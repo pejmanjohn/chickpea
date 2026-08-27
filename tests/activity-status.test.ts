@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import {
   activityStatus,
   activityStatusForObservation,
+  buildSemanticActivityContext,
   connectingActivityStatus,
   initialActivityStatus,
   isSafeTypedActivityStatus,
@@ -328,6 +329,24 @@ test('unknown tool names are never copied into status text', () => {
 
   assert.deepEqual(status, activityStatus('running', 'Working with', 'a tool'));
   assert.doesNotMatch(status.text, new RegExp(secret));
+});
+
+test('semantic MCP activity uses a family grant without caching customer-authored names', () => {
+  const secretName = 'mcp__xoxb-customer-secret__prompt_injected_tool';
+  const context = buildSemanticActivityContext([], ['custom_connection']);
+  assert.doesNotMatch(JSON.stringify(context), /xoxb-customer-secret/);
+  registerActivityContext('semantic-mcp-thread', context);
+
+  assert.deepEqual(activityStatusForObservation({
+    type: 'tool_start',
+    instanceId: 'semantic-mcp-thread',
+    toolName: secretName,
+  }), {
+    kind: 'checking',
+    action: 'Checking',
+    object: 'a connected service',
+    text: 'Checking a connected service…',
+  });
 });
 
 test('the presentation declaration uses user-facing activity copy', () => {

@@ -8,8 +8,14 @@ import {
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../slack/presentation-intent.ts';
 import {
   activityStatus,
+  genericSemanticDescriptor,
+  isSemanticActivityDescriptor,
+  narrateSemanticActivity,
   safeActivityLabel,
+  unknownSemanticDescriptor,
   type ActivityStatus,
+  type SemanticActivityDescriptor,
+  type SemanticTargetFamily,
   type TypedActivityStatus,
 } from './semantic.ts';
 
@@ -39,10 +45,40 @@ export interface ApiConnectionActivity {
   matchesRequest?: (url: string) => boolean;
 }
 
+export interface ActivityToolDescriptor {
+  toolName: string;
+  descriptor: SemanticActivityDescriptor;
+}
+
 export interface ActivityContext {
   skills: readonly ActivitySkill[];
   mcpConnections: readonly ActivityConnection[];
   apiConnections: readonly ApiConnectionActivity[];
+  /**
+   * Exact product-trusted descriptors for tools mounted on this render.
+   * Presence selects the closed semantic contract, even when the list is
+   * empty; unregistered observations then degrade to fixed generic copy.
+   */
+  toolDescriptors?: readonly ActivityToolDescriptor[];
+  /** Generic grants are policy evidence for invocation-owner facts, not copy. */
+  enabledFamilies?: readonly SemanticTargetFamily[];
+}
+
+/** Build the content-free context shape shared by RuntimePlan and legacy assembly. */
+export function buildSemanticActivityContext(
+  toolDescriptors: readonly ActivityToolDescriptor[],
+  enabledFamilies: readonly SemanticTargetFamily[] = [],
+): ActivityContext {
+  return {
+    skills: [],
+    mcpConnections: [],
+    apiConnections: [],
+    toolDescriptors: toolDescriptors.map(({ toolName, descriptor }) => ({
+      toolName,
+      descriptor: cloneSemanticDescriptor(descriptor),
+    })),
+    enabledFamilies: [...new Set(enabledFamilies)],
+  };
 }
 
 interface RegisteredActivityContext {
@@ -55,6 +91,8 @@ interface RegisteredActivityContext {
     allowedMethods: Set<string>;
     matchesRequest?: (url: string) => boolean;
   }>;
+  semanticDescriptors?: Map<string, SemanticActivityDescriptor>;
+  enabledFamilies: Set<SemanticTargetFamily>;
 }
 
 interface ActivityObservation {
@@ -75,6 +113,12 @@ const MAX_ACTIVITY_CONTEXTS = 256;
 const activityContexts = new Map<string, RegisteredActivityContext>();
 
 export function registerActivityContext(instanceId: string, context: ActivityContext): void {
+  const semanticDescriptors = context.toolDescriptors === undefined
+    ? undefined
+    : new Map(context.toolDescriptors.flatMap(({ toolName, descriptor }) => {
+        if (!toolName || !isSemanticActivityDescriptor(descriptor)) return [];
+        return [[toolName, cloneSemanticDescriptor(descriptor)] as const];
+      }));
   const registered: RegisteredActivityContext = {
     skills: new Map(
       context.skills.map((skill) => [
@@ -97,6 +141,8 @@ export function registerActivityContext(instanceId: string, context: ActivityCon
       ),
       ...(connection.matchesRequest ? { matchesRequest: connection.matchesRequest } : {}),
     })),
+    ...(semanticDescriptors ? { semanticDescriptors } : {}),
+    enabledFamilies: new Set(context.enabledFamilies ?? []),
   };
 
   // Refresh insertion order so safe degradation evicts the oldest registered
@@ -137,7 +183,39 @@ export function activityStatusForObservation(
   ) {
     return undefined;
   }
+  if (context.semanticDescriptors) {
+    const descriptor = context.semanticDescriptors.get(event.toolName) ??
+      (event.toolName.startsWith('mcp__') && context.enabledFamilies.has('custom_connection')
+        ? genericSemanticDescriptor('custom_connection')
+        : unknownSemanticDescriptor());
+    return narrateSemanticActivity(
+      descriptor,
+      { phase: 'started' },
+    );
+  }
   return toolActivityStatus(event.toolName, event.args, context);
+}
+
+function cloneSemanticDescriptor(
+  descriptor: SemanticActivityDescriptor,
+): SemanticActivityDescriptor {
+  return {
+    operation: descriptor.operation,
+    target: descriptor.target,
+    ...(descriptor.label
+      ? {
+          label: {
+            kind: descriptor.label.kind,
+            id: descriptor.label.id,
+            label: descriptor.label.label,
+          },
+        }
+      : {}),
+    object: descriptor.object,
+    effect: descriptor.effect,
+    role: descriptor.role,
+    trust: descriptor.trust,
+  };
 }
 
 export function toolActivityStatus(

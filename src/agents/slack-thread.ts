@@ -18,10 +18,16 @@ import { Bash, InMemoryFs, type NetworkConfig, type SecureFetch } from 'just-bas
 import * as v from 'valibot';
 
 import {
+  buildSemanticActivityContext,
   connectingActivityStatus,
   registerActivityContext,
-  type ApiConnectionActivity,
+  type ActivityToolDescriptor,
 } from '../activity/status.ts';
+import {
+  genericSemanticDescriptor,
+  semanticDescriptorForCoreTool,
+  unknownSemanticDescriptor,
+} from '../activity/semantic.ts';
 import {
   ApiOAuthError,
   connectionAccountIdFromOAuthRef,
@@ -58,7 +64,6 @@ import {
   type GithubConnection,
 } from '../config/github-app.ts';
 import {
-  isProfileMcpServerEligible,
   resolveRuntimePlanMcpConnections,
   resolveProfileMcpTools,
 } from '../config/profile-mcp.ts';
@@ -106,6 +111,7 @@ import {
   resolveEffectiveConnectionAccounts,
   isActiveConnectionActor,
 } from '../connections/runtime.ts';
+import { semanticDescriptorForManagedTool } from '../connections/catalog/index.ts';
 import {
   createManagedConnectionTools,
   MANAGED_CONNECTION_RESULT_INSTRUCTION,
@@ -151,7 +157,14 @@ import { resolveSlackInstallationExecutionContext } from '../slack/installation-
 import { slackPresentationIntentCapability } from '../slack/presentation-intent.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
-import { useWorkspaceManagementSlackTools } from '../management/slack-tools.ts';
+import {
+  parseSlackManagementSignal,
+  useWorkspaceManagementSlackTools,
+} from '../management/slack-tools.ts';
+import {
+  WORKSPACE_MANAGEMENT_TOOL_NAMES,
+  workspaceManagementSemanticDescriptor,
+} from '../management/tool-adapter.ts';
 import {
   AGENT_AUTHORING_SKILL_NAME,
   useAgentAuthoring,
@@ -159,6 +172,7 @@ import {
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
+  buildRuntimePlanActivityContext,
   parseRuntimePlanV2,
   type RuntimePlanModelCredentialV3,
   type RuntimePlanRepositoryV2,
@@ -607,6 +621,8 @@ export interface SlackAgentRuntimeInput {
   declarationsOwnedByHooks?: boolean;
   forcedSandbox?: SandboxSelection;
   sandboxConversationKey?: string;
+  /** RuntimePlan hooks already own the exact frozen activity registration. */
+  registerActivityContext?: boolean;
 }
 
 /** Shared interactive/routine agent assembly. Credentials always resolve here, live. */
@@ -791,39 +807,6 @@ export async function createSlackAgentRuntime(
     ...(workspaceSkill ? [workspaceSkill] : []),
   ], { reservedNames: [AGENT_AUTHORING_SKILL_NAME] });
 
-  const apiConnectionActivities: ApiConnectionActivity[] = [
-    ...repositoryAccess.connectors.map(({ allowedHosts, pathPrefixes, allowedMethods, matchesRequest }) => ({
-      displayName: 'GitHub repositories',
-      allowedHosts,
-      pathPrefixes,
-      allowedMethods,
-      ...(matchesRequest ? { matchesRequest } : {}),
-    })),
-    ...resolvedApiConnections.flatMap(({ connectors, displayName }) =>
-      connectors.flatMap((connector) => {
-        const withoutGithub = withoutGithubManagedHosts(connector);
-        return withoutGithub
-          ? [{
-              displayName,
-              allowedHosts: withoutGithub.allowedHosts,
-              pathPrefixes: withoutGithub.pathPrefixes,
-              allowedMethods: withoutGithub.allowedMethods,
-              ...(withoutGithub.matchesRequest
-                ? { matchesRequest: withoutGithub.matchesRequest }
-                : {}),
-            }]
-          : [];
-      }),
-    ),
-  ];
-  registerActivityContext(id, {
-    skills: skills.map((skill) => ({ name: skill.name })),
-    mcpConnections: projectEffectiveMcpConnections(effectiveConnectionAccounts)
-      .filter(isProfileMcpServerEligible)
-      .map(({ id: connectionId, displayName }) => ({ id: connectionId, displayName })),
-    apiConnections: apiConnectionActivities,
-  });
-
   const managedTools = input.actorMembershipId
     ? createManagedConnectionTools({
         connections: projectEffectiveManagedConnections(effectiveConnectionAccounts),
@@ -899,8 +882,8 @@ export async function createSlackAgentRuntime(
               },
             }
           : {}),
-        onConnectionStart: ({ displayName }) => {
-          publishActivityStatus(id, connectingActivityStatus(displayName), env);
+        onConnectionStart: () => {
+          publishActivityStatus(id, connectingActivityStatus('a connected service'), env);
         },
       });
 
@@ -988,6 +971,40 @@ export async function createSlackAgentRuntime(
     tools = [...mcpTools, ...managedTools, artifactCapability.tool];
   }
 
+  if (input.registerActivityContext !== false) {
+    const activityDescriptors: ActivityToolDescriptor[] = [];
+    for (const tool of managedTools) {
+      const descriptor = semanticDescriptorForManagedTool(tool.name);
+      if (descriptor) activityDescriptors.push({ toolName: tool.name, descriptor });
+    }
+    if (skills.length > 0) {
+      const skill = genericSemanticDescriptor('skill');
+      activityDescriptors.push(
+        { toolName: 'activate_skill', descriptor: skill },
+        { toolName: 'read_skill_resource', descriptor: skill },
+      );
+    }
+    const sandboxDescriptor = unknownSemanticDescriptor();
+    for (const toolName of ['bash', 'read', 'write', 'edit', 'grep', 'glob']) {
+      activityDescriptors.push({ toolName, descriptor: sandboxDescriptor });
+    }
+    if (tools.some(({ name }) => name === 'post_artifact')) {
+      activityDescriptors.push({
+        toolName: 'post_artifact',
+        descriptor: genericSemanticDescriptor('artifact'),
+      });
+    }
+    registerActivityContext(id, buildSemanticActivityContext(activityDescriptors, [
+      ...(managedTools.length > 0 ? ['managed_connector' as const] : []),
+      ...(mcpTools.length > 0 || resolvedApiConnections.length > 0
+        ? ['custom_connection' as const]
+        : []),
+      ...(skills.length > 0 ? ['skill' as const] : []),
+      ...(repositoryAccess.grants.length > 0 ? ['repository' as const] : []),
+      ...(tools.some(({ name }) => name === 'post_artifact') ? ['artifact' as const] : []),
+    ]));
+  }
+
   const thinkingLevel = thinkingLevelForModel(config.model);
   return {
     model: runtimeModel.model,
@@ -1069,11 +1086,13 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const attachmentReadOnly = slackAttachmentTurnIsReadOnly(
     parseSlackAttachmentIntake(delivery, plan),
   );
+  const managementEnabled = !!parseSlackManagementSignal(delivery, plan);
   useChickpeaSlackRuntimeCapabilities(
     plan,
     id,
     attachmentReadOnly,
     presentationIntent,
+    managementEnabled,
   );
   useSlackAttachmentContext(
     plan,
@@ -1089,10 +1108,19 @@ export function useChickpeaSlackRuntimeCapabilities(
   id: string,
   attachmentReadOnly: boolean,
   presentationIntent: ReturnType<typeof slackPresentationIntentCapability>,
+  managementEnabled: boolean,
 ): void {
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
     toolsDisabled: attachmentReadOnly,
+    includeAgentAuthoringSkill: !attachmentReadOnly,
+    additionalActivityToolDescriptors: slackActivityToolDescriptors({
+      plan,
+      managementEnabled: managementEnabled && !attachmentReadOnly,
+      ...(!attachmentReadOnly && presentationIntent
+        ? { presentationToolName: presentationIntent.tool.name }
+        : {}),
+    }),
   });
   if (!attachmentReadOnly) {
     useAgentAuthoring();
@@ -1114,8 +1142,20 @@ export function useRuntimePlanAgent(
     sandboxConversationKey?: string;
     connectorUsageCorrelation?: import('../connections/managed-tools.ts').ManagedToolUsageCorrelation;
     toolsDisabled?: boolean;
+    includeAgentAuthoringSkill?: boolean;
+    additionalActivityToolDescriptors?: readonly ActivityToolDescriptor[];
   } = {},
 ): void {
+  registerActivityContext(id, buildRuntimePlanActivityContext(plan, {
+    ...(options.toolsDisabled === undefined ? {} : { toolsDisabled: options.toolsDisabled }),
+    ...(options.includeAgentAuthoringSkill === undefined
+      ? {}
+      : { includeAgentAuthoringSkill: options.includeAgentAuthoringSkill }),
+    reservedToolNames: [AGENT_AUTHORING_SKILL_NAME],
+    ...(options.additionalActivityToolDescriptors === undefined
+      ? {}
+      : { additionalToolDescriptors: options.additionalActivityToolDescriptors }),
+  }));
   registerFrozenRuntimeModelRoute(
     plan.model,
     plan.runtimeModel ?? plan.model,
@@ -1151,8 +1191,8 @@ export function useRuntimePlanAgent(
     for (const connection of resolveRuntimePlanMcpConnections(
       plan.agentId,
       plan.mcpConnections,
-      ({ displayName }) => {
-        publishActivityStatus(id, connectingActivityStatus(displayName));
+      () => {
+        publishActivityStatus(id, connectingActivityStatus('a connected service'));
       },
     )) {
       useMcpConnection(connection);
@@ -1169,6 +1209,37 @@ export function useRuntimePlanAgent(
       useTool(createRuntimePlanArtifactTool(plan));
     }
   }
+}
+
+function slackActivityToolDescriptors(input: {
+  plan: RuntimePlanV2;
+  managementEnabled: boolean;
+  presentationToolName?: string;
+}): ActivityToolDescriptor[] {
+  const descriptors: ActivityToolDescriptor[] = [];
+  if (input.managementEnabled) {
+    descriptors.push(...WORKSPACE_MANAGEMENT_TOOL_NAMES.map((toolName) => ({
+      toolName,
+      descriptor: workspaceManagementSemanticDescriptor(toolName),
+    })));
+    descriptors.push({
+      toolName: 'request_chickpea_handoff',
+      descriptor: semanticDescriptorForCoreTool('request_chickpea_handoff'),
+    });
+    if (input.plan.actorMembershipId && input.plan.connectionAuthorizations?.length) {
+      descriptors.push({
+        toolName: 'authorize_personal_connection',
+        descriptor: genericSemanticDescriptor('connection_setup'),
+      });
+    }
+  }
+  if (input.presentationToolName) {
+    descriptors.push({
+      toolName: input.presentationToolName,
+      descriptor: semanticDescriptorForCoreTool(input.presentationToolName),
+    });
+  }
+  return descriptors;
 }
 
 // Must stay a static literal — see the note on ChickpeaRoutineExecution.
@@ -1231,6 +1302,7 @@ function createRuntimePlanSandbox(
         },
         freezeChannel: false,
         artifactThreadTs: null,
+        registerActivityContext: false,
         declarationsOwnedByHooks: !plan.actorMembershipId,
         forcedSandbox: plan.sandbox.mode,
         ...(plan.actorMembershipId ? { actorMembershipId: plan.actorMembershipId } : {}),

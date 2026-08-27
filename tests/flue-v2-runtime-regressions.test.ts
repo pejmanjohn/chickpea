@@ -6,11 +6,153 @@ import { fileURLToPath } from 'node:url';
 
 import {
   createCloudflareAgentRuntime,
+  createFlueContext,
   InMemoryAttachmentStore,
   InMemoryConversationStreamStore,
 } from '@flue/runtime/internal';
 
+import { ChickpeaSlack } from '../src/agents/slack-thread.ts';
+import { compileRuntimePlanV2, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { activityStatusForObservation } from '../src/activity/status.ts';
+import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
+import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
+import { serializeCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
+
 const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const HOOK_MODEL = 'openai/gpt-5.4-mini';
+
+const HOOK_AGENT: CustomAgentConfig = {
+  id: 'agent_hook_activity',
+  kind: 'user',
+  revision: 1,
+  name: 'Hook Activity',
+  instructions: 'Use only the mounted capabilities.',
+  enabled: true,
+  model: HOOK_MODEL,
+  skills: [],
+  mcpServers: [],
+  apiConnections: [],
+  repositories: [],
+};
+
+function hookRuntimePlan(
+  capability = 'gmail.messages.search',
+): RuntimePlanV2 {
+  const policy = {
+    kind: 'managed' as const,
+    adapterId: 'composio',
+    toolkit: 'gmail',
+    principalRef: 'principal_private',
+    accountRef: 'account_private',
+    allowedCapabilities: [capability],
+  };
+  const managed: EffectiveConnectionAccount = {
+    account: {
+      id: 'gmail-account',
+      workspaceId: 'T_HOOK',
+      revision: 1,
+      ownerKind: 'team',
+      createdByMembershipId: 'membership_owner',
+      providerId: 'google',
+      label: 'Private mailbox label',
+      policy,
+      secretRefId: 'secret_private',
+      lifecycle: 'ready',
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    binding: {
+      agentId: HOOK_AGENT.id,
+      connectionAccountId: 'gmail-account',
+      providerId: 'google',
+      allowedCapabilities: [capability],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    policy,
+    scope: 'team',
+  };
+  const assignment: ResolvedAssignment = {
+    workspaceId: 'T_HOOK',
+    channelId: 'C_HOOK',
+    agentId: HOOK_AGENT.id,
+    agent: structuredClone(HOOK_AGENT),
+    model: HOOK_MODEL,
+    modelAttribution: {
+      source: 'workspace_default',
+      providerId: 'openai',
+      workspaceDefaultRevision: 1,
+    },
+  };
+  return compileRuntimePlanV2({
+    turn: {
+      workspaceId: 'T_HOOK',
+      channelId: 'C_HOOK',
+      eventId: 'E_HOOK',
+      text: 'Check my inbox.',
+      userId: 'U_HOOK',
+      actorMembershipId: 'membership_hook',
+      messageTs: '1787000000.000200',
+      threadTs: '1787000000.000100',
+      source: 'app_mention',
+      contextMode: 'thread',
+    },
+    assignment,
+    instructions: HOOK_AGENT.instructions,
+    memoryEpoch: 1,
+    sandboxMode: 'bash',
+    effectiveConnections: [managed],
+  });
+}
+
+function slackDelivery(plan: RuntimePlanV2, attachments = false) {
+  return {
+    kind: 'signal' as const,
+    type: 'slack.message',
+    tagName: 'slack_message',
+    body: serializeCurrentRequestEnvelope(
+      'Check my inbox.',
+      false,
+      'U_HOOK',
+      '1787000000.000200',
+      { schemaVersion: 2, progressiveStreamingOffered: true },
+    ),
+    attributes: {
+      workspaceId: plan.conversation.workspaceId,
+      channelId: plan.conversation.channelId,
+      threadTs: plan.conversation.threadTs,
+      slackUserId: 'U_HOOK',
+      eventId: 'E_HOOK',
+      messageTs: '1787000000.000200',
+      turnJobId: 'turn_hook',
+      ...(attachments
+        ? {
+            attachmentFileIds: 'F_HOOK',
+            attachmentIntakeStatus: 'ok',
+            attachmentCount: '1',
+          }
+        : {}),
+    },
+  };
+}
+
+async function renderChickpeaHook(plan: RuntimePlanV2, id: string, attachments = false) {
+  const context = createFlueContext({
+    id,
+    agentName: 'chickpea-slack-v2',
+    env: {},
+    agentConfig: {
+      resolveModel() {
+        return undefined;
+      },
+    } as never,
+  });
+  await assert.rejects(
+    context.initializeRootHarness(ChickpeaSlack, slackDelivery(plan, attachments), plan),
+    /could not be resolved/,
+  );
+}
 
 const MCP_PROBE = String.raw`
 import assert from 'node:assert/strict';
@@ -77,6 +219,116 @@ assert.match(await adapter.execute({ valid: true }), /"answer": "yes"/);
 await assert.rejects(() => adapter.execute({ valid: false }), /structured content/i);
 await connection.close();
 `;
+
+test('the ChickpeaSlack hook registers exact activity before model work can begin', async () => {
+  const plan = hookRuntimePlan();
+  const id = 'hook-activity-normal';
+
+  await renderChickpeaHook(plan, id);
+
+  assert.deepEqual(
+    activityStatusForObservation({
+      type: 'tool_start',
+      instanceId: id,
+      toolName: 'gmail_search_messages',
+      toolCallId: 'call_gmail',
+      args: { query: 'subject:private user text must not matter' },
+    }),
+    {
+      kind: 'checking',
+      action: 'Checking',
+      object: 'Gmail',
+      text: 'Checking Gmail…',
+    },
+  );
+  assert.equal(
+    activityStatusForObservation({
+      type: 'tool_start',
+      instanceId: id,
+      toolName: 'stream_answer',
+      toolCallId: 'call_answer',
+    })?.text,
+    'Drafting the response…',
+  );
+  assert.deepEqual(
+    activityStatusForObservation({
+      type: 'tool_start',
+      instanceId: id,
+      toolName: 'gmail_get_profile',
+      toolCallId: 'call_unmounted_gmail',
+    }),
+    {
+      kind: 'running',
+      action: 'Working on',
+      object: 'the request',
+      text: 'Working on the request…',
+    },
+  );
+  assert.deepEqual(
+    activityStatusForObservation({
+      type: 'tool_start',
+      instanceId: id,
+      toolName: 'inspect_workspace',
+      toolCallId: 'call_management',
+    }),
+    {
+      kind: 'checking',
+      action: 'Inspecting',
+      object: 'workspace settings',
+      text: 'Inspecting workspace settings…',
+    },
+  );
+});
+
+test('the hook refresh replaces stale managed descriptors for the same instance', async () => {
+  const id = 'hook-activity-refreshed';
+  await renderChickpeaHook(hookRuntimePlan(), id);
+  assert.equal(
+    activityStatusForObservation({
+      type: 'tool_start', instanceId: id, toolName: 'gmail_search_messages',
+    })?.text,
+    'Checking Gmail…',
+  );
+
+  await renderChickpeaHook(hookRuntimePlan('gmail.profile.read'), id);
+  assert.equal(
+    activityStatusForObservation({
+      type: 'tool_start', instanceId: id, toolName: 'gmail_search_messages',
+    })?.text,
+    'Working on the request…',
+  );
+  assert.equal(
+    activityStatusForObservation({
+      type: 'tool_start', instanceId: id, toolName: 'gmail_get_profile',
+    })?.text,
+    'Checking Gmail…',
+  );
+});
+
+test('the ChickpeaSlack attachment hook registers no connector or management descriptors', async () => {
+  const plan = hookRuntimePlan();
+  const id = 'hook-activity-attachment';
+
+  await renderChickpeaHook(plan, id, true);
+
+  for (const toolName of ['gmail_search_messages', 'inspect_workspace', 'stream_answer']) {
+    assert.deepEqual(
+      activityStatusForObservation({
+        type: 'tool_start',
+        instanceId: id,
+        toolName,
+        toolCallId: `call_${toolName}`,
+      }),
+      {
+        kind: 'running',
+        action: 'Working on',
+        object: 'the request',
+        text: 'Working on the request…',
+      },
+      toolName,
+    );
+  }
+});
 
 test('Flue 2 MCP validation works under restricted string-code generation', () => {
   const result = spawnSync(

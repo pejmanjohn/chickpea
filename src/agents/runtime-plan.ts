@@ -29,6 +29,20 @@ import {
   type FrozenRuntimeModelRoute,
 } from '../config/runtime-model.ts';
 import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
+import {
+  buildSemanticActivityContext,
+  type ActivityContext,
+  type ActivityToolDescriptor,
+} from '../activity/status.ts';
+import {
+  genericSemanticDescriptor,
+  unknownSemanticDescriptor,
+  type SemanticTargetFamily,
+} from '../activity/semantic.ts';
+import {
+  MANAGED_CONNECTOR_CATALOG,
+  semanticDescriptorForManagedCapability,
+} from '../connections/catalog/index.ts';
 
 export const RUNTIME_PLAN_SCHEMA_VERSION = 3 as const;
 export const DEFAULT_CONTINUITY_POLICY = 'slack-runtime-v3' as const;
@@ -175,6 +189,17 @@ export interface CompileRuntimePlanV2Input {
   connectionChoices?: readonly RuntimePlanConnectionChoiceV2[];
 }
 
+export interface RuntimePlanActivityContextOptions {
+  /** Attachment-bearing Slack turns mount no model-callable work capabilities. */
+  toolsDisabled?: boolean;
+  /** Product-owned declarations mounted by a caller outside the base plan hook. */
+  additionalToolDescriptors?: readonly ActivityToolDescriptor[];
+  /** The interactive authoring skill is mounted outside RuntimePlan.skills. */
+  includeAgentAuthoringSkill?: boolean;
+  /** Names withheld from managed tools by the same declaration owner. */
+  reservedToolNames?: readonly string[];
+}
+
 /**
  * Compile the only data allowed to cross Flue's durable creation boundary.
  * Credential identities, versions, values, tokens, and live request objects
@@ -255,6 +280,125 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     harnessRevision: computeHarnessRevision(planWithoutRevision),
   };
   return parseRuntimePlanV2(plan);
+}
+
+/**
+ * Project one admitted RuntimePlan into the exact content-free activity
+ * declarations mounted by the hook render. Customer-authored names remain
+ * lookup keys only; every descriptor is closed, generic, or catalog-owned.
+ */
+export function buildRuntimePlanActivityContext(
+  plan: RuntimePlanV2,
+  options: RuntimePlanActivityContextOptions = {},
+): ActivityContext {
+  if (options.toolsDisabled) return buildSemanticActivityContext([]);
+
+  const descriptors: ActivityToolDescriptor[] = [];
+  const families = new Set<SemanticTargetFamily>();
+  const reservedToolNames = new Set([
+    ...plan.skills.map(({ name }) => name),
+    ...(options.reservedToolNames ?? []),
+  ]);
+
+  for (const descriptor of managedActivityDescriptors(plan, reservedToolNames)) {
+    descriptors.push(descriptor);
+    families.add('managed_connector');
+  }
+
+  if (plan.skills.length > 0 || options.includeAgentAuthoringSkill) {
+    const skill = genericSemanticDescriptor('skill');
+    descriptors.push(
+      { toolName: 'activate_skill', descriptor: skill },
+      { toolName: 'read_skill_resource', descriptor: skill },
+    );
+    families.add('skill');
+  }
+
+  if (plan.mcpConnections.length > 0) {
+    // MCP server and tool names are customer-authored. The mounted runtime is
+    // already the authority that an observed MCP call is real, so retain only
+    // the closed family grant and classify the stable `mcp__` namespace.
+    families.add('custom_connection');
+  }
+
+  // A sandbox primitive can inspect a repository, call an API, run tests, or
+  // do unrelated local work. Keep its baseline unknown until an invocation
+  // owner classifies already-validated input into a closed fact.
+  const sandboxDescriptor = unknownSemanticDescriptor();
+  for (const toolName of ['bash', 'read', 'write', 'edit', 'grep', 'glob']) {
+    descriptors.push({ toolName, descriptor: sandboxDescriptor });
+  }
+  if (plan.repositories.length > 0) families.add('repository');
+  if (plan.apiConnections.length > 0) families.add('custom_connection');
+
+  if (plan.sandbox.mode === 'cloudflare') {
+    descriptors.push({
+      toolName: 'post_artifact',
+      descriptor: genericSemanticDescriptor('artifact'),
+    });
+    families.add('artifact');
+  }
+
+  for (const descriptor of options.additionalToolDescriptors ?? []) {
+    descriptors.push(descriptor);
+    families.add(descriptor.descriptor.target);
+  }
+
+  return buildSemanticActivityContext(
+    dedupeActivityDescriptors(descriptors),
+    [...families],
+  );
+}
+
+function managedActivityDescriptors(
+  plan: RuntimePlanV2,
+  reservedToolNames: ReadonlySet<string>,
+): ActivityToolDescriptor[] {
+  if (!plan.actorMembershipId || !plan.managedConnections?.length) return [];
+  const groups = new Map<string, {
+    connectionIds: Set<string>;
+    toolkit: string;
+    capabilities: Set<string>;
+  }>();
+  for (const connection of plan.managedConnections) {
+    if (connection.allowedCapabilities.length === 0) continue;
+    const toolkit = connection.toolkit.trim().toLowerCase();
+    const key = `${connection.adapterId.trim().toLowerCase()}:${toolkit}`;
+    const group = groups.get(key) ?? {
+      connectionIds: new Set<string>(),
+      toolkit,
+      capabilities: new Set<string>(),
+    };
+    group.connectionIds.add(connection.id);
+    for (const capability of connection.allowedCapabilities) {
+      group.capabilities.add(capability);
+    }
+    groups.set(key, group);
+  }
+
+  const candidates: ActivityToolDescriptor[] = [];
+  const nameCounts = new Map<string, number>();
+  for (const group of groups.values()) {
+    if (group.connectionIds.size !== 1) continue;
+    for (const capabilityId of group.capabilities) {
+      const capability = MANAGED_CONNECTOR_CATALOG.capability(capabilityId);
+      if (!capability || capability.connectorToolkit !== group.toolkit ||
+          reservedToolNames.has(capability.toolName)) continue;
+      const descriptor = semanticDescriptorForManagedCapability(capabilityId);
+      if (!descriptor) continue;
+      candidates.push({ toolName: capability.toolName, descriptor });
+      nameCounts.set(capability.toolName, (nameCounts.get(capability.toolName) ?? 0) + 1);
+    }
+  }
+  return candidates.filter(({ toolName }) => nameCounts.get(toolName) === 1);
+}
+
+function dedupeActivityDescriptors(
+  descriptors: readonly ActivityToolDescriptor[],
+): ActivityToolDescriptor[] {
+  const byName = new Map<string, ActivityToolDescriptor>();
+  for (const descriptor of descriptors) byName.set(descriptor.toolName, descriptor);
+  return [...byName.values()];
 }
 
 export function deriveRuntimePlanInstanceId(plan: RuntimePlanV2): string {

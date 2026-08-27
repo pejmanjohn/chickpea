@@ -3,12 +3,14 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import {
+  buildRuntimePlanActivityContext,
   compileRuntimePlanV2,
   deriveRuntimePlanInstanceId,
   parseRuntimePlanV2,
   runtimePlanConversationKey,
   runtimePlanSandboxConversationKey,
 } from '../src/agents/runtime-plan.ts';
+import { genericSemanticDescriptor } from '../src/activity/semantic.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 import type { EffectiveConnectionAccount } from '../src/connections/types.ts';
 import { sandboxThreadKey } from '../src/sandbox/thread-key.ts';
@@ -407,6 +409,51 @@ test('managed providers freeze Chickpea capabilities without remote account iden
     /ca_private|chickpea-user-private|secret_unused|provider-mailbox-private|Primary mailbox/,
   );
   assert.equal(parseRuntimePlanV2(structuredClone(plan)).harnessRevision, plan.harnessRevision);
+});
+
+test('activity context projects only exact mounted declarations and closed generic families', () => {
+  const plan = compile();
+  const context = buildRuntimePlanActivityContext(plan, {
+    includeAgentAuthoringSkill: true,
+    additionalToolDescriptors: [{
+      toolName: 'inspect_workspace',
+      descriptor: genericSemanticDescriptor('workspace'),
+    }],
+  });
+  const descriptors = new Map(
+    context.toolDescriptors?.map(({ toolName, descriptor }) => [toolName, descriptor]),
+  );
+
+  assert.equal(descriptors.get('activate_skill')?.target, 'skill');
+  assert.equal(descriptors.get('read_skill_resource')?.target, 'skill');
+  assert.equal(descriptors.has('mcp__notion__search'), false);
+  assert.equal(descriptors.has('mcp__notion__read'), false);
+  assert.equal(descriptors.get('bash')?.target, 'unknown');
+  assert.equal(descriptors.get('post_artifact')?.target, 'artifact');
+  assert.equal(descriptors.get('inspect_workspace')?.target, 'workspace');
+  assert.deepEqual(new Set(context.enabledFamilies), new Set([
+    'skill', 'custom_connection', 'repository', 'artifact', 'workspace',
+  ]));
+
+  const projectedDescriptors = JSON.stringify(context);
+  assert.doesNotMatch(
+    projectedDescriptors,
+    /Runtime|research|notion|CRM|api\.example\.com|acme\/product|x-secret-header|Complete instructions/,
+  );
+});
+
+test('attachment activity context withholds every RuntimePlan work descriptor', () => {
+  const context = buildRuntimePlanActivityContext(compile(), {
+    toolsDisabled: true,
+    includeAgentAuthoringSkill: true,
+    additionalToolDescriptors: [{
+      toolName: 'inspect_workspace',
+      descriptor: genericSemanticDescriptor('workspace'),
+    }],
+  });
+
+  assert.deepEqual(context.toolDescriptors, []);
+  assert.deepEqual(context.enabledFamilies, []);
 });
 
 test('personal authorization choices freeze labels and lifecycle without credential policy', () => {
