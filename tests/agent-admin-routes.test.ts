@@ -298,6 +298,69 @@ test('shared Slack connection test requires inbound session health even when out
   }
 });
 
+test('shared Slack connection test rejects a healthy session from an older Worker version', async () => {
+  const fixture = harness();
+  let gatewayVersion = 'old-version';
+  let restartCalls = 0;
+  const env = {
+    CF_VERSION_METADATA: { id: 'current-version' },
+    SLACK_GATEWAY_SESSION: {
+      idFromName: (name: string) => name,
+      get: () => ({
+        restart: async () => {
+          restartCalls += 1;
+        },
+        status: async () => ({
+          healthy: true,
+          phase: 'healthy',
+          detail: null,
+          generation: 7,
+          versionId: gatewayVersion,
+        }),
+      }),
+    },
+  };
+  try {
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      teamId: 'T_TEST',
+      transportMode: 'gateway',
+      appId: 'A_TEST',
+      botUserId: 'U_BOT',
+      gatewayBindingId: 'binding_test',
+    });
+
+    const stale = await fixture.app.request(
+      'http://localhost/admin/api/slack-connection/test',
+      { method: 'POST', headers: auth(), body: '{}' },
+      env,
+    );
+    assert.equal(stale.status, 502);
+    assert.deepEqual(await stale.json(), {
+      error: 'slack_gateway_unreachable',
+      detail: 'gateway_session_stale_version',
+    });
+    assert.equal(restartCalls, 1);
+    assert.equal(
+      (await fixture.store.getWorkspaceInstallation('T_TEST'))?.healthDetail,
+      'gateway_session_stale_version',
+    );
+
+    gatewayVersion = 'current-version';
+    const current = await fixture.app.request(
+      'http://localhost/admin/api/slack-connection/test',
+      { method: 'POST', headers: auth(), body: '{}' },
+      env,
+    );
+    assert.equal(current.status, 200);
+    assert.equal((await current.json() as { ok: boolean }).ok, true);
+    assert.equal(restartCalls, 1);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 function harness(
   transport = new FakeTransport(),
   overrides: Partial<Parameters<typeof createAdminRoutes>[0]> = {},

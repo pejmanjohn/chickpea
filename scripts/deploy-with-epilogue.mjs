@@ -40,6 +40,11 @@ import {
   SETUP_CAPABILITY_ISSUED_AT_BINDING,
   setupCapabilityUrl,
 } from '../src/auth/setup-capability.mjs';
+import {
+  DEPLOYMENT_ACTIVATION_DIGEST_BINDING,
+  DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING,
+  mintDeploymentActivation,
+} from '../src/auth/deployment-activation.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Invoke wrangler's bin with the current node (mirrors flue-build-cf.mjs):
@@ -363,6 +368,9 @@ function validateFlue2CutoverArtifact(artifact) {
   if (!(config.compatibility_flags ?? []).includes('global_fetch_strictly_public')) {
     failures.push('global_fetch_strictly_public for the shared Slack gateway');
   }
+  if (config.version_metadata?.binding !== 'CF_VERSION_METADATA') {
+    failures.push('CF_VERSION_METADATA Worker version binding');
+  }
   if (failures.length) {
     throw new Error(`Flue 2 cutover preflight failed; missing or unsafe ${failures.join(', ')}.`);
   }
@@ -670,6 +678,17 @@ async function prepareDeploymentAuthority(artifact, secretNames) {
   return { generatedSecrets, setup };
 }
 
+async function bindDeploymentActivation(artifact) {
+  const activation = await mintDeploymentActivation();
+  artifact.config.vars = {
+    ...(artifact.config.vars ?? {}),
+    [DEPLOYMENT_ACTIVATION_DIGEST_BINDING]: activation.digest,
+    [DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING]: String(activation.issuedAt),
+  };
+  writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
+  return activation;
+}
+
 function createSecretsFile(secrets) {
   if (Object.keys(secrets).length === 0) return undefined;
   const directory = mkdtempSync(path.join(tmpdir(), 'chickpea-deploy-secrets-'));
@@ -957,6 +976,9 @@ if (!deployArgs.includes('--dry-run')) {
 
 let preparedSecrets;
 try {
+  if (deploymentAuthority) {
+    deploymentAuthority.activation = await bindDeploymentActivation(builtArtifact);
+  }
   preparedSecrets = deploymentAuthority
     ? createSecretsFile(deploymentAuthority.generatedSecrets)
     : undefined;
@@ -992,6 +1014,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 }
 
 let deployedUrl = '';
+let deployedVersionId = '';
 let tail = '';
 child.stdout.on('data', (chunk) => {
   process.stdout.write(chunk);
@@ -1002,8 +1025,82 @@ child.stdout.on('data', (chunk) => {
   if (match && !deployedUrl) {
     deployedUrl = match[0];
   }
+  const versionMatch = text.match(/Current Version ID:\s*([A-Za-z0-9-]+)/);
+  if (versionMatch?.[1]) deployedVersionId = versionMatch[1];
   tail = text.slice(-256);
 });
+
+const DEFAULT_DEPLOYMENT_READINESS_TIMEOUT_MS = 6 * 60 * 1_000;
+const MAX_DEPLOYMENT_READINESS_TIMEOUT_MS = 10 * 60 * 1_000;
+const configuredReadinessTimeout = Number(process.env.CHICKPEA_DEPLOY_READINESS_TIMEOUT_MS);
+const deploymentReadinessTimeoutMs = Number.isFinite(configuredReadinessTimeout) &&
+  configuredReadinessTimeout > 0
+  ? Math.min(configuredReadinessTimeout, MAX_DEPLOYMENT_READINESS_TIMEOUT_MS)
+  : DEFAULT_DEPLOYMENT_READINESS_TIMEOUT_MS;
+const testReadinessStatuses = process.env.DEPLOY_TEST_READINESS_STATUSES
+  ?.split(',')
+  .map((value) => Number(value.trim()))
+  .filter(Number.isInteger);
+let testReadinessIndex = 0;
+
+function readinessBaseUrl() {
+  if (deployedUrl) return deployedUrl;
+  if (process.env.DEPLOY_TEST_READINESS_BASE_URL) {
+    return process.env.DEPLOY_TEST_READINESS_BASE_URL;
+  }
+  const configured = builtArtifact.config.vars?.SLACK_TAG_PUBLIC_URL;
+  return typeof configured === 'string' && configured.trim()
+    ? configured.trim().replace(/\/+$/, '')
+    : undefined;
+}
+
+async function requestDeploymentReadiness(baseUrl, versionId, activation) {
+  if (testReadinessStatuses?.length) {
+    const status = testReadinessStatuses[
+      Math.min(testReadinessIndex, testReadinessStatuses.length - 1)
+    ];
+    testReadinessIndex += 1;
+    return status;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(new URL('/internal/deployment/ready', baseUrl), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${activation.capability}`,
+        'X-Chickpea-Target-Version': versionId,
+      },
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+    return response.status;
+  } catch {
+    return 0;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function waitForDeploymentReadiness(baseUrl, versionId, activation) {
+  const deadline = Date.now() + deploymentReadinessTimeoutMs;
+  process.stdout.write('Waiting for the current Worker and Slack gateway version...\n');
+  while (Date.now() < deadline) {
+    if (await requestDeploymentReadiness(baseUrl, versionId, activation) === 204) {
+      process.stdout.write('Verified current-version deployment readiness.\n');
+      return;
+    }
+    if (testReadinessStatuses?.length &&
+        testReadinessIndex >= testReadinessStatuses.length) break;
+    if (!testReadinessStatuses?.length) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+  }
+  throw new Error(
+    'Worker uploaded, but current-version readiness was not confirmed. ' +
+    'The Slack gateway may still be serving older code.',
+  );
+}
 
 const RULE = '────────────────────────────────────────────────────────';
 function printPrivateSetupLink(baseUrl, setup) {
@@ -1013,8 +1110,6 @@ function printPrivateSetupLink(baseUrl, setup) {
       '',
       RULE,
       '  ✔ Worker deployed.',
-      '',
-      '  Cloudflare may take 1–2 minutes to make this URL available to you.',
       '',
       '  🔐 PRIVATE SETUP LINK — COPY AND OPEN THIS',
       RULE,
@@ -1041,7 +1136,7 @@ function printPrivateSetupPath(setup) {
 // Workers Builds receives stdout through a pipe. Let Node exit naturally after
 // this callback so the final setup link and Cloudflare's completion event can
 // flush; process.exit() can truncate asynchronous pipe writes.
-child.on('close', (code) => {
+child.on('close', async (code) => {
   cleanupSecrets();
   if (code !== 0) {
     process.exitCode = code ?? 1;
@@ -1049,6 +1144,25 @@ child.on('close', (code) => {
   }
   // A dry run deploys nothing — next-steps instructions would be a lie.
   if (deployArgs.includes('--dry-run')) {
+    return;
+  }
+  const baseUrl = readinessBaseUrl();
+  if (!baseUrl || !deployedVersionId || !deploymentAuthority) {
+    console.error(
+      'Worker uploaded, but its version or public origin was unavailable for readiness verification.',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    await waitForDeploymentReadiness(
+      baseUrl,
+      deployedVersionId,
+      deploymentAuthority.activation,
+    );
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
     return;
   }
   if (deployedUrl && deploymentAuthority) {
