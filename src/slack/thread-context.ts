@@ -135,7 +135,7 @@ export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextM
     if (!message.user || !message.text || !message.text.trim() || !message.ts) {
       return [];
     }
-    if (message.bot_id || message.subtype) {
+    if (message.bot_id || (message.subtype && message.subtype !== 'file_share')) {
       return [];
     }
     return [
@@ -189,7 +189,7 @@ function parseSlackTs(ts: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function slackTimestampUnits(timestamp: string): bigint | null {
+export function slackTimestampUnits(timestamp: string): bigint | null {
   const match = /^(\d+)(?:\.(\d{1,6}))?$/.exec(timestamp);
   if (!match?.[1]) return null;
   return BigInt(match[1]) * 1_000_000n + BigInt((match[2] ?? '').padEnd(6, '0'));

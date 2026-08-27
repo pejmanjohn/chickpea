@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 
-import type { WebClient } from '@slack/web-api';
+import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import type { SlackInteractionProgressPatch } from '../src/config/state-rpc.ts';
+import { SqliteMemoryStateStore } from '../src/memory/store.ts';
 import {
   AgentPromptFailure,
   type AgentDispatchResult,
@@ -27,6 +27,7 @@ import { SANDBOX_UNAVAILABLE_FALLBACK_NOTICE } from '../src/slack/web-client-pre
 import { SLACK_SELF_MENTION_PLACEHOLDER } from '../src/slack/web-client-context.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
+import { repairTerminalSlackPresentation } from '../src/slack/presentation-repair.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -113,163 +114,280 @@ function workTurn(eventId: string): NormalizedSlackTurn {
   };
 }
 
-function heartbeatClient(options: { failFinal?: boolean } = {}): {
-  client: WebClient;
-  heartbeatStarted: Promise<void>;
-  finalAttempted: Promise<void>;
-  releaseHeartbeat(): void;
-  updateCount(): number;
-  removedCount(): number;
-  trace(): readonly string[];
-} {
-  const heartbeat = deferred<void>();
-  const heartbeatStarted = deferred<void>();
-  const finalAttempted = deferred<void>();
-  let updates = 0;
-  let removals = 0;
-  let posts = 0;
-  const trace: string[] = [];
+function v3PresentationHarness(turn: NormalizedSlackTurn, runId: string) {
+  const db = openStateDb(':memory:');
+  const store = new SlackRunPresentationStoreLogic(db);
+  const sessionGeneration = Number(turn.messageTs.replace('.', ''));
+  store.create({
+    schemaVersion: 3,
+    runId,
+    turnJobId: `turn_${runId}`,
+    bindingId: `binding_${runId}`,
+    workBindingGeneration: 1,
+    runFencingToken: 0,
+    owner: { kind: 'selected_agent', persona: {
+      name: 'Frozen Support',
+      avatarUrl: 'https://chickpea.example/assets/agents/frozen/avatar/7',
+      avatarRevision: 7,
+    } },
+    sessionGeneration,
+    currentActivity: {
+      kind: 'preparing',
+      action: 'Preparing',
+      object: 'your request',
+      generation: sessionGeneration,
+      sequence: 1,
+      operation: { operationId: `activity_${runId}_1`, certainty: 'pending' },
+    },
+    root: {
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      threadTs: turn.threadTs,
+      requesterUserId: turn.userId,
+    },
+  });
+  return {
+    db,
+    store,
+    state: {
+      getRunPresentation: (id: string) => store.get(id),
+      getLatestThreadSessionGeneration: (root: Parameters<
+        typeof store.getLatestThreadSessionGeneration
+      >[0]) => store.getLatestThreadSessionGeneration(root),
+      transitionRunPresentation: (input: Parameters<typeof store.transition>[0]) =>
+        store.transition(input),
+      reserveSlackAppend: (workspaceId: string) => store.reserveAppend(workspaceId),
+      applySlackAppendCooldown: (workspaceId: string, retryAfterMs: number) =>
+        store.applyAppendCooldown(workspaceId, retryAfterMs),
+      matchFlueObservation: () => undefined,
+    },
+  };
+}
+
+test('runTurn acknowledges substantive work with a temporary eyes reaction', async () => {
+  let reactionAdds = 0;
+  let reactionRemoves = 0;
   const client = {
-    assistant: {
-      threads: {
-        setStatus: async () => {
-          trace.push('status');
-          return { ok: true };
-        },
-      },
-    },
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
     reactions: {
-      add: async () => ({ ok: true }),
+      add: async () => {
+        reactionAdds += 1;
+        return { ok: true };
+      },
       remove: async () => {
-        trace.push('reaction.remove');
-        removals += 1;
+        reactionRemoves += 1;
         return { ok: true };
       },
     },
-    conversations: {
-      history: async () => {
-        trace.push('history.start');
-        await delay(1_100, undefined);
-        trace.push('history.end');
-        return { ok: true, messages: [] };
-      },
-    },
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
     chat: {
-      postMessage: async () => {
-        posts += 1;
-        if (options.failFinal && posts > 1) {
-          trace.push('final.fallback');
-          throw new Error('simulated Slack post failure');
-        }
-        return { ok: true, channel: assignment.channelId, ts: 'checklist-ts' };
-      },
-      update: async () => {
-        trace.push(`update.${updates + 1}`);
-        updates += 1;
-        if (updates === 1) {
-          heartbeatStarted.resolve(undefined);
-          await heartbeat.promise;
-        }
-        return { ok: true };
-      },
-      startStream: async () => {
-        trace.push('final.start');
-        finalAttempted.resolve(undefined);
-        if (options.failFinal) throw new Error('simulated unknown Slack delivery outcome');
-        return { ok: true, ts: 'final-ts' };
-      },
+      postMessage: async () => ({ ok: true, channel: assignment.channelId, ts: 'checklist-ts' }),
+      update: async () => ({ ok: true }),
+      startStream: async () => ({ ok: true, ts: 'final-ts' }),
       stopStream: async () => ({ ok: true }),
     },
   } as unknown as WebClient;
 
-  return {
+  await runTurn(workTurn('Ev_NO_SYNTHETIC_WORK_ACK'), assignment, undefined, {
     client,
-    heartbeatStarted: heartbeatStarted.promise,
-    finalAttempted: finalAttempted.promise,
-    releaseHeartbeat: () => heartbeat.resolve(undefined),
-    updateCount: () => updates,
-    removedCount: () => removals,
-    trace: () => trace,
-  };
-}
-
-test('runTurn drains an in-flight heartbeat before terminal checklist finalization', async () => {
-  const harness = heartbeatClient();
-  let settled = false;
-  const running = runTurn(workTurn('Ev_HEARTBEAT_SUCCESS'), assignment, undefined, {
-    client: harness.client,
     replayText: 'Verification complete.',
-    progressHeartbeatMs: 1_000,
     usageRecordingEnabled: false,
-  }).finally(() => {
-    settled = true;
   });
 
-  await harness.heartbeatStarted;
-  await harness.finalAttempted;
-  await Promise.resolve();
-  assert.equal(settled, false);
-  assert.equal(harness.updateCount(), 1);
-
-  harness.releaseHeartbeat();
-  await running;
-  assert.equal(harness.updateCount(), 2);
-  assert.equal(harness.removedCount(), 1);
+  assert.equal(reactionAdds, 1);
+  assert.equal(reactionRemoves, 1);
 });
 
-test('runTurn failure cleanup does not wait for an in-flight heartbeat', async () => {
-  const harness = heartbeatClient({ failFinal: true });
-  const outcome = runTurn(workTurn('Ev_HEARTBEAT_FAILURE'), assignment, undefined, {
-    client: harness.client,
-    replayText: 'Verification complete.',
-    progressHeartbeatMs: 1_000,
-    usageRecordingEnabled: false,
-  }).then(() => 'resolved' as const, () => 'rejected' as const);
+test('runTurn keeps the persisted V3 owner from first status through final delivery', async () => {
+  const persona = {
+    name: 'Frozen Support',
+    avatarUrl: 'https://chickpea.example/assets/agents/frozen/avatar/7',
+    avatarRevision: 7,
+  };
+  for (const owner of [
+    { kind: 'selected_agent' as const, persona },
+    { kind: 'chickpea' as const },
+  ]) {
+    const db = openStateDb(':memory:');
+    try {
+      const messageTs = owner.kind === 'selected_agent'
+        ? '1785700000.000100'
+        : '1785700000.000101';
+      const turn: NormalizedSlackTurn = {
+        ...workTurn(`Ev_FROZEN_OWNER_${owner.kind}`),
+        messageTs,
+        threadTs: messageTs,
+        interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+      };
+      const runId = `run_frozen_owner_${owner.kind}`;
+      const sessionGeneration = Number(turn.messageTs.replace('.', ''));
+      const presentations = new SlackRunPresentationStoreLogic(db);
+      presentations.create({
+        schemaVersion: 3,
+        runId,
+        turnJobId: `turn_frozen_owner_${owner.kind}`,
+        bindingId: `binding_frozen_owner_${owner.kind}`,
+        workBindingGeneration: 1,
+        runFencingToken: 0,
+        owner,
+        sessionGeneration,
+        currentActivity: {
+          kind: 'preparing',
+          action: 'Preparing',
+          object: 'your request',
+          generation: sessionGeneration,
+          sequence: 1,
+          operation: { operationId: `activity_${runId}_1`, certainty: 'pending' },
+        },
+        root: {
+          workspaceId: turn.workspaceId,
+          channelId: turn.channelId,
+          threadTs: turn.threadTs,
+          requesterUserId: turn.userId,
+        },
+      });
+      const statuses: Array<Record<string, unknown>> = [];
+      const sessionStatuses: Array<Record<string, unknown>> = [];
+      const activities: Array<Record<string, unknown>> = [];
+      const starts: Array<Record<string, unknown>> = [];
+      const stops: Array<Record<string, unknown>> = [];
+      const client = {
+        apiCall: async (method: string, input: Record<string, unknown>) => {
+          assert.equal(method, 'agents.sessions.setStatus');
+          sessionStatuses.push(input);
+          return { ok: true };
+        },
+        assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+          statuses.push(input);
+          return { ok: true };
+        } } },
+        chat: {
+          startStream: async (input: Record<string, unknown>) => {
+            starts.push(input);
+            return { ok: true, ts: `1785700200.${owner.kind === 'selected_agent' ? '000100' : '000200'}` };
+          },
+          stopStream: async (input: Record<string, unknown>) => {
+            stops.push(input);
+            return { ok: true };
+          },
+          postMessage: async (input: Record<string, unknown>) => {
+            activities.push(input);
+            return { ok: true, channel: turn.channelId, ts: '1785700150.000100' };
+          },
+          delete: async () => ({ ok: true }),
+        },
+      } as unknown as WebClient;
+      const presentationState = {
+        getRunPresentation: (id: string) => presentations.get(id),
+        getLatestThreadSessionGeneration: (root: Parameters<
+          typeof presentations.getLatestThreadSessionGeneration
+        >[0]) => presentations.getLatestThreadSessionGeneration(root),
+        transitionRunPresentation: (input: Parameters<typeof presentations.transition>[0]) =>
+          presentations.transition(input),
+        reserveSlackAppend: (workspaceId: string) => presentations.reserveAppend(workspaceId),
+        applySlackAppendCooldown: (workspaceId: string, retryAfterMs: number) =>
+          presentations.applyAppendCooldown(workspaceId, retryAfterMs),
+        matchFlueObservation: () => undefined,
+      };
 
-  await harness.heartbeatStarted;
-  await harness.finalAttempted;
-  assert.equal(
-    await Promise.race([outcome, delay(250, 'timeout' as const)]),
-    'rejected',
-    harness.trace().join(', '),
-  );
-  assert.equal(harness.updateCount(), 1);
-  assert.equal(harness.removedCount(), 1);
+      await runTurn(turn, { ...assignment, agent: { ...assignment.agent, name: 'Mutable Agent' } },
+        undefined, {
+          client,
+          runId,
+          replayText: 'Persisted answer.',
+          presentationState,
+          usageRecordingEnabled: false,
+        });
 
-  harness.releaseHeartbeat();
+      assert.deepEqual(
+        statuses.map(({ status }) => status),
+        ['Preparing your request…', ''],
+        'the native under-composer status stays visible and clears after the final',
+      );
+      assert.deepEqual(statuses[0], {
+        channel_id: turn.channelId,
+        thread_ts: turn.threadTs,
+        status: 'Preparing your request…',
+        loading_messages: ['Preparing your request…'],
+        ...(owner.kind === 'selected_agent'
+          ? { username: persona.name, icon_url: persona.avatarUrl }
+          : {}),
+      });
+      assert.deepEqual(
+        sessionStatuses.map(({ status, username, icon_url }) => ({ status, username, icon_url })),
+        [
+          {
+            status: 'processing',
+            ...(owner.kind === 'selected_agent'
+              ? { username: persona.name, icon_url: persona.avatarUrl }
+              : { username: undefined, icon_url: undefined }),
+          },
+          {
+            status: 'active',
+            ...(owner.kind === 'selected_agent'
+              ? { username: persona.name, icon_url: persona.avatarUrl }
+              : { username: undefined, icon_url: undefined }),
+          },
+        ],
+      );
+      if (owner.kind === 'selected_agent') {
+        assert.deepEqual(activities, [], 'selected Agents use only Slack native status while working');
+        assert.equal(starts[0]?.username, persona.name);
+        assert.equal(starts[0]?.icon_url, persona.avatarUrl);
+      } else {
+        assert.deepEqual(activities, [], 'Chickpea uses only Slack native status while working');
+        assert.equal(Object.hasOwn(starts[0] ?? {}, 'username'), false);
+        assert.equal(Object.hasOwn(starts[0] ?? {}, 'icon_url'), false);
+      }
+      assert.doesNotMatch(
+        JSON.stringify(stops[0]),
+        /provider/i,
+        'the V3 footer must not add separate provider metadata',
+      );
+      assert.match(JSON.stringify(stops[0]), /local-stub\/heartbeat/);
+      const persisted = presentations.get(runId);
+      assert.equal(
+        persisted?.schemaVersion === 3
+          ? persisted.currentActivity?.operation.certainty
+          : undefined,
+        'acknowledged',
+      );
+    } finally {
+      db.close();
+    }
+  }
 });
 
-test('runTurn bounds a never-settling heartbeat without racing a terminal update', async () => {
-  const harness = heartbeatClient();
-  const progress: SlackInteractionProgressPatch[] = [];
-  const outcome = runTurn(workTurn('Ev_HEARTBEAT_TIMEOUT'), assignment, undefined, {
-    client: harness.client,
-    replayText: 'Verification complete.',
-    progressHeartbeatMs: 1_000,
-    progressHeartbeatDrainMs: 50,
-    usageRecordingEnabled: false,
-    onInteractionProgress(patch) {
-      progress.push(patch);
+test('work activity replaces the legacy checklist heartbeat and UTC timestamp', async () => {
+  const posts: Array<Record<string, unknown>> = [];
+  const updates: Array<Record<string, unknown>> = [];
+  const client = {
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      postMessage: async (input: Record<string, unknown>) => {
+        posts.push(input);
+        return { ok: true, channel: assignment.channelId, ts: 'activity-ts' };
+      },
+      update: async (input: Record<string, unknown>) => {
+        updates.push(input);
+        return { ok: true };
+      },
+      delete: async () => ({ ok: true }),
+      startStream: async () => ({ ok: true, ts: 'final-ts' }),
+      stopStream: async () => ({ ok: true }),
     },
-  }).then(() => 'resolved' as const, () => 'rejected' as const);
+  } as unknown as WebClient;
 
-  await harness.heartbeatStarted;
-  await harness.finalAttempted;
-  assert.equal(await Promise.race([outcome, delay(250, 'timeout' as const)]), 'resolved');
-  assert.equal(harness.updateCount(), 1, 'terminal update must not race the hung heartbeat');
-  assert.equal(
-    progress.some((patch) =>
-      patch.checklist?.messageTs === 'checklist-ts' && patch.checklist.cleanup === 'pending'
-    ),
-    true,
-    'the repair lane must receive the pending checklist coordinate',
-  );
-  assert.equal(
-    progress.some((patch) => patch.checklist?.cleanup === 'done'),
-    false,
-    'durable repair must retain ownership of checklist finalization',
-  );
-  assert.equal(harness.removedCount(), 1);
+  await runTurn(workTurn('Ev_NO_CHECKLIST_HEARTBEAT'), assignment, undefined, {
+    client,
+    replayText: 'Verification complete.',
+    usageRecordingEnabled: false,
+  });
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0]?.text, 'Drafting Verification result…');
+  assert.deepEqual(updates, []);
+  assert.doesNotMatch(JSON.stringify(posts), /UTC|chickpea_work_checklist|is thinking|local-stub/);
 });
 
 test('replay delivery skips model activity and never invokes the agent provider', async () => {
@@ -411,6 +529,7 @@ test('runTurn resolves the authenticated self-mention placeholder before Slack d
 
 test('a recovery-required Flue conflict emits no Slack final', async () => {
   let finalAttempts = 0;
+  const posts: Array<Record<string, unknown>> = [];
   const client = {
     assistant: {
       threads: {
@@ -426,8 +545,8 @@ test('a recovery-required Flue conflict emits no Slack final', async () => {
         return { ok: true, ts: 'unexpected-final' };
       },
       stopStream: async () => ({ ok: true }),
-      postMessage: async () => {
-        finalAttempts += 1;
+      postMessage: async (input: Record<string, unknown>) => {
+        posts.push(input);
         return { ok: true, channel: assignment.channelId, ts: 'unexpected-final' };
       },
     },
@@ -448,10 +567,12 @@ test('a recovery-required Flue conflict emits no Slack final', async () => {
     (error: unknown) => error instanceof AgentPromptFailure && error.recoveryRequired,
   );
   assert.equal(finalAttempts, 0);
+  assert.deepEqual(posts.map((post) => post.text), ['Drafting the response…']);
 });
 
 test('a retryable Flue interruption emits no Slack final', async () => {
   let finalAttempts = 0;
+  const posts: Array<Record<string, unknown>> = [];
   const client = {
     assistant: { threads: { setStatus: async () => ({ ok: true }) } },
     conversations: { history: async () => ({ ok: true, messages: [] }) },
@@ -461,8 +582,8 @@ test('a retryable Flue interruption emits no Slack final', async () => {
         return { ok: true, ts: 'unexpected-final' };
       },
       stopStream: async () => ({ ok: true }),
-      postMessage: async () => {
-        finalAttempts += 1;
+      postMessage: async (input: Record<string, unknown>) => {
+        posts.push(input);
         return { ok: true, channel: assignment.channelId, ts: 'unexpected-final' };
       },
     },
@@ -483,30 +604,20 @@ test('a retryable Flue interruption emits no Slack final', async () => {
     (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
   );
   assert.equal(finalAttempts, 0);
+  assert.deepEqual(posts.map((post) => post.text), ['Drafting the response…']);
 });
 
-test('a stalled detail status does not delay agent start or final delivery', async () => {
-  const detailWrite = deferred<void>();
+test('activity remains visible until final delivery and omits model or context narration', async () => {
   const agentStarted = deferred<void>();
   const finalAttempted = deferred<void>();
-  const lateClear = deferred<void>();
   const lifecycle: string[] = [];
-  let nonEmptyStatusCalls = 0;
-  let clearCalls = 0;
+  const activity: Array<Record<string, unknown>> = [];
+  let compatibilityStatusCalls = 0;
   const client = {
     assistant: {
       threads: {
-        async setStatus(input: { status?: string }) {
-          if (input.status === '') {
-            clearCalls += 1;
-            lifecycle.push('clear');
-            if (clearCalls === 2) lateClear.resolve(undefined);
-            return { ok: true };
-          }
-          nonEmptyStatusCalls += 1;
-          if (nonEmptyStatusCalls === 2) {
-            await detailWrite.promise;
-          }
+        async setStatus() {
+          compatibilityStatusCalls += 1;
           return { ok: true };
         },
       },
@@ -521,7 +632,14 @@ test('a stalled detail status does not delay agent start or final delivery', asy
         return { ok: true, ts: 'final-ts' };
       },
       stopStream: async () => ({ ok: true }),
-      postMessage: async () => ({ ok: true, channel: assignment.channelId, ts: 'final-ts' }),
+      postMessage: async (input: Record<string, unknown>) => {
+        activity.push(input);
+        return { ok: true, channel: assignment.channelId, ts: 'activity-ts' };
+      },
+      delete: async () => {
+        lifecycle.push('clear');
+        return { ok: true };
+      },
     },
   } as unknown as WebClient;
   const turn: NormalizedSlackTurn = {
@@ -547,16 +665,387 @@ test('a stalled detail status does not delay agent start or final delivery', asy
   await agentStarted.promise;
   await finalAttempted.promise;
   assert.equal(await Promise.race([outcome, delay(100, 'timeout' as const)]), 'resolved');
-  assert.equal(clearCalls, 1, 'final delivery should trigger an immediate clear');
+  assert.equal(compatibilityStatusCalls, 2, 'native status is set once and cleared once');
+  assert.deepEqual(activity.map((item) => item.text), ['Drafting the response…']);
+  assert.doesNotMatch(JSON.stringify(activity), /local-stub|message(?:s)? of|is thinking/i);
   assert.deepEqual(
     lifecycle.slice(0, 2),
     ['final', 'clear'],
-    'the final must be posted before the status is cleared',
+    'the final must be posted before the activity is removed',
   );
+});
 
-  detailWrite.resolve(undefined);
-  await lateClear.promise;
-  assert.equal(clearCalls, 2, 'the late detail write should be cleared after it settles');
+test('acknowledged final settles the frozen Agent Session before deleting activity', async () => {
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_V3_TERMINAL_ORDER'),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const runId = 'run_v3_terminal_order';
+  const h = v3PresentationHarness(turn, runId);
+  const effects: string[] = [];
+  const client = {
+    apiCall: async (_method: string, input: Record<string, unknown>) => {
+      effects.push(`session:${String(input.status)}:${String(input.username)}`);
+      return { ok: true };
+    },
+    assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+      effects.push(`activity:${input.status ? 'set' : 'clear'}:${String(input.username)}`);
+      return { ok: true };
+    } } },
+    chat: {
+      startStream: async () => {
+        effects.push('final:start');
+        return { ok: true, ts: '1787776100.000200' };
+      },
+      stopStream: async () => {
+        effects.push('final:ack');
+        return { ok: true };
+      },
+    },
+  } as unknown as WebClient;
+
+  try {
+    await runTurn(turn, assignment, undefined, {
+      client,
+      runId,
+      presentationState: h.state,
+      replayText: 'The requested work is complete.',
+      executionAuthority: 'ledger',
+      usageRecordingEnabled: false,
+    });
+    assert.deepEqual(effects, [
+      'session:processing:Frozen Support',
+      'activity:set:Frozen Support',
+      'final:start',
+      'final:ack',
+      'session:active:Frozen Support',
+      'activity:clear:undefined',
+    ]);
+    const persisted = h.store.get(runId);
+    assert.equal(persisted?.schemaVersion, 3);
+    if (persisted?.schemaVersion !== 3) return;
+    assert.equal(persisted.terminalDelivery.state === 'intended'
+      ? persisted.terminalDelivery.operation.certainty
+      : undefined, 'acknowledged');
+    assert.equal(persisted.agentSession.acknowledged, 'active');
+    assert.equal(persisted.cleanup.state === 'required'
+      ? persisted.cleanup.operation.certainty
+      : undefined, 'acknowledged');
+    assert.equal(persisted.activityProjection.state, 'cleared');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('a lease lost after visible activity and agent completion settles a frozen-owner failure', async () => {
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_V3_LEASE_LOST_AFTER_AGENT'),
+    messageTs: '1787776150.000100',
+    threadTs: '1787776150.000100',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const runId = 'run_v3_lease_lost_after_agent';
+  const h = v3PresentationHarness(turn, runId);
+  const { model: _model, modelAttribution: _modelAttribution, ...assignmentWithoutModel } = assignment;
+  const leaseAssignment: ResolvedAssignment = {
+    ...assignmentWithoutModel,
+    agent: assignment.agent,
+  };
+  const config = new SqliteConfigStore(':memory:', { agents: [assignment.agent] });
+  const memory = new SqliteMemoryStateStore(':memory:');
+  const installation = await config.ensureWorkspaceInstallation({
+    workspaceId: assignment.workspaceId,
+    transportMode: 'direct',
+    defaultAgentId: assignment.agentId,
+    teamId: assignment.workspaceId,
+    botUserId: 'U_CHICKPEA',
+  });
+  await config.updateWorkspaceInstallation(assignment.workspaceId, { health: 'healthy' }, installation.revision);
+  const finalPayloads: Array<Record<string, unknown>> = [];
+  let delivered = 0;
+  const client = {
+    apiCall: async () => ({ ok: true }),
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      postMessage: async () => ({ ok: true, channel: turn.channelId, ts: '1787776150.000200' }),
+      startStream: async (input: Record<string, unknown>) => {
+        finalPayloads.push(input);
+        return { ok: true, ts: '1787776150.000300' };
+      },
+      stopStream: async () => ({ ok: true }),
+      delete: async () => ({ ok: true }),
+    },
+  } as unknown as WebClient;
+
+  try {
+    await runTurn(turn, leaseAssignment, undefined, {
+      client,
+      runId,
+      presentationState: h.state,
+      executionAuthority: 'ledger',
+      usageRecordingEnabled: false,
+      appStores: { config, memory, identity: {} } as never,
+      onDelivered: () => { delivered += 1; },
+      async agentPrompt(): Promise<AgentDispatchResult> {
+        const live = await config.getAgent(assignment.agentId);
+        await config.updateAgent(assignment.agentId, { enabled: false }, live.revision);
+        return {
+          text: 'This answer must not be delivered after the lease changes.',
+          requestedModel: null,
+          returnedModel: null,
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+    });
+
+    assert.equal(finalPayloads.length, 1);
+    assert.match(String(finalPayloads[0]?.markdown_text), /agent run failed before completion/);
+    assert.equal(delivered, 1, 'the terminal failure still writes the delivery tombstone');
+    const persisted = h.store.get(runId);
+    assert.equal(persisted?.schemaVersion, 3);
+    if (persisted?.schemaVersion !== 3) return;
+    assert.equal(
+      persisted.terminalDelivery.state === 'intended'
+        ? persisted.terminalDelivery.operation.certainty
+        : undefined,
+      'acknowledged',
+    );
+    assert.equal(persisted.agentSession.acknowledged, 'suspended');
+    assert.equal(persisted.activityProjection.state, 'cleared');
+  } finally {
+    config.close();
+    memory.close();
+    h.db.close();
+  }
+});
+
+test('confirmed final rejection leaves the same durable activity visible for recovery', async () => {
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_V3_FINAL_REJECTED'),
+    messageTs: '1787776200.000100',
+    threadTs: '1787776200.000100',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const runId = 'run_v3_final_rejected';
+  const h = v3PresentationHarness(turn, runId);
+  const deleted: string[] = [];
+  const rejected = Object.assign(new Error('Slack rejected the final'), {
+    code: ErrorCode.PlatformError,
+    data: { error: 'invalid_blocks' },
+  });
+  const client = {
+    apiCall: async () => ({ ok: true }),
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    chat: {
+      postMessage: async () => { throw rejected; },
+      startStream: async () => { throw rejected; },
+      delete: async (input: Record<string, unknown>) => {
+        deleted.push(String(input.ts));
+        return { ok: true };
+      },
+    },
+  } as unknown as WebClient;
+
+  try {
+    await assert.rejects(() => runTurn(turn, assignment, undefined, {
+      client,
+      runId,
+      presentationState: h.state,
+      replayText: 'This final will be rejected.',
+      executionAuthority: 'ledger',
+      usageRecordingEnabled: false,
+    }));
+    assert.deepEqual(deleted, [], 'activity must remain until a terminal reply is acknowledged');
+    const persisted = h.store.get(runId);
+    assert.equal(persisted?.schemaVersion, 3);
+    if (persisted?.schemaVersion !== 3) return;
+    assert.deepEqual(persisted.activityProjection, {
+      surface: 'assistant_status', state: 'visible',
+    });
+    assert.equal(persisted.terminalDelivery.state === 'intended'
+      ? persisted.terminalDelivery.operation.certainty
+      : undefined, 'failed');
+    assert.deepEqual(persisted.cleanup, { state: 'not_required' });
+    assert.equal(persisted.agentSession.desired, 'processing');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('unknown final effect remains repair-required and replay never posts a duplicate', async () => {
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_V3_FINAL_UNKNOWN'),
+    messageTs: '1787776300.000100',
+    threadTs: '1787776300.000100',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const runId = 'run_v3_final_unknown';
+  const h = v3PresentationHarness(turn, runId);
+  let activityPosts = 0;
+  let finalStarts = 0;
+  let finalStops = 0;
+  let deletes = 0;
+  const client = {
+    apiCall: async () => ({ ok: true }),
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    chat: {
+      postMessage: async () => {
+        activityPosts += 1;
+        return { ok: true, channel: turn.channelId, ts: '1787776300.000200' };
+      },
+      startStream: async () => {
+        finalStarts += 1;
+        return { ok: true, ts: '1787776300.000300' };
+      },
+      stopStream: async () => {
+        finalStops += 1;
+        throw Object.assign(new Error('timeout'), { code: ErrorCode.RequestError });
+      },
+      delete: async () => { deletes += 1; return { ok: true }; },
+    },
+  } as unknown as WebClient;
+  const options = {
+    client,
+    runId,
+    presentationState: h.state,
+    replayText: 'The final may already be visible.',
+    executionAuthority: 'ledger' as const,
+    usageRecordingEnabled: false,
+  };
+
+  try {
+    await assert.rejects(() => runTurn(turn, assignment, undefined, options));
+    await assert.rejects(() => runTurn(turn, assignment, undefined, options));
+    assert.deepEqual({ activityPosts, finalStarts, finalStops, deletes }, {
+      activityPosts: 0, finalStarts: 1, finalStops: 1, deletes: 0,
+    });
+    const persisted = h.store.get(runId);
+    assert.equal(persisted?.schemaVersion === 3 &&
+      persisted.terminalDelivery.state === 'intended'
+      ? persisted.terminalDelivery.operation.certainty
+      : undefined, 'unknown');
+    assert.equal(persisted?.repairRequired, true);
+  } finally {
+    h.db.close();
+  }
+});
+
+test('unknown fallback post keeps its terminal idempotency key and is not reposted', async () => {
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_V3_FALLBACK_UNKNOWN'),
+    messageTs: '1787776350.000100',
+    threadTs: '1787776350.000100',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const runId = 'run_v3_fallback_unknown';
+  const h = v3PresentationHarness(turn, runId);
+  const posts: Array<Record<string, unknown>> = [];
+  let starts = 0;
+  const startRejected = Object.assign(new Error('unsupported stream'), {
+    code: ErrorCode.PlatformError,
+    data: { error: 'invalid_blocks' },
+  });
+  const client = {
+    apiCall: async () => ({ ok: true }),
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    chat: {
+      postMessage: async (input: Record<string, unknown>) => {
+        posts.push(input);
+        throw Object.assign(new Error('post timeout'), { code: ErrorCode.RequestError });
+      },
+      startStream: async () => { starts += 1; throw startRejected; },
+      delete: async () => ({ ok: true }),
+    },
+  } as unknown as WebClient;
+  const options = {
+    client, runId, presentationState: h.state,
+    replayText: 'The fallback may already be visible.',
+    executionAuthority: 'ledger' as const,
+    usageRecordingEnabled: false,
+  };
+
+  try {
+    await assert.rejects(() => runTurn(turn, assignment, undefined, options));
+    await assert.rejects(() => runTurn(turn, assignment, undefined, options));
+    assert.equal(starts, 1);
+    assert.equal(posts.length, 1, 'only the terminal fallback is attempted');
+    assert.match(String(posts[0]?.client_msg_id), /^[0-9a-f-]{36}$/);
+    assert.doesNotMatch(
+      JSON.stringify(posts[0]),
+      /provider/i,
+      'the V3 fallback footer must not add separate provider metadata',
+    );
+    assert.match(JSON.stringify(posts[0]), /local-stub\/heartbeat/);
+    const persisted = h.store.get(runId);
+    assert.equal(persisted?.schemaVersion === 3 &&
+      persisted.terminalDelivery.state === 'intended'
+      ? persisted.terminalDelivery.operation.certainty
+      : undefined, 'unknown');
+  } finally {
+    h.db.close();
+  }
+});
+
+test('failed activity cleanup retries the same coordinate without replaying the answer', async () => {
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_V3_CLEANUP_RETRY'),
+    messageTs: '1787776400.000100',
+    threadTs: '1787776400.000100',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const runId = 'run_v3_cleanup_retry';
+  const h = v3PresentationHarness(turn, runId);
+  let finalStarts = 0;
+  const statuses: Array<Record<string, unknown>> = [];
+  const clearRejected = Object.assign(new Error('status clear rejected'), {
+    code: ErrorCode.PlatformError,
+    data: { error: 'temporarily_unavailable' },
+  });
+  const client = {
+    apiCall: async () => ({ ok: true }),
+    assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+      statuses.push(input);
+      if (input.status === '' && statuses.filter((status) => status.status === '').length === 1) {
+        throw clearRejected;
+      }
+      return { ok: true };
+    } } },
+    chat: {
+      startStream: async () => {
+        finalStarts += 1;
+        return { ok: true, ts: '1787776400.000300' };
+      },
+      stopStream: async () => ({ ok: true }),
+    },
+  } as unknown as WebClient;
+  const options = {
+    client,
+    runId,
+    presentationState: h.state,
+    replayText: 'The final is durable.',
+    executionAuthority: 'ledger' as const,
+    usageRecordingEnabled: false,
+  };
+
+  try {
+    await runTurn(turn, assignment, undefined, options);
+    const pendingRepair = h.store.get(runId);
+    assert.equal(pendingRepair?.schemaVersion, 3);
+    if (pendingRepair?.schemaVersion !== 3) return;
+    await repairTerminalSlackPresentation(pendingRepair, h.state, client);
+    assert.equal(finalStarts, 1);
+    assert.deepEqual(statuses.map(({ status }) => status), [
+      'Preparing your request…', '', '',
+    ]);
+    const persisted = h.store.get(runId);
+    assert.equal(persisted?.schemaVersion === 3 && persisted.cleanup.state === 'required'
+      ? persisted.cleanup.operation.certainty
+      : undefined, 'acknowledged');
+  } finally {
+    h.db.close();
+  }
 });
 
 test('runTurn freezes eligibility before exposing the receipt-scoped relay factory', async () => {
@@ -626,6 +1115,8 @@ test('runTurn freezes eligibility before exposing the receipt-scoped relay facto
     beforeDelivery: async () => undefined,
     presentationState: {
       getRunPresentation: (runId) => presentations.get(runId),
+      getLatestThreadSessionGeneration: (root) =>
+        presentations.getLatestThreadSessionGeneration(root),
       transitionRunPresentation: (input) => presentations.transition(input),
       reserveSlackAppend: (workspaceId) => presentations.reserveAppend(workspaceId),
       applySlackAppendCooldown: (workspaceId, retryAfterMs) =>

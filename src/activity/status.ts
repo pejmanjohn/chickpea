@@ -6,9 +6,43 @@ import {
   type ParsedShellCommand,
 } from './curl-request-urls.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../slack/presentation-intent.ts';
+import { hasCredentialLikeContent } from '../security/content-validation.ts';
+
+export type ActivityKind =
+  | 'preparing'
+  | 'checking'
+  | 'reading'
+  | 'writing'
+  | 'updating'
+  | 'running'
+  | 'waiting'
+  | 'finishing';
 
 export interface ActivityStatus {
+  /** Present on all production-derived activity; optional only for legacy relays/tests. */
+  kind?: ActivityKind;
+  action?: string;
+  object?: string;
   text: string;
+}
+
+export interface TypedActivityStatus extends ActivityStatus {
+  kind: ActivityKind;
+  action: string;
+  object: string;
+}
+
+/**
+ * Activity crosses an isolate boundary on Cloudflare. Accept only the canonical
+ * typed form there so an RPC cannot turn an internal label into user-visible
+ * copy or discard the structured action/object needed by durable presentation.
+ */
+export function isSafeTypedActivityStatus(value: unknown): value is TypedActivityStatus {
+  if (!value || typeof value !== 'object') return false;
+  const status = value as Record<string, unknown>;
+  if (!isActivityKind(status.kind) || typeof status.action !== 'string' ||
+      typeof status.object !== 'string' || typeof status.text !== 'string') return false;
+  return activityStatus(status.kind, status.action, status.object).text === status.text;
 }
 
 export interface ActivitySkill {
@@ -115,7 +149,10 @@ export function activityStatusForObservation(
     return undefined;
   }
   if (event.type === 'thinking_start') {
-    return { text: 'is thinking through the request' };
+    // The turn already publishes an admission activity before model work
+    // starts. A thinking event contains no new user-facing fact and must not
+    // replace a more specific action such as "Drafting the initial skill".
+    return undefined;
   }
   if (
     event.type !== 'tool_start' ||
@@ -133,54 +170,84 @@ export function toolActivityStatus(
   context?: RegisteredActivityContext,
 ): ActivityStatus {
   if (toolName === SLACK_STREAM_ANSWER_TOOL_NAME) {
-    return { text: 'is preparing the response' };
+    return activityStatus('writing', 'Drafting', 'the response');
   }
   if (toolName === 'activate_skill') {
     const name = objectString(args, 'name');
     const displayName = name ? context?.skills.get(name) : undefined;
     return displayName
-      ? boundedNamedStatus('is loading the ', displayName, ' skill')
-      : { text: 'is loading a skill' };
+      ? activityStatus('preparing', 'Loading', `the ${displayName} skill`)
+      : activityStatus('preparing', 'Loading', 'a skill');
   }
   if (toolName === 'bash') {
     return bashActivityStatus(args, context?.apiConnections ?? []);
   }
   if (toolName === 'read') {
-    return { text: 'is reading a workspace file' };
+    return activityStatus('reading', 'Reading', 'a workspace file');
   }
   if (toolName === 'write') {
-    return { text: 'is writing a workspace file' };
+    return activityStatus('writing', 'Writing', 'a workspace file');
   }
   if (toolName === 'edit') {
-    return { text: 'is editing a workspace file' };
+    return activityStatus('updating', 'Editing', 'a workspace file');
   }
   if (toolName === 'grep') {
-    return { text: 'is searching the workspace' };
+    return activityStatus('checking', 'Searching', 'the workspace');
   }
   if (toolName === 'glob') {
-    return { text: 'is finding workspace files' };
+    return activityStatus('checking', 'Finding', 'workspace files');
   }
   if (toolName === 'read_skill_resource') {
-    return { text: 'is reading a skill resource' };
+    return activityStatus('reading', 'Reading', 'a skill resource');
   }
   if (toolName.startsWith('mcp__')) {
     const serverId = mcpServerId(toolName);
     const displayName = serverId ? context?.mcpConnections.get(serverId) : undefined;
     return displayName
-      ? boundedNamedStatus('is using ', displayName)
-      : { text: 'is using a connection' };
+      ? activityStatus('checking', 'Checking', displayName)
+      : activityStatus('checking', 'Checking', 'a connection');
   }
   if (toolName === 'lookup_thread_history') {
-    return { text: 'is checking thread history' };
+    return activityStatus('checking', 'Checking', 'thread history');
   }
   if (toolName === 'post_artifact') {
-    return { text: 'is sharing a workspace artifact' };
+    return activityStatus('finishing', 'Sharing', 'a workspace artifact');
   }
-  return { text: 'is using a tool' };
+  return activityStatus('running', 'Working with', 'a tool');
 }
 
 export function connectingActivityStatus(displayName: string): ActivityStatus {
-  return boundedNamedStatus('is connecting to ', displayName);
+  return activityStatus('checking', 'Connecting to', displayName);
+}
+
+/** Calm admission activity, upgraded to a safe request object when known. */
+export function initialActivityStatus(
+  taskLabels?: readonly string[],
+  requestText?: string,
+): TypedActivityStatus {
+  const firstTask = taskLabels?.find((label) => label.trim())?.trim();
+  if (firstTask) return activityStatus('writing', 'Drafting', firstTask);
+  return activityStatus('writing', 'Drafting', requestedDraftObject(requestText));
+}
+
+/**
+ * Infer only from an allowlist of common product artifacts. User wording is
+ * never copied into Slack, so credentials, mentions, and prompt injection
+ * cannot become presentation text.
+ */
+function requestedDraftObject(requestText: string | undefined): string {
+  const text = requestText?.toLowerCase() ?? '';
+  const drafting = /\b(?:author|build|create|design|draft|edit|outline|revise|write)\b/.test(text);
+  if (!drafting) return 'the response';
+  if (/\binitial\s+skill\b/.test(text)) return 'the initial skill';
+  if (/\bskills?\b/.test(text)) return 'the skill';
+  if (/\bagents?\b/.test(text)) return 'the Agent';
+  if (/\bplans?\b/.test(text)) return 'the plan';
+  if (/\breports?\b/.test(text)) return 'the report';
+  if (/\bproposals?\b/.test(text)) return 'the proposal';
+  if (/\bdocuments?\b/.test(text)) return 'the document';
+  if (/\b(?:emails?|messages?)\b/.test(text)) return 'the message';
+  return 'the response';
 }
 
 function bashActivityStatus(
@@ -188,50 +255,50 @@ function bashActivityStatus(
   apiConnections: RegisteredActivityContext['apiConnections'],
 ): ActivityStatus {
   const command = objectString(args, 'command');
-  if (!command) return { text: 'is running a workspace command' };
+  if (!command) return activityStatus('running', 'Running', 'a workspace command');
 
   const commands = parseShellCommands(command);
   const curlRequests = extractCurlRequests(command);
   if (!commands || !curlRequests) {
-    return { text: 'is running a workspace command' };
+    return activityStatus('running', 'Running', 'a workspace command');
   }
 
   if (commands.some((parsed) => isGitCommand(parsed, 'clone'))) {
-    return { text: 'is cloning the repository' };
+    return activityStatus('running', 'Cloning', 'the repository');
   }
   if (commands.some(isDependencyInstallCommand)) {
-    return { text: 'is installing dependencies' };
+    return activityStatus('running', 'Installing', 'dependencies');
   }
   if (commands.some(isTestCommand)) {
-    return { text: 'is running the test suite' };
+    return activityStatus('running', 'Running', 'the test suite');
   }
   if (commands.some(isScreenshotCommand)) {
-    return { text: 'is capturing a screenshot' };
+    return activityStatus('running', 'Capturing', 'a screenshot');
   }
   if (commands.some(isStartCommand)) {
-    return { text: 'is starting the app' };
+    return activityStatus('running', 'Starting', 'the app');
   }
   if (curlRequests.some(isGitHubPullCreation)) {
-    return { text: 'is opening the pull request' };
+    return activityStatus('finishing', 'Opening', 'the pull request');
   }
   if (commands.some((parsed) => isGitCommand(parsed, 'push'))) {
-    return { text: 'is pushing the branch' };
+    return activityStatus('finishing', 'Pushing', 'the branch');
   }
   if (commands.some((parsed) => isGitCommand(parsed, 'commit'))) {
-    return { text: 'is committing the changes' };
+    return activityStatus('finishing', 'Committing', 'the changes');
   }
   const connection = apiConnectionForRequests(curlRequests, apiConnections);
   if (connection) {
-    return boundedNamedStatus('is using ', connection.displayName);
+    return activityStatus('checking', 'Checking', connection.displayName);
   }
   if (commands.some(isEditCommand)) {
-    return { text: 'is editing the code' };
+    return activityStatus('updating', 'Editing', 'the code');
   }
   if (commands.some(isInspectionCommand)) {
-    return { text: 'is inspecting the workspace' };
+    return activityStatus('checking', 'Inspecting', 'the workspace');
   }
 
-  return { text: 'is running a workspace command' };
+  return activityStatus('running', 'Running', 'a workspace command');
 }
 
 function apiConnectionForRequests(
@@ -440,10 +507,30 @@ function objectString(value: unknown, key: string): string | undefined {
   return typeof candidate === 'string' ? candidate : undefined;
 }
 
-function boundedNamedStatus(prefix: string, displayName: string, suffix = ''): ActivityStatus {
-  const maxNameLength = Math.max(1, 50 - prefix.length - suffix.length);
-  const name = truncate(safeActivityLabel(displayName), maxNameLength);
-  return { text: `${prefix}${name}${suffix}` };
+export function activityStatus(
+  kind: ActivityKind,
+  action: string,
+  object: string,
+): TypedActivityStatus {
+  const safeAction = safeActivityLabel(action) || 'Working on';
+  const candidateObject = safeActivityLabel(object);
+  const safeObject = hasCredentialLikeContent(candidateObject)
+    ? 'the current item'
+    : candidateObject || 'the request';
+  const maxObjectLength = Math.max(1, 50 - safeAction.length - 2);
+  const boundedObject = truncate(safeObject, maxObjectLength);
+  return {
+    kind,
+    action: safeAction,
+    object: boundedObject,
+    text: `${safeAction} ${boundedObject}…`,
+  };
+}
+
+function isActivityKind(value: unknown): value is ActivityKind {
+  return value === 'preparing' || value === 'checking' || value === 'reading' ||
+    value === 'writing' || value === 'updating' || value === 'running' ||
+    value === 'waiting' || value === 'finishing';
 }
 
 function safeActivityLabel(value: string): string {

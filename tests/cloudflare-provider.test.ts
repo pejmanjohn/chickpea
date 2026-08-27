@@ -9,10 +9,12 @@ import {
 } from '@flue/runtime/internal';
 
 import {
+  createCloudflareBindingProvider,
   cloudflareBindingProviderOptions,
   registerCloudflareBindingProvider,
 } from '../src/cloudflare-provider.ts';
 import { setWorkersAiRestPiProvider } from '../src/config/pi-provider.ts';
+import { runWithAttachmentModelContext } from '../src/slack/attachment-model-context.ts';
 
 beforeEach(() => resetModelsForTests());
 afterEach(() => resetModelsForTests());
@@ -154,4 +156,35 @@ test('the Cloudflare binding registration does not alter the REST Workers AI pro
   assert.equal(model.baseUrl, 'https://workers-ai.example.invalid/v1');
   assert.equal(Object.hasOwn(model, 'binding'), false);
   assert.equal(Object.hasOwn(model, 'gateway'), false);
+});
+
+test('the Cloudflare binding provider receives the same request-local attachment baseline', async () => {
+  let receivedInputs: Record<string, unknown> | undefined;
+  const provider = createCloudflareBindingProvider({
+    run: async (_modelId, inputs) => {
+      receivedInputs = inputs;
+      return { response: 'grounded' };
+    },
+  });
+  const model = provider.getModels().find((candidate) => candidate.id === '@cf/zai-org/glm-5.2');
+  assert.ok(model);
+
+  await runWithAttachmentModelContext([{
+    kind: 'text',
+    ordinal: 1,
+    fileId: 'FCF',
+    filename: 'cloudflare.txt',
+    label: 'Attachment 1 - cloudflare.txt',
+    representation: 'text_original',
+    contentType: 'text/plain',
+    text: 'binding-only-evidence',
+  }], async () => {
+    await provider.streamSimple(model, {
+      messages: [{ role: 'user', content: 'Read the attachment.', timestamp: 1 }],
+      tools: [],
+    }).result();
+  });
+
+  assert.match(JSON.stringify(receivedInputs), /binding-only-evidence/);
+  assert.match(JSON.stringify(receivedInputs), /Attachment 1 - cloudflare\.txt/);
 });

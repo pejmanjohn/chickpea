@@ -123,9 +123,15 @@ test('a frozen bash plan still rechecks live Agent execution authority', async (
     sandboxFactory.indexOf("if (plan.sandbox.mode === 'bash')"),
     sandboxFactory.indexOf("  return {\n    async createSessionEnv({ id })"),
   );
-  assert.match(bashBranch, /requireLiveFrozenAgent\(getConfigStore\(env\), plan\.agentId\)/);
+  const modelPreparation = sandboxFactory.slice(
+    sandboxFactory.indexOf('async function prepareRuntimePlanModel'),
+  );
+  assert.match(bashBranch, /await prepareRuntimePlanModel\(plan, env\)/);
+  assert.match(modelPreparation, /requireLiveFrozenAgent\(getConfigStore\(env\), plan\.agentId\)/);
+  assert.match(modelPreparation, /revalidateModelCredentialAttribution/);
+  assert.match(modelPreparation, /const resolved = await resolveRuntimeModel\(plan\.agentId, plan\.model/);
   assert.ok(
-    bashBranch.indexOf('requireLiveFrozenAgent') < bashBranch.indexOf('resolveRuntimeModel'),
+    modelPreparation.indexOf('requireLiveFrozenAgent') < modelPreparation.indexOf('resolveRuntimeModel'),
     'Agent execution authority must be checked before model credential resolution.',
   );
 });

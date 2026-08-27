@@ -11,6 +11,7 @@ import type {
 } from '../work/types.ts';
 import { runTurn, type RunTurnOptions } from './run-turn.ts';
 import {
+  DURABLE_RECOVERY_FAILURE_TEXT,
   deliverPersistedSlackPayload,
   PersistedSlackDeliveryError,
   type PersistedSlackDeliveryReceipt,
@@ -44,6 +45,10 @@ import { recordSlackInstallationUnavailable } from './installation-observability
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
 import { AgentPromptFailure } from './flue-dispatch.ts';
+import {
+  hasRetryableTerminalRepair,
+  repairTerminalSlackPresentation,
+} from './presentation-repair.ts';
 import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
 import type {
   SlackPresentationMutation,
@@ -249,20 +254,17 @@ export function createLedgerSlackRunHandler(
       });
     } catch (error) {
       if (error instanceof AgentPromptFailure && error.recoveryRequired) {
-        await clearActiveWork(options, job);
-        return {
-          kind: 'recovery_required',
-          reasonCode: 'flue_dispatch_reconciliation_required',
-        };
+        return deliverDurableRecoveryFailure(
+          options, claim, job, client, installationContext,
+          'flue_dispatch_reconciliation_required',
+        );
       }
       if (error instanceof AgentPromptFailure && error.retryable) {
         if (attempt >= MAX_POST_DISPATCH_ATTEMPTS) {
-          await options.turns.markRecoveryRequired(
-            job.id,
+          return deliverDurableRecoveryFailure(
+            options, claim, job, client, installationContext,
             'post_dispatch_attempts_exhausted',
           );
-          await clearActiveWork(options, job);
-          return { kind: 'recovery_required', reasonCode: 'post_dispatch_attempts_exhausted' };
         }
         return { kind: 'requeue', reasonCode: 'flue_reattachment_interrupted' };
       }
@@ -281,6 +283,50 @@ export function createLedgerSlackRunHandler(
     }
     return classifyExecutionFailure(options, claim, job, attempt, now);
   };
+}
+
+async function deliverDurableRecoveryFailure(
+  options: LedgerSlackRunHandlerOptions,
+  claim: InteractiveRunClaim,
+  job: PendingTurnJob,
+  client: WebClient,
+  installationContext: SlackInstallationExecutionContext | undefined,
+  reasonCode: string,
+): Promise<RunDriverHandlerResult> {
+  try {
+    await (options.executeTurn ?? runTurn)(job.turn, job.assignment, options.platformEnv, {
+      client,
+      ...(installationContext ? { installationContext } : {}),
+      turnId: job.id,
+      runId: claim.run.id,
+      runAttempt: claim.fencingToken,
+      runFencingToken: claim.fencingToken,
+      executionAuthority: 'ledger',
+      replayText: DURABLE_RECOVERY_FAILURE_TEXT,
+      replayTerminalResult: 'failure',
+      ...(options.presentationState ? { presentationState: options.presentationState } : {}),
+      ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
+      ...(options.onPublicMessageDelivered
+        ? {
+            onPublicMessageDelivered: (delivery) =>
+              options.onPublicMessageDelivered!(job.turn, job.assignment, delivery),
+          }
+        : {}),
+      onDelivered: async () => {
+        await options.turns.markError(job.id);
+        await clearActiveWork(options, job);
+      },
+    });
+    // The user now has a terminal explanation, but the original dispatched
+    // execution is still ambiguous. Keep the canonical Run in recovery so the
+    // driver releases its lease with the true execution outcome instead of
+    // treating the notice itself as a successful run.
+    return { kind: 'recovery_required', reasonCode };
+  } catch {
+    await options.turns.markRecoveryRequired(job.id, reasonCode);
+    await clearActiveWork(options, job);
+    return { kind: 'recovery_required', reasonCode };
+  }
 }
 
 async function deliverPersistedResponse(
@@ -318,6 +364,14 @@ async function deliverPersistedResponse(
     run.deliveryStatus === 'pending' &&
     run.deliveryAttemptId
   ) {
+    const settledPresentation = await settleRecoveredV3Terminal(
+      options.presentationState,
+      presentation,
+      client,
+    );
+    if (!recoveredV3TerminalIsSettled(settledPresentation)) {
+      return { kind: 'requeue', reasonCode: 'slack_presentation_terminal_repair_pending' };
+    }
     await options.work.finalizeRunDelivery({
       runId: claim.run.id,
       fencingToken: claim.fencingToken,
@@ -352,6 +406,14 @@ async function deliverPersistedResponse(
       presentation,
       delivered,
     );
+    const settledPresentation = await settleRecoveredV3Terminal(
+      options.presentationState,
+      recoveredPresentation,
+      client,
+    );
+    if (!recoveredV3TerminalIsSettled(settledPresentation)) {
+      return { kind: 'requeue', reasonCode: 'slack_presentation_terminal_repair_pending' };
+    }
     await options.work.finalizeRunDelivery({
       runId: claim.run.id,
       fencingToken: claim.fencingToken,
@@ -364,7 +426,7 @@ async function deliverPersistedResponse(
     await options.turns.markDelivered(job.id);
     await markRecoveredPresentationFinalized(
       options.presentationState,
-      recoveredPresentation,
+      settledPresentation,
     );
     await clearActiveWork(options, job);
     return { kind: 'completed' };
@@ -405,6 +467,26 @@ async function deliverPersistedResponse(
     }
     return { kind: 'requeue', reasonCode: 'confirmed_delivery_failure' };
   }
+}
+
+async function settleRecoveredV3Terminal(
+  state: SlackPresentationStatePort | undefined,
+  presentation: SlackRunPresentation | undefined,
+  client: WebClient,
+): Promise<SlackRunPresentation | undefined> {
+  if (!state || !presentation || presentation.schemaVersion !== 3) return presentation;
+  const current = await state.getRunPresentation(presentation.runId) ?? presentation;
+  if (current.schemaVersion !== 3 || !hasRetryableTerminalRepair(current)) return current;
+  return repairTerminalSlackPresentation(current, state, client);
+}
+
+function recoveredV3TerminalIsSettled(
+  presentation: SlackRunPresentation | undefined,
+): boolean {
+  return !presentation || presentation.schemaVersion !== 3 || (
+    presentation.lifecyclePhase === 'settled' &&
+    presentation.activityProjection.state !== 'visible'
+  );
 }
 
 function persistedDeliveryMethod(renderedPayload: string): string {
@@ -457,7 +539,7 @@ async function recordRecoveredPresentationDelivery(
             : 'terminal_only',
       });
     }
-    if (current.stream.state === 'reconciling' && current.plan &&
+    if (current.schemaVersion !== 3 && current.stream.state === 'reconciling' && current.plan &&
         receipt.terminalTaskStatus &&
         current.plan.tasks.every((task) => task.status !== 'complete' && task.status !== 'error')) {
       current = await applyPresentationMutation(state, current, {

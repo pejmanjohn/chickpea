@@ -5,8 +5,12 @@ import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import {
   deliverPersistedSlackPayload,
+  slackDeliveryFailureOutcome,
   WebClientPresenter,
 } from '../src/slack/web-client-presenter.ts';
+import { activityStatus } from '../src/activity/status.ts';
+import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
 
 function presenterWith(client: unknown): WebClientPresenter {
   return new WebClientPresenter(client as WebClient, {
@@ -18,7 +22,34 @@ function presenterWith(client: unknown): WebClientPresenter {
   });
 }
 
-test('setStatus uses the Agent name in native Slack status text without unsupported persona fields', async () => {
+test('gateway delivery certainty distinguishes rejected 4xx and 429 calls from ambiguous effects', () => {
+  assert.equal(
+    slackDeliveryFailureOutcome(new SlackTransportError(
+      'chat.postMessage', 'gateway_http_400', { effectOutcome: 'failed' },
+    )),
+    'failed',
+  );
+  assert.equal(
+    slackDeliveryFailureOutcome(new SlackTransportError(
+      'chat.postMessage', 'gateway_http_429', { retryable: true, effectOutcome: 'failed' },
+    )),
+    'failed',
+  );
+  assert.equal(
+    slackDeliveryFailureOutcome(new SlackTransportError(
+      'chat.postMessage', 'gateway_http_500', { retryable: true, effectOutcome: 'unknown' },
+    )),
+    'unknown',
+  );
+  assert.equal(
+    slackDeliveryFailureOutcome(new SlackTransportError(
+      'chat.postMessage', 'gateway_network', { retryable: true, effectOutcome: 'unknown' },
+    )),
+    'unknown',
+  );
+});
+
+test('compatibility status uses meaningful activity without repeating the Agent name', async () => {
   const calls: unknown[] = [];
   const presenter = presenterWith({
     assistant: {
@@ -31,23 +62,241 @@ test('setStatus uses the Agent name in native Slack status text without unsuppor
     },
   });
 
-  await presenter.setStatus({ text: 'is thinking...' });
-  await presenter.setStatus({ text: 'is searching the workspace' });
+  await presenter.setStatus(activityStatus('preparing', 'Preparing', 'your request'));
+  await presenter.setStatus(activityStatus('checking', 'Searching', 'the workspace'));
 
   assert.deepEqual(calls, [
     {
       channel_id: 'C_BOUND',
       thread_ts: '1782770400.000100',
-      status: 'Test agent is thinking...',
-      loading_messages: ['Test agent is thinking...'],
+      status: 'Preparing your request…',
+      loading_messages: ['Preparing your request…'],
     },
     {
       channel_id: 'C_BOUND',
       thread_ts: '1782770400.000100',
-      status: 'Test agent is thinking...',
-      loading_messages: ['Test agent is thinking...', 'Test agent is searching the workspace'],
+      status: 'Searching the workspace…',
+      loading_messages: ['Searching the workspace…'],
     },
   ]);
+});
+
+test('native thread status can coexist with and clear independently from message activity', async () => {
+  const events: Array<{ kind: string; input: Record<string, unknown> }> = [];
+  const presenter = presenterWith({
+    assistant: {
+      threads: {
+        async setStatus(input: Record<string, unknown>) {
+          events.push({ kind: 'native', input });
+          return { ok: true };
+        },
+      },
+    },
+    chat: {
+      async postMessage(input: Record<string, unknown>) {
+        events.push({ kind: 'activity', input });
+        return { ok: true, ts: '1782770400.000200' };
+      },
+    },
+  });
+  const update = activityStatus('writing', 'Drafting', 'the initial skill');
+
+  await presenter.setStatus(update);
+  assert.equal(await presenter.setNativeThreadStatus(update), true);
+  assert.equal(await presenter.clearNativeThreadStatus(), true);
+
+  assert.deepEqual(events.map(({ kind }) => kind), ['activity', 'native', 'native']);
+  assert.deepEqual(events[1]?.input, {
+    channel_id: 'C_BOUND',
+    thread_ts: '1782770400.000100',
+    status: 'Drafting the initial skill…',
+    loading_messages: ['Drafting the initial skill…'],
+  });
+  assert.deepEqual(events[2]?.input, {
+    channel_id: 'C_BOUND',
+    thread_ts: '1782770400.000100',
+    status: '',
+  });
+});
+
+test('V3 Chickpea chooses native status instead of a transient chat message', async () => {
+  const presenter = new WebClientPresenter({} as WebClient, {
+    channelId: 'C_BOUND',
+    threadTs: '1782770400.000100',
+    agentName: 'Chickpea',
+    agentId: 'agent_chickpea',
+    visibleOwner: { kind: 'chickpea' },
+  });
+
+  assert.equal(presenter.preferredActivitySurface(), 'assistant_status');
+});
+
+test('selected Agent native status carries its frozen persona', async () => {
+  const statuses: Array<Record<string, unknown>> = [];
+  const presenter = new WebClientPresenter({
+    assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+      statuses.push(input);
+      return { ok: true };
+    } } },
+  } as unknown as WebClient, {
+    channelId: 'C_BOUND',
+    threadTs: '1782770400.000100',
+    agentName: 'Sprout',
+    agentId: 'agent_sprout',
+    visibleOwner: {
+      kind: 'selected_agent',
+      persona: {
+        name: 'Sprout',
+        avatarUrl: 'https://chickpea.example/assets/agents/sprout/avatar/3',
+        avatarRevision: 3,
+      },
+    },
+  });
+
+  assert.equal(await presenter.setNativeThreadStatus(
+    activityStatus('writing', 'Drafting', 'the response'),
+  ), true);
+  assert.equal(await presenter.clearNativeThreadStatus(), true);
+  assert.deepEqual(statuses, [
+    {
+      channel_id: 'C_BOUND',
+      thread_ts: '1782770400.000100',
+      status: 'Drafting the response…',
+      loading_messages: ['Drafting the response…'],
+      username: 'Sprout',
+      icon_url: 'https://chickpea.example/assets/agents/sprout/avatar/3',
+    },
+    {
+      channel_id: 'C_BOUND',
+      thread_ts: '1782770400.000100',
+      status: '',
+    },
+  ]);
+});
+
+test('meaningful activity is one owner-authored mutable message with no duplicated name', async () => {
+  const posts: Array<Record<string, unknown>> = [];
+  const updates: Array<Record<string, unknown>> = [];
+  let compatibilityStatuses = 0;
+  const presenter = new WebClientPresenter({
+    assistant: { threads: { setStatus: async () => {
+      compatibilityStatuses += 1;
+      return { ok: true };
+    } } },
+    chat: {
+      postMessage: async (input: Record<string, unknown>) => {
+        posts.push(input);
+        return { ok: true, ts: '1782770400.000150' };
+      },
+      update: async (input: Record<string, unknown>) => {
+        updates.push(input);
+        return { ok: true };
+      },
+    },
+  } as unknown as WebClient, {
+    channelId: 'C_BOUND',
+    threadTs: '1782770400.000100',
+    agentName: 'Skill Builder',
+    agentAvatarUrl: 'https://chickpea.example/assets/agents/skill-builder/avatar/2',
+    agentId: 'agent_skill_builder',
+    visibleOwner: {
+      kind: 'selected_agent',
+      persona: {
+        name: 'Skill Builder',
+        avatarUrl: 'https://chickpea.example/assets/agents/skill-builder/avatar/2',
+        avatarRevision: 2,
+      },
+    },
+  });
+
+  assert.equal(await presenter.setStatus({
+    kind: 'writing', action: 'Drafting', object: 'the initial skill',
+    text: 'Drafting the initial skill…',
+  }), true);
+  assert.equal(await presenter.setStatus({
+    kind: 'checking', action: 'Checking', object: 'Google Ads access',
+    text: 'Checking Google Ads access…',
+  }), true);
+
+  assert.equal(compatibilityStatuses, 0);
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0], {
+    channel: 'C_BOUND',
+    thread_ts: '1782770400.000100',
+    text: 'Drafting the initial skill…',
+    username: 'Skill Builder',
+    icon_url: 'https://chickpea.example/assets/agents/skill-builder/avatar/2',
+  });
+  assert.deepEqual(updates, [{
+    channel: 'C_BOUND',
+    ts: '1782770400.000150',
+    text: 'Checking Google Ads access…',
+  }]);
+  assert.doesNotMatch(String(posts[0]?.text), /Skill Builder Skill Builder|is thinking|UTC/);
+});
+
+test('durable message activity uses its operation id and rehydrates the same coordinate', async () => {
+  const posts: Array<Record<string, unknown>> = [];
+  const updates: Array<Record<string, unknown>> = [];
+  const client = {
+    chat: {
+      postMessage: async (input: Record<string, unknown>) => {
+        posts.push(input);
+        return { ok: true, ts: '1782770400.000160' };
+      },
+      update: async (input: Record<string, unknown>) => {
+        updates.push(input);
+        return { ok: true };
+      },
+    },
+  } as unknown as WebClient;
+  const target = {
+    channelId: 'C_BOUND', threadTs: '1782770400.000100',
+    agentName: 'Test agent', agentId: 'agent_test',
+  };
+  const operationId = 'activity_run_durable_1';
+  const first = new WebClientPresenter(client, target);
+  assert.equal(await first.setStatus(
+    activityStatus('writing', 'Drafting', 'the initial skill'),
+    { operationId, surface: 'message' },
+  ), true);
+  assert.equal(posts[0]?.client_msg_id, slackClientMessageId(operationId));
+
+  const retried = new WebClientPresenter(client, target, undefined, {
+    activityProjection: {
+      surface: 'message', state: 'visible', messageTs: '1782770400.000160',
+    },
+  });
+  assert.equal(await retried.setStatus(
+    activityStatus('checking', 'Checking', 'Google Ads access'),
+    { operationId: 'activity_run_durable_2', surface: 'message',
+      messageTs: '1782770400.000160' },
+  ), true);
+  assert.equal(posts.length, 1);
+  assert.equal(updates[0]?.ts, '1782770400.000160');
+});
+
+test('an ambiguous activity post is recorded as unknown and never creates a fallback artifact', async () => {
+  let compatibilityCalls = 0;
+  const presenter = presenterWith({
+    chat: {
+      async postMessage() {
+        throw { code: ErrorCode.RequestError };
+      },
+    },
+    assistant: {
+      threads: {
+        async setStatus() {
+          compatibilityCalls += 1;
+          return { ok: true };
+        },
+      },
+    },
+  });
+
+  assert.equal(await presenter.setStatus({ text: 'Drafting the initial skill…' }), false);
+  assert.equal(presenter.activityReceiptCertainty(), 'unknown');
+  assert.equal(compatibilityCalls, 0);
 });
 
 test('clearStatus clears the thread without re-sending Agent display fields', async () => {
@@ -63,7 +312,7 @@ test('clearStatus clears the thread without re-sending Agent display fields', as
     },
   });
 
-  await presenter.setStatus({ text: 'is thinking...' });
+  await presenter.setStatus(activityStatus('preparing', 'Preparing', 'your request'));
   await presenter.clearStatus();
 
   assert.deepEqual(calls.at(-1), {
@@ -71,6 +320,40 @@ test('clearStatus clears the thread without re-sending Agent display fields', as
     thread_ts: '1782770400.000100',
     status: '',
   });
+});
+
+test('V3 presentation owner overrides mutable assignment persona or uses the base app', async () => {
+  const selectedCalls: Array<Record<string, unknown>> = [];
+  const baseCalls: Array<Record<string, unknown>> = [];
+  const selectedOwner = {
+    kind: 'selected_agent' as const,
+    persona: {
+      name: 'Frozen Support',
+      avatarUrl: 'https://chickpea.example/assets/agents/frozen/avatar/7',
+      avatarRevision: 7,
+    },
+  };
+  const target = {
+    channelId: 'C_BOUND',
+    threadTs: '1782770400.000100',
+    agentName: 'Mutable assignment',
+    agentAvatarUrl: 'https://chickpea.example/assets/agents/mutable/avatar/99',
+    agentId: 'agent_mutable',
+  };
+  const selected = new WebClientPresenter({
+    chat: { postMessage: async (input: Record<string, unknown>) => selectedCalls.push(input) },
+  } as unknown as WebClient, { ...target, visibleOwner: selectedOwner });
+  const chickpea = new WebClientPresenter({
+    chat: { postMessage: async (input: Record<string, unknown>) => baseCalls.push(input) },
+  } as unknown as WebClient, { ...target, visibleOwner: { kind: 'chickpea' } });
+
+  await selected.postProgress('Selected progress');
+  await chickpea.postProgress('Base app progress');
+
+  assert.equal(selectedCalls[0]?.username, selectedOwner.persona.name);
+  assert.equal(selectedCalls[0]?.icon_url, selectedOwner.persona.avatarUrl);
+  assert.equal(Object.hasOwn(baseCalls[0] ?? {}, 'username'), false);
+  assert.equal(Object.hasOwn(baseCalls[0] ?? {}, 'icon_url'), false);
 });
 
 test('postArtifact sends bytes to files.uploadV2 in the requested thread', async () => {
@@ -419,6 +702,25 @@ test('semantic reactions fall back by name and preserve pre-existing reactions',
   assert.deepEqual(calls, ['merged', 'ship']);
 });
 
+test('gateway no_reaction is an idempotent cleanup success', async () => {
+  let removals = 0;
+  const presenter = presenterWith({
+    reactions: {
+      async remove() {
+        removals += 1;
+        throw new SlackTransportError('reactions.remove', 'no_reaction', {
+          effectOutcome: 'failed',
+        });
+      },
+    },
+  });
+
+  await presenter.removeReaction('eyes', {
+    channelId: 'C_BOUND', messageTs: '1782770400.000100',
+  });
+  assert.equal(removals, 1);
+});
+
 test('reaction-only delivery persists the semantic chain and text-falls back on confirmed scope failure', async () => {
   const events: Array<Record<string, unknown>> = [];
   const posts: unknown[] = [];
@@ -585,4 +887,47 @@ test('work checklist posts once and updates the same message coordinate', async 
   assert.equal((calls[1]?.input as { ts: string }).ts, ts);
   assert.equal((calls[1]?.input as { username?: string }).username, undefined);
   assert.equal((calls[1]?.input as { icon_url?: string }).icon_url, undefined);
+});
+
+test('fallback milestone projection distinguishes every semantic outcome without a timestamp', async () => {
+  const posts: Array<Record<string, unknown>> = [];
+  const presenter = presenterWith({
+    chat: {
+      async postMessage(input: Record<string, unknown>) {
+        posts.push(input);
+        return { ok: true, ts: 'milestones-ts' };
+      },
+    },
+  });
+  const messageTs = await presenter.postMilestonePlan({
+    displayMode: 'plan',
+    tasks: [
+      { id: 'task_completed', title: 'Inspect', status: 'complete', outcome: 'completed',
+        detail: 'Completed: record inspected.' },
+      { id: 'task_changed', title: 'Revise', status: 'complete', outcome: 'changed',
+        detail: 'Changed: recommendation revised.' },
+      { id: 'task_skipped', title: 'Optional', status: 'complete', outcome: 'skipped',
+        detail: 'Skipped: unnecessary.' },
+      { id: 'task_failed', title: 'Publish', status: 'error', outcome: 'failed',
+        detail: 'Failed: permission denied.' },
+    ],
+  });
+
+  assert.equal(messageTs, 'milestones-ts');
+  await presenter.postMilestonePlan({
+    displayMode: 'plan',
+    tasks: [
+      { id: 'task_failed_again', title: 'Publish', status: 'error', outcome: 'failed',
+        detail: 'Failed: permission denied.' },
+      { id: 'task_not_run', title: 'Notify', status: 'error', outcome: 'not_run',
+        detail: 'Not run: publishing failed.' },
+    ],
+  });
+  const rendered = posts.map((post) => String(post.text)).join('\n');
+  assert.match(rendered, /Completed: record inspected\./);
+  assert.match(rendered, /Changed: recommendation revised\./);
+  assert.match(rendered, /Skipped: unnecessary\./);
+  assert.match(rendered, /Failed: permission denied\./);
+  assert.match(rendered, /Not run: publishing failed\./);
+  assert.doesNotMatch(rendered, /UTC/);
 });

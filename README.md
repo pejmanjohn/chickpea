@@ -81,6 +81,12 @@ Reconnecting Slack cannot repair that policy, so Chickpea does not recommend it 
 
 Slack only sends user-group mention events to an app that can see the Channel. Chickpea can explain a denied grant when the base bot is present; it cannot answer where Slack sends no event.
 
+### Slack attachments
+
+Chickpea reads common images, PDFs, UTF-8 text and source files, and Slack-generated PDF previews for supported document, presentation, and spreadsheet formats. Attachment turns are read-only: file contents can inform the answer but cannot authorize tools or changes.
+
+One turn accepts up to 4 files, 8 MiB per file, and 12 MiB total. Images use Slack's bounded thumbnails when available. PDFs accept up to 100 pages. Normalized text is limited to 32,000 characters per file and 48,000 characters total. Files that exceed a limit, fail validation, or lack a safe conversion receive a file-specific next action instead of a partial-read claim. Existing Slack installations that predate the `files:read` scope must reconnect once.
+
 ## Admin experience
 
 The authenticated Admin surface is Agent-first:
@@ -199,6 +205,16 @@ delivery disabled during rollout must set `SLACK_TAG_PROGRESSIVE_STREAMING=false
 upgrade; the variable does not affect native task cards.
 
 The repository includes parity fixtures for direct Slack transport and the shared-gateway protocol. Live Slack acceptance should use a disposable paid workspace to verify user-group policy, handle collisions, public auto-join, private invitation, App Home, avatar updates, archive, and restore.
+
+### Slack activity and terminal delivery
+
+New Slack runs freeze one visible owner before the first effect. A healthy selected Agent keeps its name and avatar through activity, task updates, the final response, and Agent Session settlement. If that identity is incomplete or unhealthy, Chickpea owns the full run. The UI never switches to a generic "Agent" identity.
+
+Activity is one mutable thread reply with safe action-and-object copy such as "Drafting the initial skill…" or "Checking Google Ads…". Model names, provider names, private reasoning, raw tool arguments, and context-loading narration are not activity. Updates reuse the same Slack message and it remains visible until Slack acknowledges the final response.
+
+Task rows appear only after the runtime emits an authoritative milestone transition for a plan with at least two committed steps. A single action stays activity-only. Task details record completed, changed, skipped, failed, or not-run outcomes and do not include UTC timestamps.
+
+Terminal delivery, Agent Session settlement, and activity cleanup have separate durable receipts. Confirmed failures retry against the stored coordinate in both Node and Cloudflare drains. An unknown Slack effect is never replayed automatically because the original write may already be visible; it stays marked for operator reconciliation instead of risking a duplicate response.
 
 ## Good to know
 

@@ -32,7 +32,10 @@ import {
   resolveSlackInstallationExecutionContext,
   verifySlackInstallationTurnAccess,
 } from '../src/slack/installation-execution.ts';
-import { createGatewaySlackWebClient } from '../src/slack/gateway/web-client.ts';
+import {
+  createGatewaySlackWebClient,
+  setAgentSessionStatus,
+} from '../src/slack/gateway/web-client.ts';
 import {
   DEFAULT_CHICKPEA_GATEWAY_URL,
   resolveChickpeaGatewayUrl,
@@ -476,6 +479,207 @@ test('gateway transport failures preserve the exact Slack operation for ambiguit
   }
 });
 
+test('gateway client marks an explicit operation rejection as a confirmed failed effect', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === '/v1/workspaces/TGATEWAY/operations') {
+        return json({ error: 'operation_field_not_allowed' }, 403);
+      }
+      return gateway.fetch(input, init);
+    },
+    now: () => NOW,
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    await assert.rejects(
+      client.call('chat.startStream', { channel: 'C_SUPPORT', chunks: [] }),
+      (error: unknown) => error instanceof SlackTransportError &&
+        error.code === 'operation_field_not_allowed' &&
+        error.effectOutcome === 'failed',
+    );
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway attachment read signs the exact binary contract and returns only validated metadata and bytes', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const bytes = new TextEncoder().encode('one page');
+  let attachmentRequest: Record<string, unknown> | undefined;
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === '/v1/workspaces/TGATEWAY/attachments/read') {
+        attachmentRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(bytes, {
+          headers: {
+            'content-type': 'text/plain',
+            'x-chickpea-complete': 'true',
+            'x-chickpea-content-length': String(bytes.byteLength),
+            'x-chickpea-file-id': 'F_TEXT',
+            'x-chickpea-filename': Buffer.from('notes.txt').toString('base64url'),
+            'x-chickpea-protocol-version': String(CHICKPEA_GATEWAY_PROTOCOL_VERSION),
+            'x-chickpea-representation': 'text_original',
+            'x-chickpea-request-id': String(attachmentRequest.requestId),
+          },
+        });
+      }
+      return gateway.fetch(input, init);
+    },
+    now: () => NOW,
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+
+    const result = await client.readAttachment('F_TEXT', 4_096);
+
+    assert.deepEqual(result, {
+      fileId: 'F_TEXT',
+      filename: 'notes.txt',
+      representation: 'text_original',
+      contentType: 'text/plain',
+      bytes,
+    });
+    assert.equal(attachmentRequest?.kind, 'slack.attachment.read');
+    assert.equal(attachmentRequest?.bindingId, 'binding_test');
+    assert.equal(attachmentRequest?.workspaceId, 'TGATEWAY');
+    assert.equal(attachmentRequest?.fileId, 'F_TEXT');
+    assert.equal(attachmentRequest?.maxBytes, 4_096);
+    assert.ok(await verifyGatewayRequestSignature({
+      publicKey: gateway.publicKey!,
+      request: attachmentRequest as never,
+    }));
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway attachment read preserves bounded conversion and reconnect error envelopes', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const errors = [
+    { code: 'conversion_pending', retryable: true, status: 409 },
+    { code: 'binding_reconnect_required', retryable: false, status: 403 },
+  ];
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === '/v1/workspaces/TGATEWAY/attachments/read') {
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        const failure = errors.shift()!;
+        return json({
+          protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+          requestId: request.requestId,
+          ok: false,
+          error: { code: failure.code, retryable: failure.retryable },
+        }, failure.status);
+      }
+      return gateway.fetch(input, init);
+    },
+    now: () => NOW,
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    await assert.rejects(
+      client.readAttachment('F_CONVERTING', 4_096),
+      (error: unknown) => error instanceof SlackTransportError &&
+        error.code === 'conversion_pending' && error.retryable,
+    );
+    await assert.rejects(
+      client.readAttachment('F_RECONNECT', 4_096),
+      (error: unknown) => error instanceof SlackTransportError &&
+        error.code === 'binding_reconnect_required' && !error.retryable,
+    );
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('gateway attachment headers and per-file ceiling accept exact values and reject one over', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  let attachmentFetches = 0;
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === '/v1/workspaces/TGATEWAY/attachments/read') {
+        attachmentFetches += 1;
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        const filename = attachmentFetches === 1 ? 'x'.repeat(256) : 'x'.repeat(257);
+        return new Response(Uint8Array.of(0x61), {
+          headers: {
+            'content-length': '1',
+            'content-type': 'text/plain',
+            'x-chickpea-complete': 'true',
+            'x-chickpea-content-length': '1',
+            'x-chickpea-file-id': String(request.fileId),
+            'x-chickpea-filename': Buffer.from(filename).toString('base64url'),
+            'x-chickpea-protocol-version': String(CHICKPEA_GATEWAY_PROTOCOL_VERSION),
+            'x-chickpea-representation': 'text_original',
+            'x-chickpea-request-id': String(request.requestId),
+          },
+        });
+      }
+      return gateway.fetch(input, init);
+    },
+    now: () => NOW,
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const exact = await client.readAttachment('F_EXACT', 8 * 1_024 * 1_024);
+    assert.equal(exact.filename.length, 256);
+    assert.equal(attachmentFetches, 1);
+
+    await assert.rejects(
+      client.readAttachment('F_OVER', 8 * 1_024 * 1_024 + 1),
+      (error: unknown) => error instanceof SlackTransportError &&
+        error.code === 'invalid_max_bytes',
+    );
+    assert.equal(attachmentFetches, 1);
+
+    await assert.rejects(
+      client.readAttachment('F_FILENAME', 1),
+      (error: unknown) => error instanceof SlackTransportError &&
+        error.code === 'invalid_attachment_filename',
+    );
+    assert.equal(attachmentFetches, 2);
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
 test('gateway transport maps only allowlisted tenant-bound Slack operations', async () => {
   const settings = new SqliteSettingsStore(':memory:', () => NOW);
   const config = configStore();
@@ -640,6 +844,68 @@ test('gateway execution uses the shared app without resolving or storing a bot t
     settings.close();
     config.close();
   }
+});
+
+test('Agent Session status uses one apiCall bridge for direct and gateway clients', async () => {
+  const input = {
+    channel_id: 'C_SUPPORT',
+    thread_ts: '1787774942.263000',
+    status: 'processing' as const,
+    title: 'Investigate the alert',
+    initiator_user_id: 'U_MEMBER',
+    username: 'Support Agent',
+    icon_url: 'https://cdn.chickpea.test/support.png',
+    icon_emoji: ':seedling:',
+  };
+  const directCalls: Array<{
+    operation: string;
+    input: Record<string, unknown> | undefined;
+  }> = [];
+  const direct = {
+    apiCall: async (operation: string, operationInput?: Record<string, unknown>) => {
+      directCalls.push({ operation, input: operationInput });
+      return { ok: true };
+    },
+  };
+  await setAgentSessionStatus(direct, input);
+  assert.deepEqual(directCalls, [{ operation: 'agents.sessions.setStatus', input }]);
+
+  const gatewayCalls: Array<{
+    operation: string;
+    input: Record<string, unknown>;
+  }> = [];
+  const facade = createGatewaySlackWebClient({
+    workspaceId: 'TGATEWAY',
+    call: async (operation, operationInput) => {
+      gatewayCalls.push({ operation, input: operationInput });
+      return {};
+    },
+  });
+  await setAgentSessionStatus(facade, input);
+  await facade.assistant.threads.setStatus({
+    channel_id: 'C_SUPPORT',
+    thread_ts: '1787774942.263000',
+    status: 'is working on the alert',
+    username: 'Support Agent',
+    icon_url: 'https://cdn.chickpea.test/support.png',
+  });
+  assert.deepEqual(gatewayCalls, [
+    { operation: 'agents.sessions.setStatus', input },
+    {
+      operation: 'assistant.threads.setStatus',
+      input: {
+        channel_id: 'C_SUPPORT',
+        thread_ts: '1787774942.263000',
+        status: 'is working on the alert',
+        username: 'Support Agent',
+        icon_url: 'https://cdn.chickpea.test/support.png',
+      },
+    },
+  ]);
+  await assert.rejects(
+    facade.apiCall('agents.sessions.rename', { channel_id: 'C_SUPPORT', title: 'Nope' }),
+    /unavailable/,
+  );
 });
 
 test('shared-app Slack OIDC returns a bounded identity proof without exposing provider tokens', async () => {

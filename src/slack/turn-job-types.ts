@@ -41,6 +41,10 @@ export interface FlueDispatchEnvelopeV2 extends FlueDispatchEnvelopeBase {
       eventId: string;
       messageTs: string;
       turnJobId: string;
+      /** Comma-separated Slack file ids; bytes and private URLs remain outside durable state. */
+      attachmentFileIds?: string;
+      attachmentIntakeStatus?: 'ok' | 'too_many' | 'invalid_metadata';
+      attachmentCount?: string;
     };
   };
 }

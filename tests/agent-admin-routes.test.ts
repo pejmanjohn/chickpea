@@ -209,10 +209,14 @@ test('shared Slack connection test requires inbound session health even when out
   const fixture = harness();
   let inboundHealthy = false;
   let statusCalls = 0;
+  let restartCalls = 0;
   const env = {
     SLACK_GATEWAY_SESSION: {
       idFromName: (name: string) => name,
       get: () => ({
+        restart: async () => {
+          restartCalls += 1;
+        },
         status: async () => {
           statusCalls += 1;
           return {
@@ -245,7 +249,8 @@ test('shared Slack connection test requires inbound session health even when out
       error: 'slack_gateway_unreachable',
       detail: 'gateway_session_offline',
     });
-    assert.equal(statusCalls, 1);
+    assert.equal(statusCalls, 2);
+    assert.equal(restartCalls, 1);
     assert.equal((await fixture.store.getWorkspaceInstallation('T_TEST'))?.health, 'needs_attention');
     assert.equal(
       (await fixture.store.getWorkspaceInstallation('T_TEST'))?.healthDetail,
@@ -260,7 +265,8 @@ test('shared Slack connection test requires inbound session health even when out
     );
     assert.equal(recovered.status, 200);
     assert.equal((await recovered.json() as { ok: boolean }).ok, true);
-    assert.equal(statusCalls, 2);
+    assert.equal(statusCalls, 3);
+    assert.equal(restartCalls, 1);
     assert.equal((await fixture.store.getWorkspaceInstallation('T_TEST'))?.health, 'healthy');
     assert.equal(
       (await fixture.store.getWorkspaceInstallation('T_TEST'))?.healthDetail ?? null,

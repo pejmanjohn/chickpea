@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { SlackStatusUpdate } from '../src/slack/replies.ts';
+import { THREAD_TTL_MS } from '../src/slack/state-limits.ts';
 import {
   registerSlackStatusTurn,
   setObservedSlackStatus,
@@ -116,6 +117,190 @@ test('a delayed observation from turn A cannot land after turn B registers', asy
   await turnB.drain();
   assert.deepEqual(second.statuses, ['is inspecting the new workspace']);
   turnB.close();
+});
+
+test('a delayed old-generation write cannot land after or clear the newer owner', async () => {
+  const oldWrite = Promise.withResolvers<boolean>();
+  const calls: string[] = [];
+  const turnA = registerSlackStatusTurn('generation-fenced-thread', {
+    setStatus(update: SlackStatusUpdate): Promise<boolean> {
+      calls.push(`old:${update.text}`);
+      return oldWrite.promise;
+    },
+  }, { generation: GENERATION_A, sessionGeneration: 1785700000000100 });
+
+  const oldStatus = turnA.setStatus({ text: 'is writing the old answer' });
+  const turnB = registerSlackStatusTurn('generation-fenced-thread', {
+    setStatus(update: SlackStatusUpdate): Promise<boolean> {
+      calls.push(`new:${update.text}`);
+      return Promise.resolve(true);
+    },
+  }, { generation: GENERATION_B, sessionGeneration: 1785700000000200 });
+
+  const newStatus = turnB.setStatus({ text: 'is writing the new answer' });
+  assert.equal(
+    await turnA.setStatus({ text: 'is replaying stale work' }),
+    false,
+    'the prior generation must be fenced as soon as the newer executor registers',
+  );
+  assert.deepEqual(calls, ['old:is writing the old answer']);
+
+  let oldClearCount = 0;
+  await turnA.finish(async () => { oldClearCount += 1; });
+  assert.equal(oldClearCount, 0, 'the older generation cannot clear the newer owner');
+
+  oldWrite.resolve(true);
+  assert.equal(await oldStatus, true);
+  assert.equal(await newStatus, true);
+  assert.deepEqual(calls, [
+    'old:is writing the old answer',
+    'new:is writing the new answer',
+  ]);
+
+  let newClearCount = 0;
+  await turnB.finish(async () => { newClearCount += 1; });
+  assert.equal(newClearCount, 1);
+});
+
+test('a queued older generation stays silent when the newer executor already owns the thread', async () => {
+  const current = recordingPresenter();
+  const queued = recordingPresenter();
+  const active = registerSlackStatusTurn('queued-generation-thread', current, {
+    generation: GENERATION_B,
+    sessionGeneration: 1785700000000200,
+  });
+  const older = registerSlackStatusTurn('queued-generation-thread', queued, {
+    generation: GENERATION_A,
+    sessionGeneration: 1785700000000100,
+  });
+
+  assert.equal(await older.setStatus({ text: 'is preparing queued work' }), false);
+  assert.equal(await active.setStatus({ text: 'is running active work' }), true);
+  assert.deepEqual(queued.statuses, []);
+  assert.deepEqual(current.statuses, ['is running active work']);
+  older.close();
+  active.close();
+});
+
+test('thread ownership fences an older Agent instance after a handoff', async () => {
+  const ownershipKey = 'T_HANDOFF:C_HANDOFF:1785700000.000100';
+  const priorAgent = recordingPresenter();
+  const nextAgent = recordingPresenter();
+  const prior = registerSlackStatusTurn('agent-instance-prior', priorAgent, {
+    generation: GENERATION_A,
+    sessionGeneration: 1785700000000100,
+    ownershipKey,
+  });
+  const next = registerSlackStatusTurn('agent-instance-next', nextAgent, {
+    generation: GENERATION_B,
+    sessionGeneration: 1785700000000200,
+    ownershipKey,
+  });
+
+  assert.equal(await prior.setStatus({ text: 'is writing stale handoff work' }), false);
+  assert.equal(await next.setStatus({ text: 'is writing current handoff work' }), true);
+  assert.deepEqual(priorAgent.statuses, []);
+  assert.deepEqual(nextAgent.statuses, ['is writing current handoff work']);
+  prior.close();
+  next.close();
+});
+
+test('a completed newer generation keeps a later stale registration silent', async () => {
+  const ownershipKey = 'T_HISTORY:C_HISTORY:1785700000.000100';
+  let now = 1_800_000_000_000;
+  const currentPresenter = recordingPresenter();
+  const current = registerSlackStatusTurn('history-instance-current', currentPresenter, {
+    generation: GENERATION_B,
+    sessionGeneration: 1785700000000200,
+    ownershipKey,
+    now: () => now,
+  });
+  assert.equal(await current.setStatus({ text: 'is handling the current request' }), true);
+  current.close();
+
+  now += THREAD_TTL_MS;
+  const stalePresenter = recordingPresenter();
+  const stale = registerSlackStatusTurn('history-instance-stale', stalePresenter, {
+    generation: GENERATION_A,
+    sessionGeneration: 1785700000000100,
+    ownershipKey,
+    now: () => now,
+  });
+  assert.equal(await stale.setStatus({ text: 'is replaying an older request' }), false);
+  assert.deepEqual(stalePresenter.statuses, []);
+  stale.close();
+});
+
+test('an inactive generation fence expires after durable thread retention', async () => {
+  const ownershipKey = 'T_EXPIRED_HISTORY:C_EXPIRED_HISTORY:1785700000.000100';
+  let now = 1_800_000_000_000;
+  const current = registerSlackStatusTurn('expired-history-current', recordingPresenter(), {
+    generation: GENERATION_B,
+    sessionGeneration: 1785700000000200,
+    ownershipKey,
+    now: () => now,
+  });
+  current.close();
+
+  now += THREAD_TTL_MS + 1;
+  const resumedPresenter = recordingPresenter();
+  const resumed = registerSlackStatusTurn('expired-history-resumed', resumedPresenter, {
+    generation: GENERATION_A,
+    sessionGeneration: 1785700000000100,
+    ownershipKey,
+    now: () => now,
+  });
+
+  assert.equal(await resumed.setStatus({ text: 'is handling retained-history expiry' }), true);
+  assert.deepEqual(resumedPresenter.statuses, ['is handling retained-history expiry']);
+  resumed.close();
+});
+
+test('an active generation fence is not pruned after durable thread retention', async () => {
+  const ownershipKey = 'T_ACTIVE_HISTORY:C_ACTIVE_HISTORY:1785700000.000100';
+  let now = 1_800_000_000_000;
+  const current = registerSlackStatusTurn('active-history-current', recordingPresenter(), {
+    generation: GENERATION_B,
+    sessionGeneration: 1785700000000200,
+    ownershipKey,
+    now: () => now,
+  });
+
+  now += THREAD_TTL_MS + 1;
+  const stalePresenter = recordingPresenter();
+  const stale = registerSlackStatusTurn('active-history-stale', stalePresenter, {
+    generation: GENERATION_A,
+    sessionGeneration: 1785700000000100,
+    ownershipKey,
+    now: () => now,
+  });
+
+  assert.equal(await stale.setStatus({ text: 'is replaying while the owner is active' }), false);
+  assert.deepEqual(stalePresenter.statuses, []);
+  stale.close();
+  current.close();
+});
+
+test('the same persisted generation may resume after its prior owner closes', async () => {
+  const ownershipKey = 'T_RETRY:C_RETRY:1785700000.000100';
+  const firstPresenter = recordingPresenter();
+  const first = registerSlackStatusTurn('retry-instance', firstPresenter, {
+    generation: GENERATION_A,
+    sessionGeneration: 1785700000000100,
+    ownershipKey,
+  });
+  assert.equal(await first.setStatus({ text: 'is preparing the durable answer' }), true);
+  first.close();
+
+  const retryPresenter = recordingPresenter();
+  const retry = registerSlackStatusTurn('retry-instance', retryPresenter, {
+    generation: GENERATION_A,
+    sessionGeneration: 1785700000000100,
+    ownershipKey,
+  });
+  assert.equal(await retry.setStatus({ text: 'is resuming the durable answer' }), true);
+  assert.deepEqual(retryPresenter.statuses, ['is resuming the durable answer']);
+  retry.close();
 });
 
 test('setStatus on a closed turn resolves false without calling the presenter', async () => {

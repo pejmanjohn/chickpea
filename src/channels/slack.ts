@@ -39,7 +39,6 @@ import {
 } from '../config/state-backend.ts';
 import {
   tagStateStub,
-  type SlackInteractionProgress,
   type StateRpcResult,
   type TurnJob,
 } from '../config/state-rpc.ts';
@@ -100,7 +99,11 @@ import {
 } from '../slack/run-turn.ts';
 import { slackAgentThreadKey, slackThreadKey } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
-import { wakeNodeTurnRelay } from '../slack/node-turn-relay.ts';
+import {
+  slackPresentationStatePort,
+  wakeNodeTurnRelay,
+} from '../slack/node-turn-relay.ts';
+import { presentAdmittedSlackActivity } from '../slack/admission-activity.ts';
 import {
   hydrateSlackContextViaWebClient,
   hydrateSlackPublicHandoffFallback,
@@ -110,15 +113,18 @@ import {
   recordAcceptedSlackHumanMessage,
   recordDeliveredSlackAgentMessage,
 } from '../slack/public-context.ts';
-import { WebClientPresenter } from '../slack/web-client-presenter.ts';
+import {
+  selectSlackPresentationOwner,
+  slackSessionGenerationFromTimestamp,
+} from '../slack/claim-store.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import type { SlackInboundEnvelope, SlackTransport } from '../slack/transport/types.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import { GatewayDeploymentClient } from '../slack/gateway/client.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
 import { createGatewaySlackWebClient } from '../slack/gateway/web-client.ts';
-import { publishSlackAdmissionProgress } from '../slack/work-admission-progress.ts';
 import { selectSlackExecutionAuthority } from '../work/authority.ts';
+import { opaqueId } from '../work/admission.ts';
 import { EGRESS_SETTING_KEY, parseEgressPolicy } from '../config/egress.ts';
 import {
   isSlackMemberJoinedChannelEvent,
@@ -128,6 +134,7 @@ import {
 import type { AuthPrincipal } from '../auth/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
+import { initialActivityStatus } from '../activity/status.ts';
 
 const MAX_SLACK_INGRESS_BYTES = 1_048_576;
 
@@ -1315,6 +1322,22 @@ async function processSlackEvent(
       runId: admission.run.id,
       executionAuthority: admission.run.executionAuthority,
     };
+    const sessionGeneration = slackSessionGenerationFromTimestamp(turn.messageTs);
+    const owner = selectSlackPresentationOwner({
+      installationHealth: installation.health,
+      agentId: assignment.agent.id,
+      agentName: assignment.agent.name,
+      ...(assignmentAvatarUrl ? { avatarUrl: assignmentAvatarUrl } : {}),
+      ...(assignment.agent.slackPresence
+        ? { slackPresence: assignment.agent.slackPresence }
+        : {}),
+    });
+    const admittedActivity = initialActivityStatus(
+      turn.interactionIntent?.disposition === 'work'
+        ? turn.interactionIntent.checklist
+        : undefined,
+      turn.text,
+    );
     try {
       const result = await state.admitCanonical({
         evtKey,
@@ -1323,21 +1346,29 @@ async function processSlackEvent(
         admission,
         turnJob: canonicalTurnJob,
         presentation: {
+          schemaVersion: 3,
           root: {
             workspaceId: turn.workspaceId,
             channelId: turn.channelId,
             threadTs: turn.threadTs,
             requesterUserId: turn.userId,
           },
-          ...(assignmentAvatarUrl && assignment.agent.slackPresence
-            ? {
-                persona: {
-                  name: assignment.agent.name,
-                  avatarUrl: assignmentAvatarUrl,
-                  avatarRevision: assignment.agent.slackPresence.avatar.revision,
-                },
-              }
-            : {}),
+          owner,
+          sessionGeneration,
+          currentActivity: {
+            kind: admittedActivity.kind,
+            action: admittedActivity.action,
+            object: admittedActivity.object,
+            generation: sessionGeneration,
+            sequence: 1,
+            operation: {
+              operationId: opaqueId(
+                'activity',
+                `${admission.run.id}:${canonicalTurnJob.id}:1`,
+              ),
+              certainty: 'pending',
+            },
+          },
           ...(turn.interactionIntent?.disposition === 'work'
             ? { taskLabels: turn.interactionIntent.checklist }
             : {}),
@@ -1346,6 +1377,26 @@ async function processSlackEvent(
       if (!result.claimed) return;
       claimsHeldByCanonicalAdmission = true;
       canonicalRunId = result.admission.run.id;
+      const presentationState = slackPresentationStatePort(state);
+      if (slackClient && presentationState) {
+        await presentAdmittedSlackActivity({
+          client: slackClient,
+          state: presentationState,
+          runId: result.admission.run.id,
+          runFencingToken: result.admission.run.fencingToken,
+          workspaceId: turn.workspaceId,
+          channelId: turn.channelId,
+          threadTs: turn.threadTs,
+          requesterUserId: turn.userId,
+          owner,
+          agentId: assignment.agent.id,
+          activity: admittedActivity,
+        }).catch(() => {
+          // The durable activity intent remains recoverable by the turn
+          // driver. Admission must not fail because the first projection did.
+          console.warn('[chickpea] admitted Slack activity projection failed');
+        });
+      }
     } catch (err) {
       if (admission.run.executionAuthority === 'ledger') {
         // A selected canary must never fall back across authority lanes. The
@@ -1375,35 +1426,6 @@ async function processSlackEvent(
   }
 
   const durableCanonicalTurnJob = canonicalRunId ? canonicalTurnJob : undefined;
-
-  let admissionInteractionProgress: SlackInteractionProgress | undefined;
-  const shouldAcknowledgeAtAdmission = slackClient && !candidateTurn && !deterministicCommand &&
-    turn.interactionIntent?.disposition !== 'react_only';
-  if (shouldAcknowledgeAtAdmission) {
-    const presenter = new WebClientPresenter(slackClient, {
-      channelId: turn.channelId,
-      threadTs: turn.threadTs,
-      agentName: assignment.agent.name,
-      ...(assignmentAvatarUrl
-        ? { agentAvatarUrl: assignmentAvatarUrl }
-        : {}),
-      agentId: assignment.agent.id,
-      userId: turn.userId,
-      workspaceId: turn.workspaceId,
-    });
-    admissionInteractionProgress = await publishSlackAdmissionProgress({
-      turn,
-      ...(turn.interactionIntent?.disposition === 'work'
-        ? { checklist: turn.interactionIntent.checklist }
-        : {}),
-      presenter,
-      record: async (patch) => {
-        if (durableCanonicalTurnJob && state.recordSlackInteractionProgress) {
-          await state.recordSlackInteractionProgress(durableCanonicalTurnJob.id, patch);
-        }
-      },
-    });
-  }
 
   if (promotedClassifierUsage) {
     await recordInteractionClassifierUsage({
@@ -1493,9 +1515,6 @@ async function processSlackEvent(
       if (marksActiveWork) await state.setActiveWork(threadKey, msgKey, false);
       console.error('[chickpea] Node turn enqueue failed:', sanitizeError(err));
       return;
-    }
-    if (admissionInteractionProgress && state.recordSlackInteractionProgress) {
-      await state.recordSlackInteractionProgress(msgKey, admissionInteractionProgress);
     }
   }
   await recordAcceptedSlackHumanMessage(stores.config, turn, assignment).catch(() => {

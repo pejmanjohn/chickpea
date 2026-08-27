@@ -2,25 +2,42 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  activityStatus,
   activityStatusForObservation,
   connectingActivityStatus,
+  initialActivityStatus,
   registerActivityContext,
   toolActivityStatus,
 } from '../src/activity/status.ts';
 
-test('thinking activity is visible without exposing model reasoning content', () => {
+test('activity facts carry safe action-and-object copy without exposing raw input', () => {
+  const secret = 'xoxb-12345678901234567890';
+  const activity = activityStatus('writing', 'Drafting', `initial skill ${secret}`);
+
+  assert.deepEqual(activity, {
+    kind: 'writing',
+    action: 'Drafting',
+    object: 'the current item',
+    text: 'Drafting the current item…',
+  });
+  assert.equal(activity.text.startsWith('Agent '), false);
+  assert.doesNotMatch(activity.text, new RegExp(secret));
+  assert.doesNotMatch(activity.text, /is thinking|gpt-|claude-|local-stub/i);
+});
+
+test('thinking observations do not replace the admitted user-facing activity', () => {
   registerActivityContext('thinking-thread', {
     skills: [],
     mcpConnections: [],
     apiConnections: [],
   });
-  assert.deepEqual(
+  assert.equal(
     activityStatusForObservation({
       type: 'thinking_start',
       instanceId: 'thinking-thread',
       contentIndex: 0,
     }),
-    { text: 'is thinking through the request' },
+    undefined,
   );
   assert.equal(
     activityStatusForObservation({
@@ -29,6 +46,24 @@ test('thinking activity is visible without exposing model reasoning content', ()
       delta: 'private model reasoning',
     }),
     undefined,
+  );
+});
+
+test('admission activity uses allowlisted request objects without echoing user text', () => {
+  assert.deepEqual(
+    initialActivityStatus(
+      undefined,
+      'Briefly explain how you would draft an initial skill for monitoring xoxb-secret.',
+    ),
+    activityStatus('writing', 'Drafting', 'the initial skill'),
+  );
+  assert.deepEqual(
+    initialActivityStatus(undefined, 'Reply with exactly received.'),
+    activityStatus('writing', 'Drafting', 'the response'),
+  );
+  assert.deepEqual(
+    initialActivityStatus(['Google Ads access requirements'], 'xoxb-secret'),
+    activityStatus('writing', 'Drafting', 'Google Ads access requirements'),
   );
 });
 
@@ -47,7 +82,7 @@ test('skill activation names only a skill registered for this agent instance', (
       toolCallId: 'call-1',
       args: { name: 'repo-inspector' },
     }),
-    { text: 'is loading the Repository inspector skill' },
+    activityStatus('preparing', 'Loading', 'the Repository inspector skill'),
   );
 
   const secret = 'ghs_do-not-leak-this-token';
@@ -58,7 +93,7 @@ test('skill activation names only a skill registered for this agent instance', (
     toolCallId: 'call-2',
     args: { name: secret },
   });
-  assert.deepEqual(unknown, { text: 'is loading a skill' });
+  assert.deepEqual(unknown, activityStatus('preparing', 'Loading', 'a skill'));
   assert.doesNotMatch(unknown.text, new RegExp(secret));
 });
 
@@ -76,7 +111,7 @@ test('MCP activity uses the configured display name and hides unknown tool ident
       toolName: 'mcp__context7__resolve-library-id',
       toolCallId: 'call-1',
     }),
-    { text: 'is using Context7 Docs' },
+    activityStatus('checking', 'Checking', 'Context7 Docs'),
   );
   assert.deepEqual(
     activityStatusForObservation({
@@ -85,7 +120,7 @@ test('MCP activity uses the configured display name and hides unknown tool ident
       toolName: 'mcp__secret-server__secret-tool',
       toolCallId: 'call-2',
     }),
-    { text: 'is using a connection' },
+    activityStatus('checking', 'Checking', 'a connection'),
   );
 });
 
@@ -103,31 +138,31 @@ test('unknown tool names are never copied into status text', () => {
     toolCallId: 'unknown-call',
   });
 
-  assert.deepEqual(status, { text: 'is using a tool' });
+  assert.deepEqual(status, activityStatus('running', 'Working with', 'a tool'));
   assert.doesNotMatch(status.text, new RegExp(secret));
 });
 
 test('the presentation declaration uses user-facing activity copy', () => {
   assert.deepEqual(
     toolActivityStatus('stream_answer'),
-    { text: 'is preparing the response' },
+    activityStatus('writing', 'Drafting', 'the response'),
   );
 });
 
 test('sandbox primitives use fixed statuses without exposing their arguments', () => {
   const secret = 'credential-do-not-leak';
   const expected = new Map([
-    ['read', 'is reading a workspace file'],
-    ['write', 'is writing a workspace file'],
-    ['edit', 'is editing a workspace file'],
-    ['grep', 'is searching the workspace'],
-    ['glob', 'is finding workspace files'],
-    ['read_skill_resource', 'is reading a skill resource'],
+    ['read', activityStatus('reading', 'Reading', 'a workspace file')],
+    ['write', activityStatus('writing', 'Writing', 'a workspace file')],
+    ['edit', activityStatus('updating', 'Editing', 'a workspace file')],
+    ['grep', activityStatus('checking', 'Searching', 'the workspace')],
+    ['glob', activityStatus('checking', 'Finding', 'workspace files')],
+    ['read_skill_resource', activityStatus('reading', 'Reading', 'a skill resource')],
   ]);
 
-  for (const [toolName, text] of expected) {
+  for (const [toolName, expectedStatus] of expected) {
     const status = toolActivityStatus(toolName, { path: secret, pattern: secret });
-    assert.deepEqual(status, { text }, toolName);
+    assert.deepEqual(status, expectedStatus, toolName);
     assert.doesNotMatch(status.text, new RegExp(secret));
   }
 });
@@ -142,7 +177,7 @@ test('bash activity classifies parsed commands rather than quoted or searched te
   ]) {
     assert.deepEqual(
       toolActivityStatus('bash', { command }),
-      { text: 'is running a workspace command' },
+      activityStatus('running', 'Running', 'a workspace command'),
       command,
     );
   }
@@ -153,7 +188,7 @@ test('bash activity classifies parsed commands rather than quoted or searched te
   ]) {
     assert.deepEqual(
       toolActivityStatus('bash', { command }),
-      { text: 'is inspecting the workspace' },
+      activityStatus('checking', 'Inspecting', 'the workspace'),
       command,
     );
   }
@@ -166,7 +201,7 @@ test('sandbox app startup recognizes package-manager working-directory flags', (
         'cd /workspace/sample-app && pnpm -C apps/web dev > /workspace/dev-server.log 2>&1 & ' +
         'echo $! > /workspace/dev-server.pid',
     }),
-    { text: 'is starting the app' },
+    activityStatus('running', 'Starting', 'the app'),
   );
 
   for (const command of [
@@ -181,7 +216,7 @@ test('sandbox app startup recognizes package-manager working-directory flags', (
   ]) {
     assert.deepEqual(
       toolActivityStatus('bash', { command }),
-      { text: 'is starting the app' },
+      activityStatus('running', 'Starting', 'the app'),
       command,
     );
   }
@@ -190,17 +225,17 @@ test('sandbox app startup recognizes package-manager working-directory flags', (
     toolActivityStatus('bash', {
       command: 'pnpm -C apps/web install && pnpm -C apps/web dev',
     }),
-    { text: 'is installing dependencies' },
+    activityStatus('running', 'Installing', 'dependencies'),
     'the earlier higher-priority install stage must not be hidden by app startup',
   );
   assert.deepEqual(
     toolActivityStatus('bash', { command: 'pnpm -w build start' }),
-    { text: 'is running a workspace command' },
+    activityStatus('running', 'Running', 'a workspace command'),
     'a script argument named start must not be mistaken for the selected script',
   );
   assert.deepEqual(
     toolActivityStatus('bash', { command: 'pnpm -C apps/web test' }),
-    { text: 'is running the test suite' },
+    activityStatus('running', 'Running', 'the test suite'),
   );
 });
 
@@ -230,7 +265,7 @@ test('API curl activity is matched against approved host and path scope without 
         'https://app.asana.com/api/1.0/users/me',
     },
   });
-  assert.deepEqual(matched, { text: 'is using Asana' });
+  assert.deepEqual(matched, activityStatus('checking', 'Checking', 'Asana'));
   assert.doesNotMatch(matched.text, /do-not-leak/);
 
   assert.deepEqual(
@@ -248,7 +283,7 @@ test('API curl activity is matched against approved host and path scope without 
         ].join('\n'),
       },
     }),
-    { text: 'is using Asana' },
+    activityStatus('checking', 'Checking', 'Asana'),
   );
 
   assert.deepEqual(
@@ -259,7 +294,7 @@ test('API curl activity is matched against approved host and path scope without 
       toolCallId: 'explicit-url-call',
       args: { command: 'curl -sS --url https://app.asana.com/api/1.0/users/me' },
     }),
-    { text: 'is using Asana' },
+    activityStatus('checking', 'Checking', 'Asana'),
   );
 
   assert.deepEqual(
@@ -272,7 +307,7 @@ test('API curl activity is matched against approved host and path scope without 
         command: 'curl -sS https://app.asana.com/api/1.0/workspaces | head -c 200',
       },
     }),
-    { text: 'is using Asana' },
+    activityStatus('checking', 'Checking', 'Asana'),
   );
 
   assert.deepEqual(
@@ -283,7 +318,7 @@ test('API curl activity is matched against approved host and path scope without 
       toolCallId: 'call-2',
       args: { command: 'curl -sS https://app.asana.com/api/1.00/users/me' },
     }),
-    { text: 'is running a workspace command' },
+    activityStatus('running', 'Running', 'a workspace command'),
     'path matching must use segment boundaries rather than raw prefix matching',
   );
 
@@ -306,7 +341,7 @@ test('API curl activity is matched against approved host and path scope without 
         toolCallId: 'negative-call',
         args: { command },
       }),
-      { text: 'is running a workspace command' },
+      activityStatus('running', 'Running', 'a workspace command'),
       command,
     );
   }
@@ -321,7 +356,7 @@ test('API curl activity is matched against approved host and path scope without 
         command: "cat <<'EOF'\ncurl https://app.asana.com/api/1.0/users/me\nEOF",
       },
     }),
-    { text: 'is inspecting the workspace' },
+    activityStatus('checking', 'Inspecting', 'the workspace'),
     'a URL in a heredoc body must not be attributed to the connection',
   );
 });
@@ -358,7 +393,7 @@ test('API activity falls back when one curl command targets multiple configured 
           'https://api.linear.app/graphql',
       },
     }),
-    { text: 'is running a workspace command' },
+    activityStatus('running', 'Running', 'a workspace command'),
   );
 });
 
@@ -388,16 +423,16 @@ test('API activity requires both the HTTP method and request guard to match', ()
 
   assert.deepEqual(
     observe("curl -sS -d '{}' 'https://api.example.com/v1/items?scope=approved'"),
-    { text: 'is using Guarded API' },
+    activityStatus('checking', 'Checking', 'Guarded API'),
   );
   assert.deepEqual(
     observe("curl -sS 'https://api.example.com/v1/items?scope=approved'"),
-    { text: 'is running a workspace command' },
+    activityStatus('running', 'Running', 'a workspace command'),
     'the default GET method is outside the connection policy',
   );
   assert.deepEqual(
     observe("curl -sS -X POST 'https://api.example.com/v1/items?scope=blocked'"),
-    { text: 'is running a workspace command' },
+    activityStatus('running', 'Running', 'a workspace command'),
     'a request rejected by matchesRequest must not receive the connection name',
   );
 });
@@ -422,7 +457,7 @@ test('re-registering an instance replaces stale skill and connection names', () 
       toolCallId: 'old-skill-call',
       args: { name: 'old-skill' },
     }),
-    { text: 'is loading a skill' },
+    activityStatus('preparing', 'Loading', 'a skill'),
   );
   assert.deepEqual(
     activityStatusForObservation({
@@ -431,7 +466,7 @@ test('re-registering an instance replaces stale skill and connection names', () 
       toolName: 'mcp__old-server__query',
       toolCallId: 'old-server-call',
     }),
-    { text: 'is using a connection' },
+    activityStatus('checking', 'Checking', 'a connection'),
   );
 });
 
@@ -461,12 +496,12 @@ test('activity contexts are bounded and evict the oldest instance', () => {
     }),
     undefined,
   );
-  assert.deepEqual(
+  assert.equal(
     activityStatusForObservation({
       type: 'thinking_start',
       instanceId: 'bounded-thread-256',
     }),
-    { text: 'is thinking through the request' },
+    undefined,
   );
 });
 

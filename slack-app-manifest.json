@@ -51,6 +51,7 @@
         "channels:read",
         "chat:write",
         "chat:write.customize",
+        "files:read",
         "files:write",
         "groups:history",
         "groups:read",

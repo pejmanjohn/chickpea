@@ -20,6 +20,14 @@ import {
   type SemanticReaction,
 } from './interaction-intent.ts';
 import type { SlackAgentViewPresentation } from './agent-view-presentation.ts';
+import type {
+  SlackPresentationOwner,
+  SlackPresentationActivityProjection,
+  SlackPresentationPlanV3,
+  SlackPresentationReceiptCertainty,
+} from './run-presentations.ts';
+import { slackClientMessageId } from './transport/message-id.ts';
+import { SlackTransportError } from './transport/types.ts';
 
 /** Static failure copy keeps raw provider errors out of Slack (scenario S15). */
 export const PROVIDER_FAILURE_TEXT =
@@ -48,11 +56,16 @@ export const SANDBOX_UNAVAILABLE_FALLBACK_NOTICE =
 export const AGENT_FAILURE_TEXT =
   'I reached the Slack thread, but the agent run failed before completion. I did not expose internal error details in Slack.';
 
+export const DURABLE_RECOVERY_FAILURE_TEXT =
+  "I couldn't finish this request after retrying. Please try again. If it keeps happening, ask a workspace admin to check Chickpea's Slack connection.";
+
 export interface SlackPresenterTarget {
   channelId: string;
   threadTs: string;
   agentName: string;
   agentAvatarUrl?: string;
+  /** Frozen V3 authorship. Omitted preserves legacy target-derived persona behavior. */
+  visibleOwner?: SlackPresentationOwner;
   agentId: string;
   modelLabel?: string | undefined;
   publicUrl?: string | undefined;
@@ -102,7 +115,20 @@ export interface SlackPresenterOptions {
   agentViewPresentation?: SlackAgentViewPresentation;
   /** Successful non-ephemeral final, for the ownership handoff ledger. */
   onPublicDelivery?: (input: { messageTs: string; text: string }) => void | Promise<void>;
+  /** Rehydrates the one V3 activity artifact after an isolate restart. */
+  activityProjection?: SlackPresentationActivityProjection;
 }
+
+export interface SlackActivityWrite {
+  operationId: string;
+  surface: 'message' | 'assistant_status';
+  messageTs?: string;
+}
+
+export type SlackActivityReceiptCertainty = Exclude<
+  SlackPresentationReceiptCertainty,
+  'pending'
+>;
 
 export class PersistedSlackDeliveryError extends Error {
   constructor(
@@ -130,39 +156,202 @@ export class PersistedSlackDeliveryError extends Error {
 export class WebClientPresenter {
   private statusFailed = false;
   private statusWasSet = false;
+  private nativeThreadStatusWasSet = false;
+  private activityMessageTs: string | undefined;
+  private lastActivityReceiptCertainty: SlackActivityReceiptCertainty = 'failed';
 
   constructor(
     private readonly client: WebClient,
     private readonly target: SlackPresenterTarget,
     private readonly deliveryObserver?: SlackDeliveryObserver,
     private readonly options: SlackPresenterOptions = {},
-  ) {}
+  ) {
+    const projection = options.activityProjection;
+    if (projection?.surface === 'message' && projection.state === 'visible') {
+      this.activityMessageTs = projection.messageTs;
+      this.statusWasSet = true;
+    } else if (projection?.surface === 'assistant_status' && projection.state === 'visible') {
+      this.statusWasSet = true;
+      this.nativeThreadStatusWasSet = true;
+    }
+  }
 
-  /** Attempt to set the Assistant thread status. Returns whether it stuck. */
-  async setStatus(update: SlackStatusUpdate): Promise<boolean> {
+  preferredActivitySurface(): 'message' | 'assistant_status' {
+    const projection = this.options.activityProjection;
+    if (projection && projection.surface !== 'unselected') return projection.surface;
+    // V3 owners use Slack's native under-composer status. Slack supports
+    // custom username/icon authorship on this surface, so selected Agents keep
+    // their frozen identity without creating a transient chat message.
+    if (this.target.visibleOwner) return 'assistant_status';
+    const chat = (this.client as unknown as { chat?: { postMessage?: unknown } }).chat;
+    return typeof chat?.postMessage === 'function' ? 'message' : 'assistant_status';
+  }
+
+  /**
+   * Present one owner-authored activity artifact. Direct message activity is
+   * preferred because Slack's Assistant/Agent status surfaces cannot carry the
+   * safe action-and-object fact. Once created, every update targets the same
+   * coordinate. The legacy thread-status bridge is used only when a message
+   * post is locally unavailable or Slack confirms that no post occurred.
+   */
+  async setStatus(update: SlackStatusUpdate, durable?: SlackActivityWrite): Promise<boolean> {
     if (this.statusFailed) {
       return false;
     }
+    const chat = (this.client as unknown as {
+      chat?: {
+        postMessage?: (input: Record<string, unknown>) => Promise<{ ts?: string }>;
+        update?: (input: Record<string, unknown>) => Promise<unknown>;
+      };
+    }).chat;
+    if (durable?.surface === 'message' && durable.messageTs) {
+      this.activityMessageTs = durable.messageTs;
+      this.statusWasSet = true;
+    }
+    if (this.activityMessageTs) {
+      if (typeof chat?.update !== 'function') {
+        this.statusFailed = true;
+        return false;
+      }
+      try {
+        await chat.update({
+          channel: this.target.channelId,
+          ts: this.activityMessageTs,
+          text: update.text,
+        });
+        this.lastActivityReceiptCertainty = 'acknowledged';
+        return true;
+      } catch (error) {
+        // An existing visible activity must never gain a competing fallback.
+        this.lastActivityReceiptCertainty = slackDeliveryFailureOutcome(error);
+        this.statusFailed = true;
+        return false;
+      }
+    }
+    if (durable?.surface !== 'assistant_status' && typeof chat?.postMessage === 'function') {
+      try {
+        const posted = await chat.postMessage({
+          channel: this.target.channelId,
+          thread_ts: this.target.threadTs,
+          text: update.text,
+          ...(durable ? { client_msg_id: slackClientMessageId(durable.operationId) } : {}),
+          ...this.persona(),
+        });
+        if (typeof posted.ts !== 'string' || !posted.ts) {
+          // Slack may have accepted the write without returning its coordinate.
+          // Do not create a second artifact when the effect is ambiguous.
+          this.lastActivityReceiptCertainty = 'unknown';
+          this.statusFailed = true;
+          return false;
+        }
+        this.activityMessageTs = posted.ts;
+        this.statusWasSet = true;
+        this.lastActivityReceiptCertainty = 'acknowledged';
+        return true;
+      } catch (error) {
+        const outcome = slackDeliveryFailureOutcome(error);
+        if (outcome !== 'failed') {
+          this.lastActivityReceiptCertainty = outcome;
+          this.statusFailed = true;
+          return false;
+        }
+        // V3 freezes its projection surface. A confirmed message rejection is
+        // repairable, but may not switch authorship/surface mid-lifecycle.
+        if (durable) return false;
+        // Legacy presentation may use the compatibility status after a proven
+        // message rejection because it has no durable activity projection.
+      }
+    }
+    if (durable?.surface === 'message') return false;
     try {
       await this.client.assistant.threads.setStatus({
         channel_id: this.target.channelId,
         thread_ts: this.target.threadTs,
-        status: slackStatusText(update, this.target.agentName),
-        loading_messages: slackLoadingMessages(update, this.target.agentName),
+        status: slackStatusText(update),
+        loading_messages: slackLoadingMessages(update),
+        ...this.nativeStatusPersona(),
       });
       this.statusWasSet = true;
+      this.nativeThreadStatusWasSet = true;
+      this.lastActivityReceiptCertainty = 'acknowledged';
       return true;
-    } catch {
+    } catch (error) {
       // Latch off further status attempts for this turn (S16: <=2 non-empty).
+      this.lastActivityReceiptCertainty = slackDeliveryFailureOutcome(error);
       this.statusFailed = true;
       return false;
     }
   }
 
+  activityReceiptCertainty(): SlackActivityReceiptCertainty {
+    return this.lastActivityReceiptCertainty;
+  }
+
+  activityReceipt(): { certainty: SlackActivityReceiptCertainty; messageTs?: string } {
+    return {
+      certainty: this.lastActivityReceiptCertainty,
+      ...(this.activityMessageTs ? { messageTs: this.activityMessageTs } : {}),
+    };
+  }
+
+  /** Keep Slack's native under-composer loading indicator visible for the run. */
+  async setNativeThreadStatus(update: SlackStatusUpdate): Promise<boolean> {
+    if (this.nativeThreadStatusWasSet) return true;
+    try {
+      await this.client.assistant.threads.setStatus({
+        channel_id: this.target.channelId,
+        thread_ts: this.target.threadTs,
+        status: slackStatusText(update),
+        loading_messages: slackLoadingMessages(update),
+        ...this.nativeStatusPersona(),
+      });
+      this.nativeThreadStatusWasSet = true;
+      return true;
+    } catch {
+      // Agent Sessions and the durable activity message remain authoritative.
+      return false;
+    }
+  }
+
+  /** Clear only the native under-composer indicator, never the activity message. */
+  async clearNativeThreadStatus(): Promise<boolean> {
+    if (!this.nativeThreadStatusWasSet) return true;
+    try {
+      await this.client.assistant.threads.setStatus({
+        channel_id: this.target.channelId,
+        thread_ts: this.target.threadTs,
+        status: '',
+      });
+      this.nativeThreadStatusWasSet = false;
+      if (!this.activityMessageTs) this.statusWasSet = false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Clear the Assistant thread status, but only if one was ever set. */
-  async clearStatus(): Promise<void> {
+  async clearStatus(): Promise<SlackActivityReceiptCertainty> {
     if (!this.statusWasSet) {
-      return;
+      return 'acknowledged';
+    }
+    if (this.activityMessageTs) {
+      try {
+        await this.client.chat.delete({
+          channel: this.target.channelId,
+          ts: this.activityMessageTs,
+        });
+        this.activityMessageTs = undefined;
+        this.statusWasSet = false;
+        return 'acknowledged';
+      } catch (error) {
+        if (slackPlatformErrorCode(error) === 'message_not_found') {
+          this.activityMessageTs = undefined;
+          this.statusWasSet = false;
+          return 'acknowledged';
+        }
+        return slackDeliveryFailureOutcome(error);
+      }
     }
     try {
       await this.client.assistant.threads.setStatus({
@@ -170,8 +359,11 @@ export class WebClientPresenter {
         thread_ts: this.target.threadTs,
         status: '',
       });
-    } catch {
-      // A failed clear is non-fatal; the turn already delivered its final.
+      this.statusWasSet = false;
+      this.nativeThreadStatusWasSet = false;
+      return 'acknowledged';
+    } catch (error) {
+      return slackDeliveryFailureOutcome(error);
     }
   }
 
@@ -304,6 +496,31 @@ export class WebClientPresenter {
     });
   }
 
+  /** Message-based parity renderer for surfaces where native task details are insufficient. */
+  async postMilestonePlan(plan: SlackPresentationPlanV3): Promise<string | undefined> {
+    const rendered = renderMilestonePlan(plan);
+    if (!rendered) return undefined;
+    const response = await this.client.chat.postMessage({
+      channel: this.target.channelId,
+      thread_ts: this.target.threadTs,
+      text: rendered.text,
+      blocks: rendered.blocks,
+      ...this.persona(),
+    });
+    return typeof response.ts === 'string' && response.ts ? response.ts : undefined;
+  }
+
+  async updateMilestonePlan(messageTs: string, plan: SlackPresentationPlanV3): Promise<void> {
+    const rendered = renderMilestonePlan(plan);
+    if (!rendered) return;
+    await this.client.chat.update({
+      channel: this.target.channelId,
+      ts: messageTs,
+      text: rendered.text,
+      blocks: rendered.blocks,
+    });
+  }
+
   /**
    * Attach a workspace artifact to its bound Slack thread. Slack's v2 upload
    * helper performs the external-upload sequence over the same patched fetch
@@ -347,6 +564,7 @@ export class WebClientPresenter {
       : text;
 
     let forcePostFallback = false;
+    let fallbackOperationId: string | undefined;
     if (this.options.agentViewPresentation) {
       const result = await this.options.agentViewPresentation.finalize(
         text,
@@ -362,6 +580,7 @@ export class WebClientPresenter {
         return;
       }
       forcePostFallback = result.fallbackPresentation;
+      fallbackOperationId = result.operationId;
     }
 
     if (!forcePostFallback && this.target.userId && this.target.workspaceId) {
@@ -431,6 +650,9 @@ export class WebClientPresenter {
       channel: this.target.channelId,
       thread_ts: this.target.threadTs,
       ...rendered,
+      ...(forcePostFallback && fallbackOperationId
+        ? { client_msg_id: slackClientMessageId(fallbackOperationId) }
+        : {}),
       ...this.persona(),
     };
     const attemptId = await this.observeBeforeDelivery({
@@ -455,6 +677,9 @@ export class WebClientPresenter {
       }
     } catch (error) {
       const outcome = this.deliveryOutcome(error);
+      if (forcePostFallback) {
+        await this.options.agentViewPresentation?.markFallbackDeliveryFailed(outcome);
+      }
       await this.observeAfterDelivery({
         attemptId,
         outcome,
@@ -558,10 +783,25 @@ export class WebClientPresenter {
     };
   }
 
-  private persona(): { username: string; icon_url?: string } {
+  private persona(): { username?: string; icon_url?: string } {
+    if (this.target.visibleOwner?.kind === 'chickpea') return {};
+    if (this.target.visibleOwner?.kind === 'selected_agent') {
+      return {
+        username: this.target.visibleOwner.persona.name,
+        icon_url: this.target.visibleOwner.persona.avatarUrl,
+      };
+    }
     return {
       username: this.target.agentName,
       ...(this.target.agentAvatarUrl ? { icon_url: this.target.agentAvatarUrl } : {}),
+    };
+  }
+
+  private nativeStatusPersona(): { username?: string; icon_url?: string } {
+    if (this.target.visibleOwner?.kind !== 'selected_agent') return {};
+    return {
+      username: this.target.visibleOwner.persona.name,
+      icon_url: this.target.visibleOwner.persona.avatarUrl,
     };
   }
 }
@@ -707,6 +947,7 @@ export async function deliverPersistedSlackPayload(
 }
 
 export function slackDeliveryFailureOutcome(error: unknown): 'failed' | 'unknown' {
+  if (error instanceof SlackTransportError) return error.effectOutcome;
   const code = error && typeof error === 'object'
     ? (error as { code?: unknown }).code
     : undefined;
@@ -904,6 +1145,7 @@ async function addReactionChain(
 }
 
 function slackPlatformErrorCode(error: unknown): string | undefined {
+  if (error instanceof SlackTransportError) return error.code;
   if (!error || typeof error !== 'object') return undefined;
   const data = (error as { data?: unknown }).data;
   if (!data || typeof data !== 'object') return undefined;
@@ -919,16 +1161,48 @@ function renderWorkChecklist(checklist: readonly string[], complete: boolean | '
     text: { type: 'mrkdwn'; text: string };
   }>;
 } {
-  const timestamp = new Date().toISOString().slice(11, 16) + ' UTC';
   const lines = checklist.map((item, index) =>
     `${complete === true ? '✓' : complete === 'failed' ? '×' : index === 0 ? '✱' : '○'} ${item}`
   );
-  const text = `${lines.join('\n')}\n${timestamp}`;
+  const text = lines.join('\n');
   return {
     text,
     blocks: [{
       type: 'section',
       block_id: 'chickpea_work_checklist',
+      text: { type: 'mrkdwn', text },
+    }],
+  };
+}
+
+function renderMilestonePlan(plan: SlackPresentationPlanV3): {
+  text: string;
+  blocks: Array<{
+    type: 'section';
+    block_id: 'chickpea_milestone_plan';
+    text: { type: 'mrkdwn'; text: string };
+  }>;
+} | undefined {
+  if (plan.tasks.length < 2 || plan.tasks.length > 4 ||
+      plan.tasks.every((task) => task.status === 'pending')) return undefined;
+  const lines = plan.tasks.map((task) => {
+    const marker = task.outcome === 'not_run'
+      ? '⊘'
+      : task.status === 'complete'
+        ? '✓'
+        : task.status === 'error'
+          ? '×'
+          : task.status === 'in_progress'
+            ? '✱'
+            : '○';
+    return `${marker} ${task.title}${task.detail ? ` — ${task.detail}` : ''}`;
+  });
+  const text = lines.join('\n');
+  return {
+    text,
+    blocks: [{
+      type: 'section',
+      block_id: 'chickpea_milestone_plan',
       text: { type: 'mrkdwn', text },
     }],
   };

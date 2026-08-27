@@ -28,6 +28,11 @@ import {
 import { isRevisionedAlias, revisionedAlias } from '../model-catalog/provider-alias.ts';
 import type { CatalogProviderId, ModelAuthLane } from '../model-catalog/types.ts';
 import { createChickpeaPiProvider } from '../config/pi-provider.ts';
+import {
+  attachmentNativePdfRequest,
+  recordAttachmentNativePdfRequiredFailure,
+  type AttachmentNativePdfRequest,
+} from '../slack/attachment-model-context.ts';
 
 export const OPENAI_PLATFORM_COMPAT_PROVIDER_ID = 'chickpea-openai-platform-bundled-v1';
 export const ANTHROPIC_COMPAT_PROVIDER_ID = 'chickpea-anthropic-api-bundled-v1';
@@ -76,8 +81,13 @@ export interface ModelCompatibilityStreamAdapters {
 }
 
 export function registerModelCompatibilityApis(): void {
-  // Flue 2 no longer has a process-global API registry. Each Pi Provider owns
-  // its stream implementation and is installed when credentials are bound.
+  // Flue resolves useModel() before it initializes the sandbox that binds live
+  // credentials. Install credential-free provider metadata at module startup
+  // so a fresh Agent isolate can resolve an internal route; the sandbox then
+  // replaces the same provider id with the boundary-selected credential before
+  // any stream starts.
+  registerBundledCompatibilityProvider('openai');
+  registerBundledCompatibilityProvider('anthropic');
 }
 
 /**
@@ -94,23 +104,28 @@ export function bindModelCompatibilityProvider(
     ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
   });
   registerModelCompatibilityApis();
+  registerBundledCompatibilityProvider(provider);
+  for (const registration of capturedRegistrations.values()) {
+    if (registration.provider === provider) registerCapturedProviderBinding(registration);
+  }
+}
+
+function registerBundledCompatibilityProvider(provider: ApiKeyCompatibilityProvider): void {
+  const credential = boundCredentials.get(provider);
   const lane = laneForProvider(provider);
   const models = listBundledCatalogModels(lane);
   const providerId = compatibilityProviderId(provider);
   const api = provider === 'openai' ? OPENAI_PLATFORM_COMPAT_API : ANTHROPIC_COMPAT_API;
-  const baseUrl = options.baseUrl ?? models[0]?.baseUrl;
+  const baseUrl = credential?.baseUrl ?? models[0]?.baseUrl;
   if (!baseUrl) throw new Error(`No compiled compatibility models for ${provider}.`);
   setProvider(createChickpeaPiProvider({
     id: providerId,
     name: provider === 'openai' ? 'OpenAI compatibility' : 'Anthropic compatibility',
-    ...(apiKey ? { apiKey } : {}),
+    ...(credential?.apiKey ? { apiKey: credential.apiKey } : {}),
     baseUrl,
     models: compatibilityModels(models, providerId, api),
     api: compatibilityStreams(),
   }));
-  for (const registration of capturedRegistrations.values()) {
-    if (registration.provider === provider) registerCapturedProviderBinding(registration);
-  }
 }
 
 export function revisionedCompatibilityAliases(
@@ -136,8 +151,18 @@ export function registerCapturedModelCompatibilityProvider(options: {
   const lane = laneForProvider(options.provider);
   const aliases = revisionedCompatibilityAliases(options.provider, options.revision, options.sha256);
   const existing = capturedRegistrations.get(aliases.providerId);
-  if (existing) return { providerId: existing.providerId, api: existing.api };
-  const models = Object.freeze(options.models.map((model) => Object.freeze(structuredClone(model))));
+  if (existing && (existing.provider !== options.provider || existing.lane !== lane)) {
+    throw new Error('Model compatibility catalog alias is equivocal.');
+  }
+  const byId = new Map((existing?.models ?? []).map((model) => [model.id, model]));
+  for (const model of options.models) {
+    const current = byId.get(model.id);
+    if (current && JSON.stringify(current) !== JSON.stringify(model)) {
+      throw new Error('Model compatibility catalog alias is equivocal.');
+    }
+    byId.set(model.id, Object.freeze(structuredClone(model)));
+  }
+  const models = Object.freeze([...byId.values()]);
   const byCanonical = new Map(models.map((model) => [
     `${options.provider}/${model.id}`,
     model,
@@ -208,35 +233,179 @@ export function createModelCompatibilityStream(
   };
   const mappedContext = mapHistory(context, incomingModel.provider, compiled.provider, compiled.api);
 
-  let source: AssistantMessageEventStream;
-  if (route.provider === 'openai') {
-    const model = adapterModel as Model<'openai-responses'>;
-    source = simple
-      ? (adapters.openAiStreamSimple ?? streamSimpleOpenAi)(
-        model,
-        mappedContext,
-        options as SimpleStreamOptions | undefined,
-      )
-      : (adapters.openAiStream ?? streamOpenAi)(
-        model,
-        mappedContext,
-        options as OpenAIResponsesOptions | undefined,
-      );
-  } else {
+  const createSource = (
+    selectedOptions: StreamOptions | SimpleStreamOptions | undefined,
+  ): AssistantMessageEventStream => {
+    if (route.provider === 'openai') {
+      const model = adapterModel as Model<'openai-responses'>;
+      return simple
+        ? (adapters.openAiStreamSimple ?? streamSimpleOpenAi)(
+          model,
+          mappedContext,
+          selectedOptions as SimpleStreamOptions | undefined,
+        )
+        : (adapters.openAiStream ?? streamOpenAi)(
+          model,
+          mappedContext,
+          selectedOptions as OpenAIResponsesOptions | undefined,
+        );
+    }
     const model = adapterModel as Model<'anthropic-messages'>;
-    source = simple
+    return simple
       ? (adapters.anthropicStreamSimple ?? streamSimpleAnthropic)(
         model,
         mappedContext,
-        options as SimpleStreamOptions | undefined,
+        selectedOptions as SimpleStreamOptions | undefined,
       )
       : (adapters.anthropicStream ?? streamAnthropic)(
         model,
         mappedContext,
-        options as AnthropicOptions | undefined,
+        selectedOptions as AnthropicOptions | undefined,
       );
-  }
+  };
+  const nativeRequest = attachmentNativePdfRequest(options);
+  const source = nativeRequest
+    ? nativePdfCompatibilityStream(createSource, options, nativeRequest, incomingModel)
+    : createSource(options);
   return rewriteStream(source, incomingModel);
+}
+
+function nativePdfCompatibilityStream(
+  createSource: (
+    options: StreamOptions | SimpleStreamOptions | undefined,
+  ) => AssistantMessageEventStream,
+  nativeOptions: StreamOptions | SimpleStreamOptions | undefined,
+  request: AttachmentNativePdfRequest,
+  incomingModel: Model<string>,
+): AssistantMessageEventStream {
+  const target = createAssistantMessageEventStream();
+  void (async () => {
+    let emittedMaterialOutput = false;
+    const pendingPrelude: AssistantMessageEvent[] = [];
+    try {
+      const source = createSource(nativeOptions);
+      for await (const event of source) {
+        if (!emittedMaterialOutput && event.type === 'error') {
+          if (event.reason === 'aborted') {
+            for (const pending of pendingPrelude) target.push(pending);
+            finishCompatibilityError(target, event.error, 'aborted');
+            return;
+          }
+          if (request.fallback === 'baseline_complete') {
+            await pipeBaselineCompatibilityStream(
+              createSource,
+              request.baselineOptions,
+              target,
+              incomingModel,
+            );
+          } else {
+            finishCompatibilityError(target, nativeRequiredError(event.error, request));
+          }
+          return;
+        }
+        if (!emittedMaterialOutput && !isMaterialAssistantEvent(event)) {
+          pendingPrelude.push(event);
+          continue;
+        }
+        if (!emittedMaterialOutput) {
+          emittedMaterialOutput = true;
+          for (const pending of pendingPrelude) target.push(pending);
+        }
+        target.push(event);
+      }
+      target.end();
+    } catch {
+      if (!emittedMaterialOutput && nativeOptions?.signal?.aborted) {
+        finishCompatibilityError(target, abortedStreamFailure(incomingModel), 'aborted');
+        return;
+      }
+      if (!emittedMaterialOutput && request.fallback === 'baseline_complete') {
+        await pipeBaselineCompatibilityStream(
+          createSource,
+          request.baselineOptions,
+          target,
+          incomingModel,
+        );
+        return;
+      }
+      const failure = sanitizedStreamFailure(undefined, incomingModel);
+      finishCompatibilityError(
+        target,
+        !emittedMaterialOutput && request.fallback === 'native_required'
+          ? nativeRequiredError(failure, request)
+          : failure,
+      );
+    }
+  })();
+  return target;
+}
+
+function isMaterialAssistantEvent(event: AssistantMessageEvent): boolean {
+  switch (event.type) {
+    case 'text_delta':
+    case 'thinking_delta':
+    case 'toolcall_delta':
+      return event.delta.length > 0;
+    case 'text_end':
+    case 'thinking_end':
+      return event.content.length > 0;
+    case 'toolcall_end':
+    case 'done':
+      return true;
+    default:
+      return false;
+  }
+}
+
+async function pipeBaselineCompatibilityStream(
+  createSource: (
+    options: StreamOptions | SimpleStreamOptions | undefined,
+  ) => AssistantMessageEventStream,
+  options: StreamOptions | SimpleStreamOptions | undefined,
+  target: AssistantMessageEventStream,
+  incomingModel: Model<string>,
+): Promise<void> {
+  try {
+    const source = createSource(options);
+    for await (const event of source) target.push(event);
+    target.end();
+  } catch {
+    const error = sanitizedStreamFailure(undefined, incomingModel);
+    finishCompatibilityError(target, error);
+  }
+}
+
+function nativeRequiredError(
+  source: AssistantMessage,
+  request: AttachmentNativePdfRequest,
+): AssistantMessage {
+  const required = request.attachments.find(
+    (attachment) => attachment.pdfCompleteness === 'native_required',
+  ) ?? request.attachments[0];
+  const label = required?.label ?? 'The attached PDF';
+  recordAttachmentNativePdfRequiredFailure(label);
+  return {
+    ...source,
+    stopReason: 'error',
+    errorMessage: `${label} requires native PDF analysis, but this model provider rejected the file.`,
+  };
+}
+
+function finishCompatibilityError(
+  target: AssistantMessageEventStream,
+  error: AssistantMessage,
+  reason: 'error' | 'aborted' = 'error',
+): void {
+  target.push({ type: 'error', reason, error });
+  target.end(error);
+}
+
+function abortedStreamFailure(incomingModel: Model<string>): AssistantMessage {
+  return {
+    ...sanitizedStreamFailure(undefined, incomingModel),
+    stopReason: 'aborted',
+    errorMessage: 'Request was aborted',
+  };
 }
 
 function compatibilityProviderId(provider: ApiKeyCompatibilityProvider): string {

@@ -106,6 +106,28 @@ test('short thread (single page) is returned intact', async () => {
   assert.equal(client.calls(), 1);
 });
 
+test('thread hydration retains human file-share text without copying Slack file metadata', async () => {
+  const client = fakeClientWithReplyPages([
+    {
+      messages: [
+        {
+          ...humanMsg(1, '1001.0000'),
+          subtype: 'file_share',
+          text: 'This screenshot shows the current dashboard.',
+          files: [{ id: 'F_PRIVATE', url_private: 'https://files.slack.com/private' }],
+        },
+      ],
+    },
+  ]);
+
+  const context = await hydrateSlackContextViaWebClient(client as never, threadTurn());
+
+  assert.ok(context.messages.some((message) =>
+    message.text === 'This screenshot shows the current dashboard.'
+  ));
+  assert.doesNotMatch(JSON.stringify(context), /F_PRIVATE|url_private|files\.slack\.com/);
+});
+
 test('thread hydration rejects messages newer than the admitted trigger watermark', async () => {
   const client = fakeClientWithReplyPages([
     {

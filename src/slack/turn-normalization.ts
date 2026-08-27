@@ -5,6 +5,8 @@ import {
   type NormalizedSlackTurn,
   type SlackContextMode,
   type SlackEventFixture,
+  type SlackAttachmentReference,
+  type SlackAttachmentIntake,
   type SlackMessageEvent,
   type SlackTurnNormalization,
   type SlackTurnSource,
@@ -46,7 +48,11 @@ interface RunnableTurnInput {
   contextMode: SlackContextMode;
   reaction?: string;
   reactionTargetTs?: string;
+  attachments?: SlackAttachmentReference[];
+  attachmentIntake?: SlackAttachmentIntake;
 }
+
+const MAX_SLACK_ATTACHMENTS_PER_TURN = 4;
 
 export function normalizeSlackTurn(
   payload: SlackEventFixture,
@@ -79,6 +85,7 @@ export function normalizeSlackTurn(
       return { status: 'ignored', reason: 'missing_user' };
     }
 
+    const attachmentSet = normalizeSlackAttachments(payload.event);
     return runnableTurn({
       payload,
       channelId: payload.event.channel,
@@ -88,6 +95,8 @@ export function normalizeSlackTurn(
       threadTs: payload.event.thread_ts ?? payload.event.ts,
       source: 'app_mention',
       contextMode: payload.event.thread_ts ? 'thread' : 'channel_history',
+      ...(attachmentSet.references.length > 0 ? { attachments: attachmentSet.references } : {}),
+      ...(attachmentSet.intake ? { attachmentIntake: attachmentSet.intake } : {}),
     });
   }
 
@@ -124,7 +133,7 @@ export function normalizeSlackTurn(
   }
 
   const event = payload.event;
-  if (event.subtype) {
+  if (event.subtype && event.subtype !== 'file_share') {
     return { status: 'ignored', reason: 'message_subtype' };
   }
   if (isAppAuthoredMessage(event)) {
@@ -139,24 +148,30 @@ export function normalizeSlackTurn(
   if (options.botUserId && event.user === options.botUserId) {
     return { status: 'ignored', reason: 'self_message' };
   }
-  if (!event.text || !event.text.trim()) {
+  const attachmentSet = normalizeSlackAttachments(event);
+  const attachments = attachmentSet.references;
+  const text = event.text?.trim() ||
+    (attachmentSet.intake ? 'Please inspect the attached file.' : '');
+  if (!text) {
     return { status: 'ignored', reason: 'empty_text' };
   }
   if (!event.channel || !event.ts) {
     return { status: 'ignored', reason: 'missing_thread_metadata' };
   }
 
-  if (options.botUserId && event.text.includes(`<@${options.botUserId}>`)) {
+  if (options.botUserId && text.includes(`<@${options.botUserId}>`)) {
     return runnableTurn({
       payload,
       channelId: event.channel,
-      text: event.text,
+      text,
       userId: event.user,
       messageTs: event.ts,
       threadTs: event.thread_ts ?? event.ts,
       source: 'app_mention',
       ...(event.channel_type ? { channelType: event.channel_type } : {}),
       contextMode: event.thread_ts ? 'thread' : 'channel_history',
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(attachmentSet.intake ? { attachmentIntake: attachmentSet.intake } : {}),
     });
   }
 
@@ -168,7 +183,7 @@ export function normalizeSlackTurn(
     return runnableTurn({
       payload,
       channelId: event.channel,
-      text: event.text,
+      text,
       userId: event.user,
       messageTs: event.ts,
       threadTs: event.thread_ts ?? event.ts,
@@ -176,23 +191,27 @@ export function normalizeSlackTurn(
       source: 'dm_message',
       ...(event.channel_type ? { channelType: event.channel_type } : {}),
       contextMode: event.thread_ts ? 'thread' : 'dm_history',
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(attachmentSet.intake ? { attachmentIntake: attachmentSet.intake } : {}),
     });
   }
 
   if (!isChannelConversation(event)) {
     return { status: 'ignored', reason: 'unsupported_channel_type' };
   }
-  if (!event.thread_ts && /<!subteam\^[A-Z0-9]+(?:\|[^>]+)?>/i.test(event.text)) {
+  if (!event.thread_ts && /<!subteam\^[A-Z0-9]+(?:\|[^>]+)?>/i.test(text)) {
     return runnableTurn({
       payload,
       channelId: event.channel,
-      text: event.text,
+      text,
       userId: event.user,
       messageTs: event.ts,
       threadTs: event.ts,
       source: 'agent_mention',
       ...(event.channel_type ? { channelType: event.channel_type } : {}),
       contextMode: 'channel_history',
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(attachmentSet.intake ? { attachmentIntake: attachmentSet.intake } : {}),
     });
   }
   if (!event.thread_ts) {
@@ -205,13 +224,15 @@ export function normalizeSlackTurn(
   return runnableTurn({
     payload,
     channelId: event.channel,
-    text: event.text,
+    text,
     userId: event.user,
     messageTs: event.ts,
     threadTs: event.thread_ts,
     source: 'implicit_thread_reply',
     ...(event.channel_type ? { channelType: event.channel_type } : {}),
     contextMode: 'thread',
+    ...(attachments.length > 0 ? { attachments } : {}),
+    ...(attachmentSet.intake ? { attachmentIntake: attachmentSet.intake } : {}),
   });
 }
 
@@ -230,9 +251,30 @@ function runnableTurn(input: RunnableTurnInput): SlackTurnNormalization {
     contextMode: input.contextMode,
     ...(input.reaction ? { reaction: input.reaction } : {}),
     ...(input.reactionTargetTs ? { reactionTargetTs: input.reactionTargetTs } : {}),
+    ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+    ...(input.attachmentIntake ? { attachmentIntake: input.attachmentIntake } : {}),
   };
 
   return { status: 'runnable', turn };
+}
+
+function normalizeSlackAttachments(
+  event: Pick<SlackMessageEvent, 'files'>,
+): { references: SlackAttachmentReference[]; intake?: SlackAttachmentIntake } {
+  if (!Array.isArray(event.files) || event.files.length === 0) return { references: [] };
+  const count = event.files.length;
+  if (count > MAX_SLACK_ATTACHMENTS_PER_TURN) {
+    return { references: [], intake: { status: 'too_many', count } };
+  }
+  const references: SlackAttachmentReference[] = [];
+  for (const file of event.files) {
+    if (!file || typeof file !== 'object' || typeof file.id !== 'string' ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(file.id)) {
+      return { references: [], intake: { status: 'invalid_metadata', count } };
+    }
+    references.push({ fileId: file.id });
+  }
+  return { references, intake: { status: 'ok', count } };
 }
 
 function isDirectConversation(event: SlackMessageEvent): boolean {

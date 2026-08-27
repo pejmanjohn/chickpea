@@ -13,19 +13,28 @@ import {
   bindOpenAiSubscriptionProvider,
   isOpenAiSubscriptionProviderId,
   openAiSubscriptionModelSpecifier,
+  registerCapturedOpenAiSubscriptionProvider,
 } from '../openai-subscription/provider.ts';
 import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
 import {
   canonicalCompatibilityModel,
   isInternalCompatibilityProvider,
+  registerCapturedModelCompatibilityProvider,
 } from '../model-compat/provider.ts';
 import { resolveApiKeyModelSpecifier } from '../model-compat/routing.ts';
 import {
   activeModelCatalogSnapshot,
   loadModelCatalog,
+  materializeCatalogModel,
   resolveActiveCatalogRoute,
   type ModelCatalogLoadResult,
 } from '../model-catalog/index.ts';
+import { revisionedAlias } from '../model-catalog/provider-alias.ts';
+import type {
+  CompiledModelProfileId,
+  ModelAuthLane,
+  ModelCatalogEntry,
+} from '../model-catalog/types.ts';
 import type { ModelCredentialAttribution } from './types.ts';
 import type { RunExecutionRouteInput } from '../work/types.ts';
 
@@ -36,6 +45,18 @@ export interface ResolvedRuntimeModel {
   model: string;
   /** Safe billing-lane fact for traces and product audit state. */
   providerAuthRoute?: ProviderAuthRoute;
+}
+
+/** Safe hosted-route facts carried across the Flue creation boundary. */
+export interface FrozenRuntimeModelRoute {
+  source: 'hosted_catalog';
+  revision: number;
+  sha256: string;
+  lane: ModelAuthLane;
+  profile: CompiledModelProfileId;
+  displayName?: string;
+  contextWindow?: number;
+  maxTokens?: number;
 }
 
 export class RuntimeModelReadinessError extends Error {
@@ -106,6 +127,95 @@ export function safeRuntimeModelRouteEvidence(
         }
       : {}),
   };
+}
+
+/** Freeze only code-reviewed catalog inputs needed to recreate a hosted alias in a cold isolate. */
+export function freezeRuntimeModelRoute(
+  canonicalModel: string,
+  providerAuthRoute: ProviderAuthRoute | undefined,
+): FrozenRuntimeModelRoute | undefined {
+  const lane = authLaneForCanonicalModel(canonicalModel, providerAuthRoute);
+  if (!lane) return undefined;
+  const route = resolveActiveCatalogRoute(canonicalModel, lane);
+  if (!route || route.source !== 'catalog' || route.snapshot.source !== 'hosted') return undefined;
+  const entry = route.snapshot.entries.find((candidate) => candidate.id === canonicalModel);
+  const profile = entry?.lanes[lane];
+  if (!entry || !profile) throw new Error('Hosted runtime model route is incomplete.');
+  return {
+    source: 'hosted_catalog',
+    revision: route.snapshot.revision,
+    sha256: route.snapshot.sha256,
+    lane,
+    profile,
+    ...(entry.displayName ? { displayName: entry.displayName } : {}),
+    ...(entry.contextWindow ? { contextWindow: entry.contextWindow } : {}),
+    ...(entry.maxTokens ? { maxTokens: entry.maxTokens } : {}),
+  };
+}
+
+/** Validate and synchronously register one frozen hosted alias before useModel(). */
+export function registerFrozenRuntimeModelRoute(
+  canonicalModel: string,
+  runtimeModel: string,
+  route: FrozenRuntimeModelRoute | undefined,
+): void {
+  if (!route) return;
+  const { model, aliases } = materializeFrozenRuntimeModelRoute(
+    canonicalModel,
+    runtimeModel,
+    route,
+  );
+  if (route.lane === 'openai_subscription') {
+    registerCapturedOpenAiSubscriptionProvider({
+      revision: route.revision,
+      sha256: route.sha256,
+      models: [model],
+    });
+    return;
+  }
+  const provider = route.lane === 'openai_api_key' ? 'openai' : 'anthropic';
+  const registered = registerCapturedModelCompatibilityProvider({
+    provider,
+    revision: route.revision,
+    sha256: route.sha256,
+    models: [model],
+  });
+  if (registered?.providerId !== aliases.providerId) {
+    throw new Error('Frozen compatibility model route could not be registered.');
+  }
+}
+
+export function validateFrozenRuntimeModelRoute(
+  canonicalModel: string,
+  runtimeModel: string,
+  route: FrozenRuntimeModelRoute | undefined,
+): void {
+  if (route) materializeFrozenRuntimeModelRoute(canonicalModel, runtimeModel, route);
+}
+
+function materializeFrozenRuntimeModelRoute(
+  canonicalModel: string,
+  runtimeModel: string,
+  route: FrozenRuntimeModelRoute,
+) {
+  const entry: ModelCatalogEntry = {
+    id: canonicalModel as ModelCatalogEntry['id'],
+    lanes: { [route.lane]: route.profile },
+    ...(route.displayName ? { displayName: route.displayName } : {}),
+    ...(route.contextWindow ? { contextWindow: route.contextWindow } : {}),
+    ...(route.maxTokens ? { maxTokens: route.maxTokens } : {}),
+  };
+  const model = materializeCatalogModel(entry, route.lane);
+  const family = route.lane === 'openai_subscription'
+    ? 'openaiSubscription'
+    : route.lane === 'openai_api_key'
+      ? 'openaiPlatform'
+      : 'anthropic';
+  const aliases = revisionedAlias(family, route.revision, route.sha256);
+  if (runtimeModel !== `${aliases.providerId}/${model.id}`) {
+    throw new Error('Frozen runtime model route does not match its internal specifier.');
+  }
+  return { model, aliases };
 }
 
 interface RuntimeModelDependencies {
@@ -205,6 +315,18 @@ export function canonicalRuntimeModel(model: string): string {
 function providerPrefix(model: string): string {
   const separator = model.indexOf('/');
   return separator > 0 ? model.slice(0, separator) : model;
+}
+
+function authLaneForCanonicalModel(
+  canonicalModel: string,
+  providerAuthRoute: ProviderAuthRoute | undefined,
+): ModelAuthLane | undefined {
+  const provider = providerPrefix(canonicalModel);
+  if (provider === 'anthropic') return 'anthropic_api_key';
+  if (provider !== 'openai') return undefined;
+  return providerAuthRoute === 'openai_subscription'
+    ? 'openai_subscription'
+    : 'openai_api_key';
 }
 
 async function requireProviderKey(

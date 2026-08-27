@@ -23,19 +23,21 @@ import type {
   SlackAgentBindingExpectation,
 } from './turn-job-types.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
+import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import {
   SlackRunPresentationStoreLogic,
   type SlackAppendReservation,
+  type SlackPresentationActivity,
+  type SlackPresentationOwner,
   type SlackPresentationTransitionInput,
   type SlackPresentationTransitionResult,
   type SlackPresentationSummary,
-  type SlackPresentationPersona,
   type SlackPresentationRoot,
   type SlackRunPresentation,
-  type SlackRunPresentationV1,
 } from './run-presentations.ts';
 import { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
+import { slackTimestampUnits } from './thread-context.ts';
 
 export { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
 
@@ -46,10 +48,57 @@ export interface SlackCanonicalAdmissionInput {
   admission: AdmitShadowRunInput;
   turnJob?: TurnJob;
   presentation?: {
+    schemaVersion: 3;
     root: SlackPresentationRoot;
-    persona?: SlackPresentationPersona;
+    owner: SlackPresentationOwner;
+    sessionGeneration: number;
+    currentActivity: SlackPresentationActivity;
     taskLabels?: readonly string[];
-    features?: Partial<SlackRunPresentationV1['features']>;
+  };
+}
+
+export function slackSessionGenerationFromTimestamp(messageTs: string): number {
+  if (!/^\d+\.\d{6}$/.test(messageTs)) {
+    throw new Error('Slack session generation requires a microsecond timestamp.');
+  }
+  const units = slackTimestampUnits(messageTs);
+  if (units === null || units < 1n || units > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('Slack session generation exceeds the safe integer range.');
+  }
+  return Number(units);
+}
+
+export function selectSlackPresentationOwner(input: {
+  installationHealth: 'pending' | 'healthy' | 'needs_attention' | 'revoked';
+  agentId: string;
+  agentName: string;
+  avatarUrl?: string;
+  slackPresence?: {
+    desiredState: 'unpublished' | 'active' | 'disabled';
+    health: 'unpublished' | 'pending' | 'healthy' | 'needs_attention';
+    avatar: { revision: number };
+  };
+}): SlackPresentationOwner {
+  if (input.agentId === CHICKPEA_AGENT_ID) return { kind: 'chickpea' };
+  const presence = input.slackPresence;
+  if (
+    input.installationHealth !== 'healthy' ||
+    !input.avatarUrl ||
+    !presence ||
+    presence.desiredState !== 'active' ||
+    presence.health !== 'healthy' ||
+    !Number.isSafeInteger(presence.avatar.revision) ||
+    presence.avatar.revision < 1
+  ) {
+    return { kind: 'chickpea' };
+  }
+  return {
+    kind: 'selected_agent',
+    persona: {
+      name: input.agentName,
+      avatarUrl: input.avatarUrl,
+      avatarRevision: presence.avatar.revision,
+    },
   };
 }
 
@@ -144,6 +193,9 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   retrySlackInstallationRecovery?(workspaceId: string): Promise<number>;
   resolveTurnRecoveryRequired?(id: string): Promise<boolean>;
   getRunPresentation?(runId: string): Promise<SlackRunPresentation | undefined>;
+  getLatestThreadSessionGeneration?(
+    root: Pick<SlackPresentationRoot, 'workspaceId' | 'channelId' | 'threadTs'>,
+  ): Promise<number | undefined>;
   transitionRunPresentation?(
     input: SlackPresentationTransitionInput,
   ): Promise<SlackPresentationTransitionResult>;
@@ -279,18 +331,16 @@ export class SlackStateLogic {
           throw new Error('Slack presentation requires its canonical TurnJob owner.');
         }
         presentations.createInTransaction({
+          schemaVersion: 3,
           runId: admission.run.id,
           turnJobId: input.turnJob.id,
           bindingId: admission.binding.id,
           workBindingGeneration: admission.binding.generation,
           runFencingToken: admission.run.fencingToken,
           root: input.presentation.root,
-          ...(input.presentation.persona
-            ? { persona: input.presentation.persona }
-            : {}),
-          ...(input.presentation.features
-            ? { features: input.presentation.features }
-            : {}),
+          owner: input.presentation.owner,
+          sessionGeneration: input.presentation.sessionGeneration,
+          currentActivity: input.presentation.currentActivity,
           ...(input.presentation.taskLabels
             ? { taskLabels: input.presentation.taskLabels }
             : {}),
@@ -495,6 +545,12 @@ export class SqliteSlackStateStore implements SlackStateStore {
     return this.presentations.get(runId);
   }
 
+  async getLatestThreadSessionGeneration(
+    root: Pick<SlackPresentationRoot, 'workspaceId' | 'channelId' | 'threadTs'>,
+  ) {
+    return this.presentations.getLatestThreadSessionGeneration(root);
+  }
+
   async transitionRunPresentation(input: SlackPresentationTransitionInput) {
     return this.presentations.transition(input);
   }
@@ -508,7 +564,7 @@ export class SqliteSlackStateStore implements SlackStateStore {
   }
 
   async listRunPresentationsForRepair(limit = 50) {
-    return this.presentations.listRepairRequired(limit);
+    return this.presentations.listAutoRepairableV3(limit);
   }
 
   async maintainRunPresentations(limit = 100) {

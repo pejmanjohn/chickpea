@@ -5,6 +5,7 @@ import type { AnyChunk, KnownBlock } from '@slack/types';
 
 import { hasCredentialLikeContent, hasDisallowedControlCharacter } from '../security/content-validation.ts';
 import type { FlueDispatchReceiptV1, FlueObservationTarget } from './turn-job-types.ts';
+import type { ActivityStatus } from '../activity/status.ts';
 import {
   appendSlackReplyFooter,
   canonicalSlackMarkdownText,
@@ -21,6 +22,9 @@ import {
   type SlackProgressiveReadRelay,
 } from './progressive-relay.ts';
 import type { ProgressiveEligibilityDecision } from './progressive-eligibility.ts';
+import { SlackTransportError } from './transport/types.ts';
+import { slackClientMessageId } from './transport/message-id.ts';
+import { setAgentSessionStatus } from './gateway/web-client.ts';
 import {
   presentationAllowsProgressive,
   presentationUsesNativeTasks,
@@ -28,6 +32,13 @@ import {
   type SlackPresentationFinalizationRecord,
   type SlackAppendReservation,
   type SlackPresentationMutation,
+  type SlackPresentationActivity,
+  type SlackPresentationActivityProjection,
+  type SlackPresentationAgentSessionState,
+  type SlackPresentationOwner,
+  type SlackPresentationRoot,
+  type SlackPresentationTaskOutcome,
+  type SlackPresentationReceiptCertainty,
   type SlackPresentationTransitionInput,
   type SlackPresentationTransitionResult,
   type SlackRunPresentation,
@@ -37,6 +48,9 @@ type MaybePromise<T> = T | Promise<T>;
 
 export interface SlackPresentationStatePort {
   getRunPresentation(runId: string): MaybePromise<SlackRunPresentation | undefined>;
+  getLatestThreadSessionGeneration(
+    root: Pick<SlackPresentationRoot, 'workspaceId' | 'channelId' | 'threadTs'>,
+  ): MaybePromise<number | undefined>;
   transitionRunPresentation(
     input: SlackPresentationTransitionInput,
   ): MaybePromise<SlackPresentationTransitionResult>;
@@ -66,12 +80,12 @@ export interface SlackPresentationDeliveryObserver {
 }
 
 export interface FrozenProgressiveEligibilityDecision extends ProgressiveEligibilityDecision {
-  presentationSchemaVersion: 1 | 2;
+  presentationSchemaVersion: 1 | 2 | 3;
 }
 
 export type AgentViewFinalResult =
   | { handled: true; messageTs?: string }
-  | { handled: false; fallbackPresentation: boolean };
+  | { handled: false; fallbackPresentation: boolean; operationId?: string };
 
 export interface AgentViewPresentationOptions {
   client: WebClient;
@@ -84,6 +98,24 @@ export interface AgentViewPresentationOptions {
   wait?: (milliseconds: number) => Promise<void>;
   onNativeStarted?: () => Promise<void>;
   onFinalized?: (record: SlackPresentationFinalizationRecord) => MaybePromise<void>;
+}
+
+export interface SlackMilestoneTransition {
+  taskId: string;
+  to: 'in_progress' | SlackPresentationTaskOutcome;
+  detail?: string;
+}
+
+/** Typed seam for authoritative Run milestone events; no tool arguments are inferred here. */
+export interface SlackMilestoneTransitionPort {
+  transitionMilestone(input: SlackMilestoneTransition): Promise<void>;
+  recordExecutionFailure(reason: string): Promise<void>;
+}
+
+export interface PreparedSlackActivityWrite {
+  operationId: string;
+  surface: 'message' | 'assistant_status';
+  messageTs?: string;
 }
 
 const MAX_PROGRESSIVE_BUFFER_BYTES = 128 * 1_024;
@@ -108,6 +140,408 @@ export class SlackAgentViewPresentation {
     | undefined;
 
   constructor(private readonly options: AgentViewPresentationOptions) {}
+
+  /**
+   * Persist the activity intent before its Slack write. The admission activity
+   * already owns a pending receipt, so the first call reuses it; later facts
+   * advance one monotonic sequence at a time.
+   */
+  async beginActivity(
+    update: ActivityStatus,
+    preferredSurface: 'message' | 'assistant_status',
+  ): Promise<PreparedSlackActivityWrite | undefined> {
+    let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3) return undefined;
+    let current = presentation.currentActivity;
+    let created = false;
+    if (current?.operation.certainty === 'pending') {
+      // Admission persists the first activity before the Worker can write it.
+      // A selected surface without a coordinate means a prior attempt may
+      // already have created the message, so reconciliation must resolve it.
+    } else if (current?.operation.certainty === 'unknown') {
+      await this.reconcileActivityReceipts();
+      presentation = await this.requirePresentation();
+      if (presentation.schemaVersion !== 3) return undefined;
+      current = presentation.currentActivity;
+      if (current?.operation.certainty === 'unknown') return undefined;
+      // Reconciliation may conclusively establish absence, which is eligible
+      // for the existing failed-effect retry path below.
+      if (current?.operation.certainty === 'pending') return undefined;
+    }
+    if (!current || current.operation.certainty !== 'pending') {
+      const kind = update.kind ?? 'preparing';
+      const action = update.action ?? 'Preparing';
+      const object = update.object ?? 'your request';
+      if (current && current.action === action && current.object === object) {
+        if (current.operation.certainty !== 'failed') return undefined;
+        const operationId = `activity_${hash(`${presentation.runId}:${current.sequence}:retry:${presentation.projectionVersion}`).slice(0, 24)}`;
+        presentation = await this.transition(presentation, {
+          kind: 'retry_activity', operationId,
+        });
+        created = true;
+      } else {
+        const sequence = (current?.sequence ?? 0) + 1;
+        const activity: SlackPresentationActivity = {
+          kind,
+          action,
+          object,
+          generation: presentation.sessionGeneration,
+          sequence,
+          operation: {
+            operationId: `activity_${hash(`${presentation.runId}:${sequence}`).slice(0, 24)}`,
+            certainty: 'pending',
+          },
+        };
+        presentation = await this.transition(presentation, {
+          kind: 'set_current_activity',
+          activity,
+        });
+        created = true;
+      }
+    }
+    if (presentation.schemaVersion !== 3 || !presentation.currentActivity) return undefined;
+    let projection = presentation.activityProjection;
+    let selectedNow = false;
+    if (projection.surface === 'unselected') {
+      presentation = await this.transition(presentation, {
+        kind: 'select_activity_projection',
+        surface: preferredSurface,
+      });
+      if (presentation.schemaVersion !== 3) return undefined;
+      projection = presentation.activityProjection;
+      selectedNow = true;
+    }
+    if (projection.surface === 'unselected' || projection.state === 'cleared') return undefined;
+    const messageTs = projection.surface === 'message' ? projection.messageTs : undefined;
+    if (!selectedNow && !created && projection.state !== 'visible') return undefined;
+    const activity = presentation.currentActivity;
+    if (!activity) return undefined;
+    return {
+      operationId: activity.operation.operationId,
+      surface: projection.surface,
+      ...(messageTs ? { messageTs } : {}),
+    };
+  }
+
+  async recordActivityReceipt(
+    operationId: string | undefined,
+    certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>,
+    messageTs?: string,
+  ): Promise<void> {
+    if (!operationId) return;
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 ||
+        presentation.currentActivity?.operation.operationId !== operationId ||
+        (presentation.currentActivity.operation.certainty !== 'pending' &&
+          presentation.currentActivity.operation.certainty !== 'unknown')) return;
+    await this.transition(presentation, {
+      kind: 'record_activity_receipt',
+      operationId,
+      certainty,
+      ...(messageTs ? { messageTs } : {}),
+    });
+  }
+
+  async transitionMilestone(input: SlackMilestoneTransition): Promise<void> {
+    let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || !presentation.plan ||
+        presentation.plan.tasks.length < 2) return;
+    presentation = await this.transition(presentation, {
+      kind: 'transition_task',
+      taskId: input.taskId,
+      to: input.to,
+      ...(input.detail === undefined ? {} : { detail: input.detail }),
+    });
+    await this.projectMilestonesBestEffort(presentation);
+  }
+
+  /**
+   * Agent execution failure is authoritative even when no per-tool milestone
+   * event exists. Fail only the already-active row and mark untouched later
+   * rows not run; never infer successful outcomes from a generic agent reply.
+   */
+  async recordExecutionFailure(reason: string): Promise<void> {
+    let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || !presentation.plan) return;
+    const activeIndex = presentation.plan.tasks.findIndex((task) => task.status === 'in_progress');
+    if (activeIndex < 0) return;
+    const active = presentation.plan.tasks[activeIndex]!;
+    presentation = await this.transition(presentation, {
+      kind: 'transition_task',
+      taskId: active.id,
+      to: 'failed',
+      detail: `Failed: ${safeMilestoneReason(reason)}`,
+    });
+    if (presentation.schemaVersion !== 3 || !presentation.plan) return;
+    for (const task of presentation.plan.tasks.slice(activeIndex + 1)) {
+      if (task.status !== 'pending') continue;
+      presentation = await this.transition(presentation, {
+        kind: 'transition_task',
+        taskId: task.id,
+        to: 'not_run',
+        detail: 'Not run: work stopped after the prior milestone failed.',
+      });
+      if (presentation.schemaVersion !== 3 || !presentation.plan) return;
+    }
+    await this.projectMilestonesBestEffort(presentation);
+  }
+
+  async recordTerminalDeliveryReceipt(
+    certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>,
+  ): Promise<void> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || presentation.terminalDelivery.state !== 'intended' ||
+        (presentation.terminalDelivery.operation.certainty !== 'pending' &&
+          presentation.terminalDelivery.operation.certainty !== 'unknown')) return;
+    await this.transition(presentation, {
+      kind: 'record_terminal_delivery_receipt',
+      operationId: presentation.terminalDelivery.operation.operationId,
+      certainty,
+    });
+  }
+
+  /**
+   * Start Slack's native Agent Session processing indicator independently of
+   * the richer, owner-authored activity message. The intent is persisted
+   * before the API call so admission replay cannot blindly duplicate an
+   * outcome whose receipt is unknown.
+   */
+  async beginAgentSessionProcessing(): Promise<boolean> {
+    let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || presentation.agentSession.disposition ||
+        presentation.agentSession.desired !== 'processing') return false;
+    if (presentation.agentSession.acknowledged === 'processing') return true;
+    let operationId: string;
+    if (!presentation.agentSession.operation) {
+      operationId = `session_${hash(`${presentation.runId}:processing:1`).slice(0, 24)}`;
+      presentation = await this.transition(presentation, {
+        kind: 'set_agent_session_desired', desired: 'processing', operationId,
+      });
+    } else if (presentation.agentSession.operation.certainty === 'failed') {
+      operationId = `session_${hash(`${presentation.runId}:processing:retry:${presentation.projectionVersion}`).slice(0, 24)}`;
+      presentation = await this.transition(presentation, {
+        kind: 'retry_agent_session', operationId,
+      });
+    } else {
+      return false;
+    }
+    if (presentation.schemaVersion !== 3) return false;
+    try {
+      await setAgentSessionStatus(this.options.client, {
+        channel_id: presentation.root.channelId,
+        thread_ts: presentation.root.threadTs,
+        status: 'processing',
+        initiator_user_id: presentation.root.requesterUserId,
+        ...ownerPersonaFields(presentation.owner),
+      });
+      await this.recordAgentSessionReceipt(operationId, 'acknowledged', 'processing');
+      return true;
+    } catch (error) {
+      const certainty = slackEffectOutcome(error);
+      await this.recordAgentSessionReceipt(operationId, certainty);
+      if (certainty === 'failed' && isPermanentAgentSessionRejection(error)) {
+        await this.markAgentSessionUnavailable(operationId);
+      }
+      return false;
+    }
+  }
+
+  async settleAgentSession(result: 'answer' | 'failure'): Promise<void> {
+    let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || presentation.terminalDelivery.state !== 'intended' ||
+        presentation.terminalDelivery.operation.certainty !== 'acknowledged') return;
+    const desired: SlackPresentationAgentSessionState = result === 'answer'
+      ? 'active'
+      : 'suspended';
+    if (presentation.agentSession.disposition) return;
+    if (presentation.agentSession.acknowledged === desired) return;
+    let operationId: string;
+    let mayWrite = false;
+    if (!presentation.agentSession.operation ||
+        (presentation.agentSession.desired === 'processing' &&
+          (presentation.agentSession.operation.certainty === 'acknowledged' ||
+            presentation.agentSession.operation.certainty === 'failed'))) {
+      operationId = `session_${hash(`${presentation.runId}:${desired}:1`).slice(0, 24)}`;
+      presentation = await this.transition(presentation, {
+        kind: 'set_agent_session_desired', desired, operationId,
+      });
+      mayWrite = true;
+    } else if (presentation.agentSession.desired === desired &&
+        presentation.agentSession.operation.certainty === 'failed') {
+      operationId = `session_${hash(`${presentation.runId}:${desired}:retry:${presentation.projectionVersion}`).slice(0, 24)}`;
+      presentation = await this.transition(presentation, {
+        kind: 'retry_agent_session', operationId,
+      });
+      mayWrite = true;
+    } else {
+      return;
+    }
+    if (!mayWrite || presentation.schemaVersion !== 3) return;
+    try {
+      await setAgentSessionStatus(this.options.client, {
+        channel_id: presentation.root.channelId,
+        thread_ts: presentation.root.threadTs,
+        status: desired,
+        initiator_user_id: presentation.root.requesterUserId,
+        ...ownerPersonaFields(presentation.owner),
+      });
+      await this.recordAgentSessionReceipt(operationId, 'acknowledged', desired);
+    } catch (error) {
+      const certainty = slackEffectOutcome(error);
+      await this.recordAgentSessionReceipt(operationId, certainty);
+      if (certainty === 'failed' && isPermanentAgentSessionRejection(error)) {
+        await this.markAgentSessionUnavailable(operationId);
+      }
+    }
+  }
+
+  async supersedeSharedRepairEffects(): Promise<void> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3) return;
+    const sessionSupersedable = !presentation.agentSession.disposition &&
+      (!presentation.agentSession.operation ||
+        presentation.agentSession.operation.certainty === 'failed');
+    const cleanupSupersedable = presentation.activityProjection.surface ===
+        'assistant_status' && presentation.activityProjection.state === 'visible' &&
+      (presentation.cleanup.state === 'not_required' ||
+        presentation.cleanup.operation.certainty === 'failed');
+    if (!sessionSupersedable && !cleanupSupersedable) return;
+    await this.transition(presentation, { kind: 'supersede_shared_repair_effects' });
+  }
+
+  async prepareActivityCleanup(): Promise<{
+    operationId: string;
+    projection: Exclude<SlackPresentationActivityProjection, { surface: 'unselected' }>;
+  } | undefined> {
+    let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion === 3 && presentation.cleanup.state === 'required' &&
+        presentation.cleanup.operation.certainty === 'unknown') {
+      await this.reconcileActivityReceipts();
+      presentation = await this.requirePresentation();
+    }
+    if (presentation.schemaVersion !== 3 || presentation.terminalDelivery.state !== 'intended' ||
+        presentation.terminalDelivery.operation.certainty !== 'acknowledged' ||
+        presentation.activityProjection.surface === 'unselected' ||
+        presentation.activityProjection.state !== 'visible' ||
+        (presentation.cleanup.state === 'not_required' &&
+          presentation.cleanup.disposition !== undefined)) return undefined;
+    let operationId: string;
+    if (presentation.cleanup.state === 'not_required') {
+      operationId = `cleanup_${hash(`${presentation.runId}:activity:1`).slice(0, 24)}`;
+      presentation = await this.transition(presentation, {
+        kind: 'record_cleanup_intent', operationId, target: 'activity',
+      });
+    } else if (presentation.cleanup.operation.certainty === 'failed') {
+      operationId = `cleanup_${hash(`${presentation.runId}:activity:retry:${presentation.projectionVersion}`).slice(0, 24)}`;
+      presentation = await this.transition(presentation, {
+        kind: 'retry_cleanup', operationId,
+      });
+    } else {
+      return undefined;
+    }
+    if (presentation.schemaVersion !== 3 ||
+        presentation.activityProjection.surface === 'unselected') return undefined;
+    return { operationId, projection: presentation.activityProjection };
+  }
+
+  async recordActivityCleanupReceipt(
+    operationId: string,
+    certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>,
+  ): Promise<void> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || presentation.cleanup.state !== 'required' ||
+        presentation.cleanup.operation.operationId !== operationId ||
+        (presentation.cleanup.operation.certainty !== 'pending' &&
+          presentation.cleanup.operation.certainty !== 'unknown')) return;
+    await this.transition(presentation, {
+      kind: 'record_cleanup_receipt', operationId, certainty,
+    });
+  }
+
+  /**
+   * Resolve only receipts whose Slack coordinate can be inspected without
+   * another effect. An incomplete or failed read deliberately leaves the
+   * receipt unknown, so recovery never replays an unproven write.
+   */
+  async reconcileActivityReceipts(): Promise<void> {
+    let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 ||
+        presentation.activityProjection.surface !== 'message') return;
+    const activityNeedsReconciliation =
+      presentation.currentActivity?.operation.certainty === 'unknown';
+    const cleanupNeedsReconciliation = presentation.cleanup.state === 'required' &&
+      presentation.cleanup.operation.certainty === 'unknown' &&
+      presentation.activityProjection.state === 'visible' &&
+      Boolean(presentation.activityProjection.messageTs);
+    if (!activityNeedsReconciliation && !cleanupNeedsReconciliation) return;
+
+    const thread = await this.readThreadReplies(presentation);
+    if (!thread) return;
+    if (activityNeedsReconciliation && presentation.currentActivity) {
+      const operationId = presentation.currentActivity.operation.operationId;
+      const found = thread.messages.find((message) =>
+        message.clientMsgId === slackClientMessageId(operationId)
+      );
+      if (found?.ts) {
+        await this.recordActivityReceipt(operationId, 'acknowledged', found.ts);
+        presentation = await this.requirePresentation();
+      } else if (thread.complete) {
+        await this.recordActivityReceipt(operationId, 'failed');
+        presentation = await this.requirePresentation();
+      }
+    }
+    if (presentation.schemaVersion !== 3 || presentation.cleanup.state !== 'required' ||
+        presentation.cleanup.operation.certainty !== 'unknown' ||
+        presentation.activityProjection.surface !== 'message' ||
+        presentation.activityProjection.state !== 'visible' ||
+        !presentation.activityProjection.messageTs) return;
+    const targetTs = presentation.activityProjection.messageTs;
+    const remainsVisible = thread.messages.some((message) => message.ts === targetTs);
+    if (remainsVisible) {
+      await this.recordActivityCleanupReceipt(
+        presentation.cleanup.operation.operationId,
+        'failed',
+      );
+    } else if (thread.complete) {
+      await this.recordActivityCleanupReceipt(
+        presentation.cleanup.operation.operationId,
+        'acknowledged',
+      );
+    }
+  }
+
+  async settleLifecycle(): Promise<void> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || presentation.lifecyclePhase === 'settled' ||
+        presentation.terminalDelivery.state !== 'intended' ||
+        presentation.terminalDelivery.operation.certainty !== 'acknowledged') return;
+    await this.transition(presentation, { kind: 'set_lifecycle_phase', phase: 'settled' });
+  }
+
+  private async recordAgentSessionReceipt(
+    operationId: string,
+    certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>,
+    acknowledged?: SlackPresentationAgentSessionState,
+  ): Promise<void> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || !presentation.agentSession.operation ||
+        presentation.agentSession.operation.operationId !== operationId ||
+        presentation.agentSession.operation.certainty !== 'pending') return;
+    await this.transition(presentation, {
+      kind: 'record_agent_session_receipt',
+      operationId,
+      certainty,
+      ...(certainty === 'acknowledged' && acknowledged ? { acknowledged } : {}),
+    });
+  }
+
+  private async markAgentSessionUnavailable(operationId: string): Promise<void> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3 || presentation.agentSession.disposition ||
+        presentation.agentSession.operation?.operationId !== operationId ||
+        presentation.agentSession.operation.certainty !== 'failed') return;
+    await this.transition(presentation, { kind: 'mark_agent_session_unavailable' });
+  }
 
   /** Freeze once before prompt persistence; retries reuse the stored decision. */
   async freezeProgressiveEligibility(
@@ -204,7 +638,7 @@ export class SlackAgentViewPresentation {
         presentation.stream.state === 'finalized') {
       return undefined;
     }
-    if (presentation.schemaVersion === 2 &&
+    if (presentation.schemaVersion !== 1 &&
         (presentation.progressiveIntent.status === 'not_requested' ||
           presentation.progressiveIntent.status === 'denied')) {
       return undefined;
@@ -217,7 +651,7 @@ export class SlackAgentViewPresentation {
         chunk,
       ),
       invalidate: (reason) => this.invalidate(reason),
-      ...(presentation.schemaVersion === 2
+      ...(presentation.schemaVersion !== 1
         ? {
             modelIntent: {
               initial: presentation.progressiveIntent,
@@ -238,15 +672,38 @@ export class SlackAgentViewPresentation {
     let presentation = await this.requirePresentation();
     if (presentation.stream.state === 'finalized' ||
         presentation.stream.state === 'artifact_delivered') {
+      if (presentation.schemaVersion === 3 && presentation.stream.messageTs &&
+          presentation.terminalDelivery.state === 'intended' &&
+          (presentation.terminalDelivery.operation.certainty === 'pending' ||
+            presentation.terminalDelivery.operation.certainty === 'unknown')) {
+        await this.recordTerminalDeliveryReceipt('acknowledged');
+        presentation = await this.requirePresentation();
+      }
       return { handled: true, ...(presentation.stream.messageTs
         ? { messageTs: presentation.stream.messageTs }
         : {}) };
     }
-    if (presentation.stream.state === 'fallback') {
-      return { handled: false, fallbackPresentation: true };
-    }
     if (presentation.stream.state === 'starting' || presentation.stream.state === 'unknown') {
       throw new Error('Slack Agent View presentation requires reconciliation.');
+    }
+    const terminal = await this.prepareTerminalDelivery(
+      terminalTaskStatus === 'error' ? 'failure' : 'answer',
+    );
+    if (!terminal.mayWrite) {
+      if (terminal.acknowledged) {
+        return { handled: true, ...(presentation.stream.messageTs
+          ? { messageTs: presentation.stream.messageTs }
+          : {}) };
+      }
+      throw new Error('Slack terminal delivery requires reconciliation.');
+    }
+    presentation = await this.requirePresentation();
+    if (presentation.stream.state === 'fallback') {
+      return {
+        handled: false,
+        fallbackPresentation: true,
+        ...(terminal.operationId ? { operationId: terminal.operationId } : {}),
+      };
     }
 
     const approved = format === 'markdown'
@@ -286,9 +743,18 @@ export class SlackAgentViewPresentation {
             safeFailureCode: 'slack_stream_not_started',
           });
           await this.transition(presentation, { kind: 'mark_fallback', outcome: 'fallback' });
-          return { handled: false, fallbackPresentation: true };
+          const pendingTerminal = await this.requirePresentation();
+          return {
+            handled: false,
+            fallbackPresentation: true,
+            ...(pendingTerminal.schemaVersion === 3 &&
+                pendingTerminal.terminalDelivery.state === 'intended'
+              ? { operationId: pendingTerminal.terminalDelivery.operation.operationId }
+              : {}),
+          };
         }
         await this.markUnknown(presentation, 'unknown_effect');
+        await this.recordTerminalDeliveryReceipt('unknown');
         await observer.after({
           attemptId,
           outcome,
@@ -366,6 +832,13 @@ export class SlackAgentViewPresentation {
       outcome,
       messageTs: requireSlackTs(messageTs),
     });
+    await this.recordTerminalDeliveryReceipt('acknowledged');
+  }
+
+  async markFallbackDeliveryFailed(
+    certainty: Exclude<SlackPresentationReceiptCertainty, 'pending' | 'acknowledged'>,
+  ): Promise<void> {
+    await this.recordTerminalDeliveryReceipt(certainty);
   }
 
   async markCanonicalFinalized(): Promise<void> {
@@ -399,6 +872,7 @@ export class SlackAgentViewPresentation {
     if (taskLabels.length < 1 || taskLabels.length > 4) return;
     const presentation = await this.requirePresentation();
     if (!presentationUsesNativeTasks(presentation)) return;
+    if (presentation.schemaVersion === 3 && taskLabels.length < 2) return;
     if (presentation.plan) return;
     if (presentation.stream.state !== 'absent') return;
     await this.transition(presentation, { kind: 'adopt_plan', taskLabels });
@@ -539,7 +1013,12 @@ export class SlackAgentViewPresentation {
   ): Promise<SlackRunPresentation> {
     if (presentation.stream.state === 'streaming') return presentation;
     if (presentation.stream.state !== 'absent' || !presentation.plan) return presentation;
-    if (presentation.plan.tasks.every((task) => task.status === 'pending')) {
+    if (presentation.schemaVersion === 3 &&
+        presentation.plan.tasks.every((task) => task.status === 'pending')) {
+      return presentation;
+    }
+    if (presentation.schemaVersion !== 3 &&
+        presentation.plan.tasks.every((task) => task.status === 'pending')) {
       presentation = await this.transition(presentation, {
         kind: 'set_task_status',
         status: 'in_progress',
@@ -556,7 +1035,12 @@ export class SlackAgentViewPresentation {
         flue: { instanceId, submissionId },
       });
     } catch (error) {
-      if (slackEffectOutcome(error) === 'failed') {
+      const outcome = slackEffectOutcome(error);
+      console.warn(
+        `[chickpea] Slack Agent View native stream start ${outcome}: ` +
+        safeSlackErrorCode(error),
+      );
+      if (outcome === 'failed') {
         return this.transition(presentation, { kind: 'mark_fallback', outcome: 'fallback' });
       }
       await this.markUnknown(presentation, 'unknown_effect');
@@ -585,7 +1069,8 @@ export class SlackAgentViewPresentation {
       outcome: presentation.stream.acknowledgedByteLength > 0 ? 'progressive' : 'terminal_only',
       ...(this.degradedReason ? { degradationReason: this.degradedReason } : {}),
     });
-    if (presentation.plan && presentationUsesNativeTasks(presentation)) {
+    if (presentation.schemaVersion !== 3 && presentation.plan &&
+        presentationUsesNativeTasks(presentation)) {
       presentation = await this.transition(presentation, {
         kind: 'set_task_status',
         status: terminalTaskStatus,
@@ -600,7 +1085,12 @@ export class SlackAgentViewPresentation {
         blocks,
       });
     } catch (error) {
+      console.warn(
+        `[chickpea] Slack Agent View stream finalization ${slackEffectOutcome(error)}: ` +
+        safeSlackErrorCode(error),
+      );
       await this.markUnknown(presentation, 'unknown_effect');
+      await this.recordTerminalDeliveryReceipt('unknown');
       await observer.after({
         attemptId,
         outcome: 'unknown',
@@ -612,6 +1102,7 @@ export class SlackAgentViewPresentation {
       kind: 'mark_artifact_delivered',
       outcome: presentation.stream.presentationOutcome ?? 'terminal_only',
     });
+    await this.recordTerminalDeliveryReceipt('acknowledged');
     await observer.after({
       attemptId,
       outcome: 'delivered',
@@ -658,7 +1149,8 @@ export class SlackAgentViewPresentation {
       outcome: 'corrected',
       degradationReason: 'unknown_effect',
     });
-    if (presentation.plan && presentationUsesNativeTasks(presentation)) {
+    if (presentation.schemaVersion !== 3 && presentation.plan &&
+        presentationUsesNativeTasks(presentation)) {
       presentation = await this.transition(presentation, {
         kind: 'set_task_status',
         status: terminalTaskStatus,
@@ -673,6 +1165,7 @@ export class SlackAgentViewPresentation {
       await this.options.client.chat.update(update);
     } catch (error) {
       await this.markUnknown(presentation, 'unknown_effect');
+      await this.recordTerminalDeliveryReceipt('unknown');
       await observer.after({
         attemptId,
         outcome: 'unknown',
@@ -684,6 +1177,7 @@ export class SlackAgentViewPresentation {
       kind: 'mark_artifact_delivered',
       outcome: 'corrected',
     });
+    await this.recordTerminalDeliveryReceipt('acknowledged');
     await observer.after({
       attemptId,
       outcome: 'delivered',
@@ -696,7 +1190,7 @@ export class SlackAgentViewPresentation {
     if (reason === 'intent_persistence_failed') {
       try {
         let presentation = await this.requirePresentation();
-        if (presentation.schemaVersion === 2 &&
+        if (presentation.schemaVersion !== 1 &&
             presentation.progressiveIntent.status !== 'not_requested' &&
             presentation.progressiveIntent.status !== 'denied') {
           presentation = await this.transition(presentation, {
@@ -719,7 +1213,7 @@ export class SlackAgentViewPresentation {
     intent: ProgressiveIntentTransition,
   ): Promise<void> {
     const presentation = await this.requirePresentation();
-    if (presentation.schemaVersion !== 2) {
+    if (presentation.schemaVersion === 1) {
       throw new Error('Legacy presentations cannot record model intent.');
     }
     const current = presentation.progressiveIntent;
@@ -835,6 +1329,97 @@ export class SlackAgentViewPresentation {
       milliseconds,
     );
   }
+
+  private async readThreadReplies(presentation: Extract<SlackRunPresentation, { schemaVersion: 3 }>):
+    Promise<{ messages: Array<{ ts?: string; clientMsgId?: string }>; complete: boolean } | undefined> {
+    try {
+      const response = await this.options.client.conversations.replies({
+        channel: presentation.root.channelId,
+        ts: presentation.root.threadTs,
+        limit: 100,
+      });
+      const raw = response as unknown as {
+        messages?: unknown;
+        has_more?: unknown;
+        response_metadata?: { next_cursor?: unknown };
+      };
+      if (!Array.isArray(raw.messages)) return undefined;
+      const nextCursor = raw.response_metadata?.next_cursor;
+      return {
+        messages: raw.messages.map((message) => {
+          const row = message && typeof message === 'object'
+            ? message as Record<string, unknown>
+            : {};
+          return {
+            ...(typeof row.ts === 'string' ? { ts: row.ts } : {}),
+            ...(typeof row.client_msg_id === 'string'
+              ? { clientMsgId: row.client_msg_id }
+              : {}),
+          };
+        }),
+        complete: raw.has_more !== true &&
+          !(typeof nextCursor === 'string' && nextCursor.trim().length > 0),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async projectMilestonesBestEffort(presentation: SlackRunPresentation): Promise<void> {
+    if (presentation.schemaVersion !== 3 || presentation.stream.state !== 'streaming' ||
+        !presentation.stream.messageTs || !presentation.plan) return;
+    try {
+      await this.options.client.chat.appendStream({
+        channel: presentation.root.channelId,
+        ts: presentation.stream.messageTs,
+        chunks: taskChunks(presentation),
+      } as unknown as Parameters<WebClient['chat']['appendStream']>[0]);
+    } catch (error) {
+      // Execution truth is already durable. A Slack projection failure cannot
+      // rewrite a completed/failed milestone into a different work outcome.
+      console.warn(
+        `[chickpea] Slack milestone projection ${slackEffectOutcome(error)}: ` +
+        safeSlackErrorCode(error),
+      );
+    }
+  }
+
+  private async prepareTerminalDelivery(result: 'answer' | 'failure'): Promise<{
+    mayWrite: boolean;
+    acknowledged: boolean;
+    operationId?: string;
+  }> {
+    let presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3) return { mayWrite: true, acknowledged: false };
+    if (presentation.terminalDelivery.state === 'none') {
+      const operationId = `terminal_${hash(`${presentation.runId}:${result}:1`).slice(0, 24)}`;
+      await this.transition(presentation, {
+        kind: 'record_terminal_delivery_intent', operationId, result,
+      });
+      return { mayWrite: true, acknowledged: false, operationId };
+    }
+    if (presentation.terminalDelivery.result !== result) {
+      if (result === 'failure' && presentation.terminalDelivery.result === 'answer' &&
+          presentation.terminalDelivery.operation.certainty === 'failed') {
+        const operationId = `terminal_${hash(`${presentation.runId}:failure:supersede:${presentation.projectionVersion}`).slice(0, 24)}`;
+        await this.transition(presentation, {
+          kind: 'supersede_failed_answer_delivery', operationId,
+        });
+        return { mayWrite: true, acknowledged: false, operationId };
+      }
+      return { mayWrite: false, acknowledged: false };
+    }
+    const receipt = presentation.terminalDelivery.operation;
+    if (receipt.certainty === 'acknowledged') {
+      return { mayWrite: false, acknowledged: true, operationId: receipt.operationId };
+    }
+    if (receipt.certainty !== 'failed') {
+      return { mayWrite: false, acknowledged: false, operationId: receipt.operationId };
+    }
+    const operationId = `terminal_${hash(`${presentation.runId}:${result}:retry:${presentation.projectionVersion}`).slice(0, 24)}`;
+    await this.transition(presentation, { kind: 'retry_terminal_delivery', operationId });
+    return { mayWrite: true, acknowledged: false, operationId };
+  }
 }
 
 export function deriveSlackThreadTitle(message: string, workLabel?: string): string {
@@ -869,10 +1454,19 @@ function streamStartPayload(
     ...(chunks.length === 1 && chunks[0]?.type === 'markdown_text' && taskChunks.length === 0
       ? { markdown_text: input.markdownText! }
       : { chunks }),
-    ...(presentation.plan ? { task_display_mode: presentation.plan.displayMode } : {}),
-    ...(presentation.persona
-      ? { username: presentation.persona.name, icon_url: presentation.persona.avatarUrl }
+    ...(taskChunks.length > 0 && presentation.plan
+      ? { task_display_mode: presentation.plan.displayMode }
       : {}),
+    ...(presentation.schemaVersion === 3
+      ? presentation.owner.kind === 'selected_agent'
+        ? {
+            username: presentation.owner.persona.name,
+            icon_url: presentation.owner.persona.avatarUrl,
+          }
+        : {}
+      : presentation.persona
+        ? { username: presentation.persona.name, icon_url: presentation.persona.avatarUrl }
+        : {}),
   } as unknown as Parameters<WebClient['chat']['startStream']>[0];
 }
 
@@ -882,6 +1476,7 @@ function taskChunks(presentation: SlackRunPresentation): AnyChunk[] {
     id: task.id,
     title: task.title,
     status: task.status,
+    ...('detail' in task && task.detail ? { details: task.detail } : {}),
   })) ?? [];
 }
 
@@ -889,12 +1484,29 @@ function terminalTaskChunks(
   presentation: SlackRunPresentation,
   status: 'complete' | 'error',
 ): AnyChunk[] {
+  if (presentation.schemaVersion === 3) {
+    return presentation.plan?.tasks.some((task) => task.status !== 'pending')
+      ? taskChunks(presentation)
+      : [];
+  }
   return presentation.plan?.tasks.map((task) => ({
     type: 'task_update',
     id: task.id,
     title: task.title,
     status,
   })) ?? [];
+}
+
+function safeMilestoneReason(value: string): string {
+  if (hasDisallowedControlCharacter(value) || hasCredentialLikeContent(value)) {
+    return 'the active milestone could not finish.';
+  }
+  const safe = value
+    .replace(/[<>&*_~`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!safe) return 'the active milestone could not finish.';
+  return safe.length <= 320 ? safe : `${safe.slice(0, 319).trimEnd()}…`;
 }
 
 function terminalFlueIdentity(
@@ -904,6 +1516,15 @@ function terminalFlueIdentity(
     instanceId: `terminal_${hash(presentation.runId).slice(0, 24)}`,
     submissionId: `terminal_${hash(presentation.turnJobId).slice(0, 24)}`,
   };
+}
+
+function ownerPersonaFields(owner: SlackPresentationOwner): {
+  username?: string;
+  icon_url?: string;
+} {
+  return owner.kind === 'selected_agent'
+    ? { username: owner.persona.name, icon_url: owner.persona.avatarUrl }
+    : {};
 }
 
 function requireSlackTs(value: unknown): string {
@@ -944,9 +1565,46 @@ function comparePosition(
 
 function slackEffectOutcome(error: unknown): 'failed' | 'unknown' {
   const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
-  return code === ErrorCode.PlatformError || code === ErrorCode.RateLimitedError
+  return code === ErrorCode.PlatformError || code === ErrorCode.RateLimitedError ||
+      (error instanceof SlackTransportError && error.effectOutcome === 'failed')
     ? 'failed'
     : 'unknown';
+}
+
+const PERMANENT_AGENT_SESSION_SLACK_ERRORS = new Set([
+  'missing_scope',
+  'method_not_supported_for_channel_type',
+  'no_permission',
+  'not_allowed_token_type',
+  'unknown_method',
+]);
+
+function isPermanentAgentSessionRejection(error: unknown): boolean {
+  if (error instanceof SlackTransportError) {
+    return error.effectOutcome === 'failed' && !error.retryable;
+  }
+  if (error instanceof Error &&
+      error.message.includes('Slack operation is unavailable through the Chickpea gateway')) {
+    return true;
+  }
+  if (!error || typeof error !== 'object') return false;
+  const data = (error as { data?: unknown }).data;
+  const slackCode = data && typeof data === 'object'
+    ? (data as { error?: unknown }).error
+    : undefined;
+  return typeof slackCode === 'string' &&
+    PERMANENT_AGENT_SESSION_SLACK_ERRORS.has(slackCode);
+}
+
+function safeSlackErrorCode(error: unknown): string {
+  if (!error || typeof error !== 'object') return 'unknown';
+  const data = (error as { data?: unknown }).data;
+  const platformCode = data && typeof data === 'object'
+    ? (data as { error?: unknown }).error
+    : undefined;
+  const transportCode = (error as { code?: unknown }).code;
+  const code = typeof platformCode === 'string' ? platformCode : transportCode;
+  return typeof code === 'string' && /^[a-z0-9_]{1,128}$/.test(code) ? code : 'unknown';
 }
 
 function isRateLimited(error: unknown): error is { code: ErrorCode; retryAfter: number } {

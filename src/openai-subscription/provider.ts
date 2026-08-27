@@ -100,11 +100,17 @@ export interface BindOpenAiSubscriptionProviderOptions {
 
 export function registerOpenAiSubscriptionApi(): void {
   registerCapturedSubscriptionApi(BUNDLED_SUBSCRIPTION_REGISTRATION);
+  // Flue resolves useModel() before sandbox initialization. Register the safe
+  // bundled provider shape at startup so a fresh Agent isolate recognizes the
+  // route; bindOpenAiSubscriptionProvider installs the request-authorized
+  // transport marker before the first stream can leave the process.
+  setProvider(createSubscriptionProvider(BUNDLED_SUBSCRIPTION_REGISTRATION));
 }
 
 export async function bindOpenAiSubscriptionProvider(
   options: BindOpenAiSubscriptionProviderOptions,
 ): Promise<void> {
+  registerOpenAiSubscriptionApi();
   const route = options.route;
   if (
     options.modelId &&
@@ -151,7 +157,14 @@ export async function bindOpenAiSubscriptionProvider(
     },
   });
   subscriptionTransportMarkers.set(registration.api, marker);
-  const piProvider = createChickpeaPiProvider({
+  const piProvider = createSubscriptionProvider(registration);
+  boundSubscriptionProviders.set(registration.providerId, piProvider);
+  setProvider(piProvider);
+  recordRegisteredProvider(OPENAI_SUBSCRIPTION_PROVIDER_ID);
+}
+
+function createSubscriptionProvider(registration: CapturedSubscriptionRegistration) {
+  return createChickpeaPiProvider({
     id: registration.providerId,
     name: 'OpenAI subscription',
     baseUrl: OPENAI_SUBSCRIPTION_API_BASE,
@@ -163,9 +176,6 @@ export async function bindOpenAiSubscriptionProvider(
     })),
     api: subscriptionStreams(registration),
   });
-  boundSubscriptionProviders.set(registration.providerId, piProvider);
-  setProvider(piProvider);
-  recordRegisteredProvider(OPENAI_SUBSCRIPTION_PROVIDER_ID);
 }
 
 export function openAiSubscriptionModelSpecifier(
@@ -176,6 +186,36 @@ export function openAiSubscriptionModelSpecifier(
     throw new OpenAiSubscriptionError('unsupported_model');
   }
   return `${subscriptionRegistration(route).providerId}/${model}`;
+}
+
+/** Register one credential-free hosted alias before Flue resolves useModel(). */
+export function registerCapturedOpenAiSubscriptionProvider(options: {
+  revision: number;
+  sha256: string;
+  models: readonly Model<string>[];
+}): { providerId: string; api: string } {
+  const aliases = revisionedAlias('openaiSubscription', options.revision, options.sha256);
+  const existing = hostedSubscriptionRegistrations.get(aliases.providerId);
+  if (!existing && hostedSubscriptionRegistrations.size >= MAX_HOSTED_ALIAS_REGISTRATIONS) {
+    throw new Error('OpenAI subscription catalog activation requires a restart.');
+  }
+  const byId = new Map((existing?.models ?? []).map((model) => [model.id, model]));
+  for (const model of options.models) {
+    const current = byId.get(model.id);
+    if (current && JSON.stringify(current) !== JSON.stringify(model)) {
+      throw new Error('OpenAI subscription catalog alias is equivocal.');
+    }
+    byId.set(model.id, Object.freeze(structuredClone(model)));
+  }
+  const registration: CapturedSubscriptionRegistration = Object.freeze({
+    providerId: aliases.providerId,
+    api: aliases.api,
+    models: freezeModels([...byId.values()]),
+  });
+  hostedSubscriptionRegistrations.set(registration.providerId, registration);
+  registerCapturedSubscriptionApi(registration);
+  setProvider(createSubscriptionProvider(registration));
+  return aliases;
 }
 
 export function isOpenAiSubscriptionProviderId(providerId: string): boolean {
@@ -199,23 +239,17 @@ function subscriptionRegistration(
     route.snapshot.revision,
     route.snapshot.sha256,
   );
-  const cached = hostedSubscriptionRegistrations.get(alias.providerId);
-  if (cached) return cached;
-  if (hostedSubscriptionRegistrations.size >= MAX_HOSTED_ALIAS_REGISTRATIONS) {
-    throw new Error('OpenAI subscription catalog activation requires a restart.');
-  }
   const models = route.snapshot.entries.flatMap((entry) =>
     entry.lanes.openai_subscription
       ? [materializeCatalogModel(entry, 'openai_subscription')]
       : []
   );
-  const registration: CapturedSubscriptionRegistration = Object.freeze({
-    providerId: alias.providerId,
-    api: alias.api,
+  registerCapturedOpenAiSubscriptionProvider({
+    revision: route.snapshot.revision,
+    sha256: route.snapshot.sha256,
     models: freezeModels(models),
   });
-  hostedSubscriptionRegistrations.set(alias.providerId, registration);
-  return registration;
+  return hostedSubscriptionRegistrations.get(alias.providerId)!;
 }
 
 function compileBundledSubscriptionModels(): Model<string>[] {

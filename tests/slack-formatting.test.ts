@@ -19,6 +19,7 @@ import {
   slackStatusText,
   toolStatus,
 } from '../src/slack/replies.ts';
+import { activityStatus } from '../src/activity/status.ts';
 
 test('standard Markdown final replies render as Slack markdown blocks', () => {
   const markdown = [
@@ -240,67 +241,68 @@ test('unassigned-Channel hint names the bot, explains the silence, and links Con
   assert.doesNotMatch(unlinked, /\|Configure>/);
 });
 
-test('status updates keep generic liveness while loading copy carries the current fact', () => {
-  const update = { text: 'is using 2 messages of channel_history context' };
+test('status surfaces carry the same meaningful activity fact', () => {
+  const update = activityStatus('checking', 'Checking', 'thread context');
 
-  assert.equal(slackStatusText(update), 'is thinking...');
-  assert.deepEqual(slackLoadingMessages(update), [
-    'is thinking...',
-    'Using 2 messages of channel_history context',
-  ]);
+  assert.equal(slackStatusText(update), 'Checking thread context…');
+  assert.deepEqual(slackLoadingMessages(update), ['Checking thread context…']);
 });
 
-test('thinking status does not add a redundant loading message', () => {
-  assert.deepEqual(slackLoadingMessages({ text: 'is thinking...' }), [
-    'is thinking...',
-  ]);
+test('activity status never prefixes the Agent name or adds generic thinking copy', () => {
+  const preparing = activityStatus('preparing', 'Preparing', 'your request');
+  assert.deepEqual(slackLoadingMessages(preparing), ['Preparing your request…']);
   assert.equal(
-    slackStatusText({ text: 'is thinking...' }, 'Sprout'),
-    'Sprout is thinking...',
+    slackStatusText(preparing, 'Sprout'),
+    'Preparing your request…',
   );
   assert.deepEqual(
-    slackLoadingMessages({ text: 'is searching the workspace' }, 'Sprout'),
-    ['Sprout is thinking...', 'Sprout is searching the workspace'],
+    slackLoadingMessages(activityStatus('checking', 'Searching', 'the workspace'), 'Sprout'),
+    ['Searching the workspace…'],
   );
 });
 
 test('toolStatus hides raw MCP identifiers when no registered activity context is available', () => {
-  assert.deepEqual(toolStatus('mcp__context7__resolve-library-id'), {
-    text: 'is using a connection',
-  });
+  assert.deepEqual(
+    toolStatus('mcp__context7__resolve-library-id'),
+    activityStatus('checking', 'Checking', 'a connection'),
+  );
   // A known builtin gets descriptive fixed copy rather than its identifier.
-  assert.deepEqual(toolStatus('lookup_thread_history'), {
-    text: 'is checking thread history',
-  });
+  assert.deepEqual(
+    toolStatus('lookup_thread_history'),
+    activityStatus('checking', 'Checking', 'thread history'),
+  );
   // A malformed mcp__ name (no second separator) falls back rather than
   // rendering an empty server or tool segment.
-  assert.deepEqual(toolStatus('mcp__broken'), { text: 'is using a connection' });
+  assert.deepEqual(
+    toolStatus('mcp__broken'),
+    activityStatus('checking', 'Checking', 'a connection'),
+  );
 });
 
 test('bash tool status describes the workspace stage without exposing command text', () => {
   const examples = [
-    ['git clone https://github.com/Acme/Alpha.git', 'is cloning the repository'],
-    ['pnpm install --frozen-lockfile', 'is installing dependencies'],
-    ['pnpm test', 'is running the test suite'],
-    ['cat > src/example.test.ts <<EOF', 'is editing the code'],
-    ['git commit -m "test: add smoke coverage"', 'is committing the changes'],
-    ['git push origin chickpea/smoke-test', 'is pushing the branch'],
+    ['git clone https://github.com/Acme/Alpha.git', 'Cloning the repository…'],
+    ['pnpm install --frozen-lockfile', 'Installing dependencies…'],
+    ['pnpm test', 'Running the test suite…'],
+    ['cat > src/example.test.ts <<EOF', 'Editing the code…'],
+    ['git commit -m "test: add smoke coverage"', 'Committing the changes…'],
+    ['git push origin chickpea/smoke-test', 'Pushing the branch…'],
     [
       "curl -X POST https://api.github.com/repos/Acme/Alpha/pulls -d '{...}'",
-      'is opening the pull request',
+      'Opening the pull request…',
     ],
-    ['pnpm run dev', 'is starting the app'],
-    ['node capture-with-playwright.mjs screenshot.png', 'is capturing a screenshot'],
-    ['git status && find . -maxdepth 2 -type f', 'is inspecting the workspace'],
+    ['pnpm run dev', 'Starting the app…'],
+    ['node capture-with-playwright.mjs screenshot.png', 'Capturing a screenshot…'],
+    ['git status && find . -maxdepth 2 -type f', 'Inspecting the workspace…'],
   ] as const;
 
   for (const [command, expected] of examples) {
-    assert.deepEqual(toolStatus('bash', { command }), { text: expected }, command);
+    assert.equal(toolStatus('bash', { command }).text, expected, command);
   }
 
   const secret = 'ghs_do-not-leak-this-token';
   const fallback = toolStatus('bash', { command: `custom-command --token ${secret}` });
-  assert.deepEqual(fallback, { text: 'is running a workspace command' });
+  assert.deepEqual(fallback, activityStatus('running', 'Running', 'a workspace command'));
   assert.doesNotMatch(fallback.text, new RegExp(secret));
 });
 

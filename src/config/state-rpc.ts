@@ -75,7 +75,9 @@ import type {
   SlackPresentationTransitionResult,
   SlackRunPresentation,
   SlackPresentationSummary,
+  SlackPresentationRoot,
 } from '../slack/run-presentations.ts';
+import type { TypedActivityStatus } from '../activity/status.ts';
 
 export type { TurnJob } from '../slack/turn-job-types.ts';
 
@@ -445,6 +447,9 @@ export interface TagStateRpc {
   slackPresentationGet(
     runId: string,
   ): Promise<StateRpcResult<SlackRunPresentation | null>>;
+  slackPresentationLatestThreadGeneration(
+    root: Pick<SlackPresentationRoot, 'workspaceId' | 'channelId' | 'threadTs'>,
+  ): Promise<StateRpcResult<number | null>>;
   slackPresentationTransition(
     input: SlackPresentationTransitionInput,
   ): Promise<StateRpcResult<SlackPresentationTransitionResult>>;
@@ -524,12 +529,12 @@ export interface TagStateRpc {
    * registry living in this DO's isolate (where the alarm runs the turn). The
    * opaque generation fences delayed RPCs from later turns on the same thread.
    * Best-effort: a miss/closed turn or ambiguous concurrent-turn match is a
-   * success, never an error. Only sanitized status text crosses this seam.
+   * success, never an error. Only canonical sanitized activity crosses this seam.
    */
   observedStatus(
     instanceId: string,
     submissionId: string,
-    statusText: string,
+    status: TypedActivityStatus,
   ): Promise<StateRpcResult<null>>;
 }
 
