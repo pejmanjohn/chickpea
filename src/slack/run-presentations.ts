@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 
 import type { StateDb } from '../state/state-db.ts';
-import type { ActivityKind } from '../activity/status.ts';
+import type {
+  ActivityKind,
+  SemanticActivityPhase,
+  SemanticTargetFamily,
+} from '../activity/status.ts';
 import { hasCredentialLikeContent } from '../security/content-validation.ts';
 
 export const SLACK_PRESENTATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -120,6 +124,10 @@ export interface SlackPresentationActivity {
   kind: SlackPresentationActivityKind;
   action: string;
   object: string;
+  /** Added by semantic status V1; absent only on compatible older rows. */
+  family?: SemanticTargetFamily;
+  /** Added by semantic status V1; absent only on compatible older rows. */
+  phase?: SemanticActivityPhase;
   generation: number;
   sequence: number;
   operation: SlackPresentationOperationReceipt;
@@ -135,7 +143,7 @@ export type SlackPresentationActivityProjection =
     }
   | {
       surface: 'assistant_status';
-      state: 'selected' | 'visible' | 'cleared';
+      state: 'selected' | 'visible' | 'unavailable' | 'cleared';
     };
 
 export type SlackPresentationTaskOutcome =
@@ -483,6 +491,7 @@ export type SlackPresentationMutation =
       certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>;
       messageTs?: string;
     }
+  | { kind: 'mark_activity_unavailable' }
   | {
       kind: 'set_agent_session_desired';
       desired: SlackPresentationAgentSessionState;
@@ -1818,6 +1827,23 @@ function applyMutation(
       next.repairRequired = v3RepairRequired(next);
       return next;
     }
+    case 'mark_activity_unavailable': {
+      requireV3(current);
+      requireV3(next);
+      if (current.activityProjection.surface !== 'assistant_status' ||
+          current.activityProjection.state === 'cleared' ||
+          !current.currentActivity ||
+          (current.currentActivity.operation.certainty !== 'failed' &&
+            current.currentActivity.operation.certainty !== 'unknown')) {
+        throw stateError(
+          'invalid_transition',
+          'Only a rejected or ambiguous native activity may become unavailable.',
+        );
+      }
+      next.activityProjection = { surface: 'assistant_status', state: 'unavailable' };
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
     case 'set_agent_session_desired': {
       requireV3(current);
       requireV3(next);
@@ -1906,7 +1932,9 @@ function applyMutation(
         superseded = true;
       }
       if (current.activityProjection.surface === 'assistant_status' &&
-          current.activityProjection.state === 'visible' &&
+          (current.activityProjection.state === 'visible' ||
+            current.activityProjection.state === 'unavailable' &&
+            current.currentActivity?.operation.certainty === 'unknown') &&
           (current.cleanup.state === 'not_required' ||
             current.cleanup.operation.certainty === 'failed')) {
         next.cleanup = { state: 'not_required', disposition: 'superseded' };
@@ -2011,9 +2039,12 @@ function applyMutation(
         throw stateError('invalid_transition', 'Terminal delivery must be acknowledged before cleanup.');
       }
       validateId(mutation.operationId, 'Cleanup operation id');
+      const ambiguousNativeActivity = current.activityProjection.surface ===
+          'assistant_status' && current.activityProjection.state === 'unavailable' &&
+        current.currentActivity?.operation.certainty === 'unknown';
       if (mutation.target === 'activity' &&
           (current.activityProjection.surface === 'unselected' ||
-            current.activityProjection.state !== 'visible')) {
+            current.activityProjection.state !== 'visible' && !ambiguousNativeActivity)) {
         throw stateError('invalid_transition', 'There is no visible activity to clean up.');
       }
       next.cleanup = {
@@ -2583,6 +2614,11 @@ function validateActivity(
   }
   validateUserFacingFact(activity.action, 'Activity action', 80);
   validateUserFacingFact(activity.object, 'Activity object', 160);
+  if ((activity.family === undefined) !== (activity.phase === undefined) ||
+      activity.family !== undefined && !isActivityFamily(activity.family) ||
+      activity.phase !== undefined && !isActivityPhase(activity.phase)) {
+    throw stateError('invalid_input', 'Activity semantic telemetry is invalid.');
+  }
   if (activity.generation !== sessionGeneration) {
     throw stateError('identity_conflict', 'Activity generation does not match its session.');
   }
@@ -2611,6 +2647,18 @@ function isActivityKind(value: unknown): value is SlackPresentationActivityKind 
   return value === 'preparing' || value === 'checking' || value === 'reading' ||
     value === 'writing' || value === 'updating' || value === 'running' ||
     value === 'waiting' || value === 'finishing';
+}
+
+function isActivityFamily(value: unknown): value is SemanticTargetFamily {
+  return value === 'managed_connector' || value === 'custom_connection' || value === 'skill' ||
+    value === 'repository' || value === 'memory' || value === 'scheduled_work' ||
+    value === 'workspace' || value === 'connection_setup' || value === 'agent_authoring' ||
+    value === 'artifact' || value === 'response' || value === 'unknown' || value === 'internal';
+}
+
+function isActivityPhase(value: unknown): value is SemanticActivityPhase {
+  return value === 'thinking' || value === 'working' || value === 'reviewing' ||
+    value === 'drafting' || value === 'reassessing';
 }
 
 function isReceiptCertainty(value: unknown): value is SlackPresentationReceiptCertainty {
@@ -2689,7 +2737,8 @@ function isActivityProjection(value: unknown): value is SlackPresentationActivit
   }
   if (projection.surface === 'assistant_status') {
     return (projection.state === 'selected' || projection.state === 'visible' ||
-      projection.state === 'cleared') && projection.messageTs === undefined;
+      projection.state === 'unavailable' || projection.state === 'cleared') &&
+      projection.messageTs === undefined;
   }
   if (projection.surface !== 'message' ||
       (projection.state !== 'selected' && projection.state !== 'visible' &&

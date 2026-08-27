@@ -33,6 +33,8 @@ test('semantic activity narrates Gmail from catalog facts without reading invoca
     kind: 'checking',
     action: 'Checking',
     object: 'Gmail',
+    family: 'managed_connector',
+    phase: 'working',
     text: 'Checking Gmail…',
   });
   assert.deepEqual(narrateSemanticActivity(descriptor, {
@@ -42,6 +44,8 @@ test('semantic activity narrates Gmail from catalog facts without reading invoca
     kind: 'reading',
     action: 'Reviewing',
     object: 'Gmail messages',
+    family: 'managed_connector',
+    phase: 'reviewing',
     text: 'Reviewing Gmail messages…',
   });
 });
@@ -69,6 +73,8 @@ test('the semantic copy matrix covers core roles and hides internal helpers', ()
     kind: 'preparing',
     action: 'Thinking',
     object: 'the request',
+    family: 'unknown',
+    phase: 'thinking',
     text: 'Thinking…',
   });
   assert.equal(isSafeTypedActivityStatus(thinkingSemanticActivity()), true);
@@ -79,6 +85,8 @@ test('the semantic copy matrix covers core roles and hides internal helpers', ()
     kind: 'writing',
     action: 'Drafting',
     object: 'the response',
+    family: 'response',
+    phase: 'drafting',
     text: 'Drafting the response…',
   });
   assert.equal(narrateSemanticActivity(answer, {
@@ -95,6 +103,8 @@ test('the semantic copy matrix covers core roles and hides internal helpers', ()
     kind: 'running',
     action: 'Working on',
     object: 'the request',
+    family: 'unknown',
+    phase: 'working',
     text: 'Working on the request…',
   });
   assert.doesNotMatch(
@@ -160,6 +170,8 @@ test('unsafe managed labels and invalid descriptors degrade to fixed copy', () =
       kind: 'running',
       action: 'Working on',
       object: 'the request',
+      family: 'unknown',
+      phase: 'working',
       text: 'Working on the request…',
     });
   }
@@ -169,6 +181,8 @@ test('unsafe managed labels and invalid descriptors degrade to fixed copy', () =
       kind: 'running',
       action: 'Working on',
       object: 'the request',
+      family: 'unknown',
+      phase: 'working',
       text: 'Working on the request…',
     },
   );
@@ -195,6 +209,8 @@ test('side-effecting semantic activity stays in-progress or neutral until final 
     kind: 'preparing',
     action: 'Reassessing',
     object: 'the request',
+    family: 'unknown',
+    phase: 'reassessing',
     text: 'Reassessing the request…',
   });
 });
@@ -207,6 +223,8 @@ test('activity facts carry safe action-and-object copy without exposing raw inpu
     kind: 'writing',
     action: 'Drafting',
     object: 'the current item',
+    family: 'unknown',
+    phase: 'drafting',
     text: 'Drafting the current item…',
   });
   assert.equal(activity.text.startsWith('Agent '), false);
@@ -345,6 +363,8 @@ test('semantic MCP activity uses a family grant without caching customer-authore
     kind: 'checking',
     action: 'Checking',
     object: 'a connected service',
+    family: 'custom_connection',
+    phase: 'working',
     text: 'Checking a connected service…',
   });
 });

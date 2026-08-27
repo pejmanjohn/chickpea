@@ -121,6 +121,13 @@ export type SemanticTargetFamily =
   | 'unknown'
   | 'internal';
 
+export type SemanticActivityPhase =
+  | 'thinking'
+  | 'working'
+  | 'reviewing'
+  | 'drafting'
+  | 'reassessing';
+
 export type SemanticLifecycleRole = 'work' | 'answer_generation' | 'internal_hidden';
 export type SemanticTrustTier = 'managed_catalog' | 'built_in' | 'customer_configuration' | 'unknown';
 export type SemanticEffectClass = ManagedEffectClass | 'none';
@@ -172,6 +179,8 @@ export interface ActivityStatus {
   kind?: ActivityKind;
   action?: string;
   object?: string;
+  family?: SemanticTargetFamily;
+  phase?: SemanticActivityPhase;
   text: string;
 }
 
@@ -179,6 +188,8 @@ export interface TypedActivityStatus extends ActivityStatus {
   kind: ActivityKind;
   action: string;
   object: string;
+  family: SemanticTargetFamily;
+  phase: SemanticActivityPhase;
 }
 
 const OPERATION_SET = new Set<string>(SEMANTIC_OPERATIONS);
@@ -393,7 +404,14 @@ export function semanticInvocationFact(
 }
 
 export function thinkingSemanticActivity(): TypedActivityStatus {
-  return canonicalActivityStatus('preparing', 'Thinking', 'the request', 'Thinking…');
+  return canonicalActivityStatus(
+    'preparing',
+    'Thinking',
+    'the request',
+    'Thinking…',
+    'unknown',
+    'thinking',
+  );
 }
 
 export function narrateSemanticActivity(
@@ -407,17 +425,32 @@ export function narrateSemanticActivity(
   if (descriptorValue.role === 'internal_hidden') return undefined;
   if (descriptorValue.role === 'answer_generation') {
     return event.phase === 'started'
-      ? activityStatus('writing', 'Drafting', 'the response')
+      ? activityStatus('writing', 'Drafting', 'the response', 'response', 'drafting')
       : undefined;
   }
   if (event.phase === 'settled' && event.outcome !== 'succeeded') {
-    return activityStatus('preparing', 'Reassessing', 'the request');
+    return activityStatus(
+      'preparing',
+      'Reassessing',
+      'the request',
+      'unknown',
+      'reassessing',
+    );
   }
   if (descriptorValue.target === 'unknown') return genericActivity(event);
+  const phase = event.phase === 'settled' ? 'reviewing' : 'working';
   if (descriptorValue.target === 'managed_connector') {
-    return managedActivity(descriptorValue, event);
+    return withSemanticFact(
+      managedActivity(descriptorValue, event),
+      descriptorValue.target,
+      phase,
+    );
   }
-  return familyActivity(descriptorValue, event);
+  return withSemanticFact(
+    familyActivity(descriptorValue, event),
+    descriptorValue.target,
+    phase,
+  );
 }
 
 export function isManagedCapabilitySemanticOverride(
@@ -448,19 +481,31 @@ export function isSemanticActivityDescriptor(value: unknown): value is SemanticA
 
 /** Accept only canonical structured copy before crossing the activity wire. */
 export function isSafeTypedActivityStatus(value: unknown): value is TypedActivityStatus {
-  if (!isRecord(value) || !isActivityKind(value.kind) ||
+  if (!isRecord(value) ||
+      !hasOnlyKeys(value, ['kind', 'action', 'object', 'family', 'phase', 'text']) ||
+      !isActivityKind(value.kind) ||
       typeof value.action !== 'string' || typeof value.object !== 'string' ||
+      !isTargetFamily(value.family) || !isSemanticActivityPhase(value.phase) ||
       typeof value.text !== 'string' || value.text.length > ACTIVITY_STATUS_TEXT_LIMIT) return false;
   if (value.action === 'Thinking' && value.object === 'the request') {
-    return value.kind === 'preparing' && value.text === 'Thinking…';
+    return value.kind === 'preparing' && value.family === 'unknown' &&
+      value.phase === 'thinking' && value.text === 'Thinking…';
   }
-  return activityStatus(value.kind, value.action, value.object).text === value.text;
+  return activityStatus(
+    value.kind,
+    value.action,
+    value.object,
+    value.family,
+    value.phase,
+  ).text === value.text;
 }
 
 export function activityStatus(
   kind: ActivityKind,
   action: string,
   object: string,
+  family: SemanticTargetFamily = 'unknown',
+  phase: SemanticActivityPhase = defaultSemanticPhase(action),
 ): TypedActivityStatus {
   const safeAction = safeActivityLabel(action) || 'Working on';
   const candidateObject = safeActivityLabel(object);
@@ -474,7 +519,25 @@ export function activityStatus(
     safeAction,
     boundedObject,
     `${safeAction} ${boundedObject}…`,
+    family,
+    phase,
   );
+}
+
+function withSemanticFact(
+  status: TypedActivityStatus,
+  family: SemanticTargetFamily,
+  phase: SemanticActivityPhase,
+): TypedActivityStatus {
+  return { ...status, family, phase };
+}
+
+function defaultSemanticPhase(action: string): SemanticActivityPhase {
+  if (action === 'Thinking') return 'thinking';
+  if (action === 'Drafting') return 'drafting';
+  if (action === 'Reviewing') return 'reviewing';
+  if (action === 'Reassessing') return 'reassessing';
+  return 'working';
 }
 
 export function safeActivityLabel(value: string): string {
@@ -625,8 +688,10 @@ function canonicalActivityStatus(
   action: string,
   object: string,
   text: string,
+  family: SemanticTargetFamily,
+  phase: SemanticActivityPhase,
 ): TypedActivityStatus {
-  return { kind, action, object, text };
+  return { kind, action, object, family, phase, text };
 }
 
 function isSemanticOperation(value: unknown): value is SemanticOperation {
@@ -642,6 +707,11 @@ function isTargetFamily(value: unknown): value is SemanticTargetFamily {
     value === 'repository' || value === 'memory' || value === 'scheduled_work' ||
     value === 'workspace' || value === 'connection_setup' || value === 'agent_authoring' ||
     value === 'artifact' || value === 'response' || value === 'unknown' || value === 'internal';
+}
+
+function isSemanticActivityPhase(value: unknown): value is SemanticActivityPhase {
+  return value === 'thinking' || value === 'working' || value === 'reviewing' ||
+    value === 'drafting' || value === 'reassessing';
 }
 
 function isEffect(value: unknown): value is SemanticEffectClass {

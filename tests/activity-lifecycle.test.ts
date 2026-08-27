@@ -8,6 +8,7 @@ import {
   registerActivityInvocationFact,
 } from '../src/activity/status.ts';
 import { ActivityLifecycleReducer } from '../src/activity/lifecycle.ts';
+import type { SemanticActivityTelemetrySink } from '../src/activity/telemetry.ts';
 import {
   genericSemanticDescriptor,
   semanticDescriptorForCoreTool,
@@ -85,6 +86,37 @@ test('a successful work batch reviews only after every parallel call settles', (
   assert.equal(observe({
     type: 'tool', toolName: 'gmail_search_messages', toolCallId: 'gmail', isError: false,
   }), 'Reviewing the results…');
+});
+
+test('work evidence records closed family, outcome, and measured duration', () => {
+  let now = 1_000;
+  const records: Array<Record<string, unknown>> = [];
+  const telemetry: SemanticActivityTelemetrySink = {
+    info(message) {
+      records.push(JSON.parse(message.slice('[chickpea:activity] '.length)));
+    },
+  };
+  const reducer = new ActivityLifecycleReducer(() => now, telemetry);
+  const descriptor = semanticDescriptorForManagedTool('gmail_search_messages');
+  assert.ok(descriptor);
+
+  reducer.observe({
+    type: 'tool_start', instanceId: 'duration-instance', submissionId: 'duration-submission',
+    toolCallId: 'gmail', descriptor,
+  });
+  now = 2_750;
+  reducer.observe({
+    type: 'tool', instanceId: 'duration-instance', submissionId: 'duration-submission',
+    toolCallId: 'gmail', descriptor, isError: false,
+  });
+
+  assert.deepEqual(records, [{
+    schemaVersion: 1,
+    event: 'activity.work',
+    family: 'managed_connector',
+    outcome: 'succeeded',
+    durationMs: 1_750,
+  }]);
 });
 
 test('a failed parallel batch never emits success review and reassesses only at settlement', () => {

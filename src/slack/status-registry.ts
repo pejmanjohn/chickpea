@@ -1,6 +1,5 @@
 import type { SlackStatusUpdate } from './replies.ts';
 import { THREAD_TTL_MS } from './state-limits.ts';
-import type { WebClientPresenter } from './web-client-presenter.ts';
 import {
   emitSemanticActivityTelemetry,
   semanticTelemetryForStatus,
@@ -19,7 +18,11 @@ export interface SlackStatusTurnRegistration {
   finish(clearStatus: (late: boolean) => Promise<void>): Promise<void>;
 }
 
-type StatusPresenter = Pick<WebClientPresenter, 'setStatus'>;
+interface StatusPresenter {
+  setStatus(update: SlackStatusUpdate): Promise<boolean>;
+  /** Native-only same-fact refresh; absent presenters simply stop refreshing. */
+  refreshStatus?(update: SlackStatusUpdate): Promise<boolean>;
+}
 
 export interface SlackStatusTurnOptions {
   /** Opaque identity for the logical turn that owns observed activity. */
@@ -41,6 +44,8 @@ export interface SlackStatusTurnOptions {
   refreshIntervalMs?: number;
   /** Durable proof that this exact phrase is already visible from admission. */
   initialAppliedStatus?: SlackStatusUpdate;
+  /** A rehydrated receipt has no visibility age, so refresh it immediately. */
+  refreshInitialStatus?: boolean;
   /** Fixed-schema content-free observability; injectable for focused tests. */
   telemetry?: SemanticActivityTelemetrySink;
 }
@@ -48,6 +53,7 @@ export interface SlackStatusTurnOptions {
 interface QueuedStatusWrite {
   update: SlackStatusUpdate;
   observed: boolean;
+  refresh: false | 'ordinary' | 'validated';
   result: Promise<boolean>;
   resolve(result: boolean): void;
 }
@@ -79,6 +85,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     private acceptsWrites = true,
     ownershipBarrier?: Promise<void>,
     initialAppliedStatus?: SlackStatusUpdate,
+    refreshInitialStatus = false,
   ) {
     this.ownershipReady = ownershipBarrier === undefined;
     if (ownershipBarrier) {
@@ -89,7 +96,11 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
     if (initialAppliedStatus) {
       this.lastAppliedText = initialAppliedStatus.text;
-      this.scheduleRefresh(initialAppliedStatus);
+      this.scheduleRefresh(
+        initialAppliedStatus,
+        refreshInitialStatus ? 0 : this.refreshIntervalMs,
+        true,
+      );
     }
   }
 
@@ -119,7 +130,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
   private enqueue(
     update: SlackStatusUpdate,
     observed: boolean,
-    refresh: boolean,
+    refresh: false | 'ordinary' | 'validated',
   ): Promise<boolean> {
     if (!refresh && isSafeTypedActivityStatus(update)) {
       const produced = semanticTelemetryForStatus(update);
@@ -164,6 +175,7 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     const queued: QueuedStatusWrite = {
       update,
       observed,
+      refresh,
       result: deferred.promise,
       resolve: deferred.resolve,
     };
@@ -292,7 +304,11 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
 
     let attempt: Promise<boolean>;
     try {
-      attempt = this.presenter.setStatus(queued.update);
+      attempt = queued.refresh === 'validated' && this.presenter.refreshStatus
+        ? this.presenter.refreshStatus(queued.update)
+        : queued.refresh === 'validated'
+          ? Promise.resolve(false)
+          : this.presenter.setStatus(queued.update);
     } catch {
       attempt = Promise.resolve(false);
     }
@@ -325,13 +341,17 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
     }
   }
 
-  private scheduleRefresh(update: SlackStatusUpdate): void {
+  private scheduleRefresh(
+    update: SlackStatusUpdate,
+    delayMs = this.refreshIntervalMs,
+    requireValidation = false,
+  ): void {
     this.cancelRefresh();
     if (this.closed || this.terminalizing || !this.ownsVisibleWrites()) return;
     emitSemanticActivityTelemetry({
       event: 'activity.refresh',
       outcome: 'scheduled',
-      durationMs: this.refreshIntervalMs,
+      durationMs: delayMs,
     }, this.telemetry);
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = undefined;
@@ -352,8 +372,8 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
         outcome: 'attempted',
         durationMs: this.refreshIntervalMs,
       }, this.telemetry);
-      void this.enqueue(update, true, true);
-    }, this.refreshIntervalMs);
+      void this.enqueue(update, true, requireValidation ? 'validated' : 'ordinary');
+    }, delayMs);
     this.refreshTimer.unref?.();
   }
 
@@ -491,6 +511,7 @@ export function registerSlackStatusTurn(
     acceptsWrites,
     ownershipBarrier,
     options.initialAppliedStatus,
+    options.refreshInitialStatus,
   );
   turns.add(turn);
   activeSlackStatusTurns.set(instanceId, turns);

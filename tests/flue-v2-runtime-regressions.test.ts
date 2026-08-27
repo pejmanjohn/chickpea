@@ -238,6 +238,8 @@ test('the ChickpeaSlack hook registers exact activity before model work can begi
       kind: 'checking',
       action: 'Checking',
       object: 'Gmail',
+      family: 'managed_connector',
+      phase: 'working',
       text: 'Checking Gmail…',
     },
   );
@@ -261,6 +263,8 @@ test('the ChickpeaSlack hook registers exact activity before model work can begi
       kind: 'running',
       action: 'Working on',
       object: 'the request',
+      family: 'unknown',
+      phase: 'working',
       text: 'Working on the request…',
     },
   );
@@ -275,6 +279,8 @@ test('the ChickpeaSlack hook registers exact activity before model work can begi
       kind: 'checking',
       action: 'Inspecting',
       object: 'workspace settings',
+      family: 'workspace',
+      phase: 'working',
       text: 'Inspecting workspace settings…',
     },
   );
@@ -323,6 +329,8 @@ test('the ChickpeaSlack attachment hook registers no connector or management des
         kind: 'running',
         action: 'Working on',
         object: 'the request',
+        family: 'unknown',
+        phase: 'working',
         text: 'Working on the request…',
       },
       toolName,

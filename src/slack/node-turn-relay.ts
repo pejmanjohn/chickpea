@@ -510,18 +510,23 @@ export function slackPresentationStatePort(
     !state.transitionRunPresentation ||
     !state.reserveSlackAppend ||
     !state.applySlackAppendCooldown ||
-    !state.reserveSlackActivityStatus ||
-    !state.applySlackActivityStatusCooldown ||
     !state.matchFlueObservation
   ) return undefined;
+  const activityCoordinator = state.reserveSlackActivityStatus &&
+      state.applySlackActivityStatusCooldown
+    ? {
+        reserveSlackActivityStatus: state.reserveSlackActivityStatus.bind(state),
+        applySlackActivityStatusCooldown:
+          state.applySlackActivityStatusCooldown.bind(state),
+      }
+    : {};
   return {
     getRunPresentation: state.getRunPresentation.bind(state),
     getLatestThreadSessionGeneration: state.getLatestThreadSessionGeneration.bind(state),
     transitionRunPresentation: state.transitionRunPresentation.bind(state),
     reserveSlackAppend: state.reserveSlackAppend.bind(state),
     applySlackAppendCooldown: state.applySlackAppendCooldown.bind(state),
-    reserveSlackActivityStatus: state.reserveSlackActivityStatus.bind(state),
-    applySlackActivityStatusCooldown: state.applySlackActivityStatusCooldown.bind(state),
+    ...activityCoordinator,
     matchFlueObservation: state.matchFlueObservation.bind(state),
   };
 }

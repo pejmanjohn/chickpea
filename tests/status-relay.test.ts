@@ -186,6 +186,29 @@ test('Cloudflare relay remains best-effort when the state binding is missing', a
   });
 });
 
+test('activity RPC rejects hidden fields instead of sanitizing an open payload', async () => {
+  await withCloudflareUserAgent(async () => {
+    let calls = 0;
+    publishActivityStatus('exact-activity-wire', {
+      ...activityStatus('checking', 'Checking', 'Gmail', 'managed_connector', 'working'),
+      hiddenCustomerValue: 'must-not-cross-the-wire',
+    } as never, {
+      TAG_STATE: {
+        getByName() {
+          return {
+            observedStatus() {
+              calls += 1;
+              return Promise.resolve({ ok: true });
+            },
+          };
+        },
+      },
+    }, 'submission-exact-activity-wire');
+    await Promise.resolve();
+    assert.equal(calls, 0);
+  });
+});
+
 test('Cloudflare relay keeps distinct typed updates on one coordinate through the state sink', async () => {
   await withCloudflareUserAgent(() => withActivityObservation(
     'typed-relay-thread',

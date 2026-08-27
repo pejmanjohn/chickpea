@@ -1361,6 +1361,8 @@ async function processSlackEvent(
                   kind: admittedActivity.kind,
                   action: admittedActivity.action,
                   object: admittedActivity.object,
+                  family: admittedActivity.family,
+                  phase: admittedActivity.phase,
                   generation: sessionGeneration,
                   sequence: 1,
                   operation: {

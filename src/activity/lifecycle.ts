@@ -6,6 +6,10 @@ import {
   type SemanticInvocationFact,
   type TypedActivityStatus,
 } from './semantic.ts';
+import {
+  emitSemanticActivityTelemetry,
+  type SemanticActivityTelemetrySink,
+} from './telemetry.ts';
 
 export interface ActivityLifecycleObservation {
   readonly type: string;
@@ -20,6 +24,7 @@ export interface ActivityLifecycleObservation {
 interface ActiveWorkCall {
   descriptor: SemanticActivityDescriptor;
   sequence: number;
+  startedAt: number;
 }
 
 interface SubmissionLifecycleState {
@@ -46,6 +51,11 @@ const MAX_CALLS_PER_SUBMISSION = 256;
 export class ActivityLifecycleReducer {
   private readonly submissions = new Map<string, SubmissionLifecycleState>();
   private readonly settledSubmissions = new Set<string>();
+
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly telemetry: SemanticActivityTelemetrySink = console,
+  ) {}
 
   observe(event: ActivityLifecycleObservation): TypedActivityStatus | undefined {
     const instanceId = event.instanceId;
@@ -153,6 +163,7 @@ export class ActivityLifecycleReducer {
     state.activeWork.set(toolCallId, {
       descriptor,
       sequence: state.nextSequence++,
+      startedAt: this.now(),
     });
     if (latestActiveCall(state)?.[0] !== toolCallId) return undefined;
     return this.emit(state, narrateSemanticActivity(descriptor, { phase: 'started' }));
@@ -175,6 +186,12 @@ export class ActivityLifecycleReducer {
     }
     state.activeWork.delete(toolCallId);
     state.completedDescriptors.push(completed.descriptor);
+    emitSemanticActivityTelemetry({
+      event: 'activity.work',
+      family: completed.descriptor.target,
+      outcome: isError === false ? 'succeeded' : isError === true ? 'failed' : 'ambiguous',
+      durationMs: this.now() - completed.startedAt,
+    }, this.telemetry);
     if (isError !== false) state.batchUnsuccessful = true;
 
     const remaining = latestActiveCall(state);

@@ -77,6 +77,7 @@ export async function presentAdmittedSlackActivity(
     write.operationId,
     receipt.certainty,
     receipt.messageTs,
+    receipt.unavailable,
   );
   return receipt.certainty === 'acknowledged';
 }

@@ -72,6 +72,7 @@ Records use the `[chickpea:activity]` prefix and contain only:
 - queue layer and disposition;
 - native or legacy-recovery surface;
 - transport, clear, refresh, and shared-rate outcomes;
+- completed work family, outcome, and measured duration;
 - booleans and durations clamped to five minutes.
 
 The emitter drops unknown fields and open-ended strings. It never records
@@ -93,7 +94,8 @@ node --test --import tsx \
   tests/status-registry.test.ts \
   tests/status-relay.test.ts \
   tests/web-client-presenter.test.ts \
-  tests/run-turn-heartbeat.test.ts
+  tests/run-turn-heartbeat.test.ts \
+  tests/semantic-activity-live-verifier.test.ts
 ```
 
 ## Disposable acceptance gate
@@ -123,13 +125,13 @@ mailbox containing only synthetic seeded messages.
    tool. Do not add a sleep, dwell, or pacing change to product code.
 2. Watch the status while the turn is active. A final thread screenshot is not
    evidence of the sequence.
-3. Confirm telemetry contains a managed-connector work phase and an
-   acknowledged native transport. If the managed call remains active beyond
-   the one-second observed-write throttle, require a Gmail-specific status to
-   be visibly acknowledged before the final answer.
-4. Repeat enough isolated synthetic turns to measure eligible calls. At least
-   90% of calls active beyond the throttle must acknowledge the specific phase.
-   Fast ineligible turns may coalesce and do not count as failures.
+3. Save this turn's fixed-schema events in its own file. The verifier derives
+   eligibility from a managed-connector `activity.work` duration of at least
+   one second and matches specificity to an acknowledged native
+   `managed_connector`/`working` transport event. Do not combine turns.
+4. Collect at least ten isolated eligible turns. At least 90% must acknowledge
+   the specific managed-connector phase. Fast ineligible turns may coalesce,
+   but do not put them in the eligible capture set or count them as failures.
 5. Run a no-tool control whose answer mentions email but uses supplied context.
    It must not produce or display managed Gmail work.
 
@@ -174,25 +176,36 @@ beyond 90 seconds should acknowledge a refresh; a superseded phase must not.
   "diagnosticTrace": true,
   "progressMessageCalls": 0,
   "priorVersionRestored": true,
-  "rawCaptureDeleted": true,
-  "eligibleManagedTurns": 10,
-  "specificAcknowledgedTurns": 9
+  "rawCaptureDeleted": true
 }
 ```
 
-Validate the sanitized diagnostic event stream and manifest after restoration:
+Validate the isolated normal-timing streams, diagnostic stream, and manifest
+after restoration. Repeat `--normal-events` once per eligible turn (ten or
+more); the verifier derives both counts and the ratio from those files:
 
 ```bash
 node scripts/verify-semantic-activity-status-live.mjs \
-  --events /path/to/content-free-events.jsonl \
-  --manifest /path/to/content-free-manifest.json \
-  --mode diagnostic
+  --normal-events /path/to/normal-turn-01.jsonl \
+  --normal-events /path/to/normal-turn-02.jsonl \
+  --normal-events /path/to/normal-turn-03.jsonl \
+  --normal-events /path/to/normal-turn-04.jsonl \
+  --normal-events /path/to/normal-turn-05.jsonl \
+  --normal-events /path/to/normal-turn-06.jsonl \
+  --normal-events /path/to/normal-turn-07.jsonl \
+  --normal-events /path/to/normal-turn-08.jsonl \
+  --normal-events /path/to/normal-turn-09.jsonl \
+  --normal-events /path/to/normal-turn-10.jsonl \
+  --diagnostic-events /path/to/diagnostic-turn.jsonl \
+  --manifest /path/to/content-free-manifest.json
 ```
 
 The verifier performs no network calls. It rejects unknown event/manifest
 fields, legacy-message activity, a missing managed/native/clear proof, an
-incomplete ordered diagnostic sequence, any progress-message call, an
-unrestored version, retained raw capture, and a normal-timing ratio below 90%.
+unrelated transport acknowledgement, an incomplete ordered diagnostic
+sequence, operator-supplied count fields, any progress-message call, an
+unrestored version, retained raw capture, and a derived normal-timing ratio
+below 90%.
 
 ## Release evidence
 

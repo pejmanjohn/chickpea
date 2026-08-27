@@ -2,9 +2,11 @@ import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import {
   emitSemanticActivityTelemetry,
+  semanticTelemetryForStatus,
   type SemanticActivityTelemetrySink,
   type SemanticActivityTelemetrySurface,
 } from '../activity/telemetry.ts';
+import { isSafeTypedActivityStatus } from '../activity/status.ts';
 import {
   appendSlackReplyFooter,
   canonicalSlackMarkdownText,
@@ -122,6 +124,8 @@ export interface SlackPresenterOptions {
   onPublicDelivery?: (input: { messageTs: string; text: string }) => void | Promise<void>;
   /** Rehydrates the one V3 activity artifact after an isolate restart. */
   activityProjection?: SlackPresentationActivityProjection;
+  /** A native write had an ambiguous receipt and therefore still needs clear. */
+  activityMayBeVisible?: boolean;
   /** Installation-scoped durable budget shared by native semantic status writers. */
   activityStatusCoordinator?: {
     reserve(): Promise<{ outcome: 'reserved' | 'cooldown' | 'exhausted' }>;
@@ -182,6 +186,13 @@ export class WebClientPresenter {
       this.statusWasSet = true;
     } else if (projection?.surface === 'assistant_status' && projection.state === 'visible') {
       this.statusWasSet = true;
+    } else if (projection?.surface === 'assistant_status' &&
+        projection.state === 'unavailable') {
+      this.statusFailed = true;
+      this.statusWasSet = options.activityMayBeVisible === true;
+    } else if (projection?.surface === 'assistant_status' &&
+        options.activityMayBeVisible === true) {
+      this.statusWasSet = true;
     }
   }
 
@@ -202,7 +213,12 @@ export class WebClientPresenter {
     const startedAt = Date.now();
     this.lastActivityReceiptCertainty = 'failed';
     if (this.statusFailed) {
-      this.emitTransport(activitySurface(this.activityMessageTs, durable), 'latched_off', startedAt);
+      this.emitTransport(
+        activitySurface(this.activityMessageTs, durable),
+        'latched_off',
+        startedAt,
+        update,
+      );
       return false;
     }
     const chat = (this.client as unknown as {
@@ -217,7 +233,7 @@ export class WebClientPresenter {
     if (this.activityMessageTs) {
       if (typeof chat?.update !== 'function') {
         this.statusFailed = true;
-        this.emitTransport('legacy_message', 'rejected', startedAt);
+        this.emitTransport('legacy_message', 'rejected', startedAt, update);
         return false;
       }
       try {
@@ -227,7 +243,7 @@ export class WebClientPresenter {
           text: update.text,
         });
         this.lastActivityReceiptCertainty = 'acknowledged';
-        this.emitTransport('legacy_message', 'acknowledged', startedAt);
+        this.emitTransport('legacy_message', 'acknowledged', startedAt, update);
         return true;
       } catch (error) {
         // An existing visible activity must never gain a competing fallback.
@@ -237,17 +253,18 @@ export class WebClientPresenter {
           'legacy_message',
           transportTelemetryOutcome(this.lastActivityReceiptCertainty),
           startedAt,
+          update,
         );
         return false;
       }
     }
     if (durable?.surface === 'message') {
-      this.emitTransport('legacy_message', 'rejected', startedAt);
+      this.emitTransport('legacy_message', 'rejected', startedAt, update);
       return false;
     }
     const reservation = await this.reserveNativeStatus();
     if (!reservation) {
-      this.emitTransport('assistant_status', 'rejected', startedAt);
+      this.emitTransport('assistant_status', 'rejected', startedAt, update);
       return false;
     }
     try {
@@ -260,16 +277,18 @@ export class WebClientPresenter {
       });
       this.statusWasSet = true;
       this.lastActivityReceiptCertainty = 'acknowledged';
-      this.emitTransport('assistant_status', 'acknowledged', startedAt);
+      this.emitTransport('assistant_status', 'acknowledged', startedAt, update);
       return true;
     } catch (error) {
       // Latch off further custom-status attempts for this turn.
       this.lastActivityReceiptCertainty = slackDeliveryFailureOutcome(error);
       this.statusFailed = true;
+      if (this.lastActivityReceiptCertainty === 'unknown') this.statusWasSet = true;
       this.emitTransport(
         'assistant_status',
         transportTelemetryOutcome(this.lastActivityReceiptCertainty),
         startedAt,
+        update,
       );
       const retryAfterMs = slackRateRetryAfterMs(error);
       if (retryAfterMs !== undefined) {
@@ -311,10 +330,15 @@ export class WebClientPresenter {
     return this.lastActivityReceiptCertainty;
   }
 
-  activityReceipt(): { certainty: SlackActivityReceiptCertainty; messageTs?: string } {
+  activityReceipt(): {
+    certainty: SlackActivityReceiptCertainty;
+    messageTs?: string;
+    unavailable?: boolean;
+  } {
     return {
       certainty: this.lastActivityReceiptCertainty,
       ...(this.activityMessageTs ? { messageTs: this.activityMessageTs } : {}),
+      ...(this.statusFailed && !this.activityMessageTs ? { unavailable: true } : {}),
     };
   }
 
@@ -377,11 +401,16 @@ export class WebClientPresenter {
     surface: SemanticActivityTelemetrySurface,
     outcome: 'acknowledged' | 'rejected' | 'ambiguous' | 'latched_off',
     startedAt: number,
+    update: SlackStatusUpdate,
   ): void {
+    const semantic = isSafeTypedActivityStatus(update)
+      ? semanticTelemetryForStatus(update)
+      : { family: 'unknown' as const, phase: 'working' as const };
     emitSemanticActivityTelemetry({
       event: 'activity.transport',
       surface,
       outcome,
+      ...semantic,
       durationMs: Date.now() - startedAt,
     }, this.options.activityTelemetry ?? console);
   }

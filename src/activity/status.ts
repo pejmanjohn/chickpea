@@ -27,6 +27,8 @@ export {
   isSafeTypedActivityStatus,
   type ActivityKind,
   type ActivityStatus,
+  type SemanticActivityPhase,
+  type SemanticTargetFamily,
   type TypedActivityStatus,
 } from './semantic.ts';
 

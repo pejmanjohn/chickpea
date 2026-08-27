@@ -53,6 +53,8 @@ test('workspace management emits a closed inspection fact without operation bodi
     kind: 'checking',
     action: 'Inspecting',
     object: 'workspace settings',
+    family: 'workspace',
+    phase: 'working',
     text: 'Inspecting workspace settings…',
   });
   assert.deepEqual(narrateSemanticActivity(fact.descriptor, {
@@ -61,6 +63,8 @@ test('workspace management emits a closed inspection fact without operation bodi
     kind: 'reading',
     action: 'Reviewing',
     object: 'workspace settings',
+    family: 'workspace',
+    phase: 'reviewing',
     text: 'Reviewing workspace settings…',
   });
   assert.doesNotMatch(JSON.stringify(fact), new RegExp(secret));

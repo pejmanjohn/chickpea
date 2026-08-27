@@ -114,7 +114,11 @@ function workTurn(eventId: string): NormalizedSlackTurn {
   };
 }
 
-function v3PresentationHarness(turn: NormalizedSlackTurn, runId: string) {
+function v3PresentationHarness(
+  turn: NormalizedSlackTurn,
+  runId: string,
+  semanticActivityEnabled = true,
+) {
   const db = openStateDb(':memory:');
   const store = new SlackRunPresentationStoreLogic(db);
   const sessionGeneration = Number(turn.messageTs.replace('.', ''));
@@ -131,14 +135,20 @@ function v3PresentationHarness(turn: NormalizedSlackTurn, runId: string) {
       avatarRevision: 7,
     } },
     sessionGeneration,
-    currentActivity: {
-      kind: 'preparing',
-      action: 'Preparing',
-      object: 'your request',
-      generation: sessionGeneration,
-      sequence: 1,
-      operation: { operationId: `activity_${runId}_1`, certainty: 'pending' },
-    },
+    ...(semanticActivityEnabled
+      ? {
+          currentActivity: {
+            kind: 'preparing' as const,
+            action: 'Preparing',
+            object: 'your request',
+            generation: sessionGeneration,
+            sequence: 1,
+            operation: {
+              operationId: `activity_${runId}_1`, certainty: 'pending' as const,
+            },
+          },
+        }
+      : {}),
     root: {
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
@@ -398,6 +408,51 @@ test('admission activity is fixed thinking copy without checklist or UTC narrati
   assert.deepEqual(updates, []);
   assert.equal(deletes, 0);
   assert.doesNotMatch(JSON.stringify(statuses), /UTC|chickpea_work_checklist|is thinking|local-stub/);
+});
+
+test('a capability-disabled V3 turn keeps Agent Session lifecycle without semantic status', async () => {
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_V3_SEMANTIC_ACTIVITY_OFF'),
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const runId = 'run_v3_semantic_activity_off';
+  const h = v3PresentationHarness(turn, runId, false);
+  const sessionStatuses: string[] = [];
+  const semanticStatuses: string[] = [];
+  const client = {
+    apiCall: async (_method: string, input: Record<string, unknown>) => {
+      sessionStatuses.push(String(input.status));
+      return { ok: true };
+    },
+    assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+      semanticStatuses.push(String(input.status));
+      return { ok: true };
+    } } },
+    chat: {
+      startStream: async () => ({ ok: true, ts: '1787776100.000300' }),
+      stopStream: async () => ({ ok: true }),
+    },
+  } as unknown as WebClient;
+
+  try {
+    await runTurn(turn, assignment, undefined, {
+      client,
+      runId,
+      replayText: 'Lifecycle-only answer.',
+      presentationState: h.state,
+      usageRecordingEnabled: false,
+    });
+    assert.deepEqual(sessionStatuses, ['processing', 'active']);
+    assert.deepEqual(semanticStatuses, []);
+    const stored = h.store.get(runId);
+    assert.equal(stored?.schemaVersion, 3);
+    if (stored?.schemaVersion === 3) {
+      assert.equal(stored.currentActivity, undefined);
+      assert.deepEqual(stored.activityProjection, { surface: 'unselected', state: 'absent' });
+    }
+  } finally {
+    h.db.close();
+  }
 });
 
 test('replay delivery skips model activity and never invokes the agent provider', async () => {

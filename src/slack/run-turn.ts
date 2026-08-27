@@ -108,7 +108,6 @@ import {
   SlackAgentViewPresentation,
   type SlackPresentationStatePort,
 } from './agent-view-presentation.ts';
-import { presentAdmittedSlackActivity } from './admission-activity.ts';
 import { createSlackWebClient } from './web-client.ts';
 import {
   externalActionAuthorityInstructions,
@@ -466,28 +465,6 @@ export async function runTurn(
         mode: ledgerAuthority ? 'enforce' : 'observe',
       })
     : undefined;
-  if (frozenPresentation?.schemaVersion === 3 &&
-      frozenPresentation.currentActivity?.operation.certainty === 'pending' &&
-      options.presentationState && options.runId) {
-    const admitted = frozenPresentation.currentActivity;
-    await presentAdmittedSlackActivity({
-      client,
-      state: options.presentationState,
-      runId: options.runId,
-      runFencingToken: options.runFencingToken ?? 0,
-      workspaceId: frozenPresentation.root.workspaceId,
-      channelId: frozenPresentation.root.channelId,
-      threadTs: frozenPresentation.root.threadTs,
-      requesterUserId: frozenPresentation.root.requesterUserId,
-      owner: frozenPresentation.owner,
-      agentId: assignment.agent.id,
-      activity: activityStatus(admitted.kind, admitted.action, admitted.object),
-    }).catch(() => {
-      // The durable pending receipt remains repairable; status is cosmetic.
-      console.warn('[chickpea] admitted Slack activity projection failed');
-    });
-    frozenPresentation = await options.presentationState.getRunPresentation(options.runId);
-  }
   let onNativeStarted = async (): Promise<void> => {};
   const agentViewPresentation = options.presentationState && options.runId
     ? new SlackAgentViewPresentation({
@@ -526,6 +503,10 @@ export async function runTurn(
       ? { activityProjection: frozenPresentation.activityProjection }
       : {}),
     ...(frozenPresentation?.schemaVersion === 3 &&
+        frozenPresentation.currentActivity?.operation.certainty === 'unknown'
+      ? { activityMayBeVisible: true }
+      : {}),
+    ...(frozenPresentation?.schemaVersion === 3 &&
         options.presentationState?.reserveSlackActivityStatus &&
         options.presentationState.applySlackActivityStatusCooldown
       ? {
@@ -559,6 +540,8 @@ export async function runTurn(
         frozenPresentation.currentActivity.kind,
         frozenPresentation.currentActivity.action,
         frozenPresentation.currentActivity.object,
+        frozenPresentation.currentActivity.family,
+        frozenPresentation.currentActivity.phase,
       )
     : undefined;
   const activityPresenter = {
@@ -582,6 +565,7 @@ export async function runTurn(
           activityWrite?.operationId,
           receipt.certainty,
           receipt.messageTs,
+          receipt.unavailable,
         );
       } catch {
         // Slack may already have accepted the activity. Keep the presenter's
@@ -589,6 +573,12 @@ export async function runTurn(
         return false;
       }
       return succeeded;
+    },
+    async refreshStatus(update: SlackStatusUpdate): Promise<boolean> {
+      if (!semanticActivityEnabled || !agentViewPresentation) return false;
+      const durable = await agentViewPresentation.prepareActivityRefresh(update);
+      if (!durable) return false;
+      return presenter.setStatus(update, durable);
     },
   };
   const statusTurn = registerSlackStatusTurn(statusInstanceId, activityPresenter, {
@@ -602,9 +592,27 @@ export async function runTurn(
             frozenPresentation.root.threadTs,
           ].join(':'),
           ...(admittedVisibleStatus ? { initialAppliedStatus: admittedVisibleStatus } : {}),
+          ...(admittedVisibleStatus ? { refreshInitialStatus: true } : {}),
         }
       : {}),
   });
+  let admissionStatusAttempted = false;
+  if (frozenPresentation?.schemaVersion === 3 &&
+      frozenPresentation.currentActivity?.operation.certainty === 'pending') {
+    admissionStatusAttempted = true;
+    const admitted = frozenPresentation.currentActivity;
+    await statusTurn.setStatus(activityStatus(
+      admitted.kind,
+      admitted.action,
+      admitted.object,
+      admitted.family,
+      admitted.phase,
+    )).catch(() => {
+      // The durable pending receipt remains repairable; status is cosmetic.
+      console.warn('[chickpea] admitted Slack activity projection failed');
+      return false;
+    });
+  }
   let terminalStatusFinished = false;
   const finishStatus = async (result: 'answer' | 'failure'): Promise<void> => {
     // Close the sink first. Agent observations are relayed best-effort from a
@@ -621,12 +629,15 @@ export async function runTurn(
         return;
       }
       const cleanup = await agentViewPresentation.prepareActivityCleanup();
-      if (!cleanup) {
+      if (cleanup.kind === 'already_cleared') {
         // An in-flight native write may have landed after the acknowledged
         // durable cleanup. Re-clear the transport without rewriting receipts.
-        if (late) await presenter.clearStatus(true);
+        if (late && cleanup.surface === 'assistant_status') {
+          await presenter.clearStatus(true);
+        }
         return;
       }
+      if (cleanup.kind !== 'prepared') return;
       const certainty = await presenter.clearStatus(late);
       await agentViewPresentation.recordActivityCleanupReceipt(
         cleanup.operationId,
@@ -862,9 +873,11 @@ export async function runTurn(
           frozenPresentation.currentActivity.kind,
           frozenPresentation.currentActivity.action,
           frozenPresentation.currentActivity.object,
+          frozenPresentation.currentActivity.family,
+          frozenPresentation.currentActivity.phase,
         )
       : initialActivityStatus(workChecklist, turn.text);
-    if (semanticActivityEnabled && !admittedVisibleStatus) {
+    if (semanticActivityEnabled && !admittedVisibleStatus && !admissionStatusAttempted) {
       await statusTurn.setStatus(initialStatus);
     }
 

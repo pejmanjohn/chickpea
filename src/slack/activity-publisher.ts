@@ -1,4 +1,5 @@
 import {
+  activityStatus,
   isSafeTypedActivityStatus,
   type ActivityStatus,
   type TypedActivityStatus,
@@ -37,6 +38,13 @@ export function publishActivityStatus(
   // structured fact over the Cloudflare RPC, and reject legacy/raw text before
   // it can cross an isolate boundary.
   if (!isSafeTypedActivityStatus(status)) return;
+  const canonicalStatus = activityStatus(
+    status.kind,
+    status.action,
+    status.object,
+    status.family,
+    status.phase,
+  );
   const context = currentFlueObservationContext();
   const matchingContext = context?.instanceId === instanceId ? context : undefined;
   const submissionId = observedSubmissionId ?? matchingContext?.submissionId;
@@ -44,7 +52,7 @@ export function publishActivityStatus(
   const generation = matchingContext?.submissionId === submissionId
     ? matchingContext.target?.generation
     : undefined;
-  if (generation && setObservedSlackStatus(instanceId, generation, status)) {
+  if (generation && setObservedSlackStatus(instanceId, generation, canonicalStatus)) {
     return;
   }
 
@@ -55,7 +63,7 @@ export function publishActivityStatus(
     pending: undefined,
   };
   instanceQueues.set(submissionId, queue);
-  if (sameActivityStatus(queue.active?.status, status)) {
+  if (sameActivityStatus(queue.active?.status, canonicalStatus)) {
     // The in-flight value is already the newest requested state.
     if (queue.pending) {
       emitRelayQueue('superseded');
@@ -64,12 +72,12 @@ export function publishActivityStatus(
     emitRelayQueue('coalesced');
     return;
   }
-  if (sameActivityStatus(queue.pending?.status, status)) {
+  if (sameActivityStatus(queue.pending?.status, canonicalStatus)) {
     emitRelayQueue('coalesced');
     return;
   }
   if (queue.pending) emitRelayQueue('superseded');
-  queue.pending = { status, ...(env ? { env } : {}) };
+  queue.pending = { status: canonicalStatus, ...(env ? { env } : {}) };
   emitRelayQueue('enqueued');
   startNextRelay(instanceId, submissionId, queue);
 }
@@ -118,5 +126,6 @@ function sameActivityStatus(
   right: TypedActivityStatus,
 ): boolean {
   return left?.kind === right.kind && left.action === right.action &&
-    left.object === right.object && left.text === right.text;
+    left.object === right.object && left.family === right.family &&
+    left.phase === right.phase && left.text === right.text;
 }

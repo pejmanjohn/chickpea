@@ -4,58 +4,55 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const options = parseArguments(process.argv.slice(2));
-const events = parseEvents(readFileSync(options.events, 'utf8'));
 const manifest = JSON.parse(readFileSync(options.manifest, 'utf8'));
 validateManifest(manifest);
 
-assert.ok(events.length > 0, 'No semantic activity events were supplied');
-assert.equal(
-  events.some((event) => event.surface === 'legacy_message'),
-  false,
-  'Acceptance contains legacy message activity; new work must be native-only',
+assert.ok(
+  options.normalEvents.length >= 10,
+  'At least ten isolated normal-timing captures are required',
 );
-assert.ok(events.some((event) =>
-  event.event === 'activity.produced' &&
-  event.family === 'managed_connector' &&
-  event.phase === 'working'
-), 'No managed-connector work phase was produced');
-assert.ok(events.some((event) =>
-  event.event === 'activity.transport' &&
-  event.surface === 'assistant_status' &&
-  event.outcome === 'acknowledged'
-), 'No native semantic status was acknowledged');
-assert.ok(events.some((event) =>
+const normalCaptures = options.normalEvents.map((path) =>
+  parseEvents(readFileSync(path, 'utf8'))
+);
+let specificAcknowledgedTurns = 0;
+for (const [index, events] of normalCaptures.entries()) {
+  assertNativeOnly(events, `normal capture ${index + 1}`);
+  assert.ok(events.some((event) =>
+    event.event === 'activity.work' &&
+    event.family === 'managed_connector' &&
+    event.durationMs >= 1_000
+  ), `Normal capture ${index + 1} is not an eligible managed turn`);
+  if (hasAcknowledgedPhase(events, 'managed_connector', 'working')) {
+    specificAcknowledgedTurns += 1;
+  }
+  assertAcknowledgedClear(events, `normal capture ${index + 1}`);
+}
+
+const diagnosticEvents = parseEvents(readFileSync(options.diagnosticEvents, 'utf8'));
+assertNativeOnly(diagnosticEvents, 'diagnostic capture');
+const diagnosticCursor = assertOrderedAcknowledgedPhases(diagnosticEvents, [
+  ['unknown', 'thinking'],
+  ['managed_connector', 'working'],
+  ['managed_connector', 'reviewing'],
+  ['response', 'drafting'],
+]);
+assert.notEqual(diagnosticEvents.findIndex((event, index) =>
+  index >= diagnosticCursor &&
   event.event === 'activity.clear' &&
   event.surface === 'assistant_status' &&
   event.outcome === 'acknowledged'
-), 'The native semantic status was not acknowledged as cleared');
+), -1, 'The diagnostic status was not cleared after its final acknowledged phase');
 
-if (options.mode === 'diagnostic') {
-  const diagnosticCursor = assertOrderedAcknowledgedPhases(events, [
-    ['unknown', 'thinking'],
-    ['managed_connector', 'working'],
-    ['managed_connector', 'reviewing'],
-    ['response', 'drafting'],
-  ]);
-  assert.notEqual(events.findIndex((event, index) =>
-    index >= diagnosticCursor &&
-    event.event === 'activity.clear' &&
-    event.surface === 'assistant_status' &&
-    event.outcome === 'acknowledged'
-  ), -1, 'The diagnostic status was not cleared after its final acknowledged phase');
-}
-
-const ratio = manifest.eligibleManagedTurns === 0
-  ? 0
-  : manifest.specificAcknowledgedTurns / manifest.eligibleManagedTurns;
+const eligibleManagedTurns = normalCaptures.length;
+const ratio = specificAcknowledgedTurns / eligibleManagedTurns;
 assert.ok(ratio >= 0.9, 'Eligible managed turns did not meet the 90% specific-status gate');
 
 console.log(JSON.stringify({
   ok: true,
-  mode: options.mode,
-  eventCount: events.length,
-  eligibleManagedTurns: manifest.eligibleManagedTurns,
-  specificAcknowledgedTurns: manifest.specificAcknowledgedTurns,
+  normalEventCount: normalCaptures.reduce((total, events) => total + events.length, 0),
+  diagnosticEventCount: diagnosticEvents.length,
+  eligibleManagedTurns,
+  specificAcknowledgedTurns,
   specificAcknowledgedRatio: ratio,
   progressMessageCalls: manifest.progressMessageCalls,
   priorVersionRestored: manifest.priorVersionRestored,
@@ -63,27 +60,54 @@ console.log(JSON.stringify({
 }, null, 2));
 
 function parseArguments(args) {
-  const parsed = { mode: 'normal' };
+  const parsed = { normalEvents: [] };
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
     if (!value) usage();
-    if (flag === '--events') parsed.events = value;
+    if (flag === '--normal-events') parsed.normalEvents.push(value);
+    else if (flag === '--diagnostic-events') parsed.diagnosticEvents = value;
     else if (flag === '--manifest') parsed.manifest = value;
-    else if (flag === '--mode' && (value === 'normal' || value === 'diagnostic')) {
-      parsed.mode = value;
-    } else usage();
+    else usage();
   }
-  if (!parsed.events || !parsed.manifest) usage();
+  if (parsed.normalEvents.length === 0 || !parsed.diagnosticEvents || !parsed.manifest) usage();
   return parsed;
 }
 
 function usage() {
   throw new Error(
     'Usage: verify-semantic-activity-status-live.mjs '
-      + '--events <sanitized-jsonl> --manifest <content-free-json> '
-      + '--mode <normal|diagnostic>',
+      + '--normal-events <isolated-sanitized-jsonl> (repeat 10+) '
+      + '--diagnostic-events <isolated-sanitized-jsonl> '
+      + '--manifest <content-free-json>',
   );
+}
+
+function assertNativeOnly(events, label) {
+  assert.ok(events.length > 0, `No semantic activity events in ${label}`);
+  assert.equal(
+    events.some((event) => event.surface === 'legacy_message'),
+    false,
+    `${label} contains legacy message activity; new work must be native-only`,
+  );
+}
+
+function hasAcknowledgedPhase(events, family, phase) {
+  return events.some((event) =>
+    event.event === 'activity.transport' &&
+    event.surface === 'assistant_status' &&
+    event.outcome === 'acknowledged' &&
+    event.family === family &&
+    event.phase === phase
+  );
+}
+
+function assertAcknowledgedClear(events, label) {
+  assert.ok(events.some((event) =>
+    event.event === 'activity.clear' &&
+    event.surface === 'assistant_status' &&
+    event.outcome === 'acknowledged'
+  ), `${label} did not acknowledge the native semantic status clear`);
 }
 
 function parseEvents(input) {
@@ -126,10 +150,16 @@ function validateEvent(event) {
       break;
     case 'activity.transport':
       exactKeys(event, [
-        'schemaVersion', 'event', 'surface', 'outcome', 'durationMs',
+        'schemaVersion', 'event', 'surface', 'outcome', 'family', 'phase', 'durationMs',
       ], ['durationMs']);
       oneOf(event.surface, ['assistant_status', 'legacy_message']);
       oneOf(event.outcome, ['acknowledged', 'rejected', 'ambiguous', 'latched_off']);
+      oneOf(event.family, [
+        'managed_connector', 'custom_connection', 'skill', 'repository', 'memory',
+        'scheduled_work', 'workspace', 'connection_setup', 'agent_authoring',
+        'artifact', 'response', 'unknown', 'internal',
+      ]);
+      oneOf(event.phase, ['thinking', 'working', 'reviewing', 'drafting', 'reassessing']);
       optionalDuration(event.durationMs);
       break;
     case 'activity.clear':
@@ -153,6 +183,18 @@ function validateEvent(event) {
         'schemaVersion', 'event', 'outcome', 'durationMs',
       ], ['durationMs']);
       oneOf(event.outcome, ['reserved', 'cooldown', 'exhausted', 'unavailable']);
+      optionalDuration(event.durationMs);
+      break;
+    case 'activity.work':
+      exactKeys(event, [
+        'schemaVersion', 'event', 'family', 'outcome', 'durationMs',
+      ]);
+      oneOf(event.family, [
+        'managed_connector', 'custom_connection', 'skill', 'repository', 'memory',
+        'scheduled_work', 'workspace', 'connection_setup', 'agent_authoring',
+        'artifact', 'response', 'unknown', 'internal',
+      ]);
+      oneOf(event.outcome, ['succeeded', 'failed', 'ambiguous']);
       optionalDuration(event.durationMs);
       break;
     default:
@@ -182,7 +224,6 @@ function validateManifest(manifest) {
   const allowed = new Set([
     'syntheticMailbox', 'readOnlyQuery', 'unmodifiedTiming', 'diagnosticTrace',
     'progressMessageCalls', 'priorVersionRestored', 'rawCaptureDeleted',
-    'eligibleManagedTurns', 'specificAcknowledgedTurns',
   ]);
   assert.equal(Object.keys(manifest).every((key) => allowed.has(key)), true);
   for (const field of [
@@ -190,14 +231,7 @@ function validateManifest(manifest) {
     'priorVersionRestored', 'rawCaptureDeleted',
   ]) assert.equal(manifest[field], true, `${field} must be true`);
   assert.equal(manifest.progressMessageCalls, 0, 'Activity progress-message calls must be zero');
-  for (const field of ['eligibleManagedTurns', 'specificAcknowledgedTurns']) {
-    assert.ok(Number.isInteger(manifest[field]) && manifest[field] >= 0 && manifest[field] <= 10_000);
-  }
-  assert.ok(manifest.eligibleManagedTurns > 0, 'At least one eligible managed turn is required');
-  assert.ok(manifest.specificAcknowledgedTurns <= manifest.eligibleManagedTurns);
-  if (options.mode === 'diagnostic') {
-    assert.equal(manifest.diagnosticTrace, true, 'diagnosticTrace must be true');
-  }
+  assert.equal(manifest.diagnosticTrace, true, 'diagnosticTrace must be true');
 }
 
 function assertOrderedAcknowledgedPhases(events, expected) {
@@ -214,7 +248,9 @@ function assertOrderedAcknowledgedPhases(events, expected) {
       index > producedIndex &&
       event.event === 'activity.transport' &&
       event.surface === 'assistant_status' &&
-      event.outcome === 'acknowledged'
+      event.outcome === 'acknowledged' &&
+      event.family === family &&
+      event.phase === phase
     );
     assert.notEqual(
       acknowledgedIndex,

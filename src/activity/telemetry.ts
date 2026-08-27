@@ -1,13 +1,12 @@
-import type { SemanticTargetFamily, TypedActivityStatus } from './semantic.ts';
+import type {
+  SemanticActivityPhase,
+  SemanticTargetFamily,
+  TypedActivityStatus,
+} from './semantic.ts';
 
 export const SEMANTIC_ACTIVITY_TELEMETRY_SCHEMA_VERSION = 1;
 
-export type SemanticActivityTelemetryPhase =
-  | 'thinking'
-  | 'working'
-  | 'reviewing'
-  | 'drafting'
-  | 'reassessing';
+export type SemanticActivityTelemetryPhase = SemanticActivityPhase;
 
 export type SemanticActivityTelemetrySurface = 'assistant_status' | 'legacy_message';
 
@@ -45,6 +44,8 @@ export type SemanticActivityRateOutcome =
   | 'exhausted'
   | 'unavailable';
 
+export type SemanticActivityWorkOutcome = 'succeeded' | 'failed' | 'ambiguous';
+
 export interface SemanticActivityTelemetrySink {
   info(message: string): void;
 }
@@ -67,6 +68,8 @@ export type SemanticActivityTelemetryEvent =
       event: 'activity.transport';
       surface: SemanticActivityTelemetrySurface;
       outcome: SemanticActivityTransportOutcome;
+      family: SemanticTargetFamily;
+      phase: SemanticActivityTelemetryPhase;
       durationMs?: number;
     }
   | {
@@ -85,6 +88,12 @@ export type SemanticActivityTelemetryEvent =
       event: 'activity.rate';
       outcome: SemanticActivityRateOutcome;
       durationMs?: number;
+    }
+  | {
+      event: 'activity.work';
+      family: SemanticTargetFamily;
+      outcome: SemanticActivityWorkOutcome;
+      durationMs: number;
     };
 
 const TARGET_FAMILIES = new Set<SemanticTargetFamily>([
@@ -121,6 +130,9 @@ const REFRESH_OUTCOMES = new Set<SemanticActivityRefreshOutcome>([
 ]);
 const RATE_OUTCOMES = new Set<SemanticActivityRateOutcome>([
   'reserved', 'cooldown', 'exhausted', 'unavailable',
+]);
+const WORK_OUTCOMES = new Set<SemanticActivityWorkOutcome>([
+  'succeeded', 'failed', 'ambiguous',
 ]);
 
 const MAX_DURATION_MS = 300_000;
@@ -164,6 +176,8 @@ export function emitSemanticActivityTelemetry(
         event,
         surface: telemetrySurface(input.surface),
         outcome: enumValue(input.outcome, TRANSPORT_OUTCOMES, 'rejected'),
+        family: enumValue(input.family, TARGET_FAMILIES, 'unknown'),
+        phase: enumValue(input.phase, PHASES, 'working'),
         ...boundedDuration(input.durationMs),
       };
       break;
@@ -193,6 +207,15 @@ export function emitSemanticActivityTelemetry(
         ...boundedDuration(input.durationMs),
       };
       break;
+    case 'activity.work':
+      payload = {
+        schemaVersion: SEMANTIC_ACTIVITY_TELEMETRY_SCHEMA_VERSION,
+        event,
+        family: enumValue(input.family, TARGET_FAMILIES, 'unknown'),
+        outcome: enumValue(input.outcome, WORK_OUTCOMES, 'ambiguous'),
+        ...boundedDuration(input.durationMs),
+      };
+      break;
     default:
       // Callers cannot introduce an open-ended event or field by casting.
       payload = {
@@ -215,74 +238,7 @@ export function emitSemanticActivityTelemetry(
 export function semanticTelemetryForStatus(
   status: TypedActivityStatus,
 ): { family: SemanticTargetFamily; phase: SemanticActivityTelemetryPhase } {
-  if (status.action === 'Thinking' && status.object === 'the request') {
-    return { family: 'unknown', phase: 'thinking' };
-  }
-  if (status.action === 'Drafting' && status.object === 'the response') {
-    return { family: 'response', phase: 'drafting' };
-  }
-  if (status.action === 'Reassessing') {
-    return { family: 'unknown', phase: 'reassessing' };
-  }
-
-  const phase: SemanticActivityTelemetryPhase = status.action === 'Reviewing'
-    ? 'reviewing'
-    : 'working';
-  return { family: statusFamily(status), phase };
-}
-
-function statusFamily(status: TypedActivityStatus): SemanticTargetFamily {
-  const exact = `${status.action}\u0000${status.object}`;
-  switch (exact) {
-    case 'Checking\u0000a connected service':
-    case 'Updating\u0000a connected service':
-      return 'custom_connection';
-    case 'Using\u0000a skill':
-    case 'Reviewing\u0000skill results':
-      return 'skill';
-    case 'Inspecting\u0000the repository':
-    case 'Running\u0000tests':
-    case 'Editing\u0000files':
-    case 'Reviewing\u0000repository results':
-    case 'Reviewing\u0000test results':
-    case 'Reviewing\u0000file changes':
-      return 'repository';
-    case 'Checking\u0000memory':
-    case 'Updating\u0000memory':
-    case 'Reviewing\u0000memory':
-      return 'memory';
-    case 'Checking\u0000scheduled work':
-    case 'Updating\u0000scheduled work':
-    case 'Reviewing\u0000scheduled work':
-      return 'scheduled_work';
-    case 'Inspecting\u0000workspace settings':
-    case 'Reviewing\u0000workspace settings':
-      return 'workspace';
-    case 'Setting up\u0000a connection':
-    case 'Checking\u0000the connection':
-      return 'connection_setup';
-    case 'Preparing\u0000Agent changes':
-    case 'Applying\u0000Agent changes':
-    case 'Inspecting\u0000Agent settings':
-    case 'Reviewing\u0000Agent changes':
-      return 'agent_authoring';
-    case 'Creating\u0000an artifact':
-    case 'Reviewing\u0000the artifact':
-      return 'artifact';
-    case 'Working on\u0000the request':
-    case 'Reviewing\u0000the results':
-      return 'unknown';
-  }
-
-  if (
-    status.action === 'Checking' ||
-    status.action === 'Sending with' ||
-    status.action === 'Updating' ||
-    status.action === 'Reviewing'
-  ) {
-    return 'managed_connector';
-  }
-  return 'unknown';
+  return { family: status.family, phase: status.phase };
 }
 
 function telemetrySurface(value: unknown): SemanticActivityTelemetrySurface {

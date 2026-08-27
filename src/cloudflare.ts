@@ -134,7 +134,11 @@ import {
 import { createLedgerSlackRunHandler } from './slack/ledger-turn-driver.ts';
 import type { SlackPresentationStatePort } from './slack/agent-view-presentation.ts';
 import { setObservedSlackStatus } from './slack/status-registry.ts';
-import { isSafeTypedActivityStatus, type TypedActivityStatus } from './activity/status.ts';
+import {
+  activityStatus,
+  isSafeTypedActivityStatus,
+  type TypedActivityStatus,
+} from './activity/status.ts';
 import {
   deliverAgentFailureFinal,
   repairSlackInteractionProgress,
@@ -1400,7 +1404,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (!isSafeTypedActivityStatus(status)) return null;
       const target = stores.turnJobs.matchFlueObservation(instanceId, submissionId);
       if (target) {
-        setObservedSlackStatus(instanceId, target.generation, status);
+        setObservedSlackStatus(
+          instanceId,
+          target.generation,
+          activityStatus(
+            status.kind,
+            status.action,
+            status.object,
+            status.family,
+            status.phase,
+          ),
+        );
       }
       return null;
     });

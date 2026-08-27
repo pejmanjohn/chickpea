@@ -115,6 +115,43 @@ test('a still-current phase refreshes and final preparation cancels the refresh'
   await turn.finish(async () => {});
 });
 
+test('a rehydrated status refreshes only through the validated native path', async () => {
+  const calls: string[] = [];
+  const turn = registerSlackStatusTurn('rehydrated-refresh-thread', {
+    setStatus(update) {
+      calls.push(`set:${update.text}`);
+      return Promise.resolve(true);
+    },
+    refreshStatus(update) {
+      calls.push(`refresh:${update.text}`);
+      return Promise.resolve(true);
+    },
+  }, {
+    generation: 'rehydrated-refresh-generation',
+    initialAppliedStatus: { text: 'Checking Gmail…' },
+    refreshInitialStatus: true,
+    refreshIntervalMs: 30,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(calls, ['refresh:Checking Gmail…']);
+  turn.close();
+});
+
+test('a legacy presenter cannot reassert a rehydrated status', async () => {
+  const presenter = recordingPresenter();
+  const turn = registerSlackStatusTurn('legacy-rehydrated-refresh-thread', presenter, {
+    generation: 'legacy-rehydrated-refresh-generation',
+    initialAppliedStatus: { text: 'Checking Gmail…' },
+    refreshInitialStatus: true,
+    refreshIntervalMs: 30,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(presenter.statuses, []);
+  turn.close();
+});
+
 test('a superseded phase never refreshes after the newer fact is applied', async () => {
   const presenter = recordingPresenter();
   const turn = registerSlackStatusTurn('refresh-superseded-thread', presenter, {

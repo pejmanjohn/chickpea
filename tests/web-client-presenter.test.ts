@@ -271,6 +271,7 @@ test('legacy message activity can update a stored coordinate but never creates a
 
 test('an ambiguous native rejection is recorded without creating a message fallback', async () => {
   let progressPosts = 0;
+  const nativeStatuses: string[] = [];
   const presenter = presenterWith({
     chat: {
       async postMessage() {
@@ -280,8 +281,10 @@ test('an ambiguous native rejection is recorded without creating a message fallb
     },
     assistant: {
       threads: {
-        async setStatus() {
-          throw { code: ErrorCode.RequestError };
+        async setStatus(input: { status: string }) {
+          nativeStatuses.push(input.status);
+          if (input.status) throw { code: ErrorCode.RequestError };
+          return { ok: true };
         },
       },
     },
@@ -289,6 +292,8 @@ test('an ambiguous native rejection is recorded without creating a message fallb
 
   assert.equal(await presenter.setStatus({ text: 'Drafting the initial skill…' }), false);
   assert.equal(presenter.activityReceiptCertainty(), 'unknown');
+  assert.equal(await presenter.clearStatus(), 'acknowledged');
+  assert.deepEqual(nativeStatuses, ['Drafting the initial skill…', '']);
   assert.equal(progressPosts, 0);
 });
 

@@ -47,6 +47,8 @@ test('semantic activity telemetry serializes only fixed enums, booleans, and bou
     event: 'activity.transport',
     surface: 'assistant_status',
     outcome: 'acknowledged',
+    family: 'unknown',
+    phase: 'working',
     durationMs: 300_000,
   }]);
   assert.equal(JSON.stringify(sink.records).includes(credential), false);
@@ -54,8 +56,12 @@ test('semantic activity telemetry serializes only fixed enums, booleans, and bou
 });
 
 test('canonical status copy reduces to closed family and phase facts without retaining labels', () => {
-  const gmailStart = activityStatus('checking', 'Checking', 'Gmail');
-  const gmailReview = activityStatus('reading', 'Reviewing', 'Gmail messages');
+  const gmailStart = activityStatus(
+    'checking', 'Checking', 'Gmail', 'managed_connector', 'working',
+  );
+  const gmailReview = activityStatus(
+    'reading', 'Reviewing', 'Gmail messages', 'managed_connector', 'reviewing',
+  );
 
   assert.deepEqual(semanticTelemetryForStatus(gmailStart), {
     family: 'managed_connector',
@@ -66,11 +72,15 @@ test('canonical status copy reduces to closed family and phase facts without ret
     phase: 'reviewing',
   });
   assert.deepEqual(
-    semanticTelemetryForStatus(activityStatus('writing', 'Drafting', 'the response')),
+    semanticTelemetryForStatus(activityStatus(
+      'writing', 'Drafting', 'the response', 'response', 'drafting',
+    )),
     { family: 'response', phase: 'drafting' },
   );
   assert.deepEqual(
-    semanticTelemetryForStatus(activityStatus('checking', 'Checking', 'memory')),
+    semanticTelemetryForStatus(activityStatus(
+      'checking', 'Checking', 'memory', 'memory', 'working',
+    )),
     { family: 'memory', phase: 'working' },
   );
 });
@@ -91,9 +101,15 @@ test('status queue telemetry records coalescing, supersession, refresh, and stal
     telemetry: sink,
   });
 
-  const thinking = activityStatus('preparing', 'Thinking', 'the request');
-  const gmail = activityStatus('checking', 'Checking', 'Gmail');
-  const reviewing = activityStatus('reading', 'Reviewing', 'Gmail messages');
+  const thinking = activityStatus(
+    'preparing', 'Thinking', 'the request', 'unknown', 'thinking',
+  );
+  const gmail = activityStatus(
+    'checking', 'Checking', 'Gmail', 'managed_connector', 'working',
+  );
+  const reviewing = activityStatus(
+    'reading', 'Reviewing', 'Gmail messages', 'managed_connector', 'reviewing',
+  );
   const first = turn.setStatus(thinking);
   const coalesced = turn.setStatus(thinking);
   const superseded = turn.setStatus(gmail);
