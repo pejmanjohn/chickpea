@@ -106,11 +106,17 @@ export async function listPrivatelyUsableAgents(
     grant.status === 'active' &&
     agentIds.has(grant.agentId)
   );
+  const grantsByAgent = new Map<string, AgentChannelGrant[]>();
+  for (const grant of grants) {
+    const agentGrants = grantsByAgent.get(grant.agentId) ?? [];
+    agentGrants.push(grant);
+    grantsByAgent.set(grant.agentId, agentGrants);
+  }
   const facts = await collectDirectoryFacts(grants, input.transport);
   const placements = new Map<string, PlacementState>();
   for (const agent of agents) {
     placements.set(agent.id, placementState(
-      grants.filter((grant) => grant.agentId === agent.id),
+      grantsByAgent.get(agent.id) ?? [],
       facts,
     ));
   }
@@ -192,9 +198,9 @@ async function collectDirectoryFacts(
     // Targeted lookups below recover any placement Slack can still verify.
   }
 
-  const unresolved = channelIds.filter((channelId) => !facts.has(channelId));
+  const unresolved = new Set(channelIds.filter((channelId) => !facts.has(channelId)));
   const targeted = await collectTargetedFacts(
-    grants.filter((grant) => unresolved.includes(grant.channelId)),
+    grants.filter((grant) => unresolved.has(grant.channelId)),
     transport,
   );
   for (const [channelId, channel] of targeted) facts.set(channelId, channel);
@@ -250,14 +256,15 @@ function evaluateAccess(
     };
   }
   if (placement.verifiedPrivateChannelIds.size > 0) {
+    const memberChannels = membership.memberChannels;
+    if (placement.unavailable || membership.memberChannelsUnavailable || !memberChannels) {
+      return { status: 'unavailable', audience: 'unavailable' };
+    }
     const isMember = [...placement.verifiedPrivateChannelIds].some((channelId) =>
-      membership.memberChannels?.has(channelId)
+      memberChannels.has(channelId)
     );
     if (actor.fullMember && isMember) {
       return { status: 'allowed', audience: 'private_channel_members' };
-    }
-    if (placement.unavailable || membership.memberChannelsUnavailable || !membership.memberChannels) {
-      return { status: 'unavailable', audience: 'unavailable' };
     }
     return { status: 'denied', audience: 'private_channel_members' };
   }

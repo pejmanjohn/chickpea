@@ -58,6 +58,7 @@ import {
 import {
   listPrivatelyUsableAgents,
   resolvePrivateAgentAccess,
+  type PrivateAgentActor,
 } from '../slack/agent-access.ts';
 import {
   agentAppHomeStarterMessage,
@@ -482,6 +483,17 @@ interface ResolvedAgentRoutingActor {
   principal?: AuthPrincipal;
 }
 
+function privateAgentActor(
+  actor: ResolvedAgentRoutingActor,
+  slackUserId: string,
+): PrivateAgentActor {
+  return {
+    fullMember: actor.routing.fullMember,
+    slackUserId,
+    ...(actor.principal ? { membershipId: actor.principal.membershipId } : {}),
+  };
+}
+
 export async function resolveAgentRoutingActor(input: {
   workspaceId: string;
   userId: string;
@@ -572,11 +584,7 @@ async function publishAgentAppHome(input: {
         agents,
         workspaceId: input.workspaceId,
         grants,
-        actor: {
-          fullMember: true,
-          slackUserId: input.userId,
-          ...(actor.principal ? { membershipId: actor.principal.membershipId } : {}),
-        },
+        actor: privateAgentActor(actor, input.userId),
         transport: input.transport,
       })
     : [];
@@ -625,11 +633,7 @@ async function seedAgentAppHomeThread(input: {
     agent,
     workspaceId: input.workspaceId,
     grants,
-    actor: {
-      fullMember: true,
-      slackUserId: input.userId,
-      ...(actor.principal ? { membershipId: actor.principal.membershipId } : {}),
-    },
+    actor: privateAgentActor(actor, input.userId),
     transport: input.transport,
   });
   if (access.status !== 'allowed') {
@@ -1023,13 +1027,7 @@ async function processSlackEvent(
           agent,
           workspaceId: turn.workspaceId,
           grants: await store.listAgentChannelGrants(turn.workspaceId),
-          actor: {
-            fullMember: agentRoutingActor!.routing.fullMember,
-            slackUserId: turn.userId,
-            ...(agentRoutingActor!.principal
-              ? { membershipId: agentRoutingActor!.principal.membershipId }
-              : {}),
-          },
+          actor: privateAgentActor(agentRoutingActor!, turn.userId),
           transport: runtimeTransport,
         }),
       });

@@ -212,6 +212,26 @@ test('a verified public placement still grants access when another placement is 
   assert.deepEqual(calls.sort(), ['lookup:C_PUBLIC', 'lookup:C_UNKNOWN']);
 });
 
+test('an unknown active placement keeps private-only access unavailable', async () => {
+  const selected = agent('mixed-private-unknown');
+  assert.deepEqual(await resolvePrivateAgentAccess({
+    agent: selected,
+    workspaceId: 'T1',
+    grants: [
+      grant(selected.id, 'C_PRIVATE'),
+      grant(selected.id, 'C_UNKNOWN'),
+    ],
+    actor: fullMember,
+    transport: transport({
+      channels: {
+        C_PRIVATE: channel('C_PRIVATE', { private: true }),
+        C_UNKNOWN: new Error('Slack unavailable'),
+      },
+      memberChannels: new Set(['C_PRIVATE']),
+    }),
+  }), { status: 'unavailable', audience: 'unavailable' });
+});
+
 test('private membership uncertainty is unavailable, while audience projection stays categorical', async () => {
   const selected = agent('private');
   const grants = [grant(selected.id, 'C_PRIVATE')];
