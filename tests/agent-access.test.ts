@@ -7,7 +7,11 @@ import {
   resolvePrivateAgentAccess,
   resolvePrivateAgentAudience,
 } from '../src/slack/agent-access.ts';
-import type { SlackChannel, SlackTransport } from '../src/slack/transport/types.ts';
+import {
+  SlackTransportError,
+  type SlackChannel,
+  type SlackTransport,
+} from '../src/slack/transport/types.ts';
 
 function agent(
   id: string,
@@ -321,4 +325,61 @@ test('large directories use one bounded traversal and target only unresolved gra
 
   assert.equal(visible.length, 8);
   assert.deepEqual(calls, ['directory', 'lookup:C7']);
+});
+
+test('Slack fact failures emit sanitized unavailable diagnostics', async (t) => {
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (...values: unknown[]) => {
+    warnings.push(values.map(String).join(' '));
+  });
+  const selected = agent('private');
+  const grants = [grant(selected.id, 'C_PRIVATE')];
+
+  await resolvePrivateAgentAccess({
+    agent: selected,
+    workspaceId: 'T1',
+    grants,
+    actor: fullMember,
+    transport: transport({
+      channels: {
+        C_PRIVATE: new SlackTransportError('conversations.info', 'ratelimited'),
+      },
+    }),
+  });
+  await resolvePrivateAgentAccess({
+    agent: selected,
+    workspaceId: 'T1',
+    grants,
+    actor: fullMember,
+    transport: transport({
+      channels: { C_PRIVATE: channel('C_PRIVATE', { private: true }) },
+      memberChannels: new SlackTransportError('users.conversations', 'service_unavailable'),
+    }),
+  });
+  const directoryAgents = Array.from({ length: 8 }, (_, index) => agent(`directory_${index}`));
+  const directoryGrants = directoryAgents.map((item, index) => grant(item.id, `C${index}`));
+  await listPrivatelyUsableAgents({
+    agents: directoryAgents,
+    workspaceId: 'T1',
+    grants: directoryGrants,
+    actor: fullMember,
+    transport: transport({
+      directory: new SlackTransportError('conversations.list', 'request_timeout'),
+      channels: Object.fromEntries(directoryGrants.map(({ channelId }) => [
+        channelId,
+        channel(channelId),
+      ])),
+    }),
+  });
+
+  assert.match(warnings.join('\n'), /placement facts unavailable \(conversations\.info:ratelimited\)/);
+  assert.match(
+    warnings.join('\n'),
+    /member-channels facts unavailable \(users\.conversations:service_unavailable\)/,
+  );
+  assert.match(
+    warnings.join('\n'),
+    /directory facts unavailable \(conversations\.list:request_timeout\)/,
+  );
+  assert.doesNotMatch(warnings.join('\n'), /C_PRIVATE|U1|member_1/);
 });

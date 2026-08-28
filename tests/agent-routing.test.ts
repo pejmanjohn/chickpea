@@ -598,12 +598,42 @@ test('an ungranted handle discloses only permitted alternatives and keeps the cu
 test('a non-member Channel denial never enumerates Agent alternatives', async () => {
   const { store } = await fixture();
   try {
+    let lookups = 0;
     const result = await resolveAgentRoute({
-      turn: turn(), surface: 'channel',
+      turn: turn({ text: '<!subteam^SUNKNOWN|@unknown> help' }), surface: 'channel',
       actor: { channelMember: false, fullMember: false }, config: store,
+      transport: {
+        lookupUserGroup: async () => {
+          lookups += 1;
+          return undefined;
+        },
+      },
     });
     assert.equal(result.kind, 'denied');
     if (result.kind === 'denied') assert.deepEqual(result.alternatives, []);
+    const direct = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1',
+        channelType: 'im',
+        source: 'dm_message',
+        text: '<!subteam^SUNKNOWN|@unknown> help',
+      }),
+      surface: 'direct',
+      actor: { channelMember: false, fullMember: false },
+      config: store,
+      transport: {
+        lookupUserGroup: async () => {
+          lookups += 1;
+          return undefined;
+        },
+      },
+    });
+    assert.equal(direct.kind, 'denied');
+    if (direct.kind === 'denied') {
+      assert.equal(direct.reason, 'member_required');
+      assert.deepEqual(direct.alternatives, []);
+    }
+    assert.equal(lookups, 0);
   } finally {
     store.close();
   }

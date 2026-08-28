@@ -1,5 +1,9 @@
 import type { AgentChannelGrant, CustomAgentConfig } from '../config/types.ts';
-import type { SlackChannel, SlackTransport } from './transport/types.ts';
+import {
+  SlackTransportError,
+  type SlackChannel,
+  type SlackTransport,
+} from './transport/types.ts';
 
 export type PrivateAgentAudience =
   | 'workspace_members'
@@ -70,8 +74,9 @@ export async function resolvePrivateAgentAccess(
   ) {
     try {
       memberChannels = await input.transport.listMemberChannels(input.actor.slackUserId);
-    } catch {
+    } catch (error) {
       memberChannelsUnavailable = true;
+      logUnavailableFacts('member-channels', error);
     }
   }
   return evaluateAccess(input.agent, input.actor, placement, {
@@ -129,8 +134,9 @@ export async function listPrivatelyUsableAgents(
   if (privateMembershipNeeded && input.actor.slackUserId) {
     try {
       memberChannels = await input.transport.listMemberChannels(input.actor.slackUserId);
-    } catch {
+    } catch (error) {
       memberChannelsUnavailable = true;
+      logUnavailableFacts('member-channels', error);
     }
   }
 
@@ -165,16 +171,21 @@ async function collectTargetedFacts(
   transport: AgentAccessTransport,
 ): Promise<ReadonlyMap<string, SlackChannel | undefined>> {
   const facts = new Map<string, SlackChannel | undefined>();
+  let firstFailure: unknown;
+  let failed = false;
   await Promise.all([...new Set(grants.map(({ channelId }) => channelId))].map(
     async (channelId) => {
       try {
         const channel = await transport.lookupChannel(channelId);
         facts.set(channelId, channel.id === channelId ? channel : undefined);
-      } catch {
+      } catch (error) {
+        if (!failed) firstFailure = error;
+        failed = true;
         facts.set(channelId, undefined);
       }
     },
   ));
+  if (failed) logUnavailableFacts('placement', firstFailure);
   return facts;
 }
 
@@ -194,7 +205,8 @@ async function collectDirectoryFacts(
     for (const channel of directory.channels) {
       if (wanted.has(channel.id)) facts.set(channel.id, channel);
     }
-  } catch {
+  } catch (error) {
+    logUnavailableFacts('directory', error);
     // Targeted lookups below recover any placement Slack can still verify.
   }
 
@@ -278,4 +290,14 @@ function evaluateAccess(
     };
   }
   return { status: 'unavailable', audience: 'unavailable' };
+}
+
+function logUnavailableFacts(
+  category: 'placement' | 'directory' | 'member-channels',
+  error: unknown,
+): void {
+  const reason = error instanceof SlackTransportError
+    ? `${error.operation}:${error.code}`
+    : 'unexpected_error';
+  console.warn(`[chickpea] Agent private-use ${category} facts unavailable (${reason})`);
 }

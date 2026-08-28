@@ -109,6 +109,9 @@ export async function resolveAgentRoute(
   if (!installation) {
     return denied('installation_unavailable', []);
   }
+  if (!actor.fullMember) {
+    return denied(surface === 'direct' ? 'member_required' : 'not_available', []);
+  }
 
   const [agents, channelGrants, currentRoute] = await Promise.all([
     config.listAgents(),
@@ -219,12 +222,10 @@ export async function resolveAgentRoute(
     const grant = activeGrants.find((candidate) => candidate.agentId === selected!.id);
     const baseAppMention = selected.kind === 'system' &&
       source === 'default_agent' && turn.source === 'app_mention';
-    if (!actor.fullMember) return denied('not_available', []);
     if (!actor.channelMember || (!baseAppMention && !grant)) {
       return denied('not_available', available);
     }
   } else {
-    if (!actor.fullMember) return denied('member_required', []);
     if (selected.kind === 'user') {
       const access = await input.authorizeUserAgent?.(selected);
       if (access?.status !== 'allowed') {
