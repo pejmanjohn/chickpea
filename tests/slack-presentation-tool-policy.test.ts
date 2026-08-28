@@ -18,6 +18,7 @@ import {
   SlackPresentationToolUnavailableError,
 } from '../src/slack/presentation-tool-policy.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../src/slack/presentation-intent.ts';
+import { SLACK_PRESENT_TABLE_TOOL_NAME } from '../src/slack/table-presentation.ts';
 
 const EXECUTION_CONTEXT = {
   agentName: CHICKPEA_SLACK_AGENT_NAME,
@@ -126,6 +127,46 @@ test('a failed declaration does not arm the answer-only lock', async () => {
     assert.equal(
       await executeTool('read', 'call_read_after_failure', async () => 'allowed'),
       'allowed',
+    );
+  });
+});
+
+test('a successful table presentation locks later data-changing tools', async () => {
+  await withSubmission(async () => {
+    observeTurn([{ role: 'user', content: currentPrompt(true) }]);
+    assert.equal(
+      await executeTool(SLACK_PRESENT_TABLE_TOOL_NAME, 'call_table', async () => 'recorded'),
+      'recorded',
+    );
+    await assert.rejects(
+      () => executeTool('mcp__docs__search', 'call_after_table', async () => 'must not execute'),
+      SlackAnswerOnlyToolDeniedError,
+    );
+  });
+});
+
+test('resumed turns rehydrate a successful table presentation as answer-only', async () => {
+  await withSubmission(async () => {
+    observeTurn([
+      { role: 'user', content: currentPrompt(true) },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall', id: 'call_durable_table', name: SLACK_PRESENT_TABLE_TOOL_NAME,
+          arguments: {},
+        }],
+      },
+      {
+        role: 'toolResult',
+        toolCallId: 'call_durable_table',
+        toolName: SLACK_PRESENT_TABLE_TOOL_NAME,
+        content: [{ type: 'text', text: 'Table recorded.' }],
+        isError: false,
+      },
+    ]);
+    await assert.rejects(
+      () => executeTool('write', 'call_after_resumed_table', async () => 'must not execute'),
+      SlackAnswerOnlyToolDeniedError,
     );
   });
 });

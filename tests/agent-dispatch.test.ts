@@ -25,6 +25,7 @@ import {
   SANDBOX_SESSION_CAP_FAILURE_TEXT,
 } from '../src/slack/web-client-presenter.ts';
 import type { SlackProgressiveReadRelay } from '../src/slack/progressive-relay.ts';
+import { SLACK_TABLE_PRESENTATION_DATA_NAME } from '../src/slack/table-presentation.ts';
 
 function envelope(type: string, message: string): string {
   return JSON.stringify({ error: { type, message, details: 'private detail' } });
@@ -329,6 +330,60 @@ test('saved receipt reattaches with read and saved settlement skips Flue entirel
   })), beforeResult: async () => { beforeResult += 1; } });
   assert.deepEqual(replay, result);
   assert.equal(beforeResult, 1, 'saved settlement still runs the pre-reply notice seam');
+});
+
+test('native table intent is reduced into and replayed from the durable settlement', async () => {
+  let persisted: FlueSettlementCheckpointV1 | undefined;
+  const dispatchState = state({
+    async recordSettlement(settlement) {
+      persisted = structuredClone(settlement);
+      return settlement;
+    },
+  });
+  const result = await promptSlackThreadAgent(promptInput(dispatchState, handle({
+    async read() {
+      return {
+        text: 'The allocation is ready for review.',
+        data: {
+          [SLACK_TABLE_PRESENTATION_DATA_NAME]: [{
+            caption: 'Synthetic allocation',
+            presentation: 'static',
+            columns: [
+              { header: 'Component' },
+              { header: 'Amount', type: 'number' },
+            ],
+            rows: [
+              ['Taxable', 9_350],
+              ['Non-taxable', 650],
+              ['Employer tax', 420],
+              ['Benefits', 80],
+              ['Gross addition', 10_500],
+              ['Net addition', 9_920],
+              ['Total', 10_000],
+            ],
+            rowHeaderIndex: 0,
+          }],
+        },
+        submissionId: RECEIPT.submissionId,
+        uid: RECEIPT.uid,
+        metadata: {},
+      };
+    },
+  })));
+
+  assert.equal(result.tablePresentations?.[0]?.caption, 'Synthetic allocation');
+  assert.deepEqual(persisted?.outcome === 'completed'
+    ? persisted.result.tablePresentations
+    : undefined, result.tablePresentations);
+  if (!persisted) assert.fail('completed settlement was not persisted');
+
+  const replay = await promptSlackThreadAgent(promptInput(state({
+    flueSettlement: persisted,
+  }), handle({
+    async dispatch() { throw new Error('dispatch must not run'); },
+    async read() { throw new Error('read must not run'); },
+  })));
+  assert.deepEqual(replay.tablePresentations, result.tablePresentations);
 });
 
 test('sandbox activation failure is sanitized and never replays dispatch in normal mode', async () => {

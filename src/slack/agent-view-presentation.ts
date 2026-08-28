@@ -15,6 +15,12 @@ import {
   type SlackReplyFormat,
 } from './message-format.ts';
 import {
+  appendSlackTableToRenderedMessage,
+  renderSlackTablePresentation,
+  type RenderedSlackTablePresentation,
+  type SlackTablePresentation,
+} from './table-presentation.ts';
+import {
   ReceiptScopedTextRelay,
   type ProgressiveIntentTransition,
   type ProgressiveRelayInvalidationReason,
@@ -749,6 +755,7 @@ export class SlackAgentViewPresentation {
     format: SlackReplyFormat,
     terminalTaskStatus: 'complete' | 'error',
     observer: SlackPresentationDeliveryObserver,
+    tablePresentation?: SlackTablePresentation,
   ): Promise<AgentViewFinalResult> {
     let presentation = await this.requirePresentation();
     if (presentation.stream.state === 'finalized' ||
@@ -790,7 +797,13 @@ export class SlackAgentViewPresentation {
     const approved = format === 'markdown'
       ? canonicalSlackMarkdownText(text)
       : text.replace(/\r\n?/g, '\n').trim();
-    const footerBlocks = [this.footerBlock()];
+    const renderedTable = tablePresentation
+      ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - approved.length - 2))
+      : undefined;
+    const footerBlocks = [
+      ...(renderedTable ? [renderedTable.block as unknown as KnownBlock] : []),
+      this.footerBlock(),
+    ];
     const taskChunks = presentationUsesNativeTasks(presentation)
       ? terminalTaskChunks(presentation, terminalTaskStatus)
       : [];
@@ -873,6 +886,7 @@ export class SlackAgentViewPresentation {
         approved,
         terminalTaskStatus,
         observer,
+        renderedTable,
       );
     }
     const suffix = approved.slice(acknowledged.length);
@@ -1208,10 +1222,18 @@ export class SlackAgentViewPresentation {
     approved: string,
     terminalTaskStatus: 'complete' | 'error',
     observer: SlackPresentationDeliveryObserver,
+    table?: RenderedSlackTablePresentation,
   ): Promise<AgentViewFinalResult> {
     const corrected = `${approved}\n\n${CORRECTED_MARKER}`;
+    const content = table
+      ? appendSlackTableToRenderedMessage(
+          renderSlackMessage(corrected, 'markdown'),
+          corrected,
+          table,
+        )
+      : renderSlackMessage(corrected, 'markdown');
     const rendered = appendSlackReplyFooter(
-      renderSlackMessage(corrected, 'markdown'),
+      content,
       this.options.footer,
     );
     const messageTs = presentation.stream.messageTs!;

@@ -24,7 +24,7 @@ export function createSeededAgents(
       [
         'You are a general-purpose Slack assistant.',
         'Be direct and concise, and match the formality of the conversation.',
-        'Use Slack-friendly markdown only where it aids clarity — short lists or a small code block — and skip decorative formatting.',
+        'Use Slack-friendly markdown only where it aids clarity — short lists, a small code block, or a compact table for genuinely tabular data — and skip decorative formatting. Never force prose into a table.',
         'Say what is missing when you lack the context to answer.',
         'Never invent facts.',
       ].join(' '),

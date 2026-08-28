@@ -89,6 +89,7 @@ import {
   WebClientPresenter,
   type SlackReactionReceipt,
 } from './web-client-presenter.ts';
+import type { SlackTablePresentation } from './table-presentation.ts';
 import {
   InteractiveUsageRecorder,
   InteractionUsageRecorder,
@@ -962,6 +963,10 @@ export async function runTurn(
     // retry loop from the claims being released on an uncaught throw).
     let text: string;
     let agentResult: AgentDispatchResult | undefined;
+    let tablePresentation: SlackTablePresentation | undefined =
+      options.flueDispatch?.flueSettlement?.outcome === 'completed'
+        ? options.flueDispatch.flueSettlement.result.tablePresentations?.[0]
+        : undefined;
     if (options.replayText !== undefined) {
       text = options.replayText;
     } else {
@@ -1016,6 +1021,7 @@ export async function runTurn(
         text = sandboxUnavailableFallback
           ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${agentResult.text}`
           : agentResult.text;
+        tablePresentation = agentResult.tablePresentations?.[0];
         await workLifecycle?.settleExecution({
           outcome: 'succeeded',
           rawStatus: 'flue_succeeded',
@@ -1091,6 +1097,7 @@ export async function runTurn(
       text,
       'markdown',
       terminalResult === 'failure' ? 'error' : 'complete',
+      tablePresentation,
     );
     // Clear after the final reaches Slack. A custom Agent persona does not
     // reliably trigger Slack's automatic app-status cleanup, and clearing

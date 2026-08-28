@@ -5,6 +5,7 @@ import {
   type AgentProps,
   type AgentRuntimeConfig,
   type SandboxFactory,
+  useDataWriter,
   useDelivery,
   useInitialData,
   useInstruction,
@@ -155,6 +156,14 @@ import {
 } from '../slack/attachment-context.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationIntentCapability } from '../slack/presentation-intent.ts';
+import {
+  createSlackPresentTableTool,
+  SLACK_PRESENT_TABLE_INSTRUCTION,
+  SLACK_PRESENT_TABLE_TOOL_NAME,
+  SLACK_TABLE_PRESENTATION_DATA_NAME,
+  SlackTablePresentationSchema,
+  type SlackTablePresentation,
+} from '../slack/table-presentation.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 import {
@@ -1083,6 +1092,9 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const delivery = useDelivery();
   const currentRequest = parseCurrentRequestEnvelope(delivery.body);
   const presentationIntent = slackPresentationIntentCapability(currentRequest);
+  const writeTablePresentation = useDataWriter(SLACK_TABLE_PRESENTATION_DATA_NAME, {
+    schema: SlackTablePresentationSchema,
+  });
   const attachmentReadOnly = slackAttachmentTurnIsReadOnly(
     parseSlackAttachmentIntake(delivery, plan),
   );
@@ -1092,6 +1104,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
     id,
     attachmentReadOnly,
     presentationIntent,
+    writeTablePresentation,
     managementEnabled,
   );
   useSlackAttachmentContext(
@@ -1108,6 +1121,7 @@ export function useChickpeaSlackRuntimeCapabilities(
   id: string,
   attachmentReadOnly: boolean,
   presentationIntent: ReturnType<typeof slackPresentationIntentCapability>,
+  writeTablePresentation: (presentation: SlackTablePresentation) => void,
   managementEnabled: boolean,
 ): void {
   useRuntimePlanAgent(plan, id, {
@@ -1120,12 +1134,15 @@ export function useChickpeaSlackRuntimeCapabilities(
       ...(!attachmentReadOnly && presentationIntent
         ? { presentationToolName: presentationIntent.tool.name }
         : {}),
+      ...(!attachmentReadOnly ? { tablePresentationToolName: SLACK_PRESENT_TABLE_TOOL_NAME } : {}),
     }),
   });
   if (!attachmentReadOnly) {
     useAgentAuthoring();
     useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv);
     usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
+    useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
+    useTool(createSlackPresentTableTool(writeTablePresentation));
     if (presentationIntent) {
       useInstruction(presentationIntent.instruction);
       useTool(presentationIntent.tool);
@@ -1215,6 +1232,7 @@ function slackActivityToolDescriptors(input: {
   plan: RuntimePlanV2;
   managementEnabled: boolean;
   presentationToolName?: string;
+  tablePresentationToolName?: string;
 }): ActivityToolDescriptor[] {
   const descriptors: ActivityToolDescriptor[] = [];
   if (input.managementEnabled) {
@@ -1237,6 +1255,12 @@ function slackActivityToolDescriptors(input: {
     descriptors.push({
       toolName: input.presentationToolName,
       descriptor: semanticDescriptorForCoreTool(input.presentationToolName),
+    });
+  }
+  if (input.tablePresentationToolName) {
+    descriptors.push({
+      toolName: input.tablePresentationToolName,
+      descriptor: semanticDescriptorForCoreTool(input.tablePresentationToolName),
     });
   }
   return descriptors;

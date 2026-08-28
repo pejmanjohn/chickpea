@@ -53,6 +53,9 @@ test('standard Markdown final replies render as Slack markdown blocks', () => {
   assert.match(rendered.text, /Incident Summary/);
   assert.match(rendered.text, /Bold lead/);
   assert.match(rendered.text, /Runbook \(https:\/\/example\.com\/runbook\)/);
+  assert.match(rendered.text, /Metric — Value/);
+  assert.match(rendered.text, /p95 — 120ms/);
+  assert.doesNotMatch(rendered.text, /\| Metric \|/);
   assert.doesNotMatch(rendered.text, /\*\*Bold lead\*\*/);
   assert.doesNotMatch(rendered.text, /```/);
 });
@@ -83,6 +86,7 @@ test('every progressive cut point is a monotone prefix of the canonical terminal
     'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456\nRotated.',
     'CHICKPEA_AUTH_SECRET=consumer-install-secret-value\nNever render this.',
     '<https://example.com/path|Slack link> then a safe suffix.',
+    '| Metric | Value |\n| --- | ---: |\n| p95 | 120ms |\n| errors | 3 |',
   ];
 
   for (const terminalInput of corpus) {

@@ -14,6 +14,7 @@ import {
   type CurrentRequestEnvelope,
 } from '../memory/tool-policy.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
+import { SLACK_PRESENT_TABLE_TOOL_NAME } from './table-presentation.ts';
 
 interface PresentationToolPolicyState {
   envelope?: CurrentRequestEnvelope;
@@ -64,6 +65,13 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
     return result;
   }
 
+  if (operation.toolName === SLACK_PRESENT_TABLE_TOOL_NAME) {
+    if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
+    const result = await next();
+    active.answerOnly = true;
+    return result;
+  }
+
   if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
   return next();
 };
@@ -107,7 +115,10 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
   for (const message of messages.slice(newestUserIndex + 1)) {
     if (message.role === 'assistant') {
       for (const content of message.content) {
-        if (content.type === 'toolCall' && content.name === SLACK_STREAM_ANSWER_TOOL_NAME) {
+        if (content.type === 'toolCall' && (
+          content.name === SLACK_STREAM_ANSWER_TOOL_NAME ||
+          content.name === SLACK_PRESENT_TABLE_TOOL_NAME
+        )) {
           declaredCalls.add(content.id);
         }
       }
@@ -115,7 +126,8 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
     }
     if (
       message.role === 'toolResult' &&
-      message.toolName === SLACK_STREAM_ANSWER_TOOL_NAME &&
+      (message.toolName === SLACK_STREAM_ANSWER_TOOL_NAME ||
+        message.toolName === SLACK_PRESENT_TABLE_TOOL_NAME) &&
       message.isError === false &&
       declaredCalls.has(message.toolCallId)
     ) {

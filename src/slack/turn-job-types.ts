@@ -2,6 +2,7 @@ import type { ResolvedAssignment } from '../config/types.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { WorkTraceCorrelation } from '../work/trace-correlation.ts';
+import type { SlackTablePresentation } from './table-presentation.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 
 interface FlueDispatchEnvelopeBase {
@@ -67,6 +68,7 @@ export type FlueSettlementCheckpointV1 =
       settledAt: number;
       result: {
         text: string;
+        tablePresentations?: SlackTablePresentation[];
         requestedModel: string | null;
         returnedModel: { provider: string; id: string } | null;
         reportedUsage: {

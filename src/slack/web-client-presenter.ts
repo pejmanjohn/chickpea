@@ -17,6 +17,11 @@ import {
   type SlackReplyFooter,
 } from './message-format.ts';
 import {
+  appendSlackTableToRenderedMessage,
+  renderSlackTablePresentation,
+  type SlackTablePresentation,
+} from './table-presentation.ts';
+import {
   slackLoadingMessages,
   slackStatusText,
   type SlackStatusUpdate,
@@ -605,6 +610,7 @@ export class WebClientPresenter {
     text: string,
     format: SlackReplyFormat,
     terminalTaskStatus: 'complete' | 'error' = 'complete',
+    tablePresentation?: SlackTablePresentation,
   ): Promise<void> {
     const footer = this.replyFooter();
     const displayText = format === 'markdown'
@@ -612,6 +618,9 @@ export class WebClientPresenter {
         ? canonicalSlackMarkdownText(text)
         : sanitizeSlackMarkdownLinks(text)
       : text;
+    const renderedTable = tablePresentation
+      ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - displayText.length - 2))
+      : undefined;
 
     let forcePostFallback = false;
     let fallbackOperationId: string | undefined;
@@ -624,6 +633,7 @@ export class WebClientPresenter {
           before: (input) => this.observeBeforeDelivery(input),
           after: (input) => this.observeAfterDelivery(input),
         },
+        tablePresentation,
       );
       if (result.handled) {
         if (result.messageTs) await this.notifyPublicDelivery(result.messageTs, text);
@@ -642,7 +652,10 @@ export class WebClientPresenter {
         markdown_text: displayText,
         ...this.persona(),
       } as unknown as Parameters<WebClient['chat']['startStream']>[0];
-      const stopBlocks = [renderSlackReplyFooterBlock(footer)];
+      const stopBlocks = [
+        ...(renderedTable ? [renderedTable.block] : []),
+        renderSlackReplyFooterBlock(footer),
+      ];
       const attemptId = await this.observeBeforeDelivery({
         method: 'slack_chat_stream',
         approvedOutput: text,
@@ -695,7 +708,14 @@ export class WebClientPresenter {
       }
     }
 
-    const rendered = appendSlackReplyFooter(renderSlackMessage(displayText, format), footer);
+    const content = renderedTable
+      ? appendSlackTableToRenderedMessage(
+          renderSlackMessage(displayText, format),
+          displayText,
+          renderedTable,
+        )
+      : renderSlackMessage(displayText, format);
+    const rendered = appendSlackReplyFooter(content, footer);
     const postPayload = {
       channel: this.target.channelId,
       thread_ts: this.target.threadTs,
@@ -744,15 +764,26 @@ export class WebClientPresenter {
   }
 
   /** Deliver channel-contextual information only to the requesting member. */
-  async deliverRequesterOnly(text: string, format: SlackReplyFormat): Promise<void> {
+  async deliverRequesterOnly(
+    text: string,
+    format: SlackReplyFormat,
+    tablePresentation?: SlackTablePresentation,
+  ): Promise<void> {
     if (!this.target.userId) {
       throw new Error('Requester-only Slack delivery requires a target user.');
     }
     const displayText = format === 'markdown' ? sanitizeSlackMarkdownLinks(text) : text;
-    const rendered = appendSlackReplyFooter(
-      renderSlackMessage(displayText, format),
-      this.replyFooter(),
-    );
+    const renderedTable = tablePresentation
+      ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - displayText.length - 2))
+      : undefined;
+    const content = renderedTable
+      ? appendSlackTableToRenderedMessage(
+          renderSlackMessage(displayText, format),
+          displayText,
+          renderedTable,
+        )
+      : renderSlackMessage(displayText, format);
+    const rendered = appendSlackReplyFooter(content, this.replyFooter());
     const payload = {
       channel: this.target.channelId,
       user: this.target.userId,

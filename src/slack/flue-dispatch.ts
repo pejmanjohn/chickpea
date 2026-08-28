@@ -28,6 +28,11 @@ import type {
 } from './turn-job-types.ts';
 import type { SlackProgressiveReadRelay } from './progressive-relay.ts';
 import {
+  parseSlackTablePresentations,
+  SLACK_TABLE_PRESENTATION_DATA_NAME,
+  type SlackTablePresentation,
+} from './table-presentation.ts';
+import {
   AGENT_FAILURE_TEXT,
   OPENAI_SUBSCRIPTION_POLICY_TEXT,
   OPENAI_SUBSCRIPTION_QUOTA_TEXT,
@@ -63,6 +68,7 @@ export interface AgentReturnedModel {
 
 export interface AgentDispatchResult {
   text: string;
+  tablePresentations?: SlackTablePresentation[];
   requestedModel: string | null;
   returnedModel: AgentReturnedModel | null;
   reportedUsage: AgentReportedUsage | null;
@@ -357,8 +363,12 @@ export function resultFromAgentReply(
     reportedUsage: null,
     completeness: 'not_reported' as const,
   };
+  const tablePresentations = parseSlackTablePresentations(
+    reply.data?.[SLACK_TABLE_PRESENTATION_DATA_NAME],
+  );
   return {
     text,
+    ...(tablePresentations.length > 0 ? { tablePresentations } : {}),
     requestedModel: metadata?.requestedModel ?? nonEmptyString(requestedModel),
     returnedModel: metadata?.returnedModel ?? null,
     reportedUsage: usage.reportedUsage,
