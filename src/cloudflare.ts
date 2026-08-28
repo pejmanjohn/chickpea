@@ -199,11 +199,14 @@ import { IdentityStateError } from './identity/errors.ts';
 import { IdentityStoreLogic } from './identity/store.ts';
 import type { IdentityStore } from './identity/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from './identity/types.ts';
-import { ManagementStoreLogic } from './management/store.ts';
+import { ManagementStoreLogic, type ManagementStore } from './management/store.ts';
 import { createLiveWorkspaceManagementService } from './management/live-service.ts';
 import { invokeSlackWorkspaceManagementTool } from './management/slack-tools.ts';
 import type { WorkspaceManagementToolResult } from './management/tool-adapter.ts';
-import { formatManagementSetupReceipt } from './management/receipts.ts';
+import {
+  deliverManagementReceiptToSlack,
+  drainManagementReceiptOutbox,
+} from './management/receipts.ts';
 import {
   ManagementError,
   type ManagementRpcRequest,
@@ -601,9 +604,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   async workspaceManagementInvoke(
     request: SlackWorkspaceManagementRpcRequest,
   ): Promise<WorkspaceManagementToolResult> {
+    console.log('[chickpea:management] state RPC started', JSON.stringify({
+      tool: request.name,
+    }));
     this.stores ??= this.tryInit();
     const stores = this.stores;
-    if (!stores) return workspaceManagementRpcFailure();
+    if (!stores) {
+      console.error('[chickpea:management] state RPC unavailable', JSON.stringify({
+        tool: request.name,
+      }));
+      return workspaceManagementRpcFailure();
+    }
     try {
       const platformEnv = this.env as PlatformEnv;
       const local = localGatewayAppStores(stores);
@@ -634,6 +645,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         args: request.args,
       });
       try {
+        const dueBeforeReply = stores.management.nextOutboxDueAt();
+        if (dueBeforeReply !== undefined && dueBeforeReply <= Date.now()) {
+          await drainCloudflareManagementReceipts(
+            stores,
+            this.createAlarmIdentityResolver(stores),
+          );
+        }
         const outboxDueAt = stores.management.nextOutboxDueAt();
         if (outboxDueAt !== undefined) {
           await this.armAlarmNoLaterThan(Math.max(Date.now(), outboxDueAt));
@@ -645,9 +663,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         // transport error.
         console.error('[chickpea] Workspace management receipt alarm failed');
       }
+      console.log('[chickpea:management] state RPC completed', JSON.stringify({
+        tool: request.name,
+        outcome: result.ok ? 'success' : 'error',
+        ...(!result.ok ? { reason: result.error.code } : {}),
+      }));
       return result;
-    } catch {
-      console.error('[chickpea] Workspace management state RPC failed');
+    } catch (error) {
+      console.error('[chickpea] Workspace management state RPC failed', JSON.stringify({
+        tool: request.name,
+        errorName: error instanceof Error ? error.name : typeof error,
+      }));
       return workspaceManagementRpcFailure();
     }
   }
@@ -1971,64 +1997,15 @@ async function drainCloudflareManagementReceipts(
   stores: TagStateStores,
   resolveInstallation: SlackInstallationExecutionResolver,
 ): Promise<void> {
-  const at = Date.now();
-  const claimed = stores.management.claimDueOutbox(at, 10, at + 30_000);
-  if (claimed.length === 0) return;
-  for (const record of claimed) {
-    try {
-      let channel: string;
-      let threadTs: string | undefined;
-      let workspaceId: string;
-      if (record.destination.kind === 'thread') {
-        workspaceId = record.destination.workspaceId;
-        channel = record.destination.channelId;
-        threadTs = record.destination.threadTs;
-      } else {
-        const destination = record.destination;
-        const binding = stores.identity.listExternalIdentities().find((candidate) =>
-          candidate.organizationId === destination.organizationId &&
-          candidate.userId === destination.userId);
-        if (!binding) throw new Error('Receipt identity unavailable.');
-        workspaceId = binding.slackTeamId;
-        channel = binding.slackUserId;
-      }
-      const execution = await resolveInstallation(workspaceId);
-      if (execution.workspaceId !== workspaceId) throw new Error('Receipt workspace mismatch.');
-      const response = await execution.client.chat.postMessage({
-        channel,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
-        text: formatManagementSetupReceipt(record.receipt),
-        client_msg_id: record.outboxId,
-      } as Parameters<typeof execution.client.chat.postMessage>[0]);
-      if (!response.ok || !response.ts) throw new Error('Receipt delivery failed.');
-      stores.management.settleOutbox({
-        outboxId: record.outboxId,
-        outcome: 'delivered',
-        at: Date.now(),
-        deliveryRef: `slack:${channel}:${response.ts}`,
-      });
-    } catch {
-      settleCloudflareReceiptRetry(stores, record);
-    }
-  }
-}
-
-function settleCloudflareReceiptRetry(
-  stores: TagStateStores,
-  record: ReturnType<TagStateStores['management']['claimDueOutbox']>[number],
-): void {
-  const now = Date.now();
-  const terminal = record.attempts >= 8;
-  stores.management.settleOutbox({
-    outboxId: record.outboxId,
-    outcome: terminal ? 'failed' : 'retry',
-    at: now,
-    ...(terminal
-      ? { failureCode: 'slack_delivery_failed' }
-      : {
-          nextAttemptAt: now +
-            Math.min(15 * 60_000, 5_000 * 2 ** Math.max(0, record.attempts - 1)),
-        }),
+  // ManagementStoreLogic is the in-DO synchronous implementation of every
+  // ManagementStore operation; the shared drain awaits its return values, so
+  // one implementation owns claim, backoff, terminal settling, and logging.
+  await drainManagementReceiptOutbox({
+    management: stores.management as unknown as ManagementStore,
+    deliver: (record) => deliverManagementReceiptToSlack(record, {
+      identity: stores.identity as unknown as IdentityStore,
+      resolveInstallation,
+    }),
   });
 }
 

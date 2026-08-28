@@ -132,6 +132,10 @@ const zOperationBase = {
 const zRoutineSchedule = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('cron'), expression: zText(200) }),
   z.strictObject({ kind: z.literal('once'), localDateTime: zText(64) }),
+  z.strictObject({
+    kind: z.literal('in'),
+    minutes: z.number().int().min(1).max(532_800),
+  }),
 ]);
 const zSetupAgentTargetBase = {
   agentId: zAgentId.optional(),
@@ -429,6 +433,10 @@ const vOperationBase = { itemId: vid, dependsOn: v.optional(va(vid, 25)) };
 const vRoutineSchedule = v.variant('kind', [
   v.strictObject({ kind: v.literal('cron'), expression: vt(200) }),
   v.strictObject({ kind: v.literal('once'), localDateTime: vt(64) }),
+  v.strictObject({
+    kind: v.literal('in'),
+    minutes: v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(532_800)),
+  }),
 ]);
 const vSetupAgentTargetBase = {
   agentId: v.optional(vAgentId),

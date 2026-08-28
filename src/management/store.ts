@@ -227,6 +227,7 @@ export interface ManagementStore {
   ): Promise<ManagementSetupRecord>;
   completeSetup(input: CompleteManagementSetupInput): Promise<ManagementSetupRecord>;
   revokeSetup(input: RevokeManagementSetupInput): Promise<ManagementSetupRecord>;
+  putOutbox(record: ManagementReceiptOutboxRecord): Promise<ManagementReceiptOutboxRecord>;
   getOutboxForOperation(operationId: string): Promise<ManagementReceiptOutboxRecord | undefined>;
   claimDueOutbox(
     at: number,
@@ -373,6 +374,8 @@ export class ManagementStoreLogic {
         return { kind: 'setup', setup: this.completeSetup(request.input) };
       case 'revoke_setup':
         return { kind: 'setup', setup: this.revokeSetup(request.input) };
+      case 'put_outbox':
+        return { kind: 'outbox', outbox: this.putOutbox(request.record) };
       case 'get_outbox_for_operation':
         return {
           kind: 'outbox',
@@ -1078,23 +1081,7 @@ export class ManagementStoreLogic {
         input.setupOperationId,
       );
       if (updated.changes !== 1) throw setupError('setup_unavailable');
-      this.db.run(
-        `INSERT OR IGNORE INTO management_receipt_outbox (
-          outbox_id, operation_id, destination_json, receipt_json, status,
-          attempts, next_attempt_at, delivery_ref, failure_code, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        input.outbox.outboxId,
-        input.outbox.operationId,
-        JSON.stringify(input.outbox.destination),
-        JSON.stringify(input.outbox.receipt),
-        input.outbox.status,
-        input.outbox.attempts,
-        input.outbox.nextAttemptAt,
-        input.outbox.deliveryRef ?? null,
-        input.outbox.failureCode ?? null,
-        input.outbox.createdAt,
-        input.outbox.updatedAt,
-      );
+      this.putOutbox(input.outbox);
       this.audit.appendIdempotent({
         eventId: `management-setup:${input.setupOperationId}`,
         domain: 'management',
@@ -1119,6 +1106,27 @@ export class ManagementStoreLogic {
       });
       return this.requireSetup(input.setupOperationId);
     });
+  }
+
+  putOutbox(record: ManagementReceiptOutboxRecord): ManagementReceiptOutboxRecord {
+    this.db.run(
+      `INSERT OR IGNORE INTO management_receipt_outbox (
+        outbox_id, operation_id, destination_json, receipt_json, status,
+        attempts, next_attempt_at, delivery_ref, failure_code, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      record.outboxId,
+      record.operationId,
+      JSON.stringify(record.destination),
+      JSON.stringify(record.receipt),
+      record.status,
+      record.attempts,
+      record.nextAttemptAt,
+      record.deliveryRef ?? null,
+      record.failureCode ?? null,
+      record.createdAt,
+      record.updatedAt,
+    );
+    return this.requireOutbox(record.outboxId);
   }
 
   revokeSetup(input: RevokeManagementSetupInput): ManagementSetupRecord {

@@ -197,7 +197,22 @@ function useEvaluationTools() {
     description: 'Inspect this Agent scheduled routines and scheduling availability.',
     input: inspectRoutinesValibotSchema,
     output: v.string(),
-    run: () => ({ output: JSON.stringify({ available: true, routines: [] }) }),
+    // Mirrors the observed live trap: the thread already holds a completed
+    // identical follow-up whose stale absolute time must not be echoed into a
+    // new schedule or "edited" into a fresh follow-up.
+    run: () => ({ output: JSON.stringify({
+      available: true,
+      routines: [{
+        id: 'routine_prior_follow_up',
+        name: 'Follow-up check',
+        state: 'completed',
+        triggerKind: 'once',
+        scheduleInput: '2026-08-27T11:26',
+        timezone: 'America/Los_Angeles',
+        version: 2,
+        lastRun: { status: 'succeeded', deliveryStatus: 'delivered' },
+      }],
+    }) }),
   });
   useTool({
     name: 'discover_slack_channels',
@@ -926,6 +941,7 @@ function evaluateResult(raw, expected) {
       expected.expectedMemoryRevision,
     )],
     ['existing_channel_reused', existingChannelReused(raw.toolCalls)],
+    ['fresh_routine_created', freshRoutineCreated(raw.toolCalls)],
     ['skill_shape_valid', proposedSkillIsHighQuality(raw.toolCalls, expected.expectedSkill)],
     ['exact_proposal_presented', exactProposalPresented(raw)],
     ['exact_proposal_token_confirmed', exactProposalTokenConfirmed(raw.toolCalls)],
@@ -980,6 +996,19 @@ function existingChannelReused(toolCalls) {
     !operations.some((operation) =>
       operation?.kind === 'put_channel' || operation?.kind === 'grant_agent_channel'
     );
+}
+
+function freshRoutineCreated(toolCalls) {
+  const apply = toolCalls.find(({ name }) => name === 'apply_workspace_changes');
+  const operation = apply?.input?.operations?.find(({ kind }) => kind === 'save_routine');
+  // A relative-time follow-up must forward the lead time itself; a model-computed
+  // wall-clock localDateTime is the observed nondeterministic live failure.
+  return operation?.schedule?.kind === 'in' &&
+    Number.isInteger(operation.schedule.minutes) &&
+    operation.schedule.minutes >= 1 &&
+    operation?.destination?.kind === 'current_dm_thread' &&
+    operation.routineId === undefined &&
+    operation.expectedVersion === undefined;
 }
 
 function proposedSkillIsHighQuality(toolCalls, expectedSkill) {

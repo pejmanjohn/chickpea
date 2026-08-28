@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.2.0",
-  "guideVersion": "1.0.13",
+  "corpusVersion": "1.3.0",
+  "guideVersion": "1.0.15",
   "baseline": {
     "id": "no-guide-v1",
     "description": "The same evaluation Agent and tools without the Chickpea agent-authoring router or skill."
@@ -155,8 +155,8 @@
         "toolClass": "direct_apply",
         "mutationAllowance": "direct_apply",
         "approvalPosture": "direct_allowed",
-        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "direct_apply_used", "confirmation_not_required"],
-        "criticalAssertions": ["direct_apply_used", "confirmation_not_required"]
+        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "direct_apply_used", "fresh_routine_created", "confirmation_not_required"],
+        "criticalAssertions": ["direct_apply_used", "fresh_routine_created", "confirmation_not_required"]
       }
     },
     {

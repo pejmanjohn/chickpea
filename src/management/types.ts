@@ -23,6 +23,8 @@ export type ManagementOrigin =
       workspaceId: string;
       channelId: string;
       threadTs: string;
+      /** Trusted requester message coordinate for durable Slack acknowledgements. */
+      messageTs?: string;
       /** Trusted normalized Slack surface. Missing legacy origins are Channels. */
       conversationKind?: 'channel' | 'im' | 'mpim';
       /** Trusted Agent selected by Slack routing, never by model text. */
@@ -156,7 +158,9 @@ export type ManagementOperation =
       taskText: string;
       schedule:
         | { kind: 'cron'; expression: string }
-        | { kind: 'once'; localDateTime: string };
+        | { kind: 'once'; localDateTime: string }
+        /** Relative lead time; the service computes the future instant on its own clock. */
+        | { kind: 'in'; minutes: number };
       timezone: string;
       outputPolicy: RoutineOutputPolicy;
     })
@@ -298,6 +302,16 @@ export interface ManagementSetupReceipt {
   completedAt: number;
 }
 
+/** Content-free acknowledgement for a successfully saved private DM schedule. */
+export interface ManagementRoutineSavedAcknowledgement {
+  kind: 'routine_saved_reaction';
+  emojiName: 'white_check_mark';
+}
+
+export type ManagementReceipt =
+  | ManagementSetupReceipt
+  | ManagementRoutineSavedAcknowledgement;
+
 /** Internal durable record. Digest members must never cross a public adapter. */
 export interface ManagementSetupRecord {
   setupOperationId: string;
@@ -346,6 +360,12 @@ export type ManagementReceiptDestination =
       kind: 'initiator_dm';
       organizationId: string;
       userId: string;
+    }
+  | {
+      kind: 'reaction';
+      workspaceId: string;
+      channelId: string;
+      messageTs: string;
     };
 
 export type ManagementReceiptOutboxStatus =
@@ -358,7 +378,7 @@ export interface ManagementReceiptOutboxRecord {
   outboxId: string;
   operationId: string;
   destination: ManagementReceiptDestination;
-  receipt: ManagementSetupReceipt;
+  receipt: ManagementReceipt;
   status: ManagementReceiptOutboxStatus;
   attempts: number;
   nextAttemptAt: number;
@@ -857,6 +877,7 @@ export type ManagementRpcRequest =
     }
   | { kind: 'complete_setup'; input: CompleteManagementSetupInput }
   | { kind: 'revoke_setup'; input: RevokeManagementSetupInput }
+  | { kind: 'put_outbox'; record: ManagementReceiptOutboxRecord }
   | { kind: 'get_outbox_for_operation'; operationId: string }
   | { kind: 'claim_due_outbox'; at: number; limit: number; leaseUntil: number }
   | {

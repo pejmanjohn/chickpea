@@ -4,10 +4,13 @@ import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from '../slack/installation-execution.ts';
+import { SlackTransportError } from '../slack/transport/types.ts';
 import type { ManagementStore } from './store.ts';
 import type {
   ManagementReceiptDestination,
   ManagementReceiptOutboxRecord,
+  ManagementReceipt,
+  ManagementRoutineSavedAcknowledgement,
   ManagementSetupReceipt,
   ManagementSetupRecord,
 } from './types.ts';
@@ -15,6 +18,17 @@ import { emitManagementMetric } from './telemetry.ts';
 
 const OUTBOX_LEASE_MS = 30_000;
 const OUTBOX_MAX_ATTEMPTS = 8;
+
+/** Slack rejections a retry can never fix; settle them terminally at once. */
+const PERMANENT_DELIVERY_CODES = new Set([
+  'missing_scope',
+  'not_allowed_token_type',
+  'invalid_name',
+  'channel_not_found',
+  'message_not_found',
+  'is_archived',
+  'operation_not_allowed',
+]);
 
 export interface CompleteManagementSetupReceiptInput {
   setup: ManagementSetupRecord;
@@ -58,7 +72,10 @@ export async function completeManagementSetupReceipt(
   });
 }
 
-export function formatManagementSetupReceipt(receipt: ManagementSetupReceipt): string {
+export function formatManagementSetupReceipt(receipt: ManagementReceipt): string {
+  if (isRoutineSavedAcknowledgement(receipt)) {
+    throw new Error('A reaction acknowledgement cannot be formatted as a setup receipt.');
+  }
   const subject = receipt.accountLabel ?? receipt.connector;
   const lead = `${subject} has been connected to ${receipt.connector} connector.`;
   const details = [
@@ -100,16 +117,24 @@ export async function drainManagementReceiptOutbox(input: {
         deliveryRef: result.deliveryRef,
       });
       delivered += 1;
-    } catch {
-      const terminal = record.attempts >= OUTBOX_MAX_ATTEMPTS;
+    } catch (error) {
+      const failureCode = receiptDeliveryFailureCode(error);
+      const terminal = record.attempts >= OUTBOX_MAX_ATTEMPTS ||
+        PERMANENT_DELIVERY_CODES.has(failureCode);
       await input.management.settleOutbox({
         outboxId: record.outboxId,
         outcome: terminal ? 'failed' : 'retry',
         at: now(),
-        ...(terminal
-          ? { failureCode: 'slack_delivery_failed' }
-          : { nextAttemptAt: now() + receiptRetryDelay(record.attempts) }),
+        failureCode,
+        ...(terminal ? {} : { nextAttemptAt: now() + receiptRetryDelay(record.attempts) }),
       });
+      console.warn('[chickpea:management] receipt delivery failed', JSON.stringify({
+        outboxId: record.outboxId,
+        destination: record.destination.kind,
+        attempt: record.attempts,
+        terminal,
+        failureCode,
+      }));
       if (terminal) failed += 1;
       else retried += 1;
     }
@@ -131,6 +156,37 @@ export async function deliverManagementReceiptToSlack(
     resolveInstallation?: SlackInstallationExecutionResolver;
   },
 ): Promise<ManagementReceiptDeliveryResult> {
+  if (record.destination.kind === 'reaction') {
+    if (!isRoutineSavedAcknowledgement(record.receipt)) {
+      throw new Error('The Slack reaction acknowledgement payload is invalid.');
+    }
+    const destination = record.destination;
+    const execution = await (input.resolveInstallation
+      ? input.resolveInstallation(destination.workspaceId)
+      : resolveSlackInstallationExecutionContext(destination.workspaceId, input.env));
+    if (execution.workspaceId !== destination.workspaceId) {
+      throw new Error('Acknowledgement workspace does not match the Slack installation.');
+    }
+    try {
+      const response = await execution.client.reactions.add({
+        channel: destination.channelId,
+        timestamp: destination.messageTs,
+        name: record.receipt.emojiName,
+      });
+      if (response.ok === false) {
+        if (response.error === 'already_reacted') {
+          return { deliveryRef: reactionDeliveryRef(record) };
+        }
+        throw new Error('Slack did not acknowledge the schedule reaction.');
+      }
+    } catch (error) {
+      if (slackPlatformErrorCode(error) !== 'already_reacted') throw error;
+    }
+    return { deliveryRef: reactionDeliveryRef(record) };
+  }
+  if (isRoutineSavedAcknowledgement(record.receipt)) {
+    throw new Error('The Slack reaction acknowledgement destination is invalid.');
+  }
   let channel: string;
   let threadTs: string | undefined;
   let workspaceId: string;
@@ -177,6 +233,35 @@ function receiptDestination(setup: ManagementSetupRecord): ManagementReceiptDest
     organizationId: setup.organizationId,
     userId: setup.actorUserId,
   };
+}
+
+export function isRoutineSavedAcknowledgement(
+  receipt: ManagementReceipt,
+): receipt is ManagementRoutineSavedAcknowledgement {
+  return 'kind' in receipt && receipt.kind === 'routine_saved_reaction';
+}
+
+function reactionDeliveryRef(record: ManagementReceiptOutboxRecord): string {
+  const destination = record.destination;
+  if (destination.kind !== 'reaction') throw new Error('Reaction destination is unavailable.');
+  return `slack:${destination.channelId}:${destination.messageTs}:reaction`;
+}
+
+function slackPlatformErrorCode(error: unknown): string | undefined {
+  if (error instanceof SlackTransportError) return error.code;
+  if (!error || typeof error !== 'object') return undefined;
+  const data = (error as { data?: unknown }).data;
+  if (!data || typeof data !== 'object') return undefined;
+  const code = (data as { error?: unknown }).error;
+  return typeof code === 'string' ? code : undefined;
+}
+
+/** Content-free failure classification: a Slack error code or an error name. */
+function receiptDeliveryFailureCode(error: unknown): string {
+  const code = slackPlatformErrorCode(error);
+  if (code) return code;
+  if (error instanceof Error && error.name !== 'Error') return error.name;
+  return 'slack_delivery_failed';
 }
 
 function receiptRetryDelay(attempts: number): number {

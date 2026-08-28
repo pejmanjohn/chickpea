@@ -1120,6 +1120,12 @@ export class CfManagementStore implements ManagementStore {
     return response.setup;
   }
 
+  async putOutbox(record: Parameters<ManagementStore['putOutbox']>[0]) {
+    const response = await this.execute({ kind: 'put_outbox', record });
+    if (response.kind !== 'outbox' || !response.outbox) throw unexpectedManagementResponse();
+    return response.outbox;
+  }
+
   async getOutboxForOperation(operationId: string) {
     const response = await this.execute({ kind: 'get_outbox_for_operation', operationId });
     if (response.kind !== 'outbox') throw unexpectedManagementResponse();

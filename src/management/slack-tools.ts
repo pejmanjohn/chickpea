@@ -391,6 +391,7 @@ export async function resolveSlackManagementActor(
       workspaceId: signal.workspaceId,
       channelId: signal.channelId,
       threadTs: signal.threadTs,
+      messageTs: signal.messageTs,
       ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
       agentId: signal.agentId,
     },
@@ -493,9 +494,10 @@ export async function invokeCloudflareSlackWorkspaceManagementTool<
       name: input.name,
       args: input.args,
     });
-  } catch {
+  } catch (error) {
     console.warn('[chickpea:management] state RPC transport failed', JSON.stringify({
       tool: input.name,
+      errorName: error instanceof Error ? error.name : typeof error,
     }));
     if (input.turnGuard && MUTATING_TOOLS.has(input.name)) {
       input.turnGuard.recordConfirmationFailure({

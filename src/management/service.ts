@@ -41,6 +41,7 @@ import type {
 } from '../memory/types.ts';
 import {
   normalizeOneTimeSchedule,
+  normalizeRelativeOneTimeSchedule,
   normalizeRoutineSchedule,
 } from '../routines/schedule.ts';
 import { RoutineService } from '../routines/service.ts';
@@ -49,7 +50,7 @@ import {
   reassignDirectRoutineAgent,
 } from '../routines/agent-authority.ts';
 import { routineDestinationBindingDigest } from '../routines/ids.ts';
-import type { RoutineDefinition, RoutineStore } from '../routines/types.ts';
+import { RoutineStateError, type RoutineDefinition, type RoutineStore } from '../routines/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
@@ -482,6 +483,13 @@ export class WorkspaceManagementService {
       at,
     });
     if (reservation.request.status === 'completed' && reservation.request.result) {
+      await queueAppliedPrivateDmRoutineAcknowledgement(
+        this.stores.management,
+        actor,
+        operations,
+        reservation.request.result,
+        this.now(),
+      );
       return emitOperationOutcomes(actor.origin.kind, reservation.request.result);
     }
     if (reservation.request.status === 'failed') {
@@ -624,6 +632,13 @@ export class WorkspaceManagementService {
     await this.stores.management.completeRequest(
       request.operationId,
       withoutSetupCapabilities(result),
+      this.now(),
+    );
+    await queueAppliedPrivateDmRoutineAcknowledgement(
+      this.stores.management,
+      actor,
+      request.operations,
+      result,
       this.now(),
     );
     return emitOperationOutcomes(actor.origin.kind, result);
@@ -2343,7 +2358,9 @@ export class WorkspaceManagementService {
       }
       const projection = operation.schedule.kind === 'cron'
         ? normalizeRoutineSchedule(operation.schedule.expression, operation.timezone, this.now())
-        : normalizeOneTimeSchedule(operation.schedule.localDateTime, operation.timezone, this.now());
+        : operation.schedule.kind === 'once'
+          ? normalizeOneTimeSchedule(operation.schedule.localDateTime, operation.timezone, this.now())
+          : normalizeRelativeOneTimeSchedule(operation.schedule.minutes, operation.timezone, this.now());
       const channelId = this.routineMutationChannelId(actor, operation);
       const existing = operation.routineId
         ? await this.stores.routines!.getRoutine(operation.routineId)
@@ -2356,9 +2373,9 @@ export class WorkspaceManagementService {
         description: operation.description,
         taskText: operation.taskText,
         triggerKind: operation.schedule.kind === 'cron' ? 'schedule' as const : 'once' as const,
-        scheduleInput: operation.schedule.kind === 'cron'
-          ? operation.schedule.expression
-          : operation.schedule.localDateTime,
+        scheduleInput: projection.schedule.kind === 'cron'
+          ? projection.schedule.expression
+          : projection.schedule.localDateTime,
         scheduleJson: projection.scheduleJson,
         timezone: operation.timezone,
         outputPolicy: operation.outputPolicy,
@@ -2450,7 +2467,16 @@ export class WorkspaceManagementService {
       return routineMutation(routine);
     } catch (error) {
       if (error instanceof ManagementError) throw error;
-      throw new ManagementError('revision_conflict', 'The routine mutation could not be applied.');
+      if (error instanceof RoutineStateError) {
+        throw new ManagementError(
+          error.code === 'routine_version_conflict' ? 'revision_conflict' : 'invalid_request',
+          error.message,
+        );
+      }
+      console.warn('[chickpea:management] routine mutation failed', JSON.stringify({
+        errorName: error instanceof Error ? error.name : 'unknown',
+      }));
+      throw new ManagementError('invalid_request', 'The routine mutation could not be applied.');
     }
   }
 
@@ -3957,7 +3983,9 @@ function routineOperationPreview(
     taskText: operation.taskText,
     schedule: operation.schedule.kind === 'once'
       ? `Once at ${operation.schedule.localDateTime}`
-      : operation.schedule.expression,
+      : operation.schedule.kind === 'in'
+        ? `Once, ${operation.schedule.minutes} minute${operation.schedule.minutes === 1 ? '' : 's'} from now`
+        : operation.schedule.expression,
     timezone: operation.timezone,
     destination: direct
       ? 'Current DM thread'
@@ -4054,6 +4082,56 @@ function routineMutation(routine: RoutineDefinition): ImmediateMutation {
     changed: [{ kind: 'routine', id: routine.id, revision: routine.version }],
     resultingRevisions: { [`routine:${routine.id}`]: routine.version },
   };
+}
+
+async function queueAppliedPrivateDmRoutineAcknowledgement(
+  management: ManagementStore,
+  actor: LiveManagementActor,
+  operations: ManagementOperation[],
+  result: ManagementApplyResult,
+  at: number,
+): Promise<void> {
+  const origin = actor.origin;
+  if (origin.kind !== 'slack' || origin.conversationKind !== 'im') return;
+  const appliedRoutineItems = new Set(result.outcomes
+    .filter(({ operationKind, disposition }) =>
+      operationKind === 'save_routine' && disposition === 'applied')
+    .map(({ itemId }) => itemId));
+  if (!operations.some(({ kind, itemId }) =>
+    kind === 'save_routine' && appliedRoutineItems.has(itemId))) return;
+  if (!origin.messageTs) {
+    console.warn(
+      '[chickpea:management] private schedule acknowledgement skipped: origin message coordinate missing',
+    );
+    return;
+  }
+
+  const coordinateDigest = createHash('sha256')
+    .update(`${result.operationId}\0${origin.workspaceId}\0${origin.channelId}\0${origin.messageTs}`)
+    .digest('hex')
+    .slice(0, 32);
+  try {
+    await management.putOutbox({
+      outboxId: `routine_ack_${coordinateDigest}`,
+      operationId: result.operationId,
+      destination: {
+        kind: 'reaction',
+        workspaceId: origin.workspaceId,
+        channelId: origin.channelId,
+        messageTs: origin.messageTs,
+      },
+      receipt: { kind: 'routine_saved_reaction', emojiName: 'white_check_mark' },
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: at,
+      createdAt: at,
+      updatedAt: at,
+    });
+  } catch {
+    // The schedule is already durably saved. Keep that result truthful while
+    // leaving a safe operational signal for the acknowledgement failure.
+    console.error('[chickpea] Failed to queue private schedule acknowledgement');
+  }
 }
 
 async function routineContentAccess(

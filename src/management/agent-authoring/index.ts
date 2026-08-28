@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.13' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.15' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -19,7 +19,7 @@ export const AGENT_AUTHORING_ROUTER_INSTRUCTION = [
   'Before calling any configuration mutation tool, consider the whole request. Treat a compound request as one Agent-authoring request and never partially write it.',
   'Skill activation, reference reading, live inspection, and proposal drafting are read-only; do them without asking for separate permission.',
   'For Agent brainstorming or capability questions involving services or connections, call `inspect_workspace` in the same turn before naming services or availability; do not answer from general knowledge or defer inspection.',
-  'Natural-language scheduled work uses Agent authoring; only exact `!routines` commands use deterministic controls. A clear standalone schedule request applies immediately without approval, including relative-time follow-ups that do not say schedule. Inspect first and place every primitive in a compound request together.',
+  'Natural-language scheduled work uses Agent authoring; only exact `!routines` commands use deterministic controls. A clear standalone schedule request applies immediately without approval, including relative-time follow-ups that do not say schedule. For a new follow-up, create a fresh routine without `routineId` or `expectedVersion`, sending relative timing as `schedule: {kind: "in", minutes: N}` instead of computing a wall-clock time; only edit a routine when the requester explicitly identifies that schedule. Inspect first and place every primitive in a compound request together.',
   'Exploration and unresolved questions are read-only. Use the management tools only after the activated guide establishes the correct posture and target.',
 ].join(' ');
 
@@ -72,7 +72,7 @@ All requests to remember or edit durable Agent memory are Agent authoring. Call 
 
 All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, reassign, or delete scheduled work are Agent authoring. Inspect and handle the request through this guide even when the schedule is the only primitive. Exact \`!routines\` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, inspect and place every part together; never save only the cadence and discard the rest.
 
-A clear instruction to continue work at a future time is an explicit schedule request and does not need to say schedule. For example, “Check this again in 5 minutes and tell me anything new” means create one-time scheduled work for that follow-up in the current destination, using \`post_on_change\` because “anything new” supplies the empty-result behavior. When a standalone schedule create or edit has a clear task, time, destination, and empty-result behavior, call \`apply_workspace_changes\` immediately without a proposal or approval round trip. Ask only for details that materially change execution. Keep scheduled work inside a proposal only when it is part of a compound request whose other changes require review.
+A clear instruction to continue work at a future time is an explicit schedule request and does not need to say schedule. For example, “Check this again in 5 minutes and tell me anything new” means create one-time scheduled work for that follow-up in the current destination, using \`post_on_change\` because “anything new” supplies the empty-result behavior. In this phrasing, “again” refers to repeating the prior task, not editing an inspected schedule: omit \`routineId\` and \`expectedVersion\` and create a fresh routine. Never infer a schedule edit from “again,” “follow up,” a similar task, or an existing routine in the thread; include an inspected routine ID and version only when the requester explicitly asks to change that particular schedule. Send a relative lead time as the lead time itself — \`schedule: { "kind": "in", "minutes": 5 }\` — so the service computes the exact future minute on its own clock; never convert “in N minutes” into a wall-clock \`localDateTime\`, and reserve \`once\` with \`localDateTime\` for a date and time the requester names explicitly. When a standalone schedule create or edit has a clear task, time, destination, and empty-result behavior, call \`apply_workspace_changes\` immediately without a proposal or approval round trip. Ask only for details that materially change execution. Keep scheduled work inside a proposal only when it is part of a compound request whose other changes require review.
 
 ## Explore and design conversationally
 

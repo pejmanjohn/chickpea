@@ -64,7 +64,7 @@ test('management-created schedules accept active grant-only destinations and bin
       routines,
       routineSchedulingAvailable: true,
       now: () => NOW,
-      randomId: () => 'management_routine',
+      randomId: (() => { let sequence = 0; return () => `management_routine_${++sequence}`; })(),
     });
     const context = {
       userId: owner.user.id,
@@ -109,6 +109,27 @@ test('management-created schedules accept active grant-only destinations and bin
       lifecycle: 'active',
       grants: [{ agentId: 'agent_support', status: 'active', revision: 1 }],
     }]);
+
+    const invalidSchedule = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'save-invalid-support-routine',
+      operations: [{
+        itemId: 'invalid-routine',
+        kind: 'save_routine',
+        agentId: 'agent_support',
+        workspaceId: 'T_MANAGEMENT_ROUTINE',
+        channelId: 'C_SUPPORT',
+        name: 'Invalid triage',
+        description: 'Exercise schedule validation.',
+        taskText: 'This routine must not be saved.',
+        schedule: { kind: 'once', localDateTime: 'not-a-local-time' },
+        timezone: 'UTC',
+        outputPolicy: 'post',
+      }],
+    });
+    assert.equal(invalidSchedule.status, 'partial');
+    assert.equal(invalidSchedule.outcomes[0]?.code, 'invalid_request');
+    assert.equal((await routines.listRoutines('T_MANAGEMENT_ROUTINE', 'C_SUPPORT')).length, 1);
   } finally {
     identity.close();
     config.close();
@@ -361,8 +382,9 @@ test('private DM routines need no deployment flag and use trusted thread managem
     assert.doesNotMatch(presentation, /\*After\*\n> \(not set\)/);
     assert.deepEqual(await routines.listRoutines('T_DIRECT_ROUTINE', 'D_DIRECT_OWNER'), []);
 
+    const appliedSignal = signal(support.id, '100.1');
     const applied = await invokeSlackWorkspaceManagementTool({
-      signal: signal(support.id, '100.1'), identity, service,
+      signal: appliedSignal, identity, service,
       name: 'apply_workspace_changes',
       args: {
         idempotencyKey: 'private-schedule-direct-apply',
@@ -370,7 +392,19 @@ test('private DM routines need no deployment flag and use trusted thread managem
       },
     });
     assert.equal(applied.ok, true);
-    assert.equal((applied as { ok: true; result: { status: string } }).result.status, 'completed');
+    const appliedResult = (applied as { ok: true; result: {
+      operationId: string; status: string;
+    } }).result;
+    assert.equal(appliedResult.status, 'completed');
+    const acknowledgement = await management.getOutboxForOperation(appliedResult.operationId);
+    assert.deepEqual(acknowledgement?.destination, {
+      kind: 'reaction', workspaceId: 'T_DIRECT_ROUTINE', channelId: 'D_DIRECT_OWNER',
+      messageTs: appliedSignal.messageTs,
+    });
+    assert.deepEqual(acknowledgement?.receipt, {
+      kind: 'routine_saved_reaction', emojiName: 'white_check_mark',
+    });
+    assert.equal(acknowledgement?.status, 'pending');
     const [routine] = await routines.listRoutines('T_DIRECT_ROUTINE', 'D_DIRECT_OWNER');
     assert.ok(routine);
     assert.equal(routine.state, 'active');
@@ -532,6 +566,128 @@ test('private DM routines need no deployment flag and use trusted thread managem
     const authorityFailedRoutine = await routines.getRoutine(routine.id);
     assert.equal(authorityFailedRoutine?.state, 'paused');
     assert.equal(authorityFailedRoutine?.pausedReason, 'schedule_authority_missing');
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    routines.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('identical relative DM follow-ups create fresh future schedules repeatedly', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-management-relative-routines-'));
+  const statePath = join(dir, 'state.db');
+  let now = Date.UTC(2026, 7, 27, 18, 20, 12);
+  const identity = new SqliteIdentityStore(':memory:', { now: () => now });
+  const owner = await createSlackOwner(identity, {
+    now, teamId: 'T_RELATIVE_ROUTINE', userId: 'U_RELATIVE_OWNER',
+    suffix: 'management-relative-routine',
+  });
+  const config = new SqliteConfigStore(statePath, { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const routines = new SqliteRoutineStore(statePath, () => now);
+  try {
+    const support = await config.createAgent({
+      id: 'agent_relative_support', name: 'Relative support', instructions: 'Help privately.',
+      enabled: true, lifecycle: 'active', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [],
+      repositories: [],
+    });
+    await config.materializeChickpeaAgent();
+    const installation = await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_RELATIVE_ROUTINE', transportMode: 'direct', defaultAgentId: support.id,
+    });
+    await config.updateWorkspaceInstallation(
+      'T_RELATIVE_ROUTINE', { runtimeContract: 'chickpea-v1' }, installation.revision,
+    );
+    const service = new WorkspaceManagementService({
+      identity, config, management, routines,
+      routineSchedulingAvailable: true,
+      now: () => now,
+      randomId: (() => { let sequence = 0; return () => `relative_${++sequence}`; })(),
+    });
+    let sequence = 0;
+    const signal = () => ({
+      agentId: support.id, workspaceId: 'T_RELATIVE_ROUTINE', channelId: 'D_RELATIVE_OWNER',
+      conversationKind: 'im' as const, threadTs: '100.1', slackUserId: owner.binding.slackUserId,
+      eventId: `Ev_RELATIVE_${++sequence}`, messageTs: `${sequence}.2`,
+      turnJobId: `turn_RELATIVE_${sequence}`,
+    });
+    // The exact payload the guide asks for on "Check this again in 5 minutes
+    // and tell me anything new": relative lead time, fresh routine, no
+    // model-computed wall-clock localDateTime.
+    const followUp = {
+      itemId: 'follow-up', kind: 'save_routine' as const,
+      agentId: support.id, workspaceId: 'T_RELATIVE_ROUTINE',
+      destination: { kind: 'current_dm_thread' as const },
+      name: 'Follow-up check', description: 'Re-check the thread topic.',
+      taskText: 'Check this again and report anything new.',
+      schedule: { kind: 'in' as const, minutes: 5 },
+      timezone: 'America/Los_Angeles', outputPolicy: 'post_on_change' as const,
+    };
+
+    const apply = async (idempotencyKey: string) => {
+      const applied = await invokeSlackWorkspaceManagementTool({
+        signal: signal(), identity, service,
+        name: 'apply_workspace_changes',
+        args: { idempotencyKey, operations: [followUp] },
+      });
+      assert.equal(applied.ok, true);
+      return (applied as { ok: true; result: {
+        operationId: string; status: string;
+        outcomes: Array<{ disposition: string; code?: string }>;
+      } }).result;
+    };
+
+    const first = await apply('relative-follow-up-1820');
+    assert.equal(first.status, 'completed');
+    assert.equal(
+      (await management.getOutboxForOperation(first.operationId))?.status,
+      'pending',
+    );
+
+    // 6:46: the identical sentence again in the same DM thread, after the first
+    // routine's occurrence has already passed. Before the relative contract this
+    // repeat depended on model wall-clock arithmetic and failed invalid_request.
+    now = Date.UTC(2026, 7, 27, 18, 46, 33);
+    const second = await apply('relative-follow-up-1846');
+    assert.equal(second.status, 'completed');
+    assert.equal(
+      (await management.getOutboxForOperation(second.operationId))?.status,
+      'pending',
+    );
+
+    const saved = await routines.listRoutines('T_RELATIVE_ROUTINE', 'D_RELATIVE_OWNER');
+    assert.equal(saved.length, 2);
+    const nextRuns = saved.map(({ nextRunAt }) => nextRunAt).sort((a, b) => a! - b!);
+    assert.deepEqual(nextRuns, [
+      Date.UTC(2026, 7, 27, 18, 26),
+      Date.UTC(2026, 7, 27, 18, 52),
+    ]);
+    for (const routine of saved) {
+      assert.equal(routine.triggerKind, 'once');
+      assert.equal(routine.destination.kind, 'direct_thread');
+    }
+
+    // The observed live failure payload: replaying the FIRST follow-up's
+    // absolute local time at 6:46 must still fail schedule validation closed.
+    const stale = await invokeSlackWorkspaceManagementTool({
+      signal: signal(), identity, service,
+      name: 'apply_workspace_changes',
+      args: {
+        idempotencyKey: 'relative-follow-up-stale-echo',
+        operations: [{
+          ...followUp,
+          schedule: { kind: 'once' as const, localDateTime: '2026-08-27T11:26' },
+        }],
+      },
+    });
+    const staleOutcome = (stale as { ok: true; result: {
+      outcomes: Array<{ disposition: string; code?: string }>;
+    } }).result.outcomes[0];
+    assert.equal(staleOutcome?.disposition, 'failed');
+    assert.equal(staleOutcome?.code, 'invalid_request');
   } finally {
     identity.close();
     config.close();

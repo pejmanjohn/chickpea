@@ -149,6 +149,61 @@ export function normalizeOneTimeSchedule(
   };
 }
 
+const RELATIVE_ONCE_MAX_MINUTES = PROJECTION_DAYS * 24 * 60;
+
+/**
+ * Server-clock projection for relative one-time requests ("in N minutes").
+ * The conversational layer forwards the requested lead time verbatim, so no
+ * model wall-clock arithmetic can place a follow-up in the past. The computed
+ * instant is authoritative; the canonical local label is derived from it and
+ * rounded up to the next whole minute so the routine never starts early.
+ */
+export function normalizeRelativeOneTimeSchedule(
+  minutes: number,
+  timezone: string,
+  from: number = Date.now(),
+): RoutineScheduleProjection<CanonicalOneTimeRoutineSchedule> {
+  if (!Number.isSafeInteger(from) || from < 0 || !isIanaTimeZone(timezone)) {
+    throw scheduleError('routine_invalid_timezone', 'Routine time zone must be a valid IANA time zone.');
+  }
+  if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > RELATIVE_ONCE_MAX_MINUTES) {
+    throw scheduleError(
+      'routine_invalid_schedule',
+      'A relative one-time routine needs a whole number of minutes, up to 370 days ahead.',
+    );
+  }
+  const at = Math.ceil((from + minutes * 60_000) / 60_000) * 60_000;
+  const schedule: CanonicalOneTimeRoutineSchedule = {
+    version: 1,
+    kind: 'once',
+    localDateTime: formatLocalMinute(at, timezone),
+    at,
+  };
+  return {
+    schedule,
+    scheduleJson: JSON.stringify(schedule),
+    nextRunAt: at,
+    preview: [at],
+    projectedDailyStarts: 0,
+    reservations: [{ windowStart: at, count: 1 }],
+  };
+}
+
+function formatLocalMinute(timestamp: number, timezone: string): string {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US-u-ca-iso8601', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(timestamp).map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
 /**
  * Rebuild the small, rolling collision-preview window after a due slot advances.
  * Full-year enumeration is retained only for validation and daily-rate
@@ -299,25 +354,34 @@ function cron(schedule: CanonicalRecurringRoutineSchedule, timezone: string): Cr
 }
 
 function canonicalLocalDateTime(value: string): string {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value.trim());
+  const trimmed = value.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?$/.exec(trimmed);
   if (!match) {
     throw scheduleError(
       'routine_invalid_schedule',
       'A one-time routine must use a local date and time like 2026-07-28T09:30.',
     );
   }
-  const [year, month, day, hour, minute] = match.slice(1).map(Number);
-  const roundTrip = new Date(Date.UTC(year!, month! - 1, day!, hour!, minute!));
+  const [year, month, day, hour, minute] = match.slice(1, 6).map(Number);
+  const second = Number(match[6] ?? 0);
+  const fractionalSecond = match[7] ?? '';
+  const roundTrip = new Date(Date.UTC(year!, month! - 1, day!, hour!, minute!, second));
   if (
+    second > 59 ||
     roundTrip.getUTCFullYear() !== year ||
     roundTrip.getUTCMonth() !== month! - 1 ||
     roundTrip.getUTCDate() !== day ||
     roundTrip.getUTCHours() !== hour ||
-    roundTrip.getUTCMinutes() !== minute
+    roundTrip.getUTCMinutes() !== minute ||
+    roundTrip.getUTCSeconds() !== second
   ) {
     throw scheduleError('routine_invalid_schedule', 'The one-time routine date and time is invalid.');
   }
-  return value.trim();
+  const shouldRoundUp = second > 0 || /[1-9]/.test(fractionalSecond);
+  const canonical = new Date(
+    Date.UTC(year!, month! - 1, day!, hour!, minute!) + (shouldRoundUp ? 60_000 : 0),
+  );
+  return canonical.toISOString().slice(0, 16);
 }
 
 function resolveLocalDateTime(localDateTime: string, timezone: string): number {
