@@ -1,6 +1,6 @@
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { WebClient } from '@slack/web-api';
-import { getConfigStore, getRoutineStore } from '../config/state-backend.ts';
+import { getConfigStore, getIdentityStore, getRoutineStore } from '../config/state-backend.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { ConfigStore } from '../config/store.ts';
@@ -13,9 +13,7 @@ import {
 } from '../slack/command-address.ts';
 import type { SlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import {
-  createRoutineRunId,
   hashRoutineValue,
-  runNowOccurrenceKey,
   routineDestinationBindingDigest,
 } from './ids.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
@@ -33,6 +31,10 @@ import {
   type RoutineCapability,
 } from './scheduler-adapter.ts';
 import { RoutineService } from './service.ts';
+import {
+  executeSlackScheduleCommand,
+  SlackScheduleCommandError,
+} from './slack-command.ts';
 import {
   bindRoutineAgentAuthority,
   isActiveRoutineActor,
@@ -67,6 +69,7 @@ interface RoutineCommandExecutionContext {
   turn: NormalizedSlackTurn;
   store: RoutineStore;
   config: ConfigStore;
+  identity: IdentityStore;
   env: PlatformEnv | undefined;
   capability: RoutineCapability;
   now: () => number;
@@ -180,13 +183,14 @@ export async function handleRoutineSlackRequest(
   }
   const store = dependencies.store ?? getRoutineStore(env);
   const config = dependencies.config ?? getConfigStore(env);
+  const identity = dependencies.identity ?? getIdentityStore(env);
   const now = dependencies.now ?? Date.now;
   const capability = dependencies.capability ?? routineCapability();
   const canManageChannel = dependencies.canManageChannel ?? canManageRoutineChannel;
   const botToken = dependencies.installationContext?.botToken;
   const slackClient = dependencies.installationContext?.client;
   const commandContext: RoutineCommandExecutionContext = {
-    turn, store, config, env, capability, now, canManageChannel,
+    turn, store, config, identity, env, capability, now, canManageChannel,
     bindAuthority: dependencies.bindAuthority ?? ((input) =>
       bindRoutineAgentAuthority(input, {
         ...(dependencies.config ? { config: dependencies.config } : {}),
@@ -213,7 +217,7 @@ async function executeRoutineCommand(
   context: RoutineCommandExecutionContext,
 ): Promise<string> {
   const {
-    turn, store, env, capability, now, canManageChannel, botToken, slackClient, assignment,
+    turn, store, config, identity, env, capability, now, canManageChannel, botToken, slackClient, assignment,
     bindAuthority, resolveAuthority,
   } = context;
   const service = new RoutineService(store, { now });
@@ -321,41 +325,44 @@ async function executeRoutineCommand(
     return renderRoutineDetail(routine, runs, provenance);
   }
   if (command.kind === 'control') {
-    if (command.action === 'resume') requireRoutineScheduling(capability);
-    const updated = await service.control({
+    const result = await executeSlackScheduleCommand({
+      kind: 'control',
+      actionKey: turn.eventId,
+      itemId: `${command.action}:${routine.id}`,
+      actorUserId: turn.userId,
+      actorClass: 'member',
       routineId: routine.id,
       expectedVersion: routine.version,
       action: command.action,
-      actorId: turn.userId,
-      actorClass: 'member',
-      idempotencyKey: `routine:slack:${turn.eventId}:${command.action}:${routine.id}`,
+    }, {
+      routines: store,
+      config,
+      identity,
+      schedulingAvailable: capability.available,
+      now,
     });
+    const updated = result.routine;
     const verb = command.action === 'pause' ? 'paused' : command.action === 'resume' ? 'resumed' : 'disabled';
     const icon = command.action === 'pause' ? '⏸️' : command.action === 'resume' ? '▶️' : '⏹️';
     return `${icon} **Routine ${verb}**\n**Name:** ${updated.name}\n**ID:** \`${updated.id}\``;
   }
   if (command.kind === 'run') {
-    requireRoutineScheduling(capability);
     const authority = await resolveAuthority(routine, env);
     if (assignment && !isChickpeaAssignment(assignment) &&
         authority.reference.agentId !== assignment.agentId) return notFoundText();
-    if (routine.triggerKind === 'once') {
-      throw new RoutineStateError(
-        'routine_one_time_run_unsupported',
-        'A one-time job runs only at its scheduled time. Create another one-time job for a different time.',
-      );
-    }
-    const at = now();
-    await store.createOccurrence({
-      runId: createRoutineRunId(),
-      idempotencyKey: runNowOccurrenceKey(routine.id, turn.eventId),
+    await executeSlackScheduleCommand({
+      kind: 'run',
+      actionKey: turn.eventId,
+      itemId: `run:${routine.id}`,
+      actorUserId: turn.userId,
       routineId: routine.id,
-      routineVersion: routine.version,
-      scheduledFor: at,
-      triggerSource: 'run_now',
-      requestedBy: turn.userId,
-      queuedAt: at,
-      deadlineAt: at + ROUTINE_LIMITS.occurrenceDeadlineMs,
+    }, {
+      routines: store,
+      config,
+      identity,
+      schedulingAvailable: capability.available,
+      now,
+      resolveAuthority: async () => authority,
     });
     return `▶️ **Routine queued**\n**Name:** ${routine.name}`;
   }
@@ -571,7 +578,9 @@ function definitionFromRoutine(
 }
 
 function routineErrorText(error: unknown): string {
-  if (error instanceof RoutineStateError) return error.message;
+  if (error instanceof RoutineStateError || error instanceof SlackScheduleCommandError) {
+    return error.message;
+  }
   return 'Chickpea could not safely manage that routine. Try `!routines help`.';
 }
 

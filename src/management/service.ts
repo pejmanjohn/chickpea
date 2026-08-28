@@ -28,7 +28,6 @@ import {
   type ConnectionAccount,
   type ConnectionAccountPolicy,
   type CustomAgentConfig,
-  type ResolvedAssignment,
 } from '../config/types.ts';
 import {
   applyConnectionCapabilityCeiling,
@@ -39,17 +38,13 @@ import type {
   AgentMemory,
   MemoryStateStore,
 } from '../memory/types.ts';
-import {
-  normalizeOneTimeSchedule,
-  normalizeRelativeOneTimeSchedule,
-  normalizeRoutineSchedule,
-} from '../routines/schedule.ts';
 import { RoutineService } from '../routines/service.ts';
+import { reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
 import {
-  bindRoutineAgentAuthority,
-  reassignDirectRoutineAgent,
-} from '../routines/agent-authority.ts';
-import { routineDestinationBindingDigest } from '../routines/ids.ts';
+  executeSlackScheduleCommand,
+  SlackScheduleCommandError,
+  type SlackScheduleCommand,
+} from '../routines/slack-command.ts';
 import { RoutineStateError, type RoutineDefinition, type RoutineStore } from '../routines/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
@@ -2337,136 +2332,21 @@ export class WorkspaceManagementService {
     }>,
   ): Promise<ImmediateMutation> {
     await this.requireRoutineMutation(actor, operation);
-    const service = new RoutineService(this.stores.routines!, {
-      now: this.now,
-      routineId: () => `routine_${createHash('sha256')
-        .update(`${mutationId}:${operation.itemId}`)
-        .digest('hex')
-        .slice(0, 32)}`,
-    });
     try {
-      if (operation.kind === 'control_routine') {
-        return routineMutation(await service.control({
-          routineId: operation.routineId,
-          expectedVersion: operation.expectedVersion,
-          action: operation.action,
-          actorId: actor.userId,
-          actorClass: 'operator',
-          reasonCode: 'workspace_management',
-          idempotencyKey: `management:routine:control:${mutationId}:${operation.itemId}`,
-        }));
-      }
-      const projection = operation.schedule.kind === 'cron'
-        ? normalizeRoutineSchedule(operation.schedule.expression, operation.timezone, this.now())
-        : operation.schedule.kind === 'once'
-          ? normalizeOneTimeSchedule(operation.schedule.localDateTime, operation.timezone, this.now())
-          : normalizeRelativeOneTimeSchedule(operation.schedule.minutes, operation.timezone, this.now());
-      const channelId = this.routineMutationChannelId(actor, operation);
-      const existing = operation.routineId
-        ? await this.stores.routines!.getRoutine(operation.routineId)
-        : undefined;
-      const directOrigin = slackDirectOrigin(actor);
-      const direct = operation.destination?.kind === 'current_dm_thread' ||
-        existing?.destination.kind === 'direct_thread';
-      const definition = {
-        name: operation.name,
-        description: operation.description,
-        taskText: operation.taskText,
-        triggerKind: operation.schedule.kind === 'cron' ? 'schedule' as const : 'once' as const,
-        scheduleInput: projection.schedule.kind === 'cron'
-          ? projection.schedule.expression
-          : projection.schedule.localDateTime,
-        scheduleJson: projection.scheduleJson,
-        timezone: operation.timezone,
-        outputPolicy: operation.outputPolicy,
-        authorityMode: direct ? 'live_direct_member_v1' as const : 'live_channel_v1' as const,
-      };
-      const request = operation.routineId
-        ? {
-            action: 'edit' as const,
-            routineId: operation.routineId,
-            ...(operation.expectedVersion !== undefined
-              ? { expectedVersion: operation.expectedVersion }
-              : {}),
-            definition,
-          }
-        : { action: 'create' as const, definition };
-      const routine = await service.save({
-        ...request,
-        actorId: actor.userId,
-        actorClass: 'operator',
-        workspaceId: operation.workspaceId,
-        channelId,
-        ...(!existing && direct && directOrigin
-          ? {
-              destination: {
-                kind: 'direct_thread' as const,
-                conversationId: channelId,
-                threadTs: directOrigin.threadTs,
-                ownerMembershipId: actor.membershipId,
-              },
-            }
-          : {}),
-        nextRunAt: projection.nextRunAt,
-        projectedDailyStarts: projection.projectedDailyStarts,
-        reservations: projection.reservations,
-        sourceVisibility: direct ? 'private' : 'unknown',
-      }, `management:routine:save:${mutationId}:${operation.itemId}`);
-      const agent = await this.stores.config.getAgent(operation.agentId);
-      const assignment: ResolvedAssignment = {
-        workspaceId: operation.workspaceId,
-        channelId,
-        agentId: agent.id,
-        agent,
-      };
-      try {
-        const reference = await bindRoutineAgentAuthority({
-          routine,
-          assignment,
-          actorMembershipId: actor.membershipId,
-          env: undefined,
-        }, {
-          config: this.stores.config as ConfigStore,
-          identity: this.stores.identity as IdentityStore,
-        });
-        if (!existing && routine.destination.kind === 'direct_thread') {
-          const digest = routineDestinationBindingDigest(
-            routine.id,
-            routine.workspaceId,
-            routine.destination,
-          );
-          const activated = await this.stores.routines!.activateDirectRoutine({
-            routineId: routine.id,
-            expectedVersion: routine.version,
-            expectedReferenceRevision: reference.revision,
-            destinationBindingDigest: digest,
-          });
-          return routineMutation(activated);
-        }
-      } catch {
-        const pendingDirect = routine.destination.kind === 'direct_thread' &&
-          routine.state === 'pending_authority';
-        if (!pendingDirect) {
-          await service.control({
-            routineId: routine.id,
-            expectedVersion: routine.version,
-            action: 'pause',
-            actorId: actor.userId,
-            actorClass: 'operator',
-            reasonCode: 'schedule_authority_missing',
-            idempotencyKey: `management:routine:authority-failed:${mutationId}:${operation.itemId}`,
-          }).catch(() => undefined);
-        }
-        throw new ManagementError(
-          'invalid_request',
-          pendingDirect
-            ? 'The private schedule was saved inactive because its Agent authority could not be bound.'
-            : 'The schedule was saved paused because its Agent authority could not be bound.',
-        );
-      }
-      return routineMutation(routine);
+      const command = this.scheduleCommand(actor, mutationId, operation);
+      const result = await executeSlackScheduleCommand(command, {
+        routines: this.stores.routines!,
+        config: this.stores.config as ConfigStore,
+        identity: this.stores.identity as IdentityStore,
+        schedulingAvailable: () => this.isRoutineSchedulingAvailable(),
+        now: this.now,
+      });
+      return routineMutation(result.routine);
     } catch (error) {
       if (error instanceof ManagementError) throw error;
+      if (error instanceof SlackScheduleCommandError) {
+        throw new ManagementError('invalid_request', error.message);
+      }
       if (error instanceof RoutineStateError) {
         throw new ManagementError(
           error.code === 'routine_version_conflict' ? 'revision_conflict' : 'invalid_request',
@@ -2478,6 +2358,57 @@ export class WorkspaceManagementService {
       }));
       throw new ManagementError('invalid_request', 'The routine mutation could not be applied.');
     }
+  }
+
+  private scheduleCommand(
+    actor: LiveManagementActor,
+    mutationId: string,
+    operation: Extract<ManagementOperation, {
+      kind: 'save_routine' | 'control_routine';
+    }>,
+  ): SlackScheduleCommand {
+    if (operation.kind === 'control_routine') {
+      return {
+        kind: 'control',
+        actionKey: mutationId,
+        itemId: operation.itemId,
+        actorUserId: actor.userId,
+        routineId: operation.routineId,
+        expectedVersion: operation.expectedVersion,
+        action: operation.action,
+      };
+    }
+    const channelId = this.routineMutationChannelId(actor, operation);
+    const directOrigin = slackDirectOrigin(actor);
+    return {
+      kind: 'save',
+      actionKey: mutationId,
+      itemId: operation.itemId,
+      actorUserId: actor.userId,
+      actorMembershipId: actor.membershipId,
+      workspaceId: operation.workspaceId,
+      channelId,
+      agentId: operation.agentId,
+      ...(operation.destination?.kind === 'current_dm_thread' && directOrigin
+        ? {
+            directDestination: {
+              conversationId: channelId,
+              threadTs: directOrigin.threadTs,
+              ownerMembershipId: actor.membershipId,
+            },
+          }
+        : {}),
+      ...(operation.routineId ? { routineId: operation.routineId } : {}),
+      ...(operation.expectedVersion !== undefined
+        ? { expectedVersion: operation.expectedVersion }
+        : {}),
+      name: operation.name,
+      description: operation.description,
+      taskText: operation.taskText,
+      schedule: operation.schedule,
+      timezone: operation.timezone,
+      outputPolicy: operation.outputPolicy,
+    };
   }
 
   private async executeProgressiveItem(
