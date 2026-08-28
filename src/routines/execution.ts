@@ -86,7 +86,8 @@ import {
 } from './telemetry.ts';
 import type {
   RoutineAdmissionAttempt,
-  RoutineAgentDispatchEnvelopeV1,
+  RoutineAgentDispatchEnvelope,
+  RoutineAgentDispatchEnvelopeV2,
   RoutineAgentReceiptV1,
   RoutineAgentSettlementV1,
   RoutineAgentUsageV1,
@@ -123,7 +124,7 @@ interface PreparedExecution {
   routine: RoutineDefinition;
   access: RoutineRuntimeAccess;
   prompt: PreparedRoutinePrompt;
-  envelope: RoutineAgentDispatchEnvelopeV1;
+  envelope: RoutineAgentDispatchEnvelope;
   sandboxConversationKey: string;
   receipt: RoutineAgentReceiptV1 | null;
   usageRecorder?: RoutineUsageRecorder;
@@ -298,7 +299,7 @@ export async function executeRoutineOccurrence(
     });
     modelSettled = true;
     if (
-      prepared.prompt.prompt !== prepared.envelope.message ||
+      prepared.prompt.prompt !== executionPrompt(prepared.envelope) ||
       prepared.prompt.memoryEpoch !== executionInitialData(prepared.envelope).runtimePlan.memoryEpoch ||
       !(await prepared.prompt.validateMemoryLease())
     ) {
@@ -592,7 +593,7 @@ function createEnvelope(input: {
   runtimeModelRoute?: FrozenRuntimeModelRoute;
   modelCredential: EffectiveSlackConfig['modelCredential'] | null;
   sandboxMode: 'bash' | 'cloudflare';
-}): RoutineAgentDispatchEnvelopeV1 {
+}): RoutineAgentDispatchEnvelopeV2 {
   const runtimePlan = compileRuntimePlanV2({
     turn: input.prompt.turn,
     assignment: {
@@ -628,22 +629,44 @@ function createEnvelope(input: {
     },
   };
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     attemptId: input.attemptId,
     instanceId: opaqueId('routineagent', input.attemptId),
     idempotencyKey: input.attemptId,
-    message: input.prompt.prompt,
+    message: {
+      kind: 'signal',
+      type: 'schedule',
+      body: input.prompt.prompt,
+      attributes: {
+        routineId: input.routine.id,
+        occurrenceId: input.run.id,
+        workspaceId: input.routine.workspaceId,
+        conversationId: input.routine.channelId,
+        destinationKind: input.routine.destination.kind,
+        ownerAgentId: input.access.config.agentId,
+        ownerMembershipId: input.access.actorMembershipId ?? 'legacy_membership',
+        threadTs: input.routine.destination.kind === 'direct_thread'
+          ? input.routine.destination.threadTs
+          : '',
+        triggerSource: input.run.triggerSource,
+        scheduledFor: String(input.run.scheduledFor),
+      },
+    },
     initialData,
   };
 }
 
-function executionInitialData(envelope: RoutineAgentDispatchEnvelopeV1): RoutineExecutionInitialData {
+function executionInitialData(envelope: RoutineAgentDispatchEnvelope): RoutineExecutionInitialData {
   return parseRoutineExecutionInitialData(envelope.initialData);
+}
+
+function executionPrompt(envelope: RoutineAgentDispatchEnvelope): string {
+  return envelope.schemaVersion === 1 ? envelope.message : envelope.message.body;
 }
 
 function assertRoutineReattachmentAttribution(
   run: RoutineRun,
-  envelope: RoutineAgentDispatchEnvelopeV1,
+  envelope: RoutineAgentDispatchEnvelope,
   access: RoutineRuntimeAccess,
 ): void {
   const admittedAgentId = executionInitialData(envelope).runtimePlan.agentId;
@@ -665,7 +688,7 @@ async function createRoutineShadowLifecycle(
   input: {
     run: RoutineRun;
     access: RoutineRuntimeAccess;
-    envelope: RoutineAgentDispatchEnvelopeV1;
+    envelope: RoutineAgentDispatchEnvelope;
     providerAuthRoute: ProviderAuthRoute | undefined;
     modelCredential:
       | NonNullable<Awaited<ReturnType<typeof resolveModelCredentialAttribution>>>
@@ -716,7 +739,7 @@ async function createRoutineShadowLifecycle(
       onGap?.();
       return undefined;
     }
-    return await lifecycle.prepareExecution(envelope.message) ? lifecycle : undefined;
+    return await lifecycle.prepareExecution(executionPrompt(envelope)) ? lifecycle : undefined;
   } catch {
     onGap?.();
     return undefined;

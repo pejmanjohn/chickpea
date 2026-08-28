@@ -280,7 +280,7 @@ export interface RoutineRun {
   admissionLeaseUntil: number | null;
   flueRunId: string | null;
   /** Historical Flue workflow id above remains read-only for legacy rows. */
-  flueAgentEnvelope?: RoutineAgentDispatchEnvelopeV1 | null;
+  flueAgentEnvelope?: RoutineAgentDispatchEnvelope | null;
   flueAgentSettlement?: RoutineAgentSettlementV1 | null;
   queuedAt: number;
   admittedAt: number | null;
@@ -360,6 +360,37 @@ export interface RoutineAgentDispatchEnvelopeV1 {
   message: string;
   initialData: unknown;
 }
+
+export interface RoutineScheduleSignalV2 {
+  kind: 'signal';
+  type: 'schedule';
+  body: string;
+  attributes: {
+    routineId: string;
+    occurrenceId: string;
+    workspaceId: string;
+    conversationId: string;
+    destinationKind: 'channel' | 'direct_thread';
+    ownerAgentId: string;
+    ownerMembershipId: string;
+    threadTs: string;
+    triggerSource: RoutineTriggerSource;
+    scheduledFor: string;
+  };
+}
+
+export interface RoutineAgentDispatchEnvelopeV2 {
+  schemaVersion: 2;
+  attemptId: string;
+  instanceId: string;
+  idempotencyKey: string;
+  message: RoutineScheduleSignalV2;
+  initialData: unknown;
+}
+
+export type RoutineAgentDispatchEnvelope =
+  | RoutineAgentDispatchEnvelopeV1
+  | RoutineAgentDispatchEnvelopeV2;
 
 export interface RoutineAgentReceiptV1 {
   submissionId: string;
@@ -456,7 +487,7 @@ export interface PrepareRoutineAgentDispatchInput {
   occurrenceId: string;
   attempt: number;
   startedAt: number;
-  envelope: RoutineAgentDispatchEnvelopeV1;
+  envelope: RoutineAgentDispatchEnvelope;
   resolvedAccessHash: string;
   resolvedAgentId: string;
   resolvedAuthorityReceiptId: string;

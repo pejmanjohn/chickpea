@@ -2002,6 +2002,21 @@ export class RoutineStoreLogic {
         return 'superseded';
       }
       const routine = this.getRoutine(run.routineId);
+      if (input.envelope.schemaVersion === 2 && (!routine ||
+          input.envelope.message.attributes.routineId !== run.routineId ||
+          input.envelope.message.attributes.occurrenceId !== run.id ||
+          input.envelope.message.attributes.workspaceId !== routine.workspaceId ||
+          input.envelope.message.attributes.conversationId !== routine.channelId ||
+          input.envelope.message.attributes.destinationKind !== routine.destination.kind ||
+          input.envelope.message.attributes.ownerAgentId !== input.resolvedAgentId ||
+          input.envelope.message.attributes.ownerMembershipId !== input.resolvedRunsAsMembershipId ||
+          input.envelope.message.attributes.threadTs !== (
+            routine.destination.kind === 'direct_thread' ? routine.destination.threadTs : ''
+          ) ||
+          input.envelope.message.attributes.triggerSource !== run.triggerSource ||
+          input.envelope.message.attributes.scheduledFor !== String(run.scheduledFor))) {
+        throw routineError('routine_admission_conflict', 'Routine schedule signal conflicts.');
+      }
       if (
         (run.triggerSource === 'schedule' || run.triggerSource === 'once') &&
         (!routine || routine.deletedAt !== null || routine.state !== 'active')
@@ -3704,15 +3719,31 @@ function validateAgentDispatchInput(input: PrepareRoutineAgentDispatchInput): vo
     (input.providerAuthRoute !== undefined &&
       !['openai_api_key', 'openai_subscription'].includes(input.providerAuthRoute)) ||
     !isOpaqueRoutineId(input.traceId) ||
-    envelope.schemaVersion !== 1 ||
+    !validRoutineAgentEnvelope(envelope) ||
     !isOpaqueRoutineId(envelope.attemptId) ||
     !isOpaqueRoutineId(envelope.instanceId) ||
     envelope.idempotencyKey !== envelope.attemptId ||
-    typeof envelope.message !== 'string' || envelope.message.length < 1 ||
     encoded.length < 1 || encoded.length > 500_000
   ) {
     throw routineError('routine_admission_invalid', 'Routine agent admission is invalid.');
   }
+}
+
+function validRoutineAgentEnvelope(
+  envelope: PrepareRoutineAgentDispatchInput['envelope'],
+): boolean {
+  if (envelope.schemaVersion === 1) {
+    return typeof envelope.message === 'string' && envelope.message.length > 0;
+  }
+  const message = envelope.message;
+  const attributes = message.attributes;
+  return message.kind === 'signal' && message.type === 'schedule' &&
+    typeof message.body === 'string' && message.body.length > 0 &&
+    ['channel', 'direct_thread'].includes(attributes.destinationKind) &&
+    ['schedule', 'once', 'run_now'].includes(attributes.triggerSource) &&
+    /^\d{1,16}$/.test(attributes.scheduledFor) &&
+    Object.values(attributes).every((value) =>
+      typeof value === 'string' && value.length <= 256);
 }
 
 function validateAgentReceiptInput(input: RecordRoutineAgentReceiptInput): void {
