@@ -20,7 +20,7 @@ test('canonical Agent-authoring package is versioned, complete, and digest-bound
   assert.equal(AGENT_AUTHORING_GUIDE_URI, 'chickpea://guide/agent-authoring/v1');
   assert.ok(AGENT_AUTHORING_PACKAGE.skill.description.length > 80);
   assert.match(AGENT_AUTHORING_PACKAGE.skill.description, /Explore, create, onboard, or edit/i);
-  assert.match(AGENT_AUTHORING_PACKAGE.skill.description, /Required before answering/i);
+  assert.match(AGENT_AUTHORING_PACKAGE.skill.description, /compound Agent-configuration request/i);
   assert.ok(AGENT_AUTHORING_GUIDE.length > 4_000);
   assert.ok(AGENT_SKILL_CREATION_GUIDE.length > 2_000);
   assert.ok(AGENT_AUTHORING_ROUTER_INSTRUCTION.length < AGENT_AUTHORING_GUIDE.length / 8);
@@ -64,16 +64,13 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
   for (const phrase of [
     '`commit`', '`explore`', '`capability_question`', '`clarify`',
     'instructions', 'skills', 'memory', 'connections', 'repositories', 'schedules',
-    'All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, reassign, or delete scheduled work are Agent authoring',
+    'Standalone natural-language requests to create, edit, pause, resume, or disable scheduled work use the first-class `manage_scheduled_work` tool',
     'Check this again in 5 minutes and tell me anything new',
     'does not need to say schedule',
-    '`post_on_change` because “anything new” supplies the empty-result behavior',
-    '“again” refers to repeating the prior task, not editing an inspected schedule',
-    'omit `routineId` and `expectedVersion` and create a fresh routine',
-    'Send a relative lead time as the lead time itself',
-    '\\{ "kind": "in", "minutes": 5 \\}',
-    'never convert “in N minutes” into a wall-clock `localDateTime`',
-    '`apply_workspace_changes` immediately without a proposal or approval round trip',
+    'fresh one-time scheduled work, not an edit to an existing routine',
+    'Relative timing stays relative',
+    'same `save_routine` operation used by the shared command',
+    'Never use the compound path to add an approval round trip',
     'Slack presence', 'Channel reach', 'editing authority',
     'inspect_workspace', 'propose_workspace_changes', 'confirm_workspace_change',
     'opaque control token', 'Preserve it byte-for-byte', 'never retype',
