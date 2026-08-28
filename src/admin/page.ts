@@ -1980,6 +1980,10 @@ details[open].advanced summary::before {
 .agent-slack-channels-head h3 { margin-bottom: 4px; }
 .agent-slack-channels-head p { color: var(--text-3); font-size: .75rem; line-height: 1.45; margin: 0; }
 .agent-slack-channels-head > .btn { flex: none; }
+.agent-private-use-audience { align-items: flex-start; background: var(--well); border: 1px solid var(--line); border-radius: 12px; display: flex; gap: 10px; padding: 12px 14px; }
+.agent-private-use-audience .ic { color: var(--text-3); flex: none; height: 18px; margin-top: 1px; width: 18px; }
+.agent-private-use-audience strong { color: var(--text); display: block; font-size: .8125rem; line-height: 1.35; }
+.agent-private-use-audience p { color: var(--text-3); font-size: .75rem; line-height: 1.5; margin: 3px 0 0; }
 .agent-placement-label.agent-slack-channel-count { justify-content: flex-end; }
 .agent-slack-card-icon { align-items: center; background: transparent; border: 1px solid var(--admin-visual-line); border-radius: 10px; display: inline-flex; justify-content: center; }
 .agent-slack-card-mark { height: 19px; width: 19px; }
@@ -9391,9 +9395,10 @@ button.capability-pill { cursor: pointer; }
     channelRows += '</div>';
     var heading = '<div class="agent-slack-channels-head"><div><h3>Slack channels</h3><p>Choose where people can mention this Agent.</p></div>' +
       (concrete.length && canEditChannels ? '<button type="button" class="btn btn-soft btn-sm" data-action="attach-open">Add to channels</button>' : "") + '</div>';
+    var audience = agentPrivateUseAudienceHtml(draft);
     var picker = canEditChannels ? attachPickerHtml(draft) + attachNoticeHtml() : "";
     if (!draft.id) {
-      return heading + '<div class="agent-channel-empty agent-channel-empty-readonly"><div><strong>Add channels after creating this Agent</strong><p>Save the Agent first, then choose the Slack channels where people can mention it.</p></div></div>';
+      return heading + audience + '<div class="agent-channel-empty agent-channel-empty-readonly"><div><strong>Add channels after creating this Agent</strong><p>Save the Agent first, then choose the Slack channels where people can mention it.</p></div></div>';
     }
     if (!concrete.length) {
       var empty = draft.lifecycle === "archived"
@@ -9401,9 +9406,27 @@ button.capability-pill { cursor: pointer; }
         : readOnly
         ? '<div class="agent-channel-empty agent-channel-empty-readonly"><div><strong>' + esc(draft.name || "This Agent") + ' isn&rsquo;t in any Channels yet</strong><p>An editor can choose its first Channel when it is ready.</p></div></div>'
         : '<div class="agent-channel-empty"><span class="agent-channel-empty-icon" aria-hidden="true">#</span><div><strong>Make ' + esc(draft.name || "this Agent") + ' mentionable</strong><p>Choose its first Slack Channel. People in that Channel can then mention ' + esc(replyIdentityLabel) + '.</p></div><button type="button" class="btn btn-primary btn-sm" data-action="attach-open">Choose first channel</button></div>';
-      return heading + empty + picker;
+      return heading + audience + empty + picker;
     }
-    return heading + '<div class="agent-placement-body"><div class="agent-placement-label agent-slack-channel-count"><span class="agent-placement-count">' + esc(channelCountLabel(concrete.length)) + '</span></div>' + channelRows + '</div>' + picker;
+    return heading + audience + '<div class="agent-placement-body"><div class="agent-placement-label agent-slack-channel-count"><span class="agent-placement-count">' + esc(channelCountLabel(concrete.length)) + '</span></div>' + channelRows + '</div>' + picker;
+  }
+
+  function agentPrivateUseAudienceHtml(draft) {
+    if (!draft.id) return "";
+    var audience = draft.whereItWorks && draft.whereItWorks.privateUseAudience;
+    var title = "DM access unavailable";
+    var detail = "Chickpea cannot verify this Agent&rsquo;s current Slack placements, so private use is unavailable.";
+    if (audience === "workspace_members") {
+      title = "All workspace members can DM this Agent";
+      detail = "Any full workspace member can use it privately. Guests and Slack Connect participants cannot use Agents.";
+    } else if (audience === "private_channel_members") {
+      title = "Members of its private channels can DM this Agent";
+      detail = "A full workspace member can use it privately while they belong to at least one private channel where it is active.";
+    } else if (audience === "creator_only") {
+      title = "Only the creator can DM this Agent";
+      detail = "This applies while the Agent is not active in any Slack channel.";
+    }
+    return '<div class="agent-private-use-audience" role="note" aria-labelledby="agent-private-use-title">' + icon("users") + '<div><strong id="agent-private-use-title">' + title + '</strong><p>' + detail + '</p></div></div>';
   }
 
   function channelNameLink(assignment) {
@@ -16657,7 +16680,9 @@ button.capability-pill { cursor: pointer; }
       state.attachChannelSelected = "";
       state.attachError = "";
       state.attachNotice = "Agent added to #" + normalizeChannelLabel(channel.name || channel.id) + ".";
-      return refreshData(renderPreservingPagePosition);
+      return refreshData().then(function () {
+        return loadVisibleAgentDetail(draft.id);
+      });
     }).catch(function (error) {
       var payload = error && error.payload;
       if (payload && payload.agent) {
@@ -16679,7 +16704,9 @@ button.capability-pill { cursor: pointer; }
       method: "DELETE"
     }).then(function () {
       state.attachNotice = "Agent removed from #" + normalizeChannelLabel(label) + ".";
-      return refreshData(renderPreservingPagePosition);
+      return refreshData().then(function () {
+        return loadVisibleAgentDetail(draft.id);
+      });
     }).catch(function (error) {
       state.profileError = (error && (error.serverMessage || error.message)) || "Could not remove this Agent from the Channel.";
       render();

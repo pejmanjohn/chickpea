@@ -1212,6 +1212,13 @@ function runAdminPageHarness(
           })),
         };
       }
+      const whereItWorks = projected.whereItWorks as Record<string, unknown>;
+      if (whereItWorks.privateUseAudience === undefined) {
+        whereItWorks.privateUseAudience = Array.isArray(whereItWorks.channels) &&
+            whereItWorks.channels.length > 0
+          ? 'workspace_members'
+          : 'creator_only';
+      }
       return projected;
     },
   );
@@ -2004,6 +2011,9 @@ function runAdminPageHarness(
         existing.whereItWorks.channels = existing.whereItWorks.channels.filter((grant: Record<string, unknown>) => !(
           grant.workspaceId === workspaceId && grant.channelId === channelId
         ));
+        existing.whereItWorks.privateUseAudience = existing.whereItWorks.channels.length > 0
+          ? 'workspace_members'
+          : 'creator_only';
       }
       return Promise.resolve(jsonResponse({ removed: true }));
     }
@@ -2053,6 +2063,9 @@ function runAdminPageHarness(
         });
         existing.whereItWorks = {
           ...(existing.whereItWorks || {}),
+          privateUseAudience: channel?.isPrivate
+            ? 'private_channel_members'
+            : 'workspace_members',
           channels: current.concat(grant),
         };
       }
@@ -3284,6 +3297,7 @@ test('Where it works can remove an Agent Channel grant', async () => {
   }]);
   assert.match(harness.app.innerHTML, /Agent removed from #eng-releases/);
   assert.match(harness.app.innerHTML, /Make Release Profile mentionable/);
+  assert.match(harness.app.innerHTML, /Only the creator can DM this Agent/);
 });
 
 test('the profile editor presents reversible archive semantics for an assigned Agent', async () => {
@@ -3404,6 +3418,37 @@ test('Agent Slack destination owns its editable handle, avatar, channels, and ed
   assert.equal(harness.agentPatchBodies[0]?.body.editPolicy, 'all_workspace_members');
 });
 
+test('Agent Slack destination explains every derived DM audience without controls or rosters', async () => {
+  const cases = [
+    ['workspace_members', 'All workspace members can DM this Agent'],
+    ['private_channel_members', 'Members of its private channels can DM this Agent'],
+    ['creator_only', 'Only the creator can DM this Agent'],
+    ['unavailable', 'DM access unavailable'],
+  ] as const;
+  for (const [audience, label] of cases) {
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/agents/agent_release',
+      agents: [{
+        ...releaseAgent,
+        whereItWorks: {
+          privateUseAudience: audience,
+          channels: audience === 'creator_only' ? [] : [{
+            workspaceId: 'T_DESIGN', channelId: 'C0EXR3L9T',
+            channelName: 'eng-releases', status: 'active',
+          }],
+        },
+      }],
+    });
+    await flushAsync();
+    const start = harness.app.innerHTML.indexOf('class="agent-private-use-audience"');
+    const end = harness.app.innerHTML.indexOf('</div></div>', start) + 12;
+    const audienceHtml = harness.app.innerHTML.slice(start, end);
+    assert.match(audienceHtml, new RegExp(label));
+    assert.match(audienceHtml, /role="note" aria-labelledby="agent-private-use-title"/);
+    assert.doesNotMatch(audienceHtml, /<button|<select|memberCount|member roster/i);
+  }
+});
+
 test('Agent roster uses each Agent Slack avatar when one is available', async () => {
   const avatarUrl = 'https://secure.gravatar.com/avatar/agent-release?s=192&d=identicon';
   const harness = runAdminPageHarness({
@@ -3510,6 +3555,7 @@ test('Add to channels loads the Slack catalog and can attach an unassigned works
   }]);
   assert.doesNotMatch(harness.app.innerHTML, /data-role="attach-channel"/);
   assert.match(harness.app.innerHTML, /2 channels/);
+  assert.match(harness.app.innerHTML, /All workspace members can DM this Agent/);
 });
 
 test('Add to channels grants another Agent without replacing the existing Agent', async () => {

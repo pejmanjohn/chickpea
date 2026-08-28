@@ -35,7 +35,7 @@ interface PrivateAgentAudienceInput {
   agent: CustomAgentConfig;
   workspaceId: string;
   grants: readonly AgentChannelGrant[];
-  transport: AgentAccessTransport;
+  transport?: AgentAccessTransport;
 }
 
 interface PrivateAgentDirectoryInput {
@@ -86,6 +86,8 @@ export async function resolvePrivateAgentAudience(
 ): Promise<PrivateAgentAudience> {
   if (!agentIsEligible(input.agent)) return 'unavailable';
   const grants = activeAgentGrants(input);
+  if (grants.length === 0) return 'creator_only';
+  if (!input.transport) return 'unavailable';
   const facts = await collectTargetedFacts(grants, input.transport);
   return audienceForPlacement(placementState(grants, facts));
 }

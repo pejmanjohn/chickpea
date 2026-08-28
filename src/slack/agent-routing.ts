@@ -1,5 +1,3 @@
-import { canEditAgent } from '../auth/permissions.ts';
-import type { AuthPrincipal } from '../auth/types.ts';
 import type { ConfigStore } from '../config/store.ts';
 import {
   type AgentChannelGrant,
@@ -325,50 +323,6 @@ async function commitSelectedAgentRoute(input: {
       ? { handoffFallbackRequired: true }
       : {}),
   };
-}
-
-/** @deprecated Migrate directory callers to placement-derived private access. */
-export async function discoverableAgents(input: {
-  config: Pick<ConfigStore, 'listAgents' | 'listAgentChannelGrants'>;
-  workspaceId: string;
-  principal?: AuthPrincipal;
-  channelMember: (channelId: string) => Promise<boolean>;
-}): Promise<CustomAgentConfig[]> {
-  const [agents, grants] = await Promise.all([
-    input.config.listAgents(),
-    input.config.listAgentChannelGrants(input.workspaceId),
-  ]);
-  const grantedChannelsByAgent = new Map<string, Set<string>>();
-  for (const grant of grants) {
-    if (grant.status !== 'active') continue;
-    const channels = grantedChannelsByAgent.get(grant.agentId) ?? new Set<string>();
-    channels.add(grant.channelId);
-    grantedChannelsByAgent.set(grant.agentId, channels);
-  }
-  const membership = new Map<string, boolean>();
-  const channelMember = async (channelId: string): Promise<boolean> => {
-    const cached = membership.get(channelId);
-    if (cached !== undefined) return cached;
-    const allowed = await input.channelMember(channelId);
-    membership.set(channelId, allowed);
-    return allowed;
-  };
-  const visible: CustomAgentConfig[] = [];
-  for (const agent of agents) {
-    if (agent.kind !== 'user' || !agentIsActive(agent)) continue;
-    if (input.principal && canEditAgent(input.principal, agent)) {
-      visible.push(agent);
-      continue;
-    }
-    const channels = grantedChannelsByAgent.get(agent.id) ?? new Set<string>();
-    for (const channelId of channels) {
-      if (await channelMember(channelId)) {
-        visible.push(agent);
-        break;
-      }
-    }
-  }
-  return visible.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function agentIsActive(agent: CustomAgentConfig): boolean {

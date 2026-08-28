@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { AgentRevisionConflictError } from '../src/config/errors.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
-import { discoverableAgents, resolveAgentRoute } from '../src/slack/agent-routing.ts';
+import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import {
   AgentUserGroupLookupLimiter,
   repairMentionedAgentUserGroup,
@@ -442,31 +442,6 @@ test('concurrent unknown-group repairs share one directory lookup', async () => 
     { kind: 'not_available' },
     { kind: 'not_available' },
   ]);
-});
-
-test('Agent discovery checks granted Channels lazily and reuses membership results', async () => {
-  const { store, support, finance } = await fixture();
-  try {
-    for (const agent of [support, finance]) {
-      await store.putAgentChannelGrant({
-        workspaceId: 'T1', channelId: 'C2', agentId: agent.id, status: 'active',
-        createdByMembershipId: 'membership_owner', channelLabel: 'later', channelIsPrivate: false,
-      });
-    }
-    const calls: string[] = [];
-    const visible = await discoverableAgents({
-      config: store,
-      workspaceId: 'T1',
-      channelMember: async (channelId) => {
-        calls.push(channelId);
-        return channelId === 'C1';
-      },
-    });
-    assert.deepEqual(visible.map(({ id }) => id).sort(), [finance.id, support.id].sort());
-    assert.deepEqual(calls, ['C1']);
-  } finally {
-    store.close();
-  }
 });
 
 test('a permitted explicit handle visibly hands an owned thread to another Agent', async () => {
