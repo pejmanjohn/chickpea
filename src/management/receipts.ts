@@ -5,6 +5,7 @@ import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from '../slack/installation-execution.ts';
+import { renderSlackActionLink } from '../slack/message-format.ts';
 import { SlackTransportError } from '../slack/transport/types.ts';
 import {
   handoffCreatedAgentThread,
@@ -27,6 +28,7 @@ import { emitManagementMetric } from './telemetry.ts';
 
 const OUTBOX_LEASE_MS = 30_000;
 const OUTBOX_MAX_ATTEMPTS = 8;
+const VIEW_AGENT_LINK_LABEL = 'View Agent';
 
 /** Slack rejections a retry can never fix; settle them terminally at once. */
 const PERMANENT_DELIVERY_CODES = new Set([
@@ -405,10 +407,12 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
   ];
   if (receipt.suggestedConnector) {
     lines.push(
-      `A sensible next step is to connect *${escapeSlackText(receipt.suggestedConnector)}* so I can work with live account data.${receipt.setupUrl ? ` ${receipt.setupUrl}` : ''}`,
+      `A sensible next step is to connect *${escapeSlackText(receipt.suggestedConnector)}* so I can work with live account data.`,
     );
+    if (receipt.setupUrl) lines.push(renderSlackActionLink(receipt.setupUrl, VIEW_AGENT_LINK_LABEL));
   } else if (receipt.setupUrl) {
-    lines.push(`You can configure my connections and capabilities here: ${receipt.setupUrl}`);
+    lines.push('You can configure my connections and capabilities from my Agent page.');
+    lines.push(renderSlackActionLink(receipt.setupUrl, VIEW_AGENT_LINK_LABEL));
   } else {
     lines.push('Tell me what you’d like to work on first.');
   }
@@ -418,7 +422,7 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
 function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome): string {
   return [
     `Created *${boundedSlackText(receipt.agentName, 80)}*, but Slack would not let me post its welcome under the Agent’s identity. The creation thread remains with Chickpea.`,
-    ...(receipt.setupUrl ? [`Configure the Agent here: ${receipt.setupUrl}`] : []),
+    ...(receipt.setupUrl ? [renderSlackActionLink(receipt.setupUrl, VIEW_AGENT_LINK_LABEL)] : []),
   ].join('\n\n');
 }
 

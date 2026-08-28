@@ -191,9 +191,21 @@ test('Agent welcome uses its persona and falls back to Chickpea when customize s
   assert.equal(calls.length, 2);
   assert.equal(calls[0]?.username, 'Paid Marketing');
   assert.equal(calls[0]?.icon_url, 'https://example.test/avatar.png');
+  assert.equal(
+    calls[0]?.text,
+    [
+      'Hi — I’m *Paid Marketing*. Helps optimize Google Ads.',
+      'A sensible next step is to connect *Google Ads* so I can work with live account data.',
+      '<https://example.test/admin/agents/agent_paid_marketing|View Agent>',
+    ].join('\n\n'),
+  );
   assert.equal(calls[1]?.username, undefined);
   assert.match(String(calls[1]?.text), /would not let me post its welcome/);
   assert.doesNotMatch(String(calls[1]?.text), /Hi — I’m/);
+  assert.match(
+    String(calls[1]?.text),
+    /<https:\/\/example\.test\/admin\/agents\/agent_paid_marketing\|View Agent>/,
+  );
   assert.equal(delivered.length, 1);
   assert.equal((delivered[0] as { persona: string }).persona, 'chickpea');
   assert.equal(result.deliveryRef, 'slack:C_WELCOME:1800000000.000300');
@@ -249,6 +261,10 @@ test('an acknowledged Agent welcome is not retried when post-delivery bookkeepin
   });
 
   assert.equal(posts.length, 1);
+  assert.match(
+    String((posts[0] as { text?: string }).text),
+    /<https:\/\/example\.test\/admin\/agents\/agent_paid_marketing\|View Agent>/,
+  );
   assert.equal(result.deliveryRef, 'slack:C_WELCOME:1800000000.000500');
 });
 

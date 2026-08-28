@@ -30,6 +30,7 @@ import type { NormalizedSlackTurn } from './types.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import { slackConversationKind } from './thread-key.ts';
+import { renderSlackMarkdownActionLink, slackActionLink } from './message-format.ts';
 
 /**
  * Durable queue of Slack turns for the Cloudflare turn-relay (see state-rpc.ts
@@ -1502,7 +1503,9 @@ function validateFlueInstanceUid(value: unknown): string {
 export function replayTextForTurnProgress(progress: TurnProgress): string | undefined {
   const pullRequest = progress.pullRequest;
   if (!pullRequest) return undefined;
-  return `Pull request #${pullRequest.number} is already open: ${pullRequest.url}`;
+  return `Pull request #${pullRequest.number} is already open: ${renderSlackMarkdownActionLink(
+    slackActionLink(pullRequest.url, 'View pull request'),
+  )}`;
 }
 
 function parseTurnProgress(raw: string): TurnProgress {

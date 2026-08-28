@@ -1524,6 +1524,10 @@ test('missing actor account starts one account-owned OAuth flow from the Agent p
     assert.equal(started.kind, 'authorization_required');
     if (started.kind !== 'authorization_required') return;
     assert.match(started.authorizationUrl, /^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/);
+    assert.deepEqual(started.actionLinks, [{
+      url: started.authorizationUrl,
+      label: 'Authorize Google',
+    }]);
     const actorAccount = (await config.listConnectionAccounts('T_CONNECTIONS'))
       .find((account) => account.id === 'connection_bobwork');
     assert.equal(actorAccount?.ownerMembershipId, 'membership_bob');
