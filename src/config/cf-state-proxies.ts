@@ -195,12 +195,16 @@ import {
   type BeginRoutineOccurrenceInput,
   type CancelRoutineConfirmationInput,
   type ClaimRoutineRecoveryDeliveryInput,
+  type ClaimRoutineScheduleActionInput,
+  type ClaimRoutineScheduleActionResult,
   type ClaimRoutineDeliveryInput,
   type ClaimDueRoutinesInput,
   type ConfirmRoutineInput,
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
+  type DeferRoutineScheduleActionInput,
   type PutRoutineConfirmationInput,
+  type ReserveRoutineScheduleActionInput,
   type PrepareRoutineAgentDispatchInput,
   type RecordRoutineAgentReceiptInput,
   type RecordRoutineAgentSettlementInput,
@@ -214,6 +218,7 @@ import {
   type RoutineDueClaimBatch,
   type RoutineRevision,
   type RoutineRecoveryDelivery,
+  type RoutineScheduleAction,
   type RoutineRpcRequest,
   type RoutineRpcResponse,
   type RoutineRun,
@@ -223,6 +228,7 @@ import {
   type SaveRoutineInput,
   type ResolveRoutineAdmissionInput,
   type StartRoutineAdmissionInput,
+  type SettleRoutineScheduleActionInput,
   type TransitionRoutineRunInput,
 } from '../routines/types.ts';
 
@@ -1666,6 +1672,50 @@ export class CfMemoryStateStore implements MemoryStateStore {
 
 export class CfRoutineStore implements RoutineStore {
   constructor(private readonly stub: TagStateRpc) {}
+
+  async reserveScheduleAction(
+    input: ReserveRoutineScheduleActionInput,
+  ): Promise<RoutineScheduleAction> {
+    const response = await this.execute({ kind: 'reserve_schedule_action', input });
+    if (response.kind !== 'schedule_action' || !response.action) throw unexpectedRoutineResponse();
+    return response.action;
+  }
+  async getScheduleAction(actionId: string): Promise<RoutineScheduleAction | undefined> {
+    const response = await this.execute({ kind: 'get_schedule_action', actionId });
+    if (response.kind !== 'schedule_action') throw unexpectedRoutineResponse();
+    return orUndefined(response.action);
+  }
+  async claimScheduleAction(
+    input: ClaimRoutineScheduleActionInput,
+  ): Promise<ClaimRoutineScheduleActionResult> {
+    const response = await this.execute({ kind: 'claim_schedule_action', input });
+    if (response.kind !== 'schedule_action_claim') throw unexpectedRoutineResponse();
+    return response.claim;
+  }
+  async claimDueScheduleActions(input: {
+    owner: string;
+    at: number;
+    leaseUntil: number;
+    limit: number;
+  }): Promise<RoutineScheduleAction[]> {
+    const response = await this.execute({ kind: 'claim_due_schedule_actions', input });
+    if (response.kind !== 'schedule_actions') throw unexpectedRoutineResponse();
+    return response.actions;
+  }
+  async deferScheduleAction(
+    input: DeferRoutineScheduleActionInput,
+  ): Promise<RoutineScheduleAction> {
+    const response = await this.execute({ kind: 'defer_schedule_action', input });
+    if (response.kind !== 'schedule_action' || !response.action) throw unexpectedRoutineResponse();
+    return response.action;
+  }
+  async settleScheduleAction(
+    input: SettleRoutineScheduleActionInput,
+  ): Promise<RoutineScheduleAction> {
+    const response = await this.execute({ kind: 'settle_schedule_action', input });
+    if (response.kind !== 'schedule_action' || !response.action) throw unexpectedRoutineResponse();
+    return response.action;
+  }
 
   async putConfirmation(input: PutRoutineConfirmationInput): Promise<RoutineConfirmation> {
     const response = await this.execute({ kind: 'put_confirmation', input });

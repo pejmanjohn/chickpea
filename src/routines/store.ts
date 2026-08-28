@@ -31,12 +31,15 @@ import {
   type BeginRoutineOccurrenceInput,
   type CancelRoutineConfirmationInput,
   type ClaimRoutineRecoveryDeliveryInput,
+  type ClaimRoutineScheduleActionInput,
+  type ClaimRoutineScheduleActionResult,
   type ClaimRoutineDeliveryInput,
   type ClaimDueRoutinesInput,
   type ConfirmRoutineInput,
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
   type PutRoutineConfirmationInput,
+  type DeferRoutineScheduleActionInput,
   type PrepareRoutineAgentDispatchInput,
   type RecordRoutineAgentReceiptInput,
   type RecordRoutineAgentSettlementInput,
@@ -63,10 +66,14 @@ import {
   type RoutineRunFilter,
   type RoutineRunStatus,
   type RoutineScheduleReservation,
+  type RoutineScheduleAction,
+  type RoutineScheduleActionResult,
   type RoutineStore,
   type SaveRoutineInput,
+  type ReserveRoutineScheduleActionInput,
   type ResolveRoutineAdmissionInput,
   type StartRoutineAdmissionInput,
+  type SettleRoutineScheduleActionInput,
   type TransitionRoutineRunInput,
 } from './types.ts';
 import {
@@ -143,6 +150,27 @@ interface RecoveryDeliveryRow {
   status: RoutineRecoveryDelivery['status'];
   message_ts: string | null;
   failure_class: RoutineRecoveryDelivery['failureClass'];
+  updated_at: number;
+}
+
+interface ScheduleActionRow {
+  action_id: string;
+  action_digest: string;
+  workspace_id: string;
+  actor_user_id: string;
+  actor_membership_id: string;
+  agent_id: string;
+  conversation_kind: RoutineScheduleAction['conversationKind'];
+  channel_id: string;
+  thread_ts: string;
+  message_ts: string;
+  status: RoutineScheduleAction['status'];
+  lease_owner: string | null;
+  lease_until: number | null;
+  attempts: number;
+  next_attempt_at: number;
+  result_json: string | null;
+  created_at: number;
   updated_at: number;
 }
 
@@ -290,6 +318,18 @@ export class RoutineStoreLogic {
 
   execute(request: RoutineRpcRequest): RoutineRpcResponse {
     switch (request.kind) {
+      case 'reserve_schedule_action':
+        return { kind: 'schedule_action', action: this.reserveScheduleAction(request.input) };
+      case 'get_schedule_action':
+        return { kind: 'schedule_action', action: this.getScheduleAction(request.actionId) ?? null };
+      case 'claim_schedule_action':
+        return { kind: 'schedule_action_claim', claim: this.claimScheduleAction(request.input) };
+      case 'claim_due_schedule_actions':
+        return { kind: 'schedule_actions', actions: this.claimDueScheduleActions(request.input) };
+      case 'defer_schedule_action':
+        return { kind: 'schedule_action', action: this.deferScheduleAction(request.input) };
+      case 'settle_schedule_action':
+        return { kind: 'schedule_action', action: this.settleScheduleAction(request.input) };
       case 'put_confirmation':
         return { kind: 'confirmation', confirmation: this.putConfirmation(request.input) };
       case 'get_confirmation':
@@ -379,6 +419,160 @@ export class RoutineStoreLogic {
       case 'list_audit_events':
         return { kind: 'audit_events', events: this.listAuditEvents(request.filter) };
     }
+  }
+
+  reserveScheduleAction(input: ReserveRoutineScheduleActionInput): RoutineScheduleAction {
+    validateScheduleActionAdmission(input);
+    return this.db.transaction(() => {
+      const existing = this.getScheduleAction(input.actionId);
+      if (existing) {
+        if (!sameScheduleActionAdmission(existing, input)) throw scheduleActionConflict();
+        return existing;
+      }
+      this.db.run(
+        `INSERT INTO routine_schedule_actions (
+          action_id, action_digest, workspace_id, actor_user_id, actor_membership_id,
+          agent_id, conversation_kind, channel_id, thread_ts, message_ts, status,
+          lease_owner, lease_until, attempts, next_attempt_at, result_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, 0, ?, NULL, ?, ?)`,
+        input.actionId,
+        input.actionDigest,
+        input.workspaceId,
+        input.actorUserId,
+        input.actorMembershipId,
+        input.agentId,
+        input.conversationKind,
+        input.channelId,
+        input.threadTs,
+        input.messageTs,
+        input.at,
+        input.at,
+        input.at,
+      );
+      return required(this.getScheduleAction(input.actionId), 'Schedule action was not readable.');
+    });
+  }
+
+  getScheduleAction(actionId: string): RoutineScheduleAction | undefined {
+    validateScheduleActionId(actionId);
+    const row = this.db.get(
+      'SELECT * FROM routine_schedule_actions WHERE action_id = ?',
+      actionId,
+    );
+    return row ? rowToScheduleAction(row as unknown as ScheduleActionRow) : undefined;
+  }
+
+  claimScheduleAction(input: ClaimRoutineScheduleActionInput): ClaimRoutineScheduleActionResult {
+    validateScheduleActionClaim(input);
+    return this.db.transaction(() => {
+      const current = required(
+        this.getScheduleAction(input.actionId),
+        'Schedule action was not found.',
+      );
+      if (current.status !== 'pending') return { outcome: 'terminal', action: current };
+      if (current.nextAttemptAt > input.at || (current.leaseUntil ?? 0) > input.at) {
+        return { outcome: 'pending', action: current };
+      }
+      this.db.run(
+        `UPDATE routine_schedule_actions
+         SET lease_owner = ?, lease_until = ?, attempts = attempts + 1, updated_at = ?
+         WHERE action_id = ? AND status = 'pending'
+           AND next_attempt_at <= ? AND (lease_until IS NULL OR lease_until <= ?)`,
+        input.owner,
+        input.leaseUntil,
+        input.at,
+        input.actionId,
+        input.at,
+        input.at,
+      );
+      const claimed = required(this.getScheduleAction(input.actionId), 'Schedule action was not readable.');
+      return claimed.leaseOwner === input.owner && claimed.leaseUntil === input.leaseUntil
+        ? { outcome: 'claimed', action: claimed }
+        : { outcome: 'pending', action: claimed };
+    });
+  }
+
+  claimDueScheduleActions(input: {
+    owner: string;
+    at: number;
+    leaseUntil: number;
+    limit: number;
+  }): RoutineScheduleAction[] {
+    validateScheduleActionClaim({ actionId: 'rsaction_due', ...input });
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+      throw routineError('routine_schedule_action_invalid', 'Schedule action claim limit is invalid.');
+    }
+    return this.db.transaction(() => {
+      const due = this.db.all(
+        `SELECT action_id FROM routine_schedule_actions
+         WHERE status = 'pending' AND next_attempt_at <= ?
+           AND (lease_until IS NULL OR lease_until <= ?)
+         ORDER BY next_attempt_at, created_at, action_id LIMIT ?`,
+        input.at,
+        input.at,
+        input.limit,
+      ) as Array<{ action_id: string }>;
+      const claimed: RoutineScheduleAction[] = [];
+      for (const row of due) {
+        const result = this.claimScheduleAction({
+          actionId: row.action_id,
+          owner: input.owner,
+          at: input.at,
+          leaseUntil: input.leaseUntil,
+        });
+        if (result.outcome === 'claimed') claimed.push(result.action);
+      }
+      return claimed;
+    });
+  }
+
+  deferScheduleAction(input: DeferRoutineScheduleActionInput): RoutineScheduleAction {
+    validateScheduleActionSettlement(input);
+    if (!Number.isSafeInteger(input.nextAttemptAt) || input.nextAttemptAt <= input.at) {
+      throw routineError('routine_schedule_action_invalid', 'Schedule action retry time is invalid.');
+    }
+    return this.db.transaction(() => {
+      const current = required(this.getScheduleAction(input.actionId), 'Schedule action was not found.');
+      if (current.status !== 'pending') return current;
+      requireScheduleActionLease(current, input.owner, input.expectedAttempt);
+      this.db.run(
+        `UPDATE routine_schedule_actions
+         SET lease_owner = NULL, lease_until = NULL, next_attempt_at = ?, updated_at = ?
+         WHERE action_id = ? AND status = 'pending' AND lease_owner = ? AND attempts = ?`,
+        input.nextAttemptAt,
+        input.at,
+        input.actionId,
+        input.owner,
+        input.expectedAttempt,
+      );
+      return required(this.getScheduleAction(input.actionId), 'Schedule action was not readable.');
+    });
+  }
+
+  settleScheduleAction(input: SettleRoutineScheduleActionInput): RoutineScheduleAction {
+    validateScheduleActionSettlement(input);
+    const result = validateScheduleActionResult(input.result);
+    return this.db.transaction(() => {
+      const current = required(this.getScheduleAction(input.actionId), 'Schedule action was not found.');
+      if (current.status !== 'pending') {
+        if (sameJson(current.result, result)) return current;
+        throw scheduleActionConflict();
+      }
+      requireScheduleActionLease(current, input.owner, input.expectedAttempt);
+      this.db.run(
+        `UPDATE routine_schedule_actions
+         SET status = ?, lease_owner = NULL, lease_until = NULL, result_json = ?, updated_at = ?
+         WHERE action_id = ? AND status = 'pending' AND lease_owner = ? AND attempts = ?`,
+        result.outcome === 'applied' ? 'applied' : 'failed',
+        JSON.stringify(result),
+        input.at,
+        input.actionId,
+        input.owner,
+        input.expectedAttempt,
+      );
+      return required(this.getScheduleAction(input.actionId), 'Schedule action was not readable.');
+    });
   }
 
   putConfirmation(input: PutRoutineConfirmationInput): RoutineConfirmation {
@@ -2176,6 +2370,32 @@ export class RoutineStoreLogic {
        ON routine_confirmations (expires_at, consumed_at)`,
     );
     this.db.exec(
+      `CREATE TABLE IF NOT EXISTS routine_schedule_actions (
+        action_id TEXT PRIMARY KEY,
+        action_digest TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        actor_user_id TEXT NOT NULL,
+        actor_membership_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        conversation_kind TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        thread_ts TEXT NOT NULL,
+        message_ts TEXT NOT NULL,
+        status TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_until INTEGER,
+        attempts INTEGER NOT NULL,
+        next_attempt_at INTEGER NOT NULL,
+        result_json TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_schedule_actions_due_idx
+       ON routine_schedule_actions (status, next_attempt_at, lease_until, created_at)`,
+    );
+    this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_schedule_reservations (
         routine_id TEXT NOT NULL, window_start INTEGER NOT NULL, reserved_count INTEGER NOT NULL,
         PRIMARY KEY (routine_id, window_start)
@@ -3728,6 +3948,150 @@ function rowToRecoveryDelivery(row: RecoveryDeliveryRow): RoutineRecoveryDeliver
     failureClass: 'direct_thread_unavailable',
     updatedAt: row.updated_at,
   };
+}
+
+function rowToScheduleAction(row: ScheduleActionRow): RoutineScheduleAction {
+  const result = row.result_json
+    ? validateScheduleActionResult(JSON.parse(row.result_json) as RoutineScheduleActionResult)
+    : null;
+  if (!['pending', 'applied', 'failed'].includes(row.status) ||
+      !['channel', 'im'].includes(row.conversation_kind) ||
+      !Number.isSafeInteger(row.attempts) || row.attempts < 0 ||
+      !Number.isSafeInteger(row.next_attempt_at) ||
+      !Number.isSafeInteger(row.created_at) || !Number.isSafeInteger(row.updated_at)) {
+    throw routineError('routine_schedule_action_invalid', 'Schedule action state is invalid.');
+  }
+  if ((row.status === 'pending') !== (result === null)) {
+    throw routineError('routine_schedule_action_invalid', 'Schedule action result is invalid.');
+  }
+  return {
+    actionId: row.action_id,
+    actionDigest: row.action_digest,
+    workspaceId: row.workspace_id,
+    actorUserId: row.actor_user_id,
+    actorMembershipId: row.actor_membership_id,
+    agentId: row.agent_id,
+    conversationKind: row.conversation_kind,
+    channelId: row.channel_id,
+    threadTs: row.thread_ts,
+    messageTs: row.message_ts,
+    status: row.status,
+    leaseOwner: row.lease_owner,
+    leaseUntil: row.lease_until,
+    attempts: row.attempts,
+    nextAttemptAt: row.next_attempt_at,
+    result,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function validateScheduleActionId(actionId: string): void {
+  if (!/^rsaction_[A-Za-z0-9_-]{1,180}$/.test(actionId)) {
+    throw routineError('routine_schedule_action_invalid', 'Schedule action ID is invalid.');
+  }
+}
+
+function validateScheduleActionAdmission(input: ReserveRoutineScheduleActionInput): void {
+  validateScheduleActionId(input.actionId);
+  if (!/^[a-f0-9]{64}$/.test(input.actionDigest) ||
+      !['channel', 'im'].includes(input.conversationKind) ||
+      !Number.isSafeInteger(input.at) || input.at < 0) {
+    throw routineError('routine_schedule_action_invalid', 'Schedule action admission is invalid.');
+  }
+  for (const value of [
+    input.workspaceId,
+    input.actorUserId,
+    input.actorMembershipId,
+    input.agentId,
+    input.channelId,
+    input.threadTs,
+    input.messageTs,
+  ]) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/.test(value)) {
+      throw routineError('routine_schedule_action_invalid', 'Schedule action origin is invalid.');
+    }
+  }
+}
+
+function validateScheduleActionClaim(input: ClaimRoutineScheduleActionInput): void {
+  validateScheduleActionId(input.actionId);
+  if (!/^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/.test(input.owner) ||
+      !Number.isSafeInteger(input.at) || input.at < 0 ||
+      !Number.isSafeInteger(input.leaseUntil) || input.leaseUntil <= input.at) {
+    throw routineError('routine_schedule_action_invalid', 'Schedule action claim is invalid.');
+  }
+}
+
+function validateScheduleActionSettlement(input: {
+  actionId: string;
+  owner: string;
+  expectedAttempt: number;
+  at: number;
+}): void {
+  validateScheduleActionId(input.actionId);
+  if (!/^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/.test(input.owner) ||
+      !Number.isSafeInteger(input.expectedAttempt) || input.expectedAttempt < 1 ||
+      !Number.isSafeInteger(input.at) || input.at < 0) {
+    throw routineError('routine_schedule_action_invalid', 'Schedule action settlement is invalid.');
+  }
+}
+
+function validateScheduleActionResult(
+  result: RoutineScheduleActionResult,
+): RoutineScheduleActionResult {
+  if (!result || typeof result !== 'object') throw scheduleActionConflict();
+  if (result.outcome === 'applied') {
+    if (!['saved', 'controlled', 'run_queued', 'confirmation_required'].includes(result.effect) ||
+        !isOpaqueRoutineId(result.routineId) ||
+        (result.routineVersion !== undefined &&
+          (!Number.isSafeInteger(result.routineVersion) || result.routineVersion < 1)) ||
+        (result.safeState !== undefined &&
+          !['active', 'paused', 'disabled', 'pending_authority'].includes(result.safeState))) {
+      throw scheduleActionConflict();
+    }
+    return result;
+  }
+  if (result.outcome !== 'failed' || !/^[a-z0-9_]{1,80}$/.test(result.code) ||
+      (result.routineId !== undefined && !isOpaqueRoutineId(result.routineId)) ||
+      (result.safeState !== undefined &&
+        !['paused', 'disabled', 'pending_authority'].includes(result.safeState))) {
+    throw scheduleActionConflict();
+  }
+  return result;
+}
+
+function sameScheduleActionAdmission(
+  action: RoutineScheduleAction,
+  input: ReserveRoutineScheduleActionInput,
+): boolean {
+  return action.actionId === input.actionId &&
+    action.actionDigest === input.actionDigest &&
+    action.workspaceId === input.workspaceId &&
+    action.actorUserId === input.actorUserId &&
+    action.actorMembershipId === input.actorMembershipId &&
+    action.agentId === input.agentId &&
+    action.conversationKind === input.conversationKind &&
+    action.channelId === input.channelId &&
+    action.threadTs === input.threadTs &&
+    action.messageTs === input.messageTs;
+}
+
+function requireScheduleActionLease(
+  action: RoutineScheduleAction,
+  owner: string,
+  expectedAttempt: number,
+): void {
+  if (action.leaseOwner !== owner || action.attempts !== expectedAttempt) {
+    throw scheduleActionConflict();
+  }
+}
+
+function scheduleActionConflict(): RoutineStateError {
+  return routineError(
+    'routine_schedule_action_conflict',
+    'Schedule action conflicts with an existing durable result.',
+  );
 }
 
 function definitionHash(definition: RoutineDefinitionContent): string;

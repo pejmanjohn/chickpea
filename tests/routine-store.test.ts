@@ -119,7 +119,130 @@ test('routine schema is additive and portable across the target-neutral StateDb 
   assert.ok(sqlite.get(
     "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'routine_recovery_deliveries'",
   ));
+  assert.ok(sqlite.get(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'routine_schedule_actions'",
+  ));
   sqlite.close();
+});
+
+test('schedule action admission replays one content-bounded record and rejects conflicting reuse', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
+  const input = {
+    actionId: 'rsaction_replay',
+    actionDigest: 'a'.repeat(64),
+    workspaceId: 'T_TEST',
+    actorUserId: 'U_MEMBER',
+    actorMembershipId: 'membership_owner',
+    agentId: 'agent_sprout',
+    conversationKind: 'im' as const,
+    channelId: 'D_MEMBER',
+    threadTs: '1787853827.722389',
+    messageTs: '1787853830.000100',
+    at: CREATED_AT,
+  };
+  try {
+    const first = await store.reserveScheduleAction(input);
+    const replay = await store.reserveScheduleAction(input);
+    assert.deepEqual(replay, first);
+    assert.equal(first.status, 'pending');
+    assert.equal(first.attempts, 0);
+    assert.equal(first.result, null);
+    assert.doesNotMatch(JSON.stringify(first), /check my email|secret task/i);
+
+    await assert.rejects(
+      () => store.reserveScheduleAction({ ...input, actionDigest: 'b'.repeat(64) }),
+      (error: unknown) => error instanceof RoutineStateError &&
+        error.code === 'routine_schedule_action_conflict',
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('schedule action leases recover and terminal results replay without conflicting settlement', async () => {
+  let clock = CREATED_AT;
+  const store = new SqliteRoutineStore(':memory:', () => clock);
+  const input = {
+    actionId: 'rsaction_terminal',
+    actionDigest: 'c'.repeat(64),
+    workspaceId: 'T_TEST',
+    actorUserId: 'U_MEMBER',
+    actorMembershipId: 'membership_owner',
+    agentId: 'agent_sprout',
+    conversationKind: 'im' as const,
+    channelId: 'D_MEMBER',
+    threadTs: '1787853827.722389',
+    messageTs: '1787853830.000100',
+    at: clock,
+  };
+  try {
+    await store.reserveScheduleAction(input);
+    const first = await store.claimScheduleAction({
+      actionId: input.actionId,
+      owner: 'foreground',
+      at: clock,
+      leaseUntil: clock + 1_000,
+    });
+    assert.equal(first.outcome, 'claimed');
+    assert.equal(first.action.attempts, 1);
+
+    const blocked = await store.claimScheduleAction({
+      actionId: input.actionId,
+      owner: 'alarm',
+      at: clock + 500,
+      leaseUntil: clock + 1_500,
+    });
+    assert.equal(blocked.outcome, 'pending');
+
+    clock += 1_001;
+    const recovered = await store.claimScheduleAction({
+      actionId: input.actionId,
+      owner: 'alarm',
+      at: clock,
+      leaseUntil: clock + 1_000,
+    });
+    assert.equal(recovered.outcome, 'claimed');
+    assert.equal(recovered.action.attempts, 2);
+
+    const appliedResult = {
+      outcome: 'applied' as const,
+      effect: 'saved' as const,
+      routineId: 'routine_saved',
+      routineVersion: 1,
+    };
+    const applied = await store.settleScheduleAction({
+      actionId: input.actionId,
+      owner: 'alarm',
+      expectedAttempt: 2,
+      result: appliedResult,
+      at: clock + 1,
+    });
+    assert.equal(applied.status, 'applied');
+    assert.deepEqual(applied.result, appliedResult);
+
+    const terminal = await store.claimScheduleAction({
+      actionId: input.actionId,
+      owner: 'replay',
+      at: clock + 2,
+      leaseUntil: clock + 1_002,
+    });
+    assert.equal(terminal.outcome, 'terminal');
+    assert.deepEqual(terminal.action, applied);
+
+    await assert.rejects(
+      () => store.settleScheduleAction({
+        actionId: input.actionId,
+        owner: 'alarm',
+        expectedAttempt: 2,
+        result: { outcome: 'failed', code: 'schedule_invalid' },
+        at: clock + 3,
+      }),
+      (error: unknown) => error instanceof RoutineStateError &&
+        error.code === 'routine_schedule_action_conflict',
+    );
+  } finally {
+    store.close();
+  }
 });
 
 test('direct routines stay inert until their exact Agent reference is bound and activated', async () => {

@@ -538,7 +538,98 @@ export interface RoutineAdminPage {
   nextCursor: number | null;
 }
 
+export type RoutineScheduleActionStatus = 'pending' | 'applied' | 'failed';
+
+export type RoutineScheduleActionResult =
+  | {
+      outcome: 'applied';
+      effect: 'saved' | 'controlled' | 'run_queued' | 'confirmation_required';
+      routineId: string;
+      routineVersion?: number;
+      safeState?: 'active' | 'paused' | 'disabled' | 'pending_authority';
+    }
+  | {
+      outcome: 'failed';
+      code: string;
+      routineId?: string;
+      safeState?: 'paused' | 'disabled' | 'pending_authority';
+    };
+
+export interface RoutineScheduleAction {
+  actionId: string;
+  actionDigest: string;
+  workspaceId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  agentId: string;
+  conversationKind: 'channel' | 'im';
+  channelId: string;
+  threadTs: string;
+  messageTs: string;
+  status: RoutineScheduleActionStatus;
+  leaseOwner: string | null;
+  leaseUntil: number | null;
+  attempts: number;
+  nextAttemptAt: number;
+  result: RoutineScheduleActionResult | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ReserveRoutineScheduleActionInput {
+  actionId: string;
+  actionDigest: string;
+  workspaceId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  agentId: string;
+  conversationKind: 'channel' | 'im';
+  channelId: string;
+  threadTs: string;
+  messageTs: string;
+  at: number;
+}
+
+export interface ClaimRoutineScheduleActionInput {
+  actionId: string;
+  owner: string;
+  at: number;
+  leaseUntil: number;
+}
+
+export type ClaimRoutineScheduleActionResult =
+  | { outcome: 'claimed'; action: RoutineScheduleAction }
+  | { outcome: 'pending'; action: RoutineScheduleAction }
+  | { outcome: 'terminal'; action: RoutineScheduleAction };
+
+export interface SettleRoutineScheduleActionInput {
+  actionId: string;
+  owner: string;
+  expectedAttempt: number;
+  result: RoutineScheduleActionResult;
+  at: number;
+}
+
+export interface DeferRoutineScheduleActionInput {
+  actionId: string;
+  owner: string;
+  expectedAttempt: number;
+  nextAttemptAt: number;
+  at: number;
+}
+
 export interface RoutineStore {
+  reserveScheduleAction(input: ReserveRoutineScheduleActionInput): Promise<RoutineScheduleAction>;
+  getScheduleAction(actionId: string): Promise<RoutineScheduleAction | undefined>;
+  claimScheduleAction(input: ClaimRoutineScheduleActionInput): Promise<ClaimRoutineScheduleActionResult>;
+  claimDueScheduleActions(input: {
+    owner: string;
+    at: number;
+    leaseUntil: number;
+    limit: number;
+  }): Promise<RoutineScheduleAction[]>;
+  deferScheduleAction(input: DeferRoutineScheduleActionInput): Promise<RoutineScheduleAction>;
+  settleScheduleAction(input: SettleRoutineScheduleActionInput): Promise<RoutineScheduleAction>;
   putConfirmation(input: PutRoutineConfirmationInput): Promise<RoutineConfirmation>;
   getConfirmation(tokenHash: string): Promise<RoutineConfirmation | undefined>;
   cancelConfirmation(input: CancelRoutineConfirmationInput): Promise<boolean>;
@@ -596,6 +687,15 @@ export class RoutineStateError extends Error {
 }
 
 export type RoutineRpcRequest =
+  | { kind: 'reserve_schedule_action'; input: ReserveRoutineScheduleActionInput }
+  | { kind: 'get_schedule_action'; actionId: string }
+  | { kind: 'claim_schedule_action'; input: ClaimRoutineScheduleActionInput }
+  | {
+      kind: 'claim_due_schedule_actions';
+      input: { owner: string; at: number; leaseUntil: number; limit: number };
+    }
+  | { kind: 'defer_schedule_action'; input: DeferRoutineScheduleActionInput }
+  | { kind: 'settle_schedule_action'; input: SettleRoutineScheduleActionInput }
   | { kind: 'put_confirmation'; input: PutRoutineConfirmationInput }
   | { kind: 'get_confirmation'; tokenHash: string }
   | { kind: 'cancel_confirmation'; input: CancelRoutineConfirmationInput }
@@ -638,6 +738,9 @@ export type RoutineRpcRequest =
   | { kind: 'list_audit_events'; filter: AuditEventFilter };
 
 export type RoutineRpcResponse =
+  | { kind: 'schedule_action'; action: RoutineScheduleAction | null }
+  | { kind: 'schedule_action_claim'; claim: ClaimRoutineScheduleActionResult }
+  | { kind: 'schedule_actions'; actions: RoutineScheduleAction[] }
   | { kind: 'confirmation'; confirmation: RoutineConfirmation | null }
   | { kind: 'routine'; routine: RoutineDefinition | null }
   | { kind: 'routines'; routines: RoutineDefinition[] }
