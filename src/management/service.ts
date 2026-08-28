@@ -167,8 +167,6 @@ export interface WorkspaceManagementServiceInput {
   routines?: RoutineStore;
   work?: Pick<WorkStore, 'getWork' | 'getBinding'>;
   routineSchedulingAvailable?: boolean | (() => boolean | Promise<boolean>);
-  /** Server-side gate for private DM creation. Defaults closed. */
-  directRoutineSchedulingAvailable?: boolean | (() => boolean | Promise<boolean>);
   setupBaseUrl?: string | (() => string | undefined | Promise<string | undefined>);
   providerCredentialSource?: (
     providerId: ManagedProviderId,
@@ -2015,12 +2013,6 @@ export class WorkspaceManagementService {
       }
       const agent = await optionalAgent(this.stores.config, operation.agentId);
       if (directRoutine) {
-        if (!operation.routineId && !(await this.isDirectRoutineSchedulingAvailable())) {
-          throw new ManagementError(
-            'invalid_request',
-            'Private DM scheduling is not enabled on this deployment.',
-          );
-        }
         if (!agent || agent.kind !== 'user' || !agent.enabled ||
             agent.lifecycle === 'draft' || agent.lifecycle === 'archived') {
           throw new ManagementError('invalid_request', 'The schedule Agent is not available.');
@@ -2090,12 +2082,6 @@ export class WorkspaceManagementService {
     return typeof this.stores.routineSchedulingAvailable === 'function'
       ? this.stores.routineSchedulingAvailable()
       : this.stores.routineSchedulingAvailable ?? true;
-  }
-
-  private async isDirectRoutineSchedulingAvailable(): Promise<boolean> {
-    return typeof this.stores.directRoutineSchedulingAvailable === 'function'
-      ? this.stores.directRoutineSchedulingAvailable()
-      : this.stores.directRoutineSchedulingAvailable ?? false;
   }
 
   private routineMutationChannelId(

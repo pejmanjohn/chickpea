@@ -280,7 +280,7 @@ test('a routed Agent manages and inspects only its own routines', async () => {
   }
 });
 
-test('private DM routines use trusted thread creation and DM-wide Agent-scoped management', async () => {
+test('private DM routines need no deployment flag and use trusted thread management', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-management-direct-routines-'));
   const statePath = join(dir, 'state.db');
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
@@ -314,7 +314,6 @@ test('private DM routines use trusted thread creation and DM-wide Agent-scoped m
     const service = new WorkspaceManagementService({
       identity, config, management, routines,
       routineSchedulingAvailable: true,
-      directRoutineSchedulingAvailable: true,
       now: () => NOW,
       randomId: (() => { let sequence = 0; return () => `direct_${++sequence}`; })(),
     });
@@ -334,21 +333,6 @@ test('private DM routines use trusted thread creation and DM-wide Agent-scoped m
       schedule: { kind: 'cron' as const, expression: '0 9 * * 1-5' },
       timezone: 'UTC', outputPolicy: 'post' as const,
     };
-
-    const disabledService = new WorkspaceManagementService({
-      identity, config, management, routines,
-      routineSchedulingAvailable: true,
-      now: () => NOW,
-      randomId: () => 'direct_disabled',
-    });
-    const disabledAttempt = await invokeSlackWorkspaceManagementTool({
-      signal: signal(support.id, '90.1'), identity, service: disabledService,
-      name: 'apply_workspace_changes',
-      args: { idempotencyKey: 'private-create-default-off', operations: [createOperation] },
-    });
-    assert.equal((disabledAttempt as { ok: true; result: {
-      outcomes: Array<{ disposition: string }>;
-    } }).result.outcomes[0]?.disposition, 'failed');
 
     const rawDestinationAttempt = await invokeSlackWorkspaceManagementTool({
       signal: signal(support.id, '95.1'), identity, service,

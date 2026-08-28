@@ -263,7 +263,7 @@ test('exact commands reauthorize the current Channel and hide unauthorized IDs',
   }
 });
 
-test('exact DM commands are member-, conversation-, and Agent-scoped across threads', async () => {
+test('exact DM commands need no deployment flag and stay scoped across threads', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-direct-routine-commands-'));
   const path = join(dir, 'state.db');
   const store = new SqliteRoutineStore(path, () => NOW);
@@ -394,18 +394,27 @@ test('exact DM commands are member-, conversation-, and Agent-scoped across thre
     assert.equal((await store.listRuns({ routineId: routine.id })).length, 1);
     assert.match(await handle(
       directTurn(`!routines clone ${routine.id}`, '220.1'), supportAssignment,
-    ) ?? '', /not enabled/);
-    assert.match(await handle(
-      directTurn(`!routines clone ${routine.id}`, '300.1'), chickpeaAssignment,
-      { directCreationAvailable: true },
     ) ?? '', /Routine created/);
     const copy = (await store.listRoutines('T_TEST', 'D_TEST'))
       .find(({ id }) => id !== routine.id)!;
     assert.deepEqual(copy.destination, {
-      kind: 'direct_thread', conversationId: 'D_TEST', threadTs: '300.1',
+      kind: 'direct_thread', conversationId: 'D_TEST', threadTs: '220.1',
       ownerMembershipId: 'membership_test',
     });
+    assert.equal(copy.state, 'active');
     assert.equal((await config.getAgentScheduleReference(copy.id))?.agentId, supportAgent.id);
+
+    assert.match(await handle(
+      directTurn(`!routines clone ${routine.id}`, '300.1'), chickpeaAssignment,
+    ) ?? '', /Routine created/);
+    const chickpeaCopy = (await store.listRoutines('T_TEST', 'D_TEST'))
+      .find(({ destination }) =>
+        destination.kind === 'direct_thread' && destination.threadTs === '300.1')!;
+    assert.equal(chickpeaCopy.state, 'active');
+    assert.equal(
+      (await config.getAgentScheduleReference(chickpeaCopy.id))?.agentId,
+      supportAgent.id,
+    );
 
     assert.match(await handle(
       directTurn(`!routines pause ${routine.id}`, '400.1'), supportAssignment,

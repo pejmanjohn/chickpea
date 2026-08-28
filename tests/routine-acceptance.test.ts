@@ -375,7 +375,7 @@ const privateDmAcceptanceMatrix = [
   {
     example: 'AE2',
     evidence: [
-      ['management-routines.test.ts', 'private DM routines use trusted thread creation and DM-wide Agent-scoped management'],
+      ['management-routines.test.ts', 'private DM routines need no deployment flag and use trusted thread management'],
       ['routine-scheduler.test.ts', 'heartbeat claims oldest due schedules once and aggregates downtime without catch-up'],
     ],
   },
@@ -383,7 +383,7 @@ const privateDmAcceptanceMatrix = [
     example: 'AE3',
     evidence: [[
       'management-routines.test.ts',
-      'private DM routines use trusted thread creation and DM-wide Agent-scoped management',
+      'private DM routines need no deployment flag and use trusted thread management',
     ]],
   },
   {

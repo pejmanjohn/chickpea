@@ -76,7 +76,6 @@ interface RoutineCommandExecutionContext {
   assignment?: ResolvedAssignment;
   bindAuthority: typeof bindRoutineAgentAuthority;
   resolveAuthority: typeof resolveRoutineAgentAuthority;
-  directCreationAvailable: boolean;
 }
 
 const OPAQUE = '[A-Za-z0-9_-]{1,200}';
@@ -156,8 +155,6 @@ export async function handleRoutineSlackRequest(
     resolveAuthority?: typeof resolveRoutineAgentAuthority;
     /** Test seam; production always revalidates the canonical member. */
     isActiveActor?: typeof isActiveRoutineActor;
-    /** Test seam; production stays closed unless the deployment enables it. */
-    directCreationAvailable?: boolean;
   } = {},
 ): Promise<string | undefined> {
   const command = parseRoutineCommand(turn.text, {
@@ -190,8 +187,6 @@ export async function handleRoutineSlackRequest(
   const slackClient = dependencies.installationContext?.client;
   const commandContext: RoutineCommandExecutionContext = {
     turn, store, config, env, capability, now, canManageChannel,
-    directCreationAvailable: dependencies.directCreationAvailable ??
-      env?.PRIVATE_DM_SCHEDULES_ENABLED === 'true',
     bindAuthority: dependencies.bindAuthority ?? ((input) =>
       bindRoutineAgentAuthority(input, {
         ...(dependencies.config ? { config: dependencies.config } : {}),
@@ -219,7 +214,7 @@ async function executeRoutineCommand(
 ): Promise<string> {
   const {
     turn, store, env, capability, now, canManageChannel, botToken, slackClient, assignment,
-    bindAuthority, resolveAuthority, directCreationAvailable,
+    bindAuthority, resolveAuthority,
   } = context;
   const service = new RoutineService(store, { now });
   if (command.kind === 'help' || command.kind === 'invalid') return renderRoutineHelp();
@@ -366,12 +361,6 @@ async function executeRoutineCommand(
   }
   if (command.kind === 'clone') {
     requireRoutineScheduling(capability);
-    if (routine.destination.kind === 'direct_thread' && !directCreationAvailable) {
-      throw new RoutineStateError(
-        'routine_direct_creation_disabled',
-        'Private DM schedule creation is not enabled on this deployment.',
-      );
-    }
     if (routine.triggerKind === 'once') {
       throw new RoutineStateError(
         'routine_one_time_clone_unsupported',
