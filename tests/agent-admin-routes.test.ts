@@ -3052,7 +3052,7 @@ test('revoking a reusable API OAuth account deletes its client and token setting
   }
 });
 
-test('Channel discovery projects a non-editor Agent as explicitly read-only', async () => {
+test('Channel use does not expose a non-editor Agent in Admin', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const identities = new SqliteIdentityStore(':memory:');
@@ -3100,15 +3100,70 @@ test('Channel discovery projects a non-editor Agent as explicitly read-only', as
     const list = await app.request('http://localhost/admin/api/agents', { headers: auth() });
     assert.equal(list.status, 200, await list.clone().text());
     const listed = (await list.json() as Record<string, any>).agents;
-    assert.equal(listed.find((agent: Record<string, any>) => agent.id === 'agent_readonly')?.canEdit, false);
+    assert.equal(listed.some((agent: Record<string, any>) => agent.id === 'agent_readonly'), false);
 
     const detail = await app.request('http://localhost/admin/api/agents/agent_readonly', { headers: auth() });
-    assert.equal(detail.status, 200, await detail.clone().text());
-    assert.equal((await detail.json() as Record<string, any>).agent.canEdit, false);
+    assert.equal(detail.status, 404, await detail.clone().text());
   } finally {
     identities.close();
     settings.close();
     store.close();
+  }
+});
+
+test('Agent detail projects the live categorical DM audience without a roster', async () => {
+  const transport = new FakeTransport();
+  const fixture = harness(transport);
+  try {
+    const selected = await fixture.store.createAgent({
+      id: 'agent_audience', name: 'Audience', instructions: 'Help.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: 'membership_test_owner',
+      editPolicy: 'creator_and_admins', model: 'local-stub/audience', skills: [],
+      mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: selected.id,
+    });
+    const listResponse = await fixture.app.request(
+      'http://localhost/admin/api/agents',
+      { headers: auth() },
+    );
+    assert.equal(listResponse.status, 200, await listResponse.clone().text());
+    const listedAgent = (await listResponse.json() as Record<string, any>).agents.find(
+      (candidate: Record<string, unknown>) => candidate.id === selected.id,
+    );
+    assert.ok(listedAgent);
+    assert.equal('privateUseAudience' in listedAgent.whereItWorks, false);
+
+    const audience = async () => {
+      const response = await fixture.app.request(
+        `http://localhost/admin/api/agents/${selected.id}`,
+        { headers: auth() },
+      );
+      assert.equal(response.status, 200, await response.clone().text());
+      const body = await response.json() as Record<string, any>;
+      assert.equal('members' in body.agent.whereItWorks, false);
+      assert.equal('memberCount' in body.agent.whereItWorks, false);
+      return body.agent.whereItWorks.privateUseAudience as string;
+    };
+
+    assert.equal(await audience(), 'creator_only');
+    await fixture.store.putAgentChannelGrant({
+      workspaceId: 'T_TEST', channelId: 'C_SUPPORT', agentId: selected.id,
+      status: 'active', createdByMembershipId: 'membership_test_owner',
+      channelLabel: 'support', channelIsPrivate: false,
+    });
+    transport.channel = {
+      id: 'C_SUPPORT', name: 'support', private: false, member: true, archived: false,
+    };
+    assert.equal(await audience(), 'workspace_members');
+    transport.channel = { ...transport.channel, private: true };
+    assert.equal(await audience(), 'private_channel_members');
+    transport.channel = { ...transport.channel, archived: true };
+    assert.equal(await audience(), 'unavailable');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
   }
 });
 

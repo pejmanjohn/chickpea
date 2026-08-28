@@ -56,7 +56,12 @@ interface AgentProjection {
 interface SlackFixtureResponse {
   ok: boolean;
   error?: string;
-  channel?: { id: string };
+  channel?: {
+    id: string;
+    is_private: boolean;
+    is_member: boolean;
+    is_archived: boolean;
+  };
 }
 
 async function loadFixtureModule(): Promise<VisualFixtureModule> {
@@ -219,6 +224,9 @@ test('visual fixture fake Slack fails closed and returns requested records', asy
       { channel: 'C_SUPPORT' },
     );
     assert.equal(channel.channel?.id, 'C_SUPPORT');
+    assert.equal(channel.channel?.is_private, false);
+    assert.equal(channel.channel?.is_member, false);
+    assert.equal(channel.channel?.is_archived, false);
     assert.deepEqual(
       await callSlack(
         'conversations.info',

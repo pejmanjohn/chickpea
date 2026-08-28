@@ -9,7 +9,10 @@ export function agentAppHomeStarterMessage(agentName: string): string {
   return `${agentName} is ready.`;
 }
 
-export function agentDirectoryAppHome(agents: readonly CustomAgentConfig[]): View {
+export function agentDirectoryAppHome(
+  agents: readonly CustomAgentConfig[],
+  options: { unavailableNotice?: boolean } = {},
+): View {
   const blocks: Array<Record<string, unknown>> = [
     {
       type: 'header',
@@ -24,6 +27,15 @@ export function agentDirectoryAppHome(agents: readonly CustomAgentConfig[]): Vie
     },
     { type: 'divider' },
   ];
+  if (options.unavailableNotice) {
+    blocks.push({
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: 'That Agent is not available right now. Your available Agents are shown below.',
+      }],
+    });
+  }
   if (agents.length === 0) {
     blocks.push({
       type: 'section',

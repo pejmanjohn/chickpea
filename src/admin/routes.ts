@@ -435,7 +435,10 @@ import {
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { reservedAgentIdentityField } from '../config/agent-id.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
-import { discoverableAgents } from '../slack/agent-routing.ts';
+import {
+  resolvePrivateAgentAudience,
+  type PrivateAgentAudience,
+} from '../slack/agent-access.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
@@ -1794,6 +1797,29 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const user = membership ? await identity(c).getUser(membership.userId) : undefined;
     if (!membership || membership.status !== 'active' || !user) throw new AuthorizationError();
     return { principal, slackUserId: user.slackUserId, slackTeamId: user.slackTeamId };
+  };
+  const privateAgentAudience = async (
+    c: Context,
+    agent: CustomAgentConfig,
+  ): Promise<PrivateAgentAudience> => {
+    try {
+      const actor = await agentActor(c);
+      const grants = await store(c).listAgentChannelGrants(actor.slackTeamId);
+      const activeAgentGrants = grants.filter((grant) =>
+        grant.agentId === agent.id && grant.status === 'active'
+      );
+      return resolvePrivateAgentAudience({
+        agent,
+        workspaceId: actor.slackTeamId,
+        grants,
+        ...(activeAgentGrants.length > 0
+          ? { transport: await agentSlackTransport(c, actor.slackTeamId) }
+          : {}),
+      });
+    } catch {
+      console.warn('[chickpea] Agent private-use audience unavailable');
+      return 'unavailable';
+    }
   };
   const routineAccessByContext = new WeakMap<object, RoutineContentAccessResolver>();
   const routineContentAccess = (c: Context): RoutineContentAccessResolver => {
@@ -5050,33 +5076,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       configStore.listWorkspaceInstallations(),
     ]);
     const principal = principalByContext.get(c);
-    let rawAgents = allAgents;
-    if (principal) {
-      const editableIds = new Set(
-        allAgents.filter((agent) => canEditAgent(principal, agent)).map((agent) => agent.id),
-      );
-      const needsSlackVisibility = allAgents.some((agent) => !editableIds.has(agent.id));
-      let discoverableIds = new Set<string>();
-      if (needsSlackVisibility) {
-        try {
-          const actor = await agentActor(c);
-          const transport = await agentSlackTransport(c, actor.slackTeamId);
-          const memberChannels = await transport.listMemberChannels(actor.slackUserId);
-          discoverableIds = new Set((await discoverableAgents({
-            config: configStore,
-            workspaceId: actor.slackTeamId,
-            principal,
-            channelMember: async (channelId) => memberChannels.has(channelId),
-          })).map((agent) => agent.id));
-        } catch {
-          // Slack membership is the authority for non-editors. If it cannot be
-          // proven, keep the directory private while retaining editable Agents.
-        }
-      }
-      rawAgents = allAgents.filter((agent) =>
-        editableIds.has(agent.id) || discoverableIds.has(agent.id)
-      );
-    }
+    const rawAgents = principal
+      ? allAgents.filter((agent) => canEditAgent(principal, agent))
+      : allAgents;
     const agents = await Promise.all(
       rawAgents.map((agent) =>
         withApiConnectionSources(agent, platformEnv, settingsStore),
@@ -7105,24 +7107,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const agent = await store(c).getAgent(c.req.param('id'));
       const principal = principalByContext.get(c);
       const canEdit = principal ? canEditAgent(principal, agent) : true;
-      if (!canEdit) {
-        let discoverable = false;
-        try {
-          const actor = await agentActor(c);
-          const transport = await agentSlackTransport(c, actor.slackTeamId);
-          const memberChannels = await transport.listMemberChannels(actor.slackUserId);
-          discoverable = (await discoverableAgents({
-            config: store(c),
-            workspaceId: actor.slackTeamId,
-            principal: principal!,
-            channelMember: async (channelId) => memberChannels.has(channelId),
-          })).some((candidate) => candidate.id === agent.id);
-        } catch {
-          // An Agent detail lookup must not widen directory visibility when
-          // Slack membership cannot be proven.
-        }
-        if (!discoverable) return c.json({ error: 'not_found' }, 404);
-      }
+      if (!canEdit) return c.json({ error: 'not_found' }, 404);
       const enriched = await withApiConnectionSources(
         agent,
         c.env as PlatformEnv | undefined,
@@ -7134,7 +7119,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           store(c),
           snapshots(c),
           undefined,
-          { canEdit },
+          {
+            canEdit,
+            privateUseAudience: await privateAgentAudience(c, agent),
+          },
         ),
       });
     } catch (err) {
@@ -10342,7 +10330,10 @@ async function agentAdminProjection(
     installations: WorkspaceInstallation[];
     snapshotRoots: Awaited<ReturnType<AgentSnapshotStore['listLiveRootsByAgent']>>;
   },
-  access: { canEdit: boolean } = { canEdit: true },
+  access: {
+    canEdit: boolean;
+    privateUseAudience?: PrivateAgentAudience;
+  } = { canEdit: true },
 ): Promise<object> {
   const projectionData = preloaded ?? await (async () => {
     const [references, grants, installations, snapshotRoots] = await Promise.all([
@@ -10389,7 +10380,7 @@ async function agentAdminProjection(
           agent.slackPresence.normalizedHandle,
         )
       : null,
-    tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory', 'schedules'],
+    tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory', 'schedules', 'model'],
     capabilityPreviews: {
       skills: agent.skills.map(({ name, description, enabled }) => ({ name, description, enabled })),
       connectors: [
@@ -10420,6 +10411,9 @@ async function agentAdminProjection(
     defaultForWorkspaces: legacyDefaultInstallations
       .map(({ workspaceId: installedWorkspaceId }) => installedWorkspaceId),
     whereItWorks: {
+      ...(access.privateUseAudience
+        ? { privateUseAudience: access.privateUseAudience }
+        : {}),
       channels: grants.map((grant) => ({
         workspaceId: grant.workspaceId,
         channelId: grant.channelId,

@@ -53,12 +53,12 @@ export const CANONICAL_SLACK_AUTH_VISUAL_STATES = Object.freeze({
 });
 
 const VISUAL_CHANNELS = Object.freeze([
-  { id: 'C_RELEASES', name: 'release-room', is_private: false, is_member: true },
-  { id: 'C_SUPPORT', name: 'customer-support', is_private: false, is_member: false },
-  { id: 'C_CUSTOMER', name: 'customer-insights', is_private: true, is_member: true },
-  { id: 'C_UNASSIGNED', name: 'product-feedback', is_private: false, is_member: true },
-  { id: 'C_ARCHIVED', name: 'research-archive', is_private: true, is_member: true },
-  { id: 'C_DISCOVERED', name: 'design-critique', is_private: false, is_member: true },
+  { id: 'C_RELEASES', name: 'release-room', is_private: false, is_member: true, is_archived: false },
+  { id: 'C_SUPPORT', name: 'customer-support', is_private: false, is_member: false, is_archived: false },
+  { id: 'C_CUSTOMER', name: 'customer-insights', is_private: true, is_member: true, is_archived: false },
+  { id: 'C_UNASSIGNED', name: 'product-feedback', is_private: false, is_member: true, is_archived: false },
+  { id: 'C_ARCHIVED', name: 'research-archive', is_private: true, is_member: true, is_archived: true },
+  { id: 'C_DISCOVERED', name: 'design-critique', is_private: false, is_member: true, is_archived: false },
 ]);
 let activeFixture = false;
 

@@ -1,5 +1,3 @@
-import { canEditAgent } from '../auth/permissions.ts';
-import type { AuthPrincipal } from '../auth/types.ts';
 import type { ConfigStore } from '../config/store.ts';
 import {
   type AgentChannelGrant,
@@ -15,6 +13,7 @@ import {
   repairMentionedAgentUserGroup,
 } from './agent-presence/reconciler.ts';
 import type { SlackTransport } from './transport/types.ts';
+import type { PrivateAgentAccessResult } from './agent-access.ts';
 
 export type AgentRouteSurface = 'channel' | 'direct';
 export type AgentRouteSource =
@@ -57,8 +56,6 @@ export type AgentRoutingResult =
 export interface AgentRoutingActor {
   channelMember: boolean;
   fullMember: boolean;
-  /** Agents discoverable in App Home or an Agent-specific DM. */
-  discoverableAgentIds?: ReadonlySet<string>;
 }
 
 export interface ResolveAgentRouteInput {
@@ -82,6 +79,10 @@ export interface ResolveAgentRouteInput {
    * group id is absent from the stored Agent map. */
   transport?: Pick<SlackTransport, 'lookupUserGroup'>;
   userGroupLookupLimiter?: AgentUserGroupLookupLimiter;
+  /** Live placement-derived authority for the selected user-created Agent. */
+  authorizeUserAgent?: (
+    agent: CustomAgentConfig,
+  ) => Promise<PrivateAgentAccessResult>;
 }
 
 const USER_GROUP_MENTION = /<!subteam\^([A-Z0-9]+)(?:\|[^>]*)?>/g;
@@ -107,6 +108,9 @@ export async function resolveAgentRoute(
   const installation = await config.getWorkspaceInstallation(turn.workspaceId);
   if (!installation) {
     return denied('installation_unavailable', []);
+  }
+  if (!actor.fullMember) {
+    return denied(surface === 'direct' ? 'member_required' : 'not_available', []);
   }
 
   const [agents, channelGrants, currentRoute] = await Promise.all([
@@ -216,20 +220,41 @@ export async function resolveAgentRoute(
 
   if (surface === 'channel') {
     const grant = activeGrants.find((candidate) => candidate.agentId === selected!.id);
-    const baseAppMention = source === 'default_agent' && turn.source === 'app_mention';
+    const baseAppMention = selected.kind === 'system' &&
+      source === 'default_agent' && turn.source === 'app_mention';
     if (!actor.channelMember || (!baseAppMention && !grant)) {
       return denied('not_available', available);
     }
   } else {
-    if (!actor.fullMember) return denied('member_required', []);
-    const selectedFromDirectory = selected.kind === 'user' && (
-      source === 'app_home' || source === 'agent_handle' || source === 'thread_owner'
-    );
-    if (selectedFromDirectory && !actor.discoverableAgentIds?.has(selected.id)) {
-      return denied('not_available', []);
+    if (selected.kind === 'user') {
+      const access = await input.authorizeUserAgent?.(selected);
+      if (access?.status !== 'allowed') {
+        return denied('not_available', []);
+      }
     }
   }
 
+  return commitSelectedAgentRoute({
+    turn,
+    config,
+    installation,
+    selected,
+    source,
+    activeGrants,
+    currentRoute,
+  });
+}
+
+async function commitSelectedAgentRoute(input: {
+  turn: NormalizedSlackTurn;
+  config: ResolveAgentRouteInput['config'];
+  installation: NonNullable<Awaited<ReturnType<ConfigStore['getWorkspaceInstallation']>>>;
+  selected: CustomAgentConfig;
+  source: AgentRouteSource;
+  activeGrants: AgentChannelGrant[];
+  currentRoute: AgentThreadRoute | undefined;
+}): Promise<Extract<AgentRoutingResult, { kind: 'routed' }>> {
+  const { turn, config, installation, selected, source, activeGrants, currentRoute } = input;
   const generation = selected.configurationGeneration ?? selected.revision;
   const ownerChanged = Boolean(currentRoute && currentRoute.agentId !== selected.id);
   const persistedHandoffRetry = installation.runtimeContract === 'chickpea-v1' &&
@@ -277,7 +302,7 @@ export async function resolveAgentRoute(
       turn,
       selected,
       activeGrants,
-      source === 'default_agent' && turn.source === 'app_mention'
+      selected.kind === 'system' && source === 'default_agent' && turn.source === 'app_mention'
         ? 'workspace_management'
         : undefined,
       route.ownerIncarnation,
@@ -299,49 +324,6 @@ export async function resolveAgentRoute(
       ? { handoffFallbackRequired: true }
       : {}),
   };
-}
-
-export async function discoverableAgents(input: {
-  config: Pick<ConfigStore, 'listAgents' | 'listAgentChannelGrants'>;
-  workspaceId: string;
-  principal?: AuthPrincipal;
-  channelMember: (channelId: string) => Promise<boolean>;
-}): Promise<CustomAgentConfig[]> {
-  const [agents, grants] = await Promise.all([
-    input.config.listAgents(),
-    input.config.listAgentChannelGrants(input.workspaceId),
-  ]);
-  const grantedChannelsByAgent = new Map<string, Set<string>>();
-  for (const grant of grants) {
-    if (grant.status !== 'active') continue;
-    const channels = grantedChannelsByAgent.get(grant.agentId) ?? new Set<string>();
-    channels.add(grant.channelId);
-    grantedChannelsByAgent.set(grant.agentId, channels);
-  }
-  const membership = new Map<string, boolean>();
-  const channelMember = async (channelId: string): Promise<boolean> => {
-    const cached = membership.get(channelId);
-    if (cached !== undefined) return cached;
-    const allowed = await input.channelMember(channelId);
-    membership.set(channelId, allowed);
-    return allowed;
-  };
-  const visible: CustomAgentConfig[] = [];
-  for (const agent of agents) {
-    if (agent.kind !== 'user' || !agentIsActive(agent)) continue;
-    if (input.principal && canEditAgent(input.principal, agent)) {
-      visible.push(agent);
-      continue;
-    }
-    const channels = grantedChannelsByAgent.get(agent.id) ?? new Set<string>();
-    for (const channelId of channels) {
-      if (await channelMember(channelId)) {
-        visible.push(agent);
-        break;
-      }
-    }
-  }
-  return visible.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function agentIsActive(agent: CustomAgentConfig): boolean {
