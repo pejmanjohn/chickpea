@@ -3406,6 +3406,12 @@ test('Agent header owns its editable avatar while Slack owns handle, channels, a
   const slackBody = harness.app.innerHTML.match(/<div class="agent-destination-body">[\s\S]*?<\/div><\/details>/)?.[0] ?? '';
   assert.match(slackBody, /for="p-handle">Handle<\/label>[\s\S]*?<h3>Slack channels<\/h3>/);
   assert.doesNotMatch(slackBody, /<h3>Appearance<\/h3>|>Avatar<|profile-avatar-upload|Upload image|PNG, JPEG, or WebP/);
+  assert.ok(
+    slackBody.indexOf('data-action="attach-open"') < slackBody.indexOf('class="agent-placement-body"') &&
+      slackBody.indexOf('class="agent-placement-body"') < slackBody.indexOf('class="hint agent-private-use-audience"'),
+    'Connected channels must appear after Add to channels and before the DM notice',
+  );
+  assert.doesNotMatch(slackBody, /agent-slack-channel-count|agent-placement-count|>1 channel</);
   assert.match(harness.app.innerHTML, /<label class="field-label" for="p-handle">Handle<\/label>/);
   assert.match(harness.app.innerHTML, /class="agent-handle-control"><span class="agent-handle-prefix" aria-hidden="true">@<\/span><input class="input mono" id="p-handle"/);
   assert.doesNotMatch(harness.app.innerHTML, /Members mention this user-group handle/);
@@ -3445,12 +3451,14 @@ test('Agent Slack destination explains every derived DM audience without control
       }],
     });
     await flushAsync();
-    const start = harness.app.innerHTML.indexOf('class="agent-private-use-audience"');
-    const end = harness.app.innerHTML.indexOf('</div></div>', start) + 12;
-    const audienceHtml = harness.app.innerHTML.slice(start, end);
-    assert.match(audienceHtml, new RegExp(label));
-    assert.match(audienceHtml, /role="note" aria-labelledby="agent-private-use-title"/);
-    assert.doesNotMatch(audienceHtml, /<button|<select|memberCount|member roster/i);
+    const audienceHtml = harness.app.innerHTML.match(/<p class="hint agent-private-use-audience" role="note">[^<]+<\/p>/)?.[0] ?? '';
+    assert.match(audienceHtml, new RegExp(label + '\\.'));
+    assert.doesNotMatch(audienceHtml, /<strong|<svg|<button|<select|memberCount|member roster|workspace member can use|Slack Connect/i);
+    const audienceStart = harness.app.innerHTML.indexOf('class="hint agent-private-use-audience"');
+    const channelsEnd = audience === 'creator_only'
+      ? harness.app.innerHTML.indexOf('class="agent-channel-empty"')
+      : harness.app.innerHTML.indexOf('class="agent-placement-body"');
+    assert.ok(channelsEnd !== -1 && channelsEnd < audienceStart, 'The DM notice must follow the channel content');
   }
 });
 
@@ -3602,7 +3610,7 @@ test('Add to channels loads the Slack catalog and can attach an unassigned works
     body: { workspaceId: 'T_DESIGN', channelId: 'C_NEW' },
   }]);
   assert.doesNotMatch(harness.app.innerHTML, /data-role="attach-channel"/);
-  assert.match(harness.app.innerHTML, /2 channels/);
+  assert.match(harness.app.innerHTML, /2 Slack channels/);
   assert.match(harness.app.innerHTML, /All workspace members can DM this Agent/);
 });
 
@@ -4726,7 +4734,8 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   }
   assert.match(harness.app.innerHTML, /class="agent-destinations-section"[\s\S]*?class="agent-card-icon semantic-icon tone-channel"[\s\S]*?<h2>Destinations<\/h2>/);
   assert.match(harness.app.innerHTML, /class="agent-destination-summary"[\s\S]*?<strong>Slack<\/strong>[\s\S]*?1 Slack channel/);
-  assert.match(harness.app.innerHTML, /<h3>Slack channels<\/h3>[\s\S]*?class="agent-placement-count">1 channel/);
+  assert.match(harness.app.innerHTML, /<h3>Slack channels<\/h3>[\s\S]*?class="agent-placement-body">[\s\S]*?class="where-list"/);
+  assert.doesNotMatch(harness.app.innerHTML, /agent-slack-channel-count|agent-placement-count/);
   assert.match(harness.app.innerHTML, /class="where-channel-row"[\s\S]*?#<\/span>[\s\S]*?eng-releases/);
   assert.doesNotMatch(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>|workspace Default Agent for private messages/);
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
@@ -4754,7 +4763,7 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(page, /\.agent-model-row\.agent-model-tab-row\s*\{[^}]*background:\s*transparent;[^}]*display:\s*block;[^}]*padding:\s*0;/s);
   assert.match(page, /\.agent-destinations-section\s*\{[^}]*border-radius:\s*16px;[^}]*display:\s*flex;/s);
   assert.match(page, /\.agent-destination-subsection\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*gap:\s*18px;/s);
-  assert.match(page, /\.agent-placement-label\.agent-slack-channel-count\s*\{[^}]*justify-content:\s*flex-end;/s);
+  assert.doesNotMatch(page, /\.agent-placement-label\.agent-slack-channel-count\s*\{/);
   assert.match(
     page,
     /--semantic-instructions-fg:\s*#b96c06;[\s\S]*?--semantic-instructions-bg:\s*#fbefe0;[\s\S]*?--semantic-channel-fg:\s*#4b863d;[\s\S]*?--semantic-channel-bg:\s*#ebf0e2;[\s\S]*?--semantic-model-fg:\s*#7554ca;[\s\S]*?--semantic-model-bg:\s*#eee5f6;/s,
@@ -4779,7 +4788,7 @@ test('Where it works uses full-width Channel rows and guided first-Channel activ
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
 
   assert.match(harness.app.innerHTML, /class="where-list"[\s\S]*?class="where-entry"[\s\S]*?eng-releases/);
-  assert.match(harness.app.innerHTML, /<span class="agent-placement-count">1 channel<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /agent-slack-channel-count|agent-placement-count/);
   assert.doesNotMatch(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>|Workspace default for @Chickpea DMs and App Home/);
 
   const noChannelsHarness = runAdminPageHarness({
