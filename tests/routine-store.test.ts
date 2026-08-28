@@ -1413,6 +1413,139 @@ test('attributable failures auto-pause at three while unknown outcomes pause imm
   }
 });
 
+test('a recurring private routine reserves one content-free root notice when failures pause it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-routine-private-pause-notice-'));
+  const path = join(dir, 'state.db');
+  const store = new SqliteRoutineStore(path, () => CREATED_AT);
+  const config = new SqliteConfigStore(path, { agents: [] });
+  const destination = {
+    kind: 'direct_thread' as const,
+    conversationId: 'D_PRIVATE_NOTICE',
+    threadTs: '1787853827.722389',
+    ownerMembershipId: 'membership_private_notice',
+  };
+  try {
+    await config.createAgent({
+      id: 'agent_private_notice', name: 'Private notice', instructions: 'Run private work.',
+      enabled: true, creatorMembershipId: destination.ownerMembershipId,
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [],
+      repositories: [],
+    });
+    const pending = await store.save({
+      actorId: 'U_PRIVATE', actorClass: 'member', workspaceId: 'T_TEST',
+      channelId: destination.conversationId, destination,
+      draft: createDraft('routine_private_pause_notice', {
+        definition: definition({ authorityMode: 'live_direct_member_v1' }),
+      }),
+      idempotencyKey: 'routine:private:pause-notice', sourceVisibility: 'private',
+    });
+    const digest = routineDestinationBindingDigest(pending.id, pending.workspaceId, destination);
+    const reference = await config.putAgentScheduleReference({
+      scheduleId: pending.id, agentId: 'agent_private_notice', workspaceId: pending.workspaceId,
+      channelId: destination.conversationId, destinationKind: 'direct_thread',
+      destinationBindingDigest: digest, createdByMembershipId: destination.ownerMembershipId,
+      runsAsMembershipId: destination.ownerMembershipId,
+      authorityReceiptId: 'receipt_private_notice', requiredConnectionAccountIds: [], state: 'active',
+    });
+    const routine = await store.activateDirectRoutine({
+      routineId: pending.id, expectedVersion: pending.version,
+      expectedReferenceRevision: reference.revision, destinationBindingDigest: digest,
+    });
+
+    for (let index = 0; index < 3; index += 1) {
+      const run = await store.createOccurrence({
+        runId: `rrun_private_notice_${index}`,
+        idempotencyKey: `private-notice-${index}`,
+        routineId: routine.id,
+        routineVersion: routine.version,
+        scheduledFor: NEXT_RUN + index,
+        triggerSource: 'run_now',
+        requestedBy: 'U_PRIVATE',
+        queuedAt: CREATED_AT + index * 10,
+        deadlineAt: CREATED_AT + 15 * 60 * 1_000,
+      });
+      await store.startAdmissionAttempt({
+        occurrenceId: run.id, owner: 'manual', leaseUntil: CREATED_AT + 120_000,
+        invokeStartedAt: CREATED_AT + index * 10 + 1,
+      });
+      await store.beginOccurrence({
+        occurrenceId: run.id, flueRunId: `run_private_notice_${index}`,
+        startedAt: CREATED_AT + index * 10 + 2,
+      });
+      await store.transitionRun({
+        occurrenceId: run.id, from: ['running'], to: 'failed',
+        at: CREATED_AT + index * 10 + 3,
+        failureClass: 'tool_failed', publicError: 'The scheduled action failed safely.',
+      });
+      const notice = await store.getRecoveryDelivery(run.id);
+      if (index < 2) assert.equal(notice, undefined);
+      else assert.deepEqual(notice, {
+        occurrenceId: run.id,
+        claimedAt: null,
+        status: 'pending',
+        messageTs: null,
+        failureClass: 'consecutive_failures',
+        updatedAt: CREATED_AT + index * 10 + 3,
+      });
+    }
+
+    const unknownPending = await store.save({
+      actorId: 'U_PRIVATE', actorClass: 'member', workspaceId: 'T_TEST',
+      channelId: destination.conversationId, destination,
+      draft: createDraft('routine_private_unknown_notice', {
+        definition: definition({ authorityMode: 'live_direct_member_v1' }),
+      }),
+      idempotencyKey: 'routine:private:unknown-notice', sourceVisibility: 'private',
+    });
+    const unknownDigest = routineDestinationBindingDigest(
+      unknownPending.id,
+      unknownPending.workspaceId,
+      destination,
+    );
+    const unknownReference = await config.putAgentScheduleReference({
+      scheduleId: unknownPending.id, agentId: 'agent_private_notice',
+      workspaceId: unknownPending.workspaceId, channelId: destination.conversationId,
+      destinationKind: 'direct_thread', destinationBindingDigest: unknownDigest,
+      createdByMembershipId: destination.ownerMembershipId,
+      runsAsMembershipId: destination.ownerMembershipId,
+      authorityReceiptId: 'receipt_private_unknown', requiredConnectionAccountIds: [],
+      state: 'active',
+    });
+    const unknownRoutine = await store.activateDirectRoutine({
+      routineId: unknownPending.id, expectedVersion: unknownPending.version,
+      expectedReferenceRevision: unknownReference.revision,
+      destinationBindingDigest: unknownDigest,
+    });
+    const unknownRun = await store.createOccurrence({
+      runId: 'rrun_private_unknown_notice', idempotencyKey: 'private-unknown-notice',
+      routineId: unknownRoutine.id, routineVersion: unknownRoutine.version,
+      scheduledFor: NEXT_RUN + 10, triggerSource: 'run_now', requestedBy: 'U_PRIVATE',
+      queuedAt: CREATED_AT + 40, deadlineAt: CREATED_AT + 15 * 60 * 1_000,
+    });
+    await store.startAdmissionAttempt({
+      occurrenceId: unknownRun.id, owner: 'manual', leaseUntil: CREATED_AT + 120_000,
+      invokeStartedAt: CREATED_AT + 41,
+    });
+    await store.beginOccurrence({
+      occurrenceId: unknownRun.id, flueRunId: 'run_private_unknown_notice',
+      startedAt: CREATED_AT + 42,
+    });
+    await store.transitionRun({
+      occurrenceId: unknownRun.id, from: ['running'], to: 'failed', at: CREATED_AT + 43,
+      failureClass: 'delivery_unknown',
+      publicError: 'The Slack delivery outcome could not be confirmed.',
+    });
+    assert.equal(
+      (await store.getRecoveryDelivery(unknownRun.id))?.failureClass,
+      'delivery_unknown',
+    );
+  } finally {
+    config.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('an unknown external outcome pauses immediately without inventing a retry', async () => {
   const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
   try {

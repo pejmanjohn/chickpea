@@ -1,6 +1,7 @@
 import { ErrorCode, WebClient, type ChatPostMessageResponse } from '@slack/web-api';
 
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
 import {
   appendSlackReplyFooter,
   buildSlackAdminUrl,
@@ -10,8 +11,17 @@ import {
   type SlackReplyFooter,
 } from '../slack/message-format.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
-import { RoutineRuntimeError, type RoutineRuntimeAccess } from './runtime.ts';
-import type { RoutineDefinition, RoutineRun, RoutineStore } from './types.ts';
+import {
+  resolveRoutineRuntimeAccess,
+  RoutineRuntimeError,
+  type RoutineRuntimeAccess,
+} from './runtime.ts';
+import type {
+  RoutineDefinition,
+  RoutineRecoveryDelivery,
+  RoutineRun,
+  RoutineStore,
+} from './types.ts';
 import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 
@@ -24,6 +34,10 @@ const DEFINITIVE_DIRECT_THREAD_ERRORS = new Set([
 
 export const DIRECT_ROUTINE_RECOVERY_NOTICE =
   'Chickpea paused private scheduled work because its original thread could not receive a reply. Ask Chickpea here to list private schedules.';
+export const DIRECT_ROUTINE_CONSECUTIVE_FAILURE_NOTICE =
+  'Chickpea paused private scheduled work after repeated failures. Ask Chickpea here to list private schedules and resume it after reviewing the issue.';
+export const DIRECT_ROUTINE_UNKNOWN_OUTCOME_NOTICE =
+  'Chickpea paused private scheduled work because a result may have been delivered without a confirmed outcome. Ask Chickpea here to list private schedules before resuming it.';
 
 export interface RoutineDeliveryReceipt {
   channelId: string;
@@ -36,6 +50,39 @@ export type RoutineRecoveryDeliveryOutcome =
   | 'unknown'
   | 'superseded';
 
+export async function drainDirectRoutinePauseNotices(
+  input: { store: RoutineStore; env: PlatformEnv; limit?: number },
+  dependencies: {
+    resolveAccess?: typeof resolveRoutineRuntimeAccess;
+  } = {},
+): Promise<{ scanned: number; settled: number }> {
+  const pending = await input.store.listPendingRecoveryDeliveries(input.limit ?? 25);
+  let settled = 0;
+  for (const notice of pending) {
+    const run = await input.store.getRun(notice.occurrenceId);
+    const routine = run ? await input.store.getRoutine(run.routineId) : undefined;
+    if (!run || !routine || routine.destination.kind !== 'direct_thread') continue;
+    try {
+      const access = await (dependencies.resolveAccess ?? resolveRoutineRuntimeAccess)(
+        run,
+        routine,
+        input.env,
+      );
+      const outcome = await deliverDirectRoutineRecoveryNotice({
+        store: input.store,
+        run,
+        routine,
+        access,
+      }, access.client);
+      if (outcome !== 'superseded') settled += 1;
+    } catch {
+      // Access is resolved before claiming the notice, so a transient preflight
+      // failure stays pending for a later scheduled heartbeat.
+    }
+  }
+  return { scanned: pending.length, settled };
+}
+
 /** One at-most-once top-level Slack delivery. Ambiguous transport failures are never retried. */
 export async function deliverRoutineResult(
   input: {
@@ -47,6 +94,7 @@ export async function deliverRoutineResult(
     changeKeyHash: string | null;
     workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
+    sleep?: (delayMs: number) => Promise<void>;
   },
   client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
 ): Promise<RoutineDeliveryReceipt> {
@@ -71,6 +119,7 @@ export async function deliverRoutineFailureNotice(
     publicError: string;
     workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
+    sleep?: (delayMs: number) => Promise<void>;
   },
   client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
 ): Promise<RoutineDeliveryReceipt> {
@@ -117,6 +166,7 @@ async function deliverRoutineSlackMessage(
     approvedOutput: string;
     workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
+    sleep?: (delayMs: number) => Promise<void>;
   },
   message: string | RenderedSlackMessage,
   client: WebClient,
@@ -159,39 +209,57 @@ async function deliverRoutineSlackMessage(
   });
 
   let response: ChatPostMessageResponse;
-  try {
-    response = await client.chat.postMessage(payload);
-  } catch (error) {
-    const directThreadUnavailable = input.routine.destination.kind === 'direct_thread' &&
-      isDefinitiveDirectThreadError(error);
-    const rateLimited = slackErrorCode(error) === ErrorCode.RateLimitedError;
-    await input.workLifecycle?.afterDelivery({
-      attemptId: workAttemptId,
-      outcome: directThreadUnavailable || rateLimited ? 'failed' : 'unknown',
-      ...(directThreadUnavailable ? { terminalDisposition: 'failed' as const } : {}),
-      safeFailureCode: directThreadUnavailable
-        ? 'direct_thread_unavailable'
-        : rateLimited ? 'slack_rate_limited' : 'delivery_unknown',
-    });
-    await recordFailedDelivery(
-      input.store,
-      input.run.id,
-      directThreadUnavailable || rateLimited ? 'failed' : 'unknown',
-      now(),
-      directThreadUnavailable ? 'direct_thread_unavailable' : undefined,
-    );
-    if (directThreadUnavailable) {
+  let rateLimitRetries = 0;
+  while (true) {
+    try {
+      response = await client.chat.postMessage(payload);
+      break;
+    } catch (error) {
+      const retryAfterMs = slackRateLimitRetryAfterMs(error);
+      if (retryAfterMs !== undefined &&
+          rateLimitRetries < ROUTINE_LIMITS.deliveryRateLimitMaxRetries &&
+          retryAfterMs <= ROUTINE_LIMITS.deliveryRateLimitMaxRetryAfterMs &&
+          now() + retryAfterMs + ROUTINE_SLACK_TIMEOUT_MS <= Math.min(
+            Number.isSafeInteger(input.run.deadlineAt)
+              ? input.run.deadlineAt
+              : claimedAt + ROUTINE_LIMITS.deliveryLeaseMs,
+            claimedAt + ROUTINE_LIMITS.deliveryLeaseMs,
+          )) {
+        rateLimitRetries += 1;
+        await (input.sleep ?? sleep)(retryAfterMs);
+        continue;
+      }
+      const directThreadUnavailable = input.routine.destination.kind === 'direct_thread' &&
+        isDefinitiveDirectThreadError(error);
+      const rateLimited = slackErrorCode(error) === ErrorCode.RateLimitedError;
+      await input.workLifecycle?.afterDelivery({
+        attemptId: workAttemptId,
+        outcome: directThreadUnavailable || rateLimited ? 'failed' : 'unknown',
+        ...(directThreadUnavailable ? { terminalDisposition: 'failed' as const } : {}),
+        safeFailureCode: directThreadUnavailable
+          ? 'direct_thread_unavailable'
+          : rateLimited ? 'slack_rate_limited' : 'delivery_unknown',
+      });
+      await recordFailedDelivery(
+        input.store,
+        input.run.id,
+        directThreadUnavailable || rateLimited ? 'failed' : 'unknown',
+        now(),
+        directThreadUnavailable ? 'direct_thread_unavailable' : undefined,
+      );
+      if (directThreadUnavailable) {
+        throw new RoutineRuntimeError(
+          'direct_thread_unavailable',
+          'The private routine thread could not receive a reply.',
+        );
+      }
       throw new RoutineRuntimeError(
-        'direct_thread_unavailable',
-        'The private routine thread could not receive a reply.',
+        rateLimited ? 'slack_rate_limited' : 'delivery_unknown',
+        rateLimited
+          ? 'Slack rate-limited the routine result after a bounded retry.'
+          : 'Slack delivery may have completed but could not be confirmed; Chickpea did not retry it.',
       );
     }
-    throw new RoutineRuntimeError(
-      rateLimited ? 'slack_rate_limited' : 'delivery_unknown',
-      rateLimited
-        ? 'Slack rate-limited the routine result; Chickpea did not retry it.'
-        : 'Slack delivery may have completed but could not be confirmed; Chickpea did not retry it.',
-    );
   }
   const channelId = typeof response.channel === 'string' ? response.channel : undefined;
   const messageTs = typeof response.ts === 'string' ? response.ts : undefined;
@@ -274,6 +342,8 @@ export async function deliverDirectRoutineRecoveryNotice(
     at: now(),
   });
   if (claimed !== 'claimed') return 'superseded';
+  const recovery = await input.store.getRecoveryDelivery(input.run.id);
+  if (!recovery) return 'superseded';
 
   let openResponse: Awaited<ReturnType<WebClient['conversations']['open']>>;
   try {
@@ -296,7 +366,7 @@ export async function deliverDirectRoutineRecoveryNotice(
   try {
     response = await client.chat.postMessage({
       channel: input.routine.destination.conversationId,
-      text: DIRECT_ROUTINE_RECOVERY_NOTICE,
+      text: directRoutinePauseNotice(recovery.failureClass),
       username: 'Chickpea',
       unfurl_links: false,
       unfurl_media: false,
@@ -474,6 +544,30 @@ async function recordRecoveryOutcome(
 
 function slackErrorCode(error: unknown): unknown {
   return error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
+}
+
+function slackRateLimitRetryAfterMs(error: unknown): number | undefined {
+  if (slackErrorCode(error) !== ErrorCode.RateLimitedError ||
+      !error || typeof error !== 'object') return undefined;
+  const retryAfter = (error as { retryAfter?: unknown }).retryAfter;
+  if (typeof retryAfter !== 'number' || !Number.isFinite(retryAfter) || retryAfter <= 0) {
+    return undefined;
+  }
+  return Math.ceil(retryAfter * 1_000);
+}
+
+function directRoutinePauseNotice(
+  failureClass: RoutineRecoveryDelivery['failureClass'],
+): string {
+  return failureClass === 'direct_thread_unavailable'
+    ? DIRECT_ROUTINE_RECOVERY_NOTICE
+    : failureClass === 'consecutive_failures'
+      ? DIRECT_ROUTINE_CONSECUTIVE_FAILURE_NOTICE
+      : DIRECT_ROUTINE_UNKNOWN_OUTCOME_NOTICE;
+}
+
+function sleep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 function isDefinitiveDirectThreadError(error: unknown): boolean {

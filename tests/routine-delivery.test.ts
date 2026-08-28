@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { WebClient } from '@slack/web-api';
+import { ErrorCode, WebClient } from '@slack/web-api';
 
 import {
   DIRECT_ROUTINE_RECOVERY_NOTICE,
+  DIRECT_ROUTINE_CONSECUTIVE_FAILURE_NOTICE,
   deliverDirectRoutineRecoveryNotice,
+  drainDirectRoutinePauseNotices,
   deliverRoutineFailureNotice,
   deliverRoutineResult,
   renderRoutineDelivery,
@@ -194,6 +196,43 @@ test('an ambiguous Slack failure records unknown and is never retried', async ()
   assert.deepEqual(events, ['claim', 'record:unknown::']);
 });
 
+test('an explicit Slack rate limit retries once inside the claimed attempt and deadline', async () => {
+  const events: string[] = [];
+  const waits: number[] = [];
+  let requests = 0;
+  let clock = 1_000;
+  const client = {
+    chat: {
+      postMessage: async () => {
+        requests += 1;
+        if (requests === 1) {
+          throw { code: ErrorCode.RateLimitedError, retryAfter: 2 };
+        }
+        return { ok: true, channel: 'C_TEST', ts: '1785000000.000400' };
+      },
+    },
+  } as unknown as WebClient;
+
+  const receipt = await deliverRoutineResult({
+    store: store(events),
+    run: { ...run, deadlineAt: 60_000 },
+    routine,
+    access,
+    message: 'Delivered after a safe retry.',
+    changeKeyHash: null,
+    now: () => clock,
+    sleep: async (delayMs) => {
+      waits.push(delayMs);
+      clock += delayMs;
+    },
+  }, client);
+
+  assert.deepEqual(receipt, { channelId: 'C_TEST', messageTs: '1785000000.000400' });
+  assert.equal(requests, 2);
+  assert.deepEqual(waits, [2_000]);
+  assert.deepEqual(events, ['claim', 'record:delivered:1785000000.000400:']);
+});
+
 test('definitive private-thread rejections are classified without retrying or falling back', async () => {
   const cases = [
     { error: 'cannot_reply_to_message' },
@@ -298,6 +337,7 @@ test('private recovery posts one sanitized Chickpea notice at the verified DM ro
   const requests: Array<Record<string, unknown>> = [];
   let claimed = false;
   const recoveryStore = {
+    getRecoveryDelivery: async () => ({ failureClass: 'direct_thread_unavailable' }),
     claimRecoveryDelivery: async (input: ClaimRoutineRecoveryDeliveryInput) => {
       events.push(`claim:${input.occurrenceId}`);
       if (claimed) return 'superseded' as const;
@@ -353,11 +393,94 @@ test('private recovery posts one sanitized Chickpea notice at the verified DM ro
   );
 });
 
+test('a repeated-failure pause notice is content-free and posts at the verified DM root', async () => {
+  let request: Record<string, unknown> | undefined;
+  const recoveryStore = {
+    getRecoveryDelivery: async () => ({ failureClass: 'consecutive_failures' }),
+    claimRecoveryDelivery: async () => 'claimed' as const,
+    recordRecoveryDelivery: async () => ({}),
+  } as unknown as RoutineStore;
+  const client = {
+    conversations: {
+      open: async () => ({ ok: true, channel: { id: 'D_TEST', is_im: true } }),
+    },
+    chat: {
+      postMessage: async (input: Record<string, unknown>) => {
+        request = input;
+        return { ok: true, channel: 'D_TEST', ts: '1785000000.000901' };
+      },
+    },
+  } as unknown as WebClient;
+
+  assert.equal(await deliverDirectRoutineRecoveryNotice({
+    store: recoveryStore,
+    run,
+    routine: directRoutine,
+    access: { ...access, actorSlackUserId: 'U_ACTOR' },
+    now: () => 2_000,
+  }, client), 'accepted');
+  assert.equal(request?.text, DIRECT_ROUTINE_CONSECUTIVE_FAILURE_NOTICE);
+  assert.equal(request?.thread_ts, undefined);
+  assert.doesNotMatch(JSON.stringify(request), /routine_test|Daily|1784000000\.000100/);
+});
+
+test('scheduled pause-notice recovery replays pending state without posting twice', async () => {
+  let claimed = false;
+  let posts = 0;
+  const notice = {
+    occurrenceId: run.id,
+    claimedAt: null,
+    status: 'pending' as const,
+    messageTs: null,
+    failureClass: 'consecutive_failures' as const,
+    updatedAt: 1_000,
+  };
+  const recoveryStore = {
+    listPendingRecoveryDeliveries: async () => [notice],
+    getRun: async () => ({ ...run, routineId: directRoutine.id }),
+    getRoutine: async () => directRoutine,
+    getRecoveryDelivery: async () => notice,
+    claimRecoveryDelivery: async () => {
+      if (claimed) return 'superseded' as const;
+      claimed = true;
+      return 'claimed' as const;
+    },
+    recordRecoveryDelivery: async () => ({}),
+  } as unknown as RoutineStore;
+  const client = {
+    conversations: {
+      open: async () => ({ ok: true, channel: { id: 'D_TEST', is_im: true } }),
+    },
+    chat: {
+      postMessage: async () => {
+        posts += 1;
+        return { ok: true, channel: 'D_TEST', ts: '1785000000.000902' };
+      },
+    },
+  } as unknown as WebClient;
+  const resolveAccess = async () => ({
+    ...access,
+    actorSlackUserId: 'U_ACTOR',
+    client,
+  });
+
+  assert.deepEqual(await drainDirectRoutinePauseNotices(
+    { store: recoveryStore, env: {} as never },
+    { resolveAccess: resolveAccess as never },
+  ), { scanned: 1, settled: 1 });
+  assert.deepEqual(await drainDirectRoutinePauseNotices(
+    { store: recoveryStore, env: {} as never },
+    { resolveAccess: resolveAccess as never },
+  ), { scanned: 1, settled: 0 });
+  assert.equal(posts, 1);
+});
+
 test('private recovery rejects a mismatched or unproven DM without posting', async () => {
   for (const channel of [{ id: 'D_OTHER', is_im: true }, { id: 'D_TEST' }]) {
     const events: string[] = [];
     let posts = 0;
     const recoveryStore = {
+      getRecoveryDelivery: async () => ({ failureClass: 'direct_thread_unavailable' }),
       claimRecoveryDelivery: async () => 'claimed' as const,
       recordRecoveryDelivery: async (input: RecordRoutineRecoveryDeliveryInput) => {
         events.push(input.outcome);
@@ -388,6 +511,7 @@ test('an ambiguous private recovery attempt is recorded unknown and never retrie
   let claimed = false;
   let opens = 0;
   const recoveryStore = {
+    getRecoveryDelivery: async () => ({ failureClass: 'direct_thread_unavailable' }),
     claimRecoveryDelivery: async () => {
       if (claimed) return 'superseded' as const;
       claimed = true;

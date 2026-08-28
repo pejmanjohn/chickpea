@@ -1890,6 +1890,11 @@ export class CfRoutineStore implements RoutineStore {
     if (response.kind !== 'recovery_delivery') throw unexpectedRoutineResponse();
     return orUndefined(response.delivery);
   }
+  async listPendingRecoveryDeliveries(limit = 25): Promise<RoutineRecoveryDelivery[]> {
+    const response = await this.execute({ kind: 'list_pending_recovery_deliveries', limit });
+    if (response.kind !== 'recovery_deliveries') throw unexpectedRoutineResponse();
+    return response.deliveries;
+  }
   async claimRecoveryDelivery(
     input: ClaimRoutineRecoveryDeliveryInput,
   ): Promise<'claimed' | 'superseded'> {

@@ -238,6 +238,7 @@ import {
 } from './routines/admission.ts';
 import { RoutineScheduler } from './routines/scheduler.ts';
 import { executeRoutineOccurrence } from './routines/execution.ts';
+import { drainDirectRoutinePauseNotices } from './routines/delivery.ts';
 
 // The generated default captures model and tool content. Register the native
 // Cloudflare adapter explicitly for this Cloudflare-only entry so Workers
@@ -2360,4 +2361,5 @@ async function runRoutineHeartbeat(
     }),
   });
   await new RoutineScheduler(store, admissions).heartbeat(scheduledTime, owner);
+  await drainDirectRoutinePauseNotices({ store, env: rawEnv as PlatformEnv });
 }

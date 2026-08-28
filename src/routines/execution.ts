@@ -873,6 +873,7 @@ async function finalizeSettlement(
     usageCompleteness: settlement.usage?.completeness ?? 'not_reported',
   });
   await deliverFailureNoticeBestEffort(prepared, settlement.publicError);
+  await deliverDirectPauseNoticeBestEffort(prepared);
 }
 
 async function recordUsage(
@@ -1192,6 +1193,22 @@ async function deliverFailureNoticeBestEffort(
       })().catch(() => undefined);
     }
     // The failed occurrence remains available through its authorized management surface.
+  }
+}
+
+async function deliverDirectPauseNoticeBestEffort(prepared: PreparedExecution): Promise<void> {
+  if (prepared.routine.destination.kind !== 'direct_thread') return;
+  try {
+    const run = await prepared.store.getRun(prepared.run.id);
+    if (!run || !(await prepared.store.getRecoveryDelivery(run.id))) return;
+    await deliverDirectRoutineRecoveryNotice({
+      store: prepared.store,
+      run,
+      routine: prepared.routine,
+      access: prepared.access,
+    }, prepared.access.client);
+  } catch {
+    // The durable root-notice claim prevents a duplicate if this outward result is ambiguous.
   }
 }
 

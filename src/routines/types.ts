@@ -237,7 +237,11 @@ export interface RoutineRecoveryDelivery {
   claimedAt: number | null;
   status: RoutineRecoveryDeliveryStatus;
   messageTs: string | null;
-  failureClass: 'direct_thread_unavailable';
+  failureClass:
+    | 'direct_thread_unavailable'
+    | 'consecutive_failures'
+    | 'unknown_external_outcome'
+    | 'delivery_unknown';
   updatedAt: number;
 }
 
@@ -712,6 +716,7 @@ export interface RoutineStore {
   claimDelivery(input: ClaimRoutineDeliveryInput): Promise<'claimed' | 'superseded'>;
   recordDelivery(input: RecordRoutineDeliveryInput): Promise<RoutineRun>;
   getRecoveryDelivery(occurrenceId: string): Promise<RoutineRecoveryDelivery | undefined>;
+  listPendingRecoveryDeliveries(limit?: number): Promise<RoutineRecoveryDelivery[]>;
   claimRecoveryDelivery(
     input: ClaimRoutineRecoveryDeliveryInput,
   ): Promise<'claimed' | 'superseded'>;
@@ -784,6 +789,7 @@ export type RoutineRpcRequest =
   | { kind: 'claim_delivery'; input: ClaimRoutineDeliveryInput }
   | { kind: 'record_delivery'; input: RecordRoutineDeliveryInput }
   | { kind: 'get_recovery_delivery'; occurrenceId: string }
+  | { kind: 'list_pending_recovery_deliveries'; limit: number }
   | { kind: 'claim_recovery_delivery'; input: ClaimRoutineRecoveryDeliveryInput }
   | { kind: 'record_recovery_delivery'; input: RecordRoutineRecoveryDeliveryInput }
   | { kind: 'list_admissions'; occurrenceId: string }
@@ -808,6 +814,7 @@ export type RoutineRpcResponse =
   | { kind: 'begin'; outcome: 'started' | 'superseded' }
   | { kind: 'delivery_claim'; outcome: 'claimed' | 'superseded' }
   | { kind: 'recovery_delivery'; delivery: RoutineRecoveryDelivery | null }
+  | { kind: 'recovery_deliveries'; deliveries: RoutineRecoveryDelivery[] }
   | { kind: 'recovery_delivery_claim'; outcome: 'claimed' | 'superseded' }
   | { kind: 'boolean'; value: boolean }
   | { kind: 'purged'; count: number }

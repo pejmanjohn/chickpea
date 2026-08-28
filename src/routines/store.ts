@@ -418,6 +418,11 @@ export class RoutineStoreLogic {
           kind: 'recovery_delivery',
           delivery: this.getRecoveryDelivery(request.occurrenceId) ?? null,
         };
+      case 'list_pending_recovery_deliveries':
+        return {
+          kind: 'recovery_deliveries',
+          deliveries: this.listPendingRecoveryDeliveries(request.limit),
+        };
       case 'claim_recovery_delivery':
         return {
           kind: 'recovery_delivery_claim',
@@ -2290,6 +2295,18 @@ export class RoutineStoreLogic {
     return row ? rowToRecoveryDelivery(row as unknown as RecoveryDeliveryRow) : undefined;
   }
 
+  listPendingRecoveryDeliveries(limit = 25): RoutineRecoveryDelivery[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw routineError('routine_recovery_delivery_invalid', 'Routine recovery delivery is invalid.');
+    }
+    return this.db.all(
+      `SELECT * FROM routine_recovery_deliveries
+       WHERE status = 'pending' AND claimed_at = 0
+       ORDER BY updated_at ASC, occurrence_id ASC LIMIT ?`,
+      limit,
+    ).map((row) => rowToRecoveryDelivery(row as unknown as RecoveryDeliveryRow));
+  }
+
   claimRecoveryDelivery(
     input: ClaimRoutineRecoveryDeliveryInput,
   ): 'claimed' | 'superseded' {
@@ -3394,6 +3411,7 @@ export class RoutineStoreLogic {
       );
       if (pause) {
         this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routineId);
+        this.reserveDirectPauseNotice(run, routine, 'consecutive_failures', at);
         const paused = required(this.getRoutine(routineId), 'Auto-paused routine was not readable.');
         this.appendRoutineAudit(
           `routine:auto-pause:${run.id}:consecutive_failures`,
@@ -3494,6 +3512,7 @@ export class RoutineStoreLogic {
       run.routineId,
     );
     this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', run.routineId);
+    this.reserveDirectPauseNotice(run, routine, reason, at);
     const paused = required(this.getRoutine(run.routineId), 'Unknown-outcome routine was not readable.');
     if (routine.state !== 'paused' || routine.pausedReason !== reason) {
       this.appendRoutineAudit(
@@ -3508,6 +3527,25 @@ export class RoutineStoreLogic {
         reason,
       );
     }
+  }
+
+  private reserveDirectPauseNotice(
+    run: RoutineRun,
+    routine: RoutineDefinition,
+    failureClass: RoutineRecoveryDelivery['failureClass'],
+    at: number,
+  ): void {
+    if (routine.destination.kind !== 'direct_thread' || routine.triggerKind !== 'schedule') return;
+    this.db.run(
+      `INSERT INTO routine_recovery_deliveries (
+        occurrence_id, claimed_at, status, message_ts, failure_class, updated_at
+      ) VALUES (?, ?, 'pending', NULL, ?, ?)
+      ON CONFLICT(occurrence_id) DO NOTHING`,
+      run.id,
+      0,
+      failureClass,
+      at,
+    );
   }
 
   private runByIdempotencyKey(idempotencyKey: string): RoutineRun | undefined {
@@ -4076,7 +4114,7 @@ function rowToRecoveryDelivery(row: RecoveryDeliveryRow): RoutineRecoveryDeliver
     claimedAt: row.claimed_at > 0 ? row.claimed_at : null,
     status: row.status,
     messageTs: row.message_ts,
-    failureClass: 'direct_thread_unavailable',
+    failureClass: row.failure_class,
     updatedAt: row.updated_at,
   };
 }
