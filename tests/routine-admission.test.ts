@@ -125,6 +125,7 @@ test('a lost dispatch acknowledgement repeats the exact frozen envelope and idem
     assert.equal(first.unknown, 1);
     assert.equal(second.attached, 1);
     assert.deepEqual(resumed, frozen);
+    assert.equal(resumed?.schemaVersion, 1);
     assert.equal(resumed?.idempotencyKey, resumed?.attemptId);
     assert.equal((await store.listAdmissions(run.id)).length, 1);
     assert.equal((await store.getRun(run.id))?.resolvedAuthorityReceiptId, 'schedule_authority_test');

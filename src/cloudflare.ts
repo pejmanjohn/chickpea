@@ -201,11 +201,21 @@ import type { IdentityStore } from './identity/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from './identity/types.ts';
 import { ManagementStoreLogic, type ManagementStore } from './management/store.ts';
 import { createLiveWorkspaceManagementService } from './management/live-service.ts';
-import { invokeSlackWorkspaceManagementTool } from './management/slack-tools.ts';
+import {
+  invokeSlackWorkspaceManagementTool,
+  resolveSlackManagementActor,
+} from './management/slack-tools.ts';
+import {
+  invokeSlackScheduleAction,
+  retryDueSlackScheduleActions,
+  type SlackScheduleActionOutcome,
+  type SlackScheduleActionRpcRequest,
+} from './management/slack-schedule-actions.ts';
 import type { WorkspaceManagementToolResult } from './management/tool-adapter.ts';
 import {
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
+  reconcileScheduleActionReceipts,
 } from './management/receipts.ts';
 import {
   ManagementError,
@@ -229,6 +239,7 @@ import {
 } from './routines/admission.ts';
 import { RoutineScheduler } from './routines/scheduler.ts';
 import { executeRoutineOccurrence } from './routines/execution.ts';
+import { drainRoutinePauseNotices } from './routines/delivery.ts';
 
 // The generated default captures model and tool content. Register the native
 // Cloudflare adapter explicitly for this Cloudflare-only entry so Workers
@@ -616,27 +627,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       return workspaceManagementRpcFailure();
     }
     try {
-      const platformEnv = this.env as PlatformEnv;
-      const local = localGatewayAppStores(stores);
-      const settings = localSettingsStore(stores);
-      const service = createLiveWorkspaceManagementService(platformEnv, {
-        identity: local.identity,
-        settings,
-        usage: local.usage,
-        slackCredentials: {
-          state: local.identity,
-          keyring: loadCredentialKeyring(platformEnv),
-        },
-        overrides: {
-          identity: local.identity,
-          config: local.config,
-          management: local.management,
-          memory: local.memory,
-          routines: local.routines,
-          work: local.work,
-          setupBaseUrl: () => resolveSlackPublicUrl(platformEnv, settings),
-        },
-      });
+      const { local, service } = localManagementRuntime(
+        stores,
+        this.env as PlatformEnv,
+      );
       const result = await invokeSlackWorkspaceManagementTool({
         signal: request.signal,
         identity: local.identity,
@@ -645,13 +639,6 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         args: request.args,
       });
       try {
-        const dueBeforeReply = stores.management.nextOutboxDueAt();
-        if (dueBeforeReply !== undefined && dueBeforeReply <= Date.now()) {
-          await drainCloudflareManagementReceipts(
-            stores,
-            this.createAlarmIdentityResolver(stores),
-          );
-        }
         const outboxDueAt = stores.management.nextOutboxDueAt();
         if (outboxDueAt !== undefined) {
           await this.armAlarmNoLaterThan(Math.max(Date.now(), outboxDueAt));
@@ -676,6 +663,38 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       }));
       return workspaceManagementRpcFailure();
     }
+  }
+
+  async slackScheduleActionInvoke(
+    request: SlackScheduleActionRpcRequest,
+  ): Promise<SlackScheduleActionOutcome> {
+    this.stores ??= this.tryInit();
+    const stores = this.stores;
+    if (!stores) throw new Error('Schedule action state is unavailable.');
+    const { local, service } = localManagementRuntime(
+      stores,
+      this.env as PlatformEnv,
+    );
+    const context = await resolveSlackManagementActor(request.signal, local.identity);
+    // Arm recovery before the first durable write so a DO interruption after
+    // admission cannot strand a pending action without an alarm.
+    await this.armAlarmNoLaterThan(Date.now());
+    const result = await invokeSlackScheduleAction({
+      signal: request.signal,
+      context,
+      operation: request.operation,
+      dependencies: {
+        management: local.management,
+        routines: local.routines,
+        service,
+        owner: `rpc:${request.signal.turnJobId}`,
+      },
+    });
+    const nextAction = stores.routines.nextScheduleActionDueAt();
+    const nextReceipt = stores.management.nextOutboxDueAt();
+    const nextWake = earliestDefined(nextAction, nextReceipt);
+    if (nextWake !== undefined) await this.armAlarmNoLaterThan(Math.max(Date.now(), nextWake));
+    return result;
   }
 
   /**
@@ -1486,13 +1505,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         stores,
         resolveInstallation,
       );
+      const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
       await drainCloudflareManagementReceipts(stores, resolveInstallation);
       const turnRetry = gatewayNeedsRetry || stores.gatewayInbox.hasPending() ||
         stores.turnJobs.hasPending('ledger') || stores.turnJobs.hasPendingSlackInteractionCleanup()
         ? Date.now() + runDriverRetryDelayMs(ledgerDrain, RELAY_RETRY_BACKOFF_MS)
         : undefined;
       const outboxRetry = stores.management.nextOutboxDueAt();
-      const nextWake = earliestDefined(turnRetry, presentationRepairs.nextRetryAt, outboxRetry);
+      const nextWake = earliestDefined(
+        turnRetry,
+        presentationRepairs.nextRetryAt,
+        scheduleActions.nextDueAt,
+        outboxRetry,
+      );
       if (nextWake !== undefined) await this.ctx.storage.setAlarm(nextWake);
       return;
     }
@@ -1781,6 +1806,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       stores,
       resolveInstallation,
     );
+    const scheduleActions = await drainCloudflareScheduleActions(stores, this.env as PlatformEnv);
     await drainCloudflareManagementReceipts(stores, resolveInstallation);
     needsRetry ||= stores.turnJobs.hasPending('legacy') ||
       stores.turnJobs.hasPending('ledger') ||
@@ -1788,7 +1814,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       stores.gatewayInbox.hasPending();
     const turnRetry = needsRetry ? Date.now() + identityRetryDelayMs : undefined;
     const outboxRetry = stores.management.nextOutboxDueAt();
-    const nextWake = earliestDefined(turnRetry, presentationRepairs.nextRetryAt, outboxRetry);
+    const nextWake = earliestDefined(
+      turnRetry,
+      presentationRepairs.nextRetryAt,
+      scheduleActions.nextDueAt,
+      outboxRetry,
+    );
     if (nextWake !== undefined) {
       // Re-arm (do NOT throw) so this invocation returns normally and its
       // attempt-count writes commit; the next firing re-drives the leftover
@@ -2009,6 +2040,49 @@ async function drainCloudflareManagementReceipts(
   });
 }
 
+async function drainCloudflareScheduleActions(
+  stores: TagStateStores,
+  platformEnv: PlatformEnv,
+): Promise<{ attempted: number; nextDueAt?: number }> {
+  const now = Date.now();
+  const nextDueAt = stores.routines.nextScheduleActionDueAt();
+  if (nextDueAt === undefined || nextDueAt > now) {
+    const local = localGatewayAppStores(stores);
+    await reconcileScheduleActionReceipts({
+      routines: local.routines,
+      management: local.management,
+      at: now,
+    });
+    return { attempted: 0, ...(nextDueAt !== undefined ? { nextDueAt } : {}) };
+  }
+  const { local, service } = localManagementRuntime(stores, platformEnv);
+  return retryDueSlackScheduleActions({
+    dependencies: {
+      management: local.management,
+      routines: local.routines,
+      service,
+      owner: `alarm:schedule:${Date.now()}`,
+    },
+    resolveContext: async (action, request) => {
+      return {
+        userId: action.actorUserId,
+        membershipId: action.actorMembershipId,
+        organizationId: request.organizationId,
+        actingAgentId: action.agentId,
+        origin: {
+          kind: 'slack',
+          workspaceId: action.workspaceId,
+          channelId: action.channelId,
+          threadTs: action.threadTs,
+          messageTs: action.messageTs,
+          conversationKind: action.conversationKind,
+          agentId: action.agentId,
+        },
+      };
+    },
+  });
+}
+
 async function drainLedgerRuns(
   stores: TagStateStores,
   platformEnv: PlatformEnv,
@@ -2126,6 +2200,32 @@ function localSettingsStore(stores: TagStateStores): SettingsStore {
     applySettingsPatch: async (patch) => stores.settings.applySettingsPatch(patch),
     mergeSettingStringSet: async (key, values) =>
       stores.settings.mergeSettingStringSet(key, values),
+  };
+}
+
+function localManagementRuntime(stores: TagStateStores, platformEnv: PlatformEnv) {
+  const local = localGatewayAppStores(stores);
+  const settings = localSettingsStore(stores);
+  return {
+    local,
+    service: createLiveWorkspaceManagementService(platformEnv, {
+      identity: local.identity,
+      settings,
+      usage: local.usage,
+      slackCredentials: {
+        state: local.identity,
+        keyring: loadCredentialKeyring(platformEnv),
+      },
+      overrides: {
+        identity: local.identity,
+        config: local.config,
+        management: local.management,
+        memory: local.memory,
+        routines: local.routines,
+        work: local.work,
+        setupBaseUrl: () => resolveSlackPublicUrl(platformEnv, settings),
+      },
+    }),
   };
 }
 
@@ -2247,4 +2347,5 @@ async function runRoutineHeartbeat(
     }),
   });
   await new RoutineScheduler(store, admissions).heartbeat(scheduledTime, owner);
+  await drainRoutinePauseNotices({ store, env: rawEnv as PlatformEnv });
 }

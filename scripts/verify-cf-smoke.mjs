@@ -268,6 +268,13 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
       bundle.includes('FLUE_PRIVATE_SANDBOX_COMMAND_V1'),
     'built Worker composes the heartbeat, fresh agents, and content-free tracing',
   );
+  check(
+    bundle.includes('routine_schedule_actions') &&
+      bundle.includes('manage_scheduled_work') &&
+      bundle.includes('slackScheduleActionInvoke') &&
+      bundle.includes('retryDueSlackScheduleActions'),
+    'built Worker carries the durable schedule-action ledger, tool, RPC, and alarm recovery path',
+  );
 }
 
 function writeSmokeWranglerConfigs(setup) {

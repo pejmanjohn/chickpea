@@ -237,11 +237,20 @@ export interface RoutineRecoveryDelivery {
   claimedAt: number | null;
   status: RoutineRecoveryDeliveryStatus;
   messageTs: string | null;
-  failureClass: 'direct_thread_unavailable';
+  failureClass:
+    | 'direct_thread_unavailable'
+    | 'consecutive_failures'
+    | 'unknown_external_outcome'
+    | 'delivery_unknown';
   updatedAt: number;
 }
 
 export interface ClaimRoutineRecoveryDeliveryInput {
+  occurrenceId: string;
+  at: number;
+}
+
+export interface DeferRoutineRecoveryDeliveryInput {
   occurrenceId: string;
   at: number;
 }
@@ -280,7 +289,7 @@ export interface RoutineRun {
   admissionLeaseUntil: number | null;
   flueRunId: string | null;
   /** Historical Flue workflow id above remains read-only for legacy rows. */
-  flueAgentEnvelope?: RoutineAgentDispatchEnvelopeV1 | null;
+  flueAgentEnvelope?: RoutineAgentDispatchEnvelope | null;
   flueAgentSettlement?: RoutineAgentSettlementV1 | null;
   queuedAt: number;
   admittedAt: number | null;
@@ -361,6 +370,37 @@ export interface RoutineAgentDispatchEnvelopeV1 {
   initialData: unknown;
 }
 
+export interface RoutineScheduleSignalV2 {
+  kind: 'signal';
+  type: 'schedule';
+  body: string;
+  attributes: {
+    routineId: string;
+    occurrenceId: string;
+    workspaceId: string;
+    conversationId: string;
+    destinationKind: 'channel' | 'direct_thread';
+    ownerAgentId: string;
+    ownerMembershipId: string;
+    threadTs: string;
+    triggerSource: RoutineTriggerSource;
+    scheduledFor: string;
+  };
+}
+
+export interface RoutineAgentDispatchEnvelopeV2 {
+  schemaVersion: 2;
+  attemptId: string;
+  instanceId: string;
+  idempotencyKey: string;
+  message: RoutineScheduleSignalV2;
+  initialData: unknown;
+}
+
+export type RoutineAgentDispatchEnvelope =
+  | RoutineAgentDispatchEnvelopeV1
+  | RoutineAgentDispatchEnvelopeV2;
+
 export interface RoutineAgentReceiptV1 {
   submissionId: string;
   acceptedAt: string;
@@ -427,6 +467,8 @@ export interface RoutineDueClaimBatch {
 export interface RoutineMaintenanceResult {
   confirmationsPurged: number;
   reservationsPurged: number;
+  scheduleActionsDeleted: number;
+  recoveryNoticesReconciled: number;
   deliveryLeasesReconciled: number;
   deadlineRunsReconciled: number;
   runsDeleted: number;
@@ -456,7 +498,7 @@ export interface PrepareRoutineAgentDispatchInput {
   occurrenceId: string;
   attempt: number;
   startedAt: number;
-  envelope: RoutineAgentDispatchEnvelopeV1;
+  envelope: RoutineAgentDispatchEnvelope;
   resolvedAccessHash: string;
   resolvedAgentId: string;
   resolvedAuthorityReceiptId: string;
@@ -527,6 +569,7 @@ export interface RoutineRunFilter {
 export interface RoutineAdminPageInput {
   workspaceId?: string;
   channelId?: string;
+  destinationKind?: RoutineDestination['kind'];
   state?: RoutineState | 'current' | 'all' | 'deleted';
   runStatus?: RoutineRunStatus;
   cursor?: number;
@@ -538,7 +581,114 @@ export interface RoutineAdminPage {
   nextCursor: number | null;
 }
 
+export type RoutineScheduleActionStatus = 'pending' | 'applied' | 'failed';
+
+export type RoutineScheduleActionResult =
+  | {
+      outcome: 'applied';
+      effect: 'saved' | 'controlled' | 'run_queued';
+      routineId: string;
+      routineVersion?: number;
+      safeState?: 'active' | 'paused' | 'disabled' | 'pending_authority';
+    }
+  | {
+      outcome: 'failed';
+      code: string;
+      routineId?: string;
+      safeState?: 'paused' | 'disabled' | 'pending_authority';
+    };
+
+export interface RoutineScheduleAction {
+  actionId: string;
+  actionDigest: string;
+  /** Private management-request ledger entry containing the bounded command payload. */
+  requestOperationId: string;
+  workspaceId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  agentId: string;
+  conversationKind: 'channel' | 'im';
+  channelId: string;
+  threadTs: string;
+  messageTs: string;
+  status: RoutineScheduleActionStatus;
+  leaseOwner: string | null;
+  leaseUntil: number | null;
+  attempts: number;
+  nextAttemptAt: number;
+  result: RoutineScheduleActionResult | null;
+  pendingReceiptQueuedAt: number | null;
+  terminalReceiptQueuedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ReserveRoutineScheduleActionInput {
+  actionId: string;
+  actionDigest: string;
+  requestOperationId: string;
+  workspaceId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  agentId: string;
+  conversationKind: 'channel' | 'im';
+  channelId: string;
+  threadTs: string;
+  messageTs: string;
+  at: number;
+}
+
+export interface ClaimRoutineScheduleActionInput {
+  actionId: string;
+  owner: string;
+  at: number;
+  leaseUntil: number;
+}
+
+export type ClaimRoutineScheduleActionResult =
+  | { outcome: 'claimed'; action: RoutineScheduleAction }
+  | { outcome: 'pending'; action: RoutineScheduleAction }
+  | { outcome: 'terminal'; action: RoutineScheduleAction };
+
+export interface SettleRoutineScheduleActionInput {
+  actionId: string;
+  owner: string;
+  expectedAttempt: number;
+  result: RoutineScheduleActionResult;
+  at: number;
+}
+
+export interface DeferRoutineScheduleActionInput {
+  actionId: string;
+  owner: string;
+  expectedAttempt: number;
+  nextAttemptAt: number;
+  at: number;
+}
+
+export interface MarkRoutineScheduleActionReceiptQueuedInput {
+  actionId: string;
+  phase: 'pending' | 'terminal';
+  at: number;
+}
+
 export interface RoutineStore {
+  reserveScheduleAction(input: ReserveRoutineScheduleActionInput): Promise<RoutineScheduleAction>;
+  getScheduleAction(actionId: string): Promise<RoutineScheduleAction | undefined>;
+  claimScheduleAction(input: ClaimRoutineScheduleActionInput): Promise<ClaimRoutineScheduleActionResult>;
+  claimDueScheduleActions(input: {
+    owner: string;
+    at: number;
+    leaseUntil: number;
+    limit: number;
+  }): Promise<RoutineScheduleAction[]>;
+  nextScheduleActionDueAt(): Promise<number | undefined>;
+  listScheduleActionsNeedingReceipts(limit: number): Promise<RoutineScheduleAction[]>;
+  markScheduleActionReceiptQueued(
+    input: MarkRoutineScheduleActionReceiptQueuedInput,
+  ): Promise<RoutineScheduleAction>;
+  deferScheduleAction(input: DeferRoutineScheduleActionInput): Promise<RoutineScheduleAction>;
+  settleScheduleAction(input: SettleRoutineScheduleActionInput): Promise<RoutineScheduleAction>;
   putConfirmation(input: PutRoutineConfirmationInput): Promise<RoutineConfirmation>;
   getConfirmation(tokenHash: string): Promise<RoutineConfirmation | undefined>;
   cancelConfirmation(input: CancelRoutineConfirmationInput): Promise<boolean>;
@@ -574,9 +724,13 @@ export interface RoutineStore {
   claimDelivery(input: ClaimRoutineDeliveryInput): Promise<'claimed' | 'superseded'>;
   recordDelivery(input: RecordRoutineDeliveryInput): Promise<RoutineRun>;
   getRecoveryDelivery(occurrenceId: string): Promise<RoutineRecoveryDelivery | undefined>;
+  listPendingRecoveryDeliveries(limit?: number): Promise<RoutineRecoveryDelivery[]>;
   claimRecoveryDelivery(
     input: ClaimRoutineRecoveryDeliveryInput,
   ): Promise<'claimed' | 'superseded'>;
+  deferRecoveryDelivery(
+    input: DeferRoutineRecoveryDeliveryInput,
+  ): Promise<RoutineRecoveryDelivery>;
   recordRecoveryDelivery(
     input: RecordRoutineRecoveryDeliveryInput,
   ): Promise<RoutineRecoveryDelivery>;
@@ -596,6 +750,21 @@ export class RoutineStateError extends Error {
 }
 
 export type RoutineRpcRequest =
+  | { kind: 'reserve_schedule_action'; input: ReserveRoutineScheduleActionInput }
+  | { kind: 'get_schedule_action'; actionId: string }
+  | { kind: 'claim_schedule_action'; input: ClaimRoutineScheduleActionInput }
+  | {
+      kind: 'claim_due_schedule_actions';
+      input: { owner: string; at: number; leaseUntil: number; limit: number };
+    }
+  | { kind: 'next_schedule_action_due_at' }
+  | { kind: 'list_schedule_actions_needing_receipts'; limit: number }
+  | {
+      kind: 'mark_schedule_action_receipt_queued';
+      input: MarkRoutineScheduleActionReceiptQueuedInput;
+    }
+  | { kind: 'defer_schedule_action'; input: DeferRoutineScheduleActionInput }
+  | { kind: 'settle_schedule_action'; input: SettleRoutineScheduleActionInput }
   | { kind: 'put_confirmation'; input: PutRoutineConfirmationInput }
   | { kind: 'get_confirmation'; tokenHash: string }
   | { kind: 'cancel_confirmation'; input: CancelRoutineConfirmationInput }
@@ -631,13 +800,19 @@ export type RoutineRpcRequest =
   | { kind: 'claim_delivery'; input: ClaimRoutineDeliveryInput }
   | { kind: 'record_delivery'; input: RecordRoutineDeliveryInput }
   | { kind: 'get_recovery_delivery'; occurrenceId: string }
+  | { kind: 'list_pending_recovery_deliveries'; limit: number }
   | { kind: 'claim_recovery_delivery'; input: ClaimRoutineRecoveryDeliveryInput }
+  | { kind: 'defer_recovery_delivery'; input: DeferRoutineRecoveryDeliveryInput }
   | { kind: 'record_recovery_delivery'; input: RecordRoutineRecoveryDeliveryInput }
   | { kind: 'list_admissions'; occurrenceId: string }
   | { kind: 'count_admitting_or_running_occurrences' }
   | { kind: 'list_audit_events'; filter: AuditEventFilter };
 
 export type RoutineRpcResponse =
+  | { kind: 'schedule_action'; action: RoutineScheduleAction | null }
+  | { kind: 'schedule_action_claim'; claim: ClaimRoutineScheduleActionResult }
+  | { kind: 'schedule_actions'; actions: RoutineScheduleAction[] }
+  | { kind: 'schedule_action_due_at'; dueAt: number | null }
   | { kind: 'confirmation'; confirmation: RoutineConfirmation | null }
   | { kind: 'routine'; routine: RoutineDefinition | null }
   | { kind: 'routines'; routines: RoutineDefinition[] }
@@ -651,6 +826,7 @@ export type RoutineRpcResponse =
   | { kind: 'begin'; outcome: 'started' | 'superseded' }
   | { kind: 'delivery_claim'; outcome: 'claimed' | 'superseded' }
   | { kind: 'recovery_delivery'; delivery: RoutineRecoveryDelivery | null }
+  | { kind: 'recovery_deliveries'; deliveries: RoutineRecoveryDelivery[] }
   | { kind: 'recovery_delivery_claim'; outcome: 'claimed' | 'superseded' }
   | { kind: 'boolean'; value: boolean }
   | { kind: 'purged'; count: number }

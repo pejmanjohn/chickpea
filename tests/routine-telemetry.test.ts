@@ -15,6 +15,8 @@ const result = {
   maintenance: {
     confirmationsPurged: 3,
     reservationsPurged: 4,
+    scheduleActionsDeleted: 2,
+    recoveryNoticesReconciled: 1,
     deliveryLeasesReconciled: 0,
     deadlineRunsReconciled: 1,
     runsDeleted: 2,
@@ -39,6 +41,8 @@ test('routine heartbeat telemetry contains only approved counts and duration', (
     admissionUnknown: 0,
     confirmationsPurged: 3,
     reservationsPurged: 4,
+    scheduleActionsDeleted: 2,
+    recoveryNoticesReconciled: 1,
     deliveryLeasesReconciled: 0,
     deadlineRunsReconciled: 1,
     runsDeleted: 2,

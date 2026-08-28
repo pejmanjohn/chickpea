@@ -380,7 +380,7 @@ test('Scheduled Work structurally redacts private and unlinked definition conten
   }
 });
 
-test('direct schedules expose only anonymous health and are absent from shared detail and mutation surfaces', async () => {
+test('direct schedules are absent from shared list, detail, and mutation surfaces', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'chickpea-admin-routine-direct-private-')), 'state.db');
   const routines = new SqliteRoutineStore(path, () => NOW);
   const work = new SqliteWorkStore(path, { now: () => NOW });
@@ -531,23 +531,42 @@ test('direct schedules expose only anonymous health and are absent from shared d
     );
     const list = JSON.parse(listText) as Record<string, any>;
     assert.deepEqual(list.routines, []);
-    assert.equal(list.privateScheduleHealth.length, 1);
-    assert.deepEqual(Object.keys(list.privateScheduleHealth[0]).sort(), [
-      'lastFinishedAt', 'lastRun', 'nextRunAt', 'owner', 'state',
-    ]);
-    assert.deepEqual(list.privateScheduleHealth[0].owner, {
-      agentId: agent.id,
-      displayName: agent.name,
-    });
-    assert.deepEqual(Object.keys(list.privateScheduleHealth[0].lastRun).sort(), [
-      'deliveryStatus', 'failureClass', 'finishedAt', 'scheduledFor', 'startedAt', 'status',
-    ]);
+    assert.equal(list.nextCursor, null);
+    assert.equal('privateScheduleHealth' in list, false);
 
     const channelScoped = await app.request(
       `/admin/api/audit/scheduled_work/routines?channelId=${destination.conversationId}`,
       { headers },
     );
-    assert.deepEqual((await channelScoped.json() as Record<string, any>).privateScheduleHealth, []);
+    const channelScopedBody = await channelScoped.json() as Record<string, any>;
+    assert.deepEqual(channelScopedBody.routines, []);
+    assert.equal('privateScheduleHealth' in channelScopedBody, false);
+
+    await Promise.all([
+      seedActiveRoutine(routines, 'routine_channel_visible_0', NOW + 30 * 60_000),
+      seedActiveRoutine(routines, 'routine_channel_visible_1', NOW + 60 * 60_000),
+    ]);
+    const firstPage = await app.request(
+      '/admin/api/audit/scheduled_work/routines?workspaceId=T_TEST&limit=1',
+      { headers },
+    );
+    const firstPageBody = await firstPage.json() as Record<string, any>;
+    assert.equal(firstPageBody.routines.length, 1);
+    assert.equal(firstPageBody.nextCursor, '1');
+    const secondPage = await app.request(
+      `/admin/api/audit/scheduled_work/routines?workspaceId=T_TEST&limit=1&cursor=${firstPageBody.nextCursor}`,
+      { headers },
+    );
+    const secondPageBody = await secondPage.json() as Record<string, any>;
+    assert.equal(secondPageBody.routines.length, 1);
+    assert.equal(secondPageBody.nextCursor, null);
+    assert.deepEqual(
+      new Set([
+        firstPageBody.routines[0].id,
+        secondPageBody.routines[0].id,
+      ]),
+      new Set(['routine_channel_visible_0', 'routine_channel_visible_1']),
+    );
 
     for (const pathName of [
       `/admin/api/audit/scheduled_work/routines/${routine.id}`,

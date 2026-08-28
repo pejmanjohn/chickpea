@@ -195,12 +195,18 @@ import {
   type BeginRoutineOccurrenceInput,
   type CancelRoutineConfirmationInput,
   type ClaimRoutineRecoveryDeliveryInput,
+  type ClaimRoutineScheduleActionInput,
+  type ClaimRoutineScheduleActionResult,
   type ClaimRoutineDeliveryInput,
   type ClaimDueRoutinesInput,
   type ConfirmRoutineInput,
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
+  type DeferRoutineRecoveryDeliveryInput,
+  type DeferRoutineScheduleActionInput,
+  type MarkRoutineScheduleActionReceiptQueuedInput,
   type PutRoutineConfirmationInput,
+  type ReserveRoutineScheduleActionInput,
   type PrepareRoutineAgentDispatchInput,
   type RecordRoutineAgentReceiptInput,
   type RecordRoutineAgentSettlementInput,
@@ -214,6 +220,7 @@ import {
   type RoutineDueClaimBatch,
   type RoutineRevision,
   type RoutineRecoveryDelivery,
+  type RoutineScheduleAction,
   type RoutineRpcRequest,
   type RoutineRpcResponse,
   type RoutineRun,
@@ -223,6 +230,7 @@ import {
   type SaveRoutineInput,
   type ResolveRoutineAdmissionInput,
   type StartRoutineAdmissionInput,
+  type SettleRoutineScheduleActionInput,
   type TransitionRoutineRunInput,
 } from '../routines/types.ts';
 
@@ -905,6 +913,12 @@ export class CfManagementStore implements ManagementStore {
 
   async markRequestApplying(operationId: string, at: number) {
     const response = await this.execute({ kind: 'mark_request_applying', operationId, at });
+    if (response.kind !== 'request' || !response.request) throw unexpectedManagementResponse();
+    return response.request;
+  }
+
+  async failRequest(operationId: string, at: number) {
+    const response = await this.execute({ kind: 'fail_request', operationId, at });
     if (response.kind !== 'request' || !response.request) throw unexpectedManagementResponse();
     return response.request;
   }
@@ -1667,6 +1681,70 @@ export class CfMemoryStateStore implements MemoryStateStore {
 export class CfRoutineStore implements RoutineStore {
   constructor(private readonly stub: TagStateRpc) {}
 
+  async reserveScheduleAction(
+    input: ReserveRoutineScheduleActionInput,
+  ): Promise<RoutineScheduleAction> {
+    const response = await this.execute({ kind: 'reserve_schedule_action', input });
+    if (response.kind !== 'schedule_action' || !response.action) throw unexpectedRoutineResponse();
+    return response.action;
+  }
+  async getScheduleAction(actionId: string): Promise<RoutineScheduleAction | undefined> {
+    const response = await this.execute({ kind: 'get_schedule_action', actionId });
+    if (response.kind !== 'schedule_action') throw unexpectedRoutineResponse();
+    return orUndefined(response.action);
+  }
+  async claimScheduleAction(
+    input: ClaimRoutineScheduleActionInput,
+  ): Promise<ClaimRoutineScheduleActionResult> {
+    const response = await this.execute({ kind: 'claim_schedule_action', input });
+    if (response.kind !== 'schedule_action_claim') throw unexpectedRoutineResponse();
+    return response.claim;
+  }
+  async claimDueScheduleActions(input: {
+    owner: string;
+    at: number;
+    leaseUntil: number;
+    limit: number;
+  }): Promise<RoutineScheduleAction[]> {
+    const response = await this.execute({ kind: 'claim_due_schedule_actions', input });
+    if (response.kind !== 'schedule_actions') throw unexpectedRoutineResponse();
+    return response.actions;
+  }
+
+  async nextScheduleActionDueAt(): Promise<number | undefined> {
+    const response = await this.execute({ kind: 'next_schedule_action_due_at' });
+    if (response.kind !== 'schedule_action_due_at') throw unexpectedRoutineResponse();
+    return response.dueAt ?? undefined;
+  }
+
+  async listScheduleActionsNeedingReceipts(limit: number): Promise<RoutineScheduleAction[]> {
+    const response = await this.execute({ kind: 'list_schedule_actions_needing_receipts', limit });
+    if (response.kind !== 'schedule_actions') throw unexpectedRoutineResponse();
+    return response.actions;
+  }
+
+  async markScheduleActionReceiptQueued(
+    input: MarkRoutineScheduleActionReceiptQueuedInput,
+  ): Promise<RoutineScheduleAction> {
+    const response = await this.execute({ kind: 'mark_schedule_action_receipt_queued', input });
+    if (response.kind !== 'schedule_action' || !response.action) throw unexpectedRoutineResponse();
+    return response.action;
+  }
+  async deferScheduleAction(
+    input: DeferRoutineScheduleActionInput,
+  ): Promise<RoutineScheduleAction> {
+    const response = await this.execute({ kind: 'defer_schedule_action', input });
+    if (response.kind !== 'schedule_action' || !response.action) throw unexpectedRoutineResponse();
+    return response.action;
+  }
+  async settleScheduleAction(
+    input: SettleRoutineScheduleActionInput,
+  ): Promise<RoutineScheduleAction> {
+    const response = await this.execute({ kind: 'settle_schedule_action', input });
+    if (response.kind !== 'schedule_action' || !response.action) throw unexpectedRoutineResponse();
+    return response.action;
+  }
+
   async putConfirmation(input: PutRoutineConfirmationInput): Promise<RoutineConfirmation> {
     const response = await this.execute({ kind: 'put_confirmation', input });
     if (response.kind !== 'confirmation' || !response.confirmation) throw unexpectedRoutineResponse();
@@ -1819,12 +1897,26 @@ export class CfRoutineStore implements RoutineStore {
     if (response.kind !== 'recovery_delivery') throw unexpectedRoutineResponse();
     return orUndefined(response.delivery);
   }
+  async listPendingRecoveryDeliveries(limit = 25): Promise<RoutineRecoveryDelivery[]> {
+    const response = await this.execute({ kind: 'list_pending_recovery_deliveries', limit });
+    if (response.kind !== 'recovery_deliveries') throw unexpectedRoutineResponse();
+    return response.deliveries;
+  }
   async claimRecoveryDelivery(
     input: ClaimRoutineRecoveryDeliveryInput,
   ): Promise<'claimed' | 'superseded'> {
     const response = await this.execute({ kind: 'claim_recovery_delivery', input });
     if (response.kind !== 'recovery_delivery_claim') throw unexpectedRoutineResponse();
     return response.outcome;
+  }
+  async deferRecoveryDelivery(
+    input: DeferRoutineRecoveryDeliveryInput,
+  ): Promise<RoutineRecoveryDelivery> {
+    const response = await this.execute({ kind: 'defer_recovery_delivery', input });
+    if (response.kind !== 'recovery_delivery' || !response.delivery) {
+      throw unexpectedRoutineResponse();
+    }
+    return response.delivery;
   }
   async recordRecoveryDelivery(
     input: RecordRoutineRecoveryDeliveryInput,

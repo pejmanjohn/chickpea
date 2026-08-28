@@ -119,13 +119,257 @@ test('routine schema is additive and portable across the target-neutral StateDb 
   assert.ok(sqlite.get(
     "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'routine_recovery_deliveries'",
   ));
+  assert.ok(sqlite.get(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'routine_schedule_actions'",
+  ));
   sqlite.close();
+});
+
+test('intermediate legacy schedule actions upgrade without replaying stale receipts', () => {
+  const sqlite = openStateDb(':memory:');
+  sqlite.exec(
+    `CREATE TABLE routine_schedule_actions (
+      action_id TEXT PRIMARY KEY,
+      action_digest TEXT NOT NULL,
+      request_operation_id TEXT NOT NULL DEFAULT 'management_legacy_schedule_action',
+      workspace_id TEXT NOT NULL,
+      actor_user_id TEXT NOT NULL,
+      actor_membership_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      conversation_kind TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      thread_ts TEXT NOT NULL,
+      message_ts TEXT NOT NULL,
+      status TEXT NOT NULL,
+      lease_owner TEXT,
+      lease_until INTEGER,
+      attempts INTEGER NOT NULL,
+      next_attempt_at INTEGER NOT NULL,
+      result_json TEXT,
+      pending_receipt_queued_at INTEGER,
+      terminal_receipt_queued_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
+  );
+  const insertLegacyAction = (input: {
+    actionId: string;
+    status: 'pending' | 'applied';
+    result: string | null;
+  }) => sqlite.run(
+    `INSERT INTO routine_schedule_actions (
+      action_id, action_digest, workspace_id, actor_user_id, actor_membership_id,
+      agent_id, conversation_kind, channel_id, thread_ts, message_ts, status,
+      lease_owner, lease_until, attempts, next_attempt_at, result_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?, ?, ?)`,
+    input.actionId,
+    'a'.repeat(64),
+    'T_TEST',
+    'U_MEMBER',
+    'membership_owner',
+    'agent_sprout',
+    'channel',
+    'C_TEST',
+    '1787853827.722389',
+    '1787853830.000100',
+    input.status,
+    CREATED_AT,
+    input.result,
+    CREATED_AT,
+    CREATED_AT,
+  );
+  insertLegacyAction({
+    actionId: 'rsaction_legacy_terminal',
+    status: 'applied',
+    result: JSON.stringify({
+      outcome: 'applied', effect: 'saved', routineId: 'routine_legacy_terminal', routineVersion: 1,
+    }),
+  });
+  insertLegacyAction({
+    actionId: 'rsaction_legacy_pending',
+    status: 'pending',
+    result: null,
+  });
+
+  const store = new RoutineStoreLogic(sqlite, () => CREATED_AT);
+  const terminal = store.getScheduleAction('rsaction_legacy_terminal');
+  const pending = store.getScheduleAction('rsaction_legacy_pending');
+  assert.equal(terminal?.requestOperationId, 'management_rsaction_legacy_terminal');
+  assert.equal(terminal?.pendingReceiptQueuedAt, CREATED_AT);
+  assert.equal(terminal?.terminalReceiptQueuedAt, CREATED_AT);
+  assert.equal(pending?.requestOperationId, 'management_rsaction_legacy_pending');
+  assert.equal(pending?.pendingReceiptQueuedAt, CREATED_AT);
+  assert.equal(pending?.terminalReceiptQueuedAt, null);
+  assert.deepEqual(store.listScheduleActionsNeedingReceipts(10), []);
+  const recovered = store.claimScheduleAction({
+    actionId: 'rsaction_legacy_pending',
+    owner: 'alarm',
+    at: CREATED_AT + 1,
+    leaseUntil: CREATED_AT + 1_001,
+  });
+  assert.equal(recovered.outcome, 'claimed');
+  if (recovered.outcome === 'claimed') {
+    assert.equal(recovered.action.requestOperationId, 'management_rsaction_legacy_pending');
+  }
+  sqlite.close();
+});
+
+test('schedule action admission replays one content-bounded record and rejects conflicting reuse', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
+  const input = {
+    actionId: 'rsaction_replay',
+    actionDigest: 'a'.repeat(64),
+    requestOperationId: 'management_schedule_replay',
+    workspaceId: 'T_TEST',
+    actorUserId: 'U_MEMBER',
+    actorMembershipId: 'membership_owner',
+    agentId: 'agent_sprout',
+    conversationKind: 'im' as const,
+    channelId: 'D_MEMBER',
+    threadTs: '1787853827.722389',
+    messageTs: '1787853830.000100',
+    at: CREATED_AT,
+  };
+  try {
+    const first = await store.reserveScheduleAction(input);
+    const replay = await store.reserveScheduleAction(input);
+    assert.deepEqual(replay, first);
+    assert.equal(first.status, 'pending');
+    assert.equal(first.attempts, 0);
+    assert.equal(first.result, null);
+    assert.equal(first.pendingReceiptQueuedAt, null);
+    assert.equal(first.terminalReceiptQueuedAt, null);
+    assert.doesNotMatch(JSON.stringify(first), /check my email|secret task/i);
+
+    await assert.rejects(
+      () => store.reserveScheduleAction({ ...input, actionDigest: 'b'.repeat(64) }),
+      (error: unknown) => error instanceof RoutineStateError &&
+        error.code === 'routine_schedule_action_conflict',
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('schedule action leases recover and terminal results replay without conflicting settlement', async () => {
+  let clock = CREATED_AT;
+  const store = new SqliteRoutineStore(':memory:', () => clock);
+  const input = {
+    actionId: 'rsaction_terminal',
+    actionDigest: 'c'.repeat(64),
+    requestOperationId: 'management_schedule_terminal',
+    workspaceId: 'T_TEST',
+    actorUserId: 'U_MEMBER',
+    actorMembershipId: 'membership_owner',
+    agentId: 'agent_sprout',
+    conversationKind: 'im' as const,
+    channelId: 'D_MEMBER',
+    threadTs: '1787853827.722389',
+    messageTs: '1787853830.000100',
+    at: clock,
+  };
+  try {
+    await store.reserveScheduleAction(input);
+    const first = await store.claimScheduleAction({
+      actionId: input.actionId,
+      owner: 'foreground',
+      at: clock,
+      leaseUntil: clock + 1_000,
+    });
+    assert.equal(first.outcome, 'claimed');
+    assert.equal(first.action.attempts, 1);
+
+    const blocked = await store.claimScheduleAction({
+      actionId: input.actionId,
+      owner: 'alarm',
+      at: clock + 500,
+      leaseUntil: clock + 1_500,
+    });
+    assert.equal(blocked.outcome, 'pending');
+    assert.equal(await store.nextScheduleActionDueAt(), CREATED_AT + 1_000);
+
+    assert.deepEqual(
+      (await store.listScheduleActionsNeedingReceipts(10)).map(({ actionId }) => actionId),
+      [input.actionId],
+    );
+    const pendingReceipt = await store.markScheduleActionReceiptQueued({
+      actionId: input.actionId,
+      phase: 'pending',
+      at: clock + 501,
+    });
+    assert.equal(pendingReceipt.pendingReceiptQueuedAt, clock + 501);
+
+    clock += 1_001;
+    const recovered = await store.claimScheduleAction({
+      actionId: input.actionId,
+      owner: 'alarm',
+      at: clock,
+      leaseUntil: clock + 1_000,
+    });
+    assert.equal(recovered.outcome, 'claimed');
+    assert.equal(recovered.action.attempts, 2);
+
+    const appliedResult = {
+      outcome: 'applied' as const,
+      effect: 'saved' as const,
+      routineId: 'routine_saved',
+      routineVersion: 1,
+    };
+    const applied = await store.settleScheduleAction({
+      actionId: input.actionId,
+      owner: 'alarm',
+      expectedAttempt: 2,
+      result: appliedResult,
+      at: clock + 1,
+    });
+    assert.equal(applied.status, 'applied');
+    assert.deepEqual(applied.result, appliedResult);
+    assert.deepEqual(
+      (await store.listScheduleActionsNeedingReceipts(10)).map(({ actionId }) => actionId),
+      [input.actionId],
+    );
+    const terminalReceipt = await store.markScheduleActionReceiptQueued({
+      actionId: input.actionId,
+      phase: 'terminal',
+      at: clock + 2,
+    });
+    assert.equal(terminalReceipt.terminalReceiptQueuedAt, clock + 2);
+    assert.deepEqual(await store.listScheduleActionsNeedingReceipts(10), []);
+
+    const terminal = await store.claimScheduleAction({
+      actionId: input.actionId,
+      owner: 'replay',
+      at: clock + 2,
+      leaseUntil: clock + 1_002,
+    });
+    assert.equal(terminal.outcome, 'terminal');
+    assert.deepEqual(terminal.action, terminalReceipt);
+
+    await assert.rejects(
+      () => store.settleScheduleAction({
+        actionId: input.actionId,
+        owner: 'alarm',
+        expectedAttempt: 2,
+        result: { outcome: 'failed', code: 'schedule_invalid' },
+        at: clock + 3,
+      }),
+      (error: unknown) => error instanceof RoutineStateError &&
+        error.code === 'routine_schedule_action_conflict',
+    );
+
+    clock = terminalReceipt.updatedAt + ROUTINE_LIMITS.scheduleActionRetentionMs + 1;
+    assert.equal((await store.cleanupRetention()).scheduleActionsDeleted, 1);
+    assert.equal(await store.getScheduleAction(input.actionId), undefined);
+  } finally {
+    store.close();
+  }
 });
 
 test('direct routines stay inert until their exact Agent reference is bound and activated', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-routine-direct-activation-'));
   const path = join(dir, 'state.db');
-  const store = new SqliteRoutineStore(path, () => CREATED_AT);
+  let clock = CREATED_AT;
+  const store = new SqliteRoutineStore(path, () => clock);
   const config = new SqliteConfigStore(path, { agents: [] });
   const destination = {
     kind: 'direct_thread' as const,
@@ -414,6 +658,18 @@ test('direct routines stay inert until their exact Agent reference is bound and 
     assert.equal((await store.getRoutine(active.id))?.state, 'paused');
     assert.equal((await store.getRoutine(active.id))?.pausedReason, 'direct_thread_unavailable');
     assert.equal((await store.getRecoveryDelivery(noticeRun.id))?.status, 'pending');
+    const deferred = await store.deferRecoveryDelivery({
+      occurrenceId: noticeRun.id,
+      at: CREATED_AT + 11,
+    });
+    assert.equal(deferred.updatedAt, CREATED_AT + 11);
+    assert.equal(await store.claimRecoveryDelivery({
+      occurrenceId: noticeRun.id,
+      at: CREATED_AT + 12,
+    }), 'claimed');
+    clock = CREATED_AT + 12 + ROUTINE_LIMITS.recoveryDeliveryUnknownAfterMs + 1;
+    assert.equal((await store.cleanupRetention()).recoveryNoticesReconciled, 1);
+    assert.equal((await store.getRecoveryDelivery(noticeRun.id))?.status, 'unknown');
   } finally {
     store.close();
     config.close();
@@ -1254,12 +1510,181 @@ test('attributable failures auto-pause at three while unknown outcomes pause imm
         occurrenceId: run.id, from: ['running'], to: 'failed', at: CREATED_AT + index * 10 + 3,
         failureClass: 'tool_failed', publicError: 'The scheduled action failed safely.',
       });
+      const notice = await store.getRecoveryDelivery(run.id);
+      if (index < 2) assert.equal(notice, undefined);
+      else {
+        assert.equal(notice?.failureClass, 'consecutive_failures');
+        assert.equal(notice?.status, 'pending');
+      }
       routine = (await store.getRoutine(routine.id))!;
     }
     assert.equal(routine.consecutiveFailures, 3);
     assert.equal(routine.state, 'paused');
+
+    const unknownRoutine = await confirmDraft(
+      store,
+      createDraft('routine_channel_unknown_notice'),
+      'channel-unknown-notice',
+    );
+    const unknownRun = await store.createOccurrence({
+      runId: 'rrun_channel_unknown_notice', idempotencyKey: 'channel-unknown-notice',
+      routineId: unknownRoutine.id, routineVersion: unknownRoutine.version,
+      scheduledFor: NEXT_RUN + 10, triggerSource: 'run_now', requestedBy: 'U_MEMBER',
+      queuedAt: CREATED_AT + 40, deadlineAt: CREATED_AT + 15 * 60 * 1_000,
+    });
+    await store.startAdmissionAttempt({
+      occurrenceId: unknownRun.id, owner: 'manual', leaseUntil: CREATED_AT + 120_000,
+      invokeStartedAt: CREATED_AT + 41,
+    });
+    await store.beginOccurrence({
+      occurrenceId: unknownRun.id, flueRunId: 'run_channel_unknown_notice',
+      startedAt: CREATED_AT + 42,
+    });
+    await store.transitionRun({
+      occurrenceId: unknownRun.id, from: ['running'], to: 'failed', at: CREATED_AT + 43,
+      failureClass: 'delivery_unknown',
+      publicError: 'The Slack delivery outcome could not be confirmed.',
+    });
+    assert.equal((await store.getRoutine(unknownRoutine.id))?.state, 'paused');
+    assert.equal(
+      (await store.getRecoveryDelivery(unknownRun.id))?.failureClass,
+      'delivery_unknown',
+    );
   } finally {
     store.close();
+  }
+});
+
+test('a recurring private routine reserves one content-free root notice when failures pause it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-routine-private-pause-notice-'));
+  const path = join(dir, 'state.db');
+  const store = new SqliteRoutineStore(path, () => CREATED_AT);
+  const config = new SqliteConfigStore(path, { agents: [] });
+  const destination = {
+    kind: 'direct_thread' as const,
+    conversationId: 'D_PRIVATE_NOTICE',
+    threadTs: '1787853827.722389',
+    ownerMembershipId: 'membership_private_notice',
+  };
+  try {
+    await config.createAgent({
+      id: 'agent_private_notice', name: 'Private notice', instructions: 'Run private work.',
+      enabled: true, creatorMembershipId: destination.ownerMembershipId,
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [],
+      repositories: [],
+    });
+    const pending = await store.save({
+      actorId: 'U_PRIVATE', actorClass: 'member', workspaceId: 'T_TEST',
+      channelId: destination.conversationId, destination,
+      draft: createDraft('routine_private_pause_notice', {
+        definition: definition({ authorityMode: 'live_direct_member_v1' }),
+      }),
+      idempotencyKey: 'routine:private:pause-notice', sourceVisibility: 'private',
+    });
+    const digest = routineDestinationBindingDigest(pending.id, pending.workspaceId, destination);
+    const reference = await config.putAgentScheduleReference({
+      scheduleId: pending.id, agentId: 'agent_private_notice', workspaceId: pending.workspaceId,
+      channelId: destination.conversationId, destinationKind: 'direct_thread',
+      destinationBindingDigest: digest, createdByMembershipId: destination.ownerMembershipId,
+      runsAsMembershipId: destination.ownerMembershipId,
+      authorityReceiptId: 'receipt_private_notice', requiredConnectionAccountIds: [], state: 'active',
+    });
+    const routine = await store.activateDirectRoutine({
+      routineId: pending.id, expectedVersion: pending.version,
+      expectedReferenceRevision: reference.revision, destinationBindingDigest: digest,
+    });
+
+    for (let index = 0; index < 3; index += 1) {
+      const run = await store.createOccurrence({
+        runId: `rrun_private_notice_${index}`,
+        idempotencyKey: `private-notice-${index}`,
+        routineId: routine.id,
+        routineVersion: routine.version,
+        scheduledFor: NEXT_RUN + index,
+        triggerSource: 'run_now',
+        requestedBy: 'U_PRIVATE',
+        queuedAt: CREATED_AT + index * 10,
+        deadlineAt: CREATED_AT + 15 * 60 * 1_000,
+      });
+      await store.startAdmissionAttempt({
+        occurrenceId: run.id, owner: 'manual', leaseUntil: CREATED_AT + 120_000,
+        invokeStartedAt: CREATED_AT + index * 10 + 1,
+      });
+      await store.beginOccurrence({
+        occurrenceId: run.id, flueRunId: `run_private_notice_${index}`,
+        startedAt: CREATED_AT + index * 10 + 2,
+      });
+      await store.transitionRun({
+        occurrenceId: run.id, from: ['running'], to: 'failed',
+        at: CREATED_AT + index * 10 + 3,
+        failureClass: 'tool_failed', publicError: 'The scheduled action failed safely.',
+      });
+      const notice = await store.getRecoveryDelivery(run.id);
+      if (index < 2) assert.equal(notice, undefined);
+      else assert.deepEqual(notice, {
+        occurrenceId: run.id,
+        claimedAt: null,
+        status: 'pending',
+        messageTs: null,
+        failureClass: 'consecutive_failures',
+        updatedAt: CREATED_AT + index * 10 + 3,
+      });
+    }
+
+    const unknownPending = await store.save({
+      actorId: 'U_PRIVATE', actorClass: 'member', workspaceId: 'T_TEST',
+      channelId: destination.conversationId, destination,
+      draft: createDraft('routine_private_unknown_notice', {
+        definition: definition({ authorityMode: 'live_direct_member_v1' }),
+      }),
+      idempotencyKey: 'routine:private:unknown-notice', sourceVisibility: 'private',
+    });
+    const unknownDigest = routineDestinationBindingDigest(
+      unknownPending.id,
+      unknownPending.workspaceId,
+      destination,
+    );
+    const unknownReference = await config.putAgentScheduleReference({
+      scheduleId: unknownPending.id, agentId: 'agent_private_notice',
+      workspaceId: unknownPending.workspaceId, channelId: destination.conversationId,
+      destinationKind: 'direct_thread', destinationBindingDigest: unknownDigest,
+      createdByMembershipId: destination.ownerMembershipId,
+      runsAsMembershipId: destination.ownerMembershipId,
+      authorityReceiptId: 'receipt_private_unknown', requiredConnectionAccountIds: [],
+      state: 'active',
+    });
+    const unknownRoutine = await store.activateDirectRoutine({
+      routineId: unknownPending.id, expectedVersion: unknownPending.version,
+      expectedReferenceRevision: unknownReference.revision,
+      destinationBindingDigest: unknownDigest,
+    });
+    const unknownRun = await store.createOccurrence({
+      runId: 'rrun_private_unknown_notice', idempotencyKey: 'private-unknown-notice',
+      routineId: unknownRoutine.id, routineVersion: unknownRoutine.version,
+      scheduledFor: NEXT_RUN + 10, triggerSource: 'run_now', requestedBy: 'U_PRIVATE',
+      queuedAt: CREATED_AT + 40, deadlineAt: CREATED_AT + 15 * 60 * 1_000,
+    });
+    await store.startAdmissionAttempt({
+      occurrenceId: unknownRun.id, owner: 'manual', leaseUntil: CREATED_AT + 120_000,
+      invokeStartedAt: CREATED_AT + 41,
+    });
+    await store.beginOccurrence({
+      occurrenceId: unknownRun.id, flueRunId: 'run_private_unknown_notice',
+      startedAt: CREATED_AT + 42,
+    });
+    await store.transitionRun({
+      occurrenceId: unknownRun.id, from: ['running'], to: 'failed', at: CREATED_AT + 43,
+      failureClass: 'delivery_unknown',
+      publicError: 'The Slack delivery outcome could not be confirmed.',
+    });
+    assert.equal(
+      (await store.getRecoveryDelivery(unknownRun.id))?.failureClass,
+      'delivery_unknown',
+    );
+  } finally {
+    config.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

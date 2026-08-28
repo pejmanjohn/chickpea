@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.15' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.18' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -15,17 +15,17 @@ export const AGENT_AUTHORING_REASONS = [
 export type AgentAuthoringReason = typeof AGENT_AUTHORING_REASONS[number];
 
 export const AGENT_AUTHORING_ROUTER_INSTRUCTION = [
-  'Always activate the `agent-authoring` skill for requests to create an Agent, edit an Agent, remember or edit Agent memory, explore Agent roles or workflows, ask a capability question about Agent configuration, create or revise a skill, or manage scheduled work conversationally.',
+  'Always activate the `agent-authoring` skill for requests to create an Agent, edit an Agent, remember or edit Agent memory, explore Agent roles or workflows, ask a capability question about Agent configuration, or create or revise a skill.',
   'Before calling any configuration mutation tool, consider the whole request. Treat a compound request as one Agent-authoring request and never partially write it.',
   'Skill activation, reference reading, live inspection, and proposal drafting are read-only; do them without asking for separate permission.',
   'For Agent brainstorming or capability questions involving services or connections, call `inspect_workspace` in the same turn before naming services or availability; do not answer from general knowledge or defer inspection.',
-  'Natural-language scheduled work uses Agent authoring; only exact `!routines` commands use deterministic controls. A clear standalone schedule request applies immediately without approval, including relative-time follow-ups that do not say schedule. For a new follow-up, create a fresh routine without `routineId` or `expectedVersion`, sending relative timing as `schedule: {kind: "in", minutes: N}` instead of computing a wall-clock time; only edit a routine when the requester explicitly identifies that schedule. Inspect first and place every primitive in a compound request together.',
+  'Standalone create, edit, pause, resume, disable, and run-now requests use the first-class manage_scheduled_work tool and do not activate Agent authoring. A clear request to delete scheduled work does activate this skill: call inspect_routines first, select the exact routine ID and current version, then use propose_workspace_changes with delete_routine and wait for confirmation. If scheduled work is one part of a compound Agent-configuration request, activate this skill, inspect first, and place every primitive together in the normal proposal flow.',
   'Exploration and unresolved questions are read-only. Use the management tools only after the activated guide establishes the correct posture and target.',
 ].join(' ');
 
 export const AGENT_AUTHORING_GUIDE = `# Chickpea Agent authoring
 
-Use this guide when a requester wants to explore, create, onboard, or edit a Chickpea Agent, asks what an Agent could do, wants to create or revise a reusable Agent skill, or conversationally creates, edits, or manages scheduled work for an Agent. The management service is the only mutation authority. This guide helps you reason and compose; tools validate, authorize, preview, confirm, and apply.
+Use this guide when a requester wants to explore, create, onboard, or edit a Chickpea Agent, asks what an Agent could do, or wants to create or revise a reusable Agent skill. Use it for scheduled work when that work is part of a compound Agent-configuration request or when the requester asks to delete scheduled work. The management service is the only mutation authority. This guide helps you reason and compose; tools validate, authorize, preview, confirm, and apply.
 
 ## Start with posture
 
@@ -70,9 +70,9 @@ When a request spans primitives, use the smallest coherent composition. Explain 
 
 All requests to remember or edit durable Agent memory are Agent authoring. Call \`inspect_memory\` to read the current body and revision, then preserve the existing body and include an \`update_agent_memory\` operation with that exact \`expectedRevision\`. A clear, standalone, reversible memory request may use the direct-apply path when policy permits. If the same turn also asks for standing behavior, a skill, access, identity, model, reach, editing authority, or scheduled work, include the memory operation in the same read-only proposal as the other primitives; never partially apply the turn.
 
-All natural-language requests to create, edit, inspect, run, clone, pause, resume, disable, reassign, or delete scheduled work are Agent authoring. Inspect and handle the request through this guide even when the schedule is the only primitive. Exact \`!routines\` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, inspect and place every part together; never save only the cadence and discard the rest.
+Standalone natural-language requests to create, edit, pause, resume, disable, or run scheduled work now use the first-class \`manage_scheduled_work\` tool and are outside Agent authoring. Inspect existing routines before an edit, control, or run-now action so the operation uses an exact routine ID and current version where required. Deletion is deliberately outside \`manage_scheduled_work\` because it is irreversible. For a clear delete request, activate this guide, call \`inspect_routines\`, and disambiguate if needed. Once the exact routine ID and current version are known, call \`propose_workspace_changes\` with one \`delete_routine\` operation, show the returned Slack preview, and wait for explicit confirmation before calling \`confirm_workspace_change\`. Never delete through \`apply_workspace_changes\`. Exact \`!routines\` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, this guide owns the compound request: inspect and place every part together; never save only the cadence and discard the rest.
 
-A clear instruction to continue work at a future time is an explicit schedule request and does not need to say schedule. For example, “Check this again in 5 minutes and tell me anything new” means create one-time scheduled work for that follow-up in the current destination, using \`post_on_change\` because “anything new” supplies the empty-result behavior. In this phrasing, “again” refers to repeating the prior task, not editing an inspected schedule: omit \`routineId\` and \`expectedVersion\` and create a fresh routine. Never infer a schedule edit from “again,” “follow up,” a similar task, or an existing routine in the thread; include an inspected routine ID and version only when the requester explicitly asks to change that particular schedule. Send a relative lead time as the lead time itself — \`schedule: { "kind": "in", "minutes": 5 }\` — so the service computes the exact future minute on its own clock; never convert “in N minutes” into a wall-clock \`localDateTime\`, and reserve \`once\` with \`localDateTime\` for a date and time the requester names explicitly. When a standalone schedule create or edit has a clear task, time, destination, and empty-result behavior, call \`apply_workspace_changes\` immediately without a proposal or approval round trip. Ask only for details that materially change execution. Keep scheduled work inside a proposal only when it is part of a compound request whose other changes require review.
+A clear instruction to continue work at a future time is an explicit schedule request and does not need to say schedule. For example, “Check this again in 5 minutes and tell me anything new” means fresh one-time scheduled work, not an edit to an existing routine. Relative timing stays relative so the service computes the exact future instant from its trusted clock. In a compound request, represent the schedule with the same \`save_routine\` operation used by the shared command, but keep it inside the proposal required by the other changes. Never use the compound path to add an approval round trip to a standalone clear schedule action.
 
 ## Explore and design conversationally
 
@@ -95,7 +95,7 @@ Do not repeatedly re-ask settled details. Fill obvious blanks, show the assumpti
 
 ## Propose, review, and commit
 
-Use \`propose_workspace_changes\` for new-Agent creation and for generated, inferred, compound, multi-field, skill-bearing, capability-expanding, reach-changing, destructive, or otherwise consequential edits. A proposal is read-only: it normalizes the exact typed operations, shows a bounded visible diff and missing setup, records the guide version, and returns a requester- and origin-bound handle. Do not propose a standalone clear schedule create or edit; apply it immediately.
+Use \`propose_workspace_changes\` for new-Agent creation and for generated, inferred, compound, multi-field, skill-bearing, capability-expanding, reach-changing, destructive, or otherwise consequential edits. A proposal is read-only: it normalizes the exact typed operations, shows a bounded visible diff and missing setup, records the guide version, and returns a requester- and origin-bound handle. Standalone scheduled work does not belong to this path except for irreversible deletion, which always does.
 
 Treat every returned proposal handle as an opaque control token. Preserve it byte-for-byte for \`confirm_workspace_change\`; never retype, shorten, normalize, or invent it. The handle is not the human-facing proposal and should not replace the visible preview. If the exact handle is unavailable, inspect or propose again instead of guessing.
 
@@ -183,7 +183,7 @@ export const AGENT_AUTHORING_GUIDE_DIGEST = bytesToHex(sha256(new TextEncoder().
 
 const agentAuthoringSkill = defineSkill({
   name: AGENT_AUTHORING_SKILL_NAME,
-  description: 'Explore, create, onboard, or edit a Chickpea Agent, remember or edit Agent memory, answer Agent capability questions, create or revise reusable Agent skills, or create, edit, or manage scheduled Agent work. Required before answering any such request.',
+  description: 'Explore, create, onboard, or edit a Chickpea Agent, remember or edit Agent memory, answer Agent capability questions, or create or revise reusable Agent skills. Also use for scheduled work when it is part of a compound Agent-configuration request.',
   instructions: AGENT_AUTHORING_GUIDE,
   metadata: {
     'chickpea-guide-version': AGENT_AUTHORING_GUIDE_VERSION,

@@ -134,6 +134,10 @@ test('Cloudflare routine proxy carries direct activation and recovery receipts a
 
   assert.deepEqual(await store.activateDirectRoutine(activation), routine);
   assert.deepEqual(await store.getRecoveryDelivery('rrun_rpc'), recovery);
+  assert.deepEqual(
+    await store.deferRecoveryDelivery({ occurrenceId: 'rrun_rpc', at: 9 }),
+    { ...recovery, status: 'unknown' },
+  );
   assert.equal(await store.claimRecoveryDelivery({ occurrenceId: 'rrun_rpc', at: 10 }), 'claimed');
   assert.equal(
     (await store.recordRecoveryDelivery({
@@ -144,6 +148,7 @@ test('Cloudflare routine proxy carries direct activation and recovery receipts a
   assert.deepEqual(requests, [
     { kind: 'activate_direct_routine', input: activation },
     { kind: 'get_recovery_delivery', occurrenceId: 'rrun_rpc' },
+    { kind: 'defer_recovery_delivery', input: { occurrenceId: 'rrun_rpc', at: 9 } },
     { kind: 'claim_recovery_delivery', input: { occurrenceId: 'rrun_rpc', at: 10 } },
     {
       kind: 'record_recovery_delivery',
@@ -172,10 +177,12 @@ test('Cloudflare routine proxy carries maintenance results across the RPC seam',
   const result = {
     confirmationsPurged: 1,
     reservationsPurged: 2,
-    deliveryLeasesReconciled: 3,
-    deadlineRunsReconciled: 4,
-    runsDeleted: 5,
-    auditEventsDeleted: 6,
+    scheduleActionsDeleted: 3,
+    recoveryNoticesReconciled: 4,
+    deliveryLeasesReconciled: 5,
+    deadlineRunsReconciled: 6,
+    runsDeleted: 7,
+    auditEventsDeleted: 8,
   };
   const stub = {
     async routinesExecute(request: RoutineRpcRequest): Promise<StateRpcResult<RoutineRpcResponse>> {

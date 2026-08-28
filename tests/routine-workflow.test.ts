@@ -164,6 +164,7 @@ function dependencies(events: string[] = []) {
 
 function fakeHandle(input: {
   events?: string[];
+  dispatches?: unknown[];
   reply?: AgentReply;
   dispatchError?: unknown;
   readError?: unknown;
@@ -175,8 +176,9 @@ function fakeHandle(input: {
   };
   return {
     id: 'routineagent_test',
-    async dispatch() {
+    async dispatch(request) {
       input.events?.push('dispatch');
+      input.dispatches?.push(request);
       if (input.dispatchError) throw input.dispatchError;
       return receipt;
     },
@@ -221,17 +223,41 @@ function telemetrySink() {
 test('live access and a frozen app checkpoint precede Flue dispatch', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   const events: string[] = [];
+  const dispatches: unknown[] = [];
   try {
     const fixture = await admittedFixture(store, 'order');
     await executeRoutineOccurrence({
       env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
-    }, { ...dependencies(events), handle: fakeHandle({ events }) });
+    }, { ...dependencies(events), handle: fakeHandle({ events, dispatches }) });
 
     assert.deepEqual(events, ['live-access', 'model', 'dispatch', 'read']);
     const completed = await store.getRun(fixture.run.id);
     assert.equal(completed?.status, 'no_op');
     assert.equal(completed?.flueRunId, null);
     assert.equal(completed?.flueAgentEnvelope?.idempotencyKey, fixture.attempt.attemptId);
+    const dispatched = dispatches[0] as {
+      idempotencyKey: string;
+      message: unknown;
+    };
+    assert.equal(dispatched.idempotencyKey, fixture.attempt.attemptId);
+    assert.deepEqual(dispatched.message, {
+      kind: 'signal',
+      type: 'schedule',
+      body: `Execute ${fixture.run.id}`,
+      attributes: {
+        routineId: fixture.routine.id,
+        occurrenceId: fixture.run.id,
+        workspaceId: 'T_TEST',
+        conversationId: 'C_TEST',
+        destinationKind: 'channel',
+        ownerAgentId: 'agent_default',
+        ownerMembershipId: 'legacy_membership',
+        threadTs: '',
+        triggerSource: 'schedule',
+        scheduledFor: String(NOW),
+      },
+    });
+    assert.equal(completed?.flueAgentEnvelope?.schemaVersion, 2);
     assert.deepEqual(
       parseRoutineExecutionInitialData(completed?.flueAgentEnvelope?.initialData)
         .connectorUsageCorrelation,

@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   createSlackChickpeaHandoff,
   createSlackManagementTurnGuard,
+  invokeCloudflareSlackScheduleAction,
   invokeCloudflareSlackWorkspaceManagementTool,
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
@@ -209,4 +210,43 @@ test('Cloudflare Slack management also latches setup-link transport ambiguity', 
   if (blocked.ok) assert.fail('expected a guarded setup-link write');
   assert.equal(blocked.error.code, 'fresh_approval_required');
   assert.equal(calls.length, 1);
+});
+
+test('first-class schedule RPC retries the same host-bound action without an unknown outcome', async () => {
+  const calls: unknown[] = [];
+  const operation = {
+    itemId: 'schedule',
+    kind: 'save_routine' as const,
+    agentId: SIGNAL.agentId,
+    workspaceId: SIGNAL.workspaceId,
+    channelId: SIGNAL.channelId,
+    name: 'Follow up',
+    description: 'Check again later.',
+    taskText: 'Check again and report anything new.',
+    schedule: { kind: 'in' as const, minutes: 5 },
+    timezone: 'UTC',
+    outputPolicy: 'post_on_change' as const,
+  };
+  const result = await invokeCloudflareSlackScheduleAction({
+    stub: {
+      async slackScheduleActionInvoke(request) {
+        calls.push(request);
+        if (calls.length === 1) throw new Error('response transport closed');
+        return {
+          outcome: 'applied',
+          effect: 'saved',
+          routineId: 'routine_follow_up',
+          routineVersion: 1,
+        };
+      },
+    },
+    signal: SIGNAL,
+    operation,
+  });
+
+  assert.equal(result.outcome, 'applied');
+  assert.deepEqual(calls, [
+    { signal: SIGNAL, operation },
+    { signal: SIGNAL, operation },
+  ]);
 });

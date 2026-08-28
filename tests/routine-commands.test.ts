@@ -18,6 +18,7 @@ import { RoutineService } from '../src/routines/service.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineDefinition, RoutineStore } from '../src/routines/types.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { withEnv } from './helpers/env.ts';
 
 const NOW = Date.UTC(2026, 6, 27, 12);
 const enabled: RoutineCapability = {
@@ -183,6 +184,35 @@ test('only a cross-channel Routine list is requester-only', () => {
   assert.equal(routineResponseVisibility('!routines <#C_TEST|current>', 'C_TEST'), 'channel');
   assert.equal(routineResponseVisibility('!routines <#C_OTHER|private>', 'C_TEST'), 'requester');
   assert.equal(routineResponseVisibility('!routines show routine_one', 'C_TEST'), 'channel');
+});
+
+test('read-only exact commands do not open process-global identity state', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-routine-command-identity-'));
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: dir }, async () => {
+      const dependencies = {
+        store,
+        config,
+        capability: enabled,
+        canManageChannel: async () => true,
+        isActiveActor: async () => true,
+      };
+      assert.match(
+        await handleRoutineSlackRequestImpl(turn('!routines help'), undefined, dependencies) ?? '',
+        /Routine controls/,
+      );
+      assert.match(
+        await handleRoutineSlackRequestImpl(turn('!routines'), undefined, dependencies) ?? '',
+        /Scheduled work for/,
+      );
+    });
+  } finally {
+    config.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('inactive identities are denied exact controls but natural language remains outside this lane', async () => {

@@ -20,6 +20,12 @@ export function createConfirmationToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
+export function scheduleActionId(turnJobId: string, actionFingerprint: string): string {
+  return `rsaction_${hashRoutineValue(
+    `routine-schedule-action-v1\0${turnJobId}\0${actionFingerprint}`,
+  ).slice(0, 32)}`;
+}
+
 export function hashRoutineValue(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }

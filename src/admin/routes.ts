@@ -4948,18 +4948,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     usage,
     work,
     contentAccess: routineContentAccess,
-    privateOwner: async (c, routine) => {
-      const reference = await store(c).getAgentScheduleReference(routine.id);
-      if (!reference || reference.destinationKind !== 'direct_thread') {
-        return { agentId: null, displayName: null };
-      }
-      try {
-        const agent = await store(c).getAgent(reference.agentId);
-        return { agentId: agent.id, displayName: agent.name };
-      } catch {
-        return { agentId: reference.agentId, displayName: null };
-      }
-    },
     ...(options.routineCapability ? { capability: options.routineCapability } : {}),
   }));
   app.route('/admin/api', createUsageAdminApi({ store: usage, work }));

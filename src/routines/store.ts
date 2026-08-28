@@ -31,12 +31,17 @@ import {
   type BeginRoutineOccurrenceInput,
   type CancelRoutineConfirmationInput,
   type ClaimRoutineRecoveryDeliveryInput,
+  type ClaimRoutineScheduleActionInput,
+  type ClaimRoutineScheduleActionResult,
   type ClaimRoutineDeliveryInput,
   type ClaimDueRoutinesInput,
   type ConfirmRoutineInput,
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
+  type DeferRoutineRecoveryDeliveryInput,
   type PutRoutineConfirmationInput,
+  type DeferRoutineScheduleActionInput,
+  type MarkRoutineScheduleActionReceiptQueuedInput,
   type PrepareRoutineAgentDispatchInput,
   type RecordRoutineAgentReceiptInput,
   type RecordRoutineAgentSettlementInput,
@@ -63,10 +68,14 @@ import {
   type RoutineRunFilter,
   type RoutineRunStatus,
   type RoutineScheduleReservation,
+  type RoutineScheduleAction,
+  type RoutineScheduleActionResult,
   type RoutineStore,
   type SaveRoutineInput,
+  type ReserveRoutineScheduleActionInput,
   type ResolveRoutineAdmissionInput,
   type StartRoutineAdmissionInput,
+  type SettleRoutineScheduleActionInput,
   type TransitionRoutineRunInput,
 } from './types.ts';
 import {
@@ -143,6 +152,30 @@ interface RecoveryDeliveryRow {
   status: RoutineRecoveryDelivery['status'];
   message_ts: string | null;
   failure_class: RoutineRecoveryDelivery['failureClass'];
+  updated_at: number;
+}
+
+interface ScheduleActionRow {
+  action_id: string;
+  action_digest: string;
+  request_operation_id: string;
+  workspace_id: string;
+  actor_user_id: string;
+  actor_membership_id: string;
+  agent_id: string;
+  conversation_kind: RoutineScheduleAction['conversationKind'];
+  channel_id: string;
+  thread_ts: string;
+  message_ts: string;
+  status: RoutineScheduleAction['status'];
+  lease_owner: string | null;
+  lease_until: number | null;
+  attempts: number;
+  next_attempt_at: number;
+  result_json: string | null;
+  pending_receipt_queued_at: number | null;
+  terminal_receipt_queued_at: number | null;
+  created_at: number;
   updated_at: number;
 }
 
@@ -290,6 +323,30 @@ export class RoutineStoreLogic {
 
   execute(request: RoutineRpcRequest): RoutineRpcResponse {
     switch (request.kind) {
+      case 'reserve_schedule_action':
+        return { kind: 'schedule_action', action: this.reserveScheduleAction(request.input) };
+      case 'get_schedule_action':
+        return { kind: 'schedule_action', action: this.getScheduleAction(request.actionId) ?? null };
+      case 'claim_schedule_action':
+        return { kind: 'schedule_action_claim', claim: this.claimScheduleAction(request.input) };
+      case 'claim_due_schedule_actions':
+        return { kind: 'schedule_actions', actions: this.claimDueScheduleActions(request.input) };
+      case 'next_schedule_action_due_at':
+        return { kind: 'schedule_action_due_at', dueAt: this.nextScheduleActionDueAt() ?? null };
+      case 'list_schedule_actions_needing_receipts':
+        return {
+          kind: 'schedule_actions',
+          actions: this.listScheduleActionsNeedingReceipts(request.limit),
+        };
+      case 'mark_schedule_action_receipt_queued':
+        return {
+          kind: 'schedule_action',
+          action: this.markScheduleActionReceiptQueued(request.input),
+        };
+      case 'defer_schedule_action':
+        return { kind: 'schedule_action', action: this.deferScheduleAction(request.input) };
+      case 'settle_schedule_action':
+        return { kind: 'schedule_action', action: this.settleScheduleAction(request.input) };
       case 'put_confirmation':
         return { kind: 'confirmation', confirmation: this.putConfirmation(request.input) };
       case 'get_confirmation':
@@ -362,10 +419,20 @@ export class RoutineStoreLogic {
           kind: 'recovery_delivery',
           delivery: this.getRecoveryDelivery(request.occurrenceId) ?? null,
         };
+      case 'list_pending_recovery_deliveries':
+        return {
+          kind: 'recovery_deliveries',
+          deliveries: this.listPendingRecoveryDeliveries(request.limit),
+        };
       case 'claim_recovery_delivery':
         return {
           kind: 'recovery_delivery_claim',
           outcome: this.claimRecoveryDelivery(request.input),
+        };
+      case 'defer_recovery_delivery':
+        return {
+          kind: 'recovery_delivery',
+          delivery: this.deferRecoveryDelivery(request.input),
         };
       case 'record_recovery_delivery':
         return {
@@ -379,6 +446,220 @@ export class RoutineStoreLogic {
       case 'list_audit_events':
         return { kind: 'audit_events', events: this.listAuditEvents(request.filter) };
     }
+  }
+
+  reserveScheduleAction(input: ReserveRoutineScheduleActionInput): RoutineScheduleAction {
+    validateScheduleActionAdmission(input);
+    return this.db.transaction(() => {
+      const existing = this.getScheduleAction(input.actionId);
+      if (existing) {
+        if (!sameScheduleActionAdmission(existing, input)) throw scheduleActionConflict();
+        return existing;
+      }
+      this.db.run(
+        `INSERT INTO routine_schedule_actions (
+          action_id, action_digest, request_operation_id, workspace_id, actor_user_id, actor_membership_id,
+          agent_id, conversation_kind, channel_id, thread_ts, message_ts, status,
+          lease_owner, lease_until, attempts, next_attempt_at, result_json,
+          pending_receipt_queued_at, terminal_receipt_queued_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, 0, ?, NULL, NULL, NULL, ?, ?)`,
+        input.actionId,
+        input.actionDigest,
+        input.requestOperationId,
+        input.workspaceId,
+        input.actorUserId,
+        input.actorMembershipId,
+        input.agentId,
+        input.conversationKind,
+        input.channelId,
+        input.threadTs,
+        input.messageTs,
+        input.at,
+        input.at,
+        input.at,
+      );
+      return required(this.getScheduleAction(input.actionId), 'Schedule action was not readable.');
+    });
+  }
+
+  getScheduleAction(actionId: string): RoutineScheduleAction | undefined {
+    validateScheduleActionId(actionId);
+    const row = this.db.get(
+      'SELECT * FROM routine_schedule_actions WHERE action_id = ?',
+      actionId,
+    );
+    return row ? rowToScheduleAction(row as unknown as ScheduleActionRow) : undefined;
+  }
+
+  claimScheduleAction(input: ClaimRoutineScheduleActionInput): ClaimRoutineScheduleActionResult {
+    validateScheduleActionClaim(input);
+    return this.db.transaction(() => {
+      const current = required(
+        this.getScheduleAction(input.actionId),
+        'Schedule action was not found.',
+      );
+      if (current.status !== 'pending') return { outcome: 'terminal', action: current };
+      if (current.nextAttemptAt > input.at || (current.leaseUntil ?? 0) > input.at) {
+        return { outcome: 'pending', action: current };
+      }
+      this.db.run(
+        `UPDATE routine_schedule_actions
+         SET lease_owner = ?, lease_until = ?, attempts = attempts + 1, updated_at = ?
+         WHERE action_id = ? AND status = 'pending'
+           AND next_attempt_at <= ? AND (lease_until IS NULL OR lease_until <= ?)`,
+        input.owner,
+        input.leaseUntil,
+        input.at,
+        input.actionId,
+        input.at,
+        input.at,
+      );
+      const claimed = required(this.getScheduleAction(input.actionId), 'Schedule action was not readable.');
+      return claimed.leaseOwner === input.owner && claimed.leaseUntil === input.leaseUntil
+        ? { outcome: 'claimed', action: claimed }
+        : { outcome: 'pending', action: claimed };
+    });
+  }
+
+  claimDueScheduleActions(input: {
+    owner: string;
+    at: number;
+    leaseUntil: number;
+    limit: number;
+  }): RoutineScheduleAction[] {
+    validateScheduleActionLease(input);
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+      throw routineError('routine_schedule_action_invalid', 'Schedule action claim limit is invalid.');
+    }
+    const due = this.db.all(
+      `SELECT action_id FROM routine_schedule_actions
+       WHERE status = 'pending' AND next_attempt_at <= ?
+         AND (lease_until IS NULL OR lease_until <= ?)
+       ORDER BY next_attempt_at, created_at, action_id LIMIT ?`,
+      input.at,
+      input.at,
+      input.limit,
+    ) as Array<{ action_id: string }>;
+    const claimed: RoutineScheduleAction[] = [];
+    for (const row of due) {
+      // Each individual claim is transactional and rechecks eligibility. Keeping
+      // the scan outside that transaction works on both node:sqlite and the
+      // Cloudflare state adapter, neither of which supports nested transactions.
+      const result = this.claimScheduleAction({
+        actionId: row.action_id,
+        owner: input.owner,
+        at: input.at,
+        leaseUntil: input.leaseUntil,
+      });
+      if (result.outcome === 'claimed') claimed.push(result.action);
+    }
+    return claimed;
+  }
+
+  nextScheduleActionDueAt(): number | undefined {
+    const row = this.db.get(
+      `SELECT MIN(
+         CASE
+           WHEN lease_until IS NOT NULL AND lease_until > next_attempt_at THEN lease_until
+           ELSE next_attempt_at
+         END
+       ) AS due_at
+       FROM routine_schedule_actions WHERE status = 'pending'`,
+    ) as unknown as { due_at: number | null } | undefined;
+    return row?.due_at === null || row?.due_at === undefined ? undefined : Number(row.due_at);
+  }
+
+  listScheduleActionsNeedingReceipts(limit: number): RoutineScheduleAction[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw routineError('routine_schedule_action_invalid', 'Schedule action receipt limit is invalid.');
+    }
+    return (this.db.all(
+      `SELECT * FROM routine_schedule_actions
+       WHERE (status = 'pending' AND attempts > 0 AND pending_receipt_queued_at IS NULL)
+          OR (status IN ('applied', 'failed') AND terminal_receipt_queued_at IS NULL)
+       ORDER BY updated_at, action_id LIMIT ?`,
+      limit,
+    ) as unknown as ScheduleActionRow[]).map(rowToScheduleAction);
+  }
+
+  markScheduleActionReceiptQueued(
+    input: MarkRoutineScheduleActionReceiptQueuedInput,
+  ): RoutineScheduleAction {
+    validateScheduleActionId(input.actionId);
+    if (!Number.isSafeInteger(input.at) || input.at < 0) {
+      throw routineError('routine_schedule_action_invalid', 'Schedule action receipt time is invalid.');
+    }
+    const current = required(this.getScheduleAction(input.actionId), 'Schedule action was not found.');
+    if (input.phase === 'pending') {
+      if (current.status !== 'pending' || current.attempts < 1) throw scheduleActionConflict();
+      this.db.run(
+        `UPDATE routine_schedule_actions SET pending_receipt_queued_at = COALESCE(
+           pending_receipt_queued_at, ?
+         ), updated_at = ? WHERE action_id = ?`,
+        input.at,
+        input.at,
+        input.actionId,
+      );
+    } else {
+      if (current.status === 'pending') throw scheduleActionConflict();
+      this.db.run(
+        `UPDATE routine_schedule_actions SET terminal_receipt_queued_at = COALESCE(
+           terminal_receipt_queued_at, ?
+         ), updated_at = ? WHERE action_id = ?`,
+        input.at,
+        input.at,
+        input.actionId,
+      );
+    }
+    return required(this.getScheduleAction(input.actionId), 'Schedule action was not readable.');
+  }
+
+  deferScheduleAction(input: DeferRoutineScheduleActionInput): RoutineScheduleAction {
+    validateScheduleActionSettlement(input);
+    if (!Number.isSafeInteger(input.nextAttemptAt) || input.nextAttemptAt <= input.at) {
+      throw routineError('routine_schedule_action_invalid', 'Schedule action retry time is invalid.');
+    }
+    return this.db.transaction(() => {
+      const current = required(this.getScheduleAction(input.actionId), 'Schedule action was not found.');
+      if (current.status !== 'pending') return current;
+      requireScheduleActionLease(current, input.owner, input.expectedAttempt);
+      this.db.run(
+        `UPDATE routine_schedule_actions
+         SET lease_owner = NULL, lease_until = NULL, next_attempt_at = ?, updated_at = ?
+         WHERE action_id = ? AND status = 'pending' AND lease_owner = ? AND attempts = ?`,
+        input.nextAttemptAt,
+        input.at,
+        input.actionId,
+        input.owner,
+        input.expectedAttempt,
+      );
+      return required(this.getScheduleAction(input.actionId), 'Schedule action was not readable.');
+    });
+  }
+
+  settleScheduleAction(input: SettleRoutineScheduleActionInput): RoutineScheduleAction {
+    validateScheduleActionSettlement(input);
+    const result = validateScheduleActionResult(input.result);
+    return this.db.transaction(() => {
+      const current = required(this.getScheduleAction(input.actionId), 'Schedule action was not found.');
+      if (current.status !== 'pending') {
+        if (sameJson(current.result, result)) return current;
+        throw scheduleActionConflict();
+      }
+      requireScheduleActionLease(current, input.owner, input.expectedAttempt);
+      this.db.run(
+        `UPDATE routine_schedule_actions
+         SET status = ?, lease_owner = NULL, lease_until = NULL, result_json = ?, updated_at = ?
+         WHERE action_id = ? AND status = 'pending' AND lease_owner = ? AND attempts = ?`,
+        result.outcome === 'applied' ? 'applied' : 'failed',
+        JSON.stringify(result),
+        input.at,
+        input.actionId,
+        input.owner,
+        input.expectedAttempt,
+      );
+      return required(this.getScheduleAction(input.actionId), 'Schedule action was not readable.');
+    });
   }
 
   putConfirmation(input: PutRoutineConfirmationInput): RoutineConfirmation {
@@ -887,6 +1168,20 @@ export class RoutineStoreLogic {
       'DELETE FROM routine_schedule_reservations WHERE window_start < ?',
       at - 15 * 60 * 1_000,
     ).changes;
+    const scheduleActionsDeleted = this.db.run(
+      `DELETE FROM routine_schedule_actions
+       WHERE status IN ('applied', 'failed')
+         AND terminal_receipt_queued_at IS NOT NULL
+         AND updated_at < ?`,
+      at - ROUTINE_LIMITS.scheduleActionRetentionMs,
+    ).changes;
+    const recoveryNoticesReconciled = this.db.run(
+      `UPDATE routine_recovery_deliveries
+       SET status = 'unknown', updated_at = ?
+       WHERE status = 'pending' AND claimed_at > 0 AND claimed_at < ?`,
+      at,
+      at - ROUTINE_LIMITS.recoveryDeliveryUnknownAfterMs,
+    ).changes;
 
     let deliveryLeasesReconciled = 0;
     const staleDeliveries = this.db.all(
@@ -998,6 +1293,8 @@ export class RoutineStoreLogic {
     return {
       confirmationsPurged,
       reservationsPurged,
+      scheduleActionsDeleted,
+      recoveryNoticesReconciled,
       deliveryLeasesReconciled,
       deadlineRunsReconciled,
       runsDeleted,
@@ -1046,6 +1343,10 @@ export class RoutineStoreLogic {
     if (input.channelId) {
       clauses.push('channel_id = ?');
       params.push(input.channelId);
+    }
+    if (input.destinationKind) {
+      clauses.push('destination_kind = ?');
+      params.push(input.destinationKind);
     }
     if (input.state === 'deleted') {
       clauses.push('deleted_at IS NOT NULL');
@@ -1733,6 +2034,21 @@ export class RoutineStoreLogic {
         return 'superseded';
       }
       const routine = this.getRoutine(run.routineId);
+      if (input.envelope.schemaVersion === 2 && (!routine ||
+          input.envelope.message.attributes.routineId !== run.routineId ||
+          input.envelope.message.attributes.occurrenceId !== run.id ||
+          input.envelope.message.attributes.workspaceId !== routine.workspaceId ||
+          input.envelope.message.attributes.conversationId !== routine.channelId ||
+          input.envelope.message.attributes.destinationKind !== routine.destination.kind ||
+          input.envelope.message.attributes.ownerAgentId !== input.resolvedAgentId ||
+          input.envelope.message.attributes.ownerMembershipId !== input.resolvedRunsAsMembershipId ||
+          input.envelope.message.attributes.threadTs !== (
+            routine.destination.kind === 'direct_thread' ? routine.destination.threadTs : ''
+          ) ||
+          input.envelope.message.attributes.triggerSource !== run.triggerSource ||
+          input.envelope.message.attributes.scheduledFor !== String(run.scheduledFor))) {
+        throw routineError('routine_admission_conflict', 'Routine schedule signal conflicts.');
+      }
       if (
         (run.triggerSource === 'schedule' || run.triggerSource === 'once') &&
         (!routine || routine.deletedAt !== null || routine.state !== 'active')
@@ -2006,6 +2322,18 @@ export class RoutineStoreLogic {
     return row ? rowToRecoveryDelivery(row as unknown as RecoveryDeliveryRow) : undefined;
   }
 
+  listPendingRecoveryDeliveries(limit = 25): RoutineRecoveryDelivery[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw routineError('routine_recovery_delivery_invalid', 'Routine recovery delivery is invalid.');
+    }
+    return this.db.all(
+      `SELECT * FROM routine_recovery_deliveries
+       WHERE status = 'pending' AND claimed_at = 0
+       ORDER BY updated_at ASC, occurrence_id ASC LIMIT ?`,
+      limit,
+    ).map((row) => rowToRecoveryDelivery(row as unknown as RecoveryDeliveryRow));
+  }
+
   claimRecoveryDelivery(
     input: ClaimRoutineRecoveryDeliveryInput,
   ): 'claimed' | 'superseded' {
@@ -2030,6 +2358,25 @@ export class RoutineStoreLogic {
         ? 'claimed'
         : 'superseded';
     });
+  }
+
+  deferRecoveryDelivery(
+    input: DeferRoutineRecoveryDeliveryInput,
+  ): RoutineRecoveryDelivery {
+    if (!isOpaqueRoutineId(input.occurrenceId) ||
+        !Number.isSafeInteger(input.at) || input.at <= 0) {
+      throw routineError('routine_recovery_delivery_invalid', 'Routine recovery delivery is invalid.');
+    }
+    this.db.run(
+      `UPDATE routine_recovery_deliveries SET updated_at = ?
+       WHERE occurrence_id = ? AND status = 'pending' AND claimed_at = 0`,
+      input.at,
+      input.occurrenceId,
+    );
+    return required(
+      this.getRecoveryDelivery(input.occurrenceId),
+      'Routine recovery delivery was not found.',
+    );
   }
 
   recordRecoveryDelivery(input: RecordRoutineRecoveryDeliveryInput): RoutineRecoveryDelivery {
@@ -2176,6 +2523,51 @@ export class RoutineStoreLogic {
        ON routine_confirmations (expires_at, consumed_at)`,
     );
     this.db.exec(
+      `CREATE TABLE IF NOT EXISTS routine_schedule_actions (
+        action_id TEXT PRIMARY KEY,
+        action_digest TEXT NOT NULL,
+        request_operation_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        actor_user_id TEXT NOT NULL,
+        actor_membership_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        conversation_kind TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        thread_ts TEXT NOT NULL,
+        message_ts TEXT NOT NULL,
+        status TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_until INTEGER,
+        attempts INTEGER NOT NULL,
+        next_attempt_at INTEGER NOT NULL,
+        result_json TEXT,
+        pending_receipt_queued_at INTEGER,
+        terminal_receipt_queued_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
+    this.ensureScheduleActionColumns();
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_schedule_actions_due_idx
+       ON routine_schedule_actions (status, next_attempt_at, lease_until, created_at)`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_schedule_actions_pending_receipt_idx
+       ON routine_schedule_actions (updated_at, action_id)
+       WHERE status = 'pending' AND attempts > 0 AND pending_receipt_queued_at IS NULL`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_schedule_actions_terminal_receipt_idx
+       ON routine_schedule_actions (updated_at, action_id)
+       WHERE status IN ('applied', 'failed') AND terminal_receipt_queued_at IS NULL`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_schedule_actions_retention_idx
+       ON routine_schedule_actions (updated_at, action_id)
+       WHERE status IN ('applied', 'failed') AND terminal_receipt_queued_at IS NOT NULL`,
+    );
+    this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_schedule_reservations (
         routine_id TEXT NOT NULL, window_start INTEGER NOT NULL, reserved_count INTEGER NOT NULL,
         PRIMARY KEY (routine_id, window_start)
@@ -2265,6 +2657,16 @@ export class RoutineStoreLogic {
         updated_at INTEGER NOT NULL
       )`,
     );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_recovery_deliveries_pending_idx
+       ON routine_recovery_deliveries (updated_at, occurrence_id)
+       WHERE status = 'pending' AND claimed_at = 0`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_recovery_deliveries_stale_claim_idx
+       ON routine_recovery_deliveries (claimed_at, occurrence_id)
+       WHERE status = 'pending' AND claimed_at > 0`,
+    );
     // The pointers into the Work ledger (routines.work_id/binding_id,
     // routine_runs.canonical_run_id) are installed by whichever store gets here
     // first — see installLedgerLinks. The tables above must already exist.
@@ -2317,6 +2719,62 @@ export class RoutineStoreLogic {
     this.db.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS routine_run_admissions_attempt_id_unique ON routine_run_admissions (attempt_id)',
     );
+  }
+
+  private ensureScheduleActionColumns(): void {
+    const columns = new Set((this.db.all(
+      'PRAGMA table_info(routine_schedule_actions)',
+    ) as Array<{ name: string }>).map(({ name }) => name));
+    if (!columns.has('request_operation_id')) {
+      this.db.exec(
+        "ALTER TABLE routine_schedule_actions ADD COLUMN request_operation_id TEXT NOT NULL DEFAULT 'management_legacy_schedule_action'",
+      );
+    }
+    const legacyActions = this.db.all(
+      "SELECT action_id FROM routine_schedule_actions WHERE request_operation_id = 'management_legacy_schedule_action'",
+    ) as Array<{ action_id: string }>;
+    for (const { action_id: actionId } of legacyActions) {
+      if (!/^rsaction_[A-Za-z0-9_-]{1,180}$/.test(actionId)) continue;
+      this.db.run(
+        'UPDATE routine_schedule_actions SET request_operation_id = ? WHERE action_id = ?',
+        `management_${actionId}`,
+        actionId,
+      );
+    }
+    if (!columns.has('pending_receipt_queued_at')) {
+      this.db.exec(
+        'ALTER TABLE routine_schedule_actions ADD COLUMN pending_receipt_queued_at INTEGER',
+      );
+      this.db.run(
+        `UPDATE routine_schedule_actions SET pending_receipt_queued_at = updated_at
+         WHERE attempts > 0`,
+      );
+    }
+    if (!columns.has('terminal_receipt_queued_at')) {
+      this.db.exec(
+        'ALTER TABLE routine_schedule_actions ADD COLUMN terminal_receipt_queued_at INTEGER',
+      );
+      this.db.run(
+        `UPDATE routine_schedule_actions SET terminal_receipt_queued_at = updated_at
+         WHERE status IN ('applied', 'failed')`,
+      );
+    }
+    for (const { action_id: actionId } of legacyActions) {
+      this.db.run(
+        `UPDATE routine_schedule_actions
+         SET pending_receipt_queued_at = CASE
+               WHEN attempts > 0 THEN COALESCE(pending_receipt_queued_at, updated_at)
+               ELSE pending_receipt_queued_at
+             END,
+             terminal_receipt_queued_at = CASE
+               WHEN status IN ('applied', 'failed')
+                 THEN COALESCE(terminal_receipt_queued_at, updated_at)
+               ELSE terminal_receipt_queued_at
+             END
+         WHERE action_id = ?`,
+        actionId,
+      );
+    }
   }
 
   private insertRoutine(input: {
@@ -3059,6 +3517,7 @@ export class RoutineStoreLogic {
       );
       if (pause) {
         this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routineId);
+        this.reservePauseNotice(run, routine, 'consecutive_failures', at);
         const paused = required(this.getRoutine(routineId), 'Auto-paused routine was not readable.');
         this.appendRoutineAudit(
           `routine:auto-pause:${run.id}:consecutive_failures`,
@@ -3159,6 +3618,7 @@ export class RoutineStoreLogic {
       run.routineId,
     );
     this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', run.routineId);
+    this.reservePauseNotice(run, routine, reason, at);
     const paused = required(this.getRoutine(run.routineId), 'Unknown-outcome routine was not readable.');
     if (routine.state !== 'paused' || routine.pausedReason !== reason) {
       this.appendRoutineAudit(
@@ -3173,6 +3633,25 @@ export class RoutineStoreLogic {
         reason,
       );
     }
+  }
+
+  private reservePauseNotice(
+    run: RoutineRun,
+    routine: RoutineDefinition,
+    failureClass: RoutineRecoveryDelivery['failureClass'],
+    at: number,
+  ): void {
+    if (routine.triggerKind !== 'schedule') return;
+    this.db.run(
+      `INSERT INTO routine_recovery_deliveries (
+        occurrence_id, claimed_at, status, message_ts, failure_class, updated_at
+      ) VALUES (?, ?, 'pending', NULL, ?, ?)
+      ON CONFLICT(occurrence_id) DO NOTHING`,
+      run.id,
+      0,
+      failureClass,
+      at,
+    );
   }
 
   private runByIdempotencyKey(idempotencyKey: string): RoutineRun | undefined {
@@ -3351,6 +3830,8 @@ function validateAdminPageInput(input: RoutineAdminPageInput): void {
     (input.cursor !== undefined && (!Number.isSafeInteger(input.cursor) || input.cursor < 0 || input.cursor > 100_000)) ||
     (input.workspaceId !== undefined && !isOpaqueRoutineId(input.workspaceId)) ||
     (input.channelId !== undefined && !isOpaqueRoutineId(input.channelId)) ||
+    (input.destinationKind !== undefined &&
+      !['channel', 'direct_thread'].includes(input.destinationKind)) ||
     (input.state !== undefined && !['active', 'paused', 'disabled', 'completed', 'current', 'all', 'deleted'].includes(input.state)) ||
     (input.runStatus !== undefined && ![
       'queued', 'admitting', 'running', 'succeeded', 'no_op', 'failed', 'skipped', 'cancelled', 'superseded',
@@ -3384,15 +3865,31 @@ function validateAgentDispatchInput(input: PrepareRoutineAgentDispatchInput): vo
     (input.providerAuthRoute !== undefined &&
       !['openai_api_key', 'openai_subscription'].includes(input.providerAuthRoute)) ||
     !isOpaqueRoutineId(input.traceId) ||
-    envelope.schemaVersion !== 1 ||
+    !validRoutineAgentEnvelope(envelope) ||
     !isOpaqueRoutineId(envelope.attemptId) ||
     !isOpaqueRoutineId(envelope.instanceId) ||
     envelope.idempotencyKey !== envelope.attemptId ||
-    typeof envelope.message !== 'string' || envelope.message.length < 1 ||
     encoded.length < 1 || encoded.length > 500_000
   ) {
     throw routineError('routine_admission_invalid', 'Routine agent admission is invalid.');
   }
+}
+
+function validRoutineAgentEnvelope(
+  envelope: PrepareRoutineAgentDispatchInput['envelope'],
+): boolean {
+  if (envelope.schemaVersion === 1) {
+    return typeof envelope.message === 'string' && envelope.message.length > 0;
+  }
+  const message = envelope.message;
+  const attributes = message.attributes;
+  return message.kind === 'signal' && message.type === 'schedule' &&
+    typeof message.body === 'string' && message.body.length > 0 &&
+    ['channel', 'direct_thread'].includes(attributes.destinationKind) &&
+    ['schedule', 'once', 'run_now'].includes(attributes.triggerSource) &&
+    /^\d{1,16}$/.test(attributes.scheduledFor) &&
+    Object.values(attributes).every((value) =>
+      typeof value === 'string' && value.length <= 256);
 }
 
 function validateAgentReceiptInput(input: RecordRoutineAgentReceiptInput): void {
@@ -3725,9 +4222,166 @@ function rowToRecoveryDelivery(row: RecoveryDeliveryRow): RoutineRecoveryDeliver
     claimedAt: row.claimed_at > 0 ? row.claimed_at : null,
     status: row.status,
     messageTs: row.message_ts,
-    failureClass: 'direct_thread_unavailable',
+    failureClass: row.failure_class,
     updatedAt: row.updated_at,
   };
+}
+
+function rowToScheduleAction(row: ScheduleActionRow): RoutineScheduleAction {
+  const result = row.result_json
+    ? validateScheduleActionResult(JSON.parse(row.result_json) as RoutineScheduleActionResult)
+    : null;
+  if (!['pending', 'applied', 'failed'].includes(row.status) ||
+      !['channel', 'im'].includes(row.conversation_kind) ||
+      !Number.isSafeInteger(row.attempts) || row.attempts < 0 ||
+      !Number.isSafeInteger(row.next_attempt_at) ||
+      !Number.isSafeInteger(row.created_at) || !Number.isSafeInteger(row.updated_at)) {
+    throw routineError('routine_schedule_action_invalid', 'Schedule action state is invalid.');
+  }
+  if ((row.status === 'pending') !== (result === null)) {
+    throw routineError('routine_schedule_action_invalid', 'Schedule action result is invalid.');
+  }
+  return {
+    actionId: row.action_id,
+    actionDigest: row.action_digest,
+    requestOperationId: row.request_operation_id,
+    workspaceId: row.workspace_id,
+    actorUserId: row.actor_user_id,
+    actorMembershipId: row.actor_membership_id,
+    agentId: row.agent_id,
+    conversationKind: row.conversation_kind,
+    channelId: row.channel_id,
+    threadTs: row.thread_ts,
+    messageTs: row.message_ts,
+    status: row.status,
+    leaseOwner: row.lease_owner,
+    leaseUntil: row.lease_until,
+    attempts: row.attempts,
+    nextAttemptAt: row.next_attempt_at,
+    result,
+    pendingReceiptQueuedAt: row.pending_receipt_queued_at,
+    terminalReceiptQueuedAt: row.terminal_receipt_queued_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function validateScheduleActionId(actionId: string): void {
+  if (!/^rsaction_[A-Za-z0-9_-]{1,180}$/.test(actionId)) {
+    throw routineError('routine_schedule_action_invalid', 'Schedule action ID is invalid.');
+  }
+}
+
+function validateScheduleActionAdmission(input: ReserveRoutineScheduleActionInput): void {
+  validateScheduleActionId(input.actionId);
+  if (!/^[a-f0-9]{64}$/.test(input.actionDigest) ||
+      !['channel', 'im'].includes(input.conversationKind) ||
+      !Number.isSafeInteger(input.at) || input.at < 0) {
+    throw routineError('routine_schedule_action_invalid', 'Schedule action admission is invalid.');
+  }
+  for (const value of [
+    input.requestOperationId,
+    input.workspaceId,
+    input.actorUserId,
+    input.actorMembershipId,
+    input.agentId,
+    input.channelId,
+    input.threadTs,
+    input.messageTs,
+  ]) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/.test(value)) {
+      throw routineError('routine_schedule_action_invalid', 'Schedule action origin is invalid.');
+    }
+  }
+}
+
+function validateScheduleActionClaim(input: ClaimRoutineScheduleActionInput): void {
+  validateScheduleActionId(input.actionId);
+  validateScheduleActionLease(input);
+}
+
+function validateScheduleActionLease(input: {
+  owner: string;
+  at: number;
+  leaseUntil: number;
+}): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/.test(input.owner) ||
+      !Number.isSafeInteger(input.at) || input.at < 0 ||
+      !Number.isSafeInteger(input.leaseUntil) || input.leaseUntil <= input.at) {
+    throw routineError('routine_schedule_action_invalid', 'Schedule action claim is invalid.');
+  }
+}
+
+function validateScheduleActionSettlement(input: {
+  actionId: string;
+  owner: string;
+  expectedAttempt: number;
+  at: number;
+}): void {
+  validateScheduleActionId(input.actionId);
+  if (!/^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/.test(input.owner) ||
+      !Number.isSafeInteger(input.expectedAttempt) || input.expectedAttempt < 1 ||
+      !Number.isSafeInteger(input.at) || input.at < 0) {
+    throw routineError('routine_schedule_action_invalid', 'Schedule action settlement is invalid.');
+  }
+}
+
+function validateScheduleActionResult(
+  result: RoutineScheduleActionResult,
+): RoutineScheduleActionResult {
+  if (!result || typeof result !== 'object') throw scheduleActionConflict();
+  if (result.outcome === 'applied') {
+    if (!['saved', 'controlled', 'run_queued'].includes(result.effect) ||
+        !isOpaqueRoutineId(result.routineId) ||
+        (result.routineVersion !== undefined &&
+          (!Number.isSafeInteger(result.routineVersion) || result.routineVersion < 1)) ||
+        (result.safeState !== undefined &&
+          !['active', 'paused', 'disabled', 'pending_authority'].includes(result.safeState))) {
+      throw scheduleActionConflict();
+    }
+    return result;
+  }
+  if (result.outcome !== 'failed' || !/^[a-z0-9_]{1,80}$/.test(result.code) ||
+      (result.routineId !== undefined && !isOpaqueRoutineId(result.routineId)) ||
+      (result.safeState !== undefined &&
+        !['paused', 'disabled', 'pending_authority'].includes(result.safeState))) {
+    throw scheduleActionConflict();
+  }
+  return result;
+}
+
+function sameScheduleActionAdmission(
+  action: RoutineScheduleAction,
+  input: ReserveRoutineScheduleActionInput,
+): boolean {
+  return action.actionId === input.actionId &&
+    action.actionDigest === input.actionDigest &&
+    action.requestOperationId === input.requestOperationId &&
+    action.workspaceId === input.workspaceId &&
+    action.actorUserId === input.actorUserId &&
+    action.actorMembershipId === input.actorMembershipId &&
+    action.agentId === input.agentId &&
+    action.conversationKind === input.conversationKind &&
+    action.channelId === input.channelId &&
+    action.threadTs === input.threadTs &&
+    action.messageTs === input.messageTs;
+}
+
+function requireScheduleActionLease(
+  action: RoutineScheduleAction,
+  owner: string,
+  expectedAttempt: number,
+): void {
+  if (action.leaseOwner !== owner || action.attempts !== expectedAttempt) {
+    throw scheduleActionConflict();
+  }
+}
+
+function scheduleActionConflict(): RoutineStateError {
+  return routineError(
+    'routine_schedule_action_conflict',
+    'Schedule action conflicts with an existing durable result.',
+  );
 }
 
 function definitionHash(definition: RoutineDefinitionContent): string;

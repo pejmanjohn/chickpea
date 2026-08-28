@@ -63,7 +63,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'create_agent', 'update_agent', 'delete_agent', 'archive_agent', 'restore_agent', 'put_channel',
     'grant_agent_channel', 'revoke_agent_channel',
     'update_member', 'remove_provider_credential',
-    'update_agent_memory', 'save_routine', 'control_routine', 'delete_routine',
+    'update_agent_memory', 'save_routine', 'control_routine', 'run_routine', 'delete_routine',
     'reassign_routine_agent',
     'request_setup',
   ]),
@@ -111,6 +111,7 @@ const REASON_TOKENS = new Set([
   'base_agent_capabilities_require_setup',
   'setup_failed', 'setup_not_found', 'setup_session_mismatch', 'setup_unavailable',
   'target_changed', 'undo_unavailable', 'validation_failed',
+  'routines_unavailable_on_target', 'schedule_authority_missing',
   'archive_agent_reach', 'restore_agent_reach',
   'schedule_agent_reassignment',
   'paid_plan_required', 'user_group_policy_denied', 'two_factor_required',
@@ -184,6 +185,7 @@ export function agentAuthoringArtifactClass(
         break;
       case 'save_routine':
       case 'control_routine':
+      case 'run_routine':
       case 'delete_routine':
       case 'reassign_routine_agent':
         classes.add('schedule');

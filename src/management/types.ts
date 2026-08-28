@@ -173,6 +173,12 @@ export type ManagementOperation =
       action: 'pause' | 'resume' | 'disable';
     })
   | (ManagementOperationBase & {
+      kind: 'run_routine';
+      workspaceId: string;
+      channelId?: string;
+      routineId: string;
+    })
+  | (ManagementOperationBase & {
       kind: 'delete_routine';
       workspaceId: string;
       channelId?: string;
@@ -308,9 +314,32 @@ export interface ManagementRoutineSavedAcknowledgement {
   emojiName: 'white_check_mark';
 }
 
+/** Content-bounded acknowledgement derived only from durable schedule-action state. */
+export type ManagementScheduleActionAcknowledgement =
+  | {
+      kind: 'schedule_action';
+      transition: 'pending';
+    }
+  | {
+      kind: 'schedule_action';
+      transition: 'applied';
+      /** Present only when the immediate private-DM acknowledgement is a reaction. */
+      emojiName?: 'white_check_mark';
+      /** Proven post-apply state saved with the durable action result. */
+      safeState?: 'active' | 'paused' | 'disabled' | 'pending_authority';
+    }
+  | {
+      kind: 'schedule_action';
+      transition: 'failed';
+      code?: string;
+      /** Proven fail-safe state saved with the durable action result. */
+      safeState?: 'paused' | 'disabled' | 'pending_authority';
+    };
+
 export type ManagementReceipt =
   | ManagementSetupReceipt
-  | ManagementRoutineSavedAcknowledgement;
+  | ManagementRoutineSavedAcknowledgement
+  | ManagementScheduleActionAcknowledgement;
 
 /** Internal durable record. Digest members must never cross a public adapter. */
 export interface ManagementSetupRecord {
@@ -546,6 +575,8 @@ export interface ApplyWorkspaceChangesInput {
   context: ManagementActorContext;
   idempotencyKey: string;
   operations: ManagementOperation[];
+  /** The caller owns Slack acknowledgement delivery for this invocation. */
+  acknowledgementOwner?: 'service' | 'caller';
 }
 
 export interface ProposeWorkspaceChangesInput {
@@ -700,8 +731,11 @@ export class ManagementError extends Error {
       | 'setup_not_found'
       | 'setup_unavailable'
       | 'setup_expired'
-      | 'setup_session_mismatch',
+      | 'setup_session_mismatch'
+      | 'routines_unavailable_on_target'
+      | 'schedule_authority_missing',
     message: string,
+    readonly changed?: ManagementObjectRef[],
   ) {
     super(message);
   }
@@ -816,6 +850,7 @@ export type ManagementRpcRequest =
   | { kind: 'reserve_request'; input: ReserveManagementRequestInput }
   | { kind: 'get_request'; operationId: string }
   | { kind: 'mark_request_applying'; operationId: string; at: number }
+  | { kind: 'fail_request'; operationId: string; at: number }
   | {
       kind: 'save_request_progress';
       operationId: string;

@@ -6,11 +6,13 @@ import {
 } from '../slack/installation-execution.ts';
 import { SlackTransportError } from '../slack/transport/types.ts';
 import type { ManagementStore } from './store.ts';
+import { RoutineStateError, type RoutineStore } from '../routines/types.ts';
 import type {
   ManagementReceiptDestination,
   ManagementReceiptOutboxRecord,
   ManagementReceipt,
   ManagementRoutineSavedAcknowledgement,
+  ManagementScheduleActionAcknowledgement,
   ManagementSetupReceipt,
   ManagementSetupRecord,
 } from './types.ts';
@@ -73,8 +75,17 @@ export async function completeManagementSetupReceipt(
 }
 
 export function formatManagementSetupReceipt(receipt: ManagementReceipt): string {
-  if (isRoutineSavedAcknowledgement(receipt)) {
+  if (isRoutineSavedAcknowledgement(receipt) || isScheduleActionReaction(receipt)) {
     throw new Error('A reaction acknowledgement cannot be formatted as a setup receipt.');
+  }
+  if (isScheduleActionAcknowledgement(receipt)) {
+    if (receipt.transition === 'pending') {
+      return '⏳ I’m still setting up that scheduled work. I’ll post the final outcome here.';
+    }
+    if (receipt.transition === 'failed') {
+      return scheduleActionFailureText(receipt.code, receipt.safeState);
+    }
+    return `✅ That scheduled-work action completed.${scheduleActionSafeStateText(receipt.safeState)}`;
   }
   const subject = receipt.accountLabel ?? receipt.connector;
   const lead = `${subject} has been connected to ${receipt.connector} connector.`;
@@ -157,7 +168,7 @@ export async function deliverManagementReceiptToSlack(
   },
 ): Promise<ManagementReceiptDeliveryResult> {
   if (record.destination.kind === 'reaction') {
-    if (!isRoutineSavedAcknowledgement(record.receipt)) {
+    if (!isRoutineSavedAcknowledgement(record.receipt) && !isScheduleActionReaction(record.receipt)) {
       throw new Error('The Slack reaction acknowledgement payload is invalid.');
     }
     const destination = record.destination;
@@ -239,6 +250,142 @@ export function isRoutineSavedAcknowledgement(
   receipt: ManagementReceipt,
 ): receipt is ManagementRoutineSavedAcknowledgement {
   return 'kind' in receipt && receipt.kind === 'routine_saved_reaction';
+}
+
+export function isScheduleActionAcknowledgement(
+  receipt: ManagementReceipt,
+): receipt is ManagementScheduleActionAcknowledgement {
+  return 'kind' in receipt && receipt.kind === 'schedule_action';
+}
+
+function isScheduleActionReaction(
+  receipt: ManagementReceipt,
+): receipt is ManagementScheduleActionAcknowledgement & {
+  transition: 'applied'; emojiName: 'white_check_mark';
+} {
+  return isScheduleActionAcknowledgement(receipt) && receipt.transition === 'applied' &&
+    receipt.emojiName === 'white_check_mark';
+}
+
+/**
+ * Repair schedule acknowledgements from durable action state. Outbox insertion
+ * happens before the queued marker; a crash between them safely replays the
+ * deterministic INSERT OR IGNORE on the next alarm.
+ */
+export async function reconcileScheduleActionReceipts(input: {
+  routines: Pick<
+    RoutineStore,
+    'listScheduleActionsNeedingReceipts' | 'markScheduleActionReceiptQueued'
+  >;
+  management: Pick<ManagementStore, 'putOutbox'>;
+  at: number;
+  limit?: number;
+}): Promise<number> {
+  const actions = await input.routines.listScheduleActionsNeedingReceipts(input.limit ?? 25);
+  let reconciled = 0;
+  for (const action of actions) {
+    const phase = action.status === 'pending' ? 'pending' : 'terminal';
+    const transition = action.status === 'pending'
+      ? 'pending' as const
+      : action.status === 'applied' ? 'applied' as const : 'failed' as const;
+    const recoveredAfterPendingReceipt = action.pendingReceiptQueuedAt !== null;
+    const immediateChannelSuccess = action.conversationKind === 'channel' &&
+      transition === 'applied' && !recoveredAfterPendingReceipt;
+    if (!immediateChannelSuccess) {
+      const reaction = action.conversationKind === 'im' && transition === 'applied' &&
+        !recoveredAfterPendingReceipt;
+      const failedResult = transition === 'failed' && action.result?.outcome === 'failed'
+        ? action.result
+        : undefined;
+      const appliedResult = transition === 'applied' && action.result?.outcome === 'applied'
+        ? action.result
+        : undefined;
+      const nonActiveSafeState = appliedResult?.safeState && appliedResult.safeState !== 'active'
+        ? appliedResult.safeState
+        : undefined;
+      const receipt: ManagementScheduleActionAcknowledgement = transition === 'pending'
+        ? { kind: 'schedule_action', transition }
+        : transition === 'applied'
+          ? {
+              kind: 'schedule_action',
+              transition,
+              ...(reaction ? { emojiName: 'white_check_mark' as const } : {}),
+              ...(nonActiveSafeState ? { safeState: nonActiveSafeState } : {}),
+            }
+          : {
+              kind: 'schedule_action',
+              transition,
+              code: failedResult?.code ?? 'schedule_failed',
+              ...(failedResult?.safeState ? { safeState: failedResult.safeState } : {}),
+            };
+      await input.management.putOutbox({
+        outboxId: `receipt_schedule_action_${action.actionId}_${phase}`,
+        operationId: action.actionId,
+        destination: reaction
+          ? {
+              kind: 'reaction',
+              workspaceId: action.workspaceId,
+              channelId: action.channelId,
+              messageTs: action.messageTs,
+            }
+          : {
+              kind: 'thread',
+              workspaceId: action.workspaceId,
+              channelId: action.channelId,
+              threadTs: action.threadTs,
+            },
+        receipt,
+        status: 'pending',
+        attempts: 0,
+        nextAttemptAt: input.at,
+        createdAt: input.at,
+        updatedAt: input.at,
+      });
+    }
+    try {
+      await input.routines.markScheduleActionReceiptQueued({
+        actionId: action.actionId,
+        phase,
+        at: input.at,
+      });
+    } catch (error) {
+      if (!(error instanceof RoutineStateError &&
+          error.code === 'routine_schedule_action_conflict')) throw error;
+      continue;
+    }
+    reconciled += 1;
+  }
+  return reconciled;
+}
+
+function scheduleActionFailureText(
+  code: string | undefined,
+  safeState: 'paused' | 'disabled' | 'pending_authority' | undefined,
+): string {
+  let failure: string;
+  if (code === 'routines_unavailable_on_target') {
+    failure = 'I couldn’t complete that scheduled-work action because scheduling is unavailable on this deployment.';
+  } else if (code === 'schedule_authority_missing') {
+    failure = 'I couldn’t complete that scheduled-work action because its Agent authority is unavailable.';
+  } else {
+    failure = 'I couldn’t complete that scheduled-work action.';
+  }
+  return `${failure}${scheduleActionSafeStateText(safeState)}`;
+}
+
+function scheduleActionSafeStateText(
+  safeState: 'active' | 'paused' | 'disabled' | 'pending_authority' | undefined,
+): string {
+  if (safeState === 'paused') {
+    return ' The affected schedule is paused, so it will not run.';
+  }
+  if (safeState === 'disabled') {
+    return ' The affected schedule is disabled, so it will not run.';
+  }
+  if (safeState === 'pending_authority') {
+    return ' The affected schedule is pending authority, so it will not run until authority is restored.';
+  }
+  return '';
 }
 
 function reactionDeliveryRef(record: ManagementReceiptOutboxRecord): string {

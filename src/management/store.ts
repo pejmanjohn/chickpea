@@ -49,6 +49,7 @@ function managementAuditTarget(operation: ManagementOperation): string {
   if (operation.kind === 'update_member') return `membership:${operation.membershipId}`;
   if (operation.kind === 'remove_provider_credential') return `provider:${operation.providerId}`;
   if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+      operation.kind === 'run_routine' ||
       operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
     return `routine:${operation.routineId ?? `${operation.workspaceId}:${'channelId' in operation ? operation.channelId : 'current_dm_thread'}`}`;
   }
@@ -164,6 +165,7 @@ export interface ManagementStore {
   ): Promise<{ request: ManagementRequestRecord; created: boolean }>;
   getRequest(operationId: string): Promise<ManagementRequestRecord | undefined>;
   markRequestApplying(operationId: string, at: number): Promise<ManagementRequestRecord>;
+  failRequest(operationId: string, at: number): Promise<ManagementRequestRecord>;
   saveRequestProgress(
     operationId: string,
     progress: ManagementRequestProgress,
@@ -266,6 +268,11 @@ export class ManagementStoreLogic {
         return {
           kind: 'request',
           request: this.markRequestApplying(request.operationId, request.at),
+        };
+      case 'fail_request':
+        return {
+          kind: 'request',
+          request: this.failRequest(request.operationId, request.at),
         };
       case 'save_request_progress':
         return {
@@ -450,6 +457,18 @@ export class ManagementStoreLogic {
     if (request.status === 'completed' || request.status === 'failed') return request;
     this.db.run(
       `UPDATE management_requests SET status = 'applying', updated_at = ?
+       WHERE operation_id = ? AND status IN ('reserved', 'applying')`,
+      at,
+      operationId,
+    );
+    return this.requireRequest(operationId);
+  }
+
+  failRequest(operationId: string, at: number): ManagementRequestRecord {
+    const request = this.requireRequest(operationId);
+    if (request.status === 'completed' || request.status === 'failed') return request;
+    this.db.run(
+      `UPDATE management_requests SET status = 'failed', updated_at = ?
        WHERE operation_id = ? AND status IN ('reserved', 'applying')`,
       at,
       operationId,
