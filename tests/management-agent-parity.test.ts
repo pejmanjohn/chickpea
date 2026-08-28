@@ -11,6 +11,7 @@ import {
 } from '../src/management/agent-authoring/index.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
+import { resolvePrivateAgentAccess } from '../src/slack/agent-access.ts';
 import { classifySlackInteraction } from '../src/slack/interaction-intent.ts';
 import { slackMarkdownBlockTextLimit } from '../src/slack/message-format.ts';
 import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
@@ -1488,6 +1489,204 @@ test('members inspect and mutate only Agents permitted by canEditAgent', async (
     assert.equal(denied.status, 'partial');
     assert.equal(denied.outcomes[0]?.disposition, 'failed');
     assert.equal(denied.outcomes[0]?.code, 'forbidden');
+  } finally {
+    f.close();
+  }
+});
+
+test('all-workspace editing does not bypass private Channel use', async () => {
+  const f = await createManagementAdapterFixture('member-edit-private-use');
+  const creator = (await f.identity.provisionSlackMember({
+    slackTeamId: f.owner.binding.slackTeamId,
+    slackUserId: 'UEDITPRIVATECREATOR',
+    displayName: 'Private Agent Creator',
+  })).resolution!;
+  const editor = (await f.identity.provisionSlackMember({
+    slackTeamId: f.owner.binding.slackTeamId,
+    slackUserId: 'UEDITPRIVATEEDITOR',
+    displayName: 'Workspace Editor',
+  })).resolution!;
+  const agent = await f.config.createAgent({
+    ...agentInput,
+    id: 'agent_workspace_edit_private_use',
+    creatorMembershipId: creator.membership.id,
+    editPolicy: 'all_workspace_members',
+    lifecycle: 'active',
+    configurationGeneration: 1,
+  });
+  const grant = await f.config.putAgentChannelGrant({
+    workspaceId: f.owner.binding.slackTeamId,
+    channelId: 'C_PRIVATE_EDIT',
+    agentId: agent.id,
+    status: 'active',
+    createdByMembershipId: creator.membership.id,
+  }, 0);
+  const context: ManagementActorContext = {
+    userId: editor.user.id,
+    membershipId: editor.membership.id,
+    organizationId: editor.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'workspace-editor-private-client' },
+  };
+  try {
+    const snapshot = await f.service.inspectWorkspace(context);
+    assert.deepEqual(snapshot.agents.map(({ id }) => id), [agent.id]);
+    const projected = snapshot.agents[0] as Record<string, unknown>;
+    assert.equal('privateUseAudience' in projected, false);
+    assert.equal('canUse' in projected, false);
+
+    assert.deepEqual(await resolvePrivateAgentAccess({
+      agent,
+      workspaceId: f.owner.binding.slackTeamId,
+      grants: [grant],
+      actor: {
+        fullMember: true,
+        membershipId: editor.membership.id,
+        slackUserId: editor.binding.slackUserId,
+      },
+      transport: {
+        async lookupChannel(channelId) {
+          return { id: channelId, name: 'private-edit', private: true, member: true, archived: false };
+        },
+        async listChannels() { return { channels: [], truncated: false }; },
+        async listMemberChannels() { return new Set<string>(); },
+      },
+    }), { status: 'denied', audience: 'private_channel_members' });
+
+    const proposed = await f.service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('workspace-editor-private-use'),
+      operations: [{
+        itemId: 'description',
+        kind: 'update_agent',
+        agentId: agent.id,
+        expectedRevision: agent.revision,
+        patch: { description: 'Editable without private Slack use.' },
+      }],
+    });
+    assert.equal(proposed.status, 'pending');
+  } finally {
+    f.close();
+  }
+});
+
+test('public placement permits use without exposing Agent management', async () => {
+  const f = await createManagementAdapterFixture('member-public-use-private-admin');
+  const creator = (await f.identity.provisionSlackMember({
+    slackTeamId: f.owner.binding.slackTeamId,
+    slackUserId: 'UPUBLICCREATOR',
+    displayName: 'Public Agent Creator',
+  })).resolution!;
+  const user = (await f.identity.provisionSlackMember({
+    slackTeamId: f.owner.binding.slackTeamId,
+    slackUserId: 'UPUBLICUSER',
+    displayName: 'Public Agent User',
+  })).resolution!;
+  const agent = await f.config.createAgent({
+    ...agentInput,
+    id: 'agent_public_use_private_admin',
+    creatorMembershipId: creator.membership.id,
+    editPolicy: 'creator_and_admins',
+    lifecycle: 'active',
+    configurationGeneration: 1,
+  });
+  const grant = await f.config.putAgentChannelGrant({
+    workspaceId: f.owner.binding.slackTeamId,
+    channelId: 'C_PUBLIC_USE',
+    agentId: agent.id,
+    status: 'active',
+    createdByMembershipId: creator.membership.id,
+  }, 0);
+  const context: ManagementActorContext = {
+    userId: user.user.id,
+    membershipId: user.membership.id,
+    organizationId: user.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'public-agent-user-client' },
+  };
+  try {
+    assert.deepEqual(await resolvePrivateAgentAccess({
+      agent,
+      workspaceId: f.owner.binding.slackTeamId,
+      grants: [grant],
+      actor: {
+        fullMember: true,
+        membershipId: user.membership.id,
+        slackUserId: user.binding.slackUserId,
+      },
+      transport: {
+        async lookupChannel(channelId) {
+          return { id: channelId, name: 'public-use', private: false, member: true, archived: false };
+        },
+        async listChannels() { return { channels: [], truncated: false }; },
+        async listMemberChannels() { return new Set<string>(); },
+      },
+    }), { status: 'allowed', audience: 'workspace_members' });
+    assert.deepEqual((await f.service.inspectWorkspace(context)).agents, []);
+    await assert.rejects(
+      () => f.service.proposeWorkspaceChanges({
+        context,
+        ...authoringProposalMetadata('public-use-private-admin'),
+        operations: [{
+          itemId: 'description',
+          kind: 'update_agent',
+          agentId: agent.id,
+          expectedRevision: agent.revision,
+          patch: { description: 'Must remain editor-only.' },
+        }],
+      }),
+      (error: unknown) => error instanceof ManagementError && error.code === 'forbidden',
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('an admin manages a private-only Agent without gaining private use', async () => {
+  const f = await createManagementAdapterFixture('admin-private-use-separation');
+  const creator = (await f.identity.provisionSlackMember({
+    slackTeamId: f.owner.binding.slackTeamId,
+    slackUserId: 'UADMINPRIVATECREATOR',
+    displayName: 'Admin Private Creator',
+  })).resolution!;
+  const agent = await f.config.createAgent({
+    ...agentInput,
+    id: 'agent_admin_private_use',
+    creatorMembershipId: creator.membership.id,
+    editPolicy: 'creator_and_admins',
+    lifecycle: 'active',
+    configurationGeneration: 1,
+  });
+  const grant = await f.config.putAgentChannelGrant({
+    workspaceId: f.admin.binding.slackTeamId,
+    channelId: 'C_ADMIN_PRIVATE',
+    agentId: agent.id,
+    status: 'active',
+    createdByMembershipId: creator.membership.id,
+  }, 0);
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'admin-private-use-client' },
+  };
+  try {
+    assert.deepEqual((await f.service.inspectWorkspace(context)).agents.map(({ id }) => id), [agent.id]);
+    assert.deepEqual(await resolvePrivateAgentAccess({
+      agent,
+      workspaceId: f.admin.binding.slackTeamId,
+      grants: [grant],
+      actor: {
+        fullMember: true,
+        membershipId: f.admin.membership.id,
+        slackUserId: f.admin.binding.slackUserId,
+      },
+      transport: {
+        async lookupChannel(channelId) {
+          return { id: channelId, name: 'admin-private', private: true, member: true, archived: false };
+        },
+        async listChannels() { return { channels: [], truncated: false }; },
+        async listMemberChannels() { return new Set<string>(); },
+      },
+    }), { status: 'denied', audience: 'private_channel_members' });
   } finally {
     f.close();
   }
