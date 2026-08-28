@@ -601,7 +601,6 @@ export interface ProposeWorkspaceChangesResult {
     /** Human-readable Slack copy; the opaque proposal id remains control data. */
     slack: string;
   };
-  expiresAt: number;
   confirmationTool: 'confirm_workspace_change';
 }
 
@@ -656,9 +655,8 @@ export interface ManagementProposalRecord {
   summary: string;
   targetRevisions: Record<string, number>;
   requestOperationId?: string;
-  status: 'pending' | 'applying' | 'completed' | 'stale' | 'expired';
+  status: 'pending' | 'applying' | 'completed' | 'stale';
   result?: ManagementApplyResult;
-  expiresAt: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -693,9 +691,8 @@ export interface ManagementChangeSetProposalRecord {
   digest: string;
   preview: ManagementChangeSetPreview;
   targetRevisions: Record<string, number>;
-  status: 'pending' | 'applying' | 'completed' | 'stale' | 'expired';
+  status: 'pending' | 'applying' | 'completed' | 'stale';
   result?: ManagementApplyResult;
-  expiresAt: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -722,7 +719,6 @@ export class ManagementError extends Error {
       | 'operation_not_found'
       | 'proposal_not_found'
       | 'proposal_binding_mismatch'
-      | 'proposal_expired'
       | 'proposal_stale'
       | 'base_agent_capabilities_require_setup'
       | 'undo_unavailable'
@@ -772,7 +768,6 @@ export interface PutManagementProposalInput {
   summary: string;
   targetRevisions: Record<string, number>;
   requestOperationId?: string;
-  expiresAt: number;
   at: number;
 }
 
@@ -789,15 +784,6 @@ export interface PutManagementChangeSetProposalInput {
   digest: string;
   preview: ManagementChangeSetPreview;
   targetRevisions: Record<string, number>;
-  expiresAt: number;
-  at: number;
-}
-
-export interface HasPendingManagementChangeSetProposalInput {
-  organizationId: string;
-  actorUserId: string;
-  actorMembershipId: string;
-  originKey: string;
   at: number;
 }
 
@@ -875,10 +861,6 @@ export type ManagementRpcRequest =
   | { kind: 'mark_proposal_stale'; proposalId: string; at: number }
   | { kind: 'put_change_set_proposal'; input: PutManagementChangeSetProposalInput }
   | { kind: 'get_change_set_proposal'; proposalId: string }
-  | {
-      kind: 'has_pending_change_set_proposal';
-      input: HasPendingManagementChangeSetProposalInput;
-    }
   | { kind: 'claim_change_set_proposal'; input: ClaimManagementProposalInput }
   | { kind: 'reclaim_change_set_proposal'; input: ReclaimManagementChangeSetProposalInput }
   | {
@@ -931,7 +913,6 @@ export type ManagementRpcResponse =
   | { kind: 'request'; request: ManagementRequestRecord | null }
   | { kind: 'proposal'; proposal: ManagementProposalRecord | null }
   | { kind: 'change_set_proposal'; proposal: ManagementChangeSetProposalRecord | null }
-  | { kind: 'pending_change_set_proposal'; pending: boolean }
   | { kind: 'undo'; undo: ManagementUndoRecord | null }
   | { kind: 'setup'; setup: ManagementSetupRecord | null }
   | { kind: 'outbox'; outbox: ManagementReceiptOutboxRecord | null }

@@ -68,7 +68,7 @@ test('Cloudflare Slack management keeps failed-confirmation turn guards local', 
       calls.push(request);
       return {
         ok: false as const,
-        error: { code: 'proposal_expired', message: 'The proposal expired.' },
+        error: { code: 'proposal_stale', message: 'The proposal is stale.' },
       };
     },
   };
@@ -77,15 +77,15 @@ test('Cloudflare Slack management keeps failed-confirmation turn guards local', 
     stub,
     signal: SIGNAL,
     name: 'confirm_workspace_change',
-    args: { proposalId: 'changeset_expired' },
+    args: { proposalId: 'changeset_stale' },
     turnGuard: guard,
   });
   assert.equal(confirmation.ok, false);
   assert.deepEqual(persisted, [{
     turnJobId: SIGNAL.turnJobId,
     confirmationFailure: {
-      code: 'proposal_expired',
-      proposalId: 'changeset_expired',
+      code: 'proposal_stale',
+      proposalId: 'changeset_stale',
     },
   }]);
 

@@ -85,21 +85,13 @@ test('Cloudflare management proxy preserves the canonical ledger contract and ty
       originKey: 'mcp:client_rpc', idempotencyKey: 'changeset-rpc', guideVersion: '1.0.0',
       authoringReason: 'agent_creation', operations: input.operations, digest: 'c'.repeat(64),
       preview: { summary: 'RPC change set', changes: [], missingSetup: [] },
-      targetRevisions: {}, expiresAt: NOW + 1_000, at: NOW,
+      targetRevisions: {}, at: NOW,
     });
     assert.equal(changeSet.proposalId, 'changeset_rpc');
     assert.equal((await proxy.getChangeSetProposal(changeSet.proposalId))?.digest, 'c'.repeat(64));
-    assert.equal(await proxy.hasPendingChangeSetProposal({
-      organizationId: changeSet.organizationId,
-      actorUserId: changeSet.actorUserId,
-      actorMembershipId: changeSet.actorMembershipId,
-      originKey: changeSet.originKey,
-      at: NOW,
-    }), true);
-    assert.deepEqual(calls.slice(-3).map(({ kind }) => kind), [
+    assert.deepEqual(calls.slice(-2).map(({ kind }) => kind), [
       'put_change_set_proposal',
       'get_change_set_proposal',
-      'has_pending_change_set_proposal',
     ]);
   } finally {
     direct.close();

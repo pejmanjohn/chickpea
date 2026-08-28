@@ -82,8 +82,6 @@ export interface SlackInteractionIntentContext {
   recentContext?: string[];
   reactionTargetText?: string;
   activeWork?: boolean;
-  /** Exact requester, Slack thread, and acting-Agent binding has a live proposal. */
-  pendingManagementProposal?: boolean;
   requestedModel?: string | null;
 }
 
@@ -244,10 +242,7 @@ export function resolveImmediateSlackInteractionIntent(
   context: SlackInteractionIntentContext,
 ): SlackInteractionIntent | null {
   const text = normalizedInteractionText(context.text);
-  if (
-    explicitManagementApproval(text) ||
-    (context.pendingManagementProposal && pendingProposalApproval(text))
-  ) {
+  if (explicitManagementApproval(text)) {
     return { disposition: 'reply', reason: 'substantive_request' };
   }
   if (context.guaranteed) {
@@ -271,21 +266,9 @@ export function resolveImmediateSlackInteractionIntent(
   return null;
 }
 
-/** Short agreement is substantive only for an exact pending management binding. */
-export function shouldLookupPendingManagementProposal(text: string): boolean {
-  return pendingProposalApproval(normalizedInteractionText(text));
-}
-
 function explicitManagementApproval(text: string): boolean {
   const approval = text.toLowerCase().replace(/[.!]+$/g, '').trim();
   return /^(?:approve|approved|confirm|apply it|apply this|go ahead|do it)$/.test(approval);
-}
-
-function pendingProposalApproval(text: string): boolean {
-  const approval = text.toLowerCase().replace(/[.!]+$/g, '').trim();
-  return /^(?:yes|yep|yeah|agreed|sounds good|works for me|sgtm|ok|okay|perfect|great|\+1|confirmed)$/.test(
-    approval,
-  );
 }
 
 function normalizedInteractionText(text: string): string {

@@ -59,7 +59,7 @@ An explicit reversible single-field edit may apply directly when current policy 
 - archiving or restoring an Agent, or granting or revoking Channel reach; or
 - overwriting an existing Agent from a recipe.
 
-The same live requester must confirm from the same MCP client or Slack thread before the proposal expires. `confirm_workspace_change` accepts only the proposal handle and applies the frozen operations; it cannot reinterpret them. A changed target revision, digest, permission, requester, acting Agent, or origin makes the whole change set stale or denied before its first write. Inspect again and present a newly calculated diff instead of retrying the old handle.
+The same live requester must confirm from the same MCP client or Slack thread. Proposals do not expire, and a newer proposal from that same requester and origin supersedes the older pending one. `confirm_workspace_change` accepts only the proposal handle and applies the frozen operations; it cannot reinterpret them. A changed target revision, digest, permission, requester, acting Agent, or origin makes the whole change set stale or denied before its first write. Inspect again and present a newly calculated diff instead of retrying the old handle.
 
 ## Clean Agent creation
 

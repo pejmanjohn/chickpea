@@ -87,7 +87,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'registration', 'resource', 'scope', 'validation',
   ]),
   staleReason: new Set([
-    'binding', 'digest_mismatch', 'expired', 'permission_changed', 'target_revision', 'unknown',
+    'binding', 'digest_mismatch', 'permission_changed', 'target_revision', 'unknown',
   ]),
   surface: new Set(['admin', 'mcp', 'service', 'setup', 'slack', 'unknown']),
   tool: new Set([
@@ -106,7 +106,7 @@ const REASON_TOKENS = new Set([
   'invalid_state', 'invalid_token', 'live_access_denied', 'management_error',
   'management_outcome_unknown',
   'missing_token', 'operation_in_progress', 'operation_not_found', 'other',
-  'operational_access_required', 'owner_required', 'proposal_binding_mismatch', 'proposal_expired',
+  'operational_access_required', 'owner_required', 'proposal_binding_mismatch',
   'proposal_not_found', 'proposal_stale', 'revision_conflict', 'setup_expired',
   'base_agent_capabilities_require_setup',
   'setup_failed', 'setup_not_found', 'setup_session_mismatch', 'setup_unavailable',

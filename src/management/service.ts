@@ -113,7 +113,6 @@ import {
   type UndoWorkspaceChangeInput,
 } from './types.ts';
 
-const PROPOSAL_TTL_MS = 15 * 60_000;
 const CHANGE_SET_APPLY_LEASE_MS = 30_000;
 const SETUP_TTL_MS = 24 * 60 * 60_000;
 const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
@@ -740,7 +739,6 @@ export class WorkspaceManagementService {
       digest: managementOperationDigest(operations),
       preview,
       targetRevisions,
-      expiresAt: at + PROPOSAL_TTL_MS,
       at,
     });
     emitAgentAuthoringOutcome(actor, operations, { proposalOutcome: 'created' });
@@ -2322,7 +2320,6 @@ export class WorkspaceManagementService {
       summary,
       targetRevisions,
       ...(requestOperationId ? { requestOperationId } : {}),
-      expiresAt: at + PROPOSAL_TTL_MS,
       at,
     });
   }
@@ -3395,9 +3392,6 @@ function authoringProposalFailure(
   if (error.code === 'proposal_binding_mismatch') {
     return { proposalOutcome: 'stale', staleReason: 'binding' };
   }
-  if (error.code === 'proposal_expired') {
-    return { proposalOutcome: 'stale', staleReason: 'expired' };
-  }
   if (error.code === 'revision_conflict') {
     return { proposalOutcome: 'stale', staleReason: 'target_revision' };
   }
@@ -4043,7 +4037,6 @@ function publicChangeSetProposal(
     presentation: {
       slack: formatSlackChangeSetProposal(proposal.preview),
     },
-    expiresAt: proposal.expiresAt,
     confirmationTool: 'confirm_workspace_change',
   };
 }

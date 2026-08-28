@@ -234,14 +234,6 @@ test('workspace proposal approvals always reach the main Agent instead of ending
   assert.equal(promptCalls, 0);
 
   assert.deepEqual(
-    resolveImmediateSlackInteractionIntent({
-      ...baseContext,
-      text: 'yes',
-      pendingManagementProposal: true,
-    }),
-    { disposition: 'reply', reason: 'substantive_request' },
-  );
-  assert.deepEqual(
     resolveImmediateSlackInteractionIntent({ ...baseContext, text: 'yes' }),
     {
       disposition: 'react_only',

@@ -217,16 +217,10 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
     );
     assert.doesNotMatch(result.presentation.slack, /changeset_/);
     assert.match(result.presentation.slack, /Reply `approve`/);
+    assert.equal('expiresAt' in result, false);
     assert.equal((await f.config.getAgent(agent.id)).revision, agent.revision);
     const pending = await f.management.getChangeSetProposal(result.proposalId);
     assert.ok(pending);
-    assert.equal(await f.management.hasPendingChangeSetProposal({
-      organizationId: pending.organizationId,
-      actorUserId: pending.actorUserId,
-      actorMembershipId: pending.actorMembershipId,
-      originKey: pending.originKey,
-      at: 1_800_000_000_000,
-    }), true);
 
     const mcpConfirmation = await invokeWorkspaceManagementTool({
       service: f.service,
@@ -263,7 +257,6 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
       source: 'implicit_thread_reply',
       guaranteed: true,
       profileInstructions: agent.instructions,
-      pendingManagementProposal: true,
     }, undefined, async () => JSON.stringify({
       disposition: 'react_only',
       reason: 'state_change',
@@ -381,6 +374,15 @@ test('exact create proposal writes nothing before approval and creates only the 
     assert.equal(proposed.status, 'pending');
     assert.equal(proposed.confirmationTool, 'confirm_workspace_change');
     assert.equal(proposed.preview.changes[0]?.operationKind, 'create_agent');
+    assert.match(proposed.presentation.slack, /\*New Agent\*/);
+    assert.match(proposed.presentation.slack, /\*Name\*\n> Support Triage/);
+    assert.match(proposed.presentation.slack, /\*Description\*\n> Handles support triage\./);
+    assert.match(proposed.presentation.slack, /\*Instructions\*\n> Triage support requests\./);
+    assert.match(proposed.presentation.slack, /\*Slack Handle\*\n> @support/);
+    assert.doesNotMatch(
+      proposed.presentation.slack,
+      /\*Before\*|\*After\*|Slack Presence|Editing Authority|MCP Servers|Repositories/,
+    );
     await assert.rejects(() => f.config.getAgent('agent_support'));
     assert.deepEqual(await f.config.listAgentChannelGrants(), []);
 
@@ -827,14 +829,14 @@ test('an applying change set cannot resume after the requester loses Agent edit 
   }
 });
 
-test('an applying change set cannot resume after its confirmation expires', async () => {
-  const f = await createManagementAdapterFixture('proposal-recovery-expiry');
+test('a pending workspace proposal can be approved after the former expiration window', async () => {
+  const f = await createManagementAdapterFixture('proposal-no-expiry');
   let now = 1_800_000_000_000;
   const context: ManagementActorContext = {
     userId: f.admin.user.id,
     membershipId: f.admin.membership.id,
     organizationId: f.admin.membership.organizationId,
-    origin: { kind: 'mcp', clientId: 'recovery-expiry-client' },
+    origin: { kind: 'slack', workspaceId: 'T_TEST', channelId: 'D_TEST', threadTs: '1.0' },
   };
   const service = new WorkspaceManagementService({
     identity: f.identity,
@@ -844,16 +846,59 @@ test('an applying change set cannot resume after its confirmation expires', asyn
   });
   try {
     const agent = await f.config.createAgent({
-      id: 'agent_expiry', name: 'Expiry', instructions: 'Expire safely.', enabled: true,
+      id: 'agent_no_expiry', name: 'No Expiry', instructions: 'Stay available.', enabled: true,
       lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
       configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
     });
     const proposed = await service.proposeWorkspaceChanges({
       context,
-      ...authoringProposalMetadata('recovery-expiry'),
+      ...authoringProposalMetadata('no-expiry'),
       operations: [{
         itemId: 'description', kind: 'update_agent', agentId: agent.id,
-        expectedRevision: agent.revision, patch: { description: 'Expired write.' },
+        expectedRevision: agent.revision, patch: { description: 'Approved asynchronously.' },
+      }],
+    });
+    now += 16 * 60_000 + 48_000;
+
+    const applied = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+
+    assert.equal(applied.status, 'completed');
+    assert.equal((await f.config.getAgent(agent.id)).description, 'Approved asynchronously.');
+  } finally {
+    f.close();
+  }
+});
+
+test('an applying change set can recover after the former expiration window', async () => {
+  const f = await createManagementAdapterFixture('proposal-recovery-no-expiry');
+  let now = 1_800_000_000_000;
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'recovery-no-expiry-client' },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => now,
+  });
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_recovery_no_expiry', name: 'Recovery', instructions: 'Recover safely.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('recovery-no-expiry'),
+      operations: [{
+        itemId: 'description', kind: 'update_agent', agentId: agent.id,
+        expectedRevision: agent.revision, patch: { description: 'Recovered write.' },
       }],
     });
     await f.management.claimChangeSetProposal({
@@ -861,18 +906,19 @@ test('an applying change set cannot resume after its confirmation expires', asyn
       organizationId: context.organizationId,
       actorUserId: context.userId,
       actorMembershipId: context.membershipId,
-      originKey: 'mcp:recovery-expiry-client',
+      originKey: 'mcp:recovery-no-expiry-client',
       at: now,
     });
     now += 15 * 60_000 + 1;
-    await assert.rejects(
-      () => service.confirmWorkspaceChange({ context, proposalId: proposed.proposalId }),
-      (error: unknown) => error instanceof ManagementError && error.code === 'proposal_expired',
-    );
-    assert.equal((await f.config.getAgent(agent.id)).description, undefined);
+    const result = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(result.status, 'completed');
+    assert.equal((await f.config.getAgent(agent.id)).description, 'Recovered write.');
     assert.equal(
       (await f.management.getChangeSetProposal(proposed.proposalId))?.status,
-      'expired',
+      'completed',
     );
   } finally {
     f.close();

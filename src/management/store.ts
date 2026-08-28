@@ -9,7 +9,6 @@ import {
   type AuthorizeManagementSetupInput,
   type CompleteManagementSetupInput,
   type ExchangeManagementSetupInput,
-  type HasPendingManagementChangeSetProposalInput,
   type ManagementApplyResult,
   type ManagementChangeSetProposalRecord,
   type ManagementOperation,
@@ -189,9 +188,6 @@ export interface ManagementStore {
     input: PutManagementChangeSetProposalInput,
   ): Promise<ManagementChangeSetProposalRecord>;
   getChangeSetProposal(proposalId: string): Promise<ManagementChangeSetProposalRecord | undefined>;
-  hasPendingChangeSetProposal(
-    input: HasPendingManagementChangeSetProposalInput,
-  ): Promise<boolean>;
   claimChangeSetProposal(
     input: ClaimManagementProposalInput,
   ): Promise<ManagementChangeSetProposalRecord>;
@@ -309,11 +305,6 @@ export class ManagementStoreLogic {
         return {
           kind: 'change_set_proposal',
           proposal: this.getChangeSetProposal(request.proposalId) ?? null,
-        };
-      case 'has_pending_change_set_proposal':
-        return {
-          kind: 'pending_change_set_proposal',
-          pending: this.hasPendingChangeSetProposal(request.input),
         };
       case 'claim_change_set_proposal':
         return {
@@ -548,7 +539,7 @@ export class ManagementStoreLogic {
         proposal_id, organization_id, actor_user_id, actor_membership_id,
         origin_key, operation_json, summary, target_revisions_json,
         request_operation_id, status, result_json, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?)`,
       input.proposalId,
       input.organizationId,
       input.actorUserId,
@@ -558,7 +549,6 @@ export class ManagementStoreLogic {
       input.summary,
       JSON.stringify(input.targetRevisions),
       input.requestOperationId ?? null,
-      input.expiresAt,
       input.at,
       input.at,
     );
@@ -590,15 +580,6 @@ export class ManagementStoreLogic {
     }
     if (proposal.status !== 'pending') {
       throw new ManagementError('proposal_stale', 'The confirmation is no longer available.');
-    }
-    if (proposal.expiresAt <= input.at) {
-      this.db.run(
-        `UPDATE management_proposals SET status = 'expired', updated_at = ?
-         WHERE proposal_id = ? AND status = 'pending'`,
-        input.at,
-        input.proposalId,
-      );
-      throw new ManagementError('proposal_expired', 'The confirmation has expired.');
     }
     this.db.run(
       `UPDATE management_proposals SET status = 'applying', updated_at = ?
@@ -698,24 +679,25 @@ export class ManagementStoreLogic {
           'The prior proposal is no longer pending. Use a new idempotency key after reviewing fresh state.',
         );
       }
-      if (replay.expiresAt <= input.at) {
-        this.db.run(
-          `UPDATE management_change_set_proposals SET status = 'expired', updated_at = ?
-           WHERE proposal_id = ? AND status = 'pending'`,
-          input.at,
-          replay.proposalId,
-        );
-        throw new ManagementError('proposal_expired', 'The prior proposal has expired.');
-      }
       return replay;
     }
+    this.db.run(
+      `UPDATE management_change_set_proposals SET status = 'stale', updated_at = ?
+       WHERE organization_id = ? AND actor_user_id = ? AND actor_membership_id = ?
+         AND origin_key = ? AND status = 'pending'`,
+      input.at,
+      input.organizationId,
+      input.actorUserId,
+      input.actorMembershipId,
+      input.originKey,
+    );
     this.db.run(
       `INSERT INTO management_change_set_proposals (
         proposal_id, organization_id, actor_user_id, actor_membership_id,
         origin_key, idempotency_key, guide_version, authoring_reason,
         operations_json, digest, preview_json, target_revisions_json,
         status, result_json, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?)`,
       input.proposalId,
       input.organizationId,
       input.actorUserId,
@@ -728,7 +710,6 @@ export class ManagementStoreLogic {
       input.digest,
       JSON.stringify(input.preview),
       JSON.stringify(input.targetRevisions),
-      input.expiresAt,
       input.at,
       input.at,
     );
@@ -743,21 +724,6 @@ export class ManagementStoreLogic {
     return row ? changeSetProposalFromRow(row) : undefined;
   }
 
-  hasPendingChangeSetProposal(input: HasPendingManagementChangeSetProposalInput): boolean {
-    const row = this.db.get(
-      `SELECT 1 AS found FROM management_change_set_proposals
-       WHERE organization_id = ? AND actor_user_id = ? AND actor_membership_id = ?
-         AND origin_key = ? AND status = 'pending' AND expires_at > ?
-       LIMIT 1`,
-      input.organizationId,
-      input.actorUserId,
-      input.actorMembershipId,
-      input.originKey,
-      input.at,
-    ) as { found: number } | undefined;
-    return row?.found === 1;
-  }
-
   claimChangeSetProposal(input: ClaimManagementProposalInput): ManagementChangeSetProposalRecord {
     const proposal = this.requireChangeSetProposal(input.proposalId);
     assertProposalClaimBinding(proposal, input);
@@ -767,15 +733,6 @@ export class ManagementStoreLogic {
     }
     if (proposal.status !== 'pending') {
       throw new ManagementError('proposal_stale', 'The confirmation is no longer available.');
-    }
-    if (proposal.expiresAt <= input.at) {
-      this.db.run(
-        `UPDATE management_change_set_proposals SET status = 'expired', updated_at = ?
-         WHERE proposal_id = ? AND status = 'pending'`,
-        input.at,
-        input.proposalId,
-      );
-      throw new ManagementError('proposal_expired', 'The confirmation has expired.');
     }
     this.db.run(
       `UPDATE management_change_set_proposals SET status = 'applying', updated_at = ?
@@ -796,19 +753,6 @@ export class ManagementStoreLogic {
       throw new ManagementError('operation_in_progress', 'The confirmation recovery lease changed.');
     }
     const renewedAt = Math.max(input.at, proposal.updatedAt + 1);
-    if (proposal.expiresAt <= input.at) {
-      const expired = this.db.run(
-        `UPDATE management_change_set_proposals SET status = 'expired', updated_at = ?
-         WHERE proposal_id = ? AND status = 'applying' AND updated_at = ?`,
-        renewedAt,
-        input.proposalId,
-        input.expectedUpdatedAt,
-      );
-      if (expired.changes !== 1) {
-        throw new ManagementError('operation_in_progress', 'The confirmation recovery lease changed.');
-      }
-      throw new ManagementError('proposal_expired', 'The confirmation has expired.');
-    }
     const updated = this.db.run(
       `UPDATE management_change_set_proposals SET updated_at = ?
        WHERE proposal_id = ? AND status = 'applying' AND updated_at = ?`,
@@ -1267,18 +1211,16 @@ export class ManagementStoreLogic {
       remove(
         `DELETE FROM management_change_set_proposals WHERE proposal_id IN (
            SELECT proposal_id FROM management_change_set_proposals
-           WHERE (status IN ('completed', 'stale', 'expired') AND updated_at < ?)
-              OR (status IN ('pending', 'applying') AND expires_at < ?)
+           WHERE status IN ('completed', 'stale') AND updated_at < ?
            ORDER BY updated_at LIMIT ?
          )`,
-        cutoff,
         cutoff,
         boundedLimit,
       );
       remove(
         `DELETE FROM management_proposals WHERE proposal_id IN (
            SELECT proposal_id FROM management_proposals
-           WHERE status IN ('completed', 'stale', 'expired') AND updated_at < ?
+           WHERE status IN ('completed', 'stale') AND updated_at < ?
            ORDER BY updated_at LIMIT ?
          )`,
         cutoff,
@@ -1349,9 +1291,9 @@ export class ManagementStoreLogic {
         summary TEXT NOT NULL,
         target_revisions_json TEXT NOT NULL,
         request_operation_id TEXT,
-        status TEXT NOT NULL CHECK (status IN ('pending', 'applying', 'completed', 'stale', 'expired')),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'applying', 'completed', 'stale')),
         result_json TEXT,
-        expires_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )`,
@@ -1379,14 +1321,15 @@ export class ManagementStoreLogic {
         digest TEXT NOT NULL,
         preview_json TEXT NOT NULL,
         target_revisions_json TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('pending', 'applying', 'completed', 'stale', 'expired')),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'applying', 'completed', 'stale')),
         result_json TEXT,
-        expires_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )`,
     );
     this.ensureChangeSetProposalColumns();
+    this.reactivateExpiredProposals();
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS management_change_set_proposals_state_idx
        ON management_change_set_proposals (organization_id, actor_user_id, status, expires_at)`,
@@ -1539,6 +1482,16 @@ export class ManagementStoreLogic {
     }
   }
 
+  private reactivateExpiredProposals(): void {
+    // Keep the legacy storage column and status readable for in-place upgrades,
+    // but proposal lifetime is now governed only by binding, revision, policy,
+    // and single-use state checks.
+    this.db.run("UPDATE management_proposals SET status = 'pending' WHERE status = 'expired'");
+    this.db.run(
+      "UPDATE management_change_set_proposals SET status = 'pending' WHERE status = 'expired'",
+    );
+  }
+
   private requireRequest(operationId: string): ManagementRequestRecord {
     const request = this.getRequest(operationId);
     if (!request) throw this.missingOperation(operationId);
@@ -1654,7 +1607,6 @@ function proposalFromRow(row: ManagementProposalRow): ManagementProposalRecord {
     ...(row.result_json
       ? { result: JSON.parse(row.result_json) as ManagementApplyResult }
       : {}),
-    expiresAt: Number(row.expires_at),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
@@ -1680,7 +1632,6 @@ function changeSetProposalFromRow(
     ...(row.result_json
       ? { result: JSON.parse(row.result_json) as ManagementApplyResult }
       : {}),
-    expiresAt: Number(row.expires_at),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
