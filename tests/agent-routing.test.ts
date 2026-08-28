@@ -13,6 +13,11 @@ import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
 type MentionRepairConfig = Parameters<typeof repairMentionedAgentUserGroup>[0]['config'];
 
+const allowUserAgent = async () => ({
+  status: 'allowed' as const,
+  audience: 'workspace_members' as const,
+});
+
 function turn(patch: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {
   return {
     workspaceId: 'T1', channelId: 'C1', eventId: 'Ev1', text: '<!subteam^SSUPPORT|@support> help',
@@ -615,6 +620,20 @@ test('an ungranted handle discloses only permitted alternatives and keeps the cu
   }
 });
 
+test('a non-member Channel denial never enumerates Agent alternatives', async () => {
+  const { store } = await fixture();
+  try {
+    const result = await resolveAgentRoute({
+      turn: turn(), surface: 'channel',
+      actor: { channelMember: false, fullMember: false }, config: store,
+    });
+    assert.equal(result.kind, 'denied');
+    if (result.kind === 'denied') assert.deepEqual(result.alternatives, []);
+  } finally {
+    store.close();
+  }
+});
+
 test('multiple Agent handles are ambiguous and root messages without an address are ignored', async () => {
   const { store } = await fixture();
   try {
@@ -633,18 +652,14 @@ test('multiple Agent handles are ambiguous and root messages without an address 
   }
 });
 
-test('@Chickpea and direct-message roots use the normal workspace default Agent', async () => {
+test('legacy defaults require ordinary placement authority on every surface', async () => {
   const { store, first } = await fixture();
   try {
     const base = await resolveAgentRoute({
       turn: turn({ text: '<@U_BOT> help', source: 'app_mention' }), surface: 'channel',
       actor: { channelMember: true, fullMember: true }, config: store,
     });
-    assert.equal(base.kind, 'routed');
-    if (base.kind === 'routed') {
-      assert.equal(base.assignment.agentId, first.id);
-      assert.equal(base.assignment.interactionMode, 'workspace_management');
-    }
+    assert.equal(base.kind, 'denied');
 
     const outsider = await resolveAgentRoute({
       turn: turn({
@@ -661,6 +676,7 @@ test('@Chickpea and direct-message roots use the normal workspace default Agent'
         contextMode: 'dm_history',
       }),
       surface: 'direct', actor: { channelMember: false, fullMember: true }, config: store,
+      authorizeUserAgent: allowUserAgent,
     });
     assert.equal(dm.kind, 'routed');
     if (dm.kind === 'routed') {
@@ -712,14 +728,13 @@ test('activated addressed DM roots are sticky and explicit addresses transfer ow
     const actor = {
       channelMember: false,
       fullMember: true,
-      discoverableAgentIds: new Set([support.id, finance.id]),
     };
     const opened = await resolveAgentRoute({
       turn: turn({
         channelId: 'D1', text: '<!subteam^SSUPPORT|@support> hey', source: 'dm_message',
         channelType: 'im', contextMode: 'dm_history',
       }),
-      surface: 'direct', actor, config: store,
+      surface: 'direct', actor, config: store, authorizeUserAgent: allowUserAgent,
     });
     assert.equal(opened.kind, 'routed');
     if (opened.kind !== 'routed') return;
@@ -731,7 +746,7 @@ test('activated addressed DM roots are sticky and explicit addresses transfer ow
         channelId: 'D1', eventId: 'Ev2', messageTs: '100.2', text: 'more',
         source: 'dm_message', channelType: 'im', contextMode: 'thread',
       }),
-      surface: 'direct', actor, config: store,
+      surface: 'direct', actor, config: store, authorizeUserAgent: allowUserAgent,
     });
     assert.equal(continued.kind, 'routed');
     if (continued.kind !== 'routed') return;
@@ -744,7 +759,7 @@ test('activated addressed DM roots are sticky and explicit addresses transfer ow
         text: '<!subteam^SFINANCE|@finance> take over', source: 'dm_message',
         channelType: 'im', contextMode: 'thread',
       }),
-      surface: 'direct', actor, config: store,
+      surface: 'direct', actor, config: store, authorizeUserAgent: allowUserAgent,
     });
     assert.equal(transferred.kind, 'routed');
     if (transferred.kind !== 'routed') return;
@@ -756,7 +771,7 @@ test('activated addressed DM roots are sticky and explicit addresses transfer ow
         channelId: 'D1', eventId: 'Ev4', messageTs: '100.4',
         text: '<@U_BOT> help', source: 'app_mention', channelType: 'im', contextMode: 'thread',
       }),
-      surface: 'direct', actor, config: store,
+      surface: 'direct', actor, config: store, authorizeUserAgent: allowUserAgent,
     });
     assert.equal(returned.kind, 'routed');
     if (returned.kind === 'routed') {
@@ -775,14 +790,16 @@ test('ambiguous, unknown, and unauthorized DM addresses do not mutate ownership'
     const actor = {
       channelMember: false,
       fullMember: true,
-      discoverableAgentIds: new Set([support.id]),
     };
+    const authorizeUserAgent = async (agent: CustomAgentConfig) => agent.id === support.id
+      ? { status: 'allowed' as const, audience: 'private_channel_members' as const }
+      : { status: 'denied' as const, audience: 'private_channel_members' as const };
     await resolveAgentRoute({
       turn: turn({
         channelId: 'D1', text: '<!subteam^SSUPPORT> hey', source: 'dm_message',
         channelType: 'im', contextMode: 'dm_history',
       }),
-      surface: 'direct', actor, config: store,
+      surface: 'direct', actor, config: store, authorizeUserAgent,
     });
     const before = await store.getAgentThreadRoute('T1', 'D1', '100.1');
     assert.ok(before);
@@ -797,7 +814,7 @@ test('ambiguous, unknown, and unauthorized DM addresses do not mutate ownership'
           channelId: 'D1', eventId: `Ev-${text}`, messageTs: '100.2', text,
           source: 'dm_message', channelType: 'im', contextMode: 'thread',
         }),
-        surface: 'direct', actor, config: store,
+        surface: 'direct', actor, config: store, authorizeUserAgent,
       });
       assert.notEqual(result.kind, 'routed');
       assert.deepEqual(
@@ -817,14 +834,13 @@ test('repeating the current owner and editing its profile do not rotate owner in
     const actor = {
       channelMember: false,
       fullMember: true,
-      discoverableAgentIds: new Set([support.id]),
     };
     const opened = await resolveAgentRoute({
       turn: turn({
         channelId: 'D1', text: '<!subteam^SSUPPORT> hey', source: 'dm_message',
         channelType: 'im', contextMode: 'dm_history',
       }),
-      surface: 'direct', actor, config: store,
+      surface: 'direct', actor, config: store, authorizeUserAgent: allowUserAgent,
     });
     assert.equal(opened.kind, 'routed');
 
@@ -834,7 +850,7 @@ test('repeating the current owner and editing its profile do not rotate owner in
         text: '<!subteam^SSUPPORT> still you', source: 'dm_message',
         channelType: 'im', contextMode: 'thread',
       }),
-      surface: 'direct', actor, config: store,
+      surface: 'direct', actor, config: store, authorizeUserAgent: allowUserAgent,
     });
     assert.equal(repeated.kind, 'routed');
     if (repeated.kind !== 'routed') return;
@@ -849,7 +865,7 @@ test('repeating the current owner and editing its profile do not rotate owner in
         channelId: 'D1', eventId: 'Ev3', messageTs: '100.3', text: 'continue',
         source: 'dm_message', channelType: 'im', contextMode: 'thread',
       }),
-      surface: 'direct', actor, config: store,
+      surface: 'direct', actor, config: store, authorizeUserAgent: allowUserAgent,
     });
     assert.equal(afterEdit.kind, 'routed');
     if (afterEdit.kind === 'routed') {
@@ -861,8 +877,8 @@ test('repeating the current owner and editing its profile do not rotate owner in
   }
 });
 
-test('an explicit @Chickpea mention takes over an Agent thread without a default-Agent grant', async () => {
-  const { store, first, support } = await fixture();
+test('a legacy user-created default cannot use the system-Agent Channel waiver', async () => {
+  const { store, support } = await fixture();
   try {
     const opened = await resolveAgentRoute({
       turn: turn(), surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
@@ -878,11 +894,11 @@ test('an explicit @Chickpea mention takes over an Agent thread without a default
       }),
       surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
     });
-    assert.equal(handedOff.kind, 'routed');
-    if (handedOff.kind !== 'routed') return;
-    assert.equal(handedOff.assignment.agentId, first.id);
-    assert.equal(handedOff.source, 'default_agent');
-    assert.equal(handedOff.handoff, true);
+    assert.equal(handedOff.kind, 'denied');
+    assert.equal(
+      (await store.getAgentThreadRoute('T1', 'C1', '100.1'))?.agentId,
+      support.id,
+    );
   } finally {
     store.close();
   }
@@ -900,10 +916,10 @@ test('a trusted App Home selection starts a discoverable Agent-specific DM route
       actor: {
         channelMember: false,
         fullMember: true,
-        discoverableAgentIds: new Set([support.id]),
       },
       config: store,
       appHomeAgentId: support.id,
+      authorizeUserAgent: allowUserAgent,
     });
     assert.equal(selected.kind, 'routed');
     if (selected.kind !== 'routed') return;
@@ -912,6 +928,45 @@ test('a trusted App Home selection starts a discoverable Agent-specific DM route
     assert.equal(
       (await store.getAgentThreadRoute('T1', 'D1', '100.1'))?.agentId,
       support.id,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('an existing Agent DM reauthorizes before changing its stored route', async () => {
+  const { store, support } = await fixture();
+  try {
+    const directTurn = turn({
+      channelId: 'D1', text: '<!subteam^SSUPPORT> hey', source: 'dm_message',
+      channelType: 'im', contextMode: 'dm_history',
+    });
+    const opened = await resolveAgentRoute({
+      turn: directTurn,
+      surface: 'direct',
+      actor: { channelMember: false, fullMember: true },
+      config: store,
+      authorizeUserAgent: async () => ({
+        status: 'allowed', audience: 'private_channel_members',
+      }),
+    });
+    assert.equal(opened.kind, 'routed');
+    const before = await store.getAgentThreadRoute('T1', 'D1', '100.1');
+    assert.equal(before?.agentId, support.id);
+
+    const revoked = await resolveAgentRoute({
+      turn: { ...directTurn, eventId: 'Ev2', messageTs: '100.2', text: 'continue' },
+      surface: 'direct',
+      actor: { channelMember: false, fullMember: true },
+      config: store,
+      authorizeUserAgent: async () => ({
+        status: 'denied', audience: 'private_channel_members',
+      }),
+    });
+    assert.equal(revoked.kind, 'denied');
+    assert.deepEqual(
+      await store.getAgentThreadRoute('T1', 'D1', '100.1'),
+      before,
     );
   } finally {
     store.close();

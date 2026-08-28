@@ -32,7 +32,7 @@ export function createGatewaySlackTransport(client: GatewayOperationClient): Sla
 
     async lookupChannel(channelId): Promise<SlackChannel> {
       const result = await client.call('conversations.info', { channel: channelId });
-      return mapChannel(requiredRecord(result.channel, 'conversations.info'));
+      return mapPolicyChannel(requiredRecord(result.channel, 'conversations.info'));
     },
 
     async listChannels() {
@@ -86,12 +86,12 @@ export function createGatewaySlackTransport(client: GatewayOperationClient): Sla
 
     async openDirectConversation(userId): Promise<SlackChannel> {
       const result = await client.call('conversations.open', { users: userId });
-      return mapChannel(requiredRecord(result.channel, 'conversations.open'));
+      return mapOpenedDirectConversation(requiredRecord(result.channel, 'conversations.open'));
     },
 
     async joinPublicChannel(channelId): Promise<SlackChannel> {
       const result = await client.call('conversations.join', { channel: channelId });
-      return mapChannel(requiredRecord(result.channel, 'conversations.join'));
+      return mapJoinedPublicChannel(requiredRecord(result.channel, 'conversations.join'));
     },
 
     async lookupUserGroup(userGroupId): Promise<SlackUserGroup | undefined> {
@@ -188,7 +188,7 @@ async function collectChannels(
     const result = await page(cursor);
     if (Array.isArray(result.channels)) {
       channels.push(...result.channels.map((channel) =>
-        mapChannel(requiredRecord(channel, 'conversations.list'))
+        mapPolicyChannel(requiredRecord(channel, 'conversations.list'))
       ));
     }
     cursor = stringValue(record(result.response_metadata).next_cursor).trim() || undefined;
@@ -231,13 +231,33 @@ function mapMember(user: Record<string, unknown>): SlackMember {
   };
 }
 
-function mapChannel(channel: Record<string, unknown>): SlackChannel {
+function mapPolicyChannel(channel: Record<string, unknown>): SlackChannel {
   return {
     id: requiredString(channel.id, 'conversations'),
     ...(stringValue(channel.name) ? { name: stringValue(channel.name) } : {}),
-    private: channel.is_private === true,
-    member: channel.is_member === true,
-    archived: channel.is_archived === true,
+    private: requiredBoolean(channel.is_private, 'conversations'),
+    member: requiredBoolean(channel.is_member, 'conversations'),
+    archived: requiredBoolean(channel.is_archived, 'conversations'),
+  };
+}
+
+function mapOpenedDirectConversation(channel: Record<string, unknown>): SlackChannel {
+  return {
+    id: requiredString(channel.id, 'conversations.open'),
+    ...(stringValue(channel.name) ? { name: stringValue(channel.name) } : {}),
+    private: true,
+    member: true,
+    archived: false,
+  };
+}
+
+function mapJoinedPublicChannel(channel: Record<string, unknown>): SlackChannel {
+  return {
+    id: requiredString(channel.id, 'conversations.join'),
+    ...(stringValue(channel.name) ? { name: stringValue(channel.name) } : {}),
+    private: false,
+    member: true,
+    archived: false,
   };
 }
 
@@ -263,6 +283,13 @@ function requiredString(value: unknown, operation: string): string {
   const result = stringValue(value);
   if (!result) throw new SlackTransportError(operation, 'invalid_response');
   return result;
+}
+
+function requiredBoolean(value: unknown, operation: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new SlackTransportError(operation, 'invalid_response');
+  }
+  return value;
 }
 
 function record(value: unknown): Record<string, unknown> {

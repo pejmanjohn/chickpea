@@ -22,7 +22,6 @@ test('every Channel turn rechecks the invoking Slack member against the Channel'
       workspaceId: owner.binding.slackTeamId,
       userId: owner.user.slackUserId,
       channelId: 'C_RESTRICTED',
-      includeDiscoverableAgents: false,
       botUserId: 'UBOT',
       transport: {
         async lookupMember() {
@@ -67,7 +66,6 @@ test('a delivered Channel event is fresh membership evidence and skips directory
       userId: owner.user.slackUserId,
       channelId: 'C_SOURCE',
       sourceChannelMembership: true,
-      includeDiscoverableAgents: false,
       botUserId: 'UBOT',
       transport: {
         async lookupMember() {
@@ -213,7 +211,7 @@ test('guests and Slack Connect actors stay conversational-only and receive no me
       });
       assert.equal(result.outcome, 'conversational_only');
       assert.equal(result.resolution, undefined);
-      assert.equal(slackInteractionMayUseGrantedChannel(result), true);
+      assert.equal(slackInteractionMayUseGrantedChannel(result), false);
     }
     assert.equal((await identity.listMemberships()).length, 1);
   } finally {

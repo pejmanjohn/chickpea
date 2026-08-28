@@ -200,11 +200,17 @@ test('gateway transport follows Slack cursors for Channels and membership', asyn
       if (operation === 'conversations.list') {
         return input.cursor === 'channels-next'
           ? {
-              channels: [{ id: 'C2', name: 'zeta', is_member: true }],
+              channels: [{
+                id: 'C2', name: 'zeta', is_member: true,
+                is_private: false, is_archived: false,
+              }],
               response_metadata: { next_cursor: '' },
             }
           : {
-              channels: [{ id: 'C1', name: 'alpha', is_member: true }],
+              channels: [{
+                id: 'C1', name: 'alpha', is_member: true,
+                is_private: false, is_archived: false,
+              }],
               response_metadata: { next_cursor: 'channels-next' },
             };
       }
@@ -271,12 +277,18 @@ test('direct transport follows Slack cursors for Channels and membership', async
     return input?.cursor === 'channels-next'
       ? {
           ok: true,
-          channels: [{ id: 'C2', name: 'zeta', is_member: true }],
+          channels: [{
+            id: 'C2', name: 'zeta', is_member: true,
+            is_private: false, is_archived: false,
+          }],
           response_metadata: { next_cursor: '' },
         }
       : {
           ok: true,
-          channels: [{ id: 'C1', name: 'alpha', is_member: true }],
+          channels: [{
+            id: 'C1', name: 'alpha', is_member: true,
+            is_private: false, is_archived: false,
+          }],
           response_metadata: { next_cursor: 'channels-next' },
         };
   };
@@ -319,6 +331,60 @@ test('direct transport follows Slack cursors for Channels and membership', async
     null,
     'members-next',
   ]);
+});
+
+test('policy-facing Channel reads reject missing or malformed authorization facts', async () => {
+  for (const field of ['is_private', 'is_member', 'is_archived'] as const) {
+    for (const invalid of [undefined, null, 'false', 0]) {
+      const raw = {
+        id: 'C123', is_private: false, is_member: true, is_archived: false,
+        [field]: invalid,
+      };
+      const directClient = fakeClient([]);
+      directClient.conversations.info = async () => ({ ok: true, channel: raw });
+      await assert.rejects(
+        () => createDirectSlackTransportFromClient(directClient).lookupChannel('C123'),
+        (error: unknown) => error instanceof SlackTransportError && error.code === 'invalid_response',
+      );
+
+      const gateway = createGatewaySlackTransport({
+        workspaceId: 'T123',
+        async call() {
+          return { channel: raw };
+        },
+      });
+      await assert.rejects(
+        () => gateway.lookupChannel('C123'),
+        (error: unknown) => error instanceof SlackTransportError && error.code === 'invalid_response',
+      );
+    }
+  }
+});
+
+test('conversation open and public join synthesize only operation-guaranteed facts', async () => {
+  const client = fakeClient([]);
+  client.conversations.open = async () => ({ ok: true, channel: { id: 'D123' } });
+  client.conversations.join = async () => ({ ok: true, channel: { id: 'C123' } });
+  const direct = createDirectSlackTransportFromClient(client);
+  assert.deepEqual(await direct.openDirectConversation('U123'), {
+    id: 'D123', private: true, member: true, archived: false,
+  });
+  assert.deepEqual(await direct.joinPublicChannel('C123'), {
+    id: 'C123', private: false, member: true, archived: false,
+  });
+
+  const gateway = createGatewaySlackTransport({
+    workspaceId: 'T123',
+    async call(operation) {
+      return { channel: { id: operation === 'conversations.open' ? 'D123' : 'C123' } };
+    },
+  });
+  assert.deepEqual(await gateway.openDirectConversation('U123'), {
+    id: 'D123', private: true, member: true, archived: false,
+  });
+  assert.deepEqual(await gateway.joinPublicChannel('C123'), {
+    id: 'C123', private: false, member: true, archived: false,
+  });
 });
 
 test('direct transport turns Slack failures into stable capability errors', async () => {

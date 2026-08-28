@@ -50,12 +50,15 @@ import {
   resolveSlackBehaviorSettings,
 } from '../slack/behavior-settings.ts';
 import {
-  discoverableAgents,
   parseAgentUserGroupMentions,
   resolveAgentRoute,
   type AgentRoutingActor,
   type AgentRoutingResult,
 } from '../slack/agent-routing.ts';
+import {
+  listPrivatelyUsableAgents,
+  resolvePrivateAgentAccess,
+} from '../slack/agent-access.ts';
 import {
   agentAppHomeStarterMessage,
   agentDirectoryAppHome,
@@ -486,7 +489,6 @@ export async function resolveAgentRoutingActor(input: {
   /** A Slack message/reaction event is current proof that its author belongs
    * to the exact source Channel at event time. */
   sourceChannelMembership?: boolean;
-  includeDiscoverableAgents?: boolean;
   botUserId: string;
   transport: SlackTransport;
   stores: AppStores;
@@ -532,22 +534,10 @@ export async function resolveAgentRoutingActor(input: {
     ? input.sourceChannelMembership === true ||
       await input.transport.channelHasMember(input.channelId, input.userId)
     : false;
-  let discoverableAgentIds: ReadonlySet<string> | undefined;
-  if (fullMember && input.includeDiscoverableAgents !== false) {
-    const memberChannels = await input.transport.listMemberChannels(input.userId);
-    const agents = await discoverableAgents({
-      config: input.stores.config,
-      workspaceId: input.workspaceId,
-      ...(principal ? { principal } : {}),
-      channelMember: async (channelId) => memberChannels.has(channelId),
-    });
-    discoverableAgentIds = new Set(agents.map((agent) => agent.id));
-  }
   return {
     routing: {
       channelMember,
       fullMember,
-      ...(discoverableAgentIds ? { discoverableAgentIds } : {}),
     },
     ...(principal ? { principal } : {}),
   };
@@ -559,6 +549,7 @@ async function publishAgentAppHome(input: {
   stores: AppStores;
   transport: SlackTransport;
   botUserId?: string;
+  unavailableNotice?: boolean;
 }): Promise<void> {
   if (!input.botUserId) return;
   const installation = await input.stores.config.getWorkspaceInstallation(input.workspaceId);
@@ -570,13 +561,30 @@ async function publishAgentAppHome(input: {
     transport: input.transport,
     stores: input.stores,
   });
+  const [agents, grants] = actor.routing.fullMember
+    ? await Promise.all([
+        input.stores.config.listAgents(),
+        input.stores.config.listAgentChannelGrants(input.workspaceId),
+      ])
+    : [[], []];
   const visible = actor.routing.fullMember
-    ? (await input.stores.config.listUserAgents()).filter((agent) =>
-        actor.routing.discoverableAgentIds?.has(agent.id))
+    ? await listPrivatelyUsableAgents({
+        agents,
+        workspaceId: input.workspaceId,
+        grants,
+        actor: {
+          fullMember: true,
+          slackUserId: input.userId,
+          ...(actor.principal ? { membershipId: actor.principal.membershipId } : {}),
+        },
+        transport: input.transport,
+      })
     : [];
   await input.transport.publishAppHome({
     userId: input.userId,
-    view: agentDirectoryAppHome(visible),
+    view: agentDirectoryAppHome(visible, {
+      unavailableNotice: input.unavailableNotice === true,
+    }),
   });
 }
 
@@ -600,9 +608,34 @@ async function seedAgentAppHomeThread(input: {
     transport: input.transport,
     stores: input.stores,
   });
-  if (!actor.routing.fullMember || !actor.routing.discoverableAgentIds?.has(input.agentId)) return;
-  const agent = await input.stores.config.getAgent(input.agentId);
-  if (!agent.enabled || agent.lifecycle === 'archived') return;
+  if (!actor.routing.fullMember) {
+    await publishAgentAppHome({ ...input, unavailableNotice: true });
+    return;
+  }
+  const agent = (await input.stores.config.listAgents()).find(({ id }) => id === input.agentId);
+  if (
+    !agent || agent.kind !== 'user' || !agent.enabled ||
+    agent.lifecycle === 'draft' || agent.lifecycle === 'archived'
+  ) {
+    await publishAgentAppHome({ ...input, unavailableNotice: true });
+    return;
+  }
+  const grants = await input.stores.config.listAgentChannelGrants(input.workspaceId);
+  const access = await resolvePrivateAgentAccess({
+    agent,
+    workspaceId: input.workspaceId,
+    grants,
+    actor: {
+      fullMember: true,
+      slackUserId: input.userId,
+      ...(actor.principal ? { membershipId: actor.principal.membershipId } : {}),
+    },
+    transport: input.transport,
+  });
+  if (access.status !== 'allowed') {
+    await publishAgentAppHome({ ...input, unavailableNotice: true });
+    return;
+  }
   const avatarUrl = await resolvedAgentAvatarUrl(agent, input.stores, input.platformEnv);
   if (!avatarUrl) return;
   const dm = await input.transport.openDirectConversation(input.userId);
@@ -632,6 +665,7 @@ async function seedAgentAppHomeThread(input: {
     actor: actor.routing,
     config: input.stores.config,
     appHomeAgentId: agent.id,
+    authorizeUserAgent: async () => access,
   });
   if (routed.kind === 'routed') {
     await recordDeliveredSlackAgentMessage(
@@ -667,9 +701,7 @@ async function postAgentRoutingFeedback(input: {
     : '';
   const text = input.result.kind === 'ambiguous'
     ? `Mention one Agent at a time.${alternatives}`
-    : input.result.reason === 'member_required'
-      ? 'Only full workspace members can start private Agent conversations.'
-      : input.result.reason === 'temporarily_unavailable'
+    : input.result.reason === 'temporarily_unavailable'
         ? 'That Agent address could not be verified right now. Try again.'
       : `That Agent is not available here.${alternatives}`;
   if (input.surface === 'channel') {
@@ -977,7 +1009,6 @@ async function processSlackEvent(
         userId: turn.userId,
         ...(surface === 'channel' ? { channelId: turn.channelId } : {}),
         ...(surface === 'channel' ? { sourceChannelMembership: true } : {}),
-        includeDiscoverableAgents: surface !== 'channel',
         botUserId: resolvedBotUserId,
         transport: runtimeTransport,
         stores,
@@ -988,6 +1019,19 @@ async function processSlackEvent(
         actor: agentRoutingActor.routing,
         config: store,
         transport: runtimeTransport,
+        authorizeUserAgent: async (agent) => resolvePrivateAgentAccess({
+          agent,
+          workspaceId: turn.workspaceId,
+          grants: await store.listAgentChannelGrants(turn.workspaceId),
+          actor: {
+            fullMember: agentRoutingActor!.routing.fullMember,
+            slackUserId: turn.userId,
+            ...(agentRoutingActor!.principal
+              ? { membershipId: agentRoutingActor!.principal.membershipId }
+              : {}),
+          },
+          transport: runtimeTransport,
+        }),
       });
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed') {

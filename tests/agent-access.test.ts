@@ -254,6 +254,12 @@ test('directory access filters workspace, grant, and Agent lifecycle state', asy
 
   assert.deepEqual(visible.map(({ id }) => id), [active.id]);
   assert.deepEqual(calls, ['lookup:C_PUBLIC']);
+  assert.equal(await resolvePrivateAgentAudience({
+    agent: disabled,
+    workspaceId: 'T1',
+    grants: [],
+    transport: transport(),
+  }), 'unavailable');
 });
 
 test('directory fact collection deduplicates Channel lookups and member traversal', async () => {
@@ -274,4 +280,25 @@ test('directory fact collection deduplicates Channel lookups and member traversa
 
   assert.deepEqual(visible.map(({ id }) => id), [alpha.id, beta.id]);
   assert.deepEqual(calls, ['lookup:C_SHARED', 'member-channels']);
+});
+
+test('large directories use one bounded traversal and target only unresolved grants', async () => {
+  const agents = Array.from({ length: 8 }, (_, index) => agent(`agent_${index}`));
+  const grants = agents.map((item, index) => grant(item.id, `C${index}`));
+  const calls: string[] = [];
+  const directoryChannels = grants.slice(0, 7).map(({ channelId }) => channel(channelId));
+  const visible = await listPrivatelyUsableAgents({
+    agents,
+    workspaceId: 'T1',
+    grants,
+    actor: fullMember,
+    transport: transport({
+      calls,
+      directory: { channels: directoryChannels, truncated: true },
+      channels: { C7: channel('C7') },
+    }),
+  });
+
+  assert.equal(visible.length, 8);
+  assert.deepEqual(calls, ['directory', 'lookup:C7']);
 });

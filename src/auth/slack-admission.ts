@@ -67,14 +67,11 @@ export type SlackInteractionMemberResult =
   | { outcome: 'provisioned' | 'active' | 'deactivated'; resolution: Awaited<ReturnType<IdentityStore['resolveSlackIdentity']>> }
   | { outcome: 'conversational_only' | 'denied'; resolution?: undefined };
 
-/** Guests may converse through an explicit Channel grant, but a deactivated
- * full member must not regain Agent use merely because Slack still delivers
- * their Channel message. */
+/** Only active full workspace members may invoke an Agent in a granted Channel. */
 export function slackInteractionMayUseGrantedChannel(
   result: SlackInteractionMemberResult,
 ): boolean {
-  return result.outcome === 'provisioned' || result.outcome === 'active' ||
-    result.outcome === 'conversational_only';
+  return result.outcome === 'provisioned' || result.outcome === 'active';
 }
 
 /** Provision product authority from Slack truth without making email an identity key. */

@@ -42,6 +42,15 @@ test('App Home explains when the Slack view shows only the first 24 Agents', () 
   assert.match(JSON.stringify(blocks.at(-1)), /Showing 24 of 26 available Agents/);
 });
 
+test('a stale selection refresh uses a generic availability notice', () => {
+  const view = agentDirectoryAppHome([agent('support', 'Support')], {
+    unavailableNotice: true,
+  });
+  const notice = JSON.stringify((view.blocks ?? [])[3]);
+  assert.match(notice, /not available right now/);
+  assert.doesNotMatch(notice, /private|Channel membership|placement/i);
+});
+
 test('only the exact App Home Agent action produces a trusted selection', () => {
   const payload: Record<string, any> = {
     type: 'block_actions',

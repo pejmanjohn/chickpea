@@ -84,6 +84,7 @@ export async function resolvePrivateAgentAccess(
 export async function resolvePrivateAgentAudience(
   input: PrivateAgentAudienceInput,
 ): Promise<PrivateAgentAudience> {
+  if (!agentIsEligible(input.agent)) return 'unavailable';
   const grants = activeAgentGrants(input);
   const facts = await collectTargetedFacts(grants, input.transport);
   return audienceForPlacement(placementState(grants, facts));
