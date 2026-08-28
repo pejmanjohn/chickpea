@@ -10389,7 +10389,7 @@ async function agentAdminProjection(
           agent.slackPresence.normalizedHandle,
         )
       : null,
-    tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory', 'schedules'],
+    tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory', 'schedules', 'model'],
     capabilityPreviews: {
       skills: agent.skills.map(({ name, description, enabled }) => ({ name, description, enabled })),
       connectors: [

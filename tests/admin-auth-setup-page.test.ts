@@ -36,7 +36,7 @@ test('Slack sign-in is the only visible login path and preserves a safe Admin de
     html,
     /<button class="auth-button slack-provider-button"[^>]*><span class="slack-provider-logo slack-logo-image" aria-hidden="true"><\/span>Continue with Slack<\/button>/,
   );
-  assert.match(html, /\.slack-logo-image\{background:url\("data:image\/png;base64,/);
+  assert.match(html, /\.slack-logo-image\{background:url\("data:image\/svg\+xml;base64,/);
   assert.doesNotMatch(html, /Full Slack members|Guests and Slack Connect participants/);
   assert.doesNotMatch(html, />Sign in with Slack<\/h1>/);
   assert.doesNotMatch(html, /invitation-only|invited to manage/i);

@@ -23,7 +23,7 @@ import type { SlackSetupTransaction } from '../identity/types.ts';
 import type { SlackAppManifest } from '../slack/app-manifest.ts';
 
 const SLACK_LOGO_DATA_URL =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAA/CAMAAABnwz74AAAAn1BMVEX///+j3++a2+rw5M3n2tOk0K7L3L54xrXI0sftyHSPxZqLwZSp07HI6/RkzOpz0uyJ09tmtHlirnNwtH59z+ZZyOpdrXFbqm1dsnOPxppNxej23qjupqThYIDldY3yr7rodJPx0Ibz0YreSW3dO2XjMV7kVnv43qzzyXbvuE/ttUXyyHfjNmPjKVrbJVXwsTvusj3aG1DbLFLhH1PvscJL5pvlAAAAAXRSTlMAQObYZgAABDtJREFUSMe9lw1vokAQhvkQVsFCEUFbRVBEQUWl9v//tpuZ3QU8bW97l9ybaAI4z843UdOeSTdAendtDizLGtiaonSdIYAN5Y2R7TjMdZyxIuDF8FD+q7zhsmACCl01wnDqRREhXqX9JI4n8Ww2USNMo0gAvNch2ccxegCEwDUVMmBEkhD5L5o2tlg8D8AHAMwchUTqfhQJROQZNgACHsCPAcgAwNAhQDxDF5QAxj1gDACKABkqAE2nInQhOAFo8gOAZvh3HlhBIBCqgDfm9T0QACCoAjAP0+nUgC/jrQOgD6qAvsZWOBGEvwZ0Hrj/Aph8DdC/0O+ALonmeDx+M+Vg6FNMehR1Q8THear3AZMewHVcFrqOZQr76F0q6nVh5BEBhknYI4BMYD/MQYFr0Xi39tG9wAlca48Al83JHggI0L0HU+lC5Bsm9sGE1gEAZrgPbAdMA/jM5yEzNZ1Fz+17rRz3AablzmVrBY6lDYwo+haA44ze0z5wTRkSKgwB8PI9wETALIbDSU8ANL0U8KPePUoihBtz+8DhgDDkpeUAn6+vR/P3d6yCbmHS+UoMGVUlZGHI0A/Xxq3LvD4ASwIfqqvPsMy2C/kWDoxFWUMeAeOdyHzqvN7JBHn3xHObcQLkHAALCiFgjLmunAV6k5GmrXx/yuRzeLO5ILKHMuKFA+oNFkQyBOEXXQ6H+os+7J6PRvB+tEfixyO41OjrOw21/ytzuVyaZjvg2jJJlnfPzQXIvFPv8WiVZlmWghJ+YwWX2aoNMllvnmidyMdplm9BeV5k/N4qL0DbneDty+pwqB51PCbCfou/L06nekd3VkVd10VRn3MOPFYX0BV1aMUR+DzJ8uJEJ54KAqxOaA6AuqHrdXW4cKMegOwP1RoykeyKFoAnJjtuD4QmX0HnYQAPElGUezAQDqDwxCSXgKLZpuYXACIcDuVGS7PWvKj7gHNRfOQc8JQADAIMskIeWNxagMgCepCUPN5WkJCrJAAgWW0loOY5yG91TWUoaulBHyAKcqHEUg52wgWwx+5K8kYS6lNqYxWqPgId4IDLpTpiFdIcCfWt2KXUF9sOkCNAEEQl5fmo6rgQnXQ6QRtlqSYAzRn18SEA2roUgF4rgQdVuRCjkHymaZaI1n4C0OzNppTqhmG/6E9bO1w9wFkCNPOpnk82AhoOaFrAT9TzoAPgOvg7AHeT9oEqoQWcOWCxL49i/uW++QMg/w2wkW1QlUqEFiBCSEo5vNC5KmEAAM1rBJw6wAEBlRrgXNcIgO4WgIvYAIdqo/CPRQLqFnDhk0cAhb5IdgRAUQiLEidYbEUlD7LzTQLyzwSrcJGEaj36M0DLtjdOaM601vcQw5UvIaUq4HuhaW44EGLA9yXN8fVaKXbjKNuhB9tM9k3KF7OqPRA+6d2YtH23WMIiWC+UOplkDkB3P98PBs+P/wV/Ze9+4cPjFgAAAABJRU5ErkJggg==';
+  'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTQiIGhlaWdodD0iNTQiIHZpZXdCb3g9IjAgMCA1NCA1NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGcgY2xpcC1wYXRoPSJ1cmwoI2NsaXAwXzQxMjdfNzAxMDUpIj4KPHBhdGggZD0iTTExLjM3OSAzMy45OTkzQzExLjM3OSAzNy4xMzU4IDguODQ1MTIgMzkuNjUwNyA1LjcyNzYgMzkuNjUwN0MyLjYxMDA4IDM5LjY1MDcgMC4wNTcyMjA1IDM3LjExNjggMC4wNTcyMjA1IDMzLjk5OTNDMC4wNTcyMjA1IDMwLjg4MTcgMi41OTExIDI4LjM0NzkgNS43MDg2MiAyOC4zNDc5SDExLjM2VjMzLjk5OTNIMTEuMzc5WiIgZmlsbD0iI0UwMUU1QSIvPgo8cGF0aCBkPSJNMTQuMTk2MiAzMy45OTk3QzE0LjE5NjIgMzAuODYzMiAxNi43MzAxIDI4LjM0ODMgMTkuODQ3NiAyOC4zNDgzQzIyLjk2NTEgMjguMzQ4MyAyNS40OTkgMzAuODgyMiAyNS40OTkgMzMuOTk5N1Y0OC4xMzUzQzI1LjQ5OSA1MS4yNzE4IDIyLjk2NTEgNTMuNzg2NyAxOS44NDc2IDUzLjc4NjdDMTYuNzMwMSA1My43ODY3IDE0LjE5NjIgNTEuMjcxOCAxNC4xOTYyIDQ4LjEzNTNWMzMuOTk5N1oiIGZpbGw9IiNFMDFFNUEiLz4KPHBhdGggZD0iTTE5Ljg2NjIgMTEuMjY3M0MxNi43Mjk2IDExLjI2NzMgMTQuMjE0OCA4LjczMzQ3IDE0LjIxNDggNS42MTU5NEMxNC4yMTQ4IDIuNDk4NDIgMTYuNzQ4NiAtMC4wMzU0NTM4IDE5Ljg2NjIgLTAuMDM1NDUzOEMyMi45ODM3IC0wLjAzNTQ1MzggMjUuNTE3NSAyLjQ5ODQyIDI1LjUxNzUgNS42MTU5NFYxMS4yNjczSDE5Ljg2NjJaIiBmaWxsPSIjMzZDNUYwIi8+CjxwYXRoIGQ9Ik0xOS44NjgyIDE0LjEzMzRDMjMuMDA0NyAxNC4xMzM0IDI1LjUxOTYgMTYuNjY3MyAyNS41MTk2IDE5Ljc4NDhDMjUuNTE5NiAyMi45MDIzIDIyLjk4NTcgMjUuNDM2MiAxOS44NjgyIDI1LjQzNjJINS42NzU2NkMyLjUzOTE2IDI1LjQzNjIgMC4wMjQyNjE1IDIyLjkwMjMgMC4wMjQyNjE1IDE5Ljc4NDhDMC4wMjQyNjE1IDE2LjY2NzMgMi41NTgxNCAxNC4xMzM0IDUuNjc1NjYgMTQuMTMzNEgxOS44NjgyWiIgZmlsbD0iIzM2QzVGMCIvPgo8cGF0aCBkPSJNNDIuNTMyMyAxOS43ODUzQzQyLjUzMjMgMTYuNjQ4OCA0NS4wNjYyIDE0LjEzMzkgNDguMTgzNyAxNC4xMzM5QzUxLjMwMTIgMTQuMTMzOSA1My44MzUxIDE2LjY2NzggNTMuODM1MSAxOS43ODUzQzUzLjgzNTEgMjIuOTAyOCA1MS4zMDEyIDI1LjQzNjcgNDguMTgzNyAyNS40MzY3SDQyLjUzMjNWMTkuNzg1M1oiIGZpbGw9IiMyRUI2N0QiLz4KPHBhdGggZD0iTTM5LjcxMjYgMTkuNzkzNEMzOS43MTI2IDIyLjkyOTkgMzcuMTc4NyAyNS40NDQ4IDM0LjA2MTIgMjUuNDQ0OEMzMC45NDM2IDI1LjQ0NDggMjguNDA5OCAyMi45MTEgMjguNDA5OCAxOS43OTM0VjUuNjE5ODZDMjguNDA5OCAyLjQ4MzM2IDMwLjk0MzYgLTAuMDMxNTM5OSAzNC4wNjEyIC0wLjAzMTUzOTlDMzcuMTc4NyAtMC4wMzE1Mzk5IDM5LjcxMjYgMi40ODMzNiAzOS43MTI2IDUuNjE5ODZWMTkuNzkzNFoiIGZpbGw9IiMyRUI2N0QiLz4KPHBhdGggZD0iTTM0LjAzNzYgNDIuNDgyQzM3LjE3NDEgNDIuNDgyIDM5LjY4OSA0NS4wMTU4IDM5LjY4OSA0OC4xMzM0QzM5LjY4OSA1MS4yNTA5IDM3LjE1NTIgNTMuNzg0OCAzNC4wMzc2IDUzLjc4NDhDMzAuOTIwMSA1My43ODQ4IDI4LjM4NjIgNTEuMjUwOSAyOC4zODYyIDQ4LjEzMzRWNDIuNDgySDM0LjAzNzZaIiBmaWxsPSIjRUNCMjJFIi8+CjxwYXRoIGQ9Ik0zNC4wMzgxIDM5LjY1MDdDMzAuOTAxNiAzOS42NTA3IDI4LjM4NjcgMzcuMTE2OCAyOC4zODY3IDMzLjk5OTNDMjguMzg2NyAzMC44ODE4IDMwLjkyMDYgMjguMzQ3OSAzNC4wMzgxIDI4LjM0NzlINDguMjMwNkM1MS4zNjcxIDI4LjM0NzkgNTMuODgyIDMwLjg4MTggNTMuODgyIDMzLjk5OTNDNTMuODgyIDM3LjExNjggNTEuMzQ4MiAzOS42NTA3IDQ4LjIzMDYgMzkuNjUwN0gzNC4wMzgxWiIgZmlsbD0iI0VDQjIyRSIvPgo8L2c+CjxkZWZzPgo8Y2xpcFBhdGggaWQ9ImNsaXAwXzQxMjdfNzAxMDUiPgo8cmVjdCB3aWR0aD0iNTQiIGhlaWdodD0iNTQiIGZpbGw9IndoaXRlIi8+CjwvY2xpcFBhdGg+CjwvZGVmcz4KPC9zdmc+Cg==';
 
 export function renderAdminPage(
   options: { usageAdminUi?: boolean } = {},
@@ -91,6 +91,7 @@ ${CHICKPEA_FAVICON_HTML}
   --admin-visual-faint: #b2a487;
   --admin-visual-gold: #dda126;
   --admin-visual-gold-dark: #b77806;
+  --admin-visual-accent-strong: #b05415;
   --admin-visual-canvas: #f4ead2;
   --admin-visual-paper: #fffdf7;
   --admin-visual-paper-soft: #fbf7ec;
@@ -682,6 +683,81 @@ button, input, textarea, select { font: inherit; }
 .slack-overview { gap: 22px; max-width: 990px; }
 .slack-head { align-items: center; display: flex; gap: 16px; }
 .slack-logo-large { flex-shrink: 0; height: 48px; object-fit: contain; width: 48px; }
+.destination-page { display: flex; flex-direction: column; gap: 0; margin: 0 auto; max-width: 760px; width: 100%; }
+.destination-hero { align-items: center; display: flex; gap: 14px; padding: 0 0 24px; }
+.destination-hero-logo {
+  background-color: var(--bg);
+  border: 1px solid var(--admin-visual-line);
+  border-radius: 12px;
+  background-size: 62%;
+  height: 48px;
+  width: 48px;
+}
+.destination-hero-copy { display: flex; flex-direction: column; gap: 1px; }
+.destination-hero .page-title { letter-spacing: 0; line-height: 1.1; }
+.destination-workspace { color: var(--text-2); font-size: .8125rem; }
+.destination-tabs { border-bottom: 1px solid var(--admin-visual-line); display: flex; gap: 12px; }
+.destination-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: .875rem;
+  font-weight: 600;
+  margin-bottom: -1px;
+  padding: 9px 12px 10px;
+}
+.destination-tab:hover { color: var(--text); }
+.destination-tab.active { border-bottom-color: var(--admin-visual-accent-strong); color: var(--admin-visual-accent-strong); }
+.destination-tab:focus-visible { border-radius: 8px 8px 0 0; outline: 2px solid var(--admin-visual-accent-strong); outline-offset: 2px; }
+.destination-panel { display: flex; flex-direction: column; gap: 26px; padding-top: 26px; }
+.destination-overview-section { display: flex; flex-direction: column; gap: 10px; }
+.destination-overview-section h2, .destination-tab-heading h2 { color: var(--text); font-size: 1rem; letter-spacing: 0; margin: 0; }
+.destination-overview-card {
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--admin-visual-line);
+  border-radius: 15px;
+  display: flex;
+  gap: 14px;
+  min-height: 96px;
+  padding: 16px 18px;
+}
+.destination-workspace-avatar {
+  align-items: center;
+  background: var(--admin-visual-green-soft);
+  border-radius: 10px;
+  color: #358536;
+  display: inline-flex;
+  flex: none;
+  font-size: .875rem;
+  font-weight: 500;
+  height: 46px;
+  justify-content: center;
+  letter-spacing: -.03em;
+  width: 46px;
+}
+.destination-card-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.destination-card-copy strong { color: var(--text); font-size: .9375rem; font-weight: 700; }
+.destination-card-copy small { color: var(--text-3); font-size: .8125rem; }
+.destination-summary-copy strong { color: var(--text); font-size: .875rem; font-weight: 700; }
+.destination-summary-copy small { color: var(--text-3); font-size: .75rem; }
+.destination-status { align-items: center; color: var(--ok); display: inline-flex; font-size: .75rem; font-weight: 700; gap: 6px; margin-top: 1px; }
+.destination-status::before { background: currentColor; border-radius: 50%; content: ""; height: 6px; width: 6px; }
+.destination-outline-action { background: transparent; border: 1px solid var(--admin-visual-accent-strong); box-shadow: none; color: var(--admin-visual-accent-strong); flex: none; padding-inline: 14px; }
+.destination-outline-action:hover:not(:disabled) { background: #fff9e9; }
+.destination-summary-card { gap: 0; }
+.destination-summary-item { align-items: center; display: flex; flex: 1; gap: 12px; min-width: 0; }
+.destination-summary-item + .destination-summary-item { border-left: 1px solid var(--admin-visual-line); margin-left: 18px; padding-left: 18px; }
+.destination-summary-icon { height: 42px; width: 42px; }
+.destination-summary-icon .ic { height: 20px; width: 20px; }
+.destination-summary-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.destination-summary-card > .btn { margin-left: 20px; }
+.destination-tab-heading { align-items: flex-start; display: flex; gap: 20px; justify-content: space-between; }
+.destination-tab-heading > div { display: flex; flex-direction: column; gap: 4px; }
+.destination-tab-heading .btn { flex: none; }
+.destination-panel .section:first-child { border-top: 0; padding-top: 0; }
 .workspace-card {
   align-items: center;
   background: var(--bg);
@@ -999,10 +1075,10 @@ details[open].advanced summary::before {
 .skill-build-copy { color: var(--text-2); font-size: .75rem; line-height: 1.45; }
 .skill-build-copy strong { color: var(--text); display: block; font-size: .8125rem; margin-bottom: 2px; }
 .configured-skills { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-.configured-skills > h3 { color: var(--text); font-size: .8125rem; margin: 0 3px; }
+.configured-skills > h4 { color: var(--text); font-size: .8125rem; margin: 0 3px; }
 .suggested-skills { display: flex; flex-direction: column; margin-top: 10px; }
 .suggested-skills-head { align-items: flex-end; display: flex; gap: 14px; justify-content: space-between; margin-bottom: 12px; }
-.suggested-skills-head h3 { color: var(--text); font-size: 1rem; letter-spacing: -.02em; margin: 0; }
+.suggested-skills-head h4 { color: var(--text); font-size: 1rem; letter-spacing: -.02em; margin: 0; }
 .suggested-skills-head p { color: var(--text-3); font-size: .75rem; line-height: 1.45; margin: 3px 0 0; }
 .suggested-on-count { color: var(--ok); font-size: .6875rem; font-weight: 700; white-space: nowrap; }
 .suggested-category-nav {
@@ -1541,29 +1617,6 @@ details[open].advanced summary::before {
 /* Agent and Channel pages keep their specialized rail and content density
    inside the shared attached shell. */
 .admin-surface .agent-shell-sidebar .rail-head { padding: 0 3px 8px; }
-.agent-slack-context { padding: 0 3px 8px; }
-.agent-slack-row {
-  align-items: center;
-  color: var(--text);
-  display: flex;
-  font-size: .8125rem;
-  font-weight: 700;
-  gap: 10px;
-  min-height: 42px;
-}
-.agent-slack-row .platform-logo { height: 22px; width: 22px; }
-.agent-slack-status {
-  align-items: center;
-  color: var(--ok);
-  display: inline-flex;
-  font-size: .6875rem;
-  gap: 5px;
-  margin-left: auto;
-}
-.agent-slack-status::before { background: currentColor; border-radius: 50%; content: ""; height: 7px; width: 7px; }
-.agent-slack-status.disconnected { color: var(--text-3); }
-.agent-slack-status.attention { color: var(--danger); }
-.agent-workspace-row { margin: 3px 0 2px; padding: 6px 0; }
 .agent-roster { display: flex; flex-direction: column; gap: 4px; }
 .agent-roster-item {
   align-items: center;
@@ -1618,6 +1671,35 @@ details[open].advanced summary::before {
   white-space: nowrap;
 }
 .agent-roster-add { margin: 5px 0 0; padding-left: 12px; }
+.destination-shell-sidebar .rail-head { padding: 0 3px 10px; }
+.destination-rail-item {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 12px;
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 34px minmax(0, 1fr);
+  padding: 9px;
+  text-align: left;
+  width: 100%;
+}
+.destination-rail-item:hover { background: rgba(232, 216, 182, .5); }
+.destination-rail-item.active { background: #f4e8cc; }
+.destination-rail-item:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.destination-rail-logo {
+  background-color: var(--bg);
+  background-size: 62%;
+  border: 1px solid var(--admin-visual-line);
+  border-radius: 9px;
+  height: 34px;
+  width: 34px;
+}
+.destination-rail-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.destination-rail-name { color: var(--text); font-size: .8125rem; font-weight: 700; line-height: 1.2; }
+.destination-rail-meta { color: var(--text-3); font-size: .6875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .admin-surface .main {
   padding: 44px 46px 48px;
 }
@@ -1877,7 +1959,28 @@ details[open].advanced summary::before {
 .agent-profile-intro { color: var(--text-3); flex: 0 1 auto; font-size: .9375rem; margin: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .agent-description-row.is-empty .agent-profile-intro { color: var(--text-3); }
 .agent-description-input { max-width: 78ch; }
-.agent-presence-card { align-items: stretch; gap: 18px; grid-template-columns: minmax(0, 1fr); }
+.agent-destinations-section { background: var(--bg); border: 1px solid var(--admin-visual-line); border-radius: 16px; display: flex; flex-direction: column; gap: 18px; padding: 20px; }
+.agent-section-heading, .agent-configuration-head { align-items: flex-start; display: flex; gap: 12px; }
+.agent-section-heading h2, .agent-configuration-head h2 { color: var(--text); font-size: 1.2rem; letter-spacing: -.02em; margin: 0 0 4px; }
+.agent-section-heading p, .agent-configuration-head p { color: var(--text-3); font-size: .8125rem; line-height: 1.45; margin: 0; }
+.agent-destination-list { border: 1px solid var(--admin-visual-line); border-radius: 14px; overflow: hidden; }
+.agent-destination-card > summary { align-items: center; cursor: pointer; display: grid; gap: 14px; grid-template-columns: auto minmax(0, 1fr) auto; list-style: none; padding: 16px 18px; }
+.agent-destination-card > summary::-webkit-details-marker { display: none; }
+.agent-destination-card > summary:focus-visible { outline: 2px solid var(--ember-press); outline-offset: -2px; }
+.agent-destination-summary-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.agent-destination-summary-copy strong { color: var(--text); font-size: .9375rem; }
+.agent-destination-summary-copy small { color: var(--text-3); font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-destination-chevron { color: var(--text-3); height: 18px; transition: transform .16s ease; width: 18px; }
+.agent-destination-card[open] .agent-destination-chevron { transform: rotate(180deg); }
+.agent-destination-body { border-top: 1px solid var(--admin-visual-line); display: flex; flex-direction: column; gap: 24px; padding: 24px 28px 28px; }
+.agent-destination-subsection { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.agent-destination-subsection > h3, .agent-slack-channels-head h3 { color: var(--text); font-size: .9375rem; letter-spacing: -.01em; margin: 0; }
+.agent-destination-divider { background: var(--admin-visual-line); height: 1px; }
+.agent-slack-channels-head { align-items: center; display: flex; gap: 16px; justify-content: space-between; }
+.agent-slack-channels-head h3 { margin-bottom: 4px; }
+.agent-slack-channels-head p { color: var(--text-3); font-size: .75rem; line-height: 1.45; margin: 0; }
+.agent-slack-channels-head > .btn { flex: none; }
+.agent-placement-label.agent-slack-channel-count { justify-content: flex-end; }
 .agent-slack-card-icon { align-items: center; background: transparent; border: 1px solid var(--admin-visual-line); border-radius: 10px; display: inline-flex; justify-content: center; }
 .agent-slack-card-mark { height: 19px; width: 19px; }
 .agent-presence-grid { align-items: start; display: grid; gap: 24px; grid-template-columns: minmax(250px, 1fr) minmax(240px, 1fr); }
@@ -1899,9 +2002,10 @@ details[open].advanced summary::before {
 .agent-overflow-menu button.danger { color: var(--danger); }
 .agent-overflow-menu button:disabled { cursor: not-allowed; opacity: .48; }
 .agent-overflow-guidance { border-top: 1px solid var(--line); color: var(--text-3); font-size: .6875rem; line-height: 1.45; margin: 3px 4px 0; padding: 8px 6px 3px; }
-.agent-tabs-card { border: 1px solid #dfd2b9; border-radius: 16px; background: var(--bg); overflow: hidden; }
+.agent-tabs-card { border: 1px solid #dfd2b9; border-radius: 16px; background: var(--bg); overflow: visible; }
+.agent-configuration-head { padding: 20px 20px 18px; }
 .agent-tabs-card .ptabs { background: #f5ecd9; border: 0; border-bottom: 1px solid #dfd2b9; border-radius: 0; padding: 10px; }
-.agent-tabs-card .ptab-panel { background: var(--bg); border: 0; border-radius: 0; min-height: 315px; padding: 28px; }
+.agent-tabs-card .ptab-panel { background: var(--bg); border: 0; border-radius: 0 0 15px 15px; min-height: 315px; padding: 28px; }
 .agent-tab-head { align-items: flex-start; display: flex; gap: 12px; margin-bottom: 8px; }
 .agent-tab-icon, .agent-card-icon { flex: none; height: 34px; width: 34px; }
 .semantic-icon { align-items: center; border: 1px solid transparent; border-radius: 10px; display: inline-flex; flex: none; justify-content: center; }
@@ -1915,19 +2019,12 @@ details[open].advanced summary::before {
 .semantic-icon.tone-channel { background: var(--semantic-channel-bg); border-color: var(--semantic-channel-line); color: var(--semantic-channel-fg); }
 .semantic-icon.tone-neutral { background: var(--semantic-neutral-bg); border-color: var(--semantic-neutral-line); color: var(--semantic-neutral-fg); }
 .semantic-icon.tone-slack { background: var(--semantic-slack-bg); border-color: var(--semantic-slack-line); }
-.agent-tab-head h2, .agent-card-heading h2 { color: var(--text); font-size: 1.05rem; letter-spacing: -.015em; margin: 0 0 4px; }
-.agent-tab-head p, .agent-card-heading p { color: var(--text-3); font-size: .75rem; line-height: 1.45; margin: 0; }
+.agent-tab-head h3 { color: var(--text); font-size: 1.05rem; letter-spacing: -.015em; margin: 0 0 4px; }
+.agent-tab-head p { color: var(--text-3); font-size: .75rem; line-height: 1.45; margin: 0; }
 .agent-instructions-editor .textarea { background: #fdf9f0; font-size: .875rem; line-height: 1.65; min-height: 170px; }
 .agent-instructions-guidance { align-items: flex-start; background: var(--well); border-radius: 10px; color: var(--text-3); display: flex; font-size: .75rem; gap: 8px; line-height: 1.45; margin: 12px 0 0; padding: 10px 12px; }
-.agent-detail-card { align-items: center; background: var(--bg); border: 1px solid var(--admin-visual-line); border-radius: 14px; display: grid; gap: 22px; min-height: 105px; padding: 18px 20px; }
-.agent-placement-card { align-items: stretch; gap: 16px; grid-template-columns: minmax(0, 1fr); }
-.agent-model-card { grid-template-columns: 245px minmax(0, 1fr); }
-.agent-card-heading { align-items: flex-start; display: flex; gap: 12px; }
-.agent-placement-head { align-items: center; display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) auto; }
-.agent-placement-head > .btn { white-space: nowrap; }
 .agent-placement-body { min-width: 0; }
 .agent-placement-label { align-items: center; display: flex; justify-content: space-between; margin-bottom: 8px; }
-.agent-placement-label h3 { color: var(--text-3); font-size: .625rem; letter-spacing: .08em; margin: 0; text-transform: uppercase; }
 .agent-placement-count { color: var(--text-3); font-size: .6875rem; }
 .agent-channel-empty { align-items: center; background: #fbf1da; border: 1px solid #ecd7a7; border-radius: 12px; display: grid; gap: 16px; grid-template-columns: auto minmax(0, 1fr) auto; padding: 16px; }
 .agent-channel-empty-icon { align-items: center; background: var(--bg); border: 1px solid #e6d2a5; border-radius: 10px; color: #9d6e19; display: inline-flex; flex: none; font-size: 1.15rem; font-weight: 800; height: 40px; justify-content: center; width: 40px; }
@@ -1935,7 +2032,7 @@ details[open].advanced summary::before {
 .agent-channel-empty p { color: var(--text-2); font-size: .75rem; line-height: 1.5; margin: 3px 0 0; }
 .agent-channel-empty > .btn { white-space: nowrap; }
 .agent-channel-empty-readonly { background: var(--well); border-color: var(--line); grid-template-columns: minmax(0, 1fr); }
-.agent-model-card .agent-model-row { background: transparent; padding: 0; }
+.agent-model-row.agent-model-tab-row { align-items: stretch; background: transparent; border-radius: 0; display: block; padding: 0; }
 .agent-advanced-card { margin-top: 7px; }
 .agent-advanced-card > summary { align-items: center; display: flex; font-weight: 750; gap: 9px; padding: 16px 18px; }
 .agent-advanced-card > summary::before { display: none; }
@@ -2118,9 +2215,11 @@ button.capability-pill { cursor: pointer; }
   .agent-profile-header-actions { width: 100%; }
   .agent-overflow { margin-left: auto; }
   .agent-presence-grid { grid-template-columns: 1fr; }
-  .agent-detail-card, .agent-placement-card, .agent-model-card { align-items: stretch; grid-template-columns: 1fr; }
-  .agent-placement-head, .agent-channel-empty { align-items: start; grid-template-columns: 1fr; }
-  .agent-placement-head > .btn, .agent-channel-empty > .btn { justify-self: start; }
+  .agent-destinations-section { padding: 18px; }
+  .agent-destination-body { padding: 20px; }
+  .agent-slack-channels-head { align-items: flex-start; flex-direction: column; }
+  .agent-channel-empty { align-items: start; grid-template-columns: 1fr; }
+  .agent-channel-empty > .btn { justify-self: start; }
   .agent-channel-empty-icon { display: none; }
   .owner-memory-editor { padding: 20px; }
   .agent-tabs-card [id="ptab-panel-memory"] .owner-memory-editor { margin: 8px -20px -20px; }
@@ -2130,7 +2229,6 @@ button.capability-pill { cursor: pointer; }
   .owner-memory-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .owner-memory-actions .spacer { display: none; }
   .owner-memory-actions .btn { width: 100%; }
-  .agent-model-row { align-items: stretch; flex-direction: column; }
   .agent-advanced-policy-row { align-items: stretch; flex-direction: column; }
   .agent-advanced-policy-row .agent-advanced-select { flex-basis: auto !important; max-width: none; min-width: 0 !important; width: 100%; }
   .channel-detail-header { flex-direction: column; gap: 14px; }
@@ -2151,9 +2249,17 @@ button.capability-pill { cursor: pointer; }
   .channels-index-cell { align-items: flex-start; display: grid; gap: 8px; grid-template-columns: 76px minmax(0, 1fr); padding-right: 0; }
   .channels-index-cell::before { color: var(--text-3); display: block; font-size: .625rem; font-weight: 800; letter-spacing: .06em; padding-top: 7px; text-transform: uppercase; }
   .channels-index-channel, .channels-index-agent { padding: 0; }
+  .destination-overview-card { align-items: flex-start; flex-wrap: wrap; }
+  .destination-overview-card > .btn { margin-left: 0; }
+  .destination-summary-card { align-items: stretch; flex-direction: column; }
+  .destination-summary-item + .destination-summary-item { border-left: 0; border-top: 1px solid var(--admin-visual-line); margin-left: 0; margin-top: 16px; padding-left: 0; padding-top: 16px; }
+  .destination-summary-card > .btn { align-self: flex-start; margin-left: 0; }
 }
 
 @media (max-width: 740px) {
+  .destination-hero { padding-bottom: 20px; padding-top: 0; }
+  .destination-panel { padding-top: 22px; }
+  .destination-tab { padding-left: 9px; padding-right: 9px; }
   .agent-profile-page .ptabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: visible; }
   .agent-profile-page .ptab { min-width: 0; padding-inline: 8px; text-align: center; }
   .agent-profile-page .agent-tabs-card .ptab-panel { padding: 20px; }
@@ -2383,7 +2489,7 @@ button.capability-pill { cursor: pointer; }
   padding: 0 3px;
   text-transform: uppercase;
 }
-.connection-state-stack .connection-section-head h3 { font: inherit; margin: 0; }
+.connection-state-stack .connection-section-head h4 { font: inherit; margin: 0; }
 .connection-state-stack .connection-section-count { margin-left: auto; }
 .connection-state-stack .connection-account-list {
   background: var(--bg);
@@ -2998,6 +3104,10 @@ button.capability-pill { cursor: pointer; }
     // Agents are the primary authoring destination. channelScreen distinguishes
     // the secondary Channels index from a concrete Slack-channel detail.
     view: "profiles",
+    // Destinations currently has one connected service, Slack. Keep the
+    // destination-level tab separate from channel detail so adding another
+    // service later only requires another sibling rail row.
+    destinationTab: "overview",
     // Team is Chickpea's authorization surface. Slack interactions provision
     // ordinary members; Owners manage the durable roster here.
     team: null,
@@ -3025,6 +3135,10 @@ button.capability-pill { cursor: pointer; }
     // ([hidden]) across switches, so no draft state lives here — just which
     // panel is visible.
     profileTab: "instructions",
+    // The Slack destination disclosure is independent of the active Agent
+    // configuration tab. Native <details> state would otherwise be lost when
+    // a tab switch re-renders the profile page.
+    profileSlackDestinationOpen: true,
     suggestedSkillCategory: "featured",
     // Inline title and description editing on the profile edit screen. Each
     // carries { prev } while open so Escape can restore the prior draft text.
@@ -3445,6 +3559,7 @@ button.capability-pill { cursor: pointer; }
       "arrow-path": "M13.836 2.477a.75.75 0 0 1 .75.75v3.182a.75.75 0 0 1-.75.75h-3.182a.75.75 0 0 1 0-1.5h1.37l-.84-.841a4.5 4.5 0 0 0-7.08.932.75.75 0 0 1-1.3-.75 6 6 0 0 1 9.44-1.242l.842.84V3.227a.75.75 0 0 1 .75-.75Zm-.911 7.5A.75.75 0 0 1 13.2 11a6 6 0 0 1-9.44 1.241l-.84-.84v1.372a.75.75 0 0 1-1.5 0V9.591a.75.75 0 0 1 .75-.75H5.35a.75.75 0 0 1 0 1.5H3.98l.841.84a4.5 4.5 0 0 0 7.08-.932.75.75 0 0 1 1.025-.272Z",
       "exclamation-triangle": "M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.299-2.25l5.196-9ZM8 5a.75.75 0 0 1 .75.75v2.5a.75.75 0 0 1-1.5 0v-2.5A.75.75 0 0 1 8 5Zm0 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z",
       robot: "M6.5 1.75a1.5 1.5 0 0 1 3 0v.5h1.75A2.75 2.75 0 0 1 14 5v5a2.75 2.75 0 0 1-2.75 2.75h-.5v1a.75.75 0 0 1-1.5 0v-1h-2.5v1a.75.75 0 0 1-1.5 0v-1h-.5A2.75 2.75 0 0 1 2 10V5a2.75 2.75 0 0 1 2.75-2.75H6.5v-.5Zm-1.75 2A1.25 1.25 0 0 0 3.5 5v5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V5c0-.69-.56-1.25-1.25-1.25h-6.5ZM6 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm4 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2ZM5.75 9h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1 0-1.5Z",
+      users: "M6 7a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm4.75-1a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM.75 14.25A5.25 5.25 0 0 1 6 9a5.25 5.25 0 0 1 5.25 5.25.75.75 0 0 1-.75.75h-9a.75.75 0 0 1-.75-.75Zm10.4-6.52a4.76 4.76 0 0 1 4.1 4.72.75.75 0 0 1-.75.75h-1.82a6.75 6.75 0 0 0-1.53-5.47Z",
       clock: "M8 1.25a6.75 6.75 0 1 0 0 13.5 6.75 6.75 0 0 0 0-13.5Zm0 1.5A5.25 5.25 0 1 1 8 13.25 5.25 5.25 0 0 1 8 2.75Zm.75 1.5a.75.75 0 0 0-1.5 0V8c0 .2.08.39.22.53l2.5 2.5a.75.75 0 1 0 1.06-1.06L8.75 7.69V4.25Z",
       ellipsis: "M3.75 8a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm5.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm5.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Z",
       gear: "M8.75 1.25a.75.75 0 0 0-1.5 0v.58a6.2 6.2 0 0 0-1.38.57l-.41-.41A.75.75 0 0 0 4.4 3.05l.41.41c-.24.44-.43.9-.57 1.38h-.58a.75.75 0 0 0 0 1.5h.58c.14.48.33.94.57 1.38l-.41.41A.75.75 0 1 0 5.46 9.2l.41-.41c.44.24.9.43 1.38.57v.58a.75.75 0 0 0 1.5 0v-.58a6.2 6.2 0 0 0 1.38-.57l.41.41a.75.75 0 1 0 1.06-1.06l-.41-.41c.24-.44.43-.9.57-1.38h.58a.75.75 0 0 0 0-1.5h-.58a6.2 6.2 0 0 0-.57-1.38l.41-.41A.75.75 0 0 0 10.54 2l-.41.41a6.2 6.2 0 0 0-1.38-.57v-.59ZM8 7.5a1.9 1.9 0 1 1 0-3.8 1.9 1.9 0 0 1 0 3.8Z",
@@ -3452,6 +3567,9 @@ button.capability-pill { cursor: pointer; }
       sparkle: "M8 1.25a.75.75 0 0 1 .72.54l.52 1.83a4.5 4.5 0 0 0 3.14 3.14l1.83.52a.75.75 0 0 1 0 1.44l-1.83.52a4.5 4.5 0 0 0-3.14 3.14l-.52 1.83a.75.75 0 0 1-1.44 0l-.52-1.83a4.5 4.5 0 0 0-3.14-3.14l-1.83-.52a.75.75 0 0 1 0-1.44l1.83-.52a4.5 4.5 0 0 0 3.14-3.14l.52-1.83A.75.75 0 0 1 8 1.25Z",
       "bars-3": "M2 4.75A.75.75 0 0 1 2.75 4h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75Zm0 3.5A.75.75 0 0 1 2.75 7.5h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8.25Zm0 3.5a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"
     };
+    if (name === "users") {
+      return '<svg class="ic' + (extra ? " " + extra : "") + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M18 21a8 8 0 0 0-16 0"/><circle cx="10" cy="8" r="5"/><path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3"/></svg>';
+    }
     return '<svg class="ic' + (extra ? " " + extra : "") + '" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="' + paths[name] + '"/></svg>';
   }
 
@@ -3584,6 +3702,7 @@ button.capability-pill { cursor: pointer; }
     state.profileOverflowOpen = false;
     state.profileReplacementDefaultAgentId = "";
     state.profileTab = "instructions";
+    state.profileSlackDestinationOpen = true;
     state.suggestedSkillCategory = "featured";
     state.profileRenaming = null;
     state.profileDescriptionEditing = null;
@@ -3608,7 +3727,7 @@ button.capability-pill { cursor: pointer; }
   // Open a profile's edit screen (from a click or a route), resetting every
   // transient editor state.
   function normalizedProfileTab(tab) {
-    return ["instructions", "skills", "connections", "repositories", "memory", "schedules"].includes(tab)
+    return ["instructions", "skills", "connections", "repositories", "memory", "schedules", "model"].includes(tab)
       ? tab
       : "instructions";
   }
@@ -3710,9 +3829,6 @@ button.capability-pill { cursor: pointer; }
     if (state.view === "usage") return "/admin/usage";
     if (state.view === "team") return "/admin/team";
     if (state.view === "settings") {
-      if (state.settingsSection === "slack") {
-        return "/admin/settings/slack";
-      }
       return "/admin/settings/" + encodeURIComponent(state.settingsSection);
     }
     if (state.view === "audit") {
@@ -3724,7 +3840,9 @@ button.capability-pill { cursor: pointer; }
       return "/admin/agents";
     }
     if (state.channelScreen === "detail" && state.active) return "/admin/channels/" + encodeURIComponent(state.active.workspaceId) + "/" + encodeURIComponent(state.active.channelId);
-    return "/admin/channels";
+    if (state.destinationTab === "connection") return "/admin/destinations/slack/connection";
+    if (state.destinationTab === "channels") return "/admin/destinations/slack/channels";
+    return "/admin/destinations/slack";
   }
 
   // Some deep-linkable UI state (currently the Scheduled Work summary modal)
@@ -3759,6 +3877,10 @@ button.capability-pill { cursor: pointer; }
     }
     if (parts[1] === "usage" && USAGE_ADMIN_UI) { applyUsageQuery(location.search || ""); openUsage(); return; }
     if (parts[1] === "team") { openTeam(); return; }
+    if (parts[1] === "settings" && parts[2] === "slack") {
+      openDestination("connection");
+      return;
+    }
     if (parts[1] === "settings") {
       openSettings(parts[2] || "providers");
       return;
@@ -3791,6 +3913,7 @@ button.capability-pill { cursor: pointer; }
     if (parts[1] === "channels" && parts[2] && parts[3]) {
       state.view = "channels";
       state.channelScreen = "detail";
+      state.destinationTab = "channels";
       state.profileScreen = "list";
       selectActive(parts[2], parts[3]);
       render();
@@ -3798,6 +3921,10 @@ button.capability-pill { cursor: pointer; }
     }
     if (parts[1] === "channels") {
       openChannels();
+      return;
+    }
+    if (parts[1] === "destinations") {
+      openDestination(parts[3] === "connection" ? "connection" : parts[3] === "channels" ? "channels" : "overview");
       return;
     }
     var initialAgent = state.agents[0] || null;
@@ -4086,7 +4213,7 @@ button.capability-pill { cursor: pointer; }
       ? mobileAgentRosterHtml()
       : connectedBadge +
         '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="' + (scoped ? "mobile-agents-open" : "open-profiles") + '" data-section-switcher="true">Agents</button>' +
-        '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-channels" data-section-switcher="true">Channels</button>' +
+        '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-destinations" data-section-switcher="true">Destinations</button>' +
         '<button type="button" class="btn btn-soft' + (primarySection() === "team" ? " nav-active" : "") + '" data-action="open-team" data-section-switcher="true">Team</button>' +
         (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
         '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>';
@@ -4111,7 +4238,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function isAgentChannelSurface() {
-    return state.view === "profiles" || state.view === "channels";
+    return state.view === "profiles";
   }
 
   function isPrimaryAdminSurface() {
@@ -4134,7 +4261,7 @@ button.capability-pill { cursor: pointer; }
 
   function agentPlacementMeta(agent) {
     var channelCount = channelGrantsForAgent(agent.id).length;
-    return channelCountLabel(channelCount);
+    return channelCount + " " + (channelCount === 1 ? "place" : "places");
   }
 
   function agentRosterAvatarHtml(agent) {
@@ -4169,7 +4296,7 @@ button.capability-pill { cursor: pointer; }
     var active = primarySection();
     var sections = [
       { id: "profiles", label: "Agents", action: "open-profiles" },
-      { id: "channels", label: "Channels", action: "open-channels" },
+      { id: "channels", label: "Destinations", action: "open-destinations" },
       { id: "team", label: "Team", action: "open-team" }
     ];
     if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
@@ -4194,6 +4321,7 @@ button.capability-pill { cursor: pointer; }
     if (state.view === "onboarding") return onboardingRailHtml();
     if (state.view === "usage") return usageRailHtml();
     if (state.view === "team") return teamRailHtml();
+    if (state.view === "channels") return channelsRailHtml();
     if (isAgentChannelSurface()) return profilesRailHtml();
     if (state.view === "settings") return settingsRailHtml();
     if (state.view === "audit") return scheduledWorkRailHtml();
@@ -4222,50 +4350,15 @@ button.capability-pill { cursor: pointer; }
   }
 
   function channelsRailHtml() {
-    var channels = configuredChannelsForIndex().filter(function (channel) { return channel.configured; });
-    var groups = [];
-    channels.forEach(function (channel) {
-      var group = groups.find(function (candidate) { return candidate.workspaceId === channel.workspaceId; });
-      if (!group) {
-        group = { workspaceId: channel.workspaceId, channels: [] };
-        groups.push(group);
-      }
-      group.channels.push(channel);
-    });
-    var html = '<nav class="rail" aria-label="Channels"><div class="rail-context">' +
-      '<div class="rail-head"><span class="section-eyebrow">Channels</span></div>' +
-      '<button type="button" class="platform-row' + (state.view === "channels" && state.channelScreen === "overview" ? " active" : "") + '" data-action="open-channels">' +
-      '<span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' +
-      (isSlackConnected() ? '<span class="platform-status' + (slackConnectionPresentation().key === "connected" ? '' : ' attention') + '">' + esc(slackConnectionPresentation().label) + '</span>' : '') + '</button>';
-    if (channels.length === 0) {
-      html += '<div class="ws-row">' + icon("chevron-down") + esc(railGroupLabel(connectedTeamId())) + '</div>' +
-        '<div class="empty" style="margin:8px 0 8px 12px; padding:12px;"><p class="hint" style="margin:0;">No channels yet</p></div>';
-    } else {
-      groups.forEach(function (group) {
-        html += '<div class="ws-row">' + icon("chevron-down") + esc(railGroupLabel(group.workspaceId)) + '</div>';
-        group.channels.forEach(function (channel) {
-          var active = state.channelScreen === "detail" && state.active && state.active.workspaceId === channel.workspaceId && state.active.channelId === channel.channelId;
-          var grants = Array.isArray(channel.grants) ? channel.grants : [];
-          var names = grants.map(function (grant) {
-            var agent = agentById(grant.agentId);
-            return grant.agentName || (agent && agent.name) || grant.agentId;
-          });
-          html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-channel" data-workspace="' + esc(channel.workspaceId) + '" data-channel="' + esc(channel.channelId) + '">' +
-            '<span class="chan-name">#' + esc(normalizeChannelLabel(channel.channelName)) + '</span>' +
-            '<span class="chan-meta">' + esc(names.length ? names.join(", ") : "No Agents published") + '</span></button>';
-        });
-      });
-    }
-    // The picker itself lives in the MAIN panel (rail placement was a walkthrough
-    // complaint). The rail add-button is the secondary path to it; disabled only
-    // in the transient null-connection state (a failed connection fetch).
-    var addDisabled = !isSlackConnected();
-    html += '<button type="button" class="rail-add" data-action="toggle-add-channel"' +
-      (addDisabled ? ' disabled title="Connect @Chickpea first"' : '') + '>' + icon("plus") + 'Add Slack channel</button>';
-    if (addDisabled) {
-      html += '<p class="hint" style="margin-left:12px; padding:0 10px;">Connect @Chickpea first</p>';
-    }
-    return html + '</div>' + sectionSwitcherHtml() + '</nav>';
+    var count = connectedAssignmentCount();
+    var workspace = connectedTeamName() || "Workspace";
+    return '<nav class="rail primary-shell-sidebar destination-shell-sidebar" aria-label="Destinations">' +
+      primaryShellBrandHtml() + '<div class="rail-context"><div class="rail-head"><span class="section-eyebrow">Destinations</span></div>' +
+      '<button type="button" class="destination-rail-item active" data-action="open-destinations" aria-current="page">' +
+      '<span class="destination-rail-logo slack-logo-image" aria-hidden="true"></span>' +
+      '<span class="destination-rail-copy"><span class="destination-rail-name">Slack</span><span class="destination-rail-meta">' +
+      esc(workspace + " · " + channelCountLabel(count)) + '</span></span></button></div>' +
+      sectionSwitcherHtml() + '</nav>';
   }
 
   function usageRailHtml() {
@@ -4353,17 +4446,9 @@ button.capability-pill { cursor: pointer; }
   }
 
   function profilesRailHtml() {
-    var connected = isSlackConnected();
-    var slackPresentation = slackConnectionPresentation();
-    var workspaceLabel = railGroupLabel(connectedTeamId());
-    var status = connected
-      ? '<span class="agent-slack-status' + (slackPresentation.key === "connected" ? '' : ' attention') + '">' + esc(slackPresentation.label) + '</span>'
-      : '<span class="agent-slack-status disconnected">Not connected</span>';
     return '<aside class="rail primary-shell-sidebar agent-shell-sidebar">' +
       primaryShellBrandHtml() +
       '<div class="rail-context"><div class="rail-head"><span class="section-eyebrow">Agents</span></div>' +
-      '<div class="agent-slack-context"><div class="agent-slack-row"><span class="platform-logo slack-logo-image" aria-hidden="true"></span>Slack' + status + '</div>' +
-      '<div class="ws-row agent-workspace-row">' + icon("chevron-down") + esc(workspaceLabel) + '</div></div>' +
       '<nav class="agent-roster" aria-label="Agents">' + agentRosterItemsHtml() +
       '<button type="button" class="agent-roster-item agent-roster-add" data-action="new-profile">' + icon("plus") + 'New Agent</button></nav></div>' +
       sectionSwitcherHtml() + '</aside>';
@@ -4371,7 +4456,6 @@ button.capability-pill { cursor: pointer; }
 
   function settingsRailHtml() {
     var sections = [
-      { id: "slack", name: "Slack", meta: "Installation" },
       { id: "connectors", name: "Connectors", meta: "Managed integrations" },
       { id: "providers", name: "Model providers", meta: "Keys and models" },
       { id: "github", name: "GitHub", meta: "Accounts and access" },
@@ -5221,7 +5305,7 @@ button.capability-pill { cursor: pointer; }
     return { key: "saved", label: "Granted" };
   }
 
-  function channelsIndexHtml() {
+  function channelsIndexHtml(embedded) {
     if (state.addChannelOpen) {
       return '<button type="button" class="link-btn" data-action="toggle-add-channel">&larr; Channels</button>' + addChannelPanelHtml();
     }
@@ -5262,7 +5346,10 @@ button.capability-pill { cursor: pointer; }
     var configuredCount = allChannels.filter(function (channel) { return channel.configured; }).length;
     var activeGrantCount = allChannels.reduce(function (count, channel) { return count + (channel.grants || []).filter(function (grant) { return grant.status === "active"; }).length; }, 0);
     var slackStatus = channelsSlackStatus();
-    return '<div class="channels-index-head"><div class="channels-index-head-copy"><span class="agent-kicker">Slack</span><h1 class="page-title">Channels</h1><p class="hint">Channels grant reach only. Each Agent keeps the same instructions, memory, connections, and schedules everywhere it works.</p></div></div>' +
+    var head = embedded
+      ? '<div class="destination-tab-heading"><div><h2>Slack channels</h2><p class="hint">Choose where people can mention an Agent. Each Agent keeps the same configuration everywhere it works.</p></div></div>'
+      : '<div class="channels-index-head"><div class="channels-index-head-copy"><span class="agent-kicker">Slack</span><h1 class="page-title">Channels</h1><p class="hint">Channels grant reach only. Each Agent keeps the same instructions, memory, connections, and schedules everywhere it works.</p></div></div>';
+    return head +
       '<div class="channels-overview-card"><dl class="channels-overview-stats"><div class="channels-summary-stat"><dt>Configured Channels</dt><dd>' + configuredCount + '</dd></div>' +
       '<div class="channels-summary-stat"><dt>Active Agent grants</dt><dd>' + activeGrantCount + '</dd></div>' +
       '<div class="channels-summary-stat"><dt>Connection</dt><dd><span class="channels-slack-state ' + slackStatus.key + '">' + esc(slackStatus.label) + '</span></dd></div></dl>' +
@@ -5271,14 +5358,67 @@ button.capability-pill { cursor: pointer; }
       '<div class="channels-index-table" role="table" aria-label="Channel grants"><div class="channels-index-table-head" role="row"><span role="columnheader">Channel</span><span role="columnheader">Agents</span><span role="columnheader">Status</span></div><div class="channels-index-list" role="rowgroup">' + rows + '</div></div></section>';
   }
 
-  function slackOverviewHtml() {
-    var head = '<div class="slack-head"><span class="slack-logo-large slack-logo-image" role="img" aria-label="Slack"></span>' +
-      '<div><h1 class="page-title" style="font-size:1.75rem;">Slack</h1><p class="hint">Manage where Chickpea answers in Slack.</p></div></div>';
+  function workspaceInitials() {
+    var words = String(connectedTeamName() || "Workspace").trim().split(/\\s+/).filter(Boolean);
+    return words.slice(0, 2).map(function (word) { return word.charAt(0); }).join("").toUpperCase() || "W";
+  }
+
+  function activeSlackAgentCount() {
+    var ids = new Set();
+    configuredChannelsForIndex().forEach(function (channel) {
+      (channel.grants || []).forEach(function (grant) {
+        if (grant.status === "active") ids.add(grant.agentId);
+      });
+    });
+    return ids.size;
+  }
+
+  function destinationOverviewHtml() {
     if (!state.slack) {
-      return head + '<div class="empty"><p class="field-label">Slack settings are unavailable</p><p class="hint">Reload the page to try the connection again.</p></div>';
+      return '<div class="empty"><p class="field-label">Slack settings are unavailable</p><p class="hint">Reload the page to try the connection again.</p></div>';
     }
-    if (!isSlackConnected()) return channelsIndexHtml() + '<section class="channels-connection-card" aria-label="Connect Slack">' + slackStepperHtml() + '</section>';
-    return channelsIndexHtml();
+    if (!isSlackConnected()) {
+      return '<section class="destination-overview-section"><h2>Workspace connection</h2><div class="destination-overview-card"><div class="destination-card-copy"><strong>Connect Slack</strong><small>Connect a workspace before publishing Agents to channels.</small></div></div></section>' + slackStepperHtml();
+    }
+    var channelCount = connectedAssignmentCount();
+    var agentCount = activeSlackAgentCount();
+    return '<section class="destination-overview-section"><h2>Workspace connection</h2>' +
+      '<div class="destination-overview-card"><span class="destination-workspace-avatar" aria-hidden="true">' + esc(workspaceInitials()) + '</span>' +
+      '<div class="destination-card-copy"><strong>' + esc(connectedTeamName()) + '</strong><small>Connected workspace</small><span class="destination-status">Connected</span></div>' +
+      '<button type="button" class="btn destination-outline-action" data-action="destination-tab" data-tab="connection">Manage connection</button></div></section>' +
+      '<section class="destination-overview-section"><h2>Channels summary</h2><div class="destination-overview-card destination-summary-card">' +
+      '<div class="destination-summary-item"><span class="destination-summary-icon semantic-icon tone-model" aria-hidden="true">' + icon("hash") + '</span><span class="destination-summary-copy"><strong>' + esc(channelCountLabel(channelCount)) + '</strong><small>Connected and available</small></span></div>' +
+      '<div class="destination-summary-item"><span class="destination-summary-icon semantic-icon tone-model" aria-hidden="true">' + icon("users") + '</span><span class="destination-summary-copy"><strong>' + esc(agentCount + " active " + (agentCount === 1 ? "Agent" : "Agents")) + '</strong><small>Using Slack</small></span></div>' +
+      '<button type="button" class="btn destination-outline-action" data-action="destination-tab" data-tab="channels">View channels</button></div></section>';
+  }
+
+  function slackDestinationTabsHtml() {
+    var tabs = [
+      { id: "overview", label: "Overview" },
+      { id: "connection", label: "Connection" },
+      { id: "channels", label: "Channels" }
+    ];
+    return '<div class="destination-tabs" role="tablist" aria-label="Slack destination">' + tabs.map(function (tab) {
+      var active = state.destinationTab === tab.id;
+      return '<button type="button" class="destination-tab' + (active ? ' active' : '') + '" id="dtab-' + tab.id + '" role="tab" aria-selected="' + (active ? 'true' : 'false') + '" aria-controls="dtab-panel-' + tab.id + '" tabindex="' + (active ? '0' : '-1') + '" data-action="destination-tab" data-tab="' + tab.id + '">' + tab.label + '</button>';
+    }).join("") + '</div>';
+  }
+
+  function slackOverviewHtml() {
+    var body = !state.slack
+      ? destinationOverviewHtml()
+      : state.destinationTab === "connection"
+      ? slackWorkspaceSettingsHtml()
+      : state.destinationTab === "channels"
+        ? channelsIndexHtml(true) + (!isSlackConnected() ? '<section class="channels-connection-card" aria-label="Connect Slack">' + slackStepperHtml() + '</section>' : '')
+        : destinationOverviewHtml();
+    var panels = ["overview", "connection", "channels"].map(function (tab) {
+      var active = state.destinationTab === tab;
+      return '<div class="destination-panel" id="dtab-panel-' + tab + '" role="tabpanel" aria-labelledby="dtab-' + tab + '"' + (active ? '' : ' hidden') + '>' + (active ? body : '') + '</div>';
+    }).join("");
+    return '<div class="destination-page"><header class="destination-hero"><span class="destination-hero-logo slack-logo-image" aria-hidden="true"></span>' +
+      '<div class="destination-hero-copy"><h1 class="page-title">Slack</h1><p class="destination-workspace">' + esc(connectedTeamName() || "Workspace") + '</p></div></header>' +
+      slackDestinationTabsHtml() + panels + '</div>';
   }
 
   function slackWorkspaceSettingsHtml() {
@@ -7062,7 +7202,8 @@ button.capability-pill { cursor: pointer; }
       connections: !!(state.connectionEditor || state.apiConnectionEditor),
       repositories: !!(state.repositoryPicker || state.repositoryAddOpen),
       memory: !!state.ownerMemory.dirty,
-      schedules: !!state.agentSchedules.error
+      schedules: !!state.agentSchedules.error,
+      model: false
     };
     var repositoryCount = enabledRepositoryGrants(draft).length;
     var tabs = [
@@ -7071,7 +7212,8 @@ button.capability-pill { cursor: pointer; }
       { id: "connections", label: "Connections", count: state.agentConnections.agentId === draft.id && !state.agentConnections.legacyFallback ? state.agentConnections.attached.length : (draft.mcpServers || []).length + (draft.apiConnections || []).length, icon: "check", tone: "connector", description: "Team and personal accounts this Agent can use." },
       { id: "repositories", label: "Repositories", count: repositoryCount, icon: "repository", tone: "repository", description: "Code and documentation this Agent can work with." },
       { id: "memory", label: "Memory", count: 0, icon: "robot", tone: "memory", description: "Durable context this Agent can use wherever it works." },
-      { id: "schedules", label: "Schedules", count: state.agentSchedules.agentId === draft.id ? state.agentSchedules.schedules.length : 0, icon: "clock", tone: "schedule", description: "Recurring and one-time work owned by this Agent." }
+      { id: "schedules", label: "Schedules", count: state.agentSchedules.agentId === draft.id ? state.agentSchedules.schedules.length : 0, icon: "clock", tone: "schedule", description: "Recurring and one-time work owned by this Agent." },
+      { id: "model", label: "Model", count: 0, icon: "robot", tone: "model", description: "The intelligence this Agent uses for every response. Changes apply to new threads." }
     ];
     var bar = tabs.map(function (tab) {
       var on = tab.id === active;
@@ -7090,9 +7232,10 @@ button.capability-pill { cursor: pointer; }
         ? '<fieldset class="agent-readonly-fields" disabled>' + html + '</fieldset>'
         : html;
       return '<div class="ptab-panel" id="ptab-panel-' + tab.id + '" role="tabpanel" aria-labelledby="ptab-' + tab.id + '"' + (tab.id === active ? "" : " hidden") + '>' +
-        '<div class="agent-tab-head"><span class="agent-tab-icon semantic-icon tone-' + tab.tone + '" aria-hidden="true">' + icon(tab.icon) + '</span><div><h2>' + tab.label + '</h2><p>' + tab.description + '</p></div></div>' + body + '</div>';
+        '<div class="agent-tab-head"><span class="agent-tab-icon semantic-icon tone-' + tab.tone + '" aria-hidden="true">' + icon(tab.icon) + '</span><div><h3>' + tab.label + '</h3><p>' + tab.description + '</p></div></div>' + body + '</div>';
     }
-    return '<section class="agent-tabs-card">' +
+    return '<section class="agent-tabs-card agent-configuration-card">' +
+      '<div class="agent-configuration-head"><span class="agent-card-icon semantic-icon tone-model" aria-hidden="true">' + icon("robot") + '</span><div><h2>Agent configuration</h2><p>Behavior and capabilities that follow this Agent everywhere.</p></div></div>' +
       '<div class="ptab-tray">' +
       '<div class="ptabs" role="tablist" aria-label="Agent setup">' + bar + '</div>' +
       panel(tabs[0], instructionsPanelHtml(draft, state.profileScreen === "create")) +
@@ -7101,13 +7244,14 @@ button.capability-pill { cursor: pointer; }
       panel(tabs[3], repositoriesPanelHtml(draft)) +
       panel(tabs[4], ownerMemoryPanelHtml("agent", draft.id, draft.name)) +
       panel(tabs[5], agentSchedulesPanelHtml(draft)) +
+      panel(tabs[6], '<div class="agent-model-row agent-model-tab-row">' + modelFieldHtml(draft) + '</div>') +
       '</div>' +
       '</section>';
   }
 
   function instructionsPanelHtml(draft, showPlaceholder) {
     return '<div class="field agent-instructions-editor">' + profileInstructionsFieldHtml(draft, showPlaceholder) +
-      '<p class="agent-instructions-guidance">' + icon("check") + '<span>These instructions follow the Agent across every permitted Channel and DM.</span></p></div>';
+      '<p class="agent-instructions-guidance">' + icon("check") + '<span>These instructions follow the Agent everywhere it works.</span></p></div>';
   }
 
   function skillsPanelHtml(draft) {
@@ -7126,7 +7270,7 @@ button.capability-pill { cursor: pointer; }
         '<button type="button" class="btn btn-ghost btn-sm" data-action="skill-edit" data-index="' + index + '">Edit</button>' +
         '<button type="button" class="x-btn" data-action="skill-remove" data-index="' + index + '" aria-label="Remove skill">&times;</button></div>';
     }).join("");
-    var list = rows ? '<section class="configured-skills"><h3>Your skills</h3><div class="skill-list">' + rows + '</div></section>' : "";
+    var list = rows ? '<section class="configured-skills"><h4>Your skills</h4><div class="skill-list">' + rows + '</div></section>' : "";
     // A new-skill editor (index === null) renders below the list, not in a row.
     var newForm = (editor && (editor.index === null || editor.index === undefined)) ? '<div class="skill-list">' + skillEditorFormHtml(editor) + '</div>' : "";
     // The import panel takes the place of the action buttons while it is open,
@@ -7171,7 +7315,7 @@ button.capability-pill { cursor: pointer; }
       var configured = configuredSuggestion(suggestion);
       return !!(configured && configured.enabled);
     }).length;
-    var suggested = '<section class="suggested-skills"><div class="suggested-skills-head"><div><h3>Suggested skills</h3>' +
+    var suggested = '<section class="suggested-skills"><div class="suggested-skills-head"><div><h4>Suggested skills</h4>' +
       '<p>Start with a focused set, or browse by the kind of work this Agent should help with.</p></div>' +
       '<span class="suggested-on-count" aria-live="polite">' + enabledSuggestions + (enabledSuggestions === 1 ? ' skill on' : ' skills on') + '</span></div>' +
       '<div class="suggested-category-nav" role="tablist" aria-label="Skill categories">' + categoryNav + '</div>' +
@@ -7470,7 +7614,7 @@ button.capability-pill { cursor: pointer; }
           ? '<div class="gallery-empty">No connectors match &ldquo;' + esc(state.connectorGallerySearch) + '&rdquo;.</div>'
           : '<div class="gallery-empty">Every prepackaged connector is already added.</div>');
     return (catalogVisible ? '<input class="input" id="conn-gallery-search-input" type="text" autocomplete="off" placeholder="Search connectors" value="' + esc(state.connectorGallerySearch || "") + '" data-action="conn-gallery-search" aria-label="Search connectors">' : "") +
-      '<div class="' + (accountMode ? "connection-section-head" : "gallery-head") + '">' + (accountMode ? "<h3>Available</h3>" : "<span>Available</span>") + '<span class="' + (accountMode ? "connection-section-count" : "gallery-head-count") + '">' + (shown.length + matchingAccounts.length + (customMatches ? 1 : 0)) + '</span></div>' +
+      '<div class="' + (accountMode ? "connection-section-head" : "gallery-head") + '">' + (accountMode ? "<h4>Available</h4>" : "<span>Available</span>") + '<span class="' + (accountMode ? "connection-section-count" : "gallery-head-count") + '">' + (shown.length + matchingAccounts.length + (customMatches ? 1 : 0)) + '</span></div>' +
       list + (accountMode ? "" : custom);
   }
 
@@ -8356,7 +8500,7 @@ button.capability-pill { cursor: pointer; }
       attached.map(function (entry) { return entry.account; }),
       !state.connectionAccountForm
     );
-    var attachedSection = '<section class="connection-state-section"><div class="connection-section-head"><h3>In this Agent</h3><span class="connection-section-count">' + attached.length + '</span></div>' + attachedHtml + '</section>';
+    var attachedSection = '<section class="connection-state-section"><div class="connection-section-head"><h4>In this Agent</h4><span class="connection-section-count">' + attached.length + '</span></div>' + attachedHtml + '</section>';
     var availableSection = gallery ? '<section class="connection-state-section">' + gallery + '</section>' : '';
     return oauthReturnNoticeHtml(draft) + notice +
       '<div class="connection-state-stack">' + attachedSection + availableSection + '</div>' +
@@ -9020,6 +9164,13 @@ button.capability-pill { cursor: pointer; }
       (err ? '<p class="field-error">Name is required.</p>' : "") + '</div>';
   }
 
+  function profileDescriptionFieldHtml(draft) {
+    var readOnly = draft.canEdit === false;
+    return '<div class="field"><label class="field-label" for="p-description">Description</label>' +
+      '<input class="input" id="p-description" type="text" maxlength="500" value="' + esc(draft.description || "") + '" placeholder="What teammates should use this Agent for" data-action="profile-description"' + (readOnly ? " readonly" : "") + '>' +
+      '<p class="hint">A short summary of what this Agent helps teammates do.</p></div>';
+  }
+
   function handleFromAgentName(value) {
     var normalized = String(value || "agent").trim().toLowerCase()
       .replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80).replace(/-+$/g, "");
@@ -9039,7 +9190,7 @@ button.capability-pill { cursor: pointer; }
       '</div></div></div>';
   }
 
-  function agentPresenceFieldsHtml(draft) {
+  function agentPresenceControlsHtml(draft) {
     var readOnly = draft.canEdit === false;
     var presence = draft.slackPresence || {};
     var avatarUrl = presence.avatar && presence.avatar.url;
@@ -9053,15 +9204,30 @@ button.capability-pill { cursor: pointer; }
         ? '<button type="button" class="btn btn-soft btn-sm" disabled>Upload image</button>'
         : '<label class="btn btn-soft btn-sm" style="cursor:pointer;">Upload image<input type="file" accept="image/png,image/jpeg,image/webp" data-action="profile-avatar-upload" style="display:none;"></label>')
       : '<span class="hint">A distinct Chickpea avatar is generated when you create the Agent.</span>';
-    return '<section class="agent-detail-card agent-presence-card">' +
-      '<div class="agent-card-heading"><span class="agent-card-icon agent-slack-card-icon" role="img" aria-label="Slack"><span class="agent-slack-card-mark slack-logo-image" aria-hidden="true"></span></span><div><h2>In Slack</h2><p>How this Agent appears and is mentioned.</p></div></div>' +
-      '<div class="agent-presence-grid">' +
+    return '<div class="agent-presence-grid">' +
       '<div class="field"><span class="field-label">Avatar</span><div class="agent-avatar-control">' + avatar + '<div class="agent-avatar-actions">' + upload +
       '<p class="hint">PNG, JPEG, or WebP up to 512 KB.</p></div></div></div>' +
       '<div class="field"><label class="field-label" for="p-handle">Handle</label>' +
       '<div class="agent-handle-control"><span class="agent-handle-prefix" aria-hidden="true">@</span><input class="input mono" id="p-handle" type="text" maxlength="80" value="' + esc(draft.handle || handleFromAgentName(draft.name)) + '" data-action="profile-handle"' + (readOnly ? " readonly" : "") + '></div></div></div>' +
-      (draft.id ? "" : '<div class="field"><label class="field-label" for="p-description">Description</label><input class="input" id="p-description" type="text" maxlength="500" value="' + esc(draft.description || "") + '" placeholder="What teammates should use this Agent for" data-action="profile-description"' + (readOnly ? " readonly" : "") + '></div>') +
-      (readOnly ? "" : agentPresenceRecoveryHtml(draft)) + '</section>';
+      (readOnly ? "" : agentPresenceRecoveryHtml(draft));
+  }
+
+  function agentDestinationsHtml(draft, readOnly, replyIdentityLabel) {
+    var concrete = draft.id ? channelGrantsForAgent(draft.id) : [];
+    var channelSummary = draft.id
+      ? concrete.length + " Slack " + (concrete.length === 1 ? "channel" : "channels")
+      : "Slack channels after creating";
+    return '<section class="agent-destinations-section">' +
+      '<div class="agent-section-heading"><span class="agent-card-icon semantic-icon tone-channel" aria-hidden="true">' + icon("hash") + '</span><div><h2>Destinations</h2><p>Where this Agent can receive requests and respond.</p></div></div>' +
+      '<div class="agent-destination-list"><details class="agent-destination-card"' + (state.profileSlackDestinationOpen === false ? "" : " open") + '>' +
+      '<summary class="agent-destination-summary" data-action="agent-destination-toggle"><span class="agent-card-icon agent-slack-card-icon" aria-hidden="true"><span class="agent-slack-card-mark slack-logo-image" aria-hidden="true"></span></span>' +
+      '<span class="agent-destination-summary-copy"><strong>Slack</strong><small>' + esc(replyIdentityLabel) + ' <span aria-hidden="true">&middot;</span> ' + esc(channelSummary) + '</small></span>' +
+      icon("chevron-down", "agent-destination-chevron") + '</summary>' +
+      '<div class="agent-destination-body">' +
+      '<div class="agent-destination-subsection"><h3>Appearance</h3>' + agentPresenceControlsHtml(draft) + '</div>' +
+      '<div class="agent-destination-divider" aria-hidden="true"></div>' +
+      '<div class="agent-destination-subsection agent-slack-channels-subsection">' + agentSlackChannelsContentHtml(draft, readOnly, replyIdentityLabel) + '</div>' +
+      '</div></details></div></section>';
   }
 
   function profileInstructionsFieldHtml(draft, showPlaceholder) {
@@ -9084,6 +9250,7 @@ button.capability-pill { cursor: pointer; }
 
   function profileCreateHtml() {
     var draft = state.profileDraft || newProfileDraft();
+    var replyIdentityLabel = "@" + (draft.handle || handleFromAgentName(draft.name));
     var duplicateNote = draft.duplicateSourceName
       ? '<div class="callout"><div><p class="field-label">Copied from ' + esc(draft.duplicateSourceName) + '</p><p class="hint">Behavior and skills are copied. Channel access, connections, repositories, memory, and schedules stay separate until you grant them.</p></div></div>'
       : '';
@@ -9094,9 +9261,9 @@ button.capability-pill { cursor: pointer; }
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Details</h2></div></div>' +
       '<div class="form-grid">' +
       profileNameFieldHtml(draft) +
-      modelFieldHtml(draft) +
+      profileDescriptionFieldHtml(draft) +
       '</div></section>' +
-      agentPresenceFieldsHtml(draft) +
+      agentDestinationsHtml(draft, false, replyIdentityLabel) +
       profileTabsHtml(draft) +
       agentAdvancedHtml(draft) +
       '<div class="save-bar">' + profileGenericErrorHtml() +
@@ -9189,10 +9356,8 @@ button.capability-pill { cursor: pointer; }
       (readOnly ? '<div class="callout agent-readonly-note"><div><p class="field-label">Read-only Agent</p><p class="hint">You can use this Agent in its permitted Channels or duplicate it into your own editable Agent.</p></div></div>' : "") +
       profileGenericErrorHtml() +
       disableConfirmHtml(draft) +
-      agentPresenceFieldsHtml(draft) +
+      agentDestinationsHtml(draft, readOnly, replyIdentityLabel) +
       profileTabsHtml(draft) +
-      usedInHtml(draft, readOnly, replyIdentityLabel) +
-      '<section class="agent-detail-card agent-model-card"><div class="agent-card-heading"><span class="agent-card-icon semantic-icon tone-model" aria-hidden="true">' + icon("robot") + '</span><div><h2>Model</h2><p>The intelligence this Agent uses for every response. Changes apply to new threads.</p></div></div><div class="agent-model-row">' + modelFieldHtml(draft) + '</div></section>' +
       (readOnly ? '<fieldset class="agent-readonly-fields" disabled>' + agentAdvancedHtml(draft) + '</fieldset>' : agentAdvancedHtml(draft)) +
       (readOnly ? "" : '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + (saveBarCueActive() ? " cue" : "") + '">' +
       '<div class="save-bar-inner">' +
@@ -9214,9 +9379,9 @@ button.capability-pill { cursor: pointer; }
       '</div></details>';
   }
 
-  function usedInHtml(draft, readOnly, replyIdentityLabel) {
-    var concrete = channelGrantsForAgent(draft.id);
-    var canEditChannels = !readOnly && draft.lifecycle !== "archived";
+  function agentSlackChannelsContentHtml(draft, readOnly, replyIdentityLabel) {
+    var concrete = draft.id ? channelGrantsForAgent(draft.id) : [];
+    var canEditChannels = !!draft.id && !readOnly && draft.lifecycle !== "archived";
     var channelRows = '<div class="where-list">';
     concrete.forEach(function (assignment) {
       var label = normalizeChannelLabel(assignment.channelLabel) || assignment.channelId;
@@ -9224,19 +9389,21 @@ button.capability-pill { cursor: pointer; }
         (canEditChannels ? '<button type="button" class="where-remove" data-action="detach-channel" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '" data-label="' + esc(label) + '" aria-label="Remove this Agent from #' + esc(label) + '">' + icon("x-mark") + '</button>' : "") + '</div>';
     });
     channelRows += '</div>';
-    var heading = '<div class="agent-card-heading"><span class="agent-card-icon semantic-icon tone-channel" aria-hidden="true">' + icon("hash") + '</span><div><h2>Where it works</h2><p>Choose the Channels where people can mention this Agent.</p></div></div>';
+    var heading = '<div class="agent-slack-channels-head"><div><h3>Slack channels</h3><p>Choose where people can mention this Agent.</p></div>' +
+      (concrete.length && canEditChannels ? '<button type="button" class="btn btn-soft btn-sm" data-action="attach-open">Add to channels</button>' : "") + '</div>';
     var picker = canEditChannels ? attachPickerHtml(draft) + attachNoticeHtml() : "";
+    if (!draft.id) {
+      return heading + '<div class="agent-channel-empty agent-channel-empty-readonly"><div><strong>Add channels after creating this Agent</strong><p>Save the Agent first, then choose the Slack channels where people can mention it.</p></div></div>';
+    }
     if (!concrete.length) {
       var empty = draft.lifecycle === "archived"
         ? '<div class="agent-channel-empty agent-channel-empty-readonly"><div><strong>' + esc(draft.name || "This Agent") + ' is archived</strong><p>Restore this Agent before adding it to Channels.</p></div></div>'
         : readOnly
         ? '<div class="agent-channel-empty agent-channel-empty-readonly"><div><strong>' + esc(draft.name || "This Agent") + ' isn&rsquo;t in any Channels yet</strong><p>An editor can choose its first Channel when it is ready.</p></div></div>'
         : '<div class="agent-channel-empty"><span class="agent-channel-empty-icon" aria-hidden="true">#</span><div><strong>Make ' + esc(draft.name || "this Agent") + ' mentionable</strong><p>Choose its first Slack Channel. People in that Channel can then mention ' + esc(replyIdentityLabel) + '.</p></div><button type="button" class="btn btn-primary btn-sm" data-action="attach-open">Choose first channel</button></div>';
-      return '<section class="agent-detail-card agent-placement-card"><div class="agent-placement-head">' + heading + '</div>' + empty + picker + '</section>';
+      return heading + empty + picker;
     }
-    return '<section class="agent-detail-card agent-placement-card"><div class="agent-placement-head">' + heading +
-      (canEditChannels ? '<button type="button" class="btn btn-soft btn-sm" data-action="attach-open">Add to channels</button>' : "") +
-      '</div><div class="agent-placement-body"><div class="agent-placement-label"><h3>Channels</h3><span class="agent-placement-count">' + esc(channelCountLabel(concrete.length)) + '</span></div>' + channelRows + '</div>' + picker + '</section>';
+    return heading + '<div class="agent-placement-body"><div class="agent-placement-label agent-slack-channel-count"><span class="agent-placement-count">' + esc(channelCountLabel(concrete.length)) + '</span></div>' + channelRows + '</div>' + picker;
   }
 
   function channelNameLink(assignment) {
@@ -12444,6 +12611,7 @@ button.capability-pill { cursor: pointer; }
 
   function selectActive(workspaceId, channelId) {
     state.channelScreen = "detail";
+    state.destinationTab = "channels";
     state.active = { workspaceId: workspaceId, channelId: channelId };
     state.channelTryRequestId += 1;
     state.channelTryNotice = "";
@@ -12856,7 +13024,7 @@ button.capability-pill { cursor: pointer; }
       return;
     }
     if (state.ownerMemory.dirty && (
-      action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
+      action === "open-channels" || action === "open-destinations" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
       action === "edit-profile" || action === "new-profile" || action === "duplicate-profile" || action === "open-channel-from-profile" ||
       action === "open-channel-index" || action === "select-channel" || action === "channel-back"
@@ -12920,9 +13088,9 @@ button.capability-pill { cursor: pointer; }
       return;
     }
 
-    // Channels is the platform overview. Concrete rows remain detail screens
-    // underneath it; the top-level Channels button always returns here.
+    if (action === "open-destinations") { openDestinations(); }
     if (action === "open-channels") { openChannels(); }
+    if (action === "destination-tab") { openDestination(target.getAttribute("data-tab") || "overview"); }
     if (action === "channel-back") {
       var channelBackAgent = agentById(target.getAttribute("data-agent") || "");
       if (channelBackAgent) openProfileEditor(channelBackAgent);
@@ -13027,6 +13195,12 @@ button.capability-pill { cursor: pointer; }
     // re-clicking the active pill a free no-op instead of a full re-render.
     if (action === "profile-tab" && state.profileDraft) {
       showProfileTab(target.getAttribute("data-tab") || "instructions");
+    }
+    if (action === "agent-destination-toggle" && state.profileDraft) {
+      // Click fires before <details> applies its native toggle, so invert the
+      // last rendered state without re-rendering. The next unrelated render
+      // can then reproduce the user's disclosure choice.
+      state.profileSlackDestinationOpen = !state.profileSlackDestinationOpen;
     }
     if (action === "connection-account-retry" && state.profileDraft) { loadAgentConnections(state.profileDraft.id); }
     if (action === "composio-setup-close" && state.composioSetup && state.composioSetup.phase !== "validating" && state.composioSetup.phase !== "preparing") {
@@ -13163,10 +13337,15 @@ button.capability-pill { cursor: pointer; }
     if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; resetProfileTransientState(); render(); }
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
-    if (action === "open-settings") { openSettings(target.getAttribute("data-section") || ""); }
+    if (action === "open-settings") {
+      var requestedSettingsSection = target.getAttribute("data-section") || "";
+      if (requestedSettingsSection === "slack") openDestination("connection");
+      else openSettings(requestedSettingsSection);
+    }
     if (action === "settings-section") {
       var nextSettingsSection = normalizeSettingsSection(target.getAttribute("data-section") || "providers");
-      if (nextSettingsSection === "slack" || nextSettingsSection === "connectors" || state.settingsSection === "slack" || state.settingsSection === "connectors") openSettings(nextSettingsSection);
+      if (nextSettingsSection === "slack") openDestination("connection");
+      else if (state.view !== "settings" || nextSettingsSection === "connectors" || state.settingsSection === "connectors") openSettings(nextSettingsSection);
       else {
         state.settingsSection = nextSettingsSection;
         render();
@@ -14391,10 +14570,24 @@ button.capability-pill { cursor: pointer; }
     // ARIA tabs keyboard contract for the capability tab bar: Left/Right (and
     // Home/End) move focus AND activate; the roving tabindex in profileTabsHtml
     // keeps exactly one pill in the document Tab order.
+    var destinationTabButton = event.target && event.target.closest && event.target.closest(".destination-tab");
+    if (destinationTabButton && (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End")) {
+      event.preventDefault();
+      var destinationOrder = ["overview", "connection", "channels"];
+      var destinationCurrent = destinationOrder.indexOf(state.destinationTab || "overview");
+      var destinationNext =
+        event.key === "ArrowLeft" ? (destinationCurrent + destinationOrder.length - 1) % destinationOrder.length :
+        event.key === "ArrowRight" ? (destinationCurrent + 1) % destinationOrder.length :
+        event.key === "Home" ? 0 : destinationOrder.length - 1;
+      openDestination(destinationOrder[destinationNext]);
+      var destinationFocusTarget = document.getElementById("dtab-" + destinationOrder[destinationNext]);
+      if (destinationFocusTarget) destinationFocusTarget.focus();
+      return;
+    }
     var tabButton = event.target && event.target.closest && event.target.closest(".ptab");
     if (tabButton && (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End")) {
       event.preventDefault();
-      var order = ["instructions", "skills", "connections", "repositories", "memory", "schedules"];
+      var order = ["instructions", "skills", "connections", "repositories", "memory", "schedules", "model"];
       var current = order.indexOf(state.profileTab || "instructions");
       var next =
         event.key === "ArrowLeft" ? (current + order.length - 1) % order.length :
@@ -14522,9 +14715,11 @@ button.capability-pill { cursor: pointer; }
     else enterProfiles(null);
   }
 
-  function openChannels() {
+  function openDestination(tab) {
+    if (state.view === "settings") state.settingsLoadGeneration += 1;
     state.view = "channels";
     state.channelScreen = "overview";
+    state.destinationTab = ["overview", "connection", "channels"].includes(tab) ? tab : "overview";
     state.profileScreen = "list";
     state.disableConfirm = false;
     state.addChannelOpen = false;
@@ -14536,9 +14731,18 @@ button.capability-pill { cursor: pointer; }
     revalidateCurrentVisibleResources();
   }
 
+  function openDestinations() {
+    openDestination("overview");
+  }
+
+  function openChannels() {
+    openDestination("channels");
+  }
+
   function openAddChannel(agentId) {
     state.view = "channels";
     state.channelScreen = "overview";
+    state.destinationTab = "channels";
     state.addChannelOpen = true;
     state.addChannelError = "";
     state.addChannelInvite = "";
@@ -15929,13 +16133,13 @@ button.capability-pill { cursor: pointer; }
   // The four ways to leave the profile editor: the top-nav Profiles/Settings,
   // the brand-home logo, and the "<- Profiles" back link.
   function isEditLeaveAction(action) {
-    return action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
+    return action === "open-channels" || action === "open-destinations" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "profiles-back" ||
       action === "edit-profile" || action === "new-profile" || action === "duplicate-profile" || action === "open-channel-from-profile";
   }
 
   function isChannelLeaveAction(action) {
-    return action === "open-channels" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
+    return action === "open-channels" || action === "open-destinations" || action === "open-profiles" || action === "open-team" || action === "open-settings" ||
       action === "open-audit" || action === "open-usage" || action === "go-home" || action === "channel-back" ||
       action === "edit-profile" || action === "new-profile" || action === "open-channel-index" || action === "select-channel";
   }
@@ -15981,6 +16185,8 @@ button.capability-pill { cursor: pointer; }
       openHome();
     } else if (action === "open-channels") {
       openChannels();
+    } else if (action === "open-destinations") {
+      openDestinations();
     } else if (action === "edit-profile") {
       var selected = agentById((pending && pending.agent) || "");
       if (selected) openProfileEditor(selected);
@@ -16024,6 +16230,8 @@ button.capability-pill { cursor: pointer; }
       openTeam();
     } else if (action === "go-home") {
       openHome();
+    } else if (action === "open-destinations") {
+      openDestinations();
     } else if (action === "channel-back") {
       var backAgent = agentById((pending && pending.agent) || "");
       if (backAgent) openProfileEditor(backAgent);

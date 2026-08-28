@@ -34,6 +34,18 @@ test('the dedicated onboarding frame remains document-scrollable on desktop', ()
   );
 });
 
+test('Destinations uses the shared Admin scale instead of prototype-sized chrome', () => {
+  const html = renderAdminPage();
+  assert.match(html, /\.destination-page\s*\{[^}]*max-width:\s*760px;/s);
+  assert.match(html, /\.destination-hero-logo\s*\{[^}]*height:\s*48px;[^}]*width:\s*48px;/s);
+  assert.match(html, /\.destination-hero \.page-title\s*\{[^}]*line-height:\s*1\.1;/s);
+  assert.doesNotMatch(html, /\.destination-hero \.page-title\s*\{[^}]*font-size:/s);
+  assert.match(html, /\.destination-overview-card\s*\{[^}]*min-height:\s*96px;[^}]*padding:\s*16px 18px;/s);
+  assert.match(html, /\.destination-summary-icon\s*\{[^}]*height:\s*42px;[^}]*width:\s*42px;/s);
+  assert.match(html, /\.destination-rail-logo\s*\{[^}]*height:\s*34px;[^}]*width:\s*34px;/s);
+  assert.match(html, /\.destination-rail-name\s*\{[^}]*font-size:\s*\.8125rem;/s);
+});
+
 interface FakeResponse {
   ok: boolean;
   status: number;
@@ -1059,7 +1071,7 @@ function runAdminPageHarness(
       if ((id === 'slack-permission-heading' || id === 'onboarding-connected-heading' || id === 'onboarding-channel-heading') && appHtml.includes(`id="${id}"`)) {
         return focusElement(id);
       }
-      if (id.startsWith('ptab-') && appHtml.includes(`id="${id}"`)) {
+      if ((id.startsWith('ptab-') || id.startsWith('dtab-')) && appHtml.includes(`id="${id}"`)) {
         return focusElement(id);
       }
       if (id.startsWith('agent-schedule-') && appHtml.includes(`id="${id}"`)) {
@@ -2883,28 +2895,62 @@ function channelsFixture(
   };
 }
 
-test('Agent and Channel routes share the attached Agent roster and lower navigation', async () => {
+test('Destinations lands directly on the Slack overview and its tabs stay inside one page', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/destinations/slack' });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.equal(harness.locationPath(), '/admin/destinations/slack');
+  assert.match(html, /<nav class="rail primary-shell-sidebar destination-shell-sidebar" aria-label="Destinations">/);
+  assert.match(html, /class="destination-rail-item active"[\s\S]*?class="destination-rail-name">Slack<[\s\S]*?Acme Inc · 2 channels/);
+  assert.doesNotMatch(html, /agent-workspace-row|agent-roster|select-channel/);
+  assert.match(html, /class="destination-tab active"[^>]*data-tab="overview">Overview<\/button>/);
+  assert.match(html, /id="dtab-overview" role="tab" aria-selected="true" aria-controls="dtab-panel-overview" tabindex="0"/);
+  assert.match(html, /id="dtab-connection" role="tab" aria-selected="false" aria-controls="dtab-panel-connection" tabindex="-1"/);
+  assert.match(html, /id="dtab-panel-overview" role="tabpanel" aria-labelledby="dtab-overview"/);
+  assert.match(html, /id="dtab-panel-connection" role="tabpanel" aria-labelledby="dtab-connection" hidden/);
+  assert.match(html, /class="destination-hero-logo slack-logo-image" aria-hidden="true"/);
+  assert.match(html, /<h2>Workspace connection<\/h2>[\s\S]*?Acme Inc[\s\S]*?Connected workspace[\s\S]*?Connected/);
+  assert.match(html, /<h2>Channels summary<\/h2>[\s\S]*?2 channels[\s\S]*?active Agents[\s\S]*?Using Slack/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'destination-tab', 'data-tab': 'connection' }) });
+  assert.equal(harness.locationPath(), '/admin/destinations/slack/connection');
+  assert.match(harness.app.innerHTML, /class="destination-tab active"[^>]*data-tab="connection">Connection<\/button>/);
+  assert.match(harness.app.innerHTML, /Connected workspace/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'destination-tab', 'data-tab': 'channels' }) });
+  assert.equal(harness.locationPath(), '/admin/destinations/slack/channels');
+  assert.match(harness.app.innerHTML, /class="destination-tab active"[^>]*data-tab="channels">Channels<\/button>/);
+  assert.match(harness.app.innerHTML, /role="table" aria-label="Channel grants"/);
+
+  harness.listeners.keydown?.({
+    target: actionClassTarget({ 'data-action': 'destination-tab', 'data-tab': 'channels' }, 'destination-tab'),
+    key: 'Home',
+    preventDefault() {},
+  });
+  assert.equal(harness.locationPath(), '/admin/destinations/slack');
+  assert.match(harness.app.innerHTML, /id="dtab-overview"[^>]*aria-selected="true"[^>]*tabindex="0"/);
+  assert.equal(harness.focusedAction(), 'dtab-overview');
+});
+
+test('Destinations uses a flat Slack rail while Channel routes keep stable lower navigation', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
 
   const html = harness.app.innerHTML;
-  assert.equal(harness.locationPath(), '/admin/channels');
-  assert.deepEqual(harness.historyReplaces, []);
+  assert.equal(harness.locationPath(), '/admin/destinations/slack/channels');
+  assert.deepEqual(harness.historyReplaces, ['/admin/destinations/slack/channels']);
   assert.equal(harness.app.className, 'frame primary-admin-shell admin-surface admin-surface-channels-index');
-  assert.match(html, /<aside class="rail primary-shell-sidebar agent-shell-sidebar">/);
+  assert.match(html, /<nav class="rail primary-shell-sidebar destination-shell-sidebar" aria-label="Destinations">/);
   assert.match(html, /class="primary-shell-brand"[\s\S]*?data-action="go-home"[\s\S]*?Chickpea/);
-  assert.match(html, /class="ws-row agent-workspace-row"[\s\S]*?Acme Inc/);
-  assert.doesNotMatch(html, /class="ws-row agent-workspace-row"[\s\S]*?>T_DESIGN<\/div>/);
+  assert.match(html, /class="destination-rail-name">Slack<[\s\S]*?class="destination-rail-meta">Acme Inc · 2 channels/);
   assert.doesNotMatch(html, /cloudflare · workers|local · node/);
-  assert.match(html, /<nav class="agent-roster" aria-label="Agents">/);
-  assert.match(html, /class="agent-roster-item" data-action="edit-profile" data-agent="agent_release"/);
-  assert.match(html, /class="agent-roster-item" data-action="edit-profile" data-agent="agent_ops"/);
-  assert.doesNotMatch(html, /class="agent-roster-item active"/);
-  assert.match(html, /class="section-nav-item active" data-action="open-channels"[^>]*aria-current="page">Channels<\/button>/);
-  assert.equal((html.match(/aria-label="Agents"/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /<nav class="agent-roster" aria-label="Agents">/);
+  assert.match(html, /class="section-nav-item active" data-action="open-destinations"[^>]*aria-current="page">Destinations<\/button>/);
   assert.equal((html.match(/aria-label="Admin navigation"/g) ?? []).length, 1);
-  assert.doesNotMatch(html, /<div class="rail-head"><span class="section-eyebrow">Channels<\/span><\/div>/);
-  assert.match(html, /<h1 class="page-title">Channels<\/h1>/);
+  assert.match(html, /<div class="rail-head"><span class="section-eyebrow">Destinations<\/span><\/div>/);
+  assert.match(html, /<h1 class="page-title">Slack<\/h1>/);
+  assert.match(html, /class="destination-tab active"[^>]*data-tab="channels">Channels<\/button>/);
   assert.match(html, /Channel grants/);
   assert.doesNotMatch(html, /Add Channel|Behavior|Channel instructions/);
 
@@ -2920,8 +2966,8 @@ test('Agent and Channel routes share the attached Agent roster and lower navigat
   await flushAsync();
   assert.equal(harness.locationPath(), '/admin/channels/T_DESIGN/C0EXR3L9T');
   assert.match(harness.app.innerHTML, /<h1 class="page-title mono-title">#eng-releases<\/h1>/);
-  assert.doesNotMatch(harness.app.innerHTML, /class="agent-roster-item active"/);
-  assert.match(harness.app.innerHTML, /class="section-nav-item active" data-action="open-channels"[^>]*aria-current="page">Channels<\/button>/);
+  assert.match(harness.app.innerHTML, /class="destination-rail-item active"/);
+  assert.match(harness.app.innerHTML, /class="section-nav-item active" data-action="open-destinations"[^>]*aria-current="page">Destinations<\/button>/);
   assert.match(harness.app.innerHTML, /data-action="channel-back">&larr; Channels<\/button>/);
   const channelHeader = harness.app.innerHTML.match(/<div class="main-head">[\s\S]*?<\/div><\/div>/)?.[0] ?? '';
   assert.doesNotMatch(channelHeader, /data-action="open-channel-memory"/);
@@ -2939,9 +2985,9 @@ test('Agent and Channel routes share the attached Agent roster and lower navigat
   assert.match(harness.app.innerHTML, /class="agent-roster-item active" data-action="edit-profile" data-agent="agent_release"/);
 
   click({ target: actionTarget({ 'data-action': 'open-channels' }) });
-  assert.equal(harness.locationPath(), '/admin/channels');
-  assert.match(harness.app.innerHTML, /<h1 class="page-title">Channels<\/h1>/);
-  assert.doesNotMatch(harness.app.innerHTML, /class="agent-roster-item active"/);
+  assert.equal(harness.locationPath(), '/admin/destinations/slack/channels');
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Slack<\/h1>/);
+  assert.match(harness.app.innerHTML, /class="destination-tab active"[^>]*data-tab="channels">Channels<\/button>/);
 });
 
 test('Channels deep links and popstate keep the route and selected screen in sync', async () => {
@@ -2955,9 +3001,9 @@ test('Channels deep links and popstate keep the route and selected screen in syn
   assert.doesNotMatch(harness.app.innerHTML, /class="agent-roster-item active"/);
 
   harness.popstate('/admin/channels');
-  assert.equal(harness.locationPath(), '/admin/channels');
-  assert.match(harness.app.innerHTML, /<h1 class="page-title">Channels<\/h1>/);
-  assert.doesNotMatch(harness.app.innerHTML, /class="agent-roster-item active"/);
+  assert.equal(harness.locationPath(), '/admin/destinations/slack/channels');
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Slack<\/h1>/);
+  assert.match(harness.app.innerHTML, /data-tab="channels">Channels<\/button>/);
 
   harness.popstate('/admin/agents/agent_ops');
   assert.equal(harness.locationPath(), '/admin/agents/agent_ops');
@@ -3033,8 +3079,9 @@ test('a stale shared-app binding changes every Slack status to Reconnect require
   assert.match(harness.app.innerHTML, /badge badge-off[^>]*>[\s\S]*?Reconnect required/);
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-profiles' }) });
   await flushAsync();
-  assert.match(harness.app.innerHTML, /agent-slack-status attention[^>]*>Reconnect required/);
-  assert.doesNotMatch(harness.app.innerHTML, /agent-slack-status[^>]*>Connected/);
+  const sidebar = harness.app.innerHTML.match(/<aside class="rail primary-shell-sidebar agent-shell-sidebar">[\s\S]*?<\/aside>/)?.[0] ?? '';
+  assert.match(sidebar, /<span class="section-eyebrow">Agents<\/span><\/div><nav class="agent-roster"/);
+  assert.doesNotMatch(sidebar, /Reconnect required|Connected|agent-slack-status/);
 });
 
 test('an offline inbound Slack session renders a specific retryable status', async () => {
@@ -3158,7 +3205,7 @@ test('Slack connection failures stay visible and the disconnect dialog gates bac
   assert.equal(tabPrevented, true);
   assert.equal(harness.focusedAction(), 'slack-disconnect-dialog');
   harness.popstate('/admin/agents');
-  assert.equal(harness.locationPath(), '/admin/channels');
+  assert.equal(harness.locationPath(), '/admin/destinations/slack/channels');
   assert.match(harness.app.innerHTML, /Disconnect Acme Inc\?/);
   click({ target: actionTarget({ 'data-action': 'slack-disconnect-cancel' }) });
   assert.match(harness.app.innerHTML, /Disconnect Acme Inc\?/);
@@ -3193,8 +3240,7 @@ test('admin page renders channel labels, profile secondary text, and singular ch
   });
   await flushAsync();
 
-  assert.doesNotMatch(harness.app.innerHTML, /class="agent-roster-item active"/);
-  assert.match(harness.app.innerHTML, /class="agent-roster-meta" title="1 channel">1 channel<\/span>/);
+  assert.match(harness.app.innerHTML, /class="destination-rail-item active"/);
   assert.doesNotMatch(harness.app.innerHTML, /Direct messages|\+ DMs|DM default/);
   assert.match(harness.app.innerHTML, /<h1 class="page-title mono-title">#eng-releases<\/h1>/);
   // Agents is now a main-panel destination (the modal was retired): opening it
@@ -3204,10 +3250,10 @@ test('admin page renders channel labels, profile secondary text, and singular ch
   assert.match(harness.app.innerHTML, /<span class="pcard-name">Release Profile<\/span>/);
   assert.match(harness.app.innerHTML, /used in 1 channel/);
 
-  // Drilling into an Agent opens the full-page editor whose placement section
+  // Drilling into an Agent opens the full-page editor whose Slack destination
   // links directly to the Channel detail.
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
-  assert.match(harness.app.innerHTML, /class="[^"]*agent-placement-card[^"]*"[\s\S]*?<h2>Where it works<\/h2>/);
+  assert.match(harness.app.innerHTML, /class="agent-destinations-section"[\s\S]*?<h2>Destinations<\/h2>[\s\S]*?<h3>Slack channels<\/h3>/);
   assert.match(harness.app.innerHTML, /data-action="open-channel-from-profile"[^>]*>[\s\S]*?class="where-channel-name">eng-releases/);
 });
 
@@ -3306,9 +3352,11 @@ test('New profile opens a blank create screen and validation gates save', async 
   click({ target: actionTarget({ 'data-action': 'profiles-back' }) });
   click({ target: actionTarget({ 'data-action': 'new-profile' }) });
 
-  // The create screen is a full page (not a modal): back link, all three
-  // capability tabs, a ghost-example instructions placeholder, and Create/Cancel.
+  // The create screen is a full page (not a modal): back link, global details,
+  // every configuration tab, a ghost-example instructions placeholder, and Create/Cancel.
   assert.match(harness.app.innerHTML, /<h1 class="page-title">New Agent<\/h1>/);
+  assert.match(harness.app.innerHTML, /<h2 class="section-title">Details<\/h2>[\s\S]*?for="p-name">Name[\s\S]*?for="p-description">Description[\s\S]*?class="agent-destinations-section"/);
+  assert.doesNotMatch(harness.app.innerHTML, /<h3>Appearance<\/h3>[\s\S]*?for="p-description">Description/);
   assert.match(harness.app.innerHTML, /data-action="profile-tab" data-tab="instructions"/);
   assert.match(harness.app.innerHTML, /data-action="profile-tab" data-tab="skills"/);
   assert.match(harness.app.innerHTML, /data-action="profile-tab" data-tab="connections"/);
@@ -3324,7 +3372,7 @@ test('New profile opens a blank create screen and validation gates save', async 
   assert.match(harness.app.innerHTML, /Name is required\./);
 });
 
-test('Agent Slack presence owns its editable handle, avatar, and edit policy', async () => {
+test('Agent Slack destination owns its editable handle, avatar, channels, and edit policy', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
   const click = harness.listeners.click;
@@ -3333,7 +3381,9 @@ test('Agent Slack presence owns its editable handle, avatar, and edit policy', a
   assert.ok(click && input && change);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': releaseAgent.id }) });
-  assert.match(harness.app.innerHTML, /class="agent-detail-card agent-presence-card"[\s\S]*?class="agent-card-icon agent-slack-card-icon"[\s\S]*?class="agent-slack-card-mark slack-logo-image"[\s\S]*?<h2>In Slack<\/h2>[\s\S]*?How this Agent appears and is mentioned\./);
+  assert.match(harness.app.innerHTML, /class="agent-destinations-section"[\s\S]*?<h2>Destinations<\/h2>[\s\S]*?class="agent-destination-card" open[\s\S]*?<strong>Slack<\/strong>[\s\S]*?@release-profile[\s\S]*?1 Slack channel/);
+  assert.match(harness.app.innerHTML, /class="agent-card-icon agent-slack-card-icon" aria-hidden="true"/);
+  assert.match(harness.app.innerHTML, /<h3>Appearance<\/h3>[\s\S]*?<h3>Slack channels<\/h3>/);
   assert.match(harness.app.innerHTML, /<span class="field-label">Avatar<\/span>/);
   assert.match(harness.app.innerHTML, /data-action="profile-avatar-upload"/);
   assert.match(harness.app.innerHTML, /<label class="field-label" for="p-handle">Handle<\/label>/);
@@ -3357,6 +3407,7 @@ test('Agent Slack presence owns its editable handle, avatar, and edit policy', a
 test('Agent roster uses each Agent Slack avatar when one is available', async () => {
   const avatarUrl = 'https://secure.gravatar.com/avatar/agent-release?s=192&d=identicon';
   const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
     agents: [{
       ...releaseAgent,
       slackPresence: {
@@ -3753,7 +3804,7 @@ test('profile capability tabs switch the visible panel on click', async () => {
   assert.match(harness.app.innerHTML, /id="ptab-skills" class="ptab" role="tab" aria-selected="false" tabindex="-1" aria-controls="ptab-panel-skills"/);
   assert.match(harness.app.innerHTML, /id="ptab-panel-skills"[^>]* hidden/);
   assert.doesNotMatch(harness.app.innerHTML, /id="ptab-panel-instructions"[^>]* hidden/);
-  assert.match(harness.app.innerHTML, /<h2[^>]*>Instructions<\/h2>/);
+  assert.match(harness.app.innerHTML, /<h3[^>]*>Instructions<\/h3>/);
   assert.match(harness.app.innerHTML, /The role, priorities, and boundaries this Agent follows everywhere it works/);
   assert.match(harness.app.innerHTML, /aria-label="Agent instructions"/);
 
@@ -3785,6 +3836,27 @@ test('profile capability tabs switch the visible panel on click', async () => {
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
   assert.match(harness.app.innerHTML, /Answer carefully\.\n\n- next bullet </);
   assert.equal((harness.app.innerHTML.match(/class="save-bar-sticky/g) ?? []).length, 1);
+});
+
+test('Agent configuration tabs preserve the Slack destination disclosure state', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/agents/agent_release' });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  assert.match(harness.app.innerHTML, /<details class="agent-destination-card" open>/);
+
+  click({ target: actionTarget({ 'data-action': 'agent-destination-toggle' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  assert.match(harness.app.innerHTML, /<details class="agent-destination-card">/);
+  assert.doesNotMatch(harness.app.innerHTML, /<details class="agent-destination-card" open>/);
+
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'instructions' }) });
+  assert.match(harness.app.innerHTML, /<details class="agent-destination-card">/);
+
+  click({ target: actionTarget({ 'data-action': 'agent-destination-toggle' }) });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'skills' }) });
+  assert.match(harness.app.innerHTML, /<details class="agent-destination-card" open>/);
 });
 
 test('opening Schedules revalidates work created after the Agent editor opened', async () => {
@@ -4513,7 +4585,7 @@ test('Agent archive refreshes and retries once after background presence advance
   assert.doesNotMatch(harness.app.innerHTML, /agent_revision_conflict/);
 });
 
-test('agent-first Admin lands on the Default Agent with Channels in lower navigation', async () => {
+test('agent-first Admin lands on the Default Agent with Destinations in lower navigation', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin' });
   await flushAsync();
 
@@ -4522,8 +4594,11 @@ test('agent-first Admin lands on the Default Agent with Channels in lower naviga
   assert.match(harness.app.innerHTML, /<aside class="rail primary-shell-sidebar agent-shell-sidebar">/);
   assert.match(harness.app.innerHTML, /<nav class="agent-roster" aria-label="Agents">/);
   assert.match(harness.app.innerHTML, /<span class="section-eyebrow">Agents<\/span>/);
+  const sidebar = harness.app.innerHTML.match(/<aside class="rail primary-shell-sidebar agent-shell-sidebar">[\s\S]*?<\/aside>/)?.[0] ?? '';
+  assert.match(sidebar, /<span class="section-eyebrow">Agents<\/span><\/div><nav class="agent-roster"/);
+  assert.doesNotMatch(sidebar, /agent-slack-context|agent-slack-row|agent-workspace-row/);
   assert.match(harness.app.innerHTML, /class="agent-roster-item active" data-action="edit-profile" data-agent="agent_release"[^>]*aria-current="page"/);
-  assert.match(harness.app.innerHTML, /data-action="open-channels"[^>]*>Channels<\/button>/);
+  assert.match(harness.app.innerHTML, /data-action="open-destinations"[^>]*>Destinations<\/button>/);
   assert.doesNotMatch(harness.app.innerHTML, />Profiles<\/button>|aria-label="Profiles"|>New profile</);
 });
 
@@ -4537,11 +4612,11 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(harness.app.innerHTML, /data-action="profile-description-edit"/);
   assert.doesNotMatch(harness.app.innerHTML, /Mention as|agent-replies-as/);
   assert.match(harness.app.innerHTML, /aria-label="Agent setup"/);
-  for (const tab of ['Instructions', 'Skills', 'Connections', 'Repositories', 'Memory', 'Schedules']) {
+  for (const tab of ['Instructions', 'Skills', 'Connections', 'Repositories', 'Memory', 'Schedules', 'Model']) {
     assert.match(harness.app.innerHTML, new RegExp(`role="tab"[^>]*>${tab}`));
   }
   assert.match(harness.app.innerHTML, /aria-label="Agent instructions"/);
-  assert.match(harness.app.innerHTML, /class="agent-tabs-card"/);
+  assert.match(harness.app.innerHTML, /class="agent-tabs-card agent-configuration-card"[\s\S]*?<h2>Agent configuration<\/h2>[\s\S]*?Behavior and capabilities that follow this Agent everywhere\./);
   for (const [tab, tone] of [
     ['instructions', 'instructions'],
     ['skills', 'skill'],
@@ -4554,23 +4629,29 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
       new RegExp(`id="ptab-panel-${tab}"[\\s\\S]*?class="agent-tab-icon semantic-icon tone-${tone}"`),
     );
   }
-  assert.match(harness.app.innerHTML, /class="[^"]*agent-placement-card[^"]*"[\s\S]*?class="agent-card-icon semantic-icon tone-channel"[\s\S]*?<h2>Where it works<\/h2>/);
-  assert.match(harness.app.innerHTML, /<h3[^>]*>Channels<\/h3>[\s\S]*?1 channel/);
+  assert.match(harness.app.innerHTML, /class="agent-destinations-section"[\s\S]*?class="agent-card-icon semantic-icon tone-channel"[\s\S]*?<h2>Destinations<\/h2>/);
+  assert.match(harness.app.innerHTML, /class="agent-destination-summary"[\s\S]*?<strong>Slack<\/strong>[\s\S]*?1 Slack channel/);
+  assert.match(harness.app.innerHTML, /<h3>Slack channels<\/h3>[\s\S]*?class="agent-placement-count">1 channel/);
   assert.match(harness.app.innerHTML, /class="where-channel-row"[\s\S]*?#<\/span>[\s\S]*?eng-releases/);
   assert.doesNotMatch(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>|workspace Default Agent for private messages/);
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
-  assert.match(harness.app.innerHTML, /class="[^"]*agent-model-card[^"]*"[\s\S]*?class="agent-card-icon semantic-icon tone-model"[\s\S]*?<h2>Model<\/h2>/);
+  assert.match(harness.app.innerHTML, /id="ptab-panel-model"[\s\S]*?class="agent-tab-icon semantic-icon tone-model"[\s\S]*?<h3>Model<\/h3>[\s\S]*?id="p-model"/);
   assert.match(harness.app.innerHTML, /<span class="field-label">Avatar<\/span>[\s\S]*?class="advanced agent-advanced-card"[\s\S]*?Who can edit[\s\S]*?Coding sandbox/);
   assert.doesNotMatch(harness.app.innerHTML, /<strong>Slack identity<\/strong>/);
   assert.ok(
-    harness.app.innerHTML.indexOf('class="agent-model-card"') < harness.app.innerHTML.indexOf('class="advanced agent-advanced-card"'),
-    'Model must remain outside and before Agent Advanced',
+    harness.app.innerHTML.indexOf('id="ptab-panel-model"') < harness.app.innerHTML.indexOf('class="advanced agent-advanced-card"'),
+    'Model must live inside Agent configuration before Agent Advanced',
   );
 
   const page = renderAdminPage();
   assert.match(page, /\.admin-surface \.agent-profile-page\s*\{[^}]*font-family:\s*"Avenir Next"/s);
   assert.match(page, /\.agent-profile-intro\s*\{[^}]*white-space:\s*nowrap;[^}]*text-overflow:\s*ellipsis;/s);
-  assert.match(page, /\.agent-tabs-card\s*\{[^}]*border-radius:\s*16px;[^}]*overflow:\s*hidden;/s);
+  assert.match(page, /\.agent-tabs-card\s*\{[^}]*border-radius:\s*16px;[^}]*overflow:\s*visible;/s);
+  assert.match(page, /\.agent-tabs-card \.ptab-panel\s*\{[^}]*border-radius:\s*0 0 15px 15px;/s);
+  assert.match(page, /\.agent-model-row\.agent-model-tab-row\s*\{[^}]*background:\s*transparent;[^}]*display:\s*block;[^}]*padding:\s*0;/s);
+  assert.match(page, /\.agent-destinations-section\s*\{[^}]*border-radius:\s*16px;[^}]*display:\s*flex;/s);
+  assert.match(page, /\.agent-destination-subsection\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*gap:\s*18px;/s);
+  assert.match(page, /\.agent-placement-label\.agent-slack-channel-count\s*\{[^}]*justify-content:\s*flex-end;/s);
   assert.match(
     page,
     /--semantic-instructions-fg:\s*#b96c06;[\s\S]*?--semantic-instructions-bg:\s*#fbefe0;[\s\S]*?--semantic-channel-fg:\s*#4b863d;[\s\S]*?--semantic-channel-bg:\s*#ebf0e2;[\s\S]*?--semantic-model-fg:\s*#7554ca;[\s\S]*?--semantic-model-bg:\s*#eee5f6;/s,
@@ -4831,8 +4912,9 @@ test('Channels stay secondary and link each reach grant back to its Agent', asyn
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-channels' }) });
   await flushAsync();
-  assert.equal(harness.locationPath(), '/admin/channels');
-  assert.match(harness.app.innerHTML, /<h1 class="page-title">Channels<\/h1>/);
+  assert.equal(harness.locationPath(), '/admin/destinations/slack/channels');
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Slack<\/h1>/);
+  assert.match(harness.app.innerHTML, /class="destination-tab active"[^>]*data-tab="channels">Channels<\/button>/);
   assert.match(harness.app.innerHTML, /Open Agent: Release Profile/);
   assert.match(harness.app.innerHTML, /placeholder="Find a Channel or Agent"/);
   assert.match(harness.app.innerHTML, /Multiple Agents can work in the same Channel/);
@@ -4878,7 +4960,8 @@ test('Channels index presents a many-Agent grant inventory without Channel behav
   await flushAsync();
 
   const html = harness.app.innerHTML;
-  assert.match(html, /<span class="agent-kicker">Slack<\/span><h1 class="page-title">Channels<\/h1>/);
+  assert.match(html, /<h1 class="page-title">Slack<\/h1>/);
+  assert.match(html, /<h2>Slack channels<\/h2>/);
   assert.doesNotMatch(html, /Add Channel/);
   assert.match(html, /<dt>Configured Channels<\/dt><dd>2<\/dd>/);
   assert.match(html, /<dt>Active Agent grants<\/dt><dd>1<\/dd>/);
@@ -5035,7 +5118,7 @@ test('configured unassigned Channels keep their detail and point back to Agents'
   assert.match(harness.app.innerHTML, /data-action="channel-back"[^>]*>&larr; Channels<\/button>/);
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'channel-back' }) });
-  assert.equal(harness.locationPath(), '/admin/channels');
+  assert.equal(harness.locationPath(), '/admin/destinations/slack/channels');
 });
 
 test('disconnected Channel route shows the Slack recovery stepper', async () => {
@@ -5045,9 +5128,8 @@ test('disconnected Channel route shows the Slack recovery stepper', async () => 
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /<aside class="rail primary-shell-sidebar agent-shell-sidebar">/);
-  assert.match(harness.app.innerHTML, /<nav class="agent-roster" aria-label="Agents">/);
-  assert.match(harness.app.innerHTML, /class="agent-slack-status disconnected"[^>]*>Not connected<\/span>/);
+  assert.match(harness.app.innerHTML, /<nav class="rail primary-shell-sidebar destination-shell-sidebar" aria-label="Destinations">/);
+  assert.match(harness.app.innerHTML, /class="destination-rail-name">Slack<\/span>/);
   assert.match(harness.app.innerHTML, /Slack setup incomplete/);
   assert.doesNotMatch(harness.app.innerHTML, /Agents available here|channel-agent-hero/);
 });
@@ -5071,9 +5153,9 @@ test('Agent roster keeps long names and placement counts accessible while trunca
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, new RegExp(`aria-label="Open Agent ${escapedName}, 1 channel"`));
+  assert.match(harness.app.innerHTML, new RegExp(`aria-label="Open Agent ${escapedName}, 1 place"`));
   assert.match(harness.app.innerHTML, new RegExp(`class="agent-roster-name" title="${escapedName}"`));
-  assert.match(harness.app.innerHTML, /class="agent-roster-meta" title="1 channel">1 channel<\/span>/);
+  assert.match(harness.app.innerHTML, /class="agent-roster-meta" title="1 place">1 place<\/span>/);
   assert.match(renderAdminPage(), /\.agent-roster-name\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
 });
 
@@ -6265,8 +6347,8 @@ test('connection accounts use the compact prototype states without provider impl
 
   const html = harness.app.innerHTML;
   const rows = html.match(/<div class="connection-state-stack">[\s\S]*?<\/section><\/div>/)?.[0] ?? '';
-  assert.match(html, /<h3>In this Agent<\/h3>[\s\S]*?<span class="connection-section-count">1<\/span>/);
-  assert.match(html, /<h3>Available<\/h3>/);
+  assert.match(html, /<h4>In this Agent<\/h4>[\s\S]*?<span class="connection-section-count">1<\/span>/);
+  assert.match(html, /<h4>Available<\/h4>/);
   assert.match(html, /connection-account-row connection-account-row-attached[\s\S]*?Gmail[\s\S]*?team@acme\.test &middot; Team/);
   assert.match(html, /connection-account-row connection-account-row-available[\s\S]*?Google Calendar[\s\S]*?person@acme\.test &middot; Personal/);
   assert.match(html, /Google Calendar[\s\S]*?Account ready[\s\S]*?2 capabilities[\s\S]*?>Add<\/button>/);
@@ -6447,12 +6529,12 @@ test('available rows exclude revoked accounts, suppress duplicate catalog rows, 
   html = harness.app.innerHTML;
   assert.match(html, /No connectors match/);
   assert.doesNotMatch(html, /Custom connection/);
-  assert.match(html, /<h3>Available<\/h3><span class="connection-section-count">0<\/span>/);
+  assert.match(html, /<h4>Available<\/h4><span class="connection-section-count">0<\/span>/);
 
   input({ target: inputTarget({ 'data-action': 'conn-gallery-search' }, 'another') });
   html = harness.app.innerHTML;
   assert.match(html, /Custom connection/);
-  assert.equal(html.match(/<h3>Available<\/h3><span class="connection-section-count">(\d+)<\/span>/)?.[1], '1');
+  assert.equal(html.match(/<h4>Available<\/h4><span class="connection-section-count">(\d+)<\/span>/)?.[1], '1');
 });
 
 test('reusable rows remain visible while a connection form is open', async () => {
@@ -11002,28 +11084,16 @@ test('Channel navigation has no local behavior or memory draft to guard', async 
   assert.equal(harness.memoryPuts.length, 0);
 });
 
-test('the existing mobile menu is the sole narrow Agent roster transition with focus return', async () => {
+test('the narrow Destination shell keeps global navigation without reopening the Agent roster', async () => {
   const harness = runAdminPageHarness({ initialPath: '/admin/channels/T_DESIGN/C0EXR3L9T' });
   await flushAsync();
 
   const page = renderAdminPage();
   assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.primary-admin-shell > \.topbar\s*\{[^}]*display:\s*flex;/s);
   assert.match(page, /@media \(max-width: 740px\)[\s\S]*?\.primary-admin-shell \.primary-shell-sidebar\s*\{[^}]*display:\s*none;/s);
-  assert.equal((harness.app.innerHTML.match(/aria-label="Agents"/g) ?? []).length, 1);
-  assert.match(harness.app.innerHTML, /data-action="mobile-agents-open"/);
-
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'mobile-agents-open' }) });
-  assert.match(harness.app.innerHTML, /class="mobile-agent-roster" role="group" aria-label="Choose an Agent"/);
-  assert.match(harness.app.innerHTML, /data-action="edit-profile" data-agent="agent_release"/);
-  assert.doesNotMatch(harness.app.innerHTML, /data-action="edit-profile" data-agent="agent_release"[^>]*aria-current="page"/);
-  assert.match(harness.app.innerHTML, /data-action="edit-profile" data-agent="agent_ops"/);
-  assert.match(harness.app.innerHTML, /data-action="new-profile"[^>]*>[^<]*<svg[\s\S]*?New Agent<\/button>/);
-  assert.match(harness.app.innerHTML, /data-action="mobile-agents-close"/);
-  assert.equal(harness.focusedAction(), 'mobile-agents-close');
-
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'mobile-agents-close' }) });
   assert.doesNotMatch(harness.app.innerHTML, /class="mobile-agent-roster"/);
-  assert.equal(harness.focusedAction(), 'mobile-menu-trigger');
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="mobile-agents-open"/);
+  assert.match(harness.app.innerHTML, /data-action="open-destinations"[^>]*>Destinations<\/button>/);
 });
 
 test('profile save renders server model-resolution messages', async () => {
@@ -11068,6 +11138,7 @@ test('selecting a channel renders its grant inventory without effective configur
 
 test('the attached Agent roster summarizes placements instead of grouping Channel rows', async () => {
   const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
     slackConnection: null,
     assignments: [
       ...defaultAssignments(),
@@ -11089,8 +11160,8 @@ test('the attached Agent roster summarizes placements instead of grouping Channe
   await flushAsync();
 
   const roster = harness.app.innerHTML.match(/<nav class="agent-roster" aria-label="Agents">[\s\S]*?<\/nav>/)?.[0] ?? '';
-  assert.match(roster, /data-agent="agent_release"[\s\S]*?title="2 channels"/);
-  assert.match(roster, /data-agent="agent_ops"[\s\S]*?title="1 channel"/);
+  assert.match(roster, /data-agent="agent_release"[\s\S]*?title="2 places"/);
+  assert.match(roster, /data-agent="agent_ops"[\s\S]*?title="1 place"/);
   assert.doesNotMatch(roster, /Direct messages|\+ DMs|DM default/);
   assert.doesNotMatch(roster, /data-action="select-channel"|#eng-releases|#demo-channel/);
 });
@@ -11152,18 +11223,17 @@ test('Agent publication sends the connected workspace and surfaces private-Chann
   assert.match(harness.app.innerHTML, /Invite Chickpea to #secret-room, then retry\./);
 });
 
-test('the attached Agent shell stays available while channel setup waits for Slack', async () => {
+test('the Destination shell stays available while Slack setup is incomplete', async () => {
   const harness = runAdminPageHarness({
     slackConnection: disconnectedSlackFixture(),
   });
   await flushAsync();
 
-  // Disconnected: setup stays focused while the shared roster and stable
-  // section switcher remain available.
+  // Disconnected: setup stays focused while the flat destination rail and
+  // stable section switcher remain available.
   assert.match(harness.app.innerHTML, /Slack setup incomplete/);
-  assert.match(harness.app.innerHTML, /<aside class="rail primary-shell-sidebar agent-shell-sidebar">/);
-  assert.match(harness.app.innerHTML, /<nav class="agent-roster" aria-label="Agents">/);
-  assert.match(harness.app.innerHTML, /class="agent-slack-status disconnected"[^>]*>Not connected<\/span>/);
+  assert.match(harness.app.innerHTML, /<nav class="rail primary-shell-sidebar destination-shell-sidebar" aria-label="Destinations">/);
+  assert.match(harness.app.innerHTML, /class="destination-rail-name">Slack<\/span>/);
   assert.match(harness.app.innerHTML, /class="section-nav-item" data-action="open-profiles"[^>]*>Agents<\/button>/);
   assert.match(harness.app.innerHTML, /class="section-nav-item" data-action="open-settings"[^>]*>Settings<\/button>/);
   assert.equal(harness.channelListCalls.length, 0);
@@ -11440,7 +11510,7 @@ test('admin page renders a credential-free recovery boundary when Slack is missi
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"|slack-connect-form|xoxb-/);
 });
 
-test('connected + zero channels shows the Slack overview with explicit workspace management', async () => {
+test('connected + zero channels shows the Slack destination with explicit workspace management', async () => {
   const harness = runAdminPageHarness({
     assignments: [],
     channelIndex: [],
@@ -11453,14 +11523,16 @@ test('connected + zero channels shows the Slack overview with explicit workspace
   });
   await flushAsync();
 
-  // Channels stays a placement index; workspace controls remain reachable in Settings.
-  assert.match(harness.app.innerHTML, /<h1 class="page-title">Channels<\/h1>/);
+  // The legacy Channels URL opens the Channels tab; workspace controls are a
+  // sibling tab within the same Slack destination.
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Slack<\/h1>/);
+  assert.match(harness.app.innerHTML, /class="destination-tab active"[^>]*data-tab="channels">Channels<\/button>/);
   assert.match(harness.app.innerHTML, /No Channels yet/);
   assert.match(harness.app.innerHTML, /Publish an Agent to a Slack Channel/);
   assert.doesNotMatch(harness.app.innerHTML, /Add Channel/);
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
   assert.doesNotMatch(harness.app.innerHTML, /Connect Slack/);
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings', 'data-section': 'slack' }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'destination-tab', 'data-tab': 'connection' }) });
   await flushAsync();
   assert.match(harness.app.innerHTML, /Connected workspace/);
   assert.match(harness.app.innerHTML, /0 configured channels/);
@@ -11645,8 +11717,8 @@ test('the left rail keeps one coherent section switcher and section-specific nav
   const initialSwitcher = harness.app.innerHTML.match(/<nav class="section-switcher" aria-label="Admin navigation">[\s\S]*?<\/nav>/)?.[0] ?? '';
   assert.doesNotMatch(initialSwitcher, />Sections</);
   assert.doesNotMatch(initialSwitcher, /Sessions|open-sessions/);
-  assert.ok(initialSwitcher.indexOf('>Agents</button>') < initialSwitcher.indexOf('>Channels</button>'));
-  assert.ok(initialSwitcher.indexOf('>Channels</button>') < initialSwitcher.indexOf('>Usage</button>'));
+  assert.ok(initialSwitcher.indexOf('>Agents</button>') < initialSwitcher.indexOf('>Destinations</button>'));
+  assert.ok(initialSwitcher.indexOf('>Destinations</button>') < initialSwitcher.indexOf('>Usage</button>'));
   assert.ok(initialSwitcher.indexOf('>Usage</button>') < initialSwitcher.indexOf('>Settings</button>'));
 
   const click = harness.listeners.click;
@@ -12215,7 +12287,7 @@ test('leaving Settings while its shared loads are pending ignores their stale co
 
   assert.equal(harness.renderHistory.length, renderCountAfterLeaving);
   assert.match(harness.app.innerHTML, /<h1 class="page-title">Slack<\/h1>/);
-  assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="slack"/);
+  assert.match(harness.app.innerHTML, /class="destination-rail-item active" data-action="open-destinations"/);
 });
 
 test('the unified primary shell lets its white paper grow with content and collapses on mobile', () => {
@@ -12264,7 +12336,7 @@ test('an Agent schedules deep link opens the schedules tab and keeps tab navigat
     harness.app.innerHTML,
     /id="ptab-schedules" class="ptab on" role="tab" aria-selected="true"/,
   );
-  assert.match(harness.app.innerHTML, /<h2>Schedules<\/h2>/);
+  assert.match(harness.app.innerHTML, /<h3>Schedules<\/h3>/);
 
   const click = harness.listeners.click;
   assert.ok(click);
