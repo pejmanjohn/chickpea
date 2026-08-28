@@ -354,6 +354,35 @@ test('V3 native streams project the frozen selected owner and base-app Chickpea 
   }
 });
 
+test('V3 terminal delivery preserves a native data table before the footer', async () => {
+  const h = harness({ schemaVersion: 3, owner: { kind: 'chickpea' } });
+  try {
+    await h.presentation.finalize(
+      'The queue is ready to explore.',
+      'markdown',
+      'complete',
+      observer([]),
+      {
+        caption: 'Synthetic support queue',
+        presentation: 'explore',
+        columns: [{ header: 'Ticket' }, { header: 'Age', type: 'number' }],
+        rows: Array.from({ length: 7 }, (_, index) => [`SUP-${index + 1}`, 12 - index]),
+        pageSize: 2,
+        rowHeaderIndex: 0,
+      },
+    );
+
+    const stop = h.calls.find((call) => call.method === 'chat.stopStream')?.input;
+    const blocks = stop?.blocks as Array<Record<string, unknown>>;
+    assert.deepEqual(blocks.map(({ type }) => type), ['data_table', 'context']);
+    assert.equal(blocks[0]?.caption, 'Synthetic support queue');
+    assert.equal(blocks[0]?.page_size, 2);
+    assert.equal(blocks[0]?.row_header_column_index, 0);
+  } finally {
+    h.db.close();
+  }
+});
+
 test('effect-capable Work starts honest native tasks but emits no progressive answer text', async () => {
   const h = harness({
     tasks: ['Inspect the customer', 'Prepare the update'],

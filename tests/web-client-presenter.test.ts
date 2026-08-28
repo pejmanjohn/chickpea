@@ -550,6 +550,93 @@ test('deliverFinal sanitizes emphasized URLs before streaming them to Slack', as
   );
 });
 
+test('deliverFinal attaches a native static table before the footer', async () => {
+  const starts: Array<Record<string, unknown>> = [];
+  const stops: Array<Record<string, unknown>> = [];
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async startStream(input: Record<string, unknown>) {
+          starts.push(input);
+          return { ok: true, ts: '1782770400.000320' };
+        },
+        async stopStream(input: Record<string, unknown>) {
+          stops.push(input);
+          return { ok: true };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND', threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER', workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent', agentId: 'agent_test',
+    },
+  );
+
+  await presenter.deliverFinal(
+    'The relocation bonus is ready for review.',
+    'markdown',
+    'complete',
+    {
+      caption: 'Synthetic relocation bonus allocation',
+      presentation: 'static',
+      columns: [{ header: 'Component' }, { header: 'CAD', type: 'number' }],
+      rows: [
+        ['Taxable', 9_350],
+        ['Non-taxable', 650],
+        ['Employer tax', 420],
+        ['Benefits', 80],
+        ['Gross addition', 10_500],
+        ['Net addition', 9_920],
+        ['Total', 10_000],
+      ],
+    },
+  );
+
+  assert.equal(starts[0]?.markdown_text, 'The relocation bonus is ready for review.');
+  const blocks = stops[0]?.blocks as Array<{ type: string; rows?: unknown[] }>;
+  assert.deepEqual(blocks.map(({ type }) => type), ['table', 'context']);
+  assert.equal(blocks[0]?.rows?.length, 8);
+});
+
+test('requester-only data tables retain caption, row header, and readable fallback text', async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async postEphemeral(input: Record<string, unknown>) {
+          calls.push(input);
+          return { ok: true, message_ts: '1782770400.000410' };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_INVOKING', threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER', workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent', agentId: 'agent_test',
+    },
+  );
+
+  await presenter.deliverRequesterOnly(
+    'The queue is ordered by impact.',
+    'markdown',
+    {
+      caption: 'Synthetic support queue',
+      presentation: 'explore',
+      columns: [{ header: 'Ticket' }, { header: 'Affected users', type: 'number' }],
+      rows: Array.from({ length: 7 }, (_, index) => [`SUP-${index + 1}`, 75 - index * 9]),
+      rowHeaderIndex: 0,
+      pageSize: 2,
+    },
+  );
+
+  const blocks = calls[0]?.blocks as Array<Record<string, unknown>>;
+  assert.deepEqual(blocks.map(({ type }) => type), ['markdown', 'data_table', 'context']);
+  assert.equal(blocks[1]?.caption, 'Synthetic support queue');
+  assert.equal(blocks[1]?.row_header_column_index, 0);
+  assert.match(String(calls[0]?.text), /Ticket: SUP-1 \| Affected users: 75/);
+});
+
 test('only a confirmed public final enters the handoff delivery callback', async () => {
   const delivered: Array<{ messageTs: string; text: string }> = [];
   const presenter = new WebClientPresenter(

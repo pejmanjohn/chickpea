@@ -334,7 +334,7 @@ export function unknownSemanticDescriptor(): SemanticActivityDescriptor {
 }
 
 export function semanticDescriptorForCoreTool(toolName: string): SemanticActivityDescriptor {
-  if (toolName === 'stream_answer') {
+  if (toolName === 'stream_answer' || toolName === 'present_table') {
     return {
       ...descriptor('draft', 'response', 'the response', 'none', 'built_in'),
       role: 'answer_generation',

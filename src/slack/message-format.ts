@@ -1,4 +1,5 @@
 import { credentialMarkers, redactCredentialLikeContent } from '../security/content-validation.ts';
+import type { SlackNativeTableBlock } from './table-presentation.ts';
 
 export const slackMarkdownBlockTextLimit = 12_000;
 export const slackFallbackTextLimit = 4_000;
@@ -31,7 +32,11 @@ export interface SlackSectionBlock {
   text: SlackPlainTextObject;
 }
 
-export type SlackMessageBlock = SlackMarkdownBlock | SlackSectionBlock | SlackContextBlock;
+export type SlackMessageBlock =
+  | SlackMarkdownBlock
+  | SlackSectionBlock
+  | SlackContextBlock
+  | SlackNativeTableBlock;
 
 export interface RenderedSlackMessage {
   text: string;
@@ -160,6 +165,13 @@ function earliestUnsafeTail(value: string): number {
   if (trailingTicks) unsafeFrom = Math.min(unsafeFrom, value.length - trailingTicks.length);
   if (value.endsWith('*') && !value.endsWith('**')) {
     unsafeFrom = Math.min(unsafeFrom, value.length - 1);
+  }
+  // A Markdown table row can look complete several tokens before the model
+  // adds its newline. Hold the whole trailing row so Slack never flashes a
+  // partially populated table during progressive delivery.
+  const trailingLineStart = value.lastIndexOf('\n') + 1;
+  if (/^\s*\|/.test(value.slice(trailingLineStart)) && !value.endsWith('\n')) {
+    unsafeFrom = Math.min(unsafeFrom, trailingLineStart);
   }
   return unsafeFrom;
 }
@@ -292,7 +304,9 @@ export function buildSlackAdminUrl(
 }
 
 export function markdownFallbackText(markdown: string): string {
-  const withoutCodeFences = markdown.replace(/```[a-zA-Z0-9_-]*\n?([\s\S]*?)```/g, '$1');
+  const withoutCodeFences = linearizeMarkdownTables(
+    markdown.replace(/```[a-zA-Z0-9_-]*\n?([\s\S]*?)```/g, '$1'),
+  );
   const fallback = withoutCodeFences
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
@@ -309,6 +323,25 @@ export function markdownFallbackText(markdown: string): string {
     .trim();
 
   return truncateText(escapeSlackControlCharacters(fallback || '(empty reply)'), slackFallbackTextLimit);
+}
+
+function linearizeMarkdownTables(markdown: string): string {
+  return markdown
+    .split('\n')
+    .flatMap((line) => {
+      if (/^\s*\|?(?:\s*:?-{3,}:?\s*\|)+(?:\s*:?-{3,}:?\s*\|?)\s*$/.test(line)) {
+        return [];
+      }
+      if (!/^\s*\|.*\|\s*$/.test(line)) return [line];
+      const cells = line
+        .trim()
+        .replace(/^\|/, '')
+        .replace(/\|$/, '')
+        .split(/(?<!\\)\|/)
+        .map((cell) => cell.trim().replace(/\\\|/g, '|'));
+      return [cells.join(' — ')];
+    })
+    .join('\n');
 }
 
 function normalizeMessageText(text: string): string {

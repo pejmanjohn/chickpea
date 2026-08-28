@@ -19,6 +19,7 @@ import type {
   SlackAgentBindingExpectation,
   TurnJob,
 } from './turn-job-types.ts';
+import { parseSlackTablePresentations } from './table-presentation.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { StateDb } from '../state/state-db.ts';
 import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
@@ -1293,6 +1294,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
 }>['result'] {
   const record = exactObject(value, 'Flue settled result', [
     'text',
+    'tablePresentations',
     'requestedModel',
     'returnedModel',
     'reportedUsage',
@@ -1300,6 +1302,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
     'flueSubmissionRef',
   ]);
   const text = validateBoundedString(record.text, 'settled result text', 1_000_000);
+  const tablePresentations = parseSlackTablePresentations(record.tablePresentations);
   const requestedModel = record.requestedModel === null
     ? null
     : validateBoundedString(record.requestedModel, 'requested model', 240);
@@ -1340,6 +1343,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
     : validateBoundedString(record.flueSubmissionRef, 'Flue submission ref', 200);
   return {
     text,
+    ...(tablePresentations.length > 0 ? { tablePresentations } : {}),
     requestedModel,
     returnedModel,
     reportedUsage,
