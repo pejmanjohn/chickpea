@@ -45,7 +45,7 @@ export function classifyManagementOperation(
     return { allowed: true, posture: 'confirmation', reason: 'agent_creation' };
   }
   if (operation.kind === 'save_routine') {
-    return { allowed: true, posture: 'confirmation', reason: 'schedule_change' };
+    return { allowed: true, posture: 'immediate', reason: 'safe_reversible_schedule_change' };
   }
   if (operation.kind === 'reassign_routine_agent') {
     return { allowed: true, posture: 'confirmation', reason: 'schedule_agent_reassignment' };

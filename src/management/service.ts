@@ -2628,6 +2628,18 @@ export class WorkspaceManagementService {
           },
         };
       }
+      case 'save_routine': {
+        const before = operation.routineId
+          ? await this.stores.routines?.getRoutine(operation.routineId)
+          : undefined;
+        const agent = await optionalAgent(this.stores.config, operation.agentId);
+        return {
+          itemId: operation.itemId,
+          operation,
+          ...(before ? { before: routinePreview(before, agent?.name) } : {}),
+          intendedAfter: routineOperationPreview(operation, agent?.name, before),
+        };
+      }
       default:
         return { itemId: operation.itemId, operation };
     }
@@ -3909,6 +3921,49 @@ function managementPreviewTarget(operation: ManagementOperation): string {
   return operation.target.kind === 'provider_credential'
     ? `provider:${operation.target.providerId}`
     : `agent:${operation.target.agentId ?? operation.target.agentClientRef ?? 'unresolved'}`;
+}
+
+function routinePreview(
+  routine: RoutineDefinition,
+  agentName?: string,
+): Record<string, unknown> {
+  return {
+    name: routine.name,
+    ...(agentName ? { ownerAgent: agentName } : {}),
+    description: routine.description,
+    taskText: routine.taskText,
+    schedule: routine.triggerKind === 'once'
+      ? `Once at ${routine.scheduleInput}`
+      : routine.scheduleInput,
+    timezone: routine.timezone,
+    destination: routine.destination.kind === 'direct_thread'
+      ? 'Current DM thread'
+      : `Slack Channel ${routine.destination.channelId}`,
+    delivery: routine.outputPolicy === 'post_on_change' ? 'Only when results change' : 'Always post',
+  };
+}
+
+function routineOperationPreview(
+  operation: Extract<ManagementOperation, { kind: 'save_routine' }>,
+  agentName: string | undefined,
+  existing: RoutineDefinition | undefined,
+): Record<string, unknown> {
+  const direct = operation.destination?.kind === 'current_dm_thread' ||
+    existing?.destination.kind === 'direct_thread';
+  return {
+    name: operation.name,
+    ...(agentName ? { ownerAgent: agentName } : {}),
+    description: operation.description,
+    taskText: operation.taskText,
+    schedule: operation.schedule.kind === 'once'
+      ? `Once at ${operation.schedule.localDateTime}`
+      : operation.schedule.expression,
+    timezone: operation.timezone,
+    destination: direct
+      ? 'Current DM thread'
+      : `Slack Channel ${operation.channelId ?? existing?.channelId ?? 'unavailable'}`,
+    delivery: operation.outputPolicy === 'post_on_change' ? 'Only when results change' : 'Always post',
+  };
 }
 
 function boundedChangeSetPreview(preview: ManagementChangeSetPreview): ManagementChangeSetPreview {

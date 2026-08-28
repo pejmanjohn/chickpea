@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.1.0",
-  "guideVersion": "1.0.12",
+  "corpusVersion": "1.2.0",
+  "guideVersion": "1.0.13",
   "baseline": {
     "id": "no-guide-v1",
     "description": "The same evaluation Agent and tools without the Chickpea agent-authoring router or skill."
@@ -136,11 +136,27 @@
         "posture": "commit",
         "placements": ["schedule"],
         "requiredInspections": ["inspect_workspace", "inspect_routines"],
-        "toolClass": "proposal",
-        "mutationAllowance": "proposal_only",
-        "approvalPosture": "proposal_required",
-        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "proposal_used", "existing_channel_reused", "no_apply_before_approval"],
-        "criticalAssertions": ["existing_channel_reused", "no_apply_before_approval"]
+        "toolClass": "direct_apply",
+        "mutationAllowance": "direct_apply",
+        "approvalPosture": "direct_allowed",
+        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "direct_apply_used", "existing_channel_reused", "confirmation_not_required"],
+        "criticalAssertions": ["existing_channel_reused", "confirmation_not_required"]
+      }
+    },
+    {
+      "id": "relative-time-follow-up-schedule",
+      "prompt": "Check this again in 5 minutes and tell me anything new",
+      "expected": {
+        "activation": "required",
+        "skillCreation": "forbidden",
+        "posture": "commit",
+        "placements": ["schedule"],
+        "requiredInspections": ["inspect_routines"],
+        "toolClass": "direct_apply",
+        "mutationAllowance": "direct_apply",
+        "approvalPosture": "direct_allowed",
+        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "direct_apply_used", "confirmation_not_required"],
+        "criticalAssertions": ["direct_apply_used", "confirmation_not_required"]
       }
     },
     {

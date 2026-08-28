@@ -89,12 +89,7 @@ test('management-created schedules accept active grant-only destinations and bin
         outputPolicy: 'post',
       }],
     });
-    assert.equal(result.status, 'confirmation_required');
-    const confirmed = await service.confirmWorkspaceChange({
-      context,
-      proposalId: result.outcomes[0]!.proposalId!,
-    });
-    assert.equal(confirmed.status, 'completed');
+    assert.equal(result.status, 'completed');
     const [routine] = await routines.listRoutines('T_MANAGEMENT_ROUTINE', 'C_SUPPORT');
     assert.ok(routine);
     const authority = await config.getAgentScheduleReference(routine.id);
@@ -356,12 +351,26 @@ test('private DM routines need no deployment flag and use trusted thread managem
       },
     });
     assert.equal(proposed.ok, true);
-    const proposalId = (proposed as { ok: true; result: { proposalId: string } }).result.proposalId;
-    const confirmed = await invokeSlackWorkspaceManagementTool({
+    const presentation = (proposed as { ok: true; result: {
+      presentation: { slack: string };
+    } }).result.presentation.slack;
+    assert.match(presentation, /Private support pulse/);
+    assert.match(presentation, /Review the private support queue/);
+    assert.match(presentation, /0 9 \* \* 1-5/);
+    assert.match(presentation, /Current DM thread/);
+    assert.doesNotMatch(presentation, /\*After\*\n> \(not set\)/);
+    assert.deepEqual(await routines.listRoutines('T_DIRECT_ROUTINE', 'D_DIRECT_OWNER'), []);
+
+    const applied = await invokeSlackWorkspaceManagementTool({
       signal: signal(support.id, '100.1'), identity, service,
-      name: 'confirm_workspace_change', args: { proposalId },
+      name: 'apply_workspace_changes',
+      args: {
+        idempotencyKey: 'private-schedule-direct-apply',
+        operations: [createOperation],
+      },
     });
-    assert.equal(confirmed.ok, true);
+    assert.equal(applied.ok, true);
+    assert.equal((applied as { ok: true; result: { status: string } }).result.status, 'completed');
     const [routine] = await routines.listRoutines('T_DIRECT_ROUTINE', 'D_DIRECT_OWNER');
     assert.ok(routine);
     assert.equal(routine.state, 'active');

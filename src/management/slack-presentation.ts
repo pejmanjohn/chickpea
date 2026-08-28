@@ -23,6 +23,12 @@ const PROPOSAL_FIELD_ORDER = [
   'mcpServers',
   'apiConnections',
   'repositories',
+  'ownerAgent',
+  'taskText',
+  'schedule',
+  'timezone',
+  'destination',
+  'delivery',
   'enabled',
   'lifecycle',
 ];
@@ -33,6 +39,12 @@ const PRESENTATION_FIELD_LABELS: Readonly<Record<string, string>> = {
   slackPresence: 'Slack Presence',
   editPolicy: 'Editing Authority',
   requestedHandle: 'Slack Handle',
+  ownerAgent: 'Agent',
+  taskText: 'Task',
+  schedule: 'Schedule',
+  timezone: 'Timezone',
+  destination: 'Destination',
+  delivery: 'Delivery',
 };
 
 const PROPOSAL_HEADER = '*Proposed changes*';
