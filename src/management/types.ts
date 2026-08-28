@@ -308,9 +308,18 @@ export interface ManagementRoutineSavedAcknowledgement {
   emojiName: 'white_check_mark';
 }
 
+/** Content-bounded acknowledgement derived only from durable schedule-action state. */
+export interface ManagementScheduleActionAcknowledgement {
+  kind: 'schedule_action';
+  transition: 'applied' | 'pending' | 'failed';
+  code?: string;
+  emojiName?: 'white_check_mark';
+}
+
 export type ManagementReceipt =
   | ManagementSetupReceipt
-  | ManagementRoutineSavedAcknowledgement;
+  | ManagementRoutineSavedAcknowledgement
+  | ManagementScheduleActionAcknowledgement;
 
 /** Internal durable record. Digest members must never cross a public adapter. */
 export interface ManagementSetupRecord {

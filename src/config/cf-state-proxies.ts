@@ -203,6 +203,7 @@ import {
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
   type DeferRoutineScheduleActionInput,
+  type MarkRoutineScheduleActionReceiptQueuedInput,
   type PutRoutineConfirmationInput,
   type ReserveRoutineScheduleActionInput,
   type PrepareRoutineAgentDispatchInput,
@@ -1701,6 +1702,26 @@ export class CfRoutineStore implements RoutineStore {
     const response = await this.execute({ kind: 'claim_due_schedule_actions', input });
     if (response.kind !== 'schedule_actions') throw unexpectedRoutineResponse();
     return response.actions;
+  }
+
+  async nextScheduleActionDueAt(): Promise<number | undefined> {
+    const response = await this.execute({ kind: 'next_schedule_action_due_at' });
+    if (response.kind !== 'schedule_action_due_at') throw unexpectedRoutineResponse();
+    return response.dueAt ?? undefined;
+  }
+
+  async listScheduleActionsNeedingReceipts(limit: number): Promise<RoutineScheduleAction[]> {
+    const response = await this.execute({ kind: 'list_schedule_actions_needing_receipts', limit });
+    if (response.kind !== 'schedule_actions') throw unexpectedRoutineResponse();
+    return response.actions;
+  }
+
+  async markScheduleActionReceiptQueued(
+    input: MarkRoutineScheduleActionReceiptQueuedInput,
+  ): Promise<RoutineScheduleAction> {
+    const response = await this.execute({ kind: 'mark_schedule_action_receipt_queued', input });
+    if (response.kind !== 'schedule_action' || !response.action) throw unexpectedRoutineResponse();
+    return response.action;
   }
   async deferScheduleAction(
     input: DeferRoutineScheduleActionInput,

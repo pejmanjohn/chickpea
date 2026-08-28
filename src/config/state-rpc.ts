@@ -45,6 +45,10 @@ import type { IdentityRpcRequest, IdentityRpcResponse } from '../identity/types.
 import type { ManagementRpcRequest, ManagementRpcResponse } from '../management/types.ts';
 import type { SlackManagementSignal } from '../management/slack-tools.ts';
 import type {
+  SlackScheduleActionOutcome,
+  SlackScheduleActionRpcRequest,
+} from '../management/slack-schedule-actions.ts';
+import type {
   WorkspaceManagementToolArguments,
   WorkspaceManagementToolName,
   WorkspaceManagementToolResult,
@@ -233,6 +237,9 @@ export interface TagStateRpc {
   workspaceManagementInvoke(
     request: SlackWorkspaceManagementRpcRequest,
   ): Promise<WorkspaceManagementToolResult>;
+  slackScheduleActionInvoke(
+    request: SlackScheduleActionRpcRequest,
+  ): Promise<SlackScheduleActionOutcome>;
   // -- identity and organization authorization ----------------------------
   identityExecute(request: IdentityRpcRequest): Promise<StateRpcResult<IdentityRpcResponse>>;
   // -- requester-bound workspace management ledger -----------------------

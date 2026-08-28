@@ -130,6 +130,7 @@ test('schedule action admission replays one content-bounded record and rejects c
   const input = {
     actionId: 'rsaction_replay',
     actionDigest: 'a'.repeat(64),
+    requestOperationId: 'management_schedule_replay',
     workspaceId: 'T_TEST',
     actorUserId: 'U_MEMBER',
     actorMembershipId: 'membership_owner',
@@ -147,6 +148,8 @@ test('schedule action admission replays one content-bounded record and rejects c
     assert.equal(first.status, 'pending');
     assert.equal(first.attempts, 0);
     assert.equal(first.result, null);
+    assert.equal(first.pendingReceiptQueuedAt, null);
+    assert.equal(first.terminalReceiptQueuedAt, null);
     assert.doesNotMatch(JSON.stringify(first), /check my email|secret task/i);
 
     await assert.rejects(
@@ -165,6 +168,7 @@ test('schedule action leases recover and terminal results replay without conflic
   const input = {
     actionId: 'rsaction_terminal',
     actionDigest: 'c'.repeat(64),
+    requestOperationId: 'management_schedule_terminal',
     workspaceId: 'T_TEST',
     actorUserId: 'U_MEMBER',
     actorMembershipId: 'membership_owner',
@@ -193,6 +197,18 @@ test('schedule action leases recover and terminal results replay without conflic
       leaseUntil: clock + 1_500,
     });
     assert.equal(blocked.outcome, 'pending');
+    assert.equal(await store.nextScheduleActionDueAt(), CREATED_AT + 1_000);
+
+    assert.deepEqual(
+      (await store.listScheduleActionsNeedingReceipts(10)).map(({ actionId }) => actionId),
+      [input.actionId],
+    );
+    const pendingReceipt = await store.markScheduleActionReceiptQueued({
+      actionId: input.actionId,
+      phase: 'pending',
+      at: clock + 501,
+    });
+    assert.equal(pendingReceipt.pendingReceiptQueuedAt, clock + 501);
 
     clock += 1_001;
     const recovered = await store.claimScheduleAction({
@@ -219,6 +235,17 @@ test('schedule action leases recover and terminal results replay without conflic
     });
     assert.equal(applied.status, 'applied');
     assert.deepEqual(applied.result, appliedResult);
+    assert.deepEqual(
+      (await store.listScheduleActionsNeedingReceipts(10)).map(({ actionId }) => actionId),
+      [input.actionId],
+    );
+    const terminalReceipt = await store.markScheduleActionReceiptQueued({
+      actionId: input.actionId,
+      phase: 'terminal',
+      at: clock + 2,
+    });
+    assert.equal(terminalReceipt.terminalReceiptQueuedAt, clock + 2);
+    assert.deepEqual(await store.listScheduleActionsNeedingReceipts(10), []);
 
     const terminal = await store.claimScheduleAction({
       actionId: input.actionId,
@@ -227,7 +254,7 @@ test('schedule action leases recover and terminal results replay without conflic
       leaseUntil: clock + 1_002,
     });
     assert.equal(terminal.outcome, 'terminal');
-    assert.deepEqual(terminal.action, applied);
+    assert.deepEqual(terminal.action, terminalReceipt);
 
     await assert.rejects(
       () => store.settleScheduleAction({

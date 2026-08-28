@@ -6,8 +6,10 @@ import { ErrorCode, WebClient } from '@slack/web-api';
 import {
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
+  reconcileScheduleActionReceipts,
 } from '../src/management/receipts.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
+import { SqliteRoutineStore } from '../src/routines/store.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import type { ManagementReceiptOutboxRecord } from '../src/management/types.ts';
 
@@ -128,4 +130,71 @@ test('an existing schedule acknowledgement reaction is an idempotent delivery su
   });
 
   assert.equal(result.deliveryRef, 'slack:D_ACK:1800000000.000100:reaction');
+});
+
+test('durable action state repairs one DM reaction and keeps Channel success reply-owned', async () => {
+  const management = new SqliteManagementStore(':memory:');
+  const routines = new SqliteRoutineStore(':memory:', () => 1_800_000_000_000);
+  const reserve = async (actionId: string, conversationKind: 'im' | 'channel') => {
+    await routines.reserveScheduleAction({
+      actionId,
+      actionDigest: actionId.endsWith('dm') ? 'a'.repeat(64) : 'b'.repeat(64),
+      requestOperationId: `management_${actionId}`,
+      workspaceId: 'T_ACK',
+      actorUserId: 'U_MEMBER',
+      actorMembershipId: 'membership_ack',
+      agentId: 'agent_sprout',
+      conversationKind,
+      channelId: conversationKind === 'im' ? 'D_ACK' : 'C_ACK',
+      threadTs: '1800000000.000100',
+      messageTs: '1800000000.000200',
+      at: 1_800_000_000_000,
+    });
+    const claim = await routines.claimScheduleAction({
+      actionId,
+      owner: 'foreground',
+      at: 1_800_000_000_000,
+      leaseUntil: 1_800_000_030_000,
+    });
+    assert.equal(claim.outcome, 'claimed');
+    await routines.settleScheduleAction({
+      actionId,
+      owner: 'foreground',
+      expectedAttempt: 1,
+      result: {
+        outcome: 'applied',
+        effect: 'saved',
+        routineId: `routine_${conversationKind}`,
+        routineVersion: 1,
+      },
+      at: 1_800_000_000_001,
+    });
+  };
+  try {
+    await reserve('rsaction_receipt_dm', 'im');
+    await reserve('rsaction_receipt_channel', 'channel');
+    assert.equal(await reconcileScheduleActionReceipts({
+      routines,
+      management,
+      at: 1_800_000_000_002,
+    }), 2);
+
+    const dm = await management.getOutboxForOperation('rsaction_receipt_dm');
+    assert.equal(dm?.destination.kind, 'reaction');
+    assert.deepEqual(dm?.receipt, {
+      kind: 'schedule_action',
+      transition: 'applied',
+      emojiName: 'white_check_mark',
+    });
+    assert.equal(await management.getOutboxForOperation('rsaction_receipt_channel'), undefined);
+    assert.deepEqual(await routines.listScheduleActionsNeedingReceipts(10), []);
+    assert.equal(await reconcileScheduleActionReceipts({
+      routines,
+      management,
+      at: 1_800_000_000_003,
+    }), 0);
+  } finally {
+    management.close();
+    routines.close();
+  }
 });

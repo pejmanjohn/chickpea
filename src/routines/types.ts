@@ -558,6 +558,8 @@ export type RoutineScheduleActionResult =
 export interface RoutineScheduleAction {
   actionId: string;
   actionDigest: string;
+  /** Private management-request ledger entry containing the bounded command payload. */
+  requestOperationId: string;
   workspaceId: string;
   actorUserId: string;
   actorMembershipId: string;
@@ -572,6 +574,8 @@ export interface RoutineScheduleAction {
   attempts: number;
   nextAttemptAt: number;
   result: RoutineScheduleActionResult | null;
+  pendingReceiptQueuedAt: number | null;
+  terminalReceiptQueuedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -579,6 +583,7 @@ export interface RoutineScheduleAction {
 export interface ReserveRoutineScheduleActionInput {
   actionId: string;
   actionDigest: string;
+  requestOperationId: string;
   workspaceId: string;
   actorUserId: string;
   actorMembershipId: string;
@@ -618,6 +623,12 @@ export interface DeferRoutineScheduleActionInput {
   at: number;
 }
 
+export interface MarkRoutineScheduleActionReceiptQueuedInput {
+  actionId: string;
+  phase: 'pending' | 'terminal';
+  at: number;
+}
+
 export interface RoutineStore {
   reserveScheduleAction(input: ReserveRoutineScheduleActionInput): Promise<RoutineScheduleAction>;
   getScheduleAction(actionId: string): Promise<RoutineScheduleAction | undefined>;
@@ -628,6 +639,11 @@ export interface RoutineStore {
     leaseUntil: number;
     limit: number;
   }): Promise<RoutineScheduleAction[]>;
+  nextScheduleActionDueAt(): Promise<number | undefined>;
+  listScheduleActionsNeedingReceipts(limit: number): Promise<RoutineScheduleAction[]>;
+  markScheduleActionReceiptQueued(
+    input: MarkRoutineScheduleActionReceiptQueuedInput,
+  ): Promise<RoutineScheduleAction>;
   deferScheduleAction(input: DeferRoutineScheduleActionInput): Promise<RoutineScheduleAction>;
   settleScheduleAction(input: SettleRoutineScheduleActionInput): Promise<RoutineScheduleAction>;
   putConfirmation(input: PutRoutineConfirmationInput): Promise<RoutineConfirmation>;
@@ -694,6 +710,12 @@ export type RoutineRpcRequest =
       kind: 'claim_due_schedule_actions';
       input: { owner: string; at: number; leaseUntil: number; limit: number };
     }
+  | { kind: 'next_schedule_action_due_at' }
+  | { kind: 'list_schedule_actions_needing_receipts'; limit: number }
+  | {
+      kind: 'mark_schedule_action_receipt_queued';
+      input: MarkRoutineScheduleActionReceiptQueuedInput;
+    }
   | { kind: 'defer_schedule_action'; input: DeferRoutineScheduleActionInput }
   | { kind: 'settle_schedule_action'; input: SettleRoutineScheduleActionInput }
   | { kind: 'put_confirmation'; input: PutRoutineConfirmationInput }
@@ -741,6 +763,7 @@ export type RoutineRpcResponse =
   | { kind: 'schedule_action'; action: RoutineScheduleAction | null }
   | { kind: 'schedule_action_claim'; claim: ClaimRoutineScheduleActionResult }
   | { kind: 'schedule_actions'; actions: RoutineScheduleAction[] }
+  | { kind: 'schedule_action_due_at'; dueAt: number | null }
   | { kind: 'confirmation'; confirmation: RoutineConfirmation | null }
   | { kind: 'routine'; routine: RoutineDefinition | null }
   | { kind: 'routines'; routines: RoutineDefinition[] }

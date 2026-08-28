@@ -40,6 +40,7 @@ import {
   type CreateRoutineOccurrenceInput,
   type PutRoutineConfirmationInput,
   type DeferRoutineScheduleActionInput,
+  type MarkRoutineScheduleActionReceiptQueuedInput,
   type PrepareRoutineAgentDispatchInput,
   type RecordRoutineAgentReceiptInput,
   type RecordRoutineAgentSettlementInput,
@@ -156,6 +157,7 @@ interface RecoveryDeliveryRow {
 interface ScheduleActionRow {
   action_id: string;
   action_digest: string;
+  request_operation_id: string;
   workspace_id: string;
   actor_user_id: string;
   actor_membership_id: string;
@@ -170,6 +172,8 @@ interface ScheduleActionRow {
   attempts: number;
   next_attempt_at: number;
   result_json: string | null;
+  pending_receipt_queued_at: number | null;
+  terminal_receipt_queued_at: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -326,6 +330,18 @@ export class RoutineStoreLogic {
         return { kind: 'schedule_action_claim', claim: this.claimScheduleAction(request.input) };
       case 'claim_due_schedule_actions':
         return { kind: 'schedule_actions', actions: this.claimDueScheduleActions(request.input) };
+      case 'next_schedule_action_due_at':
+        return { kind: 'schedule_action_due_at', dueAt: this.nextScheduleActionDueAt() ?? null };
+      case 'list_schedule_actions_needing_receipts':
+        return {
+          kind: 'schedule_actions',
+          actions: this.listScheduleActionsNeedingReceipts(request.limit),
+        };
+      case 'mark_schedule_action_receipt_queued':
+        return {
+          kind: 'schedule_action',
+          action: this.markScheduleActionReceiptQueued(request.input),
+        };
       case 'defer_schedule_action':
         return { kind: 'schedule_action', action: this.deferScheduleAction(request.input) };
       case 'settle_schedule_action':
@@ -431,13 +447,14 @@ export class RoutineStoreLogic {
       }
       this.db.run(
         `INSERT INTO routine_schedule_actions (
-          action_id, action_digest, workspace_id, actor_user_id, actor_membership_id,
+          action_id, action_digest, request_operation_id, workspace_id, actor_user_id, actor_membership_id,
           agent_id, conversation_kind, channel_id, thread_ts, message_ts, status,
           lease_owner, lease_until, attempts, next_attempt_at, result_json,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, 0, ?, NULL, ?, ?)`,
+          pending_receipt_queued_at, terminal_receipt_queued_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, 0, ?, NULL, NULL, NULL, ?, ?)`,
         input.actionId,
         input.actionDigest,
+        input.requestOperationId,
         input.workspaceId,
         input.actorUserId,
         input.actorMembershipId,
@@ -525,6 +542,64 @@ export class RoutineStoreLogic {
       }
       return claimed;
     });
+  }
+
+  nextScheduleActionDueAt(): number | undefined {
+    const row = this.db.get(
+      `SELECT MIN(
+         CASE
+           WHEN lease_until IS NOT NULL AND lease_until > next_attempt_at THEN lease_until
+           ELSE next_attempt_at
+         END
+       ) AS due_at
+       FROM routine_schedule_actions WHERE status = 'pending'`,
+    ) as unknown as { due_at: number | null } | undefined;
+    return row?.due_at === null || row?.due_at === undefined ? undefined : Number(row.due_at);
+  }
+
+  listScheduleActionsNeedingReceipts(limit: number): RoutineScheduleAction[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw routineError('routine_schedule_action_invalid', 'Schedule action receipt limit is invalid.');
+    }
+    return (this.db.all(
+      `SELECT * FROM routine_schedule_actions
+       WHERE (status = 'pending' AND attempts > 0 AND pending_receipt_queued_at IS NULL)
+          OR (status IN ('applied', 'failed') AND terminal_receipt_queued_at IS NULL)
+       ORDER BY updated_at, action_id LIMIT ?`,
+      limit,
+    ) as unknown as ScheduleActionRow[]).map(rowToScheduleAction);
+  }
+
+  markScheduleActionReceiptQueued(
+    input: MarkRoutineScheduleActionReceiptQueuedInput,
+  ): RoutineScheduleAction {
+    validateScheduleActionId(input.actionId);
+    if (!Number.isSafeInteger(input.at) || input.at < 0) {
+      throw routineError('routine_schedule_action_invalid', 'Schedule action receipt time is invalid.');
+    }
+    const current = required(this.getScheduleAction(input.actionId), 'Schedule action was not found.');
+    if (input.phase === 'pending') {
+      if (current.status !== 'pending' || current.attempts < 1) throw scheduleActionConflict();
+      this.db.run(
+        `UPDATE routine_schedule_actions SET pending_receipt_queued_at = COALESCE(
+           pending_receipt_queued_at, ?
+         ), updated_at = ? WHERE action_id = ?`,
+        input.at,
+        input.at,
+        input.actionId,
+      );
+    } else {
+      if (current.status === 'pending') throw scheduleActionConflict();
+      this.db.run(
+        `UPDATE routine_schedule_actions SET terminal_receipt_queued_at = COALESCE(
+           terminal_receipt_queued_at, ?
+         ), updated_at = ? WHERE action_id = ?`,
+        input.at,
+        input.at,
+        input.actionId,
+      );
+    }
+    return required(this.getScheduleAction(input.actionId), 'Schedule action was not readable.');
   }
 
   deferScheduleAction(input: DeferRoutineScheduleActionInput): RoutineScheduleAction {
@@ -2373,6 +2448,7 @@ export class RoutineStoreLogic {
       `CREATE TABLE IF NOT EXISTS routine_schedule_actions (
         action_id TEXT PRIMARY KEY,
         action_digest TEXT NOT NULL,
+        request_operation_id TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
         actor_user_id TEXT NOT NULL,
         actor_membership_id TEXT NOT NULL,
@@ -2387,10 +2463,13 @@ export class RoutineStoreLogic {
         attempts INTEGER NOT NULL,
         next_attempt_at INTEGER NOT NULL,
         result_json TEXT,
+        pending_receipt_queued_at INTEGER,
+        terminal_receipt_queued_at INTEGER,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )`,
     );
+    this.ensureScheduleActionColumns();
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS routine_schedule_actions_due_idx
        ON routine_schedule_actions (status, next_attempt_at, lease_until, created_at)`,
@@ -2537,6 +2616,27 @@ export class RoutineStoreLogic {
     this.db.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS routine_run_admissions_attempt_id_unique ON routine_run_admissions (attempt_id)',
     );
+  }
+
+  private ensureScheduleActionColumns(): void {
+    const columns = new Set((this.db.all(
+      'PRAGMA table_info(routine_schedule_actions)',
+    ) as Array<{ name: string }>).map(({ name }) => name));
+    if (!columns.has('request_operation_id')) {
+      this.db.exec(
+        "ALTER TABLE routine_schedule_actions ADD COLUMN request_operation_id TEXT NOT NULL DEFAULT 'management_legacy_schedule_action'",
+      );
+    }
+    if (!columns.has('pending_receipt_queued_at')) {
+      this.db.exec(
+        'ALTER TABLE routine_schedule_actions ADD COLUMN pending_receipt_queued_at INTEGER',
+      );
+    }
+    if (!columns.has('terminal_receipt_queued_at')) {
+      this.db.exec(
+        'ALTER TABLE routine_schedule_actions ADD COLUMN terminal_receipt_queued_at INTEGER',
+      );
+    }
   }
 
   private insertRoutine(input: {
@@ -3967,6 +4067,7 @@ function rowToScheduleAction(row: ScheduleActionRow): RoutineScheduleAction {
   return {
     actionId: row.action_id,
     actionDigest: row.action_digest,
+    requestOperationId: row.request_operation_id,
     workspaceId: row.workspace_id,
     actorUserId: row.actor_user_id,
     actorMembershipId: row.actor_membership_id,
@@ -3981,6 +4082,8 @@ function rowToScheduleAction(row: ScheduleActionRow): RoutineScheduleAction {
     attempts: row.attempts,
     nextAttemptAt: row.next_attempt_at,
     result,
+    pendingReceiptQueuedAt: row.pending_receipt_queued_at,
+    terminalReceiptQueuedAt: row.terminal_receipt_queued_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -4000,6 +4103,7 @@ function validateScheduleActionAdmission(input: ReserveRoutineScheduleActionInpu
     throw routineError('routine_schedule_action_invalid', 'Schedule action admission is invalid.');
   }
   for (const value of [
+    input.requestOperationId,
     input.workspaceId,
     input.actorUserId,
     input.actorMembershipId,
@@ -4067,6 +4171,7 @@ function sameScheduleActionAdmission(
 ): boolean {
   return action.actionId === input.actionId &&
     action.actionDigest === input.actionDigest &&
+    action.requestOperationId === input.requestOperationId &&
     action.workspaceId === input.workspaceId &&
     action.actorUserId === input.actorUserId &&
     action.actorMembershipId === input.actorMembershipId &&

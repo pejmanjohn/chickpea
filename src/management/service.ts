@@ -478,13 +478,15 @@ export class WorkspaceManagementService {
       at,
     });
     if (reservation.request.status === 'completed' && reservation.request.result) {
-      await queueAppliedPrivateDmRoutineAcknowledgement(
-        this.stores.management,
-        actor,
-        operations,
-        reservation.request.result,
-        this.now(),
-      );
+      if (!isFirstClassScheduleAction(input.idempotencyKey)) {
+        await queueAppliedPrivateDmRoutineAcknowledgement(
+          this.stores.management,
+          actor,
+          operations,
+          reservation.request.result,
+          this.now(),
+        );
+      }
       return emitOperationOutcomes(actor.origin.kind, reservation.request.result);
     }
     if (reservation.request.status === 'failed') {
@@ -629,13 +631,15 @@ export class WorkspaceManagementService {
       withoutSetupCapabilities(result),
       this.now(),
     );
-    await queueAppliedPrivateDmRoutineAcknowledgement(
-      this.stores.management,
-      actor,
-      request.operations,
-      result,
-      this.now(),
-    );
+    if (!isFirstClassScheduleAction(input.idempotencyKey)) {
+      await queueAppliedPrivateDmRoutineAcknowledgement(
+        this.stores.management,
+        actor,
+        request.operations,
+        result,
+        this.now(),
+      );
+    }
     return emitOperationOutcomes(actor.origin.kind, result);
   }
 
@@ -3270,6 +3274,10 @@ function actorPrincipal(actor: LiveManagementActor): AuthPrincipal {
 
 function managementStorageIdempotencyKey(actor: LiveManagementActor, publicKey: string): string {
   return actor.actingAgentId ? `agent.${actor.actingAgentId}.${publicKey}` : publicKey;
+}
+
+function isFirstClassScheduleAction(idempotencyKey: string): boolean {
+  return idempotencyKey.startsWith('schedule-action:rsaction_');
 }
 
 function publicManagementIdempotencyKey(actor: LiveManagementActor, storageKey: string): string {
