@@ -79,7 +79,7 @@ function createHarness() {
   writeFileSync(
     wranglerStub,
     commandLogger('wrangler') + `
-      import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+      import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
       import { DatabaseSync } from 'node:sqlite';
       import path from 'node:path';
       const args = process.argv.slice(2);
@@ -102,7 +102,17 @@ function createHarness() {
         if (process.env.DEPLOY_TEST_STALLED_INSPECTION === 'status') {
           await new Promise(() => setInterval(() => {}, 1_000));
         }
-        process.stdout.write(process.env.DEPLOY_TEST_DEPLOYMENT_STATUS || JSON.stringify({
+        let statusPayload = process.env.DEPLOY_TEST_DEPLOYMENT_STATUS;
+        if (process.env.DEPLOY_TEST_DEPLOYMENT_STATUS_SEQUENCE) {
+          const sequence = JSON.parse(process.env.DEPLOY_TEST_DEPLOYMENT_STATUS_SEQUENCE);
+          const counterPath = process.env.DEPLOY_TEST_DEPLOYMENT_STATUS_COUNTER;
+          const count = counterPath && existsSync(counterPath)
+            ? Number(readFileSync(counterPath, 'utf8'))
+            : 0;
+          statusPayload = JSON.stringify(sequence[Math.min(count, sequence.length - 1)]);
+          if (counterPath) writeFileSync(counterPath, String(count + 1));
+        }
+        process.stdout.write(statusPayload || JSON.stringify({
           versions: [{ version_id: 'deployed-version', percentage: 100 }],
         }));
         process.exit(0);
@@ -206,6 +216,8 @@ function runHarness(
       ...env,
       DEPLOY_TEST_LOG: harness.logPath,
       DEPLOY_TEST_SECRET_CAPTURE: harness.secretCapturePath,
+      DEPLOY_TEST_DEPLOYMENT_STATUS_COUNTER:
+        env.DEPLOY_TEST_DEPLOYMENT_STATUS_COUNTER ?? path.join(harness.root, 'deployment-status-count'),
       DEPLOY_TEST_READINESS_BASE_URL:
         env.DEPLOY_TEST_READINESS_BASE_URL ?? 'https://chickpea.test',
       DEPLOY_TEST_READINESS_STATUSES: env.DEPLOY_TEST_READINESS_STATUSES ?? '204',
@@ -672,6 +684,35 @@ test('an existing Worker reuses its deployed AUTH_DB id instead of another same-
     'wrangler.json',
   ), 'utf8'));
   assert.equal(config.d1_databases[0].database_id, 'deployed-database-id');
+});
+
+test('an overlapping deploy aborts instead of replacing another task canary', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  const statusSequence = [
+    { versions: [{ version_id: 'starting-version', percentage: 100 }] },
+    { versions: [{ version_id: 'competing-version', percentage: 100 }] },
+  ];
+
+  const result = runHarness(harness, ['--skip-build'], {
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_AUTH_SECRET' }]),
+    DEPLOY_TEST_DEPLOYMENT_STATUS_SEQUENCE: JSON.stringify(statusSequence),
+    DEPLOY_TEST_VERSION_VIEWS: JSON.stringify({
+      'starting-version': {
+        resources: { bindings: [{
+          name: 'AUTH_DB', type: 'd1', id: 'test-database-id',
+        }] },
+      },
+    }),
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /active Worker deployment changed while this deploy was preparing/i);
+  assert.match(result.stderr, /Another task is using the same deployment target/);
+  assert.equal(
+    commands(harness.logPath).some((command) => command.startsWith('wrangler:["deploy"')),
+    false,
+  );
 });
 
 test('an existing Worker refuses a generated AUTH_DB id that differs from production', (context) => {

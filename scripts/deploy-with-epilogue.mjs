@@ -541,7 +541,7 @@ function inspectRemoteWorker(artifact) {
   return { exists: true, names: new Set(entries.map((entry) => entry.name)) };
 }
 
-function deployedAuthDatabaseId(artifact) {
+function activeDeployment(artifact) {
   const status = spawnSync(
     process.execPath,
     [
@@ -583,6 +583,28 @@ function deployedAuthDatabaseId(artifact) {
   )) {
     throw new Error('Active Worker deployment discovery returned no readable serving versions.');
   }
+  return versions;
+}
+
+function deploymentFingerprint(versions) {
+  return versions
+    .map((version) => `${version.version_id.trim()}:${Number(version.percentage)}`)
+    .sort()
+    .join(',');
+}
+
+function assertActiveDeploymentUnchanged(artifact, expectedFingerprint) {
+  const currentFingerprint = deploymentFingerprint(activeDeployment(artifact));
+  if (currentFingerprint === expectedFingerprint) return;
+  throw new Error(
+    'The active Worker deployment changed while this deploy was preparing. ' +
+    'Another task is using the same deployment target; refusing to replace its canary. ' +
+    'Coordinate the live acceptance run, then rebuild and deploy again.',
+  );
+}
+
+function deployedAuthDatabase(artifact) {
+  const versions = activeDeployment(artifact);
 
   const databaseIds = [];
   let versionsWithoutAuthDatabase = 0;
@@ -646,7 +668,10 @@ function deployedAuthDatabaseId(artifact) {
   if (uniqueIds.length > 1) {
     throw new Error('Active Worker versions use different AUTH_DB databases; refusing to update either one.');
   }
-  return uniqueIds[0];
+  return {
+    databaseId: uniqueIds[0],
+    fingerprint: deploymentFingerprint(versions),
+  };
 }
 
 async function prepareDeploymentAuthority(artifact, secretNames) {
@@ -922,13 +947,15 @@ function verifyRemoteAuthSchema(artifact) {
 
 let deploymentAuthority;
 let remoteWorker;
+let expectedActiveDeploymentFingerprint;
 if (!deployArgs.includes('--dry-run')) {
   try {
     remoteWorker = inspectRemoteWorker(builtArtifact);
-    const liveAuthDatabaseId = remoteWorker.exists
-      ? deployedAuthDatabaseId(builtArtifact)
+    const deployed = remoteWorker.exists
+      ? deployedAuthDatabase(builtArtifact)
       : undefined;
-    builtArtifact = ensureAuthDatabase(builtArtifact, liveAuthDatabaseId);
+    expectedActiveDeploymentFingerprint = deployed?.fingerprint;
+    builtArtifact = ensureAuthDatabase(builtArtifact, deployed?.databaseId);
     // This is the final gate immediately before the first mutation of an
     // existing customer resource. It intentionally reruns after both D1 reuse
     // injection and D1 provisioning/rebuild.
@@ -985,6 +1012,22 @@ try {
 } catch (error) {
   console.error(`Unable to prepare the temporary Worker secrets file: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
+}
+
+// The inspection above intentionally happens after the build, when this
+// deploy knows the exact target and preserved bindings. A second task may
+// still finish its own deploy while migrations/readiness preparation runs.
+// Re-read the serving versions at the last safe boundary so overlapping
+// disposable acceptance runs fail closed instead of silently replacing one
+// another's Worker and interrupting their admitted Slack turns.
+if (expectedActiveDeploymentFingerprint) {
+  try {
+    assertActiveDeploymentUnchanged(builtArtifact, expectedActiveDeploymentFingerprint);
+  } catch (error) {
+    removeSecretsFile(preparedSecrets);
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 }
 
 const child = spawn(
