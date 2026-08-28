@@ -5225,7 +5225,7 @@ test('disconnected Channel route shows the Slack recovery stepper', async () => 
   assert.doesNotMatch(harness.app.innerHTML, /Agents available here|channel-agent-hero/);
 });
 
-test('Agent roster keeps long names and placement counts accessible while truncating visually', async () => {
+test('Agent roster keeps long names accessible and centered while truncating visually', async () => {
   const escapedName = 'Customer Research &amp; Escalations Agent With A Deliberately Long Name';
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_long',
@@ -5244,10 +5244,13 @@ test('Agent roster keeps long names and placement counts accessible while trunca
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, new RegExp(`aria-label="Open Agent ${escapedName}, 1 place"`));
+  assert.match(harness.app.innerHTML, new RegExp(`aria-label="Open Agent ${escapedName}"`));
   assert.match(harness.app.innerHTML, new RegExp(`class="agent-roster-name" title="${escapedName}"`));
-  assert.match(harness.app.innerHTML, /class="agent-roster-meta" title="1 place">1 place<\/span>/);
-  assert.match(renderAdminPage(), /\.agent-roster-name\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
+  assert.doesNotMatch(harness.app.innerHTML, /class="agent-roster-meta"/);
+  const page = renderAdminPage();
+  assert.match(page, /\.agent-roster-copy\s*\{[^}]*align-items:\s*center;/s);
+  assert.match(page, /\.agent-roster-name\s*\{[^}]*min-width:\s*0;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
+  assert.match(page, /\.mobile-agent-roster\s*\{[^}]*width:\s*min\(340px,\s*calc\(100vw - 40px\)\);/s);
 });
 
 test('Agent owner memory exposes one directly editable current body without file or history concepts', async () => {
@@ -11227,7 +11230,7 @@ test('selecting a channel renders its grant inventory without effective configur
   assert.doesNotMatch(harness.app.innerHTML, /channel-detail-status resolving/);
 });
 
-test('the attached Agent roster summarizes placements instead of grouping Channel rows', async () => {
+test('the attached Agent roster lists Agents without placement summaries or Channel rows', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_release',
     slackConnection: null,
@@ -11251,8 +11254,9 @@ test('the attached Agent roster summarizes placements instead of grouping Channe
   await flushAsync();
 
   const roster = harness.app.innerHTML.match(/<nav class="agent-roster" aria-label="Agents">[\s\S]*?<\/nav>/)?.[0] ?? '';
-  assert.match(roster, /data-agent="agent_release"[\s\S]*?title="2 places"/);
-  assert.match(roster, /data-agent="agent_ops"[\s\S]*?title="1 place"/);
+  assert.match(roster, /data-agent="agent_release"/);
+  assert.match(roster, /data-agent="agent_ops"/);
+  assert.doesNotMatch(roster, /agent-roster-meta|\b\d+ places?\b/);
   assert.doesNotMatch(roster, /Direct messages|\+ DMs|DM default/);
   assert.doesNotMatch(roster, /data-action="select-channel"|#eng-releases|#demo-channel/);
 });

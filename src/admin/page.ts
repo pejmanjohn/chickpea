@@ -1654,18 +1654,12 @@ details[open].advanced summary::before {
 .agent-roster-icon.has-avatar { background: transparent; overflow: hidden; }
 .agent-roster-icon.has-avatar img { display: block; height: 100%; object-fit: cover; width: 100%; }
 .agent-roster-icon .ic { height: 18px; width: 18px; }
-.agent-roster-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.agent-roster-copy { align-items: center; display: flex; flex: 1; min-width: 0; }
 .agent-roster-name {
   font-size: .75rem;
   font-weight: 750;
   line-height: 1.2;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agent-roster-meta {
-  color: var(--text-3);
-  font-size: .625rem;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1703,7 +1697,7 @@ details[open].advanced summary::before {
 .admin-surface .main {
   padding: 44px 46px 48px;
 }
-.mobile-agent-roster { display: flex; flex-direction: column; gap: 4px; min-width: min(340px, calc(100vw - 40px)); }
+.mobile-agent-roster { display: flex; flex-direction: column; gap: 4px; width: min(340px, calc(100vw - 40px)); }
 .mobile-agent-roster-head { align-items: center; display: flex; gap: 10px; justify-content: space-between; padding: 4px 6px 8px; }
 .mobile-agent-roster .agent-roster-add { margin-left: 0; }
 
@@ -4263,11 +4257,6 @@ button.capability-pill { cursor: pointer; }
     return hash % 3;
   }
 
-  function agentPlacementMeta(agent) {
-    var channelCount = channelGrantsForAgent(agent.id).length;
-    return channelCount + " " + (channelCount === 1 ? "place" : "places");
-  }
-
   function agentRosterAvatarHtml(agent) {
     var avatarUrl = agent.slackPresence && agent.slackPresence.avatar && agent.slackPresence.avatar.url;
     if (avatarUrl) {
@@ -4280,12 +4269,10 @@ button.capability-pill { cursor: pointer; }
     var selectedAgentId = selectedAgentIdForRoster();
     return state.agents.map(function (agent) {
       var active = agent.id === selectedAgentId;
-      var meta = agentPlacementMeta(agent);
       return '<button type="button" class="agent-roster-item' + (active ? ' active' : '') + '" data-action="edit-profile" data-agent="' + esc(agent.id) + '"' +
-        (active ? ' aria-current="page"' : '') + ' aria-label="Open Agent ' + esc(agent.name) + ', ' + esc(meta) + '">' +
+        (active ? ' aria-current="page"' : '') + ' aria-label="Open Agent ' + esc(agent.name) + '">' +
         agentRosterAvatarHtml(agent) +
-        '<span class="agent-roster-copy"><span class="agent-roster-name" title="' + esc(agent.name) + '">' + esc(agent.name) + '</span>' +
-        '<span class="agent-roster-meta" title="' + esc(meta) + '">' + esc(meta) + '</span></span></button>';
+        '<span class="agent-roster-copy"><span class="agent-roster-name" title="' + esc(agent.name) + '">' + esc(agent.name) + '</span></span></button>';
     }).join("");
   }
 
