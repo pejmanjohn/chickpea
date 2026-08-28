@@ -218,22 +218,31 @@ test('a verified public placement still grants access when another placement is 
 
 test('a verified private placement grants its current member when another placement is unknown', async () => {
   const selected = agent('mixed-private-unknown');
+  const grants = [
+    grant(selected.id, 'C_PRIVATE'),
+    grant(selected.id, 'C_UNKNOWN'),
+  ];
+  const channels = {
+    C_PRIVATE: channel('C_PRIVATE', { private: true }),
+    C_UNKNOWN: new Error('Slack unavailable'),
+  };
   assert.deepEqual(await resolvePrivateAgentAccess({
     agent: selected,
     workspaceId: 'T1',
-    grants: [
-      grant(selected.id, 'C_PRIVATE'),
-      grant(selected.id, 'C_UNKNOWN'),
-    ],
+    grants,
     actor: fullMember,
     transport: transport({
-      channels: {
-        C_PRIVATE: channel('C_PRIVATE', { private: true }),
-        C_UNKNOWN: new Error('Slack unavailable'),
-      },
+      channels,
       memberChannels: new Set(['C_PRIVATE']),
     }),
   }), { status: 'allowed', audience: 'private_channel_members' });
+
+  assert.equal(await resolvePrivateAgentAudience({
+    agent: selected,
+    workspaceId: 'T1',
+    grants,
+    transport: transport({ channels }),
+  }), 'unavailable');
 });
 
 test('an unknown active placement keeps a verified private-channel nonmember unavailable', async () => {
