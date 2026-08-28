@@ -29,7 +29,7 @@ import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-
 
 const NOW = 1_940_000_000_000;
 
-test('activated direct-message dispatch uses the frozen Slack root coordinate', () => {
+test('activated direct-message dispatch preserves DM kind without channel_type', () => {
   const db = openStateDb(':memory:');
   try {
     const turns = new TurnJobStoreLogic(db, () => NOW);
@@ -40,7 +40,6 @@ test('activated direct-message dispatch uses the frozen Slack root coordinate', 
       threadTs: '100.009',
       sessionThreadTs: 'dm',
       source: 'dm_message',
-      channelType: 'im',
     };
     const dmAssignment: ResolvedAssignment = {
       ...assignment(),
@@ -72,6 +71,7 @@ test('activated direct-message dispatch uses the frozen Slack root coordinate', 
     assert.equal(envelope.schemaVersion, 2);
     if (envelope.schemaVersion !== 2) throw new Error('expected a signal dispatch');
     assert.equal(envelope.message.attributes.threadTs, '100.009');
+    assert.equal(envelope.message.attributes.conversationKind, 'im');
     assert.equal(envelope.initialData?.conversation.threadTs, '100.009');
   } finally {
     db.close();

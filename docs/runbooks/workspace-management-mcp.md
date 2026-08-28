@@ -49,7 +49,7 @@ The adapter also supplies the acting scope; model-authored arguments cannot forg
 
 A user Agent may self-manage instructions, skills, model, presence, edit policy, connections, repositories, memory, reach, setup, routines, and lifecycle. Existing setup, membership, revision, Channel, destructive-confirmation, and audit gates still apply. Cross-Agent or workspace-authority work returns a bounded Chickpea handoff or a permission-safe denial without exposing the target configuration. An archived Agent cannot process another Slack turn; restoration must enter through an active authorized surface.
 
-An explicit reversible single-field edit may apply directly when current policy permits it. New-Agent creation and generated, inferred, compound, multi-field, skill-bearing, capability-expanding, reach-changing, scheduled, destructive, or otherwise consequential changes use `propose_workspace_changes`. The legacy apply tool also returns a bound proposal for any operation whose policy requires confirmation, including:
+An explicit reversible single-field edit may apply directly when current policy permits it. New-Agent creation and generated, inferred, compound, multi-field, skill-bearing, capability-expanding, reach-changing, scheduled, destructive, or otherwise consequential changes use `propose_workspace_changes`. The returned preview is the single approval boundary: never ask for permission before proposing and never ask for another approval after the requester accepts that preview. The legacy apply tool also returns a bound proposal for any operation whose policy requires confirmation, including:
 
 - deleting an Agent, routine, or durable memory entry;
 - changing member authority;
@@ -59,16 +59,16 @@ An explicit reversible single-field edit may apply directly when current policy 
 - archiving or restoring an Agent, or granting or revoking Channel reach; or
 - overwriting an existing Agent from a recipe.
 
-The same live requester must confirm from the same MCP client or Slack thread before the proposal expires. `confirm_workspace_change` accepts only the proposal handle and applies the frozen operations; it cannot reinterpret them. A changed target revision, digest, permission, requester, acting Agent, or origin makes the whole change set stale or denied before its first write. Inspect again and present a newly calculated diff instead of retrying the old handle.
+The same live requester must confirm from the same MCP client or Slack thread. Proposals do not expire, and a newer proposal from that same requester and origin supersedes the older pending one. `confirm_workspace_change` accepts only the proposal handle and applies the frozen operations; it cannot reinterpret them. A changed target revision, digest, permission, requester, acting Agent, or origin makes the whole change set stale or denied before its first write. Inspect again and present a newly calculated diff instead of retrying the old handle.
 
 ## Clean Agent creation
 
-During exploration, keep the Agent blueprint in the conversation and create no record. Once the requester approves a coherent base Agent, propose that base creation by itself:
+During exploration, keep the Agent design in the conversation and create no record. Once the design reaches commit posture, propose that base creation by itself and present the returned concise preview as the only review step:
 
 ```json
 {
   "idempotencyKey": "agent-research-v1",
-  "guideVersion": "1.0.12",
+  "guideVersion": "1.0.22",
   "authoringReason": "agent_creation",
   "operations": [
     {
@@ -94,7 +94,7 @@ During exploration, keep the Agent blueprint in the conversation and create no r
 }
 ```
 
-Show the returned exact preview and approve it with `confirm_workspace_change`. Confirmed creation produces only the reviewed active base Agent. It must not silently add a connector, repository grant, Channel grant, separate Slack identity, or routine. Add each later capability through its normal setup and authority path. If the desired blueprint contains an inline skill, its full generated content remains proposal-reviewed; external capabilities still cannot ride inside the create operation.
+Show the returned exact preview once. In Slack, a reply of `create it` (or `approve`) confirms that frozen proposal directly with `confirm_workspace_change`; never re-propose it or ask again. Confirmed creation produces the reviewed active Agent and publishes its Slack handle. It must not silently add a connector, repository grant, Channel grant, or routine. Channel reach remains a separate authority boundary. If Slack-handle publication fails, the Agent remains created with a recoverable presence warning. External capabilities still cannot ride inside the create operation.
 
 The adapter, not the model, supplies requester authority. The acting membership is recorded as the Agent creator; tool arguments cannot forge it. Use current IDs and revisions returned by inspection rather than guessing them. Channel publication remains a separate, confirmation-gated operation: `put_channel` records the Slack Channel and `grant_agent_channel` performs live Slack membership, bot-membership, and Agent-presence reconciliation before activating the additive grant. `revoke_agent_channel` also rechecks the acting Slack member before removing reach.
 
@@ -139,7 +139,7 @@ Apply the returned `operations` with the ordinary `apply_workspace_changes` tool
 
 Every mutation has a durable operation ID. `get_operation` returns only records owned by the same requester and organization. Setup URLs are returned once when issued and are not stored in pollable operation results. Polling reveals lifecycle and non-secret receipts, not raw capabilities.
 
-Exact proposals return a bounded preview, missing-setup list, target revisions, expiry, and canonical guide metadata. Confirmation results report `applied`, `setup_required`, `stale`, `denied`, `failed`, or `partial` outcomes without returning authored bodies in telemetry. A `partial` result means the admitted change set encountered a downstream per-item failure after an earlier item applied; dependents are skipped and the receipt identifies item and operation classes. It is not permission to replay the whole set.
+Exact proposals return a bounded preview, missing-setup list, target revisions, and canonical guide metadata. Confirmation results report `applied`, `setup_required`, `stale`, `denied`, `failed`, or `partial` outcomes without returning authored bodies in telemetry. A `partial` result means the admitted change set encountered a downstream per-item failure after an earlier item applied; dependents are skipped and the receipt identifies item and operation classes. It is not permission to replay the whole set.
 
 `undo_workspace_change` is available only for an eligible single safe mutation at its exact resulting revision. If the inverse has become risky, undo returns a proposal instead of bypassing confirmation.
 

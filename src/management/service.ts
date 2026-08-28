@@ -58,6 +58,7 @@ import {
 import {
   canonicalJson,
   effectiveConfigurationRevision,
+  managementApprovalScopeKey,
   managementActorOriginKey,
   managementOperationDigest,
   managementOriginKey,
@@ -113,8 +114,7 @@ import {
   type UndoWorkspaceChangeInput,
 } from './types.ts';
 
-const PROPOSAL_TTL_MS = 15 * 60_000;
-const CHANGE_SET_APPLY_LEASE_MS = 30_000;
+export const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
 const SETUP_TTL_MS = 24 * 60 * 60_000;
 const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
@@ -190,6 +190,10 @@ export interface WorkspaceManagementServiceInput {
   ) => Promise<unknown>;
   testMcpConnection?: (agentId: string, connectionId: string) => Promise<unknown>;
   listAvailableModels?: () => Promise<Array<{ id: string; name?: string }>>;
+  publishAgentPresence?: (input: {
+    actor: LiveManagementActor;
+    agentId: string;
+  }) => Promise<{ agent: CustomAgentConfig; warning?: string }>;
   publishAgentChannel?: (input: {
     actor: LiveManagementActor;
     workspaceId: string;
@@ -222,6 +226,7 @@ interface ImmediateMutation {
   inverse?: ManagementOperation;
   resultingRevisions: Record<string, number>;
   handoffUrl?: string;
+  warning?: string;
 }
 
 type ActingAgentScopeTarget = {
@@ -591,6 +596,7 @@ export class WorkspaceManagementService {
             disposition: 'applied',
             changed: mutation.changed,
             ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
+            ...(mutation.warning ? { warning: mutation.warning } : {}),
           });
           if (request.operations.length === 1 && mutation.inverse) {
             await this.stores.management.putUndo({
@@ -662,20 +668,24 @@ export class WorkspaceManagementService {
         `Read ${AGENT_AUTHORING_GUIDE_URI} and use guide version ${AGENT_AUTHORING_GUIDE_VERSION}.`,
       );
     }
-    const operations = validateManagementOperations(input.operations);
-    assertBaseAgentCreationContract(operations);
-    if (operations.some(({ kind }) => kind === 'request_setup')) {
+    const requestedOperations = validateManagementOperations(input.operations);
+    assertBaseAgentCreationContract(requestedOperations);
+    if (requestedOperations.some(({ kind }) => kind === 'request_setup')) {
       throw new ManagementError(
         'invalid_request',
         'Prepare connector or repository setup separately after the reviewed Agent change.',
       );
     }
-    if (operations.some(({ kind }) => kind === 'create_agent') && operations.length !== 1) {
+    if (requestedOperations.some(({ kind }) => kind === 'create_agent') &&
+        requestedOperations.length !== 1) {
       throw new ManagementError(
         'base_agent_capabilities_require_setup',
         'Create the base Agent in its own proposal. Add reach, capabilities, and schedules afterward.',
       );
     }
+    const operations = validateManagementOperations(
+      withTrustedSlackOriginGrant(actor, requestedOperations),
+    );
 
     const proposalId = `changeset_${this.randomId()}`;
     const targetRevisions: Record<string, number> = {};
@@ -690,7 +700,9 @@ export class WorkspaceManagementService {
         });
         throw new ChickpeaHandoffRequired(handoff);
       }
-      const policy = classifyManagementOperation(await this.policyFacts(actor, operation));
+      const policy = classifyManagementOperation(
+        await this.proposalPolicyFacts(actor, operation, operations),
+      );
       if (!policy.allowed) {
         emitAgentAuthoringOutcome(actor, operations, { proposalOutcome: 'denied' });
         throw new ManagementError('forbidden', 'Current workspace authority does not permit this proposal.');
@@ -733,6 +745,7 @@ export class WorkspaceManagementService {
       actorUserId: actor.userId,
       actorMembershipId: actor.membershipId,
       originKey: managementActorOriginKey(actor),
+      approvalScopeKey: managementApprovalScopeKey(actor),
       idempotencyKey: input.idempotencyKey,
       guideVersion: input.guideVersion,
       authoringReason: input.authoringReason,
@@ -740,7 +753,6 @@ export class WorkspaceManagementService {
       digest: managementOperationDigest(operations),
       preview,
       targetRevisions,
-      expiresAt: at + PROPOSAL_TTL_MS,
       at,
     });
     emitAgentAuthoringOutcome(actor, operations, { proposalOutcome: 'created' });
@@ -834,6 +846,7 @@ export class WorkspaceManagementService {
         disposition: 'applied',
         changed: mutation.changed,
         ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
+        ...(mutation.warning ? { warning: mutation.warning } : {}),
       }],
     );
     const resumed = await this.resumeConfirmedRequest(actor, input.context, proposal, result);
@@ -860,7 +873,7 @@ export class WorkspaceManagementService {
     let proposal = existing;
     let recovered = false;
     if (proposal.status === 'applying') {
-      if (this.now() - proposal.updatedAt < CHANGE_SET_APPLY_LEASE_MS) {
+      if (this.now() - proposal.updatedAt < MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS) {
         throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
       }
       proposal = await this.stores.management.reclaimChangeSetProposal({
@@ -869,6 +882,7 @@ export class WorkspaceManagementService {
         actorUserId: actor.userId,
         actorMembershipId: actor.membershipId,
         originKey: managementActorOriginKey(actor),
+        approvalScopeKey: managementApprovalScopeKey(actor),
         expectedUpdatedAt: proposal.updatedAt,
         at: this.now(),
       });
@@ -878,7 +892,9 @@ export class WorkspaceManagementService {
         for (const operation of proposal.operations) {
           const handoff = await this.actingAgentOperationHandoff(actor, operation);
           if (handoff) throw new ChickpeaHandoffRequired(handoff);
-          const policy = classifyManagementOperation(await this.policyFacts(actor, operation));
+          const policy = classifyManagementOperation(
+            await this.proposalPolicyFacts(actor, operation, proposal.operations),
+          );
           if (!policy.allowed) {
             throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
           }
@@ -897,6 +913,7 @@ export class WorkspaceManagementService {
         actorUserId: actor.userId,
         actorMembershipId: actor.membershipId,
         originKey: managementActorOriginKey(actor),
+        approvalScopeKey: managementApprovalScopeKey(actor),
         at: this.now(),
       });
       if (proposal.status === 'completed' && proposal.result) {
@@ -958,6 +975,7 @@ export class WorkspaceManagementService {
               disposition: 'applied',
               changed: mutation.changed,
               ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
+              ...(mutation.warning ? { warning: mutation.warning } : {}),
             });
           } catch (error) {
             const reconciled = await this.reconcileChangeSetOperation(
@@ -972,6 +990,7 @@ export class WorkspaceManagementService {
                   disposition: 'applied',
                   changed: reconciled.changed,
                   ...(reconciled.handoffUrl ? { handoffUrl: reconciled.handoffUrl } : {}),
+                  ...(reconciled.warning ? { warning: reconciled.warning } : {}),
                 }
               : {
                   itemId: operation.itemId,
@@ -1252,7 +1271,7 @@ export class WorkspaceManagementService {
       if (changeSet.organizationId !== actor.organizationId ||
           changeSet.actorUserId !== actor.userId ||
           changeSet.actorMembershipId !== actor.membershipId ||
-          changeSet.originKey !== managementActorOriginKey(actor)) {
+          changeSet.approvalScopeKey !== managementApprovalScopeKey(actor)) {
         throw new ManagementError('operation_not_found', 'The management operation was not found.');
       }
       return changeSet.result;
@@ -1667,15 +1686,22 @@ export class WorkspaceManagementService {
 
   private assertProposalBinding(
     actor: LiveManagementActor,
-    proposal: Pick<
-      ManagementProposalRecord | ManagementChangeSetProposalRecord,
-      'organizationId' | 'actorUserId' | 'actorMembershipId' | 'originKey'
-    >,
+    proposal:
+      | Pick<
+          ManagementProposalRecord,
+          'organizationId' | 'actorUserId' | 'actorMembershipId' | 'originKey'
+        >
+      | Pick<
+          ManagementChangeSetProposalRecord,
+          'organizationId' | 'actorUserId' | 'actorMembershipId' | 'originKey' | 'approvalScopeKey'
+        >,
   ): void {
     if (proposal.organizationId !== actor.organizationId ||
         proposal.actorUserId !== actor.userId ||
         proposal.actorMembershipId !== actor.membershipId ||
-        proposal.originKey !== managementActorOriginKey(actor)) {
+        ('approvalScopeKey' in proposal
+          ? proposal.approvalScopeKey !== managementApprovalScopeKey(actor)
+          : proposal.originKey !== managementActorOriginKey(actor))) {
       throw new ManagementError(
         'proposal_binding_mismatch',
         'The confirmation does not match its initiating user and origin.',
@@ -2298,6 +2324,19 @@ export class WorkspaceManagementService {
     return { actor, operation };
   }
 
+  private async proposalPolicyFacts(
+    actor: LiveManagementActor,
+    operation: ManagementOperation,
+    operations: readonly ManagementOperation[],
+  ) {
+    if (operation.kind === 'grant_agent_channel' && operation.agentId &&
+        operations.some((candidate) => candidate.kind === 'create_agent' &&
+          candidate.agent.id === operation.agentId)) {
+      return { actor, operation, agentEditable: true };
+    }
+    return this.policyFacts(actor, operation);
+  }
+
   private async createProposal(
     actor: LiveManagementActor,
     operation: ManagementOperation,
@@ -2322,7 +2361,6 @@ export class WorkspaceManagementService {
       summary,
       targetRevisions,
       ...(requestOperationId ? { requestOperationId } : {}),
-      expiresAt: at + PROPOSAL_TTL_MS,
       at,
     });
   }
@@ -2703,8 +2741,14 @@ export class WorkspaceManagementService {
       case 'create_agent': {
         const intended = prepared.intendedAfter as CustomAgentConfig;
         const { revision: _revision, ...createInput } = intended;
-        const agent = await this.stores.config.createAgent(createInput);
-        return mutationForAgent(agent, prepared.inverse, await this.agentEditorUrl(agent.id));
+        const created = await this.stores.config.createAgent(createInput);
+        const published = await this.publishCreatedAgent(actor, created);
+        return mutationForAgent(
+          published.agent,
+          prepared.inverse,
+          await this.agentEditorUrl(published.agent.id),
+          published.warning,
+        );
       }
       case 'update_agent': {
         const current = await this.stores.config.getAgent(operation.agentId);
@@ -2818,11 +2862,14 @@ export class WorkspaceManagementService {
     if (operation.kind === 'create_agent') {
       const agentId = operation.agent.id;
       const current = await optionalAgent(this.stores.config, agentId);
-      if (current && canonicalJson(current) === canonicalJson(prepared.intendedAfter)) {
+      const intended = prepared.intendedAfter as CustomAgentConfig;
+      if (current && agentCreationMatches(current, intended)) {
+        const published = await this.publishCreatedAgent(actor, current);
         return mutationForAgent(
-          current,
+          published.agent,
           prepared.inverse,
-          await this.agentEditorUrl(current.id),
+          await this.agentEditorUrl(published.agent.id),
+          published.warning,
         );
       }
       return undefined;
@@ -2869,6 +2916,29 @@ export class WorkspaceManagementService {
       }
     }
     return undefined;
+  }
+
+  private async publishCreatedAgent(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+  ): Promise<{ agent: CustomAgentConfig; warning?: string }> {
+    if (!this.stores.publishAgentPresence ||
+        (agent.slackPresence?.desiredState === 'active' &&
+          agent.slackPresence.health === 'healthy' && agent.slackPresence.userGroupId)) {
+      return { agent };
+    }
+    try {
+      return await this.stores.publishAgentPresence({ actor, agentId: agent.id });
+    } catch (error) {
+      const current = await this.stores.config.getAgent(agent.id);
+      const detail = error instanceof AgentPresenceError
+        ? error.message
+        : 'Slack handle publication did not complete. Retry it from the Agent settings.';
+      return {
+        agent: current,
+        warning: `The Agent was created, but its Slack handle needs attention: ${detail}`,
+      };
+    }
   }
 
   private async executeConfirmed(
@@ -3395,9 +3465,6 @@ function authoringProposalFailure(
   if (error.code === 'proposal_binding_mismatch') {
     return { proposalOutcome: 'stale', staleReason: 'binding' };
   }
-  if (error.code === 'proposal_expired') {
-    return { proposalOutcome: 'stale', staleReason: 'expired' };
-  }
   if (error.code === 'revision_conflict') {
     return { proposalOutcome: 'stale', staleReason: 'target_revision' };
   }
@@ -3536,13 +3603,47 @@ function mutationForAgent(
   agent: CustomAgentConfig,
   inverse?: ManagementOperation,
   handoffUrl?: string,
+  warning?: string,
 ): ImmediateMutation {
   const changed = [{ kind: 'agent' as const, id: agent.id, revision: agent.revision }];
   return {
     changed,
     ...(inverse ? { inverse } : {}),
     ...(handoffUrl ? { handoffUrl } : {}),
+    ...(warning ? { warning } : {}),
     resultingRevisions: { [`agent:${agent.id}`]: agent.revision },
+  };
+}
+
+function agentCreationMatches(
+  agent: CustomAgentConfig,
+  intended: CustomAgentConfig,
+): boolean {
+  return canonicalJson(agentCreationFingerprint(agent)) ===
+    canonicalJson(agentCreationFingerprint(intended));
+}
+
+function agentCreationFingerprint(agent: CustomAgentConfig): unknown {
+  const {
+    revision: _revision,
+    configurationGeneration: _configurationGeneration,
+    slackPresence,
+    ...configuration
+  } = agent;
+  return {
+    ...configuration,
+    ...(slackPresence
+      ? {
+          slackPresence: {
+            requestedHandle: slackPresence.requestedHandle,
+            normalizedHandle: slackPresence.normalizedHandle,
+            avatar: {
+              kind: slackPresence.avatar.kind,
+              ...(slackPresence.avatar.seed ? { seed: slackPresence.avatar.seed } : {}),
+            },
+          },
+        }
+      : {}),
   };
 }
 
@@ -3913,6 +4014,35 @@ function assertBaseAgentCreationContract(operations: readonly ManagementOperatio
   }
 }
 
+function withTrustedSlackOriginGrant(
+  actor: LiveManagementActor,
+  operations: readonly ManagementOperation[],
+): ManagementOperation[] {
+  const creation = operations.length === 1 && operations[0]?.kind === 'create_agent'
+    ? operations[0]
+    : undefined;
+  if (!creation || actor.origin.kind !== 'slack' ||
+      actor.origin.conversationKind !== 'channel') {
+    return [...operations];
+  }
+  const preferredItemId = `${creation.itemId}_origin_channel_grant`;
+  const itemId = preferredItemId.length <= 128 && preferredItemId !== creation.itemId
+    ? preferredItemId
+    : 'origin_channel_grant';
+  return [
+    creation,
+    {
+      itemId,
+      dependsOn: [creation.itemId],
+      kind: 'grant_agent_channel',
+      workspaceId: actor.origin.workspaceId,
+      channelId: actor.origin.channelId,
+      agentId: creation.agent.id,
+      expectedRevision: 0,
+    },
+  ];
+}
+
 function managementPreviewTarget(operation: ManagementOperation): string {
   if (operation.kind === 'create_agent') return `agent:${operation.agent.id}`;
   if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
@@ -4043,7 +4173,6 @@ function publicChangeSetProposal(
     presentation: {
       slack: formatSlackChangeSetProposal(proposal.preview),
     },
-    expiresAt: proposal.expiresAt,
     confirmationTool: 'confirm_workspace_change',
   };
 }

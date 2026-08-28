@@ -213,6 +213,7 @@ import {
 } from './management/slack-schedule-actions.ts';
 import type { WorkspaceManagementToolResult } from './management/tool-adapter.ts';
 import {
+  completeAgentWelcomeDelivery,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
   reconcileScheduleActionReceipts,
@@ -754,7 +755,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     request: ManagementRpcRequest,
   ): Promise<StateRpcResult<ManagementRpcResponse>> {
     const result = this.call((stores) => stores.management.execute(request));
-    if (result.ok && request.kind === 'complete_setup') {
+    if (result.ok && (
+      request.kind === 'complete_setup' ||
+      request.kind === 'put_outbox' ||
+      request.kind === 'claim_introduction'
+    )) {
       const due = this.call((stores) => stores.management.nextOutboxDueAt() ?? null);
       if (due.ok && due.value !== null) {
         await this.armAlarmNoLaterThan(Math.max(Date.now(), due.value));
@@ -1526,6 +1531,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // credential rotation without ever falling back to another identity.
     const resolveInstallation = this.createAlarmIdentityResolver(stores);
     const usageStore = localUsageStore(stores);
+    const appStores = localGatewayAppStores(stores);
+    const managementRuntime = pending.some(({ turn }) => turn.managementApprovalProposalId)
+      ? localManagementRuntime(stores, this.env as PlatformEnv, appStores)
+      : undefined;
     let needsRetry = gatewayNeedsRetry;
     let identityRetryDelayMs = RELAY_RETRY_BACKOFF_MS;
     const runJob = async (job: (typeof pending)[number]): Promise<boolean> => {
@@ -1665,7 +1674,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           workStore: stores.work as unknown as WorkStore,
           settingsStore: localSettingsStore(stores),
           usageStore,
-          appStores: localGatewayAppStores(stores),
+          appStores,
+          ...(job.turn.managementApprovalProposalId && managementRuntime
+            ? {
+                managementApproval: {
+                  identity: appStores.identity,
+                  config: appStores.config,
+                  management: appStores.management,
+                  service: managementRuntime.service,
+                },
+              }
+            : {}),
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
           onRuntimePlan: (candidate) => stores.turnJobs.freezeRuntimePlan(job.id, candidate),
           flueDispatch,
@@ -2036,6 +2055,11 @@ async function drainCloudflareManagementReceipts(
     deliver: (record) => deliverManagementReceiptToSlack(record, {
       identity: stores.identity as unknown as IdentityStore,
       resolveInstallation,
+      onDelivered: (deliveredRecord, delivery) => completeAgentWelcomeDelivery(
+        deliveredRecord,
+        delivery,
+        stores.config,
+      ),
     }),
   });
 }
@@ -2203,8 +2227,11 @@ function localSettingsStore(stores: TagStateStores): SettingsStore {
   };
 }
 
-function localManagementRuntime(stores: TagStateStores, platformEnv: PlatformEnv) {
-  const local = localGatewayAppStores(stores);
+function localManagementRuntime(
+  stores: TagStateStores,
+  platformEnv: PlatformEnv,
+  local: AppStores = localGatewayAppStores(stores),
+) {
   const settings = localSettingsStore(stores);
   return {
     local,

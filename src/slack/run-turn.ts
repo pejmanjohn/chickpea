@@ -13,6 +13,8 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
 import {
   getConfigStore,
+  getIdentityStore,
+  getManagementStore,
   getSettingsStore,
   getUsageStore,
   getWorkStore,
@@ -115,6 +117,11 @@ import {
   resolveConnectionAccountContext,
   selectConnectionsForRequest,
 } from '../connections/runtime.ts';
+import { createLiveWorkspaceManagementService } from '../management/live-service.ts';
+import {
+  executeHostSlackManagementApproval,
+  type SlackManagementApprovalDependencies,
+} from '../management/slack-approval.ts';
 
 export { createSlackWebClient } from './web-client.ts';
 
@@ -201,6 +208,8 @@ export interface RunTurnOptions {
   usageStore?: UsageStore;
   /** Local state ports when the turn already runs inside their owning DO. */
   appStores?: AppStores;
+  /** Local management runtime when the turn already runs inside its owning DO. */
+  managementApproval?: SlackManagementApprovalDependencies;
   /** Test/rollout override; otherwise USAGE_RUNTIME_RECORDING controls capture. */
   usageRecordingEnabled?: boolean;
   /** Test override, bounded to the product's 250 ms maximum. */
@@ -296,7 +305,10 @@ export async function runTurn(
   // Once the Chickpea contract is active, the frozen Workspace default is the
   // only fallback for an unpinned Agent. Never reintroduce SLACK_TAG_MODEL (or
   // another implicit provider default) after admission failed to freeze one.
-  if (assignment.runtimeContract === 'chickpea-v1' && !resolvedModel) {
+  if (
+    assignment.runtimeContract === 'chickpea-v1' && !resolvedModel &&
+    !turn.managementApprovalProposalId
+  ) {
     const repairPresenter = new WebClientPresenter(client, {
       channelId: turn.channelId,
       threadTs: turn.threadTs,
@@ -363,6 +375,7 @@ export async function runTurn(
   }
   const memoryCommand = parseMemoryCommand(turn.text);
   const deterministicCommand = Boolean(memoryCommand) ||
+    Boolean(turn.managementApprovalProposalId) ||
     (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
   let interactionIntent = turn.interactionIntent;
   if (!deterministicCommand && !interactionIntent) {
@@ -399,7 +412,8 @@ export async function runTurn(
   // Delivery-only recovery replays the exact persisted answer. It must not
   // re-resolve current Agent memory (which could both block recovery
   // on a changed lease and unnecessarily touch live state).
-  const preparedMemory = memoryCommand || options.replayText !== undefined
+  const preparedMemory = memoryCommand || turn.managementApprovalProposalId ||
+      options.replayText !== undefined
     ? undefined
     : await prepareMemoryTurn({
         turn,
@@ -477,7 +491,7 @@ export async function runTurn(
           agentName: visibleAgentName,
           ...(footerModelLabel === undefined ? {} : { modelLabel: footerModelLabel }),
           agentId: assignment.agent.id,
-          publicUrl,
+          ...(publicUrl ? { publicUrl } : {}),
           memoryItems: preparedMemory?.footerItems,
         },
         onNativeStarted: () => onNativeStarted(),
@@ -764,6 +778,65 @@ export async function runTurn(
     await agentViewPresentation?.setTitle(turn.text).catch(() => {
       console.warn('[chickpea] Slack Agent View title could not be recorded');
     });
+    if (turn.managementApprovalProposalId && options.replayText === undefined) {
+      const dependencies = options.managementApproval ?? (() => {
+        if (isCloudflareTarget()) {
+          throw new Error('Cloudflare Slack approvals require the local management runtime');
+        }
+        const identity = options.appStores?.identity ?? getIdentityStore(platformEnv);
+        const config = options.appStores?.config ?? getConfigStore(platformEnv);
+        const management = options.appStores?.management ?? getManagementStore(platformEnv);
+        return {
+          identity,
+          config,
+          management,
+          service: createLiveWorkspaceManagementService(platformEnv, {
+            identity,
+            ...(settingsStore ? { settings: settingsStore } : {}),
+            ...(options.usageStore ? { usage: options.usageStore } : {}),
+            overrides: {
+              identity,
+              config,
+              management,
+              ...(options.appStores
+                ? {
+                    memory: options.appStores.memory,
+                    routines: options.appStores.routines,
+                    work: options.appStores.work,
+                  }
+                : {}),
+            },
+          }),
+          ...(publicUrl ? { publicUrl } : {}),
+        };
+      })();
+      const approvalDependencies = dependencies.publicUrl || !publicUrl
+        ? dependencies
+        : { ...dependencies, publicUrl };
+      const persisted = await workLifecycle?.prepareExecution('Slack management approval');
+      void persisted;
+      const approval = await executeHostSlackManagementApproval({
+        turn,
+        assignment,
+        turnJobId: options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
+        proposalId: turn.managementApprovalProposalId,
+        dependencies: approvalDependencies,
+      });
+      if (workLifecycle?.hasExecution) {
+        await workLifecycle.settleExecution({
+          outcome: 'succeeded',
+          rawStatus: 'host_management_approval_succeeded',
+          modelInvoked: false,
+        });
+      }
+      if (approval.kind === 'message') {
+        await statusTurn.prepareFinal();
+        await presenter.deliverFinal(approval.text, 'markdown');
+      }
+      await finishStatus('answer');
+      await finishDelivery();
+      return;
+    }
     if (memoryCommand) {
       const handled = await handleMemoryCommand({
         turn,

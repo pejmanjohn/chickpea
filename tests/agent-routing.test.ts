@@ -4,7 +4,10 @@ import { test } from 'node:test';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { AgentRevisionConflictError } from '../src/config/errors.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
-import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
+import {
+  handoffCreatedAgentThread,
+  resolveAgentRoute,
+} from '../src/slack/agent-routing.ts';
 import {
   AgentUserGroupLookupLimiter,
   repairMentionedAgentUserGroup,
@@ -97,6 +100,152 @@ test('an Agent user-group mention opens a route and an unmentioned reply continu
     });
     assert.equal(continued.kind, 'routed');
     if (continued.kind === 'routed') assert.equal(continued.source, 'thread_owner');
+  } finally {
+    store.close();
+  }
+});
+
+test('a plain reply continues an explicitly opened Chickpea Channel thread without a grant', async () => {
+  const { store } = await fixture();
+  try {
+    const chickpea = await activateChickpea(store);
+    const opened = await resolveAgentRoute({
+      turn: turn({
+        text: '<@U_BOT> create a Paid Marketing Agent',
+        source: 'app_mention',
+      }),
+      surface: 'channel',
+      actor: { channelMember: true, fullMember: true },
+      config: store,
+    });
+    assert.equal(opened.kind, 'routed');
+    if (opened.kind !== 'routed') return;
+    assert.equal(opened.source, 'default_agent');
+    assert.equal(opened.assignment.agentId, chickpea.id);
+    assert.equal(opened.assignment.interactionMode, 'workspace_management');
+    assert.equal(
+      (await store.listAgentChannelGrants('T1', 'C1'))
+        .some(({ agentId }) => agentId === chickpea.id),
+      false,
+    );
+
+    const approvalTurn = turn({
+      eventId: 'Ev2',
+      messageTs: '100.2',
+      text: 'create it',
+      source: 'implicit_thread_reply',
+      contextMode: 'thread',
+    });
+    const outsider = await resolveAgentRoute({
+      turn: approvalTurn,
+      surface: 'channel',
+      actor: { channelMember: false, fullMember: true },
+      config: store,
+    });
+    assert.equal(outsider.kind, 'denied');
+
+    const approved = await resolveAgentRoute({
+      turn: approvalTurn,
+      surface: 'channel',
+      actor: { channelMember: true, fullMember: true },
+      config: store,
+    });
+    assert.equal(approved.kind, 'routed');
+    if (approved.kind !== 'routed') return;
+    assert.equal(approved.source, 'thread_owner');
+    assert.equal(approved.assignment.agentId, chickpea.id);
+    assert.equal(approved.assignment.interactionMode, 'workspace_management');
+  } finally {
+    store.close();
+  }
+});
+
+test('a threaded Chickpea DM stays on the ordinary direct-message path', async () => {
+  const { store } = await fixture();
+  try {
+    const chickpea = await activateChickpea(store);
+    const directTurn = turn({
+      channelId: 'D1',
+      text: 'help me configure Chickpea',
+      source: 'dm_message',
+      channelType: 'im',
+      contextMode: 'dm_history',
+    });
+    const opened = await resolveAgentRoute({
+      turn: directTurn,
+      surface: 'direct',
+      actor: { channelMember: true, fullMember: true },
+      config: store,
+    });
+    assert.equal(opened.kind, 'routed');
+    if (opened.kind !== 'routed') return;
+    assert.equal(opened.assignment.agentId, chickpea.id);
+    assert.equal(opened.assignment.interactionMode, undefined);
+
+    const continued = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1',
+        eventId: 'Ev2',
+        messageTs: '100.2',
+        text: 'one more thing',
+        source: 'dm_message',
+        channelType: 'im',
+        contextMode: 'dm_history',
+      }),
+      surface: 'direct',
+      actor: { channelMember: true, fullMember: true },
+      config: store,
+    });
+    assert.equal(continued.kind, 'routed');
+    if (continued.kind !== 'routed') return;
+    assert.equal(continued.source, 'thread_owner');
+    assert.equal(continued.assignment.agentId, chickpea.id);
+    assert.equal(continued.assignment.interactionMode, undefined);
+  } finally {
+    store.close();
+  }
+});
+
+test('an acknowledged creation welcome transfers only the granted source Channel thread', async () => {
+  const { store, first, support } = await fixture();
+  try {
+    await activateChickpea(store);
+    await store.putAgentThreadRoute({
+      workspaceId: 'T1',
+      channelId: 'C1',
+      threadTs: '100.1',
+      agentId: first.id,
+      agentGeneration: first.revision,
+      ownerIncarnation: 1,
+    });
+    const handedOff = await handoffCreatedAgentThread({
+      workspaceId: 'T1',
+      channelId: 'C1',
+      threadTs: '100.1',
+      welcomeMessageTs: '100.3',
+      agentId: support.id,
+      requesterMembershipId: 'membership_owner',
+      surface: 'channel',
+      config: store,
+    });
+    assert.equal(handedOff.source, 'creation_handoff');
+    assert.equal(handedOff.assignment.agentId, support.id);
+    assert.equal(handedOff.previousAgentId, first.id);
+    assert.equal(
+      (await store.getAgentThreadRoute('T1', 'C1', '100.1'))?.agentId,
+      support.id,
+    );
+
+    await assert.rejects(() => handoffCreatedAgentThread({
+      workspaceId: 'T1',
+      channelId: 'C_WITHOUT_GRANT',
+      threadTs: '200.1',
+      welcomeMessageTs: '200.2',
+      agentId: support.id,
+      requesterMembershipId: 'membership_owner',
+      surface: 'channel',
+      config: store,
+    }), /active source Channel grant/);
   } finally {
     store.close();
   }

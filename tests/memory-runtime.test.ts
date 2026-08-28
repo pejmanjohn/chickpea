@@ -205,6 +205,36 @@ test('an activated Chickpea management mention stays memoryless with a valid del
     assert.deepEqual(prepared.selection, { entries: [] });
     assert.match(prepared.conversationKey, /:workspace-management$/);
     assert.equal(await prepared.validateLease(), true);
+
+    const replyTurn: NormalizedSlackTurn = {
+      ...turn,
+      eventId: 'Ev-activated-management-reply',
+      text: 'call it Ads Helper instead',
+      messageTs: '200.2',
+      source: 'implicit_thread_reply',
+      contextMode: 'thread',
+    };
+    const replyRoute = await resolveAgentRoute({
+      turn: replyTurn,
+      surface: 'channel',
+      actor: { channelMember: true, fullMember: true },
+      config,
+    });
+    assert.equal(replyRoute.kind, 'routed');
+    if (replyRoute.kind !== 'routed') return;
+    assert.equal(replyRoute.source, 'thread_owner');
+    assert.equal(replyRoute.assignment.interactionMode, 'workspace_management');
+    const preparedReply = await prepareMemoryTurn({
+      turn: replyTurn,
+      assignment: replyRoute.assignment,
+      client,
+      botUserId: 'U_CHICKPEA',
+      platformEnv: undefined,
+    });
+    assert.equal(preparedReply.promptBlock, undefined);
+    assert.deepEqual(preparedReply.selection, { entries: [] });
+    assert.match(preparedReply.conversationKey, /:workspace-management$/);
+    assert.equal(await preparedReply.validateLease(), true);
   } finally {
     closeNodeStateStores();
     if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;

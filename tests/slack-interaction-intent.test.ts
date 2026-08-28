@@ -9,6 +9,7 @@ import {
   reactionFallbacks,
   resolveImmediateSlackInteractionIntent,
   resolveSlackInteractionIntent,
+  shouldResolveSlackManagementApproval,
   SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS,
 } from '../src/slack/interaction-intent.ts';
 
@@ -212,7 +213,7 @@ test('high-confidence acknowledgments stay reaction-only even when a small model
 
 test('workspace proposal approvals always reach the main Agent instead of ending as reactions', async () => {
   let promptCalls = 0;
-  for (const text of ['approve', 'confirm', 'apply it', 'go ahead']) {
+  for (const text of ['approve', 'confirm', 'apply it', 'create it', 'create this']) {
     assert.deepEqual(
       (await classifySlackInteraction(
         { ...baseContext, text },
@@ -234,14 +235,6 @@ test('workspace proposal approvals always reach the main Agent instead of ending
   assert.equal(promptCalls, 0);
 
   assert.deepEqual(
-    resolveImmediateSlackInteractionIntent({
-      ...baseContext,
-      text: 'yes',
-      pendingManagementProposal: true,
-    }),
-    { disposition: 'reply', reason: 'substantive_request' },
-  );
-  assert.deepEqual(
     resolveImmediateSlackInteractionIntent({ ...baseContext, text: 'yes' }),
     {
       disposition: 'react_only',
@@ -250,6 +243,18 @@ test('workspace proposal approvals always reach the main Agent instead of ending
       target: 'trigger',
     },
   );
+
+  for (const text of [
+    'approve', 'approved', 'confirm', 'apply it', 'create it', 'create this',
+  ]) {
+    assert.equal(shouldResolveSlackManagementApproval(text), true, text);
+  }
+  for (const text of [
+    'yes', 'sounds good', 'created', 'go ahead', 'do it', 'create a report',
+    'yes, but change the name', 'do it next week',
+  ]) {
+    assert.equal(shouldResolveSlackManagementApproval(text), false, text);
+  }
 });
 
 test('admission recognizes obvious work without invoking the classifier provider', () => {

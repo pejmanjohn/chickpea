@@ -45,7 +45,10 @@ export interface SlackAdmissionDependencies {
   fetch?: typeof fetch;
   slackApiBaseUrl?: string;
   jwks?: SlackOidcGatewayDependencies['jwks'];
-  onFirstOwnerActivated?: () => Promise<void>;
+  onFirstOwnerActivated?: (input: {
+    workspaceId: string;
+    slackUserId: string;
+  }) => Promise<void>;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
 }
@@ -664,10 +667,12 @@ export class SlackAdmissionService {
     destination: string,
     request: Request,
   ): Promise<SlackAdmissionCallbackResult> {
-    try {
-      await this.dependencies.onFirstOwnerActivated?.();
-    } catch {
-      throw new SlackOidcError('session_unavailable');
+    const operation = await this.dependencies.identity.getAuthOperation(operationId);
+    if (operation && this.dependencies.onFirstOwnerActivated) {
+      await this.dependencies.onFirstOwnerActivated({
+        workspaceId: operation.expectedSlackTeamId,
+        slackUserId: operation.expectedSlackUserId,
+      }).catch(() => undefined);
     }
     return this.issueSession(operationId, destination, request);
   }

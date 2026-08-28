@@ -137,6 +137,172 @@ test('an existing schedule acknowledgement reaction is an idempotent delivery su
   assert.equal(result.deliveryRef, 'slack:D_ACK:1800000000.000100:reaction');
 });
 
+test('Agent welcome uses its persona and falls back to Chickpea when customize scope is missing', async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const record: ManagementReceiptOutboxRecord = {
+    outboxId: 'agent_welcome_test',
+    operationId: 'management_agent_welcome',
+    destination: {
+      kind: 'thread',
+      workspaceId: 'T_WELCOME',
+      channelId: 'C_WELCOME',
+      threadTs: '1800000000.000100',
+    },
+    receipt: {
+      kind: 'agent_created_welcome',
+      proposalId: 'proposal_welcome',
+      agentId: 'agent_paid_marketing',
+      agentName: 'Paid Marketing',
+      agentDescription: 'Helps optimize Google Ads.',
+      requesterMembershipId: 'membership_welcome',
+      surface: 'channel',
+      persona: { name: 'Paid Marketing', avatarUrl: 'https://example.test/avatar.png' },
+      suggestedConnector: 'Google Ads',
+      setupUrl: 'https://example.test/admin/agents/agent_paid_marketing',
+    },
+    status: 'delivering',
+    attempts: 1,
+    nextAttemptAt: 1_800_000_000_000,
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  };
+  const delivered: unknown[] = [];
+  const result = await deliverManagementReceiptToSlack(record, {
+    identity: { async listExternalIdentities() { return []; } },
+    resolveInstallation: async (workspaceId) => ({
+      workspaceId,
+      transportMode: 'direct',
+      botUserId: 'U_BOT',
+      client: {
+        chat: {
+          async postMessage(input: Record<string, unknown>) {
+            calls.push(input);
+            if (calls.length === 1) {
+              throw new SlackTransportError('chat.postMessage', 'missing_scope');
+            }
+            return { ok: true, ts: '1800000000.000300' };
+          },
+        },
+      } as unknown as WebClient,
+    }),
+    onDelivered: async (_record, delivery) => { delivered.push(delivery); },
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]?.username, 'Paid Marketing');
+  assert.equal(calls[0]?.icon_url, 'https://example.test/avatar.png');
+  assert.equal(calls[1]?.username, undefined);
+  assert.match(String(calls[1]?.text), /would not let me post its welcome/);
+  assert.doesNotMatch(String(calls[1]?.text), /Hi — I’m/);
+  assert.equal(delivered.length, 1);
+  assert.equal((delivered[0] as { persona: string }).persona, 'chickpea');
+  assert.equal(result.deliveryRef, 'slack:C_WELCOME:1800000000.000300');
+});
+
+test('an acknowledged Agent welcome is not retried when post-delivery bookkeeping fails', async () => {
+  const posts: unknown[] = [];
+  const record: ManagementReceiptOutboxRecord = {
+    outboxId: 'agent_welcome_bookkeeping_failure',
+    operationId: 'management_agent_welcome_bookkeeping_failure',
+    destination: {
+      kind: 'thread',
+      workspaceId: 'T_WELCOME',
+      channelId: 'C_WELCOME',
+      threadTs: '1800000000.000100',
+    },
+    receipt: {
+      kind: 'agent_created_welcome',
+      proposalId: 'proposal_welcome_bookkeeping_failure',
+      agentId: 'agent_paid_marketing',
+      agentName: 'Paid Marketing',
+      agentDescription: 'Helps optimize Google Ads.',
+      requesterMembershipId: 'membership_welcome',
+      surface: 'channel',
+      persona: { name: 'Paid Marketing' },
+      setupUrl: 'https://example.test/admin/agents/agent_paid_marketing',
+    },
+    status: 'delivering',
+    attempts: 1,
+    nextAttemptAt: 1_800_000_000_000,
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  };
+
+  const result = await deliverManagementReceiptToSlack(record, {
+    identity: { async listExternalIdentities() { return []; } },
+    resolveInstallation: async (workspaceId) => ({
+      workspaceId,
+      transportMode: 'direct',
+      botUserId: 'U_BOT',
+      client: {
+        chat: {
+          async postMessage(input: unknown) {
+            posts.push(input);
+            return { ok: true, ts: '1800000000.000500' };
+          },
+        },
+      } as unknown as WebClient,
+    }),
+    async onDelivered() {
+      throw new Error('route write failed after Slack acknowledgement');
+    },
+  });
+
+  assert.equal(posts.length, 1);
+  assert.equal(result.deliveryRef, 'slack:C_WELCOME:1800000000.000500');
+});
+
+test('Chickpea introduction opens one Slack DM and posts bounded capability guidance', async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const record: ManagementReceiptOutboxRecord = {
+    outboxId: 'chickpea_intro_org_user',
+    operationId: 'chickpea_intro_org_user',
+    destination: { kind: 'slack_dm', workspaceId: 'T_INTRO', slackUserId: 'U_INTRO' },
+    receipt: { kind: 'chickpea_introduction', trigger: 'first_interaction' },
+    status: 'delivering',
+    attempts: 1,
+    nextAttemptAt: 1_800_000_000_000,
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  };
+  const result = await deliverManagementReceiptToSlack(record, {
+    identity: {
+      async listExternalIdentities() { return []; },
+      async resolveSlackIdentity() {
+        return {
+          user: { id: 'user_intro' },
+          membership: { id: 'membership_intro', organizationId: 'org_intro', status: 'active' },
+          binding: { slackTeamId: 'T_INTRO', slackUserId: 'U_INTRO' },
+        } as Awaited<ReturnType<import('../src/identity/types.ts').IdentityStore['resolveSlackIdentity']>>;
+      },
+    },
+    resolveInstallation: async (workspaceId) => ({
+      workspaceId,
+      transportMode: 'direct',
+      botUserId: 'U_BOT',
+      client: {
+        conversations: {
+          async open(input: Record<string, unknown>) {
+            calls.push(input);
+            return { ok: true, channel: { id: 'D_INTRO' } };
+          },
+        },
+        chat: {
+          async postMessage(input: Record<string, unknown>) {
+            calls.push(input);
+            return { ok: true, ts: '1800000000.000400' };
+          },
+        },
+      } as unknown as WebClient,
+    }),
+  });
+  assert.deepEqual(calls[0], { users: 'U_INTRO' });
+  assert.equal(calls[1]?.channel, 'D_INTRO');
+  assert.match(String(calls[1]?.text), /create and manage specialized Agents/);
+  assert.match(String(calls[1]?.text), /approve it once/);
+  assert.equal(result.deliveryRef, 'slack:D_INTRO:1800000000.000400');
+});
+
 test('durable action state repairs one DM reaction and keeps Channel success reply-owned', async () => {
   const management = new SqliteManagementStore(':memory:');
   const routines = new SqliteRoutineStore(':memory:', () => 1_800_000_000_000);

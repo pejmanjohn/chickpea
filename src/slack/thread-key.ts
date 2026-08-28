@@ -6,6 +6,18 @@ export function slackThreadKey(turn: NormalizedSlackTurn): string {
 }
 
 /**
+ * Trusted Slack conversation shape. Direct-message events can omit
+ * `channel_type`, so the normalized DM source is authoritative as well.
+ */
+export function slackConversationKind(
+  turn: Pick<NormalizedSlackTurn, 'source' | 'channelType'>,
+): 'channel' | 'im' | 'mpim' {
+  if (turn.channelType === 'mpim') return 'mpim';
+  if (turn.source === 'dm_message' || turn.channelType === 'im') return 'im';
+  return 'channel';
+}
+
+/**
  * Agent-platform continuity is rooted in the real Slack thread and rotates on
  * ownership transfer. Legacy installations retain their channel-wide DM key.
  */

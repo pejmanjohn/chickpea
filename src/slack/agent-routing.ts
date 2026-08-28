@@ -20,7 +20,8 @@ export type AgentRouteSource =
   | 'agent_handle'
   | 'thread_owner'
   | 'default_agent'
-  | 'app_home';
+  | 'app_home'
+  | 'creation_handoff';
 
 export type AgentRoutingDenialReason =
   | 'not_available'
@@ -83,6 +84,38 @@ export interface ResolveAgentRouteInput {
   authorizeUserAgent?: (
     agent: CustomAgentConfig,
   ) => Promise<PrivateAgentAccessResult>;
+}
+
+type Awaitable<T> = T | Promise<T>;
+type AgentRouteCommitConfig = {
+  putAgentThreadRoute(
+    ...args: Parameters<ConfigStore['putAgentThreadRoute']>
+  ): Awaitable<Awaited<ReturnType<ConfigStore['putAgentThreadRoute']>>>;
+  listSlackPublicContext(
+    ...args: Parameters<ConfigStore['listSlackPublicContext']>
+  ): Awaitable<Awaited<ReturnType<ConfigStore['listSlackPublicContext']>>>;
+};
+
+export interface CreatedAgentHandoffConfig {
+  getWorkspaceInstallation(
+    workspaceId: string,
+  ): Awaitable<Awaited<ReturnType<ConfigStore['getWorkspaceInstallation']>>>;
+  getAgent(agentId: string): Awaitable<Awaited<ReturnType<ConfigStore['getAgent']>>>;
+  listAgentChannelGrants(
+    workspaceId?: string,
+    channelId?: string,
+  ): Awaitable<Awaited<ReturnType<ConfigStore['listAgentChannelGrants']>>>;
+  getAgentThreadRoute(
+    workspaceId: string,
+    channelId: string,
+    threadTs: string,
+  ): Awaitable<Awaited<ReturnType<ConfigStore['getAgentThreadRoute']>>>;
+  putAgentThreadRoute(
+    ...args: Parameters<ConfigStore['putAgentThreadRoute']>
+  ): Awaitable<Awaited<ReturnType<ConfigStore['putAgentThreadRoute']>>>;
+  listSlackPublicContext(
+    ...args: Parameters<ConfigStore['listSlackPublicContext']>
+  ): Awaitable<Awaited<ReturnType<ConfigStore['listSlackPublicContext']>>>;
 }
 
 const USER_GROUP_MENTION = /<!subteam\^([A-Z0-9]+)(?:\|[^>]*)?>/g;
@@ -220,9 +253,13 @@ export async function resolveAgentRoute(
 
   if (surface === 'channel') {
     const grant = activeGrants.find((candidate) => candidate.agentId === selected!.id);
-    const baseAppMention = selected.kind === 'system' &&
-      source === 'default_agent' && turn.source === 'app_mention';
-    if (!actor.channelMember || (!baseAppMention && !grant)) {
+    const workspaceManagementRoute = isWorkspaceManagementRoute(
+      selected,
+      source,
+      turn,
+      surface,
+    );
+    if (!actor.channelMember || (!workspaceManagementRoute && !grant)) {
       return denied('not_available', available);
     }
   } else {
@@ -236,6 +273,7 @@ export async function resolveAgentRoute(
 
   return commitSelectedAgentRoute({
     turn,
+    surface,
     config,
     installation,
     selected,
@@ -245,16 +283,75 @@ export async function resolveAgentRoute(
   });
 }
 
+/**
+ * Transfers the exact creation thread only after Slack acknowledges the new
+ * Agent's welcome. The durable source grant or creator relationship is checked
+ * again here so an outbox retry cannot widen access.
+ */
+export async function handoffCreatedAgentThread(input: {
+  workspaceId: string;
+  channelId: string;
+  threadTs: string;
+  welcomeMessageTs: string;
+  agentId: string;
+  requesterMembershipId: string;
+  surface: AgentRouteSurface;
+  config: CreatedAgentHandoffConfig;
+}): Promise<Extract<AgentRoutingResult, { kind: 'routed' }>> {
+  const [installation, selected, grants, currentRoute] = await Promise.all([
+    input.config.getWorkspaceInstallation(input.workspaceId),
+    input.config.getAgent(input.agentId),
+    input.surface === 'channel'
+      ? input.config.listAgentChannelGrants(input.workspaceId, input.channelId)
+      : Promise.resolve([]),
+    input.config.getAgentThreadRoute(input.workspaceId, input.channelId, input.threadTs),
+  ]);
+  if (!installation || !agentIsActive(selected) || selected.kind !== 'user') {
+    throw new Error('The created Agent is unavailable for thread handoff.');
+  }
+  const activeGrants = grants.filter(({ status }) => status === 'active');
+  if (input.surface === 'channel') {
+    if (!activeGrants.some(({ agentId }) => agentId === selected.id)) {
+      throw new Error('The created Agent does not have an active source Channel grant.');
+    }
+  } else if (selected.creatorMembershipId !== input.requesterMembershipId) {
+    throw new Error('The requester cannot hand this direct thread to the created Agent.');
+  }
+  const turn: NormalizedSlackTurn = {
+    workspaceId: input.workspaceId,
+    channelId: input.channelId,
+    eventId: `agent-welcome:${input.agentId}`,
+    text: '',
+    userId: '',
+    actorMembershipId: input.requesterMembershipId,
+    messageTs: input.welcomeMessageTs,
+    threadTs: input.threadTs,
+    source: input.surface === 'channel' ? 'implicit_thread_reply' : 'dm_message',
+    contextMode: input.surface === 'channel' ? 'thread' : 'dm_history',
+  };
+  return commitSelectedAgentRoute({
+    turn,
+    surface: input.surface,
+    config: input.config,
+    installation,
+    selected,
+    source: 'creation_handoff',
+    activeGrants,
+    currentRoute,
+  });
+}
+
 async function commitSelectedAgentRoute(input: {
   turn: NormalizedSlackTurn;
-  config: ResolveAgentRouteInput['config'];
+  surface: AgentRouteSurface;
+  config: AgentRouteCommitConfig;
   installation: NonNullable<Awaited<ReturnType<ConfigStore['getWorkspaceInstallation']>>>;
   selected: CustomAgentConfig;
   source: AgentRouteSource;
   activeGrants: AgentChannelGrant[];
   currentRoute: AgentThreadRoute | undefined;
 }): Promise<Extract<AgentRoutingResult, { kind: 'routed' }>> {
-  const { turn, config, installation, selected, source, activeGrants, currentRoute } = input;
+  const { turn, surface, config, installation, selected, source, activeGrants, currentRoute } = input;
   const generation = selected.configurationGeneration ?? selected.revision;
   const ownerChanged = Boolean(currentRoute && currentRoute.agentId !== selected.id);
   const persistedHandoffRetry = installation.runtimeContract === 'chickpea-v1' &&
@@ -302,7 +399,7 @@ async function commitSelectedAgentRoute(input: {
       turn,
       selected,
       activeGrants,
-      selected.kind === 'system' && source === 'default_agent' && turn.source === 'app_mention'
+      isWorkspaceManagementRoute(selected, source, turn, surface)
         ? 'workspace_management'
         : undefined,
       route.ownerIncarnation,
@@ -324,6 +421,23 @@ async function commitSelectedAgentRoute(input: {
       ? { handoffFallbackRequired: true }
       : {}),
   };
+}
+
+/**
+ * An explicit base-app mention opens a Chickpea-owned workspace-management
+ * thread. Later plain replies continue that exact trusted route. Requiring a
+ * Channel grant on those replies would make the route unusable because the
+ * system Agent deliberately cannot receive user-Agent Channel grants.
+ */
+function isWorkspaceManagementRoute(
+  selected: CustomAgentConfig,
+  source: AgentRouteSource,
+  turn: NormalizedSlackTurn,
+  surface: AgentRouteSurface,
+): boolean {
+  if (surface !== 'channel' || selected.kind !== 'system') return false;
+  return (source === 'thread_owner' && turn.source === 'implicit_thread_reply') ||
+    (source === 'default_agent' && turn.source === 'app_mention');
 }
 
 function agentIsActive(agent: CustomAgentConfig): boolean {

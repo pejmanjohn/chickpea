@@ -29,6 +29,7 @@ import { CLAIM_TTL_MS } from './state-limits.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
+import { slackConversationKind } from './thread-key.ts';
 
 /**
  * Durable queue of Slack turns for the Cloudflare turn-relay (see state-rpc.ts
@@ -392,9 +393,7 @@ export class TurnJobStoreLogic {
             workspaceId: turn.workspaceId,
             channelId: turn.channelId,
             threadTs: signalThreadTs,
-            conversationKind: turn.channelType === 'im'
-              ? 'im'
-              : turn.channelType === 'mpim' ? 'mpim' : 'channel',
+            conversationKind: slackConversationKind(turn),
             slackUserId: turn.userId,
             eventId: turn.eventId,
             messageTs: turn.messageTs,

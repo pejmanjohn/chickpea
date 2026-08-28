@@ -991,14 +991,12 @@ export class CfManagementStore implements ManagementStore {
     return orUndefined(response.proposal);
   }
 
-  async hasPendingChangeSetProposal(
-    input: Parameters<ManagementStore['hasPendingChangeSetProposal']>[0],
+  async getActiveChangeSetProposal(
+    input: Parameters<ManagementStore['getActiveChangeSetProposal']>[0],
   ) {
-    const response = await this.execute({ kind: 'has_pending_change_set_proposal', input });
-    if (response.kind !== 'pending_change_set_proposal') {
-      throw unexpectedManagementResponse();
-    }
-    return response.pending;
+    const response = await this.execute({ kind: 'get_active_change_set_proposal', input });
+    if (response.kind !== 'change_set_proposal') throw unexpectedManagementResponse();
+    return orUndefined(response.proposal);
   }
 
   async claimChangeSetProposal(
@@ -1138,6 +1136,12 @@ export class CfManagementStore implements ManagementStore {
     const response = await this.execute({ kind: 'put_outbox', record });
     if (response.kind !== 'outbox' || !response.outbox) throw unexpectedManagementResponse();
     return response.outbox;
+  }
+
+  async claimIntroduction(input: Parameters<ManagementStore['claimIntroduction']>[0]) {
+    const response = await this.execute({ kind: 'claim_introduction', input });
+    if (response.kind !== 'introduction_claim') throw unexpectedManagementResponse();
+    return response.result;
   }
 
   async getOutboxForOperation(operationId: string) {

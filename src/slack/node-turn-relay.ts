@@ -10,6 +10,7 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import {
+  completeAgentWelcomeDelivery,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
 } from '../management/receipts.ts';
@@ -365,9 +366,18 @@ export async function drainNodeTurnRelayOnce(
   await state.maintainRunPresentations?.(100);
   if (!options.state) {
     const identity = getIdentityStore(env);
+    const config = getConfigStore(env);
     await drainManagementReceiptOutbox({
       management: getManagementStore(env),
-      deliver: (record) => deliverManagementReceiptToSlack(record, { identity, ...(env ? { env } : {}) }),
+      deliver: (record) => deliverManagementReceiptToSlack(record, {
+        identity,
+        ...(env ? { env } : {}),
+        onDelivered: (deliveredRecord, delivery) => completeAgentWelcomeDelivery(
+          deliveredRecord,
+          delivery,
+          config,
+        ),
+      }),
     }).catch(() => undefined);
   }
 }

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.4.0",
-  "guideVersion": "1.0.18",
+  "corpusVersion": "1.5.1",
+  "guideVersion": "1.0.23",
   "baseline": {
     "id": "no-guide-v1",
     "description": "The same evaluation Agent and tools without the Chickpea agent-authoring router or skill."
@@ -315,8 +315,25 @@
         "toolClass": "confirmation",
         "mutationAllowance": "confirmed_apply",
         "approvalPosture": "proposal_required",
-        "assertions": ["authoring_activated", "posture_matches", "required_inspections_complete", "proposal_used", "exact_proposal_presented", "exact_proposal_token_confirmed", "visible_final_receipt"],
-        "criticalAssertions": ["exact_proposal_presented", "exact_proposal_token_confirmed", "visible_final_receipt"]
+        "assertions": ["authoring_activated", "posture_matches", "required_inspections_complete", "proposal_used", "exact_proposal_presented", "exact_proposal_token_confirmed", "single_approval_request", "visible_final_receipt"],
+        "criticalAssertions": ["exact_proposal_presented", "exact_proposal_token_confirmed", "single_approval_request", "visible_final_receipt"]
+      }
+    },
+    {
+      "id": "new-agent-single-approval",
+      "prompt": "Create a new Editorial Agent named Copy Desk that improves headlines and short marketing copy while preserving the writer's meaning.",
+      "followUp": "create it",
+      "expected": {
+        "activation": "required",
+        "skillCreation": "forbidden",
+        "posture": "commit",
+        "placements": ["identity", "instructions"],
+        "requiredInspections": [],
+        "toolClass": "confirmation",
+        "mutationAllowance": "confirmed_apply",
+        "approvalPosture": "proposal_required",
+        "assertions": ["authoring_activated", "posture_matches", "proposal_used", "exact_proposal_token_confirmed", "single_approval_request", "visible_final_receipt"],
+        "criticalAssertions": ["exact_proposal_token_confirmed", "single_approval_request", "visible_final_receipt"]
       }
     },
     {

@@ -153,6 +153,28 @@ export function managementActorOriginKey(
   return context.actingAgentId ? `${origin}:agent:${context.actingAgentId}` : origin;
 }
 
+/**
+ * Stable approval scope for one human conversation. A top-level DM follow-up
+ * receives a new Slack thread timestamp, but remains in the same DM and under
+ * the same acting Agent. Named-channel approvals stay bound to one thread.
+ */
+export function managementApprovalScopeKey(
+  context: Pick<ManagementActorContext, 'origin' | 'actingAgentId'>,
+): string {
+  const { origin } = context;
+  let scope: string;
+  if (origin.kind !== 'slack') {
+    scope = managementOriginKey(origin);
+  } else if (origin.conversationKind === 'im') {
+    scope = `slack:${origin.workspaceId}:${origin.channelId}:dm`;
+  } else if (origin.conversationKind === 'mpim') {
+    scope = `slack:${origin.workspaceId}:${origin.channelId}:mpim`;
+  } else {
+    scope = `slack:${origin.workspaceId}:${origin.channelId}:${origin.threadTs}`;
+  }
+  return context.actingAgentId ? `${scope}:agent:${context.actingAgentId}` : scope;
+}
+
 export function managementActorKey(context: ManagementActorContext): string {
   return `${context.organizationId}:${context.userId}:${context.membershipId}`;
 }

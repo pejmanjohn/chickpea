@@ -25,7 +25,7 @@ export type ManagementOrigin =
       threadTs: string;
       /** Trusted requester message coordinate for durable Slack acknowledgements. */
       messageTs?: string;
-      /** Trusted normalized Slack surface. Missing legacy origins are Channels. */
+      /** Trusted normalized Slack surface. Missing legacy origins receive no implicit Channel grant. */
       conversationKind?: 'channel' | 'im' | 'mpim';
       /** Trusted Agent selected by Slack routing, never by model text. */
       agentId?: string;
@@ -339,7 +339,32 @@ export type ManagementScheduleActionAcknowledgement =
 export type ManagementReceipt =
   | ManagementSetupReceipt
   | ManagementRoutineSavedAcknowledgement
-  | ManagementScheduleActionAcknowledgement;
+  | ManagementScheduleActionAcknowledgement
+  | ManagementAgentCreatedWelcome
+  | ManagementChickpeaIntroduction;
+
+/** Durable, Agent-authored first message after one approved creation. */
+export interface ManagementAgentCreatedWelcome {
+  kind: 'agent_created_welcome';
+  proposalId: string;
+  agentId: string;
+  agentName: string;
+  agentDescription?: string;
+  requesterMembershipId: string;
+  surface: 'channel' | 'direct';
+  persona: {
+    name: string;
+    avatarUrl?: string;
+  };
+  setupUrl?: string;
+  suggestedConnector?: string;
+}
+
+/** One-time Chickpea introduction for an eligible Slack workspace member. */
+export interface ManagementChickpeaIntroduction {
+  kind: 'chickpea_introduction';
+  trigger: 'first_owner' | 'first_interaction';
+}
 
 /** Internal durable record. Digest members must never cross a public adapter. */
 export interface ManagementSetupRecord {
@@ -391,6 +416,11 @@ export type ManagementReceiptDestination =
       userId: string;
     }
   | {
+      kind: 'slack_dm';
+      workspaceId: string;
+      slackUserId: string;
+    }
+  | {
       kind: 'reaction';
       workspaceId: string;
       channelId: string;
@@ -415,6 +445,31 @@ export interface ManagementReceiptOutboxRecord {
   failureCode?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface ManagementIntroductionClaim {
+  organizationId: string;
+  userId: string;
+  workspaceId: string;
+  slackUserId: string;
+  trigger: 'first_owner' | 'first_interaction';
+  outboxId: string;
+  createdAt: number;
+}
+
+export interface ClaimManagementIntroductionInput {
+  organizationId: string;
+  userId: string;
+  workspaceId: string;
+  slackUserId: string;
+  trigger: ManagementIntroductionClaim['trigger'];
+  at: number;
+}
+
+export interface ClaimManagementIntroductionResult {
+  claim: ManagementIntroductionClaim;
+  created: boolean;
+  outbox?: ManagementReceiptOutboxRecord;
 }
 
 export type ManagementOperationResult = ManagementApplyResult | ManagementSetupPublicStatus;
@@ -601,7 +656,6 @@ export interface ProposeWorkspaceChangesResult {
     /** Human-readable Slack copy; the opaque proposal id remains control data. */
     slack: string;
   };
-  expiresAt: number;
   confirmationTool: 'confirm_workspace_change';
 }
 
@@ -656,9 +710,8 @@ export interface ManagementProposalRecord {
   summary: string;
   targetRevisions: Record<string, number>;
   requestOperationId?: string;
-  status: 'pending' | 'applying' | 'completed' | 'stale' | 'expired';
+  status: 'pending' | 'applying' | 'completed' | 'stale';
   result?: ManagementApplyResult;
-  expiresAt: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -686,6 +739,7 @@ export interface ManagementChangeSetProposalRecord {
   actorUserId: string;
   actorMembershipId: string;
   originKey: string;
+  approvalScopeKey: string;
   idempotencyKey: string;
   guideVersion: string;
   authoringReason: AgentAuthoringReason;
@@ -693,9 +747,8 @@ export interface ManagementChangeSetProposalRecord {
   digest: string;
   preview: ManagementChangeSetPreview;
   targetRevisions: Record<string, number>;
-  status: 'pending' | 'applying' | 'completed' | 'stale' | 'expired';
+  status: 'pending' | 'applying' | 'completed' | 'stale';
   result?: ManagementApplyResult;
-  expiresAt: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -722,7 +775,6 @@ export class ManagementError extends Error {
       | 'operation_not_found'
       | 'proposal_not_found'
       | 'proposal_binding_mismatch'
-      | 'proposal_expired'
       | 'proposal_stale'
       | 'base_agent_capabilities_require_setup'
       | 'undo_unavailable'
@@ -772,7 +824,6 @@ export interface PutManagementProposalInput {
   summary: string;
   targetRevisions: Record<string, number>;
   requestOperationId?: string;
-  expiresAt: number;
   at: number;
 }
 
@@ -782,6 +833,8 @@ export interface PutManagementChangeSetProposalInput {
   actorUserId: string;
   actorMembershipId: string;
   originKey: string;
+  /** Stable human approval scope; legacy callers fall back to originKey. */
+  approvalScopeKey?: string;
   idempotencyKey: string;
   guideVersion: string;
   authoringReason: AgentAuthoringReason;
@@ -789,15 +842,6 @@ export interface PutManagementChangeSetProposalInput {
   digest: string;
   preview: ManagementChangeSetPreview;
   targetRevisions: Record<string, number>;
-  expiresAt: number;
-  at: number;
-}
-
-export interface HasPendingManagementChangeSetProposalInput {
-  organizationId: string;
-  actorUserId: string;
-  actorMembershipId: string;
-  originKey: string;
   at: number;
 }
 
@@ -839,7 +883,16 @@ export interface ClaimManagementProposalInput {
   actorUserId: string;
   actorMembershipId: string;
   originKey: string;
+  /** Current change-set callers bind against this stable conversation scope. */
+  approvalScopeKey?: string;
   at: number;
+}
+
+export interface GetActiveManagementChangeSetProposalInput {
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  approvalScopeKey: string;
 }
 
 export interface ReclaimManagementChangeSetProposalInput extends ClaimManagementProposalInput {
@@ -875,10 +928,7 @@ export type ManagementRpcRequest =
   | { kind: 'mark_proposal_stale'; proposalId: string; at: number }
   | { kind: 'put_change_set_proposal'; input: PutManagementChangeSetProposalInput }
   | { kind: 'get_change_set_proposal'; proposalId: string }
-  | {
-      kind: 'has_pending_change_set_proposal';
-      input: HasPendingManagementChangeSetProposalInput;
-    }
+  | { kind: 'get_active_change_set_proposal'; input: GetActiveManagementChangeSetProposalInput }
   | { kind: 'claim_change_set_proposal'; input: ClaimManagementProposalInput }
   | { kind: 'reclaim_change_set_proposal'; input: ReclaimManagementChangeSetProposalInput }
   | {
@@ -913,6 +963,7 @@ export type ManagementRpcRequest =
   | { kind: 'complete_setup'; input: CompleteManagementSetupInput }
   | { kind: 'revoke_setup'; input: RevokeManagementSetupInput }
   | { kind: 'put_outbox'; record: ManagementReceiptOutboxRecord }
+  | { kind: 'claim_introduction'; input: ClaimManagementIntroductionInput }
   | { kind: 'get_outbox_for_operation'; operationId: string }
   | { kind: 'claim_due_outbox'; at: number; limit: number; leaseUntil: number }
   | {
@@ -931,9 +982,9 @@ export type ManagementRpcResponse =
   | { kind: 'request'; request: ManagementRequestRecord | null }
   | { kind: 'proposal'; proposal: ManagementProposalRecord | null }
   | { kind: 'change_set_proposal'; proposal: ManagementChangeSetProposalRecord | null }
-  | { kind: 'pending_change_set_proposal'; pending: boolean }
   | { kind: 'undo'; undo: ManagementUndoRecord | null }
   | { kind: 'setup'; setup: ManagementSetupRecord | null }
   | { kind: 'outbox'; outbox: ManagementReceiptOutboxRecord | null }
   | { kind: 'outbox_batch'; outbox: ManagementReceiptOutboxRecord[] }
+  | { kind: 'introduction_claim'; result: ClaimManagementIntroductionResult }
   | { kind: 'retention'; deleted: number };
