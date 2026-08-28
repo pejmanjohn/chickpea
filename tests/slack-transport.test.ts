@@ -361,6 +361,29 @@ test('policy-facing Channel reads reject missing or malformed authorization fact
   }
 });
 
+test('policy-facing group-DM reads do not synthesize missing membership facts', async () => {
+  const raw = {
+    id: 'G123', is_mpim: true, is_private: true, is_archived: false,
+  };
+  const directClient = fakeClient([]);
+  directClient.conversations.info = async () => ({ ok: true, channel: raw });
+  await assert.rejects(
+    () => createDirectSlackTransportFromClient(directClient).lookupChannel('G123'),
+    (error: unknown) => error instanceof SlackTransportError && error.code === 'invalid_response',
+  );
+
+  const gateway = createGatewaySlackTransport({
+    workspaceId: 'T123',
+    async call() {
+      return { channel: raw };
+    },
+  });
+  await assert.rejects(
+    () => gateway.lookupChannel('G123'),
+    (error: unknown) => error instanceof SlackTransportError && error.code === 'invalid_response',
+  );
+});
+
 test('conversation open and public join synthesize only operation-guaranteed facts', async () => {
   const client = fakeClient([]);
   client.conversations.open = async () => ({ ok: true, channel: { id: 'D123' } });

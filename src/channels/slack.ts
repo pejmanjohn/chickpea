@@ -698,6 +698,7 @@ export async function postAgentRoutingFeedback(input: {
   surface: AssignmentSurface;
   result: Extract<AgentRoutingResult, { kind: 'denied' | 'ambiguous' }>;
   client: ReturnType<typeof createSlackWebClient>;
+  channelHintEnabled: boolean;
 }): Promise<void> {
   const alternatives = input.result.alternatives.length > 0
     ? ` Available here: ${input.result.alternatives.map(({ handle }) => `@${handle}`).join(', ')}.`
@@ -715,6 +716,7 @@ export async function postAgentRoutingFeedback(input: {
       (input.turn.source === 'implicit_thread_reply' &&
         parseAgentUserGroupMentions(input.turn.text).length > 0);
     if (
+      (input.result.kind === 'ambiguous' && !input.channelHintEnabled) ||
       (input.turn.source !== 'app_mention' && !explicitAgentMention) ||
       (!input.turn.channelId.startsWith('C') && input.turn.channelType !== 'group')
     ) return;
@@ -1036,6 +1038,7 @@ async function processSlackEvent(
           surface,
           result: routed,
           client: runtimeClient,
+          channelHintEnabled: behavior.unassignedHint.value,
         });
         return;
       }

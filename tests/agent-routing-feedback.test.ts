@@ -28,6 +28,7 @@ test('an explicit Channel denial always informs only the requester', async () =>
     turn: turn(),
     surface: 'channel',
     result: { kind: 'denied', reason: 'not_available', alternatives: [] },
+    channelHintEnabled: false,
     client: {
       chat: {
         async postEphemeral(input: unknown) {
@@ -57,6 +58,7 @@ test('an ambient Channel denial remains silent', async () => {
     turn: turn({ text: 'hello', source: 'implicit_thread_reply' }),
     surface: 'channel',
     result: { kind: 'denied', reason: 'not_available', alternatives: [] },
+    channelHintEnabled: true,
     client: {
       chat: {
         async postEphemeral(input: unknown) {
@@ -68,4 +70,29 @@ test('an ambient Channel denial remains silent', async () => {
   });
 
   assert.deepEqual(calls, []);
+});
+
+test('the unassigned hint setting controls ambiguous mention guidance', async () => {
+  for (const [channelHintEnabled, expectedCalls] of [[false, 0], [true, 1]] as const) {
+    const calls: unknown[] = [];
+    await postAgentRoutingFeedback({
+      turn: turn(),
+      surface: 'channel',
+      result: {
+        kind: 'ambiguous',
+        reason: 'multiple_agents',
+        alternatives: [{ id: 'a', name: 'Agent A', handle: 'agent-a' }],
+      },
+      channelHintEnabled,
+      client: {
+        chat: {
+          async postEphemeral(input: unknown) {
+            calls.push(input);
+            return { ok: true };
+          },
+        },
+      } as never,
+    });
+    assert.equal(calls.length, expectedCalls);
+  }
 });
