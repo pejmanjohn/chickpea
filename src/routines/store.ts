@@ -1321,6 +1321,10 @@ export class RoutineStoreLogic {
       clauses.push('channel_id = ?');
       params.push(input.channelId);
     }
+    if (input.destinationKind) {
+      clauses.push('destination_kind = ?');
+      params.push(input.destinationKind);
+    }
     if (input.state === 'deleted') {
       clauses.push('deleted_at IS NOT NULL');
     } else if (input.state === 'current') {
@@ -3724,6 +3728,8 @@ function validateAdminPageInput(input: RoutineAdminPageInput): void {
     (input.cursor !== undefined && (!Number.isSafeInteger(input.cursor) || input.cursor < 0 || input.cursor > 100_000)) ||
     (input.workspaceId !== undefined && !isOpaqueRoutineId(input.workspaceId)) ||
     (input.channelId !== undefined && !isOpaqueRoutineId(input.channelId)) ||
+    (input.destinationKind !== undefined &&
+      !['channel', 'direct_thread'].includes(input.destinationKind)) ||
     (input.state !== undefined && !['active', 'paused', 'disabled', 'completed', 'current', 'all', 'deleted'].includes(input.state)) ||
     (input.runStatus !== undefined && ![
       'queued', 'admitting', 'running', 'succeeded', 'no_op', 'failed', 'skipped', 'cancelled', 'superseded',

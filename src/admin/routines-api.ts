@@ -40,10 +40,6 @@ interface RoutineAdminApiOptions {
   usage?: (c: Context) => UsageStore;
   work?: (c: Context) => WorkStore;
   contentAccess?: (c: Context) => RoutineContentAccessResolver;
-  privateOwner?: (
-    c: Context,
-    routine: RoutineDefinition,
-  ) => Promise<{ agentId: string | null; displayName: string | null }>;
 }
 
 const opaqueId = v.pipe(v.string(), v.regex(/^[A-Za-z0-9_-]{1,200}$/));
@@ -84,24 +80,17 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
         ...(channelId ? { channelId } : {}),
         ...(state ? { state: state as RoutineDefinition['state'] | 'current' | 'all' | 'deleted' } : {}),
         ...(status ? { runStatus: status as RoutineRun['status'] } : {}),
+        destinationKind: 'channel',
         cursor: offset,
         limit,
       });
-      const channelRoutines = page.routines.filter(
-        (routine) => routine.destination.kind === 'channel',
-      );
-      const directRoutines = channelId
-        ? []
-        : page.routines.filter((routine) => routine.destination.kind === 'direct_thread');
       return c.json({
-        routines: await Promise.all(channelRoutines.map(async (routine) => {
+        routines: await Promise.all(page.routines.map(async (routine) => {
           const access = await accessFor(c).resolve(routine);
           return routineContentReadable(access)
             ? readableRoutineSummary(routine, access)
             : redactedRoutineSummary(routine, access);
         })),
-        privateScheduleHealth: await Promise.all(directRoutines.map((routine) =>
-          privateRoutineHealth(c, routine, options))),
         nextCursor: page.nextCursor === null ? null : String(page.nextCursor),
         capability: capabilityFor(c, options),
         limits: routineOperatorLimits(),
@@ -260,34 +249,6 @@ export function createRoutineAdminApi(options: RoutineAdminApiOptions): Hono {
   });
 
   return app;
-}
-
-async function privateRoutineHealth(
-  c: Context,
-  routine: RoutineDefinition,
-  options: RoutineAdminApiOptions,
-): Promise<Record<string, unknown>> {
-  const [owner, latest] = await Promise.all([
-    options.privateOwner?.(c, routine) ?? Promise.resolve({ agentId: null, displayName: null }),
-    options.store(c).listRuns({ routineId: routine.id, limit: 1 }),
-  ]);
-  const run = latest[0];
-  return {
-    owner,
-    state: routine.deletedAt !== null ? 'deleted' : routine.state,
-    nextRunAt: routine.nextRunAt,
-    lastFinishedAt: routine.lastFinishedAt,
-    lastRun: run
-      ? {
-          scheduledFor: run.scheduledFor,
-          startedAt: run.startedAt,
-          finishedAt: run.finishedAt,
-          status: run.status,
-          deliveryStatus: run.deliveryStatus,
-          failureClass: run.failureClass,
-        }
-      : null,
-  };
 }
 
 async function directRoutineAuditSubject(

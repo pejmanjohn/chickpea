@@ -562,6 +562,7 @@ export interface RoutineRunFilter {
 export interface RoutineAdminPageInput {
   workspaceId?: string;
   channelId?: string;
+  destinationKind?: RoutineDestination['kind'];
   state?: RoutineState | 'current' | 'all' | 'deleted';
   runStatus?: RoutineRunStatus;
   cursor?: number;

@@ -3196,7 +3196,6 @@ button.capability-pill { cursor: pointer; }
     // owns its own route and loading state so switching tabs cannot mix data.
     auditDomain: "scheduled-work",
     scheduledRoutines: null,
-    scheduledPrivateHealth: null,
     scheduledLoading: false,
     scheduledError: "",
     scheduledSelection: "",
@@ -9593,7 +9592,7 @@ button.capability-pill { cursor: pointer; }
     if (state.scheduledError && !state.scheduledRoutines) return head + '<div class="empty"><p class="field-error">' + esc(state.scheduledError) + '</p><button type="button" class="btn btn-ghost" data-action="scheduled-retry">Retry</button></div>' + capability;
     if (!state.scheduledInspector) return head + scheduledFiltersHtml() +
       scheduledRoutineListHtml(state.scheduledRoutines || []) +
-      scheduledPrivateHealthHtml(state.scheduledPrivateHealth || []) + capability + scheduledLiveHtml();
+      capability + scheduledLiveHtml();
     if (state.scheduledDetailLoading || !state.scheduledDetail) {
       return head + '<button type="button" class="btn btn-ghost btn-sm scheduled-detail-back" data-action="scheduled-back-summary">&larr; Back to routine summary</button>' +
         '<div class="empty"><p class="hint">Loading routine detail&hellip;</p></div>' + scheduledLiveHtml();
@@ -9640,26 +9639,6 @@ button.capability-pill { cursor: pointer; }
     }).join("");
     return '<section aria-label="Scheduled work"><div class="scheduled-table-wrap"><table class="scheduled-table"><thead><tr><th>Name</th><th>Scope</th><th>Schedule</th><th>Status</th><th>Last run</th><th>Next run</th><th aria-label="Actions"></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       '<div class="scheduled-table-footer"><span>Showing 1&ndash;' + Number(routines.length) + ' of ' + Number(routines.length) + '</span><span>Page 1 of 1</span></div></section>';
-  }
-
-  function scheduledPrivateHealthHtml(entries) {
-    if (!entries.length) return '';
-    var rows = entries.map(function (entry) {
-      var owner = entry.owner || {};
-      var ownerName = owner.displayName || "Agent unavailable";
-      var ownerId = owner.agentId ? '<span class="mono">' + esc(owner.agentId) + '</span>' : "Unknown Agent";
-      var run = entry.lastRun || {};
-      var delivery = run.deliveryStatus || "not attempted";
-      var failure = run.failureClass || "—";
-      return '<tr><td><strong>' + esc(ownerName) + '</strong><br><span class="hint">' + ownerId + '</span></td>' +
-        '<td><span class="scheduled-table-state ' + esc(entry.state || "unknown") + '">' + esc(String(entry.state || "unknown").replace(/_/g, " ")) + '</span></td>' +
-        '<td>' + esc(entry.lastFinishedAt ? formatScheduledDate(entry.lastFinishedAt, "UTC") : "Never") + '</td>' +
-        '<td>' + esc(entry.nextRunAt ? formatScheduledDate(entry.nextRunAt, "UTC") : "—") + '</td>' +
-        '<td>' + esc(String(delivery).replace(/_/g, " ")) + '</td>' +
-        '<td>' + esc(String(failure).replace(/_/g, " ")) + '</td></tr>';
-    }).join("");
-    return '<section aria-label="Private DM schedule health" style="margin-top:18px;"><div class="section-head"><div><h2 class="section-title">Private DM schedule health</h2><p class="hint">Operational status only. Private schedule details, destinations, and identifiers are never shown here.</p></div></div>' +
-      '<div class="scheduled-table-wrap"><table class="scheduled-table"><thead><tr><th>Owning Agent</th><th>Status</th><th>Last run</th><th>Next run</th><th>Delivery</th><th>Failure</th></tr></thead><tbody>' + rows + '</tbody></table></div></section>';
   }
 
   function scheduledRoutineSummaryModalHtml() {
@@ -9888,7 +9867,6 @@ button.capability-pill { cursor: pointer; }
       state: "current"
     };
     state.scheduledRoutines = null;
-    state.scheduledPrivateHealth = null;
     openScheduledWork("");
   }
 
@@ -9933,7 +9911,6 @@ button.capability-pill { cursor: pointer; }
     var request = api(resourceOwner, { cache: "no-store" }).then(function (body) {
       if (!visibleResourceLoadIsCurrent(resourceTicket) || state.view !== "audit") return;
       state.scheduledRoutines = body.routines || [];
-      state.scheduledPrivateHealth = body.privateScheduleHealth || [];
       state.scheduledCapability = body.capability || null;
       state.scheduledLimits = body.limits || null;
       state.scheduledLoading = false;
@@ -9988,7 +9965,6 @@ button.capability-pill { cursor: pointer; }
       state.scheduledBusy = "";
       state.scheduledNotice = "Routine " + action + (action.endsWith("e") ? "d" : "ed") + ".";
       state.scheduledRoutines = null;
-      state.scheduledPrivateHealth = null;
       invalidateVisibleResource("audit", scheduledListPath());
       render();
       return loadScheduledRoutines();
@@ -9998,7 +9974,6 @@ button.capability-pill { cursor: pointer; }
         ? "This routine changed in another session. The list has been refreshed."
         : error.serverMessage || error.message || "Could not update this routine.";
       state.scheduledRoutines = null;
-      state.scheduledPrivateHealth = null;
       invalidateVisibleResource("audit", scheduledListPath());
       render();
       return loadScheduledRoutines();
@@ -10071,7 +10046,6 @@ button.capability-pill { cursor: pointer; }
         if (state.scheduledDetail) state.scheduledDetail.routine = body.routine;
       }
       state.scheduledRoutines = null;
-      state.scheduledPrivateHealth = null;
       invalidateVisibleResource("audit", scheduledListPath());
       invalidateVisibleResource("audit-detail", routine.id);
       render();
@@ -14000,7 +13974,6 @@ button.capability-pill { cursor: pointer; }
       state.scheduledDetail = null;
       state.scheduledInspector = false;
       state.scheduledRoutines = null;
-      state.scheduledPrivateHealth = null;
       loadScheduledRoutines();
     }
     if (action === "scheduled-filter-state") {
@@ -14010,7 +13983,6 @@ button.capability-pill { cursor: pointer; }
       state.scheduledDetail = null;
       state.scheduledInspector = false;
       state.scheduledRoutines = null;
-      state.scheduledPrivateHealth = null;
       loadScheduledRoutines();
     }
     if (action === "sandbox-ready-attestation" && !state.sandboxSaving) {

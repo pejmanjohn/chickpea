@@ -12810,7 +12810,7 @@ test('Scheduled Work matches the compact audit inventory before loading routine-
   assert.doesNotMatch(harness.app.innerHTML, /One independent Flue Workflow run per trigger/);
 });
 
-test('Scheduled Work renders private DM health without private schedule content or identifiers', async () => {
+test('Scheduled Work ignores private DM health even if an obsolete server includes it', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/audit-logs/scheduled-work',
     scheduledPrivateHealth: [{
@@ -12837,13 +12837,8 @@ test('Scheduled Work renders private DM health without private schedule content 
   await flushAsync();
 
   const html = harness.app.innerHTML;
-  assert.match(html, /Private DM schedule health/);
-  assert.match(html, /Operational status only\. Private schedule details, destinations, and identifiers are never shown here\./);
-  assert.match(html, /Private Work Agent/);
-  assert.match(html, /agent_private_owner/);
-  assert.match(html, /delivery thread rejected/);
+  assert.doesNotMatch(html, /Private DM schedule health|Operational status only|Private Work Agent|agent_private_owner|delivery thread rejected/);
   assert.doesNotMatch(html, /PRIVATE_ROUTINE_ID_MUST_NOT_RENDER|PRIVATE_RUN_ID_MUST_NOT_RENDER|PRIVATE_TASK_MUST_NOT_RENDER|PRIVATE_NAME_MUST_NOT_RENDER|PRIVATE_DM_MUST_NOT_RENDER|PRIVATE_THREAD_MUST_NOT_RENDER/);
-  assert.doesNotMatch(html, /data-action="select-private|data-routine="PRIVATE_ROUTINE/);
 });
 
 test('Scheduled Work status filter defaults to Current and reloads explicit states', async () => {
