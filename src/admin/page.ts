@@ -9414,6 +9414,7 @@ button.capability-pill { cursor: pointer; }
   function agentPrivateUseAudienceHtml(draft) {
     if (!draft.id) return "";
     var audience = draft.whereItWorks && draft.whereItWorks.privateUseAudience;
+    if (!audience) return "";
     var title = "DM access unavailable";
     var detail = "Chickpea cannot verify this Agent&rsquo;s current Slack placements, so private use is unavailable.";
     if (audience === "workspace_members") {
@@ -12890,6 +12891,12 @@ button.capability-pill { cursor: pointer; }
     });
   }
 
+  function refreshSavedAgentDetail(agentId) {
+    return refreshData(function () {}).then(function () {
+      return loadVisibleAgentDetail(agentId);
+    });
+  }
+
   function publishAgentToChannel(agentId, workspaceId, channelId) {
     return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/channels", "POST", {
       workspaceId: workspaceId,
@@ -16348,7 +16355,7 @@ button.capability-pill { cursor: pointer; }
         // form reflects exactly what persisted (and the save bar re-disables).
         // If a leave was requested (Save changes in the guard modal), carry it
         // out now that the save succeeded, instead of staying on the editor.
-        return refreshData().then(function () {
+        return refreshSavedAgentDetail(state.editingAgentId).then(function () {
           var saved = agentById(state.editingAgentId);
           if (saved) state.profileDraft = cloneAgent(saved);
           if (secretsFailed && state.profileDraft) {
@@ -16374,7 +16381,7 @@ button.capability-pill { cursor: pointer; }
       if (onSaved) {
         state.profileScreen = "edit";
         state.editingAgentId = secretAgentId;
-        return refreshData().then(function () {
+        return refreshSavedAgentDetail(secretAgentId).then(function () {
           var created = agentById(secretAgentId);
           if (created) state.profileDraft = cloneAgent(created);
           onSaved();

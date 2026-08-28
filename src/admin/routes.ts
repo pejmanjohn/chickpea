@@ -10411,9 +10411,9 @@ async function agentAdminProjection(
     defaultForWorkspaces: legacyDefaultInstallations
       .map(({ workspaceId: installedWorkspaceId }) => installedWorkspaceId),
     whereItWorks: {
-      privateUseAudience: access.privateUseAudience ?? (
-        grants.some((grant) => grant.status === 'active') ? 'unavailable' : 'creator_only'
-      ),
+      ...(access.privateUseAudience
+        ? { privateUseAudience: access.privateUseAudience }
+        : {}),
       channels: grants.map((grant) => ({
         workspaceId: grant.workspaceId,
         channelId: grant.channelId,

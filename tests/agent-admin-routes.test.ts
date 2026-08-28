@@ -3124,6 +3124,17 @@ test('Agent detail projects the live categorical DM audience without a roster', 
     await fixture.store.ensureWorkspaceInstallation({
       workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: selected.id,
     });
+    const listResponse = await fixture.app.request(
+      'http://localhost/admin/api/agents',
+      { headers: auth() },
+    );
+    assert.equal(listResponse.status, 200, await listResponse.clone().text());
+    const listedAgent = (await listResponse.json() as Record<string, any>).agents.find(
+      (candidate: Record<string, unknown>) => candidate.id === selected.id,
+    );
+    assert.ok(listedAgent);
+    assert.equal('privateUseAudience' in listedAgent.whereItWorks, false);
+
     const audience = async () => {
       const response = await fixture.app.request(
         `http://localhost/admin/api/agents/${selected.id}`,

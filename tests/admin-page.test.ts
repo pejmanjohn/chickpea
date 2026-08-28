@@ -368,6 +368,7 @@ function runAdminPageHarness(
     cloudflare?: boolean;
     agents?: unknown[];
     agentsGetError?: { status: number; error: string };
+    agentsListOmitsPrivateUseAudience?: boolean;
     providers?: ProviderSummaryFixture[];
     openrouterFavorites?: string[];
     openrouterModels?: Array<{ id: string; context_length?: number; pricing?: Record<string, string> }>;
@@ -1213,7 +1214,9 @@ function runAdminPageHarness(
         };
       }
       const whereItWorks = projected.whereItWorks as Record<string, unknown>;
-      if (whereItWorks.privateUseAudience === undefined) {
+      if (options.agentsListOmitsPrivateUseAudience) {
+        delete whereItWorks.privateUseAudience;
+      } else if (whereItWorks.privateUseAudience === undefined) {
         whereItWorks.privateUseAudience = Array.isArray(whereItWorks.channels) &&
             whereItWorks.channels.length > 0
           ? 'workspace_members'
@@ -3447,6 +3450,48 @@ test('Agent Slack destination explains every derived DM audience without control
     assert.match(audienceHtml, /role="note" aria-labelledby="agent-private-use-title"/);
     assert.doesNotMatch(audienceHtml, /<button|<select|memberCount|member roster/i);
   }
+});
+
+test('saving an Agent reloads its detail-scoped DM audience after the roster refresh', async () => {
+  const detailedAgent = {
+    ...releaseAgent,
+    whereItWorks: {
+      privateUseAudience: 'workspace_members',
+      channels: [{
+        workspaceId: 'T_DESIGN', channelId: 'C0EXR3L9T',
+        channelName: 'eng-releases', status: 'active',
+      }],
+    },
+  };
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agents: [detailedAgent],
+    agentsListOmitsPrivateUseAudience: true,
+    agentDetailFetch() {
+      return Promise.resolve(jsonResponse({
+        agent: {
+          ...detailedAgent,
+          whereItWorks: {
+            ...detailedAgent.whereItWorks,
+            privateUseAudience: 'workspace_members',
+          },
+        },
+      }));
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /All workspace members can DM this Agent/);
+  const detailGetsBeforeSave = harness.agentDetailGets();
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'profile-description' }, 'Updated description'),
+  });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentDetailGets(), detailGetsBeforeSave + 1);
+  assert.match(harness.app.innerHTML, /All workspace members can DM this Agent/);
+  assert.doesNotMatch(harness.app.innerHTML, /DM access unavailable/);
 });
 
 test('Agent roster uses each Agent Slack avatar when one is available', async () => {
