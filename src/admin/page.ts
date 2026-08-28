@@ -1654,18 +1654,12 @@ details[open].advanced summary::before {
 .agent-roster-icon.has-avatar { background: transparent; overflow: hidden; }
 .agent-roster-icon.has-avatar img { display: block; height: 100%; object-fit: cover; width: 100%; }
 .agent-roster-icon .ic { height: 18px; width: 18px; }
-.agent-roster-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.agent-roster-copy { align-items: center; display: flex; flex: 1; min-width: 0; }
 .agent-roster-name {
   font-size: .75rem;
   font-weight: 750;
   line-height: 1.2;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agent-roster-meta {
-  color: var(--text-3);
-  font-size: .625rem;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1703,7 +1697,7 @@ details[open].advanced summary::before {
 .admin-surface .main {
   padding: 44px 46px 48px;
 }
-.mobile-agent-roster { display: flex; flex-direction: column; gap: 4px; min-width: min(340px, calc(100vw - 40px)); }
+.mobile-agent-roster { display: flex; flex-direction: column; gap: 4px; width: min(340px, calc(100vw - 40px)); }
 .mobile-agent-roster-head { align-items: center; display: flex; gap: 10px; justify-content: space-between; padding: 4px 6px 8px; }
 .mobile-agent-roster .agent-roster-add { margin-left: 0; }
 
@@ -1947,15 +1941,18 @@ details[open].advanced summary::before {
 /* ---- Agent-first detail and owner memory -------------------------------- */
 .agent-profile-page { display: flex; flex-direction: column; gap: 15px; min-width: 0; }
 .admin-surface .agent-profile-page { font-family: "Avenir Next", Avenir, ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-.agent-profile-header { align-items: center; display: flex; gap: 24px; justify-content: space-between; }
-.agent-profile-heading { display: flex; flex: 1; flex-direction: column; gap: 7px; min-width: 0; }
+.agent-profile-header { min-width: 0; }
+.agent-profile-heading { display: flex; flex-direction: column; gap: 10px; min-width: 0; width: 100%; }
+.agent-profile-header-row { align-items: center; display: flex; gap: 24px; justify-content: space-between; min-width: 0; }
+.agent-profile-identity { align-items: center; display: flex; flex: 1; gap: 18px; min-width: 0; }
+.agent-profile-copy { display: flex; flex: 1; flex-direction: column; gap: 10px; min-width: 0; }
 .agent-profile-heading .page-title { font-size: clamp(2rem, 3.4vw, 2.75rem); letter-spacing: -.04em; line-height: 1.06; }
-.agent-profile-header-actions { align-items: center; display: flex; flex: none; gap: 10px; }
+.agent-profile-header-actions { align-items: center; align-self: flex-start; display: flex; flex: none; gap: 10px; margin-top: 8px; }
 .agent-status-chip { align-items: center; border-radius: 999px; display: inline-flex; font-size: .75rem; font-weight: 750; gap: 7px; padding: 8px 12px; }
 .agent-status-chip > span { background: currentColor; border-radius: 50%; height: 7px; width: 7px; }
 .agent-status-chip.enabled { background: var(--ok-tint); color: var(--ok); }
 .agent-status-chip.disabled { background: var(--well); color: var(--text-3); }
-.agent-description-row { align-items: center; display: flex; gap: 8px; margin: -5px 0 15px; max-width: 78ch; min-width: 0; }
+.agent-description-row { align-items: center; display: flex; gap: 8px; margin: 0; max-width: 78ch; min-width: 0; }
 .agent-profile-intro { color: var(--text-3); flex: 0 1 auto; font-size: .9375rem; margin: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .agent-description-row.is-empty .agent-profile-intro { color: var(--text-3); }
 .agent-description-input { max-width: 78ch; }
@@ -1980,20 +1977,20 @@ details[open].advanced summary::before {
 .agent-slack-channels-head h3 { margin-bottom: 4px; }
 .agent-slack-channels-head p { color: var(--text-3); font-size: .75rem; line-height: 1.45; margin: 0; }
 .agent-slack-channels-head > .btn { flex: none; }
-.agent-private-use-audience { align-items: flex-start; background: var(--well); border: 1px solid var(--line); border-radius: 12px; display: flex; gap: 10px; padding: 12px 14px; }
-.agent-private-use-audience .ic { color: var(--text-3); flex: none; height: 18px; margin-top: 1px; width: 18px; }
-.agent-private-use-audience strong { color: var(--text); display: block; font-size: .8125rem; line-height: 1.35; }
-.agent-private-use-audience p { color: var(--text-3); font-size: .75rem; line-height: 1.5; margin: 3px 0 0; }
-.agent-placement-label.agent-slack-channel-count { justify-content: flex-end; }
+.agent-private-use-audience { margin: 0; }
 .agent-slack-card-icon { align-items: center; background: transparent; border: 1px solid var(--admin-visual-line); border-radius: 10px; display: inline-flex; justify-content: center; }
 .agent-slack-card-mark { height: 19px; width: 19px; }
-.agent-presence-grid { align-items: start; display: grid; gap: 24px; grid-template-columns: minmax(250px, 1fr) minmax(240px, 1fr); }
-.agent-avatar-control { align-items: center; display: flex; gap: 14px; min-height: 64px; }
-.agent-avatar-image, .agent-avatar-fallback { border-radius: 16px; flex: none; height: 64px; width: 64px; }
-.agent-avatar-image { object-fit: cover; }
-.agent-avatar-fallback { align-items: center; background: var(--well); display: flex; font-size: 30px; justify-content: center; }
-.agent-avatar-actions { min-width: 0; }
-.agent-avatar-actions .hint { margin-top: 6px; }
+.agent-profile-avatar { border-radius: 20px; flex: none; height: 96px; overflow: hidden; width: 96px; }
+.agent-profile-avatar-upload { cursor: pointer; display: block; position: relative; }
+.agent-profile-avatar-upload.is-disabled { cursor: wait; }
+.agent-profile-avatar-image, .agent-profile-avatar-fallback { display: block; height: 100%; width: 100%; }
+.agent-profile-avatar-image { object-fit: cover; }
+.agent-profile-avatar-fallback { align-items: center; background: var(--well); display: flex; font-size: 38px; justify-content: center; }
+.agent-avatar-hover { align-items: center; background: rgba(30, 25, 17, .68); color: #fff; display: flex; font-size: .75rem; font-weight: 800; inset: 0; justify-content: center; opacity: 0; pointer-events: none; position: absolute; transition: opacity .14s ease; }
+.agent-profile-avatar-upload:hover .agent-avatar-hover, .agent-profile-avatar-upload:focus-within .agent-avatar-hover { opacity: 1; }
+.agent-profile-avatar-upload:focus-within { outline: 2px solid var(--ember-press); outline-offset: 3px; }
+.agent-profile-avatar-input { height: 1px; opacity: 0; overflow: hidden; position: absolute; width: 1px; }
+.agent-handle-subsection { max-width: 480px; width: 100%; }
 .agent-handle-control { position: relative; }
 .agent-handle-prefix { color: var(--text-3); font-family: var(--mono); left: 14px; pointer-events: none; position: absolute; top: 50%; transform: translateY(-50%); z-index: 1; }
 .agent-handle-control .input { min-width: 0; padding-left: 30px; }
@@ -2215,10 +2212,10 @@ button.capability-pill { cursor: pointer; }
 .channels-index-fallback { margin: 0; }
 .channels-connection-card { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 24px; }
 @container (max-width: 750px) {
-  .agent-profile-header { align-items: flex-start; flex-direction: column; }
-  .agent-profile-header-actions { width: 100%; }
+  .agent-profile-header-row { align-items: flex-start; flex-direction: column; }
+  .agent-profile-identity { width: 100%; }
+  .agent-profile-header-actions { margin-top: 0; width: 100%; }
   .agent-overflow { margin-left: auto; }
-  .agent-presence-grid { grid-template-columns: 1fr; }
   .agent-destinations-section { padding: 18px; }
   .agent-destination-body { padding: 20px; }
   .agent-slack-channels-head { align-items: flex-start; flex-direction: column; }
@@ -4263,11 +4260,6 @@ button.capability-pill { cursor: pointer; }
     return hash % 3;
   }
 
-  function agentPlacementMeta(agent) {
-    var channelCount = channelGrantsForAgent(agent.id).length;
-    return channelCount + " " + (channelCount === 1 ? "place" : "places");
-  }
-
   function agentRosterAvatarHtml(agent) {
     var avatarUrl = agent.slackPresence && agent.slackPresence.avatar && agent.slackPresence.avatar.url;
     if (avatarUrl) {
@@ -4280,12 +4272,10 @@ button.capability-pill { cursor: pointer; }
     var selectedAgentId = selectedAgentIdForRoster();
     return state.agents.map(function (agent) {
       var active = agent.id === selectedAgentId;
-      var meta = agentPlacementMeta(agent);
       return '<button type="button" class="agent-roster-item' + (active ? ' active' : '') + '" data-action="edit-profile" data-agent="' + esc(agent.id) + '"' +
-        (active ? ' aria-current="page"' : '') + ' aria-label="Open Agent ' + esc(agent.name) + ', ' + esc(meta) + '">' +
+        (active ? ' aria-current="page"' : '') + ' aria-label="Open Agent ' + esc(agent.name) + '">' +
         agentRosterAvatarHtml(agent) +
-        '<span class="agent-roster-copy"><span class="agent-roster-name" title="' + esc(agent.name) + '">' + esc(agent.name) + '</span>' +
-        '<span class="agent-roster-meta" title="' + esc(meta) + '">' + esc(meta) + '</span></span></button>';
+        '<span class="agent-roster-copy"><span class="agent-roster-name" title="' + esc(agent.name) + '">' + esc(agent.name) + '</span></span></button>';
     }).join("");
   }
 
@@ -9194,25 +9184,25 @@ button.capability-pill { cursor: pointer; }
       '</div></div></div>';
   }
 
-  function agentPresenceControlsHtml(draft) {
-    var readOnly = draft.canEdit === false;
+  function agentProfileAvatarHtml(draft, readOnly) {
     var presence = draft.slackPresence || {};
     var avatarUrl = presence.avatar && presence.avatar.url;
     var avatar = avatarUrl
-      ? '<img class="agent-avatar-image" src="' + esc(avatarUrl) + '" alt="">'
-      : '<span class="agent-avatar-fallback" aria-hidden="true">&#127793;</span>';
-    var upload = readOnly
-      ? '<span class="hint">Only Agent editors can replace this image.</span>'
-      : draft.id
-      ? (state.profilePresenceMutation
-        ? '<button type="button" class="btn btn-soft btn-sm" disabled>Upload image</button>'
-        : '<label class="btn btn-soft btn-sm" style="cursor:pointer;">Upload image<input type="file" accept="image/png,image/jpeg,image/webp" data-action="profile-avatar-upload" style="display:none;"></label>')
-      : '<span class="hint">A distinct Chickpea avatar is generated when you create the Agent.</span>';
-    return '<div class="agent-presence-grid">' +
-      '<div class="field"><span class="field-label">Avatar</span><div class="agent-avatar-control">' + avatar + '<div class="agent-avatar-actions">' + upload +
-      '<p class="hint">PNG, JPEG, or WebP up to 512 KB.</p></div></div></div>' +
-      '<div class="field"><label class="field-label" for="p-handle">Handle</label>' +
-      '<div class="agent-handle-control"><span class="agent-handle-prefix" aria-hidden="true">@</span><input class="input mono" id="p-handle" type="text" maxlength="80" value="' + esc(draft.handle || handleFromAgentName(draft.name)) + '" data-action="profile-handle"' + (readOnly ? " readonly" : "") + '></div></div></div>' +
+      ? '<img class="agent-profile-avatar-image" src="' + esc(avatarUrl) + '" alt="">'
+      : '<span class="agent-profile-avatar-fallback" aria-hidden="true">&#127793;</span>';
+    if (readOnly || !draft.id) {
+      return '<span class="agent-profile-avatar agent-profile-avatar-static">' + avatar + '</span>';
+    }
+    var busy = !!state.profilePresenceMutation;
+    return '<label class="agent-profile-avatar agent-profile-avatar-upload' + (busy ? ' is-disabled' : '') + '" aria-label="Change Agent avatar">' +
+      avatar + '<span class="agent-avatar-hover" aria-hidden="true">Change</span>' +
+      '<input class="agent-profile-avatar-input" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Change Agent avatar" data-action="profile-avatar-upload"' + (busy ? ' disabled' : '') + '></label>';
+  }
+
+  function agentPresenceControlsHtml(draft) {
+    var readOnly = draft.canEdit === false;
+    return '<div class="field"><label class="field-label" for="p-handle">Handle</label>' +
+      '<div class="agent-handle-control"><span class="agent-handle-prefix" aria-hidden="true">@</span><input class="input mono" id="p-handle" type="text" maxlength="80" value="' + esc(draft.handle || handleFromAgentName(draft.name)) + '" data-action="profile-handle"' + (readOnly ? " readonly" : "") + '></div></div>' +
       (readOnly ? "" : agentPresenceRecoveryHtml(draft));
   }
 
@@ -9228,7 +9218,7 @@ button.capability-pill { cursor: pointer; }
       '<span class="agent-destination-summary-copy"><strong>Slack</strong><small>' + esc(replyIdentityLabel) + ' <span aria-hidden="true">&middot;</span> ' + esc(channelSummary) + '</small></span>' +
       icon("chevron-down", "agent-destination-chevron") + '</summary>' +
       '<div class="agent-destination-body">' +
-      '<div class="agent-destination-subsection"><h3>Appearance</h3>' + agentPresenceControlsHtml(draft) + '</div>' +
+      '<div class="agent-destination-subsection agent-handle-subsection">' + agentPresenceControlsHtml(draft) + '</div>' +
       '<div class="agent-destination-divider" aria-hidden="true"></div>' +
       '<div class="agent-destination-subsection agent-slack-channels-subsection">' + agentSlackChannelsContentHtml(draft, readOnly, replyIdentityLabel) + '</div>' +
       '</div></details></div></section>';
@@ -9355,8 +9345,9 @@ button.capability-pill { cursor: pointer; }
         (readOnly ? "" : '<button type="button" class="rename-btn" data-action="profile-description-edit" aria-label="Edit Agent description">' + icon("pencil") + '</button>') + '</div>';
     return '<div class="agent-profile-page">' +
       '<button type="button" class="link-btn agent-roster-back" style="align-self:flex-start;" data-action="profiles-back">&larr; All Agents</button>' +
-      '<header class="agent-profile-header"><div class="agent-profile-heading"><span class="agent-kicker">Agent</span>' + titleRow + '</div>' + agentLifecycleHtml(draft) + '</header>' +
-      descriptionRow +
+      '<header class="agent-profile-header"><div class="agent-profile-heading"><span class="agent-kicker">Agent</span>' +
+      '<div class="agent-profile-header-row"><div class="agent-profile-identity">' + agentProfileAvatarHtml(draft, readOnly) +
+      '<div class="agent-profile-copy">' + titleRow + descriptionRow + '</div></div>' + agentLifecycleHtml(draft) + '</div></div></header>' +
       (readOnly ? '<div class="callout agent-readonly-note"><div><p class="field-label">Read-only Agent</p><p class="hint">You can use this Agent in its permitted Channels or duplicate it into your own editable Agent.</p></div></div>' : "") +
       profileGenericErrorHtml() +
       disableConfirmHtml(draft) +
@@ -9398,7 +9389,7 @@ button.capability-pill { cursor: pointer; }
     var audience = agentPrivateUseAudienceHtml(draft);
     var picker = canEditChannels ? attachPickerHtml(draft) + attachNoticeHtml() : "";
     if (!draft.id) {
-      return heading + audience + '<div class="agent-channel-empty agent-channel-empty-readonly"><div><strong>Add channels after creating this Agent</strong><p>Save the Agent first, then choose the Slack channels where people can mention it.</p></div></div>';
+      return heading + '<div class="agent-channel-empty agent-channel-empty-readonly"><div><strong>Add channels after creating this Agent</strong><p>Save the Agent first, then choose the Slack channels where people can mention it.</p></div></div>' + audience;
     }
     if (!concrete.length) {
       var empty = draft.lifecycle === "archived"
@@ -9406,9 +9397,9 @@ button.capability-pill { cursor: pointer; }
         : readOnly
         ? '<div class="agent-channel-empty agent-channel-empty-readonly"><div><strong>' + esc(draft.name || "This Agent") + ' isn&rsquo;t in any Channels yet</strong><p>An editor can choose its first Channel when it is ready.</p></div></div>'
         : '<div class="agent-channel-empty"><span class="agent-channel-empty-icon" aria-hidden="true">#</span><div><strong>Make ' + esc(draft.name || "this Agent") + ' mentionable</strong><p>Choose its first Slack Channel. People in that Channel can then mention ' + esc(replyIdentityLabel) + '.</p></div><button type="button" class="btn btn-primary btn-sm" data-action="attach-open">Choose first channel</button></div>';
-      return heading + audience + empty + picker;
+      return heading + empty + picker + audience;
     }
-    return heading + audience + '<div class="agent-placement-body"><div class="agent-placement-label agent-slack-channel-count"><span class="agent-placement-count">' + esc(channelCountLabel(concrete.length)) + '</span></div>' + channelRows + '</div>' + picker;
+    return heading + '<div class="agent-placement-body">' + channelRows + '</div>' + picker + audience;
   }
 
   function agentPrivateUseAudienceHtml(draft) {
@@ -9416,18 +9407,14 @@ button.capability-pill { cursor: pointer; }
     var audience = draft.whereItWorks && draft.whereItWorks.privateUseAudience;
     if (!audience) return "";
     var title = "DM access unavailable";
-    var detail = "Chickpea cannot verify this Agent&rsquo;s current Slack placements, so private use is unavailable.";
     if (audience === "workspace_members") {
       title = "All workspace members can DM this Agent";
-      detail = "Any full workspace member can use it privately. Guests and Slack Connect participants cannot use Agents.";
     } else if (audience === "private_channel_members") {
       title = "Members of its private channels can DM this Agent";
-      detail = "A full workspace member can use it privately while they belong to at least one private channel where it is active.";
     } else if (audience === "creator_only") {
       title = "Only the creator can DM this Agent";
-      detail = "This applies while the Agent is not active in any Slack channel.";
     }
-    return '<div class="agent-private-use-audience" role="note" aria-labelledby="agent-private-use-title">' + icon("users") + '<div><strong id="agent-private-use-title">' + title + '</strong><p>' + detail + '</p></div></div>';
+    return '<p class="hint agent-private-use-audience" role="note">' + title + '.</p>';
   }
 
   function channelNameLink(assignment) {

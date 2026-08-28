@@ -3389,7 +3389,7 @@ test('New profile opens a blank create screen and validation gates save', async 
   assert.match(harness.app.innerHTML, /Name is required\./);
 });
 
-test('Agent Slack destination owns its editable handle, avatar, channels, and edit policy', async () => {
+test('Agent header owns its editable avatar while Slack owns handle, channels, and edit policy', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
   const click = harness.listeners.click;
@@ -3398,13 +3398,21 @@ test('Agent Slack destination owns its editable handle, avatar, channels, and ed
   assert.ok(click && input && change);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': releaseAgent.id }) });
+  const header = harness.app.innerHTML.match(/<header class="agent-profile-header">[\s\S]*?<\/header>/)?.[0] ?? '';
+  assert.match(header, /class="[^"]*agent-profile-avatar-upload[^"]*"[\s\S]*?<span class="agent-avatar-hover" aria-hidden="true">Change<\/span>[\s\S]*?data-action="profile-avatar-upload"/);
+  assert.match(header, /class="agent-profile-identity"[\s\S]*?class="[^"]*agent-profile-avatar-upload[^"]*"[\s\S]*?<h1 class="page-title">Release Profile<\/h1>[\s\S]*?class="agent-profile-intro"/);
   assert.match(harness.app.innerHTML, /class="agent-destinations-section"[\s\S]*?<h2>Destinations<\/h2>[\s\S]*?class="agent-destination-card" open[\s\S]*?<strong>Slack<\/strong>[\s\S]*?@release-profile[\s\S]*?1 Slack channel/);
   assert.match(harness.app.innerHTML, /class="agent-card-icon agent-slack-card-icon" aria-hidden="true"/);
-  assert.match(harness.app.innerHTML, /<h3>Appearance<\/h3>[\s\S]*?<h3>Slack channels<\/h3>/);
-  assert.match(harness.app.innerHTML, /<span class="field-label">Avatar<\/span>/);
-  assert.match(harness.app.innerHTML, /data-action="profile-avatar-upload"/);
+  const slackBody = harness.app.innerHTML.match(/<div class="agent-destination-body">[\s\S]*?<\/div><\/details>/)?.[0] ?? '';
+  assert.match(slackBody, /for="p-handle">Handle<\/label>[\s\S]*?<h3>Slack channels<\/h3>/);
+  assert.doesNotMatch(slackBody, /<h3>Appearance<\/h3>|>Avatar<|profile-avatar-upload|Upload image|PNG, JPEG, or WebP/);
+  assert.ok(
+    slackBody.indexOf('data-action="attach-open"') < slackBody.indexOf('class="agent-placement-body"') &&
+      slackBody.indexOf('class="agent-placement-body"') < slackBody.indexOf('class="hint agent-private-use-audience"'),
+    'Connected channels must appear after Add to channels and before the DM notice',
+  );
+  assert.doesNotMatch(slackBody, /agent-slack-channel-count|agent-placement-count|>1 channel</);
   assert.match(harness.app.innerHTML, /<label class="field-label" for="p-handle">Handle<\/label>/);
-  assert.match(harness.app.innerHTML, /class="agent-presence-grid"[\s\S]*?Avatar[\s\S]*?Handle/);
   assert.match(harness.app.innerHTML, /class="agent-handle-control"><span class="agent-handle-prefix" aria-hidden="true">@<\/span><input class="input mono" id="p-handle"/);
   assert.doesNotMatch(harness.app.innerHTML, /Members mention this user-group handle/);
   assert.match(harness.app.innerHTML, /class="advanced agent-advanced-card"[\s\S]*?data-action="profile-edit-policy"/);
@@ -3443,12 +3451,14 @@ test('Agent Slack destination explains every derived DM audience without control
       }],
     });
     await flushAsync();
-    const start = harness.app.innerHTML.indexOf('class="agent-private-use-audience"');
-    const end = harness.app.innerHTML.indexOf('</div></div>', start) + 12;
-    const audienceHtml = harness.app.innerHTML.slice(start, end);
-    assert.match(audienceHtml, new RegExp(label));
-    assert.match(audienceHtml, /role="note" aria-labelledby="agent-private-use-title"/);
-    assert.doesNotMatch(audienceHtml, /<button|<select|memberCount|member roster/i);
+    const audienceHtml = harness.app.innerHTML.match(/<p class="hint agent-private-use-audience" role="note">[^<]+<\/p>/)?.[0] ?? '';
+    assert.match(audienceHtml, new RegExp(label + '\\.'));
+    assert.doesNotMatch(audienceHtml, /<strong|<svg|<button|<select|memberCount|member roster|workspace member can use|Slack Connect/i);
+    const audienceStart = harness.app.innerHTML.indexOf('class="hint agent-private-use-audience"');
+    const channelsEnd = audience === 'creator_only'
+      ? harness.app.innerHTML.indexOf('class="agent-channel-empty"')
+      : harness.app.innerHTML.indexOf('class="agent-placement-body"');
+    assert.ok(channelsEnd !== -1 && channelsEnd < audienceStart, 'The DM notice must follow the channel content');
   }
 });
 
@@ -3526,7 +3536,8 @@ test('Agent editing no longer exposes a separate Slack identity control', async 
   assert.ok(click);
 
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': releaseAgent.id }) });
-  assert.match(harness.app.innerHTML, /class="agent-presence-grid"[\s\S]*?Avatar[\s\S]*?Handle/);
+  assert.match(harness.app.innerHTML, /class="agent-profile-identity"[\s\S]*?class="[^"]*agent-profile-avatar-upload[^"]*"[\s\S]*?class="agent-profile-copy"/);
+  assert.match(harness.app.innerHTML, /class="[^"]*agent-handle-subsection[^"]*"[\s\S]*?for="p-handle">Handle/);
   assert.doesNotMatch(harness.app.innerHTML, /profile-slack-identity|Manage @Chickpea|Manage @Finance/);
 });
 
@@ -3599,7 +3610,7 @@ test('Add to channels loads the Slack catalog and can attach an unassigned works
     body: { workspaceId: 'T_DESIGN', channelId: 'C_NEW' },
   }]);
   assert.doesNotMatch(harness.app.innerHTML, /data-role="attach-channel"/);
-  assert.match(harness.app.innerHTML, /2 channels/);
+  assert.match(harness.app.innerHTML, /2 Slack channels/);
   assert.match(harness.app.innerHTML, /All workspace members can DM this Agent/);
 });
 
@@ -4599,7 +4610,8 @@ test('a discoverable non-editor sees a truthful read-only Agent instead of a fai
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /Read-only Agent/);
-  assert.match(harness.app.innerHTML, /Only Agent editors can replace this image/);
+  assert.match(harness.app.innerHTML, /class="agent-profile-avatar agent-profile-avatar-static"/);
+  assert.doesNotMatch(harness.app.innerHTML, /agent-profile-avatar-upload|agent-avatar-hover|profile-avatar-upload/);
   assert.match(harness.app.innerHTML, /data-action="profile-handle" readonly/);
   assert.match(harness.app.innerHTML, /data-action="profile-edit-policy" disabled/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="profile-rename"/);
@@ -4722,12 +4734,13 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   }
   assert.match(harness.app.innerHTML, /class="agent-destinations-section"[\s\S]*?class="agent-card-icon semantic-icon tone-channel"[\s\S]*?<h2>Destinations<\/h2>/);
   assert.match(harness.app.innerHTML, /class="agent-destination-summary"[\s\S]*?<strong>Slack<\/strong>[\s\S]*?1 Slack channel/);
-  assert.match(harness.app.innerHTML, /<h3>Slack channels<\/h3>[\s\S]*?class="agent-placement-count">1 channel/);
+  assert.match(harness.app.innerHTML, /<h3>Slack channels<\/h3>[\s\S]*?class="agent-placement-body">[\s\S]*?class="where-list"/);
+  assert.doesNotMatch(harness.app.innerHTML, /agent-slack-channel-count|agent-placement-count/);
   assert.match(harness.app.innerHTML, /class="where-channel-row"[\s\S]*?#<\/span>[\s\S]*?eng-releases/);
   assert.doesNotMatch(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>|workspace Default Agent for private messages/);
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
   assert.match(harness.app.innerHTML, /id="ptab-panel-model"[\s\S]*?class="agent-tab-icon semantic-icon tone-model"[\s\S]*?<h3>Model<\/h3>[\s\S]*?id="p-model"/);
-  assert.match(harness.app.innerHTML, /<span class="field-label">Avatar<\/span>[\s\S]*?class="advanced agent-advanced-card"[\s\S]*?Who can edit[\s\S]*?Coding sandbox/);
+  assert.match(harness.app.innerHTML, /class="[^"]*agent-profile-avatar-upload[^"]*"[\s\S]*?class="advanced agent-advanced-card"[\s\S]*?Who can edit[\s\S]*?Coding sandbox/);
   assert.doesNotMatch(harness.app.innerHTML, /<strong>Slack identity<\/strong>/);
   assert.ok(
     harness.app.innerHTML.indexOf('id="ptab-panel-model"') < harness.app.innerHTML.indexOf('class="advanced agent-advanced-card"'),
@@ -4736,13 +4749,21 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
 
   const page = renderAdminPage();
   assert.match(page, /\.admin-surface \.agent-profile-page\s*\{[^}]*font-family:\s*"Avenir Next"/s);
+  assert.match(page, /\.agent-profile-identity\s*\{[^}]*align-items:\s*center;[^}]*display:\s*flex;[^}]*gap:\s*18px;/s);
+  assert.match(page, /\.agent-profile-avatar\s*\{[^}]*height:\s*96px;[^}]*width:\s*96px;/s);
+  assert.match(page, /\.agent-profile-avatar-upload\s*\{[^}]*cursor:\s*pointer;[^}]*position:\s*relative;/s);
+  assert.match(page, /\.agent-avatar-hover\s*\{[^}]*opacity:\s*0;[^}]*position:\s*absolute;/s);
+  assert.match(page, /\.agent-profile-avatar-upload:hover \.agent-avatar-hover[^\{]*\{[^}]*opacity:\s*1;/s);
+  assert.match(page, /\.agent-profile-header-actions\s*\{[^}]*align-self:\s*flex-start;[^}]*margin-top:\s*8px;/s);
+  assert.match(page, /@container \(max-width:\s*750px\)\s*\{[\s\S]*?\.agent-profile-identity\s*\{[^}]*width:\s*100%;/s);
+  assert.match(page, /@container \(max-width:\s*750px\)\s*\{[\s\S]*?\.agent-profile-header-actions\s*\{[^}]*margin-top:\s*0;[^}]*width:\s*100%;/s);
   assert.match(page, /\.agent-profile-intro\s*\{[^}]*white-space:\s*nowrap;[^}]*text-overflow:\s*ellipsis;/s);
   assert.match(page, /\.agent-tabs-card\s*\{[^}]*border-radius:\s*16px;[^}]*overflow:\s*visible;/s);
   assert.match(page, /\.agent-tabs-card \.ptab-panel\s*\{[^}]*border-radius:\s*0 0 15px 15px;/s);
   assert.match(page, /\.agent-model-row\.agent-model-tab-row\s*\{[^}]*background:\s*transparent;[^}]*display:\s*block;[^}]*padding:\s*0;/s);
   assert.match(page, /\.agent-destinations-section\s*\{[^}]*border-radius:\s*16px;[^}]*display:\s*flex;/s);
   assert.match(page, /\.agent-destination-subsection\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*gap:\s*18px;/s);
-  assert.match(page, /\.agent-placement-label\.agent-slack-channel-count\s*\{[^}]*justify-content:\s*flex-end;/s);
+  assert.doesNotMatch(page, /\.agent-placement-label\.agent-slack-channel-count\s*\{/);
   assert.match(
     page,
     /--semantic-instructions-fg:\s*#b96c06;[\s\S]*?--semantic-instructions-bg:\s*#fbefe0;[\s\S]*?--semantic-channel-fg:\s*#4b863d;[\s\S]*?--semantic-channel-bg:\s*#ebf0e2;[\s\S]*?--semantic-model-fg:\s*#7554ca;[\s\S]*?--semantic-model-bg:\s*#eee5f6;/s,
@@ -4767,7 +4788,7 @@ test('Where it works uses full-width Channel rows and guided first-Channel activ
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
 
   assert.match(harness.app.innerHTML, /class="where-list"[\s\S]*?class="where-entry"[\s\S]*?eng-releases/);
-  assert.match(harness.app.innerHTML, /<span class="agent-placement-count">1 channel<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /agent-slack-channel-count|agent-placement-count/);
   assert.doesNotMatch(harness.app.innerHTML, /<h3[^>]*>Direct messages<\/h3>|Workspace default for @Chickpea DMs and App Home/);
 
   const noChannelsHarness = runAdminPageHarness({
@@ -5225,7 +5246,7 @@ test('disconnected Channel route shows the Slack recovery stepper', async () => 
   assert.doesNotMatch(harness.app.innerHTML, /Agents available here|channel-agent-hero/);
 });
 
-test('Agent roster keeps long names and placement counts accessible while truncating visually', async () => {
+test('Agent roster keeps long names accessible and centered while truncating visually', async () => {
   const escapedName = 'Customer Research &amp; Escalations Agent With A Deliberately Long Name';
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_long',
@@ -5244,10 +5265,13 @@ test('Agent roster keeps long names and placement counts accessible while trunca
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, new RegExp(`aria-label="Open Agent ${escapedName}, 1 place"`));
+  assert.match(harness.app.innerHTML, new RegExp(`aria-label="Open Agent ${escapedName}"`));
   assert.match(harness.app.innerHTML, new RegExp(`class="agent-roster-name" title="${escapedName}"`));
-  assert.match(harness.app.innerHTML, /class="agent-roster-meta" title="1 place">1 place<\/span>/);
-  assert.match(renderAdminPage(), /\.agent-roster-name\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
+  assert.doesNotMatch(harness.app.innerHTML, /class="agent-roster-meta"/);
+  const page = renderAdminPage();
+  assert.match(page, /\.agent-roster-copy\s*\{[^}]*align-items:\s*center;/s);
+  assert.match(page, /\.agent-roster-name\s*\{[^}]*min-width:\s*0;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s);
+  assert.match(page, /\.mobile-agent-roster\s*\{[^}]*width:\s*min\(340px,\s*calc\(100vw - 40px\)\);/s);
 });
 
 test('Agent owner memory exposes one directly editable current body without file or history concepts', async () => {
@@ -11227,7 +11251,7 @@ test('selecting a channel renders its grant inventory without effective configur
   assert.doesNotMatch(harness.app.innerHTML, /channel-detail-status resolving/);
 });
 
-test('the attached Agent roster summarizes placements instead of grouping Channel rows', async () => {
+test('the attached Agent roster lists Agents without placement summaries or Channel rows', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_release',
     slackConnection: null,
@@ -11251,8 +11275,9 @@ test('the attached Agent roster summarizes placements instead of grouping Channe
   await flushAsync();
 
   const roster = harness.app.innerHTML.match(/<nav class="agent-roster" aria-label="Agents">[\s\S]*?<\/nav>/)?.[0] ?? '';
-  assert.match(roster, /data-agent="agent_release"[\s\S]*?title="2 places"/);
-  assert.match(roster, /data-agent="agent_ops"[\s\S]*?title="1 place"/);
+  assert.match(roster, /data-agent="agent_release"/);
+  assert.match(roster, /data-agent="agent_ops"/);
+  assert.doesNotMatch(roster, /agent-roster-meta|\b\d+ places?\b/);
   assert.doesNotMatch(roster, /Direct messages|\+ DMs|DM default/);
   assert.doesNotMatch(roster, /data-action="select-channel"|#eng-releases|#demo-channel/);
 });
