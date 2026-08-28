@@ -216,7 +216,7 @@ test('a verified public placement still grants access when another placement is 
   assert.deepEqual(calls.sort(), ['lookup:C_PUBLIC', 'lookup:C_UNKNOWN']);
 });
 
-test('an unknown active placement keeps private-only access unavailable', async () => {
+test('a verified private placement grants its current member when another placement is unknown', async () => {
   const selected = agent('mixed-private-unknown');
   assert.deepEqual(await resolvePrivateAgentAccess({
     agent: selected,
@@ -232,6 +232,26 @@ test('an unknown active placement keeps private-only access unavailable', async 
         C_UNKNOWN: new Error('Slack unavailable'),
       },
       memberChannels: new Set(['C_PRIVATE']),
+    }),
+  }), { status: 'allowed', audience: 'private_channel_members' });
+});
+
+test('an unknown active placement keeps a verified private-channel nonmember unavailable', async () => {
+  const selected = agent('mixed-private-unknown-nonmember');
+  assert.deepEqual(await resolvePrivateAgentAccess({
+    agent: selected,
+    workspaceId: 'T1',
+    grants: [
+      grant(selected.id, 'C_PRIVATE'),
+      grant(selected.id, 'C_UNKNOWN'),
+    ],
+    actor: fullMember,
+    transport: transport({
+      channels: {
+        C_PRIVATE: channel('C_PRIVATE', { private: true }),
+        C_UNKNOWN: new Error('Slack unavailable'),
+      },
+      memberChannels: new Set(),
     }),
   }), { status: 'unavailable', audience: 'unavailable' });
 });
@@ -284,6 +304,26 @@ test('directory access filters workspace, grant, and Agent lifecycle state', asy
     grants: [],
     transport: transport(),
   }), 'unavailable');
+});
+
+test('directory access excludes guests and Slack Connect actors without reading Slack facts', async () => {
+  const calls: string[] = [];
+  for (const actor of [
+    { fullMember: false, slackUserId: 'U_GUEST' },
+    { fullMember: false, slackUserId: 'U_CONNECT' },
+  ]) {
+    assert.deepEqual(await listPrivatelyUsableAgents({
+      agents: [agent('public')],
+      workspaceId: 'T1',
+      grants: [grant('public', 'C_PUBLIC')],
+      actor,
+      transport: transport({
+        calls,
+        channels: { C_PUBLIC: channel('C_PUBLIC') },
+      }),
+    }), []);
+  }
+  assert.deepEqual(calls, []);
 });
 
 test('directory fact collection deduplicates Channel lookups and member traversal', async () => {

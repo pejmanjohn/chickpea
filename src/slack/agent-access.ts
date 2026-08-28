@@ -269,7 +269,7 @@ function evaluateAccess(
   }
   if (placement.verifiedPrivateChannelIds.size > 0) {
     const memberChannels = membership.memberChannels;
-    if (placement.unavailable || membership.memberChannelsUnavailable || !memberChannels) {
+    if (membership.memberChannelsUnavailable || !memberChannels) {
       return { status: 'unavailable', audience: 'unavailable' };
     }
     const isMember = [...placement.verifiedPrivateChannelIds].some((channelId) =>
@@ -277,6 +277,9 @@ function evaluateAccess(
     );
     if (actor.fullMember && isMember) {
       return { status: 'allowed', audience: 'private_channel_members' };
+    }
+    if (placement.unavailable) {
+      return { status: 'unavailable', audience: 'unavailable' };
     }
     return { status: 'denied', audience: 'private_channel_members' };
   }

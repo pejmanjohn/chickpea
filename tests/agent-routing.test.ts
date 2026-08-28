@@ -939,7 +939,7 @@ test('a trusted App Home selection starts a discoverable Agent-specific DM route
   }
 });
 
-test('an existing Agent DM reauthorizes before changing its stored route', async () => {
+test('an existing Agent DM reaction reauthorizes before changing its stored route', async () => {
   const { store, support } = await fixture();
   try {
     const directTurn = turn({
@@ -960,7 +960,15 @@ test('an existing Agent DM reauthorizes before changing its stored route', async
     assert.equal(before?.agentId, support.id);
 
     const revoked = await resolveAgentRoute({
-      turn: { ...directTurn, eventId: 'Ev2', messageTs: '100.2', text: 'continue' },
+      turn: {
+        ...directTurn,
+        eventId: 'Ev2',
+        messageTs: '100.2',
+        text: 'continue',
+        source: 'reaction_added',
+        reactionTargetTs: '100.1',
+        reactionTargetText: 'original Agent reply',
+      },
       surface: 'direct',
       actor: { channelMember: false, fullMember: true },
       config: store,
