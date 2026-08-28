@@ -267,8 +267,31 @@ export function resolveImmediateSlackInteractionIntent(
 }
 
 function explicitManagementApproval(text: string): boolean {
-  const approval = text.toLowerCase().replace(/[.!]+$/g, '').trim();
-  return /^(?:approve|approved|confirm|apply it|apply this|go ahead|do it)$/.test(approval);
+  return EXACT_MANAGEMENT_APPROVALS.has(normalizedApprovalText(text));
+}
+
+const EXACT_MANAGEMENT_APPROVALS = new Set([
+  'approve',
+  'approved',
+  'confirm',
+  'apply it',
+  'apply this',
+  'create it',
+  'create this',
+]);
+
+function normalizedApprovalText(text: string): string {
+  return text.toLowerCase().replace(/[.!]+$/g, '').trim();
+}
+
+/**
+ * Phrases that can approve an exact requester/thread/Agent-bound proposal.
+ * Ambiguous acknowledgments are only candidates here: admission must find a
+ * matching durable proposal before treating them as authorization.
+ */
+export function shouldResolveSlackManagementApproval(text: string): boolean {
+  const approval = normalizedApprovalText(normalizedInteractionText(text));
+  return EXACT_MANAGEMENT_APPROVALS.has(approval);
 }
 
 function normalizedInteractionText(text: string): string {

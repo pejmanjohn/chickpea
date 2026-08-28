@@ -192,6 +192,11 @@ export interface NormalizedSlackTurn {
   activeWorkAtAdmission?: boolean;
   /** Host-validated preflight result carried into the durable TurnJob. */
   interactionIntent?: SlackInteractionIntent;
+  /**
+   * Opaque proposal selected by trusted admission from the exact requester,
+   * Slack conversation, and acting Agent binding. Slack text cannot supply this id.
+   */
+  managementApprovalProposalId?: string;
 }
 
 export interface IgnoredSlackTurn {

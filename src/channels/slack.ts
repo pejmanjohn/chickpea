@@ -69,6 +69,7 @@ import {
 import {
   classifySlackInteraction,
   resolveImmediateSlackInteractionIntent,
+  shouldResolveSlackManagementApproval,
 } from '../slack/interaction-intent.ts';
 import {
   InteractionUsageRecorder,
@@ -136,6 +137,7 @@ import {
 } from '../slack/types.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
+import { resolveHostSlackManagementApproval } from '../management/slack-approval.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import { initialActivityStatus } from '../activity/status.ts';
 
@@ -476,7 +478,7 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
     );
   };
 }
-interface ResolvedAgentRoutingActor {
+export interface ResolvedAgentRoutingActor {
   routing: AgentRoutingActor;
   principal?: AuthPrincipal;
 }
@@ -551,6 +553,25 @@ export async function resolveAgentRoutingActor(input: {
     },
     ...(principal ? { principal } : {}),
   };
+}
+
+export async function claimChickpeaIntroductionForAgentInteraction(input: {
+  actor: ResolvedAgentRoutingActor;
+  workspaceId: string;
+  slackUserId: string;
+  management: Pick<AppStores['management'], 'claimIntroduction'>;
+}): Promise<void> {
+  if (!input.actor.principal) return;
+  await input.management.claimIntroduction({
+    organizationId: input.actor.principal.organizationId,
+    userId: input.actor.principal.userId,
+    workspaceId: input.workspaceId,
+    slackUserId: input.slackUserId,
+    trigger: 'first_interaction',
+    at: Date.now(),
+  }).catch((error) => {
+    console.warn('[chickpea] Slack introduction claim failed:', sanitizeError(error));
+  });
 }
 
 async function publishAgentAppHome(input: {
@@ -1040,6 +1061,12 @@ async function processSlackEvent(
         });
         return;
       }
+      await claimChickpeaIntroductionForAgentInteraction({
+        actor: agentRoutingActor,
+        workspaceId: turn.workspaceId,
+        slackUserId: turn.userId,
+        management: stores.management,
+      });
       let routedAssignment = routed.assignment;
       if (routed.handoffFallbackRequired && routed.previousAgentId && routed.route.handoff) {
         const fallbackContext = await hydrateSlackPublicHandoffFallback(
@@ -1174,7 +1201,7 @@ async function processSlackEvent(
     botUserId: resolvedBotUserId,
     agentUserGroupId: assignment.agent.slackPresence?.userGroupId,
   };
-  const deterministicCommand = Boolean(parseMemoryCommand(turn.text)) ||
+  let deterministicCommand = Boolean(parseMemoryCommand(turn.text)) ||
     (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress)));
   let admissionTruth: SlackAdmissionTruth = {
     eligible: false,
@@ -1223,6 +1250,24 @@ async function processSlackEvent(
   }
   if (admissionTruth.eligible && admittedActorMembershipId) {
     turn.actorMembershipId = admittedActorMembershipId;
+  }
+
+  if (
+    admissionTruth.eligible && admittedActorMembershipId &&
+    shouldResolveSlackManagementApproval(turn.text)
+  ) {
+    const proposalId = await resolveHostSlackManagementApproval({
+      turn,
+      assignment,
+      actorMembershipId: admittedActorMembershipId,
+      identity: stores.identity,
+      management: stores.management,
+    });
+    if (proposalId) {
+      turn.managementApprovalProposalId = proposalId;
+      turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
+      deterministicCommand = true;
+    }
   }
 
   if (!deterministicCommand && !candidateTurn) {
@@ -1321,7 +1366,8 @@ async function processSlackEvent(
   // established legacy turn path so Slack receives one sanitized failure
   // instead of an intake exception and silence.
   let modelReadyForCanonicalAdmission = true;
-  modelReadyForCanonicalAdmission = Boolean(assignment.model && assignment.modelAttribution);
+  modelReadyForCanonicalAdmission = Boolean(turn.managementApprovalProposalId) ||
+    Boolean(assignment.model && assignment.modelAttribution);
 
   if (admissionTruth.eligible && modelReadyForCanonicalAdmission) {
     emitManagementMetric('live_revision.admission', {
@@ -1343,9 +1389,7 @@ async function processSlackEvent(
       channelId: turn.channelId,
       assignment,
       ...(egressPolicy ? { egressPolicy } : {}),
-      legacyOnlyTurn:
-        Boolean(parseMemoryCommand(turn.text)) ||
-        (isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, commandAddress))),
+      legacyOnlyTurn: deterministicCommand,
       ...(platformEnv ? { env: platformEnv } : {}),
     });
     const admission = prepareSlackShadowAdmission({

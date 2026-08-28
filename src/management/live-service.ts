@@ -196,6 +196,27 @@ export function createLiveWorkspaceManagementService(
       }
       return entries;
     },
+    publishAgentPresence: async ({ actor, agentId }) => {
+      const organization = await identity.getOrganization();
+      if (!organization?.slackTeamId) {
+        return {
+          agent: await config.getAgent(agentId),
+          warning: 'The Agent was created, but its Slack handle could not be published because the connected Slack workspace is unavailable.',
+        };
+      }
+      try {
+        await actorSlackUser(actor, organization.slackTeamId);
+        return {
+          agent: await (await presenceReconciler(organization.slackTeamId)).retry(agentId),
+        };
+      } catch (error) {
+        if (!(error instanceof AgentPresenceError)) throw error;
+        return {
+          agent: await config.getAgent(agentId),
+          warning: `The Agent was created, but its Slack handle needs attention: ${error.message}`,
+        };
+      }
+    },
     publishAgentChannel: async ({ actor, workspaceId, channelId, agentId }) => {
       const user = await actorSlackUser(actor, workspaceId);
       return (await presenceReconciler(workspaceId)).publish({

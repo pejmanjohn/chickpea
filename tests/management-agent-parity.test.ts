@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import * as v from 'valibot';
 
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
+import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
   AGENT_AUTHORING_GUIDE_DIGEST,
   AGENT_AUTHORING_GUIDE_URI,
@@ -12,9 +13,15 @@ import {
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import { resolvePrivateAgentAccess } from '../src/slack/agent-access.ts';
+import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import { classifySlackInteraction } from '../src/slack/interaction-intent.ts';
 import { slackMarkdownBlockTextLimit } from '../src/slack/message-format.ts';
+import { normalizeSlackTurn } from '../src/slack/turn-normalization.ts';
 import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
+import {
+  executeHostSlackManagementApproval,
+  resolveHostSlackManagementApproval,
+} from '../src/management/slack-approval.ts';
 import {
   invokeWorkspaceManagementTool,
   workspaceManagementSemanticInvocation,
@@ -33,6 +40,7 @@ import type {
 import { ManagementError } from '../src/management/types.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { appMention, channelThreadMessage } from './helpers/slack-fixtures.ts';
 
 const agentInput = {
   id: 'agent_support',
@@ -345,8 +353,504 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
   }
 });
 
-test('exact create proposal writes nothing before approval and creates only the active base Agent', async () => {
+test('a top-level DM approval confirms the same pending proposal without model continuity', async () => {
+  const f = await createManagementAdapterFixture('dm-approval-scope');
+  const chickpea = await f.config.materializeChickpeaAgent();
+  const agent = await f.config.createAgent({
+    ...agentInput,
+    id: 'agent_dm_scope',
+    creatorMembershipId: f.admin.membership.id,
+    lifecycle: 'active',
+    configurationGeneration: 1,
+  });
+  const installation = await f.config.ensureWorkspaceInstallation({
+    workspaceId: f.admin.binding.slackTeamId,
+    transportMode: 'direct',
+    defaultAgentId: agent.id,
+    teamId: f.admin.binding.slackTeamId,
+    botUserId: 'U_CHICKPEA',
+  });
+  await f.config.updateWorkspaceInstallation(
+    f.admin.binding.slackTeamId,
+    { runtimeContract: 'chickpea-v1', health: 'healthy' },
+    installation.revision,
+  );
+  const proposalSignal = {
+    agentId: CHICKPEA_AGENT_ID,
+    workspaceId: f.admin.binding.slackTeamId,
+    channelId: 'D_AUTHORING',
+    threadTs: '100.1',
+    conversationKind: 'im' as const,
+    slackUserId: f.admin.binding.slackUserId,
+    eventId: 'Ev_DM_PROPOSAL',
+    messageTs: '100.1',
+    turnJobId: 'turn_DM_PROPOSAL',
+  };
+  try {
+    const proposed = await invokeSlackWorkspaceManagementTool({
+      signal: proposalSignal,
+      identity: f.identity,
+      service: f.service,
+      name: 'propose_workspace_changes',
+      args: {
+        ...authoringProposalMetadata('dm-approval-scope'),
+        operations: [{
+          itemId: 'description',
+          kind: 'update_agent',
+          agentId: agent.id,
+          expectedRevision: agent.revision,
+          patch: { description: 'Confirmed from a fresh top-level DM turn.' },
+        }],
+      },
+    });
+    assert.equal(proposed.ok, true);
+    const proposalId = (proposed as { ok: true; result: { proposalId: string } }).result.proposalId;
+
+    const topLevelApprovalTurn = {
+        workspaceId: proposalSignal.workspaceId,
+        channelId: proposalSignal.channelId,
+        eventId: 'Ev_DM_APPROVAL',
+        text: 'create it',
+        userId: proposalSignal.slackUserId,
+        actorMembershipId: f.admin.membership.id,
+        messageTs: '200.1',
+        threadTs: '200.1',
+        source: 'dm_message',
+        contextMode: 'dm_history',
+      } as const;
+    const approvalAssignment = {
+      workspaceId: proposalSignal.workspaceId,
+      channelId: proposalSignal.channelId,
+      agentId: CHICKPEA_AGENT_ID,
+      model: 'local-stub/management',
+      modelAttribution: { source: 'pinned' as const, providerId: 'local-stub' },
+      runtimeContract: 'chickpea-v1' as const,
+      agent: chickpea,
+    };
+    const resolveApproval = (turn: typeof topLevelApprovalTurn | {
+      workspaceId: string;
+      channelId: string;
+      eventId: string;
+      text: string;
+      userId: string;
+      actorMembershipId: string;
+      messageTs: string;
+      threadTs: string;
+      source: 'dm_message';
+      contextMode: 'thread';
+    }) => resolveHostSlackManagementApproval({
+      turn,
+      assignment: approvalAssignment,
+      actorMembershipId: f.admin.membership.id,
+      identity: f.identity,
+      management: f.management,
+    });
+
+    assert.equal(await resolveApproval(topLevelApprovalTurn), proposalId);
+    assert.equal(await resolveApproval({
+      ...topLevelApprovalTurn,
+      eventId: 'Ev_DM_WRONG_THREAD',
+      messageTs: '999.2',
+      threadTs: '999.1',
+      contextMode: 'thread',
+    }), undefined);
+    assert.equal(await resolveApproval({
+      ...topLevelApprovalTurn,
+      eventId: 'Ev_DM_ORIGINAL_THREAD',
+      messageTs: '100.2',
+      threadTs: '100.1',
+      contextMode: 'thread',
+    }), proposalId);
+
+    assert.equal(await resolveHostSlackManagementApproval({
+      turn: topLevelApprovalTurn,
+      assignment: {
+        ...approvalAssignment,
+        agentId: agent.id,
+        agent,
+      },
+      actorMembershipId: f.admin.membership.id,
+      identity: f.identity,
+      management: f.management,
+    }), undefined);
+
+    const confirmed = await invokeSlackWorkspaceManagementTool({
+      signal: {
+        ...proposalSignal,
+        threadTs: '200.1',
+        messageTs: '200.1',
+        eventId: 'Ev_DM_APPROVAL',
+        turnJobId: 'turn_DM_APPROVAL',
+      },
+      identity: f.identity,
+      service: f.service,
+      name: 'confirm_workspace_change',
+      args: { proposalId },
+    });
+
+    assert.equal(confirmed.ok, true);
+    assert.equal(
+      (await f.config.getAgent(agent.id)).description,
+      'Confirmed from a fresh top-level DM turn.',
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('a plain Channel thread reply reaches the proposal opened by an explicit Chickpea mention', async () => {
+  const f = await createManagementAdapterFixture('channel-approval-route');
+  await f.config.materializeChickpeaAgent();
+  const legacyDefault = await f.config.createAgent({
+    ...agentInput,
+    id: 'agent_channel_approval_default',
+    name: 'Legacy Default',
+    creatorMembershipId: f.admin.membership.id,
+    lifecycle: 'active',
+    configurationGeneration: 1,
+  });
+  const installation = await f.config.ensureWorkspaceInstallation({
+    workspaceId: f.admin.binding.slackTeamId,
+    transportMode: 'direct',
+    defaultAgentId: legacyDefault.id,
+    teamId: f.admin.binding.slackTeamId,
+    botUserId: 'U_CHICKPEA',
+  });
+  await f.config.updateWorkspaceInstallation(
+    f.admin.binding.slackTeamId,
+    { runtimeContract: 'chickpea-v1', health: 'healthy' },
+    installation.revision,
+  );
+  const workspaceId = f.admin.binding.slackTeamId;
+  const channelId = 'C_CHANNEL_APPROVAL';
+  const threadTs = '100.1';
+  const actor = { channelMember: true, fullMember: true };
+  await f.config.putChannel({
+    workspaceId,
+    channelId,
+    label: 'channel-approval',
+    lifecycle: 'active',
+  }, 0);
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    memory: f.memory,
+    routines: f.routines,
+    routineSchedulingAvailable: true,
+    setupBaseUrl: 'http://localhost',
+    now: () => 1_800_000_000_000,
+    randomId: () => 'channel_approval_route',
+    assertAgentChannelMembership: async () => undefined,
+  });
+  try {
+    const normalizedRoot = normalizeSlackTurn(appMention({
+      team_id: workspaceId,
+      event_id: 'Ev_CHANNEL_PROPOSAL',
+      event: {
+        channel: channelId,
+        user: f.admin.binding.slackUserId,
+        ts: threadTs,
+        text: '<@U_CHICKPEA> create a Paid Marketing Agent',
+      },
+    }), { botUserId: 'U_CHICKPEA' });
+    assert.equal(normalizedRoot.status, 'runnable');
+    if (normalizedRoot.status !== 'runnable') return;
+    const root = await resolveAgentRoute({
+      turn: normalizedRoot.turn,
+      surface: 'channel',
+      actor,
+      config: f.config,
+    });
+    assert.equal(root.kind, 'routed');
+    if (root.kind !== 'routed') return;
+    assert.equal(root.assignment.interactionMode, 'workspace_management');
+
+    const proposed = await invokeSlackWorkspaceManagementTool({
+      signal: {
+        agentId: CHICKPEA_AGENT_ID,
+        workspaceId,
+        channelId,
+        threadTs,
+        conversationKind: 'channel',
+        slackUserId: f.admin.binding.slackUserId,
+        eventId: 'Ev_CHANNEL_PROPOSAL',
+        messageTs: threadTs,
+        turnJobId: 'turn_CHANNEL_PROPOSAL',
+      },
+      identity: f.identity,
+      service,
+      name: 'propose_workspace_changes',
+      args: {
+        ...authoringProposalMetadata('channel-approval-route', 'agent_creation'),
+        operations: [{
+          itemId: 'create',
+          kind: 'create_agent',
+          agent: {
+            ...agentInput,
+            id: 'agent_channel_approval',
+            name: 'Channel Approval',
+            requestedHandle: 'channel-approval',
+          },
+        }],
+      },
+    });
+    assert.equal(proposed.ok, true, JSON.stringify(proposed));
+    const proposalId = (proposed as { ok: true; result: { proposalId: string } })
+      .result.proposalId;
+
+    const normalizedApproval = normalizeSlackTurn(channelThreadMessage({
+      team_id: workspaceId,
+      event_id: 'Ev_CHANNEL_APPROVAL',
+      event: {
+        channel: channelId,
+        channel_type: 'channel',
+        user: f.admin.binding.slackUserId,
+        ts: '100.2',
+        thread_ts: threadTs,
+        text: 'create it',
+      },
+    }), { botUserId: 'U_CHICKPEA' });
+    assert.equal(normalizedApproval.status, 'runnable');
+    if (normalizedApproval.status !== 'runnable') return;
+    const approvalTurn = normalizedApproval.turn;
+    const approvalRoute = await resolveAgentRoute({
+      turn: approvalTurn,
+      surface: 'channel',
+      actor,
+      config: f.config,
+    });
+    assert.equal(approvalRoute.kind, 'routed');
+    if (approvalRoute.kind !== 'routed') return;
+    assert.equal(approvalRoute.source, 'thread_owner');
+    assert.equal(approvalRoute.assignment.agentId, CHICKPEA_AGENT_ID);
+    assert.equal(approvalRoute.assignment.interactionMode, 'workspace_management');
+    assert.equal(
+      (await f.config.listAgentChannelGrants(workspaceId, channelId)).length,
+      0,
+    );
+    assert.equal(await resolveHostSlackManagementApproval({
+      turn: approvalTurn,
+      assignment: approvalRoute.assignment,
+      actorMembershipId: f.admin.membership.id,
+      identity: f.identity,
+      management: f.management,
+    }), proposalId);
+  } finally {
+    f.close();
+  }
+});
+
+test('host approval receipts never claim that a failed change was applied', async () => {
+  const f = await createManagementAdapterFixture('host-approval-receipt-truth');
+  const chickpea = await f.config.materializeChickpeaAgent();
+  const turn = {
+    workspaceId: f.admin.binding.slackTeamId,
+    channelId: 'D_HOST_RECEIPT',
+    eventId: 'Ev_HOST_RECEIPT',
+    text: 'create it',
+    userId: f.admin.binding.slackUserId,
+    messageTs: '200.1',
+    threadTs: '200.1',
+    source: 'dm_message' as const,
+    contextMode: 'dm_history' as const,
+  };
+  const assignment = {
+    workspaceId: turn.workspaceId,
+    channelId: turn.channelId,
+    agentId: CHICKPEA_AGENT_ID,
+    runtimeContract: 'chickpea-v1' as const,
+    agent: chickpea,
+  };
+  try {
+    const failed = await executeHostSlackManagementApproval({
+      turn,
+      assignment,
+      turnJobId: 'turn_HOST_RECEIPT',
+      proposalId: 'changeset_failed',
+      dependencies: {
+        identity: f.identity,
+        config: f.config,
+        management: f.management,
+        service: {
+          confirmWorkspaceChange: async () => ({
+            operationId: 'changeset_failed',
+            idempotencyKey: 'failed',
+            status: 'partial',
+            outcomes: [{
+              itemId: 'create',
+              operationKind: 'create_agent',
+              disposition: 'failed',
+              code: 'revision_conflict',
+            }],
+            effectiveRevision: 'rev_failed',
+            activation: 'next_turn',
+          }),
+        } as unknown as WorkspaceManagementService,
+      },
+    });
+    assert.equal(failed.kind, 'message');
+    if (failed.kind !== 'message') assert.fail('expected failure message');
+    assert.match(failed.text, /couldn’t apply the approved changes/);
+    assert.match(failed.text, /Nothing was changed/);
+    assert.doesNotMatch(failed.text, /^Applied/);
+
+    let confirmAttempts = 0;
+    const recovered = await executeHostSlackManagementApproval({
+      turn,
+      assignment,
+      turnJobId: 'turn_HOST_RECEIPT_RETRY',
+      proposalId: 'changeset_applying',
+      dependencies: {
+        identity: f.identity,
+        config: f.config,
+        management: f.management,
+        service: {
+          confirmWorkspaceChange: async () => {
+            confirmAttempts += 1;
+            throw new ManagementError('operation_in_progress', 'Still applying.');
+          },
+        } as unknown as WorkspaceManagementService,
+      },
+    });
+    assert.deepEqual(recovered, {
+      kind: 'message',
+      text: 'That proposal is still being applied; it won’t be applied twice.',
+    });
+    assert.equal(confirmAttempts, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test('clean Slack Agent creation queues one Agent welcome instead of a Chickpea success receipt', async () => {
+  const f = await createManagementAdapterFixture('host-creation-welcome');
+  const created = await f.config.createAgent({
+    ...agentInput,
+    id: 'agent_paid_marketing_welcome',
+    name: 'Paid Marketing',
+    description: 'Helps optimize Google Ads budgets and copy.',
+    instructions: 'Use Google Ads data when connected.',
+    lifecycle: 'active',
+    creatorMembershipId: f.admin.membership.id,
+    slackPresence: {
+      requestedHandle: 'paid-marketing',
+      normalizedHandle: 'paid-marketing',
+      desiredState: 'active',
+      health: 'healthy',
+      avatar: { kind: 'generated', revision: 1, seed: 'paid-marketing' },
+      userGroupId: 'SPAIDMARKETING',
+    },
+  });
+  const turn = {
+    workspaceId: f.admin.binding.slackTeamId,
+    channelId: 'C_HOST_WELCOME',
+    channelType: 'channel',
+    eventId: 'Ev_HOST_WELCOME',
+    text: 'create it',
+    userId: f.admin.binding.slackUserId,
+    messageTs: '200.2',
+    threadTs: '200.1',
+    source: 'implicit_thread_reply' as const,
+    contextMode: 'thread' as const,
+  };
+  try {
+    const approval = await executeHostSlackManagementApproval({
+      turn,
+      assignment: {
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        agentId: CHICKPEA_AGENT_ID,
+        runtimeContract: 'chickpea-v1',
+        agent: await f.config.materializeChickpeaAgent(),
+      },
+      turnJobId: 'turn_HOST_WELCOME',
+      proposalId: 'changeset_host_welcome',
+      dependencies: {
+        identity: f.identity,
+        config: f.config,
+        management: f.management,
+        publicUrl: 'https://example.test',
+        service: {
+          confirmWorkspaceChange: async () => ({
+            operationId: 'management_host_welcome',
+            idempotencyKey: 'host-welcome',
+            status: 'completed',
+            outcomes: [
+              {
+                itemId: 'create',
+                operationKind: 'create_agent',
+                disposition: 'applied',
+                changed: [{ kind: 'agent', id: created.id, revision: created.revision }],
+                handoffUrl: 'https://example.test/admin/agents/agent_paid_marketing_welcome',
+              },
+              {
+                itemId: 'create_origin_channel_grant',
+                operationKind: 'grant_agent_channel',
+                disposition: 'applied',
+              },
+            ],
+            effectiveRevision: 'rev_host_welcome',
+            activation: 'next_turn',
+          }),
+        } as unknown as WorkspaceManagementService,
+      },
+    });
+    assert.deepEqual(approval, {
+      kind: 'agent_welcome_queued',
+      outboxId: 'agent_welcome_changeset_host_welcome',
+    });
+    const outbox = await f.management.getOutboxForOperation('management_host_welcome');
+    assert.equal(outbox?.destination.kind, 'thread');
+    assert.deepEqual(outbox?.receipt, {
+      kind: 'agent_created_welcome',
+      proposalId: 'changeset_host_welcome',
+      agentId: created.id,
+      agentName: 'Paid Marketing',
+      agentDescription: 'Helps optimize Google Ads budgets and copy.',
+      requesterMembershipId: f.admin.membership.id,
+      surface: 'channel',
+      persona: {
+        name: 'Paid Marketing',
+        avatarUrl: 'https://example.test/assets/agents/agent_paid_marketing_welcome/avatar/1',
+      },
+      setupUrl: 'https://example.test/admin/agents/agent_paid_marketing_welcome',
+      suggestedConnector: 'Google Ads',
+    });
+  } finally {
+    f.close();
+  }
+});
+
+test('one create proposal publishes the Slack handle after its single approval', async () => {
   const f = await createManagementAdapterFixture('exact-create-proposal');
+  let sequence = 0;
+  let publishCalls = 0;
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    memory: f.memory,
+    routines: f.routines,
+    routineSchedulingAvailable: true,
+    setupBaseUrl: 'http://localhost',
+    now: () => 1_800_000_000_000,
+    randomId: () => `exact_create_${++sequence}`,
+    publishAgentPresence: async ({ agentId }) => {
+      publishCalls += 1;
+      const current = await f.config.getAgent(agentId);
+      const agent = await f.config.updateAgent(agentId, {
+        slackPresence: {
+          ...current.slackPresence!,
+          desiredState: 'active',
+          health: 'healthy',
+          userGroupId: 'SPAIDMARKETING',
+          observedAt: 1_800_000_000_000,
+        },
+      }, current.revision);
+      return { agent };
+    },
+  });
   const context: ManagementActorContext = {
     userId: f.admin.user.id,
     membershipId: f.admin.membership.id,
@@ -354,7 +858,7 @@ test('exact create proposal writes nothing before approval and creates only the 
     origin: { kind: 'mcp', clientId: 'exact-create-client' },
   };
   try {
-    const proposed = await f.service.proposeWorkspaceChanges({
+    const proposed = await service.proposeWorkspaceChanges({
       context,
       ...authoringProposalMetadata('exact-create', 'agent_creation'),
       operations: [{
@@ -374,6 +878,7 @@ test('exact create proposal writes nothing before approval and creates only the 
     assert.equal(proposed.status, 'pending');
     assert.equal(proposed.confirmationTool, 'confirm_workspace_change');
     assert.equal(proposed.preview.changes[0]?.operationKind, 'create_agent');
+    assert.match(proposed.presentation.slack, /\*Ready to create\*/);
     assert.match(proposed.presentation.slack, /\*New Agent\*/);
     assert.match(proposed.presentation.slack, /\*Name\*\n> Support Triage/);
     assert.match(proposed.presentation.slack, /\*Description\*\n> Handles support triage\./);
@@ -383,10 +888,11 @@ test('exact create proposal writes nothing before approval and creates only the 
       proposed.presentation.slack,
       /\*Before\*|\*After\*|Slack Presence|Editing Authority|MCP Servers|Repositories/,
     );
+    assert.match(proposed.presentation.slack, /Reply `create it`/);
     await assert.rejects(() => f.config.getAgent('agent_support'));
     assert.deepEqual(await f.config.listAgentChannelGrants(), []);
 
-    const confirmed = await f.service.confirmWorkspaceChange({
+    const confirmed = await service.confirmWorkspaceChange({
       context,
       proposalId: proposed.proposalId,
     });
@@ -394,20 +900,282 @@ test('exact create proposal writes nothing before approval and creates only the 
     const created = await f.config.getAgent('agent_support');
     assert.equal(created.lifecycle, 'active');
     assert.equal(created.enabled, true);
-    assert.equal(created.slackPresence?.desiredState, 'unpublished');
-    assert.equal(created.slackPresence?.health, 'unpublished');
+    assert.equal(created.slackPresence?.desiredState, 'active');
+    assert.equal(created.slackPresence?.health, 'healthy');
+    assert.equal(created.slackPresence?.userGroupId, 'SPAIDMARKETING');
     assert.deepEqual(created.mcpServers, []);
     assert.deepEqual(created.apiConnections, []);
     assert.deepEqual(created.repositories, []);
     assert.equal(created.skills[0]?.name, 'support-triage');
     assert.deepEqual(await f.config.listAgentChannelGrants(), []);
+    assert.equal(publishCalls, 1);
 
-    const replay = await f.service.confirmWorkspaceChange({
+    const replay = await service.confirmWorkspaceChange({
       context,
       proposalId: proposed.proposalId,
     });
     assert.deepEqual(replay, confirmed);
+    assert.equal(publishCalls, 1);
     assert.equal((await f.config.listUserAgents()).filter(({ id }) => id === 'agent_support').length, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test('a Channel-origin create proposal includes and applies its trusted origin grant', async () => {
+  const f = await createManagementAdapterFixture('channel-create-origin-grant');
+  const workspaceId = f.admin.binding.slackTeamId;
+  const channelId = 'C_AGENT_CREATE';
+  let membershipChecks = 0;
+  let publishCalls = 0;
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    actingAgentId: CHICKPEA_AGENT_ID,
+    origin: {
+      kind: 'slack',
+      workspaceId,
+      channelId,
+      threadTs: '1800000000.000001',
+      conversationKind: 'channel',
+      agentId: CHICKPEA_AGENT_ID,
+    },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => 1_800_000_000_000,
+    randomId: () => 'channel_create_origin_grant',
+    assertAgentChannelMembership: async ({ actor, workspaceId: actualWorkspaceId, channelId: actualChannelId }) => {
+      membershipChecks += 1;
+      assert.equal(actor.membershipId, context.membershipId);
+      assert.equal(actualWorkspaceId, workspaceId);
+      assert.equal(actualChannelId, channelId);
+    },
+    publishAgentPresence: async ({ agentId }) => {
+      const current = await f.config.getAgent(agentId);
+      const agent = await f.config.updateAgent(agentId, {
+        slackPresence: {
+          ...current.slackPresence!,
+          desiredState: 'active',
+          health: 'healthy',
+          userGroupId: 'SPAIDMARKETING',
+          observedAt: 1_800_000_000_000,
+        },
+      }, current.revision);
+      return { agent };
+    },
+    publishAgentChannel: async ({ actor, workspaceId: targetWorkspaceId, channelId: targetChannelId, agentId }) => {
+      publishCalls += 1;
+      const grant = await f.config.putAgentChannelGrant({
+        workspaceId: targetWorkspaceId,
+        channelId: targetChannelId,
+        agentId,
+        status: 'active',
+        createdByMembershipId: actor.membershipId,
+        channelLabel: 'agent-create',
+      }, 0);
+      return { agent: await f.config.getAgent(agentId), grant };
+    },
+  });
+  try {
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('channel-create-origin-grant', 'agent_creation'),
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+    });
+    const persisted = await f.management.getChangeSetProposal(proposed.proposalId);
+    assert.deepEqual(persisted?.operations.map(({ kind }) => kind), [
+      'create_agent',
+      'grant_agent_channel',
+    ]);
+    assert.deepEqual(persisted?.operations[1], {
+      itemId: 'create_origin_channel_grant',
+      dependsOn: ['create'],
+      kind: 'grant_agent_channel',
+      workspaceId,
+      channelId,
+      agentId: agentInput.id,
+      expectedRevision: 0,
+    });
+    assert.match(proposed.presentation.slack, /^\*Ready to create\*/);
+    assert.match(proposed.presentation.slack, /\*Available in\*\n> This Channel/);
+    assert.match(proposed.presentation.slack, /Reply `create it`/);
+    assert.doesNotMatch(proposed.presentation.slack, /Grant Agent Channel|Reply `approve`/);
+
+    const confirmed = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(confirmed.status, 'completed');
+    assert.deepEqual(confirmed.outcomes.map(({ operationKind, disposition }) => ({
+      operationKind,
+      disposition,
+    })), [{
+      operationKind: 'create_agent',
+      disposition: 'applied',
+    }, {
+      operationKind: 'grant_agent_channel',
+      disposition: 'applied',
+    }]);
+    assert.equal((await f.config.listAgentChannelGrants(workspaceId, channelId))[0]?.agentId, agentInput.id);
+    assert.equal((await f.config.listAgentChannelGrants(workspaceId, channelId))[0]?.status, 'active');
+    assert.equal(membershipChecks, 3);
+    assert.equal(publishCalls, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test('Agent creation stays applied with a warning when Slack publication unexpectedly fails', async () => {
+  const f = await createManagementAdapterFixture('create-presence-warning');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'create-presence-warning-client' },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    randomId: () => 'create_presence_warning',
+    publishAgentPresence: async () => {
+      throw new Error('Synthetic unexpected publication failure.');
+    },
+  });
+  try {
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('create-presence-warning', 'agent_creation'),
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+    });
+    const confirmed = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(confirmed.status, 'completed');
+    assert.equal(confirmed.outcomes[0]?.disposition, 'applied');
+    assert.match(confirmed.outcomes[0]?.warning ?? '', /Slack handle needs attention/);
+    assert.equal((await f.config.getAgent(agentInput.id)).lifecycle, 'active');
+  } finally {
+    f.close();
+  }
+});
+
+test('an applying create proposal reconciles a published Agent after its lease', async () => {
+  const f = await createManagementAdapterFixture('create-publish-recovery');
+  let now = 1_800_000_000_000;
+  let publishCalls = 0;
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'create-publish-recovery-client' },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => now,
+    randomId: () => 'create_publish_recovery',
+    publishAgentPresence: async ({ agentId }) => {
+      publishCalls += 1;
+      return { agent: await f.config.getAgent(agentId) };
+    },
+  });
+  try {
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('create-publish-recovery', 'agent_creation'),
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+    });
+    await f.management.claimChangeSetProposal({
+      proposalId: proposed.proposalId,
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: 'mcp:create-publish-recovery-client',
+      at: now,
+    });
+    const intended = proposed.preview.changes[0]?.after as CustomAgentConfig;
+    const { revision: _revision, ...createInput } = intended;
+    const created = await f.config.createAgent(createInput);
+    await f.config.updateAgent(created.id, {
+      slackPresence: {
+        ...created.slackPresence!,
+        desiredState: 'active',
+        health: 'healthy',
+        userGroupId: 'SRECOVERED',
+        observedAt: now,
+      },
+    }, created.revision);
+
+    now += 30_001;
+    const recovered = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(recovered.status, 'completed');
+    assert.equal(recovered.outcomes[0]?.disposition, 'applied');
+    assert.equal((await f.config.getAgent(agentInput.id)).slackPresence?.health, 'healthy');
+    assert.equal(publishCalls, 0);
+  } finally {
+    f.close();
+  }
+});
+
+test('create recovery does not adopt a concurrently edited Agent with the same id', async () => {
+  const f = await createManagementAdapterFixture('create-recovery-conflict');
+  let now = 1_800_000_000_000;
+  let publishCalls = 0;
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'create-recovery-conflict-client' },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => now,
+    randomId: () => 'create_recovery_conflict',
+    publishAgentPresence: async ({ agentId }) => {
+      publishCalls += 1;
+      return { agent: await f.config.getAgent(agentId) };
+    },
+  });
+  try {
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('create-recovery-conflict', 'agent_creation'),
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+    });
+    await f.management.claimChangeSetProposal({
+      proposalId: proposed.proposalId,
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: 'mcp:create-recovery-conflict-client',
+      at: now,
+    });
+    const intended = proposed.preview.changes[0]?.after as CustomAgentConfig;
+    const { revision: _revision, ...createInput } = intended;
+    const created = await f.config.createAgent(createInput);
+    await f.config.updateAgent(created.id, { name: 'Concurrent replacement' }, created.revision);
+
+    now += 30_001;
+    const recovered = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(recovered.status, 'partial');
+    assert.equal(recovered.outcomes[0]?.disposition, 'failed');
+    assert.equal((await f.config.getAgent(agentInput.id)).name, 'Concurrent replacement');
+    assert.equal(publishCalls, 0);
   } finally {
     f.close();
   }

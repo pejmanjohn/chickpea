@@ -28,6 +28,8 @@ import { SLACK_SELF_MENTION_PLACEHOLDER } from '../src/slack/web-client-context.
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 import { repairTerminalSlackPresentation } from '../src/slack/presentation-repair.ts';
+import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -206,6 +208,250 @@ test('runTurn acknowledges substantive work with a temporary eyes reaction', asy
 
   assert.equal(reactionAdds, 1);
   assert.equal(reactionRemoves, 1);
+});
+
+test('runTurn applies a bound DM approval in the host without invoking the Agent', async () => {
+  const f = await createManagementAdapterFixture('run-turn-host-approval');
+  let promptCalls = 0;
+  let historyCalls = 0;
+  const delivered: string[] = [];
+  try {
+    const managedAgent = await f.config.createAgent({
+      id: 'agent_host_approval',
+      name: 'Host Approval',
+      instructions: 'Manage this Agent.',
+      enabled: true,
+      kind: 'user',
+      lifecycle: 'active',
+      creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const installation = await f.config.ensureWorkspaceInstallation({
+      workspaceId: f.admin.binding.slackTeamId,
+      transportMode: 'direct',
+      defaultAgentId: managedAgent.id,
+      teamId: f.admin.binding.slackTeamId,
+      botUserId: 'U_CHICKPEA',
+    });
+    await f.config.updateWorkspaceInstallation(
+      f.admin.binding.slackTeamId,
+      { runtimeContract: 'chickpea-v1', health: 'healthy' },
+      installation.revision,
+    );
+    const proposalContext = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      actingAgentId: managedAgent.id,
+      origin: {
+        kind: 'slack' as const,
+        workspaceId: f.admin.binding.slackTeamId,
+        channelId: 'D_HOST_APPROVAL',
+        threadTs: '100.1',
+        messageTs: '100.1',
+        conversationKind: 'im' as const,
+        agentId: managedAgent.id,
+      },
+    };
+    const proposed = await f.service.proposeWorkspaceChanges({
+      context: proposalContext,
+      ...authoringProposalMetadata('run-turn-host-approval'),
+      operations: [{
+        itemId: 'description',
+        kind: 'update_agent',
+        agentId: managedAgent.id,
+        expectedRevision: managedAgent.revision,
+        patch: { description: 'Applied by the trusted Slack host.' },
+      }],
+    });
+    const approvalAssignment: ResolvedAssignment = {
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: 'D_HOST_APPROVAL',
+      agentId: managedAgent.id,
+      runtimeContract: 'chickpea-v1',
+      agent: managedAgent,
+    };
+    const turn: NormalizedSlackTurn = {
+      workspaceId: approvalAssignment.workspaceId,
+      channelId: approvalAssignment.channelId,
+      eventId: 'Ev_HOST_APPROVAL',
+      text: 'create it',
+      userId: f.admin.binding.slackUserId,
+      actorMembershipId: f.admin.membership.id,
+      messageTs: '200.1',
+      threadTs: '200.1',
+      source: 'dm_message',
+      contextMode: 'dm_history',
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+      managementApprovalProposalId: proposed.proposalId,
+    };
+    const client = {
+      conversations: { history: async () => {
+        historyCalls += 1;
+        return { ok: true, messages: [] };
+      } },
+      chat: {
+        startStream: async (input: { markdown_text: string }) => {
+          delivered.push(input.markdown_text);
+          return { ok: true, ts: '201.1' };
+        },
+        stopStream: async () => ({ ok: true }),
+        postMessage: async (input: { text: string }) => {
+          delivered.push(input.text);
+          return { ok: true, channel: turn.channelId, ts: '201.1' };
+        },
+      },
+    } as unknown as WebClient;
+
+    await runTurn(turn, approvalAssignment, undefined, {
+      client,
+      turnId: 'turn_HOST_APPROVAL',
+      agentPrompt: async () => {
+        promptCalls += 1;
+        throw new Error('the Agent must not handle an approved proposal');
+      },
+      managementApproval: {
+        identity: f.identity,
+        config: f.config,
+        management: f.management,
+        service: f.service,
+      },
+      usageRecordingEnabled: false,
+    });
+
+    assert.equal(promptCalls, 0);
+    assert.equal(historyCalls, 0);
+    assert.match(delivered.join('\n'), /Applied the approved changes\./);
+    const applied = await f.config.getAgent(managedAgent.id);
+    assert.equal(applied.description, 'Applied by the trusted Slack host.');
+
+    await runTurn({
+      ...turn,
+      eventId: 'Ev_HOST_APPROVAL_RETRY',
+      messageTs: '200.2',
+      threadTs: '200.2',
+    }, approvalAssignment, undefined, {
+      client,
+      turnId: 'turn_HOST_APPROVAL_RETRY',
+      agentPrompt: async () => {
+        promptCalls += 1;
+        throw new Error('the Agent must not handle an approved proposal replay');
+      },
+      managementApproval: {
+        identity: f.identity,
+        config: f.config,
+        management: f.management,
+        service: f.service,
+      },
+      usageRecordingEnabled: false,
+    });
+    assert.equal(promptCalls, 0);
+    assert.equal((await f.config.getAgent(managedAgent.id)).revision, applied.revision);
+    assert.equal(delivered.filter((text) => /Applied the approved changes\./.test(text)).length, 2);
+  } finally {
+    f.close();
+  }
+});
+
+test('runTurn supplies the resolved public URL to a Cloudflare-shaped creation approval', async () => {
+  const f = await createManagementAdapterFixture('run-turn-host-creation-avatar');
+  try {
+    const created = await f.config.createAgent({
+      id: 'agent_host_creation_avatar',
+      name: 'Paid Marketing',
+      description: 'Helps optimize Google Ads.',
+      instructions: 'Use Google Ads data when connected.',
+      enabled: true,
+      kind: 'user',
+      lifecycle: 'active',
+      creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1,
+      slackPresence: {
+        requestedHandle: 'paid-marketing-avatar',
+        normalizedHandle: 'paid-marketing-avatar',
+        desiredState: 'active',
+        health: 'healthy',
+        avatar: { kind: 'generated', revision: 1, seed: 'paid-marketing-avatar' },
+        userGroupId: 'SPAIDMARKETINGAVATAR',
+      },
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const assignment: ResolvedAssignment = {
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: 'D_HOST_CREATION_AVATAR',
+      agentId: created.id,
+      runtimeContract: 'chickpea-v1',
+      agent: created,
+    };
+    const turn: NormalizedSlackTurn = {
+      workspaceId: assignment.workspaceId,
+      channelId: assignment.channelId,
+      eventId: 'Ev_HOST_CREATION_AVATAR',
+      text: 'create it',
+      userId: f.admin.binding.slackUserId,
+      actorMembershipId: f.admin.membership.id,
+      messageTs: '210.1',
+      threadTs: '210.1',
+      source: 'dm_message',
+      contextMode: 'dm_history',
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+      managementApprovalProposalId: 'changeset_host_creation_avatar',
+    };
+    const client = {
+      chat: {
+        startStream: async () => ({ ok: true, ts: '211.1' }),
+        stopStream: async () => ({ ok: true }),
+        postMessage: async () => ({ ok: true, channel: turn.channelId, ts: '211.1' }),
+      },
+    } as unknown as WebClient;
+
+    await runTurn(turn, assignment, {
+      SLACK_TAG_PUBLIC_URL: 'https://chickpea.example',
+    }, {
+      client,
+      turnId: 'turn_HOST_CREATION_AVATAR',
+      managementApproval: {
+        identity: f.identity,
+        config: f.config,
+        management: f.management,
+        service: {
+          confirmWorkspaceChange: async () => ({
+            operationId: 'management_host_creation_avatar',
+            idempotencyKey: 'host-creation-avatar',
+            status: 'completed',
+            outcomes: [{
+              itemId: 'create',
+              operationKind: 'create_agent',
+              disposition: 'applied',
+              changed: [{ kind: 'agent', id: created.id, revision: created.revision }],
+            }],
+            effectiveRevision: 'rev_host_creation_avatar',
+            activation: 'next_turn',
+          }),
+        } as unknown as import('../src/management/service.ts').WorkspaceManagementService,
+      },
+      usageRecordingEnabled: false,
+    });
+
+    const outbox = await f.management.getOutboxForOperation('management_host_creation_avatar');
+    assert.ok(outbox?.receipt && 'kind' in outbox.receipt);
+    if (!outbox?.receipt || !('kind' in outbox.receipt)) assert.fail('expected Agent welcome');
+    assert.equal(outbox.receipt.kind, 'agent_created_welcome');
+    if (outbox.receipt.kind !== 'agent_created_welcome') assert.fail('expected Agent welcome');
+    assert.equal(
+      outbox.receipt.persona.avatarUrl,
+      'https://chickpea.example/assets/agents/agent_host_creation_avatar/avatar/1',
+    );
+  } finally {
+    f.close();
+  }
 });
 
 test('runTurn keeps the persisted V3 owner from first status through final delivery', async () => {

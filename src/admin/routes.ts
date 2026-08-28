@@ -1611,8 +1611,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         identity: identityStore,
         credentials,
         environment,
-        onFirstOwnerActivated: async () => {
-          await beginOnboardingJourney(settings(c));
+        onFirstOwnerActivated: async ({ workspaceId, slackUserId }) => {
+          await Promise.allSettled([
+            beginOnboardingJourney(settings(c)),
+            (async () => {
+              const resolution = await identityStore.resolveSlackIdentity(workspaceId, slackUserId);
+              if (!resolution || resolution.membership.status !== 'active') return;
+              await management(c).claimIntroduction({
+                organizationId: resolution.membership.organizationId,
+                userId: resolution.user.id,
+                workspaceId,
+                slackUserId,
+                trigger: 'first_owner',
+                at: Date.now(),
+              });
+            })(),
+          ]);
         },
         ...(gatewayClient && gatewayBinding
           ? {

@@ -245,7 +245,7 @@ async function prepareWorkspaceManagementTurn(
 ): Promise<PreparedMemoryTurn> {
   const { assignment, turn } = input;
   if (
-    turn.source !== 'app_mention' ||
+    !isWorkspaceManagementTurnSource(turn.source) ||
     assignment.workspaceId !== turn.workspaceId ||
     assignment.channelId !== turn.channelId ||
     assignment.agentId !== assignment.agent.id ||
@@ -323,7 +323,7 @@ async function validateWorkspaceManagementLease(
     ]);
     const facts = conversation.facts;
     return Boolean(
-      turn.source === 'app_mention' &&
+      isWorkspaceManagementTurnSource(turn.source) &&
       agent.enabled && agent.lifecycle !== 'archived' &&
       installation && installation.health !== 'revoked' &&
       workspaceManagementAgentId(installation) === assignment.agentId &&
@@ -340,6 +340,10 @@ async function validateWorkspaceManagementLease(
   } catch {
     return false;
   }
+}
+
+function isWorkspaceManagementTurnSource(source: NormalizedSlackTurn['source']): boolean {
+  return source === 'app_mention' || source === 'implicit_thread_reply';
 }
 
 function workspaceManagementAgentId(

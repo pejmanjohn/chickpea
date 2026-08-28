@@ -1,16 +1,23 @@
 import type { PlatformEnv } from '../config/state-backend.ts';
+import type { ConfigStore } from '../config/store.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from '../slack/installation-execution.ts';
 import { SlackTransportError } from '../slack/transport/types.ts';
+import {
+  handoffCreatedAgentThread,
+  type CreatedAgentHandoffConfig,
+} from '../slack/agent-routing.ts';
 import type { ManagementStore } from './store.ts';
 import { RoutineStateError, type RoutineStore } from '../routines/types.ts';
 import type {
   ManagementReceiptDestination,
   ManagementReceiptOutboxRecord,
   ManagementReceipt,
+  ManagementAgentCreatedWelcome,
+  ManagementChickpeaIntroduction,
   ManagementRoutineSavedAcknowledgement,
   ManagementScheduleActionAcknowledgement,
   ManagementSetupReceipt,
@@ -30,6 +37,7 @@ const PERMANENT_DELIVERY_CODES = new Set([
   'message_not_found',
   'is_archived',
   'operation_not_allowed',
+  'introduction_recipient_ineligible',
 ]);
 
 export interface CompleteManagementSetupReceiptInput {
@@ -87,6 +95,8 @@ export function formatManagementSetupReceipt(receipt: ManagementReceipt): string
     }
     return `✅ That scheduled-work action completed.${scheduleActionSafeStateText(receipt.safeState)}`;
   }
+  if (isAgentCreatedWelcome(receipt)) return formatAgentCreatedWelcome(receipt);
+  if (isChickpeaIntroduction(receipt)) return formatChickpeaIntroduction(receipt);
   const subject = receipt.accountLabel ?? receipt.connector;
   const lead = `${subject} has been connected to ${receipt.connector} connector.`;
   const details = [
@@ -100,6 +110,49 @@ export function formatManagementSetupReceipt(receipt: ManagementReceipt): string
 
 export interface ManagementReceiptDeliveryResult {
   deliveryRef: string;
+}
+
+export async function completeAgentWelcomeDelivery(
+  record: ManagementReceiptOutboxRecord,
+  delivery: {
+    workspaceId: string;
+    channelId: string;
+    threadTs?: string;
+    messageTs: string;
+    text: string;
+    persona: 'agent' | 'chickpea';
+  },
+  config: CreatedAgentHandoffConfig & {
+    putSlackPublicContext(
+      ...args: Parameters<ConfigStore['putSlackPublicContext']>
+    ): Awaited<ReturnType<ConfigStore['putSlackPublicContext']>> |
+      ReturnType<ConfigStore['putSlackPublicContext']>;
+  },
+): Promise<void> {
+  if (!isAgentCreatedWelcome(record.receipt)) return;
+  if (delivery.persona !== 'agent') return;
+  if (record.destination.kind !== 'thread' || !delivery.threadTs) {
+    throw new Error('The Agent welcome must target its creation thread.');
+  }
+  await handoffCreatedAgentThread({
+    workspaceId: record.destination.workspaceId,
+    channelId: record.destination.channelId,
+    threadTs: record.destination.threadTs,
+    welcomeMessageTs: delivery.messageTs,
+    agentId: record.receipt.agentId,
+    requesterMembershipId: record.receipt.requesterMembershipId,
+    surface: record.receipt.surface,
+    config,
+  });
+  await config.putSlackPublicContext({
+    workspaceId: record.destination.workspaceId,
+    channelId: record.destination.channelId,
+    rootTs: record.destination.threadTs,
+    messageTs: delivery.messageTs,
+    role: 'agent',
+    agentId: record.receipt.agentId,
+    text: delivery.text,
+  });
 }
 
 export async function drainManagementReceiptOutbox(input: {
@@ -162,9 +215,21 @@ export async function drainManagementReceiptOutbox(input: {
 export async function deliverManagementReceiptToSlack(
   record: ManagementReceiptOutboxRecord,
   input: {
-    identity: Pick<IdentityStore, 'listExternalIdentities'>;
+    identity: Pick<IdentityStore, 'listExternalIdentities'> &
+      Partial<Pick<IdentityStore, 'resolveSlackIdentity'>>;
     env?: PlatformEnv;
     resolveInstallation?: SlackInstallationExecutionResolver;
+    onDelivered?: (
+      record: ManagementReceiptOutboxRecord,
+      delivery: {
+        workspaceId: string;
+        channelId: string;
+        threadTs?: string;
+        messageTs: string;
+        text: string;
+        persona: 'agent' | 'chickpea';
+      },
+    ) => void | Promise<void>;
   },
 ): Promise<ManagementReceiptDeliveryResult> {
   if (record.destination.kind === 'reaction') {
@@ -205,7 +270,7 @@ export async function deliverManagementReceiptToSlack(
     workspaceId = record.destination.workspaceId;
     channel = record.destination.channelId;
     threadTs = record.destination.threadTs;
-  } else {
+  } else if (record.destination.kind === 'initiator_dm') {
     const destination = record.destination;
     const binding = (await input.identity.listExternalIdentities()).find((candidate) =>
       candidate.organizationId === destination.organizationId &&
@@ -213,6 +278,20 @@ export async function deliverManagementReceiptToSlack(
     if (!binding) throw new Error('The initiating Slack member is unavailable.');
     workspaceId = binding.slackTeamId;
     channel = binding.slackUserId;
+  } else {
+    workspaceId = record.destination.workspaceId;
+    channel = record.destination.slackUserId;
+    const resolution = await input.identity.resolveSlackIdentity?.(workspaceId, channel);
+    if (
+      !resolution ||
+      resolution.membership.status !== 'active' ||
+      resolution.binding.slackTeamId !== workspaceId ||
+      resolution.binding.slackUserId !== channel
+    ) {
+      const error = new Error('The Chickpea introduction recipient is no longer eligible.');
+      error.name = 'introduction_recipient_ineligible';
+      throw error;
+    }
   }
   const execution = await (input.resolveInstallation
     ? input.resolveInstallation(workspaceId)
@@ -220,13 +299,60 @@ export async function deliverManagementReceiptToSlack(
   if (execution.workspaceId !== workspaceId) {
     throw new Error('Receipt workspace does not match the Slack installation.');
   }
-  const response = await execution.client.chat.postMessage({
+  if (record.destination.kind === 'slack_dm' || record.destination.kind === 'initiator_dm') {
+    const opened = await execution.client.conversations.open({ users: channel });
+    if (!opened.ok || !opened.channel?.id) throw new Error('Slack did not open the receipt DM.');
+    channel = opened.channel.id;
+  }
+  const text = formatManagementSetupReceipt(record.receipt);
+  const baseMessage = {
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
-    text: formatManagementSetupReceipt(record.receipt),
+    text,
     client_msg_id: record.outboxId,
-  } as Parameters<typeof execution.client.chat.postMessage>[0]);
+  } as Parameters<typeof execution.client.chat.postMessage>[0];
+  let response;
+  let deliveredText = text;
+  let persona: 'agent' | 'chickpea' = 'chickpea';
+  if (isAgentCreatedWelcome(record.receipt)) {
+    try {
+      response = await execution.client.chat.postMessage({
+        ...baseMessage,
+        username: record.receipt.persona.name,
+        ...(record.receipt.persona.avatarUrl
+          ? { icon_url: record.receipt.persona.avatarUrl }
+          : {}),
+      } as Parameters<typeof execution.client.chat.postMessage>[0]);
+      persona = 'agent';
+    } catch (error) {
+      if (slackPlatformErrorCode(error) !== 'missing_scope') throw error;
+      deliveredText = formatAgentWelcomeFallback(record.receipt);
+      response = await execution.client.chat.postMessage({
+        ...baseMessage,
+        text: deliveredText,
+      });
+    }
+  } else {
+    response = await execution.client.chat.postMessage(baseMessage);
+  }
   if (!response.ok || !response.ts) throw new Error('Slack did not acknowledge the receipt.');
+  try {
+    await input.onDelivered?.(record, {
+      workspaceId,
+      channelId: channel,
+      ...(threadTs ? { threadTs } : {}),
+      messageTs: response.ts,
+      text: deliveredText,
+      persona,
+    });
+  } catch (error) {
+    // Slack has already acknowledged the irreversible post. A follow-up route
+    // or context write must never make the outbox retry and duplicate it.
+    console.warn('[chickpea:management] post-delivery bookkeeping failed', JSON.stringify({
+      outboxId: record.outboxId,
+      error: error instanceof Error ? error.name : 'unknown',
+    }));
+  }
   return { deliveryRef: `slack:${channel}:${response.ts}` };
 }
 
@@ -256,6 +382,64 @@ export function isScheduleActionAcknowledgement(
   receipt: ManagementReceipt,
 ): receipt is ManagementScheduleActionAcknowledgement {
   return 'kind' in receipt && receipt.kind === 'schedule_action';
+}
+
+export function isAgentCreatedWelcome(
+  receipt: ManagementReceipt,
+): receipt is ManagementAgentCreatedWelcome {
+  return 'kind' in receipt && receipt.kind === 'agent_created_welcome';
+}
+
+export function isChickpeaIntroduction(
+  receipt: ManagementReceipt,
+): receipt is ManagementChickpeaIntroduction {
+  return 'kind' in receipt && receipt.kind === 'chickpea_introduction';
+}
+
+function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): string {
+  const description = receipt.agentDescription
+    ? boundedSlackText(receipt.agentDescription, 400)
+    : undefined;
+  const lines = [
+    `Hi — I’m *${boundedSlackText(receipt.agentName, 80)}*.${description ? ` ${description}` : ''}`,
+  ];
+  if (receipt.suggestedConnector) {
+    lines.push(
+      `A sensible next step is to connect *${escapeSlackText(receipt.suggestedConnector)}* so I can work with live account data.${receipt.setupUrl ? ` ${receipt.setupUrl}` : ''}`,
+    );
+  } else if (receipt.setupUrl) {
+    lines.push(`You can configure my connections and capabilities here: ${receipt.setupUrl}`);
+  } else {
+    lines.push('Tell me what you’d like to work on first.');
+  }
+  return lines.join('\n\n');
+}
+
+function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome): string {
+  return [
+    `Created *${boundedSlackText(receipt.agentName, 80)}*, but Slack would not let me post its welcome under the Agent’s identity. The creation thread remains with Chickpea.`,
+    ...(receipt.setupUrl ? [`Configure the Agent here: ${receipt.setupUrl}`] : []),
+  ].join('\n\n');
+}
+
+function formatChickpeaIntroduction(_receipt: ManagementChickpeaIntroduction): string {
+  return [
+    'Hi — I’m *Chickpea*. I help your workspace create and manage specialized Agents right from Slack.',
+    'You can ask me to create an Agent, change how an Agent works, connect tools, or set up scheduled work. I’ll show one clear proposal when approval matters, then carry it out after you approve it once.',
+  ].join('\n\n');
+}
+
+function escapeSlackText(value: string): string {
+  return value
+    .replace(/[\r\n\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/[*_~`]/g, '');
+}
+
+function boundedSlackText(value: string, max: number): string {
+  return escapeSlackText(value).slice(0, max).trim();
 }
 
 function isScheduleActionReaction(

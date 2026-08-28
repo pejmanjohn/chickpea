@@ -5,13 +5,69 @@ import {
   provisionSlackInteractionMember,
   slackInteractionMayUseGrantedChannel,
 } from '../src/auth/slack-admission.ts';
-import { resolveAgentRoutingActor } from '../src/channels/slack.ts';
+import {
+  claimChickpeaIntroductionForAgentInteraction,
+  resolveAgentRoutingActor,
+} from '../src/channels/slack.ts';
 import type { AppStores } from '../src/config/state-backend.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { SqliteManagementStore } from '../src/management/store.ts';
 import type { SlackTransport } from '../src/slack/transport/types.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = 1_787_000_000_000;
+
+test('first eligible Agent interaction queues one shared Chickpea introduction claim', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const management = new SqliteManagementStore(':memory:');
+  const owner = await createSlackOwner(identity, { now: NOW });
+  const input = {
+    workspaceId: owner.binding.slackTeamId,
+    userId: owner.user.slackUserId,
+    botUserId: 'UBOT',
+    transport: {
+      async lookupMember() {
+        return {
+          id: owner.user.slackUserId,
+          teamId: owner.binding.slackTeamId,
+          deleted: false,
+          bot: false,
+          appUser: false,
+          restricted: false,
+          ultraRestricted: false,
+          stranger: false,
+        };
+      },
+    } as unknown as SlackTransport,
+    stores: { identity, management } as unknown as AppStores,
+  };
+  try {
+    const actor = await resolveAgentRoutingActor(input);
+    assert.equal(actor.routing.fullMember, true);
+    assert.equal((await management.claimDueOutbox(Date.now(), 10, Date.now() + 30_000)).length, 0);
+    await claimChickpeaIntroductionForAgentInteraction({
+      actor,
+      workspaceId: input.workspaceId,
+      slackUserId: input.userId,
+      management,
+    });
+    await claimChickpeaIntroductionForAgentInteraction({
+      actor,
+      workspaceId: input.workspaceId,
+      slackUserId: input.userId,
+      management,
+    });
+    const claimed = await management.claimDueOutbox(Date.now(), 10, Date.now() + 30_000);
+    assert.equal(claimed.length, 1);
+    assert.ok(claimed[0] && 'kind' in claimed[0].receipt);
+    if (claimed[0] && 'kind' in claimed[0].receipt) {
+      assert.equal(claimed[0].receipt.kind, 'chickpea_introduction');
+    }
+  } finally {
+    identity.close();
+    management.close();
+  }
+});
 
 test('every Channel turn rechecks the invoking Slack member against the Channel', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });

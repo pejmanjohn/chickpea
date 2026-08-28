@@ -89,9 +89,40 @@ test('Cloudflare management proxy preserves the canonical ledger contract and ty
     });
     assert.equal(changeSet.proposalId, 'changeset_rpc');
     assert.equal((await proxy.getChangeSetProposal(changeSet.proposalId))?.digest, 'c'.repeat(64));
-    assert.deepEqual(calls.slice(-2).map(({ kind }) => kind), [
+    assert.equal((await proxy.getActiveChangeSetProposal({
+      organizationId: 'org_rpc',
+      actorUserId: 'user_rpc',
+      actorMembershipId: 'member_rpc',
+      approvalScopeKey: 'mcp:client_rpc',
+    }))?.proposalId, changeSet.proposalId);
+    assert.deepEqual(calls.slice(-3).map(({ kind }) => kind), [
       'put_change_set_proposal',
       'get_change_set_proposal',
+      'get_active_change_set_proposal',
+    ]);
+
+    const introduction = await proxy.claimIntroduction({
+      organizationId: 'org_rpc',
+      userId: 'user_rpc',
+      workspaceId: 'T_RPC',
+      slackUserId: 'U_RPC',
+      trigger: 'first_interaction',
+      at: NOW,
+    });
+    assert.equal(introduction.created, true);
+    assert.equal(introduction.outbox?.destination.kind, 'slack_dm');
+    const replay = await proxy.claimIntroduction({
+      organizationId: 'org_rpc',
+      userId: 'user_rpc',
+      workspaceId: 'T_RPC',
+      slackUserId: 'U_RPC',
+      trigger: 'first_owner',
+      at: NOW + 1,
+    });
+    assert.equal(replay.created, false);
+    assert.deepEqual(calls.slice(-2).map(({ kind }) => kind), [
+      'claim_introduction',
+      'claim_introduction',
     ]);
   } finally {
     direct.close();

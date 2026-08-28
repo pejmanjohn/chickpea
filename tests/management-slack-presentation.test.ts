@@ -38,7 +38,7 @@ test('new Agent proposals show only the useful identity fields without before an
   });
 
   assert.equal(presentation, [
-    '*Proposed changes*',
+    '*Ready to create*',
     '*New Agent*',
     '*Name*',
     '> Paid Marketing',
@@ -52,10 +52,47 @@ test('new Agent proposals show only the useful identity fields without before an
     '*Instructions*',
     '> Review spend, flag budget risks, and improve ad copy.',
     '',
-    'Reply `approve` to apply these exact changes, or tell me what to adjust.',
+    'Reply `create it` to create this Agent and publish its Slack handle, or tell me what to adjust.',
   ].join('\n'));
   assert.doesNotMatch(presentation, /Before|After|Slack Presence|Editing Authority|MCP Servers/);
   assert.doesNotMatch(presentation, /private-seed|Repositories|Lifecycle|Kind/);
+});
+
+test('Channel-created Agent proposals stay one concise creation review', () => {
+  const presentation = formatSlackChangeSetProposal({
+    summary: '2 reviewed workspace changes',
+    changes: [{
+      itemId: 'create',
+      operationKind: 'create_agent',
+      target: 'agent:agent_paid_marketing',
+      after: {
+        name: 'Paid Marketing',
+        description: 'Helps with Google Ads budgets and copy.',
+        instructions: 'Review spend and improve ad copy.',
+        slackPresence: {
+          requestedHandle: 'Paid Marketing',
+          normalizedHandle: 'paid-marketing',
+        },
+      },
+    }, {
+      itemId: 'create_origin_channel_grant',
+      operationKind: 'grant_agent_channel',
+      target: 'channel_grant:T123:C123:agent_paid_marketing',
+      after: {
+        workspaceId: 'T123',
+        channelId: 'C123',
+        agentId: 'agent_paid_marketing',
+        revision: 1,
+        status: 'active',
+      },
+    }],
+    missingSetup: [],
+  });
+
+  assert.match(presentation, /^\*Ready to create\*/);
+  assert.match(presentation, /\*Available in\*\n> This Channel/);
+  assert.match(presentation, /Reply `create it`/);
+  assert.doesNotMatch(presentation, /Proposed changes|Grant Agent Channel|channel_grant|Reply `approve`/);
 });
 
 test('Agent edits compare meaningful fields and project Slack presence to its handle', () => {
@@ -160,7 +197,7 @@ test('blank Agent fields and internal Slack presence state do not create proposa
   ].join('\n'));
 });
 
-test('explicit new Agent model, non-default authority, and nonempty skills get concise summaries', () => {
+test('new Agent internals stay hidden even when explicitly configured', () => {
   const presentation = formatSlackChangeSetProposal({
     summary: '1 reviewed workspace change',
     changes: [{
@@ -184,10 +221,10 @@ test('explicit new Agent model, non-default authority, and nonempty skills get c
     missingSetup: [],
   });
 
-  assert.match(presentation, /\*Model\*\n> anthropic\/claude-opus-5/);
-  assert.match(presentation, /\*Editing Authority\*\n> All workspace members/);
-  assert.match(presentation, /\*Skills\*\n> 2: budget-review, copy-review/);
-  assert.doesNotMatch(presentation, /private detail|\"instructions\"/);
+  assert.doesNotMatch(
+    presentation,
+    /Model|Editing Authority|Skills|anthropic\/claude-opus-5|budget-review|copy-review|private detail|\"instructions\"/,
+  );
 });
 
 test('destructive proposals name the target and action without fake before and after values', () => {

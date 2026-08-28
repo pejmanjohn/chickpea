@@ -67,6 +67,7 @@ import {
 import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import {
+  completeAgentWelcomeDelivery,
   completeManagementSetupReceipt,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
@@ -617,6 +618,11 @@ async function finishSetup(
     deliver: (record) => (options.deliverReceipt ?? deliverManagementReceiptToSlack)(record, {
       identity: dependencies.identity,
       ...(dependencies.platformEnv ? { env: dependencies.platformEnv } : {}),
+      onDelivered: (deliveredRecord, delivery) => completeAgentWelcomeDelivery(
+        deliveredRecord,
+        delivery,
+        dependencies.config,
+      ),
     }),
     now: () => at,
   }).catch(() => undefined);

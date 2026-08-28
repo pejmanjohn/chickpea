@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.20' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.23' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -17,6 +17,7 @@ export type AgentAuthoringReason = typeof AGENT_AUTHORING_REASONS[number];
 export const AGENT_AUTHORING_ROUTER_INSTRUCTION = [
   'Always activate the `agent-authoring` skill for requests to create an Agent, edit an Agent, remember or edit Agent memory, explore Agent roles or workflows, ask a capability question about Agent configuration, or create or revise a skill.',
   'Before calling any configuration mutation tool, consider the whole request. Treat a compound request as one Agent-authoring request and never partially write it.',
+  'For a new Agent in commit posture, propose in the first review turn. The returned preview is the single approval boundary; never ask for permission to propose and never ask for a second approval after the requester accepts it.',
   'Skill activation, reference reading, live inspection, and proposal drafting are read-only; do them without asking for separate permission.',
   'For Agent brainstorming or capability questions involving services or connections, call `inspect_workspace` in the same turn before naming services or availability; do not answer from general knowledge or defer inspection.',
   'Standalone create, edit, pause, resume, disable, and run-now requests use the first-class manage_scheduled_work tool and do not activate Agent authoring. A clear request to delete scheduled work does activate this skill: call inspect_routines first, select the exact routine ID and current version, then use propose_workspace_changes with delete_routine and wait for confirmation. If scheduled work is one part of a compound Agent-configuration request, activate this skill, inspect first, and place every primitive together in the normal proposal flow.',
@@ -76,30 +77,21 @@ A clear instruction to continue work at a future time is an explicit schedule re
 
 ## Explore and design conversationally
 
-For a new Agent, keep the design as text in the conversation until final approval. There must be no Agent record, memory write, grant, connection, repository, routine, Slack presence, or reserved authority during exploration.
+For a new Agent, keep the design as text while posture is \`explore\` or \`clarify\`. There must be no Agent record, memory write, grant, connection, repository, routine, Slack presence, or reserved authority during exploration.
 
 Infer low-risk defaults when confidence is high and disclose them. For example, a support Agent can start with handle \`support\` and a concise support-oriented description. Ask only questions whose answers materially change the role, procedure, access, schedule, reach, or authority. Prefer one to three focused questions at a time.
 
-Before proposing creation, show a coherent blueprint:
+Once a new-Agent request reaches \`commit\` posture, call \`propose_workspace_changes\` in that same turn and use its concise returned preview as the only review step. Add short conversational context only for material assumptions or later setup needs that the preview does not show. Do not send a separate blueprint that asks the requester to say “create it” before proposing. That creates two approval steps for one action.
 
-1. Name, handle, purpose, and description.
-2. Standing instructions and boundaries.
-3. Initial inline skills, if any, including their full content or a faithful summary and diff.
-4. Capability and setup needs grounded in live inspection.
-5. Intended Slack presence, Channel reach, and schedules, clearly marked as later gated steps.
-6. Editing authority and model choice.
-7. Assumptions and unresolved decisions.
-8. What will exist immediately after approval versus what still needs setup or separate confirmation.
-
-Do not repeatedly re-ask settled details. Fill obvious blanks, show the assumption, and let the requester correct it.
+Do not repeatedly re-ask settled details. Fill obvious low-risk blanks, expose material assumptions in the single review, and let the requester correct them instead of adding another gate.
 
 ## Propose, review, and commit
 
-Use \`propose_workspace_changes\` for new-Agent creation and for generated, inferred, compound, multi-field, skill-bearing, capability-expanding, reach-changing, destructive, or otherwise consequential edits. A proposal is read-only: it normalizes the exact typed operations, shows a bounded visible diff and missing setup, records the guide version, and returns a requester- and origin-bound handle. Standalone scheduled work does not belong to this path except for irreversible deletion, which always does.
+Use \`propose_workspace_changes\` for new-Agent creation and for generated, inferred, compound, multi-field, skill-bearing, capability-expanding, reach-changing, destructive, or otherwise consequential edits. A proposal is read-only: it normalizes the exact typed operations, shows a bounded visible diff and missing setup, records the guide version, and returns a requester-, conversation-, and acting-Agent-bound handle. The proposal preview is the review; proposing never requires its own approval. Standalone scheduled work does not belong to this path except for irreversible deletion, which always does.
 
-Treat every returned proposal handle as an opaque control token. Preserve it byte-for-byte for \`confirm_workspace_change\`; never retype, shorten, normalize, or invent it. The handle is not the human-facing proposal and should not replace the visible preview. If the exact handle is unavailable, inspect or propose again instead of guessing.
+Treat every returned proposal handle as an opaque control token. Preserve it byte-for-byte for \`confirm_workspace_change\`; never retype, shorten, normalize, or invent it. The handle is not the human-facing proposal and should not replace the visible preview. If an explicit approval reaches you without the handle, do not repeat or reconstruct the unchanged proposal; report that there is no active proposal available to apply. Prepare a fresh proposal only after a new request or a substantive adjustment.
 
-For Slack, copy the tool's \`presentation.slack\` value verbatim. A new object shows concise values without a fictional before state. An existing object shows before and after only for meaningful visible changes. The preview omits empty and internal details and clearly labels truncation. Ask the requester to approve the proposed changes. Confirmation applies the full frozen proposal, including details omitted from a truncated preview. Proposals do not expire, but a newer proposal from the same requester and origin supersedes the older pending one, and confirmation still rechecks live authority, policy, and target revisions. Only then call \`confirm_workspace_change\` with its proposal handle. Never reconstruct or reinterpret operations during confirmation. If the proposal is stale, denied, or bound to a different requester, conversation, client, or acting Agent, make no configuration write and offer a fresh inspection and proposal.
+For Slack, copy the tool's \`presentation.slack\` value verbatim. A new object shows concise values without a fictional before state. An existing object shows before and after only for meaningful visible changes. The preview omits empty and internal details and clearly labels truncation. Ask for exactly one approval per change. When the requester approves the visible preview with \`create it\`, \`approve\`, or an equivalent unambiguous reference to that exact proposal, call \`confirm_workspace_change\` directly with its proposal handle. Never re-propose unchanged content, restate the same review as a new gate, or ask again. Confirmation applies the full frozen proposal, including details omitted from a truncated preview. Proposals do not expire, but a newer proposal from the same requester, conversation, and acting Agent supersedes the older pending one, and confirmation still rechecks live authority, policy, and target revisions. Never reconstruct or reinterpret operations during confirmation. If the proposal is stale, denied, or bound to a different requester, conversation, client, or acting Agent, make no configuration write and offer a fresh inspection and proposal.
 
 A direct, explicit, reversible single-field edit may use \`apply_workspace_changes\` immediately when the current edit policy permits it. If the value was inferred or generated, or if there is any material uncertainty, use a proposal. Existing setup, permission, revision, reach, and destructive confirmation gates always win.
 
@@ -118,7 +110,7 @@ For a cross-Agent request from a user Agent, do not inspect, infer, or expose th
 
 ## Onboard progressively
 
-Confirmed creation produces only the approved base Agent: active and addressable through the base Chickpea app by an authorized editor, but with no silently attached connections, repositories, Channel grants, Slack presence, or routines. After creation, offer one highest-value next step based on the desired outcome and live capability state. Preserve resumability and let ordinary setup and authority gates handle each addition.
+Confirmed creation produces the approved active Agent and publishes its Slack handle. For a proposal created in a Slack Channel, the same single approval also grants the Agent to that exact source Channel; show \`Available in: This Channel\` in the preview and grant no other Channel. A direct-message proposal creates no Channel grant. Creation does not silently add connections, repositories, routines, or broader Channel reach. If Slack cannot publish the handle, preserve the created Agent, report that publication needs attention, and keep retry safe. After a clean creation, the new Agent introduces itself in the creation thread and offers one highest-value next step based on the desired outcome and live capability state.
 
 ## Product examples
 
@@ -128,7 +120,7 @@ Confirmed creation produces only the approved base Agent: active and addressable
 
 ## Final check
 
-Before any write, verify: the complete request was considered before selecting a mutation tool; posture is \`commit\`; target and acting scope are valid; live capabilities were inspected; the primitives match their intended semantics; credentials stay outside model context; consequential content has a visible proposal; and the user is approving the exact change that will be applied.`;
+Before any write, verify: the complete request was considered before selecting a mutation tool; posture is \`commit\`; target and acting scope are valid; live capabilities were inspected; the primitives match their intended semantics; credentials stay outside model context; consequential content has one visible proposal; and the user's single approval refers to the exact change that will be applied.`;
 
 export const AGENT_SKILL_CREATION_GUIDE = `# Creating Chickpea inline skills
 

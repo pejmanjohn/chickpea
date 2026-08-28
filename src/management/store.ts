@@ -6,6 +6,8 @@ import type { StateDb } from '../state/state-db.ts';
 import {
   ManagementError,
   type ClaimManagementProposalInput,
+  type ClaimManagementIntroductionInput,
+  type ClaimManagementIntroductionResult,
   type AuthorizeManagementSetupInput,
   type CompleteManagementSetupInput,
   type ExchangeManagementSetupInput,
@@ -14,6 +16,8 @@ import {
   type ManagementOperation,
   type ManagementProposalRecord,
   type ManagementReceiptOutboxRecord,
+  type ManagementIntroductionClaim,
+  type GetActiveManagementChangeSetProposalInput,
   type ManagementRequestProgress,
   type ManagementRequestRecord,
   type ManagementRpcRequest,
@@ -96,6 +100,7 @@ interface ManagementChangeSetProposalRow {
   actor_user_id: string;
   actor_membership_id: string;
   origin_key: string;
+  approval_scope_key: string;
   idempotency_key: string | null;
   guide_version: string | null;
   authoring_reason: ManagementChangeSetProposalRecord['authoringReason'] | null;
@@ -157,6 +162,16 @@ interface ManagementOutboxRow {
   updated_at: number;
 }
 
+interface ManagementIntroductionClaimRow {
+  organization_id: string;
+  user_id: string;
+  workspace_id: string;
+  slack_user_id: string;
+  trigger: ManagementIntroductionClaim['trigger'];
+  outbox_id: string;
+  created_at: number;
+}
+
 export interface ManagementStore {
   execute(request: ManagementRpcRequest): Promise<ManagementRpcResponse>;
   reserveRequest(
@@ -188,6 +203,9 @@ export interface ManagementStore {
     input: PutManagementChangeSetProposalInput,
   ): Promise<ManagementChangeSetProposalRecord>;
   getChangeSetProposal(proposalId: string): Promise<ManagementChangeSetProposalRecord | undefined>;
+  getActiveChangeSetProposal(
+    input: GetActiveManagementChangeSetProposalInput,
+  ): Promise<ManagementChangeSetProposalRecord | undefined>;
   claimChangeSetProposal(
     input: ClaimManagementProposalInput,
   ): Promise<ManagementChangeSetProposalRecord>;
@@ -226,6 +244,9 @@ export interface ManagementStore {
   completeSetup(input: CompleteManagementSetupInput): Promise<ManagementSetupRecord>;
   revokeSetup(input: RevokeManagementSetupInput): Promise<ManagementSetupRecord>;
   putOutbox(record: ManagementReceiptOutboxRecord): Promise<ManagementReceiptOutboxRecord>;
+  claimIntroduction(
+    input: ClaimManagementIntroductionInput,
+  ): Promise<ClaimManagementIntroductionResult>;
   getOutboxForOperation(operationId: string): Promise<ManagementReceiptOutboxRecord | undefined>;
   claimDueOutbox(
     at: number,
@@ -306,6 +327,11 @@ export class ManagementStoreLogic {
           kind: 'change_set_proposal',
           proposal: this.getChangeSetProposal(request.proposalId) ?? null,
         };
+      case 'get_active_change_set_proposal':
+        return {
+          kind: 'change_set_proposal',
+          proposal: this.getActiveChangeSetProposal(request.input) ?? null,
+        };
       case 'claim_change_set_proposal':
         return {
           kind: 'change_set_proposal',
@@ -374,6 +400,8 @@ export class ManagementStoreLogic {
         return { kind: 'setup', setup: this.revokeSetup(request.input) };
       case 'put_outbox':
         return { kind: 'outbox', outbox: this.putOutbox(request.record) };
+      case 'claim_introduction':
+        return { kind: 'introduction_claim', result: this.claimIntroduction(request.input) };
       case 'get_outbox_for_operation':
         return {
           kind: 'outbox',
@@ -646,6 +674,7 @@ export class ManagementStoreLogic {
   putChangeSetProposal(
     input: PutManagementChangeSetProposalInput,
   ): ManagementChangeSetProposalRecord {
+    const approvalScopeKey = input.approvalScopeKey ?? input.originKey;
     const existing = this.getChangeSetProposal(input.proposalId);
     if (existing) return existing;
     const replayRow = this.db.get(
@@ -684,25 +713,26 @@ export class ManagementStoreLogic {
     this.db.run(
       `UPDATE management_change_set_proposals SET status = 'stale', updated_at = ?
        WHERE organization_id = ? AND actor_user_id = ? AND actor_membership_id = ?
-         AND origin_key = ? AND status = 'pending'`,
+         AND approval_scope_key = ? AND status = 'pending'`,
       input.at,
       input.organizationId,
       input.actorUserId,
       input.actorMembershipId,
-      input.originKey,
+      approvalScopeKey,
     );
     this.db.run(
       `INSERT INTO management_change_set_proposals (
         proposal_id, organization_id, actor_user_id, actor_membership_id,
-        origin_key, idempotency_key, guide_version, authoring_reason,
+        origin_key, approval_scope_key, idempotency_key, guide_version, authoring_reason,
         operations_json, digest, preview_json, target_revisions_json,
         status, result_json, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?)`,
       input.proposalId,
       input.organizationId,
       input.actorUserId,
       input.actorMembershipId,
       input.originKey,
+      approvalScopeKey,
       input.idempotencyKey,
       input.guideVersion,
       input.authoringReason,
@@ -720,6 +750,23 @@ export class ManagementStoreLogic {
     const row = this.db.get(
       'SELECT * FROM management_change_set_proposals WHERE proposal_id = ?',
       proposalId,
+    ) as unknown as ManagementChangeSetProposalRow | undefined;
+    return row ? changeSetProposalFromRow(row) : undefined;
+  }
+
+  getActiveChangeSetProposal(
+    input: GetActiveManagementChangeSetProposalInput,
+  ): ManagementChangeSetProposalRecord | undefined {
+    const row = this.db.get(
+      `SELECT * FROM management_change_set_proposals
+       WHERE organization_id = ? AND actor_user_id = ? AND actor_membership_id = ?
+         AND approval_scope_key = ? AND status IN ('pending', 'applying')
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`,
+      input.organizationId,
+      input.actorUserId,
+      input.actorMembershipId,
+      input.approvalScopeKey,
     ) as unknown as ManagementChangeSetProposalRow | undefined;
     return row ? changeSetProposalFromRow(row) : undefined;
   }
@@ -1092,6 +1139,48 @@ export class ManagementStoreLogic {
     return this.requireOutbox(record.outboxId);
   }
 
+  claimIntroduction(input: ClaimManagementIntroductionInput): ClaimManagementIntroductionResult {
+    return this.db.transaction(() => {
+      const outboxId = `chickpea_intro_${input.organizationId}_${input.userId}`;
+      const inserted = this.db.run(
+        `INSERT OR IGNORE INTO management_introduction_claims (
+           organization_id, user_id, workspace_id, slack_user_id, trigger, outbox_id, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        input.organizationId,
+        input.userId,
+        input.workspaceId,
+        input.slackUserId,
+        input.trigger,
+        outboxId,
+        input.at,
+      ).changes === 1;
+      const row = this.db.get(
+        `SELECT * FROM management_introduction_claims
+         WHERE organization_id = ? AND user_id = ?`,
+        input.organizationId,
+        input.userId,
+      ) as unknown as ManagementIntroductionClaimRow;
+      const claim = introductionClaimFromRow(row);
+      if (!inserted) return { claim, created: false };
+      const outbox = this.putOutbox({
+        outboxId,
+        operationId: outboxId,
+        destination: {
+          kind: 'slack_dm',
+          workspaceId: input.workspaceId,
+          slackUserId: input.slackUserId,
+        },
+        receipt: { kind: 'chickpea_introduction', trigger: input.trigger },
+        status: 'pending',
+        attempts: 0,
+        nextAttemptAt: input.at,
+        createdAt: input.at,
+        updatedAt: input.at,
+      });
+      return { claim, created: true, outbox };
+    });
+  }
+
   revokeSetup(input: RevokeManagementSetupInput): ManagementSetupRecord {
     return this.db.transaction(() => {
       const setup = this.requireSetup(input.setupOperationId, input.at);
@@ -1314,6 +1403,7 @@ export class ManagementStoreLogic {
         actor_user_id TEXT NOT NULL,
         actor_membership_id TEXT NOT NULL,
         origin_key TEXT NOT NULL,
+        approval_scope_key TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
         guide_version TEXT NOT NULL,
         authoring_reason TEXT NOT NULL,
@@ -1333,6 +1423,12 @@ export class ManagementStoreLogic {
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS management_change_set_proposals_state_idx
        ON management_change_set_proposals (organization_id, actor_user_id, status, expires_at)`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS management_change_set_proposals_approval_idx
+       ON management_change_set_proposals (
+         organization_id, actor_user_id, actor_membership_id, approval_scope_key, status, created_at
+       )`,
     );
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS management_change_set_proposals_retention_idx
@@ -1420,6 +1516,18 @@ export class ManagementStoreLogic {
       `CREATE INDEX IF NOT EXISTS management_receipt_outbox_operation_idx
        ON management_receipt_outbox (operation_id, created_at)`,
     );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS management_introduction_claims (
+        organization_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        slack_user_id TEXT NOT NULL,
+        trigger TEXT NOT NULL,
+        outbox_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (organization_id, user_id)
+      )`,
+    );
   }
 
   private ensureSetupColumns(): void {
@@ -1460,6 +1568,7 @@ export class ManagementStoreLogic {
       ['idempotency_key', 'TEXT'],
       ['guide_version', 'TEXT'],
       ['authoring_reason', 'TEXT'],
+      ['approval_scope_key', "TEXT NOT NULL DEFAULT ''"],
     ];
     for (const [name, definition] of additions) {
       if (!columns.has(name)) {
@@ -1467,6 +1576,17 @@ export class ManagementStoreLogic {
           `ALTER TABLE management_change_set_proposals ADD COLUMN ${name} ${definition}`,
         );
       }
+    }
+    const legacyRows = this.db.all(
+      `SELECT proposal_id, origin_key FROM management_change_set_proposals
+       WHERE approval_scope_key = ''`,
+    ) as Array<{ proposal_id: string; origin_key: string }>;
+    for (const row of legacyRows) {
+      this.db.run(
+        'UPDATE management_change_set_proposals SET approval_scope_key = ? WHERE proposal_id = ?',
+        approvalScopeKeyFromOriginKey(row.origin_key),
+        row.proposal_id,
+      );
     }
   }
 
@@ -1621,6 +1741,7 @@ function changeSetProposalFromRow(
     actorUserId: row.actor_user_id,
     actorMembershipId: row.actor_membership_id,
     originKey: row.origin_key,
+    approvalScopeKey: row.approval_scope_key || approvalScopeKeyFromOriginKey(row.origin_key),
     idempotencyKey: row.idempotency_key ?? `legacy:${row.proposal_id}`,
     guideVersion: row.guide_version ?? 'unknown',
     authoringReason: row.authoring_reason ?? 'agent_edit',
@@ -1640,19 +1761,33 @@ function changeSetProposalFromRow(
 function assertProposalClaimBinding(
   proposal: Pick<
     ManagementChangeSetProposalRecord,
-    'organizationId' | 'actorUserId' | 'actorMembershipId' | 'originKey'
+    'organizationId' | 'actorUserId' | 'actorMembershipId' | 'approvalScopeKey'
   >,
   input: ClaimManagementProposalInput,
 ): void {
   if (proposal.organizationId !== input.organizationId ||
       proposal.actorUserId !== input.actorUserId ||
       proposal.actorMembershipId !== input.actorMembershipId ||
-      proposal.originKey !== input.originKey) {
+      proposal.approvalScopeKey !== (input.approvalScopeKey ?? input.originKey)) {
     throw new ManagementError(
       'proposal_binding_mismatch',
       'The confirmation does not match its initiating user and origin.',
     );
   }
+}
+
+function approvalScopeKeyFromOriginKey(originKey: string): string {
+  const agentOffset = originKey.lastIndexOf(':agent:');
+  const origin = agentOffset >= 0 ? originKey.slice(0, agentOffset) : originKey;
+  const agent = agentOffset >= 0 ? originKey.slice(agentOffset) : '';
+  if (!origin.startsWith('slack:')) return originKey;
+  const parts = origin.split(':');
+  const conversationKind = parts.at(-1);
+  if ((conversationKind === 'im' || conversationKind === 'mpim') && parts.length >= 5) {
+    const scope = conversationKind === 'im' ? 'dm' : 'mpim';
+    return `slack:${parts[1]}:${parts[2]}:${scope}${agent}`;
+  }
+  return `${origin}${agent}`;
 }
 
 function undoFromRow(row: ManagementUndoRow): ManagementUndoRecord {
@@ -1709,6 +1844,18 @@ function outboxFromRow(row: ManagementOutboxRow): ManagementReceiptOutboxRecord 
     ...(row.failure_code ? { failureCode: row.failure_code } : {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+  };
+}
+
+function introductionClaimFromRow(row: ManagementIntroductionClaimRow): ManagementIntroductionClaim {
+  return {
+    organizationId: row.organization_id,
+    userId: row.user_id,
+    workspaceId: row.workspace_id,
+    slackUserId: row.slack_user_id,
+    trigger: row.trigger,
+    outboxId: row.outbox_id,
+    createdAt: Number(row.created_at),
   };
 }
 

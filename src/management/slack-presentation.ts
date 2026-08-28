@@ -62,23 +62,39 @@ const PRESENTATION_FIELD_LABELS: Readonly<Record<string, string>> = {
   timezone: 'Timezone',
   destination: 'Destination',
   delivery: 'Delivery',
+  availableIn: 'Available in',
 };
 
 const PROPOSAL_HEADER = '*Proposed changes*';
+const CREATE_HEADER = '*Ready to create*';
 const APPROVAL_INSTRUCTION =
   'Reply `approve` to apply these exact changes, or tell me what to adjust.';
+const CREATE_APPROVAL_INSTRUCTION =
+  'Reply `create it` to create this Agent and publish its Slack handle, or tell me what to adjust.';
 const TRUNCATED_APPROVAL_INSTRUCTION =
   'Reply `approve` to apply the full proposed changes, or tell me what to adjust.';
+const TRUNCATED_CREATE_APPROVAL_INSTRUCTION =
+  'Reply `create it` to create the full Agent and publish its Slack handle, or tell me what to adjust.';
 const TRUNCATION_NOTICE =
   '_Preview truncated to fit Slack. Approval applies the full proposed changes._';
 
 export function formatSlackChangeSetProposal(preview: ManagementChangeSetPreview): string {
+  const creation = slackCreationPreview(preview);
+  const creationOnly = creation !== undefined;
+  const header = creationOnly ? CREATE_HEADER : PROPOSAL_HEADER;
+  const approvalInstruction = creationOnly
+    ? CREATE_APPROVAL_INSTRUCTION
+    : APPROVAL_INSTRUCTION;
+  const truncatedApprovalInstruction = creationOnly
+    ? TRUNCATED_CREATE_APPROVAL_INSTRUCTION
+    : TRUNCATED_APPROVAL_INSTRUCTION;
   const sections = preview.changes.flatMap((change) => {
+    if (creation?.originGrant === change) return [];
     const before = presentationRecord(change.operationKind, change.before);
     const after = presentationRecord(change.operationKind, change.after);
     const targetName = stringValue(after?.name) ?? stringValue(before?.name) ?? change.target;
     if (change.operationKind === 'create_agent') {
-      return [formatSlackNewAgentSection(after, targetName)];
+      return [formatSlackNewAgentSection(after, targetName, creation?.originGrant !== undefined)];
     }
     const fields = changedPresentationFields(before, after);
     if (fields.length === 0) {
@@ -94,16 +110,16 @@ export function formatSlackChangeSetProposal(preview: ManagementChangeSetPreview
   });
   const body = sections.join('\n\n');
   const fullPresentation = [
-    PROPOSAL_HEADER,
+    header,
     ...(body ? [body, ''] : []),
-    APPROVAL_INSTRUCTION,
+    approvalInstruction,
   ].join('\n');
   if (fullPresentation.length <= slackMarkdownBlockTextLimit) {
     return fullPresentation;
   }
 
-  const prefix = `${PROPOSAL_HEADER}\n`;
-  const suffix = `\n\n${TRUNCATION_NOTICE}\n\n${TRUNCATED_APPROVAL_INSTRUCTION}`;
+  const prefix = `${header}\n`;
+  const suffix = `\n\n${TRUNCATION_NOTICE}\n\n${truncatedApprovalInstruction}`;
   const availableBodyLength = slackMarkdownBlockTextLimit - prefix.length - suffix.length;
   return `${prefix}${body.slice(0, availableBodyLength).trimEnd()}${suffix}`;
 }
@@ -133,23 +149,16 @@ function formatSlackChangeSection(
 function formatSlackNewAgentSection(
   after: Record<string, unknown> | undefined,
   targetName: string,
+  availableInOriginChannel = false,
 ): string {
   const identityFields = NEW_AGENT_PRESENTATION_FIELDS.flatMap((field) => {
     const fallback = field === 'name' ? targetName : undefined;
     const value = after?.[field] ?? fallback;
     return isEmptyPresentationValue(value) ? [] : [[field, value] as const];
   });
-  const model = stringValue(after?.model);
-  const skillsSummary = agentSkillsSummary(after?.skills);
-  const optionalFields: ReadonlyArray<readonly [string, unknown]> = [
-    ...(model ? [['model', model] as const] : []),
-    ...(after?.editPolicy === 'all_workspace_members'
-      ? [['editPolicy', 'All workspace members'] as const]
-      : []),
-    ...(skillsSummary
-      ? [['skills', skillsSummary] as const]
-      : []),
-  ];
+  const optionalFields: ReadonlyArray<readonly [string, unknown]> = availableInOriginChannel
+    ? [['availableIn', 'This Channel'] as const]
+    : [];
   const fields = [...identityFields, ...optionalFields];
   return [
     '*New Agent*',
@@ -175,16 +184,6 @@ function presentationOperationLabel(operationKind: string): string {
     .join(' ');
 }
 
-function agentSkillsSummary(value: unknown): string | undefined {
-  if (!Array.isArray(value) || value.length === 0) return undefined;
-  const names = value.flatMap((skill) => {
-    const name = stringValue(recordValue(skill)?.name);
-    return name ? [name] : [];
-  });
-  if (names.length === 0) return `${value.length} configured`;
-  return `${value.length}: ${names.join(', ')}`;
-}
-
 function changedPresentationFields(
   before: Record<string, unknown> | undefined,
   after: Record<string, unknown> | undefined,
@@ -202,6 +201,23 @@ function changedPresentationFields(
       if (rightIndex === -1) return -1;
       return leftIndex - rightIndex;
     });
+}
+
+function slackCreationPreview(preview: ManagementChangeSetPreview): {
+  creation: ManagementChangeSetPreview['changes'][number];
+  originGrant?: ManagementChangeSetPreview['changes'][number];
+} | undefined {
+  const [creation, originGrant, ...extra] = preview.changes;
+  if (creation?.operationKind !== 'create_agent' || extra.length > 0) return undefined;
+  if (!originGrant) return { creation };
+  if (originGrant.operationKind !== 'grant_agent_channel' || originGrant.before !== undefined) {
+    return undefined;
+  }
+  const createdAgentId = stringValue(recordValue(creation.after)?.id) ??
+    (creation.target.startsWith('agent:') ? creation.target.slice('agent:'.length) : undefined);
+  const grantedAgentId = stringValue(recordValue(originGrant.after)?.agentId);
+  if (!createdAgentId || createdAgentId !== grantedAgentId) return undefined;
+  return { creation, originGrant };
 }
 
 function presentationFieldLabel(field: string): string {

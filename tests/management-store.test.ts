@@ -26,6 +26,48 @@ const operation = {
   },
 };
 
+test('Chickpea introduction claim queues exactly one durable DM across triggers', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  try {
+    const first = await store.claimIntroduction({
+      organizationId: 'org_intro',
+      userId: 'user_intro',
+      workspaceId: 'T_INTRO',
+      slackUserId: 'U_INTRO',
+      trigger: 'first_interaction',
+      at: NOW,
+    });
+    assert.equal(first.created, true);
+    assert.deepEqual(first.outbox?.destination, {
+      kind: 'slack_dm',
+      workspaceId: 'T_INTRO',
+      slackUserId: 'U_INTRO',
+    });
+    assert.deepEqual(first.outbox?.receipt, {
+      kind: 'chickpea_introduction',
+      trigger: 'first_interaction',
+    });
+
+    const replay = await store.claimIntroduction({
+      organizationId: 'org_intro',
+      userId: 'user_intro',
+      workspaceId: 'T_INTRO',
+      slackUserId: 'U_INTRO',
+      trigger: 'first_owner',
+      at: NOW + 1,
+    });
+    assert.equal(replay.created, false);
+    assert.equal(replay.outbox, undefined);
+    assert.equal(replay.claim.trigger, 'first_interaction');
+    assert.equal(
+      (await store.claimDueOutbox(NOW, 10, NOW + 30_000)).length,
+      1,
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test('proposal schema migration reactivates legacy rows and adds provenance columns', () => {
   const db = openStateDb(':memory:');
   try {
@@ -75,7 +117,8 @@ test('proposal schema migration reactivates legacy rows and adds provenance colu
         operations_json, digest, preview_json, target_revisions_json, status,
         result_json, expires_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'expired', NULL, ?, ?, ?)`,
-      'changeset_legacy', 'org_1', 'user_1', 'member_1', 'mcp:client_1',
+      'changeset_legacy', 'org_1', 'user_1', 'member_1',
+      'slack:T1:D1:1787950349.935349:im:agent:agent_chickpea',
       JSON.stringify([operation]), 'f'.repeat(64),
       JSON.stringify({ summary: 'Legacy change set', changes: [], missingSetup: [] }),
       '{}', NOW + 1_000, NOW, NOW,
@@ -88,13 +131,15 @@ test('proposal schema migration reactivates legacy rows and adds provenance colu
     assert.ok(columns.has('idempotency_key'));
     assert.ok(columns.has('guide_version'));
     assert.ok(columns.has('authoring_reason'));
+    assert.ok(columns.has('approval_scope_key'));
     assert.equal(store.getProposal('proposal_legacy')?.status, 'pending');
     assert.deepEqual(store.getChangeSetProposal('changeset_legacy'), {
       proposalId: 'changeset_legacy',
       organizationId: 'org_1',
       actorUserId: 'user_1',
       actorMembershipId: 'member_1',
-      originKey: 'mcp:client_1',
+      originKey: 'slack:T1:D1:1787950349.935349:im:agent:agent_chickpea',
+      approvalScopeKey: 'slack:T1:D1:dm:agent:agent_chickpea',
       idempotencyKey: 'legacy:changeset_legacy',
       guideVersion: 'unknown',
       authoringReason: 'agent_edit',
@@ -298,6 +343,42 @@ test('change-set proposals coexist with legacy proposals and preserve exact type
   }
 });
 
+test('change-set idempotency is exact-origin scoped while a DM keeps one active proposal', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  const approvalScopeKey = 'slack:T1:D1:dm:agent:agent_chickpea';
+  const put = (proposalId: string, originKey: string, at: number) =>
+    store.putChangeSetProposal({
+      proposalId,
+      organizationId: 'org_1',
+      actorUserId: 'user_1',
+      actorMembershipId: 'member_1',
+      originKey,
+      approvalScopeKey,
+      idempotencyKey: 'agent-research-v1',
+      guideVersion: '1.0.0',
+      authoringReason: 'agent_creation',
+      operations: [operation],
+      digest: 'a'.repeat(64),
+      preview: { summary: 'Create Agent', changes: [], missingSetup: [] },
+      targetRevisions: {},
+      at,
+    });
+  try {
+    const first = await put('changeset_dm_thread_1', 'slack:T1:D1:1.0:agent:agent_chickpea', NOW);
+    const second = await put('changeset_dm_thread_2', 'slack:T1:D1:2.0:agent:agent_chickpea', NOW + 1);
+    assert.equal(second.proposalId, 'changeset_dm_thread_2');
+    assert.equal((await store.getChangeSetProposal(first.proposalId))?.status, 'stale');
+    assert.equal((await store.getActiveChangeSetProposal({
+      organizationId: 'org_1',
+      actorUserId: 'user_1',
+      actorMembershipId: 'member_1',
+      approvalScopeKey,
+    }))?.proposalId, second.proposalId);
+  } finally {
+    store.close();
+  }
+});
+
 test('change-set proposals remain pending until they stale or complete once', async () => {
   const store = new SqliteManagementStore(':memory:');
   const put = (
@@ -360,6 +441,60 @@ test('change-set proposals remain pending until they stale or complete once', as
       () => put('changeset_complete_retry', NOW + 4, 'changeset_complete'),
       (error: unknown) => error instanceof ManagementError && error.code === 'proposal_stale',
     );
+  } finally {
+    store.close();
+  }
+});
+
+test('active change-set lookup spans one DM but remains requester, conversation, and Agent bound', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  const binding = {
+    organizationId: 'org_1',
+    actorUserId: 'user_1',
+    actorMembershipId: 'member_1',
+    originKey: 'slack:T1:D1:1787950349.935349:im:agent:agent_chickpea',
+    approvalScopeKey: 'slack:T1:D1:dm:agent:agent_chickpea',
+  };
+  try {
+    await store.putChangeSetProposal({
+      proposalId: 'changeset_bound',
+      ...binding,
+      idempotencyKey: 'bound',
+      guideVersion: '1.0.0',
+      authoringReason: 'agent_creation',
+      operations: [operation],
+      digest: 'f'.repeat(64),
+      preview: { summary: 'Create Test', changes: [], missingSetup: [] },
+      targetRevisions: {},
+      at: NOW,
+    });
+
+    assert.equal(
+      (await store.getActiveChangeSetProposal(binding))?.proposalId,
+      'changeset_bound',
+    );
+    for (const mismatch of [
+      { actorUserId: 'user_2' },
+      { actorMembershipId: 'member_2' },
+      { approvalScopeKey: 'slack:T1:D2:dm:agent:agent_chickpea' },
+      { approvalScopeKey: 'slack:T1:D1:dm:agent:agent_other' },
+    ]) {
+      assert.equal(await store.getActiveChangeSetProposal({ ...binding, ...mismatch }), undefined);
+    }
+
+    await store.claimChangeSetProposal({
+      proposalId: 'changeset_bound',
+      ...binding,
+      originKey: 'slack:T1:D1:1787959999.000001:im:agent:agent_chickpea',
+      at: NOW + 1,
+    });
+    assert.equal(
+      (await store.getActiveChangeSetProposal(binding))?.status,
+      'applying',
+      'an interrupted confirmation remains recoverable from the durable approval turn',
+    );
+    await store.markChangeSetProposalStale('changeset_bound', NOW + 2);
+    assert.equal(await store.getActiveChangeSetProposal(binding), undefined);
   } finally {
     store.close();
   }
