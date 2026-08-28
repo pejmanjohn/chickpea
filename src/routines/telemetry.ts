@@ -37,6 +37,8 @@ export function emitRoutineHeartbeatTelemetry(
     admissionUnknown: result.admissions.unknown,
     confirmationsPurged: result.maintenance.confirmationsPurged,
     reservationsPurged: result.maintenance.reservationsPurged,
+    scheduleActionsDeleted: result.maintenance.scheduleActionsDeleted,
+    recoveryNoticesReconciled: result.maintenance.recoveryNoticesReconciled,
     deliveryLeasesReconciled: result.maintenance.deliveryLeasesReconciled,
     deadlineRunsReconciled: result.maintenance.deadlineRunsReconciled,
     runsDeleted: result.maintenance.runsDeleted,

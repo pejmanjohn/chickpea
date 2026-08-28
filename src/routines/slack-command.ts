@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 import type { ConfigStore } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
@@ -9,6 +7,7 @@ import {
 } from './agent-authority.ts';
 import {
   createRoutineRunId,
+  hashRoutineValue,
   routineDestinationBindingDigest,
   runNowOccurrenceKey,
 } from './ids.ts';
@@ -83,6 +82,7 @@ export class SlackScheduleCommandError extends Error {
     readonly code:
       | 'routines_unavailable_on_target'
       | 'schedule_authority_missing'
+      | 'schedule_safety_pending'
       | 'schedule_command_failed',
     message: string,
     readonly safeRoutine?: Pick<RoutineDefinition, 'id' | 'version' | 'state'>,
@@ -214,19 +214,19 @@ export async function executeSlackScheduleCommand(
       sourceVisibility: direct ? 'private' : 'unknown',
     }, effectKey(command, 'save'));
 
-    const agent = await dependencies.config.getAgent(command.agentId);
-    const assignment: ResolvedAssignment = {
-      workspaceId: command.workspaceId,
-      channelId: command.channelId,
-      agentId: agent.id,
-      agent,
-    };
-    const bindAuthority = dependencies.bindAuthority ?? ((input) =>
-      bindRoutineAgentAuthority(input, {
-        config: dependencies.config,
-        identity: dependencies.identity,
-      }));
     try {
+      const agent = await dependencies.config.getAgent(command.agentId);
+      const assignment: ResolvedAssignment = {
+        workspaceId: command.workspaceId,
+        channelId: command.channelId,
+        agentId: agent.id,
+        agent,
+      };
+      const bindAuthority = dependencies.bindAuthority ?? ((input) =>
+        bindRoutineAgentAuthority(input, {
+          config: dependencies.config,
+          identity: dependencies.identity,
+        }));
       const reference = await bindAuthority({
         routine,
         assignment,
@@ -250,24 +250,27 @@ export async function executeSlackScheduleCommand(
     } catch {
       const pendingDirect = routine.destination.kind === 'direct_thread' &&
         routine.state === 'pending_authority';
-      if (!pendingDirect) {
-        await service.control({
-          routineId: routine.id,
-          expectedVersion: routine.version,
-          action: 'pause',
-          actorId: command.actorUserId,
-          actorClass: 'operator',
-          reasonCode: 'schedule_authority_missing',
-          idempotencyKey: effectKey(command, 'authority-failed'),
-        }).catch(() => undefined);
-      }
-      const safeRoutine = await dependencies.routines.getRoutine(routine.id);
+      const safeRoutine = pendingDirect
+        ? routine
+        : await proveAuthorityFailureSafeState(
+            dependencies.routines,
+            routine.id,
+            () => service.control({
+              routineId: routine.id,
+              expectedVersion: routine.version,
+              action: 'pause',
+              actorId: command.actorUserId,
+              actorClass: 'operator',
+              reasonCode: 'schedule_authority_missing',
+              idempotencyKey: effectKey(command, 'authority-failed'),
+            }),
+          );
       throw new SlackScheduleCommandError(
         'schedule_authority_missing',
         pendingDirect
           ? 'The private schedule was saved inactive because its Agent authority could not be bound.'
           : 'The schedule was saved paused because its Agent authority could not be bound.',
-        safeRoutine ?? routine,
+        safeRoutine,
       );
     }
     return { effect: 'saved', routine };
@@ -283,11 +286,42 @@ export async function executeSlackScheduleCommand(
   }
 }
 
+async function proveAuthorityFailureSafeState(
+  routines: RoutineStore,
+  routineId: string,
+  compensate: () => Promise<RoutineDefinition>,
+): Promise<RoutineDefinition> {
+  try {
+    const compensated = await compensate();
+    if (isAuthorityFailureSafeState(compensated)) return compensated;
+  } catch {
+    try {
+      const observed = await routines.getRoutine(routineId);
+      if (observed && isAuthorityFailureSafeState(observed)) return observed;
+    } catch {
+      // The state owner must prove the safe state; a failed read cannot do so.
+    }
+    throw new SlackScheduleCommandError(
+      'schedule_safety_pending',
+      'The schedule is still recovering from an authority-binding failure.',
+    );
+  }
+  throw new SlackScheduleCommandError(
+    'schedule_safety_pending',
+    'The schedule is still recovering from an authority-binding failure.',
+  );
+}
+
+function isAuthorityFailureSafeState(
+  routine: Pick<RoutineDefinition, 'state'>,
+): boolean {
+  return routine.state === 'paused' ||
+    routine.state === 'disabled' ||
+    routine.state === 'pending_authority';
+}
+
 function deterministicRoutineId(actionKey: string, itemId: string): string {
-  return `routine_${createHash('sha256')
-    .update(`${actionKey}:${itemId}`)
-    .digest('hex')
-    .slice(0, 32)}`;
+  return `routine_${hashRoutineValue(`${actionKey}:${itemId}`).slice(0, 32)}`;
 }
 
 function effectKey(

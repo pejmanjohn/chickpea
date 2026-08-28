@@ -6,7 +6,7 @@ import {
 } from '../slack/installation-execution.ts';
 import { SlackTransportError } from '../slack/transport/types.ts';
 import type { ManagementStore } from './store.ts';
-import type { RoutineStore } from '../routines/types.ts';
+import { RoutineStateError, type RoutineStore } from '../routines/types.ts';
 import type {
   ManagementReceiptDestination,
   ManagementReceiptOutboxRecord,
@@ -83,9 +83,9 @@ export function formatManagementSetupReceipt(receipt: ManagementReceipt): string
       return '⏳ I’m still setting up that scheduled work. I’ll post the final outcome here.';
     }
     if (receipt.transition === 'failed') {
-      return scheduleActionFailureText(receipt.code);
+      return scheduleActionFailureText(receipt.code, receipt.safeState);
     }
-    throw new Error('An applied schedule acknowledgement requires a reaction destination.');
+    return `✅ That scheduled-work action completed.${scheduleActionSafeStateText(receipt.safeState)}`;
   }
   const subject = receipt.accountLabel ?? receipt.connector;
   const lead = `${subject} has been connected to ${receipt.connector} connector.`;
@@ -288,8 +288,36 @@ export async function reconcileScheduleActionReceipts(input: {
     const transition = action.status === 'pending'
       ? 'pending' as const
       : action.status === 'applied' ? 'applied' as const : 'failed' as const;
-    if (!(action.conversationKind === 'channel' && transition === 'applied')) {
-      const reaction = action.conversationKind === 'im' && transition === 'applied';
+    const recoveredAfterPendingReceipt = action.pendingReceiptQueuedAt !== null;
+    const immediateChannelSuccess = action.conversationKind === 'channel' &&
+      transition === 'applied' && !recoveredAfterPendingReceipt;
+    if (!immediateChannelSuccess) {
+      const reaction = action.conversationKind === 'im' && transition === 'applied' &&
+        !recoveredAfterPendingReceipt;
+      const failedResult = transition === 'failed' && action.result?.outcome === 'failed'
+        ? action.result
+        : undefined;
+      const appliedResult = transition === 'applied' && action.result?.outcome === 'applied'
+        ? action.result
+        : undefined;
+      const nonActiveSafeState = appliedResult?.safeState && appliedResult.safeState !== 'active'
+        ? appliedResult.safeState
+        : undefined;
+      const receipt: ManagementScheduleActionAcknowledgement = transition === 'pending'
+        ? { kind: 'schedule_action', transition }
+        : transition === 'applied'
+          ? {
+              kind: 'schedule_action',
+              transition,
+              ...(reaction ? { emojiName: 'white_check_mark' as const } : {}),
+              ...(nonActiveSafeState ? { safeState: nonActiveSafeState } : {}),
+            }
+          : {
+              kind: 'schedule_action',
+              transition,
+              code: failedResult?.code ?? 'schedule_failed',
+              ...(failedResult?.safeState ? { safeState: failedResult.safeState } : {}),
+            };
       await input.management.putOutbox({
         outboxId: `receipt_schedule_action_${action.actionId}_${phase}`,
         operationId: action.actionId,
@@ -306,14 +334,7 @@ export async function reconcileScheduleActionReceipts(input: {
               channelId: action.channelId,
               threadTs: action.threadTs,
             },
-        receipt: {
-          kind: 'schedule_action',
-          transition,
-          ...(transition === 'failed' ? { code: action.result?.outcome === 'failed'
-            ? action.result.code
-            : 'schedule_failed' } : {}),
-          ...(reaction ? { emojiName: 'white_check_mark' as const } : {}),
-        },
+        receipt,
         status: 'pending',
         attempts: 0,
         nextAttemptAt: input.at,
@@ -321,24 +342,50 @@ export async function reconcileScheduleActionReceipts(input: {
         updatedAt: input.at,
       });
     }
-    await input.routines.markScheduleActionReceiptQueued({
-      actionId: action.actionId,
-      phase,
-      at: input.at,
-    });
+    try {
+      await input.routines.markScheduleActionReceiptQueued({
+        actionId: action.actionId,
+        phase,
+        at: input.at,
+      });
+    } catch (error) {
+      if (!(error instanceof RoutineStateError &&
+          error.code === 'routine_schedule_action_conflict')) throw error;
+      continue;
+    }
     reconciled += 1;
   }
   return reconciled;
 }
 
-function scheduleActionFailureText(code: string | undefined): string {
+function scheduleActionFailureText(
+  code: string | undefined,
+  safeState: 'paused' | 'disabled' | 'pending_authority' | undefined,
+): string {
+  let failure: string;
   if (code === 'routines_unavailable_on_target') {
-    return 'I couldn’t create that scheduled work because scheduling is unavailable on this deployment.';
+    failure = 'I couldn’t complete that scheduled-work action because scheduling is unavailable on this deployment.';
+  } else if (code === 'schedule_authority_missing') {
+    failure = 'I couldn’t complete that scheduled-work action because its Agent authority is unavailable.';
+  } else {
+    failure = 'I couldn’t complete that scheduled-work action.';
   }
-  if (code === 'schedule_authority_missing') {
-    return 'I couldn’t activate that scheduled work because its Agent authority is unavailable. No active unowned schedule was left behind.';
+  return `${failure}${scheduleActionSafeStateText(safeState)}`;
+}
+
+function scheduleActionSafeStateText(
+  safeState: 'active' | 'paused' | 'disabled' | 'pending_authority' | undefined,
+): string {
+  if (safeState === 'paused') {
+    return ' The affected schedule is paused, so it will not run.';
   }
-  return 'I couldn’t create that scheduled work. No new active schedule was created.';
+  if (safeState === 'disabled') {
+    return ' The affected schedule is disabled, so it will not run.';
+  }
+  if (safeState === 'pending_authority') {
+    return ' The affected schedule is pending authority, so it will not run until authority is restored.';
+  }
+  return '';
 }
 
 function reactionDeliveryRef(record: ManagementReceiptOutboxRecord): string {

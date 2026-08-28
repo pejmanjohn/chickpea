@@ -202,6 +202,7 @@ import {
   type ConfirmRoutineInput,
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
+  type DeferRoutineRecoveryDeliveryInput,
   type DeferRoutineScheduleActionInput,
   type MarkRoutineScheduleActionReceiptQueuedInput,
   type PutRoutineConfirmationInput,
@@ -912,6 +913,12 @@ export class CfManagementStore implements ManagementStore {
 
   async markRequestApplying(operationId: string, at: number) {
     const response = await this.execute({ kind: 'mark_request_applying', operationId, at });
+    if (response.kind !== 'request' || !response.request) throw unexpectedManagementResponse();
+    return response.request;
+  }
+
+  async failRequest(operationId: string, at: number) {
+    const response = await this.execute({ kind: 'fail_request', operationId, at });
     if (response.kind !== 'request' || !response.request) throw unexpectedManagementResponse();
     return response.request;
   }
@@ -1901,6 +1908,15 @@ export class CfRoutineStore implements RoutineStore {
     const response = await this.execute({ kind: 'claim_recovery_delivery', input });
     if (response.kind !== 'recovery_delivery_claim') throw unexpectedRoutineResponse();
     return response.outcome;
+  }
+  async deferRecoveryDelivery(
+    input: DeferRoutineRecoveryDeliveryInput,
+  ): Promise<RoutineRecoveryDelivery> {
+    const response = await this.execute({ kind: 'defer_recovery_delivery', input });
+    if (response.kind !== 'recovery_delivery' || !response.delivery) {
+      throw unexpectedRoutineResponse();
+    }
+    return response.delivery;
   }
   async recordRecoveryDelivery(
     input: RecordRoutineRecoveryDeliveryInput,

@@ -1,5 +1,6 @@
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { scheduleActionId } from '../routines/ids.ts';
+import { SlackScheduleCommandError } from '../routines/slack-command.ts';
 import type {
   RoutineScheduleAction,
   RoutineScheduleActionResult,
@@ -8,6 +9,7 @@ import type {
 import {
   managementActorOriginKey,
   managementOperationDigest,
+  managementStorageIdempotencyKey,
   validateManagementOperations,
 } from './contracts.ts';
 import { reconcileScheduleActionReceipts } from './receipts.ts';
@@ -17,6 +19,7 @@ import {
   ManagementError,
   type ManagementActorContext,
   type ManagementOperation,
+  type ManagementRequestRecord,
 } from './types.ts';
 import type { SlackManagementSignal } from './slack-tools.ts';
 
@@ -24,7 +27,7 @@ const ACTION_LEASE_MS = 30_000;
 const ACTION_MAX_ATTEMPTS = 3;
 
 export type SlackScheduleManagementOperation = Extract<ManagementOperation, {
-  kind: 'save_routine' | 'control_routine';
+  kind: 'save_routine' | 'control_routine' | 'run_routine';
 }>;
 
 export type SlackScheduleActionOutcome =
@@ -57,9 +60,10 @@ export async function invokeSlackScheduleAction(input: {
   const digest = managementOperationDigest([validated]);
   const actionId = scheduleActionId(input.signal.turnJobId, digest);
   const publicIdempotencyKey = `schedule-action:${actionId}`;
-  const storageIdempotencyKey = input.context.actingAgentId
-    ? `agent.${input.context.actingAgentId}.${publicIdempotencyKey}`
-    : publicIdempotencyKey;
+  const storageIdempotencyKey = managementStorageIdempotencyKey(
+    input.context,
+    publicIdempotencyKey,
+  );
   const at = now();
   const request = await input.dependencies.management.reserveRequest({
     operationId: `management_${actionId}`,
@@ -124,7 +128,10 @@ export async function invokeSlackScheduleAction(input: {
 /** Retry actions already admitted by a prior RPC or interrupted Agent turn. */
 export async function retryDueSlackScheduleActions(input: {
   dependencies: SlackScheduleActionDependencies;
-  resolveContext(action: RoutineScheduleAction): Promise<ManagementActorContext>;
+  resolveContext(
+    action: RoutineScheduleAction,
+    request: ManagementRequestRecord,
+  ): Promise<ManagementActorContext>;
   limit?: number;
 }): Promise<{ attempted: number; nextDueAt?: number }> {
   const now = input.dependencies.now ?? Date.now;
@@ -140,7 +147,8 @@ export async function retryDueSlackScheduleActions(input: {
     const request = await input.dependencies.management.getRequest(action.requestOperationId);
     const operation = request?.operations[0];
     if (!request || request.operations.length !== 1 ||
-        (operation?.kind !== 'save_routine' && operation?.kind !== 'control_routine')) {
+        (operation?.kind !== 'save_routine' && operation?.kind !== 'control_routine' &&
+          operation?.kind !== 'run_routine')) {
       await input.dependencies.routines.settleScheduleAction({
         actionId: action.actionId,
         owner,
@@ -152,7 +160,7 @@ export async function retryDueSlackScheduleActions(input: {
     }
     let context: ManagementActorContext;
     try {
-      context = await input.resolveContext(action);
+      context = await input.resolveContext(action, request);
     } catch {
       await input.dependencies.routines.settleScheduleAction({
         actionId: action.actionId,
@@ -192,6 +200,7 @@ async function applyClaimedScheduleAction(input: {
       context: input.context,
       idempotencyKey: input.publicIdempotencyKey,
       operations: [input.operation],
+      acknowledgementOwner: 'caller',
     });
     const outcome = result.outcomes[0];
     const routineRef = outcome?.changed?.find(({ kind }) => kind === 'routine');
@@ -203,7 +212,11 @@ async function applyClaimedScheduleAction(input: {
         expectedAttempt: input.action.attempts,
         result: {
           outcome: 'applied',
-          effect: input.operation.kind === 'save_routine' ? 'saved' : 'controlled',
+          effect: input.operation.kind === 'save_routine'
+            ? 'saved'
+            : input.operation.kind === 'run_routine'
+              ? 'run_queued'
+              : 'controlled',
           routineId: routineRef.id,
           ...((routine?.version ?? routineRef.revision) !== undefined
             ? { routineVersion: routine?.version ?? routineRef.revision }
@@ -222,26 +235,41 @@ async function applyClaimedScheduleAction(input: {
       result: {
         outcome: 'failed',
         code: safeFailureCode(outcome?.code ?? outcome?.disposition ?? 'schedule_failed'),
+        ...(routineRef ? {
+          routineId: routineRef.id,
+          ...await safeRoutineState(input.dependencies.routines, routineRef.id),
+        } : {}),
       },
       at: input.now(),
     });
   } catch (error) {
     if (error instanceof ManagementError) {
+      const routineRef = error.changed?.find(({ kind }) => kind === 'routine');
       return input.dependencies.routines.settleScheduleAction({
         actionId: input.action.actionId,
         owner,
         expectedAttempt: input.action.attempts,
-        result: { outcome: 'failed', code: safeFailureCode(error.code) },
+        result: {
+          outcome: 'failed',
+          code: safeFailureCode(error.code),
+          ...(routineRef
+            ? await failedRoutineResult(input.dependencies.routines, routineRef)
+            : {}),
+        },
         at: input.now(),
       });
     }
-    if (input.action.attempts >= ACTION_MAX_ATTEMPTS) {
+    const safetyTransitionPending = error instanceof SlackScheduleCommandError &&
+      error.code === 'schedule_safety_pending';
+    if (!safetyTransitionPending && input.action.attempts >= ACTION_MAX_ATTEMPTS) {
+      const at = input.now();
+      await input.dependencies.management.failRequest(input.action.requestOperationId, at);
       return input.dependencies.routines.settleScheduleAction({
         actionId: input.action.actionId,
         owner,
         expectedAttempt: input.action.attempts,
         result: { outcome: 'failed', code: 'schedule_internal_failure' },
-        at: input.now(),
+        at,
       });
     }
     return input.dependencies.routines.deferScheduleAction({
@@ -295,6 +323,32 @@ function validateStandaloneScheduleOperation(
     throw new ManagementError('invalid_request', 'The schedule destination must match this conversation.');
   }
   return operation;
+}
+
+async function safeRoutineState(
+  routines: RoutineStore,
+  routineId: string,
+): Promise<{ safeState?: 'paused' | 'disabled' | 'pending_authority' }> {
+  const routine = await routines.getRoutine(routineId);
+  return routine && isFailedRoutineSafeState(routine.state)
+    ? { safeState: routine.state }
+    : {};
+}
+
+function isFailedRoutineSafeState(
+  state: string,
+): state is 'paused' | 'disabled' | 'pending_authority' {
+  return state === 'paused' || state === 'disabled' || state === 'pending_authority';
+}
+
+async function failedRoutineResult(
+  routines: RoutineStore,
+  reference: { id: string },
+): Promise<{ routineId: string; safeState?: 'paused' | 'disabled' | 'pending_authority' }> {
+  return {
+    routineId: reference.id,
+    ...await safeRoutineState(routines, reference.id),
+  };
 }
 
 function safeFailureCode(value: string): string {

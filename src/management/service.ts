@@ -61,6 +61,7 @@ import {
   managementActorOriginKey,
   managementOperationDigest,
   managementOriginKey,
+  managementStorageIdempotencyKey,
   validateManagementOperations,
 } from './contracts.ts';
 import { classifyManagementOperation } from './policy.ts';
@@ -478,7 +479,7 @@ export class WorkspaceManagementService {
       at,
     });
     if (reservation.request.status === 'completed' && reservation.request.result) {
-      if (!isFirstClassScheduleAction(input.idempotencyKey)) {
+      if (input.acknowledgementOwner !== 'caller') {
         await queueAppliedPrivateDmRoutineAcknowledgement(
           this.stores.management,
           actor,
@@ -540,7 +541,12 @@ export class WorkspaceManagementService {
           );
           continue;
         }
-        const facts = await this.policyFacts(actor, operation);
+        const facts = await this.policyFacts(actor, operation, {
+          ...(operation.kind === 'save_routine' &&
+              progress.prepared?.itemId === operation.itemId
+            ? { allowIdempotentRoutineSaveReplay: true }
+            : {}),
+        });
         const policy = classifyManagementOperation(facts);
         if (!policy.allowed) {
           progress = appendOutcome(progress, index, {
@@ -613,6 +619,9 @@ export class WorkspaceManagementService {
           operationKind: operation.kind,
           disposition: 'failed',
           code: mutationErrorCode(error),
+          ...(error instanceof ManagementError && error.changed
+            ? { changed: error.changed }
+            : {}),
         });
         request = await this.stores.management.saveRequestProgress(
           request.operationId,
@@ -631,7 +640,7 @@ export class WorkspaceManagementService {
       withoutSetupCapabilities(result),
       this.now(),
     );
-    if (!isFirstClassScheduleAction(input.idempotencyKey)) {
+    if (input.acknowledgementOwner !== 'caller') {
       await queueAppliedPrivateDmRoutineAcknowledgement(
         this.stores.management,
         actor,
@@ -1123,7 +1132,8 @@ export class WorkspaceManagementService {
     } else if (operation.kind === 'grant_agent_channel' ||
         operation.kind === 'revoke_agent_channel' || operation.kind === 'save_routine') {
       agentId = operation.agentId;
-    } else if (operation.kind === 'control_routine' || operation.kind === 'delete_routine') {
+    } else if (operation.kind === 'control_routine' || operation.kind === 'run_routine' ||
+        operation.kind === 'delete_routine') {
       agentId = (await this.stores.config.getAgentScheduleReference(operation.routineId))?.agentId;
     }
     if (!agentId) return;
@@ -1572,6 +1582,7 @@ export class WorkspaceManagementService {
   ): Promise<ChickpeaManagementHandoff | undefined> {
     if (!isUserAgentScoped(actor)) return undefined;
     if ((operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+        operation.kind === 'run_routine' ||
         operation.kind === 'delete_routine') && operation.routineId && this.stores.routines) {
       const routine = await this.stores.routines.getRoutine(operation.routineId);
       if (routine?.destination.kind === 'direct_thread') {
@@ -1611,7 +1622,8 @@ export class WorkspaceManagementService {
     if (operation.kind === 'reassign_routine_agent') {
       return operationAuthorityScopeTarget(operation);
     }
-    if (operation.kind === 'control_routine' || operation.kind === 'delete_routine') {
+    if (operation.kind === 'control_routine' || operation.kind === 'run_routine' ||
+        operation.kind === 'delete_routine') {
       const reference = operation.routineId
         ? await this.stores.config.getAgentScheduleReference(operation.routineId)
         : undefined;
@@ -2000,8 +2012,10 @@ export class WorkspaceManagementService {
   private async requireRoutineMutation(
     actor: LiveManagementActor,
     operation: Extract<ManagementOperation, {
-      kind: 'save_routine' | 'control_routine' | 'delete_routine' | 'reassign_routine_agent';
+      kind: 'save_routine' | 'control_routine' | 'run_routine' | 'delete_routine' |
+        'reassign_routine_agent';
     }>,
+    options: { allowIdempotentSaveReplay?: boolean } = {},
   ): Promise<void> {
     if (!this.stores.routines) {
       throw new ManagementError('invalid_request', 'Routine management is unavailable.');
@@ -2020,11 +2034,16 @@ export class WorkspaceManagementService {
         throw new ManagementError('invalid_request', 'The routine Channel was not found.');
       }
     }
-    if (operation.kind === 'save_routine') {
+    if (operation.kind === 'save_routine' || operation.kind === 'run_routine') {
       const available = await this.isRoutineSchedulingAvailable();
       if (!available) {
-        throw new ManagementError('invalid_request', 'Routine scheduling is unavailable on this deployment.');
+        throw new ManagementError(
+          'routines_unavailable_on_target',
+          'Routine scheduling is unavailable on this deployment.',
+        );
       }
+    }
+    if (operation.kind === 'save_routine') {
       const agent = await optionalAgent(this.stores.config, operation.agentId);
       if (directRoutine) {
         if (!agent || agent.kind !== 'user' || !agent.enabled ||
@@ -2061,9 +2080,12 @@ export class WorkspaceManagementService {
     }
     const routineId = operation.routineId;
     if (!routineId) throw new ManagementError('invalid_request', 'The routine was not found.');
-    const routine = await this.stores.routines.getRoutine(routineId);
+    const routine = existingRoutine;
+    const versionChanged = 'expectedVersion' in operation &&
+      routine?.version !== operation.expectedVersion;
     if (!routine || routine.deletedAt !== null || routine.workspaceId !== operation.workspaceId ||
-        routine.channelId !== channelId || routine.version !== operation.expectedVersion) {
+        routine.channelId !== channelId ||
+        (versionChanged && !options.allowIdempotentSaveReplay)) {
       throw new ManagementError('revision_conflict', 'The routine changed.');
     }
     const reference = await this.stores.config.getAgentScheduleReference(routineId);
@@ -2101,7 +2123,8 @@ export class WorkspaceManagementService {
   private routineMutationChannelId(
     actor: LiveManagementActor,
     operation: Extract<ManagementOperation, {
-      kind: 'save_routine' | 'control_routine' | 'delete_routine' | 'reassign_routine_agent';
+      kind: 'save_routine' | 'control_routine' | 'run_routine' | 'delete_routine' |
+        'reassign_routine_agent';
     }>,
   ): string {
     const directOrigin = slackDirectOrigin(actor);
@@ -2181,6 +2204,7 @@ export class WorkspaceManagementService {
   private async policyFacts(
     actor: LiveManagementActor,
     operation: ManagementOperation,
+    options: { allowIdempotentRoutineSaveReplay?: boolean } = {},
   ) {
     if (operation.kind === 'update_member') return { actor, operation, adminRequired: true };
     if (operation.kind === 'update_agent_memory') {
@@ -2192,8 +2216,14 @@ export class WorkspaceManagementService {
       return { actor, operation, currentAgent: agent, agentEditable: true };
     }
     if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+        operation.kind === 'run_routine' ||
         operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
-      await this.requireRoutineMutation(actor, operation);
+      await this.requireRoutineMutation(actor, operation, {
+        ...(operation.kind === 'save_routine' &&
+            options.allowIdempotentRoutineSaveReplay
+          ? { allowIdempotentSaveReplay: true }
+          : {}),
+      });
       return { actor, operation, agentEditable: true };
     }
     if (operation.kind === 'remove_provider_credential') {
@@ -2332,10 +2362,16 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     mutationId: string,
     operation: Extract<ManagementOperation, {
-      kind: 'save_routine' | 'control_routine';
+      kind: 'save_routine' | 'control_routine' | 'run_routine';
     }>,
   ): Promise<ImmediateMutation> {
-    await this.requireRoutineMutation(actor, operation);
+    // A durable action retry can arrive after the save committed but before
+    // authority compensation settled. The store's save idempotency record is
+    // the proof that permits replay past the caller's now-stale version; an
+    // unrelated stale edit still fails inside RoutineStore.save.
+    await this.requireRoutineMutation(actor, operation, {
+      allowIdempotentSaveReplay: operation.kind === 'save_routine',
+    });
     try {
       const command = this.scheduleCommand(actor, mutationId, operation);
       const result = await executeSlackScheduleCommand(command, {
@@ -2349,7 +2385,20 @@ export class WorkspaceManagementService {
     } catch (error) {
       if (error instanceof ManagementError) throw error;
       if (error instanceof SlackScheduleCommandError) {
-        throw new ManagementError('invalid_request', error.message);
+        if (error.code === 'schedule_command_failed' || error.code === 'schedule_safety_pending') {
+          throw error;
+        }
+        throw new ManagementError(
+          error.code,
+          error.message,
+          error.safeRoutine
+            ? [{
+                kind: 'routine',
+                id: error.safeRoutine.id,
+                revision: error.safeRoutine.version,
+              }]
+            : undefined,
+        );
       }
       if (error instanceof RoutineStateError) {
         throw new ManagementError(
@@ -2368,7 +2417,7 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     mutationId: string,
     operation: Extract<ManagementOperation, {
-      kind: 'save_routine' | 'control_routine';
+      kind: 'save_routine' | 'control_routine' | 'run_routine';
     }>,
   ): SlackScheduleCommand {
     if (operation.kind === 'control_routine') {
@@ -2380,6 +2429,15 @@ export class WorkspaceManagementService {
         routineId: operation.routineId,
         expectedVersion: operation.expectedVersion,
         action: operation.action,
+      };
+    }
+    if (operation.kind === 'run_routine') {
+      return {
+        kind: 'run',
+        actionKey: mutationId,
+        itemId: operation.itemId,
+        actorUserId: actor.userId,
+        routineId: operation.routineId,
       };
     }
     const channelId = this.routineMutationChannelId(actor, operation);
@@ -2736,6 +2794,7 @@ export class WorkspaceManagementService {
         return this.executeMemoryMutation(operation);
       case 'save_routine':
       case 'control_routine':
+      case 'run_routine':
         return this.executeRoutineMutation(actor, mutationId, operation);
       default:
         throw new ManagementError('invalid_request', 'This operation cannot apply immediately.');
@@ -3017,6 +3076,7 @@ export class WorkspaceManagementService {
     }
     if (operation.kind === 'save_routine' && !operation.routineId) return {};
     if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+        operation.kind === 'run_routine' ||
         operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
       const routineId = operation.routineId!;
       const routine = await this.stores.routines?.getRoutine(routineId);
@@ -3270,14 +3330,6 @@ function actorPrincipal(actor: LiveManagementActor): AuthPrincipal {
     correlationId: managementActorOriginKey(actor),
     machine: false,
   };
-}
-
-function managementStorageIdempotencyKey(actor: LiveManagementActor, publicKey: string): string {
-  return actor.actingAgentId ? `agent.${actor.actingAgentId}.${publicKey}` : publicKey;
-}
-
-function isFirstClassScheduleAction(idempotencyKey: string): boolean {
-  return idempotencyKey.startsWith('schedule-action:rsaction_');
 }
 
 function publicManagementIdempotencyKey(actor: LiveManagementActor, storageKey: string): string {
@@ -3709,6 +3761,7 @@ function handoffTargetForOperation(
     };
   }
   if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+      operation.kind === 'run_routine' ||
       operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
     return {
       kind: 'routine',
@@ -3819,6 +3872,7 @@ function proposalSummary(operation: ManagementOperation, reason: string): string
     : operation.kind === 'update_agent_memory'
       ? `memory:${operation.agentId}`
     : operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+        operation.kind === 'run_routine' ||
         operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent'
       ? `routine:${operation.routineId ?? ('channelId' in operation ? operation.channelId : undefined)}`
     : operation.kind === 'put_channel'
@@ -3880,6 +3934,7 @@ function managementPreviewTarget(operation: ManagementOperation): string {
   if (operation.kind === 'update_member') return `membership:${operation.membershipId}`;
   if (operation.kind === 'remove_provider_credential') return `provider:${operation.providerId}`;
   if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+      operation.kind === 'run_routine' ||
       operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
     return `routine:${operation.routineId ?? `${operation.workspaceId}:${'channelId' in operation ? operation.channelId : 'current_dm_thread'}`}`;
   }
@@ -3964,7 +4019,8 @@ function canExecuteImmediately(operation: ManagementOperation): boolean {
     (operation.kind === 'update_agent' && operation.patch.enabled !== false) ||
     operation.kind === 'put_channel' || operation.kind === 'grant_agent_channel' ||
     operation.kind === 'revoke_agent_channel' || operation.kind === 'update_agent_memory' ||
-    operation.kind === 'save_routine' || operation.kind === 'control_routine';
+    operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
+    operation.kind === 'run_routine';
 }
 
 function invalidatesChangeSetProposal(error: unknown): boolean {

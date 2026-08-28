@@ -412,6 +412,15 @@ function validateCorpus(corpus) {
         `${entry.id}: invalid expected Agent id.`,
       );
     }
+    if (expected.expectedRoutineDeletion !== undefined) {
+      assertToken(expected.expectedRoutineDeletion.routineId,
+        `${entry.id}: expected routine deletion id`);
+      assert(
+        Number.isInteger(expected.expectedRoutineDeletion.expectedVersion) &&
+          expected.expectedRoutineDeletion.expectedVersion > 0,
+        `${entry.id}: invalid expected routine deletion version.`,
+      );
+    }
     assertArrayTokens(expected.assertions, `${entry.id}: assertions`);
     assertArrayTokens(expected.criticalAssertions, `${entry.id}: criticalAssertions`);
     for (const critical of expected.criticalAssertions) {
@@ -504,9 +513,10 @@ async function runDeterministicSmoke(corpus) {
     const stale = corpus.cases.find(({ id }) => id === 'stale-proposal-confirmation');
     const reach = corpus.cases.find(({ id }) => id === 'revoke-channel-grant-revision');
     const schedule = corpus.cases.find(({ id }) => id === 'focused-schedule-creation');
+    const scheduleDeletion = corpus.cases.find(({ id }) => id === 'conversational-schedule-delete');
     const skill = corpus.cases.find(({ id }) => id === 'coding-bug-to-pr-skill');
     const confirmation = corpus.cases.find(({ id }) => id === 'successful-proposal-confirmation');
-    assert(positive && negative && stale && reach && schedule && skill && confirmation,
+    assert(positive && negative && stale && reach && schedule && scheduleDeletion && skill && confirmation,
       'Smoke cases are missing.');
 
     faux.setResponses([
@@ -688,6 +698,52 @@ async function runDeterministicSmoke(corpus) {
         fauxToolCall('activate_skill', { name: 'agent-authoring' }),
       ], { stopReason: 'toolUse' }),
       fauxAssistantMessage([
+        fauxToolCall('inspect_routines', { workspaceId: 'T_SYNTHETIC' }),
+      ], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([
+        fauxToolCall('propose_workspace_changes', {
+          idempotencyKey: 'delete-completed-follow-up',
+          guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+          authoringReason: 'agent_edit',
+          operations: [{
+            itemId: 'routine',
+            kind: 'delete_routine',
+            workspaceId: 'T_SYNTHETIC',
+            routineId: 'routine_prior_follow_up',
+            expectedVersion: 2,
+          }],
+        }),
+      ], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([
+        fauxToolCall('record_eval_assessment', {
+          posture: 'commit',
+          placements: ['schedule'],
+          approvalPosture: 'proposal_required',
+          capabilityClaimsGrounded: true,
+        }),
+      ], { stopReason: 'toolUse' }),
+    ]);
+    const currentScheduleDeletion = await runCase('current', scheduleDeletion);
+    const scheduleDeletionEvaluation = evaluateResult(
+      currentScheduleDeletion,
+      scheduleDeletion.expected,
+    );
+    assert(
+      scheduleDeletionEvaluation.assertions.find(
+        ({ id }) => id === 'routine_deletion_proposed',
+      )?.passed,
+      'Routine deletion did not inspect and propose the exact current routine version.',
+    );
+    assert(
+      scheduleDeletionEvaluation.assertions.find(({ id }) => id === 'no_apply_before_approval')?.passed,
+      'Routine deletion applied before explicit confirmation.',
+    );
+
+    faux.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall('activate_skill', { name: 'agent-authoring' }),
+      ], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([
         fauxToolCall('read_skill_resource', {
           skill: 'agent-authoring',
           path: 'skill-creation.md',
@@ -765,6 +821,7 @@ async function runDeterministicSmoke(corpus) {
         'stale_reproposal_boundary_observed',
         'channel_grant_revision_selection_observed',
         'existing_channel_reuse_observed',
+        'routine_deletion_confirmation_route_observed',
         'production_valid_skill_observed',
         'exact_confirmation_receipt_observed',
         'usage_observed',
@@ -941,6 +998,10 @@ function evaluateResult(raw, expected) {
       expected.expectedMemoryRevision,
     )],
     ['existing_channel_reused', existingChannelReused(raw.toolCalls)],
+    ['routine_deletion_proposed', routineDeletionProposalCorrect(
+      raw.toolCalls,
+      expected.expectedRoutineDeletion,
+    )],
     ['fresh_routine_created', freshRoutineCreated(raw.toolCalls)],
     ['skill_shape_valid', proposedSkillIsHighQuality(raw.toolCalls, expected.expectedSkill)],
     ['exact_proposal_presented', exactProposalPresented(raw)],
@@ -1009,6 +1070,14 @@ function freshRoutineCreated(toolCalls) {
     operation?.destination?.kind === 'current_dm_thread' &&
     operation.routineId === undefined &&
     operation.expectedVersion === undefined;
+}
+
+function routineDeletionProposalCorrect(toolCalls, expectedDeletion) {
+  if (!expectedDeletion) return true;
+  const proposal = toolCalls.find(({ name }) => name === 'propose_workspace_changes');
+  const deletion = proposal?.input?.operations?.find(({ kind }) => kind === 'delete_routine');
+  return deletion?.routineId === expectedDeletion.routineId &&
+    deletion?.expectedVersion === expectedDeletion.expectedVersion;
 }
 
 function proposedSkillIsHighQuality(toolCalls, expectedSkill) {

@@ -21,6 +21,7 @@ export const MANAGEMENT_OPERATION_KINDS = [
   'update_agent_memory',
   'save_routine',
   'control_routine',
+  'run_routine',
   'delete_routine',
   'reassign_routine_agent',
   'request_setup',
@@ -253,6 +254,13 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     routineId: zId,
     expectedVersion: z.number().int().positive(),
     action: z.enum(['pause', 'resume', 'disable']),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('run_routine'),
+    workspaceId: zId,
+    channelId: zId.optional(),
+    routineId: zId,
   }),
   z.strictObject({
     ...zOperationBase,
@@ -554,6 +562,13 @@ export const managementOperationValibotSchema = v.variant('kind', [
     routineId: vid,
     expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),
     action: v.picklist(['pause', 'resume', 'disable']),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('run_routine'),
+    workspaceId: vid,
+    channelId: v.optional(vid),
+    routineId: vid,
   }),
   v.strictObject({
     ...vOperationBase,

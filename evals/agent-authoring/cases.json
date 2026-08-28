@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.3.0",
-  "guideVersion": "1.0.16",
+  "corpusVersion": "1.4.0",
+  "guideVersion": "1.0.18",
   "baseline": {
     "id": "no-guide-v1",
     "description": "The same evaluation Agent and tools without the Chickpea agent-authoring router or skill."
@@ -173,6 +173,26 @@
         "approvalPosture": "direct_allowed",
         "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "direct_apply_used", "confirmation_not_required"],
         "criticalAssertions": []
+      }
+    },
+    {
+      "id": "conversational-schedule-delete",
+      "prompt": "Delete the completed Follow-up check scheduled routine.",
+      "expected": {
+        "activation": "required",
+        "skillCreation": "forbidden",
+        "posture": "commit",
+        "placements": ["schedule"],
+        "requiredInspections": ["inspect_routines"],
+        "toolClass": "proposal",
+        "mutationAllowance": "proposal_only",
+        "approvalPosture": "proposal_required",
+        "expectedRoutineDeletion": {
+          "routineId": "routine_prior_follow_up",
+          "expectedVersion": 2
+        },
+        "assertions": ["authoring_activated", "posture_matches", "placements_include_expected", "required_inspections_complete", "proposal_used", "routine_deletion_proposed", "no_apply_before_approval"],
+        "criticalAssertions": ["routine_deletion_proposed", "no_apply_before_approval"]
       }
     },
     {

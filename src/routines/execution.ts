@@ -62,7 +62,7 @@ import type { RunId } from '../work/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import {
-  deliverDirectRoutineRecoveryNotice,
+  deliverRoutineRecoveryNotice,
   deliverRoutineFailureNotice,
   deliverRoutineResult,
 } from './delivery.ts';
@@ -808,7 +808,7 @@ async function finalizeSettlement(
           usageCompleteness: usage.completeness,
           toolCallCount: settlement.result.toolCallCount,
         });
-        await deliverDirectRoutineRecoveryNotice({
+        await deliverRoutineRecoveryNotice({
           store: prepared.store,
           run: prepared.run,
           routine: prepared.routine,
@@ -873,7 +873,7 @@ async function finalizeSettlement(
     usageCompleteness: settlement.usage?.completeness ?? 'not_reported',
   });
   await deliverFailureNoticeBestEffort(prepared, settlement.publicError);
-  await deliverDirectPauseNoticeBestEffort(prepared);
+  await deliverPauseNoticeBestEffort(prepared);
 }
 
 async function recordUsage(
@@ -1184,7 +1184,7 @@ async function deliverFailureNoticeBestEffort(
       await (async () => {
         const run = await prepared.store.getRun(prepared.run.id);
         if (!run) return;
-        await deliverDirectRoutineRecoveryNotice({
+        await deliverRoutineRecoveryNotice({
           store: prepared.store,
           run,
           routine: prepared.routine,
@@ -1196,12 +1196,11 @@ async function deliverFailureNoticeBestEffort(
   }
 }
 
-async function deliverDirectPauseNoticeBestEffort(prepared: PreparedExecution): Promise<void> {
-  if (prepared.routine.destination.kind !== 'direct_thread') return;
+async function deliverPauseNoticeBestEffort(prepared: PreparedExecution): Promise<void> {
   try {
     const run = await prepared.store.getRun(prepared.run.id);
     if (!run || !(await prepared.store.getRecoveryDelivery(run.id))) return;
-    await deliverDirectRoutineRecoveryNotice({
+    await deliverRoutineRecoveryNotice({
       store: prepared.store,
       run,
       routine: prepared.routine,

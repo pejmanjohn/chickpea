@@ -187,6 +187,17 @@ export class RoutineService {
         reservations,
       };
     }
+    if (request.routineId && request.expectedVersion !== undefined) {
+      return {
+        action: 'edit',
+        routineId: request.routineId,
+        expectedVersion: request.expectedVersion,
+        definition,
+        nextRunAt,
+        projectedDailyStarts,
+        reservations,
+      };
+    }
     const current = await this.requireCurrent(request);
     return {
       action: 'edit',

@@ -69,7 +69,7 @@ interface RoutineCommandExecutionContext {
   turn: NormalizedSlackTurn;
   store: RoutineStore;
   config: ConfigStore;
-  identity: IdentityStore;
+  resolveIdentity: () => IdentityStore;
   env: PlatformEnv | undefined;
   capability: RoutineCapability;
   now: () => number;
@@ -166,9 +166,14 @@ export async function handleRoutineSlackRequest(
   });
   if (!command) return undefined;
   if (!isRoutineSlackTurn(turn)) return undefined;
+  let identity = dependencies.identity;
+  const resolveIdentity = (): IdentityStore => {
+    identity ??= getIdentityStore(env);
+    return identity;
+  };
   const activeActor = dependencies.isActiveActor ?? ((input) =>
     isActiveRoutineActor(input, {
-      ...(dependencies.identity ? { identity: dependencies.identity } : {}),
+      identity: resolveIdentity(),
     }));
   if (
     !turn.actorMembershipId ||
@@ -183,23 +188,22 @@ export async function handleRoutineSlackRequest(
   }
   const store = dependencies.store ?? getRoutineStore(env);
   const config = dependencies.config ?? getConfigStore(env);
-  const identity = dependencies.identity ?? getIdentityStore(env);
   const now = dependencies.now ?? Date.now;
   const capability = dependencies.capability ?? routineCapability();
   const canManageChannel = dependencies.canManageChannel ?? canManageRoutineChannel;
   const botToken = dependencies.installationContext?.botToken;
   const slackClient = dependencies.installationContext?.client;
   const commandContext: RoutineCommandExecutionContext = {
-    turn, store, config, identity, env, capability, now, canManageChannel,
+    turn, store, config, resolveIdentity, env, capability, now, canManageChannel,
     bindAuthority: dependencies.bindAuthority ?? ((input) =>
       bindRoutineAgentAuthority(input, {
         ...(dependencies.config ? { config: dependencies.config } : {}),
-        ...(dependencies.identity ? { identity: dependencies.identity } : {}),
+        identity: resolveIdentity(),
       })),
     resolveAuthority: dependencies.resolveAuthority ?? ((routine, runtimeEnv) =>
       resolveRoutineAgentAuthority(routine, runtimeEnv, {
         ...(dependencies.config ? { config: dependencies.config } : {}),
-        ...(dependencies.identity ? { identity: dependencies.identity } : {}),
+        identity: resolveIdentity(),
       })),
     ...(botToken ? { botToken } : {}),
     ...(slackClient ? { slackClient } : {}),
@@ -217,7 +221,7 @@ async function executeRoutineCommand(
   context: RoutineCommandExecutionContext,
 ): Promise<string> {
   const {
-    turn, store, config, identity, env, capability, now, canManageChannel, botToken, slackClient, assignment,
+    turn, store, config, resolveIdentity, env, capability, now, canManageChannel, botToken, slackClient, assignment,
     bindAuthority, resolveAuthority,
   } = context;
   const service = new RoutineService(store, { now });
@@ -337,7 +341,7 @@ async function executeRoutineCommand(
     }, {
       routines: store,
       config,
-      identity,
+      identity: resolveIdentity(),
       schedulingAvailable: capability.available,
       now,
     });
@@ -359,7 +363,7 @@ async function executeRoutineCommand(
     }, {
       routines: store,
       config,
-      identity,
+      identity: resolveIdentity(),
       schedulingAvailable: capability.available,
       now,
       resolveAuthority: async () => authority,

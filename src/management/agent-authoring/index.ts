@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.16' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.18' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -19,13 +19,13 @@ export const AGENT_AUTHORING_ROUTER_INSTRUCTION = [
   'Before calling any configuration mutation tool, consider the whole request. Treat a compound request as one Agent-authoring request and never partially write it.',
   'Skill activation, reference reading, live inspection, and proposal drafting are read-only; do them without asking for separate permission.',
   'For Agent brainstorming or capability questions involving services or connections, call `inspect_workspace` in the same turn before naming services or availability; do not answer from general knowledge or defer inspection.',
-  'A standalone request for future or repeated work uses the first-class manage_scheduled_work tool and does not activate Agent authoring. If scheduled work is one part of a compound Agent-configuration request, activate this skill, inspect first, and place every primitive together in the normal proposal flow.',
+  'Standalone create, edit, pause, resume, disable, and run-now requests use the first-class manage_scheduled_work tool and do not activate Agent authoring. A clear request to delete scheduled work does activate this skill: call inspect_routines first, select the exact routine ID and current version, then use propose_workspace_changes with delete_routine and wait for confirmation. If scheduled work is one part of a compound Agent-configuration request, activate this skill, inspect first, and place every primitive together in the normal proposal flow.',
   'Exploration and unresolved questions are read-only. Use the management tools only after the activated guide establishes the correct posture and target.',
 ].join(' ');
 
 export const AGENT_AUTHORING_GUIDE = `# Chickpea Agent authoring
 
-Use this guide when a requester wants to explore, create, onboard, or edit a Chickpea Agent, asks what an Agent could do, or wants to create or revise a reusable Agent skill. Use it for scheduled work only when that work is part of a compound Agent-configuration request. The management service is the only mutation authority. This guide helps you reason and compose; tools validate, authorize, preview, confirm, and apply.
+Use this guide when a requester wants to explore, create, onboard, or edit a Chickpea Agent, asks what an Agent could do, or wants to create or revise a reusable Agent skill. Use it for scheduled work when that work is part of a compound Agent-configuration request or when the requester asks to delete scheduled work. The management service is the only mutation authority. This guide helps you reason and compose; tools validate, authorize, preview, confirm, and apply.
 
 ## Start with posture
 
@@ -70,7 +70,7 @@ When a request spans primitives, use the smallest coherent composition. Explain 
 
 All requests to remember or edit durable Agent memory are Agent authoring. Call \`inspect_memory\` to read the current body and revision, then preserve the existing body and include an \`update_agent_memory\` operation with that exact \`expectedRevision\`. A clear, standalone, reversible memory request may use the direct-apply path when policy permits. If the same turn also asks for standing behavior, a skill, access, identity, model, reach, editing authority, or scheduled work, include the memory operation in the same read-only proposal as the other primitives; never partially apply the turn.
 
-Standalone natural-language requests to create, edit, pause, resume, or disable scheduled work use the first-class \`manage_scheduled_work\` tool and are outside Agent authoring. Exact \`!routines\` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, this guide owns the compound request: inspect and place every part together; never save only the cadence and discard the rest.
+Standalone natural-language requests to create, edit, pause, resume, disable, or run scheduled work now use the first-class \`manage_scheduled_work\` tool and are outside Agent authoring. Inspect existing routines before an edit, control, or run-now action so the operation uses an exact routine ID and current version where required. Deletion is deliberately outside \`manage_scheduled_work\` because it is irreversible. For a clear delete request, activate this guide, call \`inspect_routines\`, and disambiguate if needed. Once the exact routine ID and current version are known, call \`propose_workspace_changes\` with one \`delete_routine\` operation, show the returned Slack preview, and wait for explicit confirmation before calling \`confirm_workspace_change\`. Never delete through \`apply_workspace_changes\`. Exact \`!routines\` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, this guide owns the compound request: inspect and place every part together; never save only the cadence and discard the rest.
 
 A clear instruction to continue work at a future time is an explicit schedule request and does not need to say schedule. For example, “Check this again in 5 minutes and tell me anything new” means fresh one-time scheduled work, not an edit to an existing routine. Relative timing stays relative so the service computes the exact future instant from its trusted clock. In a compound request, represent the schedule with the same \`save_routine\` operation used by the shared command, but keep it inside the proposal required by the other changes. Never use the compound path to add an approval round trip to a standalone clear schedule action.
 
@@ -95,7 +95,7 @@ Do not repeatedly re-ask settled details. Fill obvious blanks, show the assumpti
 
 ## Propose, review, and commit
 
-Use \`propose_workspace_changes\` for new-Agent creation and for generated, inferred, compound, multi-field, skill-bearing, capability-expanding, reach-changing, destructive, or otherwise consequential edits. A proposal is read-only: it normalizes the exact typed operations, shows a bounded visible diff and missing setup, records the guide version, and returns a requester- and origin-bound handle. Standalone scheduled work does not belong to this path.
+Use \`propose_workspace_changes\` for new-Agent creation and for generated, inferred, compound, multi-field, skill-bearing, capability-expanding, reach-changing, destructive, or otherwise consequential edits. A proposal is read-only: it normalizes the exact typed operations, shows a bounded visible diff and missing setup, records the guide version, and returns a requester- and origin-bound handle. Standalone scheduled work does not belong to this path except for irreversible deletion, which always does.
 
 Treat every returned proposal handle as an opaque control token. Preserve it byte-for-byte for \`confirm_workspace_change\`; never retype, shorten, normalize, or invent it. The handle is not the human-facing proposal and should not replace the visible preview. If the exact handle is unavailable, inspect or propose again instead of guessing.
 

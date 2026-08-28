@@ -215,6 +215,7 @@ import type { WorkspaceManagementToolResult } from './management/tool-adapter.ts
 import {
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
+  reconcileScheduleActionReceipts,
 } from './management/receipts.ts';
 import {
   ManagementError,
@@ -238,7 +239,7 @@ import {
 } from './routines/admission.ts';
 import { RoutineScheduler } from './routines/scheduler.ts';
 import { executeRoutineOccurrence } from './routines/execution.ts';
-import { drainDirectRoutinePauseNotices } from './routines/delivery.ts';
+import { drainRoutinePauseNotices } from './routines/delivery.ts';
 
 // The generated default captures model and tool content. Register the native
 // Cloudflare adapter explicitly for this Cloudflare-only entry so Workers
@@ -626,27 +627,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       return workspaceManagementRpcFailure();
     }
     try {
-      const platformEnv = this.env as PlatformEnv;
-      const local = localGatewayAppStores(stores);
-      const settings = localSettingsStore(stores);
-      const service = createLiveWorkspaceManagementService(platformEnv, {
-        identity: local.identity,
-        settings,
-        usage: local.usage,
-        slackCredentials: {
-          state: local.identity,
-          keyring: loadCredentialKeyring(platformEnv),
-        },
-        overrides: {
-          identity: local.identity,
-          config: local.config,
-          management: local.management,
-          memory: local.memory,
-          routines: local.routines,
-          work: local.work,
-          setupBaseUrl: () => resolveSlackPublicUrl(platformEnv, settings),
-        },
-      });
+      const { local, service } = localManagementRuntime(
+        stores,
+        this.env as PlatformEnv,
+      );
       const result = await invokeSlackWorkspaceManagementTool({
         signal: request.signal,
         identity: local.identity,
@@ -687,28 +671,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     this.stores ??= this.tryInit();
     const stores = this.stores;
     if (!stores) throw new Error('Schedule action state is unavailable.');
-    const platformEnv = this.env as PlatformEnv;
-    const local = localGatewayAppStores(stores);
-    const settings = localSettingsStore(stores);
-    const service = createLiveWorkspaceManagementService(platformEnv, {
-      identity: local.identity,
-      settings,
-      usage: local.usage,
-      slackCredentials: {
-        state: local.identity,
-        keyring: loadCredentialKeyring(platformEnv),
-      },
-      overrides: {
-        identity: local.identity,
-        config: local.config,
-        management: local.management,
-        memory: local.memory,
-        routines: local.routines,
-        work: local.work,
-        setupBaseUrl: () => resolveSlackPublicUrl(platformEnv, settings),
-      },
-    });
+    const { local, service } = localManagementRuntime(
+      stores,
+      this.env as PlatformEnv,
+    );
     const context = await resolveSlackManagementActor(request.signal, local.identity);
+    // Arm recovery before the first durable write so a DO interruption after
+    // admission cannot strand a pending action without an alarm.
+    await this.armAlarmNoLaterThan(Date.now());
     const result = await invokeSlackScheduleAction({
       signal: request.signal,
       context,
@@ -2074,26 +2044,18 @@ async function drainCloudflareScheduleActions(
   stores: TagStateStores,
   platformEnv: PlatformEnv,
 ): Promise<{ attempted: number; nextDueAt?: number }> {
-  const local = localGatewayAppStores(stores);
-  const settings = localSettingsStore(stores);
-  const service = createLiveWorkspaceManagementService(platformEnv, {
-    identity: local.identity,
-    settings,
-    usage: local.usage,
-    slackCredentials: {
-      state: local.identity,
-      keyring: loadCredentialKeyring(platformEnv),
-    },
-    overrides: {
-      identity: local.identity,
-      config: local.config,
-      management: local.management,
-      memory: local.memory,
+  const now = Date.now();
+  const nextDueAt = stores.routines.nextScheduleActionDueAt();
+  if (nextDueAt === undefined || nextDueAt > now) {
+    const local = localGatewayAppStores(stores);
+    await reconcileScheduleActionReceipts({
       routines: local.routines,
-      work: local.work,
-      setupBaseUrl: () => resolveSlackPublicUrl(platformEnv, settings),
-    },
-  });
+      management: local.management,
+      at: now,
+    });
+    return { attempted: 0, ...(nextDueAt !== undefined ? { nextDueAt } : {}) };
+  }
+  const { local, service } = localManagementRuntime(stores, platformEnv);
   return retryDueSlackScheduleActions({
     dependencies: {
       management: local.management,
@@ -2101,9 +2063,7 @@ async function drainCloudflareScheduleActions(
       service,
       owner: `alarm:schedule:${Date.now()}`,
     },
-    resolveContext: async (action) => {
-      const request = stores.management.getRequest(action.requestOperationId);
-      if (!request) throw new Error('Schedule action request is unavailable.');
+    resolveContext: async (action, request) => {
       return {
         userId: action.actorUserId,
         membershipId: action.actorMembershipId,
@@ -2243,6 +2203,32 @@ function localSettingsStore(stores: TagStateStores): SettingsStore {
   };
 }
 
+function localManagementRuntime(stores: TagStateStores, platformEnv: PlatformEnv) {
+  const local = localGatewayAppStores(stores);
+  const settings = localSettingsStore(stores);
+  return {
+    local,
+    service: createLiveWorkspaceManagementService(platformEnv, {
+      identity: local.identity,
+      settings,
+      usage: local.usage,
+      slackCredentials: {
+        state: local.identity,
+        keyring: loadCredentialKeyring(platformEnv),
+      },
+      overrides: {
+        identity: local.identity,
+        config: local.config,
+        management: local.management,
+        memory: local.memory,
+        routines: local.routines,
+        work: local.work,
+        setupBaseUrl: () => resolveSlackPublicUrl(platformEnv, settings),
+      },
+    }),
+  };
+}
+
 function localSlackPresentationState(stores: TagStateStores): SlackPresentationStatePort {
   return {
     getRunPresentation: (runId) => stores.presentations.get(runId),
@@ -2361,5 +2347,5 @@ async function runRoutineHeartbeat(
     }),
   });
   await new RoutineScheduler(store, admissions).heartbeat(scheduledTime, owner);
-  await drainDirectRoutinePauseNotices({ store, env: rawEnv as PlatformEnv });
+  await drainRoutinePauseNotices({ store, env: rawEnv as PlatformEnv });
 }

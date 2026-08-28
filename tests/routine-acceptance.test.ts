@@ -368,15 +368,18 @@ const privateDmAcceptanceMatrix = [
   {
     example: 'AE1',
     evidence: [
+      ['routine-slack-tools.test.ts', 'natural five-minute follow-up arguments become fresh private thread work'],
+      ['routine-slack-actions.test.ts', 'first-class DM actions create once, queue reactions, and run now without approval'],
       ['routine-delivery.test.ts', 'private routine results and failure notices stay in the originating thread without Admin links'],
-      ['routine-scheduler.test.ts', 'one-time work claims once, completes after its terminal run, and never repeats'],
+      ['admin-scheduled-work-routes.test.ts', 'direct schedules are absent from shared list, detail, and mutation surfaces'],
     ],
   },
   {
     example: 'AE2',
     evidence: [
+      ['routine-slack-tools.test.ts', 'recurring and run-now arguments use the same first-class schedule action'],
       ['management-routines.test.ts', 'private DM routines need no deployment flag and use trusted thread management'],
-      ['routine-scheduler.test.ts', 'heartbeat claims oldest due schedules once and aggregates downtime without catch-up'],
+      ['routine-delivery.test.ts', 'private routine results and failure notices stay in the originating thread without Admin links'],
     ],
   },
   {
@@ -388,44 +391,80 @@ const privateDmAcceptanceMatrix = [
   },
   {
     example: 'AE4',
-    evidence: [[
-      'routine-acceptance.test.ts',
-      'a direct schedule keeps its owning Agent when the Slack thread route changes',
-    ]],
-  },
-  {
-    example: 'AE5',
     evidence: [
-      ['admin-scheduled-work-routes.test.ts', 'direct schedules expose only anonymous health and are absent from shared detail and mutation surfaces'],
-      ['admin-page.test.ts', 'Scheduled Work renders private DM health without private schedule content or identifiers'],
+      ['management-slack-cloudflare-rpc.test.ts', 'first-class schedule RPC retries the same host-bound action without an unknown outcome'],
+      ['routine-slack-actions.test.ts', 'a transient first-class action failure recovers from the durable alarm ledger'],
     ],
   },
   {
-    example: 'AE6',
+    example: 'AE5',
     evidence: [[
-      'routine-workflow.test.ts',
-      'a definitive private-thread rejection pauses recurring work and posts one root notice',
+      'routine-slack-actions.test.ts',
+      'first-class DM actions create once, queue reactions, and run now without approval',
     ]],
   },
   {
+    example: 'AE6',
+    evidence: [
+      ['routine-slack-actions.test.ts', 'a transient first-class action failure recovers from the durable alarm ledger'],
+      ['routine-slack-command.test.ts', 'authority failure leaves a durable safe routine state'],
+    ],
+  },
+  {
     example: 'AE7',
-    evidence: [[
-      'routine-agent-authority.test.ts',
-      'direct schedules bind and resolve a full member without any Channel grant',
-    ]],
+    evidence: [
+      ['management-receipts.test.ts', 'the outbox drain records the real Slack failure code and settles permanent rejections terminally'],
+      ['management-receipts.test.ts', 'durable action state repairs one DM reaction and keeps Channel success reply-owned'],
+    ],
   },
   {
     example: 'AE8',
     evidence: [[
-      'routine-acceptance.test.ts',
-      'loss of the originating full-member authority auto-disables private scheduled work',
+      'management-routines.test.ts',
+      'private DM routines need no deployment flag and use trusted thread management',
+    ]],
+  },
+  {
+    example: 'AE9',
+    evidence: [
+      ['admin-scheduled-work-routes.test.ts', 'direct schedules are absent from shared list, detail, and mutation surfaces'],
+      ['admin-page.test.ts', 'Agent Schedules explains that private DM schedules stay in Slack even when no Channel schedules exist'],
+    ],
+  },
+  {
+    example: 'AE10',
+    evidence: [[
+      'routine-delivery.test.ts',
+      'a repeated-failure pause notice is content-free and posts at the verified DM root',
+    ]],
+  },
+  {
+    example: 'AE11',
+    evidence: [
+      ['management-routines.test.ts', 'management-created schedules accept active grant-only destinations and bind authority'],
+      ['routine-delivery.test.ts', 'routine delivery claims once, posts at top level, and records the Slack receipt'],
+    ],
+  },
+  {
+    example: 'AE12',
+    evidence: [
+      ['routine-slack-command.test.ts', 'the shared schedule command replays save and immediate run effects once'],
+      ['management-routines.test.ts', 'management-created schedules accept active grant-only destinations and bind authority'],
+    ],
+  },
+  {
+    example: 'AE13',
+    evidence: [[
+      'routine-admission.test.ts',
+      'a repeated controller reattaches one stable attempt and never creates a second admission',
     ]],
   },
 ] as const;
 
 test('private DM product acceptance matrix stays linked to executable evidence', () => {
   assert.deepEqual(privateDmAcceptanceMatrix.map(({ example }) => example), [
-    'AE1', 'AE2', 'AE3', 'AE4', 'AE5', 'AE6', 'AE7', 'AE8',
+    'AE1', 'AE2', 'AE3', 'AE4', 'AE5', 'AE6', 'AE7', 'AE8', 'AE9', 'AE10',
+    'AE11', 'AE12', 'AE13',
   ]);
   const testDirectory = fileURLToPath(new URL('.', import.meta.url));
   for (const row of privateDmAcceptanceMatrix) {

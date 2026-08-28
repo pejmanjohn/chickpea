@@ -100,6 +100,13 @@ export function validateManagementOperations(
   return [...operations];
 }
 
+export function managementStorageIdempotencyKey(
+  actor: Pick<ManagementActorContext, 'actingAgentId'>,
+  publicKey: string,
+): string {
+  return actor.actingAgentId ? `agent.${actor.actingAgentId}.${publicKey}` : publicKey;
+}
+
 function operationAgentIds(operation: ManagementOperation): string[] {
   switch (operation.kind) {
     case 'update_agent':

@@ -69,10 +69,14 @@ test('Cloudflare management proxy preserves the canonical ledger contract and ty
       (error: unknown) => error instanceof ManagementError &&
         error.code === 'idempotency_conflict',
     );
+    assert.equal((await proxy.failRequest('operation_rpc', NOW + 1)).status, 'failed');
+    assert.equal((await proxy.failRequest('operation_rpc', NOW + 2)).updatedAt, NOW + 1);
     assert.deepEqual(calls.map(({ kind }) => kind), [
       'reserve_request',
       'get_request',
       'reserve_request',
+      'fail_request',
+      'fail_request',
     ]);
 
     const changeSet = await proxy.putChangeSetProposal({

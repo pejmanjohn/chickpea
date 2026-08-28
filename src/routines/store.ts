@@ -38,6 +38,7 @@ import {
   type ConfirmRoutineInput,
   type ControlRoutineInput,
   type CreateRoutineOccurrenceInput,
+  type DeferRoutineRecoveryDeliveryInput,
   type PutRoutineConfirmationInput,
   type DeferRoutineScheduleActionInput,
   type MarkRoutineScheduleActionReceiptQueuedInput,
@@ -428,6 +429,11 @@ export class RoutineStoreLogic {
           kind: 'recovery_delivery_claim',
           outcome: this.claimRecoveryDelivery(request.input),
         };
+      case 'defer_recovery_delivery':
+        return {
+          kind: 'recovery_delivery',
+          delivery: this.deferRecoveryDelivery(request.input),
+        };
       case 'record_recovery_delivery':
         return {
           kind: 'recovery_delivery',
@@ -521,32 +527,33 @@ export class RoutineStoreLogic {
     leaseUntil: number;
     limit: number;
   }): RoutineScheduleAction[] {
-    validateScheduleActionClaim({ actionId: 'rsaction_due', ...input });
+    validateScheduleActionLease(input);
     if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
       throw routineError('routine_schedule_action_invalid', 'Schedule action claim limit is invalid.');
     }
-    return this.db.transaction(() => {
-      const due = this.db.all(
-        `SELECT action_id FROM routine_schedule_actions
-         WHERE status = 'pending' AND next_attempt_at <= ?
-           AND (lease_until IS NULL OR lease_until <= ?)
-         ORDER BY next_attempt_at, created_at, action_id LIMIT ?`,
-        input.at,
-        input.at,
-        input.limit,
-      ) as Array<{ action_id: string }>;
-      const claimed: RoutineScheduleAction[] = [];
-      for (const row of due) {
-        const result = this.claimScheduleAction({
-          actionId: row.action_id,
-          owner: input.owner,
-          at: input.at,
-          leaseUntil: input.leaseUntil,
-        });
-        if (result.outcome === 'claimed') claimed.push(result.action);
-      }
-      return claimed;
-    });
+    const due = this.db.all(
+      `SELECT action_id FROM routine_schedule_actions
+       WHERE status = 'pending' AND next_attempt_at <= ?
+         AND (lease_until IS NULL OR lease_until <= ?)
+       ORDER BY next_attempt_at, created_at, action_id LIMIT ?`,
+      input.at,
+      input.at,
+      input.limit,
+    ) as Array<{ action_id: string }>;
+    const claimed: RoutineScheduleAction[] = [];
+    for (const row of due) {
+      // Each individual claim is transactional and rechecks eligibility. Keeping
+      // the scan outside that transaction works on both node:sqlite and the
+      // Cloudflare state adapter, neither of which supports nested transactions.
+      const result = this.claimScheduleAction({
+        actionId: row.action_id,
+        owner: input.owner,
+        at: input.at,
+        leaseUntil: input.leaseUntil,
+      });
+      if (result.outcome === 'claimed') claimed.push(result.action);
+    }
+    return claimed;
   }
 
   nextScheduleActionDueAt(): number | undefined {
@@ -1161,6 +1168,20 @@ export class RoutineStoreLogic {
       'DELETE FROM routine_schedule_reservations WHERE window_start < ?',
       at - 15 * 60 * 1_000,
     ).changes;
+    const scheduleActionsDeleted = this.db.run(
+      `DELETE FROM routine_schedule_actions
+       WHERE status IN ('applied', 'failed')
+         AND terminal_receipt_queued_at IS NOT NULL
+         AND updated_at < ?`,
+      at - ROUTINE_LIMITS.scheduleActionRetentionMs,
+    ).changes;
+    const recoveryNoticesReconciled = this.db.run(
+      `UPDATE routine_recovery_deliveries
+       SET status = 'unknown', updated_at = ?
+       WHERE status = 'pending' AND claimed_at > 0 AND claimed_at < ?`,
+      at,
+      at - ROUTINE_LIMITS.recoveryDeliveryUnknownAfterMs,
+    ).changes;
 
     let deliveryLeasesReconciled = 0;
     const staleDeliveries = this.db.all(
@@ -1272,6 +1293,8 @@ export class RoutineStoreLogic {
     return {
       confirmationsPurged,
       reservationsPurged,
+      scheduleActionsDeleted,
+      recoveryNoticesReconciled,
       deliveryLeasesReconciled,
       deadlineRunsReconciled,
       runsDeleted,
@@ -2337,6 +2360,25 @@ export class RoutineStoreLogic {
     });
   }
 
+  deferRecoveryDelivery(
+    input: DeferRoutineRecoveryDeliveryInput,
+  ): RoutineRecoveryDelivery {
+    if (!isOpaqueRoutineId(input.occurrenceId) ||
+        !Number.isSafeInteger(input.at) || input.at <= 0) {
+      throw routineError('routine_recovery_delivery_invalid', 'Routine recovery delivery is invalid.');
+    }
+    this.db.run(
+      `UPDATE routine_recovery_deliveries SET updated_at = ?
+       WHERE occurrence_id = ? AND status = 'pending' AND claimed_at = 0`,
+      input.at,
+      input.occurrenceId,
+    );
+    return required(
+      this.getRecoveryDelivery(input.occurrenceId),
+      'Routine recovery delivery was not found.',
+    );
+  }
+
   recordRecoveryDelivery(input: RecordRoutineRecoveryDeliveryInput): RoutineRecoveryDelivery {
     if (
       !isOpaqueRoutineId(input.occurrenceId) ||
@@ -2511,6 +2553,21 @@ export class RoutineStoreLogic {
        ON routine_schedule_actions (status, next_attempt_at, lease_until, created_at)`,
     );
     this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_schedule_actions_pending_receipt_idx
+       ON routine_schedule_actions (updated_at, action_id)
+       WHERE status = 'pending' AND attempts > 0 AND pending_receipt_queued_at IS NULL`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_schedule_actions_terminal_receipt_idx
+       ON routine_schedule_actions (updated_at, action_id)
+       WHERE status IN ('applied', 'failed') AND terminal_receipt_queued_at IS NULL`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_schedule_actions_retention_idx
+       ON routine_schedule_actions (updated_at, action_id)
+       WHERE status IN ('applied', 'failed') AND terminal_receipt_queued_at IS NOT NULL`,
+    );
+    this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_schedule_reservations (
         routine_id TEXT NOT NULL, window_start INTEGER NOT NULL, reserved_count INTEGER NOT NULL,
         PRIMARY KEY (routine_id, window_start)
@@ -2600,6 +2657,16 @@ export class RoutineStoreLogic {
         updated_at INTEGER NOT NULL
       )`,
     );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_recovery_deliveries_pending_idx
+       ON routine_recovery_deliveries (updated_at, occurrence_id)
+       WHERE status = 'pending' AND claimed_at = 0`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_recovery_deliveries_stale_claim_idx
+       ON routine_recovery_deliveries (claimed_at, occurrence_id)
+       WHERE status = 'pending' AND claimed_at > 0`,
+    );
     // The pointers into the Work ledger (routines.work_id/binding_id,
     // routine_runs.canonical_run_id) are installed by whichever store gets here
     // first — see installLedgerLinks. The tables above must already exist.
@@ -2663,14 +2730,49 @@ export class RoutineStoreLogic {
         "ALTER TABLE routine_schedule_actions ADD COLUMN request_operation_id TEXT NOT NULL DEFAULT 'management_legacy_schedule_action'",
       );
     }
+    const legacyActions = this.db.all(
+      "SELECT action_id FROM routine_schedule_actions WHERE request_operation_id = 'management_legacy_schedule_action'",
+    ) as Array<{ action_id: string }>;
+    for (const { action_id: actionId } of legacyActions) {
+      if (!/^rsaction_[A-Za-z0-9_-]{1,180}$/.test(actionId)) continue;
+      this.db.run(
+        'UPDATE routine_schedule_actions SET request_operation_id = ? WHERE action_id = ?',
+        `management_${actionId}`,
+        actionId,
+      );
+    }
     if (!columns.has('pending_receipt_queued_at')) {
       this.db.exec(
         'ALTER TABLE routine_schedule_actions ADD COLUMN pending_receipt_queued_at INTEGER',
+      );
+      this.db.run(
+        `UPDATE routine_schedule_actions SET pending_receipt_queued_at = updated_at
+         WHERE attempts > 0`,
       );
     }
     if (!columns.has('terminal_receipt_queued_at')) {
       this.db.exec(
         'ALTER TABLE routine_schedule_actions ADD COLUMN terminal_receipt_queued_at INTEGER',
+      );
+      this.db.run(
+        `UPDATE routine_schedule_actions SET terminal_receipt_queued_at = updated_at
+         WHERE status IN ('applied', 'failed')`,
+      );
+    }
+    for (const { action_id: actionId } of legacyActions) {
+      this.db.run(
+        `UPDATE routine_schedule_actions
+         SET pending_receipt_queued_at = CASE
+               WHEN attempts > 0 THEN COALESCE(pending_receipt_queued_at, updated_at)
+               ELSE pending_receipt_queued_at
+             END,
+             terminal_receipt_queued_at = CASE
+               WHEN status IN ('applied', 'failed')
+                 THEN COALESCE(terminal_receipt_queued_at, updated_at)
+               ELSE terminal_receipt_queued_at
+             END
+         WHERE action_id = ?`,
+        actionId,
       );
     }
   }
@@ -3415,7 +3517,7 @@ export class RoutineStoreLogic {
       );
       if (pause) {
         this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routineId);
-        this.reserveDirectPauseNotice(run, routine, 'consecutive_failures', at);
+        this.reservePauseNotice(run, routine, 'consecutive_failures', at);
         const paused = required(this.getRoutine(routineId), 'Auto-paused routine was not readable.');
         this.appendRoutineAudit(
           `routine:auto-pause:${run.id}:consecutive_failures`,
@@ -3516,7 +3618,7 @@ export class RoutineStoreLogic {
       run.routineId,
     );
     this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', run.routineId);
-    this.reserveDirectPauseNotice(run, routine, reason, at);
+    this.reservePauseNotice(run, routine, reason, at);
     const paused = required(this.getRoutine(run.routineId), 'Unknown-outcome routine was not readable.');
     if (routine.state !== 'paused' || routine.pausedReason !== reason) {
       this.appendRoutineAudit(
@@ -3533,13 +3635,13 @@ export class RoutineStoreLogic {
     }
   }
 
-  private reserveDirectPauseNotice(
+  private reservePauseNotice(
     run: RoutineRun,
     routine: RoutineDefinition,
     failureClass: RoutineRecoveryDelivery['failureClass'],
     at: number,
   ): void {
-    if (routine.destination.kind !== 'direct_thread' || routine.triggerKind !== 'schedule') return;
+    if (routine.triggerKind !== 'schedule') return;
     this.db.run(
       `INSERT INTO routine_recovery_deliveries (
         occurrence_id, claimed_at, status, message_ts, failure_class, updated_at
@@ -4195,6 +4297,14 @@ function validateScheduleActionAdmission(input: ReserveRoutineScheduleActionInpu
 
 function validateScheduleActionClaim(input: ClaimRoutineScheduleActionInput): void {
   validateScheduleActionId(input.actionId);
+  validateScheduleActionLease(input);
+}
+
+function validateScheduleActionLease(input: {
+  owner: string;
+  at: number;
+  leaseUntil: number;
+}): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/.test(input.owner) ||
       !Number.isSafeInteger(input.at) || input.at < 0 ||
       !Number.isSafeInteger(input.leaseUntil) || input.leaseUntil <= input.at) {
@@ -4221,7 +4331,7 @@ function validateScheduleActionResult(
 ): RoutineScheduleActionResult {
   if (!result || typeof result !== 'object') throw scheduleActionConflict();
   if (result.outcome === 'applied') {
-    if (!['saved', 'controlled', 'run_queued', 'confirmation_required'].includes(result.effect) ||
+    if (!['saved', 'controlled', 'run_queued'].includes(result.effect) ||
         !isOpaqueRoutineId(result.routineId) ||
         (result.routineVersion !== undefined &&
           (!Number.isSafeInteger(result.routineVersion) || result.routineVersion < 1)) ||

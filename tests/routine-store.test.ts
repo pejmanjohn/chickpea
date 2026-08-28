@@ -125,6 +125,95 @@ test('routine schema is additive and portable across the target-neutral StateDb 
   sqlite.close();
 });
 
+test('intermediate legacy schedule actions upgrade without replaying stale receipts', () => {
+  const sqlite = openStateDb(':memory:');
+  sqlite.exec(
+    `CREATE TABLE routine_schedule_actions (
+      action_id TEXT PRIMARY KEY,
+      action_digest TEXT NOT NULL,
+      request_operation_id TEXT NOT NULL DEFAULT 'management_legacy_schedule_action',
+      workspace_id TEXT NOT NULL,
+      actor_user_id TEXT NOT NULL,
+      actor_membership_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      conversation_kind TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      thread_ts TEXT NOT NULL,
+      message_ts TEXT NOT NULL,
+      status TEXT NOT NULL,
+      lease_owner TEXT,
+      lease_until INTEGER,
+      attempts INTEGER NOT NULL,
+      next_attempt_at INTEGER NOT NULL,
+      result_json TEXT,
+      pending_receipt_queued_at INTEGER,
+      terminal_receipt_queued_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
+  );
+  const insertLegacyAction = (input: {
+    actionId: string;
+    status: 'pending' | 'applied';
+    result: string | null;
+  }) => sqlite.run(
+    `INSERT INTO routine_schedule_actions (
+      action_id, action_digest, workspace_id, actor_user_id, actor_membership_id,
+      agent_id, conversation_kind, channel_id, thread_ts, message_ts, status,
+      lease_owner, lease_until, attempts, next_attempt_at, result_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?, ?, ?)`,
+    input.actionId,
+    'a'.repeat(64),
+    'T_TEST',
+    'U_MEMBER',
+    'membership_owner',
+    'agent_sprout',
+    'channel',
+    'C_TEST',
+    '1787853827.722389',
+    '1787853830.000100',
+    input.status,
+    CREATED_AT,
+    input.result,
+    CREATED_AT,
+    CREATED_AT,
+  );
+  insertLegacyAction({
+    actionId: 'rsaction_legacy_terminal',
+    status: 'applied',
+    result: JSON.stringify({
+      outcome: 'applied', effect: 'saved', routineId: 'routine_legacy_terminal', routineVersion: 1,
+    }),
+  });
+  insertLegacyAction({
+    actionId: 'rsaction_legacy_pending',
+    status: 'pending',
+    result: null,
+  });
+
+  const store = new RoutineStoreLogic(sqlite, () => CREATED_AT);
+  const terminal = store.getScheduleAction('rsaction_legacy_terminal');
+  const pending = store.getScheduleAction('rsaction_legacy_pending');
+  assert.equal(terminal?.requestOperationId, 'management_rsaction_legacy_terminal');
+  assert.equal(terminal?.pendingReceiptQueuedAt, CREATED_AT);
+  assert.equal(terminal?.terminalReceiptQueuedAt, CREATED_AT);
+  assert.equal(pending?.requestOperationId, 'management_rsaction_legacy_pending');
+  assert.equal(pending?.pendingReceiptQueuedAt, CREATED_AT);
+  assert.equal(pending?.terminalReceiptQueuedAt, null);
+  assert.deepEqual(store.listScheduleActionsNeedingReceipts(10), []);
+  const recovered = store.claimScheduleAction({
+    actionId: 'rsaction_legacy_pending',
+    owner: 'alarm',
+    at: CREATED_AT + 1,
+    leaseUntil: CREATED_AT + 1_001,
+  });
+  assert.equal(recovered.outcome, 'claimed');
+  if (recovered.outcome === 'claimed') {
+    assert.equal(recovered.action.requestOperationId, 'management_rsaction_legacy_pending');
+  }
+  sqlite.close();
+});
+
 test('schedule action admission replays one content-bounded record and rejects conflicting reuse', async () => {
   const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
   const input = {
@@ -267,6 +356,10 @@ test('schedule action leases recover and terminal results replay without conflic
       (error: unknown) => error instanceof RoutineStateError &&
         error.code === 'routine_schedule_action_conflict',
     );
+
+    clock = terminalReceipt.updatedAt + ROUTINE_LIMITS.scheduleActionRetentionMs + 1;
+    assert.equal((await store.cleanupRetention()).scheduleActionsDeleted, 1);
+    assert.equal(await store.getScheduleAction(input.actionId), undefined);
   } finally {
     store.close();
   }
@@ -275,7 +368,8 @@ test('schedule action leases recover and terminal results replay without conflic
 test('direct routines stay inert until their exact Agent reference is bound and activated', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-routine-direct-activation-'));
   const path = join(dir, 'state.db');
-  const store = new SqliteRoutineStore(path, () => CREATED_AT);
+  let clock = CREATED_AT;
+  const store = new SqliteRoutineStore(path, () => clock);
   const config = new SqliteConfigStore(path, { agents: [] });
   const destination = {
     kind: 'direct_thread' as const,
@@ -564,6 +658,18 @@ test('direct routines stay inert until their exact Agent reference is bound and 
     assert.equal((await store.getRoutine(active.id))?.state, 'paused');
     assert.equal((await store.getRoutine(active.id))?.pausedReason, 'direct_thread_unavailable');
     assert.equal((await store.getRecoveryDelivery(noticeRun.id))?.status, 'pending');
+    const deferred = await store.deferRecoveryDelivery({
+      occurrenceId: noticeRun.id,
+      at: CREATED_AT + 11,
+    });
+    assert.equal(deferred.updatedAt, CREATED_AT + 11);
+    assert.equal(await store.claimRecoveryDelivery({
+      occurrenceId: noticeRun.id,
+      at: CREATED_AT + 12,
+    }), 'claimed');
+    clock = CREATED_AT + 12 + ROUTINE_LIMITS.recoveryDeliveryUnknownAfterMs + 1;
+    assert.equal((await store.cleanupRetention()).recoveryNoticesReconciled, 1);
+    assert.equal((await store.getRecoveryDelivery(noticeRun.id))?.status, 'unknown');
   } finally {
     store.close();
     config.close();
@@ -1404,10 +1510,46 @@ test('attributable failures auto-pause at three while unknown outcomes pause imm
         occurrenceId: run.id, from: ['running'], to: 'failed', at: CREATED_AT + index * 10 + 3,
         failureClass: 'tool_failed', publicError: 'The scheduled action failed safely.',
       });
+      const notice = await store.getRecoveryDelivery(run.id);
+      if (index < 2) assert.equal(notice, undefined);
+      else {
+        assert.equal(notice?.failureClass, 'consecutive_failures');
+        assert.equal(notice?.status, 'pending');
+      }
       routine = (await store.getRoutine(routine.id))!;
     }
     assert.equal(routine.consecutiveFailures, 3);
     assert.equal(routine.state, 'paused');
+
+    const unknownRoutine = await confirmDraft(
+      store,
+      createDraft('routine_channel_unknown_notice'),
+      'channel-unknown-notice',
+    );
+    const unknownRun = await store.createOccurrence({
+      runId: 'rrun_channel_unknown_notice', idempotencyKey: 'channel-unknown-notice',
+      routineId: unknownRoutine.id, routineVersion: unknownRoutine.version,
+      scheduledFor: NEXT_RUN + 10, triggerSource: 'run_now', requestedBy: 'U_MEMBER',
+      queuedAt: CREATED_AT + 40, deadlineAt: CREATED_AT + 15 * 60 * 1_000,
+    });
+    await store.startAdmissionAttempt({
+      occurrenceId: unknownRun.id, owner: 'manual', leaseUntil: CREATED_AT + 120_000,
+      invokeStartedAt: CREATED_AT + 41,
+    });
+    await store.beginOccurrence({
+      occurrenceId: unknownRun.id, flueRunId: 'run_channel_unknown_notice',
+      startedAt: CREATED_AT + 42,
+    });
+    await store.transitionRun({
+      occurrenceId: unknownRun.id, from: ['running'], to: 'failed', at: CREATED_AT + 43,
+      failureClass: 'delivery_unknown',
+      publicError: 'The Slack delivery outcome could not be confirmed.',
+    });
+    assert.equal((await store.getRoutine(unknownRoutine.id))?.state, 'paused');
+    assert.equal(
+      (await store.getRecoveryDelivery(unknownRun.id))?.failureClass,
+      'delivery_unknown',
+    );
   } finally {
     store.close();
   }

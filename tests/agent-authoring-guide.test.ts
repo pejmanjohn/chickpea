@@ -56,6 +56,8 @@ test('router covers all authoring postures while leaving detailed judgment lazy'
     'before calling any configuration mutation tool',
     'remember or edit Agent memory',
     'compound request as one Agent-authoring request',
+    'delete scheduled work does activate this skill',
+    'propose_workspace_changes with delete_routine',
   ]) assert.match(AGENT_AUTHORING_ROUTER_INSTRUCTION, new RegExp(phrase, 'i'));
   assert.doesNotMatch(AGENT_AUTHORING_ROUTER_INSTRUCTION, /chief of staff|Sentry|bug-to-PR/i);
 });
@@ -64,13 +66,16 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
   for (const phrase of [
     '`commit`', '`explore`', '`capability_question`', '`clarify`',
     'instructions', 'skills', 'memory', 'connections', 'repositories', 'schedules',
-    'Standalone natural-language requests to create, edit, pause, resume, or disable scheduled work use the first-class `manage_scheduled_work` tool',
+    'Standalone natural-language requests to create, edit, pause, resume, disable, or run scheduled work now use the first-class `manage_scheduled_work` tool',
     'Check this again in 5 minutes and tell me anything new',
     'does not need to say schedule',
     'fresh one-time scheduled work, not an edit to an existing routine',
     'Relative timing stays relative',
     'same `save_routine` operation used by the shared command',
     'Never use the compound path to add an approval round trip',
+    'Deletion is deliberately outside `manage_scheduled_work`',
+    'call `inspect_routines`', 'one `delete_routine` operation',
+    'wait for explicit confirmation', 'Never delete through `apply_workspace_changes`',
     'Slack presence', 'Channel reach', 'editing authority',
     'inspect_workspace', 'propose_workspace_changes', 'confirm_workspace_change',
     'opaque control token', 'Preserve it byte-for-byte', 'never retype',
@@ -87,6 +92,34 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     '`request_chickpea_handoff`', 'mention `@Chickpea`',
     'no Agent record', 'one highest-value next step',
   ]) assert.match(AGENT_AUTHORING_GUIDE, new RegExp(phrase, 'i'));
+});
+
+test('Slack tool selection routes destructive schedule deletion through confirmation', async () => {
+  const source = await readFile(
+    new URL('../src/management/slack-tools.ts', import.meta.url),
+    'utf8',
+  );
+  const scheduleInput = source.slice(
+    source.indexOf('const scheduleActionInputSchema'),
+    source.indexOf('const slackManagementSignalSchema'),
+  );
+  const selectionInstruction = source.slice(
+    source.indexOf('Standalone requests for future or repeated work belong'),
+    source.indexOf("  ].join(' ');", source.indexOf('Standalone requests for future or repeated work belong')),
+  );
+  const scheduleTool = source.slice(
+    source.indexOf("name: 'manage_scheduled_work'"),
+    source.indexOf("name: 'prepare_connector_setup'"),
+  );
+
+  assert.doesNotMatch(scheduleInput, /['"]delete['"]/);
+  assert.match(selectionInstruction, /Deletion is deliberately excluded from manage_scheduled_work/i);
+  assert.match(selectionInstruction, /first call inspect_routines/i);
+  assert.match(selectionInstruction, /delete_routine operation to propose_workspace_changes/i);
+  assert.match(selectionInstruction, /show presentation\.slack/i);
+  assert.match(selectionInstruction, /wait for explicit requester approval before calling confirm_workspace_change/i);
+  assert.match(selectionInstruction, /Never use apply_workspace_changes for deletion/i);
+  assert.match(scheduleTool, /Do not use this tool to delete scheduled work/i);
 });
 
 test('guide handles the three product examples without premature mutation', () => {

@@ -250,6 +250,11 @@ export interface ClaimRoutineRecoveryDeliveryInput {
   at: number;
 }
 
+export interface DeferRoutineRecoveryDeliveryInput {
+  occurrenceId: string;
+  at: number;
+}
+
 export interface RecordRoutineRecoveryDeliveryInput {
   occurrenceId: string;
   outcome: Exclude<RoutineRecoveryDeliveryStatus, 'pending'>;
@@ -462,6 +467,8 @@ export interface RoutineDueClaimBatch {
 export interface RoutineMaintenanceResult {
   confirmationsPurged: number;
   reservationsPurged: number;
+  scheduleActionsDeleted: number;
+  recoveryNoticesReconciled: number;
   deliveryLeasesReconciled: number;
   deadlineRunsReconciled: number;
   runsDeleted: number;
@@ -579,7 +586,7 @@ export type RoutineScheduleActionStatus = 'pending' | 'applied' | 'failed';
 export type RoutineScheduleActionResult =
   | {
       outcome: 'applied';
-      effect: 'saved' | 'controlled' | 'run_queued' | 'confirmation_required';
+      effect: 'saved' | 'controlled' | 'run_queued';
       routineId: string;
       routineVersion?: number;
       safeState?: 'active' | 'paused' | 'disabled' | 'pending_authority';
@@ -721,6 +728,9 @@ export interface RoutineStore {
   claimRecoveryDelivery(
     input: ClaimRoutineRecoveryDeliveryInput,
   ): Promise<'claimed' | 'superseded'>;
+  deferRecoveryDelivery(
+    input: DeferRoutineRecoveryDeliveryInput,
+  ): Promise<RoutineRecoveryDelivery>;
   recordRecoveryDelivery(
     input: RecordRoutineRecoveryDeliveryInput,
   ): Promise<RoutineRecoveryDelivery>;
@@ -792,6 +802,7 @@ export type RoutineRpcRequest =
   | { kind: 'get_recovery_delivery'; occurrenceId: string }
   | { kind: 'list_pending_recovery_deliveries'; limit: number }
   | { kind: 'claim_recovery_delivery'; input: ClaimRoutineRecoveryDeliveryInput }
+  | { kind: 'defer_recovery_delivery'; input: DeferRoutineRecoveryDeliveryInput }
   | { kind: 'record_recovery_delivery'; input: RecordRoutineRecoveryDeliveryInput }
   | { kind: 'list_admissions'; occurrenceId: string }
   | { kind: 'count_admitting_or_running_occurrences' }
