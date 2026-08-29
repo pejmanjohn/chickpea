@@ -20,11 +20,7 @@ export function renderManagedConnectionSetupPage(input: ManagedConnectionPageInp
   const { setup, agent } = input;
   const connector = setup.target.targetLabel;
   const connectorCopy = managedConnectorReadCopy(setup.target.provider, connector);
-  const ownerKind = setup.target.ownerKind ?? 'member';
   const accessLane = setup.target.accessLane ?? 'read';
-  const ownerHelp = ownerKind === 'team'
-    ? `Everyone who can use ${agent.name} can use this connection.`
-    : `Only you can use this connection, and only when you invoke ${agent.name}.`;
   const accessSummary = accessLane === 'write'
     ? managedConnectorWriteSummary(setup.target.provider, connector)
     : connectorCopy.accessSummary;
@@ -40,39 +36,46 @@ export function renderManagedConnectionSetupPage(input: ManagedConnectionPageInp
           ${agentIdentity(agent, input.avatarUrl)}
           <h1 id="flow-title">Connect ${escapeHtml(connector)} to ${escapeHtml(agent.name)}</h1>
           <p class="setup-lead">${escapeHtml(agent.name)} can ${escapeHtml(connectorCopy.setupAction)}.<br>Updates still require your confirmation.</p>
-          <div class="connector-row">
-            ${connectorLogo(setup)}
-            <strong>${escapeHtml(connector)}</strong>
-          </div>
-          <form id="connector-form" method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/authorize">
-            <section class="choice-block" aria-labelledby="owner-title">
-              <h2 id="owner-title">Who uses this account?</h2>
-              <span class="select-control">
-                <select class="owner-select" id="connection-owner" name="ownerKind" aria-labelledby="owner-title" aria-describedby="owner-help">
-                  <option value="member"${ownerKind === 'member' ? ' selected' : ''}>My connection</option>
-                  <option value="team"${ownerKind === 'team' ? ' selected' : ''}>Team connection</option>
-                </select>
-                <svg class="select-control-caret" aria-hidden="true" focusable="false" viewBox="0 0 16 16">
-                  <path d="m3.75 6.25 4.25 4.25 4.25-4.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
-                </svg>
-              </span>
-              <p id="owner-help">${escapeHtml(ownerHelp)}</p>
-            </section>
-            <section class="choice-block" aria-labelledby="access-title">
-              <h2 id="access-title">Access</h2>
-              <div class="access-control" role="radiogroup" aria-label="Connector access" aria-describedby="access-help">
-                <label><input type="radio" name="access" value="read"${accessLane === 'read' ? ' checked' : ''}><span>Read-only</span></label>
-                <label><input type="radio" name="access" value="write"${accessLane === 'write' ? ' checked' : ''}${writeAvailable ? '' : ' disabled'}><span>Read and write</span></label>
-              </div>
-              <p id="access-help">${escapeHtml(accessSummary)}</p>
-            </section>
-            <p class="security-copy">Sign-in opens in a secure hosted tab. Chickpea stores the connected-account reference and this Agent&rsquo;s capability ceiling, not provider refresh tokens.</p>
-            <p class="flow-alert" id="flow-alert" role="alert"${failureMessage ? '' : ' hidden'}>${escapeHtml(failureMessage)}</p>
-          </form>
-          <div class="flow-actions">
-            <form method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/cancel"><button class="text-button" type="submit">Cancel</button></form>
-            <button class="primary-button" type="submit" form="connector-form" name="intent" value="authorize">Continue to ${escapeHtml(connector)}</button>
-          </div>
+          <section class="setup-card">
+            <div class="connector-row">
+              ${connectorLogo(setup)}
+              <strong>${escapeHtml(connector)}</strong>
+            </div>
+            <form id="connector-form" method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/authorize">
+              <section class="choice-block owner-choice-block" aria-labelledby="owner-title">
+                <h2 id="owner-title">Who uses this connection?</h2>
+                <p class="choice-instruction">Pick one to continue.</p>
+                <div class="owner-options" role="radiogroup" aria-labelledby="owner-title">
+                  <label class="owner-option">
+                    <input type="radio" name="ownerKind" value="member" aria-describedby="owner-personal-description">
+                    <span class="owner-radio" aria-hidden="true"></span>
+                    <span class="owner-option-icon owner-option-icon-personal" aria-hidden="true">${ownerChoiceIcon('member')}</span>
+                    <span class="owner-option-copy"><strong>Personal</strong><span id="owner-personal-description">Each person signs in with their own account. ${escapeHtml(agent.name)} uses yours only for your requests.</span></span>
+                  </label>
+                  <label class="owner-option">
+                    <input type="radio" name="ownerKind" value="team" aria-describedby="owner-team-description">
+                    <span class="owner-radio" aria-hidden="true"></span>
+                    <span class="owner-option-icon owner-option-icon-team" aria-hidden="true">${ownerChoiceIcon('team')}</span>
+                    <span class="owner-option-copy"><strong>Team</strong><span id="owner-team-description">One shared account for everyone who can use ${escapeHtml(agent.name)}.</span></span>
+                  </label>
+                </div>
+              </section>
+              <section class="choice-block" aria-labelledby="access-title">
+                <h2 id="access-title">Access</h2>
+                <div class="access-control" role="radiogroup" aria-label="Connector access" aria-describedby="access-help">
+                  <label><input type="radio" name="access" value="read"${accessLane === 'read' ? ' checked' : ''}><span>Read-only</span></label>
+                  <label><input type="radio" name="access" value="write"${accessLane === 'write' ? ' checked' : ''}${writeAvailable ? '' : ' disabled'}><span>Read and write</span></label>
+                </div>
+                <p id="access-help">${escapeHtml(accessSummary)}</p>
+              </section>
+              <p class="security-copy">Sign-in opens in a secure ${escapeHtml(connector)} tab. Chickpea keeps a reference to the connected account and this Agent&rsquo;s access level &mdash; never your password or refresh tokens.</p>
+              <p class="flow-alert" id="flow-alert" role="alert"${failureMessage ? '' : ' hidden'}>${escapeHtml(failureMessage)}</p>
+            </form>
+            <div class="flow-actions">
+              <form method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/cancel"><button class="text-button" type="submit">Cancel</button></form>
+              <button class="primary-button" type="submit" form="connector-form" name="intent" value="authorize" disabled>Continue to ${escapeHtml(connector)}</button>
+            </div>
+          </section>
         </section>
       </main>
       <script nonce="setup">${setupScript({ agentName: agent.name, connector, toolkit: setup.target.provider })}</script>`,
@@ -203,10 +206,17 @@ function connectorLogo(setup: ManagementSetupRecord, extraClass = ''): string {
   return `<span class="${className}"${style} aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor">${logo.svg}</svg></span>`;
 }
 
+function ownerChoiceIcon(ownerKind: 'member' | 'team'): string {
+  const path = ownerKind === 'team'
+    ? 'M6 7a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm4.75-1a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM.75 14.25A5.25 5.25 0 0 1 6 9a5.25 5.25 0 0 1 5.25 5.25.75.75 0 0 1-.75.75h-9a.75.75 0 0 1-.75-.75Zm10.4-6.52a4.76 4.76 0 0 1 4.1 4.72.75.75 0 0 1-.75.75h-1.82a6.75 6.75 0 0 0-1.53-5.47Z'
+    : 'M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM2.75 14A5.25 5.25 0 0 1 8 8.75 5.25 5.25 0 0 1 13.25 14a.75.75 0 0 1-.75.75h-9A.75.75 0 0 1 2.75 14Z';
+  return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="${path}"/></svg>`;
+}
+
 function setupScript(input: { agentName: string; connector: string; toolkit: string }): string {
   const readSummary = managedConnectorReadCopy(input.toolkit, input.connector).accessSummary;
   const writeSummary = managedConnectorWriteSummary(input.toolkit, input.connector);
-  return `(function(){var form=document.getElementById("connector-form"),owner=document.getElementById("connection-owner"),ownerHelp=document.getElementById("owner-help"),accessHelp=document.getElementById("access-help"),alert=document.getElementById("flow-alert"),button=document.querySelector('button[form="connector-form"][value="authorize"]');if(!form||!owner||!ownerHelp||!accessHelp||!alert||!button)return;var agent=${jsonForScript(input.agentName)},readSummary=${jsonForScript(readSummary)},writeSummary=${jsonForScript(writeSummary)};function update(){ownerHelp.textContent=owner.value==="team"?"Everyone who can use "+agent+" can use this connection.":"Only you can use this connection, and only when you invoke "+agent+".";var access=form.querySelector('input[name="access"]:checked');accessHelp.textContent=access&&access.value==="write"?writeSummary:readSummary}owner.addEventListener("change",update);form.querySelectorAll('input[name="access"]').forEach(function(control){control.addEventListener("change",update)});form.addEventListener("submit",async function(event){event.preventDefault();var label=button.textContent;button.disabled=true;button.textContent="Opening secure sign-in…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(String(body.message||"Chickpea could not start the secure sign-in. Try again."));var target=new URL(String(body.authorizationUrl||""));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not start the secure sign-in. Try again.";alert.hidden=false;button.disabled=false;button.textContent=label}});update()})();`;
+  return `(function(){var form=document.getElementById("connector-form"),owners=form&&form.querySelectorAll('input[name="ownerKind"]'),accessHelp=document.getElementById("access-help"),alert=document.getElementById("flow-alert"),button=document.querySelector('button[form="connector-form"][value="authorize"]');if(!form||!owners||!accessHelp||!alert||!button)return;var readSummary=${jsonForScript(readSummary)},writeSummary=${jsonForScript(writeSummary)};function selectedOwner(){return form.querySelector('input[name="ownerKind"]:checked')}function update(){button.disabled=!selectedOwner();var access=form.querySelector('input[name="access"]:checked');accessHelp.textContent=access&&access.value==="write"?writeSummary:readSummary}owners.forEach(function(control){control.addEventListener("change",update)});form.querySelectorAll('input[name="access"]').forEach(function(control){control.addEventListener("change",update)});form.addEventListener("submit",async function(event){event.preventDefault();if(!selectedOwner()){alert.textContent="Choose Personal or Team to continue.";alert.hidden=false;update();return}var label=button.textContent;button.disabled=true;button.textContent="Opening secure sign-in…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(String(body.message||"Chickpea could not start the secure sign-in. Try again."));var target=new URL(String(body.authorizationUrl||""));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not start the secure sign-in. Try again.";alert.hidden=false;button.textContent=label;update()}});update()})();`;
 }
 
 function pollScript(setupId: string): string {
@@ -315,16 +325,30 @@ body {
   margin: 16px auto 30px;
   text-align: center;
 }
+.setup-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  box-shadow: 0 12px 34px rgba(59, 50, 32, .09);
+  overflow: hidden;
+}
 .connector-row {
   align-items: center;
-  border-bottom: 1px solid var(--line);
-  border-top: 1px solid var(--line);
+  border-bottom: 1px dashed var(--line);
   display: flex;
   gap: 18px;
-  min-height: 110px;
-  padding: 18px 16px;
+  min-height: 96px;
+  padding: 18px 24px;
 }
-.connector-row strong { font-size: 1.5rem; }
+.connector-row strong { font-size: 1.28rem; }
+.connector-row .connector-logo {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  height: 48px;
+  padding: 7px;
+  width: 48px;
+}
 .connector-logo {
   align-items: center;
   background: var(--card);
@@ -343,9 +367,18 @@ body {
 .connector-logo svg[width] { height: 100%; width: 100%; }
 .connector-logo-fallback { background: var(--connector-accent, #FF7A59); color: #fff; font-weight: 850; }
 .choice-block {
-  border-bottom: 1px solid var(--line);
+  border-bottom: 0;
   margin: 0;
-  padding: 28px 16px;
+  padding: 24px;
+  position: relative;
+}
+.choice-block:not(.owner-choice-block)::after {
+  border-bottom: 1px dashed var(--line);
+  bottom: 0;
+  content: "";
+  left: 24px;
+  position: absolute;
+  right: 24px;
 }
 .choice-block h2 {
   font-family: "Baloo 2", ui-rounded, system-ui, sans-serif;
@@ -359,39 +392,80 @@ body {
   line-height: 1.55;
   margin: 11px 0 0;
 }
-.select-control {
-  display: block;
-  position: relative;
-  width: min(530px, 100%);
+.owner-choice-block {
+  background: #f8f1df;
+  border-radius: 16px;
+  margin: 16px 18px 12px;
+  padding: 18px 16px;
 }
-.owner-select {
+.owner-choice-block h2 { margin-bottom: 2px; }
+.owner-choice-block .choice-instruction { margin: 0 0 14px; }
+.owner-options {
+  display: grid;
+  gap: 10px;
+}
+.owner-option {
   align-items: center;
-  appearance: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
   background: var(--card);
-  border: 1px solid rgba(59, 50, 32, .22);
-  border-radius: 15px;
-  box-shadow: 0 2px 0 rgba(59, 50, 32, .08);
-  color: var(--ink);
+  border: 1px solid rgba(59, 50, 32, .18);
+  border-radius: 14px;
+  box-shadow: 0 2px 0 rgba(59, 50, 32, .06);
   cursor: pointer;
-  display: block;
-  font: inherit;
-  font-weight: 800;
-  min-height: 58px;
-  padding: 0 56px 0 18px;
-  width: 100%;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 18px 32px minmax(0, 1fr);
+  min-height: 88px;
+  padding: 12px 15px;
+  position: relative;
 }
-.owner-select:focus-visible { outline: 3px solid rgba(176, 84, 21, .42); outline-offset: 3px; }
-.select-control-caret {
-  color: var(--muted);
-  height: 16px;
-  pointer-events: none;
+.owner-option:hover { border-color: rgba(178, 126, 31, .45); }
+.owner-option:has(input:checked) {
+  border-color: var(--gold-press);
+  box-shadow: 0 0 0 1px var(--gold-press), 0 2px 0 rgba(59, 50, 32, .06);
+}
+.owner-option input {
+  height: 18px;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
   position: absolute;
-  right: 20px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 16px;
+  width: 18px;
+}
+.owner-radio {
+  background: var(--card);
+  border: 1.5px solid rgba(59, 50, 32, .34);
+  border-radius: 50%;
+  height: 18px;
+  position: relative;
+  width: 18px;
+}
+.owner-option input:checked + .owner-radio { border-color: var(--gold-press); }
+.owner-option input:checked + .owner-radio::after {
+  background: var(--gold-press);
+  border-radius: 50%;
+  content: "";
+  inset: 3px;
+  position: absolute;
+}
+.owner-option input:focus-visible + .owner-radio { outline: 3px solid rgba(176, 84, 21, .42); outline-offset: 3px; }
+.owner-option-icon {
+  align-items: center;
+  border-radius: 50%;
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+.owner-option-icon svg { height: 16px; width: 16px; }
+.owner-option-icon-personal { background: rgba(221, 160, 51, .18); color: var(--gold-press); }
+.owner-option-icon-team { background: rgba(111, 162, 91, .18); color: var(--green-deep); }
+.owner-option-copy { display: grid; gap: 2px; max-width: 520px; min-width: 0; }
+.owner-option-copy strong { font-size: .94rem; }
+.owner-option-copy span {
+  color: var(--muted);
+  font-size: .88rem;
+  line-height: 1.4;
+  text-wrap: pretty;
 }
 .access-control {
   align-items: stretch;
@@ -418,7 +492,7 @@ body {
 .access-control input:checked + span { background: var(--gold); color: var(--ink); }
 .access-control input:focus-visible + span { outline: 3px solid rgba(176, 84, 21, .42); outline-offset: -4px; }
 .access-control input:disabled + span { cursor: not-allowed; opacity: .48; }
-.security-copy { border-bottom: 1px solid var(--line); margin: 0; padding: 28px 16px; }
+.security-copy { margin: 0; padding: 22px 24px 0; }
 .flow-alert {
   background: #fff0ea;
   border: 1px solid rgba(168, 63, 52, .22);
@@ -428,7 +502,7 @@ body {
   line-height: 1.45;
   padding: 12px 14px;
 }
-.flow-actions { align-items: center; display: flex; gap: 22px; justify-content: center; margin-top: 28px; }
+.flow-actions { align-items: center; display: flex; gap: 16px; justify-content: flex-end; padding: 24px; }
 .flow-actions form { margin: 0; }
 .flow-actions button { font: inherit; font-weight: 850; }
 .primary-button {
@@ -446,7 +520,7 @@ body {
   padding: 0 22px;
   text-decoration: none;
 }
-.primary-button:disabled { cursor: wait; opacity: .72; }
+.primary-button:disabled { box-shadow: 0 2px 0 rgba(59, 50, 32, .18); cursor: not-allowed; opacity: .5; }
 .primary-button:active { box-shadow: none; transform: translateY(3px); }
 .text-button {
   background: transparent;
@@ -527,9 +601,11 @@ body {
   .agent-avatar { border-radius: 15px; height: 54px; width: 54px; }
   .setup-shell .flow-content > h1 { font-size: 2.2rem; }
   .setup-lead br { display: none; }
-  .connector-row { min-height: 92px; padding-inline: 4px; }
+  .setup-card { border-radius: 18px; }
+  .connector-row { min-height: 88px; padding-inline: 18px; }
   .choice-block,
-  .security-copy { padding-inline: 4px; }
+  .security-copy { padding-inline: 18px; }
+  .owner-option { align-items: start; grid-template-columns: 18px 32px minmax(0, 1fr); }
   .flow-actions { align-items: stretch; flex-direction: column-reverse; }
   .flow-actions form,
   .flow-actions button { width: 100%; }

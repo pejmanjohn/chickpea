@@ -64,12 +64,15 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
     assert.match(renderedSetup, /role="img" aria-label="Chickpea"/);
     assert.match(renderedSetup, /--chickpea-wordmark-image:url\("data:image\/png;base64,/);
     assert.match(renderedSetup, /Connect HubSpot to Sprout/);
-    assert.match(renderedSetup, /Only you can use this connection, and only when you invoke Sprout\./);
+    assert.match(renderedSetup, /Who uses this connection\?/);
+    assert.match(renderedSetup, /Pick one to continue\./);
+    assert.match(renderedSetup, /Each person signs in with their own account\. Sprout uses yours only for your requests\./);
+    assert.match(renderedSetup, /One shared account for everyone who can use Sprout\./);
     assert.match(renderedSetup, /Can search and read CRM records\. Cannot change HubSpot data\./);
-    assert.match(renderedSetup, /<select[^>]+name="ownerKind"/);
-    assert.match(renderedSetup, /<select[^>]+aria-labelledby="owner-title"/);
-    assert.match(renderedSetup, /<option value="member" selected>My connection<\/option>/);
-    assert.match(renderedSetup, /<option value="team">Team connection<\/option>/);
+    assert.match(renderedSetup, /<input[^>]+type="radio"[^>]+name="ownerKind"[^>]+value="member"/);
+    assert.match(renderedSetup, /<input[^>]+type="radio"[^>]+name="ownerKind"[^>]+value="team"/);
+    assert.doesNotMatch(renderedSetup, /<input[^>]+name="ownerKind"[^>]+checked/);
+    assert.match(renderedSetup, /<button[^>]+value="authorize"[^>]+disabled/);
     assert.match(renderedSetup, /<input[^>]+type="radio"[^>]+name="access"[^>]+value="read"[^>]+checked/);
     assert.match(renderedSetup, /<input[^>]+type="radio"[^>]+name="access"[^>]+value="write"/);
     assert.doesNotMatch(renderedSetup, /Read and write unavailable in this flow/);
@@ -138,7 +141,7 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
   }
 });
 
-test('managed connector account selector owns its caret with a padded right inset', async () => {
+test('managed connector owner chooser uses compact icon cards and requires a choice', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   try {
     const agent = await config.createAgent({
@@ -153,14 +156,13 @@ test('managed connector account selector owns its caret with a padded right inse
     });
     const rendered = renderManagedConnectionSetupPage({ setup, agent });
 
-    assert.match(rendered, /<span class="select-control">/);
-    assert.match(rendered, /<svg class="select-control-caret" aria-hidden="true"/);
-    assert.match(rendered, /\.select-control \{[^}]*position: relative;/s);
-    assert.match(rendered, /\.owner-select \{[^}]*appearance: none;/s);
-    assert.match(rendered, /\.owner-select \{[^}]*padding: 0 56px 0 18px;/s);
-    assert.doesNotMatch(rendered, /appearance: auto;/);
-    assert.match(rendered, /\.select-control-caret \{[^}]*pointer-events: none;/s);
-    assert.match(rendered, /\.select-control-caret \{[^}]*right: 20px;/s);
+    assert.match(rendered, /class="owner-option-icon owner-option-icon-personal"/);
+    assert.match(rendered, /class="owner-option-icon owner-option-icon-team"/);
+    assert.match(rendered, /\.owner-option-icon \{[^}]*height: 32px;[^}]*width: 32px;/s);
+    assert.match(rendered, /\.owner-option-icon svg \{ height: 16px; width: 16px; \}/);
+    assert.match(rendered, /\.owner-option \{[^}]*min-height: 88px;/s);
+    assert.match(rendered, /button\.disabled=!selectedOwner\(\)/);
+    assert.doesNotMatch(rendered, /select-control-caret/);
   } finally {
     config.close();
   }
@@ -205,7 +207,7 @@ test('managed connector copy and success scope stay accurate for a team Gmail ha
       setup: { ...gmailSetup, status: 'completed' },
     });
     assert.match(success, /Your team, read-only connection is ready./);
-    assert.doesNotMatch(success, /personal/);
+    assert.doesNotMatch(success, /Your personal/);
   } finally {
     config.close();
   }
