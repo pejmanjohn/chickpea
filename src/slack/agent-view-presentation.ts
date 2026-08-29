@@ -435,10 +435,11 @@ export class SlackAgentViewPresentation {
     if (presentation.agentSession.acknowledged === desired) return;
     let operationId: string;
     let mayWrite = false;
+    // Agent Session status is a convergent setter on one fenced thread. A
+    // terminal state may therefore replace an unresolved processing receipt;
+    // the old operation id cannot acknowledge or mutate the replacement.
     if (!presentation.agentSession.operation ||
-        (presentation.agentSession.desired === 'processing' &&
-          (presentation.agentSession.operation.certainty === 'acknowledged' ||
-            presentation.agentSession.operation.certainty === 'failed'))) {
+        presentation.agentSession.desired === 'processing') {
       operationId = `session_${hash(`${presentation.runId}:${desired}:1`).slice(0, 24)}`;
       presentation = await this.transition(presentation, {
         kind: 'set_agent_session_desired', desired, operationId,

@@ -12,6 +12,7 @@ import type { SlackPresentationStatePort } from '../slack/agent-view-presentatio
 import {
   abandonDeferredTerminalSlackDelivery,
   acknowledgeDeferredTerminalSlackDelivery,
+  slackPresentationRepairFailureCode,
 } from '../slack/presentation-repair.ts';
 import { SlackTransportError } from '../slack/transport/types.ts';
 import {
@@ -651,6 +652,8 @@ function slackPlatformErrorCode(error: unknown): string | undefined {
 
 /** Content-free failure classification: a Slack error code or an error name. */
 function receiptDeliveryFailureCode(error: unknown): string {
+  const repairCode = slackPresentationRepairFailureCode(error);
+  if (repairCode) return repairCode;
   const code = slackPlatformErrorCode(error);
   if (code) return code;
   if (error instanceof Error && error.name !== 'Error') return error.name;

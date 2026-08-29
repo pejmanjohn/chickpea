@@ -9,6 +9,7 @@ import {
   acknowledgeDeferredTerminalSlackDelivery,
   drainSlackPresentationRepairs,
   hasRetryableTerminalRepair,
+  slackPresentationRepairFailureCode,
 } from '../src/slack/presentation-repair.ts';
 import {
   SlackRunPresentationStoreLogic,
@@ -247,6 +248,98 @@ test('an acknowledged deferred terminal delivery settles session and activity li
     assert.equal(settled.cleanup.operation.certainty, 'acknowledged');
     assert.equal(settled.lifecyclePhase, 'settled');
     assert.equal(settled.repairRequired, false);
+  } finally {
+    db.close();
+  }
+});
+
+for (const processingCertainty of ['pending', 'unknown'] as const) {
+  test(`terminal repair supersedes a ${processingCertainty} processing-session receipt`, async () => {
+    const db = openStateDb(':memory:');
+    try {
+      const store = new SlackRunPresentationStoreLogic(db, () => BASE_NOW);
+      const runId = `run_processing_${processingCertainty}`;
+      let current = createV3(store, runId, root(`PROCESSING_${processingCertainty}`), 100);
+      current = advance(store, current, {
+        kind: 'select_activity_projection',
+        surface: 'assistant_status',
+      });
+      current = advance(store, current, {
+        kind: 'record_activity_receipt',
+        operationId: `activity_${runId}_1`,
+        certainty: 'failed',
+      });
+      current = advance(store, current, {
+        kind: 'set_agent_session_desired',
+        desired: 'processing',
+        operationId: `session_${runId}_processing`,
+      });
+      if (processingCertainty === 'unknown') {
+        current = advance(store, current, {
+          kind: 'record_agent_session_receipt',
+          operationId: `session_${runId}_processing`,
+          certainty: 'unknown',
+        });
+      }
+      current = advance(store, current, {
+        kind: 'record_terminal_delivery_intent',
+        operationId: `terminal_${runId}_1`,
+        result: 'answer',
+      });
+
+      const calls: string[] = [];
+      const settled = await acknowledgeDeferredTerminalSlackDelivery({
+        runId,
+        state: statePort(store),
+        client: repairClient({ calls }),
+      });
+
+      assert.deepEqual(calls, ['agent_session']);
+      assert.equal(settled?.agentSession.desired, 'active');
+      assert.equal(settled?.agentSession.acknowledged, 'active');
+      assert.equal(settled?.lifecyclePhase, 'settled');
+      assert.equal(settled?.repairRequired, false);
+    } finally {
+      db.close();
+    }
+  });
+}
+
+test('deferred terminal repair exposes a content-free failed stage', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => BASE_NOW);
+    const runId = 'run_deferred_terminal_stage';
+    let current = createV3(store, runId, root('DEFERRED_TERMINAL_STAGE'), 100);
+    current = advance(store, current, {
+      kind: 'record_terminal_delivery_intent',
+      operationId: `terminal_${runId}_1`,
+      result: 'answer',
+    });
+    current = advance(store, current, {
+      kind: 'record_terminal_delivery_receipt',
+      operationId: `terminal_${runId}_1`,
+      certainty: 'acknowledged',
+    });
+
+    await assert.rejects(async () => {
+      try {
+        await acknowledgeDeferredTerminalSlackDelivery({
+          runId,
+          state: {
+            ...statePort(store),
+            getLatestThreadSessionGeneration: async () => undefined,
+          },
+          client: repairClient({ calls: [] }),
+        });
+      } catch (error) {
+        assert.equal(
+          slackPresentationRepairFailureCode(error),
+          'slack_presentation_repair_latest_generation_unproven',
+        );
+        throw error;
+      }
+    }, /latest_generation_unproven/);
   } finally {
     db.close();
   }

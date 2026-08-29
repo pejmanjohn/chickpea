@@ -29,6 +29,39 @@ export interface SlackPresentationRepairDrainResult {
   nextRetryAt?: number;
 }
 
+export type SlackPresentationRepairStage =
+  | 'presentation_load'
+  | 'terminal_intent_prepare'
+  | 'terminal_intent_reload'
+  | 'terminal_delivery_receipt'
+  | 'terminal_delivery_reload'
+  | 'thread_generation_lookup'
+  | 'latest_generation_unproven'
+  | 'agent_session_settlement'
+  | 'shared_effect_supersession'
+  | 'activity_cleanup_intent'
+  | 'activity_clear'
+  | 'activity_cleanup_receipt'
+  | 'lifecycle_settlement'
+  | 'presentation_reload';
+
+/** Content-free stage marker for durable repair telemetry and diagnosis. */
+export class SlackPresentationRepairError extends Error {
+  constructor(
+    readonly stage: SlackPresentationRepairStage,
+    options?: ErrorOptions,
+  ) {
+    super(`Slack presentation repair failed during ${stage}.`, options);
+    this.name = 'SlackPresentationRepairError';
+  }
+}
+
+export function slackPresentationRepairFailureCode(error: unknown): string | undefined {
+  return error instanceof SlackPresentationRepairError
+    ? `slack_presentation_repair_${error.stage}`
+    : undefined;
+}
+
 /**
  * The deferred Slack post is the Run's canonical terminal artifact. Record its
  * acknowledgement first, then reuse the normal repair path to settle the Agent
@@ -39,7 +72,10 @@ export async function acknowledgeDeferredTerminalSlackDelivery(input: {
   state: SlackPresentationStatePort;
   client: WebClient;
 }): Promise<SlackRunPresentationV3 | undefined> {
-  let presentation = await input.state.getRunPresentation(input.runId);
+  let presentation = await repairStage(
+    'presentation_load',
+    () => input.state.getRunPresentation(input.runId),
+  );
   if (presentation?.schemaVersion !== 3) return undefined;
   const agentName = presentation.owner.kind === 'selected_agent'
     ? presentation.owner.persona.name
@@ -52,13 +88,25 @@ export async function acknowledgeDeferredTerminalSlackDelivery(input: {
     footer: { agentName, agentId: 'agent_default' },
   });
   if (presentation.terminalDelivery.state === 'none') {
-    await agentView.prepareDeferredTerminalDelivery('answer');
-    presentation = await input.state.getRunPresentation(input.runId);
+    await repairStage(
+      'terminal_intent_prepare',
+      () => agentView.prepareDeferredTerminalDelivery('answer'),
+    );
+    presentation = await repairStage(
+      'terminal_intent_reload',
+      () => input.state.getRunPresentation(input.runId),
+    );
   }
   if (presentation?.schemaVersion !== 3 ||
       presentation.terminalDelivery.state !== 'intended') return undefined;
-  await agentView.recordTerminalDeliveryReceipt('acknowledged');
-  const acknowledged = await input.state.getRunPresentation(input.runId);
+  await repairStage(
+    'terminal_delivery_receipt',
+    () => agentView.recordTerminalDeliveryReceipt('acknowledged'),
+  );
+  const acknowledged = await repairStage(
+    'terminal_delivery_reload',
+    () => input.state.getRunPresentation(input.runId),
+  );
   if (acknowledged?.schemaVersion !== 3) return undefined;
   return repairTerminalSlackPresentation(acknowledged, input.state, input.client);
 }
@@ -164,29 +212,59 @@ export async function repairTerminalSlackPresentation(
       : {}),
   });
 
-  const latestGeneration = await state.getLatestThreadSessionGeneration(presentation.root);
+  const latestGeneration = await repairStage(
+    'thread_generation_lookup',
+    () => state.getLatestThreadSessionGeneration(presentation.root),
+  );
   if (latestGeneration === undefined || latestGeneration < presentation.sessionGeneration) {
-    throw new Error('Slack presentation repair could not prove the latest thread generation.');
+    throw new SlackPresentationRepairError('latest_generation_unproven');
   }
   const ownsSharedEffects = latestGeneration === presentation.sessionGeneration;
   if (ownsSharedEffects) {
-    await agentView.settleAgentSession(terminalResult);
+    await repairStage(
+      'agent_session_settlement',
+      () => agentView.settleAgentSession(terminalResult),
+    );
   } else {
-    await agentView.supersedeSharedRepairEffects();
+    await repairStage(
+      'shared_effect_supersession',
+      () => agentView.supersedeSharedRepairEffects(),
+    );
   }
-  const cleanup = await agentView.prepareActivityCleanup();
+  const cleanup = await repairStage(
+    'activity_cleanup_intent',
+    () => agentView.prepareActivityCleanup(),
+  );
   if (cleanup.kind === 'prepared' &&
       (ownsSharedEffects || cleanup.projection.surface === 'message')) {
-    const certainty = await presenter.clearStatus();
-    await agentView.recordActivityCleanupReceipt(cleanup.operationId, certainty);
+    const certainty = await repairStage('activity_clear', () => presenter.clearStatus());
+    await repairStage(
+      'activity_cleanup_receipt',
+      () => agentView.recordActivityCleanupReceipt(cleanup.operationId, certainty),
+    );
   }
-  await agentView.settleLifecycle();
+  await repairStage('lifecycle_settlement', () => agentView.settleLifecycle());
 
-  const repaired = await state.getRunPresentation(presentation.runId);
+  const repaired = await repairStage(
+    'presentation_reload',
+    () => state.getRunPresentation(presentation.runId),
+  );
   if (repaired?.schemaVersion !== 3) {
-    throw new Error('Slack presentation repair lost its V3 state.');
+    throw new SlackPresentationRepairError('presentation_reload');
   }
   return repaired;
+}
+
+async function repairStage<T>(
+  stage: SlackPresentationRepairStage,
+  effect: () => Promise<T> | T,
+): Promise<T> {
+  try {
+    return await effect();
+  } catch (error) {
+    if (error instanceof SlackPresentationRepairError) throw error;
+    throw new SlackPresentationRepairError(stage, { cause: error });
+  }
 }
 
 export function hasRetryableTerminalRepair(

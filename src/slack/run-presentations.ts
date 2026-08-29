@@ -1865,9 +1865,12 @@ function applyMutation(
         throw stateError('invalid_input', 'Agent Session state is invalid.');
       }
       validateId(mutation.operationId, 'Agent Session operation id');
+      const supersedesProcessing = current.agentSession.desired === 'processing' &&
+        mutation.desired !== 'processing';
       if (current.agentSession.operation &&
           current.agentSession.operation.certainty !== 'acknowledged' &&
-          current.agentSession.operation.certainty !== 'failed') {
+          current.agentSession.operation.certainty !== 'failed' &&
+          !supersedesProcessing) {
         throw stateError('invalid_transition', 'Agent Session operation is unresolved.');
       }
       if (current.agentSession.desired !== 'processing') {
