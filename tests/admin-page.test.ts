@@ -4741,6 +4741,8 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(harness.app.innerHTML, /data-action="attach-open">Add to channels/);
   assert.match(harness.app.innerHTML, /id="ptab-panel-model"[\s\S]*?class="agent-tab-icon semantic-icon tone-model"[\s\S]*?<h3>Model<\/h3>[\s\S]*?id="p-model"/);
   assert.match(harness.app.innerHTML, /class="[^"]*agent-profile-avatar-upload[^"]*"[\s\S]*?class="advanced agent-advanced-card"[\s\S]*?Who can edit[\s\S]*?Coding sandbox/);
+  assert.match(harness.app.innerHTML, /class="agent-advanced-row agent-advanced-policy-row"[\s\S]*?class="agent-advanced-copy"[\s\S]*?class="select-wrap agent-advanced-select"[\s\S]*?<select[^>]*id="p-edit-policy"[\s\S]*?class="ic select-caret"/);
+  assert.match(harness.app.innerHTML, /class="agent-advanced-row agent-advanced-sandbox-row"[\s\S]*?class="agent-advanced-actions"[\s\S]*?class="badge agent-advanced-status badge-off"[\s\S]*?Needs repository[\s\S]*?>Settings<\/button>/);
   assert.doesNotMatch(harness.app.innerHTML, /<strong>Slack identity<\/strong>/);
   assert.ok(
     harness.app.innerHTML.indexOf('id="ptab-panel-model"') < harness.app.innerHTML.indexOf('class="advanced agent-advanced-card"'),
@@ -4761,6 +4763,15 @@ test('Agent detail follows the approved compact hierarchy and capability vocabul
   assert.match(page, /\.agent-tabs-card\s*\{[^}]*border-radius:\s*16px;[^}]*overflow:\s*visible;/s);
   assert.match(page, /\.agent-tabs-card \.ptab-panel\s*\{[^}]*border-radius:\s*0 0 15px 15px;/s);
   assert.match(page, /\.agent-model-row\.agent-model-tab-row\s*\{[^}]*background:\s*transparent;[^}]*display:\s*block;[^}]*padding:\s*0;/s);
+  assert.match(page, /\.agent-model-row > div, \.agent-advanced-copy, \.channel-agent-hero > div\s*\{[^}]*flex:\s*1;[^}]*flex-direction:\s*column;/s);
+  assert.match(page, /\.agent-advanced-select select\.input\s*\{[^}]*padding-right:\s*48px;/s);
+  assert.match(page, /\.agent-advanced-select \.select-caret\s*\{[^}]*margin-right:\s*16px;/s);
+  assert.match(page, /\.agent-advanced-row\s*\{[^}]*border-radius:\s*16px;[^}]*min-height:\s*100px;/s);
+  assert.match(page, /\.agent-advanced-copy\s*\{[^}]*flex:\s*0 1 400px;[^}]*max-width:\s*400px;/s);
+  assert.match(page, /\.agent-advanced-actions\s*\{[^}]*align-items:\s*center;[^}]*display:\s*flex;[^}]*gap:\s*18px;/s);
+  assert.match(page, /\.agent-advanced-status\s*\{[^}]*min-height:\s*32px;[^}]*padding:\s*6px 14px;/s);
+  assert.match(page, /@container \(max-width:\s*750px\)[\s\S]*?\.agent-advanced-policy-row, \.agent-advanced-sandbox-row\s*\{[^}]*flex-direction:\s*column;/s);
+  assert.match(page, /@container \(max-width:\s*750px\)[\s\S]*?\.agent-advanced-copy\s*\{[^}]*max-width:\s*none;[^}]*width:\s*100%;/s);
   assert.match(page, /\.agent-destinations-section\s*\{[^}]*border-radius:\s*16px;[^}]*display:\s*flex;/s);
   assert.match(page, /\.agent-destination-subsection\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*gap:\s*18px;/s);
   assert.doesNotMatch(page, /\.agent-placement-label\.agent-slack-channel-count\s*\{/);

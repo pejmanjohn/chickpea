@@ -2049,11 +2049,19 @@ details[open].advanced summary::before {
   justify-content: space-between;
   padding: 14px 16px;
 }
-.agent-model-row > div, .agent-advanced-row > span, .channel-agent-hero > div { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.agent-model-row > div, .agent-advanced-copy, .channel-agent-hero > div { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
 .agent-model-row .field { flex: 1; min-width: 0; }
-.agent-advanced-row + .agent-advanced-row { border-top: 1px solid var(--line); border-radius: 0; }
+.agent-advanced-card .channel-advanced-content { gap: 20px; }
+.agent-advanced-row { border-radius: 16px; min-height: 100px; padding: 18px 20px; }
+.agent-advanced-copy { flex: 0 1 400px; max-width: 400px; }
 .agent-advanced-row .btn { flex-shrink: 0; }
 .agent-advanced-select { flex: 0 1 320px !important; max-width: 320px; min-width: 250px !important; }
+.agent-advanced-select select.input { min-height: 40px; padding-right: 48px; }
+.agent-advanced-select .select-caret { margin-right: 16px; }
+.agent-advanced-actions { align-items: center; display: flex; flex: none; gap: 18px; }
+.agent-advanced-status { font-size: .8125rem; min-height: 32px; padding: 6px 14px; }
+.agent-advanced-status .dot { background: var(--text-2); }
+.agent-advanced-sandbox-row .btn { font-size: .8125rem; min-height: 34px; padding: 7px 16px; }
 .where-list { border: 1px solid var(--line); border-radius: 11px; display: grid; overflow: hidden; }
 .where-entry { align-items: stretch; background: var(--well); display: grid; grid-template-columns: minmax(0, 1fr) auto; min-width: 0; }
 .where-entry + .where-entry { border-top: 1px solid var(--line); }
@@ -2230,8 +2238,10 @@ button.capability-pill { cursor: pointer; }
   .owner-memory-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .owner-memory-actions .spacer { display: none; }
   .owner-memory-actions .btn { width: 100%; }
-  .agent-advanced-policy-row { align-items: stretch; flex-direction: column; }
+  .agent-advanced-policy-row, .agent-advanced-sandbox-row { align-items: stretch; flex-direction: column; }
+  .agent-advanced-copy { flex-basis: auto; max-width: none; width: 100%; }
   .agent-advanced-policy-row .agent-advanced-select { flex-basis: auto !important; max-width: none; min-width: 0 !important; width: 100%; }
+  .agent-advanced-actions { align-self: flex-start; }
   .channel-detail-header { flex-direction: column; gap: 14px; }
   .channel-detail-controls { justify-content: space-between; padding-top: 0; width: 100%; }
   .channel-agent-hero { align-items: flex-start; grid-template-columns: auto minmax(0, 1fr); }
@@ -9368,10 +9378,10 @@ button.capability-pill { cursor: pointer; }
     var sandboxReady = enabledRepositoryGrants(draft).length > 0;
     var readOnly = draft.canEdit === false;
     return '<details class="advanced agent-advanced-card"><summary>' + icon("gear") + '<span>Advanced</span></summary><div class="channel-advanced-content">' +
-      '<div class="agent-advanced-row agent-advanced-policy-row"><span><strong id="p-edit-policy-label">Who can edit</strong><small class="hint">Choose who can change this Agent&rsquo;s behavior, access, and appearance.</small></span><span class="select-wrap agent-advanced-select"><select class="input" id="p-edit-policy" aria-labelledby="p-edit-policy-label" data-action="profile-edit-policy"' + (readOnly ? " disabled" : "") + '>' +
+      '<div class="agent-advanced-row agent-advanced-policy-row"><span class="agent-advanced-copy"><strong id="p-edit-policy-label">Who can edit</strong><small class="hint">Choose who can change this Agent&rsquo;s behavior, access, and appearance.</small></span><span class="select-wrap agent-advanced-select"><select class="input" id="p-edit-policy" aria-labelledby="p-edit-policy-label" data-action="profile-edit-policy"' + (readOnly ? " disabled" : "") + '>' +
       '<option value="creator_and_admins"' + (draft.editPolicy !== "all_workspace_members" ? " selected" : "") + '>Creator and workspace admins</option>' +
       '<option value="all_workspace_members"' + (draft.editPolicy === "all_workspace_members" ? " selected" : "") + '>Any workspace member</option></select>' + icon("chevron-down", "select-caret") + '</span></div>' +
-      '<div class="agent-advanced-row"><span><strong>Coding sandbox</strong><small class="hint">Run code and work with granted repositories in an isolated environment.</small></span><span class="badge ' + (sandboxReady ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (sandboxReady ? "Available" : "Needs repository") + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="sandbox">Settings</button></div>' +
+      '<div class="agent-advanced-row agent-advanced-sandbox-row"><span class="agent-advanced-copy"><strong>Coding sandbox</strong><small class="hint">Run code and work with granted repositories in an isolated environment.</small></span><span class="agent-advanced-actions"><span class="badge agent-advanced-status ' + (sandboxReady ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (sandboxReady ? "Available" : "Needs repository") + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="sandbox">Settings</button></span></div>' +
       '</div></details>';
   }
 
