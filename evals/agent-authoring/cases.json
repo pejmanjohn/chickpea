@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "corpusVersion": "1.5.1",
-  "guideVersion": "1.0.23",
+  "guideVersion": "1.0.24",
   "baseline": {
     "id": "no-guide-v1",
     "description": "The same evaluation Agent and tools without the Chickpea agent-authoring router or skill."

@@ -63,6 +63,7 @@ const PRESENTATION_FIELD_LABELS: Readonly<Record<string, string>> = {
   destination: 'Destination',
   delivery: 'Delivery',
   availableIn: 'Available in',
+  skills: 'Skills',
 };
 
 const PROPOSAL_HEADER = '*Proposed changes*';
@@ -79,6 +80,22 @@ const TRUNCATION_NOTICE =
   '_Preview truncated to fit Slack. Approval applies the full proposed changes._';
 
 export function formatSlackChangeSetProposal(preview: ManagementChangeSetPreview): string {
+  return formatSlackProposal(preview, []);
+}
+
+export function formatSlackSkillImportProposal(
+  preview: ManagementChangeSetPreview,
+  sourceUrl: string,
+): string {
+  return formatSlackProposal(preview, [
+    ['*Source*', quoteSlackValue(sourceUrl)].join('\n'),
+  ]);
+}
+
+function formatSlackProposal(
+  preview: ManagementChangeSetPreview,
+  leadingSections: readonly string[],
+): string {
   const creation = slackCreationPreview(preview);
   const creationOnly = creation !== undefined;
   const header = creationOnly ? CREATE_HEADER : PROPOSAL_HEADER;
@@ -100,15 +117,25 @@ export function formatSlackChangeSetProposal(preview: ManagementChangeSetPreview
     if (fields.length === 0) {
       return [formatSlackOperationSection(targetName, change.operationKind)];
     }
-    return fields.map((field) => formatSlackChangeSection(
-      targetName,
-      presentationFieldLabel(field),
-      before?.[field],
-      after?.[field],
-      change.before !== undefined,
-    ));
+    return fields.flatMap((field) => {
+      if (field === 'skills') {
+        return formatSlackSkillChangeSections(
+          targetName,
+          before?.[field],
+          after?.[field],
+          change.before !== undefined,
+        );
+      }
+      return [formatSlackChangeSection(
+        targetName,
+        presentationFieldLabel(field),
+        before?.[field],
+        after?.[field],
+        change.before !== undefined,
+      )];
+    });
   });
-  const body = sections.join('\n\n');
+  const body = [...leadingSections, ...sections].join('\n\n');
   const fullPresentation = [
     header,
     ...(body ? [body, ''] : []),
@@ -122,6 +149,112 @@ export function formatSlackChangeSetProposal(preview: ManagementChangeSetPreview
   const suffix = `\n\n${TRUNCATION_NOTICE}\n\n${truncatedApprovalInstruction}`;
   const availableBodyLength = slackMarkdownBlockTextLimit - prefix.length - suffix.length;
   return `${prefix}${body.slice(0, availableBodyLength).trimEnd()}${suffix}`;
+}
+
+function formatSlackSkillChangeSections(
+  targetName: string,
+  before: unknown,
+  after: unknown,
+  compare: boolean,
+): string[] {
+  const beforeSkills = skillPresentationRecords(before);
+  const afterSkills = skillPresentationRecords(after);
+  if (!beforeSkills || !afterSkills) {
+    return [formatSlackChangeSection(
+      targetName,
+      presentationFieldLabel('skills'),
+      before,
+      after,
+      compare,
+    )];
+  }
+  const beforeByName = new Map(beforeSkills.map((skill) => [skill.name, skill]));
+  const afterByName = new Map(afterSkills.map((skill) => [skill.name, skill]));
+  const changedNames = [
+    ...afterSkills.flatMap((skill) =>
+      presentationValuesEqual(beforeByName.get(skill.name), skill) ? [] : [skill.name]
+    ),
+    ...beforeSkills.flatMap((skill) => afterByName.has(skill.name) ? [] : [skill.name]),
+  ];
+  if (changedNames.length === 0) return [];
+  return changedNames.map((name) => formatSlackSkillChangeSection(
+    targetName,
+    name,
+    beforeByName.get(name),
+    afterByName.get(name),
+  ));
+}
+
+function formatSlackSkillChangeSection(
+  targetName: string,
+  skillName: string,
+  before: SkillPresentationRecord | undefined,
+  after: SkillPresentationRecord | undefined,
+): string {
+  const heading = `*${escapeSlackControlCharacters(targetName)} — Skill: ${
+    escapeSlackControlCharacters(skillName)
+  }*`;
+  if (!before && after) {
+    return [heading, '*Add*', formatSlackSkillDetails(after)].join('\n');
+  }
+  if (before && !after) {
+    return [heading, '*Remove*', formatSlackSkillDetails(before)].join('\n');
+  }
+  return [
+    heading,
+    '*Replace*',
+    '*Before*',
+    formatSlackSkillDetails(before!),
+    '*After*',
+    formatSlackSkillDetails(after!),
+  ].join('\n');
+}
+
+interface SkillPresentationRecord {
+  name: string;
+  description: string;
+  instructions: string;
+  enabled?: boolean;
+}
+
+function skillPresentationRecords(value: unknown): SkillPresentationRecord[] | undefined {
+  if (isEmptyPresentationValue(value)) return [];
+  if (!Array.isArray(value)) return undefined;
+  const skills: SkillPresentationRecord[] = [];
+  for (const candidate of value) {
+    const record = recordValue(candidate);
+    const name = stringValue(record?.name);
+    const description = typeof record?.description === 'string' ? record.description : undefined;
+    const instructions = typeof record?.instructions === 'string' ? record.instructions : undefined;
+    if (!name || description === undefined || instructions === undefined) return undefined;
+    skills.push({
+      name,
+      description,
+      instructions,
+      ...(typeof record?.enabled === 'boolean' ? { enabled: record.enabled } : {}),
+    });
+  }
+  return skills;
+}
+
+function formatSlackSkillDetails(skill: SkillPresentationRecord): string {
+  return [
+    '*Description*',
+    quoteSlackExcerpt(skill.description, 600),
+    '*Instructions*',
+    quoteSlackExcerpt(skill.instructions, 1_600),
+  ].join('\n');
+}
+
+function quoteSlackExcerpt(value: string, limit: number): string {
+  const truncated = value.length > limit;
+  const excerpt = truncated ? value.slice(0, limit).trimEnd() : value;
+  return [
+    quoteSlackValue(excerpt),
+    ...(truncated
+      ? [`> _… ${value.length - excerpt.length} more characters; approval applies the full skill._`]
+      : []),
+  ].join('\n');
 }
 
 function formatSlackChangeSection(

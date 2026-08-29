@@ -10,13 +10,16 @@ The compact tool surface is:
 
 - `inspect_workspace`, `prepare_connector_setup`, `discover_slack_channels`, `test_mcp_connection`, `inspect_memory`, and `inspect_routines`
 - `export_workspace_recipe` and `preview_workspace_recipe`
+- `propose_skill_import`
 - `propose_workspace_changes` and `apply_workspace_changes`
 - `confirm_workspace_change` and `undo_workspace_change`
 - `get_operation` and `revoke_setup_link`
 
-The server advertises contract version `2.1.0`. The typed operation inventory remains backward-compatible at `chickpea://schema/operations/v2`; Agent-authoring guidance is an additive resource at `chickpea://guide/agent-authoring/v1`. Read the guide before translating conversational intent into configuration. The resource includes both the main guide and its packaged `skill-creation.md` procedure. A proposal result repeats its guide version, URI, and digest so a client can prove which guidance produced the preview.
+The server advertises contract version `2.2.0`. The typed operation inventory remains backward-compatible at `chickpea://schema/operations/v2`; Agent-authoring guidance is an additive resource at `chickpea://guide/agent-authoring/v1`. Read the guide before translating conversational intent into configuration. The resource includes both the main guide and its packaged `skill-creation.md` procedure. A proposal result repeats its guide version, URI, and digest so a client can prove which guidance produced the preview. The additive `propose_skill_import` tool resolves a public GitHub-hosted `SKILL.md` inside Chickpea and freezes it into the same explicit-approval proposal flow used by other skill-bearing edits.
 
 `prepare_connector_setup` is the credential-safe connector entry point for MCP and Slack. Give it an editable Agent plus a connector catalog id or display name (for example `gmail` or `Gmail`). It returns an authenticated Admin handoff URL that opens the requested Agent's reusable connection form. In a Slack conversation routed through a specific Agent handle, the adapter supplies that current Agent as the default target; credentials must never be requested in Slack or model context.
+
+`propose_skill_import` accepts a public GitHub repository, direct GitHub tree URL, skills.sh link, or `owner/repo` reference. A direct skill-directory URL is preferred because it resolves one exact `SKILL.md`. A source with multiple candidates returns bounded names, descriptions, and source URLs without creating a proposal; call again with the chosen candidate's `sourceUrl`. The server fetches and freezes the selected inline skill, preserves the Agent's other skills, and returns the ordinary approval proposal. Packaged scripts are rejected because Chickpea inline skills cannot execute imported files. The external MCP surface requires `agentId`; a trusted Slack Agent route supplies its own Agent by default.
 
 `propose_workspace_changes` accepts exact typed operations and writes no configuration. Each call must include a requester-chosen `idempotencyKey`, the current guide version, and an `authoringReason` (`agent_creation`, `agent_edit`, `skill_creation`, `skill_edit`, or `onboarding`). Retrying the same bound key and exact operation digest returns the original proposal; reusing it for different content fails closed. `apply_workspace_changes` remains for explicit direct edits and backward-compatible clients; it routes any confirmation-required operation into the existing proposal lifecycle instead of bypassing review. Apply requests accept at most 25 ordered operations. `dependsOn` gives a progressive batch explicit prerequisites; a failed prerequisite skips only its dependents. `clientRef` lets later operations address an Agent created earlier in the same admitted request. A progressive apply batch is not globally atomic, and every item returns its own durable disposition.
 
@@ -68,7 +71,7 @@ During exploration, keep the Agent design in the conversation and create no reco
 ```json
 {
   "idempotencyKey": "agent-research-v1",
-  "guideVersion": "1.0.22",
+  "guideVersion": "1.0.24",
   "authoringReason": "agent_creation",
   "operations": [
     {

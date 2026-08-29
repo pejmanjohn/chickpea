@@ -10,6 +10,8 @@ export interface ParsedSkillSource {
   repo: string;
   /** Branch/tag when the input pinned one; otherwise the repo default is used. */
   ref?: string;
+  /** Directory selected by a GitHub tree URL, relative to the repository root. */
+  skillPath?: string;
   /** A single skill slug to keep (e.g. `owner/repo@triage` or a skills.sh link). */
   skillFilter?: string;
 }
@@ -65,6 +67,9 @@ const MAX_SCANNED_SKILLS = 40;
 const SKILL_IMPORT_REQUEST_TIMEOUT_MS = 10_000;
 const MAX_DESCRIPTION = 1024;
 const MAX_INSTRUCTIONS = 100_000;
+const MAX_REPOSITORY_METADATA_BYTES = 64 * 1024;
+const MAX_REPOSITORY_TREE_BYTES = 16 * 1024 * 1024;
+const MAX_SKILL_DOCUMENT_BYTES = 512 * 1024;
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SKIP_DIR_RE = /(^|\/)(tests?|node_modules|\.git|dist|build|__pycache__|fixtures)(\/|$)/;
 const SCRIPT_EXT_RE = /\.(sh|py|js|mjs|cjs|ts|rb|bash|zsh)$/i;
@@ -102,9 +107,17 @@ export function parseSkillSource(input: string): ParsedSkillSource | null {
     if (segments.length < 2) return null;
     const owner = segments[0]!;
     const repo = stripGitSuffix(segments[1]!);
-    // .../tree/<ref>/<path...> pins a branch/tag.
+    // .../tree/<ref>/<path...> pins a branch/tag and narrows discovery to
+    // that directory. A parent directory may still contain multiple skills;
+    // the resolver reports each one so the caller can require a selection.
     if (segments[2] === 'tree' && segments[3]) {
-      return { owner, repo, ref: segments[3] };
+      const skillPath = segments.slice(4).join('/').replace(/\/+$/, '');
+      return {
+        owner,
+        repo,
+        ref: segments[3],
+        ...(skillPath ? { skillPath } : {}),
+      };
     }
     return { owner, repo };
   }
@@ -217,13 +230,20 @@ export async function resolveSkillSource(
     { headers },
   );
   assertRepositoryResponse(treeRes, authenticated, owner, repo);
-  const tree = (await treeRes.json()) as { tree?: GitTreeEntry[] };
+  const tree = await readJsonResponseBounded<{ tree?: GitTreeEntry[] }>(
+    treeRes,
+    MAX_REPOSITORY_TREE_BYTES,
+    'GitHub repository tree is too large to import safely. Use a direct skill-directory URL.',
+  );
   const blobs = (tree.tree ?? []).filter((entry) => entry.type === 'blob');
 
   const skillDirs = blobs
     .filter((entry) => entry.path === 'SKILL.md' || entry.path.endsWith('/SKILL.md'))
     .map((entry) => ({ path: entry.path, dir: entry.path.replace(/\/?SKILL\.md$/, '') }))
     .filter((entry) => !SKIP_DIR_RE.test(entry.path))
+    .filter((entry) => parsed.skillPath
+      ? entry.dir === parsed.skillPath || entry.dir.startsWith(`${parsed.skillPath}/`)
+      : true)
     .filter((entry) =>
       parsed.skillFilter ? basename(entry.dir) === parsed.skillFilter : true,
     );
@@ -256,7 +276,11 @@ export async function resolveSkillSource(
       skipped += 1;
       continue;
     }
-    const md = await rawRes.text();
+    const md = await readResponseTextBounded(
+      rawRes,
+      MAX_SKILL_DOCUMENT_BYTES,
+      'GitHub skill document is too large to import safely.',
+    );
     const front = parseFrontmatter(md);
     const name = sanitizeSkillName(front.name || basename(entry.dir));
     const description = (front.description || '').trim().slice(0, MAX_DESCRIPTION);
@@ -306,7 +330,11 @@ async function fetchRepositoryMetadata(
     { headers },
   );
   assertRepositoryResponse(res, authenticated, owner, repo);
-  const meta = (await res.json()) as { default_branch?: string; private?: boolean };
+  const meta = await readJsonResponseBounded<{ default_branch?: string; private?: boolean }>(
+    res,
+    MAX_REPOSITORY_METADATA_BYTES,
+    'GitHub repository metadata is too large to import safely.',
+  );
   return {
     defaultBranch: meta.default_branch || 'main',
     private: meta.private === true,
@@ -357,6 +385,53 @@ async function githubRequest(
       'GitHub could not complete the skill import request. Try again.',
     );
   }
+}
+
+async function readJsonResponseBounded<T>(
+  response: Response,
+  maxBytes: number,
+  tooLargeMessage: string,
+): Promise<T> {
+  if (!response.body) return await response.json() as T;
+  const text = await readResponseTextBounded(response, maxBytes, tooLargeMessage);
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new SkillImportError('github_error', 'GitHub returned invalid skill import data.');
+  }
+}
+
+async function readResponseTextBounded(
+  response: Response,
+  maxBytes: number,
+  tooLargeMessage: string,
+): Promise<string> {
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new SkillImportError('source_too_large', tooLargeMessage);
+  }
+  if (!response.body) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > maxBytes) {
+      throw new SkillImportError('source_too_large', tooLargeMessage);
+    }
+    return text;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new SkillImportError('source_too_large', tooLargeMessage);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
 }
 
 function encodeGithubPath(path: string): string {

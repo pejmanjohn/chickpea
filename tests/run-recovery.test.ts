@@ -251,6 +251,7 @@ test('an ambiguous persisted Slack retry enters recovery and cannot be claimed a
   try {
     const work = new WorkStoreLogic(db, { now: () => clock });
     const turns = new TurnJobStoreLogic(db, () => clock);
+    const presentations = new SlackRunPresentationStoreLogic(db, () => clock);
     const admission = work.admitShadowRun(prepareSubmitRun(submission('delivery-unknown')));
     const first = work.claimNextInteractiveRun({
       ownerId: 'first_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
@@ -266,6 +267,55 @@ test('an ambiguous persisted Slack retry enters recovery and cannot be claimed a
       renderedPayload: JSON.stringify({ method: 'slack_chat_post_message', payload }),
     });
     await lifecycle.afterDelivery({ attemptId, outcome: 'failed', safeFailureCode: 'confirmed' });
+    let presentation = presentations.create({
+      schemaVersion: 3,
+      runId: admission.run.id,
+      turnJobId: 'turn_delivery-unknown',
+      bindingId: admission.binding.id,
+      workBindingGeneration: admission.binding.generation,
+      runFencingToken: first.fencingToken,
+      owner: {
+        kind: 'selected_agent',
+        persona: {
+          name: 'Canary',
+          avatarUrl: 'https://chickpea.example/assets/agents/canary/avatar/1',
+          avatarRevision: 1,
+        },
+      },
+      sessionGeneration: 1,
+      currentActivity: {
+        kind: 'checking',
+        action: 'Checking',
+        object: 'the request',
+        generation: 1,
+        sequence: 1,
+        operation: { operationId: 'activity_delivery_unknown', certainty: 'pending' },
+      },
+      root: {
+        workspaceId: 'T_canary', channelId: 'C_canary', threadTs: '100.001',
+        requesterUserId: 'U_member',
+      },
+    });
+    presentation = transitionPresentation(presentations, presentation, {
+      kind: 'select_activity_projection', surface: 'assistant_status',
+    });
+    presentation = transitionPresentation(presentations, presentation, {
+      kind: 'record_activity_receipt', operationId: 'activity_delivery_unknown',
+      certainty: 'acknowledged',
+    });
+    presentation = transitionPresentation(presentations, presentation, {
+      kind: 'set_agent_session_desired', desired: 'processing',
+      operationId: 'session_delivery_unknown_processing',
+    });
+    presentation = transitionPresentation(presentations, presentation, {
+      kind: 'record_agent_session_receipt',
+      operationId: 'session_delivery_unknown_processing',
+      certainty: 'acknowledged', acknowledged: 'processing',
+    });
+    presentation = transitionPresentation(presentations, presentation, {
+      kind: 'record_terminal_delivery_intent',
+      operationId: 'terminal_delivery_unknown', result: 'answer',
+    });
     work.releaseRunLease({
       runId: admission.run.id, ownerId: first.leaseOwner, fencingToken: first.fencingToken,
       outcome: 'requeue', reasonCode: 'confirmed_delivery_failure', releasedAt: ++clock,
@@ -275,18 +325,36 @@ test('an ambiguous persisted Slack retry enters recovery and cannot be claimed a
     const second = work.claimNextInteractiveRun({
       ownerId: 'second_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
     })!;
+    const presentationCalls: string[] = [];
     const handler = createLedgerSlackRunHandler({
       work: work as unknown as WorkStore,
       turns,
       client: {
+        apiCall: async () => {
+          presentationCalls.push('agent_session');
+          return { ok: true };
+        },
+        assistant: { threads: { setStatus: async () => {
+          presentationCalls.push('assistant_status_clear');
+          return { ok: true };
+        } } },
         chat: { postMessage: async () => { throw new Error('socket closed after send'); } },
       } as unknown as WebClient,
+      presentationState: presentationPort(presentations, turns),
       now: () => ++clock,
     });
     assert.deepEqual(await handler(second), { kind: 'completed' });
     assert.equal(work.getRun(admission.run.id)?.status, 'recovery_required');
     assert.equal(work.getRun(admission.run.id)?.deliveryStatus, 'unknown');
     assert.equal(turns.getPendingByRunId(admission.run.id), undefined);
+    const settledPresentation = presentations.get(admission.run.id);
+    assert.equal(settledPresentation?.schemaVersion, 3);
+    if (settledPresentation?.schemaVersion !== 3) assert.fail('expected V3 presentation');
+    assert.equal(settledPresentation.terminalDelivery.state, 'abandoned');
+    assert.equal(settledPresentation.agentSession.acknowledged, 'suspended');
+    assert.equal(settledPresentation.activityProjection.state, 'cleared');
+    assert.equal(settledPresentation.lifecyclePhase, 'settled');
+    assert.deepEqual(presentationCalls, ['agent_session', 'assistant_status_clear']);
     assert.equal(work.claimNextInteractiveRun({
       ownerId: 'third_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
     }), undefined);

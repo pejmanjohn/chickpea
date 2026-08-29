@@ -6,6 +6,7 @@ import {
 } from '../config/state-backend.ts';
 import {
   applyWorkspaceChangesZodSchema,
+  proposeSkillImportZodSchema,
   proposeWorkspaceChangesZodSchema,
   confirmWorkspaceChangeZodSchema,
   getOperationZodSchema,
@@ -41,7 +42,7 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '2.1.0',
+  version: '2.2.0',
 } as const;
 export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI =
   'chickpea://schema/operations/v2' as const;
@@ -161,6 +162,17 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'preview_workspace_recipe',
+    args,
+  )));
+
+  server.registerTool('propose_skill_import', {
+    title: 'Propose GitHub skill import',
+    description: workspaceManagementToolDescription('propose_skill_import'),
+    inputSchema: proposeSkillImportZodSchema,
+    annotations: { readOnlyHint: false, idempotentHint: false },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'propose_skill_import',
     args,
   )));
 

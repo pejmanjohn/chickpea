@@ -688,6 +688,40 @@ export interface ProposeWorkspaceChangesResult {
   confirmationTool: 'confirm_workspace_change';
 }
 
+export interface ProposeSkillImportInput {
+  context: ManagementActorContext;
+  idempotencyKey: string;
+  guideVersion: string;
+  /** Optional only for a trusted Slack route, which supplies the acting Agent. */
+  agentId?: string;
+  source: string;
+  /** Narrows a repository or parent-directory source after candidate discovery. */
+  skillName?: string;
+}
+
+export type ProposeSkillImportResult =
+  | (Omit<ProposeWorkspaceChangesResult, 'preview'> & {
+      import: {
+        sourceUrl: string;
+        path: string;
+        name: string;
+        description: string;
+        replacedExisting: boolean;
+      };
+    })
+  | {
+      status: 'selection_required';
+      source: { owner: string; repo: string; ref: string };
+      candidates: Array<{
+        name: string;
+        description: string;
+        path: string;
+        sourceUrl: string;
+        hasScripts: boolean;
+      }>;
+      instruction: string;
+    };
+
 export interface ConfirmWorkspaceChangeInput {
   context: ManagementActorContext;
   proposalId: string;

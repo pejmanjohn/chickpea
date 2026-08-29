@@ -28,6 +28,7 @@ test('parseSkillSource accepts shorthand, GitHub URLs, and skills.sh links', () 
     owner: 'acme',
     repo: 'skills',
     ref: 'dev',
+    skillPath: 'skills/foo',
   });
   assert.deepEqual(parseSkillSource('https://www.skills.sh/acme/skills/triage'), {
     owner: 'acme',
@@ -144,6 +145,45 @@ test('resolveSkillSource honors an @skill filter', async () => {
   assert.deepEqual(
     result.skills.map((skill) => skill.name),
     ['bar'],
+  );
+});
+
+test('resolveSkillSource narrows a GitHub tree URL to its selected directory', async () => {
+  const fetchImpl = mockFetch([
+    ['/git/trees/', { json: TREE }],
+    ['/main/skills/foo/SKILL.md', { text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo' }],
+  ]);
+  const result = await resolveSkillSource({
+    owner: 'acme',
+    repo: 'skills',
+    ref: 'main',
+    skillPath: 'skills/foo',
+  }, fetchImpl);
+  assert.deepEqual(result.skills.map((skill) => skill.name), ['foo']);
+  assert.equal(result.total, 1);
+});
+
+test('resolveSkillSource rejects oversized GitHub responses before buffering them', async () => {
+  const oversizedTreeFetch = (async () => new Response('{}', {
+    headers: { 'content-length': String(32 * 1024 * 1024) },
+  })) as typeof fetch;
+  await assert.rejects(
+    () => resolveSkillSource({ owner: 'acme', repo: 'skills', ref: 'main' }, oversizedTreeFetch),
+    (error: unknown) => error instanceof SkillImportError && error.code === 'source_too_large',
+  );
+
+  const tree = JSON.stringify({ tree: [{ path: 'skills/foo/SKILL.md', type: 'blob' }] });
+  const oversizedSkillFetch = (async (input: unknown) => {
+    const url = String(input);
+    return url.includes('/git/trees/')
+      ? new Response(tree, { headers: { 'content-type': 'application/json' } })
+      : new Response('---\nname: foo\ndescription: Foo.\n---\n# Foo', {
+          headers: { 'content-length': String(1024 * 1024) },
+        });
+  }) as typeof fetch;
+  await assert.rejects(
+    () => resolveSkillSource({ owner: 'acme', repo: 'skills', ref: 'main' }, oversizedSkillFetch),
+    (error: unknown) => error instanceof SkillImportError && error.code === 'source_too_large',
   );
 });
 

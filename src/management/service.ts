@@ -31,6 +31,14 @@ import {
   type CustomAgentConfig,
 } from '../config/types.ts';
 import {
+  parseSkillSource,
+  resolveSkillSource,
+  SkillImportError,
+  type ParsedSkillSource,
+  type SkillResolution,
+} from '../config/skill-import.ts';
+import { isValidRepositoryFullName } from '../config/github-app.ts';
+import {
   applyConnectionCapabilityCeiling,
   projectRecoverableConnectionAccounts,
 } from '../connections/runtime.ts';
@@ -75,7 +83,10 @@ import {
   type WorkspaceRecipePreview,
 } from './recipes.ts';
 import type { ManagementStore } from './store.ts';
-import { formatSlackChangeSetProposal } from './slack-presentation.ts';
+import {
+  formatSlackChangeSetProposal,
+  formatSlackSkillImportProposal,
+} from './slack-presentation.ts';
 import {
   agentAuthoringArtifactClass,
   emitManagementMetric,
@@ -110,6 +121,8 @@ import {
   type ManagementWorkspaceSnapshot,
   type PrepareConnectorSetupInput,
   type PrepareConnectorSetupResult,
+  type ProposeSkillImportInput,
+  type ProposeSkillImportResult,
   type ProposeWorkspaceChangesInput,
   type ProposeWorkspaceChangesResult,
   type UndoWorkspaceChangeInput,
@@ -195,6 +208,8 @@ export interface WorkspaceManagementServiceInput {
     accessLane: 'read' | 'write';
   }) => Promise<boolean>;
   listAvailableModels?: () => Promise<Array<{ id: string; name?: string }>>;
+  /** Test seam for the public, bounded GitHub skill resolver. */
+  resolveSkillImport?: (source: ParsedSkillSource) => Promise<SkillResolution>;
   publishAgentPresence?: (input: {
     actor: LiveManagementActor;
     agentId: string;
@@ -263,6 +278,125 @@ export class WorkspaceManagementService {
   ): Promise<ManagementWorkspaceSnapshot> {
     const actor = await this.requireLiveActor(context);
     return this.snapshot(actor);
+  }
+
+  async proposeSkillImport(
+    input: ProposeSkillImportInput,
+  ): Promise<ProposeSkillImportResult> {
+    const actor = await this.requireLiveActor(input.context);
+    if (input.guideVersion !== AGENT_AUTHORING_GUIDE_VERSION) {
+      throw new ManagementError(
+        'invalid_request',
+        `Read ${AGENT_AUTHORING_GUIDE_URI} and use guide version ${AGENT_AUTHORING_GUIDE_VERSION}.`,
+      );
+    }
+    const agentId = input.agentId ??
+      (actor.origin.kind === 'slack' ? actor.origin.agentId : undefined);
+    if (!agentId || !isAgentId(agentId)) {
+      throw new ManagementError('invalid_request', 'Choose a valid Agent for the skill import.');
+    }
+    this.assertActingAgentScope(actor, {
+      scope: 'agent',
+      agentId,
+      requestedAction: 'update_agent',
+      target: { kind: 'agent', id: agentId },
+    });
+    const agent = await this.requireEditableAgent(actor, agentId);
+
+    const parsed = parseSkillSource(input.source);
+    if (!parsed) {
+      throw new ManagementError(
+        'invalid_request',
+        'Use a public GitHub repository, GitHub tree URL, skills.sh link, or owner/repo reference.',
+      );
+    }
+    if (!isValidRepositoryFullName(`${parsed.owner}/${parsed.repo}`)) {
+      throw new ManagementError('invalid_request', 'Use a valid GitHub owner/repository source.');
+    }
+    let resolution: SkillResolution;
+    try {
+      resolution = this.stores.resolveSkillImport
+        ? await this.stores.resolveSkillImport(parsed)
+        : await resolveSkillSource(parsed, fetch);
+    } catch (error) {
+      if (!(error instanceof SkillImportError)) throw error;
+      const message = error.code === 'access_candidate' || error.code === 'repository_inaccessible'
+        ? 'Slack skill import currently supports public GitHub repositories. Use Admin for a private repository connected through the GitHub App.'
+        : error.message;
+      throw new ManagementError('invalid_request', message);
+    }
+
+    const matchingSkills = input.skillName
+      ? resolution.skills.filter(({ name }) => name === input.skillName)
+      : resolution.skills;
+    if (matchingSkills.length === 0) {
+      const cappedDetail = resolution.capped
+        ? ' The repository scan was capped; use a direct GitHub skill-directory URL.'
+        : '';
+      throw new ManagementError(
+        'invalid_request',
+        `No importable SKILL.md matched that source or skill name.${cappedDetail}`,
+      );
+    }
+    if (matchingSkills.length > 1) {
+      return {
+        status: 'selection_required',
+        source: {
+          owner: resolution.owner,
+          repo: resolution.repo,
+          ref: resolution.ref,
+        },
+        candidates: matchingSkills.map(({
+          name, description, path, sourceUrl, hasScripts,
+        }) => ({ name, description, path, sourceUrl, hasScripts })),
+        instruction: 'Ask the requester to choose one candidate, then call propose_skill_import again with that candidate’s sourceUrl as source. Do not create a proposal yet.',
+      };
+    }
+
+    const skill = matchingSkills[0]!;
+    if (skill.hasScripts) {
+      throw new ManagementError(
+        'invalid_request',
+        `Skill ${skill.name} includes executable scripts, which Chickpea Agent skills do not package. No proposal was created.`,
+      );
+    }
+    const importedSkill = {
+      name: skill.name,
+      description: skill.description,
+      instructions: skill.instructions,
+      enabled: true,
+    };
+    const existingIndex = agent.skills.findIndex(({ name }) => name === skill.name);
+    const skills = existingIndex >= 0
+      ? agent.skills.map((existing, index) => index === existingIndex ? importedSkill : existing)
+      : [...agent.skills, importedSkill];
+    const proposal = await this.proposeWorkspaceChanges({
+      context: input.context,
+      idempotencyKey: input.idempotencyKey,
+      guideVersion: input.guideVersion,
+      authoringReason: 'skill_creation',
+      operations: [{
+        itemId: 'skill-import',
+        kind: 'update_agent',
+        agentId,
+        expectedRevision: agent.revision,
+        patch: { skills },
+      }],
+    });
+    const { preview: _privatePreview, ...publicProposal } = proposal;
+    return {
+      ...publicProposal,
+      presentation: {
+        slack: formatSlackSkillImportProposal(proposal.preview, skill.sourceUrl),
+      },
+      import: {
+        sourceUrl: skill.sourceUrl,
+        path: skill.path,
+        name: skill.name,
+        description: skill.description,
+        replacedExisting: existingIndex >= 0,
+      },
+    };
   }
 
   async prepareConnectorSetup(

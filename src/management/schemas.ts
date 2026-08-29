@@ -295,6 +295,13 @@ export const proposeWorkspaceChangesZodSchema = z.strictObject({
   authoringReason: z.enum(AGENT_AUTHORING_REASONS),
   operations: z.array(managementOperationZodSchema).min(1).max(25),
 });
+export const proposeSkillImportZodSchema = z.strictObject({
+  agentId: zAgentId,
+  source: zText(2_000),
+  skillName: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64).optional(),
+  idempotencyKey: zText(256),
+  guideVersion: z.literal(AGENT_AUTHORING_GUIDE_VERSION),
+});
 export const confirmWorkspaceChangeZodSchema = z.strictObject({ proposalId: zId });
 export const undoWorkspaceChangeZodSchema = z.strictObject({
   operationId: zId,
@@ -602,6 +609,17 @@ export const proposeWorkspaceChangesValibotSchema = v.strictObject({
   guideVersion: v.literal(AGENT_AUTHORING_GUIDE_VERSION),
   authoringReason: v.picklist(AGENT_AUTHORING_REASONS),
   operations: v.pipe(v.array(managementOperationValibotSchema), v.minLength(1), v.maxLength(25)),
+});
+export const proposeSkillImportValibotSchema = v.strictObject({
+  agentId: v.optional(vAgentId),
+  source: vt(2_000),
+  skillName: v.optional(v.pipe(
+    v.string(),
+    v.maxLength(64),
+    v.regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  )),
+  idempotencyKey: vt(256),
+  guideVersion: v.literal(AGENT_AUTHORING_GUIDE_VERSION),
 });
 export const confirmWorkspaceChangeValibotSchema = v.strictObject({ proposalId: vid });
 export const undoWorkspaceChangeValibotSchema = v.strictObject({
