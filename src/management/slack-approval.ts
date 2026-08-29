@@ -74,6 +74,8 @@ export async function executeHostSlackManagementApproval(input: {
   turnJobId: string;
   proposalId: string;
   dependencies: SlackManagementApprovalDependencies;
+  presentationRunId?: string;
+  prepareAgentWelcomeTerminal?: () => Promise<void>;
 }): Promise<HostSlackManagementApprovalResult> {
   const signal = slackManagementSignal(input.turn, input.assignment, input.turnJobId);
   try {
@@ -89,6 +91,10 @@ export async function executeHostSlackManagementApproval(input: {
       actorMembershipId: actor.membershipId,
       config: input.dependencies.config,
       management: input.dependencies.management,
+      ...(input.presentationRunId ? { presentationRunId: input.presentationRunId } : {}),
+      ...(input.prepareAgentWelcomeTerminal
+        ? { prepareAgentWelcomeTerminal: input.prepareAgentWelcomeTerminal }
+        : {}),
       ...(input.dependencies.publicUrl ? { publicUrl: input.dependencies.publicUrl } : {}),
     });
   } catch (error) {
@@ -132,6 +138,8 @@ async function formatHostSlackManagementReceipt(input: {
   actorMembershipId: string;
   config: Pick<ConfigStore, 'getAgent'>;
   management: Pick<ManagementStore, 'putOutbox'>;
+  presentationRunId?: string;
+  prepareAgentWelcomeTerminal?: () => Promise<void>;
   publicUrl?: string;
 }): Promise<HostSlackManagementApprovalResult> {
   const { result } = input;
@@ -173,6 +181,7 @@ async function formatHostSlackManagementReceipt(input: {
       const receipt: ManagementAgentCreatedWelcome = {
         kind: 'agent_created_welcome',
         proposalId: input.proposalId,
+        ...(input.presentationRunId ? { presentationRunId: input.presentationRunId } : {}),
         agentId: agent.id,
         agentName: agent.name,
         ...(agent.description ? { agentDescription: agent.description } : {}),
@@ -203,6 +212,13 @@ async function formatHostSlackManagementReceipt(input: {
         updatedAt: at,
       };
       const stored = await input.management.putOutbox(outbox);
+      try {
+        await input.prepareAgentWelcomeTerminal?.();
+      } catch {
+        // The durable outbox owns recovery now. Its acknowledged delivery can
+        // reconstruct the terminal intent from presentationRunId.
+        console.warn('[chickpea:management] deferred terminal intent will be recovered on delivery');
+      }
       return { kind: 'agent_welcome_queued', outboxId: stored.outboxId };
     }
   }

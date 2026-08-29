@@ -821,6 +821,14 @@ export async function runTurn(
         turnJobId: options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
         proposalId: turn.managementApprovalProposalId,
         dependencies: approvalDependencies,
+        ...(agentViewPresentation && options.runId
+          ? {
+              presentationRunId: options.runId,
+              prepareAgentWelcomeTerminal: async () => {
+                await agentViewPresentation.prepareDeferredTerminalDelivery('answer');
+              },
+            }
+          : {}),
       });
       if (workLifecycle?.hasExecution) {
         await workLifecycle.settleExecution({

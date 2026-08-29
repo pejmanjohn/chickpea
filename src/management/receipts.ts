@@ -1,3 +1,5 @@
+import type { WebClient } from '@slack/web-api';
+
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { managedConnectorReadCopy } from '../connections/managed-copy.ts';
@@ -6,6 +8,13 @@ import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from '../slack/installation-execution.ts';
+import { renderSlackActionLink } from '../slack/message-format.ts';
+import type { SlackPresentationStatePort } from '../slack/agent-view-presentation.ts';
+import {
+  abandonDeferredTerminalSlackDelivery,
+  acknowledgeDeferredTerminalSlackDelivery,
+  slackPresentationRepairFailureCode,
+} from '../slack/presentation-repair.ts';
 import { SlackTransportError } from '../slack/transport/types.ts';
 import {
   handoffCreatedAgentThread,
@@ -29,6 +38,7 @@ import { emitManagementMetric } from './telemetry.ts';
 
 const OUTBOX_LEASE_MS = 30_000;
 const OUTBOX_MAX_ATTEMPTS = 8;
+const VIEW_AGENT_LINK_LABEL = 'View Agent';
 
 /** Slack rejections a retry can never fix; settle them terminally at once. */
 const PERMANENT_DELIVERY_CODES = new Set([
@@ -154,6 +164,11 @@ export interface ManagementReceiptDeliveryResult {
   deliveryRef: string;
 }
 
+export interface AgentWelcomePresentationRuntime {
+  state: SlackPresentationStatePort;
+  resolveClient(workspaceId: string): Promise<WebClient>;
+}
+
 export async function completeAgentWelcomeDelivery(
   record: ManagementReceiptOutboxRecord,
   delivery: {
@@ -163,6 +178,7 @@ export async function completeAgentWelcomeDelivery(
     messageTs: string;
     text: string;
     persona: 'agent' | 'chickpea';
+    client: WebClient;
   },
   config: CreatedAgentHandoffConfig & {
     putSlackPublicContext(
@@ -170,11 +186,29 @@ export async function completeAgentWelcomeDelivery(
     ): Awaited<ReturnType<ConfigStore['putSlackPublicContext']>> |
       ReturnType<ConfigStore['putSlackPublicContext']>;
   },
+  presentation?: AgentWelcomePresentationRuntime,
 ): Promise<void> {
   if (!isAgentCreatedWelcome(record.receipt)) return;
   if (delivery.persona !== 'agent') return;
   if (record.destination.kind !== 'thread' || !delivery.threadTs) {
     throw new Error('The Agent welcome must target its creation thread.');
+  }
+  let presentationError: unknown;
+  if (record.receipt.presentationRunId && presentation) {
+    try {
+      await acknowledgeDeferredTerminalSlackDelivery({
+        runId: record.receipt.presentationRunId,
+        state: presentation.state,
+        // Reuse the installation client that Slack just accepted for the
+        // welcome. Resolving it again here creates a second failure boundary
+        // after the irreversible post and can strand the terminal activity.
+        client: delivery.client,
+      });
+    } catch (error) {
+      // The Slack post is already durable. Still complete routing and public
+      // context so one failed lifecycle effect cannot strand the Agent thread.
+      presentationError = error;
+    }
   }
   await handoffCreatedAgentThread({
     workspaceId: record.destination.workspaceId,
@@ -195,11 +229,32 @@ export async function completeAgentWelcomeDelivery(
     agentId: record.receipt.agentId,
     text: delivery.text,
   });
+  if (presentationError) {
+    console.warn('[chickpea:management] Agent welcome lifecycle settlement failed', JSON.stringify({
+      outboxId: record.outboxId,
+      failureCode: receiptDeliveryFailureCode(presentationError),
+    }));
+    throw presentationError;
+  }
+}
+
+export async function failAgentWelcomeDelivery(
+  record: ManagementReceiptOutboxRecord,
+  presentation?: AgentWelcomePresentationRuntime,
+): Promise<void> {
+  if (!isAgentCreatedWelcome(record.receipt) || !record.receipt.presentationRunId ||
+      !presentation || record.destination.kind !== 'thread') return;
+  await abandonDeferredTerminalSlackDelivery({
+    runId: record.receipt.presentationRunId,
+    state: presentation.state,
+    resolveClient: presentation.resolveClient,
+  });
 }
 
 export async function drainManagementReceiptOutbox(input: {
   management: ManagementStore;
   deliver(record: ManagementReceiptOutboxRecord): Promise<ManagementReceiptDeliveryResult>;
+  onTerminalFailure?(record: ManagementReceiptOutboxRecord, failureCode: string): Promise<void>;
   now?: () => number;
   limit?: number;
 }): Promise<{ delivered: number; retried: number; failed: number }> {
@@ -234,6 +289,16 @@ export async function drainManagementReceiptOutbox(input: {
         failureCode,
         ...(terminal ? {} : { nextAttemptAt: now() + receiptRetryDelay(record.attempts) }),
       });
+      if (terminal) {
+        try {
+          await input.onTerminalFailure?.(record, failureCode);
+        } catch (cleanupError) {
+          console.warn('[chickpea:management] terminal receipt cleanup failed', JSON.stringify({
+            outboxId: record.outboxId,
+            failureCode: receiptDeliveryFailureCode(cleanupError),
+          }));
+        }
+      }
       console.warn('[chickpea:management] receipt delivery failed', JSON.stringify({
         outboxId: record.outboxId,
         destination: record.destination.kind,
@@ -270,6 +335,7 @@ export async function deliverManagementReceiptToSlack(
         messageTs: string;
         text: string;
         persona: 'agent' | 'chickpea';
+        client: WebClient;
       },
     ) => void | Promise<void>;
   },
@@ -396,6 +462,7 @@ export async function deliverManagementReceiptToSlack(
       messageTs: response.ts,
       text: deliveredText,
       persona,
+      client: execution.client,
     });
   } catch (error) {
     // Slack has already acknowledged the irreversible post. A follow-up route
@@ -457,10 +524,12 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
   ];
   if (receipt.suggestedConnector) {
     lines.push(
-      `A sensible next step is to connect *${escapeSlackText(receipt.suggestedConnector)}* so I can work with live account data.${receipt.setupUrl ? ` ${receipt.setupUrl}` : ''}`,
+      `A sensible next step is to connect *${escapeSlackText(receipt.suggestedConnector)}* so I can work with live account data.`,
     );
+    if (receipt.setupUrl) lines.push(renderSlackActionLink(receipt.setupUrl, VIEW_AGENT_LINK_LABEL));
   } else if (receipt.setupUrl) {
-    lines.push(`You can configure my connections and capabilities here: ${receipt.setupUrl}`);
+    lines.push('You can configure my connections and capabilities from my Agent page.');
+    lines.push(renderSlackActionLink(receipt.setupUrl, VIEW_AGENT_LINK_LABEL));
   } else {
     lines.push('Tell me what you’d like to work on first.');
   }
@@ -470,7 +539,7 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
 function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome): string {
   return [
     `Created *${boundedSlackText(receipt.agentName, 80)}*, but Slack would not let me post its welcome under the Agent’s identity. The creation thread remains with Chickpea.`,
-    ...(receipt.setupUrl ? [`Configure the Agent here: ${receipt.setupUrl}`] : []),
+    ...(receipt.setupUrl ? [renderSlackActionLink(receipt.setupUrl, VIEW_AGENT_LINK_LABEL)] : []),
   ].join('\n\n');
 }
 
@@ -647,6 +716,8 @@ function slackPlatformErrorCode(error: unknown): string | undefined {
 
 /** Content-free failure classification: a Slack error code or an error name. */
 function receiptDeliveryFailureCode(error: unknown): string {
+  const repairCode = slackPresentationRepairFailureCode(error);
+  if (repairCode) return repairCode;
   const code = slackPlatformErrorCode(error);
   if (code) return code;
   if (error instanceof Error && error.name !== 'Error') return error.name;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  SLACK_ACTION_LINK_INSTRUCTION,
   appendSlackReplyFooter,
   buildSlackAdminUrl,
   canonicalSlackMarkdownText,
@@ -9,8 +10,11 @@ import {
   renderSlackReplyFooterBlock,
   renderUnassignedChannelHint,
   markdownFallbackText,
+  renderSlackActionLink,
+  renderSlackMarkdownActionLink,
   renderSlackMessage,
   sanitizeSlackMarkdownLinks,
+  slackActionLink,
   slackMarkdownBlockTextLimit,
   streamableSlackMarkdownPrefix,
 } from '../src/slack/message-format.ts';
@@ -122,6 +126,37 @@ test('fallback text is plain enough for notifications and accessibility', () => 
   const fallback = markdownFallbackText('## Hello <team>\n\n**Ship** [docs](https://example.com)');
 
   assert.equal(fallback, 'Hello &lt;team&gt;\n\nShip docs (https://example.com)');
+});
+
+test('product-owned action links use safe descriptive Slack labels', () => {
+  const reusable = slackActionLink(
+    'https://demo.example/admin/agents/agent_default?tab=connections&owner=member',
+    'View Agent',
+  );
+  assert.deepEqual(reusable, {
+    url: 'https://demo.example/admin/agents/agent_default?tab=connections&owner=member',
+    label: 'View Agent',
+  });
+  assert.equal(
+    renderSlackActionLink(reusable),
+    '<https://demo.example/admin/agents/agent_default?tab=connections&amp;owner=member|View Agent>',
+  );
+  assert.equal(
+    renderSlackMarkdownActionLink(reusable),
+    '[View Agent](https://demo.example/admin/agents/agent_default?tab=connections&owner=member)',
+  );
+  assert.equal(
+    renderSlackActionLink('javascript:alert(1)', 'View Agent'),
+    'View Agent',
+  );
+  assert.match(SLACK_ACTION_LINK_INSTRUCTION, /never display a raw URL/i);
+  assert.match(SLACK_ACTION_LINK_INSTRUCTION, /actionLinks/);
+  assert.match(SLACK_ACTION_LINK_INSTRUCTION, /supplied label/i);
+  assert.doesNotMatch(SLACK_ACTION_LINK_INSTRUCTION, /Connect Google Ads|Authorize Google Ads/);
+  assert.equal(
+    canonicalSlackMarkdownText('[View Agent](https://demo.example/admin/agents/agent_default)'),
+    '[View Agent](https://demo.example/admin/agents/agent_default)',
+  );
 });
 
 test('reply footers render Agent, model, and optional configure link', () => {

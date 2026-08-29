@@ -4,6 +4,13 @@ import type { SlackNativeTableBlock } from './table-presentation.ts';
 export const slackMarkdownBlockTextLimit = 12_000;
 export const slackFallbackTextLimit = 4_000;
 
+export const SLACK_ACTION_LINK_INSTRUCTION = [
+  'In Slack replies, never display a raw URL for an action link supplied by Chickpea or a tool.',
+  'When a tool result includes actionLinks, render every item as a Markdown link using its supplied label: [label](url).',
+  'For any other action URL, choose concise action-oriented link text that describes what opening it does. Apply this rule to future link types without waiting for a link-specific instruction.',
+  'Keep a URL visible only when the requester asked for the URL itself or the exact URL is meaningful data.',
+].join(' ');
+
 export type SlackReplyFormat = 'plain_text' | 'mrkdwn' | 'markdown';
 
 export interface SlackMarkdownBlock {
@@ -47,6 +54,16 @@ export interface RenderedSlackMessage {
 export interface SlackAdminUrlParams {
   agentId?: string;
   channelId?: string;
+}
+
+/** Presentation data returned by Slack-facing tools for any current or future action URL. */
+export interface SlackActionLink {
+  url: string;
+  label: string;
+}
+
+export function slackActionLink(url: string, label: string): SlackActionLink {
+  return { url, label };
 }
 
 export interface SlackReplyFooter {
@@ -232,7 +249,58 @@ export function renderSlackConfigureLink(
   params: SlackAdminUrlParams = {},
 ): string {
   const adminUrl = buildSlackAdminUrl(publicUrl, params);
-  return adminUrl ? `<${adminUrl}|Configure>` : 'Configure';
+  return adminUrl ? renderSlackActionLink(adminUrl, 'Configure') : 'Configure';
+}
+
+/** Render a product-owned action URL without exposing it as the link text. */
+export function renderSlackActionLink(link: SlackActionLink): string;
+export function renderSlackActionLink(url: string, label: string): string;
+export function renderSlackActionLink(
+  urlOrLink: string | SlackActionLink,
+  label?: string,
+): string {
+  const link = typeof urlOrLink === 'string'
+    ? slackActionLink(urlOrLink, label ?? 'Open link')
+    : urlOrLink;
+  const safeLabel = escapeSlackControlCharacters(link.label)
+    .replace(/[\r\n\u0000-\u001f\u007f|]+/g, ' ')
+    .replace(/[*_~`]/g, '')
+    .slice(0, 80)
+    .trim() || 'Open link';
+  const trimmed = link.url.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return safeLabel;
+  }
+  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+      parsed.username || parsed.password) {
+    return safeLabel;
+  }
+  const safeUrl = escapeSlackControlCharacters(parsed.toString()).replace(/\|/g, '%7C');
+  return `<${safeUrl}|${safeLabel}>`;
+}
+
+/** Render the same action-link data for Slack's standard Markdown block. */
+export function renderSlackMarkdownActionLink(link: SlackActionLink): string {
+  const safeLabel = link.label
+    .replace(/[\r\n\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/([\\\[\]])/g, '\\$1')
+    .slice(0, 80)
+    .trim() || 'Open link';
+  let parsed: URL;
+  try {
+    parsed = new URL(link.url.trim());
+  } catch {
+    return safeLabel;
+  }
+  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+      parsed.username || parsed.password) {
+    return safeLabel;
+  }
+  const safeUrl = parsed.toString().replace(/\(/g, '%28').replace(/\)/g, '%29');
+  return `[${safeLabel}](${safeUrl})`;
 }
 
 // The channel onboarding disclosure posted when the bot itself joins a channel.

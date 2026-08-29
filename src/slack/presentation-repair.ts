@@ -1,10 +1,15 @@
+import { createHash } from 'node:crypto';
+
 import type { WebClient } from '@slack/web-api';
 
 import {
   SlackAgentViewPresentation,
   type SlackPresentationStatePort,
 } from './agent-view-presentation.ts';
-import type { SlackRunPresentationV3 } from './run-presentations.ts';
+import {
+  presentationHasTerminalOutcome,
+  type SlackRunPresentationV3,
+} from './run-presentations.ts';
 import { WebClientPresenter } from './web-client-presenter.ts';
 
 export interface SlackPresentationRepairDrainOptions {
@@ -22,6 +27,100 @@ export interface SlackPresentationRepairDrainResult {
   attempted: number;
   retryableRemaining: number;
   nextRetryAt?: number;
+}
+
+export type SlackPresentationRepairStage =
+  | 'presentation_load'
+  | 'terminal_intent_prepare'
+  | 'terminal_intent_reload'
+  | 'terminal_delivery_receipt'
+  | 'terminal_delivery_reload'
+  | 'thread_generation_lookup'
+  | 'latest_generation_unproven'
+  | 'agent_session_settlement'
+  | 'shared_effect_supersession'
+  | 'activity_cleanup_intent'
+  | 'activity_clear'
+  | 'activity_cleanup_receipt'
+  | 'lifecycle_settlement'
+  | 'presentation_reload';
+
+/** Content-free stage marker for durable repair telemetry and diagnosis. */
+export class SlackPresentationRepairError extends Error {
+  constructor(
+    readonly stage: SlackPresentationRepairStage,
+    options?: ErrorOptions,
+  ) {
+    super(`Slack presentation repair failed during ${stage}.`, options);
+    this.name = 'SlackPresentationRepairError';
+  }
+}
+
+export function slackPresentationRepairFailureCode(error: unknown): string | undefined {
+  return error instanceof SlackPresentationRepairError
+    ? `slack_presentation_repair_${error.stage}`
+    : undefined;
+}
+
+/**
+ * The deferred Slack post is the Run's canonical terminal artifact. Record its
+ * acknowledgement first, then reuse the normal repair path to settle the Agent
+ * Session and remove any visible activity.
+ */
+export async function acknowledgeDeferredTerminalSlackDelivery(input: {
+  runId: string;
+  state: SlackPresentationStatePort;
+  client: WebClient;
+}): Promise<SlackRunPresentationV3 | undefined> {
+  let presentation = await repairStage(
+    'presentation_load',
+    () => input.state.getRunPresentation(input.runId),
+  );
+  if (presentation?.schemaVersion !== 3) return undefined;
+  const agentName = presentation.owner.kind === 'selected_agent'
+    ? presentation.owner.persona.name
+    : 'Chickpea';
+  const agentView = new SlackAgentViewPresentation({
+    client: input.client,
+    state: input.state,
+    runId: presentation.runId,
+    runFencingToken: presentation.runFencingToken,
+    footer: { agentName, agentId: 'agent_default' },
+  });
+  if (presentation.terminalDelivery.state === 'none') {
+    await repairStage(
+      'terminal_intent_prepare',
+      () => agentView.prepareDeferredTerminalDelivery('answer'),
+    );
+    presentation = await repairStage(
+      'terminal_intent_reload',
+      () => input.state.getRunPresentation(input.runId),
+    );
+  }
+  if (presentation?.schemaVersion !== 3 ||
+      presentation.terminalDelivery.state !== 'intended') return undefined;
+  await repairStage(
+    'terminal_delivery_receipt',
+    () => agentView.recordTerminalDeliveryReceipt('acknowledged'),
+  );
+  const acknowledged = await repairStage(
+    'terminal_delivery_reload',
+    () => input.state.getRunPresentation(input.runId),
+  );
+  if (acknowledged?.schemaVersion !== 3) return undefined;
+  return repairTerminalSlackPresentation(acknowledged, input.state, input.client);
+}
+
+/** Close lifecycle honestly when the durable deferred post is terminally undeliverable. */
+export async function abandonDeferredTerminalSlackDelivery(input: {
+  runId: string;
+  state: SlackPresentationStatePort;
+  resolveClient(workspaceId: string): Promise<WebClient>;
+}): Promise<SlackRunPresentationV3 | undefined> {
+  const abandoned = await recordDeferredTerminalAbandonment(input.runId, input.state);
+  if (!abandoned) return undefined;
+  const client = await input.resolveClient(abandoned.root.workspaceId);
+  return repairTerminalSlackPresentation(abandoned, input.state, client);
 }
 
 /**
@@ -83,7 +182,7 @@ export async function repairTerminalSlackPresentation(
   client: WebClient,
 ): Promise<SlackRunPresentationV3> {
   if (!hasRetryableTerminalRepair(presentation)) return presentation;
-  if (presentation.terminalDelivery.state !== 'intended') return presentation;
+  if (presentation.terminalDelivery.state === 'none') return presentation;
   const terminalResult = presentation.terminalDelivery.result === 'failure'
     ? 'failure'
     : 'answer';
@@ -113,37 +212,65 @@ export async function repairTerminalSlackPresentation(
       : {}),
   });
 
-  const latestGeneration = await state.getLatestThreadSessionGeneration(presentation.root);
+  const latestGeneration = await repairStage(
+    'thread_generation_lookup',
+    () => state.getLatestThreadSessionGeneration(presentation.root),
+  );
   if (latestGeneration === undefined || latestGeneration < presentation.sessionGeneration) {
-    throw new Error('Slack presentation repair could not prove the latest thread generation.');
+    throw new SlackPresentationRepairError('latest_generation_unproven');
   }
   const ownsSharedEffects = latestGeneration === presentation.sessionGeneration;
   if (ownsSharedEffects) {
-    await agentView.settleAgentSession(terminalResult);
+    await repairStage(
+      'agent_session_settlement',
+      () => agentView.settleAgentSession(terminalResult),
+    );
   } else {
-    await agentView.supersedeSharedRepairEffects();
+    await repairStage(
+      'shared_effect_supersession',
+      () => agentView.supersedeSharedRepairEffects(),
+    );
   }
-  const cleanup = await agentView.prepareActivityCleanup();
+  const cleanup = await repairStage(
+    'activity_cleanup_intent',
+    () => agentView.prepareActivityCleanup(),
+  );
   if (cleanup.kind === 'prepared' &&
       (ownsSharedEffects || cleanup.projection.surface === 'message')) {
-    const certainty = await presenter.clearStatus();
-    await agentView.recordActivityCleanupReceipt(cleanup.operationId, certainty);
+    const certainty = await repairStage('activity_clear', () => presenter.clearStatus());
+    await repairStage(
+      'activity_cleanup_receipt',
+      () => agentView.recordActivityCleanupReceipt(cleanup.operationId, certainty),
+    );
   }
-  await agentView.settleLifecycle();
+  await repairStage('lifecycle_settlement', () => agentView.settleLifecycle());
 
-  const repaired = await state.getRunPresentation(presentation.runId);
+  const repaired = await repairStage(
+    'presentation_reload',
+    () => state.getRunPresentation(presentation.runId),
+  );
   if (repaired?.schemaVersion !== 3) {
-    throw new Error('Slack presentation repair lost its V3 state.');
+    throw new SlackPresentationRepairError('presentation_reload');
   }
   return repaired;
+}
+
+async function repairStage<T>(
+  stage: SlackPresentationRepairStage,
+  effect: () => Promise<T> | T,
+): Promise<T> {
+  try {
+    return await effect();
+  } catch (error) {
+    if (error instanceof SlackPresentationRepairError) throw error;
+    throw new SlackPresentationRepairError(stage, { cause: error });
+  }
 }
 
 export function hasRetryableTerminalRepair(
   presentation: SlackRunPresentationV3,
 ): boolean {
-  if (!presentation.repairRequired ||
-      presentation.terminalDelivery.state !== 'intended' ||
-      presentation.terminalDelivery.operation.certainty !== 'acknowledged') return false;
+  if (!presentation.repairRequired || !presentationHasTerminalOutcome(presentation)) return false;
   const session = presentation.agentSession.operation;
   const lifecycleRepairable = presentation.lifecyclePhase !== 'settled';
   const sessionRepairable = !presentation.agentSession.disposition &&
@@ -184,6 +311,48 @@ async function recordRepairAttempt(
     throw new Error('Slack presentation repair attempt lost its V3 state.');
   }
   return result.presentation;
+}
+
+async function recordDeferredTerminalAbandonment(
+  runId: string,
+  state: SlackPresentationStatePort,
+): Promise<SlackRunPresentationV3 | undefined> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const presentation = await state.getRunPresentation(runId);
+    if (presentation?.schemaVersion !== 3) return undefined;
+    if (presentation.terminalDelivery.state === 'abandoned' ||
+        presentation.terminalDelivery.state === 'intended' &&
+          presentation.terminalDelivery.operation.certainty === 'acknowledged') {
+      return presentation;
+    }
+    const mutation = presentation.terminalDelivery.state === 'none'
+      ? {
+          kind: 'record_terminal_delivery_intent' as const,
+          operationId: `terminal_${hash(`${presentation.runId}:answer:1`).slice(0, 24)}`,
+          result: 'answer' as const,
+        }
+      : {
+          kind: 'abandon_terminal_delivery' as const,
+          operationId: presentation.terminalDelivery.operation.operationId,
+        };
+    const result = await state.transitionRunPresentation({
+      runId: presentation.runId,
+      workBindingGeneration: presentation.workBindingGeneration,
+      runFencingToken: presentation.runFencingToken,
+      expectedProjectionVersion: presentation.projectionVersion,
+      expectedStreamState: presentation.stream.state,
+      mutation,
+    });
+    if (result.outcome === 'applied' && result.presentation.schemaVersion === 3 &&
+        result.presentation.terminalDelivery.state === 'abandoned') {
+      return result.presentation;
+    }
+  }
+  throw new Error('Slack deferred terminal abandonment lost its presentation fence.');
+}
+
+function hash(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function earlier(current: number | undefined, candidate: number): number {

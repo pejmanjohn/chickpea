@@ -96,6 +96,7 @@ import {
 } from '../config/types.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import { resolveSlackPublicUrl } from '../slack/credentials.ts';
+import { SLACK_ACTION_LINK_INSTRUCTION } from '../slack/message-format.ts';
 import {
   isDeniedRepositoryEndpoint,
   matchesGrantedCodeSearch,
@@ -1184,6 +1185,7 @@ export function useRuntimePlanAgent(
     useChickpeaResponseMetadata(options.responseMetadataModel);
   }
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
+  useInstruction(SLACK_ACTION_LINK_INSTRUCTION);
   if (options.toolsDisabled) {
     useInstruction(
       'This attachment-bearing Slack turn is read-only. No tools, connectors, sandboxes, or workspace-management actions are available. Answer only from the authoritative Slack request and the attachment evidence signal. If the request also asks for an external action, analyze the attachments, state the exact proposed action inputs separately, and ask the user to restate those exact inputs in a new text-only message. A vague follow-up such as "go ahead" is not authorization.',

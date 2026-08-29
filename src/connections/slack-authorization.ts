@@ -20,6 +20,7 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConnectionAccount } from '../config/types.ts';
 import { parseSlackManagementSignal, type PlatformEnvResolver } from '../management/slack-tools.ts';
 import { resolveSlackPublicUrl } from '../slack/credentials.ts';
+import { slackActionLink, type SlackActionLink } from '../slack/message-format.ts';
 import {
   createOAuthContinuation,
   linkOAuthProviderState,
@@ -32,7 +33,13 @@ const AuthorizePersonalConnectionSchema = v.strictObject({
 });
 
 export type PersonalConnectionAuthorizationResult =
-  | { kind: 'authorization_required'; providerId: string; accountId: string; authorizationUrl: string }
+  | {
+    kind: 'authorization_required';
+    providerId: string;
+    accountId: string;
+    authorizationUrl: string;
+    actionLinks: SlackActionLink[];
+  }
   | { kind: 'already_connected'; providerId: string; accountId: string; label: string }
   | { kind: 'choose_account'; providerId: string; choices: Array<{ label: string; purpose?: string }> }
   | { kind: 'admin_setup_required'; providerId: string };
@@ -198,6 +205,10 @@ export async function startPersonalConnectionAuthorization(input: {
     providerId: option.providerId,
     accountId: account.id,
     authorizationUrl: oauth.authorizationUrl.href,
+    actionLinks: [slackActionLink(
+      oauth.authorizationUrl.href,
+      `Authorize ${displayProvider(option.providerId)}`,
+    )],
   };
 }
 
@@ -220,7 +231,7 @@ export function usePersonalConnectionAuthorizationSlackTool(
   useInstruction([
     `Personal authorization is available for these Agent providers: ${providers.join(', ')}.`,
     'Call authorize_personal_connection only when the current task needs one of them and no ready connection can complete the task.',
-    'If the tool returns choose_account, ask which labeled account to use. If it returns authorization_required, give the authorization link to the user and stop the task until Chickpea resumes it.',
+    'If the tool returns choose_account, ask which labeled account to use. If it returns authorization_required, present its returned actionLinks and then stop the task until Chickpea resumes it.',
   ].join(' '));
   useTool({
     name: 'authorize_personal_connection',

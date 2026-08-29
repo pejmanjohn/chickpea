@@ -12,7 +12,7 @@ import {
 } from '../src/slack/ledger-turn-driver.ts';
 import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
-import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
+import { replayTextForTurnProgress, TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import {
   SlackRunPresentationStoreLogic,
   type SlackPresentationMutation,
@@ -28,6 +28,16 @@ import type { WorkStore } from '../src/work/types.ts';
 import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-observability.ts';
 
 const NOW = 1_940_000_000_000;
+
+test('pull request recovery uses descriptive link text', () => {
+  assert.equal(replayTextForTurnProgress({
+    pullRequest: {
+      number: 42,
+      url: 'https://github.com/chickpea/slack-flue/pull/42',
+      repository: 'chickpea/slack-flue',
+    },
+  }), 'Pull request #42 is already open: [View pull request](https://github.com/chickpea/slack-flue/pull/42)');
+});
 
 test('activated direct-message dispatch preserves DM kind without channel_type', () => {
   const db = openStateDb(':memory:');

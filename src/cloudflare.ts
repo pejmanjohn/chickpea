@@ -216,6 +216,7 @@ import {
   completeAgentWelcomeDelivery,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
+  failAgentWelcomeDelivery,
   reconcileScheduleActionReceipts,
 } from './management/receipts.ts';
 import {
@@ -2050,8 +2051,14 @@ async function drainCloudflareManagementReceipts(
   // ManagementStoreLogic is the in-DO synchronous implementation of every
   // ManagementStore operation; the shared drain awaits its return values, so
   // one implementation owns claim, backoff, terminal settling, and logging.
+  const presentation = {
+    state: localSlackPresentationState(stores),
+    resolveClient: async (workspaceId: string) =>
+      (await resolveInstallation(workspaceId)).client,
+  };
   await drainManagementReceiptOutbox({
     management: stores.management as unknown as ManagementStore,
+    onTerminalFailure: (record) => failAgentWelcomeDelivery(record, presentation),
     deliver: (record) => deliverManagementReceiptToSlack(record, {
       identity: stores.identity as unknown as IdentityStore,
       resolveInstallation,
@@ -2059,6 +2066,7 @@ async function drainCloudflareManagementReceipts(
         deliveredRecord,
         delivery,
         stores.config,
+        presentation,
       ),
     }),
   });

@@ -146,6 +146,19 @@ test('Slack connector setup skips broad workspace inspection for a named service
   assert.match(selectionInstruction, /describe it only as a secure Chickpea link/i);
 });
 
+test('one global Slack action-link policy owns future tool link presentation', async () => {
+  const [formatSource, managementSource, authorizationSource] = await Promise.all([
+    readFile(new URL('../src/slack/message-format.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../src/management/slack-tools.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../src/connections/slack-authorization.ts', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(formatSource, /tool result includes actionLinks/);
+  assert.match(formatSource, /supplied label/);
+  assert.doesNotMatch(managementSource, /descriptive Markdown link labeled Connect/);
+  assert.doesNotMatch(authorizationSource, /descriptive Markdown link labeled Authorize/);
+});
+
 test('guide handles the three product examples without premature mutation', () => {
   assert.match(AGENT_AUTHORING_GUIDE, /chief.of.staff[\s\S]*explore/i);
   assert.match(AGENT_AUTHORING_GUIDE, /bug[\s\S]*pull request[\s\S]*skill/i);
@@ -175,6 +188,10 @@ test('interactive Slack Agent mounts authoring while routine execution does not'
   assert.doesNotMatch(routineSource, /useAgentAuthoring/);
   assert.doesNotMatch(slackSource.slice(slackSource.indexOf('export function useRuntimePlanAgent')),
     /useAgentAuthoring|remember_memory|autonomousMemoryRequest/);
+  assert.match(
+    slackSource.slice(slackSource.indexOf('export function useRuntimePlanAgent')),
+    /useInstruction\(SLACK_ACTION_LINK_INSTRUCTION\)/,
+  );
 });
 
 test('a frozen bash plan still rechecks live Agent execution authority', async () => {

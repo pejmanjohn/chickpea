@@ -1257,6 +1257,48 @@ test('V3 may replace a confirmed failed processing status with its terminal stat
   }
 });
 
+test('V3 terminal status supersedes pending processing but not another pending terminal write', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db);
+    let current: SlackRunPresentation = store.create(createV3Input('run_v3_session_pending'));
+    current = advance(store, current, {
+      kind: 'set_agent_session_desired', desired: 'processing', operationId: 'session_processing_1',
+    });
+    current = advance(store, current, {
+      kind: 'set_agent_session_desired', desired: 'active', operationId: 'session_active_1',
+    });
+    assert.equal(current.schemaVersion, 3);
+    if (current.schemaVersion !== 3) return;
+    assert.deepEqual(current.agentSession, {
+      desired: 'active',
+      acknowledged: 'none',
+      operation: { operationId: 'session_active_1', certainty: 'pending' },
+    });
+    assert.throws(
+      () => advance(store, current, {
+        kind: 'set_agent_session_desired',
+        desired: 'suspended',
+        operationId: 'session_suspended_1',
+      }),
+      (error: unknown) => error instanceof SlackPresentationStateError &&
+        error.code === 'invalid_transition',
+    );
+    assert.throws(
+      () => advance(store, current, {
+        kind: 'record_agent_session_receipt',
+        operationId: 'session_processing_1',
+        certainty: 'acknowledged',
+        acknowledged: 'processing',
+      }),
+      (error: unknown) => error instanceof SlackPresentationStateError &&
+        error.code === 'identity_conflict',
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('a confirmed absent activity remains repair-required until its acknowledged terminal settles', () => {
   const db = openStateDb(':memory:');
   try {

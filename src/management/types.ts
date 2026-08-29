@@ -370,6 +370,8 @@ export type ManagementReceipt =
 export interface ManagementAgentCreatedWelcome {
   kind: 'agent_created_welcome';
   proposalId: string;
+  /** Internal correlation for settling the Slack Run after this deferred post is acknowledged. */
+  presentationRunId?: string;
   agentId: string;
   agentName: string;
   agentDescription?: string;

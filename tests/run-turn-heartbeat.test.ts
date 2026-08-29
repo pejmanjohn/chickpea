@@ -28,6 +28,7 @@ import { SLACK_SELF_MENTION_PLACEHOLDER } from '../src/slack/web-client-context.
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 import { repairTerminalSlackPresentation } from '../src/slack/presentation-repair.ts';
+import { completeAgentWelcomeDelivery } from '../src/management/receipts.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 
@@ -357,7 +358,7 @@ test('runTurn applies a bound DM approval in the host without invoking the Agent
   }
 });
 
-test('runTurn supplies the resolved public URL to a Cloudflare-shaped creation approval', async () => {
+test('runTurn queues an Agent welcome as the pending terminal delivery', async () => {
   const f = await createManagementAdapterFixture('run-turn-host-creation-avatar');
   try {
     const created = await f.config.createAgent({
@@ -383,6 +384,18 @@ test('runTurn supplies the resolved public URL to a Cloudflare-shaped creation a
       apiConnections: [],
       repositories: [],
     });
+    const installation = await f.config.ensureWorkspaceInstallation({
+      workspaceId: f.admin.binding.slackTeamId,
+      transportMode: 'direct',
+      defaultAgentId: created.id,
+      teamId: f.admin.binding.slackTeamId,
+      botUserId: 'U_CHICKPEA',
+    });
+    await f.config.updateWorkspaceInstallation(
+      f.admin.binding.slackTeamId,
+      { runtimeContract: 'chickpea-v1', health: 'healthy' },
+      installation.revision,
+    );
     const assignment: ResolvedAssignment = {
       workspaceId: f.admin.binding.slackTeamId,
       channelId: 'D_HOST_CREATION_AVATAR',
@@ -404,7 +417,18 @@ test('runTurn supplies the resolved public URL to a Cloudflare-shaped creation a
       interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
       managementApprovalProposalId: 'changeset_host_creation_avatar',
     };
+    const runId = 'run_HOST_CREATION_AVATAR';
+    const h = v3PresentationHarness(turn, runId);
+    const effects: string[] = [];
     const client = {
+      apiCall: async (_method: string, input: Record<string, unknown>) => {
+        effects.push(`session:${String(input.status)}`);
+        return { ok: true };
+      },
+      assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+        effects.push(`activity:${input.status ? 'set' : 'clear'}`);
+        return { ok: true };
+      } } },
       chat: {
         startStream: async () => ({ ok: true, ts: '211.1' }),
         stopStream: async () => ({ ok: true }),
@@ -412,43 +436,89 @@ test('runTurn supplies the resolved public URL to a Cloudflare-shaped creation a
       },
     } as unknown as WebClient;
 
-    await runTurn(turn, assignment, {
-      SLACK_TAG_PUBLIC_URL: 'https://chickpea.example',
-    }, {
-      client,
-      turnId: 'turn_HOST_CREATION_AVATAR',
-      managementApproval: {
-        identity: f.identity,
-        config: f.config,
-        management: f.management,
-        service: {
-          confirmWorkspaceChange: async () => ({
-            operationId: 'management_host_creation_avatar',
-            idempotencyKey: 'host-creation-avatar',
-            status: 'completed',
-            outcomes: [{
-              itemId: 'create',
-              operationKind: 'create_agent',
-              disposition: 'applied',
-              changed: [{ kind: 'agent', id: created.id, revision: created.revision }],
-            }],
-            effectiveRevision: 'rev_host_creation_avatar',
-            activation: 'next_turn',
-          }),
-        } as unknown as import('../src/management/service.ts').WorkspaceManagementService,
-      },
-      usageRecordingEnabled: false,
-    });
+    try {
+      await runTurn(turn, assignment, {
+        SLACK_TAG_PUBLIC_URL: 'https://chickpea.example',
+      }, {
+        client,
+        turnId: 'turn_HOST_CREATION_AVATAR',
+        runId,
+        presentationState: h.state,
+        managementApproval: {
+          identity: f.identity,
+          config: f.config,
+          management: f.management,
+          service: {
+            confirmWorkspaceChange: async () => ({
+              operationId: 'management_host_creation_avatar',
+              idempotencyKey: 'host-creation-avatar',
+              status: 'completed',
+              outcomes: [{
+                itemId: 'create',
+                operationKind: 'create_agent',
+                disposition: 'applied',
+                changed: [{ kind: 'agent', id: created.id, revision: created.revision }],
+              }],
+              effectiveRevision: 'rev_host_creation_avatar',
+              activation: 'next_turn',
+            }),
+          } as unknown as import('../src/management/service.ts').WorkspaceManagementService,
+        },
+        usageRecordingEnabled: false,
+      });
 
-    const outbox = await f.management.getOutboxForOperation('management_host_creation_avatar');
-    assert.ok(outbox?.receipt && 'kind' in outbox.receipt);
-    if (!outbox?.receipt || !('kind' in outbox.receipt)) assert.fail('expected Agent welcome');
-    assert.equal(outbox.receipt.kind, 'agent_created_welcome');
-    if (outbox.receipt.kind !== 'agent_created_welcome') assert.fail('expected Agent welcome');
-    assert.equal(
-      outbox.receipt.persona.avatarUrl,
-      'https://chickpea.example/assets/agents/agent_host_creation_avatar/avatar/1',
-    );
+      const outbox = await f.management.getOutboxForOperation('management_host_creation_avatar');
+      assert.ok(outbox?.receipt && 'kind' in outbox.receipt);
+      if (!outbox?.receipt || !('kind' in outbox.receipt)) assert.fail('expected Agent welcome');
+      assert.equal(outbox.receipt.kind, 'agent_created_welcome');
+      if (outbox.receipt.kind !== 'agent_created_welcome') assert.fail('expected Agent welcome');
+      assert.equal(
+        outbox.receipt.persona.avatarUrl,
+        'https://chickpea.example/assets/agents/agent_host_creation_avatar/avatar/1',
+      );
+      assert.equal(outbox.receipt.presentationRunId, runId);
+      const persisted = h.store.get(runId);
+      assert.equal(persisted?.schemaVersion, 3);
+      if (persisted?.schemaVersion !== 3) assert.fail('expected V3 presentation');
+      assert.equal(persisted.terminalDelivery.state, 'intended');
+      if (persisted.terminalDelivery.state !== 'intended') {
+        assert.fail('expected deferred terminal delivery intent');
+      }
+      assert.equal(persisted.terminalDelivery.operation.certainty, 'pending');
+      assert.deepEqual(effects, ['session:processing', 'activity:set']);
+      assert.equal(persisted.stream.state, 'finalized');
+
+      await completeAgentWelcomeDelivery(outbox, {
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        threadTs: turn.threadTs,
+        messageTs: '211.2',
+        text: 'Agent welcome',
+        persona: 'agent',
+        client,
+      }, f.config, {
+        state: h.state,
+        resolveClient: async () => {
+          throw new Error('delivery cleanup must reuse the posting client');
+        },
+      });
+
+      const settled = h.store.get(runId);
+      assert.equal(settled?.schemaVersion, 3);
+      if (settled?.schemaVersion !== 3) assert.fail('expected settled V3 presentation');
+      assert.deepEqual(effects, [
+        'session:processing',
+        'activity:set',
+        'session:active',
+        'activity:clear',
+      ]);
+      assert.equal(settled.agentSession.acknowledged, 'active');
+      assert.equal(settled.activityProjection.state, 'cleared');
+      assert.equal(settled.lifecyclePhase, 'settled');
+      assert.equal(settled.repairRequired, false);
+    } finally {
+      h.db.close();
+    }
   } finally {
     f.close();
   }

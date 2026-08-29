@@ -181,6 +181,12 @@ export type SlackPresentationTerminalDelivery =
       state: 'intended';
       result: 'answer' | 'failure' | 'legacy';
       operation: SlackPresentationOperationReceipt;
+    }
+  | {
+      /** A durable delivery path proved that no terminal artifact can be posted. */
+      state: 'abandoned';
+      result: 'failure';
+      operation: SlackPresentationOperationReceipt & { certainty: 'failed' };
     };
 
 export type SlackPresentationCleanup =
@@ -516,6 +522,7 @@ export type SlackPresentationMutation =
       operationId: string;
       certainty: Exclude<SlackPresentationReceiptCertainty, 'pending'>;
     }
+  | { kind: 'abandon_terminal_delivery'; operationId: string }
   | { kind: 'supersede_failed_answer_delivery'; operationId: string }
   | { kind: 'retry_terminal_delivery'; operationId: string }
   | {
@@ -942,8 +949,13 @@ export class SlackRunPresentationStoreLogic {
       `SELECT ${PRESENTATION_COLUMNS} FROM slack_run_presentations
        WHERE repair_required = 1
          AND json_extract(presentation_json, '$.schemaVersion') = 3
-         AND json_extract(presentation_json, '$.terminalDelivery.state') = 'intended'
-         AND json_extract(presentation_json, '$.terminalDelivery.operation.certainty') = 'acknowledged'
+         AND (
+           (
+             json_extract(presentation_json, '$.terminalDelivery.state') = 'intended'
+             AND json_extract(presentation_json, '$.terminalDelivery.operation.certainty') = 'acknowledged'
+           )
+           OR json_extract(presentation_json, '$.terminalDelivery.state') = 'abandoned'
+         )
          AND (
            json_extract(presentation_json, '$.lifecyclePhase') <> 'settled'
            OR
@@ -1711,9 +1723,8 @@ function applyMutation(
     case 'record_repair_attempt': {
       requireV3(current);
       requireV3(next);
-      if (!current.repairRequired || current.terminalDelivery.state !== 'intended' ||
-          current.terminalDelivery.operation.certainty !== 'acknowledged') {
-        throw stateError('invalid_transition', 'Only an acknowledged terminal repair may be paced.');
+      if (!current.repairRequired || !presentationHasTerminalOutcome(current)) {
+        throw stateError('invalid_transition', 'Only a settled terminal outcome may be paced.');
       }
       validatePositiveInteger(mutation.nextRetryAt, 'Presentation repair retry time');
       next.repair = {
@@ -1854,9 +1865,12 @@ function applyMutation(
         throw stateError('invalid_input', 'Agent Session state is invalid.');
       }
       validateId(mutation.operationId, 'Agent Session operation id');
+      const supersedesProcessing = current.agentSession.desired === 'processing' &&
+        mutation.desired !== 'processing';
       if (current.agentSession.operation &&
           current.agentSession.operation.certainty !== 'acknowledged' &&
-          current.agentSession.operation.certainty !== 'failed') {
+          current.agentSession.operation.certainty !== 'failed' &&
+          !supersedesProcessing) {
         throw stateError('invalid_transition', 'Agent Session operation is unresolved.');
       }
       if (current.agentSession.desired !== 'processing') {
@@ -1981,6 +1995,28 @@ function applyMutation(
       next.repairRequired = v3RepairRequired(next);
       return next;
     }
+    case 'abandon_terminal_delivery': {
+      requireV3(current);
+      requireV3(next);
+      if (current.terminalDelivery.state !== 'intended' ||
+          current.terminalDelivery.operation.operationId !== mutation.operationId ||
+          current.terminalDelivery.operation.certainty === 'acknowledged') {
+        throw stateError(
+          'invalid_transition',
+          'Only an unacknowledged terminal delivery may be abandoned.',
+        );
+      }
+      next.terminalDelivery = {
+        state: 'abandoned',
+        result: 'failure',
+        operation: {
+          operationId: current.terminalDelivery.operation.operationId,
+          certainty: 'failed',
+        },
+      };
+      next.repairRequired = v3RepairRequired(next);
+      return next;
+    }
     case 'supersede_failed_answer_delivery': {
       requireV3(current);
       requireV3(next);
@@ -2034,9 +2070,8 @@ function applyMutation(
       if (current.cleanup.disposition) {
         throw stateError('terminal_rewrite', 'Shared cleanup repair is already terminal.');
       }
-      if (current.terminalDelivery.state !== 'intended' ||
-          current.terminalDelivery.operation.certainty !== 'acknowledged') {
-        throw stateError('invalid_transition', 'Terminal delivery must be acknowledged before cleanup.');
+      if (!presentationHasTerminalOutcome(current)) {
+        throw stateError('invalid_transition', 'Terminal outcome must be settled before cleanup.');
       }
       validateId(mutation.operationId, 'Cleanup operation id');
       const ambiguousNativeActivity = current.activityProjection.surface ===
@@ -2534,6 +2569,10 @@ function isStoredV3Presentation(
           presentation.terminalDelivery.result !== 'failure' &&
           presentation.terminalDelivery.result !== 'legacy') ||
           !isOperationReceipt(presentation.terminalDelivery.operation)) return false;
+    } else if (presentation.terminalDelivery?.state === 'abandoned') {
+      if (presentation.terminalDelivery.result !== 'failure' ||
+          !isOperationReceipt(presentation.terminalDelivery.operation) ||
+          presentation.terminalDelivery.operation.certainty !== 'failed') return false;
     } else if (presentation.terminalDelivery?.state !== 'none') return false;
     if (presentation.cleanup?.state === 'required') {
       if ((presentation.cleanup.target !== 'activity' &&
@@ -2778,17 +2817,16 @@ function v3RepairRequired(presentation: SlackRunPresentationV3): boolean {
       presentation.stream.state === 'fallback' ||
       presentation.stream.state === 'unknown') return true;
   const activityReceipt = presentation.currentActivity?.operation;
-  const terminalAcknowledged = presentation.terminalDelivery.state === 'intended' &&
-    presentation.terminalDelivery.operation.certainty === 'acknowledged';
+  const terminalSettled = presentationHasTerminalOutcome(presentation);
   const sharedCleanupSuperseded = presentation.activityProjection.surface ===
       'assistant_status' && presentation.cleanup.state === 'not_required' &&
     presentation.cleanup.disposition === 'superseded';
-  if (terminalAcknowledged && (
+  if (terminalSettled && (
     presentation.lifecyclePhase !== 'settled' ||
     (presentation.activityProjection.state === 'visible' && !sharedCleanupSuperseded)
   )) return true;
   const receipts = [
-    activityReceipt?.certainty === 'failed' && terminalAcknowledged
+    activityReceipt?.certainty === 'failed' && terminalSettled
       ? undefined
       : activityReceipt,
     presentation.agentSession.disposition ? undefined : presentation.agentSession.operation,
@@ -2800,6 +2838,14 @@ function v3RepairRequired(presentation: SlackRunPresentationV3): boolean {
   return receipts.some((receipt) =>
     receipt !== undefined && receipt.certainty !== 'acknowledged'
   );
+}
+
+export function presentationHasTerminalOutcome(
+  presentation: SlackRunPresentationV3,
+): boolean {
+  return presentation.terminalDelivery.state === 'abandoned' ||
+    presentation.terminalDelivery.state === 'intended' &&
+      presentation.terminalDelivery.operation.certainty === 'acknowledged';
 }
 
 function requireState(
