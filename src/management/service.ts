@@ -7,6 +7,7 @@ import {
   REUSABLE_CONNECTOR_PRESETS,
   resolveReusableConnectorPreset,
 } from '../config/presets.ts';
+import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
 import {
   AgentExistsError,
   AgentRevisionConflictError,
@@ -189,6 +190,10 @@ export interface WorkspaceManagementServiceInput {
     actor: LiveManagementActor,
   ) => Promise<unknown>;
   testMcpConnection?: (agentId: string, connectionId: string) => Promise<unknown>;
+  managedConnectorAvailable?: (input: {
+    toolkit: string;
+    accessLane: 'read' | 'write';
+  }) => Promise<boolean>;
   listAvailableModels?: () => Promise<Array<{ id: string; name?: string }>>;
   publishAgentChannel?: (input: {
     actor: LiveManagementActor;
@@ -278,6 +283,54 @@ export class WorkspaceManagementService {
       );
     }
     const baseUrl = await this.resolveSetupBaseUrl();
+    if (actor.origin.kind === 'slack' && 'managedToolkit' in connector) {
+      const scopes = MANAGED_CONNECTOR_CATALOG.capabilities(
+        connector.managedToolkit,
+        // Freeze the complete connector ceiling. The claimed browser flow
+        // selects a read-only subset or this full read/write set.
+        'write',
+      ).map(({ id }) => id);
+      if (scopes.length === 0) {
+        throw new ManagementError(
+          'invalid_request',
+          `${connector.name} is not available for managed connection setup.`,
+        );
+      }
+      if (this.stores.managedConnectorAvailable &&
+          !(await this.stores.managedConnectorAvailable({
+            toolkit: connector.managedToolkit,
+            accessLane: 'read',
+          }))) {
+        throw new ManagementError(
+          'setup_unavailable',
+          `${connector.name} sign-in is not configured for this Chickpea deployment yet.`,
+        );
+      }
+      const issued = await this.issueSetupRecord(actor, {
+        action: 'managed_connection',
+        target: {
+          kind: 'managed_connection',
+          provider: connector.managedToolkit,
+          targetId: `agent:${agent.id}:managed:${connector.managedToolkit}:${input.ownerKind}`,
+          targetLabel: connector.name,
+          expectedRevision: agent.revision,
+          agentId: agent.id,
+          agentName: agent.name,
+          replacement: false,
+          ownerKind: input.ownerKind,
+          accessLane: 'read',
+          presetId: connector.id,
+        },
+        scopes,
+      });
+      return {
+        agent: { id: agent.id, name: agent.name },
+        connector: { id: connector.id, name: connector.name },
+        ownerKind: input.ownerKind,
+        handoffUrl: issued.url,
+        setupOperationId: issued.record.setupOperationId,
+      };
+    }
     const url = new URL([
       '/admin/agents',
       encodeURIComponent(agent.id),

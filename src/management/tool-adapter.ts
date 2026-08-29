@@ -77,7 +77,7 @@ export function workspaceManagementSemanticInvocation(
 
 const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority. Required before recommending specific capabilities for Agent design or answering what services an Agent can use.',
-  prepare_connector_setup: 'Create a safe browser handoff URL for adding a catalog connector to an editable Agent. Set ownerKind to "member" for a personal connection or "team" for a shared connection. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.',
+  prepare_connector_setup: 'Create a safe browser handoff URL for connecting one catalog service to an editable Agent. Set ownerKind to "member" for a personal connection or "team" for a shared connection. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.',
   discover_slack_channels: 'Discover Channels in the connected Slack workspace before publishing a Chickpea Agent.',
   test_mcp_connection: 'Test one saved Agent MCP connection with its write-only credentials and return a sanitized result plus discovered tools.',
   inspect_memory: 'Inspect the single durable memory body owned by one Agent.',

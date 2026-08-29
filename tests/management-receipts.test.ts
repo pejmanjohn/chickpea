@@ -35,6 +35,85 @@ const ACKNOWLEDGEMENT: ManagementReceiptOutboxRecord = {
   updatedAt: 1_800_000_000_000,
 };
 
+test('managed connector receipts post once into the exact thread as the Agent persona', async () => {
+  const calls: unknown[] = [];
+  const receipt: ManagementReceiptOutboxRecord = {
+    outboxId: 'receipt_setup_connector',
+    operationId: 'setup_connector',
+    destination: {
+      kind: 'thread',
+      workspaceId: 'T_ACK',
+      channelId: 'D_ACK',
+      threadTs: '1800000000.000100',
+    },
+    receipt: {
+      kind: 'connector_connected',
+      setupOperationId: 'setup_connector',
+      connector: 'HubSpot',
+      toolkit: 'hubspot',
+      agentId: 'agent_sprout',
+      agentName: 'Sprout',
+      ownerKind: 'member',
+      accessLane: 'read',
+      avatarUrl: 'https://chickpea.example/assets/agents/agent_sprout/avatar/4',
+      completedAt: 1_800_000_000_000,
+    },
+    status: 'delivering',
+    attempts: 1,
+    nextAttemptAt: 1_800_000_000_000,
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  };
+
+  const result = await deliverManagementReceiptToSlack(receipt, {
+    identity: { async listExternalIdentities() { return []; } },
+    resolveInstallation: async (workspaceId) => ({
+      workspaceId,
+      transportMode: 'direct',
+      botUserId: 'U_BOT',
+      client: {
+        chat: {
+          async postMessage(input: unknown) {
+            calls.push(input);
+            return { ok: true, ts: '1800000000.000200' };
+          },
+        },
+      } as unknown as WebClient,
+    }),
+  });
+
+  assert.deepEqual(calls, [{
+    channel: 'D_ACK',
+    thread_ts: '1800000000.000100',
+    text: '✅ HubSpot is now connected. Your personal, read-only connection is ready — I can search and read your CRM records when you ask me here.',
+    client_msg_id: 'receipt_setup_connector',
+    username: 'Sprout',
+    icon_url: 'https://chickpea.example/assets/agents/agent_sprout/avatar/4',
+    unfurl_links: false,
+    unfurl_media: false,
+  }]);
+  assert.equal(result.deliveryRef, 'slack:D_ACK:1800000000.000200');
+});
+
+test('managed connector receipt copy stays connector- and owner-specific', () => {
+  const text = formatManagementSetupReceipt({
+    kind: 'connector_connected',
+    setupOperationId: 'setup_gmail_team',
+    connector: 'Gmail',
+    toolkit: 'gmail',
+    agentId: 'agent_mailroom',
+    agentName: 'Mailroom',
+    ownerKind: 'team',
+    accessLane: 'read',
+    completedAt: 1_800_000_000_000,
+  });
+  assert.equal(
+    text,
+    "✅ Gmail is now connected. Your team, read-only connection is ready — I can use Gmail's read-only capabilities when you ask me here.",
+  );
+  assert.doesNotMatch(text, /CRM|personal/);
+});
+
 test('private schedule receipts add a content-free reaction to the requesting message', async () => {
   const calls: unknown[] = [];
   const result = await deliverManagementReceiptToSlack(ACKNOWLEDGEMENT, {

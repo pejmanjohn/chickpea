@@ -17,6 +17,7 @@ import { formatManagementSetupReceipt } from '../src/management/receipts.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
+import { ManagementError } from '../src/management/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
@@ -289,6 +290,104 @@ test('expired and revoked setup capabilities cannot be claimed or resumed', asyn
       browserSessionDigest: 's'.repeat(43),
       at: START + 2,
     }));
+  } finally {
+    store.close();
+  }
+});
+
+test('a reusable managed setup commits once and emits one receipt', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  const record = {
+    setupOperationId: 'setup_reusable_connector',
+    organizationId: 'org_shared',
+    actorUserId: 'user_issuer',
+    actorMembershipId: 'member_issuer',
+    origin: {
+      kind: 'slack' as const,
+      workspaceId: 'T_SHARED',
+      channelId: 'D_SHARED',
+      threadTs: '1800100000.000200',
+      agentId: 'agent_sprout',
+    },
+    action: 'managed_connection' as const,
+    target: {
+      kind: 'managed_connection' as const,
+      provider: 'hubspot',
+      targetId: 'agent:agent_sprout:managed:hubspot:member',
+      targetLabel: 'HubSpot',
+      expectedRevision: 1,
+      agentId: 'agent_sprout',
+      agentName: 'Sprout',
+      replacement: false,
+      ownerKind: 'member' as const,
+      accessLane: 'read' as const,
+      presetId: 'hubspot',
+    },
+    scopes: ['hubspot.objects.search'],
+    tokenDigest: 'd'.repeat(64),
+    status: 'pending' as const,
+    expiresAt: START + 60_000,
+    createdAt: START,
+    updatedAt: START,
+  };
+  const receipt = {
+    kind: 'connector_connected' as const,
+    setupOperationId: record.setupOperationId,
+    connector: 'HubSpot',
+    toolkit: 'hubspot',
+    agentId: 'agent_sprout',
+    agentName: 'Sprout',
+    ownerKind: 'member' as const,
+    accessLane: 'read' as const,
+    completedAt: START + 1,
+  };
+  const outbox = {
+    outboxId: `receipt_${record.setupOperationId}`,
+    operationId: record.setupOperationId,
+    destination: {
+      kind: 'thread' as const,
+      workspaceId: 'T_SHARED',
+      channelId: 'D_SHARED',
+      threadTs: '1800100000.000200',
+    },
+    receipt,
+    status: 'pending' as const,
+    attempts: 0,
+    nextAttemptAt: START + 1,
+    createdAt: START + 1,
+    updatedAt: START + 1,
+  };
+  try {
+    await store.putSetup({ record });
+    const completed = await store.completeSetup({
+      setupOperationId: record.setupOperationId,
+      browserSessionDigest: record.tokenDigest,
+      completedByUserId: 'user_first',
+      completedByMembershipId: 'member_first',
+      connectionAccountId: 'account_first',
+      receipt,
+      outbox,
+      at: START + 1,
+    });
+    assert.equal(completed.status, 'completed');
+    assert.equal(completed.completedByUserId, 'user_first');
+    assert.equal(completed.completedByMembershipId, 'member_first');
+    assert.equal(completed.connectionAccountId, 'account_first');
+
+    await assert.rejects(() => store.completeSetup({
+      setupOperationId: record.setupOperationId,
+      browserSessionDigest: record.tokenDigest,
+      completedByUserId: 'user_second',
+      completedByMembershipId: 'member_second',
+      connectionAccountId: 'account_second',
+      receipt: { ...receipt, completedAt: START + 2 },
+      outbox: { ...outbox, updatedAt: START + 2 },
+      at: START + 2,
+    }), (error: unknown) => error instanceof ManagementError &&
+      error.code === 'setup_unavailable');
+
+    assert.equal((await store.getSetup(record.setupOperationId))?.connectionAccountId, 'account_first');
+    assert.equal((await store.getOutboxForOperation(record.setupOperationId))?.outboxId, outbox.outboxId);
   } finally {
     store.close();
   }

@@ -101,6 +101,79 @@ test('Cloudflare management proxy preserves the canonical ledger contract and ty
       'get_change_set_proposal',
       'has_pending_change_set_proposal',
     ]);
+
+    const setupRecord = {
+      setupOperationId: 'setup_rpc_reusable',
+      organizationId: 'org_rpc',
+      actorUserId: 'user_rpc',
+      actorMembershipId: 'member_rpc',
+      origin: {
+        kind: 'slack' as const,
+        workspaceId: 'T_RPC',
+        channelId: 'D_RPC',
+        threadTs: '1800000000.000100',
+        agentId: 'agent_rpc',
+      },
+      action: 'managed_connection' as const,
+      target: {
+        kind: 'managed_connection' as const,
+        provider: 'hubspot',
+        targetId: 'agent:agent_rpc:managed:hubspot:member',
+        targetLabel: 'HubSpot',
+        expectedRevision: 1,
+        agentId: 'agent_rpc',
+        agentName: 'RPC Agent',
+        replacement: false,
+        ownerKind: 'member' as const,
+        accessLane: 'read' as const,
+      },
+      scopes: ['hubspot.objects.search'],
+      tokenDigest: 'd'.repeat(64),
+      status: 'pending' as const,
+      expiresAt: NOW + 60_000,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    await proxy.putSetup({ record: setupRecord });
+    assert.equal((await proxy.getSetup(setupRecord.setupOperationId))?.status, 'pending');
+    const receipt = {
+      kind: 'connector_connected' as const,
+      setupOperationId: setupRecord.setupOperationId,
+      connector: 'HubSpot',
+      toolkit: 'hubspot',
+      agentId: 'agent_rpc',
+      agentName: 'RPC Agent',
+      ownerKind: 'member' as const,
+      accessLane: 'read' as const,
+      completedAt: NOW + 1,
+    };
+    const completed = await proxy.completeSetup({
+      setupOperationId: setupRecord.setupOperationId,
+      browserSessionDigest: setupRecord.tokenDigest,
+      completedByUserId: 'user_completer',
+      completedByMembershipId: 'member_completer',
+      connectionAccountId: 'account_rpc',
+      receipt,
+      outbox: {
+        outboxId: `receipt_${setupRecord.setupOperationId}`,
+        operationId: setupRecord.setupOperationId,
+        destination: {
+          kind: 'thread',
+          workspaceId: 'T_RPC',
+          channelId: 'D_RPC',
+          threadTs: '1800000000.000100',
+        },
+        receipt,
+        status: 'pending',
+        attempts: 0,
+        nextAttemptAt: NOW + 1,
+        createdAt: NOW + 1,
+        updatedAt: NOW + 1,
+      },
+      at: NOW + 1,
+    });
+    assert.equal(completed.completedByMembershipId, 'member_completer');
+    assert.equal(completed.connectionAccountId, 'account_rpc');
   } finally {
     direct.close();
   }

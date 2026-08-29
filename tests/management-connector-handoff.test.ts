@@ -20,11 +20,12 @@ import {
   type SlackManagementTurnGuardState,
 } from '../src/management/slack-tools.ts';
 import { safeSlackLoginDestination } from '../src/auth/setup-handoff.ts';
+import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
 import type { ManagementActorContext, ManagementOperation } from '../src/management/types.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
-test('connector setup handoff resolves the current Slack Agent and opens its connector form', async () => {
+test('connector setup handoff resolves the current Slack Agent into a reusable landing flow', async () => {
   const f = await createManagementAdapterFixture('connector-handoff');
   const agent = await f.config.createAgent({
     id: 'agent_support',
@@ -149,9 +150,33 @@ test('connector setup handoff resolves the current Slack Agent and opens its con
     assert.deepEqual(handoff.agent, { id: 'agent_support', name: 'Support' });
     assert.deepEqual(handoff.connector, { id: 'gmail', name: 'Gmail' });
     const url = new URL(handoff.handoffUrl);
-    assert.equal(url.pathname, '/admin/agents/agent_support/connections/new/gmail/member');
+    assert.match(url.pathname, /^\/setup\/setup_/);
     assert.equal(url.search, '');
+    assert.equal(url.hash, `#setup=${'c'.repeat(43)}`);
     assert.equal(safeSlackLoginDestination(url.pathname), url.pathname);
+    const setupId = url.pathname.split('/').at(-1)!;
+    const setup = await f.management.getSetup(setupId);
+    assert.equal(setup?.action, 'managed_connection');
+    assert.ok(setup?.tokenDigest);
+    assert.equal(setup?.status, 'pending');
+    assert.deepEqual(setup?.origin, context.origin);
+    assert.deepEqual(setup?.target, {
+      kind: 'managed_connection',
+      provider: 'gmail',
+      targetId: 'agent:agent_support:managed:gmail:member',
+      targetLabel: 'Gmail',
+      expectedRevision: agent.revision,
+      agentId: agent.id,
+      agentName: agent.name,
+      replacement: false,
+      ownerKind: 'member',
+      accessLane: 'read',
+      presetId: 'gmail',
+    });
+    assert.ok(setup?.scopes.length);
+    assert.ok(setup?.scopes.every((scope) => scope.startsWith('gmail.')));
+    assert.ok(setup?.scopes.some((scope) =>
+      MANAGED_CONNECTOR_CATALOG.capability(scope)?.accessLane === 'write'));
 
     const inspected = await invokeWorkspaceManagementTool({
       service: f.service,
@@ -261,7 +286,14 @@ test('connector setup handoff resolves the current Slack Agent and opens its con
       ownerKind: 'team',
     });
     assert.equal(unknown.ok, false);
-    assert.equal((unknown as { ok: false; error: { code: string } }).error.code, 'invalid_request');
+    const unknownError = (unknown as {
+      ok: false;
+      error: { code: string; message: string };
+    }).error;
+    assert.equal(unknownError.code, 'invalid_request');
+    assert.match(unknownError.message, /^Unknown connector\. Choose one of:/);
+    assert.match(unknownError.message, /HubSpot/);
+    assert.match(unknownError.message, /Linear/);
 
     for (const invalidAgentId of ['.', '..']) {
       const invalidAgent = await invokeWorkspaceManagementTool({
@@ -278,6 +310,53 @@ test('connector setup handoff resolves the current Slack Agent and opens its con
         'invalid_request',
       );
     }
+  } finally {
+    f.close();
+  }
+});
+
+test('direct managed connector handoff fails before issuing a dead link when its provider is unavailable', async () => {
+  const f = await createManagementAdapterFixture('connector-provider-unavailable', {
+    managedConnectorAvailable: async () => false,
+  });
+  const agent = await f.config.createAgent({
+    id: 'agent_support',
+    name: 'Support',
+    creatorMembershipId: f.admin.membership.id,
+    editPolicy: 'creator_and_admins',
+    lifecycle: 'active',
+    configurationGeneration: 1,
+    instructions: 'Help with support.',
+    enabled: true,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  });
+  try {
+    const result = await invokeWorkspaceManagementTool({
+      service: f.service,
+      resolveContext: async () => ({
+        userId: f.admin.user.id,
+        membershipId: f.admin.membership.id,
+        organizationId: f.admin.membership.organizationId,
+        origin: {
+          kind: 'slack' as const,
+          workspaceId: f.admin.binding.slackTeamId,
+          channelId: 'C_SUPPORT',
+          threadTs: '101.1',
+          agentId: agent.id,
+        },
+      }),
+    }, 'prepare_connector_setup', {
+      connector: 'HubSpot',
+      ownerKind: 'member',
+    });
+    assert.equal(result.ok, false);
+    assert.deepEqual((result as { ok: false; error: { code: string; message: string } }).error, {
+      code: 'setup_unavailable',
+      message: 'HubSpot sign-in is not configured for this Chickpea deployment yet.',
+    });
   } finally {
     f.close();
   }

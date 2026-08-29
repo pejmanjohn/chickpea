@@ -6,7 +6,7 @@
  * store in one temporary SQLite file, and removes that directory on shutdown.
  */
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -50,6 +50,12 @@ export const CANONICAL_SLACK_AUTH_VISUAL_STATES = Object.freeze({
   accessDenied: Object.freeze({ path: '/__admin_visual_fixture/auth/access-denied' }),
   ownerComplete: Object.freeze({ path: '/__admin_visual_fixture/auth/owner-complete' }),
   recovery: Object.freeze({ path: '/__admin_visual_fixture/auth/recovery' }),
+});
+
+export const CANONICAL_CONNECTOR_VISUAL_STATES = Object.freeze({
+  setup: Object.freeze({ path: '/__admin_visual_fixture/connectors/setup' }),
+  waiting: Object.freeze({ path: '/__admin_visual_fixture/connectors/waiting' }),
+  success: Object.freeze({ path: '/__admin_visual_fixture/connectors/success' }),
 });
 
 const VISUAL_CHANNELS = Object.freeze([
@@ -634,6 +640,11 @@ export async function startAdminVisualFixture(options = {}) {
       renderSlackSignInPage,
     } = await loadTsModule('src/admin/page.ts');
     const {
+      renderManagedConnectionSetupPage,
+      renderManagedConnectionSuccessPage,
+      renderManagedConnectionWaitingPage,
+    } = await loadTsModule('src/management/connector-landing-page.ts');
+    const {
       buildSlackAppManifest,
       slackManifestPrefillUrl,
     } = await loadTsModule('src/slack/app-manifest.ts');
@@ -769,6 +780,49 @@ export async function startAdminVisualFixture(options = {}) {
         stage: 'credentials', expectedAppId: 'AVISUAL', expectedTeamId: WORKSPACE_ID,
       }),
     };
+    const sprout = {
+      id: 'agent_sprout',
+      revision: 1,
+      name: 'Sprout',
+      description: '',
+      instructions: 'Help the requester research customer relationships.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    };
+    const connectorSetup = {
+      setupOperationId: 'setup_visual_connector',
+      action: 'managed_connection',
+      target: {
+        kind: 'managed_connection',
+        targetId: 'agent:agent_sprout:managed:hubspot:member',
+        targetLabel: 'HubSpot',
+        provider: 'hubspot',
+        agentId: sprout.id,
+        agentName: sprout.name,
+        ownerKind: 'member',
+        accessLane: 'read',
+        presetId: 'hubspot-managed',
+      },
+      actor: {
+        membershipId: owner.membership.id,
+        organizationId: owner.membership.organizationId,
+        slackTeamId: WORKSPACE_ID,
+        slackUserId: owner.user.slackUserId,
+      },
+      status: 'pending',
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 15 * 60_000,
+    };
+    const sproutAvatarPath = resolve('assets/chickpea-avatars/agent-defaults/01-sage.png');
+    const connectorPageInput = (status) => ({
+      setup: { ...connectorSetup, status },
+      agent: sprout,
+      avatarUrl: '/__admin_visual_fixture/connectors/sprout.png',
+    });
+    let connectorVisualConnected = false;
     app.get('/__admin_visual_fixture/login', (c) => {
       if (c.req.query('token') !== adminToken) return c.text('Not found', 404);
       c.header('Set-Cookie', `chickpea_visual_token=${adminToken}; Path=/; HttpOnly; SameSite=Lax`);
@@ -781,6 +835,38 @@ export async function startAdminVisualFixture(options = {}) {
       c.header('Cache-Control', 'no-store');
       return c.html(html);
     });
+    app.get('/__admin_visual_fixture/connectors/sprout.png', (c) => {
+      c.header('Cache-Control', 'public, max-age=3600');
+      c.header('Content-Type', 'image/png');
+      return c.body(readFileSync(sproutAvatarPath));
+    });
+    app.get('/__admin_visual_fixture/connectors/:state', (c) => {
+      const state = c.req.param('state');
+      if (state === 'setup') {
+        connectorVisualConnected = false;
+        return c.html(renderManagedConnectionSetupPage(connectorPageInput('pending')));
+      }
+      if (state === 'waiting') {
+        return c.html(connectorVisualConnected
+          ? renderManagedConnectionSuccessPage(connectorPageInput('completed'))
+          : renderManagedConnectionWaitingPage(connectorPageInput('pending')));
+      }
+      if (state === 'success') {
+        return c.html(renderManagedConnectionSuccessPage(connectorPageInput('completed')));
+      }
+      return c.notFound();
+    });
+    app.post('/setup/setup_visual_connector/authorize', (c) => {
+      if (c.req.header('x-requested-with') === 'chickpea-setup') {
+        return c.json({ authorizationUrl: 'https://example.com/chickpea-connector-sign-in' });
+      }
+      return c.redirect('/__admin_visual_fixture/connectors/waiting');
+    });
+    app.post('/setup/setup_visual_connector/managed/poll', (c) => {
+      connectorVisualConnected = true;
+      return c.json({ ok: true, status: 'connected' });
+    });
+    app.post('/setup/setup_visual_connector/cancel', (c) => c.redirect('/__admin_visual_fixture/connectors/setup'));
     app.post('/__admin_visual_fixture/slack/:method', async (c) => {
       if (c.req.header('authorization') !== `Bearer ${LOCAL_SLACK_TOKEN}`) {
         return c.json({ ok: false, error: 'invalid_auth' });
@@ -866,6 +952,7 @@ export async function startAdminVisualFixture(options = {}) {
       runtimeContract,
       onboardingStage,
       authStates: CANONICAL_SLACK_AUTH_VISUAL_STATES,
+      connectorStates: CANONICAL_CONNECTOR_VISUAL_STATES,
       canonicalStates: CANONICAL_ADMIN_VISUAL_STATES,
       stateDbPath,
       stateDirectory,
@@ -900,6 +987,10 @@ async function runCli() {
   for (const [name, state] of Object.entries(fixture.canonicalStates)) {
     const actions = state.actions.length ? ` then ${state.actions.join(' → ')}` : '';
     console.log(`  ${name}: ${fixture.baseUrl}${state.path}${actions}`);
+  }
+  console.log('Connector landing states:');
+  for (const [name, state] of Object.entries(fixture.connectorStates)) {
+    console.log(`  ${name}: ${fixture.baseUrl}${state.path}`);
   }
   console.log(`Temporary state: ${fixture.stateDbPath}`);
   console.log('Press Ctrl+C to stop and remove the temporary state.');

@@ -11,6 +11,8 @@ export interface ManagedAuthorizationInput {
   workspaceId: string;
   agentId: string;
   actorMembershipId: string;
+  /** Isolates one setup flow from unrelated authorizations by the same member. */
+  attemptScopeId?: string;
   ownerKind: 'team' | 'member';
   providerId: string;
   adapterId: string;
@@ -95,7 +97,7 @@ export async function beginManagedAuthorization(input: {
     expiresAt: now + MANAGED_AUTHORIZATION_TTL_MS,
     updatedAt: now,
   };
-  const key = await settingKey(input.input.actorMembershipId);
+  const key = await settingKey(input.input.actorMembershipId, input.input.attemptScopeId);
   const current = await input.settings.getSetting(key);
   if (current) {
     try {
@@ -130,6 +132,7 @@ export async function beginManagedAuthorization(input: {
 export async function inspectManagedAuthorization(input: {
   settings: SettingsStore;
   actorMembershipId: string;
+  attemptScopeId?: string;
   browserSecret: string;
   now?: () => number;
 }): Promise<ManagedAuthorizationAttempt> {
@@ -140,6 +143,7 @@ export async function inspectManagedAuthorization(input: {
 export async function inspectManagedAuthorizationForCleanup(input: {
   settings: SettingsStore;
   actorMembershipId: string;
+  attemptScopeId?: string;
   browserSecret: string;
   now?: () => number;
 }): Promise<ManagedAuthorizationAttempt> {
@@ -226,6 +230,7 @@ export async function abandonStaleManagedAuthorization(input: {
 export async function recordManagedAuthorizationRequest(input: {
   settings: SettingsStore;
   actorMembershipId: string;
+  attemptScopeId?: string;
   browserSecret: string;
   authorizationRef: string;
   now?: () => number;
@@ -255,6 +260,7 @@ export async function recordManagedAuthorizationRequest(input: {
 export async function recordManagedAuthorizationAccount(input: {
   settings: SettingsStore;
   actorMembershipId: string;
+  attemptScopeId?: string;
   browserSecret: string;
   accountRef: string;
   toolkit: string;
@@ -295,6 +301,7 @@ export async function recordManagedAuthorizationAccount(input: {
 export async function finalizeManagedAuthorization(input: {
   settings: SettingsStore;
   actorMembershipId: string;
+  attemptScopeId?: string;
   browserSecret: string;
   now?: () => number;
 }): Promise<void> {
@@ -311,6 +318,7 @@ export async function finalizeManagedAuthorization(input: {
 export async function abandonManagedAuthorization(input: {
   settings: SettingsStore;
   actorMembershipId: string;
+  attemptScopeId?: string;
   browserSecret: string;
   now?: () => number;
   allowExpired?: boolean;
@@ -332,6 +340,7 @@ export async function abandonManagedAuthorization(input: {
 export async function abandonManagedAuthorizationForRestart(input: {
   settings: SettingsStore;
   actorMembershipId: string;
+  attemptScopeId?: string;
   browserSecret: string;
   now?: () => number;
 }): Promise<void> {
@@ -347,6 +356,7 @@ export async function abandonManagedAuthorizationForRestart(input: {
 async function load(input: {
   settings: SettingsStore;
   actorMembershipId: string;
+  attemptScopeId?: string;
   browserSecret: string;
   now?: () => number;
   allowExpired?: boolean;
@@ -354,12 +364,13 @@ async function load(input: {
   if (!ID_PATTERN.test(input.actorMembershipId) || !SECRET_PATTERN.test(input.browserSecret)) {
     throw new ManagedAuthorizationError('invalid');
   }
-  const key = await settingKey(input.actorMembershipId);
+  const key = await settingKey(input.actorMembershipId, input.attemptScopeId);
   const raw = await input.settings.getSetting(key);
   if (!raw) throw new ManagedAuthorizationError('invalid');
   const attempt = parseAttempt(raw);
   if (
     attempt.actorMembershipId !== input.actorMembershipId ||
+    attempt.attemptScopeId !== input.attemptScopeId ||
     !constantTimeEqual(attempt.browserSecretHash, await sha256(input.browserSecret))
   ) {
     throw new ManagedAuthorizationError('invalid');
@@ -443,6 +454,7 @@ function safeRemoteRefFromMalformedAttempt(
 function validateInput(input: ManagedAuthorizationInput): void {
   if (!ID_PATTERN.test(input.workspaceId) || !ID_PATTERN.test(input.agentId) ||
       !ID_PATTERN.test(input.actorMembershipId) || !ID_PATTERN.test(input.providerId) ||
+      (input.attemptScopeId !== undefined && !ID_PATTERN.test(input.attemptScopeId)) ||
       !ID_PATTERN.test(input.adapterId) || !TOOLKIT_PATTERN.test(input.toolkit) ||
       !ID_PATTERN.test(input.principalRef) || input.label !== input.label.trim() ||
       input.label.length < 1 || input.label.length > 256 ||
@@ -470,8 +482,11 @@ function validCapabilities(value: unknown): value is string[] {
     value.every((entry) => /^[a-z0-9_.:-]{1,128}$/.test(entry));
 }
 
-async function settingKey(actorMembershipId: string): Promise<string> {
-  return `${SETTING_PREFIX}${(await sha256(actorMembershipId)).slice(0, 32)}`;
+async function settingKey(actorMembershipId: string, attemptScopeId?: string): Promise<string> {
+  const identity = attemptScopeId === undefined
+    ? actorMembershipId
+    : `${actorMembershipId}\u0000${attemptScopeId}`;
+  return `${SETTING_PREFIX}${(await sha256(identity)).slice(0, 32)}`;
 }
 
 function secureRandomSecret(): string {

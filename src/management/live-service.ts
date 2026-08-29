@@ -22,6 +22,8 @@ import { storedCredentialMetadata } from '../config/model-credential-refs.ts';
 import { getProviderFavorites } from '../config/provider-models.ts';
 import { clearRepointedMcpCredentials } from '../config/mcp-connection-lifecycle.ts';
 import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
+import { managedProviderAvailability } from '../connections/managed.ts';
+import { resolveManagedAuthorizationProviderContext } from '../connections/managed-provider-context.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
@@ -175,6 +177,15 @@ export function createLiveWorkspaceManagementService(
       config,
       settings,
     }),
+    managedConnectorAvailable: async ({ toolkit, accessLane }) => {
+      const context = await resolveManagedAuthorizationProviderContext({
+        settings,
+        ...(env ? { platformEnv: env } : {}),
+      });
+      const provider = context.providers.get('composio');
+      return Boolean(provider?.authorize) &&
+        managedProviderAvailability(provider, { toolkit, accessLane }).status === 'ready';
+    },
     listAvailableModels: async () => {
       const sources = await describeProviderKeySources(env, settings);
       const entries: Array<{ id: string; name?: string }> =

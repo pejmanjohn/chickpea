@@ -1,12 +1,18 @@
 import { SqliteConfigStore } from '../../src/config/store.ts';
 import { SqliteIdentityStore } from '../../src/identity/store.ts';
 import { SqliteManagementStore } from '../../src/management/store.ts';
-import { WorkspaceManagementService } from '../../src/management/service.ts';
+import {
+  WorkspaceManagementService,
+  type WorkspaceManagementServiceInput,
+} from '../../src/management/service.ts';
 import { SqliteMemoryStateStore } from '../../src/memory/store.ts';
 import { SqliteRoutineStore } from '../../src/routines/store.ts';
 import { createSlackOwner } from './slack-owner.ts';
 
-export async function createManagementAdapterFixture(suffix: string) {
+export async function createManagementAdapterFixture(
+  suffix: string,
+  overrides: Partial<WorkspaceManagementServiceInput> = {},
+) {
   let sequence = 0;
   const now = 1_800_000_000_000;
   const identity = new SqliteIdentityStore(':memory:', { now: () => now });
@@ -46,6 +52,7 @@ export async function createManagementAdapterFixture(suffix: string) {
     randomCapability: () => 'c'.repeat(43),
     now: () => now,
     randomId: () => `${suffix}_${++sequence}`,
+    ...overrides,
   });
   return {
     identity,

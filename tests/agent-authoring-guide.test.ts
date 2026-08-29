@@ -122,6 +122,26 @@ test('Slack tool selection routes destructive schedule deletion through confirma
   assert.match(scheduleTool, /Do not use this tool to delete scheduled work/i);
 });
 
+test('Slack connector setup skips broad workspace inspection for a named service', async () => {
+  const source = await readFile(
+    new URL('../src/management/slack-tools.ts', import.meta.url),
+    'utf8',
+  );
+  const instructionStart = source.indexOf(
+    'For Agent-design brainstorming or capability questions',
+  );
+  const instructionEnd = source.indexOf("  ].join(' '));", instructionStart);
+  assert.notEqual(instructionStart, -1);
+  assert.notEqual(instructionEnd, -1);
+  const selectionInstruction = source.slice(instructionStart, instructionEnd);
+
+  assert.match(selectionInstruction, /explicit request to connect a named service/i);
+  assert.match(selectionInstruction, /call prepare_connector_setup directly/i);
+  assert.match(selectionInstruction, /validates catalog availability and requester authority/i);
+  assert.match(selectionInstruction, /do not call inspect_workspace first/i);
+  assert.match(selectionInstruction, /describe it only as a secure Chickpea link/i);
+});
+
 test('guide handles the three product examples without premature mutation', () => {
   assert.match(AGENT_AUTHORING_GUIDE, /chief.of.staff[\s\S]*explore/i);
   assert.match(AGENT_AUTHORING_GUIDE, /bug[\s\S]*pull request[\s\S]*skill/i);

@@ -4137,7 +4137,8 @@ button.capability-pill { cursor: pointer; }
     if (!setup) return "";
     var busy = setup.phase === "validating" || setup.phase === "preparing";
     var title = "Set up " + setup.label;
-    var providerLink = 'In Composio, open Settings &rarr; Project Settings &rarr; API Keys. <a class="hint-link" href="https://dashboard.composio.dev" target="_blank" rel="noopener noreferrer">Open Composio &nearr;</a>';
+    var providerLink = 'In Composio, open Settings &rarr; Project Settings &rarr; API Keys. <a class="hint-link" href="https://dashboard.composio.dev" target="_blank" rel="noopener noreferrer">Open Composio &nearr;</a>' +
+      '<p class="hint">In Settings &rarr; General, leave OAuth user verification set to <strong>Not configured</strong>. Chickpea sends each sign-in back to this installation.</p>';
     var body;
     if (setup.providerPrerequisiteMissing) {
       var prerequisiteCopy = setup.toolkit === "googleads"
@@ -10656,6 +10657,9 @@ button.capability-pill { cursor: pointer; }
     var managedCatalogLabel = settings.canConfigure
       ? 'Composio-managed connectors'
       : 'Managed connectors';
+    var verificationGuidance = settings.canConfigure
+      ? '<div class="callout" role="note"><span>In Composio Settings &rarr; General, leave OAuth user verification set to <strong>Not configured</strong>. Chickpea sends each sign-in back to this installation.</span></div>'
+      : '';
     var head = '<section class="section managed-provider-section"><div class="section-head"><div><h2 class="section-title">Managed connectors</h2><p class="hint">' + providerDescription + '</p></div></div>';
     if (settings.loading) return head + '<p class="hint">Loading managed connector status&hellip;</p></section>';
     if (settings.error && !provider && !settings.recoveryMode) {
@@ -10729,7 +10733,7 @@ button.capability-pill { cursor: pointer; }
           : { label: configured ? "Setup required" : "Add project key", kind: "setup" };
       return '<div class="managed-settings-row">' + connectorLogoHtml(preset) + '<span class="managed-settings-copy"><span class="connection-account-name">' + esc(descriptor.label) + '</span><span class="connection-account-identity">' + esc(descriptor.description || "") + '</span></span><span class="managed-readiness managed-readiness-' + readiness.kind + '">' + esc(readiness.label) + '</span></div>';
     }).join("");
-    return head + '<div class="managed-provider-card"><div class="managed-provider-status"><span class="managed-provider-dot ' + (configured ? 'ready' : 'setup') + '" aria-hidden="true"></span><div><strong>' + esc(statusLabel) + '</strong><p class="hint">' + esc(statusDetail) + '</p></div></div>' + controls +
+    return head + '<div class="managed-provider-card"><div class="managed-provider-status"><span class="managed-provider-dot ' + (configured ? 'ready' : 'setup') + '" aria-hidden="true"></span><div><strong>' + esc(statusLabel) + '</strong><p class="hint">' + esc(statusDetail) + '</p></div></div>' + verificationGuidance + controls +
       (settings.error ? '<div class="callout" role="alert"><span>' + esc(settings.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry-load">Retry</button></div>' : '') +
       (settings.notice ? '<p class="oauth-return ok" role="status">' + esc(settings.notice) + '</p>' : '') + '</div>' +
       '<div class="managed-settings-list" aria-label="' + managedCatalogLabel + '">' + catalogRows + '</div></section>';

@@ -6,6 +6,8 @@ import { bodyLimit } from 'hono/body-limit';
 import { BetterAuthDirectory, BetterAuthSessionAuthenticator } from '../auth/better-auth-principal.ts';
 import { resolveBetterAuthEnvironment } from '../auth/better-auth-environment.ts';
 import { setCookieValues } from '../auth/cookies.ts';
+import { AuthorizationError, requireAgentEdit } from '../auth/permissions.ts';
+import { validateBrowserMutationProvenance } from '../auth/request-provenance.ts';
 import { AuthService } from '../auth/service.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 
@@ -61,19 +63,50 @@ import {
 import type { ConfigStore } from '../config/store.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
+  type ConnectionAccount,
   type CustomAgentConfig,
   type McpConnectionConfig,
 } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
+import { MANAGED_CONNECTOR_CATALOG, type ManagedConnectorCatalog } from '../connections/catalog/index.ts';
+import {
+  ManagedConnectionAlreadyAttachedError,
+  cancelManagedAuthorizationFlow,
+  pollManagedAuthorizationFlow,
+  startManagedAuthorizationFlow,
+  type ManagedAuthorizationFlowDependencies,
+} from '../connections/managed-authorization-flow.ts';
+import { ManagedAuthorizationError } from '../connections/managed-authorization.ts';
+import { ManagedProviderRequestError } from '../connections/managed-errors.ts';
+import {
+  managedProviderAvailability,
+  type ManagedConnectionProviderRegistry,
+} from '../connections/managed.ts';
+import { resolveManagedAuthorizationProviderContext } from '../connections/managed-provider-context.ts';
+import { ManagedConnectionProviderUnavailableError } from '../connections/store.ts';
+import {
+  agentAvatarUrl,
+  agentAvatarUrlForPresentation,
+} from '../slack/agent-presence/avatar-assets.ts';
 import {
   completeManagementSetupReceipt,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
 } from './receipts.ts';
 import type { ManagementStore } from './store.ts';
-import { ManagementError, type ManagementSetupRecord } from './types.ts';
+import {
+  ManagementError,
+  type ManagementSetupRecord,
+} from './types.ts';
 import { emitManagementMetric } from './telemetry.ts';
+import {
+  renderManagedConnectionDeparturePage,
+  renderManagedConnectionSetupPage,
+  renderManagedConnectionSuccessPage,
+  renderManagedConnectionUnavailablePage,
+  renderManagedConnectionWaitingPage,
+} from './connector-landing-page.ts';
 
 const CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SETUP_ID_PATTERN = /^setup_[A-Za-z0-9_-]{1,128}$/;
@@ -91,6 +124,8 @@ export interface ManagementSetupRoutesOptions {
   randomCapability?: () => string;
   validateProviderKey?: typeof validateProviderApiKey;
   deliverReceipt?: typeof deliverManagementReceiptToSlack;
+  managedConnectionProviders?: ManagedConnectionProviderRegistry;
+  managedConnectorCatalog?: ManagedConnectorCatalog;
   /** Test seam; production resolves the current Better Auth browser session. */
   authenticatePrincipal?: (request: Request) => Promise<AuthPrincipal | undefined>;
 }
@@ -116,14 +151,48 @@ export function createManagementSetupRoutes(
     if (!setupId) return unavailablePage(c);
     const setup = await dependencies.management.getSetup(setupId, now());
     const principal = await authenticateSetupPrincipal(c, options);
+    const session = setupSession(c, setupId);
+
+    if (setup?.action === 'managed_connection') {
+      if (setup.status === 'revoked' || setup.status === 'expired') {
+        return managedUnavailablePage(c);
+      }
+      const authorized = await principalCanEditManagedSetup(
+        principal,
+        setup,
+        dependencies.config,
+      );
+      if (setup.status === 'completed') {
+        if (!authorized) return managedUnavailablePage(c);
+        const page = await managedConnectionPageInput(c, setup, dependencies, options);
+        return page
+          ? c.html(c.req.query('poll') === '1' && session && CAPABILITY_PATTERN.test(session)
+              ? renderManagedConnectionWaitingPage(page)
+              : renderManagedConnectionSuccessPage(page))
+          : managedUnavailablePage(c);
+      }
+      if (principal && !authorized) return managedUnavailablePage(c);
+      if (!principal || !session || !managedSetupSessionMatches(setup, session)) {
+        return c.html(renderClaimPage(setupId, true));
+      }
+      if (setup.status !== 'pending') return managedUnavailablePage(c);
+      const page = await managedConnectionPageInput(c, setup, dependencies, options);
+      if (!page) return managedUnavailablePage(c);
+      return c.html(c.req.query('poll') === '1'
+        ? renderManagedConnectionWaitingPage(page)
+        : renderManagedConnectionSetupPage(page));
+    }
+
+    const browserMatches = setup && principal && session
+      ? principalMatchesSetup(principal, setup) && sessionMatches(setup, session)
+      : false;
     if (setup?.status === 'completed' && principalMatchesSetup(principal, setup)) {
       return terminalPage(c, setup);
     }
     if (setup && principal && !principalMatchesSetup(principal, setup)) {
       return unavailablePage(c);
     }
-    const session = setupSession(c, setupId);
-    if (!setup || !principal || !session || !sessionMatches(setup, session)) {
+    if (!setup || !principal || !session || !browserMatches) {
       return c.html(renderClaimPage(setupId));
     }
     if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
@@ -139,21 +208,33 @@ export function createManagementSetupRoutes(
     const setup = await dependencies.management.getSetup(setupId, now());
     const principal = await authenticateSetupPrincipal(c, options);
     if (!principal) return authenticationRequired(c);
-    if (!setup || !principalMatchesSetup(principal, setup)) return genericDenied(c);
+    if (!setup) return genericDenied(c);
     const body = await readJsonBody(c);
     const capability = isRecord(body) && typeof body.capability === 'string'
       ? body.capability
       : '';
     if (!CAPABILITY_PATTERN.test(capability)) return genericDenied(c);
-    const rawSession = (options.randomCapability ?? randomCapability)();
-    if (!CAPABILITY_PATTERN.test(rawSession)) return genericDenied(c);
+
+    let rawSession = capability;
     try {
-      await dependencies.management.exchangeSetup({
-        setupOperationId: setupId,
-        tokenDigest: digest(capability),
-        browserSessionDigest: digest(rawSession),
-        at: now(),
-      });
+      if (setup.action === 'managed_connection') {
+        if (setup.status !== 'pending' || !setup.tokenDigest ||
+            setup.tokenDigest !== digest(capability) ||
+            principal.organizationId !== setup.organizationId) {
+          throw new AuthorizationError();
+        }
+        requireAgentEdit(principal, await currentManagedAgent(setup, dependencies.config));
+      } else {
+        if (!principalMatchesSetup(principal, setup)) return genericDenied(c);
+        rawSession = (options.randomCapability ?? randomCapability)();
+        if (!CAPABILITY_PATTERN.test(rawSession)) return genericDenied(c);
+        await dependencies.management.exchangeSetup({
+          setupOperationId: setupId,
+          tokenDigest: digest(capability),
+          browserSessionDigest: digest(rawSession),
+          at: now(),
+        });
+      }
       emitManagementMetric('setup.lifecycle', {
         action: 'exchange',
         outcome: 'success',
@@ -165,14 +246,15 @@ export function createManagementSetupRoutes(
       });
       return genericDenied(c);
     }
-    c.header('Set-Cookie', setupCookie(setupId, rawSession, 24 * 60 * 60));
+    const cookieMaxAge = Math.max(1, Math.ceil((setup.expiresAt - now()) / 1_000));
+    c.header('Set-Cookie', setupCookie(setupId, rawSession, cookieMaxAge));
     return c.json({ ok: true });
   });
 
   app.post('/setup/:setupOperationId/complete', async (c) => {
     const dependencies = setupDependencies(c, options);
     const setupId = setupIdFromContext(c);
-    if (!setupId || !sameOriginMutation(c)) return genericDenied(c);
+    if (!setupId || !sameOriginFormMutation(c)) return genericDenied(c);
     const principal = await authenticateSetupPrincipal(c, options);
     if (!principal) return authenticationRequired(c);
     const setup = await requireBrowserSetup(
@@ -200,7 +282,7 @@ export function createManagementSetupRoutes(
   app.post('/setup/:setupOperationId/authorize', async (c) => {
     const dependencies = setupDependencies(c, options);
     const setupId = setupIdFromContext(c);
-    if (!setupId || !sameOriginMutation(c)) return genericDenied(c);
+    if (!setupId || !sameOriginFormMutation(c)) return genericDenied(c);
     const principal = await authenticateSetupPrincipal(c, options);
     if (!principal) return authenticationRequired(c);
     const setup = await requireBrowserSetup(
@@ -209,29 +291,74 @@ export function createManagementSetupRoutes(
     if (!setup) return genericDenied(c);
     const fields = await readFormFields(c);
     if (!fields) return formFailure(c, setup, 'invalid_form');
-    const browserSessionDigest = digest(setupSession(c, setupId)!);
+
+    let activeSetup = setup;
     try {
-      await dependencies.management.authorizeSetup({
+      if (setup.action === 'managed_connection') {
+        const agent = await currentManagedAgent(setup, dependencies.config);
+        requireAgentEdit(principal, agent);
+        if (setup.status === 'completed') {
+          if (authorizationJsonRequest(c)) {
+            return c.json({
+              error: 'managed_authorization_superseded',
+              message: `${setup.target.targetLabel} is already connected to ${agent.name}.`,
+            }, 409);
+          }
+          return c.redirect(`/setup/${encodeURIComponent(setupId)}`, 303);
+        }
+        if (setup.status !== 'pending') return genericDenied(c);
+        const selection = managedSetupSelection(setup, fields, dependencies.catalog);
+        if (setup.origin.kind !== 'slack' || !selection) {
+          throw new ManagedAuthorizationError('invalid');
+        }
+        const browserSession = setupSession(c, setupId);
+        if (!browserSession) throw new ManagedAuthorizationError('invalid');
+        const browserSecret = managedBrowserSecret(browserSession);
+        const started = await startManagedAuthorizationFlow(
+          await managedFlowDependencies(dependencies, options),
+          {
+            principal,
+            agent,
+            workspaceId: setup.origin.workspaceId,
+            ownerKind: selection.ownerKind,
+            toolkit: setup.target.provider,
+            access: selection.accessLane,
+            capabilities: selection.scopes,
+            existingBrowserSecret: browserSecret,
+            attemptScopeId: setupId,
+            returnUrl: `${requestOrigin(c)}/setup/${encodeURIComponent(setupId)}?poll=1`,
+            randomSecret: () => browserSecret,
+          },
+        );
+        const authorizationUrl = managedAuthorizationUrl(started.authorizationUrl);
+        if (authorizationJsonRequest(c)) return c.json({ authorizationUrl });
+        const page = await managedConnectionPageInput(c, setup, dependencies, options);
+        return page
+          ? c.html(renderManagedConnectionDeparturePage(page, authorizationUrl))
+          : managedUnavailablePage(c);
+      }
+
+      activeSetup = await dependencies.management.authorizeSetup({
         setupOperationId: setupId,
-        browserSessionDigest,
+        browserSessionDigest: digest(setupSession(c, setupId)!),
         at: now(),
       });
-      await assertExactTarget(setup, dependencies);
-      if (setup.action === 'api_oauth') {
+      await assertExactTarget(activeSetup, dependencies);
+      if (activeSetup.action === 'api_oauth') {
         const clientId = requiredField(fields, 'clientId', 512);
         const clientSecret = requiredField(fields, 'clientSecret', 2_048);
-        const ref = setupConnectionRef(setup);
+        const ref = setupConnectionRef(activeSetup);
         await saveApiOAuthClient(ref, { provider: 'google', clientId, clientSecret }, dependencies.settings);
         const started = await startApiOAuthAuthorization({
           ref,
           provider: 'google',
           callbackUrl: `${requestOrigin(c)}/setup/${encodeURIComponent(setupId)}/oauth/api/callback`,
-          scopes: setup.scopes,
+          scopes: activeSetup.scopes,
         }, apiOAuthDependencies(dependencies));
         return c.redirect(started.authorizationUrl.href, 303);
       }
-      if (setup.action === 'mcp_oauth') {
-        const { agent, connection } = await currentMcpConnection(setup, dependencies.config);
+      if (activeSetup.action === 'mcp_oauth') {
+        const { agent, connection } = await currentMcpConnection(activeSetup, dependencies.config);
         const started = await startMcpOAuthAuthorization({
           ref: { agentId: agent.id, connectionId: connection.id },
           serverUrl: connection.url,
@@ -240,13 +367,183 @@ export function createManagementSetupRoutes(
         }, mcpOAuthDependencies(dependencies));
         return c.redirect(started.authorizationUrl.href, 303);
       }
-      if (setup.action === 'repository_access') {
-        return beginRepositorySetup(c, setup, fields, dependencies);
+      if (activeSetup.action === 'repository_access') {
+        return beginRepositorySetup(c, activeSetup, fields, dependencies);
       }
       throw new Error('wrong_action');
     } catch (error) {
-      await markSetupFailure(setup, c, dependencies.management, safeFailureCode(error), now());
-      return formFailure(c, setup, safeFailureCode(error));
+      await markSetupFailure(activeSetup, c, dependencies.management, safeFailureCode(error), now());
+      if (activeSetup.action === 'managed_connection') {
+        const message = managedStartFailureMessage(error);
+        if (authorizationJsonRequest(c)) {
+          return c.json({ error: safeFailureCode(error), message }, 422);
+        }
+        const page = await managedConnectionPageInput(c, activeSetup, dependencies, options);
+        return page
+          ? c.html(renderManagedConnectionSetupPage({ ...page, failureMessage: message }), 422)
+          : managedUnavailablePage(c);
+      }
+      return formFailure(c, activeSetup, safeFailureCode(error));
+    }
+  });
+
+  app.post('/setup/:setupOperationId/managed/poll', async (c) => {
+    const dependencies = setupDependencies(c, options);
+    const setupId = setupIdFromContext(c);
+    if (!setupId || !sameOriginMutation(c)) return genericDenied(c);
+    const body = await readJsonBody(c);
+    if (!isRecord(body) || Object.keys(body).length > 0) return genericDenied(c);
+    const principal = await authenticateSetupPrincipal(c, options);
+    if (!principal) return authenticationRequired(c);
+    const setup = await requireBrowserSetup(
+      c, dependencies.management, setupId, principal, now(),
+    );
+    if (!setup || setup.action !== 'managed_connection' || setup.origin.kind !== 'slack') {
+      return genericDenied(c);
+    }
+
+    try {
+      const agent = await currentManagedAgent(setup, dependencies.config);
+      requireAgentEdit(principal, agent);
+      if (setup.status === 'completed') {
+        const cleanup = await cancelManagedAuthorizationFlow(
+          await managedFlowDependencies(dependencies, options),
+          {
+            principal,
+            browserSecret: managedBrowserSecret(setupSession(c, setupId)!),
+            attemptScopeId: setupId,
+          },
+        );
+        if (cleanup === 'discarded') {
+          return c.json({
+            error: 'managed_authorization_superseded',
+            message: `Someone else already connected ${setup.target.targetLabel} to ${agent.name}. Your sign-in was discarded.`,
+          }, 409);
+        }
+        return c.json({ status: 'connected' });
+      }
+      if (setup.status !== 'pending') return genericDenied(c);
+      const result = await pollManagedAuthorizationFlow(
+        await managedFlowDependencies(dependencies, options),
+        {
+          principal,
+          agent,
+          workspaceId: setup.origin.workspaceId,
+          browserSecret: managedBrowserSecret(setupSession(c, setupId)!),
+          attemptScopeId: setupId,
+          commit: async (account) => {
+            try {
+              await finishSetup(
+                c,
+                setup,
+                {
+                  connector: setup.target.targetLabel,
+                  connectionAccountId: account.id,
+                  completedByUserId: principal.userId,
+                  completedByMembershipId: principal.membershipId,
+                  ownerKind: account.ownerKind,
+                  accessLane: managedAccountAccessLane(
+                    account,
+                    setup.target.provider,
+                    dependencies.catalog,
+                  ),
+                },
+                dependencies,
+                options,
+                now(),
+              );
+              return true;
+            } catch (error) {
+              if (error instanceof ManagementError && error.code === 'setup_unavailable') {
+                return false;
+              }
+              throw error;
+            }
+          },
+        },
+      );
+      if (result.status === 'pending') return c.json({ status: 'pending' }, 202);
+      if (result.status === 'lost') {
+        return c.json({
+          error: 'managed_authorization_superseded',
+          message: `Someone else already connected ${setup.target.targetLabel} to ${agent.name}. Your sign-in was discarded.`,
+        }, 409);
+      }
+      if (result.status === 'terminal') {
+        await markSetupFailure(
+          setup,
+          c,
+          dependencies.management,
+          `managed_authorization_${result.reason}`,
+          now(),
+        );
+        return c.json({
+          error: 'managed_authorization_terminal',
+          message: 'This connection did not finish. Start over and try again.',
+          reason: result.reason,
+        }, 409);
+      }
+      return c.json({ status: 'connected' });
+    } catch (error) {
+      if (error instanceof AuthorizationError) {
+        return c.json({
+          error: 'managed_authorization_forbidden',
+          message: 'You no longer have permission to connect this Agent.',
+        }, 409);
+      }
+      if (error instanceof ManagedAuthorizationError && error.code === 'stale_provider') {
+        return c.json({
+          error: 'managed_authorization_stale_provider',
+          message: 'The connector configuration changed. Ask the Agent for a new link.',
+        }, 409);
+      }
+      if (error instanceof ManagedAuthorizationError) {
+        if (error.code === 'expired') {
+          return c.json({
+            error: 'managed_authorization_expired',
+            message: 'Provider sign-in expired. Start over and try again.',
+          }, 409);
+        }
+        return c.json({
+          error: 'managed_authorization_invalid',
+          message: 'This sign-in did not finish. Start over and try again.',
+        }, 409);
+      }
+      if (error instanceof ManagedConnectionProviderUnavailableError ||
+          error instanceof ManagedProviderRequestError) {
+        return c.json({
+          error: 'managed_authorization_poll_unavailable',
+          message: 'Managed sign-in could not be checked yet. Chickpea will keep trying.',
+        }, 503);
+      }
+      return c.json({ error: 'managed_authorization_poll_unavailable' }, 503);
+    }
+  });
+
+  app.post('/setup/:setupOperationId/cancel', async (c) => {
+    const dependencies = setupDependencies(c, options);
+    const setupId = setupIdFromContext(c);
+    if (!setupId || !sameOriginFormMutation(c)) return genericDenied(c);
+    const principal = await authenticateSetupPrincipal(c, options);
+    if (!principal) return authenticationRequired(c);
+    const setup = await requireBrowserSetup(
+      c, dependencies.management, setupId, principal, now(),
+    );
+    if (!setup || setup.action !== 'managed_connection') return genericDenied(c);
+    try {
+      const agent = await currentManagedAgent(setup, dependencies.config);
+      requireAgentEdit(principal, agent);
+      await cancelManagedAuthorizationFlow(
+        await managedFlowDependencies(dependencies, options),
+        {
+          principal,
+          browserSecret: managedBrowserSecret(setupSession(c, setupId)!),
+          attemptScopeId: setupId,
+        },
+      );
+      return c.redirect(`/setup/${encodeURIComponent(setupId)}`, 303);
+    } catch {
+      return genericDenied(c);
     }
   });
 
@@ -416,6 +713,7 @@ interface SetupDependencies {
   settings: SettingsStore;
   identity: Pick<IdentityStore, 'getUser' | 'listExternalIdentities'>;
   usage: UsageStore;
+  catalog: ManagedConnectorCatalog;
   platformEnv?: PlatformEnv;
 }
 
@@ -427,8 +725,170 @@ function setupDependencies(c: Context, options: ManagementSetupRoutesOptions): S
     settings: options.settings ?? getSettingsStore(platformEnv),
     identity: options.identity ?? getIdentityStore(platformEnv),
     usage: options.usage ?? getUsageStore(platformEnv),
+    catalog: options.managedConnectorCatalog ?? MANAGED_CONNECTOR_CATALOG,
     ...(platformEnv ? { platformEnv } : {}),
   };
+}
+
+async function managedFlowDependencies(
+  dependencies: SetupDependencies,
+  options: ManagementSetupRoutesOptions,
+): Promise<ManagedAuthorizationFlowDependencies> {
+  return {
+    config: dependencies.config,
+    settings: dependencies.settings,
+    catalog: dependencies.catalog,
+    providerContext: await resolveManagedAuthorizationProviderContext({
+      settings: dependencies.settings,
+      ...(dependencies.platformEnv ? { platformEnv: dependencies.platformEnv } : {}),
+      ...(options.managedConnectionProviders
+        ? { providers: options.managedConnectionProviders }
+        : {}),
+    }),
+  };
+}
+
+async function currentManagedAgent(
+  setup: ManagementSetupRecord,
+  config: ConfigStore,
+): Promise<CustomAgentConfig> {
+  if (setup.action !== 'managed_connection' || !setup.target.agentId) {
+    throw new ManagedAuthorizationError('invalid');
+  }
+  const agent = await config.getAgent(setup.target.agentId);
+  if (agent.lifecycle === 'archived') throw new AuthorizationError();
+  return agent;
+}
+
+async function principalCanEditManagedSetup(
+  principal: AuthPrincipal | undefined,
+  setup: ManagementSetupRecord,
+  config: ConfigStore,
+): Promise<boolean> {
+  if (!principal || principal.machine || principal.organizationId !== setup.organizationId) {
+    return false;
+  }
+  try {
+    requireAgentEdit(principal, await currentManagedAgent(setup, config));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function managedConnectionPageInput(
+  c: Context,
+  setup: ManagementSetupRecord,
+  dependencies: SetupDependencies,
+  options: ManagementSetupRoutesOptions,
+) {
+  try {
+    const agent = await currentManagedAgent(setup, dependencies.config);
+    const avatarUrl = connectorPageAvatarUrl(agent, requestOrigin(c));
+    const writeCapabilities = new Set(dependencies.catalog
+      .capabilities(setup.target.provider, 'write')
+      .filter(({ accessLane }) => accessLane === 'write')
+      .map(({ id }) => id));
+    const providerContext = (await managedFlowDependencies(dependencies, options)).providerContext;
+    const provider = providerContext.providers.get('composio');
+    const writeReady = Boolean(provider?.authorize) && managedProviderAvailability(provider, {
+      toolkit: setup.target.provider,
+      accessLane: 'write',
+    }).status === 'ready';
+    return {
+      setup,
+      agent,
+      writeAvailable: writeReady && setup.scopes.some((scope) => writeCapabilities.has(scope)),
+      ...(avatarUrl ? { avatarUrl } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function managedSetupSelection(
+  setup: ManagementSetupRecord,
+  fields: Record<string, string>,
+  catalog: ManagedConnectorCatalog,
+): { ownerKind: 'member' | 'team'; accessLane: 'read' | 'write'; scopes: string[] } {
+  const ownerKind = fields.ownerKind?.trim();
+  const accessLane = fields.access?.trim();
+  if ((ownerKind !== 'member' && ownerKind !== 'team') ||
+      (accessLane !== 'read' && accessLane !== 'write')) {
+    throw new ManagedAuthorizationError('invalid');
+  }
+  const definitions = catalog.capabilities(setup.target.provider, accessLane);
+  if (definitions.length === 0 ||
+      (accessLane === 'write' && !definitions.some(({ accessLane: lane }) => lane === 'write'))) {
+    throw new ManagedAuthorizationError('invalid');
+  }
+  const ceiling = new Set(setup.scopes);
+  const scopes = definitions.map(({ id }) => id);
+  if (scopes.some((scope) => !ceiling.has(scope))) {
+    throw new ManagedAuthorizationError('invalid');
+  }
+  return { ownerKind, accessLane, scopes };
+}
+
+function managedAccountAccessLane(
+  account: ConnectionAccount,
+  toolkit: string,
+  catalog: ManagedConnectorCatalog,
+): 'read' | 'write' {
+  if (account.policy.kind !== 'managed') return 'read';
+  const writeCapabilities = new Set(catalog.capabilities(toolkit, 'write')
+    .filter(({ accessLane }) => accessLane === 'write')
+    .map(({ id }) => id));
+  return account.policy.allowedCapabilities.some((capability) =>
+    writeCapabilities.has(capability)) ? 'write' : 'read';
+}
+
+function authorizationJsonRequest(c: Context): boolean {
+  return c.req.header('x-requested-with') === 'chickpea-setup' &&
+    (c.req.header('accept') ?? '').split(',').some((value) =>
+      value.trim().toLowerCase().startsWith('application/json'));
+}
+
+function managedAuthorizationUrl(url: URL): string {
+  if (url.protocol !== 'https:' || url.username || url.password) {
+    throw new ManagedAuthorizationError('invalid');
+  }
+  return url.href;
+}
+
+function connectorPageAvatarUrl(
+  agent: CustomAgentConfig,
+  publicOrigin: string,
+): string | undefined {
+  const presentationUrl = agentAvatarUrlForPresentation(agent, publicOrigin);
+  if (!presentationUrl || !agent.slackPresence) return presentationUrl;
+  try {
+    if (new URL(presentationUrl).origin === new URL(publicOrigin).origin) {
+      return presentationUrl;
+    }
+  } catch {
+    return undefined;
+  }
+  // Gateway-published avatars are cross-origin. The immutable Chickpea avatar
+  // route serves the same stored revision without widening this page's CSP.
+  return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision);
+}
+
+function managedStartFailureMessage(error: unknown): string {
+  if (error instanceof ManagedConnectionAlreadyAttachedError) {
+    return `This Agent already has a ${error.ownerKind === 'team' ? 'team' : 'personal'} ${error.connectorLabel} connection.`;
+  }
+  if (error instanceof ManagedConnectionProviderUnavailableError) {
+    return 'Managed sign-in is not configured for this deployment yet.';
+  }
+  if (error instanceof ManagedAuthorizationError && error.code === 'in_progress') {
+    return 'A sign-in is already in progress in another tab. Finish it there before trying again.';
+  }
+  if (error instanceof ManagedAuthorizationError && error.code === 'recovery_required') {
+    return 'This sign-in needs administrator cleanup before another connection can start.';
+  }
+  if (error instanceof AuthorizationError) return 'You no longer have permission to connect this Agent.';
+  return 'Managed sign-in could not start. Try again.';
 }
 
 async function authenticateSetupPrincipal(
@@ -594,19 +1054,54 @@ async function completeFormAction(
 async function finishSetup(
   c: Context,
   setup: ManagementSetupRecord,
-  result: { connector?: string; accountLabel?: string },
+  result: {
+    connector?: string;
+    accountLabel?: string;
+    connectionAccountId?: string;
+    completedByUserId?: string;
+    completedByMembershipId?: string;
+    ownerKind?: 'member' | 'team';
+    accessLane?: 'read' | 'write';
+  },
   dependencies: SetupDependencies,
   options: ManagementSetupRoutesOptions,
   at: number,
 ): Promise<void> {
-  const user = await dependencies.identity.getUser(setup.actorUserId);
+  const browserSessionDigest = digest(setupSession(c, setup.setupOperationId)!);
+  const managedReceipt = setup.action === 'managed_connection' && setup.target.agentId
+    ? await dependencies.config.getAgent(setup.target.agentId).then((agent) => {
+        const avatarUrl = agentAvatarUrlForPresentation(agent, requestOrigin(c));
+        return {
+          receiptKind: 'connector_connected' as const,
+          agentId: agent.id,
+          agentName: agent.name,
+          ownerKind: result.ownerKind ?? setup.target.ownerKind ?? 'member',
+          accessLane: result.accessLane ?? setup.target.accessLane ?? 'read',
+          toolkit: setup.target.provider,
+          ...(avatarUrl ? { avatarUrl } : {}),
+        };
+      })
+    : undefined;
+  const initiator = managedReceipt
+    ? setup.actorUserId
+    : (await dependencies.identity.getUser(setup.actorUserId))?.displayName ?? setup.actorUserId;
   await completeManagementSetupReceipt(dependencies.management, {
     setup,
-    browserSessionDigest: digest(setupSession(c, setup.setupOperationId)!),
+    browserSessionDigest,
+    ...(result.completedByUserId
+      ? { completedByUserId: result.completedByUserId }
+      : {}),
+    ...(result.completedByMembershipId
+      ? { completedByMembershipId: result.completedByMembershipId }
+      : {}),
+    ...(result.connectionAccountId
+      ? { connectionAccountId: result.connectionAccountId }
+      : {}),
     ...(result.connector ? { connector: result.connector } : {}),
     ...(result.accountLabel ? { accountLabel: result.accountLabel } : {}),
-    initiator: user?.displayName ?? setup.actorUserId,
+    initiator,
     at,
+    ...(managedReceipt ?? {}),
   });
   emitManagementMetric('setup.lifecycle', {
     action: setup.action,
@@ -834,7 +1329,17 @@ async function requireBrowserSetup(
   const session = setupSession(c, setupId);
   if (!session) return undefined;
   const setup = await management.getSetup(setupId, at);
-  return setup && principalMatchesSetup(principal, setup) && sessionMatches(setup, session)
+  if (!setup) return undefined;
+  if (setup.action === 'managed_connection') {
+    const sessionAuthorized = setup.status === 'completed'
+      ? CAPABILITY_PATTERN.test(session)
+      : managedSetupSessionMatches(setup, session);
+    return !principal.machine && principal.organizationId === setup.organizationId &&
+        sessionAuthorized
+      ? setup
+      : undefined;
+  }
+  return principalMatchesSetup(principal, setup) && sessionMatches(setup, session)
     ? setup
     : undefined;
 }
@@ -848,6 +1353,14 @@ async function markSetupFailure(
 ): Promise<void> {
   const session = setupSession(c, setup.setupOperationId);
   if (!session) return;
+  if (setup.action === 'managed_connection') {
+    emitManagementMetric('setup.lifecycle', {
+      action: setup.action,
+      outcome: 'failed',
+      reason: code,
+    });
+    return;
+  }
   await management.failSetup(
     setup.setupOperationId,
     digest(session),
@@ -861,13 +1374,13 @@ async function markSetupFailure(
   });
 }
 
-function renderClaimPage(setupId: string): string {
+function renderClaimPage(setupId: string, reusable = false): string {
   const exchangePath = `/setup/${encodeURIComponent(setupId)}/exchange`;
   const storageKey = `chickpea.management-setup.${setupId}`;
   const signInPath = `/auth/slack/sign-in?destination=${encodeURIComponent(`/setup/${setupId}`)}`;
   return pageShell('Secure Chickpea setup', `
     <main><h1>Secure Chickpea setup</h1>
-    <p id="status">Checking this one-use setup link…</p></main>
+    <p id="status">Checking this ${reusable ? 'secure' : 'one-use'} setup link…</p></main>
     <script nonce="setup">(function(){"use strict";
       var token="";
       try{var f=new URLSearchParams(location.hash.slice(1));token=f.get("setup")||"";
@@ -907,10 +1420,17 @@ async function renderSetupSummary(
 }
 
 function terminalPage(c: Context, setup: ManagementSetupRecord): Response {
+  if (setup.action === 'managed_connection') {
+    return managedUnavailablePage(c);
+  }
   if (setup.status === 'completed') {
     return c.html(pageShell('Setup complete', '<main><h1>Connected</h1><p>This setup is complete. You can close this window.</p></main>'));
   }
   return unavailablePage(c);
+}
+
+function managedUnavailablePage(c: Context): Response {
+  return c.html(renderManagedConnectionUnavailablePage(), 410);
 }
 
 function unavailablePage(c: Context): Response {
@@ -955,12 +1475,21 @@ function setupResponseHeaders(c: Context): void {
   c.header('X-Frame-Options', 'DENY');
   c.header('Cross-Origin-Opener-Policy', 'same-origin');
   c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  c.header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-setup'; connect-src 'self'; form-action 'self' https://github.com; base-uri 'none'; frame-ancestors 'none'");
+  c.header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-setup'; connect-src 'self'; img-src 'self' data:; form-action 'self' https://github.com; base-uri 'none'; frame-ancestors 'none'");
 }
 
 function sameOriginMutation(c: Context): boolean {
   const origin = c.req.header('origin');
   return !!origin && origin === requestOrigin(c);
+}
+
+function sameOriginFormMutation(c: Context): boolean {
+  return validateBrowserMutationProvenance(c.req.raw, {
+    canonicalOrigin: requestOrigin(c),
+    maxBodyBytes: MAX_FORM_BYTES,
+    requireJson: false,
+    allowOpaqueOriginFormNavigation: true,
+  }).ok;
 }
 
 function requestOrigin(c: Context): string {
@@ -1001,6 +1530,10 @@ function cookieSuffix(setupId: string): string {
 
 function sessionMatches(setup: ManagementSetupRecord, session: string): boolean {
   return !!setup.browserSessionDigest && setup.browserSessionDigest === digest(session);
+}
+
+function managedSetupSessionMatches(setup: ManagementSetupRecord, session: string): boolean {
+  return !!setup.tokenDigest && setup.tokenDigest === digest(session);
 }
 
 async function readJsonBody(c: Context): Promise<unknown> {
@@ -1059,8 +1592,15 @@ function digest(value: string): string {
   return createHash('sha256').update(value).digest('base64url');
 }
 
+function managedBrowserSecret(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 function safeFailureCode(error: unknown): string {
   if (error instanceof ManagementError) return error.code;
+  if (error instanceof ManagedConnectionProviderUnavailableError) {
+    return 'managed_provider_unavailable';
+  }
   const message = error instanceof Error ? error.message : '';
   if (/target|revision|connection_missing/i.test(message)) return 'target_changed';
   if (/provider|key|credential|validation|invalid_form/i.test(message)) return 'validation_failed';
