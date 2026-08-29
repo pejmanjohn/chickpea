@@ -47,10 +47,15 @@ export function renderManagedConnectionSetupPage(input: ManagedConnectionPageInp
           <form id="connector-form" method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/authorize">
             <section class="choice-block" aria-labelledby="owner-title">
               <h2 id="owner-title">Who uses this account?</h2>
-              <select class="owner-select" id="connection-owner" name="ownerKind" aria-labelledby="owner-title" aria-describedby="owner-help">
-                <option value="member"${ownerKind === 'member' ? ' selected' : ''}>My connection</option>
-                <option value="team"${ownerKind === 'team' ? ' selected' : ''}>Team connection</option>
-              </select>
+              <span class="select-control">
+                <select class="owner-select" id="connection-owner" name="ownerKind" aria-labelledby="owner-title" aria-describedby="owner-help">
+                  <option value="member"${ownerKind === 'member' ? ' selected' : ''}>My connection</option>
+                  <option value="team"${ownerKind === 'team' ? ' selected' : ''}>Team connection</option>
+                </select>
+                <svg class="select-control-caret" aria-hidden="true" focusable="false" viewBox="0 0 16 16">
+                  <path d="m3.75 6.25 4.25 4.25 4.25-4.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+                </svg>
+              </span>
               <p id="owner-help">${escapeHtml(ownerHelp)}</p>
             </section>
             <section class="choice-block" aria-labelledby="access-title">
@@ -354,9 +359,16 @@ body {
   line-height: 1.55;
   margin: 11px 0 0;
 }
+.select-control {
+  display: block;
+  position: relative;
+  width: min(530px, 100%);
+}
 .owner-select {
   align-items: center;
-  appearance: auto;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
   background: var(--card);
   border: 1px solid rgba(59, 50, 32, .22);
   border-radius: 15px;
@@ -367,10 +379,20 @@ body {
   font: inherit;
   font-weight: 800;
   min-height: 58px;
-  padding: 0 18px;
-  width: min(530px, 100%);
+  padding: 0 56px 0 18px;
+  width: 100%;
 }
 .owner-select:focus-visible { outline: 3px solid rgba(176, 84, 21, .42); outline-offset: 3px; }
+.select-control-caret {
+  color: var(--muted);
+  height: 16px;
+  pointer-events: none;
+  position: absolute;
+  right: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+}
 .access-control {
   align-items: stretch;
   background: var(--card);

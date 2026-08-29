@@ -138,6 +138,34 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
   }
 });
 
+test('managed connector account selector owns its caret with a padded right inset', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_sprout',
+      name: 'Sprout',
+      instructions: 'Help the team.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const rendered = renderManagedConnectionSetupPage({ setup, agent });
+
+    assert.match(rendered, /<span class="select-control">/);
+    assert.match(rendered, /<svg class="select-control-caret" aria-hidden="true"/);
+    assert.match(rendered, /\.select-control \{[^}]*position: relative;/s);
+    assert.match(rendered, /\.owner-select \{[^}]*appearance: none;/s);
+    assert.match(rendered, /\.owner-select \{[^}]*padding: 0 56px 0 18px;/s);
+    assert.doesNotMatch(rendered, /appearance: auto;/);
+    assert.match(rendered, /\.select-control-caret \{[^}]*pointer-events: none;/s);
+    assert.match(rendered, /\.select-control-caret \{[^}]*right: 20px;/s);
+  } finally {
+    config.close();
+  }
+});
+
 test('managed connector copy and success scope stay accurate for a team Gmail handoff', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   try {
