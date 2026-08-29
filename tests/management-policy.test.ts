@@ -37,6 +37,55 @@ function posture(decision: ReturnType<typeof classifyManagementOperation>) {
   return decision.posture;
 }
 
+test('base Agent creation and only its trusted source-Channel grant are immediate', () => {
+  assert.deepEqual(classifyManagementOperation({
+    actor,
+    operation: {
+      itemId: 'create',
+      kind: 'create_agent',
+      agent: {
+        id: 'agent_deck',
+        name: 'Deck',
+        instructions: 'Create clear presentations.',
+        editPolicy: 'all_workspace_members',
+        enabled: true,
+        skills: [],
+        mcpServers: [],
+        apiConnections: [],
+        repositories: [],
+      },
+    },
+  }), {
+    allowed: true,
+    posture: 'immediate',
+    reason: 'base_agent_creation',
+  });
+
+  const grant: ManagementOperation = {
+    itemId: 'grant',
+    kind: 'grant_agent_channel',
+    workspaceId: 'T_POLICY',
+    channelId: 'C_POLICY',
+    agentId: 'agent_deck',
+    expectedRevision: 0,
+  };
+  assert.equal(posture(classifyManagementOperation({
+    actor,
+    operation: grant,
+    agentEditable: true,
+  })), 'confirmation');
+  assert.deepEqual(classifyManagementOperation({
+    actor,
+    operation: grant,
+    agentEditable: true,
+    trustedSlackOriginGrant: true,
+  }), {
+    allowed: true,
+    posture: 'immediate',
+    reason: 'source_channel_for_created_agent',
+  });
+});
+
 test('explicit exact reversible skill changes apply immediately', () => {
   assert.deepEqual(classifyManagementOperation({
     actor,

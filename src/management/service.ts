@@ -1099,8 +1099,12 @@ export class WorkspaceManagementService {
 
   async applyWorkspaceChanges(input: ApplyWorkspaceChangesInput): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
-    const operations = validateManagementOperations(input.operations);
-    assertBaseAgentCreationContract(operations);
+    const requestedOperations = validateManagementOperations(input.operations);
+    assertBaseAgentCreationContract(requestedOperations);
+    assertStandaloneBaseAgentCreation(requestedOperations);
+    const operations = validateManagementOperations(
+      withTrustedSlackOriginGrant(actor, requestedOperations),
+    );
     const storageIdempotencyKey = managementStorageIdempotencyKey(actor, input.idempotencyKey);
     const at = this.now();
     const reservation = await this.stores.management.reserveRequest({
@@ -1186,6 +1190,11 @@ export class WorkspaceManagementService {
           ...(input.trustedReversibleOperationIds?.includes(operation.itemId)
             ? { trustedReversibleOperation: true }
             : {}),
+          trustedSlackOriginGrant: isTrustedSlackOriginGrant(
+            actor,
+            request.operations,
+            storedOperation,
+          ),
           operationCount: request.operations.length,
         });
         const policy = classifyManagementOperation(facts);
@@ -1234,7 +1243,8 @@ export class WorkspaceManagementService {
             ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
             ...(mutation.warning ? { warning: mutation.warning } : {}),
           });
-          if (request.operations.length === 1 && mutation.inverse) {
+          if (request.operations.length === 1 &&
+              operation.kind !== 'create_agent' && mutation.inverse) {
             await this.stores.management.putUndo({
               operationId: request.operationId,
               organizationId: actor.organizationId,
@@ -1313,22 +1323,19 @@ export class WorkspaceManagementService {
     }
     const requestedOperations = validateManagementOperations(input.operations);
     assertBaseAgentCreationContract(requestedOperations);
+    if (requestedOperations.some(({ kind }) => kind === 'create_agent')) {
+      throw new ManagementError(
+        'invalid_request',
+        'Create a standalone base Agent with apply_workspace_changes. Agent creation does not require confirmation.',
+      );
+    }
     if (requestedOperations.some(({ kind }) => kind === 'request_setup')) {
       throw new ManagementError(
         'invalid_request',
         'Prepare connector or repository setup separately after the reviewed Agent change.',
       );
     }
-    if (requestedOperations.some(({ kind }) => kind === 'create_agent') &&
-        requestedOperations.length !== 1) {
-      throw new ManagementError(
-        'base_agent_capabilities_require_setup',
-        'Create the base Agent in its own proposal. Add reach, capabilities, and schedules afterward.',
-      );
-    }
-    const operations = validateManagementOperations(
-      withTrustedSlackOriginGrant(actor, requestedOperations),
-    );
+    const operations = requestedOperations;
 
     const proposalId = `changeset_${this.randomId()}`;
     const targetRevisions: Record<string, number> = {};
@@ -1363,7 +1370,7 @@ export class WorkspaceManagementService {
         }
       }
       const policy = classifyManagementOperation(
-        await this.proposalPolicyFacts(actor, operation, operations),
+        await this.policyFacts(actor, operation),
       );
       if (!policy.allowed) {
         emitAgentAuthoringOutcome(actor, operations, { proposalOutcome: 'denied' });
@@ -1555,7 +1562,7 @@ export class WorkspaceManagementService {
           const handoff = await this.actingAgentOperationHandoff(actor, operation);
           if (handoff) throw new ChickpeaHandoffRequired(handoff);
           const policy = classifyManagementOperation(
-            await this.proposalPolicyFacts(actor, operation, proposal.operations),
+            await this.policyFacts(actor, operation),
           );
           if (!policy.allowed) {
             throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
@@ -2935,6 +2942,7 @@ export class WorkspaceManagementService {
       allowIdempotentRoutineSaveReplay?: boolean;
       approvalBasis?: 'explicit_requester_command';
       trustedReversibleOperation?: boolean;
+      trustedSlackOriginGrant?: boolean;
       operationCount?: number;
     } = {},
   ) {
@@ -3036,22 +3044,16 @@ export class WorkspaceManagementService {
     }
     if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
       await this.requireEditableAgent(actor, operation.agentId!);
-      return { actor, operation, agentEditable: true };
+      return {
+        actor,
+        operation,
+        agentEditable: true,
+        ...(operation.kind === 'grant_agent_channel' && options.trustedSlackOriginGrant
+          ? { trustedSlackOriginGrant: true }
+          : {}),
+      };
     }
     return { actor, operation };
-  }
-
-  private async proposalPolicyFacts(
-    actor: LiveManagementActor,
-    operation: ManagementOperation,
-    operations: readonly ManagementOperation[],
-  ) {
-    if (operation.kind === 'grant_agent_channel' && operation.agentId &&
-        operations.some((candidate) => candidate.kind === 'create_agent' &&
-          candidate.agent.id === operation.agentId)) {
-      return { actor, operation, agentEditable: true };
-    }
-    return this.policyFacts(actor, operation);
   }
 
   private async createProposal(
@@ -4743,6 +4745,16 @@ function assertBaseAgentCreationContract(operations: readonly ManagementOperatio
   }
 }
 
+function assertStandaloneBaseAgentCreation(
+  operations: readonly ManagementOperation[],
+): void {
+  if (!operations.some(({ kind }) => kind === 'create_agent') || operations.length === 1) return;
+  throw new ManagementError(
+    'base_agent_capabilities_require_setup',
+    'Create the base Agent in its own request. Add reach, connections, repositories, and schedules afterward.',
+  );
+}
+
 function withTrustedSlackOriginGrant(
   actor: LiveManagementActor,
   operations: readonly ManagementOperation[],
@@ -4770,6 +4782,22 @@ function withTrustedSlackOriginGrant(
       expectedRevision: 0,
     },
   ];
+}
+
+function isTrustedSlackOriginGrant(
+  actor: LiveManagementActor,
+  operations: readonly ManagementOperation[],
+  operation: ManagementOperation,
+): boolean {
+  const creation = operations[0];
+  const grant = operations[1];
+  if (operations.length !== 2 || creation?.kind !== 'create_agent' ||
+      grant?.kind !== 'grant_agent_channel' || operation.itemId !== grant.itemId) {
+    return false;
+  }
+  const expected = withTrustedSlackOriginGrant(actor, [creation])[1];
+  return expected?.kind === 'grant_agent_channel' &&
+    canonicalJson(grant) === canonicalJson(expected);
 }
 
 function managementPreviewTarget(operation: ManagementOperation): string {
