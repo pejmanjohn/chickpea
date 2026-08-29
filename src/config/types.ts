@@ -46,9 +46,9 @@ export interface McpConnectionConfig {
   transport: 'streamable-http' | 'sse';
   authMode: 'none' | 'bearer' | 'oauth';
   headerNames: string[];
-  /** Reusable-account credential projection for one custom MCP header. */
+  /** Agent-owned connection credential projection for one custom MCP header. */
   credentialHeaderName?: string;
-  /** Safe, non-secret prefix prepended to the reusable account credential. */
+  /** Safe, non-secret prefix prepended to the connection credential. */
   credentialValuePrefix?: string;
   /** The connector remains usable when no credential is stored. */
   credentialOptional?: boolean;
@@ -401,7 +401,7 @@ export type SlackPublicContextEntryInput = Omit<SlackPublicContextEntry, 'update
 export type ConnectionAccountOwnerKind = 'team' | 'member';
 export type ConnectionAccountLifecycle = 'pending' | 'ready' | 'needs_attention' | 'revoked';
 
-/** Non-secret API policy owned by a reusable connection account. */
+/** Non-secret API policy owned by one Agent-scoped connection account. */
 export interface ConnectionAccountApiPolicy {
   kind: 'api';
   allowedHosts: string[];
@@ -418,7 +418,7 @@ export interface ConnectionAccountApiPolicy {
   presetId?: string;
 }
 
-/** Non-secret MCP policy owned by a reusable connection account. */
+/** Non-secret MCP policy owned by one Agent-scoped connection account. */
 export interface ConnectionAccountMcpPolicy {
   kind: 'mcp';
   url: string;
@@ -486,7 +486,7 @@ export interface ConnectionAccountManagedPolicy {
   resourceConstraints?: ManagedAccountResourceConstraints;
   /** Safe summary of the provider-enforced grant, such as Notion's page picker. */
   grantSummary?: ManagedProviderGrantSummary;
-  /** Shared generation-token shape used by generic connection policy handling. */
+  /** Common generation-token shape used by generic connection policy handling. */
   oauthAttemptId?: string;
   /** Installation provider revision that last validated this exact account. */
   providerGeneration?: number;
@@ -500,8 +500,9 @@ export type ConnectionAccountPolicy =
   | ConnectionAccountManagedPolicy;
 
 /**
- * Reusable connection ownership record. Native secret material stays behind
- * secretRefId; managed policies keep that local slot empty.
+ * Agent-scoped connection record. Its durable binding is the ownership record.
+ * Native secret material stays behind secretRefId; managed policies keep that
+ * local slot empty.
  */
 export interface ConnectionAccount {
   id: string;
@@ -542,6 +543,16 @@ export type AgentConnectionBindingInput = Omit<
   AgentConnectionBinding,
   'createdAt' | 'updatedAt'
 >;
+
+export interface AgentOwnedConnectionInput {
+  account: ConnectionAccountInput;
+  binding: AgentConnectionBindingInput;
+}
+
+export interface AgentOwnedConnection {
+  account: ConnectionAccount;
+  binding: AgentConnectionBinding;
+}
 
 export type AgentScheduleState = 'active' | 'paused' | 'needs_attention' | 'archived';
 

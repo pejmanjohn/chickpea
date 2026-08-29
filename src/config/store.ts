@@ -3,7 +3,9 @@ import {
   AgentExistsError,
   AgentStillReferencedError,
   ChannelRevisionConflictError,
+  ConnectionAccountAlreadyBoundError,
   ConnectionAccountRevisionConflictError,
+  ManagedRemoteAccountAlreadyUsedError,
   ReservedAgentIdentityError,
   UnknownAgentError,
   WorkspaceModelDefaultRevisionConflictError,
@@ -21,6 +23,8 @@ import {
   type AgentChannelGrantInput,
   type AgentConnectionBinding,
   type AgentConnectionBindingInput,
+  type AgentOwnedConnection,
+  type AgentOwnedConnectionInput,
   type AgentReferenceSummary,
   type AgentScheduleReference,
   type AgentScheduleReferenceInput,
@@ -357,7 +361,11 @@ export interface ConfigStore {
     input: ConnectionAccountInput,
     expectedRevision?: number,
   ): Promise<ConnectionAccount>;
+  createAgentOwnedConnection(input: AgentOwnedConnectionInput): Promise<AgentOwnedConnection>;
   listAgentConnectionBindings(agentId: string): Promise<AgentConnectionBinding[]>;
+  getAgentConnectionBindingForAccount(
+    connectionAccountId: string,
+  ): Promise<AgentConnectionBinding | undefined>;
   putAgentConnectionBinding(input: AgentConnectionBindingInput): Promise<AgentConnectionBinding>;
   listAgentScheduleReferences(agentId: string): Promise<AgentScheduleReference[]>;
   getAgentScheduleReference(scheduleId: string): Promise<AgentScheduleReference | undefined>;
@@ -1300,6 +1308,24 @@ export class ConfigStoreLogic {
     expectedRevision?: number,
   ): ConnectionAccount {
     validateConnectionAccountInput(input);
+    if (input.policy.kind === 'managed' && input.lifecycle !== 'revoked') {
+      const adapterId = input.policy.adapterId.trim().toLowerCase();
+      const duplicate = this.db.get(
+        `SELECT id FROM config_connection_accounts
+         WHERE id <> ?
+           AND lifecycle <> 'revoked'
+           AND json_extract(policy_json, '$.kind') = 'managed'
+           AND lower(trim(json_extract(policy_json, '$.adapterId'))) = ?
+           AND json_extract(policy_json, '$.accountRef') = ?
+         LIMIT 1`,
+        input.id,
+        adapterId,
+        input.policy.accountRef,
+      );
+      if (duplicate) {
+        throw new ManagedRemoteAccountAlreadyUsedError(adapterId, input.policy.accountRef);
+      }
+    }
     const current = this.db.get(
       'SELECT * FROM config_connection_accounts WHERE id = ?',
       input.id,
@@ -1367,44 +1393,92 @@ export class ConfigStoreLogic {
     return this.listConnectionAccounts(input.workspaceId).find((account) => account.id === input.id)!;
   }
 
+  createAgentOwnedConnection(input: AgentOwnedConnectionInput): AgentOwnedConnection {
+    if (
+      input.binding.connectionAccountId !== input.account.id ||
+      input.binding.providerId !== input.account.providerId
+    ) {
+      throw new Error('Connection account and initial binding identity must match');
+    }
+    return this.db.transaction(() => {
+      const account = this.putConnectionAccount(input.account, 0);
+      const binding = this.putAgentConnectionBindingRow(input.binding);
+      return { account, binding };
+    });
+  }
+
   listAgentConnectionBindings(agentId: string): AgentConnectionBinding[] {
     return this.db
       .all('SELECT * FROM config_agent_connection_bindings WHERE agent_id = ? ORDER BY connection_account_id', agentId)
       .map((row) => rowToAgentConnectionBinding(row as unknown as AgentConnectionBindingRow));
   }
 
+  getAgentConnectionBindingForAccount(
+    connectionAccountId: string,
+  ): AgentConnectionBinding | undefined {
+    const row = this.db.get(
+      'SELECT * FROM config_agent_connection_bindings WHERE connection_account_id = ?',
+      connectionAccountId,
+    ) as unknown as AgentConnectionBindingRow | undefined;
+    return row ? rowToAgentConnectionBinding(row) : undefined;
+  }
+
   putAgentConnectionBinding(input: AgentConnectionBindingInput): AgentConnectionBinding {
+    return this.db.transaction(() => this.putAgentConnectionBindingRow(input));
+  }
+
+  private putAgentConnectionBindingRow(input: AgentConnectionBindingInput): AgentConnectionBinding {
     this.requireActiveUserAgent(input.agentId);
-    const account = this.db.get('SELECT provider_id FROM config_connection_accounts WHERE id = ?', input.connectionAccountId);
+    const account = this.db.get(
+      'SELECT provider_id, workspace_id FROM config_connection_accounts WHERE id = ?',
+      input.connectionAccountId,
+    );
     if (!account) throw new Error(`Unknown connection account ${input.connectionAccountId}`);
     if (String(account.provider_id) !== input.providerId) {
       throw new Error(`Connection account ${input.connectionAccountId} does not use ${input.providerId}`);
     }
+    const installation = this.listWorkspaceInstallations()[0];
+    if (installation && installation.workspaceId !== String(account.workspace_id)) {
+      throw new Error(
+        `Connection account ${input.connectionAccountId} belongs to workspace ` +
+        `${String(account.workspace_id)}, not ${installation.workspaceId}`,
+      );
+    }
+    const existing = this.getAgentConnectionBindingForAccount(input.connectionAccountId);
+    if (existing && existing.agentId !== input.agentId) {
+      throw new ConnectionAccountAlreadyBoundError(input.connectionAccountId, existing.agentId);
+    }
     const now = Date.now();
     const resourceConstraints = normalizeBindingResourceConstraints(input.resourceConstraints);
-    this.db.run(
-      `INSERT INTO config_agent_connection_bindings (
-        agent_id, connection_account_id, provider_id, allowed_capabilities_json,
-        resource_constraints_json, enabled, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(agent_id, connection_account_id) DO UPDATE SET
-        provider_id = excluded.provider_id,
-        allowed_capabilities_json = excluded.allowed_capabilities_json,
-        resource_constraints_json = excluded.resource_constraints_json,
-        enabled = excluded.enabled,
-        updated_at = excluded.updated_at`,
-      input.agentId,
-      input.connectionAccountId,
-      input.providerId,
-      JSON.stringify([...new Set(input.allowedCapabilities)]),
-      JSON.stringify(resourceConstraints),
-      input.enabled ? 1 : 0,
-      now,
-      now,
-    );
-    return this.listAgentConnectionBindings(input.agentId).find(
-      (binding) => binding.connectionAccountId === input.connectionAccountId,
-    )!;
+    try {
+      this.db.run(
+        `INSERT INTO config_agent_connection_bindings (
+          agent_id, connection_account_id, provider_id, allowed_capabilities_json,
+          resource_constraints_json, enabled, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(agent_id, connection_account_id) DO UPDATE SET
+          provider_id = excluded.provider_id,
+          allowed_capabilities_json = excluded.allowed_capabilities_json,
+          resource_constraints_json = excluded.resource_constraints_json,
+          enabled = excluded.enabled,
+          updated_at = excluded.updated_at`,
+        input.agentId,
+        input.connectionAccountId,
+        input.providerId,
+        JSON.stringify([...new Set(input.allowedCapabilities)]),
+        JSON.stringify(resourceConstraints),
+        input.enabled ? 1 : 0,
+        now,
+        now,
+      );
+    } catch (error) {
+      const winner = this.getAgentConnectionBindingForAccount(input.connectionAccountId);
+      if (winner && winner.agentId !== input.agentId) {
+        throw new ConnectionAccountAlreadyBoundError(input.connectionAccountId, winner.agentId);
+      }
+      throw error;
+    }
+    return this.getAgentConnectionBindingForAccount(input.connectionAccountId)!;
   }
 
   listAgentScheduleReferences(agentId: string): AgentScheduleReference[] {
@@ -1687,21 +1761,24 @@ export class ConfigStoreLogic {
   }
 
   deleteAgent(agentId: string, expectedRevision?: number): boolean {
-    const current = this.getAgent(agentId);
-    this.requireMutableUserAgent(current);
-    const requiredRevision = expectedRevision ?? current.revision;
-    if (requiredRevision !== current.revision) {
-      throw new AgentRevisionConflictError(agentId, requiredRevision, current.revision);
-    }
-    this.requireAgentHasNoBlockingReferences(agentId);
-    const deleted = this.db.run(
-      'DELETE FROM config_agents WHERE id = ? AND revision = ?',
-      agentId,
-      requiredRevision,
-    );
-    if (deleted.changes === 1) return true;
-    const actual = this.getAgent(agentId).revision;
-    throw new AgentRevisionConflictError(agentId, requiredRevision, actual);
+    return this.db.transaction(() => {
+      const current = this.getAgent(agentId);
+      this.requireMutableUserAgent(current);
+      const requiredRevision = expectedRevision ?? current.revision;
+      if (requiredRevision !== current.revision) {
+        throw new AgentRevisionConflictError(agentId, requiredRevision, current.revision);
+      }
+      this.requireAgentHasNoBlockingReferences(agentId);
+      this.deleteRevokedAgentConnectionBindings(agentId);
+      const deleted = this.db.run(
+        'DELETE FROM config_agents WHERE id = ? AND revision = ?',
+        agentId,
+        requiredRevision,
+      );
+      if (deleted.changes === 1) return true;
+      const actual = this.getAgent(agentId).revision;
+      throw new AgentRevisionConflictError(agentId, requiredRevision, actual);
+    });
   }
 
   deleteAgentWithMemory(
@@ -1722,6 +1799,7 @@ export class ConfigStoreLogic {
       }
       this.requireMutableUserAgent(this.getAgent(agentId));
       this.requireAgentHasNoBlockingReferences(agentId);
+      this.deleteRevokedAgentConnectionBindings(agentId);
       const deleted = this.db.run('DELETE FROM config_agents WHERE id = ?', agentId);
       if (deleted.changes !== 1) return false;
       memory.deleteAgentMemory(agentId);
@@ -1851,6 +1929,25 @@ export class ConfigStoreLogic {
     if (blockers.length > 0) {
       throw new AgentStillReferencedError(agentId, blockers.join(', '));
     }
+  }
+
+  private deleteRevokedAgentConnectionBindings(agentId: string): void {
+    const active = this.db.get(
+      `SELECT b.connection_account_id
+       FROM config_agent_connection_bindings b
+       JOIN config_connection_accounts a ON a.id = b.connection_account_id
+       WHERE b.agent_id = ? AND a.lifecycle <> 'revoked'
+       ORDER BY b.connection_account_id
+       LIMIT 1`,
+      agentId,
+    );
+    if (active) {
+      throw new AgentStillReferencedError(
+        agentId,
+        `connection ${String(active.connection_account_id)}`,
+      );
+    }
+    this.db.run('DELETE FROM config_agent_connection_bindings WHERE agent_id = ?', agentId);
   }
 
   private installAgentPlatformSchema(): void {
@@ -2344,11 +2441,34 @@ export class ConfigStoreLogic {
       this.db.all('PRAGMA table_info(config_agent_connection_bindings)')
         .map((column) => String(column.name)),
     );
-    if (!bindingColumns.has('resource_constraints_json')) {
-      this.db.exec(
-        "ALTER TABLE config_agent_connection_bindings ADD COLUMN resource_constraints_json TEXT NOT NULL DEFAULT '{}'",
+    this.db.transaction(() => {
+      if (!bindingColumns.has('resource_constraints_json')) {
+        this.db.exec(
+          "ALTER TABLE config_agent_connection_bindings ADD COLUMN resource_constraints_json TEXT NOT NULL DEFAULT '{}'",
+        );
+      }
+      const duplicate = this.db.get(
+        `SELECT connection_account_id, GROUP_CONCAT(agent_id) AS agent_ids,
+                COUNT(*) AS binding_count
+         FROM config_agent_connection_bindings
+         GROUP BY connection_account_id
+         HAVING COUNT(*) > 1
+         ORDER BY connection_account_id
+         LIMIT 1`,
       );
-    }
+      if (duplicate) {
+        throw new Error(
+          `Connection binding ownership preflight failed: account ` +
+          `${String(duplicate.connection_account_id)} is bound to multiple Agents ` +
+          `(${String(duplicate.agent_ids)}). Remove the duplicate bindings before startup; ` +
+          `Chickpea will not choose an owner automatically.`,
+        );
+      }
+      this.db.exec(
+        `CREATE UNIQUE INDEX IF NOT EXISTS config_agent_connection_bindings_account_uidx
+         ON config_agent_connection_bindings(connection_account_id)`,
+      );
+    });
   }
 
   private installAgentScheduleReferenceMigrations(): void {
@@ -2625,13 +2745,18 @@ export interface SqliteConfigStore extends ConfigStore {
 export class SqliteConfigStore {
   constructor(path: string = resolveStateDbPath(), seed: ConfigSeed = DEFAULT_SEED) {
     const db = openStateDb(path);
-    // The Proxy facade drops the `implements` compile check, so this typed
-    // binding is the conformance assertion that keeps it: a logic method that
-    // stops matching ConfigStore fails typecheck here.
-    const _conforms: ConfigStore = promisify(new ConfigStoreLogic(db, seed), {
-      close: () => db.close(),
-    });
-    return _conforms as unknown as SqliteConfigStore;
+    try {
+      // The Proxy facade drops the `implements` compile check, so this typed
+      // binding is the conformance assertion that keeps it: a logic method that
+      // stops matching ConfigStore fails typecheck here.
+      const _conforms: ConfigStore = promisify(new ConfigStoreLogic(db, seed), {
+        close: () => db.close(),
+      });
+      return _conforms as unknown as SqliteConfigStore;
+    } catch (error) {
+      db.close();
+      throw error;
+    }
   }
 }
 

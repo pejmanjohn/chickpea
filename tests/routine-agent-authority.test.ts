@@ -235,7 +235,7 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
     assert.equal(first.runsAsMembershipId, owner.membership.id);
     assert.deepEqual(first.requiredConnectionAccountIds.sort(), [team.id, ownerPersonal.id].sort());
 
-    const unavailableOwnerPersonal = await config.putConnectionAccount(
+    await config.putConnectionAccount(
       { ...ownerPersonal, lifecycle: 'needs_attention' },
       ownerPersonal.revision,
     );
@@ -257,29 +257,30 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
       [team.id, ownerPersonal.id].sort(),
       'an edit during an outage must retain the temporarily unavailable dependency',
     );
-    await connections.detach({
+    await connections.disconnectForAgent({
       principal: ownerPrincipal,
       agentId: agent.id,
       connectionAccountId: ownerPersonal.id,
     });
-    const editedAfterDetach = await bindRoutineAgentAuthority({
-      routine: { ...routine, taskText: 'Continue without the removed personal connection.' },
+    const editedAfterDisconnect = await bindRoutineAgentAuthority({
+      routine: { ...routine, taskText: 'Continue without the disconnected personal connection.' },
       assignment,
       actorMembershipId: owner.membership.id,
       env: undefined,
     }, { config, identity });
-    assert.equal(editedAfterDetach.state, 'active');
-    assert.deepEqual(editedAfterDetach.requiredConnectionAccountIds, [team.id]);
-    assert.equal(editedAfterDetach.connectionPauseAccountIds, undefined);
-    await config.putConnectionAccount(
-      { ...unavailableOwnerPersonal, lifecycle: 'ready' },
-      unavailableOwnerPersonal.revision,
+    assert.equal(editedAfterDisconnect.state, 'active');
+    assert.deepEqual(editedAfterDisconnect.requiredConnectionAccountIds, [team.id]);
+    assert.equal(editedAfterDisconnect.connectionPauseAccountIds, undefined);
+    const replacementPersonal = await putConnection(
+      config, 'connection_owner_reauthorized', 'member', owner.membership.id,
+      owner.membership.id,
     );
-    await connections.attach({
-      principal: ownerPrincipal,
+    await config.putAgentConnectionBinding({
       agentId: agent.id,
-      connectionAccountId: ownerPersonal.id,
+      connectionAccountId: replacementPersonal.id,
+      providerId: replacementPersonal.providerId,
       allowedCapabilities: [],
+      enabled: true,
     });
     assert.equal(connectorPaused.scheduleId, editedDuringOutage.scheduleId);
     await reassignRoutineAgentAuthority({
@@ -293,7 +294,7 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
     const resolved = await resolveRoutineAgentAuthority(routine, undefined, { config, identity });
     assert.equal(resolved.actorSlackUserId, 'U_OWNER');
     assert.deepEqual(resolved.effectiveConnections.map(({ account }) => account.id).sort(), [
-      team.id, ownerPersonal.id,
+      team.id, replacementPersonal.id,
     ].sort());
 
     await assert.rejects(
@@ -417,11 +418,20 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
   }
 });
 
-test('substituted personal outages stay attached while incomplete accounts stay optional', async () => {
+test('routine authority uses only the Runs as member account exactly bound to the Agent', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const identity = new SqliteIdentityStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
-  const connections = new ConnectionAccountService({ config, settings });
+  const connections = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([{
+      id: 'composio',
+      async validate() {},
+      async execute() { return { data: {} }; },
+      async revoke() {},
+    }]),
+  });
   try {
     const owner = await createSlackOwner(identity, {
       teamId: WORKSPACE,
@@ -463,6 +473,11 @@ test('substituted personal outages stay attached while incomplete accounts stay 
     await config.putAgentConnectionBinding({
       agentId: agent.id, connectionAccountId: ownerTemplate.id,
       providerId: ownerTemplate.providerId,
+      allowedCapabilities: ['gmail.messages.search'], enabled: true,
+    });
+    await config.putAgentConnectionBinding({
+      agentId: agent.id, connectionAccountId: bobGmail.id,
+      providerId: bobGmail.providerId,
       allowedCapabilities: ['gmail.messages.search'], enabled: true,
     });
     const routine = { ...routineDefinition(), id: 'routine_substituted' };
@@ -561,7 +576,7 @@ test('substituted personal outages stay attached while incomplete accounts stay 
     assert.equal(reassignedWithPendingAccount.state, 'active');
     assert.equal(reassignedWithPendingAccount.connectionPauseAccountIds, undefined);
     assert.deepEqual(reassignedWithPendingAccount.requiredConnectionAccountIds, [bobGmail.id]);
-    await connections.detach({
+    await connections.disconnectForAgent({
       principal: {
         userId: owner.user.id,
         membershipId: owner.membership.id,
@@ -577,7 +592,7 @@ test('substituted personal outages stay attached while incomplete accounts stay 
     });
     const afterTemplateDetach = await config.getAgentScheduleReference(routine.id);
     assert.equal(afterTemplateDetach?.state, 'active');
-    assert.deepEqual(afterTemplateDetach?.requiredConnectionAccountIds, []);
+    assert.deepEqual(afterTemplateDetach?.requiredConnectionAccountIds, [bobGmail.id]);
     assert.equal(afterTemplateDetach?.connectionPauseAccountIds, undefined);
     const fallback = await config.createAgent({
       id: 'agent_substituted_fallback', name: 'Fallback', instructions: 'Stay active.',

@@ -255,7 +255,7 @@ test('failed Google exchange retains the initiating Agent callback context', asy
   }
 });
 
-test('a superseded reusable Google OAuth attempt cannot exchange or replace newer state', async () => {
+test('a superseded Agent-owned Google OAuth attempt cannot exchange or replace newer state', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const google = fakeGoogle();
   let currentRevision = 1;
@@ -354,7 +354,7 @@ test('an older Google OAuth start cannot replace a newer pending authorization',
   }
 });
 
-test('a slower reusable Google OAuth callback cannot overwrite newer credentials', async () => {
+test('a slower Agent-owned Google OAuth callback cannot overwrite newer credentials', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const google = fakeGoogle();
   const olderAttemptId = '11111111-1111-4111-8111-111111111111';

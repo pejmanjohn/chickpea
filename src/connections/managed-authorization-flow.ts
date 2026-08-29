@@ -28,6 +28,7 @@ import {
   inspectManagedAuthorization,
   inspectManagedAuthorizationForCleanup,
   inspectStaleManagedAuthorization,
+  managedAuthorizationAttemptId,
   ManagedAuthorizationError,
   recordManagedAuthorizationAccount,
   recordManagedAuthorizationRequest,
@@ -49,8 +50,8 @@ export interface ManagedAuthorizationFlowDependencies {
   providerContext: ManagedAuthorizationProviderContext;
 }
 
-export class ManagedConnectionAlreadyAttachedError extends Error {
-  readonly name = 'ManagedConnectionAlreadyAttachedError';
+export class ManagedConnectionLaneExistsError extends Error {
+  readonly name = 'ManagedConnectionLaneExistsError';
 
   constructor(
     readonly ownerKind: 'team' | 'member',
@@ -144,7 +145,7 @@ export async function startManagedAuthorizationFlow(
         account.policy.adapterId.trim().toLowerCase() === 'composio' &&
         account.policy.toolkit === connector.toolkit);
       if (existingOwnerLane) {
-        throw new ManagedConnectionAlreadyAttachedError(ownerKind, connector.label);
+        throw new ManagedConnectionLaneExistsError(ownerKind, connector.label);
       }
     }
     const liveCapabilities = dependencies.catalog
@@ -254,7 +255,6 @@ export async function pollManagedAuthorizationFlow(
   let remoteAccountObserved = false;
   let accountMutation:
     | { kind: 'created'; accountId: string }
-    | { kind: 'replaced'; previous: ConnectionAccount; currentRevision: number }
     | undefined;
   try {
     let attempt = await inspectManagedAuthorization({
@@ -267,6 +267,12 @@ export async function pollManagedAuthorizationFlow(
     if (attempt.workspaceId !== input.workspaceId) throw new AuthorizationError();
     if (attempt.agentId !== input.agent.id || !attempt.authorizationRef) {
       throw new ManagedAuthorizationError('invalid');
+    }
+    if (attempt.connectionAccountId) {
+      const binding = await dependencies.config.getAgentConnectionBindingForAccount(
+        attempt.connectionAccountId,
+      );
+      if (binding?.agentId !== input.agent.id) throw new AuthorizationError();
     }
     const providerContext = dependencies.providerContext;
     assertManagedAuthorizationProvider(attempt, providerContext);
@@ -330,12 +336,12 @@ export async function pollManagedAuthorizationFlow(
       accountRef: attempt.accountRef!,
     });
     let account: ConnectionAccount;
-    let scheduleResumeDeferred = false;
     if (attempt.connectionAccountId) {
       const current = await service.getForManagement(input.principal, attempt.connectionAccountId);
       if (current.policy.kind !== 'managed') throw new ManagedAuthorizationError('invalid');
       account = await service.replaceManagedAuthorization({
         principal: input.principal,
+        agentId: input.agent.id,
         connectionAccountId: current.id,
         expectedRevision: current.revision,
         adapterId: attempt.adapterId,
@@ -348,29 +354,22 @@ export async function pollManagedAuthorizationFlow(
         providerLineage: providerContext.lineage,
       });
     } else if (imported) {
-      if (imported.policy.kind !== 'managed') throw new ManagedAuthorizationError('replayed');
-      account = await service.replaceManagedAuthorization({
-        principal: input.principal,
-        connectionAccountId: imported.id,
-        expectedRevision: imported.revision,
-        adapterId: attempt.adapterId,
-        toolkit: attempt.toolkit,
-        principalRef: attempt.principalRef,
-        expectedAllowedCapabilities: imported.policy.allowedCapabilities,
-        allowedCapabilities: [...new Set([
-          ...imported.policy.allowedCapabilities,
-          ...attempt.allowedCapabilities,
-        ])],
-        accountRef: attempt.accountRef!,
-        providerGeneration: providerContext.generation,
-        providerLineage: providerContext.lineage,
-        deferScheduleResume: true,
-      });
-      scheduleResumeDeferred = true;
-      accountMutation = { kind: 'replaced', previous: imported, currentRevision: account.revision };
+      const binding = await dependencies.config.getAgentConnectionBindingForAccount(imported.id);
+      if (
+        imported.policy.kind !== 'managed' ||
+        imported.policy.oauthAttemptId !== managedAuthorizationAttemptId(attempt) ||
+        binding?.agentId !== input.agent.id
+      ) {
+        throw new ManagedConnectionConflictError(
+          'Managed authorization returned an account that belongs to another setup',
+        );
+      }
+      account = imported;
     } else {
-      account = await service.create({
+      if (!attempt.bindingCapabilities) throw new ManagedAuthorizationError('invalid');
+      const created = await service.createForAgent({
         principal: input.principal,
+        agentId: input.agent.id,
         workspaceId: attempt.workspaceId,
         ownerKind: attempt.ownerKind,
         providerId: attempt.providerId,
@@ -382,26 +381,14 @@ export async function pollManagedAuthorizationFlow(
           principalRef: attempt.principalRef,
           accountRef: attempt.accountRef!,
           allowedCapabilities: [...attempt.allowedCapabilities],
+          oauthAttemptId: managedAuthorizationAttemptId(attempt),
           providerGeneration: providerContext.generation,
           providerLineage: providerContext.lineage,
         },
-      });
-      accountMutation = { kind: 'created', accountId: account.id };
-    }
-    if (!attempt.connectionAccountId) {
-      if (!attempt.bindingCapabilities) throw new ManagedAuthorizationError('invalid');
-      await service.attach({
-        principal: input.principal,
-        agentId: input.agent.id,
-        connectionAccountId: account.id,
         allowedCapabilities: [...attempt.bindingCapabilities],
       });
-      if (scheduleResumeDeferred) {
-        await service.resumeManagedAccountSchedules({
-          principal: input.principal,
-          connectionAccountId: account.id,
-        });
-      }
+      account = created.account;
+      accountMutation = { kind: 'created', accountId: account.id };
     }
     if (input.commit && !await input.commit(account)) {
       throw new ManagedSetupCompletionLostError();
@@ -435,16 +422,6 @@ export async function pollManagedAuthorizationFlow(
           principal: input.principal,
           connectionAccountId: accountMutation.accountId,
         });
-        remoteIdentitySafe = true;
-      } catch {
-        cleanupComplete = false;
-      }
-    } else if (accountMutation?.kind === 'replaced') {
-      try {
-        await dependencies.config.putConnectionAccount(
-          accountMutation.previous,
-          accountMutation.currentRevision,
-        );
         remoteIdentitySafe = true;
       } catch {
         cleanupComplete = false;
@@ -646,8 +623,8 @@ async function cleanupExistingAttempt(
       });
     }
   }
-  // Reusable setup claims have independent slots. Never inspect or clean the
-  // member-wide legacy slot while starting one of those scoped attempts.
+  // Agent-scoped setup claims have independent slots. Never inspect or clean
+  // the member-wide legacy slot while starting one of those attempts.
   if (attemptScopeId) return;
   let staleAttempt: ManagedAuthorizationAttempt | undefined;
   try {

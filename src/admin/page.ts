@@ -5,7 +5,7 @@ import {
   CONNECTOR_PRESETS,
   GOOGLE_WORKSPACE_SERVICE_PRESETS,
   MANAGED_CONNECTOR_PRESETS,
-  REUSABLE_CONNECTOR_PRESETS,
+  CONNECTION_CATALOG_PRESETS,
 } from '../config/presets.ts';
 import { GOOGLE_WORKSPACE_SCOPE_OPTIONS } from '../config/api-oauth-policy.ts';
 import {
@@ -3060,7 +3060,7 @@ button.capability-pill { cursor: pointer; }
   var CONNECTOR_PRESETS = ${JSON.stringify(CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = ${JSON.stringify(GOOGLE_WORKSPACE_SERVICE_PRESETS).replace(/</g, '\\u003c')};
   var MANAGED_CONNECTOR_PRESETS = ${JSON.stringify(MANAGED_CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
-  var REUSABLE_CONNECTOR_PRESETS = ${JSON.stringify(REUSABLE_CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
+  var CONNECTION_CATALOG_PRESETS = ${JSON.stringify(CONNECTION_CATALOG_PRESETS).replace(/</g, '\\u003c')};
   var CONNECTOR_LOGOS = ${JSON.stringify(CONNECTOR_LOGOS).replace(/</g, '\\u003c')};
   // Reuse the server-painted mascot after the first render instead of embedding
   // its raster data URL a third time inside this client script.
@@ -3193,10 +3193,9 @@ button.capability-pill { cursor: pointer; }
     // written to the API-connection secret endpoint only after the profile
     // policy saves successfully.
     apiConnectionEditor: null,
-    // Connections are reusable accounts. The Agent owns only bindings; this
-    // view deliberately exposes Team vs My account without ever receiving a
-    // credential or secret reference from the server.
-    agentConnections: { agentId: "", workspaceId: "", attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" },
+    // Each connection belongs to one Agent. The browser receives display-safe
+    // account and binding details, never credentials or secret references.
+    agentConnections: { agentId: "", workspaceId: "", attached: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" },
     composioSetup: null,
     managedAuthorization: null,
     agentSchedules: { agentId: "", schedules: [], loading: false, busy: "", error: "", notice: "" },
@@ -3767,7 +3766,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function prepareReadOnlyAgentState(agentId) {
-    state.agentConnections = { agentId: agentId, workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "", legacyFallback: true };
+    state.agentConnections = { agentId: agentId, workspaceId: connectedTeamId(), attached: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "", legacyFallback: true };
     state.agentSchedules = { agentId: agentId, schedules: [], loading: false, busy: "", error: "", notice: "" };
     state.ownerMemory = {
       ownerKind: "agent", workspaceId: connectedTeamId() || "workspace", ownerId: agentId,
@@ -3783,7 +3782,7 @@ button.capability-pill { cursor: pointer; }
     state.profileDraft = newProfileDraft();
     state.editingAgentId = null;
     resetProfileTransientState();
-    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" };
+    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" };
     state.agentSchedules = { agentId: "", schedules: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
@@ -3820,7 +3819,7 @@ button.capability-pill { cursor: pointer; }
     state.profileDraft = draft;
     state.editingAgentId = null;
     resetProfileTransientState();
-    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" };
+    state.agentConnections = { agentId: "", workspaceId: connectedTeamId(), attached: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "" };
     state.agentSchedules = { agentId: "", schedules: [], loading: false, busy: "", error: "", notice: "" };
     render();
   }
@@ -4165,7 +4164,7 @@ button.capability-pill { cursor: pointer; }
         '<p class="hint">Open Settings &rarr; Connectors and prepare the standard connector defaults. The deployment key stays read-only in Admin.</p></div>' +
         '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="composio-setup-close">Close</button><span class="spacer"></span><button type="button" class="btn btn-primary" data-action="composio-setup-settings">Open Connectors settings</button></div>';
     } else {
-      var setupPreset = (REUSABLE_CONNECTOR_PRESETS || []).find(function (preset) {
+      var setupPreset = (CONNECTION_CATALOG_PRESETS || []).find(function (preset) {
         return preset.id === setup.presetId;
       }) || {
         id: setup.presetId,
@@ -5630,12 +5629,12 @@ button.capability-pill { cursor: pointer; }
     var resourceTicket = beginVisibleResourceLoad("connections", resourceOwner, false);
     if (!resourceTicket) return coalescedVisibleResourcePromise("connections", resourceOwner);
     if (state.connectionAccountsSupported === false) {
-      state.agentConnections = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "", legacyFallback: true };
+      state.agentConnections = { agentId: agentId, workspaceId: workspaceId, attached: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: false, error: "", notice: "", legacyFallback: true };
       finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
       return Promise.resolve();
     }
-    var requestState = { agentId: agentId, workspaceId: workspaceId, attached: [], available: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: true, error: "", notice: "" };
+    var requestState = { agentId: agentId, workspaceId: workspaceId, attached: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: true, error: "", notice: "" };
     state.agentConnections = requestState;
     render();
     if (!workspaceId) {
@@ -5648,7 +5647,6 @@ button.capability-pill { cursor: pointer; }
     var request = api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections?workspaceId=" + encodeURIComponent(workspaceId)).then(function (body) {
       if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentConnections !== requestState) return;
       state.agentConnections.attached = body.attached || [];
-      state.agentConnections.available = body.available || [];
       state.agentConnections.managedCatalog = body.managedConnectors && body.managedConnectors.catalog || [];
       state.agentConnections.managedCanConfigure = !!(body.managedConnectors && body.managedConnectors.canConfigure);
       state.agentConnections.managedConfigurationReadOnly = !!(body.managedConnectors && body.managedConnectors.configurationReadOnly);
@@ -6190,18 +6188,6 @@ button.capability-pill { cursor: pointer; }
     });
   }
 
-  function attachConnectionAccount(accountId) {
-    var agentId = state.profileDraft && state.profileDraft.id;
-    if (!agentId) return;
-    postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) + "/attach", "POST", { allowedCapabilities: [] }).then(function () {
-      invalidateAgentConnections(agentId);
-      return loadAgentConnections(agentId);
-    }).catch(function (error) {
-      state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not add that connection.";
-      render();
-    });
-  }
-
   function startConnectionAccountOAuth(accountId, fromCreate, lane) {
     var agentId = state.profileDraft && state.profileDraft.id;
     if (!agentId) return Promise.reject(new Error("Save the Agent before signing in."));
@@ -6462,9 +6448,9 @@ button.capability-pill { cursor: pointer; }
   function reconnectManagedConnection(accountId) {
     var agentId = state.profileDraft && state.profileDraft.id;
     if (!agentId || !accountId) return;
-    var entry = (state.agentConnections.attached || []).concat(
-      (state.agentConnections.available || []).map(function (account) { return { account: account }; })
-    ).find(function (candidate) { return candidate.account && candidate.account.id === accountId; });
+    var entry = (state.agentConnections.attached || []).find(function (candidate) {
+      return candidate.account && candidate.account.id === accountId;
+    });
     startManagedAuthorization(
       { workspaceId: state.agentConnections.workspaceId, connectionAccountId: accountId },
       entry && entry.account ? connectionAccountDisplayName(entry.account) : "Managed connector"
@@ -6486,23 +6472,28 @@ button.capability-pill { cursor: pointer; }
     );
   }
 
-  function detachConnectionAccount(accountId) {
+  function disconnectAgentConnectionAccount(accountId) {
     var agentId = state.profileDraft && state.profileDraft.id;
-    if (!agentId) return;
-    var detachPath = "/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId);
-    function detachWithCleanupRetry(allowRetry) {
-      return api(detachPath, { method: "DELETE" }).catch(function (error) {
+    var entry = (state.agentConnections.attached || []).find(function (candidate) {
+      return candidate.account && candidate.account.id === accountId;
+    });
+    if (!agentId || !entry) return;
+    var label = connectionAccountDisplayName(entry.account);
+    if (!window.confirm("Disconnect " + label + "? This Agent will lose access and dependent schedules will pause.")) return;
+    var path = "/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId);
+    function disconnectWithCleanupRetry(allowRetry) {
+      return api(path, { method: "DELETE" }).catch(function (error) {
         if (allowRetry && error && error.payload && error.payload.error === "connection_schedule_changed") {
-          return api(detachPath, { method: "DELETE" });
+          return api(path, { method: "DELETE" });
         }
         throw error;
       });
     }
-    detachWithCleanupRetry(true).then(function () {
+    disconnectWithCleanupRetry(true).then(function () {
       invalidateAgentConnections(agentId);
       return loadAgentConnections(agentId);
     }).catch(function (error) {
-      state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not remove that connection from the Agent.";
+      state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not disconnect that account.";
       render();
     });
   }
@@ -6511,7 +6502,6 @@ button.capability-pill { cursor: pointer; }
     var label = "this account";
     var managed = false;
     var knownAccounts = (state.agentConnections.attached || [])
-      .concat((state.agentConnections.available || []).map(function (account) { return { account: account }; }))
       .concat(state.connectionInventory.accounts || []);
     knownAccounts.some(function (entry) {
       if (entry.account && entry.account.id === accountId) {
@@ -6523,7 +6513,7 @@ button.capability-pill { cursor: pointer; }
     });
     var confirmation = managed
       ? "Disconnect " + label + "? Chickpea will remove access immediately, pause dependent schedules, and delete the stored managed account. The provider may still list the authorization until you remove it from the provider’s account settings."
-      : "Disconnect " + label + "? Every Agent using it will lose access and dependent schedules will pause.";
+      : "Disconnect " + label + "? This Agent will lose access and dependent schedules will pause.";
     if (!window.confirm(confirmation)) return;
     var revokePath = "/admin/api/connections/" + encodeURIComponent(accountId) + "/revoke";
     function revokeWithCleanupRetry(allowRetry) {
@@ -7470,8 +7460,8 @@ button.capability-pill { cursor: pointer; }
         (connection.authMode === "bearer" || (connection.headerNames || []).length > 0);
     });
     if (legacy) return true;
-    return (state.agentConnections.attached || []).concat(state.agentConnections.available || []).some(function (entry) {
-      var account = entry && entry.account ? entry.account : entry;
+    return (state.agentConnections.attached || []).some(function (entry) {
+      var account = entry && entry.account;
       var policy = account && account.policy;
       return account && account.providerId === providerId && policy && policy.kind === "mcp" &&
         (policy.authMode === "bearer" || (policy.headerNames || []).length > 0);
@@ -7512,10 +7502,10 @@ button.capability-pill { cursor: pointer; }
     return '<span class="conn-logo conn-logo-mono" style="background:' + esc(preset.accent) + '">' + esc(connectorMonogram(preset.name)) + '</span>';
   }
 
-  function connectorGalleryHtml(accountMode, reusableAccounts, attachedAccounts, showCatalog) {
+  function connectorGalleryHtml(accountMode, attachedAccounts, showCatalog) {
     // Legacy Agent-owned connections use preset ids as unique connection ids,
-    // so only that lane hides presets already in use. Reusable accounts may
-    // intentionally connect the same provider more than once.
+    // so that lane hides presets already in use. Agent-scoped connections hide
+    // only connectors that this Agent already owns.
     var draft = state.profileDraft || {};
     var connectedPresetIds = {};
     if (!accountMode) {
@@ -7525,12 +7515,9 @@ button.capability-pill { cursor: pointer; }
     var googleConnection = googleWorkspaceConnection(draft);
     var googleAccess = googleAccessFromScopes(googleConnection ? googleConnection.oauthScopes : []);
     var q = String(state.connectorGallerySearch || "").trim().toLowerCase();
-    var catalog = REUSABLE_CONNECTOR_PRESETS || [];
-    var reusable = (reusableAccounts || []).filter(function (account) {
-      return account.lifecycle !== "revoked";
-    });
+    var catalog = CONNECTION_CATALOG_PRESETS || [];
     var accountPresets = accountMode
-      ? reusable.concat(attachedAccounts || []).map(connectionAccountPreset).filter(Boolean)
+      ? (attachedAccounts || []).map(connectionAccountPreset).filter(Boolean)
       : [];
     var connectedAccountPresetIds = new Set(accountPresets.map(function (preset) { return preset.id; }));
     var catalogVisible = showCatalog !== false;
@@ -7582,25 +7569,6 @@ button.capability-pill { cursor: pointer; }
         '<span class="gallery-row-spacer"></span>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="conn-preset" data-preset="' + esc(preset.id) + '">' + actionLabel + '</button></div>';
     }).join("");
-    var matchingAccounts = reusable.filter(function (account) {
-      if (!q) return true;
-      var identity = account.identity && (account.identity.accountName || account.identity.workspaceName) || "";
-      var preset = connectionAccountPreset(account);
-      var policy = account.policy || {};
-      var searchText = [
-        account.label,
-        identity,
-        account.purpose || "",
-        preset && preset.name || "",
-        account.providerId || "",
-        policy.toolkit || "",
-      ].join(" ").toLowerCase();
-      return searchText.indexOf(q) >= 0;
-    });
-    var accountRows = accountMode ? matchingAccounts.map(function (account) {
-      return connectionAccountRowHtml(account, false);
-    }).join("") : "";
-    var combinedRows = accountRows + rows;
     var custom = accountMode
       ? '<div class="connection-account-row connection-catalog-row"><span class="conn-logo conn-logo-mono" style="background:var(--ember)">+</span>' +
         '<span class="connection-account-copy"><span class="connection-account-name">Custom connection</span><span class="connection-account-identity">Connect another API or MCP server.</span></span>' +
@@ -7610,16 +7578,16 @@ button.capability-pill { cursor: pointer; }
         '<span class="gallery-row-name">Custom connection</span><span class="gallery-row-spacer"></span>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="conn-custom">Connect</button></div>';
     var customMatches = accountMode && catalogVisible && (!q || "custom connection connect another api mcp server".indexOf(q) >= 0);
-    var listRows = combinedRows + (customMatches ? custom : "");
+    var listRows = rows + (customMatches ? custom : "");
     var list = listRows
       ? '<div class="' + (accountMode ? "connection-account-list" : "gallery-list") + '">' + listRows + '</div>'
       : (!catalogVisible
-          ? '<div class="connection-empty">No reusable accounts yet.</div>'
+          ? ''
           : q
           ? '<div class="gallery-empty">No connectors match &ldquo;' + esc(state.connectorGallerySearch) + '&rdquo;.</div>'
           : '<div class="gallery-empty">Every prepackaged connector is already added.</div>');
     return (catalogVisible ? '<input class="input" id="conn-gallery-search-input" type="text" autocomplete="off" placeholder="Search connectors" value="' + esc(state.connectorGallerySearch || "") + '" data-action="conn-gallery-search" aria-label="Search connectors">' : "") +
-      '<div class="' + (accountMode ? "connection-section-head" : "gallery-head") + '">' + (accountMode ? "<h4>Available</h4>" : "<span>Available</span>") + '<span class="' + (accountMode ? "connection-section-count" : "gallery-head-count") + '">' + (shown.length + matchingAccounts.length + (customMatches ? 1 : 0)) + '</span></div>' +
+      (catalogVisible ? '<div class="' + (accountMode ? "connection-section-head" : "gallery-head") + '">' + (accountMode ? "<h4>Connect a new account</h4>" : "<span>Available</span>") + '<span class="' + (accountMode ? "connection-section-count" : "gallery-head-count") + '">' + (shown.length + (customMatches ? 1 : 0)) + '</span></div>' : '') +
       list + (accountMode ? "" : custom);
   }
 
@@ -7981,7 +7949,7 @@ button.capability-pill { cursor: pointer; }
 
   function connectionAccountPreset(account) {
     var policy = account && account.policy || {};
-    var presets = REUSABLE_CONNECTOR_PRESETS || [];
+    var presets = CONNECTION_CATALOG_PRESETS || [];
     if (policy.kind === "managed") {
       var byToolkit = presets.find(function (preset) { return preset.managedToolkit === policy.toolkit; });
       if (byToolkit) return byToolkit;
@@ -8104,7 +8072,7 @@ button.capability-pill { cursor: pointer; }
     });
   }
 
-  function connectionAccountCapabilitiesHtml(account, capabilityOverride, attached) {
+  function connectionAccountCapabilitiesHtml(account, capabilityOverride) {
     var capabilityAccount = account;
     if (account.policy && account.policy.kind === "managed" && Array.isArray(capabilityOverride)) {
       capabilityAccount = Object.assign({}, account, {
@@ -8122,7 +8090,7 @@ button.capability-pill { cursor: pointer; }
     return '<details class="connection-capabilities"><summary aria-label="Show ' + items.length + ' ' + esc(name) + ' ' + (items.length === 1 ? "capability" : "capabilities") + '">' +
       items.length + ' ' + (items.length === 1 ? "capability" : "capabilities") + '</summary>' +
       '<div class="connection-capabilities-popover"><h4>' + esc(name) + ' capabilities</h4>' +
-      '<p>' + (attached ? "What this Agent can do with this account." : "This is the maximum this account can do. Each Agent can be given less access.") + '</p>' +
+      '<p>What this Agent can do with this account.</p>' +
       '<ul class="connection-capability-list">' + rows + '</ul>' +
       (grant ? '<p class="connection-capability-grant">' + grant + '</p>' : '') + '</div></details>';
   }
@@ -8307,8 +8275,8 @@ button.capability-pill { cursor: pointer; }
       '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-resource-cancel"' + (editor.busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-resource-save"' + (!complete || editor.busy ? " disabled" : "") + '>' + (editor.busy ? "Saving&hellip;" : "Save access") + '</button></div></div>';
   }
 
-  function connectionAccountRowHtml(entry, attached) {
-    var account = attached ? entry.account : entry;
+  function connectionAccountRowHtml(entry) {
+    var account = entry.account;
     var identity = connectionAccountIdentity(account);
     var owner = connectionAccountOwnerLabel(account);
     var displayName = connectionAccountDisplayName(account);
@@ -8316,8 +8284,8 @@ button.capability-pill { cursor: pointer; }
       ? '<button type="button" class="btn btn-primary btn-sm connection-row-action" data-action="' + (account.policy.kind === "mcp" ? "connection-account-mcp-oauth-start" : "connection-account-oauth-start") + '" data-connection-id="' + esc(account.id) + '">Sign in</button>'
       : "";
     var managedResources = managedResourceDefinitions(account);
-    var bindingResources = attached && entry.binding && entry.binding.resourceConstraints || {};
-    var missingRequiredBindingResource = attached && managedResources.some(function (definition) {
+    var bindingResources = entry.binding && entry.binding.resourceConstraints || {};
+    var missingRequiredBindingResource = managedResources.some(function (definition) {
       return definition.required && !(bindingResources[definition.key] || []).length;
     });
     var pendingResourceSelection = managedResources.length > 0 &&
@@ -8327,36 +8295,31 @@ button.capability-pill { cursor: pointer; }
       (account.lifecycle === "needs_attention" || !pendingResourceSelection)
       ? '<button type="button" class="btn btn-primary btn-sm connection-row-action" data-action="connection-account-managed-reconnect" data-connection-id="' + esc(account.id) + '">Reconnect</button>'
       : "";
-    var pendingResourceAction = attached && pendingResourceSelection
+    var pendingResourceAction = pendingResourceSelection
       ? '<button type="button" class="btn btn-primary btn-sm connection-row-action" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">Choose</button>'
       : "";
-    var regularAction = attached
-      ? '<span class="connection-row-action-placeholder" aria-hidden="true"></span>'
-      : '<button type="button" class="btn btn-primary btn-sm connection-row-action" data-action="connection-account-attach" data-connection-id="' + esc(account.id) + '">Add</button>';
+    var regularAction = '<span class="connection-row-action-placeholder" aria-hidden="true"></span>';
     var action = managedAction || oauthAction || pendingResourceAction || regularAction;
     var status = account.lifecycle === "ready"
-      ? (attached ? '<span class="connection-account-state-placeholder" aria-hidden="true"></span>' : '<span class="connection-account-state connection-account-state-ready">Account ready</span>')
+      ? '<span class="connection-account-state-placeholder" aria-hidden="true"></span>'
       : '<span class="connection-account-state connection-account-state-warn">' + esc({
           pending: "Setup required",
           needs_attention: "Needs attention",
           revoked: "Disconnected"
         }[account.lifecycle] || "Needs attention") + '</span>';
     var menuItems = [];
-    if (attached) {
-      menuItems.push('<button type="button" data-action="connection-account-detach" data-connection-id="' + esc(account.id) + '">Remove from this Agent</button>');
-      if (managedResources.length && (!pendingResourceSelection || managedAction || oauthAction)) {
-        menuItems.push('<button type="button" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">' + (pendingResourceSelection ? "Choose " : "Change ") + esc(managedResourceSelectionLabel(account)) + '</button>');
-      }
+    if (managedResources.length && (!pendingResourceSelection || managedAction || oauthAction)) {
+      menuItems.push('<button type="button" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">' + (pendingResourceSelection ? "Choose " : "Change ") + esc(managedResourceSelectionLabel(account)) + '</button>');
     }
-    menuItems.push('<button type="button" class="danger" data-action="connection-account-revoke" data-connection-id="' + esc(account.id) + '">Disconnect account&hellip;</button>');
+    menuItems.push('<button type="button" class="danger" data-action="connection-account-disconnect" data-connection-id="' + esc(account.id) + '">Disconnect account&hellip;</button>');
     var menu = '<details class="connection-row-menu"><summary aria-label="More actions for ' + esc(displayName) + '">&#8943;</summary>' +
       '<div class="connection-row-menu-panel">' + menuItems.join("") + '</div></details>';
     var resourceEditor = managedResourceEditorHtml(account);
-    return '<div class="connection-account-row connection-account-row-' + (attached ? "attached" : "available") + '">' +
+    return '<div class="connection-account-row connection-account-row-attached">' +
       connectionAccountLogoHtml(account) +
       '<span class="connection-account-copy"><span class="connection-account-name">' + esc(displayName) + '</span>' +
       '<span class="connection-account-identity">' + (identity ? esc(identity) + ' &middot; ' : '') + owner + '</span></span>' +
-      status + connectionAccountCapabilitiesHtml(account, attached && entry.binding ? entry.binding.allowedCapabilities : null, attached) + action + menu +
+      status + connectionAccountCapabilitiesHtml(account, entry.binding ? entry.binding.allowedCapabilities : null) + action + menu +
       (resourceEditor ? '<div class="connection-row-editor">' + resourceEditor + '</div>' : '') + '</div>';
   }
 
@@ -8439,7 +8402,7 @@ button.capability-pill { cursor: pointer; }
         !/composio/i.test(managedDescriptor.securityDescription)
         ? managedDescriptor.securityDescription
         : "Sign-in opens in a secure hosted tab. Chickpea stores the connected-account reference and this Agent’s capability ceiling, not provider refresh tokens.";
-      return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">Team connections can be reused by Agents across the workspace. Personal connections are available only when you invoke the Agent.</p></div><div></div></div>' +
+      return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">This connection stays with this Agent. Team connections are available to people using the Agent; personal connections are available only to you.</p></div><div></div></div>' +
         '<div class="conn-title" style="margin-bottom:16px;">' + connectorLogoHtml(managedPreset) + '<div><strong>' + esc(managedPreset.name) + '</strong><p class="hint">' + esc(managedPreset.description || "") + '</p></div></div>' +
         connectionAccountAccessHtml(form) +
         '<p class="conn-security">' + esc(managedSecurityCopy) + '</p>' +
@@ -8459,7 +8422,7 @@ button.capability-pill { cursor: pointer; }
     var oauthMigrationHtml = mcpOauth && preset && (preset.id === "sentry" || preset.id === "intercom") && hasLegacyTokenMcpConnection(preset.id)
       ? '<p class="hint">This adds OAuth beside the existing token connection. Review the discovered tools, bind and verify the OAuth account, then explicitly disconnect the token account when migration is complete.</p>'
       : '';
-    return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">Team connections can be reused by Agents across the workspace. Personal connections are available only when you invoke the Agent.</p></div>' +
+    return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">This connection stays with this Agent. Team connections are available to people using the Agent; personal connections are available only to you.</p></div>' +
       (!preset ? '<div class="field"><label class="field-label">Connection type</label><span class="select-wrap"><select class="input" data-action="connection-account-kind"><option value="api"' + (form.kind === "api" ? " selected" : "") + '>REST API</option><option value="mcp"' + (form.kind === "mcp" ? " selected" : "") + '>MCP server</option></select>' + icon("chevron-down", "select-caret") + '</span></div>' : '<div></div>') + '</div>' +
       presetHead +
       authHtml +
@@ -8493,22 +8456,20 @@ button.capability-pill { cursor: pointer; }
       return '<div class="callout" role="alert"><span>' + esc(accounts.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connection-account-retry">Retry</button></div>';
     }
     var attached = accounts.attached || [];
-    var available = accounts.available || [];
     var attachedHtml = attached.length
-      ? '<div class="connection-account-list">' + attached.map(function (entry) { return connectionAccountRowHtml(entry, true); }).join("") + '</div>'
+      ? '<div class="connection-account-list">' + attached.map(function (entry) { return connectionAccountRowHtml(entry); }).join("") + '</div>'
       : '<div class="connection-empty">No connections in this Agent yet.</div>';
     var notice = accounts.notice ? '<div class="oauth-return ok" role="status">' + esc(accounts.notice) + '</div>' : '';
     var create = connectionAccountFormHtml();
     var gallery = connectorGalleryHtml(
       true,
-      available,
       attached.map(function (entry) { return entry.account; }),
       !state.connectionAccountForm
     );
     var attachedSection = '<section class="connection-state-section"><div class="connection-section-head"><h4>In this Agent</h4><span class="connection-section-count">' + attached.length + '</span></div>' + attachedHtml + '</section>';
-    var availableSection = gallery ? '<section class="connection-state-section">' + gallery + '</section>' : '';
+    var connectSection = gallery ? '<section class="connection-state-section">' + gallery + '</section>' : '';
     return oauthReturnNoticeHtml(draft) + notice +
-      '<div class="connection-state-stack">' + attachedSection + availableSection + '</div>' +
+      '<div class="connection-state-stack">' + attachedSection + connectSection + '</div>' +
       (create ? '<div style="margin-top:16px;">' + create + '</div>' : '');
   }
 
@@ -10651,7 +10612,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function connectorPresetForToolkit(toolkit) {
-    return (REUSABLE_CONNECTOR_PRESETS || []).find(function (preset) {
+    return (CONNECTION_CATALOG_PRESETS || []).find(function (preset) {
       var managed = managedPresetById(preset.id);
       var google = googleServicePresetById(preset.id);
       return (managed && managed.managedToolkit || google && google.managedToolkit) === toolkit;
@@ -10826,7 +10787,7 @@ button.capability-pill { cursor: pointer; }
 
   function connectionInventoryHtml() {
     var inventory = state.connectionInventory;
-    var head = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connected accounts</h2><p class="hint">Reconnect or disconnect accounts here. Add accounts and choose Agent access from an Agent.</p></div></div>';
+    var head = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connected accounts</h2><p class="hint">Reconnect or disconnect accounts here. Connect each new account from the Agent that will own it.</p></div></div>';
     if (inventory.loading) return head + '<p class="hint">Loading connections&hellip;</p></section>';
     if (inventory.error) return head + '<div class="callout" role="alert"><span>' + esc(inventory.error) + '</span><button type="button" class="btn btn-soft btn-sm" data-action="connection-inventory-retry">Retry</button></div></section>';
     if (!inventory.accounts.length) return head + '<div class="empty-inline"><strong>No connections yet.</strong><span>Open an Agent, choose Connections, and connect the service it needs.</span></div></section>';
@@ -10850,7 +10811,7 @@ button.capability-pill { cursor: pointer; }
         : managedNeedsAttention && !providerConfigured && state.connectorSettings.canConfigure && !(state.connectorSettings.provider && state.connectorSettings.provider.readOnly)
           ? '<button type="button" class="btn btn-soft btn-sm" data-action="connection-inventory-provider-setup">Add project key</button>'
           : managedNeedsAttention && providerConfigured && !entry.reconnectAgentId
-            ? '<span class="hint">Add this account to an Agent before reconnecting.</span>'
+            ? '<span class="hint">This account is not owned by an Agent. Disconnect it and create a new connection from the Agent.</span>'
           : '';
       var actions = '<div class="connection-inventory-actions">' + managedReconnect + '<button type="button" class="btn btn-ghost btn-sm danger-text" data-action="connection-account-revoke" data-connection-id="' + esc(account.id) + '">Disconnect</button></div>';
       var detail = account.purpose
@@ -13314,8 +13275,7 @@ button.capability-pill { cursor: pointer; }
     }
     if (action === "connection-account-resource-cancel") { state.managedResourceEditor = null; render(); }
     if (action === "connection-account-resource-save") { saveManagedResourceSelection(); }
-    if (action === "connection-account-attach") { attachConnectionAccount(target.getAttribute("data-connection-id") || ""); }
-    if (action === "connection-account-detach") { detachConnectionAccount(target.getAttribute("data-connection-id") || ""); }
+    if (action === "connection-account-disconnect") { disconnectAgentConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "connection-account-revoke") { revokeConnectionAccount(target.getAttribute("data-connection-id") || ""); }
     if (action === "agent-schedules-retry" && state.profileDraft) { loadAgentSchedules(state.profileDraft.id); }
     if (action === "agent-schedule-control") {

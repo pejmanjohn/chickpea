@@ -581,23 +581,23 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
   },
 ];
 
-export type ReusableConnectorPreset =
+export type ConnectorCatalogPreset =
   | ConnectorPreset
   | GoogleWorkspaceServicePreset
   | ManagedConnectorPreset;
 
-/** Catalog entries users can attach to more than one Agent without reconnecting. */
-export const REUSABLE_CONNECTOR_PRESETS: ReusableConnectorPreset[] = [
+/** Connector catalog entries used to start a fresh Agent-owned connection. */
+export const CONNECTION_CATALOG_PRESETS: ConnectorCatalogPreset[] = [
   ...CONNECTOR_PRESETS.filter(({ id }) => id !== 'google-workspace' && id !== 'notion'),
   ...GOOGLE_WORKSPACE_SERVICE_PRESETS,
   ...MANAGED_CONNECTOR_PRESETS,
 ].sort((left, right) => left.name.localeCompare(right.name));
 
-export function resolveReusableConnectorPreset(
+export function resolveConnectorCatalogPreset(
   value: string,
-): ReusableConnectorPreset | undefined {
+): ConnectorCatalogPreset | undefined {
   const normalized = normalizeConnectorLookup(value);
-  const matches = REUSABLE_CONNECTOR_PRESETS.filter(({ id, name }) =>
+  const matches = CONNECTION_CATALOG_PRESETS.filter(({ id, name }) =>
     normalized === normalizeConnectorLookup(id) || normalized === normalizeConnectorLookup(name)
   );
   return matches.length === 1 ? matches[0] : undefined;

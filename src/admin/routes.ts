@@ -63,6 +63,7 @@ import {
   inspectManagedAuthorization,
   inspectManagedAuthorizationForCleanup,
   inspectStaleManagedAuthorization,
+  managedAuthorizationAttemptId,
   ManagedAuthorizationError,
   recoverMalformedManagedAuthorization,
   type ManagedAuthorizationAttempt,
@@ -953,13 +954,6 @@ function managedAuthorizationRemoteRef(
 ): string | undefined {
   return attempt.accountRef ?? attempt.authorizationRef;
 }
-
-const connectionAccountAttachSchema = v.object({
-  allowedCapabilities: v.optional(v.pipe(
-    v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))),
-    v.maxLength(128),
-  )),
-});
 
 const scheduleAuthorityReassignSchema = v.strictObject({
   runsAsMembershipId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9_-]{1,200}$/)),
@@ -3927,8 +3921,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           account.policy.toolkit === connector.toolkit);
         if (existingOwnerLane) {
           return c.json({
-            error: 'managed_connection_already_attached',
-            message: `This Agent already has a ${ownerKind === 'team' ? 'team' : 'personal'} ${connector.label} connection. Remove it before connecting another account or changing its access.`,
+            error: 'managed_connection_lane_exists',
+            message: `This Agent already has a ${ownerKind === 'team' ? 'team' : 'personal'} ${connector.label} connection. Disconnect it before connecting another account or changing its access.`,
           }, 409);
         }
       }
@@ -4179,10 +4173,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           let cleanupService: ConnectionAccountService | undefined;
           let cleanupProvider: ManagedConnectionProvider | undefined;
           let remoteAccountObserved = false;
-          let accountMutation:
-            | { kind: 'created'; accountId: string }
-            | { kind: 'replaced'; previous: ConnectionAccount; currentRevision: number }
-            | undefined;
           try {
             let attempt = await inspectManagedAuthorization({
               settings: settings(c),
@@ -4194,6 +4184,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             if (organization?.slackTeamId !== attempt.workspaceId) throw new AuthorizationError();
             if (attempt.agentId !== agent.id || !attempt.authorizationRef) {
               throw new ManagedAuthorizationError('invalid');
+            }
+            if (attempt.connectionAccountId) {
+              const binding = await store(c).getAgentConnectionBindingForAccount(
+                attempt.connectionAccountId,
+              );
+              if (binding?.agentId !== agent.id) throw new AuthorizationError();
             }
           const providerContext = await resolvedManagedProviderContext(c);
           assertManagedAuthorizationProvider(attempt, {
@@ -4271,12 +4267,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             accountRef: attempt.accountRef!,
           });
           let account: ConnectionAccount;
-          let scheduleResumeDeferred = false;
           if (attempt.connectionAccountId) {
             const current = await service.getForManagement(principal, attempt.connectionAccountId);
             if (current.policy.kind !== 'managed') throw new ManagedAuthorizationError('invalid');
             account = await service.replaceManagedAuthorization({
               principal,
+              agentId: agent.id,
               connectionAccountId: current.id,
               expectedRevision: current.revision,
               adapterId: attempt.adapterId,
@@ -4289,33 +4285,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               providerLineage: providerContext.lineage,
             });
           } else if (imported) {
-            if (imported.policy.kind !== 'managed') throw new ManagedAuthorizationError('replayed');
-            account = await service.replaceManagedAuthorization({
-              principal,
-              connectionAccountId: imported.id,
-              expectedRevision: imported.revision,
-              adapterId: attempt.adapterId,
-              toolkit: attempt.toolkit,
-              principalRef: attempt.principalRef,
-              expectedAllowedCapabilities: imported.policy.allowedCapabilities,
-              allowedCapabilities: [...new Set([
-                ...imported.policy.allowedCapabilities,
-                ...attempt.allowedCapabilities,
-              ])],
-              accountRef: attempt.accountRef!,
-              providerGeneration: providerContext.generation,
-              providerLineage: providerContext.lineage,
-              deferScheduleResume: true,
-            });
-            scheduleResumeDeferred = true;
-            accountMutation = {
-              kind: 'replaced',
-              previous: imported,
-              currentRevision: account.revision,
-            };
+            const binding = await store(c).getAgentConnectionBindingForAccount(imported.id);
+            if (
+              imported.policy.kind !== 'managed' ||
+              imported.policy.oauthAttemptId !== managedAuthorizationAttemptId(attempt) ||
+              binding?.agentId !== agent.id
+            ) {
+              throw new ManagedConnectionConflictError(
+                'Managed authorization returned an account that belongs to another setup',
+              );
+            }
+            account = imported;
           } else {
-            account = await service.create({
+            if (!attempt.bindingCapabilities) throw new ManagedAuthorizationError('invalid');
+            const created = await service.createForAgent({
               principal,
+              agentId: agent.id,
               workspaceId: attempt.workspaceId,
               ownerKind: attempt.ownerKind,
               providerId: attempt.providerId,
@@ -4327,27 +4312,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
                 principalRef: attempt.principalRef,
                 accountRef: attempt.accountRef!,
                 allowedCapabilities: [...attempt.allowedCapabilities],
+                oauthAttemptId: managedAuthorizationAttemptId(attempt),
                 providerGeneration: providerContext.generation,
                 providerLineage: providerContext.lineage,
               },
-            });
-            accountMutation = { kind: 'created', accountId: account.id };
-          }
-          if (!attempt.connectionAccountId) {
-            if (!attempt.bindingCapabilities) throw new ManagedAuthorizationError('invalid');
-            await service.attach({
-              principal,
-              agentId: agent.id,
-              connectionAccountId: account.id,
               allowedCapabilities: [...attempt.bindingCapabilities],
             });
-            accountMutation = undefined;
-            if (scheduleResumeDeferred) {
-              await service.resumeManagedAccountSchedules({
-                principal,
-                connectionAccountId: account.id,
-              });
-            }
+            account = created.account;
           }
           try {
             await finalizeManagedAuthorization({
@@ -4371,30 +4342,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
                 error.metadata.definiteFailure !== true) {
               throw error;
             }
-            if (!remoteAccountObserved && accountMutation === undefined) throw error;
+            if (!remoteAccountObserved) throw error;
             let cleanupComplete = true;
             let remoteIdentitySafe = false;
-            if (accountMutation?.kind === 'created' && cleanupService) {
-              try {
-                await cleanupService.revoke({
-                  principal,
-                  connectionAccountId: accountMutation.accountId,
-                });
-                remoteIdentitySafe = true;
-              } catch {
-                cleanupComplete = false;
-              }
-            } else if (accountMutation?.kind === 'replaced') {
-              try {
-                await store(c).putConnectionAccount(
-                  accountMutation.previous,
-                  accountMutation.currentRevision,
-                );
-                remoteIdentitySafe = true;
-              } catch {
-                cleanupComplete = false;
-              }
-            }
             const remoteRef = cleanupAttempt && managedAuthorizationRemoteRef(cleanupAttempt);
             if (!remoteIdentitySafe && cleanupComplete && remoteRef && cleanupService) {
               try {
@@ -4571,6 +4521,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (account.workspaceId !== workspaceId) throw new AuthorizationError();
         return c.json(await service.listManagedResources({
           principal,
+          agentId: agent.id,
           connectionAccountId: account.id,
           resourceKey,
           ...(cursor ? { cursor } : {}),
@@ -4883,7 +4834,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const ref = connectionAccountOAuthRef(account.id);
       const pendingAccount = await replacePendingApiOAuthConnection(store(c), ref, 'google');
       if (!pendingAccount) throw new ApiOAuthError(
-        'connection_missing', 'Reusable OAuth account is missing',
+        'connection_missing', 'Agent-owned OAuth connection is missing',
       );
       const result = await startApiOAuth(
         {
@@ -6593,23 +6544,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           account.ownerMembershipId === principal.membershipId
         ),
       );
-      const visibleAgents = agents.filter((agent) => canEditAgent(principal, agent));
-      const bindings = await Promise.all(
-        visibleAgents.map(async (agent) => ({
-          agent,
-          bindings: await store(c).listAgentConnectionBindings(agent.id),
-        })),
+      const visibleAgents = new Map(
+        agents.filter((agent) => canEditAgent(principal, agent)).map((agent) => [agent.id, agent]),
       );
+      const ownership = await Promise.all(visibleAccounts.map(async (account) => ({
+        account,
+        binding: await store(c).getAgentConnectionBindingForAccount(account.id),
+      })));
       return c.json({
-        accounts: visibleAccounts.map((account) => {
-          const accountAgents = bindings.flatMap(({ agent, bindings: agentBindings }) =>
-            agentBindings.some((binding) => binding.connectionAccountId === account.id && binding.enabled)
-              ? [{ id: agent.id, name: agent.name }]
-              : []);
+        accounts: ownership.map(({ account, binding }) => {
+          const agent = binding ? visibleAgents.get(binding.agentId) : undefined;
+          const accountAgents = agent ? [{ id: agent.id, name: agent.name }] : [];
           return {
             account,
             agents: accountAgents,
-            reconnectAgentId: accountAgents[0]?.id,
+            reconnectAgentId: binding?.enabled ? accountAgents[0]?.id : undefined,
           };
         }),
       });
@@ -6634,11 +6583,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         store(c).listAgentConnectionBindings(agent.id),
         resolvedManagedProviderContext(c),
       ]);
-      const visible = views.filter(
-        (account) => account.ownerKind === 'team' ||
-          account.ownerMembershipId === principal.membershipId,
-      );
-      const byId = new Map(bindings.map((binding) => [binding.connectionAccountId, binding]));
+      const byId = new Map(views.map((account) => [account.id, account]));
       const provider = providerContext.providers.get('composio');
       const managedConnectorCatalog = managedCatalog.list().map((connector) => ({
         id: connector.id,
@@ -6670,16 +6615,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         },
       }));
       return c.json({
-        attached: visible.flatMap((account) => {
-          const binding = byId.get(account.id);
-          return binding?.enabled ? [{ account, binding }] : [];
+        attached: bindings.flatMap((binding) => {
+          const account = byId.get(binding.connectionAccountId);
+          if (!binding.enabled || !account || account.lifecycle === 'revoked') return [];
+          if (account.ownerKind === 'member' &&
+              account.ownerMembershipId !== principal.membershipId) return [];
+          return [{ account, binding }];
         }),
-        // Revoked accounts are terminal tombstones. They remain visible in an
-        // existing binding until it is removed, but must never be offered as
-        // reusable accounts because attach rejects them.
-        available: visible.filter((account) =>
-          account.lifecycle !== 'revoked' && !byId.get(account.id)?.enabled,
-        ),
         managedConnectors: {
           composio: managedConnectorCatalog.some((connector) => connector.access.read.status === 'ready'),
           canConfigure: permissionForRole(principal.role).has('admin.configure'),
@@ -6753,8 +6695,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             ...(parsed.output.mcp!.presetId ? { presetId: parsed.output.mcp!.presetId } : {}),
           };
       const service = connectionAccounts(c);
-      const account = await service.create({
+      const created = await service.createForAgent({
         principal,
+        agentId: agent.id,
         workspaceId: parsed.output.workspaceId,
         ownerKind: parsed.output.ownerKind,
         providerId: parsed.output.providerId,
@@ -6772,13 +6715,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         } : {}),
         policy,
         ...(parsed.output.credential ? { credential: parsed.output.credential } : {}),
-      });
-      const binding = await service.attach({
-        principal,
-        agentId: agent.id,
-        connectionAccountId: account.id,
         allowedCapabilities: parsed.output.allowedCapabilities ?? [],
       });
+      const { account, binding } = created;
       const { secretRefId: _secretRefId, ...safeAccount } = account;
       return c.json({ account: safeAccount, binding }, 201);
     } catch (error) {
@@ -6788,44 +6727,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.post('/admin/api/agents/:id/connections/:connectionAccountId/attach', async (c) => {
-    const parsed = v.safeParse(connectionAccountAttachSchema, await readJson(c.req));
-    if (!parsed.success) return invalidRequest(c);
-    try {
-      const principal = principalByContext.get(c);
-      if (!principal) throw new AuthorizationError('principal_required');
-      const binding = await (await resolvedConnectionAccounts(c)).attach({
-        principal,
-        agentId: c.req.param('id'),
-        connectionAccountId: c.req.param('connectionAccountId'),
-        allowedCapabilities: parsed.output.allowedCapabilities ?? [],
-      });
-      return c.json({ binding }, 201);
-    } catch (error) {
-      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
-      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
-      if (error instanceof ManagedConnectionProviderUnavailableError) return c.json({
-        error: 'managed_provider_unavailable',
-        message: `Configure the ${error.adapterId} provider credentials before attaching this managed account.`,
-      }, 503);
-      if (error instanceof ManagedConnectionConflictError) return c.json({
-        error: 'managed_connection_already_attached',
-        message: 'That managed account is already imported or this Agent already has a matching connection.',
-      }, 409);
-      return internalError(c, error);
-    }
-  });
-
   app.delete('/admin/api/agents/:id/connections/:connectionAccountId', async (c) => {
     try {
       const principal = principalByContext.get(c);
       if (!principal) throw new AuthorizationError('principal_required');
-      const binding = await connectionAccounts(c).detach({
+      const account = await (await resolvedConnectionAccounts(c)).disconnectForAgent({
         principal,
         agentId: c.req.param('id'),
         connectionAccountId: c.req.param('connectionAccountId'),
       });
-      return c.json({ binding });
+      return c.json({ account: toConnectionAccountView(account) });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
@@ -7602,6 +7513,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         agentId,
         roots: liveSnapshotRoots,
       }, 409);
+    }
+    try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
+      await (await resolvedConnectionAccounts(c)).prepareAgentDeletion({
+        principal,
+        agentId,
+        expectedRevision: agent.revision,
+      });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof AgentRevisionConflictError) {
+        return c.json({ error: 'agent_revision_conflict' }, 409);
+      }
+      if (error instanceof AgentStillReferencedError) return agentStillReferenced(c, error);
+      if (error instanceof ConnectionScheduleConflictError) return c.json({
+        error: 'connection_schedule_changed',
+        message: error.message,
+      }, 409);
+      return internalError(c, error);
     }
     // Persist the cleanup inventory before deleting the Agent. The marker is
     // independent of the config row, so settings cleanup can be retried after a
@@ -8810,7 +8741,7 @@ async function replacePendingMcpOAuthConnection(
 ): Promise<ConnectionAccount> {
   const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
   if (!connectionAccountId) {
-    throw new McpOAuthError('connection_missing', 'Reusable OAuth account is missing');
+    throw new McpOAuthError('connection_missing', 'Agent-owned OAuth connection is missing');
   }
   const account = await findConnectionAccount(configStore, connectionAccountId);
   if (!account || account.lifecycle === 'revoked' || !isMcpOAuthAccount(account, serverUrl)) {

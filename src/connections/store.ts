@@ -6,7 +6,12 @@ import {
 } from '../config/connector-secrets.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
-import { ConnectionAccountRevisionConflictError } from '../config/errors.ts';
+import {
+  AgentRevisionConflictError,
+  AgentStillReferencedError,
+  ConnectionAccountRevisionConflictError,
+  ManagedRemoteAccountAlreadyUsedError,
+} from '../config/errors.ts';
 import type {
   AgentConnectionBinding,
   AgentScheduleReference,
@@ -106,8 +111,9 @@ export class ManagedResourceSelectionError extends Error {
 export class ConnectionAccountService {
   constructor(private readonly dependencies: ConnectionAccountServiceDependencies) {}
 
-  async create(input: {
+  async createForAgent(input: {
     principal: AuthPrincipal;
+    agentId: string;
     workspaceId: string;
     ownerKind: 'team' | 'member';
     providerId: string;
@@ -116,69 +122,92 @@ export class ConnectionAccountService {
     identity?: McpConnectionIdentity;
     policy: ConnectionAccountPolicy;
     credential?: string;
-  }): Promise<ConnectionAccount> {
-    requirePermission(
-      input.principal,
-      input.ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal',
-    );
-    let policy = input.policy;
-    if (policy.kind === 'managed') {
-      assertManagedAccountPolicy(this.catalog(), input.providerId, policy);
-      await this.requireUniqueManagedAccount(policy.adapterId, policy.accountRef);
-      const provider = this.dependencies.managedProviders?.get(policy.adapterId);
-      if (!provider) {
-        throw new ManagedConnectionProviderUnavailableError(policy.adapterId);
+    allowedCapabilities?: string[];
+    resourceConstraints?: ManagedBindingResourceConstraints;
+  }): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
+    const agent = await this.dependencies.config.getAgent(input.agentId);
+    if (!canEditAgent(input.principal, agent)) throw new AuthorizationError();
+    const accountInput = await this.prepareAccountCreation(input);
+    const allowedCapabilities = accountInput.policy.kind === 'managed'
+      ? [...(input.allowedCapabilities ?? accountInput.policy.allowedCapabilities)]
+      : [...(input.allowedCapabilities ?? [])];
+    const resourceConstraints = accountInput.policy.kind === 'managed'
+      ? input.resourceConstraints ?? projectManagedResourceHandles(
+          accountInput.policy.resourceConstraints,
+        )
+      : input.resourceConstraints ?? {};
+    if (accountInput.policy.kind === 'managed') {
+      const managedPolicy = accountInput.policy;
+      const connector = this.catalog().connector(managedPolicy.toolkit);
+      if (!connector || connector.providerId !== accountInput.providerId) {
+        throw new Error('Managed connection connector is unavailable');
       }
-      policy = applyManagedValidation(
-        policy,
-        await provider.validate({ policy }),
+      if (allowedCapabilities.some(
+        (capability) => !managedPolicy.allowedCapabilities.includes(capability),
+      )) {
+        throw new Error('Managed connection binding exceeds the account capability ceiling');
+      }
+      const effectiveResources = intersectManagedResourceConstraints(
+        connector,
+        managedPolicy.resourceConstraints,
+        resourceConstraints,
       );
+      const pendingResourceSelection = Boolean(
+        connector.resources?.length && Object.keys(resourceConstraints).length === 0,
+      );
+      if (effectiveResources === undefined && !pendingResourceSelection) {
+        throw new Error('Managed connection resource selection is incomplete');
+      }
+      await this.assertManagedLaneAvailable({
+        principal: input.principal,
+        agentId: input.agentId,
+        ownerKind: accountInput.ownerKind,
+        adapterId: managedPolicy.adapterId,
+        toolkit: managedPolicy.toolkit,
+      });
     }
-    const id = `connection_${this.id()}`;
-    const secretRefId = `secret_${this.id()}`;
-    const managedConnector = policy.kind === 'managed'
-      ? this.catalog().connector(policy.toolkit)
-      : undefined;
-    const requiresManagedResourceSelection = Boolean(
-      managedConnector?.resources?.some(({ required }) => required) &&
-      policy.kind === 'managed' && !policy.resourceConstraints,
-    );
-    const account = await this.dependencies.config.putConnectionAccount({
-      id,
-      workspaceId: input.workspaceId,
-      ownerKind: input.ownerKind,
-      ...(input.ownerKind === 'member'
-        ? { ownerMembershipId: input.principal.membershipId }
-        : {}),
-      createdByMembershipId: input.principal.membershipId,
-      providerId: input.providerId,
-      label: input.label,
-      ...(input.purpose ? { purpose: input.purpose } : {}),
-      ...(input.identity ? { identity: input.identity } : {}),
-      policy,
-      secretRefId,
-      lifecycle: policy.kind === 'managed'
-        ? requiresManagedResourceSelection ? 'pending' : 'ready'
-        : input.credential || input.policy.kind === 'mcp' && input.policy.authMode === 'none'
-        ? 'pending'
-        : 'needs_attention',
-    }, 0);
-    // Managed credentials already passed provider validation and never have a
-    // local secret to promote. Persist them ready in one atomic account write.
-    if (policy.kind === 'managed') return account;
-    if (
-      !input.credential &&
-      !(input.policy.kind === 'mcp' && input.policy.authMode === 'none')
-    ) {
-      return account;
+    let secretSaved = false;
+    try {
+      if (input.credential) {
+        await saveConnectionAccountSecret(
+          accountInput.secretRefId,
+          input.credential,
+          undefined,
+          this.dependencies.settings,
+        );
+        secretSaved = true;
+      }
+      return await this.dependencies.config.createAgentOwnedConnection({
+        account: accountInput,
+        binding: {
+          agentId: input.agentId,
+          connectionAccountId: accountInput.id,
+          providerId: accountInput.providerId,
+          allowedCapabilities,
+          resourceConstraints,
+          enabled: true,
+        },
+      });
+    } catch (error) {
+      const setupError = error instanceof ManagedRemoteAccountAlreadyUsedError
+        ? new ManagedConnectionConflictError(error.message)
+        : error;
+      if (secretSaved) {
+        try {
+          await tombstoneConnectionAccountSecret(
+            accountInput.secretRefId,
+            undefined,
+            this.dependencies.settings,
+          );
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [setupError, cleanupError],
+            'Connection setup failed and its staged credential could not be removed',
+          );
+        }
+      }
+      throw setupError;
     }
-    if (input.credential) {
-      await saveConnectionAccountSecret(secretRefId, input.credential, undefined, this.dependencies.settings);
-    }
-    return this.dependencies.config.putConnectionAccount(
-      { ...account, lifecycle: 'ready' },
-      account.revision,
-    );
   }
 
   async listViews(workspaceId: string): Promise<ConnectionAccountView[]> {
@@ -198,6 +227,7 @@ export class ConnectionAccountService {
 
   async listManagedResources(input: {
     principal: AuthPrincipal;
+    agentId: string;
     connectionAccountId: string;
     resourceKey: string;
     cursor?: string;
@@ -206,7 +236,11 @@ export class ConnectionAccountService {
     resources: Array<{ handle: string; label: string }>;
     nextCursor?: string;
   }> {
-    const account = await this.getForManagement(input.principal, input.connectionAccountId);
+    const { account } = await this.requireAgentOwnedAccount({
+      principal: input.principal,
+      agentId: input.agentId,
+      connectionAccountId: input.connectionAccountId,
+    });
     if (account.policy.kind !== 'managed' || account.lifecycle === 'revoked') {
       throw new ManagedResourceSelectionError('invalid', 'Managed resource selection is unavailable');
     }
@@ -246,9 +280,11 @@ export class ConnectionAccountService {
     };
     binding: AgentConnectionBinding;
   }> {
-    const agent = await this.dependencies.config.getAgent(input.agentId);
-    if (!canEditAgent(input.principal, agent)) throw new AuthorizationError();
-    const account = await this.getForManagement(input.principal, input.connectionAccountId);
+    const { account, binding } = await this.requireAgentOwnedAccount({
+      principal: input.principal,
+      agentId: input.agentId,
+      connectionAccountId: input.connectionAccountId,
+    });
     if (account.revision !== input.expectedRevision) {
       throw new ManagedResourceSelectionError('stale', 'Managed connection changed');
     }
@@ -263,13 +299,10 @@ export class ConnectionAccountService {
     if (Object.keys(input.resourceConstraints).some((key) => !definitionsByKey.has(key))) {
       throw new ManagedResourceSelectionError('invalid', 'Managed resource key is invalid');
     }
-    // The account policy is the reusable credential's maximum resource set;
-    // each Agent binding narrows that set independently. Selecting resources
-    // for one Agent must therefore accumulate into the account ceiling instead
-    // of replacing resources already used by another Agent.
-    const accountConstraints: ManagedAccountResourceConstraints = {
-      ...(account.policy.resourceConstraints ?? {}),
-    };
+    // One account belongs to one Agent, so the submitted selection replaces
+    // both the account ceiling and its binding constraint. Removed resources
+    // must not survive in a ceiling that no sibling Agent can legitimately use.
+    const accountConstraints: ManagedAccountResourceConstraints = {};
     let bindingSelectionComplete = true;
     for (const resource of connector.resources) {
       const requestedHandles = input.resourceConstraints[resource.key] ?? [];
@@ -297,21 +330,15 @@ export class ConnectionAccountService {
       if (selected.some((item) => !item) || new Set(requestedHandles).size !== requestedHandles.length) {
         throw new ManagedResourceSelectionError('invalid', 'Managed resource is not available');
       }
-      const existing = accountConstraints[resource.key] ?? [];
-      const mergedSelections = [...new Map(
-        [...existing, ...(selected as ManagedResourceSelection[])].map((selection) => [
-          selection.handle,
-          selection,
-        ]),
-      ).values()];
-      if (mergedSelections.length > MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY) {
+      const selections = selected as ManagedResourceSelection[];
+      if (selections.length > MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY) {
         throw new ManagedResourceSelectionError(
           'invalid',
           `This connected account can grant at most ${MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY} ` +
             `${resource.label.toLowerCase()}. Connect a separate account for additional resources.`,
         );
       }
-      accountConstraints[resource.key] = mergedSelections;
+      accountConstraints[resource.key] = selections;
     }
     const effective = intersectManagedResourceConstraints(
       connector,
@@ -320,11 +347,6 @@ export class ConnectionAccountService {
     );
     if (bindingSelectionComplete && effective === undefined) {
       throw new ManagedResourceSelectionError('invalid', 'Managed resource selection is invalid');
-    }
-    const binding = (await this.dependencies.config.listAgentConnectionBindings(input.agentId))
-      .find((candidate) => candidate.connectionAccountId === account.id);
-    if (!binding) {
-      throw new ManagedResourceSelectionError('invalid', 'Managed connection is not attached');
     }
     let policy: Extract<ConnectionAccountPolicy, { kind: 'managed' }> = {
       ...account.policy,
@@ -379,99 +401,6 @@ export class ConnectionAccountService {
     };
   }
 
-  async attach(input: {
-    principal: AuthPrincipal;
-    agentId: string;
-    connectionAccountId: string;
-    allowedCapabilities?: string[];
-    resourceConstraints?: ManagedBindingResourceConstraints;
-  }): Promise<AgentConnectionBinding> {
-    const agent = await this.dependencies.config.getAgent(input.agentId);
-    if (!canEditAgent(input.principal, agent)) throw new AuthorizationError();
-    const account = await this.findAccount(input.connectionAccountId);
-    if (
-      account.ownerKind === 'member' &&
-      account.ownerMembershipId !== input.principal.membershipId
-    ) {
-      throw new AuthorizationError();
-    }
-    if (account.lifecycle === 'revoked') throw new Error('Revoked connection accounts cannot be attached');
-    const existingBinding = (await this.dependencies.config.listAgentConnectionBindings(
-      input.agentId,
-    )).find((binding) => binding.connectionAccountId === account.id);
-    const bindingCapabilities = account.policy.kind === 'managed' &&
-      (!input.allowedCapabilities || input.allowedCapabilities.length === 0)
-      ? existingBinding
-        ? [...existingBinding.allowedCapabilities]
-        : [...account.policy.allowedCapabilities]
-      : [...(input.allowedCapabilities ?? [])];
-    const bindingResourceConstraints = account.policy.kind === 'managed' &&
-      input.resourceConstraints === undefined
-      ? existingBinding
-        ? { ...(existingBinding.resourceConstraints ?? {}) }
-        : projectManagedResourceHandles(account.policy.resourceConstraints)
-      : input.resourceConstraints ?? {};
-    if (account.policy.kind === 'managed') {
-      const connector = this.catalog().connector(account.policy.toolkit);
-      if (!connector || connector.providerId !== account.providerId) {
-        throw new Error('Managed connection connector is unavailable');
-      }
-      const allowedCapabilities = account.policy.allowedCapabilities;
-      if (bindingCapabilities.some(
-        (capability) => !allowedCapabilities.includes(capability),
-      )) {
-        throw new Error('Managed connection binding exceeds the account capability ceiling');
-      }
-      const effectiveResources = intersectManagedResourceConstraints(
-        connector,
-        account.policy.resourceConstraints,
-        bindingResourceConstraints,
-      );
-      const pendingResourceSelection = Boolean(
-        connector.resources?.length &&
-        Object.keys(bindingResourceConstraints).length === 0,
-      );
-      if (effectiveResources === undefined && !pendingResourceSelection) {
-        throw new Error('Managed connection resource selection is incomplete');
-      }
-      await this.assertManagedLaneAvailable({
-        principal: input.principal,
-        agentId: input.agentId,
-        ownerKind: account.ownerKind,
-        adapterId: account.policy.adapterId,
-        toolkit: account.policy.toolkit,
-        excludeConnectionAccountId: account.id,
-      });
-    }
-    const binding = await this.dependencies.config.putAgentConnectionBinding({
-      agentId: input.agentId,
-      connectionAccountId: account.id,
-      providerId: account.providerId,
-      allowedCapabilities: bindingCapabilities,
-      resourceConstraints: bindingResourceConstraints,
-      enabled: true,
-    });
-    const scheduleIndex = await buildConnectionScheduleIndex(this.dependencies.config);
-    let resumed = false;
-    for (let attempt = 0; attempt < 2 && !resumed; attempt += 1) {
-      try {
-        const currentScheduleIndex = attempt === 0
-          ? scheduleIndex
-          : await buildConnectionScheduleIndex(this.dependencies.config);
-        await resumeDependentSchedules(this.dependencies.config, account.id, currentScheduleIndex);
-        resumed = true;
-      } catch {
-        if (attempt === 1) {
-          console.warn(JSON.stringify({
-            event: 'chickpea.connection.schedule_resume_deferred',
-            connectionAccountId: account.id,
-          }));
-        }
-      }
-    }
-    return binding;
-  }
-
   /** Preflight the one-Team/one-Personal lane invariant before remote import. */
   async assertManagedLaneAvailable(input: {
     principal: AuthPrincipal;
@@ -479,7 +408,6 @@ export class ConnectionAccountService {
     ownerKind: 'team' | 'member';
     adapterId: string;
     toolkit: string;
-    excludeConnectionAccountId?: string;
   }): Promise<void> {
     const agent = await this.dependencies.config.getAgent(input.agentId);
     if (!canEditAgent(input.principal, agent)) throw new AuthorizationError();
@@ -488,8 +416,7 @@ export class ConnectionAccountService {
       input.agentId,
     );
     for (const siblingBinding of siblingBindings) {
-      if (!siblingBinding.enabled ||
-          siblingBinding.connectionAccountId === input.excludeConnectionAccountId) continue;
+      if (!siblingBinding.enabled) continue;
       const sibling = await this.findAccount(siblingBinding.connectionAccountId);
       if (
         sibling.lifecycle !== 'revoked' &&
@@ -507,58 +434,16 @@ export class ConnectionAccountService {
     }
   }
 
-  async detach(input: {
-    principal: AuthPrincipal;
-    agentId: string;
-    connectionAccountId: string;
-  }): Promise<AgentConnectionBinding> {
-    const agent = await this.dependencies.config.getAgent(input.agentId);
-    if (!canEditAgent(input.principal, agent)) throw new AuthorizationError();
-    const current = (await this.dependencies.config.listAgentConnectionBindings(input.agentId))
-      .find((binding) => binding.connectionAccountId === input.connectionAccountId);
-    if (!current) throw new Error('Connection binding does not exist');
-    const beforeDetachIndex = await buildConnectionScheduleIndex(this.dependencies.config);
-    const contributions = bindingScheduleContributions(
-      beforeDetachIndex,
-      input.agentId,
-      input.connectionAccountId,
-    );
-    const binding = await this.dependencies.config.putAgentConnectionBinding({
-      ...current,
-      enabled: false,
-    });
-    try {
-      const afterDetachIndex = await buildConnectionScheduleIndex(this.dependencies.config);
-      for (const [connectionAccountId, candidateScheduleIds] of contributions) {
-        const disconnectedScheduleIds = new Set([...candidateScheduleIds].filter((scheduleId) => {
-          const schedule = afterDetachIndex.schedules.get(scheduleId);
-          return schedule && !recoverableConnectionIds(afterDetachIndex, schedule)
-            .has(connectionAccountId);
-        }));
-        if (disconnectedScheduleIds.size === 0) continue;
-        await retireConnectionFromDependentSchedules(
-          this.dependencies.config,
-          connectionAccountId,
-          input.agentId,
-          afterDetachIndex,
-          false,
-          disconnectedScheduleIds,
-        );
-      }
-    } catch {
-      throw new ConnectionScheduleConflictError(
-        'The connection was removed, but dependent schedules changed. Retry to finish cleanup.',
-      );
-    }
-    return binding;
-  }
-
   async revoke(input: {
     principal: AuthPrincipal;
     connectionAccountId: string;
   }): Promise<ConnectionAccount> {
     const account = await this.findAccount(input.connectionAccountId);
     this.requireManage(input.principal, account);
+    return this.revokeOwnedAccount(account);
+  }
+
+  private async revokeOwnedAccount(account: ConnectionAccount): Promise<ConnectionAccount> {
     if (account.lifecycle === 'revoked') {
       try {
         await retireConnectionFromDependentSchedules(
@@ -622,6 +507,48 @@ export class ConnectionAccountService {
     return revoked;
   }
 
+  async disconnectForAgent(input: {
+    principal: AuthPrincipal;
+    agentId: string;
+    connectionAccountId: string;
+  }): Promise<ConnectionAccount> {
+    await this.requireAgentOwnedAccount(input);
+    return this.revoke({
+      principal: input.principal,
+      connectionAccountId: input.connectionAccountId,
+    });
+  }
+
+  async prepareAgentDeletion(input: {
+    principal: AuthPrincipal;
+    agentId: string;
+    expectedRevision: number;
+  }): Promise<ConnectionAccount[]> {
+    const agent = await this.dependencies.config.getAgent(input.agentId);
+    if (!canEditAgent(input.principal, agent)) throw new AuthorizationError();
+    if (agent.revision !== input.expectedRevision) {
+      throw new AgentRevisionConflictError(input.agentId, input.expectedRevision, agent.revision);
+    }
+    const references = await this.dependencies.config.getAgentReferences(input.agentId);
+    if (references.channelGrants.length > 0) {
+      throw new AgentStillReferencedError(
+        input.agentId,
+        references.channelGrants.map(({ workspaceId, channelId }) =>
+          `${workspaceId}/${channelId}`).join(', '),
+      );
+    }
+    const bindings = await this.dependencies.config.listAgentConnectionBindings(input.agentId);
+    const revoked: ConnectionAccount[] = [];
+    for (const binding of bindings) {
+      const currentBinding = await this.dependencies.config.getAgentConnectionBindingForAccount(
+        binding.connectionAccountId,
+      );
+      if (currentBinding?.agentId !== input.agentId) throw new AuthorizationError();
+      revoked.push(await this.revokeOwnedAccount(await this.findAccount(binding.connectionAccountId)));
+    }
+    return revoked;
+  }
+
   async findManagedByRemoteRef(input: {
     principal: AuthPrincipal;
     workspaceId: string;
@@ -656,6 +583,7 @@ export class ConnectionAccountService {
   /** Replace an expired provider authorization without changing Chickpea bindings. */
   async replaceManagedAuthorization(input: {
     principal: AuthPrincipal;
+    agentId: string;
     connectionAccountId: string;
     expectedRevision: number;
     adapterId: string;
@@ -668,11 +596,8 @@ export class ConnectionAccountService {
     accountRef: string;
     providerGeneration?: number;
     providerLineage?: string;
-    /** The caller will resume schedules after its dependent binding mutation commits. */
-    deferScheduleResume?: boolean;
   }): Promise<ConnectionAccount> {
-    const account = await this.findAccount(input.connectionAccountId);
-    this.requireManage(input.principal, account);
+    const { account } = await this.requireAgentOwnedAccount(input);
     if (account.revision !== input.expectedRevision || account.lifecycle === 'revoked' ||
         account.policy.kind !== 'managed' ||
         account.policy.adapterId.trim().toLowerCase() !== input.adapterId.trim().toLowerCase() ||
@@ -721,7 +646,7 @@ export class ConnectionAccountService {
         }));
       }
     }
-    if (replaced.lifecycle === 'ready' && !input.deferScheduleResume) {
+    if (replaced.lifecycle === 'ready') {
       try {
         await resumeDependentSchedules(this.dependencies.config, replaced.id);
       } catch {
@@ -732,23 +657,6 @@ export class ConnectionAccountService {
       }
     }
     return replaced;
-  }
-
-  async resumeManagedAccountSchedules(input: {
-    principal: AuthPrincipal;
-    connectionAccountId: string;
-  }): Promise<void> {
-    const account = await this.findAccount(input.connectionAccountId);
-    this.requireManage(input.principal, account);
-    if (account.lifecycle !== 'ready' || account.policy.kind !== 'managed') return;
-    try {
-      await resumeDependentSchedules(this.dependencies.config, account.id);
-    } catch {
-      console.warn(JSON.stringify({
-        event: 'chickpea.managed_connection.schedule_resume_deferred',
-        connectionAccountId: account.id,
-      }));
-    }
   }
 
   async markManagedAccountExpired(input: {
@@ -766,6 +674,76 @@ export class ConnectionAccountService {
       if (account) return account;
     }
     throw new Error(`Unknown connection account ${id}`);
+  }
+
+  private async requireAgentOwnedAccount(input: {
+    principal: AuthPrincipal;
+    agentId: string;
+    connectionAccountId: string;
+  }): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
+    const agent = await this.dependencies.config.getAgent(input.agentId);
+    if (!canEditAgent(input.principal, agent)) throw new AuthorizationError();
+    const binding = await this.dependencies.config.getAgentConnectionBindingForAccount(
+      input.connectionAccountId,
+    );
+    if (!binding || binding.agentId !== input.agentId) throw new AuthorizationError();
+    const account = await this.findAccount(input.connectionAccountId);
+    this.requireManage(input.principal, account);
+    return { account, binding };
+  }
+
+  private async prepareAccountCreation(input: {
+    principal: AuthPrincipal;
+    workspaceId: string;
+    ownerKind: 'team' | 'member';
+    providerId: string;
+    label: string;
+    purpose?: string;
+    identity?: McpConnectionIdentity;
+    policy: ConnectionAccountPolicy;
+    credential?: string;
+  }) {
+    requirePermission(
+      input.principal,
+      input.ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal',
+    );
+    let policy = input.policy;
+    if (policy.kind === 'managed') {
+      assertManagedAccountPolicy(this.catalog(), input.providerId, policy);
+      await this.requireUniqueManagedAccount(policy.adapterId, policy.accountRef);
+      const provider = this.dependencies.managedProviders?.get(policy.adapterId);
+      if (!provider) throw new ManagedConnectionProviderUnavailableError(policy.adapterId);
+      policy = applyManagedValidation(policy, await provider.validate({ policy }));
+    }
+    const id = `connection_${this.id()}`;
+    const secretRefId = `secret_${this.id()}`;
+    const managedConnector = policy.kind === 'managed'
+      ? this.catalog().connector(policy.toolkit)
+      : undefined;
+    const requiresManagedResourceSelection = Boolean(
+      managedConnector?.resources?.some(({ required }) => required) &&
+      policy.kind === 'managed' && !policy.resourceConstraints,
+    );
+    return {
+      id,
+      workspaceId: input.workspaceId,
+      ownerKind: input.ownerKind,
+      ...(input.ownerKind === 'member'
+        ? { ownerMembershipId: input.principal.membershipId }
+        : {}),
+      createdByMembershipId: input.principal.membershipId,
+      providerId: input.providerId,
+      label: input.label,
+      ...(input.purpose ? { purpose: input.purpose } : {}),
+      ...(input.identity ? { identity: input.identity } : {}),
+      policy,
+      secretRefId,
+      lifecycle: policy.kind === 'managed'
+        ? requiresManagedResourceSelection ? 'pending' as const : 'ready' as const
+        : input.credential || input.policy.kind === 'mcp' && input.policy.authMode === 'none'
+          ? 'ready' as const
+          : 'needs_attention' as const,
+    };
   }
 
   private async requireUniqueManagedAccount(
@@ -786,7 +764,7 @@ export class ConnectionAccountService {
         );
       if (duplicate) {
         throw new ManagedConnectionConflictError(
-          `Managed account ${accountRef} is already imported; reuse connection account ${duplicate.id}`,
+          `Managed account ${accountRef} is already committed to another connection`,
         );
       }
     }
@@ -1457,41 +1435,6 @@ function recoverableConnectionIds(
     index.bindingsByAgent.get(schedule.agentId) ?? [],
     schedule.runsAsMembershipId,
   ).map(({ account }) => account.id));
-}
-
-function bindingScheduleContributions(
-  index: ConnectionScheduleIndex,
-  agentId: string,
-  bindingConnectionAccountId: string,
-): Map<string, Set<string>> {
-  const contributions = new Map<string, Set<string>>();
-  const add = (connectionAccountId: string, scheduleId: string) => {
-    const scheduleIds = contributions.get(connectionAccountId) ?? new Set<string>();
-    scheduleIds.add(scheduleId);
-    contributions.set(connectionAccountId, scheduleIds);
-  };
-  for (const scheduleId of new Set([
-    ...(index.requiredScheduleIdsByConnection.get(bindingConnectionAccountId) ?? []),
-    ...(index.pausedScheduleIdsByConnection.get(bindingConnectionAccountId) ?? []),
-  ])) add(bindingConnectionAccountId, scheduleId);
-  const bindings = (index.bindingsByAgent.get(agentId) ?? []).map((binding) =>
-    binding.connectionAccountId === bindingConnectionAccountId
-      ? { ...binding, enabled: true }
-      : binding
-  );
-  for (const schedule of index.schedules.values()) {
-    if (schedule.agentId !== agentId) continue;
-    for (const connection of projectRecoverableConnectionAccounts(
-      index.accountsByWorkspace.get(schedule.workspaceId) ?? [],
-      bindings,
-      schedule.runsAsMembershipId,
-    )) {
-      if (connection.binding.connectionAccountId === bindingConnectionAccountId) {
-        add(connection.account.id, schedule.scheduleId);
-      }
-    }
-  }
-  return contributions;
 }
 
 async function putConnectionAccountIfCurrent(

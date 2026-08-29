@@ -295,7 +295,7 @@ test('expired and revoked setup capabilities cannot be claimed or resumed', asyn
   }
 });
 
-test('a reusable managed setup commits once and emits one receipt', async () => {
+test('an Agent-owned managed setup commits once and emits one receipt', async () => {
   const store = new SqliteManagementStore(':memory:');
   const record = {
     setupOperationId: 'setup_reusable_connector',

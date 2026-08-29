@@ -72,7 +72,7 @@ import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { MANAGED_CONNECTOR_CATALOG, type ManagedConnectorCatalog } from '../connections/catalog/index.ts';
 import {
-  ManagedConnectionAlreadyAttachedError,
+  ManagedConnectionLaneExistsError,
   cancelManagedAuthorizationFlow,
   pollManagedAuthorizationFlow,
   startManagedAuthorizationFlow,
@@ -880,7 +880,7 @@ function connectorPageAvatarUrl(
 }
 
 function managedStartFailureMessage(error: unknown): string {
-  if (error instanceof ManagedConnectionAlreadyAttachedError) {
+  if (error instanceof ManagedConnectionLaneExistsError) {
     return `This Agent already has a ${error.ownerKind === 'team' ? 'team' : 'personal'} ${error.connectorLabel} connection.`;
   }
   if (error instanceof ManagedConnectionProviderUnavailableError) {

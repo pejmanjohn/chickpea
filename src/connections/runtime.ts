@@ -92,55 +92,20 @@ function projectConnectionAccounts(
   includeUnavailable: boolean,
 ): EffectiveConnectionAccount[] {
   const byId = new Map(accounts.map((account) => [account.id, account]));
-  const resolved = bindings.flatMap((binding) => {
-    const bound = byId.get(binding.connectionAccountId);
-    if (!bound || !binding.enabled || bound.providerId !== binding.providerId) return [];
-    const candidates = bound.ownerKind === 'team' ||
-        bound.policy.kind === 'managed' && bound.ownerMembershipId === actorMembershipId
-      ? [bound]
-      : accounts.filter((account) =>
-          account.ownerKind === 'member' &&
-          account.ownerMembershipId === actorMembershipId &&
-          account.providerId === bound.providerId &&
-          compatiblePersonalPolicy(bound.policy, account.policy)
-        );
-    return candidates.flatMap((account) =>
-      (account.lifecycle === 'ready' || includeUnavailable && account.lifecycle === 'needs_attention') ? [{
+  return bindings.flatMap((binding) => {
+    const account = byId.get(binding.connectionAccountId);
+    if (
+      !account || !binding.enabled || account.providerId !== binding.providerId ||
+      account.ownerKind === 'member' && account.ownerMembershipId !== actorMembershipId ||
+      account.lifecycle !== 'ready' && !(includeUnavailable && account.lifecycle === 'needs_attention')
+    ) return [];
+    return [{
       account,
       binding,
-      policy: applyConnectionCapabilityCeiling(
-        bound.ownerKind === 'member' && account.id !== bound.id
-          ? applyPersonalTemplateCeiling(bound.policy, account.policy)
-          : account.policy,
-        binding,
-      ),
+      policy: applyConnectionCapabilityCeiling(account.policy, binding),
       scope: account.ownerKind === 'member' ? 'personal' as const : 'team' as const,
-      }] : []);
+    }];
   });
-  const collapsed = new Map<string, EffectiveConnectionAccount>();
-  for (const entry of resolved) {
-    const existing = collapsed.get(entry.account.id);
-    if (!existing) {
-      collapsed.set(entry.account.id, entry);
-      continue;
-    }
-    const existingIsExact = existing.binding.connectionAccountId === existing.account.id;
-    const entryIsExact = entry.binding.connectionAccountId === entry.account.id;
-    if (entryIsExact && !existingIsExact) {
-      // A member's own explicit Agent binding is authoritative over another
-      // member's compatible personal template, independent of row order.
-      collapsed.set(entry.account.id, entry);
-      continue;
-    }
-    if (existingIsExact && !entryIsExact) continue;
-    // Multiple compatible templates for the same personal account fail closed
-    // to their shared capability intersection instead of random last-write wins.
-    collapsed.set(entry.account.id, {
-      ...existing,
-      policy: applyPersonalTemplateCeiling(existing.policy, entry.policy),
-    });
-  }
-  return [...collapsed.values()];
 }
 
 /**
@@ -171,16 +136,18 @@ function projectPersonalConnectionAuthorizationOptions(
   actorMembershipId: string,
 ): PersonalConnectionAuthorizationOption[] {
   const byId = new Map(accounts.map((account) => [account.id, account]));
+  const boundAccountIds = new Set(bindings.map(({ connectionAccountId }) => connectionAccountId));
   const options = bindings.flatMap((binding) => {
     const template = byId.get(binding.connectionAccountId);
     if (!binding.enabled || !template || template.ownerKind !== 'member' ||
         template.providerId !== binding.providerId || template.policy.kind === 'managed') return [];
     const actorAccounts = accounts.filter((account) =>
+      boundAccountIds.has(account.id) &&
       account.ownerKind === 'member' &&
       account.ownerMembershipId === actorMembershipId &&
       account.providerId === template.providerId &&
       account.lifecycle !== 'revoked' &&
-      compatiblePersonalPolicy(template.policy, account.policy)
+      samePersonalAuthorizationPolicy(template.policy, account.policy)
     );
     return [{
       providerId: template.providerId,
@@ -288,7 +255,7 @@ function connectionSelectionGroupKeys(
   if (managedService) return [`google:${managedService}`];
   // A managed migration account and a native account for the same non-Google
   // provider are alternative credentials, not independent services. Group
-  // them together so an unspecified request with both paths attached is
+  // them together so an unspecified request with both paths configured is
   // withheld and the Agent asks the member which labeled account to use.
   if (connection.policy.kind === 'managed') return [providerId];
   if (providerId !== 'google' || connection.policy.kind !== 'api') return [providerId];
@@ -527,8 +494,8 @@ export function applyConnectionCapabilityCeiling(
   binding: AgentConnectionBinding,
 ): ConnectionAccountPolicy {
   // Managed bindings must always carry an explicit snapshot. Fail closed for
-  // any legacy or malformed empty binding so widening the shared provider
-  // account can never silently widen an Agent's authority.
+  // any legacy or malformed empty binding so broadening an account during
+  // reauthorization can never silently broaden the Agent's authority.
   if (binding.allowedCapabilities.length === 0) {
     return policy.kind === 'managed' ? { ...policy, allowedCapabilities: [] } : policy;
   }
@@ -563,121 +530,6 @@ export function applyConnectionCapabilityCeiling(
   return { ...policy, allowedMethods: policy.allowedMethods.filter((method) => allowed.has(method)) };
 }
 
-/**
- * A personal account supplies the invoking member's credential and identity,
- * but the Agent-bound template remains the authority ceiling. This prevents a
- * same-provider account with broader hosts, paths, methods, scopes, or tools
- * from silently widening what the Agent may do.
- */
-function applyPersonalTemplateCeiling(
-  template: ConnectionAccountPolicy,
-  candidate: ConnectionAccountPolicy,
-): ConnectionAccountPolicy {
-  if (template.kind === 'api' && candidate.kind === 'api') {
-    return {
-      ...candidate,
-      allowedHosts: intersectExact(template.allowedHosts, candidate.allowedHosts),
-      pathPrefixes: intersectPathPrefixes(template.pathPrefixes, candidate.pathPrefixes),
-      allowedMethods: intersectExact(template.allowedMethods, candidate.allowedMethods),
-      ...(candidate.authMode === 'oauth'
-        ? { oauthScopes: intersectExact(template.oauthScopes ?? [], candidate.oauthScopes ?? []) }
-        : {}),
-    };
-  }
-  if (template.kind === 'mcp' && candidate.kind === 'mcp') {
-    const allowedTools = intersectExact(template.allowedTools, candidate.allowedTools);
-    const {
-      credentialHeaderName: _candidateCredentialHeaderName,
-      credentialValuePrefix: _candidateCredentialValuePrefix,
-      credentialOptional: _candidateCredentialOptional,
-      ...candidatePolicy
-    } = candidate;
-    return {
-      ...candidatePolicy,
-      headerNames: intersectExact(template.headerNames, candidate.headerNames),
-      allowedTools,
-      discoveredTools: candidate.discoveredTools.filter(({ name }) => allowedTools.includes(name)),
-      ...(template.credentialHeaderName
-        ? { credentialHeaderName: template.credentialHeaderName }
-        : {}),
-      ...(template.credentialValuePrefix
-        ? { credentialValuePrefix: template.credentialValuePrefix }
-        : {}),
-      ...(template.credentialOptional ? { credentialOptional: true } : {}),
-    };
-  }
-  if (template.kind === 'managed' && candidate.kind === 'managed') {
-    const {
-      resourceConstraints: _candidateResourceConstraints,
-      ...candidatePolicy
-    } = candidate;
-    const resourceConstraints = intersectEffectiveManagedResourceConstraints(
-      template.resourceConstraints,
-      candidate.resourceConstraints,
-    );
-    return {
-      ...candidatePolicy,
-      allowedCapabilities: intersectExact(
-        template.allowedCapabilities,
-        candidate.allowedCapabilities,
-      ),
-      ...(resourceConstraints === undefined ? {} : { resourceConstraints }),
-    };
-  }
-  return candidate;
-}
-
-function intersectEffectiveManagedResourceConstraints(
-  left: Extract<ConnectionAccountPolicy, { kind: 'managed' }>['resourceConstraints'],
-  right: Extract<ConnectionAccountPolicy, { kind: 'managed' }>['resourceConstraints'],
-): Extract<ConnectionAccountPolicy, { kind: 'managed' }>['resourceConstraints'] {
-  if (left === undefined && right === undefined) return undefined;
-  const keys = new Set([...Object.keys(left ?? {}), ...Object.keys(right ?? {})]);
-  return Object.fromEntries([...keys].map((key) => {
-    const rightHandles = new Set((right?.[key] ?? []).map(({ handle }) => handle));
-    return [key, (left?.[key] ?? []).filter(({ handle }) => rightHandles.has(handle))];
-  }));
-}
-
-function intersectExact(left: readonly string[], right: readonly string[]): string[] {
-  const allowed = new Set(right);
-  return [...new Set(left.filter((value) => allowed.has(value)))];
-}
-
-function intersectPathPrefixes(left: readonly string[], right: readonly string[]): string[] {
-  const intersections = left.flatMap((leftPrefix) => right.flatMap((rightPrefix) => {
-    if (leftPrefix.startsWith(rightPrefix)) return [leftPrefix];
-    if (rightPrefix.startsWith(leftPrefix)) return [rightPrefix];
-    return [];
-  }));
-  return [...new Set(intersections)];
-}
-
-function compatiblePersonalPolicy(
-  template: ConnectionAccountPolicy,
-  candidate: ConnectionAccountPolicy,
-): boolean {
-  if (template.kind !== candidate.kind) return false;
-  if (template.kind === 'api' && candidate.kind === 'api') {
-    return template.authMode === candidate.authMode &&
-      template.oauthProvider === candidate.oauthProvider &&
-      (template.presetId ?? '') === (candidate.presetId ?? '');
-  }
-  if (template.kind === 'mcp' && candidate.kind === 'mcp') {
-    return template.authMode === candidate.authMode &&
-      template.url === candidate.url &&
-      template.credentialHeaderName === candidate.credentialHeaderName &&
-      template.credentialValuePrefix === candidate.credentialValuePrefix &&
-      Boolean(template.credentialOptional) === Boolean(candidate.credentialOptional) &&
-      (template.presetId ?? '') === (candidate.presetId ?? '');
-  }
-  if (template.kind === 'managed' && candidate.kind === 'managed') {
-    return template.adapterId === candidate.adapterId &&
-      template.toolkit === candidate.toolkit;
-  }
-  return false;
-}
-
 function accountLanguageKeys(account: ConnectionAccount): string[] {
   const genericLabels = genericConnectionLabels(account);
   return [
@@ -688,6 +540,24 @@ function accountLanguageKeys(account: ConnectionAccount): string[] {
   ].flatMap((value) => value ? [normalized(value)] : []).filter(
     (value) => value.length >= 2 && !genericLabels.has(value),
   );
+}
+
+function samePersonalAuthorizationPolicy(
+  template: ConnectionAccountPolicy,
+  candidate: ConnectionAccountPolicy,
+): boolean {
+  if (template.kind !== candidate.kind) return false;
+  if (template.kind === 'api' && candidate.kind === 'api') {
+    return template.authMode === candidate.authMode &&
+      template.oauthProvider === candidate.oauthProvider &&
+      (template.presetId ?? '') === (candidate.presetId ?? '');
+  }
+  if (template.kind === 'mcp' && candidate.kind === 'mcp') {
+    return template.authMode === candidate.authMode && template.url === candidate.url &&
+      (template.presetId ?? '') === (candidate.presetId ?? '');
+  }
+  return template.kind === 'managed' && candidate.kind === 'managed' &&
+    template.adapterId === candidate.adapterId && template.toolkit === candidate.toolkit;
 }
 
 function genericConnectionLabels(account: ConnectionAccount): Set<string> {

@@ -329,7 +329,7 @@ async function resolveOneServer(
   let debugHeaders: Readonly<Record<string, string>> = {};
   try {
     const secrets = opts.resolveBearerCredential
-      ? await resolveReusableAccountMcpSecrets(server, opts.resolveBearerCredential)
+      ? await resolveConnectionAccountMcpSecrets(server, opts.resolveBearerCredential)
       : await resolveMcpSecrets(
           { agentId: opts.agentId, connectionId: server.id },
           server.headerNames,
@@ -404,7 +404,7 @@ async function resolveOneServer(
   }
 }
 
-async function resolveReusableAccountMcpSecrets(
+async function resolveConnectionAccountMcpSecrets(
   server: McpConnectionConfig,
   resolveCredential: (connectionId: string) => Promise<string>,
 ): Promise<{ bearer?: string; headers: Record<string, string> }> {

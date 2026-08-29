@@ -41,6 +41,17 @@ export type ManagedAuthorizationAttempt = ManagedAuthorizationInput & {
   accountRef?: string;
 };
 
+/** Stable UUID-shaped replay key derived from the non-secret attempt hash. */
+export function managedAuthorizationAttemptId(
+  attempt: Pick<ManagedAuthorizationAttempt, 'browserSecretHash'>,
+): string {
+  const hash = attempt.browserSecretHash;
+  if (!/^[0-9a-f]{64}$/.test(hash)) throw new ManagedAuthorizationError('invalid');
+  const variant = ((Number.parseInt(hash[15]!, 16) & 0x3) | 0x8).toString(16);
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(12, 15)}-` +
+    `${variant}${hash.slice(16, 19)}-${hash.slice(19, 31)}`;
+}
+
 export class ManagedAuthorizationError extends Error {
   constructor(readonly code:
     | 'invalid'

@@ -9,7 +9,7 @@ const LEASE_MAX_RETRY_MS = 400;
 const LEASE_ATTEMPTS = 64;
 const FETCH_TIMEOUT_MS = 10_000;
 const IDENTITY_TEXT_MAX = 160;
-// Reusable connection-account ids include an underscore and carry a generated
+// Agent-scoped connection-account ids include an underscore and carry a generated
 // suffix; legacy per-Agent ids remain a strict subset of this bounded shape.
 const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,191}$/;
 
@@ -35,10 +35,9 @@ export interface ApiOAuthRef {
 }
 
 /**
- * Reusable connection-account OAuth is keyed to the account, never to an
- * Agent binding. The existing ref shape is retained for the provider state
- * codec, with an explicit sentinel keeping account credentials reusable
- * across every Agent that is allowed to use the account.
+ * Agent-scoped connection-account OAuth is keyed to the account. The existing
+ * ref shape is retained for the provider state codec, with an explicit sentinel
+ * identifying this as an account credential instead of a legacy profile lane.
  */
 export function connectionAccountOAuthRef(connectionAccountId: string): ApiOAuthRef {
   if (!CONNECTION_ID_PATTERN.test(connectionAccountId) ||
@@ -214,9 +213,9 @@ export async function startApiOAuthAuthorization(
     provider: ApiOAuthProvider;
     callbackUrl: string;
     scopes: readonly string[];
-    /** Admin Agent page that initiated a reusable-account flow. */
+    /** Admin Agent page that initiated this Agent-owned connection flow. */
     returnAgentId?: string;
-    /** Reusable-account revision that fences this authorization attempt. */
+    /** Agent-owned connection revision that fences this authorization attempt. */
     accountRevision?: number;
     /** Stable attempt identity retained after the account revision advances. */
     oauthAttemptId?: string;

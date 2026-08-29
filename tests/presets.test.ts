@@ -8,10 +8,10 @@ import {
   CONNECTOR_PRESETS,
   GOOGLE_WORKSPACE_SERVICE_PRESETS,
   MANAGED_CONNECTOR_PRESETS,
-  REUSABLE_CONNECTOR_PRESETS,
+  CONNECTION_CATALOG_PRESETS,
   getConnectorPreset,
   presetLanes,
-  resolveReusableConnectorPreset,
+  resolveConnectorCatalogPreset,
   type ConnectorPreset,
 } from '../src/config/presets.ts';
 
@@ -215,18 +215,18 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     accent: '#FF0000',
     logoId: 'youtube',
   }]);
-  assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'notion'), false);
-  assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'notion-managed'), true);
-  assert.equal(resolveReusableConnectorPreset('notion-managed')?.id, 'notion-managed');
-  assert.equal(resolveReusableConnectorPreset('Notion')?.id, 'notion-managed');
-  assert.equal(resolveReusableConnectorPreset('Notion (managed)')?.id, 'notion-managed');
-  assert.equal(resolveReusableConnectorPreset('Native Notion'), undefined);
+  assert.equal(CONNECTION_CATALOG_PRESETS.some(({ id }) => id === 'notion'), false);
+  assert.equal(CONNECTION_CATALOG_PRESETS.some(({ id }) => id === 'notion-managed'), true);
+  assert.equal(resolveConnectorCatalogPreset('notion-managed')?.id, 'notion-managed');
+  assert.equal(resolveConnectorCatalogPreset('Notion')?.id, 'notion-managed');
+  assert.equal(resolveConnectorCatalogPreset('Notion (managed)')?.id, 'notion-managed');
+  assert.equal(resolveConnectorCatalogPreset('Native Notion'), undefined);
   for (const preset of [...GOOGLE_WORKSPACE_SERVICE_PRESETS, ...MANAGED_CONNECTOR_PRESETS]) {
     assert.ok(
       CONNECTOR_LOGOS[preset.logoId ?? preset.id],
       `missing connector logo for ${preset.id}`,
     );
-    assert.equal(resolveReusableConnectorPreset(preset.name)?.id, preset.id);
+    assert.equal(resolveConnectorCatalogPreset(preset.name)?.id, preset.id);
   }
 });
 
@@ -534,11 +534,11 @@ test('getConnectorPreset looks up known ids', () => {
 });
 
 test('reusable connector catalog is the shared Agent-facing lookup', () => {
-  assert.equal(REUSABLE_CONNECTOR_PRESETS.some(({ id }) => id === 'google-workspace'), false);
-  assert.equal(resolveReusableConnectorPreset('Gmail')?.id, 'gmail');
-  assert.equal(resolveReusableConnectorPreset('google-calendar')?.name, 'Google Calendar');
-  const sheets = resolveReusableConnectorPreset('Google Sheets');
+  assert.equal(CONNECTION_CATALOG_PRESETS.some(({ id }) => id === 'google-workspace'), false);
+  assert.equal(resolveConnectorCatalogPreset('Gmail')?.id, 'gmail');
+  assert.equal(resolveConnectorCatalogPreset('google-calendar')?.name, 'Google Calendar');
+  const sheets = resolveConnectorCatalogPreset('Google Sheets');
   assert.ok(sheets && 'managedToolkit' in sheets);
   assert.equal(sheets.managedToolkit, 'googlesheets');
-  assert.equal(resolveReusableConnectorPreset('unknown'), undefined);
+  assert.equal(resolveConnectorCatalogPreset('unknown'), undefined);
 });

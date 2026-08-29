@@ -101,6 +101,26 @@ export class ConnectionAccountRevisionConflictError extends Error {
   }
 }
 
+export class ConnectionAccountAlreadyBoundError extends Error {
+  constructor(
+    readonly accountId: string,
+    readonly agentId: string,
+  ) {
+    super(`Connection account ${accountId} already belongs to Agent ${agentId}`);
+    this.name = 'ConnectionAccountAlreadyBoundError';
+  }
+}
+
+export class ManagedRemoteAccountAlreadyUsedError extends Error {
+  constructor(
+    readonly adapterId: string,
+    readonly accountRef: string,
+  ) {
+    super(`Managed account ${accountRef} is already committed to another connection`);
+    this.name = 'ManagedRemoteAccountAlreadyUsedError';
+  }
+}
+
 // "Nothing enabled answers in this channel" — the resolver's not-found family.
 export class NoAssignmentError extends Error {
   constructor(message: string) {

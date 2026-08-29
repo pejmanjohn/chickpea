@@ -90,7 +90,12 @@ export async function startPersonalConnectionAuthorization(input: {
     throw new Error('This Agent does not offer inline authorization for that provider.');
   }
   const allAccounts = await dependencies.config.listConnectionAccounts(input.workspaceId);
+  const agentBindings = await dependencies.config.listAgentConnectionBindings(input.agentId);
+  const boundAccountIds = new Set(
+    agentBindings.filter(({ enabled }) => enabled).map(({ connectionAccountId }) => connectionAccountId),
+  );
   const actorAccounts = allAccounts.filter((account) =>
+    boundAccountIds.has(account.id) &&
     account.ownerKind === 'member' &&
     account.ownerMembershipId === input.actorMembershipId &&
     account.providerId.toLowerCase() === option.providerId.toLowerCase() &&
@@ -109,18 +114,29 @@ export async function startPersonalConnectionAuthorization(input: {
   }
   if (!account) {
     const suffix = (dependencies.randomId ?? (() => crypto.randomUUID().replace(/-/g, '')))();
-    account = await dependencies.config.putConnectionAccount({
-      id: `connection_${suffix}`,
-      workspaceId: input.workspaceId,
-      ownerKind: 'member',
-      ownerMembershipId: input.actorMembershipId,
-      createdByMembershipId: input.actorMembershipId,
-      providerId: option.providerId,
-      label: input.accountLabel ?? `${displayProvider(option.providerId)} account`,
-      policy: option.policy,
-      secretRefId: `secret_${suffix}`,
-      lifecycle: 'needs_attention',
-    }, 0);
+    const connectionAccountId = `connection_${suffix}`;
+    const { oauthAttemptId: _templateAttemptId, ...policy } = option.policy;
+    ({ account } = await dependencies.config.createAgentOwnedConnection({
+      account: {
+        id: connectionAccountId,
+        workspaceId: input.workspaceId,
+        ownerKind: 'member',
+        ownerMembershipId: input.actorMembershipId,
+        createdByMembershipId: input.actorMembershipId,
+        providerId: option.providerId,
+        label: input.accountLabel ?? `${displayProvider(option.providerId)} account`,
+        policy,
+        secretRefId: `secret_${suffix}`,
+        lifecycle: 'needs_attention',
+      },
+      binding: {
+        agentId: input.agentId,
+        connectionAccountId,
+        providerId: option.providerId,
+        allowedCapabilities: [...option.allowedCapabilities],
+        enabled: true,
+      },
+    }));
   }
   if (account.lifecycle === 'ready') {
     return {
@@ -167,10 +183,14 @@ export async function startPersonalConnectionAuthorization(input: {
     validateConnection: async (ref, provider, expectedRevision, expectedAttemptId) => {
       const current = (await dependencies.config.listConnectionAccounts(input.workspaceId))
         .find((candidate) => candidate.id === account!.id);
+      const currentBinding = await dependencies.config.getAgentConnectionBindingForAccount(
+        account!.id,
+      );
       const validConnection = ref.agentId === account!.id && ref.connectionId === 'account' &&
         provider === 'google' && current?.ownerKind === 'member' &&
         current.ownerMembershipId === input.actorMembershipId &&
-        current.lifecycle !== 'revoked';
+        current.lifecycle !== 'revoked' && currentBinding?.agentId === input.agentId &&
+        currentBinding.enabled;
       if (!validConnection) return false;
       if (
         (expectedRevision !== undefined && current.revision !== expectedRevision) ||

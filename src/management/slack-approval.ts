@@ -1,6 +1,6 @@
 import type { ConfigStore } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
-import { REUSABLE_CONNECTOR_PRESETS } from '../config/presets.ts';
+import { CONNECTION_CATALOG_PRESETS } from '../config/presets.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
@@ -318,7 +318,7 @@ function suggestedUnconnectedConnector(agent: Awaited<ReturnType<ConfigStore['ge
     ...agent.mcpServers.flatMap(({ presetId }) => presetId ? [presetId] : []),
     ...agent.apiConnections.flatMap(({ presetId }) => presetId ? [presetId] : []),
   ]);
-  const matches = REUSABLE_CONNECTOR_PRESETS.filter(({ id, name }) => {
+  const matches = CONNECTION_CATALOG_PRESETS.filter(({ id, name }) => {
     if (attached.has(id)) return false;
     const candidates = [normalizeConnectorText(id), normalizeConnectorText(name)];
     return candidates.some((candidate) => candidate && ` ${corpus} `.includes(` ${candidate} `));

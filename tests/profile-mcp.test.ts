@@ -218,7 +218,7 @@ test('runtime resolution uses the agent-scoped environment override for the same
   assert.deepEqual(seen, ['Bearer alpha-token', 'Bearer beta-token']);
 });
 
-test('reusable account credentials populate preset-specific MCP headers at runtime', async () => {
+test('Agent-owned account credentials populate preset-specific MCP headers at runtime', async () => {
   const seen: Record<string, string> = {};
   const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> => {
     new Headers(options.headers).forEach((value, key) => { seen[key] = value; });
@@ -244,7 +244,7 @@ test('reusable account credentials populate preset-specific MCP headers at runti
   assert.equal(seen.authorization, 'Sentry-Bearer sentry-user-token');
 });
 
-test('reusable account credential projection preserves custom headers without double-prefixing', async () => {
+test('Agent-owned account credential projection preserves custom headers without double-prefixing', async () => {
   const effective: EffectiveConnectionAccount = {
     account: {
       id: 'connection_sentry',

@@ -6,7 +6,12 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { ConnectionAccountManagedPolicy } from '../src/config/types.ts';
-import { ConnectionAccountRevisionConflictError } from '../src/config/errors.ts';
+import {
+  AgentRevisionConflictError,
+  AgentStillReferencedError,
+  ConnectionAccountRevisionConflictError,
+  UnknownAgentError,
+} from '../src/config/errors.ts';
 import {
   createDefaultManagedConnectionProviderRegistry,
   createManagedConnectionProviderRegistry,
@@ -238,8 +243,18 @@ test('managed validation persists only the display-safe provider grant summary',
     randomId: () => 'notion_summary',
   });
   try {
-    const account = await service.create({
+    await config.createAgent({
+      id: 'agent_notion_summary', name: 'Notion summary', instructions: 'Inspect Notion.',
+      enabled: true, creatorMembershipId: 'membership_alice',
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct',
+      defaultAgentId: 'agent_notion_summary',
+    });
+    const { account } = await service.createForAgent({
       principal: principal(),
+      agentId: 'agent_notion_summary',
       workspaceId: 'T_MANAGED',
       ownerKind: 'member',
       providerId: 'notion',
@@ -495,22 +510,20 @@ test('managed invocation rechecks Chickpea authority and the live capability cei
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_mail',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
-      providerId: 'google', label: 'Work Gmail', policy: MANAGED_POLICY,
-    });
-    assert.equal(account.lifecycle, 'ready');
     await assert.rejects(
-      service.attach({
-        principal: principal(), agentId: 'agent_mail', connectionAccountId: account.id,
-        allowedCapabilities: ['gmail.messages.send'],
+      service.createForAgent({
+        principal: principal(), agentId: 'agent_mail', workspaceId: 'T_MANAGED',
+        ownerKind: 'member', providerId: 'google', label: 'Invalid Gmail',
+        policy: MANAGED_POLICY, allowedCapabilities: ['gmail.messages.send'],
       }),
       /exceeds the account capability ceiling/,
     );
-    await service.attach({
-      principal: principal(), agentId: 'agent_mail', connectionAccountId: account.id,
-      allowedCapabilities: ['gmail.messages.search'],
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_mail', workspaceId: 'T_MANAGED',
+      ownerKind: 'member', providerId: 'google', label: 'Work Gmail',
+      policy: MANAGED_POLICY, allowedCapabilities: ['gmail.messages.search'],
     });
+    assert.equal(account.lifecycle, 'ready');
 
     const result = await invokeManagedConnectionCapability({
       config,
@@ -704,18 +717,15 @@ test('Google productivity tools execute reads and writes through the Agent runti
 
     const connections = [];
     for (const fixture of fixtures) {
-      const account = await service.create({
-        principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+      const { account } = await service.createForAgent({
+        principal: principal(), agentId: 'agent_productivity',
+        workspaceId: 'T_MANAGED', ownerKind: 'member',
         providerId: 'google', label: fixture.toolkit,
         policy: {
           kind: 'managed', adapterId: 'composio', toolkit: fixture.toolkit,
           principalRef: 'chickpea-user-1', accountRef: fixture.accountRef,
           allowedCapabilities: [...fixture.capabilities],
         },
-      });
-      await service.attach({
-        principal: principal(), agentId: 'agent_productivity',
-        connectionAccountId: account.id,
       });
       connections.push({
         id: account.id, providerId: account.providerId, adapterId: 'composio',
@@ -845,17 +855,15 @@ test('managed Notion reads and writes through its exact Agent-bound account with
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_notion',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_notion',
+      workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'notion', label: 'Managed Notion',
       policy: {
         kind: 'managed', adapterId: 'composio', toolkit: 'notion',
         principalRef: 'chickpea-user-1', accountRef: 'ca_notion_alice',
         allowedCapabilities: ['notion.pages.get', 'notion.pages.create'],
       },
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_notion', connectionAccountId: account.id,
     });
     const tools = createManagedConnectionTools({
       connections: [{
@@ -905,7 +913,7 @@ test('managed Notion reads and writes through its exact Agent-bound account with
   }
 });
 
-test('managed attachment rejects a second owner lane for the same Agent and toolkit', async () => {
+test('managed setup rejects a second owner lane for the same Agent and toolkit', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
@@ -929,8 +937,9 @@ test('managed attachment rejects a second owner lane for the same Agent and tool
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_mail',
     });
-    const create = (accountRef: string) => service.create({
+    const create = (accountRef: string) => service.createForAgent({
       principal: principal(),
+      agentId: 'agent_mail',
       workspaceId: 'T_MANAGED',
       ownerKind: 'member' as const,
       providerId: 'google',
@@ -938,16 +947,11 @@ test('managed attachment rejects a second owner lane for the same Agent and tool
       policy: { ...MANAGED_POLICY, accountRef },
     });
     const first = await create('ca_lane_one');
-    const second = await create('ca_lane_two');
-    await service.attach({
-      principal: principal(), agentId: 'agent_mail', connectionAccountId: first.id,
-    });
     await assert.rejects(
-      service.attach({
-        principal: principal(), agentId: 'agent_mail', connectionAccountId: second.id,
-      }),
+      create('ca_lane_two'),
       ManagedConnectionConflictError,
     );
+    assert.equal(first.binding.agentId, 'agent_mail');
   } finally {
     config.close();
     settings.close();
@@ -978,8 +982,9 @@ test('managed personal owner lanes are isolated per member on the same Agent', a
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_mail',
     });
-    const create = (membershipId: string, accountRef: string) => service.create({
+    const create = (membershipId: string, accountRef: string) => service.createForAgent({
       principal: principal(membershipId),
+      agentId: 'agent_mail',
       workspaceId: 'T_MANAGED',
       ownerKind: 'member' as const,
       providerId: 'google',
@@ -990,18 +995,8 @@ test('managed personal owner lanes are isolated per member on the same Agent', a
         accountRef,
       },
     });
-    const alice = await create('membership_alice', 'ca_alice');
-    const bob = await create('membership_bob', 'ca_bob');
-    await service.attach({
-      principal: principal('membership_alice'),
-      agentId: 'agent_mail',
-      connectionAccountId: alice.id,
-    });
-    await service.attach({
-      principal: principal('membership_bob'),
-      agentId: 'agent_mail',
-      connectionAccountId: bob.id,
-    });
+    const { account: alice } = await create('membership_alice', 'ca_alice');
+    const { account: bob } = await create('membership_bob', 'ca_bob');
     assert.deepEqual(
       (await config.listAgentConnectionBindings('agent_mail'))
         .map(({ connectionAccountId }) => connectionAccountId)
@@ -1039,18 +1034,19 @@ test('managed account imports reject a duplicate remote account before provider 
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_mail',
     });
-    const original = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account: original } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_mail', workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Original Gmail', policy: MANAGED_POLICY,
     });
 
     await assert.rejects(
-      service.create({
-        principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+      service.createForAgent({
+        principal: principal(), agentId: 'agent_mail',
+        workspaceId: 'T_MANAGED', ownerKind: 'member',
         providerId: 'google', label: 'Duplicate Gmail',
         policy: { ...MANAGED_POLICY, adapterId: 'COMPOSIO' },
       }),
-      new RegExp(`already imported; reuse connection account ${original.id}`),
+      /already committed to another connection/,
     );
     assert.equal(validationCalls, 1);
     assert.deepEqual(
@@ -1087,8 +1083,9 @@ test('managed remote lookup never returns an account from another workspace', as
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_scope',
     });
-    await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    await service.createForAgent({
+      principal: principal(), agentId: 'agent_scope',
+      workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Scoped Gmail', policy: MANAGED_POLICY,
     });
 
@@ -1130,8 +1127,8 @@ test('managed reconnect preserves the Chickpea account and deletes the previous 
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_mail',
     });
-    const original = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account: original } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_mail', workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Work Gmail', policy: MANAGED_POLICY,
     });
     const expired = await config.putConnectionAccount(
@@ -1140,6 +1137,7 @@ test('managed reconnect preserves the Chickpea account and deletes the previous 
     );
     const reconnected = await service.replaceManagedAuthorization({
       principal: principal(),
+      agentId: 'agent_mail',
       connectionAccountId: original.id,
       expectedRevision: expired.revision,
       adapterId: 'composio',
@@ -1190,8 +1188,8 @@ test('managed reconnect keeps a resource-incomplete account pending', async () =
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_ads',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_ads', workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Google Ads',
       policy: {
         kind: 'managed', adapterId: 'composio', toolkit: 'googleads',
@@ -1203,6 +1201,7 @@ test('managed reconnect keeps a resource-incomplete account pending', async () =
 
     const reconnected = await service.replaceManagedAuthorization({
       principal: principal(),
+      agentId: 'agent_ads',
       connectionAccountId: account.id,
       expectedRevision: account.revision,
       adapterId: 'composio',
@@ -1218,7 +1217,7 @@ test('managed reconnect keeps a resource-incomplete account pending', async () =
   }
 });
 
-test('managed Agent bindings keep their original ceiling when a shared account is widened', async () => {
+test('managed Agent bindings keep their original ceiling when reauthorization broadens the account', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
@@ -1243,20 +1242,16 @@ test('managed Agent bindings keep their original ceiling when a shared account i
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_reader',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account, binding } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_reader', workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Personal Gmail',
       policy: { ...MANAGED_POLICY, allowedCapabilities: readCapabilities },
-    });
-
-    const binding = await service.attach({
-      principal: principal(), agentId: 'agent_reader', connectionAccountId: account.id,
-      allowedCapabilities: [],
     });
     assert.deepEqual(binding.allowedCapabilities, readCapabilities);
 
     await service.replaceManagedAuthorization({
       principal: principal(),
+      agentId: 'agent_reader',
       connectionAccountId: account.id,
       expectedRevision: account.revision,
       adapterId: 'composio',
@@ -1298,7 +1293,7 @@ test('managed Agent bindings keep their original ceiling when a shared account i
   }
 });
 
-test('reusing a scoped managed account seeds the new Agent with its safe resource ceiling', async () => {
+test('two Agents may separately authorize the same external managed identity', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const provider: ManagedConnectionProvider = {
@@ -1311,7 +1306,7 @@ test('reusing a scoped managed account seeds the new Agent with its safe resourc
     config,
     settings,
     managedProviders: createManagedConnectionProviderRegistry([provider]),
-    randomId: () => 'scoped_reuse',
+    randomId: (() => { let id = 0; return () => `scoped_${++id}`; })(),
   });
   const selectedProperty = {
     handle: 'property_primary',
@@ -1338,8 +1333,9 @@ test('reusing a scoped managed account seeds the new Agent with its safe resourc
       transportMode: 'direct',
       defaultAgentId: 'agent_analytics_a',
     });
-    const account = await service.create({
+    const { account: accountA, binding: bindingA } = await service.createForAgent({
       principal: principal(),
+      agentId: 'agent_analytics_a',
       workspaceId: 'T_MANAGED',
       ownerKind: 'team',
       providerId: 'google',
@@ -1349,26 +1345,34 @@ test('reusing a scoped managed account seeds the new Agent with its safe resourc
         adapterId: 'composio',
         toolkit: 'google_analytics',
         principalRef: 'chickpea:organization:T_MANAGED',
-        accountRef: 'ca_analytics',
+        accountRef: 'ca_analytics_a',
         allowedCapabilities: ['analytics.reports.run'],
         resourceConstraints: { propertyIds: [selectedProperty] },
       },
-    });
-    await service.attach({
-      principal: principal(),
-      agentId: 'agent_analytics_a',
-      connectionAccountId: account.id,
       resourceConstraints: { propertyIds: [selectedProperty.handle] },
     });
-    const reusedBinding = await service.attach({
+    const { account: accountB, binding: bindingB } = await service.createForAgent({
       principal: principal(),
       agentId: 'agent_analytics_b',
-      connectionAccountId: account.id,
+      workspaceId: 'T_MANAGED',
+      ownerKind: 'team',
+      providerId: 'google',
+      label: 'Growth Analytics',
+      policy: {
+        kind: 'managed',
+        adapterId: 'composio',
+        toolkit: 'google_analytics',
+        principalRef: 'chickpea:organization:T_MANAGED',
+        accountRef: 'ca_analytics_b',
+        allowedCapabilities: ['analytics.reports.run'],
+        resourceConstraints: { propertyIds: [selectedProperty] },
+      },
+      resourceConstraints: { propertyIds: [selectedProperty.handle] },
     });
 
-    assert.deepEqual(reusedBinding.resourceConstraints, {
-      propertyIds: [selectedProperty.handle],
-    });
+    assert.notEqual(accountA.id, accountB.id);
+    assert.equal(bindingA.agentId, 'agent_analytics_a');
+    assert.equal(bindingB.agentId, 'agent_analytics_b');
     const [effective] = await resolveEffectiveConnectionAccounts({
       config,
       workspaceId: 'T_MANAGED',
@@ -1383,82 +1387,9 @@ test('reusing a scoped managed account seeds the new Agent with its safe resourc
     });
 
     const serializedViews = JSON.stringify(await service.listViews('T_MANAGED'));
-    assert.doesNotMatch(serializedViews, /ca_analytics|properties\/123|chickpea:organization/);
+    assert.doesNotMatch(serializedViews, /ca_analytics_[ab]|properties\/123|chickpea:organization/);
     assert.match(serializedViews, /property_primary/);
     assert.match(serializedViews, /Website — Acme/);
-  } finally {
-    config.close();
-    settings.close();
-  }
-});
-
-test('reattaching a managed account restores the Agent frozen ceiling after account widening', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
-  const settings = new SqliteSettingsStore(':memory:');
-  const provider: ManagedConnectionProvider = {
-    id: 'composio',
-    async validate() {},
-    async execute() { return { data: { ok: true } }; },
-    async revoke() {},
-  };
-  const service = new ConnectionAccountService({
-    config,
-    settings,
-    managedProviders: createManagedConnectionProviderRegistry([provider]),
-    randomId: () => 'reattach_ceiling',
-  });
-  const propertyA = { handle: 'property_a', providerRef: 'properties/100', label: 'Property A' };
-  const propertyB = { handle: 'property_b', providerRef: 'properties/200', label: 'Property B' };
-  try {
-    await config.createAgent({
-      id: 'agent_analytics', name: 'Analytics', instructions: 'Read analytics.', enabled: true,
-      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
-      skills: [], mcpServers: [], apiConnections: [], repositories: [],
-    });
-    await config.ensureWorkspaceInstallation({
-      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_analytics',
-    });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'team',
-      providerId: 'google', label: 'Analytics',
-      policy: {
-        kind: 'managed', adapterId: 'composio', toolkit: 'google_analytics',
-        principalRef: 'chickpea:organization:T_MANAGED', accountRef: 'ca_analytics',
-        allowedCapabilities: ['analytics.reports.run'],
-        resourceConstraints: { propertyIds: [propertyA] },
-      },
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_analytics', connectionAccountId: account.id,
-      allowedCapabilities: ['analytics.reports.run'],
-      resourceConstraints: { propertyIds: [propertyA.handle] },
-    });
-    await service.detach({
-      principal: principal(), agentId: 'agent_analytics', connectionAccountId: account.id,
-    });
-    if (account.policy.kind !== 'managed') assert.fail('expected a managed account');
-    await config.putConnectionAccount({
-      ...account,
-      policy: {
-        ...account.policy,
-        allowedCapabilities: ['analytics.reports.run', 'analytics.metadata.get'],
-        resourceConstraints: { propertyIds: [propertyA, propertyB] },
-      },
-    }, account.revision);
-
-    const restored = await service.attach({
-      principal: principal(), agentId: 'agent_analytics', connectionAccountId: account.id,
-    });
-    assert.deepEqual(restored.allowedCapabilities, ['analytics.reports.run']);
-    assert.deepEqual(restored.resourceConstraints, { propertyIds: [propertyA.handle] });
-    const [effective] = await resolveEffectiveConnectionAccounts({
-      config, workspaceId: 'T_MANAGED', agentId: 'agent_analytics',
-      actorMembershipId: 'membership_alice',
-    });
-    assert.equal(effective?.policy.kind, 'managed');
-    if (effective?.policy.kind !== 'managed') assert.fail('expected a managed policy');
-    assert.deepEqual(effective.policy.allowedCapabilities, ['analytics.reports.run']);
-    assert.deepEqual(effective.policy.resourceConstraints, { propertyIds: [propertyA] });
   } finally {
     config.close();
     settings.close();
@@ -1489,13 +1420,10 @@ test('replayed expiry handling finishes pausing schedules after a partial first 
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_mail',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
-      providerId: 'google', label: 'Work Gmail', policy: MANAGED_POLICY,
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_mail', connectionAccountId: account.id,
-      allowedCapabilities: ['gmail.messages.search'],
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_mail', workspaceId: 'T_MANAGED',
+      ownerKind: 'member', providerId: 'google', label: 'Work Gmail',
+      policy: MANAGED_POLICY, allowedCapabilities: ['gmail.messages.search'],
     });
     await config.putAgentScheduleReference({
       scheduleId: 'schedule_replay', agentId: 'agent_mail', workspaceId: 'T_MANAGED',
@@ -1545,16 +1473,14 @@ test('provider reconciliation fails closed, pauses schedules, and restores only 
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_mail_reconcile',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_mail_reconcile',
+      workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Work Gmail', policy: {
         ...MANAGED_POLICY,
         providerGeneration: 4,
         providerLineage: 'a'.repeat(24),
       },
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_mail_reconcile', connectionAccountId: account.id,
       allowedCapabilities: ['gmail.messages.search'],
     });
     const blocker = await config.putConnectionAccount({
@@ -1655,43 +1581,13 @@ test('provider reconciliation fails closed, pauses schedules, and restores only 
         scheduleId === 'schedule_preexisting_attention')?.connectionPauseAccountIds,
       undefined,
     );
-    const putSchedule = config.putAgentScheduleReference.bind(config);
-    let remainingScheduleResumeFailures = 3;
-    config.putAgentScheduleReference = (input, expectedRevision) => {
-      if (remainingScheduleResumeFailures > 0 &&
-          input.scheduleId === 'schedule_provider_reconcile' &&
-          input.state === 'active') {
-        remainingScheduleResumeFailures -= 1;
-        throw new Error('simulated schedule revision conflict');
-      }
-      return putSchedule(input, expectedRevision);
-    };
-    await service.attach({
-      principal: principal(), agentId: 'agent_mail_reconcile',
-      connectionAccountId: blocker.id, allowedCapabilities: [],
-    });
-    assert.equal(
-      (await config.listAgentScheduleReferences('agent_mail_reconcile'))
-        .find(({ scheduleId }) => scheduleId === 'schedule_provider_reconcile')?.state,
-      'needs_attention',
-      'two revision races defer resume without rolling back the valid binding',
-    );
+    await config.putAgentConnectionBinding({ ...blockerBinding, enabled: true });
     let repeatedInspections = 0;
     assert.deepEqual(await reconcileManagedProviderAccounts(config, {
       adapterId: 'composio', generation: 5, lineage: 'b'.repeat(24),
       inspect: async () => { repeatedInspections += 1; return 'match'; },
-    }), { restored: 0, needsAttention: 0, retryable: 1 });
-    assert.equal(repeatedInspections, 0, 'an already reconciled account must be skipped');
-    const conflicted = (await config.listAgentScheduleReferences('agent_mail_reconcile'))
-      .find(({ scheduleId }) => scheduleId === 'schedule_provider_reconcile')!;
-    assert.equal(conflicted.state, 'needs_attention');
-    assert.deepEqual(conflicted.connectionPauseAccountIds, [blocker.id]);
-    config.putAgentScheduleReference = putSchedule;
-    assert.deepEqual(await reconcileManagedProviderAccounts(config, {
-      adapterId: 'composio', generation: 5, lineage: 'b'.repeat(24),
-      inspect: async () => { repeatedInspections += 1; return 'match'; },
     }), { restored: 0, needsAttention: 0, retryable: 0 });
-    assert.equal(repeatedInspections, 0, 'schedule retries must not repeat provider inspection');
+    assert.equal(repeatedInspections, 0, 'an already reconciled account must be skipped');
     assert.equal(
       (await config.listAgentScheduleReferences('agent_mail_reconcile'))
         .find(({ scheduleId }) => scheduleId === 'schedule_provider_reconcile')?.state,
@@ -1742,17 +1638,15 @@ test('an archived Agent restores its schedules across a managed provider outage'
       workspaceId: 'T_MANAGED', transportMode: 'direct',
       defaultAgentId: 'agent_archive_fallback',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_archive_outage',
+      workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Archived Gmail', policy: {
         ...MANAGED_POLICY,
         providerGeneration: 1,
         providerLineage: 'a'.repeat(24),
       },
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_archive_outage',
-      connectionAccountId: account.id, allowedCapabilities: ['gmail.messages.search'],
+      allowedCapabilities: ['gmail.messages.search'],
     });
     await config.putAgentScheduleReference({
       scheduleId: 'schedule_archive_outage', agentId: 'agent_archive_outage',
@@ -1866,8 +1760,9 @@ test('provider reconciliation batches accounts and skips completed work on retry
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_reconcile_batch',
     });
-    const first = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account: first } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_reconcile_batch',
+      workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'First Gmail', policy: {
         ...MANAGED_POLICY,
         providerGeneration: 1,
@@ -1952,8 +1847,9 @@ test('provider reconciliation treats account revision races as retryable work', 
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_revision_race',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_revision_race',
+      workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Racing Gmail', policy: {
         ...MANAGED_POLICY,
         providerGeneration: 1,
@@ -2059,13 +1955,10 @@ test('legacy lineage is adopted only after successful concurrent execution', asy
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_legacy_lineage',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
-      providerId: 'google', label: 'Legacy Gmail', policy: MANAGED_POLICY,
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_legacy_lineage', connectionAccountId: account.id,
-      allowedCapabilities: ['gmail.messages.search'],
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_legacy_lineage', workspaceId: 'T_MANAGED',
+      ownerKind: 'member', providerId: 'google', label: 'Legacy Gmail',
+      policy: MANAGED_POLICY, allowedCapabilities: ['gmail.messages.search'],
     });
     validateCalls = 0;
 
@@ -2162,16 +2055,14 @@ test('execution blocks stale provider lineage before remote account validation o
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_stale_lineage',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_stale_lineage',
+      workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Stale Gmail', policy: {
         ...MANAGED_POLICY,
         providerGeneration: 1,
         providerLineage: 'a'.repeat(24),
       },
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_stale_lineage', connectionAccountId: account.id,
       allowedCapabilities: ['gmail.messages.search'],
     });
     await config.putAgentScheduleReference({
@@ -2241,17 +2132,15 @@ test('an unreadable deployment generation fails closed without demoting connecte
       workspaceId: 'T_MANAGED', transportMode: 'direct',
       defaultAgentId: 'agent_unreadable_generation',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_unreadable_generation',
+      workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Work Gmail', policy: {
         ...MANAGED_POLICY,
         providerGeneration: 2,
         providerLineage: 'b'.repeat(24),
       },
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_unreadable_generation',
-      connectionAccountId: account.id, allowedCapabilities: ['gmail.messages.search'],
+      allowedCapabilities: ['gmail.messages.search'],
     });
     await config.putAgentScheduleReference({
       scheduleId: 'schedule_unreadable_generation', agentId: 'agent_unreadable_generation',
@@ -2313,17 +2202,15 @@ test('a transient provider execution failure does not demote a healthy local acc
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_transient_preflight',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_transient_preflight',
+      workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Work Gmail', policy: {
         ...MANAGED_POLICY,
         providerGeneration: 3,
         providerLineage: 'c'.repeat(24),
       },
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_transient_preflight',
-      connectionAccountId: account.id, allowedCapabilities: ['gmail.messages.search'],
+      allowedCapabilities: ['gmail.messages.search'],
     });
     transient = true;
 
@@ -2367,15 +2254,12 @@ test('an execution-time authorization failure demotes the account and pauses sch
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_mail',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
-      providerId: 'google', label: 'Work Gmail', policy: MANAGED_POLICY,
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_mail', workspaceId: 'T_MANAGED',
+      ownerKind: 'member', providerId: 'google', label: 'Work Gmail',
+      policy: MANAGED_POLICY, allowedCapabilities: ['gmail.messages.search'],
     });
     assert.equal(account.revision, 1, 'managed import must be one atomic account write');
-    await service.attach({
-      principal: principal(), agentId: 'agent_mail', connectionAccountId: account.id,
-      allowedCapabilities: ['gmail.messages.search'],
-    });
     await config.putAgentScheduleReference({
       scheduleId: 'schedule_runtime_expiry', agentId: 'agent_mail', workspaceId: 'T_MANAGED',
       channelId: 'C_MAIL', createdByMembershipId: 'membership_alice',
@@ -2445,13 +2329,10 @@ test('an expiry demotion store failure preserves the actionable authorization er
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_mail',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
-      providerId: 'google', label: 'Work Gmail', policy: MANAGED_POLICY,
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_mail', connectionAccountId: account.id,
-      allowedCapabilities: ['gmail.messages.search'],
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_mail', workspaceId: 'T_MANAGED',
+      ownerKind: 'member', providerId: 'google', label: 'Work Gmail',
+      policy: MANAGED_POLICY, allowedCapabilities: ['gmail.messages.search'],
     });
     t.mock.method(config, 'putConnectionAccount', async () => {
       throw new Error('transient durable store failure');
@@ -2500,8 +2381,9 @@ test('managed provider validation failure leaves no persisted account', async ()
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_mail',
     });
     await assert.rejects(
-      service.create({
-        principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+      service.createForAgent({
+        principal: principal(), agentId: 'agent_mail',
+        workspaceId: 'T_MANAGED', ownerKind: 'member',
         providerId: 'google', label: 'Invalid Gmail', policy: MANAGED_POLICY,
       }),
       /managed account validation failed/,
@@ -2542,13 +2424,10 @@ test('failed managed revocation stays fail closed and pauses dependent schedules
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_mail',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
-      providerId: 'google', label: 'Work Gmail', policy: MANAGED_POLICY,
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_mail', connectionAccountId: account.id,
-      allowedCapabilities: ['gmail.messages.search'],
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_mail', workspaceId: 'T_MANAGED',
+      ownerKind: 'member', providerId: 'google', label: 'Work Gmail',
+      policy: MANAGED_POLICY, allowedCapabilities: ['gmail.messages.search'],
     });
     await config.putAgentScheduleReference({
       scheduleId: 'schedule_mail', agentId: 'agent_mail', workspaceId: 'T_MANAGED',
@@ -2590,6 +2469,240 @@ test('failed managed revocation stays fail closed and pauses dependent schedules
   }
 });
 
+test('Agent deletion keeps ownership records when provider cleanup fails', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([{
+      id: 'composio',
+      async validate() {},
+      async execute() { return { data: {} }; },
+      async revoke() { throw new Error('provider cleanup failed'); },
+    }]),
+    randomId: (() => { let id = 0; return () => `delete_failure_${++id}`; })(),
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_fallback', name: 'Fallback', instructions: 'Stay available.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const agent = await config.createAgent({
+      id: 'agent_delete_failure', name: 'Delete failure', instructions: 'Own Gmail.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_fallback',
+    });
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: agent.id, workspaceId: 'T_MANAGED',
+      ownerKind: 'member', providerId: 'google', label: 'Deletion Gmail',
+      policy: { ...MANAGED_POLICY, accountRef: 'ca_delete_failure' },
+      allowedCapabilities: ['gmail.messages.search'],
+    });
+
+    await assert.rejects(
+      service.prepareAgentDeletion({
+        principal: principal(), agentId: agent.id, expectedRevision: agent.revision,
+      }),
+      /provider cleanup failed/,
+    );
+    assert.equal((await config.getAgent(agent.id)).id, agent.id);
+    assert.equal(
+      (await config.getAgentConnectionBindingForAccount(account.id))?.agentId,
+      agent.id,
+    );
+    assert.equal(
+      (await config.listConnectionAccounts('T_MANAGED')).find(({ id }) => id === account.id)
+        ?.lifecycle,
+      'needs_attention',
+    );
+    await assert.rejects(
+      () => config.deleteAgent(agent.id, agent.revision),
+      AgentStillReferencedError,
+    );
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('Agent deletion validates its revision before revoking any owned connection', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let revokeCalls = 0;
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([{
+      id: 'composio',
+      async validate() {},
+      async execute() { return { data: {} }; },
+      async revoke() { revokeCalls += 1; },
+    }]),
+    randomId: () => 'delete_stale',
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_fallback', name: 'Fallback', instructions: 'Stay available.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const inspected = await config.createAgent({
+      id: 'agent_delete_stale', name: 'Delete stale', instructions: 'Own Gmail.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_fallback',
+    });
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: inspected.id, workspaceId: 'T_MANAGED',
+      ownerKind: 'member', providerId: 'google', label: 'Deletion Gmail',
+      policy: { ...MANAGED_POLICY, accountRef: 'ca_delete_stale' },
+      allowedCapabilities: ['gmail.messages.search'],
+    });
+    const current = await config.updateAgent(
+      inspected.id,
+      { description: 'Changed after deletion was proposed.' },
+      inspected.revision,
+    );
+
+    await assert.rejects(
+      service.prepareAgentDeletion({
+        principal: principal(), agentId: inspected.id, expectedRevision: inspected.revision,
+      }),
+      AgentRevisionConflictError,
+    );
+    assert.equal(revokeCalls, 0);
+    assert.equal(
+      (await config.listConnectionAccounts('T_MANAGED')).find(({ id }) => id === account.id)
+        ?.lifecycle,
+      'ready',
+    );
+    assert.equal((await config.getAgent(inspected.id)).revision, current.revision);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('an Agent editor can delete accounts authorized by another member of that Agent', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let revokeCalls = 0;
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([{
+      id: 'composio',
+      async validate() {},
+      async execute() { return { data: {} }; },
+      async revoke() { revokeCalls += 1; },
+    }]),
+    randomId: () => 'delete_colleague',
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_fallback', name: 'Fallback', instructions: 'Stay available.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const agent = await config.createAgent({
+      id: 'agent_delete_colleague', name: 'Shared Agent', instructions: 'Own Gmail.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'all_workspace_members',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_fallback',
+    });
+    const { account } = await service.createForAgent({
+      principal: principal('membership_bob'), agentId: agent.id, workspaceId: 'T_MANAGED',
+      ownerKind: 'member', providerId: 'google', label: 'Bob Gmail',
+      policy: {
+        ...MANAGED_POLICY,
+        principalRef: 'chickpea:membership:membership_bob',
+        accountRef: 'ca_delete_colleague',
+      },
+      allowedCapabilities: ['gmail.messages.search'],
+    });
+    const aliceEditor = { ...principal('membership_alice'), role: 'member' as const };
+
+    const revoked = await service.prepareAgentDeletion({
+      principal: aliceEditor,
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+    });
+    assert.deepEqual(revoked.map(({ id, lifecycle }) => ({ id, lifecycle })), [{
+      id: account.id,
+      lifecycle: 'revoked',
+    }]);
+    assert.equal(revokeCalls, 1);
+    assert.equal(await config.deleteAgent(agent.id, agent.revision), true);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('Agent deletion revokes its accounts before removing bindings and the Agent', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let revokeCalls = 0;
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([{
+      id: 'composio',
+      async validate() {},
+      async execute() { return { data: {} }; },
+      async revoke() { revokeCalls += 1; },
+    }]),
+    randomId: (() => { let id = 0; return () => `delete_success_${++id}`; })(),
+  });
+  try {
+    await config.createAgent({
+      id: 'agent_fallback', name: 'Fallback', instructions: 'Stay available.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const agent = await config.createAgent({
+      id: 'agent_delete_success', name: 'Delete success', instructions: 'Own Gmail.', enabled: true,
+      creatorMembershipId: 'membership_alice', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_fallback',
+    });
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: agent.id, workspaceId: 'T_MANAGED',
+      ownerKind: 'member', providerId: 'google', label: 'Deletion Gmail',
+      policy: { ...MANAGED_POLICY, accountRef: 'ca_delete_success' },
+      allowedCapabilities: ['gmail.messages.search'],
+    });
+
+    const revoked = await service.prepareAgentDeletion({
+      principal: principal(),
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+    });
+    assert.deepEqual(revoked.map(({ id, lifecycle }) => ({ id, lifecycle })), [{
+      id: account.id,
+      lifecycle: 'revoked',
+    }]);
+    assert.equal(revokeCalls, 1);
+    assert.equal(await config.deleteAgent(agent.id, agent.revision), true);
+    assert.equal(await config.getAgentConnectionBindingForAccount(account.id), undefined);
+    await assert.rejects(() => config.getAgent(agent.id), UnknownAgentError);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
 test('managed revocation reports a retryable conflict before touching the remote grant', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -2615,13 +2728,10 @@ test('managed revocation reports a retryable conflict before touching the remote
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_revoke_conflict',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
-      providerId: 'google', label: 'Work Gmail', policy: MANAGED_POLICY,
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_revoke_conflict',
-      connectionAccountId: account.id, allowedCapabilities: ['gmail.messages.search'],
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_revoke_conflict', workspaceId: 'T_MANAGED',
+      ownerKind: 'member', providerId: 'google', label: 'Work Gmail',
+      policy: MANAGED_POLICY, allowedCapabilities: ['gmail.messages.search'],
     });
     await config.putAgentScheduleReference({
       scheduleId: 'schedule_revoke_conflict', agentId: 'agent_revoke_conflict',
@@ -2690,8 +2800,9 @@ test('YouTube quota exhaustion blocks the provider before dispatch', async () =>
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGED', transportMode: 'direct', defaultAgentId: 'agent_youtube',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_youtube',
+      workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Chickpea YouTube',
       policy: {
         kind: 'managed', adapterId: 'composio', toolkit: 'youtube',
@@ -2703,9 +2814,6 @@ test('YouTube quota exhaustion blocks the provider before dispatch', async () =>
           }],
         },
       },
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_youtube', connectionAccountId: account.id,
       allowedCapabilities: ['youtube.videos.update'],
       resourceConstraints: { channelIds: ['channel_chickpea'] },
     });
@@ -2800,8 +2908,9 @@ test('pre-dispatch validation releases only provably unused YouTube quota bucket
       workspaceId: 'T_MANAGED', transportMode: 'direct',
       defaultAgentId: 'agent_youtube_release',
     });
-    const account = await service.create({
-      principal: principal(), workspaceId: 'T_MANAGED', ownerKind: 'member',
+    const { account } = await service.createForAgent({
+      principal: principal(), agentId: 'agent_youtube_release',
+      workspaceId: 'T_MANAGED', ownerKind: 'member',
       providerId: 'google', label: 'Chickpea YouTube',
       policy: {
         kind: 'managed', adapterId: 'composio', toolkit: 'youtube',
@@ -2813,10 +2922,6 @@ test('pre-dispatch validation releases only provably unused YouTube quota bucket
           }],
         },
       },
-    });
-    await service.attach({
-      principal: principal(), agentId: 'agent_youtube_release',
-      connectionAccountId: account.id,
       allowedCapabilities: ['youtube.videos.update', 'youtube.videos.upload'],
       resourceConstraints: { channelIds: ['channel_chickpea'] },
     });

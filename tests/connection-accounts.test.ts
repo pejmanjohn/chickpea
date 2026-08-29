@@ -10,6 +10,7 @@ import {
   saveApiOAuthClient,
 } from '../src/config/api-oauth.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { ConnectionAccountAlreadyBoundError } from '../src/config/errors.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
   ConnectionAccountService,
@@ -277,7 +278,7 @@ test('active connection actor rejects stale workspace, access, and exact identit
   }), false);
 });
 
-test('one team account binds to two Agents without copying its credential', async () => {
+test('a connection account cannot be bound to a second Agent', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
@@ -294,8 +295,9 @@ test('one team account binds to two Agents without copying its credential', asyn
       transportMode: 'direct',
       defaultAgentId: 'agent_support',
     });
-    const account = await service.create({
+    const { account, binding } = await service.createForAgent({
       principal: principal('membership_creator'),
+      agentId: 'agent_support',
       workspaceId: 'T_CONNECTIONS',
       ownerKind: 'team',
       providerId: 'zendesk',
@@ -311,50 +313,78 @@ test('one team account binds to two Agents without copying its credential', asyn
       },
       credential: 'shared-token',
     });
-    await service.attach({
-      principal: principal('membership_creator'),
-      agentId: 'agent_support',
-      connectionAccountId: account.id,
-    });
-    await service.attach({
-      principal: principal('membership_creator'),
-      agentId: 'agent_success',
-      connectionAccountId: account.id,
-    });
-    for (const [scheduleId, agentId] of [
-      ['schedule_support', 'agent_support'],
-      ['schedule_success', 'agent_success'],
-    ] as const) {
-      await config.putAgentScheduleReference({
-        scheduleId, agentId, workspaceId: 'T_CONNECTIONS', channelId: 'C_SUPPORT',
-        createdByMembershipId: 'membership_creator', runsAsMembershipId: 'membership_creator',
-        authorityReceiptId: `authority_${scheduleId}`,
-        requiredConnectionAccountIds: [account.id], state: 'active',
-      });
-    }
-    await service.detach({
-      principal: principal('membership_creator'),
-      agentId: 'agent_support',
-      connectionAccountId: account.id,
-    });
+    assert.equal(binding.agentId, 'agent_support');
+    await assert.rejects(
+      config.putAgentConnectionBinding({
+        agentId: 'agent_success',
+        connectionAccountId: account.id,
+        providerId: account.providerId,
+        allowedCapabilities: [],
+        enabled: true,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ConnectionAccountAlreadyBoundError);
+        assert.equal(error.accountId, account.id);
+        assert.equal(error.agentId, 'agent_support');
+        return true;
+      },
+    );
 
     assert.equal(
       await resolveConnectionAccountSecret({ secretRefId: account.secretRefId }, undefined, settings),
       'shared-token',
     );
     assert.equal((await config.listConnectionAccounts('T_CONNECTIONS')).length, 1);
-    assert.equal((await config.listAgentConnectionBindings('agent_support'))[0]?.enabled, false);
-    assert.equal((await config.listAgentConnectionBindings('agent_success'))[0]?.enabled, true);
-    assert.deepEqual(
-      (await config.listAgentScheduleReferences('agent_support'))[0]?.requiredConnectionAccountIds,
-      [],
-    );
-    assert.deepEqual(
-      (await config.listAgentScheduleReferences('agent_success'))[0]?.requiredConnectionAccountIds,
-      [account.id],
-      'detaching a shared Team connection must not change another Agent schedule',
-    );
+    assert.equal((await config.listAgentConnectionBindings('agent_support'))[0]?.enabled, true);
+    assert.deepEqual(await config.listAgentConnectionBindings('agent_success'), []);
     assert.doesNotMatch(JSON.stringify(await service.listViews('T_CONNECTIONS')), /shared-token|secret_id/i);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+test('Agent-scoped creation rolls back its account, binding, and staged secret together', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let nextId = 0;
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    randomId: () => `atomic${++nextId}`,
+  });
+  try {
+    await config.createAgent(agent('agent_support', 'membership_creator'));
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_CONNECTIONS',
+      transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    await assert.rejects(
+      service.createForAgent({
+        principal: principal('membership_creator'),
+        agentId: 'agent_support',
+        workspaceId: 'T_OTHER',
+        ownerKind: 'team',
+        providerId: 'zendesk',
+        label: 'Wrong workspace',
+        policy: {
+          kind: 'api',
+          allowedHosts: ['acme.zendesk.com'],
+          pathPrefixes: ['/api/v2/'],
+          headerName: 'Authorization',
+          allowedMethods: ['GET'],
+          authMode: 'credential',
+        },
+        credential: 'must-be-cleaned',
+      }),
+      /belongs to workspace T_OTHER, not T_CONNECTIONS/,
+    );
+    assert.deepEqual(await config.listConnectionAccounts('T_OTHER'), []);
+    assert.equal(
+      await resolveConnectionAccountSecret({ secretRefId: 'secret_atomic2' }, undefined, settings),
+      undefined,
+    );
   } finally {
     config.close();
     settings.close();
@@ -373,8 +403,9 @@ test('personal accounts resolve only for their owner and language selects a uniq
       transportMode: 'direct',
       defaultAgentId: 'agent_mail',
     });
-    const work = await service.create({
+    const { account: work } = await service.createForAgent({
       principal: principal('membership_alice'),
+      agentId: 'agent_mail',
       workspaceId: 'T_CONNECTIONS',
       ownerKind: 'member',
       providerId: 'google',
@@ -383,8 +414,9 @@ test('personal accounts resolve only for their owner and language selects a uniq
       policy: gmailPolicy(),
       credential: 'work-token',
     });
-    const personal = await service.create({
+    await service.createForAgent({
       principal: principal('membership_alice'),
+      agentId: 'agent_mail',
       workspaceId: 'T_CONNECTIONS',
       ownerKind: 'member',
       providerId: 'google',
@@ -393,14 +425,6 @@ test('personal accounts resolve only for their owner and language selects a uniq
       policy: gmailPolicy(),
       credential: 'personal-token',
     });
-    for (const account of [work, personal]) {
-      await service.attach({
-        principal: principal('membership_alice'),
-        agentId: 'agent_mail',
-        connectionAccountId: account.id,
-      });
-    }
-
     const alice = await resolveEffectiveConnectionAccounts({
       config,
       workspaceId: 'T_CONNECTIONS',
@@ -731,7 +755,7 @@ test('broad and service-specific native Google accounts retain their legacy grou
   assert.deepEqual(resolution.ambiguous, []);
 });
 
-test('a member-owned binding grants a provider capability without exposing another member account', async () => {
+test('a member-owned binding never substitutes another member unbound account', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
@@ -741,13 +765,15 @@ test('a member-owned binding grants a provider capability without exposing anoth
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_CONNECTIONS', transportMode: 'direct', defaultAgentId: 'agent_mail',
     });
-    const aliceTemplate = await service.create({
-      principal: principal('membership_alice'), workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
+    await service.createForAgent({
+      principal: principal('membership_alice'), agentId: 'agent_mail',
+      workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
       providerId: 'google', label: 'Alice private Gmail', identity: { accountName: 'alice@acme.test' },
       policy: gmailPolicy(), credential: 'alice-token',
     });
-    const bobWork = await service.create({
-      principal: principal('membership_bob'), workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
+    const bobWork = await config.putConnectionAccount({
+      id: 'connection_bob_unbound', workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
+      ownerMembershipId: 'membership_bob', createdByMembershipId: 'membership_bob',
       providerId: 'google', label: 'Work', identity: { accountName: 'bob@acme.test' },
       policy: {
         ...gmailPolicy(),
@@ -759,21 +785,17 @@ test('a member-owned binding grants a provider capability without exposing anoth
           'https://www.googleapis.com/auth/drive',
         ],
       },
-      credential: 'bob-token',
-    });
-    await service.attach({
-      principal: principal('membership_alice'), agentId: 'agent_mail',
-      connectionAccountId: aliceTemplate.id,
-    });
+      secretRefId: 'secret_bob_unbound', lifecycle: 'ready',
+    }, 0);
 
     const effective = await resolveEffectiveConnectionAccounts({
       config, workspaceId: 'T_CONNECTIONS', agentId: 'agent_mail',
       actorMembershipId: 'membership_bob',
     });
-    assert.deepEqual(effective.map(({ account }) => account.id), [bobWork.id]);
-    assert.deepEqual(effective[0]?.policy, gmailPolicy());
+    assert.equal(await config.getAgentConnectionBindingForAccount(bobWork.id), undefined);
+    assert.deepEqual(effective, []);
     assert.doesNotMatch(JSON.stringify(effective), /alice@acme|alice-token/i);
-    assert.doesNotMatch(JSON.stringify(effective[0]?.policy), /evil\.example|\/auth\/drive/);
+    assert.doesNotMatch(JSON.stringify(effective), /evil\.example|\/auth\/drive/);
 
     const authorization = await resolvePersonalConnectionAuthorizationOptions({
       config, workspaceId: 'T_CONNECTIONS', agentId: 'agent_mail',
@@ -781,11 +803,7 @@ test('a member-owned binding grants a provider capability without exposing anoth
     });
     assert.equal(authorization.length, 1);
     assert.equal(authorization[0]?.providerId, 'google');
-    assert.deepEqual(authorization[0]?.accounts, [{
-      id: bobWork.id,
-      label: 'Work',
-      lifecycle: 'ready',
-    }]);
+    assert.deepEqual(authorization[0]?.accounts, []);
     assert.doesNotMatch(JSON.stringify(authorization), /Alice private Gmail|alice@acme/i);
 
     let accountReads = 0;
@@ -859,7 +877,7 @@ test('managed personal templates are not advertised before managed authorization
   assert.deepEqual(options, []);
 });
 
-test('managed personal bindings prefer the owner exact account without breaking member substitution', async () => {
+test('managed personal bindings do not substitute another member account', async () => {
   const managedAccount = (
     id: string,
     ownerMembershipId: string,
@@ -922,11 +940,7 @@ test('managed personal bindings prefer the owner exact account without breaking 
     agentId: 'agent_mail',
     actorMembershipId: 'membership_bob',
   });
-  assert.deepEqual(forBob.map(({ account }) => account.id), [bobSubstitute.id]);
-  const bobPolicy = forBob[0]?.policy;
-  assert.equal(bobPolicy?.kind, 'managed');
-  if (bobPolicy?.kind !== 'managed') assert.fail('expected a managed policy');
-  assert.deepEqual(bobPolicy.allowedCapabilities, ['gmail.messages.search']);
+  assert.deepEqual(forBob, []);
 });
 
 test('a member exact managed binding wins over another member template in either row order', async () => {
@@ -991,7 +1005,7 @@ test('a member exact managed binding wins over another member template in either
   }
 });
 
-test('foreign managed templates collapse to their capability intersection in either row order', async () => {
+test('foreign managed templates never project an unbound member account', async () => {
   const account = (
     id: string,
     ownerMembershipId: string,
@@ -1058,15 +1072,11 @@ test('foreign managed templates collapse to their capability intersection in eit
       agentId: 'agent_mail',
       actorMembershipId: 'membership_bob',
     });
-    assert.deepEqual(effective.map(({ account: current }) => current.id), [bob.id]);
-    const policy = effective[0]?.policy;
-    assert.equal(policy?.kind, 'managed');
-    if (policy?.kind !== 'managed') assert.fail('expected a managed policy');
-    assert.deepEqual(policy.allowedCapabilities, ['gmail.messages.search']);
+    assert.deepEqual(effective, []);
   }
 });
 
-test('foreign managed templates collapse to their resource intersection in either row order', async () => {
+test('foreign managed resource templates never project an unbound member account', async () => {
   const resource = (handle: string, providerRef: string) => ({
     handle,
     providerRef,
@@ -1146,13 +1156,7 @@ test('foreign managed templates collapse to their resource intersection in eithe
       agentId: 'agent_analytics',
       actorMembershipId: 'membership_bob',
     });
-    assert.deepEqual(effective.map(({ account: current }) => current.id), [bob.id]);
-    const policy = effective[0]?.policy;
-    assert.equal(policy?.kind, 'managed');
-    if (policy?.kind !== 'managed') assert.fail('expected a managed policy');
-    assert.deepEqual(policy.resourceConstraints?.propertyIds?.map(({ handle }) => handle), [
-      'property_shared',
-    ]);
+    assert.deepEqual(effective, []);
   }
 });
 
@@ -1178,12 +1182,14 @@ test('personal MCP accounts cannot substitute a different credential header poli
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_CONNECTIONS', transportMode: 'direct', defaultAgentId: 'agent_errors',
     });
-    const template = await service.create({
-      principal: principal('membership_alice'), workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
+    await service.createForAgent({
+      principal: principal('membership_alice'), agentId: 'agent_errors',
+      workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
       providerId: 'sentry', label: 'Alice Sentry', policy: templatePolicy, credential: 'alice-token',
     });
-    await service.create({
-      principal: principal('membership_bob'), workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
+    await config.putConnectionAccount({
+      id: 'connection_bob_sentry_unbound', workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
+      ownerMembershipId: 'membership_bob', createdByMembershipId: 'membership_bob',
       providerId: 'sentry', label: 'Bob altered Sentry',
       policy: {
         ...templatePolicy,
@@ -1191,12 +1197,8 @@ test('personal MCP accounts cannot substitute a different credential header poli
         credentialHeaderName: 'X-Unsafe-Key',
         credentialValuePrefix: 'Token ',
       },
-      credential: 'bob-token',
-    });
-    await service.attach({
-      principal: principal('membership_alice'), agentId: 'agent_errors',
-      connectionAccountId: template.id,
-    });
+      secretRefId: 'secret_bob_sentry_unbound', lifecycle: 'ready',
+    }, 0);
 
     const effective = await resolveEffectiveConnectionAccounts({
       config, workspaceId: 'T_CONNECTIONS', agentId: 'agent_errors',
@@ -1219,15 +1221,13 @@ test('a retry finishes terminal schedule cleanup after revocation already tombst
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_CONNECTIONS', transportMode: 'direct', defaultAgentId: 'agent_support',
     });
-    const account = await service.create({
-      principal: principal('membership_creator'), workspaceId: 'T_CONNECTIONS', ownerKind: 'team',
+    const { account } = await service.createForAgent({
+      principal: principal('membership_creator'), agentId: 'agent_support',
+      workspaceId: 'T_CONNECTIONS', ownerKind: 'team',
       providerId: 'zendesk', label: 'Zendesk', policy: {
         kind: 'api', allowedHosts: ['acme.zendesk.com'], pathPrefixes: ['/api/'],
         headerName: 'Authorization', allowedMethods: ['GET'], authMode: 'credential',
       }, credential: 'token',
-    });
-    await service.attach({
-      principal: principal('membership_creator'), agentId: 'agent_support', connectionAccountId: account.id,
     });
     await config.putAgentScheduleReference({
       scheduleId: 'schedule_triage', agentId: 'agent_support', workspaceId: 'T_CONNECTIONS',
@@ -1268,65 +1268,6 @@ test('a retry finishes terminal schedule cleanup after revocation already tombst
     assert.equal(schedule?.state, 'needs_attention');
     assert.deepEqual(schedule?.requiredConnectionAccountIds, []);
     assert.equal(schedule?.connectionPauseAccountIds, undefined);
-  } finally {
-    config.close();
-    settings.close();
-  }
-});
-
-test('attaching an account refreshes schedule revisions before retrying a resume conflict', async () => {
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
-  const settings = new SqliteSettingsStore(':memory:');
-  const service = new ConnectionAccountService({
-    config, settings, randomId: () => 'attach_resume_conflict',
-  });
-  try {
-    await config.createAgent(agent('agent_resume_conflict', 'membership_creator'));
-    await config.ensureWorkspaceInstallation({
-      workspaceId: 'T_CONNECTIONS', transportMode: 'direct',
-      defaultAgentId: 'agent_resume_conflict',
-    });
-    const account = await service.create({
-      principal: principal('membership_creator'), workspaceId: 'T_CONNECTIONS',
-      ownerKind: 'team', providerId: 'zendesk', label: 'Zendesk', policy: {
-        kind: 'api', allowedHosts: ['acme.zendesk.com'], pathPrefixes: ['/api/'],
-        headerName: 'Authorization', allowedMethods: ['GET'], authMode: 'credential',
-      }, credential: 'token',
-    });
-    await config.putAgentConnectionBinding({
-      agentId: 'agent_resume_conflict', connectionAccountId: account.id,
-      providerId: account.providerId, allowedCapabilities: [], enabled: false,
-    });
-    await config.putAgentScheduleReference({
-      scheduleId: 'schedule_resume_conflict', agentId: 'agent_resume_conflict',
-      workspaceId: 'T_CONNECTIONS', channelId: 'C_SUPPORT',
-      createdByMembershipId: 'membership_creator', runsAsMembershipId: 'membership_creator',
-      authorityReceiptId: 'authority_resume_conflict',
-      requiredConnectionAccountIds: [account.id],
-      connectionPauseAccountIds: [account.id], state: 'needs_attention',
-    });
-    const putSchedule = config.putAgentScheduleReference.bind(config);
-    let conflictInjected = false;
-    config.putAgentScheduleReference = async (input, expectedRevision) => {
-      if (!conflictInjected && input.scheduleId === 'schedule_resume_conflict' &&
-          input.state === 'active') {
-        conflictInjected = true;
-        const current = (await config.listAgentScheduleReferences('agent_resume_conflict'))[0]!;
-        await putSchedule(current, current.revision);
-        throw new Error('simulated concurrent schedule revision');
-      }
-      return putSchedule(input, expectedRevision);
-    };
-
-    await service.attach({
-      principal: principal('membership_creator'), agentId: 'agent_resume_conflict',
-      connectionAccountId: account.id,
-    });
-
-    assert.equal(conflictInjected, true);
-    const resumed = (await config.listAgentScheduleReferences('agent_resume_conflict'))[0]!;
-    assert.equal(resumed.state, 'active');
-    assert.equal(resumed.connectionPauseAccountIds, undefined);
   } finally {
     config.close();
     settings.close();
@@ -1497,12 +1438,10 @@ test('missing actor account starts one account-owned OAuth flow from the Agent p
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_CONNECTIONS', transportMode: 'direct', defaultAgentId: 'agent_mail',
     });
-    const template = await service.create({
-      principal: principal('membership_alice'), workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
+    const { account: template } = await service.createForAgent({
+      principal: principal('membership_alice'), agentId: 'agent_mail',
+      workspaceId: 'T_CONNECTIONS', ownerKind: 'member',
       providerId: 'google', label: 'Alice Work', policy: gmailPolicy(), credential: 'seed-token',
-    });
-    await service.attach({
-      principal: principal('membership_alice'), agentId: 'agent_mail', connectionAccountId: template.id,
     });
     await saveApiOAuthClient(connectionAccountOAuthRef(template.id), {
       provider: 'google', clientId: 'deployment-client', clientSecret: 'deployment-secret',
@@ -1532,6 +1471,10 @@ test('missing actor account starts one account-owned OAuth flow from the Agent p
       .find((account) => account.id === 'connection_bobwork');
     assert.equal(actorAccount?.ownerMembershipId, 'membership_bob');
     assert.equal(actorAccount?.lifecycle, 'pending');
+    assert.equal(
+      (await config.getAgentConnectionBindingForAccount('connection_bobwork'))?.agentId,
+      'agent_mail',
+    );
     assert.match(
       actorAccount?.policy.oauthAttemptId ?? '',
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,

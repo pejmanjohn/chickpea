@@ -375,7 +375,7 @@ test('failed MCP exchange retains the initiating Agent callback context', async 
   }
 });
 
-test('a superseded reusable MCP OAuth attempt cannot exchange or replace newer state', async () => {
+test('a superseded Agent-owned MCP OAuth attempt cannot exchange or replace newer state', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const oauth = fakeOAuthServer();
   let currentRevision = 1;
@@ -464,7 +464,7 @@ test('an older MCP OAuth start cannot replace a newer pending authorization', as
   }
 });
 
-test('a slower reusable MCP OAuth callback cannot overwrite newer credentials', async () => {
+test('a slower Agent-owned MCP OAuth callback cannot overwrite newer credentials', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const oauth = fakeOAuthServer();
   const olderAttemptId = '11111111-1111-4111-8111-111111111111';

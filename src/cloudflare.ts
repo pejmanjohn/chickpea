@@ -14,7 +14,9 @@ import {
   AgentStillAssignedError,
   AgentStillReferencedError,
   ChannelRevisionConflictError,
+  ConnectionAccountAlreadyBoundError,
   ConnectionAccountRevisionConflictError,
+  ManagedRemoteAccountAlreadyUsedError,
   ReservedAgentIdentityError,
   UnknownAgentError,
   WorkspaceModelDefaultRevisionConflictError,
@@ -84,6 +86,8 @@ import type {
   AgentChannelGrantInput,
   AgentConnectionBinding,
   AgentConnectionBindingInput,
+  AgentOwnedConnection,
+  AgentOwnedConnectionInput,
   AgentScheduleReference,
   AgentScheduleReferenceInput,
   AgentSnapshot,
@@ -1012,10 +1016,24 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.putConnectionAccount(input, expectedRevision));
   }
 
+  async configCreateAgentOwnedConnection(
+    input: AgentOwnedConnectionInput,
+  ): Promise<StateRpcResult<AgentOwnedConnection>> {
+    return this.call((stores) => stores.config.createAgentOwnedConnection(input));
+  }
+
   async configListAgentConnectionBindings(
     agentId: string,
   ): Promise<StateRpcResult<AgentConnectionBinding[]>> {
     return this.call((stores) => stores.config.listAgentConnectionBindings(agentId));
+  }
+
+  async configGetAgentConnectionBindingForAccount(
+    connectionAccountId: string,
+  ): Promise<StateRpcResult<AgentConnectionBinding | null>> {
+    return this.call(
+      (stores) => stores.config.getAgentConnectionBindingForAccount(connectionAccountId) ?? null,
+    );
   }
 
   async configPutAgentConnectionBinding(
@@ -1955,6 +1973,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           accountId: err.accountId,
           expectedRevision: String(err.expectedRevision),
           actualRevision: String(err.actualRevision),
+        });
+      }
+      if (err instanceof ConnectionAccountAlreadyBoundError) {
+        return rpcError('connection_account_already_bound', err.message, {
+          accountId: err.accountId,
+          agentId: err.agentId,
+        });
+      }
+      if (err instanceof ManagedRemoteAccountAlreadyUsedError) {
+        return rpcError('managed_remote_account_already_used', err.message, {
+          adapterId: err.adapterId,
+          accountRef: err.accountRef,
         });
       }
       if (err instanceof IdentityStateError) {
