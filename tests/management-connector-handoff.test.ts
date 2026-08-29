@@ -504,17 +504,9 @@ test('Slack management lets a member create an Agent and edit it through its spe
       },
     });
     assert.equal(created.ok, true);
-    const createProposal = (created as { ok: true; result: {
-      outcomes: Array<{ proposalId: string }>;
-    } }).result.outcomes[0]!.proposalId;
-    const confirmedCreate = await invokeSlackWorkspaceManagementTool({
-      signal,
-      identity: f.identity,
-      service: f.service,
-      name: 'confirm_workspace_change',
-      args: { proposalId: createProposal },
-    });
-    assert.equal(confirmedCreate.ok, true);
+    assert.equal((created as { ok: true; result: { outcomes: Array<{
+      disposition: string;
+    }> } }).result.outcomes[0]?.disposition, 'applied');
     let agent = await f.config.getAgent('agent_specialist');
     assert.equal(agent.creatorMembershipId, member.membership.id);
 
@@ -1289,19 +1281,8 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       },
     });
     assert.equal(created.ok, true);
-    const proposedCreateResult = (created as { ok: true; result: {
+    const createdResult = (created as { ok: true; result: {
       operationId: string;
-      outcomes: Array<{ proposalId: string }>;
-    } }).result;
-    const confirmedCreate = await invokeSlackWorkspaceManagementTool({
-      signal: signal(CHICKPEA_AGENT_ID),
-      identity: f.identity,
-      service: f.service,
-      name: 'confirm_workspace_change',
-      args: { proposalId: proposedCreateResult.outcomes[0]!.proposalId },
-    });
-    assert.equal(confirmedCreate.ok, true);
-    const createdResult = (confirmedCreate as { ok: true; result: {
       outcomes: Array<{ handoffUrl?: string }>;
     } }).result;
     assert.equal(
@@ -1313,7 +1294,7 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       identity: f.identity,
       service: f.service,
       name: 'get_operation',
-      args: { operationId: proposedCreateResult.operationId },
+      args: { operationId: createdResult.operationId },
     });
     assert.equal(
       new URL((durableCreate as { ok: true; result: {

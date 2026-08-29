@@ -84,6 +84,8 @@ export type ManagementOperation =
   | (ManagementOperationBase & {
       kind: 'create_agent';
       clientRef?: string;
+      /** Set only after the requester chooses a separate Agent despite a visible identity match. */
+      duplicateResolution?: 'create_distinct';
       agent: ManagementAgentCreateInput;
     })
   | (ManagementOperationBase & {
@@ -518,6 +520,21 @@ export interface ManagementApplyResult {
     skillAction?: SkillActionReceiptMetadata;
   };
 }
+
+export interface ManagementDuplicateIdentityResult {
+  status: 'clarification_required';
+  clarification: {
+    kind: 'duplicate_agent_identity';
+    requested: { name: string; handle: string };
+    matches: Array<{ id: string; name: string; handle: string }>;
+    options: ['use_existing', 'create_distinct'];
+  };
+  presentation: { slack: string };
+}
+
+export type ApplyWorkspaceChangesResult =
+  | ManagementApplyResult
+  | ManagementDuplicateIdentityResult;
 
 export interface SkillImportReceiptMetadata {
   sourceUrl: string;

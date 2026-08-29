@@ -452,6 +452,16 @@ export class AgentPresenceReconciler {
             { retryable: true },
           );
         }
+        const classified = classifyAgentPresenceError(error);
+        if (classified.code === 'handle_collision') {
+          throw new AgentPresenceError('handle_collision', classified.message, {
+            suggestions: alternativeAgentHandles(
+              normalizedHandle,
+              new Set(groups.map((candidate) => candidate.handle)),
+            ),
+            ...(classified.slackCode ? { slackCode: classified.slackCode } : {}),
+          });
+        }
         throw error;
       }
     } else {

@@ -131,6 +131,9 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
             ...(parsed.output.status === undefined ? {} : { status: parsed.output.status }),
           }],
         });
+        if (proposed.status === 'clarification_required') {
+          return managementFailure(c, 'invalid_state');
+        }
         const proposalId = proposed.outcomes[0]?.proposalId;
         if (!proposalId) return managementFailure(c, proposed.outcomes[0]?.code);
         await service.confirmWorkspaceChange({

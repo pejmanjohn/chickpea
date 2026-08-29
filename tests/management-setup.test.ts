@@ -17,12 +17,22 @@ import { formatManagementSetupReceipt } from '../src/management/receipts.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
-import { ManagementError } from '../src/management/types.ts';
+import {
+  ManagementError,
+  type ApplyWorkspaceChangesResult,
+  type ManagementApplyResult,
+} from '../src/management/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const START = 1_800_100_000_000;
 const CAPABILITY = 'c'.repeat(43);
+
+function requireMutationResult(
+  result: ApplyWorkspaceChangesResult,
+): asserts result is ManagementApplyResult {
+  assert.notEqual(result.status, 'clarification_required');
+}
 
 function browserPrincipal(actor: {
   user: { id: string };
@@ -99,6 +109,7 @@ test('the initiating member claims one authenticated browser and completes an ex
         target: { kind: 'api_connection', agentId: 'agent_research', connectionId: 'gmail' },
       }],
     });
+    requireMutationResult(result);
     const outcome = result.outcomes[0]!;
     assert.equal(outcome.disposition, 'setup_required');
     const setupUrl = new URL(outcome.setupUrl!);
@@ -454,6 +465,7 @@ test('stored provider replacement requires confirmation and reissue invalidates 
         target: { kind: 'provider_credential', providerId: 'openai' },
       }],
     });
+    requireMutationResult(proposed);
     assert.equal(proposed.status, 'confirmation_required');
     assert.equal(proposed.outcomes[0]?.setupUrl, undefined);
 
@@ -545,6 +557,7 @@ test('management provider impact includes the Workspace default and inheriting A
         providerId: 'anthropic',
       }],
     });
+    requireMutationResult(proposed);
     assert.equal(proposed.status, 'confirmation_required');
     const proposal = await management.getProposal(proposed.outcomes[0]!.proposalId!);
     assert.match(proposal?.summary ?? '', /workspace_default=affected/);
@@ -589,6 +602,7 @@ test('a provider key is validated in the browser lane and never enters MCP state
         target: { kind: 'provider_credential', providerId: 'openai' },
       }],
     });
+    requireMutationResult(result);
     assert.equal(result.outcomes[0]?.disposition, 'setup_required');
     const setupId = result.outcomes[0]!.setupOperationId!;
     const app = createManagementSetupRoutes({
@@ -674,6 +688,7 @@ test('an older provider setup link cannot overwrite a newer rotation', async () 
           target: { kind: 'provider_credential', providerId: 'openai' },
         }],
       });
+      requireMutationResult(proposed);
       return service.confirmWorkspaceChange({
         context,
         proposalId: proposed.outcomes[0]!.proposalId!,
@@ -748,6 +763,7 @@ test('invalid replacement input is cleared while the prior provider credential s
         target: { kind: 'provider_credential', providerId: 'openai' },
       }],
     });
+    requireMutationResult(proposed);
     const confirmed = await service.confirmWorkspaceChange({
       context,
       proposalId: proposed.outcomes[0]!.proposalId!,

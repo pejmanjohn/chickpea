@@ -97,6 +97,7 @@ import {
 import {
   ChickpeaHandoffRequired,
   ManagementError,
+  type ApplyWorkspaceChangesResult,
   type ApplyWorkspaceChangesInput,
   type ConfirmWorkspaceChangeInput,
   type LiveManagementActor,
@@ -104,6 +105,7 @@ import {
   type ManagementChangeSetPreview,
   type ManagementChangeSetProposalRecord,
   type ChickpeaManagementHandoff,
+  type ManagementDuplicateIdentityResult,
   type ManagementItemOutcome,
   type ImportSkillInput,
   type ImportSkillResult,
@@ -221,6 +223,7 @@ export interface WorkspaceManagementServiceInput {
   publishAgentPresence?: (input: {
     actor: LiveManagementActor;
     agentId: string;
+    inferredHandle: boolean;
   }) => Promise<{ agent: CustomAgentConfig; warning?: string }>;
   publishAgentChannel?: (input: {
     actor: LiveManagementActor;
@@ -359,7 +362,7 @@ export class WorkspaceManagementService {
       );
     }
     const operationId = 'skill-import';
-    const applied = await this.applyWorkspaceChanges({
+    const applied = requireManagementApplyResult(await this.applyWorkspaceChanges({
       context: input.context,
       idempotencyKey: input.idempotencyKey,
       operationId: replayOperationId,
@@ -374,7 +377,7 @@ export class WorkspaceManagementService {
       trustedReversibleOperationIds: [operationId],
       acknowledgementOwner: 'caller',
       receiptMetadata: { skillImport: metadata },
-    });
+    }));
     const outcome = applied.outcomes.find(({ itemId }) => itemId === operationId);
     if (applied.status !== 'completed' || outcome?.disposition !== 'applied') {
       throw new ManagementError(
@@ -509,7 +512,7 @@ export class WorkspaceManagementService {
     operation: Extract<ManagementOperation, { kind: 'update_agent' }>,
     metadata: SkillActionReceiptMetadata,
   ): Promise<ManageAgentSkillResult> {
-    const applied = await this.applyWorkspaceChanges({
+    const applied = requireManagementApplyResult(await this.applyWorkspaceChanges({
       context: input.context,
       idempotencyKey: input.idempotencyKey,
       operationId,
@@ -518,7 +521,7 @@ export class WorkspaceManagementService {
       trustedReversibleOperationIds: [operation.itemId],
       acknowledgementOwner: 'caller',
       receiptMetadata: { skillAction: metadata },
-    });
+    }));
     const outcome = applied.outcomes.find(({ itemId }) => itemId === operation.itemId);
     if (applied.status !== 'completed' || outcome?.disposition !== 'applied') {
       throw new ManagementError(
@@ -1097,11 +1100,18 @@ export class WorkspaceManagementService {
     return preview;
   }
 
-  async applyWorkspaceChanges(input: ApplyWorkspaceChangesInput): Promise<ManagementApplyResult> {
+  async applyWorkspaceChanges(
+    input: ApplyWorkspaceChangesInput,
+  ): Promise<ApplyWorkspaceChangesResult> {
     const actor = await this.requireLiveActor(input.context);
     const requestedOperations = validateManagementOperations(input.operations);
     assertBaseAgentCreationContract(requestedOperations);
     assertStandaloneBaseAgentCreation(requestedOperations);
+    const duplicateIdentity = await this.duplicateAgentIdentityResult(
+      actor,
+      requestedOperations,
+    );
+    if (duplicateIdentity) return duplicateIdentity;
     const operations = validateManagementOperations(
       withTrustedSlackOriginGrant(actor, requestedOperations),
     );
@@ -1880,11 +1890,11 @@ export class WorkspaceManagementService {
           outcome.itemId === confirmedOutcome.itemId ? confirmedOutcome : outcome),
       };
     }
-    const resumed = await this.applyWorkspaceChanges({
+    const resumed = requireManagementApplyResult(await this.applyWorkspaceChanges({
       context,
       idempotencyKey: publicManagementIdempotencyKey(actor, request.idempotencyKey),
       operations: request.operations,
-    });
+    }));
     // Setup capabilities are response-only bearer secrets. Restore the one
     // produced by this confirmation only in the immediate response after the
     // parent request has durably saved its redacted progress/result.
@@ -1913,7 +1923,7 @@ export class WorkspaceManagementService {
       originalRequest.actorUserId === actor.userId &&
       originalRequest.actorMembershipId === actor.membershipId &&
       originalRequest.result?.receiptMetadata?.skillAction?.outcome === 'updated';
-    const result = await this.applyWorkspaceChanges({
+    const result = requireManagementApplyResult(await this.applyWorkspaceChanges({
       context: input.context,
       idempotencyKey: input.idempotencyKey,
       operations: [undo.inverse],
@@ -1923,7 +1933,7 @@ export class WorkspaceManagementService {
             trustedReversibleOperationIds: [undo.inverse.itemId],
           }
         : {}),
-    });
+    }));
     if (result.status === 'completed') {
       await this.stores.management.consumeUndo(input.operationId, this.now());
     }
@@ -2369,6 +2379,59 @@ export class WorkspaceManagementService {
     return actor.actingAgentId && actor.actingAgentId !== CHICKPEA_AGENT_ID
       ? editable.filter(({ id }) => id === actor.actingAgentId)
       : editable;
+  }
+
+  private async duplicateAgentIdentityResult(
+    actor: LiveManagementActor,
+    operations: readonly ManagementOperation[],
+  ): Promise<ManagementDuplicateIdentityResult | undefined> {
+    const operation = operations[0];
+    if (operations.length !== 1 || operation?.kind !== 'create_agent') return undefined;
+    const candidates = (await this.editableAgents(actor))
+      .filter(({ id }) => id !== operation.agent.id)
+      .map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        normalizedName: normalizeAgentIdentityName(agent.name),
+        handle: agent.slackPresence?.normalizedHandle ?? normalizeAgentHandle(agent.name),
+      }));
+    const requestedName = operation.agent.name.trim();
+    const normalizedName = normalizeAgentIdentityName(requestedName);
+    const requestedHandle = normalizeAgentHandle(
+      operation.agent.requestedHandle ?? requestedName,
+    );
+    const handleMatches = candidates.filter(({ handle }) => handle === requestedHandle);
+    if (operation.duplicateResolution === 'create_distinct') {
+      if (handleMatches.length > 0) {
+        throw new ManagementError(
+          'invalid_request',
+          'Choose a unique Slack handle for the distinct Agent.',
+        );
+      }
+      return undefined;
+    }
+    const matches = candidates.filter(({ normalizedName: candidateName, handle }) =>
+      candidateName === normalizedName || handle === requestedHandle);
+    if (matches.length === 0) return undefined;
+    const projected = [...matches]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map(({ id, name, handle }) => ({ id, name, handle }));
+    return {
+      status: 'clarification_required',
+      clarification: {
+        kind: 'duplicate_agent_identity',
+        requested: { name: requestedName, handle: requestedHandle },
+        matches: projected,
+        options: ['use_existing', 'create_distinct'],
+      },
+      presentation: {
+        slack: projected.length === 1
+          ? `An editable Agent already matches this identity: ${
+            escapeSlackControlCharacters(projected[0]!.name)
+          } (@${projected[0]!.handle}). Ask whether to use it or create a distinct Agent.`
+          : `${projected.length} editable Agents already match this identity. Ask which existing Agent to use or whether to create a distinct Agent.`,
+      },
+    };
   }
 
   private async requesterAuthorizedSkillChange(
@@ -3463,7 +3526,11 @@ export class WorkspaceManagementService {
         const intended = prepared.intendedAfter as CustomAgentConfig;
         const { revision: _revision, ...createInput } = intended;
         const created = await this.stores.config.createAgent(createInput);
-        const published = await this.publishCreatedAgent(actor, created);
+        const published = await this.publishCreatedAgent(actor, created, {
+          inferredHandle: operation.agent.requestedHandle === undefined,
+          requestId: mutationId,
+          prepared,
+        });
         return mutationForAgent(
           published.agent,
           prepared.inverse,
@@ -3585,7 +3652,10 @@ export class WorkspaceManagementService {
       const current = await optionalAgent(this.stores.config, agentId);
       const intended = prepared.intendedAfter as CustomAgentConfig;
       if (current && agentCreationMatches(current, intended)) {
-        const published = await this.publishCreatedAgent(actor, current);
+        const published = await this.publishCreatedAgent(actor, current, {
+          inferredHandle: operation.agent.requestedHandle === undefined,
+          prepared,
+        });
         return mutationForAgent(
           published.agent,
           prepared.inverse,
@@ -3642,6 +3712,11 @@ export class WorkspaceManagementService {
   private async publishCreatedAgent(
     actor: LiveManagementActor,
     agent: CustomAgentConfig,
+    options: {
+      inferredHandle: boolean;
+      requestId?: string;
+      prepared: ManagementPreparedItem;
+    },
   ): Promise<{ agent: CustomAgentConfig; warning?: string }> {
     if (!this.stores.publishAgentPresence ||
         (agent.slackPresence?.desiredState === 'active' &&
@@ -3649,17 +3724,81 @@ export class WorkspaceManagementService {
       return { agent };
     }
     try {
-      return await this.stores.publishAgentPresence({ actor, agentId: agent.id });
+      return await this.stores.publishAgentPresence({
+        actor,
+        agentId: agent.id,
+        inferredHandle: options.inferredHandle,
+      });
     } catch (error) {
+      let publicationError = error;
+      if (options.inferredHandle && error instanceof AgentPresenceError &&
+          error.code === 'handle_collision' && error.suggestions[0]) {
+        const recovered = await this.selectInferredAgentHandle(
+          options.requestId,
+          options.prepared,
+          agent.id,
+          error.suggestions[0],
+        );
+        try {
+          return await this.stores.publishAgentPresence({
+            actor,
+            agentId: recovered.id,
+            inferredHandle: false,
+          });
+        } catch (retryError) {
+          publicationError = retryError;
+        }
+      }
       const current = await this.stores.config.getAgent(agent.id);
-      const detail = error instanceof AgentPresenceError
-        ? error.message
+      const detail = publicationError instanceof AgentPresenceError
+        ? publicationError.message
         : 'Slack handle publication did not complete. Retry it from the Agent settings.';
       return {
         agent: current,
         warning: `The Agent was created, but its Slack handle needs attention: ${detail}`,
       };
     }
+  }
+
+  private async selectInferredAgentHandle(
+    requestId: string | undefined,
+    prepared: ManagementPreparedItem,
+    agentId: string,
+    suggestion: string,
+  ): Promise<CustomAgentConfig> {
+    const current = await this.stores.config.getAgent(agentId);
+    const presence = current.slackPresence;
+    if (!presence) {
+      throw new ManagementError('invalid_state', 'The Agent Slack identity is unavailable.');
+    }
+    const selected = normalizeAgentHandle(suggestion);
+    const updated = await this.stores.config.updateAgent(agentId, {
+      slackPresence: {
+        ...presence,
+        requestedHandle: selected,
+        normalizedHandle: selected,
+        health: 'pending',
+      },
+    }, current.revision);
+    const intended = prepared.intendedAfter as CustomAgentConfig;
+    prepared.intendedAfter = {
+      ...intended,
+      slackPresence: {
+        ...intended.slackPresence!,
+        requestedHandle: selected,
+        normalizedHandle: selected,
+      },
+    };
+    if (requestId) {
+      const request = await this.stores.management.getRequest(requestId);
+      if (request?.status === 'applying') {
+        await this.stores.management.saveRequestProgress(requestId, {
+          ...request.progress,
+          prepared,
+        }, this.now());
+      }
+    }
+    return updated;
   }
 
   private async executeConfirmed(
@@ -4138,6 +4277,18 @@ function publicManagementIdempotencyKey(actor: LiveManagementActor, storageKey: 
     throw new ManagementError('idempotency_conflict', 'The management request Agent changed.');
   }
   return storageKey.slice(prefix.length);
+}
+
+function requireManagementApplyResult(
+  result: ApplyWorkspaceChangesResult,
+): ManagementApplyResult {
+  if (result.status === 'clarification_required') {
+    throw new ManagementError(
+      'invalid_state',
+      'A non-creation management operation returned Agent identity clarification.',
+    );
+  }
+  return result;
 }
 
 function emitOperationOutcomes(
@@ -4688,6 +4839,10 @@ function isSubset(values: readonly string[], allowed: readonly string[]): boolea
 
 function scopeTokens(scope?: string): string[] {
   return scope?.trim().split(/\s+/).filter(Boolean) ?? [];
+}
+
+function normalizeAgentIdentityName(name: string): string {
+  return name.trim().toLowerCase();
 }
 
 function agentPatchMatches(agent: CustomAgentConfig, patch: ManagementAgentPatch): boolean {

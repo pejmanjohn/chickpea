@@ -212,7 +212,7 @@ export function createLiveWorkspaceManagementService(
       }
       return entries;
     },
-    publishAgentPresence: async ({ actor, agentId }) => {
+    publishAgentPresence: async ({ actor, agentId, inferredHandle }) => {
       const organization = await identity.getOrganization();
       if (!organization?.slackTeamId) {
         return {
@@ -227,6 +227,9 @@ export function createLiveWorkspaceManagementService(
         };
       } catch (error) {
         if (!(error instanceof AgentPresenceError)) throw error;
+        if (inferredHandle && error.code === 'handle_collision' && error.suggestions.length > 0) {
+          throw error;
+        }
         return {
           agent: await config.getAgent(agentId),
           warning: `The Agent was created, but its Slack handle needs attention: ${error.message}`,

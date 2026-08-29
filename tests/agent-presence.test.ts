@@ -38,6 +38,31 @@ test('Agent handles normalize predictably and suggest collision-free alternative
   );
 });
 
+test('Slack create-time handle collisions retain safe alternative suggestions', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  transport.createError = new SlackTransportError(
+    'usergroups.create',
+    'handle_already_exists',
+  );
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    await assert.rejects(
+      () => new AgentPresenceReconciler({ config, transport, now: () => NOW }).publish({
+        workspaceId: 'TACME',
+        agentId: 'agent_support',
+        channelId: 'C_SUPPORT',
+        actorMembershipId: 'membership_ada',
+        actorSlackUserId: 'UADA',
+      }),
+      (error: unknown) => error instanceof AgentPresenceError &&
+        error.code === 'handle_collision' && error.suggestions[0] === 'support-2',
+    );
+  } finally {
+    config.close();
+  }
+});
+
 test('publishing verifies actor membership, joins a public Channel, and creates one alias', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();

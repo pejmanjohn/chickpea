@@ -5604,6 +5604,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           providerId: id,
         }],
       });
+      if (proposed.status === 'clarification_required') {
+        return c.json({ error: 'provider_key_unavailable' }, 409);
+      }
       const proposalId = proposed.outcomes[0]?.proposalId;
       if (!proposalId) {
         return c.json({ error: proposed.outcomes[0]?.code ?? 'provider_key_unavailable' }, 409);

@@ -84,7 +84,12 @@ test('workspace management emits a closed inspection fact without operation bodi
 
 test('management operation schemas expose Agent presence, Channel reach, and lifecycle operations', () => {
   const operations: ManagementOperation[] = [
-    { itemId: 'create', kind: 'create_agent', agent: agentInput },
+    {
+      itemId: 'create',
+      kind: 'create_agent',
+      duplicateResolution: 'create_distinct',
+      agent: agentInput,
+    },
     {
       itemId: 'update',
       kind: 'update_agent',
@@ -1342,6 +1347,249 @@ test('authoring proposals reject Agent creation in favor of immediate direct app
         'code' in error && error.code === 'base_agent_capabilities_require_setup',
     );
     await assert.rejects(() => f.config.getAgent('agent_support'));
+  } finally {
+    f.close();
+  }
+});
+
+test('visible duplicate Agent identity returns clarification before any mutation', async () => {
+  const f = await createManagementAdapterFixture('visible-duplicate-identity');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'visible-duplicate-client' },
+  };
+  try {
+    const { requestedHandle: _requestedHandle, ...existingAgentInput } = agentInput;
+    await f.config.createAgent({
+      ...existingAgentInput,
+      id: 'agent_existing_deck',
+      name: 'Deck',
+      creatorMembershipId: f.admin.membership.id,
+      lifecycle: 'active',
+      configurationGeneration: 1,
+      slackPresence: {
+        requestedHandle: 'deck',
+        normalizedHandle: 'deck',
+        desiredState: 'active',
+        health: 'healthy',
+        avatar: { kind: 'generated', revision: 1, seed: 'deck' },
+        userGroupId: 'S_DECK',
+      },
+    });
+
+    const { requestedHandle: _newRequestedHandle, ...newAgentInput } = agentInput;
+    const byName = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'duplicate-by-name',
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: { ...newAgentInput, id: 'agent_new_deck', name: '  DECK  ' },
+      }],
+    });
+    assert.equal(byName.status, 'clarification_required');
+    assert.deepEqual('clarification' in byName ? byName.clarification : undefined, {
+      kind: 'duplicate_agent_identity',
+      requested: { name: 'DECK', handle: 'deck' },
+      matches: [{ id: 'agent_existing_deck', name: 'Deck', handle: 'deck' }],
+      options: ['use_existing', 'create_distinct'],
+    });
+    await assert.rejects(() => f.config.getAgent('agent_new_deck'));
+
+    const byHandle = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'duplicate-by-handle',
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: {
+          ...agentInput,
+          id: 'agent_campaigns',
+          name: 'Campaigns',
+          requestedHandle: 'DECK',
+        },
+      }],
+    });
+    assert.equal(byHandle.status, 'clarification_required');
+    await assert.rejects(() => f.config.getAgent('agent_campaigns'));
+
+    const distinct = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'distinct-deck',
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        duplicateResolution: 'create_distinct',
+        agent: {
+          ...agentInput,
+          id: 'agent_distinct_deck',
+          name: 'Deck',
+          requestedHandle: 'deck-2',
+        },
+      }],
+    });
+    assert.equal(distinct.status, 'completed');
+    assert.equal((await f.config.getAgent('agent_distinct_deck')).name, 'Deck');
+  } finally {
+    f.close();
+  }
+});
+
+test('inferred Slack handle collision recovers one Agent with one stable alternative', async () => {
+  const f = await createManagementAdapterFixture('inferred-handle-recovery');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'inferred-handle-client' },
+  };
+  let publishCalls = 0;
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    randomId: () => 'inferred_handle_recovery',
+    publishAgentPresence: async ({ agentId }) => {
+      publishCalls += 1;
+      if (publishCalls === 1) {
+        throw new AgentPresenceError(
+          'handle_collision',
+          'That Slack handle is unavailable.',
+          { suggestions: ['support-triage-2', 'support-triage-3'] },
+        );
+      }
+      const current = await f.config.getAgent(agentId);
+      assert.equal(current.slackPresence?.requestedHandle, 'support-triage-2');
+      return {
+        agent: await f.config.updateAgent(agentId, {
+          slackPresence: {
+            ...current.slackPresence!,
+            desiredState: 'active',
+            health: 'healthy',
+            userGroupId: 'S_SUPPORT_2',
+          },
+        }, current.revision),
+      };
+    },
+  });
+  try {
+    const { requestedHandle: _requestedHandle, ...inferredAgentInput } = agentInput;
+    const operation: ManagementOperation = {
+      itemId: 'create',
+      kind: 'create_agent',
+      agent: inferredAgentInput,
+    };
+    const created = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'inferred-handle-recovery',
+      operations: [operation],
+    });
+    assert.equal(created.status, 'completed');
+    assert.equal((await f.config.getAgent(agentInput.id)).slackPresence?.normalizedHandle,
+      'support-triage-2');
+    assert.equal(publishCalls, 2);
+
+    const replay = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'inferred-handle-recovery',
+      operations: [operation],
+    });
+    assert.deepEqual(replay, created);
+    assert.equal(publishCalls, 2);
+    assert.equal((await f.config.listUserAgents()).filter(({ id }) => id === agentInput.id).length, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test('duplicate clarification ignores Agents the member cannot edit', async () => {
+  const f = await createManagementAdapterFixture('hidden-duplicate-identity');
+  const provisioned = await f.identity.provisionSlackMember({
+    slackTeamId: f.owner.binding.slackTeamId,
+    slackUserId: 'UHIDDENDUPLICATE',
+    displayName: 'Hidden Duplicate Member',
+  });
+  const member = provisioned.resolution!;
+  const context: ManagementActorContext = {
+    userId: member.user.id,
+    membershipId: member.membership.id,
+    organizationId: member.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'hidden-duplicate-client' },
+  };
+  try {
+    const { requestedHandle: _requestedHandle, ...privateAgentInput } = agentInput;
+    await f.config.createAgent({
+      ...privateAgentInput,
+      id: 'agent_hidden_deck',
+      name: 'Deck',
+      creatorMembershipId: f.admin.membership.id,
+      lifecycle: 'active',
+      configurationGeneration: 1,
+      slackPresence: {
+        requestedHandle: 'deck',
+        normalizedHandle: 'deck',
+        desiredState: 'active',
+        health: 'healthy',
+        avatar: { kind: 'generated', revision: 1, seed: 'hidden-deck' },
+        userGroupId: 'S_HIDDEN_DECK',
+      },
+    });
+    const created = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'hidden-duplicate-create',
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: {
+          ...privateAgentInput,
+          id: 'agent_member_deck',
+          name: 'Deck',
+        },
+      }],
+    });
+    assert.equal(created.status, 'completed');
+    assert.equal((await f.config.getAgent('agent_member_deck')).creatorMembershipId,
+      member.membership.id);
+    assert.doesNotMatch(JSON.stringify(created), /agent_hidden_deck|S_HIDDEN_DECK/);
+  } finally {
+    f.close();
+  }
+});
+
+test('an explicit unavailable handle preserves the created Agent without choosing an alternative', async () => {
+  const f = await createManagementAdapterFixture('explicit-handle-collision');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'explicit-handle-client' },
+  };
+  let publishCalls = 0;
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    publishAgentPresence: async () => {
+      publishCalls += 1;
+      throw new AgentPresenceError(
+        'handle_collision',
+        'That Slack handle is unavailable.',
+        { suggestions: ['support-2'] },
+      );
+    },
+  });
+  try {
+    const created = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'explicit-handle-collision',
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+    });
+    assert.equal(created.status, 'completed');
+    assert.match(created.outcomes[0]?.warning ?? '', /Slack handle needs attention/);
+    assert.equal((await f.config.getAgent(agentInput.id)).slackPresence?.normalizedHandle, 'support');
+    assert.equal(publishCalls, 1);
   } finally {
     f.close();
   }
