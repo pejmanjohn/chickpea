@@ -136,6 +136,7 @@ export async function completeAgentWelcomeDelivery(
     messageTs: string;
     text: string;
     persona: 'agent' | 'chickpea';
+    client: WebClient;
   },
   config: CreatedAgentHandoffConfig & {
     putSlackPublicContext(
@@ -156,7 +157,10 @@ export async function completeAgentWelcomeDelivery(
       await acknowledgeDeferredTerminalSlackDelivery({
         runId: record.receipt.presentationRunId,
         state: presentation.state,
-        client: await presentation.resolveClient(delivery.workspaceId),
+        // Reuse the installation client that Slack just accepted for the
+        // welcome. Resolving it again here creates a second failure boundary
+        // after the irreversible post and can strand the terminal activity.
+        client: delivery.client,
       });
     } catch (error) {
       // The Slack post is already durable. Still complete routing and public
@@ -289,6 +293,7 @@ export async function deliverManagementReceiptToSlack(
         messageTs: string;
         text: string;
         persona: 'agent' | 'chickpea';
+        client: WebClient;
       },
     ) => void | Promise<void>;
   },
@@ -405,6 +410,7 @@ export async function deliverManagementReceiptToSlack(
       messageTs: response.ts,
       text: deliveredText,
       persona,
+      client: execution.client,
     });
   } catch (error) {
     // Slack has already acknowledged the irreversible post. A follow-up route

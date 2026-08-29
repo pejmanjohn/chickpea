@@ -495,9 +495,12 @@ test('runTurn queues an Agent welcome as the pending terminal delivery', async (
         messageTs: '211.2',
         text: 'Agent welcome',
         persona: 'agent',
+        client,
       }, f.config, {
         state: h.state,
-        resolveClient: async () => client,
+        resolveClient: async () => {
+          throw new Error('delivery cleanup must reuse the posting client');
+        },
       });
 
       const settled = h.store.get(runId);
