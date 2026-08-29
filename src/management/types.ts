@@ -275,6 +275,7 @@ export type ManagementSetupAction =
   | 'api_credential'
   | 'mcp_oauth'
   | 'mcp_credentials'
+  | 'catalog_connection'
   | 'managed_connection'
   | 'repository_access'
   | 'provider_credential';
@@ -290,7 +291,7 @@ export type ManagementSetupStatus =
 
 /** Exact non-secret capability scope frozen when a setup link is issued. */
 export interface ManagementSetupTarget {
-  kind: ManagementSetupRequestTarget['kind'] | 'managed_connection';
+  kind: ManagementSetupRequestTarget['kind'] | 'catalog_connection' | 'managed_connection';
   provider: string;
   targetId: string;
   targetLabel: string;

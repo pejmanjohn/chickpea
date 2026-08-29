@@ -7,6 +7,7 @@ import {
   CONNECTION_CATALOG_PRESETS,
   resolveConnectorCatalogPreset,
   type ConnectorCatalogPreset,
+  type ConnectorPreset,
 } from '../config/presets.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
 import {
@@ -924,6 +925,21 @@ export class WorkspaceManagementService {
         setupOperationId: issued.record.setupOperationId,
       };
     }
+    if (actor.origin.kind === 'slack' && !('managedToolkit' in connector) &&
+        (await this.agentCreationConnectorEligible(connector, baseUrl))) {
+      const issued = await this.issueSetupRecord(actor, {
+        action: 'catalog_connection',
+        target: this.catalogConnectionSetupTarget(agent, connector, input.ownerKind),
+        scopes: catalogConnectionScopes(connector),
+      });
+      return {
+        agent: { id: agent.id, name: agent.name },
+        connector: { id: connector.id, name: connector.name },
+        ownerKind: input.ownerKind,
+        handoffUrl: issued.url,
+        setupOperationId: issued.record.setupOperationId,
+      };
+    }
     const url = new URL([
       '/admin/agents',
       encodeURIComponent(agent.id),
@@ -1013,11 +1029,11 @@ export class WorkspaceManagementService {
           preset,
           baseUrl,
         );
-        if (prepared.record) setups.push({ record: prepared.record });
+        setups.push({ record: prepared.record });
         connectorActions.push({
           presetId: preset.id,
           label: preset.name,
-          ...(prepared.record ? { setupOperationId: prepared.record.setupOperationId } : {}),
+          setupOperationId: prepared.record.setupOperationId,
           setupUrl: prepared.url,
         });
       } catch {
@@ -1094,7 +1110,9 @@ export class WorkspaceManagementService {
     baseUrl: string | undefined,
   ): Promise<boolean> {
     if (!baseUrl) return false;
-    if (!('managedToolkit' in preset)) return true;
+    if (!('managedToolkit' in preset)) {
+      return 'url' in preset || 'api' in preset && !preset.api.oauth;
+    }
     if (MANAGED_CONNECTOR_CATALOG.capabilities(preset.managedToolkit, 'write').length === 0) {
       return false;
     }
@@ -1112,18 +1130,7 @@ export class WorkspaceManagementService {
     operationId: string,
     preset: ConnectorCatalogPreset,
     baseUrl: string,
-  ): { record?: ManagementSetupRecord; url: string } {
-    if (!('managedToolkit' in preset)) {
-      return {
-        url: new URL([
-          '/admin/agents',
-          encodeURIComponent(agent.id),
-          'connections/new',
-          encodeURIComponent(preset.id),
-          'member',
-        ].join('/'), baseUrl).href,
-      };
-    }
+  ): { record: ManagementSetupRecord; url: string } {
     const rawCapability = this.randomCapability();
     if (!/^[A-Za-z0-9_-]{43}$/.test(rawCapability)) {
       throw new ManagementError('invalid_request', 'Setup capability generation failed.');
@@ -1132,6 +1139,29 @@ export class WorkspaceManagementService {
     const setupOperationId = `setup_welcome_${createHash('sha256')
       .update(`${operationId}:${preset.id}`)
       .digest('hex').slice(0, 32)}`;
+    if (!('managedToolkit' in preset)) {
+      const record: ManagementSetupRecord = {
+        setupOperationId,
+        organizationId: actor.organizationId,
+        actorUserId: actor.userId,
+        actorMembershipId: actor.membershipId,
+        origin: actor.origin,
+        action: 'catalog_connection',
+        target: {
+          ...this.catalogConnectionSetupTarget(agent, preset, 'member'),
+          connectionId: `connection_${setupOperationId.slice('setup_welcome_'.length)}`,
+        },
+        scopes: catalogConnectionScopes(preset),
+        tokenDigest: capabilityDigest(rawCapability),
+        status: 'pending',
+        expiresAt: at + SETUP_TTL_MS,
+        createdAt: at,
+        updatedAt: at,
+      };
+      const url = new URL(`/setup/${encodeURIComponent(setupOperationId)}`, baseUrl);
+      url.hash = `setup=${rawCapability}`;
+      return { record, url: url.href };
+    }
     const record: ManagementSetupRecord = {
       setupOperationId,
       organizationId: actor.organizationId,
@@ -1163,6 +1193,25 @@ export class WorkspaceManagementService {
     const url = new URL(`/setup/${encodeURIComponent(setupOperationId)}`, baseUrl);
     url.hash = `setup=${rawCapability}`;
     return { record, url: url.href };
+  }
+
+  private catalogConnectionSetupTarget(
+    agent: CustomAgentConfig,
+    preset: ConnectorPreset,
+    ownerKind: 'member' | 'team',
+  ): ManagementSetupTarget {
+    return {
+      kind: 'catalog_connection',
+      provider: preset.id,
+      targetId: `agent:${agent.id}:catalog:${preset.id}`,
+      targetLabel: preset.name,
+      expectedRevision: agent.revision,
+      agentId: agent.id,
+      agentName: agent.name,
+      replacement: false,
+      ownerKind,
+      presetId: preset.id,
+    };
   }
 
   async discoverSlackChannels(
@@ -2315,15 +2364,24 @@ export class WorkspaceManagementService {
       throw new ManagementError('invalid_request', 'Setup capability generation failed.');
     }
     const at = this.now();
+    const setupOperationId = `setup_${this.randomId()}`;
+    const target = input.action === 'catalog_connection'
+      ? {
+          ...input.target,
+          connectionId: `connection_${createHash('sha256')
+            .update(setupOperationId)
+            .digest('hex').slice(0, 32)}`,
+        }
+      : input.target;
     const record = await this.stores.management.putSetup({
       record: {
-        setupOperationId: `setup_${this.randomId()}`,
+        setupOperationId,
         organizationId: actor.organizationId,
         actorUserId: actor.userId,
         actorMembershipId: actor.membershipId,
         origin: actor.origin,
         action: input.action,
-        target: input.target,
+        target,
         scopes: [...input.scopes],
         tokenDigest: capabilityDigest(rawCapability),
         status: 'pending',
@@ -5103,6 +5161,15 @@ function isSubset(values: readonly string[], allowed: readonly string[]): boolea
 
 function scopeTokens(scope?: string): string[] {
   return scope?.trim().split(/\s+/).filter(Boolean) ?? [];
+}
+
+function catalogConnectionScopes(preset: ConnectorCatalogPreset): string[] {
+  if ('url' in preset && typeof preset.url === 'string' &&
+      preset.auth?.kind === 'oauth') {
+    return scopeTokens(preset.auth.scope);
+  }
+  if ('api' in preset) return [...preset.api.methods];
+  return [];
 }
 
 function normalizeAgentIdentityName(name: string): string {

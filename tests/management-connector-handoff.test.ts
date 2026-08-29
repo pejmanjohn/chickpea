@@ -304,11 +304,16 @@ test('connector setup handoff and snapshot stay locked to the current Slack Agen
       resolveContext: async () => context,
     }, 'prepare_connector_setup', { connector: 'Linear', ownerKind: 'team' });
     assert.equal(teamOwner.ok, true);
-    assert.equal(
-      new URL((teamOwner as { ok: true; result: { handoffUrl: string } }).result.handoffUrl)
-        .pathname,
-      '/admin/agents/agent_support/connections/new/linear/team',
-    );
+    const linearHandoff = (teamOwner as { ok: true; result: {
+      handoffUrl: string;
+      setupOperationId: string;
+    } }).result;
+    assert.match(new URL(linearHandoff.handoffUrl).pathname, /^\/setup\/setup_/);
+    const linearSetup = await f.management.getSetup(linearHandoff.setupOperationId);
+    assert.equal(linearSetup?.action, 'catalog_connection');
+    assert.equal(linearSetup?.target.presetId, 'linear');
+    assert.equal(linearSetup?.target.ownerKind, 'team');
+    assert.match(linearSetup?.target.connectionId ?? '', /^connection_[a-f0-9]{32}$/);
 
     const unknown = await invokeWorkspaceManagementTool({
       service: f.service,
@@ -1251,10 +1256,14 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       args: { connector: 'Zendesk', ownerKind: 'member' },
     });
     assert.equal(connectorSetup.ok, true);
+    const zendeskSetup = (connectorSetup as { ok: true; result: {
+      handoffUrl: string;
+      setupOperationId: string;
+    } }).result;
+    assert.match(new URL(zendeskSetup.handoffUrl).pathname, /^\/setup\/setup_/);
     assert.equal(
-      new URL((connectorSetup as { ok: true; result: { handoffUrl: string } }).result.handoffUrl)
-        .pathname,
-      '/admin/agents/agent_support/connections/new/zendesk/member',
+      (await f.management.getSetup(zendeskSetup.setupOperationId))?.target.presetId,
+      'zendesk',
     );
 
     const created = await invokeSlackWorkspaceManagementTool({

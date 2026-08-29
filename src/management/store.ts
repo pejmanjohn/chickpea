@@ -1106,6 +1106,7 @@ export class ManagementStoreLogic {
     return this.db.transaction(() => {
       const existing = this.requireSetup(input.setupOperationId, input.at);
       const managed = existing.action === 'managed_connection';
+      const catalog = existing.action === 'catalog_connection';
       if (existing.status === 'completed') {
         if (managed) throw setupError('setup_unavailable');
         return existing;
@@ -1148,17 +1149,27 @@ export class ManagementStoreLogic {
           input.browserSessionDigest,
           input.at,
         );
-        if (setup.status !== 'authorizing') throw setupError('setup_unavailable');
-        completionActorUserId = setup.actorUserId;
-        completionActorMembershipId = setup.actorMembershipId;
-        authorization = 'initiating_membership_browser_session';
+        if (setup.status !== 'authorizing' || catalog &&
+            (!input.completedByUserId || !input.completedByMembershipId)) {
+          throw setupError('setup_unavailable');
+        }
+        completionActorUserId = catalog ? input.completedByUserId! : setup.actorUserId;
+        completionActorMembershipId = catalog
+          ? input.completedByMembershipId!
+          : setup.actorMembershipId;
+        authorization = catalog
+          ? 'eligible_agent_editor_browser_session'
+          : 'initiating_membership_browser_session';
         updated = this.db.run(
           `UPDATE management_setup_operations
            SET status = 'completed', receipt_json = ?, failure_code = NULL,
                token_digest = NULL, browser_session_digest = NULL,
+               completed_by_user_id = ?, completed_by_membership_id = ?,
                connection_account_id = ?, completed_at = ?, updated_at = ?
            WHERE setup_operation_id = ? AND status = 'authorizing'`,
           JSON.stringify(input.receipt),
+          completionActorUserId,
+          completionActorMembershipId,
           input.connectionAccountId ?? null,
           input.at,
           input.at,

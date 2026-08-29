@@ -8,7 +8,7 @@ import {
 } from '../connections/managed-copy.ts';
 import type { ManagementSetupRecord } from './types.ts';
 
-export interface ManagedConnectionPageInput {
+export interface ConnectorLandingPageInput {
   setup: ManagementSetupRecord;
   agent: CustomAgentConfig;
   avatarUrl?: string;
@@ -16,7 +16,7 @@ export interface ManagedConnectionPageInput {
   writeAvailable?: boolean;
 }
 
-export function renderManagedConnectionSetupPage(input: ManagedConnectionPageInput): string {
+export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInput): string {
   const { setup, agent } = input;
   const connector = setup.target.targetLabel;
   const connectorCopy = managedConnectorReadCopy(setup.target.provider, connector);
@@ -82,8 +82,82 @@ export function renderManagedConnectionSetupPage(input: ManagedConnectionPageInp
   });
 }
 
+export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInput): string {
+  const { setup, agent } = input;
+  const preset = setup.target.presetId
+    ? resolveConnectorCatalogPreset(setup.target.presetId)
+    : undefined;
+  if (!preset || 'managedToolkit' in preset) return renderManagedConnectionUnavailablePage();
+  const connector = preset.name;
+  const ownerKind = setup.target.ownerKind ?? 'member';
+  const mcpAuth = 'url' in preset ? preset.auth : undefined;
+  const credential = mcpAuth?.kind === 'bearer' || mcpAuth?.kind === 'header'
+    ? {
+        placeholder: mcpAuth.placeholder,
+        optional: mcpAuth.kind === 'header' && mcpAuth.optional === true,
+      }
+    : 'api' in preset && !preset.api.oauth
+    ? { placeholder: preset.api.placeholder, optional: false }
+    : undefined;
+  const hostTemplate = 'api' in preset && preset.api.hostTemplate === true;
+  const oauth = mcpAuth?.kind === 'oauth' || 'api' in preset && Boolean(preset.api.oauth);
+  const accessSummary = mcpAuth?.kind === 'oauth'
+    ? `${connector} requests native ${/\bwrite\b/i.test(mcpAuth.scope ?? '') ? 'read and write' : 'account'} access. Changes still require your confirmation.`
+    : preset.notes ?? preset.description;
+  const failureMessage = input.failureMessage ?? '';
+  return pageShell({
+    title: `Connect ${connector} to ${agent.name}`,
+    surface: 'connector-setup',
+    content: `
+      <main class="flow-shell setup-shell" aria-labelledby="flow-title">
+        ${brandHeader()}
+        <section class="flow-content">
+          ${agentIdentity(agent, input.avatarUrl)}
+          <h1 id="flow-title">Connect ${escapeHtml(connector)} to ${escapeHtml(agent.name)}</h1>
+          <p class="setup-lead">${escapeHtml(preset.description)}<br>Nothing is attached until you continue.</p>
+          <div class="connector-row">
+            ${connectorLogo(setup)}
+            <strong>${escapeHtml(connector)}</strong>
+          </div>
+          <form id="connector-form" method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/authorize">
+            <section class="choice-block" aria-labelledby="owner-title">
+              <h2 id="owner-title">Who uses this account?</h2>
+              <span class="select-control">
+                <select class="owner-select" id="connection-owner" name="ownerKind" aria-labelledby="owner-title" aria-describedby="owner-help">
+                  <option value="member"${ownerKind === 'member' ? ' selected' : ''}>My connection</option>
+                  <option value="team"${ownerKind === 'team' ? ' selected' : ''}>Team connection</option>
+                </select>
+                <svg class="select-control-caret" aria-hidden="true" focusable="false" viewBox="0 0 16 16">
+                  <path d="m3.75 6.25 4.25 4.25 4.25-4.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+                </svg>
+              </span>
+              <p id="owner-help">${ownerKind === 'team'
+                ? `Everyone who can use ${escapeHtml(agent.name)} can use this connection.`
+                : `Only you can use this connection, and only when you invoke ${escapeHtml(agent.name)}.`}</p>
+            </section>
+            <section class="choice-block" aria-labelledby="access-title">
+              <h2 id="access-title">Access</h2>
+              <p>${escapeHtml(accessSummary)}</p>
+            </section>
+            ${hostTemplate ? `<section class="choice-block"><label for="workspace-subdomain"><h2>Workspace subdomain</h2></label><input class="owner-select" id="workspace-subdomain" name="workspaceSubdomain" autocomplete="organization" placeholder="your-subdomain" required></section>` : ''}
+            ${credential ? `<section class="choice-block"><label for="connection-credential"><h2>${escapeHtml(connector)} credential</h2></label><input class="owner-select" id="connection-credential" name="credential" type="password" autocomplete="off" placeholder="${escapeHtml(credential.placeholder)}"${credential.optional ? '' : ' required'}>${preset.tokenDocsHint ? `<p>${escapeHtml(preset.tokenDocsHint)}</p>` : ''}</section>` : ''}
+            <p class="security-copy">${oauth
+              ? 'Sign-in opens on the connector’s secure authorization page. Chickpea stores the resulting account credential outside the Agent profile.'
+              : 'Any credential you provide is encrypted and stored outside the Agent profile.'}</p>
+            <p class="flow-alert" id="flow-alert" role="alert"${failureMessage ? '' : ' hidden'}>${escapeHtml(failureMessage)}</p>
+          </form>
+          <div class="flow-actions">
+            <a class="text-button" href="/admin/agents/${encodeURIComponent(agent.id)}">Cancel</a>
+            <button class="primary-button" type="submit" form="connector-form" name="intent" value="authorize">Continue to ${escapeHtml(connector)}</button>
+          </div>
+        </section>
+      </main>
+      <script nonce="setup">${catalogSetupScript({ connector, agentName: agent.name })}</script>`,
+  });
+}
+
 export function renderManagedConnectionDeparturePage(
-  input: ManagedConnectionPageInput,
+  input: ConnectorLandingPageInput,
   authorizationUrl: string,
 ): string {
   const connector = input.setup.target.targetLabel;
@@ -104,7 +178,7 @@ export function renderManagedConnectionDeparturePage(
 }
 
 export function renderManagedConnectionWaitingPage(
-  input: ManagedConnectionPageInput,
+  input: ConnectorLandingPageInput,
 ): string {
   const connector = input.setup.target.targetLabel;
   return pageShell({
@@ -125,7 +199,7 @@ export function renderManagedConnectionWaitingPage(
   });
 }
 
-export function renderManagedConnectionSuccessPage(input: ManagedConnectionPageInput): string {
+export function renderManagedConnectionSuccessPage(input: ConnectorLandingPageInput): string {
   const connector = input.setup.target.targetLabel;
   const receipt = input.setup.receipt && 'kind' in input.setup.receipt &&
       input.setup.receipt.kind === 'connector_connected'
@@ -184,7 +258,7 @@ function agentAvatar(agent: CustomAgentConfig, avatarUrl?: string): string {
   return `<span class="agent-avatar agent-avatar-fallback" aria-hidden="true">${escapeHtml(monogram(agent.name))}</span>`;
 }
 
-function connectionPair(input: ManagedConnectionPageInput): string {
+function connectionPair(input: ConnectorLandingPageInput): string {
   return `<div class="connection-pair" aria-hidden="true">${agentAvatar(input.agent, input.avatarUrl)}<span class="connection-link"><i></i></span>${connectorLogo(input.setup, 'pair-logo')}</div>`;
 }
 
@@ -217,6 +291,10 @@ function setupScript(input: { agentName: string; connector: string; toolkit: str
   const readSummary = managedConnectorReadCopy(input.toolkit, input.connector).accessSummary;
   const writeSummary = managedConnectorWriteSummary(input.toolkit, input.connector);
   return `(function(){var form=document.getElementById("connector-form"),owners=form&&form.querySelectorAll('input[name="ownerKind"]'),accessHelp=document.getElementById("access-help"),alert=document.getElementById("flow-alert"),button=document.querySelector('button[form="connector-form"][value="authorize"]');if(!form||!owners||!accessHelp||!alert||!button)return;var readSummary=${jsonForScript(readSummary)},writeSummary=${jsonForScript(writeSummary)};function selectedOwner(){return form.querySelector('input[name="ownerKind"]:checked')}function update(){button.disabled=!selectedOwner();var access=form.querySelector('input[name="access"]:checked');accessHelp.textContent=access&&access.value==="write"?writeSummary:readSummary}owners.forEach(function(control){control.addEventListener("change",update)});form.querySelectorAll('input[name="access"]').forEach(function(control){control.addEventListener("change",update)});form.addEventListener("submit",async function(event){event.preventDefault();if(!selectedOwner()){alert.textContent="Choose Personal or Team to continue.";alert.hidden=false;update();return}var label=button.textContent;button.disabled=true;button.textContent="Opening secure sign-in…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(String(body.message||"Chickpea could not start the secure sign-in. Try again."));var target=new URL(String(body.authorizationUrl||""));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not start the secure sign-in. Try again.";alert.hidden=false;button.textContent=label;update()}});update()})();`;
+}
+
+function catalogSetupScript(input: { connector: string; agentName: string }): string {
+  return `(function(){var form=document.getElementById("connector-form"),button=document.querySelector('button[form="connector-form"][value="authorize"]'),alert=document.getElementById("flow-alert"),owner=document.getElementById("connection-owner"),ownerHelp=document.getElementById("owner-help"),connector=${jsonForScript(input.connector)},agent=${jsonForScript(input.agentName)};if(!form||!button||!alert||!owner||!ownerHelp)return;function updateOwner(){ownerHelp.textContent=owner.value==="team"?"Everyone who can use "+agent+" can use this connection.":"Only you can use this connection, and only when you invoke "+agent+"."}owner.addEventListener("change",updateOwner);form.addEventListener("submit",async function(event){event.preventDefault();var label=button.textContent;button.disabled=true;button.textContent="Preparing "+connector+"…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(String(body.message||"Chickpea could not prepare this connection. Try again."));if(body.authorizationUrl){var target=new URL(String(body.authorizationUrl));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href);return}location.replace(location.pathname)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not prepare this connection. Try again.";alert.hidden=false;button.disabled=false;button.textContent=label}});updateOwner()})();`;
 }
 
 function pollScript(setupId: string): string {

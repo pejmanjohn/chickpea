@@ -63,7 +63,7 @@ const MANAGEMENT_METRIC_EVENTS = new Set([
 
 const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
   action: new Set([
-    'api_oauth', 'api_credential', 'exchange', 'live', 'mcp_oauth',
+    'api_oauth', 'api_credential', 'catalog_connection', 'exchange', 'live', 'mcp_oauth',
     'mcp_credentials', 'provider_credential', 'repository_access', 'snapshot',
   ]),
   operation: new Set([

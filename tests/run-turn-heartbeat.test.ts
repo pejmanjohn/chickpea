@@ -535,8 +535,14 @@ test('runTurn suppresses model prose and defers one immediate-creation welcome',
     ]);
     assert.match(
       outbox.receipt.connectorActions?.[0]?.setupUrl ?? '',
-      /^https:\/\/chickpea\.example\/admin\/agents\/agent_run_turn_deck\/connections\/new\/linear\/member$/,
+      /^https:\/\/chickpea\.example\/setup\/setup_welcome_/,
     );
+    const linearSetupId = outbox.receipt.connectorActions?.[0]?.setupOperationId;
+    assert.ok(linearSetupId);
+    const linearSetup = await f.management.getSetup(linearSetupId);
+    assert.equal(linearSetup?.action, 'catalog_connection');
+    assert.equal(linearSetup?.target.presetId, 'linear');
+    assert.equal(linearSetup?.target.agentId, 'agent_run_turn_deck');
 
     const [claimed] = await f.management.claimDueOutbox(
       outbox.nextAttemptAt,
