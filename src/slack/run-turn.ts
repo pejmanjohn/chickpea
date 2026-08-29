@@ -801,6 +801,7 @@ export async function runTurn(
               identity,
               config,
               management,
+              ...(publicUrl ? { setupBaseUrl: publicUrl } : {}),
               ...(options.appStores
                 ? {
                     memory: options.appStores.memory,
@@ -1171,6 +1172,7 @@ export async function runTurn(
               identity,
               config,
               management,
+              ...(publicUrl ? { setupBaseUrl: publicUrl } : {}),
               ...(options.appStores
                 ? {
                     memory: options.appStores.memory,

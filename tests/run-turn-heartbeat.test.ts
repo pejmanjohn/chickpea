@@ -389,7 +389,7 @@ test('runTurn suppresses model prose and defers one immediate-creation welcome',
       workspaceId: f.admin.binding.slackTeamId,
       channelId: 'D_IMMEDIATE_CREATION',
       eventId: 'Ev_IMMEDIATE_CREATION',
-      text: 'Create a Deck Agent using Google Slides.',
+      text: 'Create a Deck Agent using Linear.',
       userId: f.admin.binding.slackUserId,
       actorMembershipId: f.admin.membership.id,
       messageTs: '205.1',
@@ -436,7 +436,7 @@ test('runTurn suppresses model prose and defers one immediate-creation welcome',
           description: 'Creates polished presentations.',
           requestedHandle: 'run-turn-deck',
           editPolicy: 'all_workspace_members',
-          instructions: 'Create polished presentations in Google Slides.',
+          instructions: 'Create polished presentations and track projects in Linear.',
           enabled: true,
           skills: [],
           mcpServers: [],
@@ -495,7 +495,7 @@ test('runTurn suppresses model prose and defers one immediate-creation welcome',
             operationId: applied.operationId,
             creationItemId: 'create',
             agentId: 'agent_run_turn_deck',
-            connectorMentions: ['Google Slides'],
+            connectorMentions: ['Linear'],
             followOnNotices: [],
           },
           requestedModel: 'local-stub/management',
@@ -504,22 +504,19 @@ test('runTurn suppresses model prose and defers one immediate-creation welcome',
           usageCompleteness: 'not_reported',
         };
       },
-      managementApproval: {
-        identity: f.identity,
-        config: f.config,
-        management: f.management,
-        service: f.service,
-      },
       appStores: {
         config: f.config,
         identity: f.identity,
         memory: f.memory,
+        management: f.management,
       } as never,
       onDeferredTerminal: () => { deferred += 1; },
       onDelivered: () => { delivered += 1; },
       usageRecordingEnabled: false,
     };
-    await runTurn(turn, chickpeaAssignment, undefined, runOptions);
+    await runTurn(turn, chickpeaAssignment, {
+      SLACK_TAG_PUBLIC_URL: 'https://chickpea.example',
+    }, runOptions);
 
     assert.deepEqual(visiblePosts, []);
     assert.equal(promptCalls, 1);
@@ -534,8 +531,12 @@ test('runTurn suppresses model prose and defers one immediate-creation welcome',
     }
     assert.equal(outbox.receipt.turnJobId, 'turn_IMMEDIATE_CREATION');
     assert.deepEqual(outbox.receipt.connectorActions?.map(({ label }) => label), [
-      'Google Slides',
+      'Linear',
     ]);
+    assert.match(
+      outbox.receipt.connectorActions?.[0]?.setupUrl ?? '',
+      /^https:\/\/chickpea\.example\/admin\/agents\/agent_run_turn_deck\/connections\/new\/linear\/member$/,
+    );
 
     const [claimed] = await f.management.claimDueOutbox(
       outbox.nextAttemptAt,
@@ -550,7 +551,9 @@ test('runTurn suppresses model prose and defers one immediate-creation welcome',
       deliveryRef: 'slack:D_IMMEDIATE_CREATION:206.2',
     });
 
-    await runTurn(turn, chickpeaAssignment, undefined, runOptions);
+    await runTurn(turn, chickpeaAssignment, {
+      SLACK_TAG_PUBLIC_URL: 'https://chickpea.example',
+    }, runOptions);
     assert.deepEqual(visiblePosts, []);
     assert.equal(promptCalls, 2);
     assert.equal(deferred, 1);
