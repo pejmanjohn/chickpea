@@ -163,6 +163,164 @@ test('resolveSkillSource narrows a GitHub tree URL to its selected directory', a
   assert.equal(result.total, 1);
 });
 
+test('resolveSkillSource falls back to the public directory page when the exact-path tree API is rate limited', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const embedded = JSON.stringify({
+    payload: {
+      codeViewTreeRoute: {
+        path: 'skills/foo',
+        refInfo: { name: 'main' },
+        tree: {
+          items: [{ name: 'SKILL.md', path: 'skills/foo/SKILL.md', contentType: 'file' }],
+          totalCount: 1,
+        },
+      },
+    },
+  });
+  const fetchImpl = mockFetch([
+    ['/git/trees/', {
+      status: 403,
+      headers: { 'x-ratelimit-remaining': '0' },
+    }],
+    ['https://github.com/acme/skills/tree/main/skills/foo', {
+      text: `<script type="application/json" data-target="react-app.embeddedData">${embedded}</script>`,
+    }],
+    ['/main/skills/foo/SKILL.md', {
+      text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo',
+    }],
+  ], requests);
+
+  const result = await resolveSkillSource({
+    owner: 'acme',
+    repo: 'skills',
+    ref: 'main',
+    skillPath: 'skills/foo',
+  }, fetchImpl);
+
+  assert.equal(requests.length, 3);
+  assert.deepEqual(result.skills.map((skill) => skill.name), ['foo']);
+  assert.equal(result.skills[0]?.hasScripts, false);
+  assert.equal(result.total, 1);
+  assert.equal(result.skipped, 0);
+});
+
+test('exact-path rate-limit fallback conservatively flags packaged directories', async () => {
+  const embedded = JSON.stringify({
+    payload: {
+      codeViewTreeRoute: {
+        path: 'skills/foo',
+        refInfo: { name: 'main' },
+        tree: {
+          items: [
+            { name: 'SKILL.md', path: 'skills/foo/SKILL.md', contentType: 'file' },
+            { name: 'scripts', path: 'skills/foo/scripts', contentType: 'directory' },
+          ],
+          totalCount: 2,
+        },
+      },
+    },
+  });
+  const fetchImpl = mockFetch([
+    ['/git/trees/', { status: 429 }],
+    ['https://github.com/acme/skills/tree/main/skills/foo', {
+      text: `<script data-target="react-app.embeddedData">${embedded}</script>`,
+    }],
+    ['/main/skills/foo/SKILL.md', {
+      text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo',
+    }],
+  ]);
+
+  const result = await resolveSkillSource({
+    owner: 'acme',
+    repo: 'skills',
+    ref: 'main',
+    skillPath: 'skills/foo',
+  }, fetchImpl);
+  assert.equal(result.skills[0]?.hasScripts, true);
+});
+
+test('exact-path fallback preserves the original rate-limit error when the page is not one skill directory', async () => {
+  const parentDirectory = JSON.stringify({
+    payload: {
+      codeViewTreeRoute: {
+        path: 'skills',
+        refInfo: { name: 'main' },
+        tree: {
+          items: [{ name: 'foo', path: 'skills/foo', contentType: 'directory' }],
+          totalCount: 1,
+        },
+      },
+    },
+  });
+  const fetchImpl = mockFetch([
+    ['/git/trees/', { status: 429 }],
+    ['https://github.com/acme/skills/tree/main/skills', {
+      text: `<script data-target="react-app.embeddedData">${parentDirectory}</script>`,
+    }],
+  ]);
+
+  await assert.rejects(
+    () => resolveSkillSource({
+      owner: 'acme',
+      repo: 'skills',
+      ref: 'main',
+      skillPath: 'skills',
+    }, fetchImpl),
+    (error: unknown) => error instanceof SkillImportError && error.code === 'rate_limited',
+  );
+});
+
+test('exact-path fallback accepts a full GitHub OID for an abbreviated ref', async () => {
+  const embedded = JSON.stringify({
+    payload: {
+      codeViewTreeRoute: {
+        path: 'skills/foo',
+        refInfo: { name: '3b3fad9abcdef0123456789', currentOid: '3b3fad9abcdef0123456789' },
+        tree: {
+          items: [{ name: 'SKILL.md', path: 'skills/foo/SKILL.md', contentType: 'file' }],
+          totalCount: 1,
+        },
+      },
+    },
+  });
+  const fetchImpl = mockFetch([
+    ['/git/trees/', { status: 429 }],
+    ['https://github.com/acme/skills/tree/3b3fad9/skills/foo', {
+      text: `<script data-target="react-app.embeddedData">${embedded}</script>`,
+    }],
+    ['/3b3fad9/skills/foo/SKILL.md', {
+      text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo',
+    }],
+  ]);
+
+  const result = await resolveSkillSource({
+    owner: 'acme',
+    repo: 'skills',
+    ref: '3b3fad9',
+    skillPath: 'skills/foo',
+  }, fetchImpl);
+  assert.deepEqual(result.skills.map((skill) => skill.name), ['foo']);
+});
+
+test('authenticated rate-limited tree resolution never uses the anonymous page fallback', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const fetchImpl = mockFetch([
+    ['/git/trees/', { status: 429 }],
+    ['api.github.com/repos/acme/private', { json: { default_branch: 'main', private: true } }],
+  ], requests);
+
+  await assert.rejects(
+    () => resolveSkillSource({
+      owner: 'acme',
+      repo: 'private',
+      ref: 'main',
+      skillPath: 'skills/foo',
+    }, fetchImpl, { token: 'private-installation-token' }),
+    (error: unknown) => error instanceof SkillImportError && error.code === 'rate_limited',
+  );
+  assert.equal(requests.some(({ url }) => url.startsWith('https://github.com/')), false);
+});
+
 test('resolveSkillSource rejects oversized GitHub responses before buffering them', async () => {
   const oversizedTreeFetch = (async () => new Response('{}', {
     headers: { 'content-length': String(32 * 1024 * 1024) },

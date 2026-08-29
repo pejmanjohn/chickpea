@@ -69,6 +69,7 @@ const MAX_DESCRIPTION = 1024;
 const MAX_INSTRUCTIONS = 100_000;
 const MAX_REPOSITORY_METADATA_BYTES = 64 * 1024;
 const MAX_REPOSITORY_TREE_BYTES = 16 * 1024 * 1024;
+const MAX_GITHUB_DIRECTORY_PAGE_BYTES = 4 * 1024 * 1024;
 const MAX_SKILL_DOCUMENT_BYTES = 512 * 1024;
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SKIP_DIR_RE = /(^|\/)(tests?|node_modules|\.git|dist|build|__pycache__|fixtures)(\/|$)/;
@@ -229,6 +230,13 @@ export async function resolveSkillSource(
     `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
     { headers },
   );
+  if (!treeRes.ok && isRateLimited(treeRes) && !authenticated && parsed.ref && parsed.skillPath) {
+    return await resolveExactPublicSkillFromGithubPage({
+      ...parsed,
+      ref: parsed.ref,
+      skillPath: parsed.skillPath,
+    }, fetchImpl);
+  }
   assertRepositoryResponse(treeRes, authenticated, owner, repo);
   const tree = await readJsonResponseBounded<{ tree?: GitTreeEntry[] }>(
     treeRes,
@@ -313,6 +321,119 @@ export async function resolveSkillSource(
     skills,
     total,
     capped: total > scan.length,
+    skipped,
+  };
+}
+
+interface GithubDirectoryItem {
+  name?: string;
+  path?: string;
+  contentType?: string;
+}
+
+/**
+ * GitHub's anonymous REST quota is shared by many Worker invocations. A tree
+ * URL already names one exact public directory, so a rate-limited REST call
+ * can safely fall back to the public directory page plus raw SKILL.md. The
+ * embedded directory listing also preserves the packaged-script check; if the
+ * page is incomplete, fail closed instead of guessing about sibling content.
+ */
+async function resolveExactPublicSkillFromGithubPage(
+  parsed: ParsedSkillSource & { ref: string; skillPath: string },
+  fetchImpl: typeof fetch,
+): Promise<SkillResolution> {
+  const { owner, repo, ref, skillPath } = parsed;
+  const sourceUrl = `https://github.com/${owner}/${repo}/tree/${encodeURIComponent(ref)}/${encodeGithubPath(skillPath)}`;
+  const pageRes = await githubRequest(fetchImpl, sourceUrl, {
+    headers: { 'user-agent': 'chickpea-skill-import' },
+  });
+  assertRepositoryResponse(pageRes, false, owner, repo);
+  const html = await readResponseTextBounded(
+    pageRes,
+    MAX_GITHUB_DIRECTORY_PAGE_BYTES,
+    'GitHub skill directory is too large to import safely.',
+  );
+  const embedded = html.match(
+    /<script\b[^>]*data-target=["']react-app\.embeddedData["'][^>]*>([\s\S]*?)<\/script>/i,
+  )?.[1];
+  let route: {
+    path?: string;
+    refInfo?: { name?: string; currentOid?: string };
+    tree?: { items?: GithubDirectoryItem[]; totalCount?: number };
+  } | undefined;
+  try {
+    route = embedded
+      ? JSON.parse(embedded)?.payload?.codeViewTreeRoute
+      : undefined;
+  } catch {
+    route = undefined;
+  }
+  const items = route?.tree?.items;
+  const refMatches = route?.refInfo?.name === ref || route?.refInfo?.currentOid?.startsWith(ref);
+  if (!route || route.path !== skillPath || !refMatches || !Array.isArray(items)) {
+    throw new SkillImportError('rate_limited', GITHUB_RATE_LIMITED);
+  }
+  if (route.tree?.totalCount !== undefined && route.tree.totalCount !== items.length) {
+    throw new SkillImportError(
+      'source_too_large',
+      'GitHub skill directory could not be inspected completely. Use Admin to review this source.',
+    );
+  }
+
+  const skillDocumentPath = `${skillPath}/SKILL.md`;
+  const hasSkillDocument = items.some(
+    (item) => item.path === skillDocumentPath && item.contentType === 'file',
+  );
+  if (!hasSkillDocument) {
+    throw new SkillImportError('rate_limited', GITHUB_RATE_LIMITED);
+  }
+  const hasScripts = items.some((item) =>
+    item.path !== skillDocumentPath &&
+    (item.contentType === 'directory' || SCRIPT_EXT_RE.test(item.path ?? item.name ?? '')),
+  );
+  const rawRes = await githubRequest(
+    fetchImpl,
+    `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(ref)}/${encodeGithubPath(skillDocumentPath)}`,
+  );
+  if (!rawRes.ok) {
+    throw new SkillImportError('rate_limited', GITHUB_RATE_LIMITED);
+  }
+  const markdown = await readResponseTextBounded(
+    rawRes,
+    MAX_SKILL_DOCUMENT_BYTES,
+    'GitHub skill document is too large to import safely.',
+  );
+  const front = parseFrontmatter(markdown);
+  const name = sanitizeSkillName(front.name || basename(skillPath));
+  const description = (front.description || '').trim().slice(0, MAX_DESCRIPTION);
+  const instructions = (front.body || markdown).trim().slice(0, MAX_INSTRUCTIONS);
+  if (!name || !description || !instructions) {
+    return exactPublicSkillResolution(parsed, [], 1, 1);
+  }
+  return exactPublicSkillResolution(parsed, [{
+    name,
+    description,
+    instructions,
+    hasScripts,
+    path: skillPath,
+    sourceUrl,
+  }], 1, 0);
+}
+
+function exactPublicSkillResolution(
+  parsed: ParsedSkillSource & { ref: string; skillPath: string },
+  skills: ResolvedSkillCandidate[],
+  total: number,
+  skipped: number,
+): SkillResolution {
+  return {
+    owner: parsed.owner,
+    repo: parsed.repo,
+    ref: parsed.ref,
+    source: { visibility: 'public', access: 'anonymous' },
+    skills,
+    total,
+    capped: false,
     skipped,
   };
 }
