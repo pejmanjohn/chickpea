@@ -6387,12 +6387,27 @@ test('saving a profile with a filled-but-not-added skill editor commits the skil
 
 // ---- Connections (remote MCP servers) --------------------------------------
 
+function chooseConnectionOwner(
+  harness: { listeners: Record<string, Listener> },
+  ownerKind: 'member' | 'team' = 'team',
+): void {
+  const change = harness.listeners.change;
+  assert.ok(change);
+  change({
+    target: inputTarget({ 'data-action': 'connection-account-owner' }, ownerKind),
+  });
+}
+
 test('Agent connections expose Agent-owned Team and personal accounts with managed Google OAuth', () => {
   const page = renderAdminPage();
-  assert.match(page, />Team connection</);
-  assert.match(page, />My connection</);
+  assert.match(page, />Personal</);
+  assert.match(page, />Team</);
+  assert.match(page, /Who uses this connection\?/);
+  assert.match(page, /Each person signs in with their own account/);
+  assert.match(page, /One shared account for everyone who can use/);
   assert.match(page, /connections\/managed\/start/);
-  assert.match(page, /Sign-in opens in a secure hosted tab/);
+  assert.match(page, /Sign-in opens in a secure/);
+  assert.match(page, /Chickpea keeps a reference to the connected account/);
   assert.match(page, /Team and personal accounts this Agent can use/);
   assert.match(page, /This Agent will lose access and dependent schedules will pause/);
   assert.match(page, /provider may still list the authorization/);
@@ -7272,7 +7287,7 @@ test('unconfigured managed connectors stay discoverable and continue after owner
   }]);
   assert.doesNotMatch(harness.app.innerHTML, new RegExp(secret));
   assert.match(harness.app.innerHTML, /<strong>YouTube<\/strong>/);
-  assert.match(harness.app.innerHTML, /value="member" selected>My connection<\/option>/);
+  assert.match(harness.app.innerHTML, /value="member" data-action="connection-account-owner" checked/);
   assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
 });
 
@@ -7411,7 +7426,7 @@ test('connector handoff deep link opens the requested Agent-owned account form',
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /<strong>Gmail<\/strong>/);
-  assert.match(harness.app.innerHTML, /value="member" selected>My connection<\/option>/);
+  assert.match(harness.app.innerHTML, /value="member" data-action="connection-account-owner" checked/);
   assert.match(harness.app.innerHTML, /data-action="connection-account-google-access"/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
   assert.ok(
@@ -7467,7 +7482,7 @@ test('connector handoff rejects an unknown account owner instead of widening it 
   await flushAsync();
 
   assert.doesNotMatch(harness.app.innerHTML, /<strong>Gmail<\/strong>/);
-  assert.doesNotMatch(harness.app.innerHTML, /Who uses this account\?/);
+  assert.doesNotMatch(harness.app.innerHTML, /Who uses this connection\?/);
 });
 
 test('connector handoff survives a transient initial Agent load failure', async () => {
@@ -7589,6 +7604,7 @@ test('Agent-owned Sentry accounts use OAuth and preserve an organization/project
   input({
     target: inputTarget({ 'data-action': 'connection-account-sentry-project' }, 'web-app'),
   });
+  chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 
@@ -7633,6 +7649,7 @@ test('Agent-owned Sentry rejects a project scope without an organization before 
   input({
     target: inputTarget({ 'data-action': 'connection-account-sentry-project' }, 'web-app'),
   });
+  chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 
@@ -7658,6 +7675,7 @@ test('Agent-owned Intercom uses OAuth and warns before connecting a non-US works
   assert.match(harness.app.innerHTML, /only for US-hosted workspaces/);
   assert.match(harness.app.innerHTML, /EU and Australian workspaces cannot use this preset yet/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-credential"/);
+  chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 
@@ -7742,6 +7760,7 @@ test('Agent-owned Linear accounts create policy before starting account-scoped M
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'linear' }) });
+  chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 
@@ -7769,11 +7788,15 @@ test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'google-drive' }) });
   const managedForm = harness.app.innerHTML.match(
-    /<div class="skill-form">[\s\S]*?Continue to sign in[\s\S]*?<\/div>/,
+    /<div class="skill-form">[\s\S]*?Continue to Google Drive[\s\S]*?<\/div>/,
   )?.[0] ?? '';
-  assert.match(managedForm, /Sign-in opens in a secure hosted tab/);
-  assert.match(managedForm, /data-action="connection-account-owner"[\s\S]*?class="[^"]*select-caret/);
+  assert.match(managedForm, /Sign-in opens in a secure Google Drive tab/);
+  assert.match(managedForm, /class="connection-account-owner-options"/);
+  assert.match(managedForm, /connection-account-owner-icon-personal/);
+  assert.match(managedForm, /connection-account-owner-icon-team/);
+  assert.doesNotMatch(managedForm, /<select[^>]+data-action="connection-account-owner"/);
   assert.doesNotMatch(managedForm, /<label[^>]*>Google OAuth client (ID|secret)<\/label>/);
+  chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 
@@ -7804,6 +7827,7 @@ test('Agent-owned Google Drive accounts can request a read-write Composio capabi
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'google-drive' }) });
   click({ target: actionTarget({ 'data-action': 'connection-account-managed-access', 'data-access': 'write' }) });
+  chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 
@@ -7853,6 +7877,7 @@ test('managed productivity cards expose only configured read lanes and disable m
     /data-action="connection-account-managed-access" data-access="write" disabled aria-disabled="true"/,
   );
   assert.match(harness.app.innerHTML, /Write access is not configured for this connector/);
+  chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 
@@ -7880,7 +7905,10 @@ test('custom Agent-owned API setup directs Google OAuth to the managed connector
   const form = harness.app.innerHTML;
   assert.match(form, /Use a managed Google connector for Google OAuth/);
   assert.doesNotMatch(form, /<option value="google_oauth"/);
-  assert.match(form, /data-action="connection-account-owner"[\s\S]*?class="[^"]*select-caret/);
+  assert.match(form, /class="connection-account-owner-options"/);
+  assert.doesNotMatch(form, /<select[^>]+data-action="connection-account-owner"/);
+  assert.doesNotMatch(form, /data-action="connection-account-owner"[^>]+checked/);
+  assert.match(form, /data-action="connection-account-create" disabled/);
   assert.match(form, /data-action="connection-account-kind"[\s\S]*?class="[^"]*select-caret/);
   assert.match(form, /data-action="connection-account-auth"[\s\S]*?class="[^"]*select-caret/);
 });
@@ -7936,6 +7964,7 @@ test('Agent-owned Exa accounts support anonymous limits without an API key', asy
   click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'exa' }) });
   assert.match(harness.app.innerHTML, /Credential<span class="hint">\(optional\)<\/span>|Credential <span class="hint">\(optional\)<\/span>/);
   assert.match(harness.app.innerHTML, /Leave blank to use the provider.s anonymous limits/);
+  chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 
@@ -7966,6 +7995,7 @@ test('Agent-owned Zendesk accounts validate and persist the workspace subdomain'
   click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'zendesk' }) });
   assert.match(harness.app.innerHTML, /Workspace subdomain/);
 
+  chooseConnectionOwner(harness);
   input({ target: inputTarget({ 'data-action': 'connection-account-credential' }, 'zendesk-token') });
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   assert.equal(harness.connectionAccountPosts.length, 0);
@@ -7999,6 +8029,7 @@ test('Agent-owned Supabase accounts scope OAuth to one project and default to re
   assert.match(harness.app.innerHTML, /data-access="read-only"/);
   assert.match(harness.app.innerHTML, /data-access="read-write"/);
 
+  chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   assert.equal(harness.connectionAccountPosts.length, 0);
   assert.match(harness.app.innerHTML, /Enter a valid Supabase project reference/);
@@ -8781,6 +8812,7 @@ test('managed Notion is the only catalog option and explains the provider page b
       'data-action': 'connection-account-managed-access', 'data-access': 'write',
     }),
   });
+  chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 

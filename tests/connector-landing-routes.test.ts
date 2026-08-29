@@ -170,7 +170,9 @@ test('the managed connector link is reusable and completes from the dedicated pa
     const setupHtml = await setupPage.text();
     assert.equal(setupPage.status, 200);
     assert.match(setupHtml, /Connect HubSpot to Sprout/);
-    assert.match(setupHtml, /<select[^>]+name="ownerKind"/);
+    assert.match(setupHtml, /<input[^>]+name="ownerKind"[^>]+value="member"/);
+    assert.match(setupHtml, /<input[^>]+name="ownerKind"[^>]+value="team"/);
+    assert.doesNotMatch(setupHtml, /<input[^>]+name="ownerKind"[^>]+checked/);
     assert.match(setupHtml, /<input[^>]+name="access"[^>]+value="write"/);
     assert.match(setupHtml, /--chickpea-wordmark-image:url\("data:image\/png;base64,/);
     assert.match(setupHtml, new RegExp(`src="http://localhost/assets/agents/${agent.id}/avatar/1"`));

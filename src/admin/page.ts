@@ -2426,6 +2426,83 @@ button.capability-pill { cursor: pointer; }
 .conn-logo-raster { overflow: hidden; }
 .conn-logo-raster img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .conn-title, .conn-recommended-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.connection-account-form-connector { margin-bottom: 2px; }
+.connection-account-form-connector .conn-logo { border-radius: 10px; height: 36px; width: 36px; }
+.connection-account-form-connector .conn-logo-img svg { max-height: 24px; max-width: 24px; }
+.connection-account-owner {
+  display: grid;
+  gap: 10px;
+  max-width: 640px;
+}
+.connection-account-owner-head { display: grid; gap: 2px; }
+.connection-account-owner-head .field-label { font-size: .875rem; }
+.connection-account-owner-head .hint { margin: 0; }
+.connection-account-owner-options {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.connection-account-owner-option {
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  box-shadow: 0 1.5px 0 rgba(59, 50, 32, .06);
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 18px 32px minmax(0, 1fr);
+  min-height: 88px;
+  padding: 12px 14px;
+  position: relative;
+}
+.connection-account-owner-option:hover { border-color: rgba(178, 126, 31, .46); }
+.connection-account-owner-option:has(input:checked) {
+  border-color: var(--ember-press);
+  box-shadow: 0 0 0 1px var(--ember-press), 0 1.5px 0 rgba(59, 50, 32, .06);
+}
+.connection-account-owner-option input {
+  height: 18px;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  position: absolute;
+  width: 18px;
+}
+.connection-account-owner-radio {
+  background: var(--bg);
+  border: 1.5px solid rgba(59, 50, 32, .34);
+  border-radius: 50%;
+  height: 18px;
+  position: relative;
+  width: 18px;
+}
+.connection-account-owner-option input:checked + .connection-account-owner-radio { border-color: var(--ember-press); }
+.connection-account-owner-option input:checked + .connection-account-owner-radio::after {
+  background: var(--ember-press);
+  border-radius: 50%;
+  content: "";
+  inset: 3px;
+  position: absolute;
+}
+.connection-account-owner-option input:focus-visible + .connection-account-owner-radio { outline: 2px solid var(--ember-press); outline-offset: 3px; }
+.connection-account-owner-icon {
+  align-items: center;
+  border-radius: 50%;
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+.connection-account-owner-icon-personal { background: rgba(221, 160, 51, .18); color: #b27e1f; }
+.connection-account-owner-icon-team { background: rgba(111, 162, 91, .18); color: #4f8a3f; }
+.connection-account-owner-copy { display: grid; gap: 3px; min-width: 0; }
+.connection-account-owner-copy strong { color: var(--text); font-size: .8125rem; }
+.connection-account-owner-copy span { color: var(--text); font-size: .8125rem; line-height: 1.4; text-wrap: pretty; }
+@media (max-width: 720px) {
+  .connection-account-owner-options { grid-template-columns: 1fr; }
+  .connection-account-owner-option { min-height: 80px; }
+}
 .google-access-label { align-items: center; display: flex; gap: 8px; }
 .google-access-label .conn-logo { border-radius: 6px; height: 24px; width: 24px; }
 .google-service-summary { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; }
@@ -3569,6 +3646,8 @@ button.capability-pill { cursor: pointer; }
       "arrow-path": "M13.836 2.477a.75.75 0 0 1 .75.75v3.182a.75.75 0 0 1-.75.75h-3.182a.75.75 0 0 1 0-1.5h1.37l-.84-.841a4.5 4.5 0 0 0-7.08.932.75.75 0 0 1-1.3-.75 6 6 0 0 1 9.44-1.242l.842.84V3.227a.75.75 0 0 1 .75-.75Zm-.911 7.5A.75.75 0 0 1 13.2 11a6 6 0 0 1-9.44 1.241l-.84-.84v1.372a.75.75 0 0 1-1.5 0V9.591a.75.75 0 0 1 .75-.75H5.35a.75.75 0 0 1 0 1.5H3.98l.841.84a4.5 4.5 0 0 0 7.08-.932.75.75 0 0 1 1.025-.272Z",
       "exclamation-triangle": "M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.299-2.25l5.196-9ZM8 5a.75.75 0 0 1 .75.75v2.5a.75.75 0 0 1-1.5 0v-2.5A.75.75 0 0 1 8 5Zm0 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z",
       robot: "M6.5 1.75a1.5 1.5 0 0 1 3 0v.5h1.75A2.75 2.75 0 0 1 14 5v5a2.75 2.75 0 0 1-2.75 2.75h-.5v1a.75.75 0 0 1-1.5 0v-1h-2.5v1a.75.75 0 0 1-1.5 0v-1h-.5A2.75 2.75 0 0 1 2 10V5a2.75 2.75 0 0 1 2.75-2.75H6.5v-.5Zm-1.75 2A1.25 1.25 0 0 0 3.5 5v5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V5c0-.69-.56-1.25-1.25-1.25h-6.5ZM6 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm4 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2ZM5.75 9h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1 0-1.5Z",
+      user: "M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM2.75 14A5.25 5.25 0 0 1 8 8.75 5.25 5.25 0 0 1 13.25 14a.75.75 0 0 1-.75.75h-9A.75.75 0 0 1 2.75 14Z",
+      "user-group": "M6 7a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm4.75-1a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM.75 14.25A5.25 5.25 0 0 1 6 9a5.25 5.25 0 0 1 5.25 5.25.75.75 0 0 1-.75.75h-9a.75.75 0 0 1-.75-.75Zm10.4-6.52a4.76 4.76 0 0 1 4.1 4.72.75.75 0 0 1-.75.75h-1.82a6.75 6.75 0 0 0-1.53-5.47Z",
       users: "M6 7a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm4.75-1a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM.75 14.25A5.25 5.25 0 0 1 6 9a5.25 5.25 0 0 1 5.25 5.25.75.75 0 0 1-.75.75h-9a.75.75 0 0 1-.75-.75Zm10.4-6.52a4.76 4.76 0 0 1 4.1 4.72.75.75 0 0 1-.75.75h-1.82a6.75 6.75 0 0 0-1.53-5.47Z",
       clock: "M8 1.25a6.75 6.75 0 1 0 0 13.5 6.75 6.75 0 0 0 0-13.5Zm0 1.5A5.25 5.25 0 1 1 8 13.25 5.25 5.25 0 0 1 8 2.75Zm.75 1.5a.75.75 0 0 0-1.5 0V8c0 .2.08.39.22.53l2.5 2.5a.75.75 0 1 0 1.06-1.06L8.75 7.69V4.25Z",
       ellipsis: "M3.75 8a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm5.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm5.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Z",
@@ -5839,7 +5918,7 @@ button.capability-pill { cursor: pointer; }
   function newConnectionAccountForm() {
     state.connectorGallerySearch = "";
     state.connectionAccountForm = {
-      ownerKind: "team",
+      ownerKind: "",
       kind: "api",
       authMode: "credential",
       presetId: "",
@@ -5861,6 +5940,10 @@ button.capability-pill { cursor: pointer; }
     render();
   }
 
+  function preferredConnectionOwnerKind(value) {
+    return value === "member" || value === "team" ? value : "";
+  }
+
   function newConnectionAccountFormFromPreset(presetId, preferredOwnerKind) {
     var googleService = googleServicePresetById(presetId);
     var managedPreset = managedPresetById(presetId);
@@ -5872,7 +5955,7 @@ button.capability-pill { cursor: pointer; }
     }
     if (managedCandidate && managedDescriptor && managedConnectorLaneReady(managedDescriptor, "read")) {
       state.connectionAccountForm = {
-        ownerKind: preferredOwnerKind === "member" ? "member" : "team",
+        ownerKind: preferredConnectionOwnerKind(preferredOwnerKind),
         kind: "managed",
         authMode: "composio",
         presetId: managedCandidate.id,
@@ -5898,7 +5981,7 @@ button.capability-pill { cursor: pointer; }
       googleEditor.googleAccess[googleService.service] = "read";
       syncGoogleApiPolicy(googleEditor);
       state.connectionAccountForm = {
-        ownerKind: preferredOwnerKind === "member" ? "member" : "team",
+        ownerKind: preferredConnectionOwnerKind(preferredOwnerKind),
         kind: "api",
         authMode: "google_oauth",
         presetId: googleService.id,
@@ -5925,7 +6008,7 @@ button.capability-pill { cursor: pointer; }
     if (lanes.api && !lanes.mcp) {
       var apiEditor = apiEditorFromPreset(preset);
       state.connectionAccountForm = {
-        ownerKind: preferredOwnerKind === "member" ? "member" : "team",
+        ownerKind: preferredConnectionOwnerKind(preferredOwnerKind),
         kind: "api",
         authMode: isGoogleWorkspaceEditor(apiEditor) ? "google_oauth" : "credential",
         presetId: preset.id,
@@ -5947,7 +6030,7 @@ button.capability-pill { cursor: pointer; }
     } else {
       var mcpEditor = editorFromPreset(preset);
       state.connectionAccountForm = {
-        ownerKind: preferredOwnerKind === "member" ? "member" : "team",
+        ownerKind: preferredConnectionOwnerKind(preferredOwnerKind),
         kind: "mcp",
         authMode: mcpEditor.authMode,
         presetId: preset.id,
@@ -5983,6 +6066,11 @@ button.capability-pill { cursor: pointer; }
     var form = state.connectionAccountForm;
     var agentId = state.profileDraft && state.profileDraft.id;
     if (!form || !agentId || form.busy) return;
+    if (form.ownerKind !== "member" && form.ownerKind !== "team") {
+      form.error = "Choose Personal or Team to continue.";
+      render();
+      return;
+    }
     if (form.kind === "managed") {
       if (!managedConnectorDescriptorByToolkit(form.managedToolkit)) {
         form.error = "This managed connector is unavailable.";
@@ -7434,7 +7522,7 @@ button.capability-pill { cursor: pointer; }
       toolkit: descriptor.toolkit,
       label: preset.name,
       description: preset.description || descriptor.description || "",
-      ownerKind: preferredOwnerKind === "member" ? "member" : "team",
+      ownerKind: preferredConnectionOwnerKind(preferredOwnerKind),
       canConfigure: !!state.agentConnections.managedCanConfigure,
       deploymentManaged: !!state.agentConnections.managedConfigurationReadOnly,
       providerPrerequisiteMissing: managedConnectorMissingCode(
@@ -8364,6 +8452,16 @@ button.capability-pill { cursor: pointer; }
     return '<div class="field"><label class="field-label">Credential' + (optional ? ' <span class="hint">(optional)</span>' : '') + '</label><input class="input mono" type="password" autocomplete="off" value="' + esc(form.credential) + '" placeholder="' + esc(placeholder) + '" data-action="connection-account-credential"><p class="conn-security">' + (optional ? 'Leave blank to use the provider’s anonymous limits. ' : '') + 'Stored once outside the Agent record and never returned to this browser.</p></div>';
   }
 
+  function connectionAccountOwnerHtml(form) {
+    var agentName = String(state.profileDraft && state.profileDraft.name || "this Agent").trim() || "this Agent";
+    return '<div class="connection-account-owner" aria-labelledby="connection-account-owner-title">' +
+      '<div class="connection-account-owner-head"><span class="field-label" id="connection-account-owner-title">Who uses this connection?</span><p class="hint">Pick one to continue.</p></div>' +
+      '<div class="connection-account-owner-options" role="radiogroup" aria-labelledby="connection-account-owner-title">' +
+        '<label class="connection-account-owner-option"><input type="radio" name="connection-account-owner" value="member" data-action="connection-account-owner"' + (form.ownerKind === "member" ? " checked" : "") + '><span class="connection-account-owner-radio" aria-hidden="true"></span><span class="connection-account-owner-icon connection-account-owner-icon-personal" aria-hidden="true">' + icon("user") + '</span><span class="connection-account-owner-copy"><strong>Personal</strong><span>Each person signs in with their own account. ' + esc(agentName) + ' uses yours only for your requests.</span></span></label>' +
+        '<label class="connection-account-owner-option"><input type="radio" name="connection-account-owner" value="team" data-action="connection-account-owner"' + (form.ownerKind === "team" ? " checked" : "") + '><span class="connection-account-owner-radio" aria-hidden="true"></span><span class="connection-account-owner-icon connection-account-owner-icon-team" aria-hidden="true">' + icon("user-group") + '</span><span class="connection-account-owner-copy"><strong>Team</strong><span>One shared account for everyone who can use ' + esc(agentName) + '.</span></span></label>' +
+      '</div></div>';
+  }
+
   function connectionAccountAccessHtml(form) {
     var googleService = googleServicePresetById(form.presetId);
     if (form.kind === "managed") {
@@ -8395,19 +8493,20 @@ button.capability-pill { cursor: pointer; }
     var form = state.connectionAccountForm;
     if (!form) return '';
     var busy = !!form.busy;
+    var ownerSelected = form.ownerKind === "member" || form.ownerKind === "team";
     if (form.kind === "managed") {
       var managedPreset = form.preset;
       var managedDescriptor = managedConnectorDescriptorByToolkit(form.managedToolkit);
       var managedSecurityCopy = managedDescriptor && managedDescriptor.securityDescription &&
         !/composio/i.test(managedDescriptor.securityDescription)
         ? managedDescriptor.securityDescription
-        : "Sign-in opens in a secure hosted tab. Chickpea stores the connected-account reference and this Agent’s capability ceiling, not provider refresh tokens.";
-      return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">This connection stays with this Agent. Team connections are available to people using the Agent; personal connections are available only to you.</p></div><div></div></div>' +
-        '<div class="conn-title" style="margin-bottom:16px;">' + connectorLogoHtml(managedPreset) + '<div><strong>' + esc(managedPreset.name) + '</strong><p class="hint">' + esc(managedPreset.description || "") + '</p></div></div>' +
+        : "Sign-in opens in a secure " + managedPreset.name + " tab. Chickpea keeps a reference to the connected account and this Agent’s access level — never your password or refresh tokens.";
+      return '<div class="skill-form"><div class="conn-title connection-account-form-connector">' + connectorLogoHtml(managedPreset) + '<div><strong>' + esc(managedPreset.name) + '</strong><p class="hint">' + esc(managedPreset.description || "") + '</p></div></div>' +
+        connectionAccountOwnerHtml(form) +
         connectionAccountAccessHtml(form) +
         '<p class="conn-security">' + esc(managedSecurityCopy) + '</p>' +
         (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
-        '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy ? " disabled" : "") + '>' + (busy ? "Opening sign-in&hellip;" : "Continue to sign in") + '</button></div></div>';
+        '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !ownerSelected ? " disabled" : "") + '>' + (busy ? "Opening sign-in&hellip;" : "Continue to " + esc(managedPreset.name)) + '</button></div></div>';
     }
     var oauth = form.kind === "api" && form.authMode === "google_oauth";
     var mcpOauth = form.kind === "mcp" && form.authMode === "oauth";
@@ -8417,14 +8516,14 @@ button.capability-pill { cursor: pointer; }
     var endpointHtml = connectionAccountEndpointHtml(form, preset, oauth);
     var credentialHtml = connectionAccountCredentialHtml(form, preset, oauth, mcpOauth);
     var accessHtml = connectionAccountAccessHtml(form);
-    var presetHead = preset ? '<div class="conn-title" style="margin-bottom:16px;">' + connectorLogoHtml(preset) + '<div><strong>' + esc(preset.name) + '</strong><p class="hint">' + esc(preset.description || "") + '</p></div></div>' : '';
+    var presetHead = preset ? '<div class="conn-title connection-account-form-connector">' + connectorLogoHtml(preset) + '<div><strong>' + esc(preset.name) + '</strong><p class="hint">' + esc(preset.description || "") + '</p></div></div>' : '';
     var capabilitiesHtml = preset ? '' : '<div class="field"><label class="field-label">' + (form.kind === "mcp" ? "Allowed tools" : "Capabilities") + '</label><input class="input mono" value="' + esc(form.capabilities) + '" placeholder="tickets.read, tickets.update" data-action="connection-account-capabilities"><p class="hint">Comma-separated names. This becomes the Agent binding’s maximum authority.</p></div>';
     var oauthMigrationHtml = mcpOauth && preset && (preset.id === "sentry" || preset.id === "intercom") && hasLegacyTokenMcpConnection(preset.id)
       ? '<p class="hint">This adds OAuth beside the existing token connection. Review the discovered tools, bind and verify the OAuth account, then explicitly disconnect the token account when migration is complete.</p>'
       : '';
-    return '<div class="skill-form"><div class="form-grid"><div class="field"><label class="field-label">Who uses this account?</label><span class="select-wrap"><select class="input" data-action="connection-account-owner"><option value="team"' + (form.ownerKind === "team" ? " selected" : "") + '>Team connection</option><option value="member"' + (form.ownerKind === "member" ? " selected" : "") + '>My connection</option></select>' + icon("chevron-down", "select-caret") + '</span><p class="hint">This connection stays with this Agent. Team connections are available to people using the Agent; personal connections are available only to you.</p></div>' +
-      (!preset ? '<div class="field"><label class="field-label">Connection type</label><span class="select-wrap"><select class="input" data-action="connection-account-kind"><option value="api"' + (form.kind === "api" ? " selected" : "") + '>REST API</option><option value="mcp"' + (form.kind === "mcp" ? " selected" : "") + '>MCP server</option></select>' + icon("chevron-down", "select-caret") + '</span></div>' : '<div></div>') + '</div>' +
-      presetHead +
+    return '<div class="skill-form">' + presetHead +
+      connectionAccountOwnerHtml(form) +
+      (!preset ? '<div class="field"><label class="field-label">Connection type</label><span class="select-wrap"><select class="input" data-action="connection-account-kind"><option value="api"' + (form.kind === "api" ? " selected" : "") + '>REST API</option><option value="mcp"' + (form.kind === "mcp" ? " selected" : "") + '>MCP server</option></select>' + icon("chevron-down", "select-caret") + '</span></div>' : '') +
       authHtml +
       '<div class="form-grid">' + (!preset ? '<div class="field"><label class="field-label">Provider</label><input class="input" value="' + esc(form.providerId) + '" placeholder="zendesk" data-action="connection-account-provider"></div>' : '') +
       '<div class="field"><label class="field-label">Account label</label><input class="input" value="' + esc(form.label) + '" placeholder="Work Zendesk" data-action="connection-account-label"><p class="hint">People can say “use my work account” to select this connection.</p></div></div>' +
@@ -8437,7 +8536,7 @@ button.capability-pill { cursor: pointer; }
       (preset && preset.notes ? '<p class="hint">' + esc(preset.notes) + '</p>' : '') +
       oauthMigrationHtml +
       (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
-      '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy ? " disabled" : "") + '>' + (busy ? "Connecting&hellip;" : ((oauth || mcpOauth) ? "Continue to sign in" : "Connect and add")) + '</button></div></div>';
+      '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? " disabled" : "") + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !ownerSelected ? " disabled" : "") + '>' + (busy ? "Connecting&hellip;" : ((oauth || mcpOauth) ? "Continue to sign in" : "Connect and add")) + '</button></div></div>';
   }
 
   function connectionsPanelHtml(draft) {
@@ -14070,7 +14169,9 @@ button.capability-pill { cursor: pointer; }
       }
     }
     if (state.connectionAccountForm && action === "connection-account-owner") {
-      state.connectionAccountForm.ownerKind = target.value === "member" ? "member" : "team";
+      if (target.value !== "member" && target.value !== "team") return;
+      state.connectionAccountForm.ownerKind = target.value;
+      state.connectionAccountForm.error = "";
       render();
     }
     if (state.connectionAccountForm && action === "connection-account-kind") {
