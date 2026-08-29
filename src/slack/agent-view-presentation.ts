@@ -32,6 +32,7 @@ import { SlackTransportError } from './transport/types.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
 import { setAgentSessionStatus } from './gateway/web-client.ts';
 import {
+  presentationHasTerminalOutcome,
   presentationAllowsProgressive,
   presentationUsesNativeTasks,
   slackPresentationFinalizationRecord,
@@ -368,6 +369,17 @@ export class SlackAgentViewPresentation {
   }
 
   /**
+   * Freeze terminal intent for content that another durable delivery path owns.
+   * The caller must acknowledge that delivery later before lifecycle cleanup.
+   */
+  async prepareDeferredTerminalDelivery(result: 'answer' | 'failure'): Promise<boolean> {
+    const presentation = await this.requirePresentation();
+    if (presentation.schemaVersion !== 3) return false;
+    const terminal = await this.prepareTerminalDelivery(result);
+    return terminal.operationId !== undefined;
+  }
+
+  /**
    * Start Slack's native Agent Session processing indicator independently of
    * the richer, owner-authored activity message. The intent is persisted
    * before the API call so admission replay cannot blindly duplicate an
@@ -415,8 +427,7 @@ export class SlackAgentViewPresentation {
 
   async settleAgentSession(result: 'answer' | 'failure'): Promise<void> {
     let presentation = await this.requirePresentation();
-    if (presentation.schemaVersion !== 3 || presentation.terminalDelivery.state !== 'intended' ||
-        presentation.terminalDelivery.operation.certainty !== 'acknowledged') return;
+    if (presentation.schemaVersion !== 3 || !presentationHasTerminalOutcome(presentation)) return;
     const desired: SlackPresentationAgentSessionState = result === 'answer'
       ? 'active'
       : 'suspended';
@@ -502,8 +513,7 @@ export class SlackAgentViewPresentation {
     const ambiguousNativeActivity = presentation.activityProjection.surface ===
         'assistant_status' && presentation.activityProjection.state === 'unavailable' &&
       presentation.currentActivity?.operation.certainty === 'unknown';
-    if (presentation.terminalDelivery.state !== 'intended' ||
-        presentation.terminalDelivery.operation.certainty !== 'acknowledged' ||
+    if (!presentationHasTerminalOutcome(presentation) ||
         presentation.activityProjection.surface === 'unselected' ||
         presentation.activityProjection.state !== 'visible' && !ambiguousNativeActivity ||
         (presentation.cleanup.state === 'not_required' &&
@@ -600,8 +610,7 @@ export class SlackAgentViewPresentation {
   async settleLifecycle(): Promise<void> {
     const presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3 || presentation.lifecyclePhase === 'settled' ||
-        presentation.terminalDelivery.state !== 'intended' ||
-        presentation.terminalDelivery.operation.certainty !== 'acknowledged') return;
+        !presentationHasTerminalOutcome(presentation)) return;
     await this.transition(presentation, { kind: 'set_lifecycle_phase', phase: 'settled' });
   }
 
@@ -1503,6 +1512,13 @@ export class SlackAgentViewPresentation {
   }> {
     let presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3) return { mayWrite: true, acknowledged: false };
+    if (presentation.terminalDelivery.state === 'abandoned') {
+      return {
+        mayWrite: false,
+        acknowledged: true,
+        operationId: presentation.terminalDelivery.operation.operationId,
+      };
+    }
     if (presentation.terminalDelivery.state === 'none') {
       const operationId = `terminal_${hash(`${presentation.runId}:${result}:1`).slice(0, 24)}`;
       await this.transition(presentation, {

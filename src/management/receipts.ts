@@ -1,3 +1,5 @@
+import type { WebClient } from '@slack/web-api';
+
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { IdentityStore } from '../identity/types.ts';
@@ -6,6 +8,11 @@ import {
   type SlackInstallationExecutionResolver,
 } from '../slack/installation-execution.ts';
 import { renderSlackActionLink } from '../slack/message-format.ts';
+import type { SlackPresentationStatePort } from '../slack/agent-view-presentation.ts';
+import {
+  abandonDeferredTerminalSlackDelivery,
+  acknowledgeDeferredTerminalSlackDelivery,
+} from '../slack/presentation-repair.ts';
 import { SlackTransportError } from '../slack/transport/types.ts';
 import {
   handoffCreatedAgentThread,
@@ -114,6 +121,11 @@ export interface ManagementReceiptDeliveryResult {
   deliveryRef: string;
 }
 
+export interface AgentWelcomePresentationRuntime {
+  state: SlackPresentationStatePort;
+  resolveClient(workspaceId: string): Promise<WebClient>;
+}
+
 export async function completeAgentWelcomeDelivery(
   record: ManagementReceiptOutboxRecord,
   delivery: {
@@ -130,11 +142,26 @@ export async function completeAgentWelcomeDelivery(
     ): Awaited<ReturnType<ConfigStore['putSlackPublicContext']>> |
       ReturnType<ConfigStore['putSlackPublicContext']>;
   },
+  presentation?: AgentWelcomePresentationRuntime,
 ): Promise<void> {
   if (!isAgentCreatedWelcome(record.receipt)) return;
   if (delivery.persona !== 'agent') return;
   if (record.destination.kind !== 'thread' || !delivery.threadTs) {
     throw new Error('The Agent welcome must target its creation thread.');
+  }
+  let presentationError: unknown;
+  if (record.receipt.presentationRunId && presentation) {
+    try {
+      await acknowledgeDeferredTerminalSlackDelivery({
+        runId: record.receipt.presentationRunId,
+        state: presentation.state,
+        client: await presentation.resolveClient(delivery.workspaceId),
+      });
+    } catch (error) {
+      // The Slack post is already durable. Still complete routing and public
+      // context so one failed lifecycle effect cannot strand the Agent thread.
+      presentationError = error;
+    }
   }
   await handoffCreatedAgentThread({
     workspaceId: record.destination.workspaceId,
@@ -155,11 +182,32 @@ export async function completeAgentWelcomeDelivery(
     agentId: record.receipt.agentId,
     text: delivery.text,
   });
+  if (presentationError) {
+    console.warn('[chickpea:management] Agent welcome lifecycle settlement failed', JSON.stringify({
+      outboxId: record.outboxId,
+      failureCode: receiptDeliveryFailureCode(presentationError),
+    }));
+    throw presentationError;
+  }
+}
+
+export async function failAgentWelcomeDelivery(
+  record: ManagementReceiptOutboxRecord,
+  presentation?: AgentWelcomePresentationRuntime,
+): Promise<void> {
+  if (!isAgentCreatedWelcome(record.receipt) || !record.receipt.presentationRunId ||
+      !presentation || record.destination.kind !== 'thread') return;
+  await abandonDeferredTerminalSlackDelivery({
+    runId: record.receipt.presentationRunId,
+    state: presentation.state,
+    resolveClient: presentation.resolveClient,
+  });
 }
 
 export async function drainManagementReceiptOutbox(input: {
   management: ManagementStore;
   deliver(record: ManagementReceiptOutboxRecord): Promise<ManagementReceiptDeliveryResult>;
+  onTerminalFailure?(record: ManagementReceiptOutboxRecord, failureCode: string): Promise<void>;
   now?: () => number;
   limit?: number;
 }): Promise<{ delivered: number; retried: number; failed: number }> {
@@ -194,6 +242,16 @@ export async function drainManagementReceiptOutbox(input: {
         failureCode,
         ...(terminal ? {} : { nextAttemptAt: now() + receiptRetryDelay(record.attempts) }),
       });
+      if (terminal) {
+        try {
+          await input.onTerminalFailure?.(record, failureCode);
+        } catch (cleanupError) {
+          console.warn('[chickpea:management] terminal receipt cleanup failed', JSON.stringify({
+            outboxId: record.outboxId,
+            failureCode: receiptDeliveryFailureCode(cleanupError),
+          }));
+        }
+      }
       console.warn('[chickpea:management] receipt delivery failed', JSON.stringify({
         outboxId: record.outboxId,
         destination: record.destination.kind,

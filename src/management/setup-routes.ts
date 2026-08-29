@@ -55,6 +55,7 @@ import {
   getIdentityStore,
   getManagementStore,
   getSettingsStore,
+  getSlackStateStore,
   getUsageStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
@@ -66,11 +67,14 @@ import {
 } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
+import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
+import { slackPresentationStatePort } from '../slack/presentation-state-port.ts';
 import {
   completeAgentWelcomeDelivery,
   completeManagementSetupReceipt,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
+  failAgentWelcomeDelivery,
 } from './receipts.ts';
 import type { ManagementStore } from './store.ts';
 import { ManagementError, type ManagementSetupRecord } from './types.ts';
@@ -613,8 +617,22 @@ async function finishSetup(
     action: setup.action,
     outcome: 'completed',
   });
+  const presentationState = slackPresentationStatePort(
+    getSlackStateStore(dependencies.platformEnv),
+  );
+  const presentation = presentationState
+    ? {
+        state: presentationState,
+        resolveClient: async (workspaceId: string) =>
+          (await resolveSlackInstallationExecutionContext(
+            workspaceId,
+            dependencies.platformEnv,
+          )).client,
+      }
+    : undefined;
   await drainManagementReceiptOutbox({
     management: dependencies.management,
+    onTerminalFailure: (record) => failAgentWelcomeDelivery(record, presentation),
     deliver: (record) => (options.deliverReceipt ?? deliverManagementReceiptToSlack)(record, {
       identity: dependencies.identity,
       ...(dependencies.platformEnv ? { env: dependencies.platformEnv } : {}),
@@ -622,6 +640,7 @@ async function finishSetup(
         deliveredRecord,
         delivery,
         dependencies.config,
+        presentation,
       ),
     }),
     now: () => at,

@@ -87,12 +87,16 @@ test('the outbox drain records the real Slack failure code and settles permanent
   try {
     await management.putOutbox({ ...ACKNOWLEDGEMENT, status: 'pending', attempts: 0 });
     const at = ACKNOWLEDGEMENT.nextAttemptAt;
+    const terminalFailures: Array<{ outboxId: string; failureCode: string }> = [];
 
     const retried = await drainManagementReceiptOutbox({
       management,
       now: () => at,
       deliver: async () => {
         throw new SlackTransportError('reactions.add', 'ratelimited', { retryable: true });
+      },
+      onTerminalFailure: async (record, failureCode) => {
+        terminalFailures.push({ outboxId: record.outboxId, failureCode });
       },
     });
     assert.deepEqual(retried, { delivered: 0, retried: 1, failed: 0 });
@@ -107,11 +111,18 @@ test('the outbox drain records the real Slack failure code and settles permanent
       deliver: async () => {
         throw new SlackTransportError('reactions.add', 'missing_scope');
       },
+      onTerminalFailure: async (failedRecord, failureCode) => {
+        terminalFailures.push({ outboxId: failedRecord.outboxId, failureCode });
+      },
     });
     assert.deepEqual(rejected, { delivered: 0, retried: 0, failed: 1 });
     record = await management.getOutboxForOperation(ACKNOWLEDGEMENT.operationId);
     assert.equal(record?.status, 'failed');
     assert.equal(record?.failureCode, 'missing_scope');
+    assert.deepEqual(terminalFailures, [{
+      outboxId: ACKNOWLEDGEMENT.outboxId,
+      failureCode: 'missing_scope',
+    }]);
   } finally {
     management.close();
   }

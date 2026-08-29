@@ -13,6 +13,7 @@ import {
   completeAgentWelcomeDelivery,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
+  failAgentWelcomeDelivery,
 } from '../management/receipts.ts';
 import type { SlackStateStore } from './claim-store.ts';
 import type { WorkStore } from '../work/types.ts';
@@ -42,7 +43,7 @@ import {
 } from './installation-execution.ts';
 import { recordSlackInstallationUnavailable } from './installation-observability.ts';
 import { MAX_POST_DISPATCH_ATTEMPTS } from './turn-jobs.ts';
-import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
+import { slackPresentationStatePort } from './presentation-state-port.ts';
 import { recordDeliveredSlackAgentMessage } from './public-context.ts';
 import { drainSlackPresentationRepairs } from './presentation-repair.ts';
 
@@ -54,6 +55,8 @@ let draining: Promise<void> | undefined;
 let wakeRequested = false;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let autoWakeSuspended = false;
+
+export { slackPresentationStatePort } from './presentation-state-port.ts';
 
 /**
  * Test seam: suspend the admission-triggered auto-wake so a test can admit a
@@ -367,8 +370,17 @@ export async function drainNodeTurnRelayOnce(
   if (!options.state) {
     const identity = getIdentityStore(env);
     const config = getConfigStore(env);
+    const presentationState = slackPresentationStatePort(state);
+    const presentation = presentationState
+      ? {
+          state: presentationState,
+          resolveClient: async (workspaceId: string) =>
+            (await installationFor(workspaceId)).client,
+        }
+      : undefined;
     await drainManagementReceiptOutbox({
       management: getManagementStore(env),
+      onTerminalFailure: (record) => failAgentWelcomeDelivery(record, presentation),
       deliver: (record) => deliverManagementReceiptToSlack(record, {
         identity,
         ...(env ? { env } : {}),
@@ -376,6 +388,7 @@ export async function drainNodeTurnRelayOnce(
           deliveredRecord,
           delivery,
           config,
+          presentation,
         ),
       }),
     }).catch(() => undefined);
@@ -509,34 +522,4 @@ async function drainLedgerRuns(input: {
     }),
   });
   await driver.drain();
-}
-
-export function slackPresentationStatePort(
-  state: SlackStateStore,
-): SlackPresentationStatePort | undefined {
-  if (
-    !state.getRunPresentation ||
-    !state.getLatestThreadSessionGeneration ||
-    !state.transitionRunPresentation ||
-    !state.reserveSlackAppend ||
-    !state.applySlackAppendCooldown ||
-    !state.matchFlueObservation
-  ) return undefined;
-  const activityCoordinator = state.reserveSlackActivityStatus &&
-      state.applySlackActivityStatusCooldown
-    ? {
-        reserveSlackActivityStatus: state.reserveSlackActivityStatus.bind(state),
-        applySlackActivityStatusCooldown:
-          state.applySlackActivityStatusCooldown.bind(state),
-      }
-    : {};
-  return {
-    getRunPresentation: state.getRunPresentation.bind(state),
-    getLatestThreadSessionGeneration: state.getLatestThreadSessionGeneration.bind(state),
-    transitionRunPresentation: state.transitionRunPresentation.bind(state),
-    reserveSlackAppend: state.reserveSlackAppend.bind(state),
-    applySlackAppendCooldown: state.applySlackAppendCooldown.bind(state),
-    ...activityCoordinator,
-    matchFlueObservation: state.matchFlueObservation.bind(state),
-  };
 }
