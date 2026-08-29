@@ -57,6 +57,8 @@ test('router covers all authoring postures while leaving detailed judgment lazy'
     'single approval boundary',
     'remember or edit Agent memory',
     'compound request as one Agent-authoring request',
+    'use import_skill',
+    'not a second approval',
     'delete scheduled work does activate this skill',
     'propose_workspace_changes with delete_routine',
   ]) assert.match(AGENT_AUTHORING_ROUTER_INSTRUCTION, new RegExp(phrase, 'i'));
@@ -79,6 +81,9 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     'wait for explicit confirmation', 'Never delete through `apply_workspace_changes`',
     'Slack presence', 'Channel reach', 'editing authority',
     'inspect_workspace', 'propose_workspace_changes', 'confirm_workspace_change',
+    'call `import_skill`', 'applies one bounded new skill immediately',
+    'request itself is approval', 'reversible, local-only change',
+    'clarifying question instead of asking for approval',
     'only review step', 'exactly one approval', 'Never re-propose unchanged content',
     'publishes its Slack handle',
     'opaque control token', 'Preserve it byte-for-byte', 'never retype',

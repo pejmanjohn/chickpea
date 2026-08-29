@@ -276,7 +276,8 @@ async function formatAppliedSkillReceipt(input: {
     .map((name) => `\`${escapeSlackControlCharacters(name)}\``)
     .join(', ');
   if (changed.length === 1) {
-    return `Installed skill ${renderedSkills} on ${agentName}. It’s active from the next message.`;
+    const verb = beforeSkills.has(changed[0]!) ? 'Replaced' : 'Installed';
+    return `${verb} skill ${renderedSkills} on ${agentName}. It’s active from the next message.`;
   }
   return `Installed skills ${renderedSkills} on ${agentName}. They’re active from the next message.`;
 }

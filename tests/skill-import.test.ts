@@ -103,6 +103,7 @@ const TREE = {
     { path: 'README.md', type: 'blob' },
   ],
 };
+const EXACT_OID = '3b3fad9abcdef0123456789abcdef0123456789a';
 
 test('resolveSkillSource resolves candidates, flags scripts, and skips test fixtures', async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = [];
@@ -149,9 +150,23 @@ test('resolveSkillSource honors an @skill filter', async () => {
 });
 
 test('resolveSkillSource narrows a GitHub tree URL to its selected directory', async () => {
+  const embedded = JSON.stringify({
+    payload: {
+      codeViewTreeRoute: {
+        path: 'skills/foo',
+        refInfo: { name: 'main', currentOid: EXACT_OID },
+        tree: {
+          items: [{ name: 'SKILL.md', path: 'skills/foo/SKILL.md', contentType: 'file' }],
+          totalCount: 1,
+        },
+      },
+    },
+  });
   const fetchImpl = mockFetch([
-    ['/git/trees/', { json: TREE }],
-    ['/main/skills/foo/SKILL.md', { text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo' }],
+    ['https://github.com/acme/skills/tree/main/skills/foo', {
+      text: `<script data-target="react-app.embeddedData">${embedded}</script>`,
+    }],
+    [`/${EXACT_OID}/skills/foo/SKILL.md`, { text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo' }],
   ]);
   const result = await resolveSkillSource({
     owner: 'acme',
@@ -163,13 +178,13 @@ test('resolveSkillSource narrows a GitHub tree URL to its selected directory', a
   assert.equal(result.total, 1);
 });
 
-test('resolveSkillSource falls back to the public directory page when the exact-path tree API is rate limited', async () => {
+test('resolveSkillSource resolves an exact public directory without scanning the repository tree', async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = [];
   const embedded = JSON.stringify({
     payload: {
       codeViewTreeRoute: {
         path: 'skills/foo',
-        refInfo: { name: 'main' },
+        refInfo: { name: 'main', currentOid: EXACT_OID },
         tree: {
           items: [{ name: 'SKILL.md', path: 'skills/foo/SKILL.md', contentType: 'file' }],
           totalCount: 1,
@@ -178,14 +193,10 @@ test('resolveSkillSource falls back to the public directory page when the exact-
     },
   });
   const fetchImpl = mockFetch([
-    ['/git/trees/', {
-      status: 403,
-      headers: { 'x-ratelimit-remaining': '0' },
-    }],
     ['https://github.com/acme/skills/tree/main/skills/foo', {
       text: `<script type="application/json" data-target="react-app.embeddedData">${embedded}</script>`,
     }],
-    ['/main/skills/foo/SKILL.md', {
+    [`/${EXACT_OID}/skills/foo/SKILL.md`, {
       text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo',
     }],
   ], requests);
@@ -197,11 +208,14 @@ test('resolveSkillSource falls back to the public directory page when the exact-
     skillPath: 'skills/foo',
   }, fetchImpl);
 
-  assert.equal(requests.length, 3);
+  assert.equal(requests.length, 2);
+  assert.equal(requests.some((request) => request.url.includes('/git/trees/')), false);
   assert.deepEqual(result.skills.map((skill) => skill.name), ['foo']);
   assert.equal(result.skills[0]?.hasScripts, false);
   assert.equal(result.total, 1);
   assert.equal(result.skipped, 0);
+  assert.equal(result.ref, EXACT_OID);
+  assert.match(result.skills[0]!.sourceUrl, new RegExp(EXACT_OID));
 });
 
 test('exact-path rate-limit fallback conservatively flags packaged directories', async () => {
@@ -209,7 +223,7 @@ test('exact-path rate-limit fallback conservatively flags packaged directories',
     payload: {
       codeViewTreeRoute: {
         path: 'skills/foo',
-        refInfo: { name: 'main' },
+        refInfo: { name: 'main', currentOid: EXACT_OID },
         tree: {
           items: [
             { name: 'SKILL.md', path: 'skills/foo/SKILL.md', contentType: 'file' },
@@ -225,7 +239,7 @@ test('exact-path rate-limit fallback conservatively flags packaged directories',
     ['https://github.com/acme/skills/tree/main/skills/foo', {
       text: `<script data-target="react-app.embeddedData">${embedded}</script>`,
     }],
-    ['/main/skills/foo/SKILL.md', {
+    [`/${EXACT_OID}/skills/foo/SKILL.md`, {
       text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo',
     }],
   ]);
@@ -239,12 +253,12 @@ test('exact-path rate-limit fallback conservatively flags packaged directories',
   assert.equal(result.skills[0]?.hasScripts, true);
 });
 
-test('exact-path fallback preserves the original rate-limit error when the page is not one skill directory', async () => {
+test('an exact-path parent directory falls back to bounded candidate discovery', async () => {
   const parentDirectory = JSON.stringify({
     payload: {
       codeViewTreeRoute: {
         path: 'skills',
-        refInfo: { name: 'main' },
+        refInfo: { name: 'main', currentOid: EXACT_OID },
         tree: {
           items: [{ name: 'foo', path: 'skills/foo', contentType: 'directory' }],
           totalCount: 1,
@@ -253,21 +267,25 @@ test('exact-path fallback preserves the original rate-limit error when the page 
     },
   });
   const fetchImpl = mockFetch([
-    ['/git/trees/', { status: 429 }],
     ['https://github.com/acme/skills/tree/main/skills', {
       text: `<script data-target="react-app.embeddedData">${parentDirectory}</script>`,
     }],
+    ['/git/trees/', { json: TREE }],
+    ['/main/skills/foo/SKILL.md', {
+      text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo',
+    }],
+    ['/main/skills/bar/SKILL.md', {
+      text: '---\nname: bar\ndescription: The bar skill.\n---\n# Bar',
+    }],
   ]);
 
-  await assert.rejects(
-    () => resolveSkillSource({
-      owner: 'acme',
-      repo: 'skills',
-      ref: 'main',
-      skillPath: 'skills',
-    }, fetchImpl),
-    (error: unknown) => error instanceof SkillImportError && error.code === 'rate_limited',
-  );
+  const result = await resolveSkillSource({
+    owner: 'acme',
+    repo: 'skills',
+    ref: 'main',
+    skillPath: 'skills',
+  }, fetchImpl);
+  assert.deepEqual(result.skills.map(({ name }) => name), ['foo', 'bar']);
 });
 
 test('exact-path fallback accepts a full GitHub OID for an abbreviated ref', async () => {
@@ -275,7 +293,7 @@ test('exact-path fallback accepts a full GitHub OID for an abbreviated ref', asy
     payload: {
       codeViewTreeRoute: {
         path: 'skills/foo',
-        refInfo: { name: '3b3fad9abcdef0123456789', currentOid: '3b3fad9abcdef0123456789' },
+        refInfo: { name: EXACT_OID, currentOid: EXACT_OID },
         tree: {
           items: [{ name: 'SKILL.md', path: 'skills/foo/SKILL.md', contentType: 'file' }],
           totalCount: 1,
@@ -288,7 +306,7 @@ test('exact-path fallback accepts a full GitHub OID for an abbreviated ref', asy
     ['https://github.com/acme/skills/tree/3b3fad9/skills/foo', {
       text: `<script data-target="react-app.embeddedData">${embedded}</script>`,
     }],
-    ['/3b3fad9/skills/foo/SKILL.md', {
+    [`/${EXACT_OID}/skills/foo/SKILL.md`, {
       text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo',
     }],
   ]);

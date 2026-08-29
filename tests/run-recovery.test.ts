@@ -82,6 +82,7 @@ test('activated direct-message dispatch preserves DM kind without channel_type',
     if (envelope.schemaVersion !== 2) throw new Error('expected a signal dispatch');
     assert.equal(envelope.message.attributes.threadTs, '100.009');
     assert.equal(envelope.message.attributes.conversationKind, 'im');
+    assert.equal(envelope.message.attributes.requesterText, dmTurn.text);
     assert.equal(envelope.initialData?.conversation.threadTs, '100.009');
   } finally {
     db.close();

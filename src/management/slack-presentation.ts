@@ -239,6 +239,9 @@ function skillPresentationRecords(value: unknown): SkillPresentationRecord[] | u
 
 function formatSlackSkillDetails(skill: SkillPresentationRecord): string {
   return [
+    ...(skill.enabled === undefined
+      ? []
+      : ['*Status*', quoteSlackValue(skill.enabled ? 'Enabled' : 'Disabled')]),
     '*Description*',
     quoteSlackExcerpt(skill.description, 600),
     '*Instructions*',

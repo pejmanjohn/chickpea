@@ -94,7 +94,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'inspect_workspace', 'prepare_connector_setup', 'discover_slack_channels', 'test_mcp_connection',
     'inspect_memory', 'inspect_routines',
     'export_workspace_recipe', 'preview_workspace_recipe',
-    'propose_skill_import',
+    'import_skill', 'propose_skill_import',
     'propose_workspace_changes', 'apply_workspace_changes', 'confirm_workspace_change',
     'undo_workspace_change', 'get_operation', 'revoke_setup_link',
   ]),

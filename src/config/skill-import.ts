@@ -225,18 +225,31 @@ export async function resolveSkillSource(
   const ref = parsed.ref ?? metadata?.defaultBranch ?? 'main';
   const visibility = metadata?.private ? 'private' : 'public';
 
+  // A public tree URL already identifies one directory. Inspect that bounded
+  // directory page directly instead of downloading the repository's complete
+  // recursive tree, which avoids anonymous API quota and keeps the common
+  // Slack import path fast even for very large repositories.
+  if (!authenticated && parsed.ref && parsed.skillPath) {
+    try {
+      return await resolveExactPublicSkillFromGithubPage({
+        ...parsed,
+        ref: parsed.ref,
+        skillPath: parsed.skillPath,
+      }, fetchImpl);
+    } catch (error) {
+      if (!(error instanceof SkillImportError) || error.code !== 'not_exact_skill_directory') {
+        throw error;
+      }
+      // A parent directory still honors the documented multi-candidate path.
+      // Continue to the bounded recursive tree scan below.
+    }
+  }
+
   const treeRes = await githubRequest(
     fetchImpl,
     `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
     { headers },
   );
-  if (!treeRes.ok && isRateLimited(treeRes) && !authenticated && parsed.ref && parsed.skillPath) {
-    return await resolveExactPublicSkillFromGithubPage({
-      ...parsed,
-      ref: parsed.ref,
-      skillPath: parsed.skillPath,
-    }, fetchImpl);
-  }
   assertRepositoryResponse(treeRes, authenticated, owner, repo);
   const tree = await readJsonResponseBounded<{ tree?: GitTreeEntry[] }>(
     treeRes,
@@ -333,8 +346,9 @@ interface GithubDirectoryItem {
 
 /**
  * GitHub's anonymous REST quota is shared by many Worker invocations. A tree
- * URL already names one exact public directory, so a rate-limited REST call
- * can safely fall back to the public directory page plus raw SKILL.md. The
+ * URL already names one exact public directory, so inspect the public
+ * directory page plus raw SKILL.md without spending that quota. The inspected
+ * commit OID, not the mutable branch name, pins the imported bytes. The
  * embedded directory listing also preserves the packaged-script check; if the
  * page is incomplete, fail closed instead of guessing about sibling content.
  */
@@ -343,8 +357,8 @@ async function resolveExactPublicSkillFromGithubPage(
   fetchImpl: typeof fetch,
 ): Promise<SkillResolution> {
   const { owner, repo, ref, skillPath } = parsed;
-  const sourceUrl = `https://github.com/${owner}/${repo}/tree/${encodeURIComponent(ref)}/${encodeGithubPath(skillPath)}`;
-  const pageRes = await githubRequest(fetchImpl, sourceUrl, {
+  const requestedSourceUrl = `https://github.com/${owner}/${repo}/tree/${encodeURIComponent(ref)}/${encodeGithubPath(skillPath)}`;
+  const pageRes = await githubRequest(fetchImpl, requestedSourceUrl, {
     headers: { 'user-agent': 'chickpea-skill-import' },
   });
   assertRepositoryResponse(pageRes, false, owner, repo);
@@ -371,7 +385,10 @@ async function resolveExactPublicSkillFromGithubPage(
   const items = route?.tree?.items;
   const refMatches = route?.refInfo?.name === ref || route?.refInfo?.currentOid?.startsWith(ref);
   if (!route || route.path !== skillPath || !refMatches || !Array.isArray(items)) {
-    throw new SkillImportError('rate_limited', GITHUB_RATE_LIMITED);
+    throw new SkillImportError(
+      'not_exact_skill_directory',
+      'That GitHub path is not one exact skill directory. Use the skill directory URL or repository source.',
+    );
   }
   if (route.tree?.totalCount !== undefined && route.tree.totalCount !== items.length) {
     throw new SkillImportError(
@@ -385,15 +402,26 @@ async function resolveExactPublicSkillFromGithubPage(
     (item) => item.path === skillDocumentPath && item.contentType === 'file',
   );
   if (!hasSkillDocument) {
-    throw new SkillImportError('rate_limited', GITHUB_RATE_LIMITED);
+    throw new SkillImportError(
+      'not_exact_skill_directory',
+      'That GitHub directory does not contain SKILL.md. Use the skill directory URL or repository source.',
+    );
   }
+  const resolvedRef = route.refInfo?.currentOid;
+  if (!resolvedRef || !/^[0-9a-f]{40,64}$/i.test(resolvedRef)) {
+    throw new SkillImportError(
+      'github_error',
+      'GitHub did not provide immutable provenance for this skill. Try again.',
+    );
+  }
+  const sourceUrl = `https://github.com/${owner}/${repo}/tree/${resolvedRef}/${encodeGithubPath(skillPath)}`;
   const hasScripts = items.some((item) =>
     item.path !== skillDocumentPath &&
     (item.contentType === 'directory' || SCRIPT_EXT_RE.test(item.path ?? item.name ?? '')),
   );
   const rawRes = await githubRequest(
     fetchImpl,
-    `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(ref)}/${encodeGithubPath(skillDocumentPath)}`,
+    `https://raw.githubusercontent.com/${owner}/${repo}/${resolvedRef}/${encodeGithubPath(skillDocumentPath)}`,
   );
   if (!rawRes.ok) {
     throw new SkillImportError('rate_limited', GITHUB_RATE_LIMITED);
@@ -408,9 +436,9 @@ async function resolveExactPublicSkillFromGithubPage(
   const description = (front.description || '').trim().slice(0, MAX_DESCRIPTION);
   const instructions = (front.body || markdown).trim().slice(0, MAX_INSTRUCTIONS);
   if (!name || !description || !instructions) {
-    return exactPublicSkillResolution(parsed, [], 1, 1);
+    return exactPublicSkillResolution({ ...parsed, ref: resolvedRef }, [], 1, 1);
   }
-  return exactPublicSkillResolution(parsed, [{
+  return exactPublicSkillResolution({ ...parsed, ref: resolvedRef }, [{
     name,
     description,
     instructions,

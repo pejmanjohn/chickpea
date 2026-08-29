@@ -29,6 +29,7 @@ import {
   type ConnectionAccount,
   type ConnectionAccountPolicy,
   type CustomAgentConfig,
+  type SkillConfig,
 } from '../config/types.ts';
 import {
   parseSkillSource,
@@ -59,6 +60,7 @@ import type { WorkStore } from '../work/types.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
+import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 import {
   AGENT_AUTHORING_GUIDE_DIGEST,
   AGENT_AUTHORING_GUIDE_URI,
@@ -103,6 +105,8 @@ import {
   type ManagementChangeSetProposalRecord,
   type ChickpeaManagementHandoff,
   type ManagementItemOutcome,
+  type ImportSkillInput,
+  type ImportSkillResult,
   type ManagementMemorySnapshot,
   type ManagementAgentCreateInput,
   type ManagementAgentPatch,
@@ -112,6 +116,7 @@ import {
   type ManagementOperationResult,
   type ManagementPreparedItem,
   type ManagementProposalRecord,
+  type ManagementRequestRecord,
   type ManagementRequestProgress,
   type ManagementRoutineInspectionInput,
   type ManagementRoutineSnapshot,
@@ -283,6 +288,176 @@ export class WorkspaceManagementService {
   async proposeSkillImport(
     input: ProposeSkillImportInput,
   ): Promise<ProposeSkillImportResult> {
+    const resolved = await this.resolveSkillImportCandidate(input, 'propose_skill_import');
+    if ('status' in resolved) return resolved;
+    const { agent, agentId, skill, skills, existingIndex } = resolved;
+    const proposal = await this.proposeWorkspaceChanges({
+      context: input.context,
+      idempotencyKey: input.idempotencyKey,
+      guideVersion: input.guideVersion,
+      authoringReason: 'skill_creation',
+      operations: [{
+        itemId: 'skill-import',
+        kind: 'update_agent',
+        agentId,
+        expectedRevision: agent.revision,
+        patch: { skills },
+      }],
+    });
+    const { preview: _privatePreview, ...publicProposal } = proposal;
+    return {
+      ...publicProposal,
+      presentation: {
+        slack: formatSlackSkillImportProposal(proposal.preview, skill.sourceUrl),
+      },
+      import: skillImportMetadata(skill, existingIndex >= 0),
+    };
+  }
+
+  async importSkill(input: ImportSkillInput): Promise<ImportSkillResult> {
+    const actor = await this.requireLiveActor(input.context);
+    assertExplicitSkillImportRequest(actor, input);
+    const replayOperationId = skillImportOperationId(actor, input);
+    const replay = await this.stores.management.getRequest(replayOperationId);
+    if (replay) return await this.replaySkillImport(actor, replay);
+
+    const resolved = await this.resolveSkillImportCandidate(input, 'import_skill');
+    if ('status' in resolved) return resolved;
+    const { agent, agentId, skill, importedSkill, skills, existingIndex } = resolved;
+    const metadata = skillImportMetadata(skill, existingIndex >= 0);
+    const existing = existingIndex >= 0 ? agent.skills[existingIndex] : undefined;
+    if (existing && canonicalJson(existing) === canonicalJson(importedSkill)) {
+      return {
+        status: 'already_installed',
+        presentation: {
+          slack: `Skill \`${escapeSlackControlCharacters(skill.name)}\` is already installed on ${
+            escapeSlackControlCharacters(agent.name)
+          }. No changes were made.`,
+        },
+        import: { ...metadata, replacedExisting: false },
+      };
+    }
+    if (existing && input.replaceExisting !== true) {
+      return {
+        status: 'replacement_confirmation_required',
+        instruction: `Skill ${skill.name} already exists with different content. Ask the requester to reply exactly \`replace ${skill.name} from ${skill.sourceUrl}\`. On that new message, call import_skill with that immutable source, replaceExisting true, and a new idempotencyKey. Do not ask for a separate approval after that clarification.`,
+        import: { ...metadata, replacedExisting: true },
+      };
+    }
+    if (existing && !explicitSkillReplacementRequest(actor, skill)) {
+      throw new ManagementError(
+        'invalid_request',
+        `Replacement needs a new requester message that says \`replace ${skill.name} from ${skill.sourceUrl}\`. No change was made.`,
+      );
+    }
+    const operationId = 'skill-import';
+    const applied = await this.applyWorkspaceChanges({
+      context: input.context,
+      idempotencyKey: input.idempotencyKey,
+      operationId: replayOperationId,
+      operations: [{
+        itemId: operationId,
+        kind: 'update_agent',
+        agentId,
+        expectedRevision: agent.revision,
+        patch: { skills },
+      }],
+      approvalBasis: 'explicit_requester_command',
+      trustedReversibleOperationIds: [operationId],
+      acknowledgementOwner: 'caller',
+      receiptMetadata: { skillImport: metadata },
+    });
+    const outcome = applied.outcomes.find(({ itemId }) => itemId === operationId);
+    if (applied.status !== 'completed' || outcome?.disposition !== 'applied') {
+      throw new ManagementError(
+        'invalid_state',
+        `The bounded skill import did not complete (operation ${applied.operationId}). Inspect the Agent, then retry with a new idempotency key.`,
+      );
+    }
+    const undoAvailable = outcome.undoAvailable === true;
+    const verb = existing ? 'Replaced' : 'Installed';
+    return {
+      status: 'installed',
+      operationId: applied.operationId,
+      activation: applied.activation,
+      undoAvailable,
+      presentation: {
+        slack: `${verb} skill \`${escapeSlackControlCharacters(skill.name)}\` on ${
+          escapeSlackControlCharacters(agent.name)
+        }. It’s active from the next message.${undoAvailable ? ' You can undo this change.' : ''}`,
+      },
+      import: metadata,
+    };
+  }
+
+  private async replaySkillImport(
+    actor: LiveManagementActor,
+    request: ManagementRequestRecord,
+  ): Promise<ImportSkillResult> {
+    const result = request.result;
+    const operation = request.operations[0];
+    const outcome = result?.outcomes.find(({ itemId }) => itemId === 'skill-import');
+    if (request.status !== 'completed' || result?.status !== 'completed' ||
+        outcome?.disposition !== 'applied' || operation?.kind !== 'update_agent' ||
+        !operation.patch.skills) {
+      throw new ManagementError(
+        'invalid_state',
+        `The bounded skill import did not complete (operation ${request.operationId}). Inspect the Agent, then retry with a new idempotency key.`,
+      );
+    }
+    const undo = await this.stores.management.getUndo(request.operationId);
+    const beforeSkills = undo?.inverse.kind === 'update_agent' && undo.inverse.patch.skills
+      ? undo.inverse.patch.skills
+      : undefined;
+    const changedSkill = beforeSkills
+      ? singleChangedSkill(beforeSkills, operation.patch.skills)
+      : undefined;
+    if (!beforeSkills || !changedSkill) {
+      throw new ManagementError(
+        'invalid_state',
+        `The skill import receipt is unavailable (operation ${request.operationId}). Inspect the Agent before retrying.`,
+      );
+    }
+    const agent = await this.requireEditableAgent(actor, operation.agentId);
+    const replacedExisting = beforeSkills.some(({ name }) => name === changedSkill.name);
+    const metadata = result.receiptMetadata?.skillImport;
+    if (!metadata || metadata.name !== changedSkill.name ||
+        metadata.replacedExisting !== replacedExisting) {
+      throw new ManagementError(
+        'invalid_state',
+        `The skill import receipt is unavailable (operation ${request.operationId}). Inspect the Agent before retrying.`,
+      );
+    }
+    const undoAvailable = outcome.undoAvailable === true && undo?.status === 'available';
+    const verb = replacedExisting ? 'Replaced' : 'Installed';
+    return {
+      status: 'installed',
+      operationId: result.operationId,
+      activation: result.activation,
+      undoAvailable,
+      presentation: {
+        slack: `${verb} skill \`${escapeSlackControlCharacters(changedSkill.name)}\` on ${
+          escapeSlackControlCharacters(agent.name)
+        }. It’s active from the next message.${undoAvailable ? ' You can undo this change.' : ''}`,
+      },
+      import: metadata,
+    };
+  }
+
+  private async resolveSkillImportCandidate(
+    input: ProposeSkillImportInput,
+    continuationTool: 'propose_skill_import' | 'import_skill',
+  ): Promise<
+    | Extract<ProposeSkillImportResult, { status: 'selection_required' }>
+    | {
+        agent: CustomAgentConfig;
+        agentId: string;
+        skill: SkillResolution['skills'][number];
+        importedSkill: SkillConfig;
+        skills: SkillConfig[];
+        existingIndex: number;
+      }
+  > {
     const actor = await this.requireLiveActor(input.context);
     if (input.guideVersion !== AGENT_AUTHORING_GUIDE_VERSION) {
       throw new ManagementError(
@@ -338,6 +513,7 @@ export class WorkspaceManagementService {
         `No importable SKILL.md matched that source or skill name.${cappedDetail}`,
       );
     }
+    const immutableResolution = /^[0-9a-f]{40,64}$/i.test(resolution.ref);
     if (matchingSkills.length > 1) {
       return {
         status: 'selection_required',
@@ -349,7 +525,7 @@ export class WorkspaceManagementService {
         candidates: matchingSkills.map(({
           name, description, path, sourceUrl, hasScripts,
         }) => ({ name, description, path, sourceUrl, hasScripts })),
-        instruction: 'Ask the requester to choose one candidate, then call propose_skill_import again with that candidate’s sourceUrl as source. Do not create a proposal yet.',
+        instruction: `Ask the requester to choose one candidate, then call ${continuationTool} again with that candidate’s sourceUrl as source. Do not create a proposal yet.`,
       };
     }
 
@@ -357,10 +533,28 @@ export class WorkspaceManagementService {
     if (skill.hasScripts) {
       throw new ManagementError(
         'invalid_request',
-        `Skill ${skill.name} includes executable scripts, which Chickpea Agent skills do not package. No proposal was created.`,
+        `Skill ${skill.name} includes executable scripts, which Chickpea Agent skills do not package. No change was made.`,
       );
     }
-    const importedSkill = {
+    if (!immutableResolution) {
+      return {
+        status: 'selection_required',
+        source: {
+          owner: resolution.owner,
+          repo: resolution.repo,
+          ref: resolution.ref,
+        },
+        candidates: [{
+          name: skill.name,
+          description: skill.description,
+          path: skill.path,
+          sourceUrl: skill.sourceUrl,
+          hasScripts: skill.hasScripts,
+        }],
+        instruction: `Ask the requester to post this candidate’s sourceUrl in a new message, then call ${continuationTool} again with that exact source. The service will pin the inspected commit before any write.`,
+      };
+    }
+    const importedSkill: SkillConfig = {
       name: skill.name,
       description: skill.description,
       instructions: skill.instructions,
@@ -370,32 +564,13 @@ export class WorkspaceManagementService {
     const skills = existingIndex >= 0
       ? agent.skills.map((existing, index) => index === existingIndex ? importedSkill : existing)
       : [...agent.skills, importedSkill];
-    const proposal = await this.proposeWorkspaceChanges({
-      context: input.context,
-      idempotencyKey: input.idempotencyKey,
-      guideVersion: input.guideVersion,
-      authoringReason: 'skill_creation',
-      operations: [{
-        itemId: 'skill-import',
-        kind: 'update_agent',
-        agentId,
-        expectedRevision: agent.revision,
-        patch: { skills },
-      }],
-    });
-    const { preview: _privatePreview, ...publicProposal } = proposal;
     return {
-      ...publicProposal,
-      presentation: {
-        slack: formatSlackSkillImportProposal(proposal.preview, skill.sourceUrl),
-      },
-      import: {
-        sourceUrl: skill.sourceUrl,
-        path: skill.path,
-        name: skill.name,
-        description: skill.description,
-        replacedExisting: existingIndex >= 0,
-      },
+      agent,
+      agentId,
+      skill,
+      importedSkill,
+      skills,
+      existingIndex,
     };
   }
 
@@ -660,7 +835,7 @@ export class WorkspaceManagementService {
     const storageIdempotencyKey = managementStorageIdempotencyKey(actor, input.idempotencyKey);
     const at = this.now();
     const reservation = await this.stores.management.reserveRequest({
-      operationId: `management_${this.randomId()}`,
+      operationId: input.operationId ?? `management_${this.randomId()}`,
       organizationId: actor.organizationId,
       actorUserId: actor.userId,
       actorMembershipId: actor.membershipId,
@@ -738,6 +913,11 @@ export class WorkspaceManagementService {
               progress.prepared?.itemId === operation.itemId
             ? { allowIdempotentRoutineSaveReplay: true }
             : {}),
+          ...(input.approvalBasis ? { approvalBasis: input.approvalBasis } : {}),
+          ...(input.trustedReversibleOperationIds?.includes(operation.itemId)
+            ? { trustedReversibleOperation: true }
+            : {}),
+          operationCount: request.operations.length,
         });
         const policy = classifyManagementOperation(facts);
         if (!policy.allowed) {
@@ -824,7 +1004,14 @@ export class WorkspaceManagementService {
       }
     }
 
-    const result = await this.resultFor(request.operationId, input.idempotencyKey, progress.outcomes);
+    const baseResult = await this.resultFor(
+      request.operationId,
+      input.idempotencyKey,
+      progress.outcomes,
+    );
+    const result = input.receiptMetadata
+      ? { ...baseResult, receiptMetadata: input.receiptMetadata }
+      : baseResult;
     if (progress.outcomes.some(({ disposition }) => disposition === 'confirmation_required')) {
       return emitOperationOutcomes(actor.origin.kind, result);
     }
@@ -1421,12 +1608,22 @@ export class WorkspaceManagementService {
       throw new ManagementError('undo_unavailable', 'No undo action is available.');
     }
     await this.assertRevisionMap(undo.resultingRevisions);
+    const explicitSlackUndo = actor.origin.kind === 'slack' &&
+      requesterExplicitlyRequestsUndo(actor.origin.requestText);
     const result = await this.applyWorkspaceChanges({
       context: input.context,
       idempotencyKey: input.idempotencyKey,
       operations: [undo.inverse],
+      ...(explicitSlackUndo
+        ? {
+            approvalBasis: 'explicit_requester_command' as const,
+            trustedReversibleOperationIds: [undo.inverse.itemId],
+          }
+        : {}),
     });
-    await this.stores.management.consumeUndo(input.operationId, this.now());
+    if (result.status === 'completed') {
+      await this.stores.management.consumeUndo(input.operationId, this.now());
+    }
     return result;
   }
 
@@ -2417,7 +2614,12 @@ export class WorkspaceManagementService {
   private async policyFacts(
     actor: LiveManagementActor,
     operation: ManagementOperation,
-    options: { allowIdempotentRoutineSaveReplay?: boolean } = {},
+    options: {
+      allowIdempotentRoutineSaveReplay?: boolean;
+      approvalBasis?: 'explicit_requester_command';
+      trustedReversibleOperation?: boolean;
+      operationCount?: number;
+    } = {},
   ) {
     if (operation.kind === 'update_member') return { actor, operation, adminRequired: true };
     if (operation.kind === 'update_agent_memory') {
@@ -2473,6 +2675,9 @@ export class WorkspaceManagementService {
     if (operation.kind === 'update_agent') {
       const currentAgent = await this.requireEditableAgent(actor, operation.agentId);
       const agentReferences = await this.stores.config.getAgentReferences(operation.agentId);
+      const reversibleSkillChange = reversibleLocalSkillChange(currentAgent, operation.patch);
+      const requesterAuthorized = options.operationCount === 1 && reversibleSkillChange &&
+        explicitRequesterSkillChange(actor, reversibleSkillChange);
       return {
         actor,
         operation,
@@ -2480,6 +2685,12 @@ export class WorkspaceManagementService {
         agentReferences,
         capabilityScopeExpanded: capabilityScopeExpanded(currentAgent, operation.patch),
         agentEditable: true,
+        ...(options.approvalBasis || requesterAuthorized
+          ? { approvalBasis: 'explicit_requester_command' as const }
+          : {}),
+        ...(options.trustedReversibleOperation || reversibleSkillChange
+          ? { reversibleLocalChange: true }
+          : {}),
       };
     }
     if (operation.kind === 'delete_agent' || operation.kind === 'archive_agent' ||
@@ -2763,7 +2974,9 @@ export class WorkspaceManagementService {
             kind: 'update_agent',
             agentId: before.id,
             expectedRevision: before.revision + 1,
-            patch: fullAgentPatch(before),
+            patch: Object.keys(operation.patch).length === 1 && operation.patch.skills
+              ? { skills: before.skills }
+              : fullAgentPatch(before),
           },
         };
       }
@@ -4466,6 +4679,167 @@ async function routineContentAccess(
   } catch {
     return 'authorization_unknown';
   }
+}
+
+function skillImportMetadata(
+  skill: SkillResolution['skills'][number],
+  replacedExisting: boolean,
+) {
+  return {
+    sourceUrl: skill.sourceUrl,
+    path: skill.path,
+    name: skill.name,
+    description: skill.description,
+    replacedExisting,
+  };
+}
+
+interface ReversibleSkillChange {
+  kind: 'enable' | 'disable' | 'remove';
+  name: string;
+}
+
+function reversibleLocalSkillChange(
+  current: CustomAgentConfig,
+  patch: ManagementAgentPatch,
+): ReversibleSkillChange | undefined {
+  const fields = Object.keys(patch);
+  if (fields.length !== 1 || fields[0] !== 'skills' || !patch.skills) return undefined;
+  const before = current.skills;
+  const after = patch.skills;
+
+  if (before.length === after.length) {
+    const changedIndexes = before.flatMap((skill, index) =>
+      canonicalJson(skill) === canonicalJson(after[index]) ? [] : [index]);
+    if (changedIndexes.length !== 1) return undefined;
+    const index = changedIndexes[0]!;
+    const previous = before[index]!;
+    const next = after[index]!;
+    if (previous.enabled === next.enabled ||
+        canonicalJson({ ...previous, enabled: next.enabled }) !== canonicalJson(next)) {
+      return undefined;
+    }
+    return { kind: next.enabled ? 'enable' : 'disable', name: next.name };
+  }
+
+  if (before.length !== after.length + 1) return undefined;
+  for (let removedIndex = 0; removedIndex < before.length; removedIndex += 1) {
+    const retained = before.filter((_, index) => index !== removedIndex);
+    if (canonicalJson(retained) === canonicalJson(after)) {
+      return { kind: 'remove', name: before[removedIndex]!.name };
+    }
+  }
+  return undefined;
+}
+
+function explicitRequesterSkillChange(
+  actor: LiveManagementActor,
+  change: ReversibleSkillChange,
+): boolean {
+  if (actor.origin.kind !== 'slack' || !actor.origin.requestText) return false;
+  const clauses = normalizedRequesterText(actor.origin.requestText)
+    .split(/(?:[.!?;,\n]|\b(?:and|then|but)\b)+/)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+  const action = change.kind === 'enable'
+    ? /\b(?:enable|turn on)\b/
+    : change.kind === 'disable'
+    ? /\b(?:disable|turn off)\b/
+    : /\b(?:remove|delete|uninstall)\b/;
+  return clauses.some((clause) => {
+    const match = action.exec(clause);
+    if (!match || !containsWord(clause, change.name)) return false;
+    const prefix = clause.slice(0, match.index);
+    return !/\b(?:do not|don't|never|not)\b/.test(prefix);
+  });
+}
+
+function requesterExplicitlyRequestsUndo(requestText: string | undefined): boolean {
+  if (!requestText) return false;
+  return normalizedRequesterText(requestText)
+    .split(/(?:[.!?;,\n]|\b(?:and|then|but)\b)+/)
+    .some((clause) => /^(?:please )?undo\b/.test(clause.trim()));
+}
+
+function assertExplicitSkillImportRequest(
+  actor: LiveManagementActor,
+  input: ImportSkillInput,
+): void {
+  if (actor.origin.kind !== 'slack' || !actor.origin.requestText ||
+      !requesterTextContainsExactSource(actor.origin.requestText, input.source)) {
+    throw new ManagementError(
+      'invalid_request',
+      'Immediate skill import requires the exact GitHub source in the current requester message. No change was made.',
+    );
+  }
+}
+
+function explicitSkillReplacementRequest(
+  actor: LiveManagementActor,
+  skill: SkillResolution['skills'][number],
+): boolean {
+  if (actor.origin.kind !== 'slack' || !actor.origin.requestText) return false;
+  const expected = normalizedRequesterText(`replace ${skill.name} from ${skill.sourceUrl}`);
+  return normalizedRequesterText(actor.origin.requestText).includes(expected);
+}
+
+function normalizedRequesterText(value: string): string {
+  return value
+    .replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '')
+    .replace(/<((?:https?:\/\/)[^>|]+)(?:\|[^>]*)?>/gi, '$1')
+    .replace(/&amp;/gi, '&')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function requesterTextContainsExactSource(requestText: string, source: string): boolean {
+  const text = normalizedRequesterText(requestText);
+  const expected = normalizedRequesterText(source);
+  if (!expected) return false;
+  for (let offset = text.indexOf(expected); offset >= 0;
+    offset = text.indexOf(expected, offset + 1)) {
+    const before = offset === 0 ? '' : text[offset - 1]!;
+    const afterOffset = offset + expected.length;
+    const after = afterOffset === text.length ? '' : text[afterOffset]!;
+    const beforeBoundary = before === '' || /[\s([{'"`]/.test(before);
+    const afterBoundary = after === '' || /[\s)\]},'"`.!;:]/.test(after);
+    if (beforeBoundary && afterBoundary) return true;
+  }
+  return false;
+}
+
+function containsWord(text: string, value: string): boolean {
+  const escaped = value.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^a-z0-9-])${escaped}(?:$|[^a-z0-9-])`).test(text);
+}
+
+function skillImportOperationId(
+  actor: LiveManagementActor,
+  input: ImportSkillInput,
+): string {
+  const digest = createHash('sha256').update(canonicalJson({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    originKey: managementActorOriginKey(actor),
+    agentId: input.agentId ?? actor.actingAgentId ?? null,
+    idempotencyKey: input.idempotencyKey,
+    source: input.source,
+    skillName: input.skillName ?? null,
+    replaceExisting: input.replaceExisting === true,
+  })).digest('hex').slice(0, 32);
+  return `management_skill_import_${digest}`;
+}
+
+function singleChangedSkill(
+  before: readonly SkillConfig[],
+  after: readonly SkillConfig[],
+): SkillConfig | undefined {
+  const previous = new Map(before.map((skill) => [skill.name, skill]));
+  const changed = after.filter((skill) =>
+    canonicalJson(previous.get(skill.name)) !== canonicalJson(skill));
+  const removed = before.filter((skill) => !after.some(({ name }) => name === skill.name));
+  return changed.length === 1 && removed.length === 0 ? changed[0] : undefined;
 }
 
 function withoutSetupCapabilities(result: ManagementApplyResult): ManagementApplyResult {

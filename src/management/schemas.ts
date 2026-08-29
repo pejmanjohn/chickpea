@@ -302,6 +302,9 @@ export const proposeSkillImportZodSchema = z.strictObject({
   idempotencyKey: zText(256),
   guideVersion: z.literal(AGENT_AUTHORING_GUIDE_VERSION),
 });
+export const importSkillZodSchema = proposeSkillImportZodSchema.extend({
+  replaceExisting: z.boolean().optional(),
+});
 export const confirmWorkspaceChangeZodSchema = z.strictObject({ proposalId: zId });
 export const undoWorkspaceChangeZodSchema = z.strictObject({
   operationId: zId,
@@ -618,6 +621,18 @@ export const proposeSkillImportValibotSchema = v.strictObject({
     v.maxLength(64),
     v.regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
   )),
+  idempotencyKey: vt(256),
+  guideVersion: v.literal(AGENT_AUTHORING_GUIDE_VERSION),
+});
+export const importSkillValibotSchema = v.strictObject({
+  agentId: v.optional(vAgentId),
+  source: vt(2_000),
+  skillName: v.optional(v.pipe(
+    v.string(),
+    v.maxLength(64),
+    v.regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  )),
+  replaceExisting: v.optional(v.boolean()),
   idempotencyKey: vt(256),
   guideVersion: v.literal(AGENT_AUTHORING_GUIDE_VERSION),
 });

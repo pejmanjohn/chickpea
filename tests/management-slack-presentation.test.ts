@@ -137,6 +137,39 @@ test('Agent edits compare meaningful fields and project Slack presence to its ha
   assert.doesNotMatch(presentation, /Slack Presence|Repositories|desiredState|health/);
 });
 
+test('skill status changes are visible in approval previews', () => {
+  const presentation = formatSlackChangeSetProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'disable-skill',
+      operationKind: 'update_agent',
+      target: 'agent:agent_writer',
+      before: {
+        name: 'Writer',
+        skills: [{
+          name: 'unslop',
+          description: 'Rewrite plainly.',
+          instructions: 'Remove AI tells.',
+          enabled: true,
+        }],
+      },
+      after: {
+        name: 'Writer',
+        skills: [{
+          name: 'unslop',
+          description: 'Rewrite plainly.',
+          instructions: 'Remove AI tells.',
+          enabled: false,
+        }],
+      },
+    }],
+    missingSetup: [],
+  });
+
+  assert.match(presentation, /\*Before\*[\s\S]*\*Status\*\n> Enabled/);
+  assert.match(presentation, /\*After\*[\s\S]*\*Status\*\n> Disabled/);
+});
+
 test('blank Agent fields and internal Slack presence state do not create proposal noise', () => {
   const blankCreate = formatSlackChangeSetProposal({
     summary: '1 reviewed workspace change',
