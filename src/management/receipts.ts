@@ -1,5 +1,6 @@
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
+import { managedConnectorReadCopy } from '../connections/managed-copy.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import {
   resolveSlackInstallationExecutionContext,
@@ -18,6 +19,7 @@ import type {
   ManagementReceipt,
   ManagementAgentCreatedWelcome,
   ManagementChickpeaIntroduction,
+  ManagementConnectorConnectedReceipt,
   ManagementRoutineSavedAcknowledgement,
   ManagementScheduleActionAcknowledgement,
   ManagementSetupReceipt,
@@ -43,25 +45,51 @@ const PERMANENT_DELIVERY_CODES = new Set([
 export interface CompleteManagementSetupReceiptInput {
   setup: ManagementSetupRecord;
   browserSessionDigest: string;
+  completedByUserId?: string;
+  completedByMembershipId?: string;
+  connectionAccountId?: string;
   connector?: string;
   accountLabel?: string;
   initiator: string;
   at: number;
+  receiptKind?: 'connector_connected';
+  agentId?: string;
+  agentName?: string;
+  toolkit?: string;
+  ownerKind?: 'team' | 'member';
+  accessLane?: 'read' | 'write';
+  avatarUrl?: string;
 }
 
 export async function completeManagementSetupReceipt(
   management: ManagementStore,
   input: CompleteManagementSetupReceiptInput,
 ): Promise<ManagementSetupRecord> {
-  const receipt: ManagementSetupReceipt = {
-    setupOperationId: input.setup.setupOperationId,
-    connector: input.connector ?? input.setup.target.targetLabel,
-    target: input.setup.target.agentName ?? input.setup.target.targetLabel,
-    scopes: [...input.setup.scopes],
-    initiator: input.initiator,
-    ...(input.accountLabel ? { accountLabel: boundedLabel(input.accountLabel) } : {}),
-    completedAt: input.at,
-  };
+  const receipt: ManagementSetupReceipt | ManagementConnectorConnectedReceipt =
+    input.receiptKind === 'connector_connected'
+      ? {
+          kind: 'connector_connected',
+          setupOperationId: input.setup.setupOperationId,
+          connector: input.connector ?? input.setup.target.targetLabel,
+          toolkit: input.toolkit ?? input.setup.target.provider,
+          agentId: input.agentId ?? input.setup.target.agentId ?? 'unknown_agent',
+          agentName: boundedLabel(
+            input.agentName ?? input.setup.target.agentName ?? 'Agent',
+          ),
+          ownerKind: input.ownerKind ?? input.setup.target.ownerKind ?? 'member',
+          accessLane: input.accessLane ?? input.setup.target.accessLane ?? 'read',
+          ...(input.avatarUrl ? { avatarUrl: input.avatarUrl } : {}),
+          completedAt: input.at,
+        }
+      : {
+          setupOperationId: input.setup.setupOperationId,
+          connector: input.connector ?? input.setup.target.targetLabel,
+          target: input.setup.target.agentName ?? input.setup.target.targetLabel,
+          scopes: [...input.setup.scopes],
+          initiator: input.initiator,
+          ...(input.accountLabel ? { accountLabel: boundedLabel(input.accountLabel) } : {}),
+          completedAt: input.at,
+        };
   const outbox: ManagementReceiptOutboxRecord = {
     outboxId: `receipt_${input.setup.setupOperationId}`,
     operationId: input.setup.setupOperationId,
@@ -76,6 +104,11 @@ export async function completeManagementSetupReceipt(
   return management.completeSetup({
     setupOperationId: input.setup.setupOperationId,
     browserSessionDigest: input.browserSessionDigest,
+    ...(input.completedByUserId ? { completedByUserId: input.completedByUserId } : {}),
+    ...(input.completedByMembershipId
+      ? { completedByMembershipId: input.completedByMembershipId }
+      : {}),
+    ...(input.connectionAccountId ? { connectionAccountId: input.connectionAccountId } : {}),
     receipt,
     outbox,
     at: input.at,
@@ -97,6 +130,15 @@ export function formatManagementSetupReceipt(receipt: ManagementReceipt): string
   }
   if (isAgentCreatedWelcome(receipt)) return formatAgentCreatedWelcome(receipt);
   if (isChickpeaIntroduction(receipt)) return formatChickpeaIntroduction(receipt);
+  if (isConnectorConnectedReceipt(receipt)) {
+    const scope = receipt.ownerKind === 'member' ? 'personal' : 'team';
+    const access = receipt.accessLane === 'read' ? 'read-only' : 'read and write';
+    const copy = managedConnectorReadCopy(receipt.toolkit, receipt.connector);
+    const action = receipt.accessLane === 'read'
+      ? copy.receiptAction
+      : `use the approved ${receipt.connector} capabilities`;
+    return `✅ ${receipt.connector} is now connected. Your ${scope}, ${access} connection is ready — I can ${action} when you ask me here.`;
+  }
   const subject = receipt.accountLabel ?? receipt.connector;
   const lead = `${subject} has been connected to ${receipt.connector} connector.`;
   const details = [
@@ -310,10 +352,20 @@ export async function deliverManagementReceiptToSlack(
     ...(threadTs ? { thread_ts: threadTs } : {}),
     text,
     client_msg_id: record.outboxId,
+    ...(isConnectorConnectedReceipt(record.receipt)
+      ? {
+          username: record.receipt.agentName,
+          ...(record.receipt.avatarUrl ? { icon_url: record.receipt.avatarUrl } : {}),
+          unfurl_links: false,
+          unfurl_media: false,
+        }
+      : {}),
   } as Parameters<typeof execution.client.chat.postMessage>[0];
   let response;
   let deliveredText = text;
-  let persona: 'agent' | 'chickpea' = 'chickpea';
+  let persona: 'agent' | 'chickpea' = isConnectorConnectedReceipt(record.receipt)
+    ? 'agent'
+    : 'chickpea';
   if (isAgentCreatedWelcome(record.receipt)) {
     try {
       response = await execution.client.chat.postMessage({
@@ -440,6 +492,12 @@ function escapeSlackText(value: string): string {
 
 function boundedSlackText(value: string, max: number): string {
   return escapeSlackText(value).slice(0, max).trim();
+}
+
+export function isConnectorConnectedReceipt(
+  receipt: ManagementReceipt,
+): receipt is ManagementConnectorConnectedReceipt {
+  return 'kind' in receipt && receipt.kind === 'connector_connected';
 }
 
 function isScheduleActionReaction(

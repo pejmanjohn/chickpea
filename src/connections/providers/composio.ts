@@ -1614,6 +1614,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
     principalRef: string;
     toolkit: string;
     allowedCapabilities: readonly string[];
+    returnUrl?: string;
     signal?: AbortSignal;
   }): Promise<{ authorizationUrl: URL; authorizationRef: string }> {
     const apiKey = this.requireApiKey();
@@ -1642,6 +1643,7 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
           // fresh remote account. Runtime sessions still pin one exact account
           // reference, so this does not make tool execution ambiguous.
           allowMultiple: true,
+          ...(input.returnUrl ? { callbackUrl: input.returnUrl } : {}),
         },
         { signal },
       );

@@ -7256,6 +7256,10 @@ test('unconfigured managed connectors stay discoverable and continue after owner
   assert.match(harness.app.innerHTML, /Settings &rarr; Project Settings &rarr; API Keys/);
   assert.match(
     harness.app.innerHTML,
+    /leave OAuth user verification set to <strong>Not configured<\/strong>/,
+  );
+  assert.match(
+    harness.app.innerHTML,
     /role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="composio-setup-title"[\s\S]{0,1200}class="conn-logo conn-logo-img"/,
   );
   assert.doesNotMatch(
@@ -11891,6 +11895,10 @@ test('Settings Connectors configures managed integrations and manages connected 
   assert.match(harness.app.innerHTML, /class="chan-item active" data-action="settings-section" data-section="connectors"/);
   assert.match(harness.app.innerHTML, /Some Chickpea connectors are managed by Composio/);
   assert.match(harness.app.innerHTML, /Settings &rarr; Project Settings &rarr; API Keys/);
+  assert.match(
+    harness.app.innerHTML,
+    /leave OAuth user verification set to <strong>Not configured<\/strong>/,
+  );
   assert.match(harness.app.innerHTML, /Google Sheets/);
   assert.match(harness.app.innerHTML, /YouTube/);
   assert.equal((harness.app.innerHTML.match(/class="managed-settings-row"/g) ?? []).length, 13);

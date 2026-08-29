@@ -90,6 +90,7 @@ export interface ManagedConnectionProvider {
     principalRef: string;
     toolkit: string;
     allowedCapabilities: readonly string[];
+    returnUrl?: string;
     signal?: AbortSignal;
   }): Promise<ManagedAuthorizationResult>;
   pollAuthorization?(input: {

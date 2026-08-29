@@ -135,6 +135,9 @@ interface ManagementSetupRow {
   action: ManagementSetupRecord['action'];
   target_json: string;
   scopes_json: string;
+  completed_by_user_id: string | null;
+  completed_by_membership_id: string | null;
+  connection_account_id: string | null;
   token_digest: string | null;
   browser_session_digest: string | null;
   status: ManagementSetupRecord['status'];
@@ -947,11 +950,12 @@ export class ManagementStoreLogic {
     this.db.run(
       `INSERT INTO management_setup_operations (
         setup_operation_id, organization_id, actor_user_id, actor_membership_id,
-        origin_json, action, target_json, scopes_json, token_digest,
-        browser_session_digest, status, failure_code, receipt_json,
+        origin_json, action, target_json, scopes_json,
+        completed_by_user_id, completed_by_membership_id,
+        connection_account_id, token_digest, browser_session_digest, status, failure_code, receipt_json,
         supersedes_setup_operation_id, expires_at, claimed_at, completed_at,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       record.setupOperationId,
       record.organizationId,
       record.actorUserId,
@@ -960,6 +964,9 @@ export class ManagementStoreLogic {
       record.action,
       JSON.stringify(record.target),
       JSON.stringify(record.scopes),
+      record.completedByUserId ?? null,
+      record.completedByMembershipId ?? null,
+      record.connectionAccountId ?? null,
       record.tokenDigest ?? null,
       record.browserSessionDigest ?? null,
       record.status,
@@ -1072,24 +1079,66 @@ export class ManagementStoreLogic {
   completeSetup(input: CompleteManagementSetupInput): ManagementSetupRecord {
     return this.db.transaction(() => {
       const existing = this.requireSetup(input.setupOperationId, input.at);
-      if (existing.status === 'completed') return existing;
-      const setup = this.requireBrowserSetup(
-        input.setupOperationId,
-        input.browserSessionDigest,
-        input.at,
-      );
-      if (setup.status !== 'authorizing') throw setupError('setup_unavailable');
-      const updated = this.db.run(
-        `UPDATE management_setup_operations
-         SET status = 'completed', receipt_json = ?, failure_code = NULL,
-             token_digest = NULL, browser_session_digest = NULL,
-             completed_at = ?, updated_at = ?
-         WHERE setup_operation_id = ? AND status = 'authorizing'`,
-        JSON.stringify(input.receipt),
-        input.at,
-        input.at,
-        input.setupOperationId,
-      );
+      const managed = existing.action === 'managed_connection';
+      if (existing.status === 'completed') {
+        if (managed) throw setupError('setup_unavailable');
+        return existing;
+      }
+
+      let setup: ManagementSetupRecord;
+      let completionActorUserId: string;
+      let completionActorMembershipId: string;
+      let authorization: string;
+      let updated: { changes: number };
+      if (managed) {
+        if (existing.status !== 'pending' || !existing.tokenDigest ||
+            !constantDigestEquals(existing.tokenDigest, input.browserSessionDigest) ||
+            !input.completedByUserId || !input.completedByMembershipId) {
+          throw setupError('setup_unavailable');
+        }
+        setup = existing;
+        completionActorUserId = input.completedByUserId;
+        completionActorMembershipId = input.completedByMembershipId;
+        authorization = 'reusable_managed_setup_link';
+        updated = this.db.run(
+          `UPDATE management_setup_operations
+           SET status = 'completed', receipt_json = ?, failure_code = NULL,
+               token_digest = NULL, browser_session_digest = NULL,
+               completed_by_user_id = ?, completed_by_membership_id = ?,
+               connection_account_id = ?, completed_at = ?, updated_at = ?
+           WHERE setup_operation_id = ? AND status = 'pending' AND token_digest = ?`,
+          JSON.stringify(input.receipt),
+          completionActorUserId,
+          completionActorMembershipId,
+          input.connectionAccountId ?? null,
+          input.at,
+          input.at,
+          input.setupOperationId,
+          existing.tokenDigest,
+        );
+      } else {
+        setup = this.requireBrowserSetup(
+          input.setupOperationId,
+          input.browserSessionDigest,
+          input.at,
+        );
+        if (setup.status !== 'authorizing') throw setupError('setup_unavailable');
+        completionActorUserId = setup.actorUserId;
+        completionActorMembershipId = setup.actorMembershipId;
+        authorization = 'initiating_membership_browser_session';
+        updated = this.db.run(
+          `UPDATE management_setup_operations
+           SET status = 'completed', receipt_json = ?, failure_code = NULL,
+               token_digest = NULL, browser_session_digest = NULL,
+               connection_account_id = ?, completed_at = ?, updated_at = ?
+           WHERE setup_operation_id = ? AND status = 'authorizing'`,
+          JSON.stringify(input.receipt),
+          input.connectionAccountId ?? null,
+          input.at,
+          input.at,
+          input.setupOperationId,
+        );
+      }
       if (updated.changes !== 1) throw setupError('setup_unavailable');
       this.putOutbox(input.outbox);
       this.audit.appendIdempotent({
@@ -1098,7 +1147,7 @@ export class ManagementStoreLogic {
         eventType: 'management.setup.completed',
         outcome: 'success',
         actorClass: 'chickpea_user',
-        actorId: setup.actorUserId,
+        actorId: completionActorUserId,
         workspaceId: setup.organizationId,
         subjectId: input.setupOperationId,
         createdAt: input.at,
@@ -1107,7 +1156,9 @@ export class ManagementStoreLogic {
           actingAgentId: setup.origin.kind === 'slack'
             ? setup.origin.agentId ?? 'legacy_slack_agent'
             : 'human',
-          authorization: 'initiating_membership_browser_session',
+          authorization,
+          actorMembershipId: completionActorMembershipId,
+          issuerUserId: setup.actorUserId,
           setupOperationId: input.setupOperationId,
           scopeCount: String(setup.scopes.length),
           target: `${setup.target.kind}:${setup.target.targetId}`,
@@ -1466,6 +1517,9 @@ export class ManagementStoreLogic {
         action TEXT NOT NULL,
         target_json TEXT NOT NULL,
         scopes_json TEXT NOT NULL,
+        completed_by_user_id TEXT,
+        completed_by_membership_id TEXT,
+        connection_account_id TEXT,
         token_digest TEXT,
         browser_session_digest TEXT,
         status TEXT NOT NULL,
@@ -1538,6 +1592,9 @@ export class ManagementStoreLogic {
       ['actor_membership_id', "TEXT NOT NULL DEFAULT ''"],
       ['origin_json', "TEXT NOT NULL DEFAULT '{\"kind\":\"mcp\",\"clientId\":\"legacy\"}'"],
       ['browser_session_digest', 'TEXT'],
+      ['completed_by_user_id', 'TEXT'],
+      ['completed_by_membership_id', 'TEXT'],
+      ['connection_account_id', 'TEXT'],
       ['failure_code', 'TEXT'],
       ['receipt_json', 'TEXT'],
       ['supersedes_setup_operation_id', 'TEXT'],
@@ -1813,6 +1870,11 @@ function setupFromRow(row: ManagementSetupRow): ManagementSetupRecord {
     action: row.action,
     target: JSON.parse(row.target_json) as ManagementSetupRecord['target'],
     scopes: JSON.parse(row.scopes_json) as string[],
+    ...(row.completed_by_user_id ? { completedByUserId: row.completed_by_user_id } : {}),
+    ...(row.completed_by_membership_id
+      ? { completedByMembershipId: row.completed_by_membership_id }
+      : {}),
+    ...(row.connection_account_id ? { connectionAccountId: row.connection_account_id } : {}),
     ...(row.token_digest ? { tokenDigest: row.token_digest } : {}),
     ...(row.browser_session_digest ? { browserSessionDigest: row.browser_session_digest } : {}),
     status: row.status,

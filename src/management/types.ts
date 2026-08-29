@@ -271,6 +271,7 @@ export type ManagementSetupAction =
   | 'api_credential'
   | 'mcp_oauth'
   | 'mcp_credentials'
+  | 'managed_connection'
   | 'repository_access'
   | 'provider_credential';
 
@@ -285,7 +286,7 @@ export type ManagementSetupStatus =
 
 /** Exact non-secret capability scope frozen when a setup link is issued. */
 export interface ManagementSetupTarget {
-  kind: ManagementSetupRequestTarget['kind'];
+  kind: ManagementSetupRequestTarget['kind'] | 'managed_connection';
   provider: string;
   targetId: string;
   targetLabel: string;
@@ -296,6 +297,9 @@ export interface ManagementSetupTarget {
   repositoryId?: string;
   replacement: boolean;
   formFields?: string[];
+  ownerKind?: ConnectionAccountOwnerKind;
+  accessLane?: 'read' | 'write';
+  presetId?: string;
 }
 
 export interface ManagementSetupReceipt {
@@ -307,6 +311,24 @@ export interface ManagementSetupReceipt {
   accountLabel?: string;
   completedAt: number;
 }
+
+/** Bounded user-facing acknowledgement for a completed managed connector handoff. */
+export interface ManagementConnectorConnectedReceipt {
+  kind: 'connector_connected';
+  setupOperationId: string;
+  connector: string;
+  toolkit: string;
+  agentId: string;
+  agentName: string;
+  ownerKind: ConnectionAccountOwnerKind;
+  accessLane: 'read' | 'write';
+  avatarUrl?: string;
+  completedAt: number;
+}
+
+export type ManagementSetupCompletionReceipt =
+  | ManagementSetupReceipt
+  | ManagementConnectorConnectedReceipt;
 
 /** Content-free acknowledgement for a successfully saved private DM schedule. */
 export interface ManagementRoutineSavedAcknowledgement {
@@ -338,6 +360,7 @@ export type ManagementScheduleActionAcknowledgement =
 
 export type ManagementReceipt =
   | ManagementSetupReceipt
+  | ManagementConnectorConnectedReceipt
   | ManagementRoutineSavedAcknowledgement
   | ManagementScheduleActionAcknowledgement
   | ManagementAgentCreatedWelcome
@@ -376,11 +399,14 @@ export interface ManagementSetupRecord {
   action: ManagementSetupAction;
   target: ManagementSetupTarget;
   scopes: string[];
+  completedByUserId?: string;
+  completedByMembershipId?: string;
+  connectionAccountId?: string;
   tokenDigest?: string;
   browserSessionDigest?: string;
   status: ManagementSetupStatus;
   failureCode?: string;
-  receipt?: ManagementSetupReceipt;
+  receipt?: ManagementSetupCompletionReceipt;
   supersedesSetupOperationId?: string;
   expiresAt: number;
   claimedAt?: number;
@@ -396,7 +422,7 @@ export interface ManagementSetupPublicStatus {
   scopes: string[];
   status: ManagementSetupStatus;
   expiresAt: number;
-  receipt?: ManagementSetupReceipt;
+  receipt?: ManagementSetupCompletionReceipt;
   delivery?: {
     status: ManagementReceiptOutboxStatus;
     attempts: number;
@@ -590,6 +616,7 @@ export interface PrepareConnectorSetupResult {
   connector: { id: string; name: string };
   ownerKind: ConnectionAccountOwnerKind;
   handoffUrl: string;
+  setupOperationId?: string;
 }
 
 export interface ManagementMemorySnapshot {
@@ -865,8 +892,11 @@ export interface AuthorizeManagementSetupInput {
 export interface CompleteManagementSetupInput {
   setupOperationId: string;
   browserSessionDigest: string;
-  receipt: ManagementSetupReceipt;
+  receipt: ManagementSetupCompletionReceipt;
   outbox: ManagementReceiptOutboxRecord;
+  completedByUserId?: string;
+  completedByMembershipId?: string;
+  connectionAccountId?: string;
   at: number;
 }
 
