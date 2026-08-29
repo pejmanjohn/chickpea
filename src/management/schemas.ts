@@ -631,6 +631,12 @@ export const applyWorkspaceChangesValibotSchema = v.strictObject({
   idempotencyKey: vt(256),
   operations: v.pipe(v.array(managementOperationValibotSchema), v.minLength(1), v.maxLength(25)),
 });
+/** Slack-only presentation hints. They are stripped before shared service invocation. */
+export const slackApplyWorkspaceChangesValibotSchema = v.strictObject({
+  idempotencyKey: vt(256),
+  operations: v.pipe(v.array(managementOperationValibotSchema), v.minLength(1), v.maxLength(25)),
+  connectorMentions: v.optional(v.pipe(v.array(vt(128)), v.maxLength(12))),
+});
 export const proposeWorkspaceChangesValibotSchema = v.strictObject({
   idempotencyKey: vt(256),
   guideVersion: v.literal(AGENT_AUTHORING_GUIDE_VERSION),

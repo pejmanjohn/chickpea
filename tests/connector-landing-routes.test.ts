@@ -65,7 +65,7 @@ test('the managed connector link is reusable and completes from the dedicated pa
       id: 'agent_sprout',
       name: 'Sprout',
       creatorMembershipId: owner.membership.id,
-      editPolicy: 'creator_and_admins',
+      editPolicy: 'all_workspace_members',
       lifecycle: 'active',
       configurationGeneration: 1,
       instructions: 'Help the team.',
@@ -129,13 +129,13 @@ test('the managed connector link is reusable and completes from the dedicated pa
       correlationId: 'connector_owner',
       machine: false,
     };
-    const adminPrincipal: AuthPrincipal = {
+    const memberPrincipal: AuthPrincipal = {
       ...ownerPrincipal,
-      userId: 'user_second_admin',
-      membershipId: 'membership_second_admin',
-      role: 'admin',
-      credentialId: 'session_second_admin',
-      correlationId: 'connector_second_admin',
+      userId: 'user_second_member',
+      membershipId: 'membership_second_member',
+      role: 'member',
+      credentialId: 'session_second_member',
+      correlationId: 'connector_second_member',
     };
     let principal = ownerPrincipal;
     const deliveries: string[] = [];
@@ -198,15 +198,15 @@ test('the managed connector link is reusable and completes from the dedicated pa
 
     // A second authorized person can open the same capability and start their
     // own provider flow. The first browser did not claim or lock the link.
-    principal = adminPrincipal;
-    const adminExchange = await exchange(app, setupId);
-    assert.equal(adminExchange.status, 200, await adminExchange.clone().text());
-    const adminCookie = adminExchange.headers.get('set-cookie')!.split(';')[0]!;
-    const adminAuthorize = await authorize(app, setupId, adminCookie, {
+    principal = memberPrincipal;
+    const memberExchange = await exchange(app, setupId);
+    assert.equal(memberExchange.status, 200, await memberExchange.clone().text());
+    const memberCookie = memberExchange.headers.get('set-cookie')!.split(';')[0]!;
+    const memberAuthorize = await authorize(app, setupId, memberCookie, {
       ownerKind: 'team',
       access: 'read',
     });
-    assert.equal(adminAuthorize.status, 200, await adminAuthorize.clone().text());
+    assert.equal(memberAuthorize.status, 200, await memberAuthorize.clone().text());
     assert.equal(authorizeInputs.length, 2);
     assert.equal(authorizeInputs[0]!.principalRef, authorizeInputs[1]!.principalRef);
     assert.match(authorizeInputs[0]!.principalRef, /^chickpea:organization:/);
@@ -240,17 +240,17 @@ test('the managed connector link is reusable and completes from the dedicated pa
     assert.equal((await management.getOutboxForOperation(setupId))?.status, 'delivered');
     assert.equal((await config.listConnectionAccounts(owner.user.slackTeamId)).length, 1);
 
-    principal = adminPrincipal;
-    const adminReturn = await app.request(`http://localhost/setup/${setupId}?poll=1`, {
-      headers: { cookie: adminCookie },
+    principal = memberPrincipal;
+    const memberReturn = await app.request(`http://localhost/setup/${setupId}?poll=1`, {
+      headers: { cookie: memberCookie },
     });
-    assert.equal(adminReturn.status, 200);
-    const adminReturnHtml = await adminReturn.text();
-    assert.match(adminReturnHtml, /Finishing your HubSpot connection/);
-    assert.match(adminReturnHtml, new RegExp(`/setup/${setupId}/managed/poll`));
-    assert.doesNotMatch(adminReturnHtml, /HubSpot is now connected to Sprout/);
+    assert.equal(memberReturn.status, 200);
+    const memberReturnHtml = await memberReturn.text();
+    assert.match(memberReturnHtml, /Finishing your HubSpot connection/);
+    assert.match(memberReturnHtml, new RegExp(`/setup/${setupId}/managed/poll`));
+    assert.doesNotMatch(memberReturnHtml, /HubSpot is now connected to Sprout/);
 
-    const staleAuthorize = await authorize(app, setupId, adminCookie, {
+    const staleAuthorize = await authorize(app, setupId, memberCookie, {
       ownerKind: 'member',
       access: 'read',
     });
@@ -263,7 +263,7 @@ test('the managed connector link is reusable and completes from the dedicated pa
       method: 'POST',
       headers: {
         origin: 'http://localhost',
-        cookie: adminCookie,
+        cookie: memberCookie,
         'content-type': 'application/x-www-form-urlencoded',
       },
       body: 'ownerKind=not-a-real-owner&access=not-a-real-lane',
@@ -276,7 +276,7 @@ test('the managed connector link is reusable and completes from the dedicated pa
       method: 'POST',
       headers: {
         origin: 'http://localhost',
-        cookie: adminCookie,
+        cookie: memberCookie,
         'content-type': 'application/json',
       },
       body: '{}',

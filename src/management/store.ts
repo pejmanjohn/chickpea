@@ -8,6 +8,8 @@ import {
   type ClaimManagementProposalInput,
   type ClaimManagementIntroductionInput,
   type ClaimManagementIntroductionResult,
+  type ClaimAgentCreationWelcomeInput,
+  type ClaimAgentCreationWelcomeResult,
   type AuthorizeManagementSetupInput,
   type CompleteManagementSetupInput,
   type ExchangeManagementSetupInput,
@@ -235,6 +237,9 @@ export interface ManagementStore {
   getUndo(operationId: string): Promise<ManagementUndoRecord | undefined>;
   consumeUndo(operationId: string, at: number): Promise<ManagementUndoRecord>;
   putSetup(input: PutManagementSetupInput): Promise<ManagementSetupRecord>;
+  claimAgentCreationWelcome(
+    input: ClaimAgentCreationWelcomeInput,
+  ): Promise<ClaimAgentCreationWelcomeResult>;
   getSetup(setupOperationId: string, at?: number): Promise<ManagementSetupRecord | undefined>;
   exchangeSetup(input: ExchangeManagementSetupInput): Promise<ManagementSetupRecord>;
   authorizeSetup(input: AuthorizeManagementSetupInput): Promise<ManagementSetupRecord>;
@@ -378,6 +383,11 @@ export class ManagementStoreLogic {
         return { kind: 'undo', undo: this.consumeUndo(request.operationId, request.at) };
       case 'put_setup':
         return { kind: 'setup', setup: this.putSetup(request.input) };
+      case 'claim_agent_creation_welcome':
+        return {
+          kind: 'agent_creation_welcome_claim',
+          result: this.claimAgentCreationWelcome(request.input),
+        };
       case 'get_setup':
         return {
           kind: 'setup',
@@ -980,6 +990,22 @@ export class ManagementStoreLogic {
       record.updatedAt,
     );
     return this.requireSetup(record.setupOperationId);
+  }
+
+  claimAgentCreationWelcome(
+    input: ClaimAgentCreationWelcomeInput,
+  ): ClaimAgentCreationWelcomeResult {
+    return this.db.transaction(() => {
+      const existing = this.getOutboxForOperation(input.operationId);
+      if (existing) return { outbox: existing, created: false };
+      if (input.outbox.operationId !== input.operationId ||
+          !('kind' in input.outbox.receipt) ||
+          input.outbox.receipt.kind !== 'agent_created_welcome') {
+        throw new ManagementError('invalid_request', 'Agent welcome claim is invalid.');
+      }
+      for (const setup of input.setups) this.putSetup(setup);
+      return { outbox: this.putOutbox(input.outbox), created: true };
+    });
   }
 
   getSetup(setupOperationId: string, at?: number): ManagementSetupRecord | undefined {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
+import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
 import { classifyManagementOperation } from '../src/management/policy.ts';
 import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
@@ -411,7 +412,7 @@ test('Slack removes one named existing skill immediately and refuses a proposal 
       name: 'propose_workspace_changes',
       args: {
         idempotencyKey: 'do-not-propose-unslop-removal',
-        guideVersion: '1.0.27',
+        guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
         authoringReason: 'skill_edit',
         operations: [{
           itemId: 'remove-unslop',

@@ -33,6 +33,11 @@ import {
   type SlackTablePresentation,
 } from './table-presentation.ts';
 import {
+  parseSlackAgentCreationTerminalIntents,
+  SLACK_AGENT_CREATION_TERMINAL_DATA_NAME,
+  type SlackAgentCreationTerminalIntent,
+} from './agent-creation-terminal.ts';
+import {
   AGENT_FAILURE_TEXT,
   OPENAI_SUBSCRIPTION_POLICY_TEXT,
   OPENAI_SUBSCRIPTION_QUOTA_TEXT,
@@ -69,6 +74,7 @@ export interface AgentReturnedModel {
 export interface AgentDispatchResult {
   text: string;
   tablePresentations?: SlackTablePresentation[];
+  agentCreationTerminal?: SlackAgentCreationTerminalIntent;
   requestedModel: string | null;
   returnedModel: AgentReturnedModel | null;
   reportedUsage: AgentReportedUsage | null;
@@ -366,9 +372,13 @@ export function resultFromAgentReply(
   const tablePresentations = parseSlackTablePresentations(
     reply.data?.[SLACK_TABLE_PRESENTATION_DATA_NAME],
   );
+  const agentCreationTerminal = parseSlackAgentCreationTerminalIntents(
+    reply.data?.[SLACK_AGENT_CREATION_TERMINAL_DATA_NAME],
+  )[0];
   return {
     text,
     ...(tablePresentations.length > 0 ? { tablePresentations } : {}),
+    ...(agentCreationTerminal ? { agentCreationTerminal } : {}),
     requestedModel: metadata?.requestedModel ?? nonEmptyString(requestedModel),
     returnedModel: metadata?.returnedModel ?? null,
     reportedUsage: usage.reportedUsage,

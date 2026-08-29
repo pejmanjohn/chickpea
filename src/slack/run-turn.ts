@@ -56,7 +56,7 @@ import type { SlackStatusUpdate } from './replies.ts';
 import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { registerSlackStatusTurn } from './status-registry.ts';
 import { currentMessageOnlyContext, type SlackTurnContext } from './thread-context.ts';
-import { slackAgentThreadKey } from './thread-key.ts';
+import { slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
 import { formatSlackPublicHandoff } from './public-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import {
@@ -122,6 +122,7 @@ import {
   executeHostSlackManagementApproval,
   type SlackManagementApprovalDependencies,
 } from '../management/slack-approval.ts';
+import { resolveSlackManagementActor } from '../management/slack-tools.ts';
 
 export { createSlackWebClient } from './web-client.ts';
 
@@ -178,6 +179,8 @@ export interface RunTurnOptions {
   beforeDelivery?: () => Promise<string | undefined>;
   /** Persist terminal delivery before post-delivery workspace teardown begins. */
   onDelivered?: () => void | Promise<void>;
+  /** A durable outbox now owns the terminal; keep the TurnJob open until it settles. */
+  onDeferredTerminal?: () => void | Promise<void>;
   /** Record a confirmed Slack-visible final for future owner handoffs. */
   onPublicMessageDelivered?: (
     input: { messageTs: string; text: string },
@@ -1149,6 +1152,76 @@ export async function runTurn(
         await finishDelivery();
         return;
       }
+    }
+    if (agentResult?.agentCreationTerminal) {
+      const terminal = agentResult.agentCreationTerminal;
+      const dependencies = options.managementApproval ?? (() => {
+        const identity = options.appStores?.identity ?? getIdentityStore(platformEnv);
+        const config = options.appStores?.config ?? getConfigStore(platformEnv);
+        const management = options.appStores?.management ?? getManagementStore(platformEnv);
+        return {
+          identity,
+          config,
+          management,
+          service: createLiveWorkspaceManagementService(platformEnv, {
+            identity,
+            ...(settingsStore ? { settings: settingsStore } : {}),
+            ...(options.usageStore ? { usage: options.usageStore } : {}),
+            overrides: {
+              identity,
+              config,
+              management,
+              ...(options.appStores
+                ? {
+                    memory: options.appStores.memory,
+                    routines: options.appStores.routines,
+                    work: options.appStores.work,
+                  }
+                : {}),
+            },
+          }),
+        };
+      })();
+      const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+      const signal = {
+        agentId: assignment.agent.id,
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        threadTs: assignment.runtimeContract === 'chickpea-v1'
+          ? turn.threadTs
+          : turn.sessionThreadTs ?? turn.threadTs,
+        conversationKind: slackConversationKind(turn),
+        slackUserId: turn.userId,
+        eventId: turn.eventId,
+        messageTs: turn.messageTs,
+        turnJobId,
+        requesterText: turn.text,
+      } as const;
+      const actor = await resolveSlackManagementActor(signal, dependencies.identity);
+      await preparedMemory?.confirmInjection();
+      if (agentViewPresentation && options.runId) {
+        await agentViewPresentation.prepareDeferredTerminalDelivery('answer');
+      }
+      const finalized = await dependencies.service.finalizeSlackAgentCreationWelcome({
+        context: actor,
+        operationId: terminal.operationId,
+        creationItemId: terminal.creationItemId,
+        agentId: terminal.agentId,
+        connectorMentions: terminal.connectorMentions,
+        followOnNotices: terminal.followOnNotices,
+        turnJobId,
+        ...(agentViewPresentation && options.runId
+          ? { presentationRunId: options.runId }
+          : {}),
+      });
+      if (!finalized.created &&
+          (finalized.outbox.status === 'delivered' || finalized.outbox.status === 'failed')) {
+        await finishStatus(finalized.outbox.status === 'delivered' ? 'answer' : 'failure');
+        await finishDelivery();
+        return;
+      }
+      await options.onDeferredTerminal?.();
+      return;
     }
     const recoveredText = await options.beforeDelivery?.();
     // Confirmation only prevents reinjecting the same selection into this

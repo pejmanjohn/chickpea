@@ -51,6 +51,11 @@ const PERMANENT_DELIVERY_CODES = new Set([
   'operation_not_allowed',
   'introduction_recipient_ineligible',
 ]);
+const PERSONA_FALLBACK_CODES = new Set([
+  'missing_scope',
+  'not_allowed_token_type',
+  'invalid_name',
+]);
 
 export interface CompleteManagementSetupReceiptInput {
   setup: ManagementSetupRecord;
@@ -189,10 +194,15 @@ export async function completeAgentWelcomeDelivery(
   presentation?: AgentWelcomePresentationRuntime,
 ): Promise<void> {
   if (!isAgentCreatedWelcome(record.receipt)) return;
-  if (delivery.persona !== 'agent') return;
   if (record.destination.kind !== 'thread' || !delivery.threadTs) {
     throw new Error('The Agent welcome must target its creation thread.');
   }
+  emitManagementMetric('agent_creation.welcome_delivery', {
+    surface: 'slack',
+    outcome: 'delivered',
+    deliveryPersona: delivery.persona,
+    publicationStatus: record.receipt.publication?.status ?? 'partial',
+  });
   let presentationError: unknown;
   if (record.receipt.presentationRunId && presentation) {
     try {
@@ -209,6 +219,10 @@ export async function completeAgentWelcomeDelivery(
       // context so one failed lifecycle effect cannot strand the Agent thread.
       presentationError = error;
     }
+  }
+  if (delivery.persona !== 'agent') {
+    if (presentationError) throw presentationError;
+    return;
   }
   await handoffCreatedAgentThread({
     workspaceId: record.destination.workspaceId,
@@ -433,22 +447,32 @@ export async function deliverManagementReceiptToSlack(
     ? 'agent'
     : 'chickpea';
   if (isAgentCreatedWelcome(record.receipt)) {
-    try {
-      response = await execution.client.chat.postMessage({
-        ...baseMessage,
-        username: record.receipt.persona.name,
-        ...(record.receipt.persona.avatarUrl
-          ? { icon_url: record.receipt.persona.avatarUrl }
-          : {}),
-      } as Parameters<typeof execution.client.chat.postMessage>[0]);
-      persona = 'agent';
-    } catch (error) {
-      if (slackPlatformErrorCode(error) !== 'missing_scope') throw error;
+    const partial = record.receipt.publication?.status === 'partial';
+    if (partial) {
       deliveredText = formatAgentWelcomeFallback(record.receipt);
       response = await execution.client.chat.postMessage({
         ...baseMessage,
         text: deliveredText,
       });
+    } else {
+      try {
+        response = await execution.client.chat.postMessage({
+          ...baseMessage,
+          username: record.receipt.persona.name,
+          ...(record.receipt.persona.avatarUrl
+            ? { icon_url: record.receipt.persona.avatarUrl }
+            : {}),
+        } as Parameters<typeof execution.client.chat.postMessage>[0]);
+        persona = 'agent';
+      } catch (error) {
+        const code = slackPlatformErrorCode(error);
+        if (!code || !PERSONA_FALLBACK_CODES.has(code)) throw error;
+        deliveredText = formatAgentWelcomeFallback(record.receipt);
+        response = await execution.client.chat.postMessage({
+          ...baseMessage,
+          text: deliveredText,
+        });
+      }
     }
   } else {
     response = await execution.client.chat.postMessage(baseMessage);
@@ -519,9 +543,25 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
   const description = receipt.agentDescription
     ? boundedSlackText(receipt.agentDescription, 400)
     : undefined;
+  const handle = receipt.agentHandle ? ` (@${boundedSlackText(receipt.agentHandle, 80)})` : '';
   const lines = [
-    `Hi — I’m *${boundedSlackText(receipt.agentName, 80)}*.${description ? ` ${description}` : ''}`,
+    `Hi — I’m *${boundedSlackText(receipt.agentName, 80)}*${handle}.${description ? ` ${description}` : ''}`,
   ];
+  if (receipt.connectorNotices?.length) {
+    lines.push(...receipt.connectorNotices.map(({ text }) => boundedSlackText(text, 500)));
+  }
+  if (receipt.connectorActions?.length) {
+    lines.push(...receipt.connectorActions.map(({ label, setupUrl }) =>
+      renderSlackActionLink(setupUrl, `Connect ${boundedSlackText(label, 80)}`)
+    ));
+  }
+  if (receipt.followOnNotices?.length) {
+    lines.push(...receipt.followOnNotices.map(boundedFollowOnNoticeText));
+  }
+  if (receipt.viewAgentUrl) {
+    lines.push(renderSlackActionLink(receipt.viewAgentUrl, VIEW_AGENT_LINK_LABEL));
+    return lines.join('\n\n');
+  }
   if (receipt.suggestedConnector) {
     lines.push(
       `A sensible next step is to connect *${escapeSlackText(receipt.suggestedConnector)}* so I can work with live account data.`,
@@ -537,10 +577,27 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
 }
 
 function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome): string {
-  return [
-    `Created *${boundedSlackText(receipt.agentName, 80)}*, but Slack would not let me post its welcome under the Agent’s identity. The creation thread remains with Chickpea.`,
-    ...(receipt.setupUrl ? [renderSlackActionLink(receipt.setupUrl, VIEW_AGENT_LINK_LABEL)] : []),
-  ].join('\n\n');
+  const handle = receipt.agentHandle ? ` (@${boundedSlackText(receipt.agentHandle, 80)})` : '';
+  const incomplete = receipt.publication?.incomplete ?? [];
+  const issue = incomplete.length > 0
+    ? `I couldn’t finish ${incomplete.map((part) =>
+        part === 'slack_presence' ? 'its Slack identity' : 'its source-Channel availability'
+      ).join(' or ')}.`
+    : 'Slack would not let me post its welcome under the Agent’s identity. The creation thread remains with Chickpea.';
+  const lines = [
+    `Created *${boundedSlackText(receipt.agentName, 80)}*${handle}, but ${issue}`,
+    ...(receipt.connectorNotices ?? []).map(({ text }) => boundedSlackText(text, 500)),
+    ...(receipt.connectorActions ?? []).map(({ label, setupUrl }) =>
+      renderSlackActionLink(setupUrl, `Connect ${boundedSlackText(label, 80)}`)
+    ),
+    ...(receipt.followOnNotices ?? []).map(boundedFollowOnNoticeText),
+    ...(receipt.viewAgentUrl
+      ? [renderSlackActionLink(receipt.viewAgentUrl, VIEW_AGENT_LINK_LABEL)]
+      : receipt.setupUrl
+      ? [renderSlackActionLink(receipt.setupUrl, VIEW_AGENT_LINK_LABEL)]
+      : []),
+  ];
+  return lines.join('\n\n');
 }
 
 function formatChickpeaIntroduction(_receipt: ManagementChickpeaIntroduction): string {
@@ -561,6 +618,12 @@ function escapeSlackText(value: string): string {
 
 function boundedSlackText(value: string, max: number): string {
   return escapeSlackText(value).slice(0, max).trim();
+}
+
+function boundedFollowOnNoticeText(
+  notice: NonNullable<ManagementAgentCreatedWelcome['followOnNotices']>[number],
+): string {
+  return boundedSlackText(notice.text, notice.kind === 'proposal' ? 3_000 : 500);
 }
 
 export function isConnectorConnectedReceipt(

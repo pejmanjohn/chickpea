@@ -6,6 +6,7 @@ import { CHICKPEA_AGENT_ID, isAgentId } from '../config/agent-id.ts';
 import {
   CONNECTION_CATALOG_PRESETS,
   resolveConnectorCatalogPreset,
+  type ConnectorCatalogPreset,
 } from '../config/presets.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
 import {
@@ -61,6 +62,7 @@ import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
+import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import {
   AGENT_AUTHORING_GUIDE_DIGEST,
   AGENT_AUTHORING_GUIDE_URI,
@@ -94,6 +96,7 @@ import {
   emitManagementMetric,
   type ManagementMetricValue,
 } from './telemetry.ts';
+import { selectAgentCreationConnectors } from './agent-creation-welcome.ts';
 import {
   ChickpeaHandoffRequired,
   ManagementError,
@@ -131,6 +134,10 @@ import {
   type ManagementWorkspaceSnapshot,
   type PrepareConnectorSetupInput,
   type PrepareConnectorSetupResult,
+  type FinalizeSlackAgentCreationWelcomeInput,
+  type FinalizeSlackAgentCreationWelcomeResult,
+  type ManagementAgentCreatedWelcome,
+  type ManagementReceiptOutboxRecord,
   type ProposeSkillImportInput,
   type ProposeSkillImportResult,
   type ProposeWorkspaceChangesInput,
@@ -932,6 +939,232 @@ export class WorkspaceManagementService {
     };
   }
 
+  async finalizeSlackAgentCreationWelcome(
+    input: FinalizeSlackAgentCreationWelcomeInput,
+  ): Promise<FinalizeSlackAgentCreationWelcomeResult> {
+    const actor = await this.requireLiveActor(input.context, { cleanupRetention: false });
+    if (actor.origin.kind !== 'slack') {
+      throw new ManagementError('invalid_request', 'Agent welcomes require a Slack origin.');
+    }
+    const request = await this.stores.management.getRequest(input.operationId);
+    if (!request || request.organizationId !== actor.organizationId ||
+        request.actorUserId !== actor.userId ||
+        request.actorMembershipId !== actor.membershipId ||
+        request.originKey !== managementActorOriginKey(actor) ||
+        request.status !== 'completed' || !request.result) {
+      throw new ManagementError('operation_not_found', 'The creation operation was not found.');
+    }
+    const existing = await this.stores.management.getOutboxForOperation(input.operationId);
+    if (existing) {
+      if (!('kind' in existing.receipt) || existing.receipt.kind !== 'agent_created_welcome') {
+        throw new ManagementError('invalid_state', 'The creation operation has another receipt.');
+      }
+      if (existing.receipt.turnJobId !== input.turnJobId) {
+        throw new ManagementError('invalid_state', 'The Agent welcome belongs to another Slack turn.');
+      }
+      return { outbox: existing, created: false };
+    }
+    const creation = request.result.outcomes.find((outcome) =>
+      outcome.itemId === input.creationItemId &&
+      outcome.operationKind === 'create_agent' &&
+      outcome.disposition === 'applied' &&
+      outcome.changed?.some(({ kind, id }) => kind === 'agent' && id === input.agentId)
+    );
+    if (!creation) {
+      throw new ManagementError('invalid_state', 'The creation operation did not create this Agent.');
+    }
+    const agent = await this.requireEditableAgent(actor, input.agentId);
+    const incomplete: Array<'slack_presence' | 'source_channel'> = [];
+    if (creation.warning || agent.slackPresence?.health !== 'healthy' ||
+        !agent.slackPresence.userGroupId) {
+      incomplete.push('slack_presence');
+    }
+    if (actor.origin.conversationKind === 'channel') {
+      const sourceGrant = request.result.outcomes.find((outcome) =>
+        outcome.operationKind === 'grant_agent_channel' &&
+        outcome.disposition === 'applied'
+      );
+      if (!sourceGrant) incomplete.push('source_channel');
+    }
+
+    const baseUrl = await this.resolveSetupBaseUrl().catch(() => undefined);
+    const attachedPresetIds = new Set([
+      ...agent.mcpServers.flatMap(({ presetId }) => presetId ? [presetId] : []),
+      ...agent.apiConnections.flatMap(({ presetId }) => presetId ? [presetId] : []),
+    ]);
+    const connectorPlan = await selectAgentCreationConnectors({
+      requestText: actor.origin.requestText ?? '',
+      explicitMentions: input.connectorMentions,
+      agentCorpus: [agent.name, agent.description ?? '', agent.instructions].join(' '),
+      attachedPresetIds,
+      isEligible: (preset) => this.agentCreationConnectorEligible(preset, baseUrl),
+    });
+    const setups: Array<{ record: ManagementSetupRecord }> = [];
+    const connectorActions: NonNullable<ManagementAgentCreatedWelcome['connectorActions']> = [];
+    const connectorNotices = [...connectorPlan.notices];
+    for (const candidate of connectorPlan.candidates) {
+      const preset = CONNECTION_CATALOG_PRESETS.find(({ id }) => id === candidate.presetId);
+      if (!preset || !baseUrl) continue;
+      try {
+        const prepared = this.freezeAgentCreationConnectorSetup(
+          actor,
+          agent,
+          input.operationId,
+          preset,
+          baseUrl,
+        );
+        if (prepared.record) setups.push({ record: prepared.record });
+        connectorActions.push({
+          presetId: preset.id,
+          label: preset.name,
+          ...(prepared.record ? { setupOperationId: prepared.record.setupOperationId } : {}),
+          setupUrl: prepared.url,
+        });
+      } catch {
+        connectorNotices.push({
+          kind: 'unavailable',
+          label: preset.name,
+          text: `${preset.name} isn’t available to connect right now.`,
+        });
+      }
+    }
+    const handle = agent.slackPresence?.normalizedHandle ?? agent.slackPresence?.requestedHandle;
+    const avatarUrl = baseUrl ? agentAvatarUrlForPresentation(agent, baseUrl) : undefined;
+    const viewAgentUrl = creation.handoffUrl ?? (baseUrl
+      ? new URL(`/admin/agents/${encodeURIComponent(agent.id)}`, baseUrl).href
+      : undefined);
+    const at = this.now();
+    const receipt: ManagementAgentCreatedWelcome = {
+      kind: 'agent_created_welcome',
+      creationOperationId: input.operationId,
+      ...(input.presentationRunId ? { presentationRunId: input.presentationRunId } : {}),
+      turnJobId: input.turnJobId,
+      agentId: agent.id,
+      agentName: agent.name,
+      ...(handle ? { agentHandle: handle } : {}),
+      ...(agent.description ? { agentDescription: agent.description } : {}),
+      requesterMembershipId: actor.membershipId,
+      surface: actor.origin.conversationKind === 'channel' ? 'channel' : 'direct',
+      persona: {
+        name: agent.name,
+        ...(avatarUrl ? { avatarUrl } : {}),
+      },
+      publication: {
+        status: incomplete.length === 0 ? 'complete' : 'partial',
+        incomplete,
+      },
+      connectorActions,
+      connectorNotices,
+      followOnNotices: input.followOnNotices,
+      ...(viewAgentUrl ? { viewAgentUrl } : {}),
+    };
+    const outbox: ManagementReceiptOutboxRecord = {
+      outboxId: `agent_welcome_${input.operationId}`,
+      operationId: input.operationId,
+      destination: {
+        kind: 'thread',
+        workspaceId: actor.origin.workspaceId,
+        channelId: actor.origin.channelId,
+        threadTs: actor.origin.threadTs,
+      },
+      receipt,
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: at,
+      createdAt: at,
+      updatedAt: at,
+    };
+    const claimed = await this.stores.management.claimAgentCreationWelcome({
+      operationId: input.operationId,
+      setups,
+      outbox,
+    });
+    emitManagementMetric('agent_creation.welcome_claim', {
+      surface: 'slack',
+      outcome: claimed.created ? 'created' : 'replayed',
+      connectorActionCount: connectorActions.length,
+      connectorNoticeCount: connectorNotices.length,
+      publicationStatus: receipt.publication?.status ?? 'partial',
+    });
+    return claimed;
+  }
+
+  private async agentCreationConnectorEligible(
+    preset: ConnectorCatalogPreset,
+    baseUrl: string | undefined,
+  ): Promise<boolean> {
+    if (!baseUrl) return false;
+    if (!('managedToolkit' in preset)) return true;
+    if (MANAGED_CONNECTOR_CATALOG.capabilities(preset.managedToolkit, 'write').length === 0) {
+      return false;
+    }
+    return this.stores.managedConnectorAvailable
+      ? this.stores.managedConnectorAvailable({
+          toolkit: preset.managedToolkit,
+          accessLane: 'read',
+        })
+      : true;
+  }
+
+  private freezeAgentCreationConnectorSetup(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+    operationId: string,
+    preset: ConnectorCatalogPreset,
+    baseUrl: string,
+  ): { record?: ManagementSetupRecord; url: string } {
+    if (!('managedToolkit' in preset)) {
+      return {
+        url: new URL([
+          '/admin/agents',
+          encodeURIComponent(agent.id),
+          'connections/new',
+          encodeURIComponent(preset.id),
+          'member',
+        ].join('/'), baseUrl).href,
+      };
+    }
+    const rawCapability = this.randomCapability();
+    if (!/^[A-Za-z0-9_-]{43}$/.test(rawCapability)) {
+      throw new ManagementError('invalid_request', 'Setup capability generation failed.');
+    }
+    const at = this.now();
+    const setupOperationId = `setup_welcome_${createHash('sha256')
+      .update(`${operationId}:${preset.id}`)
+      .digest('hex').slice(0, 32)}`;
+    const record: ManagementSetupRecord = {
+      setupOperationId,
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId,
+      actorMembershipId: actor.membershipId,
+      origin: actor.origin,
+      action: 'managed_connection',
+      target: {
+        kind: 'managed_connection',
+        provider: preset.managedToolkit,
+        targetId: `agent:${agent.id}:managed:${preset.managedToolkit}:welcome`,
+        targetLabel: preset.name,
+        expectedRevision: agent.revision,
+        agentId: agent.id,
+        agentName: agent.name,
+        replacement: false,
+        ownerKind: 'member',
+        accessLane: 'read',
+        presetId: preset.id,
+      },
+      scopes: MANAGED_CONNECTOR_CATALOG.capabilities(preset.managedToolkit, 'write')
+        .map(({ id }) => id),
+      tokenDigest: capabilityDigest(rawCapability),
+      status: 'pending',
+      expiresAt: at + SETUP_TTL_MS,
+      createdAt: at,
+      updatedAt: at,
+    };
+    const url = new URL(`/setup/${encodeURIComponent(setupOperationId)}`, baseUrl);
+    url.hash = `setup=${rawCapability}`;
+    return { record, url: url.href };
+  }
+
   async discoverSlackChannels(
     context: ApplyWorkspaceChangesInput['context'],
     refresh = false,
@@ -1111,7 +1344,13 @@ export class WorkspaceManagementService {
       actor,
       requestedOperations,
     );
-    if (duplicateIdentity) return duplicateIdentity;
+    if (duplicateIdentity) {
+      emitManagementMetric('agent_creation.outcome', {
+        surface: actor.origin.kind,
+        outcome: 'clarification',
+      });
+      return duplicateIdentity;
+    }
     const operations = validateManagementOperations(
       withTrustedSlackOriginGrant(actor, requestedOperations),
     );
@@ -1138,6 +1377,11 @@ export class WorkspaceManagementService {
           this.now(),
         );
       }
+      emitAgentCreationApplyOutcome(
+        actor.origin.kind,
+        requestedOperations,
+        reservation.request.result,
+      );
       return emitOperationOutcomes(actor.origin.kind, reservation.request.result);
     }
     if (reservation.request.status === 'failed') {
@@ -1318,6 +1562,7 @@ export class WorkspaceManagementService {
         this.now(),
       );
     }
+    emitAgentCreationApplyOutcome(actor.origin.kind, requestedOperations, result);
     return emitOperationOutcomes(actor.origin.kind, result);
   }
 
@@ -4304,6 +4549,25 @@ function emitOperationOutcomes(
     });
   }
   return result;
+}
+
+function emitAgentCreationApplyOutcome(
+  surface: LiveManagementActor['origin']['kind'],
+  requestedOperations: readonly ManagementOperation[],
+  result: ManagementApplyResult,
+): void {
+  const requestedCreation = requestedOperations.length === 1 &&
+      requestedOperations[0]?.kind === 'create_agent'
+    ? requestedOperations[0]
+    : undefined;
+  const creation = requestedCreation
+    ? result.outcomes.find(({ itemId }) => itemId === requestedCreation.itemId)
+    : undefined;
+  if (!creation) return;
+  emitManagementMetric('agent_creation.outcome', {
+    surface,
+    outcome: creation.disposition === 'applied' ? 'applied' : 'failed',
+  });
 }
 
 function emitAgentAuthoringOutcome(

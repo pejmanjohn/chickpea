@@ -13,6 +13,7 @@ import {
   AGENT_AUTHORING_SKILL_NAME,
   AGENT_SKILL_CREATION_GUIDE,
 } from '../src/management/agent-authoring/index.ts';
+import { workspaceManagementToolDescription } from '../src/management/tool-adapter.ts';
 
 test('canonical Agent-authoring package is versioned, complete, and digest-bound', async () => {
   assert.equal(AGENT_AUTHORING_SKILL_NAME, 'agent-authoring');
@@ -54,7 +55,10 @@ test('router covers all authoring postures while leaving detailed judgment lazy'
     'inspect_workspace',
     'do not answer from general knowledge or defer inspection',
     'before calling any configuration mutation tool',
-    'single approval boundary',
+    'standalone base create_agent operation',
+    'apply_workspace_changes immediately',
+    'Never propose Agent creation',
+    'ordered welcome hints',
     'remember or edit Agent memory',
     'compound request as one Agent-authoring request',
     'use import_skill',
@@ -64,6 +68,16 @@ test('router covers all authoring postures while leaving detailed judgment lazy'
     'propose_workspace_changes with delete_routine',
   ]) assert.match(AGENT_AUTHORING_ROUTER_INSTRUCTION, new RegExp(phrase, 'i'));
   assert.doesNotMatch(AGENT_AUTHORING_ROUTER_INSTRUCTION, /chief of staff|Sentry|bug-to-PR/i);
+});
+
+test('shared creation tool descriptions agree on immediate standalone apply', () => {
+  const proposal = workspaceManagementToolDescription('propose_workspace_changes');
+  const apply = workspaceManagementToolDescription('apply_workspace_changes');
+
+  assert.match(proposal, /Agent creation is not valid here/i);
+  assert.match(proposal, /standalone base Agent immediately with apply_workspace_changes/i);
+  assert.match(apply, /created immediately as a standalone create_agent operation/i);
+  assert.match(apply, /do not propose it or ask for confirmation/i);
 });
 
 test('guide encodes posture, placement, blueprint, inspection, and proportional approval', () => {
@@ -84,12 +98,18 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     'inspect_workspace', 'propose_workspace_changes', 'confirm_workspace_change',
     'call `import_skill`', 'applies one bounded new skill immediately',
     'explicit requester command executes without another confirmation',
-    'Confirmation is the exception', 'Ambiguity calls for clarification, not approval',
+    'Confirmation remains required', 'Ambiguity calls for clarification, not approval',
     'reversible, local-only',
     'call `manage_agent_skill`', 'Never construct a replacement `skills` array',
     'Ambiguity calls for clarification, not approval',
-    'only review step', 'exactly one approval', 'Never re-propose unchanged content',
-    'publishes its Slack handle',
+    'standalone base `create_agent` operation',
+    'Do not call `propose_workspace_changes`',
+    'ordered `connectorMentions`',
+    'duplicate-identity clarification',
+    'Never re-propose unchanged content',
+    'without a confirmation turn',
+    'up to three independently authorized `Connect X` actions',
+    'ends with `View Agent`',
     'opaque control token', 'Preserve it byte-for-byte', 'never retype',
     '`presentation.slack` value verbatim', 'new object shows concise values',
     'existing object shows before and after only for meaningful visible changes',
@@ -103,7 +123,7 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     'All requests to remember or edit durable Agent memory are Agent authoring',
     '`update_agent_memory`', 'exact `expectedRevision`',
     '`request_chickpea_handoff`', 'mention `@Chickpea`',
-    'no Agent record', 'one highest-value next step',
+    'no Agent record',
   ]) assert.match(AGENT_AUTHORING_GUIDE, new RegExp(phrase, 'i'));
 });
 

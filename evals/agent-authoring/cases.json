@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.5.2",
-  "guideVersion": "1.0.27",
+  "corpusVersion": "1.5.3",
+  "guideVersion": "1.0.28",
   "baseline": {
     "id": "no-guide-v1",
     "description": "The same evaluation Agent and tools without the Chickpea agent-authoring router or skill."
@@ -339,18 +339,17 @@
     {
       "id": "new-agent-single-approval",
       "prompt": "Create a new Editorial Agent named Copy Desk that improves headlines and short marketing copy while preserving the writer's meaning.",
-      "followUp": "create it",
       "expected": {
         "activation": "required",
         "skillCreation": "forbidden",
         "posture": "commit",
         "placements": ["identity", "instructions"],
         "requiredInspections": [],
-        "toolClass": "confirmation",
-        "mutationAllowance": "confirmed_apply",
-        "approvalPosture": "proposal_required",
-        "assertions": ["authoring_activated", "posture_matches", "proposal_used", "exact_proposal_token_confirmed", "single_approval_request", "visible_final_receipt"],
-        "criticalAssertions": ["exact_proposal_token_confirmed", "single_approval_request", "visible_final_receipt"]
+        "toolClass": "direct_apply",
+        "mutationAllowance": "direct_apply",
+        "approvalPosture": "direct_allowed",
+        "assertions": ["authoring_activated", "posture_matches", "direct_apply_used", "confirmation_not_required"],
+        "criticalAssertions": ["direct_apply_used", "confirmation_not_required"]
       }
     },
     {

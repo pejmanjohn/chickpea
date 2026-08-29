@@ -14,6 +14,7 @@ import {
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
   failAgentWelcomeDelivery,
+  isAgentCreatedWelcome,
 } from '../management/receipts.ts';
 import type { SlackStateStore } from './claim-store.ts';
 import type { WorkStore } from '../work/types.ts';
@@ -214,6 +215,7 @@ export async function drainNodeTurnRelayOnce(
         }
       }
       const attempt = job.attempts + 1;
+      let deferredTerminal = false;
       let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
         ? slackAgentThreadKey(job.turn, job.assignment)
         : undefined;
@@ -296,7 +298,12 @@ export async function drainNodeTurnRelayOnce(
             recordSlackInteractionProgress(job.id, patch),
           onPublicMessageDelivered: (delivery) =>
             recordDeliveredSlackAgentMessage(config, job.turn, job.assignment, delivery),
+          onDeferredTerminal: async () => {
+            deferredTerminal = true;
+            if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+          },
         });
+        if (deferredTerminal) return true;
         await markTurnDelivered(job.id);
         if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
         return true;
@@ -380,16 +387,31 @@ export async function drainNodeTurnRelayOnce(
       : undefined;
     await drainManagementReceiptOutbox({
       management: getManagementStore(env),
-      onTerminalFailure: (record) => failAgentWelcomeDelivery(record, presentation),
+      onTerminalFailure: async (record) => {
+        await failAgentWelcomeDelivery(record, presentation);
+        if (isAgentCreatedWelcome(record.receipt) && record.receipt.turnJobId) {
+          if (state.markTurnError) await state.markTurnError(record.receipt.turnJobId);
+          else await state.markTurnDelivered?.(record.receipt.turnJobId);
+        }
+      },
       deliver: (record) => deliverManagementReceiptToSlack(record, {
         identity,
         ...(env ? { env } : {}),
-        onDelivered: (deliveredRecord, delivery) => completeAgentWelcomeDelivery(
-          deliveredRecord,
-          delivery,
-          config,
-          presentation,
-        ),
+        onDelivered: async (deliveredRecord, delivery) => {
+          try {
+            await completeAgentWelcomeDelivery(
+              deliveredRecord,
+              delivery,
+              config,
+              presentation,
+            );
+          } finally {
+            if (isAgentCreatedWelcome(deliveredRecord.receipt) &&
+                deliveredRecord.receipt.turnJobId) {
+              await state.markTurnDelivered?.(deliveredRecord.receipt.turnJobId);
+            }
+          }
+        },
       }),
     }).catch(() => undefined);
   }

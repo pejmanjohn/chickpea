@@ -260,7 +260,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
 test('workspace management MCP publishes the version 2 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '2.4.0',
+    version: '2.5.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });

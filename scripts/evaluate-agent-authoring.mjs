@@ -251,7 +251,7 @@ function useEvaluationTools() {
   });
   useTool({
     name: 'propose_workspace_changes',
-    description: 'Create a read-only, exact proposal for consequential, generated, compound, skill-bearing, capability, reach, or scheduled Agent changes. This does not apply anything. Show presentation.slack verbatim as the bounded human preview and retain proposalId only as control data for confirmation.',
+    description: 'Create a read-only, exact proposal for consequential, generated, compound, skill-bearing, capability, reach, or scheduled Agent edits. Agent creation is invalid here. This does not apply anything. Show presentation.slack verbatim as the bounded human preview and retain proposalId only as control data for confirmation.',
     input: proposeWorkspaceChangesValibotSchema,
     output: v.string(),
     run: () => ({
@@ -279,7 +279,7 @@ function useEvaluationTools() {
   });
   useTool({
     name: 'apply_workspace_changes',
-    description: 'Apply an explicit reversible edit when policy allows direct application. Do not use for generated, inferred, skill-bearing, compound, or consequential changes.',
+    description: 'Create one sufficiently understood base Agent immediately with one standalone create_agent operation, or apply another explicit reversible edit when policy allows. Do not propose Agent creation. Keep generated, inferred, skill-bearing, compound follow-on, and consequential edits on their existing policy paths.',
     input: applyWorkspaceChangesValibotSchema,
     output: v.string(),
     run: () => ({ output: JSON.stringify({ status: 'applied' }) }),
@@ -548,7 +548,9 @@ async function runDeterministicSmoke(corpus) {
     const scheduleDeletion = corpus.cases.find(({ id }) => id === 'conversational-schedule-delete');
     const skill = corpus.cases.find(({ id }) => id === 'coding-bug-to-pr-skill');
     const confirmation = corpus.cases.find(({ id }) => id === 'successful-proposal-confirmation');
-    assert(positive && negative && stale && reach && schedule && scheduleDeletion && skill && confirmation,
+    const creation = corpus.cases.find(({ id }) => id === 'new-agent-single-approval');
+    assert(positive && negative && stale && reach && schedule && scheduleDeletion && skill &&
+      confirmation && creation,
       'Smoke cases are missing.');
 
     faux.setResponses([
@@ -837,6 +839,50 @@ async function runDeterministicSmoke(corpus) {
       );
     }
 
+    faux.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall('activate_skill', { name: 'agent-authoring' }),
+      ], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([
+        fauxToolCall('apply_workspace_changes', {
+          idempotencyKey: 'create-copy-desk',
+          operations: [{
+            itemId: 'agent',
+            kind: 'create_agent',
+            agent: {
+              id: 'agent_copy_desk',
+              name: 'Copy Desk',
+              description: 'Improves headlines and short marketing copy.',
+              requestedHandle: 'copy-desk',
+              editPolicy: 'all_workspace_members',
+              instructions: 'Improve headlines and short marketing copy while preserving the writer’s meaning.',
+              enabled: true,
+              skills: [],
+              mcpServers: [],
+              apiConnections: [],
+              repositories: [],
+            },
+          }],
+        }),
+      ], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([
+        fauxToolCall('record_eval_assessment', {
+          posture: 'commit',
+          placements: ['identity', 'instructions'],
+          approvalPosture: 'direct_allowed',
+          capabilityClaimsGrounded: true,
+        }),
+      ], { stopReason: 'toolUse' }),
+    ]);
+    const creationResult = await runCase('current', creation);
+    const creationEvaluation = evaluateResult(creationResult, creation.expected);
+    for (const assertion of ['direct_apply_used', 'confirmation_not_required']) {
+      assert(
+        creationEvaluation.assertions.find(({ id }) => id === assertion)?.passed,
+        `Immediate Agent creation failed ${assertion}.`,
+      );
+    }
+
     return {
       mode: 'deterministic_smoke',
       corpusVersion: corpus.corpusVersion,
@@ -856,6 +902,7 @@ async function runDeterministicSmoke(corpus) {
         'routine_deletion_confirmation_route_observed',
         'production_valid_skill_observed',
         'exact_confirmation_receipt_observed',
+        'immediate_agent_creation_observed',
         'usage_observed',
       ],
     };

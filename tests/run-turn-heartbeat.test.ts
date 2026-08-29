@@ -31,6 +31,7 @@ import { repairTerminalSlackPresentation } from '../src/slack/presentation-repai
 import { completeAgentWelcomeDelivery } from '../src/management/receipts.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
+import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -353,6 +354,207 @@ test('runTurn applies a bound DM approval in the host without invoking the Agent
     assert.equal(promptCalls, 0);
     assert.equal((await f.config.getAgent(managedAgent.id)).revision, applied.revision);
     assert.equal(delivered.filter((text) => /Applied the approved changes\./.test(text)).length, 2);
+  } finally {
+    f.close();
+  }
+});
+
+test('runTurn suppresses model prose and defers one immediate-creation welcome', async () => {
+  const f = await createManagementAdapterFixture('run-turn-immediate-creation');
+  try {
+    const chickpea = await f.config.materializeChickpeaAgent();
+    const bootstrapAgent = await f.config.createAgent({
+      id: 'agent_run_turn_bootstrap',
+      name: 'Bootstrap',
+      instructions: 'Provide the initial Workspace routing target.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const installation = await f.config.ensureWorkspaceInstallation({
+      workspaceId: f.admin.binding.slackTeamId,
+      transportMode: 'direct',
+      defaultAgentId: bootstrapAgent.id,
+      teamId: f.admin.binding.slackTeamId,
+      botUserId: 'U_CHICKPEA',
+    });
+    await f.config.updateWorkspaceInstallation(
+      f.admin.binding.slackTeamId,
+      { runtimeContract: 'chickpea-v1', health: 'healthy' },
+      installation.revision,
+    );
+    const turn: NormalizedSlackTurn = {
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: 'D_IMMEDIATE_CREATION',
+      eventId: 'Ev_IMMEDIATE_CREATION',
+      text: 'Create a Deck Agent using Google Slides.',
+      userId: f.admin.binding.slackUserId,
+      actorMembershipId: f.admin.membership.id,
+      messageTs: '205.1',
+      threadTs: '205.1',
+      source: 'dm_message',
+      channelType: 'im',
+      contextMode: 'dm_history',
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    };
+    const chickpeaAssignment: ResolvedAssignment = {
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      agentId: CHICKPEA_AGENT_ID,
+      runtimeContract: 'chickpea-v1',
+      model: 'local-stub/management',
+      modelAttribution: { source: 'pinned', providerId: 'local-stub' },
+      agent: chickpea,
+    };
+    const context = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      actingAgentId: CHICKPEA_AGENT_ID,
+      origin: {
+        kind: 'slack' as const,
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        threadTs: turn.threadTs,
+        messageTs: turn.messageTs,
+        requestText: turn.text,
+        conversationKind: 'im' as const,
+        agentId: CHICKPEA_AGENT_ID,
+      },
+    };
+    const applied = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'turn-immediate-creation',
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: {
+          id: 'agent_run_turn_deck',
+          name: 'Deck',
+          description: 'Creates polished presentations.',
+          requestedHandle: 'run-turn-deck',
+          editPolicy: 'all_workspace_members',
+          instructions: 'Create polished presentations in Google Slides.',
+          enabled: true,
+          skills: [],
+          mcpServers: [],
+          apiConnections: [],
+          repositories: [],
+        },
+      }],
+    });
+    if (!('operationId' in applied)) assert.fail('expected applied creation');
+    const created = await f.config.getAgent('agent_run_turn_deck');
+    await f.config.updateAgent(created.id, {
+      slackPresence: {
+        ...created.slackPresence!,
+        desiredState: 'active',
+        health: 'healthy',
+        userGroupId: 'SRUNTURNDECK',
+      },
+    }, created.revision);
+    const storedCreation = await f.management.getRequest(applied.operationId);
+    assert.ok(storedCreation);
+    assert.equal(storedCreation.status, 'completed');
+    assert.equal(storedCreation.actorUserId, f.admin.user.id);
+    assert.equal(storedCreation.actorMembershipId, f.admin.membership.id);
+    assert.equal(
+      storedCreation.originKey,
+      `slack:${turn.workspaceId}:${turn.channelId}:${turn.threadTs}:im:agent:${CHICKPEA_AGENT_ID}`,
+    );
+
+    const visiblePosts: string[] = [];
+    const client = {
+      conversations: { history: async () => ({ ok: true, messages: [] }) },
+      chat: {
+        startStream: async (input: { markdown_text: string }) => {
+          visiblePosts.push(input.markdown_text);
+          return { ok: true, ts: '206.1' };
+        },
+        stopStream: async () => ({ ok: true }),
+        postMessage: async (input: { text: string }) => {
+          visiblePosts.push(input.text);
+          return { ok: true, channel: turn.channelId, ts: '206.1' };
+        },
+      },
+    } as unknown as WebClient;
+    let deferred = 0;
+    let delivered = 0;
+    let promptCalls = 0;
+    const runOptions = {
+      client,
+      turnId: 'turn_IMMEDIATE_CREATION',
+      agentPrompt: async (): Promise<AgentDispatchResult> => {
+        promptCalls += 1;
+        return {
+          text: 'The model says the Agent was created. This text must stay hidden.',
+          agentCreationTerminal: {
+            schemaVersion: 1,
+            operationId: applied.operationId,
+            creationItemId: 'create',
+            agentId: 'agent_run_turn_deck',
+            connectorMentions: ['Google Slides'],
+            followOnNotices: [],
+          },
+          requestedModel: 'local-stub/management',
+          returnedModel: { provider: 'local-stub', id: 'management' },
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+      managementApproval: {
+        identity: f.identity,
+        config: f.config,
+        management: f.management,
+        service: f.service,
+      },
+      appStores: {
+        config: f.config,
+        identity: f.identity,
+        memory: f.memory,
+      } as never,
+      onDeferredTerminal: () => { deferred += 1; },
+      onDelivered: () => { delivered += 1; },
+      usageRecordingEnabled: false,
+    };
+    await runTurn(turn, chickpeaAssignment, undefined, runOptions);
+
+    assert.deepEqual(visiblePosts, []);
+    assert.equal(promptCalls, 1);
+    assert.equal(deferred, 1);
+    assert.equal(delivered, 0);
+    const outbox = await f.management.getOutboxForOperation(applied.operationId);
+    assert.ok(outbox && 'kind' in outbox.receipt &&
+      outbox.receipt.kind === 'agent_created_welcome');
+    if (!outbox || !('kind' in outbox.receipt) ||
+        outbox.receipt.kind !== 'agent_created_welcome') {
+      assert.fail('expected deferred Agent welcome');
+    }
+    assert.equal(outbox.receipt.turnJobId, 'turn_IMMEDIATE_CREATION');
+    assert.deepEqual(outbox.receipt.connectorActions?.map(({ label }) => label), [
+      'Google Slides',
+    ]);
+
+    const [claimed] = await f.management.claimDueOutbox(
+      outbox.nextAttemptAt,
+      1,
+      outbox.nextAttemptAt + 60_000,
+    );
+    assert.ok(claimed);
+    await f.management.settleOutbox({
+      outboxId: outbox.outboxId,
+      outcome: 'delivered',
+      at: outbox.nextAttemptAt + 1,
+      deliveryRef: 'slack:D_IMMEDIATE_CREATION:206.2',
+    });
+
+    await runTurn(turn, chickpeaAssignment, undefined, runOptions);
+    assert.deepEqual(visiblePosts, []);
+    assert.equal(promptCalls, 2);
+    assert.equal(deferred, 1);
+    assert.equal(delivered, 1);
   } finally {
     f.close();
   }

@@ -24,6 +24,9 @@ const MANAGEMENT_METRIC_FIELDS = new Set([
   'artifactClass',
   'channelCount',
   'conflictCount',
+  'connectorActionCount',
+  'connectorNoticeCount',
+  'deliveryPersona',
   'durationMs',
   'guideVersion',
   'handoffClass',
@@ -31,6 +34,7 @@ const MANAGEMENT_METRIC_FIELDS = new Set([
   'operationCount',
   'outcome',
   'posture',
+  'publicationStatus',
   'proposalOutcome',
   'reason',
   'setupRequiredCount',
@@ -41,6 +45,9 @@ const MANAGEMENT_METRIC_FIELDS = new Set([
 ]);
 
 const MANAGEMENT_METRIC_EVENTS = new Set([
+  'agent_creation.outcome',
+  'agent_creation.welcome_claim',
+  'agent_creation.welcome_delivery',
   'agent_authoring.outcome',
   'live_revision.admission',
   'oauth.dcr',
@@ -75,9 +82,11 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
   handoffClass: new Set(['cross_agent', 'workspace_authority', 'none']),
   outcome: new Set([
     'admitted', 'applied', 'completed', 'confirmation_required', 'delivered',
-    'chickpea_handoff', 'denied', 'error', 'failed', 'partial', 'retry', 'setup_required',
-    'skipped', 'success',
+    'chickpea_handoff', 'clarification', 'created', 'denied', 'error', 'failed', 'partial',
+    'replayed', 'retry', 'setup_required', 'skipped', 'success',
   ]),
+  deliveryPersona: new Set(['agent', 'chickpea']),
+  publicationStatus: new Set(['complete', 'partial']),
   posture: new Set(['commit', 'explore', 'capability_question', 'clarify']),
   proposalOutcome: new Set([
     'created', 'applied', 'partial', 'setup_required', 'stale', 'denied', 'failed',

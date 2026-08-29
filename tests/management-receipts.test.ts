@@ -301,6 +301,110 @@ test('Agent welcome uses its persona and falls back to Chickpea when customize s
   assert.equal(result.deliveryRef, 'slack:C_WELCOME:1800000000.000300');
 });
 
+test('immediate Agent welcome renders connector actions in order and View Agent last', () => {
+  const text = formatManagementSetupReceipt({
+    kind: 'agent_created_welcome',
+    creationOperationId: 'management_deck',
+    agentId: 'agent_deck',
+    agentName: 'Deck',
+    agentHandle: 'deck-2',
+    agentDescription: 'Creates polished presentations.',
+    requesterMembershipId: 'membership_deck',
+    surface: 'channel',
+    persona: { name: 'Deck' },
+    publication: { status: 'complete', incomplete: [] },
+    connectorActions: [
+      {
+        presetId: 'google-slides',
+        label: 'Google Slides',
+        setupOperationId: 'setup_slides',
+        setupUrl: 'https://example.test/setup/slides#setup=secret',
+      },
+      {
+        presetId: 'notion-managed',
+        label: 'Notion',
+        setupOperationId: 'setup_notion',
+        setupUrl: 'https://example.test/setup/notion#setup=secret',
+      },
+    ],
+    connectorNotices: [{
+      kind: 'overflow',
+      label: 'Linear',
+      text: 'Linear can be connected later from View Agent.',
+    }],
+    followOnNotices: [{ kind: 'pending', text: 'Adding another Channel is still pending.' }],
+    viewAgentUrl: 'https://example.test/admin/agents/agent_deck',
+  });
+  assert.match(text, /^Hi — I’m \*Deck\* \(@deck-2\)\./);
+  assert.ok(text.indexOf('|Connect Google Slides>') < text.indexOf('|Connect Notion>'));
+  assert.ok(text.indexOf('|Connect Notion>') < text.indexOf('|View Agent>'));
+  assert.equal(text.match(/\|View Agent>/g)?.length, 1);
+  assert.ok(text.endsWith('<https://example.test/admin/agents/agent_deck|View Agent>'));
+});
+
+test('partial creation posts once as Chickpea with valid actions and no Agent persona attempt', async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const record: ManagementReceiptOutboxRecord = {
+    outboxId: 'agent_welcome_partial',
+    operationId: 'management_agent_welcome_partial',
+    destination: {
+      kind: 'thread',
+      workspaceId: 'T_WELCOME',
+      channelId: 'C_WELCOME',
+      threadTs: '1800000000.000100',
+    },
+    receipt: {
+      kind: 'agent_created_welcome',
+      creationOperationId: 'management_agent_welcome_partial',
+      agentId: 'agent_deck_partial',
+      agentName: 'Deck',
+      agentHandle: 'deck',
+      requesterMembershipId: 'membership_welcome',
+      surface: 'channel',
+      persona: { name: 'Deck' },
+      publication: { status: 'partial', incomplete: ['source_channel'] },
+      connectorActions: [{
+        presetId: 'google-slides',
+        label: 'Google Slides',
+        setupOperationId: 'setup_slides',
+        setupUrl: 'https://example.test/setup/slides#setup=secret',
+      }],
+      viewAgentUrl: 'https://example.test/admin/agents/agent_deck_partial',
+    },
+    status: 'delivering',
+    attempts: 1,
+    nextAttemptAt: 1_800_000_000_000,
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  };
+  const delivered: Array<{ persona: string }> = [];
+  await deliverManagementReceiptToSlack(record, {
+    identity: { async listExternalIdentities() { return []; } },
+    resolveInstallation: async (workspaceId) => ({
+      workspaceId,
+      transportMode: 'direct',
+      botUserId: 'U_BOT',
+      client: {
+        chat: {
+          async postMessage(input: Record<string, unknown>) {
+            calls.push(input);
+            return { ok: true, ts: '1800000000.000600' };
+          },
+        },
+      } as unknown as WebClient,
+    }),
+    onDelivered: async (_record, delivery) => { delivered.push(delivery); },
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.username, undefined);
+  assert.match(String(calls[0]?.text), /source-Channel availability/);
+  assert.match(String(calls[0]?.text), /\|Connect Google Slides>/);
+  assert.ok(String(calls[0]?.text).endsWith(
+    '<https://example.test/admin/agents/agent_deck_partial|View Agent>',
+  ));
+  assert.deepEqual(delivered.map(({ persona }) => persona), ['chickpea']);
+});
+
 test('an acknowledged Agent welcome is not retried when post-delivery bookkeeping fails', async () => {
   const posts: unknown[] = [];
   const record: ManagementReceiptOutboxRecord = {
