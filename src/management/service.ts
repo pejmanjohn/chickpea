@@ -107,6 +107,9 @@ import {
   type ManagementItemOutcome,
   type ImportSkillInput,
   type ImportSkillResult,
+  type ManageAgentSkillInput,
+  type ManageAgentSkillResult,
+  type SkillActionReceiptMetadata,
   type ManagementMemorySnapshot,
   type ManagementAgentCreateInput,
   type ManagementAgentPatch,
@@ -388,6 +391,267 @@ export class WorkspaceManagementService {
       },
       import: metadata,
     };
+  }
+
+  async manageAgentSkill(input: ManageAgentSkillInput): Promise<ManageAgentSkillResult> {
+    const actor = await this.requireLiveActor(input.context);
+    const agentId = input.agentId ??
+      (actor.origin.kind === 'slack' ? actor.origin.agentId : undefined);
+    if (!agentId || !isAgentId(agentId)) {
+      throw new ManagementError('invalid_request', 'Choose a valid Agent for the skill change.');
+    }
+    this.assertActingAgentScope(actor, {
+      scope: 'agent',
+      agentId,
+      requestedAction: 'update_agent',
+      target: { kind: 'agent', id: agentId },
+    });
+    const agent = await this.requireEditableAgent(actor, agentId);
+    if (actor.origin.kind === 'slack' && !await this.requesterAuthorizedSkillChange(actor, {
+      kind: input.action,
+      name: input.skillName,
+    }, agent)) {
+      throw new ManagementError(
+        'invalid_request',
+        `The current requester message must explicitly ${input.action} the ${input.skillName} skill. No change was made.`,
+      );
+    }
+
+    const operationId = skillActionOperationId(actor, input, agentId);
+    const replay = await this.stores.management.getRequest(operationId);
+    if (replay?.status === 'completed' || replay?.status === 'failed') {
+      return await this.replayManagedAgentSkill(replay);
+    }
+    if (replay) {
+      const operation = replay.operations[0];
+      if (operation?.kind !== 'update_agent' || replay.operations.length !== 1) {
+        throw new ManagementError(
+          'invalid_state',
+          `The skill change cannot resume (operation ${operationId}). Inspect the Agent before retrying.`,
+        );
+      }
+      const unchangedReason = operation.itemId === `skill-${input.action}-missing`
+        ? 'missing'
+        : operation.itemId === `skill-${input.action}-already-set`
+        ? 'already_set'
+        : undefined;
+      if (unchangedReason) {
+        if (replay.status !== 'reserved') {
+          throw new ManagementError(
+            'invalid_state',
+            `The unchanged skill receipt is invalid (operation ${operationId}). Inspect the Agent before retrying.`,
+          );
+        }
+        return this.completeReservedUnchangedManagedAgentSkill(
+          input,
+          agent.name,
+          replay,
+          unchangedReason,
+        );
+      }
+      return this.applyManagedAgentSkill(input, operationId, operation, {
+        action: input.action,
+        name: input.skillName,
+        agentName: agent.name,
+        outcome: 'updated',
+      });
+    }
+
+    const skillIndex = agent.skills.findIndex(({ name }) => name === input.skillName);
+    if (skillIndex < 0) {
+      return this.persistUnchangedManagedAgentSkill(
+        actor,
+        input,
+        agent,
+        operationId,
+        'missing',
+      );
+    }
+    const currentSkill = agent.skills[skillIndex]!;
+    if (input.action !== 'remove' && currentSkill.enabled === (input.action === 'enable')) {
+      return this.persistUnchangedManagedAgentSkill(
+        actor,
+        input,
+        agent,
+        operationId,
+        'already_set',
+      );
+    }
+
+    const skills = input.action === 'remove'
+      ? agent.skills.filter((_, index) => index !== skillIndex)
+      : agent.skills.map((skill, index) => index === skillIndex
+        ? { ...skill, enabled: input.action === 'enable' }
+        : skill);
+    const metadata = {
+      action: input.action,
+      name: input.skillName,
+      agentName: agent.name,
+      outcome: 'updated',
+    } as const;
+    return this.applyManagedAgentSkill(input, operationId, {
+      itemId: `skill-${input.action}`,
+      kind: 'update_agent',
+      agentId,
+      expectedRevision: agent.revision,
+      patch: { skills },
+    }, metadata);
+  }
+
+  private async applyManagedAgentSkill(
+    input: ManageAgentSkillInput,
+    operationId: string,
+    operation: Extract<ManagementOperation, { kind: 'update_agent' }>,
+    metadata: SkillActionReceiptMetadata,
+  ): Promise<ManageAgentSkillResult> {
+    const applied = await this.applyWorkspaceChanges({
+      context: input.context,
+      idempotencyKey: input.idempotencyKey,
+      operationId,
+      operations: [operation],
+      approvalBasis: 'explicit_requester_command',
+      trustedReversibleOperationIds: [operation.itemId],
+      acknowledgementOwner: 'caller',
+      receiptMetadata: { skillAction: metadata },
+    });
+    const outcome = applied.outcomes.find(({ itemId }) => itemId === operation.itemId);
+    if (applied.status !== 'completed' || outcome?.disposition !== 'applied') {
+      throw new ManagementError(
+        'invalid_state',
+        `The skill ${input.action} did not complete (operation ${applied.operationId}). Inspect the Agent, then retry with a new idempotency key.`,
+      );
+    }
+    return managedSkillActionResult(
+      applied.operationId,
+      metadata,
+      outcome.undoAvailable === true,
+    );
+  }
+
+  private async replayManagedAgentSkill(
+    request: ManagementRequestRecord,
+  ): Promise<ManageAgentSkillResult> {
+    const result = request.result;
+    const metadata = result?.receiptMetadata?.skillAction;
+    const operation = request.operations[0];
+    const outcome = result?.outcomes.find(({ itemId }) => itemId === operation?.itemId);
+    if (request.status !== 'completed' || result?.status !== 'completed' ||
+        operation?.kind !== 'update_agent' || !metadata) {
+      throw new ManagementError(
+        'invalid_state',
+        `The skill change did not complete (operation ${request.operationId}). Inspect the Agent, then retry with a new idempotency key.`,
+      );
+    }
+    if (metadata.outcome !== 'updated') {
+      if (outcome?.disposition !== 'skipped') {
+        throw new ManagementError(
+          'invalid_state',
+          `The skill change receipt is invalid (operation ${request.operationId}). Inspect the Agent before retrying.`,
+        );
+      }
+      return unchangedSkillActionResult(
+        metadata.action,
+        metadata.name,
+        metadata.agentName,
+        metadata.outcome,
+      );
+    }
+    if (outcome?.disposition !== 'applied') {
+      throw new ManagementError(
+        'invalid_state',
+        `The skill ${metadata.action} did not complete (operation ${request.operationId}). Inspect the Agent, then retry with a new idempotency key.`,
+      );
+    }
+    const undo = await this.stores.management.getUndo(request.operationId);
+    return managedSkillActionResult(
+      result.operationId,
+      metadata,
+      outcome.undoAvailable === true && undo?.status === 'available',
+    );
+  }
+
+  private async persistUnchangedManagedAgentSkill(
+    actor: LiveManagementActor,
+    input: ManageAgentSkillInput,
+    agent: CustomAgentConfig,
+    operationId: string,
+    reason: 'missing' | 'already_set',
+  ): Promise<ManageAgentSkillResult> {
+    const itemId = `skill-${input.action}-${reason.replace('_', '-')}`;
+    const operation: ManagementOperation = {
+      itemId,
+      kind: 'update_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+      patch: { skills: agent.skills },
+    };
+    const at = this.now();
+    const reservation = await this.stores.management.reserveRequest({
+      operationId,
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId,
+      actorMembershipId: actor.membershipId,
+      originKey: managementActorOriginKey(actor),
+      idempotencyKey: managementStorageIdempotencyKey(actor, input.idempotencyKey),
+      digest: managementOperationDigest([operation]),
+      operations: [operation],
+      at,
+    });
+    if (reservation.request.status === 'completed') {
+      return await this.replayManagedAgentSkill(reservation.request);
+    }
+    if (reservation.request.status !== 'reserved') {
+      throw new ManagementError(
+        'operation_in_progress',
+        `The prior skill change has not completed (operation ${operationId}).`,
+      );
+    }
+    return this.completeReservedUnchangedManagedAgentSkill(
+      input,
+      agent.name,
+      reservation.request,
+      reason,
+    );
+  }
+
+  private async completeReservedUnchangedManagedAgentSkill(
+    input: ManageAgentSkillInput,
+    agentName: string,
+    request: ManagementRequestRecord,
+    reason: 'missing' | 'already_set',
+  ): Promise<ManageAgentSkillResult> {
+    const operation = request.operations[0];
+    if (request.status !== 'reserved' || operation?.kind !== 'update_agent' ||
+        request.operations.length !== 1) {
+      throw new ManagementError(
+        'invalid_state',
+        `The unchanged skill receipt is invalid (operation ${request.operationId}). Inspect the Agent before retrying.`,
+      );
+    }
+    const result: ManagementApplyResult = {
+      operationId: request.operationId,
+      idempotencyKey: input.idempotencyKey,
+      status: 'completed',
+      outcomes: [{
+        itemId: operation.itemId,
+        operationKind: 'update_agent',
+        disposition: 'skipped',
+        code: reason === 'missing' ? 'skill_missing' : 'skill_already_set',
+      }],
+      effectiveRevision: await this.effectiveRevision(),
+      activation: 'next_turn',
+      receiptMetadata: {
+        skillAction: {
+          action: input.action,
+          name: input.skillName,
+          agentName,
+          outcome: reason,
+        },
+      },
+    };
+    return await this.replayManagedAgentSkill(
+      await this.stores.management.completeRequest(request.operationId, result, this.now()),
+    );
   }
 
   private async replaySkillImport(
@@ -1074,6 +1338,25 @@ export class WorkspaceManagementService {
         });
         throw new ChickpeaHandoffRequired(handoff);
       }
+      if (operations.length === 1 && operation.kind === 'update_agent') {
+        const currentAgent = await this.requireEditableAgent(actor, operation.agentId);
+        const directSkillChange = reversibleLocalSkillChange(currentAgent, operation.patch);
+        if (directSkillChange && await this.requesterAuthorizedSkillChange(
+          actor,
+          directSkillChange,
+          currentAgent,
+        )) {
+          const actionNoun = directSkillChange.kind === 'remove'
+            ? 'removal'
+            : directSkillChange.kind === 'enable'
+            ? 'enablement'
+            : 'disablement';
+          throw new ManagementError(
+            'invalid_request',
+            `Use manage_agent_skill for this explicit reversible skill ${actionNoun}. No proposal was created.`,
+          );
+        }
+      }
       const policy = classifyManagementOperation(
         await this.proposalPolicyFacts(actor, operation, operations),
       );
@@ -1610,11 +1893,19 @@ export class WorkspaceManagementService {
     await this.assertRevisionMap(undo.resultingRevisions);
     const explicitSlackUndo = actor.origin.kind === 'slack' &&
       requesterExplicitlyRequestsUndo(actor.origin.requestText);
+    const originalRequest = actor.origin.kind === 'mcp'
+      ? await this.stores.management.getRequest(input.operationId)
+      : undefined;
+    const trustedConnectorSkillUndo = actor.origin.kind === 'mcp' &&
+      originalRequest?.organizationId === actor.organizationId &&
+      originalRequest.actorUserId === actor.userId &&
+      originalRequest.actorMembershipId === actor.membershipId &&
+      originalRequest.result?.receiptMetadata?.skillAction?.outcome === 'updated';
     const result = await this.applyWorkspaceChanges({
       context: input.context,
       idempotencyKey: input.idempotencyKey,
       operations: [undo.inverse],
-      ...(explicitSlackUndo
+      ...(explicitSlackUndo || trustedConnectorSkillUndo
         ? {
             approvalBasis: 'explicit_requester_command' as const,
             trustedReversibleOperationIds: [undo.inverse.itemId],
@@ -2066,6 +2357,27 @@ export class WorkspaceManagementService {
     return actor.actingAgentId && actor.actingAgentId !== CHICKPEA_AGENT_ID
       ? editable.filter(({ id }) => id === actor.actingAgentId)
       : editable;
+  }
+
+  private async requesterAuthorizedSkillChange(
+    actor: LiveManagementActor,
+    change: ReversibleSkillChange,
+    targetAgent: CustomAgentConfig,
+  ): Promise<boolean> {
+    const editableAgentNames = actor.origin.kind === 'slack' &&
+        actor.origin.agentId === CHICKPEA_AGENT_ID
+      ? (await this.editableAgents(actor)).map(({ name }) => name)
+      : [targetAgent.name];
+    if (actor.origin.kind === 'slack' && actor.origin.agentId === CHICKPEA_AGENT_ID &&
+        editableAgentNames.filter((name) =>
+          name.trim().toLowerCase() === targetAgent.name.trim().toLowerCase()).length !== 1) {
+      return false;
+    }
+    return explicitRequesterSkillChange(actor, change, {
+      targetAgentName: targetAgent.name,
+      installedSkillNames: targetAgent.skills.map(({ name }) => name),
+      editableAgentNames,
+    });
   }
 
   private assertProposalBinding(
@@ -2674,15 +2986,17 @@ export class WorkspaceManagementService {
     }
     if (operation.kind === 'update_agent') {
       const currentAgent = await this.requireEditableAgent(actor, operation.agentId);
-      const agentReferences = await this.stores.config.getAgentReferences(operation.agentId);
+      const agentReferences = 'enabled' in operation.patch
+        ? await this.stores.config.getAgentReferences(operation.agentId)
+        : undefined;
       const reversibleSkillChange = reversibleLocalSkillChange(currentAgent, operation.patch);
       const requesterAuthorized = options.operationCount === 1 && reversibleSkillChange &&
-        explicitRequesterSkillChange(actor, reversibleSkillChange);
+        await this.requesterAuthorizedSkillChange(actor, reversibleSkillChange, currentAgent);
       return {
         actor,
         operation,
         currentAgent,
-        agentReferences,
+        ...(agentReferences ? { agentReferences } : {}),
         capabilityScopeExpanded: capabilityScopeExpanded(currentAgent, operation.patch),
         agentEditable: true,
         ...(options.approvalBasis || requesterAuthorized
@@ -4735,23 +5049,85 @@ function reversibleLocalSkillChange(
 function explicitRequesterSkillChange(
   actor: LiveManagementActor,
   change: ReversibleSkillChange,
+  context: {
+    targetAgentName: string;
+    installedSkillNames: readonly string[];
+    editableAgentNames: readonly string[];
+  },
 ): boolean {
   if (actor.origin.kind !== 'slack' || !actor.origin.requestText) return false;
-  const clauses = normalizedRequesterText(actor.origin.requestText)
-    .split(/(?:[.!?;,\n]|\b(?:and|then|but)\b)+/)
-    .map((clause) => clause.trim())
-    .filter(Boolean);
+  const systemSlackRoute = actor.origin.agentId === CHICKPEA_AGENT_ID;
+  const request = normalizedRequesterText(actor.origin.requestText.replace(/\r?\n/g, ';'));
+  const actionText = maskExactWord(
+    maskExactWord(request, change.name),
+    context.targetAgentName,
+  );
+  const mutations = actionText.match(
+    /\b(?:enable|disable|remove|delete|uninstall|turn on|turn off)\b/g,
+  ) ?? [];
+  if (mutations.length !== 1 ||
+      /\b(?:actually\s+no|i\s+disagree|changed my mind|never mind|nevermind)\b/.test(request)) {
+    return false;
+  }
+  const clauses = [...request.matchAll(/([^.!?;,\n]+)([.!?;,\n]+|$)/g)]
+    .map((match) => ({ text: match[1]!.trim(), terminator: match[2] ?? '' }))
+    .filter(({ text }) => Boolean(text));
+  const commandClauses = clauses.filter(({ text }) =>
+    !/^(?:hi|hello|hey|please|thanks|thank you|ty|cheers|appreciate it|much appreciated|that(?:'s| is) all)$/.test(text));
+  if (commandClauses.length !== 1) return false;
   const action = change.kind === 'enable'
     ? /\b(?:enable|turn on)\b/
     : change.kind === 'disable'
     ? /\b(?:disable|turn off)\b/
     : /\b(?:remove|delete|uninstall)\b/;
-  return clauses.some((clause) => {
+  return commandClauses.some(({ text: clause, terminator }) => {
     const match = action.exec(clause);
-    if (!match || !containsWord(clause, change.name)) return false;
-    const prefix = clause.slice(0, match.index);
-    return !/\b(?:do not|don't|never|not)\b/.test(prefix);
+    if (!match) return false;
+    const skill = wordMatch(clause, change.name);
+    if (!skill || skill.index <= match.index || !uniquelyNamesValue(
+      clause,
+      change.name,
+      context.installedSkillNames,
+    )) return false;
+    const prefix = clause.slice(0, match.index).trim();
+    const between = clause.slice(match.index + match[0].length, skill.index).trim();
+    const suffix = clause.slice(skill.index + skill[0].length).trim();
+    const politeRequest = /^(?:(?:please|kindly)\s+)?(?:can|could|would|will)\s+you(?:\s+please)?(?:\s+just)?$/.test(prefix);
+    const politeImperative = /^(?:please|kindly)(?:\s+just)?$/.test(prefix);
+    const explicitCommand = /^(?:|just)$/.test(prefix) || politeImperative ||
+      politeRequest ||
+      /^(?:i\s+(?:want|need)\s+you\s+to|i(?:'d|\s+would)\s+like\s+you\s+to)$/.test(prefix) ||
+      /^(?:(?:please|kindly)\s+)?go\s+ahead\s+and$/.test(prefix);
+    const targetNamed = systemSlackRoute
+      ? uniquelyNamesValue(
+          clause,
+          context.targetAgentName,
+          context.editableAgentNames,
+        )
+      : true;
+    return explicitCommand && (!terminator.includes('?') || politeRequest || politeImperative) &&
+      targetNamed && /^(?:|the|my)$/.test(between) &&
+      exactSkillChangeSuffix(suffix, context.targetAgentName, systemSlackRoute);
   });
+}
+
+function exactSkillChangeSuffix(
+  suffix: string,
+  targetAgentName: string,
+  targetRequired: boolean,
+): boolean {
+  const escapedTarget = targetAgentName.toLowerCase()
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const courtesyTail = '(?:\\s+(?:please|now|right now|for me))*';
+  const spacedSuffix = suffix ? ` ${suffix}` : '';
+  if (targetRequired) {
+    return new RegExp(
+      `^(?:\\s+skill)?\\s+(?:from|on|for)\\s+${escapedTarget}${courtesyTail}$`,
+    ).test(spacedSuffix);
+  }
+  return new RegExp(
+    `^(?:\\s+skill)?(?:\\s+(?:from|on|for)\\s+${escapedTarget})?${courtesyTail}$`,
+  ).test(spacedSuffix);
 }
 
 function requesterExplicitlyRequestsUndo(requestText: string | undefined): boolean {
@@ -4809,9 +5185,44 @@ function requesterTextContainsExactSource(requestText: string, source: string): 
   return false;
 }
 
-function containsWord(text: string, value: string): boolean {
+function wordMatch(text: string, value: string): RegExpExecArray | undefined {
   const escaped = value.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?:^|[^a-z0-9-])${escaped}(?:$|[^a-z0-9-])`).test(text);
+  return new RegExp(`(?:^|[^a-z0-9-])${escaped}(?:$|[^a-z0-9-])`).exec(text) ?? undefined;
+}
+
+function uniquelyNamesValue(
+  text: string,
+  target: string,
+  candidates: readonly string[],
+): boolean {
+  const matches = [...new Set([...candidates, target].map((value) => value.toLowerCase()))]
+    .flatMap((value) => exactWordRanges(text, value).map((range) => ({ value, ...range })));
+  const maximal = matches.filter((candidate) => !matches.some((other) =>
+    other.value !== candidate.value &&
+    other.start <= candidate.start &&
+    other.end >= candidate.end &&
+    (other.start < candidate.start || other.end > candidate.end)));
+  return maximal.length === 1 && maximal[0]!.value === target.toLowerCase();
+}
+
+function exactWordRanges(text: string, value: string): Array<{ start: number; end: number }> {
+  const escaped = value.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matches: Array<{ start: number; end: number }> = [];
+  const pattern = new RegExp(`(^|[^a-z0-9-])(${escaped})(?=$|[^a-z0-9-])`, 'g');
+  for (const match of text.matchAll(pattern)) {
+    const start = match.index + match[1]!.length;
+    matches.push({ start, end: start + match[2]!.length });
+  }
+  return matches;
+}
+
+function maskExactWord(text: string, value: string | undefined): string {
+  if (!value) return text;
+  const escaped = value.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(
+    new RegExp(`(^|[^a-z0-9-])${escaped}(?=$|[^a-z0-9-])`, 'g'),
+    '$1<target>',
+  );
 }
 
 function skillImportOperationId(
@@ -4829,6 +5240,75 @@ function skillImportOperationId(
     replaceExisting: input.replaceExisting === true,
   })).digest('hex').slice(0, 32);
   return `management_skill_import_${digest}`;
+}
+
+function skillActionOperationId(
+  actor: LiveManagementActor,
+  input: ManageAgentSkillInput,
+  agentId: string,
+): string {
+  const digest = createHash('sha256').update(canonicalJson({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    originKey: managementActorOriginKey(actor),
+    agentId,
+    idempotencyKey: input.idempotencyKey,
+    action: input.action,
+    skillName: input.skillName,
+  })).digest('hex').slice(0, 32);
+  return `management_skill_action_${digest}`;
+}
+
+function managedSkillActionResult(
+  operationId: string,
+  metadata: NonNullable<ManagementApplyResult['receiptMetadata']>['skillAction'],
+  undoAvailable: boolean,
+): ManageAgentSkillResult {
+  if (!metadata) {
+    throw new ManagementError('invalid_state', 'The skill change receipt is unavailable.');
+  }
+  const verb = metadata.action === 'enable'
+    ? 'Enabled'
+    : metadata.action === 'disable'
+    ? 'Disabled'
+    : 'Removed';
+  const preposition = metadata.action === 'remove' ? 'from' : 'on';
+  return {
+    status: 'updated',
+    action: metadata.action,
+    skillName: metadata.name,
+    operationId,
+    activation: 'next_turn',
+    undoAvailable,
+    presentation: {
+      slack: `${verb} skill \`${escapeSlackControlCharacters(metadata.name)}\` ${preposition} ${
+        escapeSlackControlCharacters(metadata.agentName)
+      }. The change takes effect from the next message.${
+        undoAvailable ? ' You can undo this change.' : ''
+      }`,
+    },
+  };
+}
+
+function unchangedSkillActionResult(
+  action: ManageAgentSkillInput['action'],
+  skillName: string,
+  agentName: string,
+  reason: 'missing' | 'already_set',
+): ManageAgentSkillResult {
+  const escapedSkill = escapeSlackControlCharacters(skillName);
+  const escapedAgent = escapeSlackControlCharacters(agentName);
+  const state = action === 'enable' ? 'enabled' : 'disabled';
+  const slack = reason === 'missing'
+    ? `Skill \`${escapedSkill}\` is not installed on ${escapedAgent}. No changes were made.`
+    : `Skill \`${escapedSkill}\` is already ${state} on ${escapedAgent}. No changes were made.`;
+  return {
+    status: 'unchanged',
+    action,
+    skillName,
+    undoAvailable: false,
+    presentation: { slack },
+  };
 }
 
 function singleChangedSkill(

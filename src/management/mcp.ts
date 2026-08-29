@@ -7,6 +7,7 @@ import {
 import {
   applyWorkspaceChangesZodSchema,
   importSkillZodSchema,
+  manageAgentSkillZodSchema,
   proposeSkillImportZodSchema,
   proposeWorkspaceChangesZodSchema,
   confirmWorkspaceChangeZodSchema,
@@ -43,7 +44,7 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '2.3.0',
+  version: '2.4.0',
 } as const;
 export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI =
   'chickpea://schema/operations/v2' as const;
@@ -185,6 +186,17 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'import_skill',
+    args,
+  )));
+
+  server.registerTool('manage_agent_skill', {
+    title: 'Manage an installed Agent skill',
+    description: workspaceManagementToolDescription('manage_agent_skill'),
+    inputSchema: manageAgentSkillZodSchema,
+    annotations: { readOnlyHint: false, idempotentHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'manage_agent_skill',
     args,
   )));
 

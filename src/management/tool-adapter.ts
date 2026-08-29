@@ -4,6 +4,7 @@ import {
   ChickpeaHandoffRequired,
   ManagementError,
   type ManagementActorContext,
+  type ManageAgentSkillAction,
   type ManagementOperation,
   type PrepareConnectorSetupInput,
   type ManagementRoutineInspectionInput,
@@ -30,6 +31,7 @@ export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'preview_workspace_recipe',
   'propose_skill_import',
   'import_skill',
+  'manage_agent_skill',
   'propose_workspace_changes',
   'apply_workspace_changes',
   'confirm_workspace_change',
@@ -53,6 +55,7 @@ const WORKSPACE_MANAGEMENT_SEMANTICS: Record<
   export_workspace_recipe: unknownSemanticDescriptor(),
   preview_workspace_recipe: unknownSemanticDescriptor(),
   import_skill: unknownSemanticDescriptor(),
+  manage_agent_skill: unknownSemanticDescriptor(),
   propose_skill_import: unknownSemanticDescriptor(),
   propose_workspace_changes: unknownSemanticDescriptor(),
   apply_workspace_changes: unknownSemanticDescriptor(),
@@ -89,11 +92,12 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   export_workspace_recipe: 'Export selected Agents and their connection requirements as a versioned, secret-free portable recipe.',
   preview_workspace_recipe: 'Preview a portable recipe against live workspace state and compile chosen outcomes into ordinary typed changes.',
   import_skill: 'Install one exact public GitHub-hosted SKILL.md on an editable Agent when its source appears in the authenticated current requester message. The service pins the inspected commit, applies one bounded scriptless skill immediately, and returns a receipt plus undo. If the source has several skills, ask the requester to post the chosen candidate sourceUrl. For different same-name content, follow the exact replacement clarification returned by the tool before retrying with replaceExisting true. Do not add another approval step.',
+  manage_agent_skill: 'Enable, disable, or remove one named existing Agent skill immediately. The narrow authenticated tool resolves current Agent state, verifies authority and the exact current command on Slack, preserves every other skill, and returns a receipt plus undo without a proposal. An authenticated MCP invocation is already the exact typed command. Use it instead of propose_workspace_changes or a model-authored skills array.',
   propose_skill_import: 'Resolve one public GitHub-hosted SKILL.md inside the trusted management service and create the normal requester-bound review for adding or replacing it on an editable Agent. Prefer a direct GitHub skill-directory URL. If selection is required, ask the requester to choose one returned candidate and call this tool again with that candidate’s sourceUrl as source. Show presentation.slack verbatim and wait for explicit approval; this tool never installs the skill by itself.',
   propose_workspace_changes: 'Create the one read-only, exact, requester-bound review for Agent creation or a consequential edit. Read chickpea://guide/agent-authoring/v1 first. Do not ask for permission before proposing and do not place another prose approval gate before or after the returned preview. Show presentation.slack verbatim; keep proposalId as opaque control data for confirm_workspace_change.',
   apply_workspace_changes: 'Apply one or more typed Chickpea workspace changes with durable idempotency and per-item outcomes. Confirmation-required operations return one bound proposal; never add a separate conversational approval gate around it.',
   confirm_workspace_change: 'Confirm one requester- and client-bound destructive or capability-expanding change proposal. After this tool returns, always send visible final text with the terminal status and what changed or why nothing changed; never end on the tool call or progress UI.',
-  undo_workspace_change: 'Undo one eligible operation at the exact resulting revision.',
+  undo_workspace_change: 'Undo one eligible operation at the exact resulting revision. A trusted connector call immediately reverses an exact manage_agent_skill receipt; other inverses still use consequence-based policy.',
   get_operation: 'Read the durable result of one operation or confirmation proposal owned by the requester.',
   revoke_setup_link: 'Revoke one unused requester-owned setup link and optionally issue a fresh 24-hour link.',
 };
@@ -120,6 +124,12 @@ export type WorkspaceManagementToolArguments = {
     replaceExisting?: boolean | undefined;
     idempotencyKey: string;
     guideVersion: string;
+  };
+  manage_agent_skill: {
+    agentId?: string | undefined;
+    action: ManageAgentSkillAction;
+    skillName: string;
+    idempotencyKey: string;
   };
   propose_skill_import: {
     agentId?: string | undefined;
@@ -275,6 +285,16 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
           ...(value.replaceExisting !== undefined
             ? { replaceExisting: value.replaceExisting }
             : {}),
+        });
+      }
+      case 'manage_agent_skill': {
+        const value = args as WorkspaceManagementToolArguments['manage_agent_skill'];
+        return service.manageAgentSkill({
+          context,
+          action: value.action,
+          skillName: value.skillName,
+          idempotencyKey: value.idempotencyKey,
+          ...(value.agentId ? { agentId: value.agentId } : {}),
         });
       }
       case 'propose_skill_import': {

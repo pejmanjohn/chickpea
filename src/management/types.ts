@@ -515,6 +515,7 @@ export interface ManagementApplyResult {
   /** Internal typed receipt data persisted for deterministic narrow-tool replay. */
   receiptMetadata?: {
     skillImport?: SkillImportReceiptMetadata;
+    skillAction?: SkillActionReceiptMetadata;
   };
 }
 
@@ -524,6 +525,15 @@ export interface SkillImportReceiptMetadata {
   name: string;
   description: string;
   replacedExisting: boolean;
+}
+
+export type ManageAgentSkillAction = 'enable' | 'disable' | 'remove';
+
+export interface SkillActionReceiptMetadata {
+  action: ManageAgentSkillAction;
+  name: string;
+  agentName: string;
+  outcome: 'updated' | 'missing' | 'already_set';
 }
 
 export interface ManagementWorkspaceSnapshot {
@@ -674,8 +684,8 @@ export interface ApplyWorkspaceChangesInput {
   idempotencyKey: string;
   operations: ManagementOperation[];
   /**
-   * Trusted intent established by a tool whose contract is an exact requester
-   * command. Generic proposals and confirmations never set this value.
+   * Trusted intent established by a narrow authenticated tool call or an exact
+   * requester command. Generic proposals and confirmations never set this value.
    */
   approvalBasis?: 'explicit_requester_command';
   /** Internal operation IDs whose exact reversible effect the service resolved. */
@@ -728,6 +738,25 @@ export interface ImportSkillInput extends ProposeSkillImportInput {
   /** Set only after the requester explicitly chooses to replace different content. */
   replaceExisting?: boolean;
 }
+
+export interface ManageAgentSkillInput {
+  context: ManagementActorContext;
+  /** Optional only for a trusted Slack route, which supplies the acting Agent. */
+  agentId?: string;
+  action: ManageAgentSkillAction;
+  skillName: string;
+  idempotencyKey: string;
+}
+
+export type ManageAgentSkillResult = {
+  status: 'updated' | 'unchanged';
+  action: ManageAgentSkillAction;
+  skillName: string;
+  operationId?: string;
+  activation?: 'next_turn';
+  undoAvailable: boolean;
+  presentation: { slack: string };
+};
 
 export type ProposeSkillImportResult =
   | (Omit<ProposeWorkspaceChangesResult, 'preview'> & {

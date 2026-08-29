@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
-const AGENT_AUTHORING_GUIDE_VERSION = '1.0.26';
-const MANAGEMENT_MCP_SERVER_VERSION = '2.3.0';
+const AGENT_AUTHORING_GUIDE_VERSION = '1.0.27';
+const MANAGEMENT_MCP_SERVER_VERSION = '2.4.0';
 
 function fetchWithDeadline(input, init = {}) {
   return fetch(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
@@ -78,6 +78,7 @@ async function main(rawBaseUrl) {
   for (const expected of [
     'inspect_workspace',
     'import_skill',
+    'manage_agent_skill',
     'propose_skill_import',
     'propose_workspace_changes',
     'apply_workspace_changes',

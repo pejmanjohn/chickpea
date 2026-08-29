@@ -31,6 +31,7 @@ const zText = (max: number) => z.string().min(1).max(max);
 const zOptionalText = (max: number) => z.string().max(max);
 const zId = zText(128);
 const zAgentId = z.string().regex(AGENT_ID_PATTERN);
+const zSkillName = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64);
 const zRevision = z.number().int().nonnegative();
 const zModelSpecifier = z.string().min(1).max(500).regex(/^[^/]+\/.+$/);
 
@@ -298,12 +299,18 @@ export const proposeWorkspaceChangesZodSchema = z.strictObject({
 export const proposeSkillImportZodSchema = z.strictObject({
   agentId: zAgentId,
   source: zText(2_000),
-  skillName: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64).optional(),
+  skillName: zSkillName.optional(),
   idempotencyKey: zText(256),
   guideVersion: z.literal(AGENT_AUTHORING_GUIDE_VERSION),
 });
 export const importSkillZodSchema = proposeSkillImportZodSchema.extend({
   replaceExisting: z.boolean().optional(),
+});
+export const manageAgentSkillZodSchema = z.strictObject({
+  agentId: zAgentId,
+  action: z.enum(['enable', 'disable', 'remove']),
+  skillName: zSkillName,
+  idempotencyKey: zText(256),
 });
 export const confirmWorkspaceChangeZodSchema = z.strictObject({ proposalId: zId });
 export const undoWorkspaceChangeZodSchema = z.strictObject({
@@ -349,6 +356,11 @@ const vt = (max: number) => v.pipe(v.string(), v.minLength(1), v.maxLength(max))
 const vot = (max: number) => v.pipe(v.string(), v.maxLength(max));
 const vid = vt(128);
 const vAgentId = v.pipe(v.string(), v.regex(AGENT_ID_PATTERN));
+const vSkillName = v.pipe(
+  v.string(),
+  v.maxLength(64),
+  v.regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+);
 const vr = v.pipe(v.number(), v.integer(), v.minValue(0));
 const vModelSpecifier = v.pipe(
   v.string(),
@@ -616,25 +628,23 @@ export const proposeWorkspaceChangesValibotSchema = v.strictObject({
 export const proposeSkillImportValibotSchema = v.strictObject({
   agentId: v.optional(vAgentId),
   source: vt(2_000),
-  skillName: v.optional(v.pipe(
-    v.string(),
-    v.maxLength(64),
-    v.regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-  )),
+  skillName: v.optional(vSkillName),
   idempotencyKey: vt(256),
   guideVersion: v.literal(AGENT_AUTHORING_GUIDE_VERSION),
 });
 export const importSkillValibotSchema = v.strictObject({
   agentId: v.optional(vAgentId),
   source: vt(2_000),
-  skillName: v.optional(v.pipe(
-    v.string(),
-    v.maxLength(64),
-    v.regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-  )),
+  skillName: v.optional(vSkillName),
   replaceExisting: v.optional(v.boolean()),
   idempotencyKey: vt(256),
   guideVersion: v.literal(AGENT_AUTHORING_GUIDE_VERSION),
+});
+export const manageAgentSkillValibotSchema = v.strictObject({
+  agentId: v.optional(vAgentId),
+  action: v.picklist(['enable', 'disable', 'remove']),
+  skillName: vSkillName,
+  idempotencyKey: vt(256),
 });
 export const confirmWorkspaceChangeValibotSchema = v.strictObject({ proposalId: vid });
 export const undoWorkspaceChangeValibotSchema = v.strictObject({

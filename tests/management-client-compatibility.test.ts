@@ -136,6 +136,18 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         { readOnlyHint: false, idempotentHint: true },
         `${client.name} must disclose that exact skill imports are idempotent writes`,
       );
+      const managedSkill = listedTools.find(({ name }) => name === 'manage_agent_skill');
+      for (const field of ['agentId', 'action', 'skillName', 'idempotencyKey']) {
+        assert.ok(
+          managedSkill?.inputSchema?.required?.includes(field),
+          `${client.name} must require managed skill ${field}`,
+        );
+      }
+      assert.deepEqual(
+        managedSkill?.annotations,
+        { readOnlyHint: false, idempotentHint: true },
+        `${client.name} must disclose that exact skill state changes are idempotent writes`,
+      );
       assert.ok(
         listedTools.find(({ name }) => name === 'prepare_connector_setup')
           ?.inputSchema?.required?.includes('ownerKind'),
@@ -248,7 +260,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
 test('workspace management MCP publishes the version 2 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '2.3.0',
+    version: '2.4.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });
