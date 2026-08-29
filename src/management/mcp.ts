@@ -6,6 +6,9 @@ import {
 } from '../config/state-backend.ts';
 import {
   applyWorkspaceChangesZodSchema,
+  importSkillZodSchema,
+  manageAgentSkillZodSchema,
+  proposeSkillImportZodSchema,
   proposeWorkspaceChangesZodSchema,
   confirmWorkspaceChangeZodSchema,
   getOperationZodSchema,
@@ -41,7 +44,7 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '2.1.0',
+  version: '2.4.0',
 } as const;
 export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI =
   'chickpea://schema/operations/v2' as const;
@@ -161,6 +164,39 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'preview_workspace_recipe',
+    args,
+  )));
+
+  server.registerTool('propose_skill_import', {
+    title: 'Propose GitHub skill import',
+    description: workspaceManagementToolDescription('propose_skill_import'),
+    inputSchema: proposeSkillImportZodSchema,
+    annotations: { readOnlyHint: false, idempotentHint: false },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'propose_skill_import',
+    args,
+  )));
+
+  server.registerTool('import_skill', {
+    title: 'Install GitHub skill',
+    description: workspaceManagementToolDescription('import_skill'),
+    inputSchema: importSkillZodSchema,
+    annotations: { readOnlyHint: false, idempotentHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'import_skill',
+    args,
+  )));
+
+  server.registerTool('manage_agent_skill', {
+    title: 'Manage an installed Agent skill',
+    description: workspaceManagementToolDescription('manage_agent_skill'),
+    inputSchema: manageAgentSkillZodSchema,
+    annotations: { readOnlyHint: false, idempotentHint: true },
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'manage_agent_skill',
     args,
   )));
 

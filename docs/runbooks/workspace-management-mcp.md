@@ -10,13 +10,18 @@ The compact tool surface is:
 
 - `inspect_workspace`, `prepare_connector_setup`, `discover_slack_channels`, `test_mcp_connection`, `inspect_memory`, and `inspect_routines`
 - `export_workspace_recipe` and `preview_workspace_recipe`
+- `import_skill`, `manage_agent_skill`, and the backward-compatible `propose_skill_import`
 - `propose_workspace_changes` and `apply_workspace_changes`
 - `confirm_workspace_change` and `undo_workspace_change`
 - `get_operation` and `revoke_setup_link`
 
-The server advertises contract version `2.1.0`. The typed operation inventory remains backward-compatible at `chickpea://schema/operations/v2`; Agent-authoring guidance is an additive resource at `chickpea://guide/agent-authoring/v1`. Read the guide before translating conversational intent into configuration. The resource includes both the main guide and its packaged `skill-creation.md` procedure. A proposal result repeats its guide version, URI, and digest so a client can prove which guidance produced the preview.
+The server advertises contract version `2.4.0`. The typed operation inventory remains backward-compatible at `chickpea://schema/operations/v2`; Agent-authoring guidance is an additive resource at `chickpea://guide/agent-authoring/v1`. Read the guide before translating conversational intent into configuration. The resource includes both the main guide and its packaged `skill-creation.md` procedure. A proposal result repeats its guide version, URI, and digest so a client can prove which guidance produced the preview. The additive `import_skill` tool resolves and installs one exact public GitHub-hosted `SKILL.md` when the requester supplied the source. The older `propose_skill_import` tool remains available for clients that deliberately need the frozen review flow.
 
 `prepare_connector_setup` is the credential-safe connector entry point for MCP and Slack. Give it an editable Agent plus a connector catalog id or display name (for example `gmail` or `Gmail`). It returns an authenticated Admin handoff URL that opens the requested Agent's reusable connection form. In a Slack conversation routed through a specific Agent handle, the adapter supplies that current Agent as the default target; credentials must never be requested in Slack or model context.
+
+`import_skill` accepts a public GitHub repository, direct GitHub tree URL, skills.sh link, or `owner/repo` reference that appears in the authenticated current Slack request. A direct skill-directory URL is preferred because the service inspects one directory and pins its commit before fetching `SKILL.md`. A source with multiple candidates returns bounded names, descriptions, and immutable source URLs without changing configuration; the requester posts the chosen `sourceUrl` in a new message before the next call. A new bounded scriptless skill installs immediately and returns a Slack-ready receipt plus an undoable operation ID. Different same-name content returns `replacement_confirmation_required` with the exact clarification text required before a new-message retry with `replaceExisting: true`. Packaged scripts are rejected because Chickpea inline skills cannot execute imported files. The external MCP surface requires `agentId`; immediate import currently requires the trusted Slack request binding, while deliberate MCP clients may use `propose_skill_import`.
+
+`manage_agent_skill` changes one named installed skill with `enable`, `disable`, or `remove`. The service reads the current Agent, verifies the requester, preserves every other skill, and writes an idempotent reversible change. Slack calls must match the exact authenticated current command; an authenticated MCP invocation is already the exact typed command. Chickpea connectors are trusted integrations, so connector identity never adds an approval gate. A clear single-skill command applies immediately and returns a Slack-ready receipt plus undo. Questions, negated commands, ambiguous targets, generated content, and compound edits do not qualify for this path. The generic proposal tool rejects an exact qualifying single-skill command so a model cannot turn it into an unnecessary approval round trip.
 
 `propose_workspace_changes` accepts exact typed operations and writes no configuration. Each call must include a requester-chosen `idempotencyKey`, the current guide version, and an `authoringReason` (`agent_creation`, `agent_edit`, `skill_creation`, `skill_edit`, or `onboarding`). Retrying the same bound key and exact operation digest returns the original proposal; reusing it for different content fails closed. `apply_workspace_changes` remains for explicit direct edits and backward-compatible clients; it routes any confirmation-required operation into the existing proposal lifecycle instead of bypassing review. Apply requests accept at most 25 ordered operations. `dependsOn` gives a progressive batch explicit prerequisites; a failed prerequisite skips only its dependents. `clientRef` lets later operations address an Agent created earlier in the same admitted request. A progressive apply batch is not globally atomic, and every item returns its own durable disposition.
 
@@ -49,7 +54,7 @@ The adapter also supplies the acting scope; model-authored arguments cannot forg
 
 A user Agent may self-manage instructions, skills, model, presence, edit policy, connections, repositories, memory, reach, setup, routines, and lifecycle. Existing setup, membership, revision, Channel, destructive-confirmation, and audit gates still apply. Cross-Agent or workspace-authority work returns a bounded Chickpea handoff or a permission-safe denial without exposing the target configuration. An archived Agent cannot process another Slack turn; restoration must enter through an active authorized surface.
 
-An explicit reversible single-field edit may apply directly when current policy permits it. New-Agent creation and generated, inferred, compound, multi-field, skill-bearing, capability-expanding, reach-changing, scheduled, destructive, or otherwise consequential changes use `propose_workspace_changes`. The returned preview is the single approval boundary: never ask for permission before proposing and never ask for another approval after the requester accepts that preview. The legacy apply tool also returns a bound proposal for any operation whose policy requires confirmation, including:
+The request itself is approval only when the trusted service derives the exact command from the authenticated current message and proves it authorized, reversible, local-only, and free of authority, reach, credential, capability, or third-party effects. Today that includes one explicit enable, disable, or removal of a named existing skill, plus purpose-built exact GitHub import and undo tools. New or generated skill content, inferred changes, compound changes, destructive actions, external consequential writes, capability expansion, and reach or authority changes use `propose_workspace_changes`. Ambiguous targets or replacements need clarification, not a generic approval prompt. The returned preview is the single approval boundary when confirmation is required: never ask for permission before proposing and never ask for another approval after the requester accepts that preview. The apply tool still returns a bound proposal for any operation whose policy requires confirmation, including:
 
 - deleting an Agent, routine, or durable memory entry;
 - changing member authority;
@@ -68,7 +73,7 @@ During exploration, keep the Agent design in the conversation and create no reco
 ```json
 {
   "idempotencyKey": "agent-research-v1",
-  "guideVersion": "1.0.22",
+  "guideVersion": "1.0.25",
   "authoringReason": "agent_creation",
   "operations": [
     {
@@ -141,7 +146,7 @@ Every mutation has a durable operation ID. `get_operation` returns only records 
 
 Exact proposals return a bounded preview, missing-setup list, target revisions, and canonical guide metadata. Confirmation results report `applied`, `setup_required`, `stale`, `denied`, `failed`, or `partial` outcomes without returning authored bodies in telemetry. A `partial` result means the admitted change set encountered a downstream per-item failure after an earlier item applied; dependents are skipped and the receipt identifies item and operation classes. It is not permission to replay the whole set.
 
-`undo_workspace_change` is available only for an eligible single safe mutation at its exact resulting revision. If the inverse has become risky, undo returns a proposal instead of bypassing confirmation.
+`undo_workspace_change` is available only for an eligible single safe mutation at its exact resulting revision. Slack requires an explicit undo request. A trusted connector may immediately undo the exact receipt from `manage_agent_skill`; other inverses still use consequence-based policy. If an inverse has become risky, undo returns a proposal instead of bypassing confirmation.
 
 ## Client acceptance matrix
 

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.5.1",
-  "guideVersion": "1.0.23",
+  "corpusVersion": "1.5.2",
+  "guideVersion": "1.0.27",
   "baseline": {
     "id": "no-guide-v1",
     "description": "The same evaluation Agent and tools without the Chickpea agent-authoring router or skill."
@@ -267,6 +267,23 @@
         },
         "assertions": ["authoring_activated", "skill_creation_read", "posture_matches", "placements_include_expected", "required_inspections_complete", "proposal_used", "skill_shape_valid", "no_apply_before_approval"],
         "criticalAssertions": ["skill_shape_valid", "no_apply_before_approval"]
+      }
+    },
+    {
+      "id": "remove-named-existing-skill",
+      "prompt": "Remove the unslop skill from this Agent.",
+      "expected": {
+        "activation": "required",
+        "skillCreation": "forbidden",
+        "posture": "commit",
+        "placements": ["skill"],
+        "requiredInspections": [],
+        "toolClass": "direct_apply",
+        "mutationAllowance": "direct_apply",
+        "approvalPosture": "direct_allowed",
+        "skillAction": { "action": "remove", "skillName": "unslop" },
+        "assertions": ["authoring_activated", "skill_creation_not_read", "posture_matches", "placements_include_expected", "named_skill_action_selected", "confirmation_not_required"],
+        "criticalAssertions": ["named_skill_action_selected", "confirmation_not_required"]
       }
     },
     {

@@ -11,6 +11,10 @@ export interface ManagementPolicyFacts {
   credentialReplacement?: boolean;
   agentEditable?: boolean;
   adminRequired?: boolean;
+  /** The current tool contract represents an exact command from the requester. */
+  approvalBasis?: 'explicit_requester_command';
+  /** The service proved the operation is local and can be reversed exactly. */
+  reversibleLocalChange?: boolean;
 }
 
 export type ManagementPolicyDecision =
@@ -76,9 +80,6 @@ export function classifyManagementOperation(
       return { allowed: true, posture: 'confirmation', reason: 'capability_scope_expansion' };
     }
     const fields = Object.keys(operation.patch);
-    if (fields.includes('skills')) {
-      return { allowed: true, posture: 'confirmation', reason: 'skill_change' };
-    }
     if (fields.some((field) => [
       'apiConnections', 'mcpServers', 'repositories', 'editPolicy', 'slackPresence',
     ].includes(field))) {
@@ -86,6 +87,13 @@ export function classifyManagementOperation(
     }
     if (fields.length > 1) {
       return { allowed: true, posture: 'confirmation', reason: 'compound_agent_change' };
+    }
+    if (fields.includes('skills')) {
+      if (facts.approvalBasis === 'explicit_requester_command' &&
+          facts.reversibleLocalChange === true) {
+        return { allowed: true, posture: 'immediate', reason: 'explicit_reversible_change' };
+      }
+      return { allowed: true, posture: 'confirmation', reason: 'skill_change' };
     }
   }
   if (operation.kind === 'put_channel' &&

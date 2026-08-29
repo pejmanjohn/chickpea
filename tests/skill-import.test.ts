@@ -28,6 +28,7 @@ test('parseSkillSource accepts shorthand, GitHub URLs, and skills.sh links', () 
     owner: 'acme',
     repo: 'skills',
     ref: 'dev',
+    skillPath: 'skills/foo',
   });
   assert.deepEqual(parseSkillSource('https://www.skills.sh/acme/skills/triage'), {
     owner: 'acme',
@@ -102,6 +103,7 @@ const TREE = {
     { path: 'README.md', type: 'blob' },
   ],
 };
+const EXACT_OID = '3b3fad9abcdef0123456789abcdef0123456789a';
 
 test('resolveSkillSource resolves candidates, flags scripts, and skips test fixtures', async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = [];
@@ -144,6 +146,220 @@ test('resolveSkillSource honors an @skill filter', async () => {
   assert.deepEqual(
     result.skills.map((skill) => skill.name),
     ['bar'],
+  );
+});
+
+test('resolveSkillSource narrows a GitHub tree URL to its selected directory', async () => {
+  const embedded = JSON.stringify({
+    payload: {
+      codeViewTreeRoute: {
+        path: 'skills/foo',
+        refInfo: { name: 'main', currentOid: EXACT_OID },
+        tree: {
+          items: [{ name: 'SKILL.md', path: 'skills/foo/SKILL.md', contentType: 'file' }],
+          totalCount: 1,
+        },
+      },
+    },
+  });
+  const fetchImpl = mockFetch([
+    ['https://github.com/acme/skills/tree/main/skills/foo', {
+      text: `<script data-target="react-app.embeddedData">${embedded}</script>`,
+    }],
+    [`/${EXACT_OID}/skills/foo/SKILL.md`, { text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo' }],
+  ]);
+  const result = await resolveSkillSource({
+    owner: 'acme',
+    repo: 'skills',
+    ref: 'main',
+    skillPath: 'skills/foo',
+  }, fetchImpl);
+  assert.deepEqual(result.skills.map((skill) => skill.name), ['foo']);
+  assert.equal(result.total, 1);
+});
+
+test('resolveSkillSource resolves an exact public directory without scanning the repository tree', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const embedded = JSON.stringify({
+    payload: {
+      codeViewTreeRoute: {
+        path: 'skills/foo',
+        refInfo: { name: 'main', currentOid: EXACT_OID },
+        tree: {
+          items: [{ name: 'SKILL.md', path: 'skills/foo/SKILL.md', contentType: 'file' }],
+          totalCount: 1,
+        },
+      },
+    },
+  });
+  const fetchImpl = mockFetch([
+    ['https://github.com/acme/skills/tree/main/skills/foo', {
+      text: `<script type="application/json" data-target="react-app.embeddedData">${embedded}</script>`,
+    }],
+    [`/${EXACT_OID}/skills/foo/SKILL.md`, {
+      text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo',
+    }],
+  ], requests);
+
+  const result = await resolveSkillSource({
+    owner: 'acme',
+    repo: 'skills',
+    ref: 'main',
+    skillPath: 'skills/foo',
+  }, fetchImpl);
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests.some((request) => request.url.includes('/git/trees/')), false);
+  assert.deepEqual(result.skills.map((skill) => skill.name), ['foo']);
+  assert.equal(result.skills[0]?.hasScripts, false);
+  assert.equal(result.total, 1);
+  assert.equal(result.skipped, 0);
+  assert.equal(result.ref, EXACT_OID);
+  assert.match(result.skills[0]!.sourceUrl, new RegExp(EXACT_OID));
+});
+
+test('exact-path rate-limit fallback conservatively flags packaged directories', async () => {
+  const embedded = JSON.stringify({
+    payload: {
+      codeViewTreeRoute: {
+        path: 'skills/foo',
+        refInfo: { name: 'main', currentOid: EXACT_OID },
+        tree: {
+          items: [
+            { name: 'SKILL.md', path: 'skills/foo/SKILL.md', contentType: 'file' },
+            { name: 'scripts', path: 'skills/foo/scripts', contentType: 'directory' },
+          ],
+          totalCount: 2,
+        },
+      },
+    },
+  });
+  const fetchImpl = mockFetch([
+    ['/git/trees/', { status: 429 }],
+    ['https://github.com/acme/skills/tree/main/skills/foo', {
+      text: `<script data-target="react-app.embeddedData">${embedded}</script>`,
+    }],
+    [`/${EXACT_OID}/skills/foo/SKILL.md`, {
+      text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo',
+    }],
+  ]);
+
+  const result = await resolveSkillSource({
+    owner: 'acme',
+    repo: 'skills',
+    ref: 'main',
+    skillPath: 'skills/foo',
+  }, fetchImpl);
+  assert.equal(result.skills[0]?.hasScripts, true);
+});
+
+test('an exact-path parent directory falls back to bounded candidate discovery', async () => {
+  const parentDirectory = JSON.stringify({
+    payload: {
+      codeViewTreeRoute: {
+        path: 'skills',
+        refInfo: { name: 'main', currentOid: EXACT_OID },
+        tree: {
+          items: [{ name: 'foo', path: 'skills/foo', contentType: 'directory' }],
+          totalCount: 1,
+        },
+      },
+    },
+  });
+  const fetchImpl = mockFetch([
+    ['https://github.com/acme/skills/tree/main/skills', {
+      text: `<script data-target="react-app.embeddedData">${parentDirectory}</script>`,
+    }],
+    ['/git/trees/', { json: TREE }],
+    ['/main/skills/foo/SKILL.md', {
+      text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo',
+    }],
+    ['/main/skills/bar/SKILL.md', {
+      text: '---\nname: bar\ndescription: The bar skill.\n---\n# Bar',
+    }],
+  ]);
+
+  const result = await resolveSkillSource({
+    owner: 'acme',
+    repo: 'skills',
+    ref: 'main',
+    skillPath: 'skills',
+  }, fetchImpl);
+  assert.deepEqual(result.skills.map(({ name }) => name), ['foo', 'bar']);
+});
+
+test('exact-path fallback accepts a full GitHub OID for an abbreviated ref', async () => {
+  const embedded = JSON.stringify({
+    payload: {
+      codeViewTreeRoute: {
+        path: 'skills/foo',
+        refInfo: { name: EXACT_OID, currentOid: EXACT_OID },
+        tree: {
+          items: [{ name: 'SKILL.md', path: 'skills/foo/SKILL.md', contentType: 'file' }],
+          totalCount: 1,
+        },
+      },
+    },
+  });
+  const fetchImpl = mockFetch([
+    ['/git/trees/', { status: 429 }],
+    ['https://github.com/acme/skills/tree/3b3fad9/skills/foo', {
+      text: `<script data-target="react-app.embeddedData">${embedded}</script>`,
+    }],
+    [`/${EXACT_OID}/skills/foo/SKILL.md`, {
+      text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo',
+    }],
+  ]);
+
+  const result = await resolveSkillSource({
+    owner: 'acme',
+    repo: 'skills',
+    ref: '3b3fad9',
+    skillPath: 'skills/foo',
+  }, fetchImpl);
+  assert.deepEqual(result.skills.map((skill) => skill.name), ['foo']);
+});
+
+test('authenticated rate-limited tree resolution never uses the anonymous page fallback', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const fetchImpl = mockFetch([
+    ['/git/trees/', { status: 429 }],
+    ['api.github.com/repos/acme/private', { json: { default_branch: 'main', private: true } }],
+  ], requests);
+
+  await assert.rejects(
+    () => resolveSkillSource({
+      owner: 'acme',
+      repo: 'private',
+      ref: 'main',
+      skillPath: 'skills/foo',
+    }, fetchImpl, { token: 'private-installation-token' }),
+    (error: unknown) => error instanceof SkillImportError && error.code === 'rate_limited',
+  );
+  assert.equal(requests.some(({ url }) => url.startsWith('https://github.com/')), false);
+});
+
+test('resolveSkillSource rejects oversized GitHub responses before buffering them', async () => {
+  const oversizedTreeFetch = (async () => new Response('{}', {
+    headers: { 'content-length': String(32 * 1024 * 1024) },
+  })) as typeof fetch;
+  await assert.rejects(
+    () => resolveSkillSource({ owner: 'acme', repo: 'skills', ref: 'main' }, oversizedTreeFetch),
+    (error: unknown) => error instanceof SkillImportError && error.code === 'source_too_large',
+  );
+
+  const tree = JSON.stringify({ tree: [{ path: 'skills/foo/SKILL.md', type: 'blob' }] });
+  const oversizedSkillFetch = (async (input: unknown) => {
+    const url = String(input);
+    return url.includes('/git/trees/')
+      ? new Response(tree, { headers: { 'content-type': 'application/json' } })
+      : new Response('---\nname: foo\ndescription: Foo.\n---\n# Foo', {
+          headers: { 'content-length': String(1024 * 1024) },
+        });
+  }) as typeof fetch;
+  await assert.rejects(
+    () => resolveSkillSource({ owner: 'acme', repo: 'skills', ref: 'main' }, oversizedSkillFetch),
+    (error: unknown) => error instanceof SkillImportError && error.code === 'source_too_large',
   );
 });
 

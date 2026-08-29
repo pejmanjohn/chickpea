@@ -112,6 +112,42 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         { readOnlyHint: false, idempotentHint: false },
         `${client.name} must disclose that proposals persist reviewed state`,
       );
+      const skillImport = listedTools.find(({ name }) => name === 'propose_skill_import');
+      for (const field of ['agentId', 'source', 'idempotencyKey', 'guideVersion']) {
+        assert.ok(
+          skillImport?.inputSchema?.required?.includes(field),
+          `${client.name} must require skill import ${field}`,
+        );
+      }
+      assert.deepEqual(
+        skillImport?.annotations,
+        { readOnlyHint: false, idempotentHint: false },
+        `${client.name} must disclose that skill import proposals persist reviewed state`,
+      );
+      const immediateSkillImport = listedTools.find(({ name }) => name === 'import_skill');
+      for (const field of ['agentId', 'source', 'idempotencyKey', 'guideVersion']) {
+        assert.ok(
+          immediateSkillImport?.inputSchema?.required?.includes(field),
+          `${client.name} must require immediate skill import ${field}`,
+        );
+      }
+      assert.deepEqual(
+        immediateSkillImport?.annotations,
+        { readOnlyHint: false, idempotentHint: true },
+        `${client.name} must disclose that exact skill imports are idempotent writes`,
+      );
+      const managedSkill = listedTools.find(({ name }) => name === 'manage_agent_skill');
+      for (const field of ['agentId', 'action', 'skillName', 'idempotencyKey']) {
+        assert.ok(
+          managedSkill?.inputSchema?.required?.includes(field),
+          `${client.name} must require managed skill ${field}`,
+        );
+      }
+      assert.deepEqual(
+        managedSkill?.annotations,
+        { readOnlyHint: false, idempotentHint: true },
+        `${client.name} must disclose that exact skill state changes are idempotent writes`,
+      );
       assert.ok(
         listedTools.find(({ name }) => name === 'prepare_connector_setup')
           ?.inputSchema?.required?.includes('ownerKind'),
@@ -224,7 +260,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
 test('workspace management MCP publishes the version 2 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '2.1.0',
+    version: '2.4.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });

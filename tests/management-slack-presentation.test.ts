@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { formatSlackChangeSetProposal } from '../src/management/slack-presentation.ts';
+import {
+  formatSlackChangeSetProposal,
+  formatSlackSkillImportProposal,
+} from '../src/management/slack-presentation.ts';
 import type { ManagementChangeSetPreview } from '../src/management/types.ts';
 
 test('new Agent proposals show only the useful identity fields without before and after', () => {
@@ -132,6 +135,39 @@ test('Agent edits compare meaningful fields and project Slack presence to its ha
   assert.match(presentation, /\*Paid Marketing — Description\*[\s\S]*\*Before\*[\s\S]*Helps with Google Ads\.[\s\S]*\*After\*[\s\S]*Helps with Google Ads budgets and copy\./);
   assert.match(presentation, /\*Paid Marketing — Slack Handle\*[\s\S]*@paid-marketing[\s\S]*@performance-marketing/);
   assert.doesNotMatch(presentation, /Slack Presence|Repositories|desiredState|health/);
+});
+
+test('skill status changes are visible in approval previews', () => {
+  const presentation = formatSlackChangeSetProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'disable-skill',
+      operationKind: 'update_agent',
+      target: 'agent:agent_writer',
+      before: {
+        name: 'Writer',
+        skills: [{
+          name: 'unslop',
+          description: 'Rewrite plainly.',
+          instructions: 'Remove AI tells.',
+          enabled: true,
+        }],
+      },
+      after: {
+        name: 'Writer',
+        skills: [{
+          name: 'unslop',
+          description: 'Rewrite plainly.',
+          instructions: 'Remove AI tells.',
+          enabled: false,
+        }],
+      },
+    }],
+    missingSetup: [],
+  });
+
+  assert.match(presentation, /\*Before\*[\s\S]*\*Status\*\n> Enabled/);
+  assert.match(presentation, /\*After\*[\s\S]*\*Status\*\n> Disabled/);
 });
 
 test('blank Agent fields and internal Slack presence state do not create proposal noise', () => {
@@ -286,4 +322,75 @@ test('new non-Agent objects show their values without a fictional before state',
   assert.match(presentation, /\*Monday budget review — Description\*\n> Review paid marketing spend\./);
   assert.match(presentation, /\*Monday budget review — Schedule\*\n> 0 9 \* \* 1/);
   assert.doesNotMatch(presentation, /\*Before\*|\*After\*|\(not set\)/);
+});
+
+test('GitHub skill proposals show the exact source and only the changed skill', () => {
+  const presentation = formatSlackSkillImportProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'update',
+      operationKind: 'update_agent',
+      target: 'agent:agent_sprout',
+      before: {
+        name: 'Sprout',
+        skills: [{
+          name: 'existing-skill',
+          description: 'Keep this skill.',
+          instructions: 'Keep working as before.',
+          enabled: true,
+        }],
+      },
+      after: {
+        name: 'Sprout',
+        skills: [{
+          name: 'existing-skill',
+          description: 'Keep this skill.',
+          instructions: 'Keep working as before.',
+          enabled: true,
+        }, {
+          name: 'unslop',
+          description: 'Remove AI writing tells from prose.',
+          instructions: 'Rewrite the draft plainly and preserve its meaning.',
+          enabled: true,
+        }],
+      },
+    }],
+    missingSetup: [],
+  }, 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop');
+
+  assert.match(presentation, /^\*Proposed changes\*\n\*Source\*/);
+  assert.match(presentation, /github\.com\/cursor\/plugins\/tree\/main\/pstack\/skills\/unslop/);
+  assert.match(presentation, /\*Sprout — Skill: unslop\*\n\*Add\*/);
+  assert.match(presentation, /\*Description\*\n> Remove AI writing tells from prose\./);
+  assert.match(presentation, /\*Instructions\*\n> Rewrite the draft plainly/);
+  assert.doesNotMatch(presentation, /existing-skill|Keep this skill|"instructions"|\[\s*\{/);
+  assert.match(presentation, /Reply `approve` to apply these exact changes/);
+});
+
+test('skill proposal instructions are visibly bounded while approval keeps the full value', () => {
+  const longInstructions = 'Do careful work. '.repeat(1_000);
+  const presentation = formatSlackSkillImportProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'update',
+      operationKind: 'update_agent',
+      target: 'agent:agent_sprout',
+      before: { name: 'Sprout', skills: [] },
+      after: {
+        name: 'Sprout',
+        skills: [{
+          name: 'unslop',
+          description: 'Remove AI writing tells.',
+          instructions: longInstructions,
+          enabled: true,
+        }],
+      },
+    }],
+    missingSetup: [],
+  }, 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop');
+
+  assert.ok(presentation.length < 3_000);
+  assert.match(presentation, /more characters; approval applies the full skill/);
+  assert.match(presentation, /Reply `approve` to apply these exact changes/);
+  assert.ok(!presentation.includes(longInstructions));
 });

@@ -25,6 +25,8 @@ export type ManagementOrigin =
       threadTs: string;
       /** Trusted requester message coordinate for durable Slack acknowledgements. */
       messageTs?: string;
+      /** Trusted current requester text from the Slack delivery, never model-authored. */
+      requestText?: string;
       /** Trusted normalized Slack surface. Missing legacy origins receive no implicit Channel grant. */
       conversationKind?: 'channel' | 'im' | 'mpim';
       /** Trusted Agent selected by Slack routing, never by model text. */
@@ -510,6 +512,28 @@ export interface ManagementApplyResult {
   /** Workspace mutation receipt token; it is not comparable to an actor-scoped inspection token. */
   effectiveRevision: string;
   activation: 'next_turn';
+  /** Internal typed receipt data persisted for deterministic narrow-tool replay. */
+  receiptMetadata?: {
+    skillImport?: SkillImportReceiptMetadata;
+    skillAction?: SkillActionReceiptMetadata;
+  };
+}
+
+export interface SkillImportReceiptMetadata {
+  sourceUrl: string;
+  path: string;
+  name: string;
+  description: string;
+  replacedExisting: boolean;
+}
+
+export type ManageAgentSkillAction = 'enable' | 'disable' | 'remove';
+
+export interface SkillActionReceiptMetadata {
+  action: ManageAgentSkillAction;
+  name: string;
+  agentName: string;
+  outcome: 'updated' | 'missing' | 'already_set';
 }
 
 export interface ManagementWorkspaceSnapshot {
@@ -659,8 +683,19 @@ export interface ApplyWorkspaceChangesInput {
   context: ManagementActorContext;
   idempotencyKey: string;
   operations: ManagementOperation[];
+  /**
+   * Trusted intent established by a narrow authenticated tool call or an exact
+   * requester command. Generic proposals and confirmations never set this value.
+   */
+  approvalBasis?: 'explicit_requester_command';
+  /** Internal operation IDs whose exact reversible effect the service resolved. */
+  trustedReversibleOperationIds?: string[];
+  /** Internal deterministic ID used by narrow tools to replay their typed receipt. */
+  operationId?: string;
   /** The caller owns Slack acknowledgement delivery for this invocation. */
   acknowledgementOwner?: 'service' | 'caller';
+  /** Internal typed receipt data stored with the durable result. */
+  receiptMetadata?: ManagementApplyResult['receiptMetadata'];
 }
 
 export interface ProposeWorkspaceChangesInput {
@@ -687,6 +722,91 @@ export interface ProposeWorkspaceChangesResult {
   };
   confirmationTool: 'confirm_workspace_change';
 }
+
+export interface ProposeSkillImportInput {
+  context: ManagementActorContext;
+  idempotencyKey: string;
+  guideVersion: string;
+  /** Optional only for a trusted Slack route, which supplies the acting Agent. */
+  agentId?: string;
+  source: string;
+  /** Narrows a repository or parent-directory source after candidate discovery. */
+  skillName?: string;
+}
+
+export interface ImportSkillInput extends ProposeSkillImportInput {
+  /** Set only after the requester explicitly chooses to replace different content. */
+  replaceExisting?: boolean;
+}
+
+export interface ManageAgentSkillInput {
+  context: ManagementActorContext;
+  /** Optional only for a trusted Slack route, which supplies the acting Agent. */
+  agentId?: string;
+  action: ManageAgentSkillAction;
+  skillName: string;
+  idempotencyKey: string;
+}
+
+export type ManageAgentSkillResult = {
+  status: 'updated' | 'unchanged';
+  action: ManageAgentSkillAction;
+  skillName: string;
+  operationId?: string;
+  activation?: 'next_turn';
+  undoAvailable: boolean;
+  presentation: { slack: string };
+};
+
+export type ProposeSkillImportResult =
+  | (Omit<ProposeWorkspaceChangesResult, 'preview'> & {
+      import: SkillImportReceiptMetadata;
+    })
+  | {
+      status: 'selection_required';
+      source: { owner: string; repo: string; ref: string };
+      candidates: Array<{
+        name: string;
+        description: string;
+        path: string;
+        sourceUrl: string;
+        hasScripts: boolean;
+      }>;
+      instruction: string;
+    };
+
+export type ImportSkillResult =
+  | {
+      status: 'installed';
+      operationId: string;
+      activation: 'next_turn';
+      undoAvailable: boolean;
+      presentation: { slack: string };
+      import: SkillImportReceiptMetadata;
+    }
+  | {
+      status: 'already_installed';
+      presentation: { slack: string };
+      import: {
+        sourceUrl: string;
+        path: string;
+        name: string;
+        description: string;
+        replacedExisting: false;
+      };
+    }
+  | {
+      status: 'replacement_confirmation_required';
+      instruction: string;
+      import: {
+        sourceUrl: string;
+        path: string;
+        name: string;
+        description: string;
+        replacedExisting: true;
+      };
+    }
+  | Extract<ProposeSkillImportResult, { status: 'selection_required' }>;
 
 export interface ConfirmWorkspaceChangeInput {
   context: ManagementActorContext;
@@ -800,6 +920,7 @@ export class ManagementError extends Error {
     readonly code:
       | 'forbidden'
       | 'invalid_request'
+      | 'invalid_state'
       | 'idempotency_conflict'
       | 'operation_not_found'
       | 'proposal_not_found'

@@ -30,6 +30,7 @@ import {
   inspectMemoryValibotSchema,
   inspectRoutinesValibotSchema,
   inspectWorkspaceValibotSchema,
+  manageAgentSkillValibotSchema,
   prepareConnectorSetupValibotSchema,
   proposeWorkspaceChangesValibotSchema,
   testMcpConnectionValibotSchema,
@@ -98,11 +99,16 @@ const MANAGEMENT_TOOLS = new Set([
   ...INSPECTION_TOOLS,
   'propose_workspace_changes',
   'apply_workspace_changes',
+  'manage_agent_skill',
   'confirm_workspace_change',
   'prepare_connector_setup',
   'request_chickpea_handoff',
 ]);
-const APPLY_TOOLS = new Set(['apply_workspace_changes', 'confirm_workspace_change']);
+const APPLY_TOOLS = new Set([
+  'apply_workspace_changes',
+  'manage_agent_skill',
+  'confirm_workspace_change',
+]);
 
 const EvalAssessmentSchema = v.strictObject({
   posture: v.picklist(POSTURES),
@@ -227,6 +233,21 @@ function useEvaluationTools() {
     input: testMcpConnectionValibotSchema,
     output: v.string(),
     run: () => ({ output: JSON.stringify({ healthy: true }) }),
+  });
+  useTool({
+    name: 'manage_agent_skill',
+    description: 'Enable, disable, or remove one named existing Agent skill immediately. The service reads current state, preserves all other skills, and returns a receipt plus undo without a proposal.',
+    input: manageAgentSkillValibotSchema,
+    output: v.string(),
+    run: ({ data }) => ({
+      output: JSON.stringify({
+        status: 'updated',
+        action: data.action,
+        skillName: data.skillName,
+        undoAvailable: true,
+        presentation: { slack: `${data.action} ${data.skillName}` },
+      }),
+    }),
   });
   useTool({
     name: 'propose_workspace_changes',
@@ -389,6 +410,13 @@ function validateCorpus(corpus) {
         `${entry.id}: expectedSkill.descriptionTerms is required.`);
       assert(Array.isArray(expected.expectedSkill.instructionTermGroups),
         `${entry.id}: expectedSkill.instructionTermGroups is required.`);
+    }
+    if (expected.skillAction !== undefined) {
+      assert(
+        ['enable', 'disable', 'remove'].includes(expected.skillAction.action),
+        `${entry.id}: invalid skill action.`,
+      );
+      assertToken(expected.skillAction.skillName, `${entry.id}: expected skill action name`);
     }
     if (expected.expectedReachOperation !== undefined) {
       assert(
@@ -988,7 +1016,12 @@ function evaluateResult(raw, expected) {
     ['proposal_used', toolNames.includes('propose_workspace_changes')],
     ['no_apply_before_approval', applied.length === 0],
     ['handoff_used', toolNames.includes('request_chickpea_handoff')],
-    ['direct_apply_used', toolNames.includes('apply_workspace_changes')],
+    ['direct_apply_used', toolNames.includes('apply_workspace_changes') ||
+      toolNames.includes('manage_agent_skill')],
+    ['named_skill_action_selected', namedSkillActionSelected(
+      raw.toolCalls,
+      expected.skillAction,
+    )],
     ['confirmation_not_required', !toolNames.includes('confirm_workspace_change')],
     ['no_management_tools', managementCalls.length === 0],
     ['setup_handoff_used', toolNames.includes('prepare_connector_setup')],
@@ -1156,10 +1189,20 @@ function actualToolClass(toolNames, toolCalls = []) {
       ? 'confirmation'
       : 'stale_confirmation';
   }
-  if (toolNames.includes('apply_workspace_changes')) return 'direct_apply';
+  if (toolNames.includes('apply_workspace_changes') ||
+      toolNames.includes('manage_agent_skill')) return 'direct_apply';
   if (toolNames.includes('propose_workspace_changes')) return 'proposal';
   if (toolNames.some((name) => INSPECTION_TOOLS.has(name))) return 'inspect';
   return 'none';
+}
+
+function namedSkillActionSelected(toolCalls, expected) {
+  if (!expected) return false;
+  const action = toolCalls.find(({ name }) => name === 'manage_agent_skill');
+  return action?.input?.action === expected.action &&
+    action?.input?.skillName === expected.skillName &&
+    !toolCalls.some(({ name }) => name === 'propose_workspace_changes' ||
+      name === 'apply_workspace_changes');
 }
 
 function mutationAllowanceHonored(raw, expected) {

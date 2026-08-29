@@ -10,6 +10,8 @@ export interface ParsedSkillSource {
   repo: string;
   /** Branch/tag when the input pinned one; otherwise the repo default is used. */
   ref?: string;
+  /** Directory selected by a GitHub tree URL, relative to the repository root. */
+  skillPath?: string;
   /** A single skill slug to keep (e.g. `owner/repo@triage` or a skills.sh link). */
   skillFilter?: string;
 }
@@ -65,6 +67,10 @@ const MAX_SCANNED_SKILLS = 40;
 const SKILL_IMPORT_REQUEST_TIMEOUT_MS = 10_000;
 const MAX_DESCRIPTION = 1024;
 const MAX_INSTRUCTIONS = 100_000;
+const MAX_REPOSITORY_METADATA_BYTES = 64 * 1024;
+const MAX_REPOSITORY_TREE_BYTES = 16 * 1024 * 1024;
+const MAX_GITHUB_DIRECTORY_PAGE_BYTES = 4 * 1024 * 1024;
+const MAX_SKILL_DOCUMENT_BYTES = 512 * 1024;
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SKIP_DIR_RE = /(^|\/)(tests?|node_modules|\.git|dist|build|__pycache__|fixtures)(\/|$)/;
 const SCRIPT_EXT_RE = /\.(sh|py|js|mjs|cjs|ts|rb|bash|zsh)$/i;
@@ -102,9 +108,17 @@ export function parseSkillSource(input: string): ParsedSkillSource | null {
     if (segments.length < 2) return null;
     const owner = segments[0]!;
     const repo = stripGitSuffix(segments[1]!);
-    // .../tree/<ref>/<path...> pins a branch/tag.
+    // .../tree/<ref>/<path...> pins a branch/tag and narrows discovery to
+    // that directory. A parent directory may still contain multiple skills;
+    // the resolver reports each one so the caller can require a selection.
     if (segments[2] === 'tree' && segments[3]) {
-      return { owner, repo, ref: segments[3] };
+      const skillPath = segments.slice(4).join('/').replace(/\/+$/, '');
+      return {
+        owner,
+        repo,
+        ref: segments[3],
+        ...(skillPath ? { skillPath } : {}),
+      };
     }
     return { owner, repo };
   }
@@ -211,19 +225,46 @@ export async function resolveSkillSource(
   const ref = parsed.ref ?? metadata?.defaultBranch ?? 'main';
   const visibility = metadata?.private ? 'private' : 'public';
 
+  // A public tree URL already identifies one directory. Inspect that bounded
+  // directory page directly instead of downloading the repository's complete
+  // recursive tree, which avoids anonymous API quota and keeps the common
+  // Slack import path fast even for very large repositories.
+  if (!authenticated && parsed.ref && parsed.skillPath) {
+    try {
+      return await resolveExactPublicSkillFromGithubPage({
+        ...parsed,
+        ref: parsed.ref,
+        skillPath: parsed.skillPath,
+      }, fetchImpl);
+    } catch (error) {
+      if (!(error instanceof SkillImportError) || error.code !== 'not_exact_skill_directory') {
+        throw error;
+      }
+      // A parent directory still honors the documented multi-candidate path.
+      // Continue to the bounded recursive tree scan below.
+    }
+  }
+
   const treeRes = await githubRequest(
     fetchImpl,
     `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
     { headers },
   );
   assertRepositoryResponse(treeRes, authenticated, owner, repo);
-  const tree = (await treeRes.json()) as { tree?: GitTreeEntry[] };
+  const tree = await readJsonResponseBounded<{ tree?: GitTreeEntry[] }>(
+    treeRes,
+    MAX_REPOSITORY_TREE_BYTES,
+    'GitHub repository tree is too large to import safely. Use a direct skill-directory URL.',
+  );
   const blobs = (tree.tree ?? []).filter((entry) => entry.type === 'blob');
 
   const skillDirs = blobs
     .filter((entry) => entry.path === 'SKILL.md' || entry.path.endsWith('/SKILL.md'))
     .map((entry) => ({ path: entry.path, dir: entry.path.replace(/\/?SKILL\.md$/, '') }))
     .filter((entry) => !SKIP_DIR_RE.test(entry.path))
+    .filter((entry) => parsed.skillPath
+      ? entry.dir === parsed.skillPath || entry.dir.startsWith(`${parsed.skillPath}/`)
+      : true)
     .filter((entry) =>
       parsed.skillFilter ? basename(entry.dir) === parsed.skillFilter : true,
     );
@@ -256,7 +297,11 @@ export async function resolveSkillSource(
       skipped += 1;
       continue;
     }
-    const md = await rawRes.text();
+    const md = await readResponseTextBounded(
+      rawRes,
+      MAX_SKILL_DOCUMENT_BYTES,
+      'GitHub skill document is too large to import safely.',
+    );
     const front = parseFrontmatter(md);
     const name = sanitizeSkillName(front.name || basename(entry.dir));
     const description = (front.description || '').trim().slice(0, MAX_DESCRIPTION);
@@ -293,6 +338,134 @@ export async function resolveSkillSource(
   };
 }
 
+interface GithubDirectoryItem {
+  name?: string;
+  path?: string;
+  contentType?: string;
+}
+
+/**
+ * GitHub's anonymous REST quota is shared by many Worker invocations. A tree
+ * URL already names one exact public directory, so inspect the public
+ * directory page plus raw SKILL.md without spending that quota. The inspected
+ * commit OID, not the mutable branch name, pins the imported bytes. The
+ * embedded directory listing also preserves the packaged-script check; if the
+ * page is incomplete, fail closed instead of guessing about sibling content.
+ */
+async function resolveExactPublicSkillFromGithubPage(
+  parsed: ParsedSkillSource & { ref: string; skillPath: string },
+  fetchImpl: typeof fetch,
+): Promise<SkillResolution> {
+  const { owner, repo, ref, skillPath } = parsed;
+  const requestedSourceUrl = `https://github.com/${owner}/${repo}/tree/${encodeURIComponent(ref)}/${encodeGithubPath(skillPath)}`;
+  const pageRes = await githubRequest(fetchImpl, requestedSourceUrl, {
+    headers: { 'user-agent': 'chickpea-skill-import' },
+  });
+  assertRepositoryResponse(pageRes, false, owner, repo);
+  const html = await readResponseTextBounded(
+    pageRes,
+    MAX_GITHUB_DIRECTORY_PAGE_BYTES,
+    'GitHub skill directory is too large to import safely.',
+  );
+  const embedded = html.match(
+    /<script\b[^>]*data-target=["']react-app\.embeddedData["'][^>]*>([\s\S]*?)<\/script>/i,
+  )?.[1];
+  let route: {
+    path?: string;
+    refInfo?: { name?: string; currentOid?: string };
+    tree?: { items?: GithubDirectoryItem[]; totalCount?: number };
+  } | undefined;
+  try {
+    route = embedded
+      ? JSON.parse(embedded)?.payload?.codeViewTreeRoute
+      : undefined;
+  } catch {
+    route = undefined;
+  }
+  const items = route?.tree?.items;
+  const refMatches = route?.refInfo?.name === ref || route?.refInfo?.currentOid?.startsWith(ref);
+  if (!route || route.path !== skillPath || !refMatches || !Array.isArray(items)) {
+    throw new SkillImportError(
+      'not_exact_skill_directory',
+      'That GitHub path is not one exact skill directory. Use the skill directory URL or repository source.',
+    );
+  }
+  if (route.tree?.totalCount !== undefined && route.tree.totalCount !== items.length) {
+    throw new SkillImportError(
+      'source_too_large',
+      'GitHub skill directory could not be inspected completely. Use Admin to review this source.',
+    );
+  }
+
+  const skillDocumentPath = `${skillPath}/SKILL.md`;
+  const hasSkillDocument = items.some(
+    (item) => item.path === skillDocumentPath && item.contentType === 'file',
+  );
+  if (!hasSkillDocument) {
+    throw new SkillImportError(
+      'not_exact_skill_directory',
+      'That GitHub directory does not contain SKILL.md. Use the skill directory URL or repository source.',
+    );
+  }
+  const resolvedRef = route.refInfo?.currentOid;
+  if (!resolvedRef || !/^[0-9a-f]{40,64}$/i.test(resolvedRef)) {
+    throw new SkillImportError(
+      'github_error',
+      'GitHub did not provide immutable provenance for this skill. Try again.',
+    );
+  }
+  const sourceUrl = `https://github.com/${owner}/${repo}/tree/${resolvedRef}/${encodeGithubPath(skillPath)}`;
+  const hasScripts = items.some((item) =>
+    item.path !== skillDocumentPath &&
+    (item.contentType === 'directory' || SCRIPT_EXT_RE.test(item.path ?? item.name ?? '')),
+  );
+  const rawRes = await githubRequest(
+    fetchImpl,
+    `https://raw.githubusercontent.com/${owner}/${repo}/${resolvedRef}/${encodeGithubPath(skillDocumentPath)}`,
+  );
+  if (!rawRes.ok) {
+    throw new SkillImportError('rate_limited', GITHUB_RATE_LIMITED);
+  }
+  const markdown = await readResponseTextBounded(
+    rawRes,
+    MAX_SKILL_DOCUMENT_BYTES,
+    'GitHub skill document is too large to import safely.',
+  );
+  const front = parseFrontmatter(markdown);
+  const name = sanitizeSkillName(front.name || basename(skillPath));
+  const description = (front.description || '').trim().slice(0, MAX_DESCRIPTION);
+  const instructions = (front.body || markdown).trim().slice(0, MAX_INSTRUCTIONS);
+  if (!name || !description || !instructions) {
+    return exactPublicSkillResolution({ ...parsed, ref: resolvedRef }, [], 1, 1);
+  }
+  return exactPublicSkillResolution({ ...parsed, ref: resolvedRef }, [{
+    name,
+    description,
+    instructions,
+    hasScripts,
+    path: skillPath,
+    sourceUrl,
+  }], 1, 0);
+}
+
+function exactPublicSkillResolution(
+  parsed: ParsedSkillSource & { ref: string; skillPath: string },
+  skills: ResolvedSkillCandidate[],
+  total: number,
+  skipped: number,
+): SkillResolution {
+  return {
+    owner: parsed.owner,
+    repo: parsed.repo,
+    ref: parsed.ref,
+    source: { visibility: 'public', access: 'anonymous' },
+    skills,
+    total,
+    capped: false,
+    skipped,
+  };
+}
+
 async function fetchRepositoryMetadata(
   owner: string,
   repo: string,
@@ -306,7 +479,11 @@ async function fetchRepositoryMetadata(
     { headers },
   );
   assertRepositoryResponse(res, authenticated, owner, repo);
-  const meta = (await res.json()) as { default_branch?: string; private?: boolean };
+  const meta = await readJsonResponseBounded<{ default_branch?: string; private?: boolean }>(
+    res,
+    MAX_REPOSITORY_METADATA_BYTES,
+    'GitHub repository metadata is too large to import safely.',
+  );
   return {
     defaultBranch: meta.default_branch || 'main',
     private: meta.private === true,
@@ -357,6 +534,53 @@ async function githubRequest(
       'GitHub could not complete the skill import request. Try again.',
     );
   }
+}
+
+async function readJsonResponseBounded<T>(
+  response: Response,
+  maxBytes: number,
+  tooLargeMessage: string,
+): Promise<T> {
+  if (!response.body) return await response.json() as T;
+  const text = await readResponseTextBounded(response, maxBytes, tooLargeMessage);
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new SkillImportError('github_error', 'GitHub returned invalid skill import data.');
+  }
+}
+
+async function readResponseTextBounded(
+  response: Response,
+  maxBytes: number,
+  tooLargeMessage: string,
+): Promise<string> {
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new SkillImportError('source_too_large', tooLargeMessage);
+  }
+  if (!response.body) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > maxBytes) {
+      throw new SkillImportError('source_too_large', tooLargeMessage);
+    }
+    return text;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new SkillImportError('source_too_large', tooLargeMessage);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
 }
 
 function encodeGithubPath(path: string): string {

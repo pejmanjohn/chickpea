@@ -27,7 +27,9 @@ import {
 export interface SlackManagementApprovalDependencies {
   identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
   config: Pick<ConfigStore, 'getAgent'>;
-  management: Pick<ManagementStore, 'putOutbox'>;
+  management: Pick<ManagementStore, 'putOutbox'> & {
+    getChangeSetProposal?: ManagementStore['getChangeSetProposal'];
+  };
   service: WorkspaceManagementService;
   publicUrl?: string;
 }
@@ -137,7 +139,9 @@ async function formatHostSlackManagementReceipt(input: {
   proposalId: string;
   actorMembershipId: string;
   config: Pick<ConfigStore, 'getAgent'>;
-  management: Pick<ManagementStore, 'putOutbox'>;
+  management: Pick<ManagementStore, 'putOutbox'> & {
+    getChangeSetProposal?: ManagementStore['getChangeSetProposal'];
+  };
   presentationRunId?: string;
   prepareAgentWelcomeTerminal?: () => Promise<void>;
   publicUrl?: string;
@@ -222,6 +226,10 @@ async function formatHostSlackManagementReceipt(input: {
       return { kind: 'agent_welcome_queued', outboxId: stored.outboxId };
     }
   }
+  if (result.status === 'completed' && attention.length === 0 && warnings.length === 0) {
+    const skillReceipt = await formatAppliedSkillReceipt(input);
+    if (skillReceipt) return { kind: 'message', text: skillReceipt };
+  }
   const receipt = attention.length === 0
     ? 'Applied the approved changes.'
     : `Applied some approved changes, but ${attention.length} ${
@@ -235,6 +243,69 @@ async function formatHostSlackManagementReceipt(input: {
     kind: 'message',
     text: details.length > 0 ? `${receipt}\n\n${details.join('\n')}` : receipt,
   };
+}
+
+async function formatAppliedSkillReceipt(input: {
+  proposalId: string;
+  config: Pick<ConfigStore, 'getAgent'>;
+  management: {
+    getChangeSetProposal?: ManagementStore['getChangeSetProposal'];
+  };
+}): Promise<string | undefined> {
+  if (!input.management.getChangeSetProposal) return undefined;
+  const proposal = await input.management.getChangeSetProposal(input.proposalId);
+  if (!proposal || proposal.authoringReason !== 'skill_creation' ||
+      proposal.operations.length !== 1) return undefined;
+  const update = proposal.operations[0];
+  if (update?.kind !== 'update_agent' || update.itemId !== 'skill-import' ||
+      Object.keys(update.patch).some((field) => field !== 'skills')) return undefined;
+  if (!update.patch.skills) return undefined;
+  const previewChange = proposal.preview.changes.find(({ itemId }) => itemId === update.itemId);
+  const beforeSkills = skillNames(recordValue(previewChange?.before)?.skills);
+  const afterSkills = skillNames(recordValue(previewChange?.after)?.skills);
+  if (!beforeSkills || !afterSkills) return undefined;
+  const changed = [...afterSkills].filter((name) => !beforeSkills.has(name) ||
+    !presentationSkillValuesEqual(
+      skillRecordByName(recordValue(previewChange?.before)?.skills, name),
+      skillRecordByName(recordValue(previewChange?.after)?.skills, name),
+    ));
+  if (changed.length === 0) return undefined;
+  const agent = await input.config.getAgent(update.agentId).catch(() => undefined);
+  const agentName = escapeSlackControlCharacters(agent?.name ?? update.agentId);
+  const renderedSkills = changed
+    .map((name) => `\`${escapeSlackControlCharacters(name)}\``)
+    .join(', ');
+  if (changed.length === 1) {
+    const verb = beforeSkills.has(changed[0]!) ? 'Replaced' : 'Installed';
+    return `${verb} skill ${renderedSkills} on ${agentName}. It’s active from the next message.`;
+  }
+  return `Installed skills ${renderedSkills} on ${agentName}. They’re active from the next message.`;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function skillNames(value: unknown): Set<string> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const names = new Set<string>();
+  for (const skill of value) {
+    const name = recordValue(skill)?.name;
+    if (typeof name !== 'string' || !name) return undefined;
+    names.add(name);
+  }
+  return names;
+}
+
+function skillRecordByName(value: unknown, name: string): unknown {
+  if (!Array.isArray(value)) return undefined;
+  return value.find((skill) => recordValue(skill)?.name === name);
+}
+
+function presentationSkillValuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function suggestedUnconnectedConnector(agent: Awaited<ReturnType<ConfigStore['getAgent']>>): string | undefined {

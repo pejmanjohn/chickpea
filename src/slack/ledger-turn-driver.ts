@@ -46,6 +46,7 @@ import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
 import { AgentPromptFailure } from './flue-dispatch.ts';
 import {
+  abandonDeferredTerminalSlackDelivery,
   hasRetryableTerminalRepair,
   repairTerminalSlackPresentation,
 } from './presentation-repair.ts';
@@ -268,7 +269,7 @@ export function createLedgerSlackRunHandler(
         }
         return { kind: 'requeue', reasonCode: 'flue_reattachment_interrupted' };
       }
-      return classifyExecutionFailure(options, claim, job, attempt, now);
+      return classifyExecutionFailure(options, claim, job, client, attempt, now);
     }
     const run = await options.work.getRun(claim.run.id);
     if (run?.status === 'settled') {
@@ -277,11 +278,12 @@ export function createLedgerSlackRunHandler(
       return { kind: 'completed' };
     }
     if (run?.status === 'recovery_required') {
+      await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
       await options.turns.markError(job.id);
       await clearActiveWork(options, job);
       return { kind: 'completed' };
     }
-    return classifyExecutionFailure(options, claim, job, attempt, now);
+    return classifyExecutionFailure(options, claim, job, client, attempt, now);
   };
 }
 
@@ -323,6 +325,7 @@ async function deliverDurableRecoveryFailure(
     // treating the notice itself as a successful run.
     return { kind: 'recovery_required', reasonCode };
   } catch {
+    await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
     await options.turns.markRecoveryRequired(job.id, reasonCode);
     await clearActiveWork(options, job);
     return { kind: 'recovery_required', reasonCode };
@@ -342,6 +345,7 @@ async function deliverPersistedResponse(
     ? await options.work.getContent(run.renderedPayloadRef)
     : undefined;
   if (!run || !rendered?.body) {
+    await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
     await options.turns.markError(job.id);
     await clearActiveWork(options, job);
     return { kind: 'recovery_required', reasonCode: 'ledger_render_missing' };
@@ -353,6 +357,7 @@ async function deliverPersistedResponse(
     renderedMethod,
     run.deliveryStatus,
   )) {
+    await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
     await options.turns.markRecoveryRequired(job.id, 'slack_presentation_effect_unresolved');
     await clearActiveWork(options, job);
     return { kind: 'recovery_required', reasonCode: 'slack_presentation_effect_unresolved' };
@@ -444,11 +449,13 @@ async function deliverPersistedResponse(
         finalizedAt: now(),
       });
     } catch {
+      await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
       await options.turns.markError(job.id);
       await clearActiveWork(options, job);
       return { kind: 'recovery_required', reasonCode: 'delivery_receipt_persist_unknown' };
     }
     if (failure.outcome === 'unknown') {
+      await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
       await options.turns.markError(job.id);
       await clearActiveWork(options, job);
       return { kind: 'completed' };
@@ -461,6 +468,7 @@ async function deliverPersistedResponse(
         safeFailureCode: 'slack_delivery_exhausted',
         settledAt: now(),
       });
+      await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
       await options.turns.markError(job.id);
       await clearActiveWork(options, job);
       return { kind: 'completed' };
@@ -602,11 +610,13 @@ async function classifyExecutionFailure(
   options: LedgerSlackRunHandlerOptions,
   claim: InteractiveRunClaim,
   job: PendingTurnJob,
+  client: WebClient,
   attempt: number,
   now: () => number,
 ): Promise<RunDriverHandlerResult> {
   const run = await options.work.getRun(claim.run.id);
   if (!run) {
+    await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
     await options.turns.markError(job.id);
     await clearActiveWork(options, job);
     return { kind: 'recovery_required', reasonCode: 'ledger_run_missing' };
@@ -617,6 +627,7 @@ async function classifyExecutionFailure(
     return { kind: 'completed' };
   }
   if (run.status === 'recovery_required' || run.deliveryStatus === 'unknown') {
+    await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
     await options.turns.markError(job.id);
     await clearActiveWork(options, job);
     return { kind: 'completed' };
@@ -630,6 +641,7 @@ async function classifyExecutionFailure(
         safeFailureCode: 'slack_delivery_exhausted',
         settledAt: now(),
       });
+      await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
       await options.turns.markError(job.id);
       await clearActiveWork(options, job);
       return { kind: 'completed' };
@@ -644,6 +656,7 @@ async function classifyExecutionFailure(
     if (!latest || latest.modelInvocationStatus === 'ready' ||
         latest.modelInvocationStatus === 'not_invoked' || latest.outcome === 'not_submitted') {
       if (attempt >= MAX_TURN_ATTEMPTS) {
+        await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
         await options.turns.markError(job.id);
         await clearActiveWork(options, job);
         return { kind: 'recovery_required', reasonCode: 'ledger_turn_attempts_exhausted' };
@@ -651,9 +664,29 @@ async function classifyExecutionFailure(
       return { kind: 'requeue', reasonCode: 'ledger_turn_failed_before_submit' };
     }
   }
+  await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
   await options.turns.markError(job.id);
   await clearActiveWork(options, job);
   return { kind: 'recovery_required', reasonCode: 'ledger_turn_outcome_ambiguous' };
+}
+
+async function abandonTerminalPresentationBestEffort(
+  options: LedgerSlackRunHandlerOptions,
+  runId: string,
+  client: WebClient,
+): Promise<void> {
+  if (!options.presentationState) return;
+  try {
+    await abandonDeferredTerminalSlackDelivery({
+      runId,
+      state: options.presentationState,
+      resolveClient: async () => client,
+    });
+  } catch {
+    // Terminal delivery is already ambiguous or exhausted. Do not post a
+    // second answer; durable presentation repair owns later idempotent cleanup.
+    console.warn('[chickpea] Slack terminal presentation abandonment needs repair');
+  }
 }
 
 async function clearActiveWork(

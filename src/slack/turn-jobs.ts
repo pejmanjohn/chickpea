@@ -399,6 +399,7 @@ export class TurnJobStoreLogic {
             eventId: turn.eventId,
             messageTs: turn.messageTs,
             turnJobId: id,
+            requesterText: turn.text.slice(0, 40_000),
             ...(turn.attachments?.length
               ? { attachmentFileIds: turn.attachments.map(({ fileId }) => fileId).join(',') }
               : {}),
@@ -1132,6 +1133,7 @@ function parseSlackSignalMessage(
   const attributes = exactObject(message.attributes, 'Flue Slack signal attributes', [
     'workspaceId', 'channelId', 'threadTs', 'slackUserId', 'eventId', 'messageTs', 'turnJobId',
     'conversationKind',
+    'requesterText',
     'attachmentFileIds',
     'attachmentIntakeStatus', 'attachmentCount',
   ]);
@@ -1146,6 +1148,9 @@ function parseSlackSignalMessage(
     eventId: validateBoundedString(attributes.eventId, 'Slack event id', 256),
     messageTs: validateBoundedString(attributes.messageTs, 'Slack message timestamp', 80),
     turnJobId: validateBoundedString(attributes.turnJobId, 'TurnJob id', 256),
+    ...(attributes.requesterText === undefined
+      ? {}
+      : { requesterText: validateBoundedString(attributes.requesterText, 'Slack requester text', 40_000) }),
     ...(attributes.attachmentFileIds === undefined
       ? {}
       : {
