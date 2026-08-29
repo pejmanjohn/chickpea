@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import * as v from 'valibot';
 
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
+import { UnknownAgentError } from '../src/config/errors.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
   AGENT_AUTHORING_GUIDE_DIGEST,
@@ -2781,6 +2782,61 @@ test('member-owned Agent archive and restore remain explicit confirmed operation
     });
     assert.equal(restores, 1);
     assert.equal((await f.config.getAgent('agent_lifecycle')).lifecycle, 'active');
+  } finally {
+    f.close();
+  }
+});
+
+test('confirmed Agent deletion uses the live cleanup boundary before removing the Agent', async () => {
+  const f = await createManagementAdapterFixture('member-agent-delete');
+  const member = (await f.identity.provisionSlackMember({
+    slackTeamId: f.owner.binding.slackTeamId,
+    slackUserId: 'UMEMBERDELETE',
+    displayName: 'Delete Member',
+  })).resolution!;
+  await f.config.createAgent({
+    id: 'agent_delete', name: 'Delete', instructions: 'Delete safely.', enabled: true,
+    lifecycle: 'active', creatorMembershipId: member.membership.id,
+    editPolicy: 'creator_and_admins', configurationGeneration: 1,
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  });
+  let cleanupCalls = 0;
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    setupBaseUrl: 'http://localhost',
+    now: () => 1_800_000_000_000,
+    randomId: () => 'delete_operation',
+    randomCapability: () => 'd'.repeat(43),
+    deleteAgent: async ({ agentId, expectedRevision }) => {
+      cleanupCalls += 1;
+      return f.config.deleteAgent(agentId, expectedRevision);
+    },
+  });
+  const context: ManagementActorContext = {
+    userId: member.user.id,
+    membershipId: member.membership.id,
+    organizationId: member.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'delete-client' },
+  };
+  try {
+    const proposed = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'delete-owned-agent',
+      operations: [{
+        itemId: 'delete', kind: 'delete_agent', agentId: 'agent_delete', expectedRevision: 1,
+      }],
+    });
+    assert.equal(proposed.status, 'confirmation_required');
+    assert.equal(cleanupCalls, 0);
+    const deleted = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.outcomes[0]!.proposalId!,
+    });
+    assert.equal(deleted.status, 'completed');
+    assert.equal(cleanupCalls, 1);
+    await assert.rejects(() => f.config.getAgent('agent_delete'), UnknownAgentError);
   } finally {
     f.close();
   }

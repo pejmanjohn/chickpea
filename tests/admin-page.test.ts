@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { renderAdminPage } from '../src/admin/page.ts';
 import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
 import {
-  REUSABLE_CONNECTOR_PRESETS,
+  CONNECTION_CATALOG_PRESETS,
 } from '../src/config/presets.ts';
 import { seededAgents } from '../src/config/seed.ts';
 
@@ -13,7 +13,7 @@ test('connection removal retries a schedule cleanup race once', () => {
   const page = renderAdminPage();
   assert.match(
     page,
-    /detachWithCleanupRetry[^]*connection_schedule_changed[^]*api\(detachPath, \{ method: "DELETE" \}\)/,
+    /disconnectWithCleanupRetry[^]*connection_schedule_changed[^]*api\(path, \{ method: "DELETE" \}\)/,
   );
   assert.match(
     page,
@@ -436,7 +436,6 @@ function runAdminPageHarness(
     apiOAuthStartError?: { status: number; error: string; message?: string };
     connectionAccounts?: {
       attached: Array<Record<string, unknown>>;
-      available: Array<Record<string, unknown>>;
       managedConnectors?: {
         composio: boolean;
         canConfigure?: boolean;
@@ -956,6 +955,7 @@ function runAdminPageHarness(
       documentScrollTop = Number(top) || 0;
     },
     setTimeout() { return 1; },
+    confirm() { return true; },
     open(url?: string) {
       if (url && url !== 'about:blank') {
         openedUrls.push(String(url));
@@ -1559,22 +1559,20 @@ function runAdminPageHarness(
       });
       return Promise.resolve(jsonResponse({ account: { lifecycle: 'ready' }, binding: {} }));
     }
-    const agentConnectionAttachMatch = path.match(
-      /^\/admin\/api\/agents\/([^/]+)\/connections\/([^/]+)\/attach$/,
+    const agentConnectionDeleteMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/connections\/([^/]+)$/,
     );
-    if (agentConnectionAttachMatch && method === 'POST') {
-      const agentId = decodeURIComponent(agentConnectionAttachMatch[1] as string);
-      const accountId = decodeURIComponent(agentConnectionAttachMatch[2] as string);
+    if (agentConnectionDeleteMatch && method === 'DELETE') {
+      const accountId = decodeURIComponent(agentConnectionDeleteMatch[2] as string);
       const accounts = harnessOptions.connectionAccounts;
-      const availableIndex = accounts?.available.findIndex((account) => account.id === accountId) ?? -1;
-      if (accounts && availableIndex >= 0) {
-        const [account] = accounts.available.splice(availableIndex, 1);
-        accounts.attached.push({
-          account,
-          binding: { agentId, connectionAccountId: accountId, allowedCapabilities: [], enabled: true },
-        });
-      }
-      return Promise.resolve(jsonResponse({ ok: true }));
+      const entry = accounts?.attached.find(({ account }) =>
+        (account as Record<string, unknown>).id === accountId);
+      if (accounts) accounts.attached = accounts.attached.filter(({ account }) =>
+        (account as Record<string, unknown>).id !== accountId);
+      return Promise.resolve(jsonResponse({ account: {
+        ...((entry?.account as Record<string, unknown> | undefined) ?? {}),
+        lifecycle: 'revoked',
+      } }));
     }
     const agentConnectionsMatch = path.match(
       /^\/admin\/api\/agents\/([^/]+)\/connections(?:\?workspaceId=([^&]+))?$/,
@@ -4396,7 +4394,7 @@ test('a connection mutation refreshes Connections without loading hidden Agent r
   };
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_release',
-    connectionAccounts: { attached: [], available: [account] },
+    connectionAccounts: { attached: [ownedConnection(account, 'agent_release')] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -4407,7 +4405,7 @@ test('a connection mutation refreshes Connections without loading hidden Agent r
 
   click({
     target: actionTarget({
-      'data-action': 'connection-account-attach',
+      'data-action': 'connection-account-disconnect',
       'data-connection-id': 'connection_linear',
     }),
   });
@@ -4416,7 +4414,7 @@ test('a connection mutation refreshes Connections without loading hidden Agent r
   assert.equal(harness.agentConnectionGets(), 2);
   assert.equal(harness.agentScheduleGets(), 0);
   assert.deepEqual(harness.ownerMemoryGetCaches, []);
-  assert.match(harness.app.innerHTML, /Linear is connected to this Agent|In this Agent/);
+  assert.match(harness.app.innerHTML, /No connections in this Agent yet/);
 });
 
 test('a repository draft mutation revalidates only Repositories on focus', async () => {
@@ -6378,14 +6376,14 @@ test('saving a profile with a filled-but-not-added skill editor commits the skil
 
 // ---- Connections (remote MCP servers) --------------------------------------
 
-test('Agent connections expose reusable Team and personal accounts with managed Google OAuth', () => {
+test('Agent connections expose Agent-owned Team and personal accounts with managed Google OAuth', () => {
   const page = renderAdminPage();
   assert.match(page, />Team connection</);
   assert.match(page, />My connection</);
   assert.match(page, /connections\/managed\/start/);
   assert.match(page, /Sign-in opens in a secure hosted tab/);
   assert.match(page, /Team and personal accounts this Agent can use/);
-  assert.match(page, /Every Agent using it will lose access and dependent schedules will pause/);
+  assert.match(page, /This Agent will lose access and dependent schedules will pause/);
   assert.match(page, /provider may still list the authorization/);
   assert.match(page, /remove it from the provider.s account settings/);
   assert.doesNotMatch(page, /ask Composio to revoke Google access/);
@@ -6433,14 +6431,10 @@ test('connection accounts use the compact prototype states without provider impl
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: {
-      attached: [{
-        account: gmailAccount,
-        binding: {
-          agentId: 'agent_conn', connectionAccountId: gmailAccount.id, providerId: 'google',
-          allowedCapabilities: ['gmail.profile.read'], enabled: true,
-        },
-      }],
-      available: [calendarAccount],
+      attached: [
+        ownedConnection(gmailAccount, 'agent_conn', ['gmail.profile.read']),
+        ownedConnection(calendarAccount),
+      ],
       managedConnectors: {
         composio: true,
         catalog: [
@@ -6462,11 +6456,12 @@ test('connection accounts use the compact prototype states without provider impl
 
   const html = harness.app.innerHTML;
   const rows = html.match(/<div class="connection-state-stack">[\s\S]*?<\/section><\/div>/)?.[0] ?? '';
-  assert.match(html, /<h4>In this Agent<\/h4>[\s\S]*?<span class="connection-section-count">1<\/span>/);
-  assert.match(html, /<h4>Available<\/h4>/);
+  assert.match(html, /<h4>In this Agent<\/h4>[\s\S]*?<span class="connection-section-count">2<\/span>/);
+  assert.match(html, /<h4>Connect a new account<\/h4>/);
   assert.match(html, /connection-account-row connection-account-row-attached[\s\S]*?Gmail[\s\S]*?team@acme\.test &middot; Team/);
-  assert.match(html, /connection-account-row connection-account-row-available[\s\S]*?Google Calendar[\s\S]*?person@acme\.test &middot; Personal/);
-  assert.match(html, /Google Calendar[\s\S]*?Account ready[\s\S]*?2 capabilities[\s\S]*?>Add<\/button>/);
+  assert.match(html, /connection-account-row connection-account-row-attached[\s\S]*?Google Calendar[\s\S]*?person@acme\.test &middot; Personal/);
+  assert.match(html, /Google Calendar[\s\S]*?2 capabilities/);
+  assert.doesNotMatch(html, /Google Calendar[\s\S]*?>Add<\/button>/);
   assert.match(html, /HubSpot[\s\S]*?No account[\s\S]*?>Connect<\/button>/);
   assert.match(html, /Gmail capabilities[\s\S]*?Read the email address and mailbox totals/);
   assert.match(html, /Gmail capabilities[\s\S]*?What this Agent can do with this account\./);
@@ -6517,7 +6512,11 @@ test('compact connection rows disclose only trusted capability effects and suppo
   };
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [unknownManaged, mcp, api] },
+    connectionAccounts: { attached: [
+      ownedConnection(unknownManaged),
+      ownedConnection(mcp),
+      ownedConnection(api),
+    ] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -6560,7 +6559,7 @@ test('custom connection labels cannot spoof connector branding and keep their en
     identity: { accountName: 'drive.google.com' },
   };
   const harness = runAdminPageHarness({
-    agents: [connectionsAgent()], connectionAccounts: { attached: [], available: [account] },
+    agents: [connectionsAgent()], connectionAccounts: { attached: [ownedConnection(account)] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -6569,13 +6568,13 @@ test('custom connection labels cannot spoof connector branding and keep their en
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
-  const row = harness.app.innerHTML.match(/<div class="connection-account-row connection-account-row-available">[\s\S]*?data-connection-id="connection_spoofed_drive"[\s\S]*?<\/div>/)?.[0] ?? '';
+  const row = harness.app.innerHTML.match(/<div class="connection-account-row connection-account-row-attached">[\s\S]*?data-connection-id="connection_spoofed_drive"[\s\S]*?<\/div>/)?.[0] ?? '';
   assert.match(row, /conn-logo conn-logo-mono/);
   assert.doesNotMatch(row, /conn-logo conn-logo-img/);
   assert.match(row, /Google Drive<\/span><span class="connection-account-identity">mcp\.attacker\.example &middot; Team/);
 });
 
-test('available rows exclude revoked accounts, suppress duplicate catalog rows, and expose truthful search results', async () => {
+test('Agent-owned rows suppress duplicate catalog entries and expose truthful search results', async () => {
   const gmail = {
     id: 'connection_gmail', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'google',
     label: 'Work email', lifecycle: 'ready', policy: {
@@ -6597,21 +6596,14 @@ test('available rows exclude revoked accounts, suppress duplicate catalog rows, 
       principalRef: 'chickpea:organization:T_DESIGN', allowedCapabilities: ['calendar.events.list'],
     },
   };
-  const revoked = {
-    id: 'connection_revoked', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'google',
-    label: 'Revoked Gmail', lifecycle: 'revoked', policy: {
-      kind: 'managed', adapterId: 'composio', toolkit: 'gmail', accountRef: 'ca_revoked',
-      principalRef: 'chickpea:organization:T_DESIGN', allowedCapabilities: ['gmail.profile.read'],
-    },
-  };
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: {
       attached: [
-        { account: gmail, binding: { agentId: 'agent_conn', connectionAccountId: gmail.id, providerId: 'google', enabled: true } },
-        { account: drive, binding: { agentId: 'agent_conn', connectionAccountId: drive.id, providerId: 'google', enabled: true } },
+        ownedConnection(gmail),
+        ownedConnection(drive),
+        ownedConnection(calendar),
       ],
-      available: [calendar, revoked],
       managedConnectors: { composio: true, catalog: [
         managedCatalogFixture('gmail', 'gmail', 'Gmail'),
         managedCatalogFixture('google-drive', 'googledrive', 'Google Drive'),
@@ -6628,9 +6620,9 @@ test('available rows exclude revoked accounts, suppress duplicate catalog rows, 
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
   let html = harness.app.innerHTML;
-  assert.match(html, /Work email[\s\S]*?Remove from this Agent[\s\S]*?Disconnect account/);
+  assert.match(html, /Work email[\s\S]*?Disconnect account/);
   assert.match(html, /Calendar account[\s\S]*?Disconnect account/);
-  assert.doesNotMatch(html, /Calendar account[\s\S]*?Remove from this Agent/);
+  assert.doesNotMatch(html, /Remove from this Agent|connection-account-attach|connection-account-detach/);
   assert.doesNotMatch(html, /data-action="connection-account-preset" data-preset="(?:gmail|google-drive|google-calendar)">Connect<\/button>/);
   assert.doesNotMatch(html, /Connect (?:personal|Team) account/);
   assert.doesNotMatch(html, /Revoked Gmail|data-connection-id="connection_revoked"/);
@@ -6644,15 +6636,15 @@ test('available rows exclude revoked accounts, suppress duplicate catalog rows, 
   html = harness.app.innerHTML;
   assert.match(html, /No connectors match/);
   assert.doesNotMatch(html, /Custom connection/);
-  assert.match(html, /<h4>Available<\/h4><span class="connection-section-count">0<\/span>/);
+  assert.match(html, /<h4>Connect a new account<\/h4><span class="connection-section-count">0<\/span>/);
 
   input({ target: inputTarget({ 'data-action': 'conn-gallery-search' }, 'another') });
   html = harness.app.innerHTML;
   assert.match(html, /Custom connection/);
-  assert.equal(html.match(/<h4>Available<\/h4><span class="connection-section-count">(\d+)<\/span>/)?.[1], '1');
+  assert.equal(html.match(/<h4>Connect a new account<\/h4><span class="connection-section-count">(\d+)<\/span>/)?.[1], '1');
 });
 
-test('reusable rows remain visible while a connection form is open', async () => {
+test('Agent-owned rows remain visible while a connection form is open', async () => {
   const account = {
     id: 'connection_recovery', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'google',
     label: 'Recovery Gmail', lifecycle: 'needs_attention', policy: {
@@ -6661,7 +6653,7 @@ test('reusable rows remain visible while a connection form is open', async () =>
     },
   };
   const harness = runAdminPageHarness({
-    agents: [connectionsAgent()], connectionAccounts: { attached: [], available: [account] },
+    agents: [connectionsAgent()], connectionAccounts: { attached: [ownedConnection(account)] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -6672,7 +6664,7 @@ test('reusable rows remain visible while a connection form is open', async () =>
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
   input({ target: inputTarget({ 'data-action': 'conn-gallery-search' }, 'mcp') });
-  assert.doesNotMatch(harness.app.innerHTML, /Recovery Gmail/);
+  assert.match(harness.app.innerHTML, /Recovery Gmail/);
   click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
   const html = harness.app.innerHTML;
   assert.match(html, /Recovery Gmail[\s\S]*?data-action="connection-account-managed-reconnect"/);
@@ -6686,8 +6678,7 @@ test('managed Notion renders only safe provider grant summaries', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: {
-      attached: [],
-      available: [{
+      attached: [ownedConnection({
         id: 'connection_managed_notion',
         workspaceId: 'T_DESIGN',
         ownerKind: 'team',
@@ -6710,7 +6701,7 @@ test('managed Notion renders only safe provider grant summaries', async () => {
             truncated: true,
           },
         },
-      }],
+      })],
     },
   });
   await flushAsync();
@@ -6761,7 +6752,6 @@ test('managed Google accounts that need attention reconnect in place', async () 
           enabled: true,
         },
       }],
-      available: [],
     },
   });
   await flushAsync();
@@ -6817,7 +6807,6 @@ test('managed sign-in polling retries a transient outage without rendering a raw
           allowedCapabilities: ['gmail.profile.read'], enabled: true,
         },
       }],
-      available: [],
     },
   });
   await flushAsync();
@@ -6873,7 +6862,6 @@ test('hostless polling completion refreshes the Agent and preserves its success 
           allowedCapabilities: ['gmail.profile.read'], enabled: true,
         },
       }],
-      available: [],
     },
   });
   await flushAsync();
@@ -6909,7 +6897,6 @@ test('a stale managed provider clears the saved sign-in and asks the user to res
           allowedCapabilities: ['gmail.profile.read'], enabled: true,
         },
       }],
-      available: [],
     },
   });
   await flushAsync();
@@ -6968,7 +6955,6 @@ test('resource-scoped managed accounts stay pending until Admin selects an allow
           allowedCapabilities: ['analytics.reports.run'], resourceConstraints: {}, enabled: true,
         },
       }],
-      available: [],
       managedConnectors: { composio: true, catalog: [descriptor] },
     },
     managedResourcePages: {
@@ -7050,7 +7036,6 @@ test('resource-scoped managed accounts that need attention offer reconnect and r
           allowedCapabilities: ['analytics.reports.run'], resourceConstraints: {}, enabled: true,
         },
       }],
-      available: [],
       managedConnectors: { composio: true, catalog: [descriptor] },
     },
   });
@@ -7101,7 +7086,6 @@ test('managed resource picker removes stale handles and warns when discovery is 
           resourceConstraints: { propertyIds: ['property_stale'] }, enabled: true,
         },
       }],
-      available: [],
       managedConnectors: { composio: true, catalog: [descriptor] },
     },
     managedResourcePages,
@@ -7142,7 +7126,7 @@ test('managed resource picker removes stale handles and warns when discovery is 
   });
 });
 
-test('an unattached pending managed account offers reconnect instead of stranding the row', async () => {
+test('an Agent-owned pending managed account offers reconnect instead of stranding the row', async () => {
   const account = {
     id: 'connection_pending_gmail',
     workspaceId: 'T_DESIGN',
@@ -7162,7 +7146,7 @@ test('an unattached pending managed account offers reconnect instead of strandin
   };
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [account] },
+    connectionAccounts: { attached: [ownedConnection(account)] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -7182,10 +7166,10 @@ test('an unattached pending managed account offers reconnect instead of strandin
   );
 });
 
-test('reusable Agent connections retain the complete preset catalog', async () => {
+test('Agent connection setup retains the complete preset catalog', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
   });
   await flushAsync();
 
@@ -7221,7 +7205,6 @@ test('unconfigured managed connectors stay discoverable and continue after owner
     agents: [connectionsAgent()],
     connectionAccounts: {
       attached: [],
-      available: [],
       managedConnectors: {
         composio: false,
         canConfigure: true,
@@ -7294,7 +7277,6 @@ test('members can discover managed connectors without seeing the project-key fie
     agents: [connectionsAgent()],
     connectionAccounts: {
       attached: [],
-      available: [],
       managedConnectors: { composio: false, canConfigure: false, catalog: [descriptor] },
     },
   });
@@ -7333,7 +7315,6 @@ test('deployment-managed connector setup sends owners to preparation without ask
     agents: [connectionsAgent()],
     connectionAccounts: {
       attached: [],
-      available: [],
       managedConnectors: {
         composio: false,
         canConfigure: true,
@@ -7380,7 +7361,6 @@ test('provider policy blocks explain the operator fix instead of sending owners 
     agents: [connectionsAgent()],
     connectionAccounts: {
       attached: [],
-      available: [],
       managedConnectors: {
         composio: true,
         canConfigure: true,
@@ -7409,12 +7389,12 @@ test('provider policy blocks explain the operator fix instead of sending owners 
   assert.doesNotMatch(harness.app.innerHTML, /prepare the standard connector defaults/i);
 });
 
-test('connector handoff deep link opens the requested reusable account form', async () => {
+test('connector handoff deep link opens the requested Agent-owned account form', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_conn/connections/new/gmail/member',
     agents: [connectionsAgent()],
     connectionAccounts: {
-      attached: [], available: [], managedConnectors: { composio: false },
+      attached: [], managedConnectors: { composio: false },
     },
   });
   await flushAsync();
@@ -7435,7 +7415,6 @@ test('connector handoff waits for Composio before opening managed Google setup',
     agents: [connectionsAgent()],
     connectionAccounts: {
       attached: [],
-      available: [],
       managedConnectors: {
         composio: true,
         catalog: [managedCatalogFixture('gmail', 'gmail', 'Gmail')],
@@ -7455,7 +7434,6 @@ test('connector handoff opens a managed-only preset after the catalog loads', as
     agents: [connectionsAgent()],
     connectionAccounts: {
       attached: [],
-      available: [],
       managedConnectors: {
         composio: true,
         catalog: [managedCatalogFixture('notion-managed', 'notion', 'Notion')],
@@ -7473,7 +7451,7 @@ test('connector handoff rejects an unknown account owner instead of widening it 
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_conn/connections/new/gmail/everyone',
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
   });
   await flushAsync();
 
@@ -7493,7 +7471,7 @@ test('connector handoff survives a transient initial Agent load failure', async 
   assert.equal(harness.historyReplaces.length, 0);
 });
 
-test('legacy Google access does not hide reusable Google account presets', async () => {
+test('legacy Google access does not hide fresh Google connection presets', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent({
       apiConnections: [{
@@ -7513,7 +7491,7 @@ test('legacy Google access does not hide reusable Google account presets', async
         presetId: 'google-workspace',
       }],
     })],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
   });
   await flushAsync();
 
@@ -7531,12 +7509,11 @@ test('legacy Google access does not hide reusable Google account presets', async
   assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 35);
 });
 
-test('every catalog connector opens a reusable-account setup flow', async () => {
+test('every catalog connector opens an Agent-owned setup flow', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: {
       attached: [],
-      available: [],
       managedConnectors: {
         composio: true,
         catalog: [
@@ -7562,7 +7539,7 @@ test('every catalog connector opens a reusable-account setup flow', async () => 
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
 
-  const presetIds = REUSABLE_CONNECTOR_PRESETS.map(({ id }) => id);
+  const presetIds = CONNECTION_CATALOG_PRESETS.map(({ id }) => id);
   for (const presetId of presetIds) {
     click({ target: actionTarget({
       'data-action': 'connection-account-preset', 'data-preset': presetId,
@@ -7570,17 +7547,17 @@ test('every catalog connector opens a reusable-account setup flow', async () => 
     assert.match(
       harness.app.innerHTML,
       /data-action="connection-account-create"/,
-      `${presetId} should open a reusable-account form`,
+      `${presetId} should open an Agent-owned connection form`,
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
   assert.equal(presetIds.length, 35);
 });
 
-test('reusable Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {
+test('Agent-owned Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -7628,10 +7605,10 @@ test('reusable Sentry accounts use OAuth and preserve an organization/project-sc
   assert.deepEqual(harness.assignedUrls, ['https://auth.linear.example/authorize?state=opaque']);
 });
 
-test('reusable Sentry rejects a project scope without an organization before saving or OAuth', async () => {
+test('Agent-owned Sentry rejects a project scope without an organization before saving or OAuth', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -7653,10 +7630,10 @@ test('reusable Sentry rejects a project scope without an organization before sav
   assert.deepEqual(harness.oauthStartPosts, []);
 });
 
-test('reusable Intercom uses OAuth and warns before connecting a non-US workspace', async () => {
+test('Agent-owned Intercom uses OAuth and warns before connecting a non-US workspace', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -7726,7 +7703,6 @@ test('Sentry OAuth migration stays additive beside an existing token account', a
           providerId: 'sentry', allowedCapabilities: ['search_issues'], enabled: true,
         },
       }],
-      available: [],
     },
   });
   await flushAsync();
@@ -7742,10 +7718,10 @@ test('Sentry OAuth migration stays additive beside an existing token account', a
   assert.match(harness.app.innerHTML, /explicitly disconnect the token account/);
 });
 
-test('reusable Linear accounts create policy before starting account-scoped MCP OAuth', async () => {
+test('Agent-owned Linear accounts create policy before starting account-scoped MCP OAuth', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -7768,10 +7744,10 @@ test('reusable Linear accounts create policy before starting account-scoped MCP 
   assert.deepEqual(harness.assignedUrls, ['https://auth.linear.example/authorize?state=opaque']);
 });
 
-test('reusable Google Drive accounts start a Drive-only Composio Connect Link', async () => {
+test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -7803,10 +7779,10 @@ test('reusable Google Drive accounts start a Drive-only Composio Connect Link', 
   assert.match(harness.app.innerHTML, /Finish sign-in in the new tab/);
 });
 
-test('reusable Google Drive accounts can request a read-write Composio capability ceiling', async () => {
+test('Agent-owned Google Drive accounts can request a read-write Composio capability ceiling', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -7831,7 +7807,6 @@ test('managed productivity cards expose only configured read lanes and disable m
     agents: [connectionsAgent()],
     connectionAccounts: {
       attached: [],
-      available: [],
       managedConnectors: {
         composio: true,
         catalog: [
@@ -7878,10 +7853,10 @@ test('managed productivity cards expose only configured read lanes and disable m
   }]);
 });
 
-test('custom reusable API setup directs Google OAuth to the managed connectors', async () => {
+test('custom Agent-owned API setup directs Google OAuth to the managed connectors', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -7899,11 +7874,11 @@ test('custom reusable API setup directs Google OAuth to the managed connectors',
   assert.match(form, /data-action="connection-account-auth"[\s\S]*?class="[^"]*select-caret/);
 });
 
-test('self-hosted reusable Google connectors fall back to native OAuth setup without Composio', async () => {
+test('self-hosted Agent-owned Google connectors fall back to native OAuth setup without Composio', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: {
-      attached: [], available: [], managedConnectors: { composio: false },
+      attached: [], managedConnectors: { composio: false },
     },
   });
   await flushAsync();
@@ -7934,10 +7909,10 @@ test('self-hosted reusable Google connectors fall back to native OAuth setup wit
   assert.match(harness.app.innerHTML, /This deployment uses its own Google OAuth client credentials/);
 });
 
-test('reusable Exa accounts support anonymous limits without an API key', async () => {
+test('Agent-owned Exa accounts support anonymous limits without an API key', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
     mcpTestResult: { ok: true, tools: [{ name: 'web_search_exa' }] },
   });
   await flushAsync();
@@ -7964,10 +7939,10 @@ test('reusable Exa accounts support anonymous limits without an API key', async 
   assert.equal(testedHeaders?.['x-api-key'], undefined);
 });
 
-test('reusable Zendesk accounts validate and persist the workspace subdomain', async () => {
+test('Agent-owned Zendesk accounts validate and persist the workspace subdomain', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -7995,10 +7970,10 @@ test('reusable Zendesk accounts validate and persist the workspace subdomain', a
   assert.deepEqual((created?.api as Record<string, unknown>).pathPrefixes, ['/api/v2']);
 });
 
-test('reusable Supabase accounts scope OAuth to one project and default to read-only', async () => {
+test('Agent-owned Supabase accounts scope OAuth to one project and default to read-only', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
-    connectionAccounts: { attached: [], available: [] },
+    connectionAccounts: { attached: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -8041,6 +8016,24 @@ function connectionsAgent(overrides: Record<string, unknown> = {}): Record<strin
     mcpServers: [],
     apiConnections: [],
     ...overrides,
+  };
+}
+
+function ownedConnection(
+  account: Record<string, unknown>,
+  agentId = 'agent_conn',
+  allowedCapabilities?: string[],
+): Record<string, unknown> {
+  const policy = account.policy as { allowedCapabilities?: string[] } | undefined;
+  return {
+    account,
+    binding: {
+      agentId,
+      connectionAccountId: account.id,
+      providerId: account.providerId,
+      allowedCapabilities: allowedCapabilities ?? policy?.allowedCapabilities ?? [],
+      enabled: true,
+    },
   };
 }
 
@@ -8740,7 +8733,6 @@ test('managed Notion is the only catalog option and explains the provider page b
     agents: [connectionsAgent()],
     connectionAccounts: {
       attached: [],
-      available: [],
       managedConnectors: {
         composio: true,
         catalog: [{

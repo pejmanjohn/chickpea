@@ -15,7 +15,7 @@ Chickpea is built on [Flue](https://www.npmjs.com/package/@flue/runtime) and is 
 - **Agent handle:** a zero-member Slack user group such as `@support`. Slack renders the mention; Chickpea routes it to the Agent and replies with that Agent's name and avatar.
 - **Channel grant:** permission for one Agent to work in one Channel. Several Agents may be granted to the same Channel.
 - **Thread route:** the Agent that owns a Slack thread. Any current Channel member may continue it; an explicit different Agent handle performs a visible handoff.
-- **Connection account:** one reusable team or personal authorization. Agents bind to allowed accounts without copying credentials.
+- **Connection account:** one team or personal authorization that belongs permanently to one Agent.
 
 Publishing an Agent to a Channel grants that Channel's members access to the Agent's complete shared boundary, including its memory and configured capabilities. Use separate Agents when information or authority must remain isolated.
 
@@ -94,7 +94,7 @@ The authenticated Admin surface is Agent-first:
 - **General:** name, description, instructions, model, lifecycle, and edit policy.
 - **Slack:** handle, avatar, publication state, recovery status, and retry.
 - **Channels:** many-to-many Channel grants and verified bot membership.
-- **Connections:** team and personal connection accounts bound to the Agent.
+- **Connections:** team and personal connection accounts owned by the Agent.
 - **Skills and repositories:** approved capabilities owned by the Agent.
 - **Memory:** one editable Agent memory used in Channels, App Home, and DMs.
 - **Schedules:** Agent-owned scheduled work with destination and explicit `Runs as` authority.
@@ -105,13 +105,14 @@ Channels remain visible as a secondary operational inventory, but they own no in
 
 ## Connections
 
-The Agent screen is the conceptual home for connections, while credentials are normalized into reusable accounts:
+The Agent screen is the home for connections. Each connection belongs to that Agent for its lifetime:
 
-- **Team account:** shared authorization such as the support team's Zendesk. Authorized editors can bind it to multiple Agents without reconnecting or seeing its secret.
-- **Personal account:** an authorization owned by one Chickpea member, such as a work Gmail and a personal Gmail. At runtime, an Agent sees only the invoking member's eligible personal accounts.
-- **Multiple accounts:** labels and purpose text distinguish accounts from the same provider. Clear language such as “use my work account” may select uniquely; otherwise the Agent asks.
+- **Team account:** an authorization such as the support team's Zendesk, managed by authorized Agent editors. Another Agent must complete its own connection flow.
+- **Personal account:** an authorization owned by one Chickpea member within one Agent, such as work Gmail. Runtime use requires both the exact Agent connection and the invoking member's identity.
+- **Separate consent:** the same external account may be authorized for another Agent, but that creates a separate Chickpea connection and provider account reference. Saved connections cannot move between Agents.
+- **Multiple accounts:** labels and purpose text distinguish eligible accounts within an Agent. Clear language such as "use my work account" may select uniquely; otherwise the Agent asks.
 
-Credentials never enter model context or ordinary tool arguments. OAuth continuations bind the provider, account owner, Agent, and interrupted Slack task. Revoking an account tombstones secret access and pauses dependent schedules.
+Credentials never enter model context or ordinary tool arguments. OAuth continuations bind the provider, account owner, Agent, and interrupted Slack task. Disconnecting revokes that exact connection, tombstones secret access, and retires it from dependent schedules; it never makes the connection available to another Agent.
 
 Hosted and self-hosted deployments may delegate OAuth storage, refresh, and API execution to Composio. Chickpea still owns team/personal account selection, Agent capability limits, confirmation policy, validation during connection and reconnection, and the exact provider account used for every call. The curated catalog includes Gmail, Google Calendar, Google Drive, Google Sheets, Google Docs, Google Slides, Search Console, Google Analytics, Notion, HubSpot, Gong, Google Ads, and YouTube. All remain visible when Composio is not configured: a Chickpea owner or admin can open **Settings → Connectors**, add one Composio project key, and let Chickpea prepare the standard managed-auth defaults. Account sign-in opens in Composio's hosted UI and Chickpea detects completion by polling, so a self-hosted installation does not need a public OAuth callback URL. Native API/MCP connections remain available for custom services. New Notion connections use the managed path. Existing Native Notion records remain readable and editable so upgrades are non-destructive, but Native Notion is no longer offered in the connector catalog. See [the managed connector runbook](docs/runbooks/composio-managed-connectors.md).
 
@@ -141,7 +142,7 @@ Schedules belong to an Agent, choose a granted Slack destination, and record the
 
 - Agent lifecycle and current Channel grant;
 - creator membership and destination membership;
-- required team and creator-personal connection accounts;
+- required Agent-owned team and creator-personal connection accounts;
 - current repository, egress, spend, and sandbox policy.
 
 If authority disappears, future runs pause without silently selecting another person. Reassignment requires an explicit receipt and does not rewrite prior run ownership. Cloudflare supplies the production scheduler; Node retains inspection and shutdown controls but does not run timers.

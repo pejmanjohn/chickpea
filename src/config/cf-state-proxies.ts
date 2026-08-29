@@ -4,7 +4,9 @@ import {
   AgentStillAssignedError,
   AgentStillReferencedError,
   ChannelRevisionConflictError,
+  ConnectionAccountAlreadyBoundError,
   ConnectionAccountRevisionConflictError,
+  ManagedRemoteAccountAlreadyUsedError,
   ReservedAgentIdentityError,
   UnknownAgentError,
   WorkspaceModelDefaultRevisionConflictError,
@@ -31,6 +33,8 @@ import type {
   AgentChannelGrantInput,
   AgentConnectionBinding,
   AgentConnectionBindingInput,
+  AgentOwnedConnection,
+  AgentOwnedConnectionInput,
   AgentScheduleReference,
   AgentScheduleReferenceInput,
   AgentSnapshot,
@@ -295,6 +299,16 @@ function unwrap<T>(result: StateRpcResult<T>): T {
         details?.accountId ?? 'unknown',
         Number(details?.expectedRevision ?? 0),
         Number(details?.actualRevision ?? 0),
+      );
+    case 'connection_account_already_bound':
+      throw new ConnectionAccountAlreadyBoundError(
+        details?.accountId ?? 'unknown',
+        details?.agentId ?? 'unknown',
+      );
+    case 'managed_remote_account_already_used':
+      throw new ManagedRemoteAccountAlreadyUsedError(
+        details?.adapterId ?? 'unknown',
+        details?.accountRef ?? 'unknown',
       );
     case 'identity': {
       const identityDetails = { ...(details ?? {}) };
@@ -1393,8 +1407,22 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configPutConnectionAccount(input, expectedRevision));
   }
 
+  async createAgentOwnedConnection(
+    input: AgentOwnedConnectionInput,
+  ): Promise<AgentOwnedConnection> {
+    return unwrap(await this.stub.configCreateAgentOwnedConnection(input));
+  }
+
   async listAgentConnectionBindings(agentId: string): Promise<AgentConnectionBinding[]> {
     return unwrap(await this.stub.configListAgentConnectionBindings(agentId));
+  }
+
+  async getAgentConnectionBindingForAccount(
+    connectionAccountId: string,
+  ): Promise<AgentConnectionBinding | undefined> {
+    return orUndefined(unwrap(
+      await this.stub.configGetAgentConnectionBindingForAccount(connectionAccountId),
+    ));
   }
 
   async putAgentConnectionBinding(

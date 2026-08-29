@@ -25,7 +25,7 @@ import type { ManagementActorContext, ManagementOperation } from '../src/managem
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
-test('connector setup handoff resolves the current Slack Agent into a reusable landing flow', async () => {
+test('connector setup handoff and snapshot stay locked to the current Slack Agent', async () => {
   const f = await createManagementAdapterFixture('connector-handoff');
   const agent = await f.config.createAgent({
     id: 'agent_support',
@@ -120,6 +120,38 @@ test('connector setup handoff resolves the current Slack Agent into a reusable l
     providerId: otherMembersGmail.providerId,
     allowedCapabilities: [],
     enabled: true,
+  });
+  await f.config.createAgent({
+    id: 'agent_sibling', name: 'Sibling', instructions: 'Use separate connections.', enabled: true,
+    creatorMembershipId: f.admin.membership.id, editPolicy: 'creator_and_admins',
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  });
+  const siblingAccount = await f.config.putConnectionAccount({
+    id: 'connection_sibling_drive', workspaceId: f.admin.binding.slackTeamId,
+    ownerKind: 'member', ownerMembershipId: f.admin.membership.id,
+    createdByMembershipId: f.admin.membership.id, providerId: 'google-drive',
+    label: 'Sibling Google Drive', policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'googledrive',
+      principalRef: 'principal_sibling_drive', accountRef: 'account_sibling_drive',
+      allowedCapabilities: ['drive.files.search'],
+    },
+    secretRefId: 'secret_sibling_drive', lifecycle: 'ready',
+  });
+  await f.config.putAgentConnectionBinding({
+    agentId: 'agent_sibling', connectionAccountId: siblingAccount.id,
+    providerId: siblingAccount.providerId, allowedCapabilities: ['drive.files.search'],
+    enabled: true,
+  });
+  await f.config.putConnectionAccount({
+    id: 'connection_unbound_drive', workspaceId: f.admin.binding.slackTeamId,
+    ownerKind: 'member', ownerMembershipId: f.admin.membership.id,
+    createdByMembershipId: f.admin.membership.id, providerId: 'google-drive',
+    label: 'Unbound Google Drive', policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'googledrive',
+      principalRef: 'principal_unbound_drive', accountRef: 'account_unbound_drive',
+      allowedCapabilities: ['drive.files.search'],
+    },
+    secretRefId: 'secret_unbound_drive', lifecycle: 'ready',
   });
   const context: ManagementActorContext = {
     userId: f.admin.user.id,

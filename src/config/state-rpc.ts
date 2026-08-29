@@ -14,6 +14,8 @@ import type {
   AgentChannelGrantInput,
   AgentConnectionBinding,
   AgentConnectionBindingInput,
+  AgentOwnedConnection,
+  AgentOwnedConnectionInput,
   AgentScheduleReference,
   AgentScheduleReferenceInput,
   AgentSnapshot,
@@ -114,7 +116,9 @@ export type StateRpcErrorCode =
   | 'agent_still_assigned'
   | 'agent_still_referenced'
   | 'channel_revision_conflict'
+  | 'connection_account_already_bound'
   | 'connection_account_revision_conflict'
+  | 'managed_remote_account_already_used'
   | 'identity'
   | 'management'
   | 'memory'
@@ -358,9 +362,15 @@ export interface TagStateRpc {
     input: ConnectionAccountInput,
     expectedRevision?: number,
   ): Promise<StateRpcResult<ConnectionAccount>>;
+  configCreateAgentOwnedConnection(
+    input: AgentOwnedConnectionInput,
+  ): Promise<StateRpcResult<AgentOwnedConnection>>;
   configListAgentConnectionBindings(
     agentId: string,
   ): Promise<StateRpcResult<AgentConnectionBinding[]>>;
+  configGetAgentConnectionBindingForAccount(
+    connectionAccountId: string,
+  ): Promise<StateRpcResult<AgentConnectionBinding | null>>;
   configPutAgentConnectionBinding(
     input: AgentConnectionBindingInput,
   ): Promise<StateRpcResult<AgentConnectionBinding>>;

@@ -4,8 +4,8 @@ import { canEditAgent } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { CHICKPEA_AGENT_ID, isAgentId } from '../config/agent-id.ts';
 import {
-  REUSABLE_CONNECTOR_PRESETS,
-  resolveReusableConnectorPreset,
+  CONNECTION_CATALOG_PRESETS,
+  resolveConnectorCatalogPreset,
 } from '../config/presets.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
 import {
@@ -244,6 +244,11 @@ export interface WorkspaceManagementServiceInput {
     agentId: string;
     expectedRevision: number;
   }) => Promise<CustomAgentConfig>;
+  deleteAgent?: (input: {
+    actor: LiveManagementActor;
+    agentId: string;
+    expectedRevision: number;
+  }) => Promise<boolean>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -853,11 +858,11 @@ export class WorkspaceManagementService {
       target: { kind: 'agent', id: input.agentId },
     });
     const agent = await this.requireEditableAgent(actor, input.agentId);
-    const connector = resolveReusableConnectorPreset(input.connector);
+    const connector = resolveConnectorCatalogPreset(input.connector);
     if (!connector) {
       throw new ManagementError(
         'invalid_request',
-        `Unknown connector. Choose one of: ${REUSABLE_CONNECTOR_PRESETS.map(({ name }) => name).join(', ')}.`,
+        `Unknown connector. Choose one of: ${CONNECTION_CATALOG_PRESETS.map(({ name }) => name).join(', ')}.`,
       );
     }
     const baseUrl = await this.resolveSetupBaseUrl();
@@ -2335,7 +2340,7 @@ export class WorkspaceManagementService {
   }
 
   private actorCanEditAgent(actor: LiveManagementActor, agent: CustomAgentConfig): boolean {
-    return canEditAgent(actorPrincipal(actor), agent);
+    return canEditAgent(managementActorPrincipal(actor), agent);
   }
 
   private async requireEditableAgent(
@@ -2580,7 +2585,7 @@ export class WorkspaceManagementService {
       ...(actor.origin.kind === 'slack' && actor.origin.agentId
         ? { currentAgentId: actor.origin.agentId }
         : {}),
-      connectors: REUSABLE_CONNECTOR_PRESETS.map(({ id, name, description }) => ({
+      connectors: CONNECTION_CATALOG_PRESETS.map(({ id, name, description }) => ({
         id,
         name,
         description,
@@ -3716,7 +3721,15 @@ export class WorkspaceManagementService {
           revision: 0,
         });
       }
-      await this.stores.config.deleteAgent(operation.agentId, operation.expectedRevision);
+      if (this.stores.deleteAgent) {
+        await this.stores.deleteAgent({
+          actor,
+          agentId: operation.agentId,
+          expectedRevision: operation.expectedRevision,
+        });
+      } else {
+        await this.stores.config.deleteAgent(operation.agentId, operation.expectedRevision);
+      }
       changed.push({ kind: 'agent', id: operation.agentId });
       return { changed, resultingRevisions: Object.fromEntries(changed.map((ref) =>
         [objectRevisionKey(ref), ref.revision ?? 0])) };
@@ -4103,7 +4116,7 @@ function appendOutcome(
   return { nextIndex: index + 1, outcomes: [...progress.outcomes, outcome] };
 }
 
-function actorPrincipal(actor: LiveManagementActor): AuthPrincipal {
+export function managementActorPrincipal(actor: LiveManagementActor): AuthPrincipal {
   return {
     userId: actor.userId,
     membershipId: actor.membershipId,
@@ -4433,7 +4446,7 @@ function uniqueModelChoices(
 function selfCapabilityHealth(
   agent: CustomAgentConfig,
   grants: AgentChannelGrant[],
-  reusableConnections: NonNullable<ManagementWorkspaceSnapshot['agents'][number]['connections']>,
+  agentConnections: NonNullable<ManagementWorkspaceSnapshot['agents'][number]['connections']>,
 ): NonNullable<ManagementWorkspaceSnapshot['selfManagement']>['capabilityHealth'] {
   const mcpConnections = { ready: 0, pending: 0, failed: 0 };
   for (const connection of agent.mcpServers) mcpConnections[connection.lifecycleStatus] += 1;
@@ -4444,14 +4457,16 @@ function selfCapabilityHealth(
   return {
     mcpConnections,
     apiConnections,
+    // Serialized for compatibility; these counts now describe only the
+    // connections permanently owned by this Agent.
     reusableConnections: {
-      ready: reusableConnections.filter(({ enabled, lifecycle }) =>
+      ready: agentConnections.filter(({ enabled, lifecycle }) =>
         enabled && lifecycle === 'ready').length,
-      pending: reusableConnections.filter(({ enabled, lifecycle }) =>
+      pending: agentConnections.filter(({ enabled, lifecycle }) =>
         enabled && lifecycle === 'pending').length,
-      needsAttention: reusableConnections.filter(({ enabled, lifecycle }) =>
+      needsAttention: agentConnections.filter(({ enabled, lifecycle }) =>
         enabled && lifecycle === 'needs_attention').length,
-      disabled: reusableConnections.filter(({ enabled }) => !enabled).length,
+      disabled: agentConnections.filter(({ enabled }) => !enabled).length,
     },
     repositories: {
       enabled: agent.repositories.filter(({ enabled }) => enabled).length,

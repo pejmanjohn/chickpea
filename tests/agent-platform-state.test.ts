@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
 import { CfConfigStore } from '../src/config/cf-state-proxies.ts';
+import {
+  ConnectionAccountAlreadyBoundError,
+  ManagedRemoteAccountAlreadyUsedError,
+} from '../src/config/errors.ts';
 import type { StateRpcResult, TagStateRpc } from '../src/config/state-rpc.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type {
@@ -291,6 +299,35 @@ test('connection accounts bind once and schedule references retain creator autho
     });
 
     assert.equal(binding.connectionAccountId, account.id);
+    assert.deepEqual(
+      await store.getAgentConnectionBindingForAccount(account.id),
+      binding,
+    );
+    assert.equal(
+      await store.getAgentConnectionBindingForAccount('connection_unbound'),
+      undefined,
+    );
+    await assert.rejects(
+      store.putAgentConnectionBinding({
+        ...binding,
+        agentId: 'agent_sales',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ConnectionAccountAlreadyBoundError);
+        assert.equal(error.accountId, account.id);
+        assert.equal(error.agentId, 'agent_support');
+        return true;
+      },
+    );
+    await store.putAgentConnectionBinding({ ...binding, enabled: false });
+    await assert.rejects(
+      store.putAgentConnectionBinding({
+        ...binding,
+        agentId: 'agent_sales',
+      }),
+      /already belongs to Agent agent_support/,
+      'a disabled binding must continue to reserve its connection account',
+    );
     assert.equal(schedule.runsAsMembershipId, 'membership_owner');
     assert.deepEqual(schedule.requiredConnectionAccountIds, [account.id]);
     assert.equal(schedule.destinationKind, 'channel');
@@ -311,6 +348,215 @@ test('connection accounts bind once and schedule references retain creator autho
     );
   } finally {
     store.close();
+  }
+});
+
+test('connection binding ownership is atomic and workspace-scoped', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  try {
+    await store.createAgent(agent('agent_support', 'Support'));
+    await store.createAgent(agent('agent_sales', 'Sales'));
+    await store.ensureWorkspaceInstallation({
+      workspaceId: 'T_PLATFORM',
+      transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const account = await store.putConnectionAccount({
+      id: 'connection_shared_race',
+      workspaceId: 'T_PLATFORM',
+      ownerKind: 'team',
+      createdByMembershipId: 'membership_owner',
+      providerId: 'zendesk',
+      label: 'Race candidate',
+      policy: {
+        kind: 'api',
+        allowedHosts: ['example.zendesk.com'],
+        pathPrefixes: ['/api/v2/'],
+        headerName: 'Authorization',
+        allowedMethods: ['GET'],
+        authMode: 'credential',
+      },
+      secretRefId: 'secret_race',
+      lifecycle: 'ready',
+    });
+    const results = await Promise.allSettled([
+      store.putAgentConnectionBinding({
+        agentId: 'agent_support',
+        connectionAccountId: account.id,
+        providerId: account.providerId,
+        allowedCapabilities: [],
+        enabled: true,
+      }),
+      store.putAgentConnectionBinding({
+        agentId: 'agent_sales',
+        connectionAccountId: account.id,
+        providerId: account.providerId,
+        allowedCapabilities: [],
+        enabled: true,
+      }),
+    ]);
+    assert.equal(results.filter(({ status }) => status === 'fulfilled').length, 1);
+    const rejection = results.find(({ status }) => status === 'rejected');
+    assert.ok(rejection?.status === 'rejected');
+    assert.ok(rejection.reason instanceof ConnectionAccountAlreadyBoundError);
+    assert.equal(
+      (await store.getAgentConnectionBindingForAccount(account.id))?.agentId,
+      'agent_support',
+    );
+
+    const foreignAccount = await store.putConnectionAccount({
+      ...account,
+      id: 'connection_foreign_workspace',
+      workspaceId: 'T_OTHER',
+      secretRefId: 'secret_foreign',
+    });
+    await assert.rejects(
+      store.putAgentConnectionBinding({
+        agentId: 'agent_support',
+        connectionAccountId: foreignAccount.id,
+        providerId: foreignAccount.providerId,
+        allowedCapabilities: [],
+        enabled: true,
+      }),
+      /belongs to workspace T_OTHER, not T_PLATFORM/,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('managed remote account references are committed only once', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  try {
+    await store.createAgent(agent('agent_support', 'Support'));
+    await store.createAgent(agent('agent_sales', 'Sales'));
+    await store.ensureWorkspaceInstallation({
+      workspaceId: 'T_PLATFORM', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    const owned = (id: string, agentId: string, accountRef = 'ca_remote_once') =>
+      store.createAgentOwnedConnection({
+        account: {
+          id,
+          workspaceId: 'T_PLATFORM',
+          ownerKind: 'team',
+          createdByMembershipId: 'membership_owner',
+          providerId: 'google',
+          label: 'Managed Gmail',
+          policy: {
+            kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+            principalRef: 'chickpea:organization:T_PLATFORM', accountRef,
+            allowedCapabilities: ['gmail.messages.search'],
+          },
+          secretRefId: `secret_${id}`,
+          lifecycle: 'ready',
+        },
+        binding: {
+          agentId,
+          connectionAccountId: id,
+          providerId: 'google',
+          allowedCapabilities: ['gmail.messages.search'],
+          enabled: true,
+        },
+      });
+    await owned('connection_remote_one', 'agent_support');
+    await assert.rejects(
+      owned('connection_remote_two', 'agent_sales'),
+      ManagedRemoteAccountAlreadyUsedError,
+    );
+    assert.equal(
+      (await store.listConnectionAccounts('T_PLATFORM')).filter(({ lifecycle }) =>
+        lifecycle !== 'revoked').length,
+      1,
+    );
+    assert.equal(
+      await store.getAgentConnectionBindingForAccount('connection_remote_two'),
+      undefined,
+    );
+
+    const second = await owned(
+      'connection_remote_two',
+      'agent_sales',
+      'ca_remote_two',
+    );
+    assert.equal(second.account.policy.kind, 'managed');
+    if (second.account.policy.kind !== 'managed') throw new Error('expected managed policy');
+    await assert.rejects(
+      store.putConnectionAccount({
+        ...second.account,
+        policy: { ...second.account.policy, accountRef: 'ca_remote_once' },
+      }, second.account.revision),
+      ManagedRemoteAccountAlreadyUsedError,
+      'reconnect updates must use the same remote-reference guard as fresh setup',
+    );
+    const persisted = (await store.listConnectionAccounts('T_PLATFORM'))
+      .find(({ id }) => id === second.account.id);
+    assert.equal(persisted?.policy.kind, 'managed');
+    if (persisted?.policy.kind === 'managed') {
+      assert.equal(persisted.policy.accountRef, 'ca_remote_two');
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test('schema startup fails closed instead of choosing among duplicate binding owners', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-connection-owner-'));
+  const databasePath = join(directory, 'state.db');
+  try {
+    const store = new SqliteConfigStore(databasePath, { agents: [] });
+    await store.createAgent(agent('agent_support', 'Support'));
+    await store.createAgent(agent('agent_sales', 'Sales'));
+    const account = await store.putConnectionAccount({
+      id: 'connection_duplicate',
+      workspaceId: 'T_PLATFORM',
+      ownerKind: 'team',
+      createdByMembershipId: 'membership_owner',
+      providerId: 'zendesk',
+      label: 'Duplicate candidate',
+      policy: {
+        kind: 'api',
+        allowedHosts: ['example.zendesk.com'],
+        pathPrefixes: ['/api/v2/'],
+        headerName: 'Authorization',
+        allowedMethods: ['GET'],
+        authMode: 'credential',
+      },
+      secretRefId: 'secret_duplicate',
+      lifecycle: 'ready',
+    });
+    await store.putAgentConnectionBinding({
+      agentId: 'agent_support',
+      connectionAccountId: account.id,
+      providerId: account.providerId,
+      allowedCapabilities: [],
+      enabled: true,
+    });
+    store.close();
+
+    const raw = new DatabaseSync(databasePath);
+    raw.exec('DROP INDEX config_agent_connection_bindings_account_uidx');
+    raw.exec(
+      `INSERT INTO config_agent_connection_bindings (
+        agent_id, connection_account_id, provider_id, allowed_capabilities_json,
+        resource_constraints_json, enabled, created_at, updated_at
+      ) SELECT 'agent_sales', connection_account_id, provider_id, allowed_capabilities_json,
+               resource_constraints_json, enabled, created_at, updated_at
+        FROM config_agent_connection_bindings WHERE agent_id = 'agent_support'`,
+    );
+    raw.close();
+
+    assert.throws(
+      () => new SqliteConfigStore(databasePath, { agents: [] }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /ownership preflight failed.*connection_duplicate/);
+        assert.match(error.message, /agent_support/);
+        assert.match(error.message, /agent_sales/);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -460,6 +706,31 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     configDeleteSlackPublicContextMessage: () => ok(true),
     configDeleteSlackPublicContextRoot: () => ok(1),
     configListConnectionAccounts: () => ok([account]),
+    configCreateAgentOwnedConnection: () => Promise.resolve({
+      ok: false as const,
+      error: {
+        code: 'managed_remote_account_already_used' as const,
+        message: 'remote account conflict',
+        details: { adapterId: 'composio', accountRef: 'ca_remote_once' },
+      },
+    }),
+    configGetAgentConnectionBindingForAccount: () => ok({
+      agentId: 'agent_support',
+      connectionAccountId: account.id,
+      providerId: account.providerId,
+      allowedCapabilities: [],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    }),
+    configPutAgentConnectionBinding: () => Promise.resolve({
+      ok: false as const,
+      error: {
+        code: 'connection_account_already_bound' as const,
+        message: 'binding conflict',
+        details: { accountId: account.id, agentId: 'agent_support' },
+      },
+    }),
     configListAgentScheduleReferences: () => ok([schedule]),
     configArchiveAgent: () => ok({
       ...agent('agent_support', 'Support'),
@@ -492,6 +763,27 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     route,
   );
   assert.deepEqual(await store.listConnectionAccounts('T_PLATFORM'), [account]);
+  assert.equal(
+    (await store.getAgentConnectionBindingForAccount(account.id))?.agentId,
+    'agent_support',
+  );
+  await assert.rejects(
+    store.createAgentOwnedConnection({
+      account,
+      binding: {
+        agentId: 'agent_support', connectionAccountId: account.id,
+        providerId: account.providerId, allowedCapabilities: [], enabled: true,
+      },
+    }),
+    ManagedRemoteAccountAlreadyUsedError,
+  );
+  await assert.rejects(
+    store.putAgentConnectionBinding({
+      agentId: 'agent_sales', connectionAccountId: account.id,
+      providerId: account.providerId, allowedCapabilities: [], enabled: true,
+    }),
+    ConnectionAccountAlreadyBoundError,
+  );
   assert.deepEqual((await store.listUserAgents()).map(({ id }) => id), ['agent_support']);
   assert.equal((await store.materializeChickpeaAgent()).kind, 'system');
   assert.deepEqual(await store.getWorkspaceModelDefault('T_PLATFORM'), modelDefault);

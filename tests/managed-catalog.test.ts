@@ -723,18 +723,6 @@ test('resource selection revalidates fresh discovery and stores provider IDs out
       apiConnections: [],
       repositories: [],
     });
-    await config.createAgent({
-      id: 'agent_resources_secondary',
-      name: 'Secondary resource fixture',
-      instructions: 'Use only the secondary selected property.',
-      enabled: true,
-      creatorMembershipId: owner.membershipId,
-      editPolicy: 'creator_and_admins',
-      skills: [],
-      mcpServers: [],
-      apiConnections: [],
-      repositories: [],
-    });
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_RESOURCES',
       transportMode: 'direct',
@@ -769,6 +757,7 @@ test('resource selection revalidates fresh discovery and stores provider IDs out
 
     const discovered = await service.listManagedResources({
       principal: owner,
+      agentId: 'agent_resources',
       connectionAccountId: account.id,
       resourceKey: 'propertyIds',
     });
@@ -807,17 +796,10 @@ test('resource selection revalidates fresh discovery and stores provider IDs out
       'properties/123',
     );
 
-    await service.attach({
-      principal: owner,
-      agentId: 'agent_resources_secondary',
-      connectionAccountId: account.id,
-      allowedCapabilities: ['analytics_fixture.reports.read'],
-      resourceConstraints: {},
-    });
     const secondaryHandle = discovered.resources[1]!.handle;
     const secondary = await service.selectManagedResources({
       principal: owner,
-      agentId: 'agent_resources_secondary',
+      agentId: 'agent_resources',
       connectionAccountId: account.id,
       expectedRevision: selected.account.revision,
       resourceConstraints: { propertyIds: [secondaryHandle] },
@@ -825,25 +807,17 @@ test('resource selection revalidates fresh discovery and stores provider IDs out
     assert.deepEqual(secondary.binding.resourceConstraints, {
       propertyIds: [secondaryHandle],
     });
-    const sharedAccount = (await config.listConnectionAccounts('T_RESOURCES'))[0];
-    if (sharedAccount?.policy.kind !== 'managed') assert.fail('expected managed policy');
+    const updatedAccount = (await config.listConnectionAccounts('T_RESOURCES'))[0];
+    if (updatedAccount?.policy.kind !== 'managed') assert.fail('expected managed policy');
     assert.deepEqual(
-      sharedAccount.policy.resourceConstraints?.propertyIds?.map(({ providerRef }) => providerRef),
-      ['properties/123', 'properties/456'],
+      updatedAccount.policy.resourceConstraints?.propertyIds?.map(({ providerRef }) => providerRef),
+      ['properties/456'],
     );
-    const bindings = await Promise.all([
-      config.listAgentConnectionBindings('agent_resources'),
-      config.listAgentConnectionBindings('agent_resources_secondary'),
-    ]);
+    const bindings = await config.listAgentConnectionBindings('agent_resources');
     assert.ok(intersectManagedResourceConstraints(
       connector,
-      sharedAccount.policy.resourceConstraints,
-      bindings[0]![0]!.resourceConstraints,
-    ));
-    assert.ok(intersectManagedResourceConstraints(
-      connector,
-      sharedAccount.policy.resourceConstraints,
-      bindings[1]![0]!.resourceConstraints,
+      updatedAccount.policy.resourceConstraints,
+      bindings[0]!.resourceConstraints,
     ));
 
     await assert.rejects(
@@ -907,7 +881,8 @@ test('resource selection can save an item from the bounded window of a longer pr
       allowedCapabilities: ['analytics_fixture.reports.read'], resourceConstraints: {}, enabled: true,
     });
     const page = await service.listManagedResources({
-      principal: owner, connectionAccountId: account.id, resourceKey: 'propertyIds',
+      principal: owner, agentId: 'agent_long_resources',
+      connectionAccountId: account.id, resourceKey: 'propertyIds',
     });
 
     const selected = await service.selectManagedResources({
@@ -924,7 +899,7 @@ test('resource selection can save an item from the bounded window of a longer pr
   }
 });
 
-test('shared resource accounts reject a second Agent that would exceed the durable ceiling', async () => {
+test('resource selection replaces the sole Agent ceiling instead of accumulating prior choices', async () => {
   const connector = syntheticResourceConnector();
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -956,9 +931,7 @@ test('shared resource accounts reject a second Agent that would exceed the durab
     managedProviders: createManagedConnectionProviderRegistry([provider]),
   });
   try {
-    for (const id of ['agent_resource_first', 'agent_resource_second']) {
-      await createResourceAgent(config, owner, id);
-    }
+    await createResourceAgent(config, owner, 'agent_resource_first');
     await config.ensureWorkspaceInstallation({
       workspaceId: 'T_RESOURCE_LIMIT', transportMode: 'direct',
       defaultAgentId: 'agent_resource_first',
@@ -973,20 +946,20 @@ test('shared resource accounts reject a second Agent that would exceed the durab
       },
       secretRefId: 'secret_resource_limit', lifecycle: 'pending',
     }, 0);
-    for (const agentId of ['agent_resource_first', 'agent_resource_second']) {
-      await config.putAgentConnectionBinding({
-        agentId, connectionAccountId: account.id, providerId: 'google',
-        allowedCapabilities: ['analytics_fixture.reports.read'], resourceConstraints: {}, enabled: true,
-      });
-    }
+    await config.putAgentConnectionBinding({
+      agentId: 'agent_resource_first', connectionAccountId: account.id, providerId: 'google',
+      allowedCapabilities: ['analytics_fixture.reports.read'], resourceConstraints: {}, enabled: true,
+    });
     const firstPage = await service.listManagedResources({
-      principal: owner, connectionAccountId: account.id, resourceKey: 'propertyIds',
+      principal: owner, agentId: 'agent_resource_first',
+      connectionAccountId: account.id, resourceKey: 'propertyIds',
     });
     assert.equal(firstPage.resources.length, 250);
     const secondCursor = firstPage.nextCursor;
     assert.ok(secondCursor);
     const secondPage = await service.listManagedResources({
-      principal: owner, connectionAccountId: account.id, resourceKey: 'propertyIds',
+      principal: owner, agentId: 'agent_resource_first',
+      connectionAccountId: account.id, resourceKey: 'propertyIds',
       cursor: secondCursor,
     });
     assert.equal(secondPage.resources.length, 7);
@@ -998,28 +971,23 @@ test('shared resource accounts reject a second Agent that would exceed the durab
       resourceConstraints: { propertyIds: firstPage.resources.slice(0, 200).map(({ handle }) => handle) },
     });
 
-    await assert.rejects(
-      service.selectManagedResources({
-        principal: owner,
-        agentId: 'agent_resource_second',
-        connectionAccountId: account.id,
-        expectedRevision: first.account.revision,
-        resourceConstraints: {
-          propertyIds: [
-            ...firstPage.resources.slice(200).map(({ handle }) => handle),
-            ...secondPage.resources.map(({ handle }) => handle),
-          ],
-        },
-      }),
-      (error) => error instanceof ManagedResourceSelectionError && error.code === 'invalid' &&
-        /at most 256 properties/i.test(error.message),
-    );
+    const replacementHandles = [
+      ...firstPage.resources.slice(200).map(({ handle }) => handle),
+      ...secondPage.resources.map(({ handle }) => handle),
+    ];
+    await service.selectManagedResources({
+      principal: owner,
+      agentId: 'agent_resource_first',
+      connectionAccountId: account.id,
+      expectedRevision: first.account.revision,
+      resourceConstraints: { propertyIds: replacementHandles },
+    });
     const persisted = (await config.listConnectionAccounts('T_RESOURCE_LIMIT'))[0];
     assert.equal(
       persisted?.policy.kind === 'managed'
         ? persisted.policy.resourceConstraints?.propertyIds?.length
         : undefined,
-      200,
+      replacementHandles.length,
     );
   } finally {
     config.close();
@@ -1050,7 +1018,7 @@ test('config persistence rejects managed account resource ceilings above 256', a
   }
 });
 
-test('a newly authorized resource connector stays pending and attaches without runtime authority', async () => {
+test('a newly authorized resource connector creates its binding without runtime authority', async () => {
   const connector = syntheticResourceConnector();
   const catalog = createManagedConnectorCatalog([connector]);
   const config = new SqliteConfigStore(':memory:', { agents: [] });
@@ -1093,8 +1061,9 @@ test('a newly authorized resource connector stays pending and attaches without r
       workspaceId: 'T_RESOURCES', transportMode: 'direct',
       defaultAgentId: 'agent_pending_resources',
     });
-    const account = await service.create({
+    const { account, binding } = await service.createForAgent({
       principal: owner,
+      agentId: 'agent_pending_resources',
       workspaceId: 'T_RESOURCES',
       ownerKind: 'team',
       providerId: 'google',
@@ -1105,16 +1074,11 @@ test('a newly authorized resource connector stays pending and attaches without r
         accountRef: 'ca_pending_resources',
         allowedCapabilities: ['analytics_fixture.reports.read'],
       },
+      allowedCapabilities: ['analytics_fixture.reports.read'],
     });
     assert.equal(account.lifecycle, 'pending');
     assert.equal(validations, 1);
 
-    const binding = await service.attach({
-      principal: owner,
-      agentId: 'agent_pending_resources',
-      connectionAccountId: account.id,
-      allowedCapabilities: ['analytics_fixture.reports.read'],
-    });
     assert.deepEqual(binding.resourceConstraints, {});
   } finally {
     config.close();

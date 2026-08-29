@@ -569,7 +569,7 @@ export interface ManagementWorkspaceSnapshot {
     skills: AgentCreateInput['skills'];
     mcpServers: AgentCreateInput['mcpServers'];
     apiConnections: AgentCreateInput['apiConnections'];
-    /** Secret-free reusable accounts available through this Agent's bindings and visible to the requester. */
+    /** Secret-free accounts owned by this Agent and visible to the requester. */
     connections?: Array<{
       id: string;
       providerId: string;
@@ -610,6 +610,7 @@ export interface ManagementWorkspaceSnapshot {
     capabilityHealth: {
       mcpConnections: { ready: number; pending: number; failed: number };
       apiConnections: { ready: number; pending: number; failed: number };
+      /** Legacy field name retained for clients; counts only this Agent's owned connections. */
       reusableConnections: { ready: number; pending: number; needsAttention: number; disabled: number };
       repositories: { enabled: number; setupRequired: number };
       channelGrants: { active: number; pending: number; needsAttention: number };
@@ -627,7 +628,7 @@ export interface ManagementWorkspaceSnapshot {
       revision: number;
     }>;
   };
-  /** Revision of this actor-visible snapshot, including its visible reusable connections. */
+  /** Revision of this actor-visible snapshot, including its visible Agent-owned connections. */
   effectiveRevision: string;
 }
 

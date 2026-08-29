@@ -1,6 +1,6 @@
 import { CHICKPEA_FAVICON_HTML, CHICKPEA_WORDMARK_CSS, CHICKPEA_WORDMARK_HTML } from '../brand/chickpea-mark.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
-import { resolveReusableConnectorPreset } from '../config/presets.ts';
+import { resolveConnectorCatalogPreset } from '../config/presets.ts';
 import type { CustomAgentConfig } from '../config/types.ts';
 import {
   managedConnectorReadCopy,
@@ -187,8 +187,8 @@ function connectionPair(input: ManagedConnectionPageInput): string {
 
 function connectorLogo(setup: ManagementSetupRecord, extraClass = ''): string {
   const presetId = setup.target.presetId ?? setup.target.provider;
-  const preset = resolveReusableConnectorPreset(presetId) ??
-    resolveReusableConnectorPreset(setup.target.targetLabel);
+  const preset = resolveConnectorCatalogPreset(presetId) ??
+    resolveConnectorCatalogPreset(setup.target.targetLabel);
   const logoId = presetId.replace(/-managed$/, '');
   const logo = CONNECTOR_LOGOS[logoId as keyof typeof CONNECTOR_LOGOS] ??
     CONNECTOR_LOGOS[setup.target.provider as keyof typeof CONNECTOR_LOGOS];

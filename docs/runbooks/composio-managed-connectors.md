@@ -125,7 +125,7 @@ Notion uses the page/database picker in Notion's own OAuth screen as the authori
 
 Search and reads return bounded, normalized data. Page-property writes accept only reviewed scalar property types, and block appends accept a bounded text-oriented block vocabulary. Archive, delete, sharing, permission administration, arbitrary page updates, and raw block trees are absent. Admin may show a bounded list of provider-visible page/database labels after validation; those labels are informational and never treated as a local authorization decision.
 
-New Notion connections use the managed path. Existing Native Notion records remain readable and editable but do not appear as a new-connection catalog option. If a legacy and managed Notion account are both attached, an unnamed Notion request withholds both account paths and asks the member to choose a label; naming one account selects only that path.
+New Notion connections use the managed path. Existing Native Notion records remain readable and editable but do not appear as a new-connection catalog option. If one Agent owns both a legacy and managed Notion account, an unnamed Notion request withholds both account paths and asks the member to choose a label; naming one account selects only that path.
 
 ## Curated HubSpot surface
 
@@ -258,11 +258,11 @@ Composio-managed defaults are intentionally a development-effort tradeoff, not p
 
 The Admin UI starts one hosted Connect Link for one saved Agent, connector, and team/personal owner. Chickpea derives the Composio user ID from the immutable organization or membership ID, stores a thirty-minute consume-once attempt, and keeps its browser secret in an HttpOnly, Secure, SameSite=Lax cookie. It opens the hosted sign-in in a new tab, persists only safe resume metadata in `sessionStorage`, and polls the exact request from the original Chickpea tab. Each hosted link also receives a callback URL derived from the current Chickpea installation so the provider tab returns to Chickpea's dedicated completion page. The callback does not authorize or select an account; exact-account polling remains the authority.
 
-Each poll checks the exact pending workspace, Agent, owner, toolkit, capability ceiling, provider generation, project lineage, request ID, and server-derived principal. A pending response schedules another bounded poll. An active exact account is validated, imported, and attached once. Terminal, mismatched, expired, replayed, or stale-project results fail closed. Refreshing the Chickpea tab restores the waiting state; **Cancel** revokes only an unimported remote request and clears the local attempt.
+Each poll checks the exact pending workspace, Agent, owner, toolkit, capability ceiling, provider generation, project lineage, request ID, and server-derived principal. A pending response schedules another bounded poll. An active exact account is validated and committed with its permanent Agent binding in one local transaction. Terminal, mismatched, expired, replayed, or stale-project results fail closed. Refreshing the Chickpea tab restores the waiting state; **Cancel** revokes only an uncommitted remote request and clears the local attempt.
 
-The Connect Link request ID is the connected-account ID. Chickpea stores it before polling and accepts completion only when Composio returns that exact account, toolkit, and server-derived principal. It does not trust account or user identifiers from browser query parameters. Reconnect and additional-account flows allow multiple accounts because an active account may already exist for the same principal and default auth config; every tool execution still pins one exact account ID.
+The Connect Link request ID is the connected-account ID. Chickpea stores it before polling and accepts completion only when Composio returns that exact account, toolkit, and server-derived principal. It does not trust account or user identifiers from browser query parameters. Reconnect preserves the existing Agent-owned Chickpea account. A fresh setup for another Agent creates a separate Chickpea account and requires a distinct Composio account reference, even when the human selects the same external identity; every tool execution still pins one exact account ID.
 
-The generic reusable-connection API does not accept managed account references. Managed records can enter Chickpea only through the browser-bound Connect Link completion flow, so a member cannot import another project's or another member's opaque `ca_...` identifier.
+The generic connection-creation API does not accept managed account references. Managed records can enter Chickpea only through the browser-bound, Agent-scoped Connect Link completion flow, so a member cannot import another project's, another member's, or another Agent's opaque `ca_...` identifier.
 
 An unknown or upgraded authorization-attempt format fails closed and emits `chickpea.managed_connection.invalid_authorization_attempt_blocked` with only any validated `adapterId`, `authorizationRef`, and `accountRef`. The member receives `managed_authorization_recovery_required` instead of being told to finish an unreachable browser flow. The durable key is `connections.managed.authorization.` followed by the first 32 hexadecimal characters of `sha256(actorMembershipId)`.
 
@@ -280,9 +280,42 @@ This owner-only operation first preserves any reference already imported by a no
 
 The legacy public callback endpoint has been removed. Deployments must not configure a Composio project-level callback identity verifier for Chickpea's hostless flow, because it can make dashboard-created links behave differently. Restart any authorization that was already in flight during an upgrade from the Agent's Connections tab, then run the complete link-and-poll canary.
 
-If authorization succeeds remotely but a later local import fails, the remote reference remains in the durable attempt so polling can retry without creating another grant. If Chickpea cannot preserve or safely import the reference, it deletes the otherwise orphaned Composio account before consuming the attempt and logs only bounded reference metadata. A reconnect preserves the Chickpea connection ID and Agent bindings. Schedules paused by an expiry remain `needs_attention` until explicitly reviewed and resumed.
+If authorization succeeds remotely but a later local commit fails, the remote reference remains in the durable attempt so polling can retry without creating another grant. If Chickpea cannot preserve or safely commit the reference, it deletes the otherwise orphaned Composio account before consuming the attempt and logs only bounded reference metadata. A reconnect preserves the Chickpea connection ID and its sole Agent binding. Schedules paused by an expiry remain `needs_attention` until explicitly reviewed and resumed.
 
 Chickpea deliberately calls Composio account deletion with `revoke_on_delete=false`. Google revocation is grant-wide for a user/OAuth-client pair: the launch canary connected the same personal Calendar account twice, revoked one Composio account with `revoke_on_delete=true`, and the surviving account immediately began returning Google 401 errors. Chickpea cannot reliably identify shared grants across team and personal lanes because Composio exposes no stable non-secret upstream identity for every Google toolkit. Disconnect therefore removes the exact Composio account and its stored credential without revoking the broader Google grant. A user can revoke Composio from Google Account settings when they intend to invalidate every Chickpea connection sharing that Google OAuth client.
+
+## Agent ownership and release preflight
+
+Every Chickpea connection belongs permanently to one Agent. A saved account cannot be attached, moved, or reused by another Agent, including when its binding is disabled. The same human may authorize the same external identity for another Agent, but that flow must create a separate Chickpea account and a separate Composio connected-account reference.
+
+Before deploying the unique binding index, run these read-only checks against the configuration database. Any row from the first query stops the release; do not choose an owner or repair it automatically. Review the second result as inert legacy inventory before proceeding.
+
+```sql
+SELECT
+  connection_account_id,
+  COUNT(*) AS binding_count,
+  GROUP_CONCAT(agent_id, ',') AS agent_ids
+FROM config_agent_connection_bindings
+GROUP BY connection_account_id
+HAVING COUNT(*) > 1;
+
+SELECT
+  a.id,
+  a.workspace_id,
+  a.provider_id,
+  a.owner_kind,
+  a.lifecycle
+FROM config_connection_accounts AS a
+LEFT JOIN config_agent_connection_bindings AS b
+  ON b.connection_account_id = a.id
+WHERE a.lifecycle <> 'revoked'
+  AND b.connection_account_id IS NULL
+ORDER BY a.workspace_id, a.id;
+```
+
+Save baseline counts for non-revoked accounts, bindings, non-revoked unbound accounts, and distinct managed remote references. After deployment, monitor unique-binding conflicts, exact-binding authorization failures, managed remote-reference collisions, and failed cleanup reconciliation. A code rollback must leave `config_agent_connection_bindings_account_uidx` in place: older code is safe only while the database continues to reject cross-Agent reuse.
+
+For the release canary, use two disposable Agents and one controlled external identity. Complete two fresh authorizations and record two Chickpea account IDs plus two distinct Composio account refs. Prove each Agent invokes only its exact account. Disconnect Agent A and prove Agent B still invokes its own account and retains its schedules. Then confirm signed-in Admin and management inspection never show Agent A's account under Agent B. Keep `revoke_on_delete=false`: two separate Composio accounts can still depend on one upstream OAuth grant, and grant-wide provider revocation can break the surviving Agent.
 
 ## Versioned execution
 
@@ -379,7 +412,7 @@ Before making managed Notion the recommended path in an environment, run the com
 2. Through the Agent tools, search/read sibling A, create one child page under A with confirmation, and read it back.
 3. Prove sibling B is absent from search and a direct read of B is denied. The tool must not widen the grant or retry with another account.
 4. Reconnect the exact managed account, select only sibling B, and prove B is readable while A is no longer readable.
-5. Disconnect that exact managed account and verify only its Agent bindings are affected. Do not grant-wide revoke a shared provider credential during this check.
+5. Disconnect that exact managed account and verify only its owning Agent's connection and dependent schedules are affected. Do not grant-wide revoke the provider credential during this check.
 
 Record the account labels, provider log IDs, toolkit version, and pass/fail outcomes without retaining page content or provider object IDs. Treat a failed boundary check as a Notion launch blocker rather than bypassing the managed authorization boundary.
 

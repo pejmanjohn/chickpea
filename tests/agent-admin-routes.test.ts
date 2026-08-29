@@ -1150,16 +1150,18 @@ test('concurrent hostless polls remain request-local and import the exact accoun
   }
 });
 
-test('reconnect polling cannot narrow a shared account widened after authorization began', async () => {
+test('reconnect polling rejects another Agent account before provider polling', async () => {
+  let pollCalls = 0;
   const provider: ManagedConnectionProvider = {
     id: 'composio',
     availability: () => ({ status: 'ready', missingConfiguration: [] }),
     async pollAuthorization() {
-      return { status: 'active', accountRef: 'ca_shared_reconnect', toolkit: 'gmail' };
+      pollCalls += 1;
+      return { status: 'active', accountRef: 'ca_cross_agent_reconnect', toolkit: 'gmail' };
     },
     async validate() {},
     async execute() { return { data: {} }; },
-    async revoke() { assert.fail('the imported shared account must not be revoked'); },
+    async revoke() { assert.fail('the other Agent account must not be revoked'); },
   };
   const fixture = harness(new FakeTransport(), {
     managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
@@ -1175,11 +1177,11 @@ test('reconnect polling cannot narrow a shared account widened after authorizati
       workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
     });
     const existing = await fixture.store.putConnectionAccount({
-      id: 'connection_shared_reconnect', workspaceId: 'T_TEST', ownerKind: 'team',
-      createdByMembershipId: 'membership_test_owner', providerId: 'google', label: 'Shared Gmail',
+      id: 'connection_cross_agent_reconnect', workspaceId: 'T_TEST', ownerKind: 'team',
+      createdByMembershipId: 'membership_test_owner', providerId: 'google', label: 'Sibling Gmail',
       policy: {
         kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
-        principalRef: 'chickpea:organization:org_oss', accountRef: 'ca_shared_reconnect',
+        principalRef: 'chickpea:organization:org_oss', accountRef: 'ca_cross_agent_reconnect',
         allowedCapabilities: ['gmail.profile.read'],
         providerGeneration: 1, providerLineage: '0'.repeat(24),
       },
@@ -1190,7 +1192,7 @@ test('reconnect polling cannot narrow a shared account widened after authorizati
       input: {
         workspaceId: 'T_TEST', agentId: 'agent_support',
         actorMembershipId: 'membership_test_owner', ownerKind: 'team',
-        providerId: 'google', adapterId: 'composio', toolkit: 'gmail', label: 'Shared Gmail',
+        providerId: 'google', adapterId: 'composio', toolkit: 'gmail', label: 'Sibling Gmail',
         principalRef: 'chickpea:organization:org_oss',
         allowedCapabilities: ['gmail.profile.read'],
         connectionAccountId: existing.id,
@@ -1200,7 +1202,7 @@ test('reconnect polling cannot narrow a shared account widened after authorizati
     });
     await recordManagedAuthorizationRequest({
       settings: fixture.settings, actorMembershipId: 'membership_test_owner',
-      browserSecret: started.browserSecret, authorizationRef: 'ca_shared_reconnect',
+      browserSecret: started.browserSecret, authorizationRef: 'ca_cross_agent_reconnect',
     });
     assert.equal(existing.policy.kind, 'managed');
     if (existing.policy.kind !== 'managed') assert.fail('expected managed policy');
@@ -1226,8 +1228,9 @@ test('reconnect polling cannot narrow a shared account widened after authorizati
       },
     );
 
-    assert.equal(response.status, 409, await response.clone().text());
-    assert.deepEqual(await response.json(), { error: 'managed_authorization_invalid' });
+    assert.equal(response.status, 403, await response.clone().text());
+    assert.equal((await response.json()).error, 'forbidden');
+    assert.equal(pollCalls, 0);
     const preserved = (await fixture.store.listConnectionAccounts('T_TEST'))
       .find(({ id }) => id === existing.id)!;
     assert.equal(preserved.revision, widened.revision);
@@ -1555,7 +1558,7 @@ test('definite import validation failure cleans authorization and returns termin
   }
 });
 
-test('failed imported-account attachment leaves connector-paused schedules paused', async () => {
+test('fresh authorization remote collision leaves the owning Agent schedules paused', async () => {
   const provider: ManagedConnectionProvider = {
     id: 'composio',
     availability: () => ({ status: 'ready', missingConfiguration: [] }),
@@ -1602,11 +1605,6 @@ test('failed imported-account attachment leaves connector-paused schedules pause
       requiredConnectionAccountIds: [existing.id],
       connectionPauseAccountIds: [existing.id], state: 'needs_attention',
     });
-    const putBinding = fixture.store.putAgentConnectionBinding.bind(fixture.store);
-    fixture.store.putAgentConnectionBinding = (input) => {
-      if (input.agentId === 'agent_support') throw new Error('simulated attachment failure');
-      return putBinding(input);
-    };
     const started = await beginManagedAuthorization({
       settings: fixture.settings,
       input: {
@@ -1897,7 +1895,7 @@ test('Agent creation reserves Chickpea system identities across id, name, and ha
   }
 });
 
-test('reusable MCP credentials cannot target an undeclared header', async () => {
+test('Agent-owned MCP credentials cannot target an undeclared header', async () => {
   const fixture = harness();
   try {
     await createAgent(fixture.app);
@@ -1928,7 +1926,7 @@ test('reusable MCP credentials cannot target an undeclared header', async () => 
   }
 });
 
-test('the reusable connection API never accepts caller-supplied managed account refs', async () => {
+test('the generic connection API never accepts caller-supplied managed account refs', async () => {
   const providerCalls: string[] = [];
   const provider: ManagedConnectionProvider = {
     id: 'composio',
@@ -2077,7 +2075,7 @@ test('workspace connection inventory omits revoked accounts and returns a reconn
   }
 });
 
-test('corrupt managed credentials do not block native connection inventory, attach, or revoke', async () => {
+test('corrupt managed credentials do not block native connection inventory or exact disconnect', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   await saveStoredComposioProjectKey('ak_native_routes_survive_managed_corruption', {
     settings,
@@ -2100,16 +2098,25 @@ test('corrupt managed credentials do not block native connection inventory, atta
       workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
       defaultAgentId: 'agent_support',
     });
-    const account = await fixture.store.putConnectionAccount({
-      id: 'connection_native_during_managed_failure', workspaceId: 'T_TEST',
-      ownerKind: 'team', createdByMembershipId: 'membership_test_owner',
-      providerId: 'custom', label: 'Native API', lifecycle: 'ready',
-      secretRefId: 'secret_native_during_managed_failure',
-      policy: {
-        kind: 'api', allowedHosts: ['api.example.com'], pathPrefixes: ['/'],
-        headerName: 'Authorization', allowedMethods: ['GET'], authMode: 'credential',
+    const { account } = await fixture.store.createAgentOwnedConnection({
+      account: {
+        id: 'connection_native_during_managed_failure', workspaceId: 'T_TEST',
+        ownerKind: 'team', createdByMembershipId: 'membership_test_owner',
+        providerId: 'custom', label: 'Native API', lifecycle: 'ready',
+        secretRefId: 'secret_native_during_managed_failure',
+        policy: {
+          kind: 'api', allowedHosts: ['api.example.com'], pathPrefixes: ['/'],
+          headerName: 'Authorization', allowedMethods: ['GET'], authMode: 'credential',
+        },
       },
-    }, 0);
+      binding: {
+        agentId: 'agent_support',
+        connectionAccountId: 'connection_native_during_managed_failure',
+        providerId: 'custom',
+        allowedCapabilities: [],
+        enabled: true,
+      },
+    });
 
     const listed = await fixture.app.request(
       'http://localhost/admin/api/agents/agent_support/connections?workspaceId=T_TEST',
@@ -2117,21 +2124,116 @@ test('corrupt managed credentials do not block native connection inventory, atta
     );
     assert.equal(listed.status, 200, await listed.clone().text());
     const listedBody = await listed.json() as {
-      available: Array<{ id: string }>;
+      attached: Array<{ account: { id: string } }>;
     };
-    assert.deepEqual(listedBody.available.map((item) => item.id), [account.id]);
+    assert.deepEqual(listedBody.attached.map((item) => item.account.id), [account.id]);
 
-    const attached = await fixture.app.request(
+    const retiredAttach = await fixture.app.request(
       `http://localhost/admin/api/agents/agent_support/connections/${account.id}/attach`,
       { method: 'POST', headers: auth(), body: JSON.stringify({ allowedCapabilities: [] }) },
     );
-    assert.equal(attached.status, 201, await attached.clone().text());
+    assert.equal(retiredAttach.status, 404, await retiredAttach.clone().text());
 
-    const revoked = await fixture.app.request(
-      `http://localhost/admin/api/connections/${account.id}/revoke`,
-      { method: 'POST', headers: auth(), body: '{}' },
+    const disconnected = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${account.id}`,
+      { method: 'DELETE', headers: auth() },
     );
-    assert.equal(revoked.status, 200, await revoked.clone().text());
+    assert.equal(disconnected.status, 200, await disconnected.clone().text());
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Agent-scoped connection routes do not disclose or mutate another Agent account', async () => {
+  let resourceCalls = 0;
+  let revokeCalls = 0;
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async discoverResources() {
+      resourceCalls += 1;
+      return { resources: [{ providerRef: 'properties/123', label: 'Primary property' }] };
+    },
+    async revoke() { revokeCalls += 1; },
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.createAgent({
+      id: 'agent_sibling', name: 'Sibling', instructions: 'Use its own analytics.', enabled: true,
+      creatorMembershipId: 'membership_test_owner', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const { account } = await fixture.store.createAgentOwnedConnection({
+      account: {
+        id: 'connection_support_analytics', workspaceId: 'T_TEST', ownerKind: 'team',
+        createdByMembershipId: 'membership_test_owner', providerId: 'google',
+        label: 'Support Analytics', secretRefId: 'secret_support_analytics', lifecycle: 'pending',
+        policy: {
+          kind: 'managed', adapterId: 'composio', toolkit: 'google_analytics',
+          principalRef: 'chickpea:organization:org_oss', accountRef: 'ca_support_analytics',
+          allowedCapabilities: ['analytics.reports.read'],
+        },
+      },
+      binding: {
+        agentId: 'agent_support', connectionAccountId: 'connection_support_analytics',
+        providerId: 'google', allowedCapabilities: ['analytics.reports.read'],
+        resourceConstraints: {}, enabled: true,
+      },
+    });
+
+    const listed = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_sibling/connections?workspaceId=T_TEST',
+      { headers: auth() },
+    );
+    assert.equal(listed.status, 200, await listed.clone().text());
+    assert.deepEqual(
+      (await listed.json() as { attached: Array<{ account: { id: string } }> }).attached,
+      [],
+    );
+
+    const resources = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_sibling/connections/${account.id}/managed/resources?workspaceId=T_TEST&resourceKey=propertyIds`,
+      { headers: auth() },
+    );
+    assert.equal(resources.status, 403, await resources.clone().text());
+
+    const selection = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_sibling/connections/${account.id}/managed/resources`,
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({
+          workspaceId: 'T_TEST', expectedRevision: account.revision,
+          resourceConstraints: { propertyIds: [] },
+        }),
+      },
+    );
+    assert.equal(selection.status, 403, await selection.clone().text());
+
+    const disconnected = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_sibling/connections/${account.id}`,
+      { method: 'DELETE', headers: auth() },
+    );
+    assert.equal(disconnected.status, 403, await disconnected.clone().text());
+    assert.equal(resourceCalls, 0);
+    assert.equal(revokeCalls, 0);
+    assert.equal(
+      (await fixture.store.listConnectionAccounts('T_TEST')).find(({ id }) => id === account.id)
+        ?.lifecycle,
+      'pending',
+    );
+    assert.equal(
+      (await fixture.store.getAgentConnectionBindingForAccount(account.id))?.agentId,
+      'agent_support',
+    );
   } finally {
     fixture.store.close();
     fixture.settings.close();
@@ -2217,7 +2319,7 @@ test('managed Google setup reports an unconfigured provider without reserving an
   }
 });
 
-test('the reusable connection catalog reports managed readiness per toolkit and lane', async () => {
+test('the connection catalog reports managed readiness per toolkit and lane', async () => {
   const provider: ManagedConnectionProvider = {
     id: 'composio',
     availability({ toolkit, accessLane }) {
@@ -2288,7 +2390,7 @@ test('the reusable connection catalog reports managed readiness per toolkit and 
   }
 });
 
-test('revoked connection accounts are excluded from reusable available accounts', async () => {
+test('revoked Agent-owned accounts are omitted from the Agent connection list', async () => {
   const fixture = harness(new FakeTransport());
   try {
     await createAgent(fixture.app);
@@ -2296,7 +2398,8 @@ test('revoked connection accounts are excluded from reusable available accounts'
       workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
       defaultAgentId: 'agent_support',
     });
-    await fixture.store.putConnectionAccount({
+    await fixture.store.createAgentOwnedConnection({
+      account: {
       id: 'connection_revoked', workspaceId: 'T_TEST', ownerKind: 'member',
       ownerMembershipId: 'membership_test_owner', createdByMembershipId: 'membership_test_owner',
       providerId: 'google', label: 'Revoked Gmail', lifecycle: 'revoked',
@@ -2306,14 +2409,20 @@ test('revoked connection accounts are excluded from reusable available accounts'
         allowedCapabilities: ['gmail.profile.read'],
       },
       secretRefId: 'secret_revoked',
-    }, 0);
+      },
+      binding: {
+        agentId: 'agent_support', connectionAccountId: 'connection_revoked',
+        providerId: 'google', allowedCapabilities: ['gmail.profile.read'], enabled: true,
+      },
+    });
     const response = await fixture.app.request(
       'http://localhost/admin/api/agents/agent_support/connections?workspaceId=T_TEST',
       { headers: auth() },
     );
     assert.equal(response.status, 200, await response.clone().text());
-    const body = await response.json() as { available: Array<{ id: string }> };
-    assert.deepEqual(body.available, []);
+    const body = await response.json() as { attached: unknown[]; available?: unknown[] };
+    assert.deepEqual(body.attached, []);
+    assert.equal(Object.hasOwn(body, 'available'), false);
   } finally {
     fixture.store.close();
     fixture.settings.close();
@@ -2687,7 +2796,7 @@ test('hostless authorization polling survives a transient provider outage', asyn
   }
 });
 
-test('reusable MCP OAuth accounts start and complete against the account reference', async () => {
+test('Agent-owned MCP OAuth accounts start and complete against the account reference', async () => {
   let accountId = '';
   let startedInput: StartMcpOAuthInput | undefined;
   const fixture = harness(new FakeTransport(), {
@@ -2788,7 +2897,7 @@ test('reusable MCP OAuth accounts start and complete against the account referen
   }
 });
 
-test('revoking during reusable MCP OAuth verification cannot reactivate the account', async () => {
+test('revoking during Agent-owned MCP OAuth verification cannot reactivate the account', async () => {
   let accountId = '';
   let releaseDiscovery: (() => void) | undefined;
   let markDiscoveryStarted: (() => void) | undefined;
@@ -2867,7 +2976,7 @@ test('revoking during reusable MCP OAuth verification cannot reactivate the acco
   }
 });
 
-test('reusable API OAuth accounts return to the initiating Agent and become ready', async () => {
+test('Agent-owned API OAuth accounts return to the initiating Agent and become ready', async () => {
   let accountId = '';
   let startedInput: {
     ref: { agentId: string; connectionId: string };
@@ -2968,7 +3077,7 @@ test('reusable API OAuth accounts return to the initiating Agent and become read
   }
 });
 
-test('reusable OAuth exchange failures return to the initiating Agent', async () => {
+test('Agent-owned OAuth exchange failures return to the initiating Agent', async () => {
   const mcpRef = { agentId: 'connection_linear_failed', connectionId: 'account' };
   const apiRef = { agentId: 'connection_google_failed', connectionId: 'account' };
   const fixture = harness(new FakeTransport(), {
@@ -3007,7 +3116,7 @@ test('reusable OAuth exchange failures return to the initiating Agent', async ()
   }
 });
 
-test('revoking a reusable API OAuth account deletes its client and token settings', async () => {
+test('revoking an Agent-owned API OAuth account deletes its client and token settings', async () => {
   const fixture = harness();
   try {
     await createAgent(fixture.app);

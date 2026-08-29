@@ -24,6 +24,7 @@ import { clearRepointedMcpCredentials } from '../config/mcp-connection-lifecycle
 import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
 import { managedProviderAvailability } from '../connections/managed.ts';
 import { resolveManagedAuthorizationProviderContext } from '../connections/managed-provider-context.ts';
+import { ConnectionAccountService } from '../connections/store.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
@@ -36,7 +37,11 @@ import {
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import type { SlackTransport } from '../slack/transport/types.ts';
-import { WorkspaceManagementService, type WorkspaceManagementServiceInput } from './service.ts';
+import {
+  managementActorPrincipal,
+  WorkspaceManagementService,
+  type WorkspaceManagementServiceInput,
+} from './service.ts';
 import { ManagementError } from './types.ts';
 import {
   testManagedMcpConnection,
@@ -281,6 +286,22 @@ export function createLiveWorkspaceManagementService(
         throw new ManagementError('revision_conflict', 'The Agent changed before restore.');
       }
       return (await presenceReconciler(user.slackTeamId)).restore(agentId);
+    },
+    deleteAgent: async ({ actor, agentId, expectedRevision }) => {
+      const providerContext = await resolveManagedAuthorizationProviderContext({
+        settings,
+        ...(env ? { platformEnv: env } : {}),
+      });
+      await new ConnectionAccountService({
+        config: config as ConfigStore,
+        settings,
+        managedProviders: providerContext.providers,
+      }).prepareAgentDeletion({
+        principal: managementActorPrincipal(actor),
+        agentId,
+        expectedRevision,
+      });
+      return config.deleteAgent(agentId, expectedRevision);
     },
     ...overrides,
   });

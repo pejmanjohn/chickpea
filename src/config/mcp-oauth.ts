@@ -102,9 +102,9 @@ export interface StartMcpOAuthInput {
   serverUrl: string;
   callbackUrl: string;
   scope?: string;
-  /** Admin Agent page that initiated a reusable-account flow. */
+  /** Admin Agent page that initiated this Agent-owned connection flow. */
   returnAgentId?: string;
-  /** Reusable-account revision that fences this authorization attempt. */
+  /** Agent-owned connection revision that fences this authorization attempt. */
   accountRevision?: number;
   /** Stable attempt identity retained after the account revision advances. */
   oauthAttemptId?: string;
