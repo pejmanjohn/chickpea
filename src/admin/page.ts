@@ -4349,8 +4349,16 @@ button.capability-pill { cursor: pointer; }
     return hash % 3;
   }
 
+  function agentAvatarUrlForAdmin(agent) {
+    var avatar = agent && agent.slackPresence && agent.slackPresence.avatar;
+    if (!avatar) return "";
+    if (avatar.url) return avatar.url;
+    if (avatar.kind !== "generated" || !agent.id || !Number.isSafeInteger(avatar.revision) || avatar.revision < 1) return "";
+    return "/assets/agents/" + encodeURIComponent(agent.id) + "/avatar/" + avatar.revision;
+  }
+
   function agentRosterAvatarHtml(agent) {
-    var avatarUrl = agent.slackPresence && agent.slackPresence.avatar && agent.slackPresence.avatar.url;
+    var avatarUrl = agentAvatarUrlForAdmin(agent);
     if (avatarUrl) {
       return '<span class="agent-roster-icon has-avatar" aria-hidden="true"><img src="' + esc(avatarUrl) + '" alt=""></span>';
     }
@@ -9256,8 +9264,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function agentProfileAvatarHtml(draft, readOnly) {
-    var presence = draft.slackPresence || {};
-    var avatarUrl = presence.avatar && presence.avatar.url;
+    var avatarUrl = agentAvatarUrlForAdmin(draft);
     var avatar = avatarUrl
       ? '<img class="agent-profile-avatar-image" src="' + esc(avatarUrl) + '" alt="">'
       : '<span class="agent-profile-avatar-fallback" aria-hidden="true">&#127793;</span>';
