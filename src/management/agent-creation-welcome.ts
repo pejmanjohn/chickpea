@@ -46,7 +46,15 @@ export async function selectAgentCreationConnectors(input: {
   const notices: AgentCreationConnectorNotice[] = [];
   const selected = new Set<string>();
   const mentions = input.explicitMentions.flatMap((raw) => {
-    const index = affirmativeMentionIndex(input.requestText, raw);
+    const matches = matchingConnectorCatalogPresets(raw, catalog);
+    const anchors = matches.length === 1
+      ? [raw, ...connectorCatalogLookupNames(matches[0]!)]
+      : [raw];
+    const index = anchors.reduce<number | undefined>((earliest, anchor) => {
+      const candidate = affirmativeMentionIndex(input.requestText, anchor);
+      if (candidate === undefined) return earliest;
+      return earliest === undefined ? candidate : Math.min(earliest, candidate);
+    }, undefined);
     return index === undefined ? [] : [{ raw, index }];
   }).sort((left, right) => left.index - right.index);
 
@@ -164,9 +172,6 @@ function negatedOrBackgroundAt(text: string, index: number): boolean {
 function safeConnectorLabel(value: string): string {
   return value
     .replace(/[\r\n\u0000-\u001f\u007f]+/g, ' ')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
     .replace(/[*_~`]/g, '')
     .slice(0, 80)
     .trim() || 'That connector';

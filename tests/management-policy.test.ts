@@ -39,15 +39,40 @@ function posture(decision: ReturnType<typeof classifyManagementOperation>) {
 }
 
 test('base Agent creation and only its trusted source-Channel grant are immediate', () => {
+  for (const editPolicy of [undefined, 'creator_and_admins'] as const) {
+    assert.deepEqual(classifyManagementOperation({
+      actor,
+      operation: {
+        itemId: `create-${editPolicy ?? 'default'}`,
+        kind: 'create_agent',
+        agent: {
+          id: `agent_deck_${editPolicy ?? 'default'}`,
+          name: 'Deck',
+          instructions: 'Create clear presentations.',
+          ...(editPolicy ? { editPolicy } : {}),
+          enabled: true,
+          skills: [],
+          mcpServers: [],
+          apiConnections: [],
+          repositories: [],
+        },
+      },
+    }), {
+      allowed: true,
+      posture: 'immediate',
+      reason: 'base_agent_creation',
+    });
+  }
+
   assert.deepEqual(classifyManagementOperation({
     actor,
     operation: {
-      itemId: 'create',
+      itemId: 'create-workspace-editable',
       kind: 'create_agent',
       agent: {
-        id: 'agent_deck',
-        name: 'Deck',
-        instructions: 'Create clear presentations.',
+        id: 'agent_workspace_editable',
+        name: 'Workspace Editable',
+        instructions: 'Accept edits from every workspace member.',
         editPolicy: 'all_workspace_members',
         enabled: true,
         skills: [],
@@ -58,8 +83,8 @@ test('base Agent creation and only its trusted source-Channel grant are immediat
     },
   }), {
     allowed: true,
-    posture: 'immediate',
-    reason: 'base_agent_creation',
+    posture: 'confirmation',
+    reason: 'workspace_wide_agent_edit_authority',
   });
 
   const grant: ManagementOperation = {
@@ -85,6 +110,69 @@ test('base Agent creation and only its trusted source-Channel grant are immediat
     posture: 'immediate',
     reason: 'source_channel_for_created_agent',
   });
+});
+
+test('direct apply keeps ordinary creation immediate but reviews workspace-wide edit authority', async () => {
+  const f = await createManagementAdapterFixture('create-edit-authority-policy');
+  const context = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp' as const, clientId: 'create-edit-authority-policy' },
+  };
+  const agent = (id: string, name: string, editPolicy?: 'creator_and_admins' | 'all_workspace_members') => ({
+    id,
+    name,
+    instructions: `Operate as ${name}.`,
+    ...(editPolicy ? { editPolicy } : {}),
+    enabled: true,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  });
+  try {
+    for (const [id, name, editPolicy] of [
+      ['agent_default_authority', 'Default Authority', undefined],
+      ['agent_creator_authority', 'Creator Authority', 'creator_and_admins'],
+    ] as const) {
+      const result = await f.service.applyWorkspaceChanges({
+        context,
+        idempotencyKey: `create-${id}`,
+        operations: [{
+          itemId: `create-${id}`,
+          kind: 'create_agent',
+          agent: agent(id, name, editPolicy),
+        }],
+      });
+      assert.equal(result.status, 'completed');
+      assert.equal(result.outcomes[0]?.disposition, 'applied');
+      assert.equal((await f.config.getAgent(id)).editPolicy, 'creator_and_admins');
+    }
+
+    const workspaceWide = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'create-workspace-wide-authority',
+      operations: [{
+        itemId: 'create-workspace-wide-authority',
+        kind: 'create_agent',
+        agent: agent(
+          'agent_workspace_wide_authority',
+          'Workspace Wide Authority',
+          'all_workspace_members',
+        ),
+      }],
+    });
+    assert.equal(workspaceWide.status, 'confirmation_required');
+    assert.equal(workspaceWide.outcomes[0]?.disposition, 'confirmation_required');
+    assert.match(workspaceWide.outcomes[0]?.proposalId ?? '', /^proposal_/);
+    assert.equal(
+      (await f.config.listUserAgents()).some(({ id }) => id === 'agent_workspace_wide_authority'),
+      false,
+    );
+  } finally {
+    f.close();
+  }
 });
 
 test('explicit exact reversible skill changes apply immediately', () => {

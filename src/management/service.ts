@@ -239,6 +239,12 @@ export interface WorkspaceManagementServiceInput {
     channelId: string;
     agentId: string;
   }) => Promise<{ agent: CustomAgentConfig; grant: AgentChannelGrant }>;
+  publishGeneratedAgentAvatar?: (input: {
+    workspaceId: string;
+    agentId: string;
+    revision: number;
+    seed: string;
+  }) => Promise<string | undefined>;
   assertAgentChannelMembership?: (input: {
     actor: LiveManagementActor;
     workspaceId: string;
@@ -989,7 +995,29 @@ export class WorkspaceManagementService {
     if (!creation) {
       throw new ManagementError('invalid_state', 'The creation operation did not create this Agent.');
     }
-    const agent = await this.requireEditableAgent(actor, input.agentId);
+    let agent = await this.requireEditableAgent(actor, input.agentId);
+    const generatedAvatar = agent.slackPresence?.avatar;
+    if (generatedAvatar?.kind === 'generated' && !generatedAvatar.url &&
+        this.stores.publishGeneratedAgentAvatar) {
+      try {
+        const publishedUrl = await this.stores.publishGeneratedAgentAvatar({
+          workspaceId: actor.origin.workspaceId,
+          agentId: agent.id,
+          revision: generatedAvatar.revision,
+          seed: generatedAvatar.seed ?? agent.id,
+        });
+        if (publishedUrl) {
+          agent = await this.stores.config.updateAgent(agent.id, {
+            slackPresence: {
+              ...agent.slackPresence!,
+              avatar: { ...generatedAvatar, url: publishedUrl },
+            },
+          }, agent.revision);
+        }
+      } catch {
+        console.warn('[chickpea] generated Agent avatar publication deferred');
+      }
+    }
     const incomplete: Array<'slack_presence' | 'source_channel'> = [];
     if (creation.warning || agent.slackPresence?.health !== 'healthy' ||
         !agent.slackPresence.userGroupId) {
@@ -1111,17 +1139,21 @@ export class WorkspaceManagementService {
   ): Promise<boolean> {
     if (!baseUrl) return false;
     if (!('managedToolkit' in preset)) {
+      if (['sentry', 'supabase'].includes(preset.id)) return false;
       return 'url' in preset || 'api' in preset && !preset.api.oauth;
     }
     if (MANAGED_CONNECTOR_CATALOG.capabilities(preset.managedToolkit, 'write').length === 0) {
       return false;
     }
-    return this.stores.managedConnectorAvailable
-      ? this.stores.managedConnectorAvailable({
-          toolkit: preset.managedToolkit,
-          accessLane: 'read',
-        })
-      : true;
+    if (!this.stores.managedConnectorAvailable) return true;
+    try {
+      return await this.stores.managedConnectorAvailable({
+        toolkit: preset.managedToolkit,
+        accessLane: 'read',
+      });
+    } catch {
+      return false;
+    }
   }
 
   private freezeAgentCreationConnectorSetup(
@@ -1862,11 +1894,17 @@ export class WorkspaceManagementService {
       recovered = true;
     } else {
       try {
+        const proposalAgentIds = new Set(proposal.operations.flatMap((operation) =>
+          operation.kind === 'create_agent' ? [operation.agent.id] : []
+        ));
         for (const operation of proposal.operations) {
           const handoff = await this.actingAgentOperationHandoff(actor, operation);
           if (handoff) throw new ChickpeaHandoffRequired(handoff);
           const policy = classifyManagementOperation(
-            await this.policyFacts(actor, operation),
+            await this.policyFacts(actor, operation, {
+              agentCreatedInProposal: operation.kind === 'grant_agent_channel' &&
+                proposalAgentIds.has(operation.agentId!),
+            }),
           );
           if (!policy.allowed) {
             throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
@@ -2021,7 +2059,7 @@ export class WorkspaceManagementService {
     operation: ManagementOperation,
   ): Promise<ImmediateMutation | undefined> {
     const prepared = changeSetPreparedItem(proposal, operation);
-    const preparedResult = await this.reconcilePrepared(actor, prepared);
+    const preparedResult = await this.reconcilePrepared(actor, prepared, proposal.proposalId);
     if (preparedResult) return preparedResult;
     const changed = await this.reconcileChangeSetConfirmedOperation(actor, operation);
     if (!changed) return undefined;
@@ -3309,6 +3347,7 @@ export class WorkspaceManagementService {
       approvalBasis?: 'explicit_requester_command';
       trustedReversibleOperation?: boolean;
       trustedSlackOriginGrant?: boolean;
+      agentCreatedInProposal?: boolean;
       operationCount?: number;
     } = {},
   ) {
@@ -3409,7 +3448,9 @@ export class WorkspaceManagementService {
       };
     }
     if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
-      await this.requireEditableAgent(actor, operation.agentId!);
+      if (!options.agentCreatedInProposal) {
+        await this.requireEditableAgent(actor, operation.agentId!);
+      }
       return {
         actor,
         operation,
@@ -3612,7 +3653,7 @@ export class WorkspaceManagementService {
         this.now(),
       );
     }
-    const reconciled = await this.reconcilePrepared(actor, prepared);
+    const reconciled = await this.reconcilePrepared(actor, prepared, requestId);
     return reconciled ?? await this.executeImmediate(actor, requestId, operation, prepared);
   }
 
@@ -3939,6 +3980,7 @@ export class WorkspaceManagementService {
   private async reconcilePrepared(
     actor: LiveManagementActor,
     prepared: ManagementPreparedItem,
+    requestId?: string,
   ): Promise<ImmediateMutation | undefined> {
     const operation = prepared.operation;
     if (!prepared.intendedAfter) return undefined;
@@ -3957,6 +3999,7 @@ export class WorkspaceManagementService {
       if (current && agentCreationMatches(current, intended)) {
         const published = await this.publishCreatedAgent(actor, current, {
           inferredHandle: operation.agent.requestedHandle === undefined,
+          ...(requestId ? { requestId } : {}),
           prepared,
         });
         return mutationForAgent(

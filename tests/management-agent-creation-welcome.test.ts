@@ -64,6 +64,23 @@ test('invalid and unavailable connectors do not consume an action slot', async (
   ]);
 });
 
+test('explicit connector aliases anchor to the canonical request text without pre-escaping labels', async () => {
+  const alias = await selectAgentCreationConnectors({
+    requestText: 'Create a deck Agent using Google Slides.',
+    explicitMentions: ['Slides'],
+    agentCorpus: '',
+  });
+  assert.deepEqual(alias.candidates.map(({ presetId }) => presetId), ['google-slides']);
+
+  const unsupported = await selectAgentCreationConnectors({
+    requestText: 'Create an Agent using <CRM & Ops>.',
+    explicitMentions: ['<CRM & Ops>'],
+    agentCorpus: '',
+  });
+  assert.equal(unsupported.notices[0]?.label, '<CRM & Ops>');
+  assert.equal(unsupported.notices[0]?.text, '<CRM & Ops> isn’t available to connect yet.');
+});
+
 test('only request-anchored affirmative connector mentions can become explicit actions', async () => {
   const plan = await selectAgentCreationConnectors({
     requestText: 'Create a research Agent without Notion. I previously used Slack. "Google Drive" is just an example. Use Linear.',
@@ -123,8 +140,16 @@ test('ambiguous aliases produce a notice and no action', async () => {
   }]);
 });
 
-test('a Slack creation atomically claims replay-stable connector handoffs and one welcome', async () => {
-  const f = await createManagementAdapterFixture('agent-creation-welcome-claim');
+test('a Slack creation freezes one welcome with connector handoffs and its published avatar', async () => {
+  const published: unknown[] = [];
+  const avatarUrl =
+    'https://gateway.chickpea.test/avatars/binding/agent_deck_welcome/rev_1.png';
+  const f = await createManagementAdapterFixture('agent-creation-welcome-claim', {
+    publishGeneratedAgentAvatar: async (input) => {
+      published.push(input);
+      return avatarUrl;
+    },
+  });
   try {
     const context: ManagementActorContext = {
       userId: f.admin.user.id,
@@ -137,7 +162,7 @@ test('a Slack creation atomically claims replay-stable connector handoffs and on
         channelId: 'D_AGENT_CREATION_WELCOME',
         threadTs: '900.1',
         messageTs: '900.1',
-        requestText: 'Create a deck Agent using Google Slides and Notion.',
+        requestText: 'Create a deck Agent using Google Slides, Notion, and Supabase.',
         conversationKind: 'im',
         agentId: CHICKPEA_AGENT_ID,
       },
@@ -153,7 +178,7 @@ test('a Slack creation atomically claims replay-stable connector handoffs and on
           name: 'Deck',
           description: 'Creates polished presentations.',
           requestedHandle: 'deck-welcome',
-          editPolicy: 'all_workspace_members',
+          editPolicy: 'creator_and_admins',
           instructions: 'Create presentations in Google Slides.',
           enabled: true,
           skills: [],
@@ -179,7 +204,7 @@ test('a Slack creation atomically claims replay-stable connector handoffs and on
       operationId: applied.operationId,
       creationItemId: 'create',
       agentId: 'agent_deck_welcome',
-      connectorMentions: ['Notion', 'Google Slides'],
+      connectorMentions: ['Notion', 'Supabase', 'Google Slides'],
       followOnNotices: [],
       presentationRunId: 'run_deck_welcome',
       turnJobId: 'turn_deck_welcome',
@@ -233,11 +258,27 @@ test('a Slack creation atomically claims replay-stable connector handoffs and on
     }
     const receipt = first.outbox.receipt;
     assert.equal(receipt.agentHandle, 'deck-welcome');
+    assert.equal(receipt.persona.avatarUrl, avatarUrl);
+    assert.deepEqual(published, [{
+      workspaceId: f.admin.binding.slackTeamId,
+      agentId: created.id,
+      revision: created.slackPresence?.avatar.revision,
+      seed: created.slackPresence?.avatar.seed,
+    }]);
+    assert.equal(
+      (await f.config.getAgent(created.id)).slackPresence?.avatar.url,
+      avatarUrl,
+    );
     assert.deepEqual(receipt.publication, { status: 'complete', incomplete: [] });
     assert.deepEqual(receipt.connectorActions?.map(({ label }) => label), [
       'Google Slides',
       'Notion',
     ]);
+    assert.deepEqual(receipt.connectorNotices, [{
+      kind: 'unavailable',
+      label: 'Supabase',
+      text: 'Supabase isn’t available to connect right now.',
+    }]);
     assert.match(receipt.connectorActions?.[0]?.setupUrl ?? '', /\/setup\/setup_welcome_/);
     assert.match(receipt.connectorActions?.[1]?.setupUrl ?? '', /\/setup\/setup_welcome_/);
     assert.notEqual(
@@ -260,24 +301,110 @@ test('a Slack creation atomically claims replay-stable connector handoffs and on
   }
 });
 
+test('a rejecting managed-connector availability check still queues the welcome', async () => {
+  const f = await createManagementAdapterFixture('welcome-availability-rejection', {
+    managedConnectorAvailable: async () => {
+      throw new Error('connector catalog unavailable');
+    },
+  });
+  try {
+    const context: ManagementActorContext = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      actingAgentId: CHICKPEA_AGENT_ID,
+      origin: {
+        kind: 'slack',
+        workspaceId: f.admin.binding.slackTeamId,
+        channelId: 'D_CONNECTOR_AVAILABILITY',
+        threadTs: '900.2',
+        messageTs: '900.2',
+        requestText: 'Create a research Agent using Notion.',
+        conversationKind: 'im',
+        agentId: CHICKPEA_AGENT_ID,
+      },
+    };
+    const applied = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'create-agent-with-unavailable-notion',
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: {
+          id: 'agent_connector_availability',
+          name: 'Research',
+          requestedHandle: 'research-availability',
+          editPolicy: 'creator_and_admins',
+          instructions: 'Research in Notion.',
+          enabled: true,
+          skills: [],
+          mcpServers: [],
+          apiConnections: [],
+          repositories: [],
+        },
+      }],
+    });
+    if (!('operationId' in applied)) assert.fail('expected applied creation');
+
+    const finalized = await f.service.finalizeSlackAgentCreationWelcome({
+      context,
+      operationId: applied.operationId,
+      creationItemId: 'create',
+      agentId: 'agent_connector_availability',
+      connectorMentions: ['Notion'],
+      followOnNotices: [],
+      turnJobId: 'turn_connector_availability',
+    });
+
+    assert.equal(finalized.created, true);
+    assert.deepEqual(await f.management.getOutboxForOperation(applied.operationId), finalized.outbox);
+    if (!('kind' in finalized.outbox.receipt) ||
+        finalized.outbox.receipt.kind !== 'agent_created_welcome') {
+      assert.fail('expected Agent welcome receipt');
+    }
+    assert.deepEqual(finalized.outbox.receipt.connectorActions, []);
+    assert.deepEqual(finalized.outbox.receipt.connectorNotices, [{
+      kind: 'unavailable',
+      label: 'Notion',
+      text: 'Notion isn’t available to connect right now.',
+    }]);
+  } finally {
+    f.close();
+  }
+});
+
 test('welcome finalization truthfully reports presence and source-Channel publication failures', async () => {
   const scenarios = [
     {
       suffix: 'welcome-presence-partial',
       conversationKind: 'im' as const,
       healthyPresence: false,
+      avatarFailure: false,
       incomplete: ['slack_presence'],
     },
     {
       suffix: 'welcome-source-partial',
       conversationKind: 'channel' as const,
       healthyPresence: true,
+      avatarFailure: false,
       incomplete: ['source_channel'],
+    },
+    {
+      suffix: 'welcome-avatar-publication-failure',
+      conversationKind: 'im' as const,
+      healthyPresence: true,
+      avatarFailure: true,
+      incomplete: [],
     },
   ] as const;
 
   for (const scenario of scenarios) {
-    const f = await createManagementAdapterFixture(scenario.suffix);
+    const f = await createManagementAdapterFixture(
+      scenario.suffix,
+      scenario.avatarFailure
+        ? { publishGeneratedAgentAvatar: async () => { throw new Error('gateway unavailable'); } }
+        : {},
+    );
     try {
       const agentId = `agent_${scenario.suffix.replaceAll('-', '_')}`;
       const agent = await f.config.createAgent({
@@ -386,9 +513,15 @@ test('welcome finalization truthfully reports presence and source-Channel public
         assert.fail('expected Agent welcome receipt');
       }
       assert.deepEqual(finalized.outbox.receipt.publication, {
-        status: 'partial',
+        status: scenario.incomplete.length === 0 ? 'complete' : 'partial',
         incomplete: scenario.incomplete,
       });
+      if (scenario.avatarFailure) {
+        assert.match(
+          finalized.outbox.receipt.persona.avatarUrl ?? '',
+          new RegExp(`/assets/agents/${agent.id}/avatar/1$`),
+        );
+      }
     } finally {
       f.close();
     }

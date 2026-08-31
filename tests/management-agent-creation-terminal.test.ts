@@ -144,6 +144,27 @@ test('a duplicate clarification can be corrected once within the same creation t
   assert.equal(persisted.frozenOutcome, undefined);
 });
 
+test('a failed create can be corrected within the same turn before anything is created', () => {
+  let persisted: SlackAgentCreationTurnState = { turnJobId: 'turn_failed_deck' };
+  const coordinator = createSlackAgentCreationTurnCoordinator(
+    'turn_failed_deck',
+    persisted,
+    (state) => { persisted = structuredClone(state); },
+  );
+  const first = coordinator.prepare({ idempotencyKey: 'first', operations: [createOperation] });
+  coordinator.record({
+    ok: false,
+    error: { code: 'invalid_request', message: 'That handle is unavailable.' },
+  });
+
+  const corrected = structuredClone(createOperation);
+  corrected.agent.requestedHandle = 'deck-corrected';
+  const retried = coordinator.prepare({ idempotencyKey: 'second', operations: [corrected] });
+
+  assert.equal(retried.idempotencyKey, first.idempotencyKey);
+  assert.deepEqual(retried.operations, [corrected]);
+});
+
 test('an applied create records one bounded terminal intent while other outcomes do not', () => {
   let persisted: SlackAgentCreationTurnState = { turnJobId: 'turn_create_deck' };
   const written: unknown[] = [];
@@ -196,6 +217,27 @@ test('an applied create records one bounded terminal intent while other outcomes
   });
   assert.equal(withLongProposal?.followOnNotices[1]?.text, longProposal.trim());
 
+  const withFailure = coordinator.recordFollowOn({
+    ok: true,
+    result: {
+      operationId: 'management_follow_on',
+      idempotencyKey: 'follow-on',
+      status: 'partial',
+      outcomes: [{
+        itemId: 'grant',
+        operationKind: 'grant_agent_channel',
+        disposition: 'failed',
+        code: 'channel_membership_required',
+      }],
+      effectiveRevision: 'follow_on_revision',
+      activation: 'next_turn',
+    },
+  });
+  assert.deepEqual(withFailure?.followOnNotices.at(-1), {
+    kind: 'failure',
+    text: 'A requested follow-on change did not finish: grant agent channel.',
+  });
+
   const recoveredWrites: unknown[] = [];
   const recovered = createSlackAgentCreationTurnCoordinator(
     'turn_create_deck',
@@ -205,7 +247,7 @@ test('an applied create records one bounded terminal intent while other outcomes
   );
   recovered.record(appliedResult);
   recovered.record(appliedResult);
-  assert.deepEqual(recoveredWrites, [withLongProposal]);
+  assert.deepEqual(recoveredWrites, [withFailure]);
 
   const duplicateWrites: unknown[] = [];
   const duplicate = createSlackAgentCreationTurnCoordinator(

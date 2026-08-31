@@ -89,7 +89,6 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
     : undefined;
   if (!preset || 'managedToolkit' in preset) return renderManagedConnectionUnavailablePage();
   const connector = preset.name;
-  const ownerKind = setup.target.ownerKind ?? 'member';
   const mcpAuth = 'url' in preset ? preset.auth : undefined;
   const credential = mcpAuth?.kind === 'bearer' || mcpAuth?.kind === 'header'
     ? {
@@ -124,16 +123,15 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
               <h2 id="owner-title">Who uses this account?</h2>
               <span class="select-control">
                 <select class="owner-select" id="connection-owner" name="ownerKind" aria-labelledby="owner-title" aria-describedby="owner-help">
-                  <option value="member"${ownerKind === 'member' ? ' selected' : ''}>My connection</option>
-                  <option value="team"${ownerKind === 'team' ? ' selected' : ''}>Team connection</option>
+                  <option value="" selected disabled>Choose Personal or Team</option>
+                  <option value="member">My connection</option>
+                  <option value="team">Team connection</option>
                 </select>
                 <svg class="select-control-caret" aria-hidden="true" focusable="false" viewBox="0 0 16 16">
                   <path d="m3.75 6.25 4.25 4.25 4.25-4.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
                 </svg>
               </span>
-              <p id="owner-help">${ownerKind === 'team'
-                ? `Everyone who can use ${escapeHtml(agent.name)} can use this connection.`
-                : `Only you can use this connection, and only when you invoke ${escapeHtml(agent.name)}.`}</p>
+              <p id="owner-help">Choose whether this connection is personal to you or shared with everyone who can use ${escapeHtml(agent.name)}.</p>
             </section>
             <section class="choice-block" aria-labelledby="access-title">
               <h2 id="access-title">Access</h2>
@@ -148,7 +146,7 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
           </form>
           <div class="flow-actions">
             <a class="text-button" href="/admin/agents/${encodeURIComponent(agent.id)}">Cancel</a>
-            <button class="primary-button" type="submit" form="connector-form" name="intent" value="authorize">Continue to ${escapeHtml(connector)}</button>
+            <button class="primary-button" type="submit" form="connector-form" name="intent" value="authorize" disabled>Continue to ${escapeHtml(connector)}</button>
           </div>
         </section>
       </main>
@@ -294,7 +292,7 @@ function setupScript(input: { agentName: string; connector: string; toolkit: str
 }
 
 function catalogSetupScript(input: { connector: string; agentName: string }): string {
-  return `(function(){var form=document.getElementById("connector-form"),button=document.querySelector('button[form="connector-form"][value="authorize"]'),alert=document.getElementById("flow-alert"),owner=document.getElementById("connection-owner"),ownerHelp=document.getElementById("owner-help"),connector=${jsonForScript(input.connector)},agent=${jsonForScript(input.agentName)};if(!form||!button||!alert||!owner||!ownerHelp)return;function updateOwner(){ownerHelp.textContent=owner.value==="team"?"Everyone who can use "+agent+" can use this connection.":"Only you can use this connection, and only when you invoke "+agent+"."}owner.addEventListener("change",updateOwner);form.addEventListener("submit",async function(event){event.preventDefault();var label=button.textContent;button.disabled=true;button.textContent="Preparing "+connector+"…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(String(body.message||"Chickpea could not prepare this connection. Try again."));if(body.authorizationUrl){var target=new URL(String(body.authorizationUrl));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href);return}location.replace(location.pathname)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not prepare this connection. Try again.";alert.hidden=false;button.disabled=false;button.textContent=label}});updateOwner()})();`;
+  return `(function(){var form=document.getElementById("connector-form"),button=document.querySelector('button[form="connector-form"][value="authorize"]'),alert=document.getElementById("flow-alert"),owner=document.getElementById("connection-owner"),ownerHelp=document.getElementById("owner-help"),connector=${jsonForScript(input.connector)},agent=${jsonForScript(input.agentName)},neutral="Choose whether this connection is personal to you or shared with everyone who can use "+agent+".";if(!form||!button||!alert||!owner||!ownerHelp)return;function selectedOwner(){return owner.value==="member"||owner.value==="team"}function updateOwner(){ownerHelp.textContent=owner.value==="team"?"Everyone who can use "+agent+" can use this connection.":owner.value==="member"?"Only you can use this connection, and only when you invoke "+agent+".":neutral;button.disabled=!selectedOwner()}owner.addEventListener("change",updateOwner);form.addEventListener("submit",async function(event){event.preventDefault();if(!selectedOwner()){alert.textContent="Choose Personal or Team to continue.";alert.hidden=false;updateOwner();return}var label=button.textContent;button.disabled=true;button.textContent="Preparing "+connector+"…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(String(body.message||"Chickpea could not prepare this connection. Try again."));if(body.authorizationUrl){var target=new URL(String(body.authorizationUrl));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href);return}location.replace(location.pathname)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not prepare this connection. Try again.";alert.hidden=false;button.textContent=label;updateOwner()}});updateOwner()})();`;
 }
 
 function pollScript(setupId: string): string {

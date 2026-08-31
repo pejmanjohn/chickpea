@@ -342,7 +342,7 @@ test('immediate Agent welcome renders connector actions in order and View Agent 
   assert.ok(text.endsWith('<https://example.test/admin/agents/agent_deck|View Agent>'));
 });
 
-test('partial creation posts once as Chickpea with valid actions and no Agent persona attempt', async () => {
+test('source-Channel-only partial creation still posts with the Agent persona and caveat', async () => {
   const calls: Array<Record<string, unknown>> = [];
   const record: ManagementReceiptOutboxRecord = {
     outboxId: 'agent_welcome_partial',
@@ -361,7 +361,7 @@ test('partial creation posts once as Chickpea with valid actions and no Agent pe
       agentHandle: 'deck',
       requesterMembershipId: 'membership_welcome',
       surface: 'channel',
-      persona: { name: 'Deck' },
+      persona: { name: 'Deck', avatarUrl: 'https://example.test/deck-avatar.png' },
       publication: { status: 'partial', incomplete: ['source_channel'] },
       connectorActions: [{
         presetId: 'google-slides',
@@ -396,13 +396,14 @@ test('partial creation posts once as Chickpea with valid actions and no Agent pe
     onDelivered: async (_record, delivery) => { delivered.push(delivery); },
   });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.username, undefined);
+  assert.equal(calls[0]?.username, 'Deck');
+  assert.equal(calls[0]?.icon_url, 'https://example.test/deck-avatar.png');
   assert.match(String(calls[0]?.text), /source-Channel availability/);
   assert.match(String(calls[0]?.text), /\|Connect Google Slides>/);
   assert.ok(String(calls[0]?.text).endsWith(
     '<https://example.test/admin/agents/agent_deck_partial|View Agent>',
   ));
-  assert.deepEqual(delivered.map(({ persona }) => persona), ['chickpea']);
+  assert.deepEqual(delivered.map(({ persona }) => persona), ['agent']);
 });
 
 test('an acknowledged Agent welcome is not retried when post-delivery bookkeeping fails', async () => {

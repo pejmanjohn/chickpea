@@ -447,8 +447,10 @@ export async function deliverManagementReceiptToSlack(
     ? 'agent'
     : 'chickpea';
   if (isAgentCreatedWelcome(record.receipt)) {
-    const partial = record.receipt.publication?.status === 'partial';
-    if (partial) {
+    const slackPresenceIncomplete = record.receipt.publication?.incomplete.includes(
+      'slack_presence',
+    ) ?? false;
+    if (slackPresenceIncomplete) {
       deliveredText = formatAgentWelcomeFallback(record.receipt);
       response = await execution.client.chat.postMessage({
         ...baseMessage,
@@ -547,6 +549,8 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
   const lines = [
     `Hi — I’m *${boundedSlackText(receipt.agentName, 80)}*${handle}.${description ? ` ${description}` : ''}`,
   ];
+  const publicationIssue = agentWelcomePublicationIssue(receipt);
+  if (publicationIssue) lines.push(publicationIssue);
   if (receipt.connectorNotices?.length) {
     lines.push(...receipt.connectorNotices.map(({ text }) => boundedSlackText(text, 500)));
   }
@@ -578,12 +582,8 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
 
 function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome): string {
   const handle = receipt.agentHandle ? ` (@${boundedSlackText(receipt.agentHandle, 80)})` : '';
-  const incomplete = receipt.publication?.incomplete ?? [];
-  const issue = incomplete.length > 0
-    ? `I couldn’t finish ${incomplete.map((part) =>
-        part === 'slack_presence' ? 'its Slack identity' : 'its source-Channel availability'
-      ).join(' or ')}.`
-    : 'Slack would not let me post its welcome under the Agent’s identity. The creation thread remains with Chickpea.';
+  const issue = agentWelcomePublicationIssue(receipt)
+    ?? 'Slack would not let me post its welcome under the Agent’s identity. The creation thread remains with Chickpea.';
   const lines = [
     `Created *${boundedSlackText(receipt.agentName, 80)}*${handle}, but ${issue}`,
     ...(receipt.connectorNotices ?? []).map(({ text }) => boundedSlackText(text, 500)),
@@ -598,6 +598,17 @@ function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome): str
       : []),
   ];
   return lines.join('\n\n');
+}
+
+function agentWelcomePublicationIssue(
+  receipt: ManagementAgentCreatedWelcome,
+): string | undefined {
+  const incomplete = receipt.publication?.incomplete ?? [];
+  return incomplete.length > 0
+    ? `I couldn’t finish ${incomplete.map((part) =>
+        part === 'slack_presence' ? 'its Slack identity' : 'its source-Channel availability'
+      ).join(' or ')}.`
+    : undefined;
 }
 
 function formatChickpeaIntroduction(_receipt: ManagementChickpeaIntroduction): string {

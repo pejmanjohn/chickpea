@@ -22,6 +22,8 @@ import {
 import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
 import {
   clearConnectorCredential,
+  connectionAccountSecretSettingKey,
+  saveConnectionAccountSecret,
   saveConnectorCredential,
 } from '../config/connector-secrets.ts';
 import {
@@ -326,6 +328,10 @@ export function createManagementSetupRoutes(
     const fields = await readFormFields(c);
     if (!fields) return formFailure(c, setup, 'invalid_form');
     try {
+      if (setup.action === 'catalog_connection') {
+        if (principal.organizationId !== setup.organizationId) throw new AuthorizationError();
+        requireAgentEdit(principal, await currentCatalogAgent(setup, dependencies.config));
+      }
       await dependencies.management.authorizeSetup({
         setupOperationId: setupId,
         browserSessionDigest: digest(setupSession(c, setupId)!),
@@ -336,6 +342,7 @@ export function createManagementSetupRoutes(
       clearSetupCookie(c, setupId);
       return c.redirect(`/setup/${encodeURIComponent(setupId)}`, 303);
     } catch (error) {
+      if (error instanceof AuthorizationError) return genericDenied(c);
       await markSetupFailure(setup, c, dependencies.management, safeFailureCode(error), now());
       return formFailure(c, setup, safeFailureCode(error));
     }
@@ -1004,31 +1011,120 @@ async function beginCatalogConnectionSetup(
       : {}),
   });
 
-  let account = (await dependencies.config.listConnectionAccounts(setup.origin.workspaceId)).find(
-    ({ id }) => id === setup.target.connectionId,
-  );
+  const prepared = await prepareCatalogConnection(preset, fields, options);
+  const requestedConnectionId = catalogSetupConnectionId(setup, ownerKind, principal.membershipId);
+  const accounts = await dependencies.config.listConnectionAccounts(setup.origin.workspaceId);
+  const generatedIds = [
+    requestedConnectionId.slice('connection_'.length),
+    randomUUID().replaceAll('-', ''),
+  ];
+  const service = new ConnectionAccountService({
+    config: dependencies.config,
+    settings: dependencies.settings,
+    randomId: () => generatedIds.shift() ?? randomUUID().replaceAll('-', ''),
+  });
+  let account = accounts.find(({ id }) => id === requestedConnectionId) ??
+    accounts.find(({ id, ownerKind: existingOwner }) =>
+      id === setup.target.connectionId && existingOwner === ownerKind
+    );
+  if (account) {
+    account = await service.getForManagement(principal, account.id);
+  }
+  const otherOwnerKind = ownerKind === 'member' ? 'team' : 'member';
+  const supersededIds = new Set([
+    setup.target.connectionId,
+    catalogSetupConnectionId(setup, otherOwnerKind, principal.membershipId),
+  ]);
+  for (const superseded of accounts.filter(({ id, lifecycle }) =>
+    id !== account?.id && supersededIds.has(id) && lifecycle !== 'revoked'
+  )) {
+    try {
+      await service.getForManagement(principal, superseded.id);
+    } catch (error) {
+      if (error instanceof AuthorizationError) continue;
+      throw error;
+    }
+    await service.revoke({
+      principal,
+      connectionAccountId: superseded.id,
+    });
+  }
   if (account) {
     const binding = await dependencies.config.getAgentConnectionBindingForAccount(account.id);
     if (account.workspaceId !== setup.origin.workspaceId || account.providerId !== preset.id ||
-        binding?.agentId !== setup.target.agentId || account.lifecycle === 'revoked' ||
+        !binding || binding.agentId !== setup.target.agentId || account.lifecycle === 'revoked' ||
         account.ownerKind !== ownerKind || account.ownerKind === 'member' &&
           account.ownerMembershipId !== principal.membershipId) {
       throw new Error('target_changed');
     }
+    const previousAccount = account;
+    const previousBinding = binding;
+    const credentialKey = connectionAccountSecretSettingKey(account.secretRefId);
+    const previousCredential = prepared.credential
+      ? await dependencies.settings.getSetting(credentialKey)
+      : undefined;
+    let updatedAccount: ConnectionAccount | undefined;
+    try {
+      updatedAccount = await dependencies.config.putConnectionAccount({
+        ...account,
+        policy: prepared.policy,
+        ...(prepared.identity ? { identity: prepared.identity } : {}),
+        lifecycle: prepared.credential ||
+            prepared.policy.kind === 'mcp' && prepared.policy.authMode === 'none'
+          ? 'ready'
+          : account.lifecycle,
+      }, account.revision);
+      await dependencies.config.putAgentConnectionBinding({
+        ...binding,
+        allowedCapabilities: prepared.allowedCapabilities,
+      });
+      if (prepared.credential) {
+        await saveConnectionAccountSecret(
+          account.secretRefId,
+          prepared.credential,
+          dependencies.platformEnv,
+          dependencies.settings,
+        );
+      }
+      account = updatedAccount;
+    } catch (error) {
+      const rollbackErrors: unknown[] = [];
+      if (updatedAccount) {
+        try {
+          await dependencies.config.putConnectionAccount(previousAccount, updatedAccount.revision);
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+        try {
+          await dependencies.config.putAgentConnectionBinding(previousBinding);
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      if (prepared.credential) {
+        try {
+          if (previousCredential === undefined) {
+            await dependencies.settings.deleteSetting(credentialKey);
+          } else {
+            await dependencies.settings.setSetting(credentialKey, previousCredential);
+          }
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...rollbackErrors],
+          'Connection replacement failed and its previous state could not be fully restored',
+        );
+      }
+      throw error;
+    }
   } else {
-    const prepared = await prepareCatalogConnection(preset, fields, options);
-    const accountIdSuffix = setup.target.connectionId.slice('connection_'.length);
-    if (!setup.target.connectionId.startsWith('connection_') || !accountIdSuffix) {
+    const accountIdSuffix = requestedConnectionId.slice('connection_'.length);
+    if (!requestedConnectionId.startsWith('connection_') || !accountIdSuffix) {
       throw new Error('target_changed');
     }
-    let idCall = 0;
-    const service = new ConnectionAccountService({
-      config: dependencies.config,
-      settings: dependencies.settings,
-      randomId: () => idCall++ === 0
-        ? accountIdSuffix
-        : randomUUID().replaceAll('-', ''),
-    });
     account = (await service.createForAgent({
       principal,
       agentId: setup.target.agentId,
@@ -1175,7 +1271,7 @@ function catalogTemplateHosts(templates: readonly string[], rawSubdomain: string
 }
 
 function catalogAccessLane(scopes: readonly string[]): 'read' | 'write' {
-  return scopes.some((scope) =>
+  return scopes.length === 0 || scopes.some((scope) =>
     /(?:^|[:_\s])write(?:$|[:_\s])/i.test(scope) ||
     ['POST', 'PUT', 'PATCH', 'DELETE'].includes(scope.toUpperCase())
   ) ? 'write' : 'read';
@@ -1531,11 +1627,16 @@ async function verifyMcpConnection(
   const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
   if (connectionAccountId) {
     const account = await findConnectionAccount(dependencies.config, connectionAccountId);
+    const binding = account
+      ? await dependencies.config.getAgentConnectionBindingForAccount(account.id)
+      : undefined;
     if (!account || account.lifecycle !== 'pending' || account.policy.kind !== 'mcp' ||
         account.policy.authMode !== 'oauth' ||
         accountRevision !== undefined && account.revision !== accountRevision ||
         oauthAttemptId !== undefined && account.policy.oauthAttemptId !== oauthAttemptId ||
-        setup.target.connectionId !== account.id) {
+        setup.origin.kind !== 'slack' || account.workspaceId !== setup.origin.workspaceId ||
+        account.providerId !== setup.target.presetId ||
+        binding?.agentId !== setup.target.agentId) {
       throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
     }
     const validated = validateMcpUrl(account.policy.url);
@@ -1631,7 +1732,8 @@ async function assertExactTarget(
   }
   if (!setup.target.agentId) throw new Error('target_changed');
   const agent = await dependencies.config.getAgent(setup.target.agentId);
-  if (agent.revision !== setup.target.expectedRevision) throw new Error('target_changed');
+  if (!setup.setupOperationId.startsWith('setup_welcome_') &&
+      agent.revision !== setup.target.expectedRevision) throw new Error('target_changed');
   if (setup.target.kind === 'api_connection') {
     const connection = agent.apiConnections.find(({ id }) => id === setup.target.connectionId);
     if (!connection || connection.displayName !== setup.target.targetLabel) throw new Error('target_changed');
@@ -1649,6 +1751,20 @@ async function assertExactTarget(
     const repository = agent.repositories.find(({ id }) => id === setup.target.repositoryId);
     if (!repository || repository.fullName !== setup.target.targetLabel) throw new Error('target_changed');
   }
+}
+
+function catalogSetupConnectionId(
+  setup: ManagementSetupRecord,
+  ownerKind: 'member' | 'team',
+  membershipId: string,
+): string {
+  const base = setup.target.connectionId;
+  if (!base?.startsWith('connection_')) throw new Error('target_changed');
+  const suffix = createHash('sha256')
+    .update(`${base}:${ownerKind}:${ownerKind === 'member' ? membershipId : 'workspace'}`)
+    .digest('hex')
+    .slice(0, 32);
+  return `connection_${suffix}`;
 }
 
 async function currentMcpConnection(

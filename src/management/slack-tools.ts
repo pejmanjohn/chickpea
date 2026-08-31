@@ -245,7 +245,8 @@ export function createSlackAgentCreationTurnCoordinator(
       let frozen = current.frozen;
       if (!frozen) throw new Error('Slack Agent creation state was not frozen.');
       if (!sameCreateOperation(frozen.operation, requestedCreate)) {
-        if (current.frozenOutcome !== 'clarification_required') {
+        if (current.frozenOutcome !== 'clarification_required' &&
+            current.frozenOutcome !== 'other') {
           throw new ManagementError(
             'invalid_request',
             'Only one base Agent can be created in a Slack turn. Ask the requester to send a separate message for another Agent.',
@@ -377,6 +378,21 @@ function followOnNoticeFromResult(
   }
   if (value.status === 'confirmation_required') {
     return { kind: 'pending', text: 'A separate requested change still needs approval.' };
+  }
+  if (isManagementApplyResult(result.result)) {
+    const incomplete = result.result.outcomes.filter(({ disposition }) =>
+      disposition === 'failed' || disposition === 'skipped'
+    );
+    if (incomplete.length > 0) {
+      const operations = [...new Set(incomplete.map(({ operationKind }) =>
+        operationKind.replaceAll('_', ' ')
+      ))].join(', ');
+      return boundedFollowOnNotice(
+        'failure',
+        `A requested follow-on change did not finish: ${operations}.`,
+        'A requested follow-on change failed.',
+      );
+    }
   }
   return undefined;
 }

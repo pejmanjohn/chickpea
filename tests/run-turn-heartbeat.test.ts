@@ -181,6 +181,7 @@ function v3PresentationHarness(
 test('runTurn acknowledges substantive work with a temporary eyes reaction', async () => {
   let reactionAdds = 0;
   let reactionRemoves = 0;
+  let managementRuntimeResolutions = 0;
   const client = {
     assistant: { threads: { setStatus: async () => ({ ok: true }) } },
     reactions: {
@@ -205,17 +206,23 @@ test('runTurn acknowledges substantive work with a temporary eyes reaction', asy
   await runTurn(workTurn('Ev_NO_SYNTHETIC_WORK_ACK'), assignment, undefined, {
     client,
     replayText: 'Verification complete.',
+    managementApproval: () => {
+      managementRuntimeResolutions += 1;
+      throw new Error('ordinary turns must not resolve the management runtime');
+    },
     usageRecordingEnabled: false,
   });
 
   assert.equal(reactionAdds, 1);
   assert.equal(reactionRemoves, 1);
+  assert.equal(managementRuntimeResolutions, 0);
 });
 
 test('runTurn applies a bound DM approval in the host without invoking the Agent', async () => {
   const f = await createManagementAdapterFixture('run-turn-host-approval');
   let promptCalls = 0;
   let historyCalls = 0;
+  let managementRuntimeResolutions = 0;
   const delivered: string[] = [];
   try {
     const managedAgent = await f.config.createAgent({
@@ -316,17 +323,21 @@ test('runTurn applies a bound DM approval in the host without invoking the Agent
         promptCalls += 1;
         throw new Error('the Agent must not handle an approved proposal');
       },
-      managementApproval: {
-        identity: f.identity,
-        config: f.config,
-        management: f.management,
-        service: f.service,
+      managementApproval: () => {
+        managementRuntimeResolutions += 1;
+        return {
+          identity: f.identity,
+          config: f.config,
+          management: f.management,
+          service: f.service,
+        };
       },
       usageRecordingEnabled: false,
     });
 
     assert.equal(promptCalls, 0);
     assert.equal(historyCalls, 0);
+    assert.equal(managementRuntimeResolutions, 1);
     assert.match(delivered.join('\n'), /Applied the approved changes\./);
     const applied = await f.config.getAgent(managedAgent.id);
     assert.equal(applied.description, 'Applied by the trusted Slack host.');
@@ -343,15 +354,19 @@ test('runTurn applies a bound DM approval in the host without invoking the Agent
         promptCalls += 1;
         throw new Error('the Agent must not handle an approved proposal replay');
       },
-      managementApproval: {
-        identity: f.identity,
-        config: f.config,
-        management: f.management,
-        service: f.service,
+      managementApproval: () => {
+        managementRuntimeResolutions += 1;
+        return {
+          identity: f.identity,
+          config: f.config,
+          management: f.management,
+          service: f.service,
+        };
       },
       usageRecordingEnabled: false,
     });
     assert.equal(promptCalls, 0);
+    assert.equal(managementRuntimeResolutions, 2);
     assert.equal((await f.config.getAgent(managedAgent.id)).revision, applied.revision);
     assert.equal(delivered.filter((text) => /Applied the approved changes\./.test(text)).length, 2);
   } finally {
@@ -435,7 +450,7 @@ test('runTurn suppresses model prose and defers one immediate-creation welcome',
           name: 'Deck',
           description: 'Creates polished presentations.',
           requestedHandle: 'run-turn-deck',
-          editPolicy: 'all_workspace_members',
+          editPolicy: 'creator_and_admins',
           instructions: 'Create polished presentations and track projects in Linear.',
           enabled: true,
           skills: [],

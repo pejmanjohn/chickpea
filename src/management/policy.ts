@@ -48,6 +48,13 @@ export function classifyManagementOperation(
     return { allowed: true, posture: 'confirmation', reason: 'irreversible_routine_delete' };
   }
   if (operation.kind === 'create_agent') {
+    if (operation.agent.editPolicy === 'all_workspace_members') {
+      return {
+        allowed: true,
+        posture: 'confirmation',
+        reason: 'workspace_wide_agent_edit_authority',
+      };
+    }
     return { allowed: true, posture: 'immediate', reason: 'base_agent_creation' };
   }
   if (operation.kind === 'save_routine' || operation.kind === 'run_routine') {

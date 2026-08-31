@@ -1552,9 +1552,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const resolveInstallation = this.createAlarmIdentityResolver(stores);
     const usageStore = localUsageStore(stores);
     const appStores = localGatewayAppStores(stores);
-    const managementRuntime = pending.some(({ turn }) => turn.managementApprovalProposalId)
-      ? localManagementRuntime(stores, this.env as PlatformEnv, appStores)
-      : undefined;
+    const resolveManagementApproval = () => {
+      const managementRuntime = localManagementRuntime(
+        stores,
+        this.env as PlatformEnv,
+        appStores,
+      );
+      return {
+        identity: appStores.identity,
+        config: appStores.config,
+        management: appStores.management,
+        service: managementRuntime.service,
+      };
+    };
     let needsRetry = gatewayNeedsRetry;
     let identityRetryDelayMs = RELAY_RETRY_BACKOFF_MS;
     const runJob = async (job: (typeof pending)[number]): Promise<boolean> => {
@@ -1696,16 +1706,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           settingsStore: localSettingsStore(stores),
           usageStore,
           appStores,
-          ...(job.turn.managementApprovalProposalId && managementRuntime
-            ? {
-                managementApproval: {
-                  identity: appStores.identity,
-                  config: appStores.config,
-                  management: appStores.management,
-                  service: managementRuntime.service,
-                },
-              }
-            : {}),
+          managementApproval: resolveManagementApproval,
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
           onRuntimePlan: (candidate) => stores.turnJobs.freezeRuntimePlan(job.id, candidate),
           flueDispatch,
