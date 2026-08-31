@@ -423,10 +423,13 @@ import {
 import {
   AgentAvatarError,
   agentAvatarUrl,
-  generatedAgentAvatarPng,
   readAgentAvatarAsset,
   uploadAgentAvatar,
 } from '../slack/agent-presence/avatar-assets.ts';
+import {
+  publishGeneratedAgentAvatar,
+  type GeneratedAgentAvatarPublishInput,
+} from '../slack/agent-presence/gateway-avatar.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import {
   AgentPresenceError,
@@ -556,6 +559,13 @@ interface AdminRoutesOptions {
    */
   slackCredentials?: SlackCredentialDependencies | undefined;
   slackAdmissionService?: SlackAdmissionService | undefined;
+  gatewayAvatarPublish?: ((input: {
+    workspaceId: string;
+    agentId: string;
+    revision: number;
+    contentType: 'image/png';
+    bytes: Uint8Array;
+  }) => Promise<string>) | undefined;
   authSecret?: string | undefined;
   recoveryToken?: string | undefined;
   authRateLimiter?: AuthRateLimiter | undefined;
@@ -1670,6 +1680,47 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       );
     }
     return createDirectSlackTransport(credentials.botToken);
+  };
+  const ensureGeneratedGatewayAvatar = async (
+    c: Context,
+    current: CustomAgentConfig,
+    workspaceId: string,
+  ): Promise<CustomAgentConfig> => {
+    const avatar = current.slackPresence?.avatar;
+    if (avatar?.kind !== 'generated') return current;
+    const installation = await store(c).getWorkspaceInstallation(workspaceId);
+    if (installation?.transportMode !== 'gateway') return current;
+    const injectedPublish = options.gatewayAvatarPublish;
+    let publish: (input: GeneratedAgentAvatarPublishInput) => Promise<string>;
+    if (injectedPublish) {
+      publish = (candidate) => injectedPublish({
+        workspaceId: installation.workspaceId,
+        ...candidate,
+      });
+    } else {
+      const gateway = createGatewayDeploymentClient(c.env as PlatformEnv | undefined);
+      publish = (candidate) => gateway.publishAvatar({
+        workspaceId: installation.workspaceId,
+        ...candidate,
+      });
+    }
+    const published = await publishGeneratedAgentAvatar({
+      agentId: current.id,
+      revision: avatar.revision,
+      seed: avatar.seed ?? current.id,
+      publish,
+    });
+    if (avatar.revision === published.revision && avatar.url === published.url) return current;
+    return store(c).updateAgent(current.id, {
+      slackPresence: {
+        ...current.slackPresence!,
+        avatar: {
+          ...avatar,
+          revision: published.revision,
+          url: published.url,
+        },
+      },
+    }, current.revision);
   };
   const slackWorkspaceDescriptor = async (c: Context): Promise<{
     teamId: string;
@@ -7290,28 +7341,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (actor.slackTeamId !== parsed.output.workspaceId) throw new AuthorizationError();
       let current = await store(c).getAgent(agentId);
       requireAgentEdit(actor.principal, current);
-      const installation = await store(c).getWorkspaceInstallation(parsed.output.workspaceId);
-      if (installation?.transportMode === 'gateway' &&
-          current.slackPresence?.avatar.kind === 'generated') {
-        const avatar = current.slackPresence.avatar;
-        const url = await createGatewayDeploymentClient(
-          c.env as PlatformEnv | undefined,
-        ).publishAvatar({
-          workspaceId: installation.workspaceId,
-          agentId,
-          revision: avatar.revision,
-          contentType: 'image/png',
-          bytes: await generatedAgentAvatarPng(avatar.seed ?? agentId),
-        });
-        if (avatar.url !== url) {
-          current = await store(c).updateAgent(agentId, {
-            slackPresence: {
-              ...current.slackPresence,
-              avatar: { ...avatar, url },
-            },
-          }, current.revision);
-        }
-      }
+      current = await ensureGeneratedGatewayAvatar(
+        c,
+        current,
+        parsed.output.workspaceId,
+      );
       const reconciler = new AgentPresenceReconciler({
         config: store(c),
         transport: await agentSlackTransport(c, parsed.output.workspaceId),
@@ -7362,8 +7396,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const actor = await agentActor(c);
       const workspaceId = parsed.output.workspaceId ?? actor.slackTeamId;
       if (actor.slackTeamId !== workspaceId) throw new AuthorizationError();
-      const current = await store(c).getAgent(agentId);
+      let current = await store(c).getAgent(agentId);
       requireAgentEdit(actor.principal, current);
+      current = await ensureGeneratedGatewayAvatar(c, current, workspaceId);
       const reconciler = new AgentPresenceReconciler({
         config: store(c),
         transport: await agentSlackTransport(c, workspaceId),

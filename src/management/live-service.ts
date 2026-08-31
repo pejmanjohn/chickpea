@@ -29,6 +29,7 @@ import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
+import { publishGeneratedAgentAvatar } from '../slack/agent-presence/gateway-avatar.ts';
 import { GatewayDeploymentClient } from '../slack/gateway/client.ts';
 import {
   createGatewayDeploymentClient,
@@ -260,11 +261,14 @@ export function createLiveWorkspaceManagementService(
         keyring: slackCredentials.keyring,
         gatewayBaseUrl: resolveChickpeaGatewayUrl(env),
       });
-      return gateway.generateAvatar({
-        workspaceId,
+      return publishGeneratedAgentAvatar({
         agentId,
         revision,
         seed,
+        publish: (avatar) => gateway.publishAvatar({
+          workspaceId,
+          ...avatar,
+        }),
       });
     },
     assertAgentChannelMembership: async ({ actor, workspaceId, channelId }) => {
