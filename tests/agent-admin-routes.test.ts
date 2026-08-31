@@ -3426,6 +3426,75 @@ test('Avatar uploads create a new immutable revision used by later Slack replies
   }
 });
 
+test('Slack retry repairs a legacy gateway rendering with the selected gallery bytes', async () => {
+  const published: Array<{ revision: number; bytes: Uint8Array }> = [];
+  const fixture = harness(new FakeTransport(), {
+    gatewayAvatarPublish: async ({ agentId, revision, bytes }) => {
+      published.push({ revision, bytes });
+      if (revision === 1) {
+        throw new SlackTransportError('avatar.publish', 'avatar_revision_exists', {
+          effectOutcome: 'failed',
+        });
+      }
+      return `https://gateway.chickpea.test/avatars/binding_test/${agentId}/rev_${revision}.png`;
+    },
+  });
+  try {
+    const { agent } = await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      teamId: 'T_TEST',
+      transportMode: 'gateway',
+      appId: 'A_TEST',
+      botUserId: 'U_BOT',
+      gatewayBindingId: 'binding_test',
+    });
+
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/slack/retry',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({ workspaceId: 'T_TEST' }),
+      },
+    );
+
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as Record<string, any>;
+    assert.deepEqual(published.map(({ revision }) => revision), [1, 2]);
+    assert.deepEqual(published[0]?.bytes, defaultAgentAvatarPng(agent.slackPresence.avatar.seed));
+    assert.deepEqual(published[1]?.bytes, published[0]?.bytes);
+    assert.equal(body.agent.slackPresence.avatar.kind, 'generated');
+    assert.equal(body.agent.slackPresence.avatar.revision, 2);
+    assert.equal(
+      body.agent.slackPresence.avatar.url,
+      'https://gateway.chickpea.test/avatars/binding_test/agent_support/rev_2.png',
+    );
+    assert.equal(
+      (await fixture.store.getAgent('agent_support')).slackPresence?.avatar.revision,
+      2,
+    );
+
+    const replay = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/slack/retry',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({ workspaceId: 'T_TEST' }),
+      },
+    );
+    assert.equal(replay.status, 200, await replay.clone().text());
+    const replayBody = await replay.json() as Record<string, any>;
+    assert.deepEqual(published.map(({ revision }) => revision), [1, 2, 2]);
+    assert.equal(replayBody.agent.slackPresence.avatar.revision, 2);
+    assert.equal(
+      replayBody.agent.slackPresence.avatar.url,
+      'https://gateway.chickpea.test/avatars/binding_test/agent_support/rev_2.png',
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('Archive disables the same Slack handle and restore re-enables it', async () => {
   const fixture = harness();
   try {

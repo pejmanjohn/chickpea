@@ -147,7 +147,7 @@ test('a Slack creation freezes one welcome with connector handoffs and its publi
   const f = await createManagementAdapterFixture('agent-creation-welcome-claim', {
     publishGeneratedAgentAvatar: async (input) => {
       published.push(input);
-      return avatarUrl;
+      return { url: avatarUrl, revision: 1 };
     },
   });
   try {

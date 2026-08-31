@@ -244,7 +244,7 @@ export interface WorkspaceManagementServiceInput {
     agentId: string;
     revision: number;
     seed: string;
-  }) => Promise<string | undefined>;
+  }) => Promise<{ url: string; revision: number } | undefined>;
   assertAgentChannelMembership?: (input: {
     actor: LiveManagementActor;
     workspaceId: string;
@@ -1000,17 +1000,21 @@ export class WorkspaceManagementService {
     if (generatedAvatar?.kind === 'generated' && !generatedAvatar.url &&
         this.stores.publishGeneratedAgentAvatar) {
       try {
-        const publishedUrl = await this.stores.publishGeneratedAgentAvatar({
+        const published = await this.stores.publishGeneratedAgentAvatar({
           workspaceId: actor.origin.workspaceId,
           agentId: agent.id,
           revision: generatedAvatar.revision,
           seed: generatedAvatar.seed ?? agent.id,
         });
-        if (publishedUrl) {
+        if (published) {
           agent = await this.stores.config.updateAgent(agent.id, {
             slackPresence: {
               ...agent.slackPresence!,
-              avatar: { ...generatedAvatar, url: publishedUrl },
+              avatar: {
+                ...generatedAvatar,
+                revision: published.revision,
+                url: published.url,
+              },
             },
           }, agent.revision);
         }
