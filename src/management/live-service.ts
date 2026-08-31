@@ -29,7 +29,11 @@ import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
-import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
+import { GatewayDeploymentClient } from '../slack/gateway/client.ts';
+import {
+  createGatewayDeploymentClient,
+  resolveChickpeaGatewayUrl,
+} from '../slack/gateway/runtime.ts';
 import {
   resolveSlackInstallationCredentials,
   type SlackCredentialDependencies,
@@ -212,7 +216,7 @@ export function createLiveWorkspaceManagementService(
       }
       return entries;
     },
-    publishAgentPresence: async ({ actor, agentId }) => {
+    publishAgentPresence: async ({ actor, agentId, inferredHandle }) => {
       const organization = await identity.getOrganization();
       if (!organization?.slackTeamId) {
         return {
@@ -227,6 +231,9 @@ export function createLiveWorkspaceManagementService(
         };
       } catch (error) {
         if (!(error instanceof AgentPresenceError)) throw error;
+        if (inferredHandle && error.code === 'handle_collision' && error.suggestions.length > 0) {
+          throw error;
+        }
         return {
           agent: await config.getAgent(agentId),
           warning: `The Agent was created, but its Slack handle needs attention: ${error.message}`,
@@ -241,6 +248,23 @@ export function createLiveWorkspaceManagementService(
         agentId,
         actorMembershipId: actor.membershipId,
         actorSlackUserId: user.slackUserId,
+      });
+    },
+    publishGeneratedAgentAvatar: async ({ workspaceId, agentId, revision, seed }) => {
+      const installation = await config.getWorkspaceInstallation(workspaceId);
+      if (installation?.transportMode !== 'gateway') return undefined;
+      const gateway = new GatewayDeploymentClient({
+        settings,
+        config: config as ConfigStore,
+        identity,
+        keyring: slackCredentials.keyring,
+        gatewayBaseUrl: resolveChickpeaGatewayUrl(env),
+      });
+      return gateway.generateAvatar({
+        workspaceId,
+        agentId,
+        revision,
+        seed,
       });
     },
     assertAgentChannelMembership: async ({ actor, workspaceId, channelId }) => {

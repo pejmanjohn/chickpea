@@ -84,6 +84,8 @@ export type ManagementOperation =
   | (ManagementOperationBase & {
       kind: 'create_agent';
       clientRef?: string;
+      /** Set only after the requester chooses a separate Agent despite a visible identity match. */
+      duplicateResolution?: 'create_distinct';
       agent: ManagementAgentCreateInput;
     })
   | (ManagementOperationBase & {
@@ -273,6 +275,7 @@ export type ManagementSetupAction =
   | 'api_credential'
   | 'mcp_oauth'
   | 'mcp_credentials'
+  | 'catalog_connection'
   | 'managed_connection'
   | 'repository_access'
   | 'provider_credential';
@@ -288,7 +291,7 @@ export type ManagementSetupStatus =
 
 /** Exact non-secret capability scope frozen when a setup link is issued. */
 export interface ManagementSetupTarget {
-  kind: ManagementSetupRequestTarget['kind'] | 'managed_connection';
+  kind: ManagementSetupRequestTarget['kind'] | 'catalog_connection' | 'managed_connection';
   provider: string;
   targetId: string;
   targetLabel: string;
@@ -371,11 +374,17 @@ export type ManagementReceipt =
 /** Durable, Agent-authored first message after one approved creation. */
 export interface ManagementAgentCreatedWelcome {
   kind: 'agent_created_welcome';
-  proposalId: string;
+  /** Present on compatibility welcomes created by the former proposal path. */
+  proposalId?: string;
+  /** Durable immediate-creation request that owns this welcome. */
+  creationOperationId?: string;
   /** Internal correlation for settling the Slack Run after this deferred post is acknowledged. */
   presentationRunId?: string;
+  /** Durable Slack turn held open until this deferred receipt settles. */
+  turnJobId?: string;
   agentId: string;
   agentName: string;
+  agentHandle?: string;
   agentDescription?: string;
   requesterMembershipId: string;
   surface: 'channel' | 'direct';
@@ -383,6 +392,27 @@ export interface ManagementAgentCreatedWelcome {
     name: string;
     avatarUrl?: string;
   };
+  publication?: {
+    status: 'complete' | 'partial';
+    incomplete: Array<'slack_presence' | 'source_channel'>;
+  };
+  connectorActions?: Array<{
+    presetId: string;
+    label: string;
+    setupOperationId?: string;
+    setupUrl: string;
+  }>;
+  connectorNotices?: Array<{
+    kind: 'ambiguous' | 'unsupported' | 'unavailable' | 'already_attached' | 'overflow';
+    label: string;
+    text: string;
+  }>;
+  followOnNotices?: Array<{
+    kind: 'proposal' | 'pending' | 'declined' | 'failure';
+    text: string;
+  }>;
+  viewAgentUrl?: string;
+  /** Compatibility fields for proposal-created welcomes. */
   setupUrl?: string;
   suggestedConnector?: string;
 }
@@ -519,6 +549,21 @@ export interface ManagementApplyResult {
   };
 }
 
+export interface ManagementDuplicateIdentityResult {
+  status: 'clarification_required';
+  clarification: {
+    kind: 'duplicate_agent_identity';
+    requested: { name: string; handle: string };
+    matches: Array<{ id: string; name: string; handle: string }>;
+    options: ['use_existing', 'create_distinct'];
+  };
+  presentation: { slack: string };
+}
+
+export type ApplyWorkspaceChangesResult =
+  | ManagementApplyResult
+  | ManagementDuplicateIdentityResult;
+
 export interface SkillImportReceiptMetadata {
   sourceUrl: string;
   path: string;
@@ -644,6 +689,25 @@ export interface PrepareConnectorSetupResult {
   ownerKind: ConnectionAccountOwnerKind;
   handoffUrl: string;
   setupOperationId?: string;
+}
+
+export interface FinalizeSlackAgentCreationWelcomeInput {
+  context: ManagementActorContext;
+  operationId: string;
+  creationItemId: string;
+  agentId: string;
+  connectorMentions: string[];
+  followOnNotices: Array<{
+    kind: 'proposal' | 'pending' | 'declined' | 'failure';
+    text: string;
+  }>;
+  presentationRunId?: string;
+  turnJobId: string;
+}
+
+export interface FinalizeSlackAgentCreationWelcomeResult {
+  outbox: ManagementReceiptOutboxRecord;
+  created: boolean;
 }
 
 export interface ManagementMemorySnapshot {
@@ -1000,6 +1064,17 @@ export interface PutManagementSetupInput {
   record: ManagementSetupRecord;
 }
 
+export interface ClaimAgentCreationWelcomeInput {
+  operationId: string;
+  setups: PutManagementSetupInput[];
+  outbox: ManagementReceiptOutboxRecord;
+}
+
+export interface ClaimAgentCreationWelcomeResult {
+  outbox: ManagementReceiptOutboxRecord;
+  created: boolean;
+}
+
 export interface ExchangeManagementSetupInput {
   setupOperationId: string;
   tokenDigest: string;
@@ -1104,6 +1179,7 @@ export type ManagementRpcRequest =
   | { kind: 'get_undo'; operationId: string }
   | { kind: 'consume_undo'; operationId: string; at: number }
   | { kind: 'put_setup'; input: PutManagementSetupInput }
+  | { kind: 'claim_agent_creation_welcome'; input: ClaimAgentCreationWelcomeInput }
   | { kind: 'get_setup'; setupOperationId: string; at?: number }
   | { kind: 'exchange_setup'; input: ExchangeManagementSetupInput }
   | { kind: 'authorize_setup'; input: AuthorizeManagementSetupInput }
@@ -1141,4 +1217,5 @@ export type ManagementRpcResponse =
   | { kind: 'outbox'; outbox: ManagementReceiptOutboxRecord | null }
   | { kind: 'outbox_batch'; outbox: ManagementReceiptOutboxRecord[] }
   | { kind: 'introduction_claim'; result: ClaimManagementIntroductionResult }
+  | { kind: 'agent_creation_welcome_claim'; result: ClaimAgentCreationWelcomeResult }
   | { kind: 'retention'; deleted: number };

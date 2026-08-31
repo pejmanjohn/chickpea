@@ -221,6 +221,7 @@ import {
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
   failAgentWelcomeDelivery,
+  isAgentCreatedWelcome,
   reconcileScheduleActionReceipts,
 } from './management/receipts.ts';
 import {
@@ -1551,9 +1552,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const resolveInstallation = this.createAlarmIdentityResolver(stores);
     const usageStore = localUsageStore(stores);
     const appStores = localGatewayAppStores(stores);
-    const managementRuntime = pending.some(({ turn }) => turn.managementApprovalProposalId)
-      ? localManagementRuntime(stores, this.env as PlatformEnv, appStores)
-      : undefined;
+    const resolveManagementApproval = () => {
+      const managementRuntime = localManagementRuntime(
+        stores,
+        this.env as PlatformEnv,
+        appStores,
+      );
+      return {
+        identity: appStores.identity,
+        config: appStores.config,
+        management: appStores.management,
+        service: managementRuntime.service,
+      };
+    };
     let needsRetry = gatewayNeedsRetry;
     let identityRetryDelayMs = RELAY_RETRY_BACKOFF_MS;
     const runJob = async (job: (typeof pending)[number]): Promise<boolean> => {
@@ -1594,6 +1605,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       const client = installationContext.client;
       const attempt = job.attempts + 1;
       let delivered = false;
+      let deferredTerminal = false;
       let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
         ? slackAgentThreadKey(job.turn, job.assignment)
         : undefined;
@@ -1694,16 +1706,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           settingsStore: localSettingsStore(stores),
           usageStore,
           appStores,
-          ...(job.turn.managementApprovalProposalId && managementRuntime
-            ? {
-                managementApproval: {
-                  identity: appStores.identity,
-                  config: appStores.config,
-                  management: appStores.management,
-                  service: managementRuntime.service,
-                },
-              }
-            : {}),
+          managementApproval: resolveManagementApproval,
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
           onRuntimePlan: (candidate) => stores.turnJobs.freezeRuntimePlan(job.id, candidate),
           flueDispatch,
@@ -1736,7 +1739,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
             if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
             delivered = true;
           },
+          onDeferredTerminal: () => {
+            deferredTerminal = true;
+            if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
+          },
         });
+        if (deferredTerminal) return true;
         // Delivery was tombstoned at the exact presentation boundary above.
         // Claims stay held — a completed turn never re-runs.
         return true;
@@ -2088,16 +2096,30 @@ async function drainCloudflareManagementReceipts(
   };
   await drainManagementReceiptOutbox({
     management: stores.management as unknown as ManagementStore,
-    onTerminalFailure: (record) => failAgentWelcomeDelivery(record, presentation),
+    onTerminalFailure: async (record) => {
+      await failAgentWelcomeDelivery(record, presentation);
+      if (isAgentCreatedWelcome(record.receipt) && record.receipt.turnJobId) {
+        stores.turnJobs.markError(record.receipt.turnJobId);
+      }
+    },
     deliver: (record) => deliverManagementReceiptToSlack(record, {
       identity: stores.identity as unknown as IdentityStore,
       resolveInstallation,
-      onDelivered: (deliveredRecord, delivery) => completeAgentWelcomeDelivery(
-        deliveredRecord,
-        delivery,
-        stores.config,
-        presentation,
-      ),
+      onDelivered: async (deliveredRecord, delivery) => {
+        try {
+          await completeAgentWelcomeDelivery(
+            deliveredRecord,
+            delivery,
+            stores.config,
+            presentation,
+          );
+        } finally {
+          if (isAgentCreatedWelcome(deliveredRecord.receipt) &&
+              deliveredRecord.receipt.turnJobId) {
+            stores.turnJobs.markDelivered(deliveredRecord.receipt.turnJobId);
+          }
+        }
+      },
     }),
   });
 }

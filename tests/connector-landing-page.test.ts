@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
+  renderCatalogConnectionSetupPage,
   renderManagedConnectionSetupPage,
   renderManagedConnectionSuccessPage,
   renderManagedConnectionWaitingPage,
@@ -41,6 +42,52 @@ const setup: ManagementSetupRecord = {
   createdAt: 1_800_000_000_000,
   updatedAt: 1_800_000_000_000,
 };
+
+test('native catalog connectors use the same dedicated Agent setup surface', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_linear',
+      name: 'Project Guide',
+      instructions: 'Help the team manage projects.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const rendered = renderCatalogConnectionSetupPage({
+      setup: {
+        ...setup,
+        setupOperationId: 'setup_catalog_linear',
+        action: 'catalog_connection',
+        target: {
+          kind: 'catalog_connection',
+          provider: 'linear',
+          targetId: 'agent:agent_linear:catalog:linear',
+          targetLabel: 'Linear',
+          expectedRevision: agent.revision,
+          agentId: agent.id,
+          agentName: agent.name,
+          connectionId: 'connection_catalog_linear',
+          replacement: false,
+          ownerKind: 'member',
+          presetId: 'linear',
+        },
+      },
+      agent,
+    });
+
+    assert.match(rendered, /Connect Linear to Project Guide/);
+    assert.match(rendered, /data-connector-surface="connector-setup"/);
+    assert.match(rendered, /<select[^>]+name="ownerKind"/);
+    assert.match(rendered, /Linear requests native read and write access/);
+    assert.match(rendered, /Continue to Linear/);
+    assert.doesNotMatch(rendered, /<nav|aria-label="Usage"|data-section-switcher/);
+  } finally {
+    config.close();
+  }
+});
 
 test('managed connector pages use the real Chickpea wordmark and approved setup and success copy', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });

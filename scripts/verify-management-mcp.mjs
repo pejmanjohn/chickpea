@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
-const AGENT_AUTHORING_GUIDE_VERSION = '1.0.27';
-const MANAGEMENT_MCP_SERVER_VERSION = '2.4.0';
+const AGENT_AUTHORING_GUIDE_VERSION = '1.0.28';
+const MANAGEMENT_MCP_SERVER_VERSION = '2.5.0';
 
 function fetchWithDeadline(input, init = {}) {
   return fetch(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
@@ -107,49 +107,15 @@ async function main(rawBaseUrl) {
   });
   const snapshot = assertSuccessfulToolResult(inspected, 'workspace inspection');
 
-  const canaryAgentId = `agent_canary_${Date.now().toString(36)}`;
-  const proposed = await mcpCall(base, token, 'tools/call', {
-    name: 'propose_workspace_changes',
-    arguments: {
-      idempotencyKey: `canary-${Date.now().toString(36)}`,
-      guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
-      authoringReason: 'agent_creation',
-      operations: [{
-        itemId: 'canary',
-        kind: 'create_agent',
-        agent: {
-          id: canaryAgentId,
-          name: 'Unconfirmed MCP canary',
-          description: 'Verifies proposal behavior without creating an Agent.',
-          instructions: 'This proposal is never confirmed.',
-          enabled: true,
-          skills: [],
-          mcpServers: [],
-          apiConnections: [],
-          repositories: [],
-        },
-      }],
-    },
-  });
-  const proposal = assertSuccessfulToolResult(proposed, 'workspace-change proposal');
-  if (proposal?.guide?.version !== AGENT_AUTHORING_GUIDE_VERSION ||
-      proposal?.guide?.uri !== AGENT_AUTHORING_GUIDE_URI ||
-      proposal?.guide?.digest !== guide.digest ||
-      !String(proposal?.proposalId ?? '').startsWith('changeset_')) {
-    throw new Error('Workspace-change proposal omitted canonical guide metadata.');
-  }
   const reinspected = assertSuccessfulToolResult(await mcpCall(base, token, 'tools/call', {
     name: 'inspect_workspace',
     arguments: {},
-  }), 'post-proposal workspace inspection');
+  }), 'repeat workspace inspection');
   requireEqual(
     reinspected?.effectiveRevision,
     snapshot?.effectiveRevision,
-    'configuration revision after unconfirmed proposal',
+    'configuration revision across read-only verification',
   );
-  if ((reinspected?.agents ?? []).some((agent) => agent?.id === canaryAgentId)) {
-    throw new Error('Unconfirmed proposal created an Agent.');
-  }
 
   // A second stateless call exercises disconnect/reconnect semantics without
   // retaining a server session or printing the private workspace snapshot.
@@ -157,7 +123,7 @@ async function main(rawBaseUrl) {
   if ((relisted?.tools?.length ?? 0) !== names.length) {
     throw new Error('Stateless reconnect returned a different tool inventory.');
   }
-  console.log(`ok authenticated guide, no-write proposal, and stateless reconnect (${names.length} tools)`);
+  console.log(`ok authenticated guide, read-only inspection, and stateless reconnect (${names.length} tools)`);
 
   const applyPath = process.env.MANAGEMENT_MCP_CANARY_APPLY_PATH?.trim();
   if (!applyPath) return;

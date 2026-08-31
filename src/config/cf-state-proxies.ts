@@ -1099,6 +1099,16 @@ export class CfManagementStore implements ManagementStore {
     return response.setup;
   }
 
+  async claimAgentCreationWelcome(
+    input: Parameters<ManagementStore['claimAgentCreationWelcome']>[0],
+  ) {
+    const response = await this.execute({ kind: 'claim_agent_creation_welcome', input });
+    if (response.kind !== 'agent_creation_welcome_claim') {
+      throw unexpectedManagementResponse();
+    }
+    return response.result;
+  }
+
   async getSetup(setupOperationId: string, at?: number) {
     const response = await this.execute({
       kind: 'get_setup',

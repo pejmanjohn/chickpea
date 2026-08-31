@@ -165,6 +165,11 @@ import {
   SlackTablePresentationSchema,
   type SlackTablePresentation,
 } from '../slack/table-presentation.ts';
+import {
+  SLACK_AGENT_CREATION_TERMINAL_DATA_NAME,
+  SlackAgentCreationTerminalIntentSchema,
+  type SlackAgentCreationTerminalIntent,
+} from '../slack/agent-creation-terminal.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { WebClientPresenter } from '../slack/web-client-presenter.ts';
 import {
@@ -1096,6 +1101,9 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const writeTablePresentation = useDataWriter(SLACK_TABLE_PRESENTATION_DATA_NAME, {
     schema: SlackTablePresentationSchema,
   });
+  const writeAgentCreationTerminal = useDataWriter(SLACK_AGENT_CREATION_TERMINAL_DATA_NAME, {
+    schema: SlackAgentCreationTerminalIntentSchema,
+  });
   const attachmentReadOnly = slackAttachmentTurnIsReadOnly(
     parseSlackAttachmentIntake(delivery, plan),
   );
@@ -1106,6 +1114,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
     attachmentReadOnly,
     presentationIntent,
     writeTablePresentation,
+    writeAgentCreationTerminal,
     managementEnabled,
   );
   useSlackAttachmentContext(
@@ -1123,6 +1132,7 @@ export function useChickpeaSlackRuntimeCapabilities(
   attachmentReadOnly: boolean,
   presentationIntent: ReturnType<typeof slackPresentationIntentCapability>,
   writeTablePresentation: (presentation: SlackTablePresentation) => void,
+  writeAgentCreationTerminal: (intent: SlackAgentCreationTerminalIntent) => void,
   managementEnabled: boolean,
 ): void {
   useRuntimePlanAgent(plan, id, {
@@ -1140,7 +1150,7 @@ export function useChickpeaSlackRuntimeCapabilities(
   });
   if (!attachmentReadOnly) {
     useAgentAuthoring();
-    useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv);
+    useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv, writeAgentCreationTerminal);
     usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
     useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
     useTool(createSlackPresentTableTool(writeTablePresentation));

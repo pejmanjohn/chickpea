@@ -202,6 +202,9 @@ async function applyClaimedScheduleAction(input: {
       operations: [input.operation],
       acknowledgementOwner: 'caller',
     });
+    if (result.status === 'clarification_required') {
+      throw new Error('A schedule operation returned Agent identity clarification.');
+    }
     const outcome = result.outcomes[0];
     const routineRef = outcome?.changed?.find(({ kind }) => kind === 'routine');
     if (outcome?.disposition === 'applied' && routineRef) {

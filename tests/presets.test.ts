@@ -414,6 +414,7 @@ test('Google services are separate catalog entries backed by one shared OAuth co
   assert.deepEqual(GOOGLE_WORKSPACE_SERVICE_PRESETS, [
     {
       id: 'gmail',
+      aliases: ['Google Mail'],
       service: 'gmail',
       managedToolkit: 'gmail',
       connectionPresetId: 'google-workspace',
@@ -423,6 +424,7 @@ test('Google services are separate catalog entries backed by one shared OAuth co
     },
     {
       id: 'google-calendar',
+      aliases: ['Calendar', 'GCal'],
       service: 'calendar',
       managedToolkit: 'googlecalendar',
       connectionPresetId: 'google-workspace',
@@ -432,6 +434,7 @@ test('Google services are separate catalog entries backed by one shared OAuth co
     },
     {
       id: 'google-drive',
+      aliases: ['Drive'],
       service: 'drive',
       managedToolkit: 'googledrive',
       connectionPresetId: 'google-workspace',
@@ -441,6 +444,7 @@ test('Google services are separate catalog entries backed by one shared OAuth co
     },
     {
       id: 'google-sheets',
+      aliases: ['Sheets'],
       managedToolkit: 'googlesheets',
       name: 'Google Sheets',
       description: 'Find spreadsheets, read ranges, and make bounded table updates.',
@@ -449,6 +453,7 @@ test('Google services are separate catalog entries backed by one shared OAuth co
     },
     {
       id: 'google-docs',
+      aliases: ['Docs'],
       managedToolkit: 'googledocs',
       name: 'Google Docs',
       description: 'Find, read, export, create, and update documents.',
@@ -457,6 +462,7 @@ test('Google services are separate catalog entries backed by one shared OAuth co
     },
     {
       id: 'google-slides',
+      aliases: ['Slides'],
       managedToolkit: 'googleslides',
       name: 'Google Slides',
       description: 'Read presentations and create or update slides through bounded operations.',
@@ -536,7 +542,10 @@ test('getConnectorPreset looks up known ids', () => {
 test('reusable connector catalog is the shared Agent-facing lookup', () => {
   assert.equal(CONNECTION_CATALOG_PRESETS.some(({ id }) => id === 'google-workspace'), false);
   assert.equal(resolveConnectorCatalogPreset('Gmail')?.id, 'gmail');
+  assert.equal(resolveConnectorCatalogPreset('Google Mail')?.id, 'gmail');
   assert.equal(resolveConnectorCatalogPreset('google-calendar')?.name, 'Google Calendar');
+  assert.equal(resolveConnectorCatalogPreset('Drive')?.id, 'google-drive');
+  assert.equal(resolveConnectorCatalogPreset('Slides')?.id, 'google-slides');
   const sheets = resolveConnectorCatalogPreset('Google Sheets');
   assert.ok(sheets && 'managedToolkit' in sheets);
   assert.equal(sheets.managedToolkit, 'googlesheets');

@@ -6,6 +6,8 @@ import { CHICKPEA_AGENT_ID, isAgentId } from '../config/agent-id.ts';
 import {
   CONNECTION_CATALOG_PRESETS,
   resolveConnectorCatalogPreset,
+  type ConnectorCatalogPreset,
+  type ConnectorPreset,
 } from '../config/presets.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../connections/catalog/index.ts';
 import {
@@ -61,6 +63,7 @@ import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
+import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import {
   AGENT_AUTHORING_GUIDE_DIGEST,
   AGENT_AUTHORING_GUIDE_URI,
@@ -94,9 +97,11 @@ import {
   emitManagementMetric,
   type ManagementMetricValue,
 } from './telemetry.ts';
+import { selectAgentCreationConnectors } from './agent-creation-welcome.ts';
 import {
   ChickpeaHandoffRequired,
   ManagementError,
+  type ApplyWorkspaceChangesResult,
   type ApplyWorkspaceChangesInput,
   type ConfirmWorkspaceChangeInput,
   type LiveManagementActor,
@@ -104,6 +109,7 @@ import {
   type ManagementChangeSetPreview,
   type ManagementChangeSetProposalRecord,
   type ChickpeaManagementHandoff,
+  type ManagementDuplicateIdentityResult,
   type ManagementItemOutcome,
   type ImportSkillInput,
   type ImportSkillResult,
@@ -129,6 +135,10 @@ import {
   type ManagementWorkspaceSnapshot,
   type PrepareConnectorSetupInput,
   type PrepareConnectorSetupResult,
+  type FinalizeSlackAgentCreationWelcomeInput,
+  type FinalizeSlackAgentCreationWelcomeResult,
+  type ManagementAgentCreatedWelcome,
+  type ManagementReceiptOutboxRecord,
   type ProposeSkillImportInput,
   type ProposeSkillImportResult,
   type ProposeWorkspaceChangesInput,
@@ -221,6 +231,7 @@ export interface WorkspaceManagementServiceInput {
   publishAgentPresence?: (input: {
     actor: LiveManagementActor;
     agentId: string;
+    inferredHandle: boolean;
   }) => Promise<{ agent: CustomAgentConfig; warning?: string }>;
   publishAgentChannel?: (input: {
     actor: LiveManagementActor;
@@ -228,6 +239,12 @@ export interface WorkspaceManagementServiceInput {
     channelId: string;
     agentId: string;
   }) => Promise<{ agent: CustomAgentConfig; grant: AgentChannelGrant }>;
+  publishGeneratedAgentAvatar?: (input: {
+    workspaceId: string;
+    agentId: string;
+    revision: number;
+    seed: string;
+  }) => Promise<string | undefined>;
   assertAgentChannelMembership?: (input: {
     actor: LiveManagementActor;
     workspaceId: string;
@@ -359,7 +376,7 @@ export class WorkspaceManagementService {
       );
     }
     const operationId = 'skill-import';
-    const applied = await this.applyWorkspaceChanges({
+    const applied = requireManagementApplyResult(await this.applyWorkspaceChanges({
       context: input.context,
       idempotencyKey: input.idempotencyKey,
       operationId: replayOperationId,
@@ -374,7 +391,7 @@ export class WorkspaceManagementService {
       trustedReversibleOperationIds: [operationId],
       acknowledgementOwner: 'caller',
       receiptMetadata: { skillImport: metadata },
-    });
+    }));
     const outcome = applied.outcomes.find(({ itemId }) => itemId === operationId);
     if (applied.status !== 'completed' || outcome?.disposition !== 'applied') {
       throw new ManagementError(
@@ -509,7 +526,7 @@ export class WorkspaceManagementService {
     operation: Extract<ManagementOperation, { kind: 'update_agent' }>,
     metadata: SkillActionReceiptMetadata,
   ): Promise<ManageAgentSkillResult> {
-    const applied = await this.applyWorkspaceChanges({
+    const applied = requireManagementApplyResult(await this.applyWorkspaceChanges({
       context: input.context,
       idempotencyKey: input.idempotencyKey,
       operationId,
@@ -518,7 +535,7 @@ export class WorkspaceManagementService {
       trustedReversibleOperationIds: [operation.itemId],
       acknowledgementOwner: 'caller',
       receiptMetadata: { skillAction: metadata },
-    });
+    }));
     const outcome = applied.outcomes.find(({ itemId }) => itemId === operation.itemId);
     if (applied.status !== 'completed' || outcome?.disposition !== 'applied') {
       throw new ManagementError(
@@ -914,6 +931,21 @@ export class WorkspaceManagementService {
         setupOperationId: issued.record.setupOperationId,
       };
     }
+    if (actor.origin.kind === 'slack' && !('managedToolkit' in connector) &&
+        (await this.agentCreationConnectorEligible(connector, baseUrl))) {
+      const issued = await this.issueSetupRecord(actor, {
+        action: 'catalog_connection',
+        target: this.catalogConnectionSetupTarget(agent, connector, input.ownerKind),
+        scopes: catalogConnectionScopes(connector),
+      });
+      return {
+        agent: { id: agent.id, name: agent.name },
+        connector: { id: connector.id, name: connector.name },
+        ownerKind: input.ownerKind,
+        handoffUrl: issued.url,
+        setupOperationId: issued.record.setupOperationId,
+      };
+    }
     const url = new URL([
       '/admin/agents',
       encodeURIComponent(agent.id),
@@ -926,6 +958,291 @@ export class WorkspaceManagementService {
       connector: { id: connector.id, name: connector.name },
       ownerKind: input.ownerKind,
       handoffUrl: url.href,
+    };
+  }
+
+  async finalizeSlackAgentCreationWelcome(
+    input: FinalizeSlackAgentCreationWelcomeInput,
+  ): Promise<FinalizeSlackAgentCreationWelcomeResult> {
+    const actor = await this.requireLiveActor(input.context, { cleanupRetention: false });
+    if (actor.origin.kind !== 'slack') {
+      throw new ManagementError('invalid_request', 'Agent welcomes require a Slack origin.');
+    }
+    const request = await this.stores.management.getRequest(input.operationId);
+    if (!request || request.organizationId !== actor.organizationId ||
+        request.actorUserId !== actor.userId ||
+        request.actorMembershipId !== actor.membershipId ||
+        request.originKey !== managementActorOriginKey(actor) ||
+        request.status !== 'completed' || !request.result) {
+      throw new ManagementError('operation_not_found', 'The creation operation was not found.');
+    }
+    const existing = await this.stores.management.getOutboxForOperation(input.operationId);
+    if (existing) {
+      if (!('kind' in existing.receipt) || existing.receipt.kind !== 'agent_created_welcome') {
+        throw new ManagementError('invalid_state', 'The creation operation has another receipt.');
+      }
+      if (existing.receipt.turnJobId !== input.turnJobId) {
+        throw new ManagementError('invalid_state', 'The Agent welcome belongs to another Slack turn.');
+      }
+      return { outbox: existing, created: false };
+    }
+    const creation = request.result.outcomes.find((outcome) =>
+      outcome.itemId === input.creationItemId &&
+      outcome.operationKind === 'create_agent' &&
+      outcome.disposition === 'applied' &&
+      outcome.changed?.some(({ kind, id }) => kind === 'agent' && id === input.agentId)
+    );
+    if (!creation) {
+      throw new ManagementError('invalid_state', 'The creation operation did not create this Agent.');
+    }
+    let agent = await this.requireEditableAgent(actor, input.agentId);
+    const generatedAvatar = agent.slackPresence?.avatar;
+    if (generatedAvatar?.kind === 'generated' && !generatedAvatar.url &&
+        this.stores.publishGeneratedAgentAvatar) {
+      try {
+        const publishedUrl = await this.stores.publishGeneratedAgentAvatar({
+          workspaceId: actor.origin.workspaceId,
+          agentId: agent.id,
+          revision: generatedAvatar.revision,
+          seed: generatedAvatar.seed ?? agent.id,
+        });
+        if (publishedUrl) {
+          agent = await this.stores.config.updateAgent(agent.id, {
+            slackPresence: {
+              ...agent.slackPresence!,
+              avatar: { ...generatedAvatar, url: publishedUrl },
+            },
+          }, agent.revision);
+        }
+      } catch {
+        console.warn('[chickpea] generated Agent avatar publication deferred');
+      }
+    }
+    const incomplete: Array<'slack_presence' | 'source_channel'> = [];
+    if (creation.warning || agent.slackPresence?.health !== 'healthy' ||
+        !agent.slackPresence.userGroupId) {
+      incomplete.push('slack_presence');
+    }
+    if (actor.origin.conversationKind === 'channel') {
+      const sourceGrant = request.result.outcomes.find((outcome) =>
+        outcome.operationKind === 'grant_agent_channel' &&
+        outcome.disposition === 'applied'
+      );
+      if (!sourceGrant) incomplete.push('source_channel');
+    }
+
+    const baseUrl = await this.resolveSetupBaseUrl().catch(() => undefined);
+    const attachedPresetIds = new Set([
+      ...agent.mcpServers.flatMap(({ presetId }) => presetId ? [presetId] : []),
+      ...agent.apiConnections.flatMap(({ presetId }) => presetId ? [presetId] : []),
+    ]);
+    const connectorPlan = await selectAgentCreationConnectors({
+      requestText: actor.origin.requestText ?? '',
+      explicitMentions: input.connectorMentions,
+      agentCorpus: [agent.name, agent.description ?? '', agent.instructions].join(' '),
+      attachedPresetIds,
+      isEligible: (preset) => this.agentCreationConnectorEligible(preset, baseUrl),
+    });
+    const setups: Array<{ record: ManagementSetupRecord }> = [];
+    const connectorActions: NonNullable<ManagementAgentCreatedWelcome['connectorActions']> = [];
+    const connectorNotices = [...connectorPlan.notices];
+    for (const candidate of connectorPlan.candidates) {
+      const preset = CONNECTION_CATALOG_PRESETS.find(({ id }) => id === candidate.presetId);
+      if (!preset || !baseUrl) continue;
+      try {
+        const prepared = this.freezeAgentCreationConnectorSetup(
+          actor,
+          agent,
+          input.operationId,
+          preset,
+          baseUrl,
+        );
+        setups.push({ record: prepared.record });
+        connectorActions.push({
+          presetId: preset.id,
+          label: preset.name,
+          setupOperationId: prepared.record.setupOperationId,
+          setupUrl: prepared.url,
+        });
+      } catch {
+        connectorNotices.push({
+          kind: 'unavailable',
+          label: preset.name,
+          text: `${preset.name} isn’t available to connect right now.`,
+        });
+      }
+    }
+    const handle = agent.slackPresence?.normalizedHandle ?? agent.slackPresence?.requestedHandle;
+    const avatarUrl = baseUrl ? agentAvatarUrlForPresentation(agent, baseUrl) : undefined;
+    const viewAgentUrl = creation.handoffUrl ?? (baseUrl
+      ? new URL(`/admin/agents/${encodeURIComponent(agent.id)}`, baseUrl).href
+      : undefined);
+    const at = this.now();
+    const receipt: ManagementAgentCreatedWelcome = {
+      kind: 'agent_created_welcome',
+      creationOperationId: input.operationId,
+      ...(input.presentationRunId ? { presentationRunId: input.presentationRunId } : {}),
+      turnJobId: input.turnJobId,
+      agentId: agent.id,
+      agentName: agent.name,
+      ...(handle ? { agentHandle: handle } : {}),
+      ...(agent.description ? { agentDescription: agent.description } : {}),
+      requesterMembershipId: actor.membershipId,
+      surface: actor.origin.conversationKind === 'channel' ? 'channel' : 'direct',
+      persona: {
+        name: agent.name,
+        ...(avatarUrl ? { avatarUrl } : {}),
+      },
+      publication: {
+        status: incomplete.length === 0 ? 'complete' : 'partial',
+        incomplete,
+      },
+      connectorActions,
+      connectorNotices,
+      followOnNotices: input.followOnNotices,
+      ...(viewAgentUrl ? { viewAgentUrl } : {}),
+    };
+    const outbox: ManagementReceiptOutboxRecord = {
+      outboxId: `agent_welcome_${input.operationId}`,
+      operationId: input.operationId,
+      destination: {
+        kind: 'thread',
+        workspaceId: actor.origin.workspaceId,
+        channelId: actor.origin.channelId,
+        threadTs: actor.origin.threadTs,
+      },
+      receipt,
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: at,
+      createdAt: at,
+      updatedAt: at,
+    };
+    const claimed = await this.stores.management.claimAgentCreationWelcome({
+      operationId: input.operationId,
+      setups,
+      outbox,
+    });
+    emitManagementMetric('agent_creation.welcome_claim', {
+      surface: 'slack',
+      outcome: claimed.created ? 'created' : 'replayed',
+      connectorActionCount: connectorActions.length,
+      connectorNoticeCount: connectorNotices.length,
+      publicationStatus: receipt.publication?.status ?? 'partial',
+    });
+    return claimed;
+  }
+
+  private async agentCreationConnectorEligible(
+    preset: ConnectorCatalogPreset,
+    baseUrl: string | undefined,
+  ): Promise<boolean> {
+    if (!baseUrl) return false;
+    if (!('managedToolkit' in preset)) {
+      if (['sentry', 'supabase'].includes(preset.id)) return false;
+      return 'url' in preset || 'api' in preset && !preset.api.oauth;
+    }
+    if (MANAGED_CONNECTOR_CATALOG.capabilities(preset.managedToolkit, 'write').length === 0) {
+      return false;
+    }
+    if (!this.stores.managedConnectorAvailable) return true;
+    try {
+      return await this.stores.managedConnectorAvailable({
+        toolkit: preset.managedToolkit,
+        accessLane: 'read',
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  private freezeAgentCreationConnectorSetup(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+    operationId: string,
+    preset: ConnectorCatalogPreset,
+    baseUrl: string,
+  ): { record: ManagementSetupRecord; url: string } {
+    const rawCapability = this.randomCapability();
+    if (!/^[A-Za-z0-9_-]{43}$/.test(rawCapability)) {
+      throw new ManagementError('invalid_request', 'Setup capability generation failed.');
+    }
+    const at = this.now();
+    const setupOperationId = `setup_welcome_${createHash('sha256')
+      .update(`${operationId}:${preset.id}`)
+      .digest('hex').slice(0, 32)}`;
+    if (!('managedToolkit' in preset)) {
+      const record: ManagementSetupRecord = {
+        setupOperationId,
+        organizationId: actor.organizationId,
+        actorUserId: actor.userId,
+        actorMembershipId: actor.membershipId,
+        origin: actor.origin,
+        action: 'catalog_connection',
+        target: {
+          ...this.catalogConnectionSetupTarget(agent, preset, 'member'),
+          connectionId: `connection_${setupOperationId.slice('setup_welcome_'.length)}`,
+        },
+        scopes: catalogConnectionScopes(preset),
+        tokenDigest: capabilityDigest(rawCapability),
+        status: 'pending',
+        expiresAt: at + SETUP_TTL_MS,
+        createdAt: at,
+        updatedAt: at,
+      };
+      const url = new URL(`/setup/${encodeURIComponent(setupOperationId)}`, baseUrl);
+      url.hash = `setup=${rawCapability}`;
+      return { record, url: url.href };
+    }
+    const record: ManagementSetupRecord = {
+      setupOperationId,
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId,
+      actorMembershipId: actor.membershipId,
+      origin: actor.origin,
+      action: 'managed_connection',
+      target: {
+        kind: 'managed_connection',
+        provider: preset.managedToolkit,
+        targetId: `agent:${agent.id}:managed:${preset.managedToolkit}:welcome`,
+        targetLabel: preset.name,
+        expectedRevision: agent.revision,
+        agentId: agent.id,
+        agentName: agent.name,
+        replacement: false,
+        ownerKind: 'member',
+        accessLane: 'read',
+        presetId: preset.id,
+      },
+      scopes: MANAGED_CONNECTOR_CATALOG.capabilities(preset.managedToolkit, 'write')
+        .map(({ id }) => id),
+      tokenDigest: capabilityDigest(rawCapability),
+      status: 'pending',
+      expiresAt: at + SETUP_TTL_MS,
+      createdAt: at,
+      updatedAt: at,
+    };
+    const url = new URL(`/setup/${encodeURIComponent(setupOperationId)}`, baseUrl);
+    url.hash = `setup=${rawCapability}`;
+    return { record, url: url.href };
+  }
+
+  private catalogConnectionSetupTarget(
+    agent: CustomAgentConfig,
+    preset: ConnectorPreset,
+    ownerKind: 'member' | 'team',
+  ): ManagementSetupTarget {
+    return {
+      kind: 'catalog_connection',
+      provider: preset.id,
+      targetId: `agent:${agent.id}:catalog:${preset.id}`,
+      targetLabel: preset.name,
+      expectedRevision: agent.revision,
+      agentId: agent.id,
+      agentName: agent.name,
+      replacement: false,
+      ownerKind,
+      presetId: preset.id,
     };
   }
 
@@ -1097,10 +1414,27 @@ export class WorkspaceManagementService {
     return preview;
   }
 
-  async applyWorkspaceChanges(input: ApplyWorkspaceChangesInput): Promise<ManagementApplyResult> {
+  async applyWorkspaceChanges(
+    input: ApplyWorkspaceChangesInput,
+  ): Promise<ApplyWorkspaceChangesResult> {
     const actor = await this.requireLiveActor(input.context);
-    const operations = validateManagementOperations(input.operations);
-    assertBaseAgentCreationContract(operations);
+    const requestedOperations = validateManagementOperations(input.operations);
+    assertBaseAgentCreationContract(requestedOperations);
+    assertStandaloneBaseAgentCreation(requestedOperations);
+    const duplicateIdentity = await this.duplicateAgentIdentityResult(
+      actor,
+      requestedOperations,
+    );
+    if (duplicateIdentity) {
+      emitManagementMetric('agent_creation.outcome', {
+        surface: actor.origin.kind,
+        outcome: 'clarification',
+      });
+      return duplicateIdentity;
+    }
+    const operations = validateManagementOperations(
+      withTrustedSlackOriginGrant(actor, requestedOperations),
+    );
     const storageIdempotencyKey = managementStorageIdempotencyKey(actor, input.idempotencyKey);
     const at = this.now();
     const reservation = await this.stores.management.reserveRequest({
@@ -1124,6 +1458,11 @@ export class WorkspaceManagementService {
           this.now(),
         );
       }
+      emitAgentCreationApplyOutcome(
+        actor.origin.kind,
+        requestedOperations,
+        reservation.request.result,
+      );
       return emitOperationOutcomes(actor.origin.kind, reservation.request.result);
     }
     if (reservation.request.status === 'failed') {
@@ -1186,6 +1525,11 @@ export class WorkspaceManagementService {
           ...(input.trustedReversibleOperationIds?.includes(operation.itemId)
             ? { trustedReversibleOperation: true }
             : {}),
+          trustedSlackOriginGrant: isTrustedSlackOriginGrant(
+            actor,
+            request.operations,
+            storedOperation,
+          ),
           operationCount: request.operations.length,
         });
         const policy = classifyManagementOperation(facts);
@@ -1234,7 +1578,8 @@ export class WorkspaceManagementService {
             ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
             ...(mutation.warning ? { warning: mutation.warning } : {}),
           });
-          if (request.operations.length === 1 && mutation.inverse) {
+          if (request.operations.length === 1 &&
+              operation.kind !== 'create_agent' && mutation.inverse) {
             await this.stores.management.putUndo({
               operationId: request.operationId,
               organizationId: actor.organizationId,
@@ -1298,6 +1643,7 @@ export class WorkspaceManagementService {
         this.now(),
       );
     }
+    emitAgentCreationApplyOutcome(actor.origin.kind, requestedOperations, result);
     return emitOperationOutcomes(actor.origin.kind, result);
   }
 
@@ -1313,22 +1659,19 @@ export class WorkspaceManagementService {
     }
     const requestedOperations = validateManagementOperations(input.operations);
     assertBaseAgentCreationContract(requestedOperations);
+    if (requestedOperations.some(({ kind }) => kind === 'create_agent')) {
+      throw new ManagementError(
+        'invalid_request',
+        'Create a standalone base Agent with apply_workspace_changes. Agent creation does not require confirmation.',
+      );
+    }
     if (requestedOperations.some(({ kind }) => kind === 'request_setup')) {
       throw new ManagementError(
         'invalid_request',
         'Prepare connector or repository setup separately after the reviewed Agent change.',
       );
     }
-    if (requestedOperations.some(({ kind }) => kind === 'create_agent') &&
-        requestedOperations.length !== 1) {
-      throw new ManagementError(
-        'base_agent_capabilities_require_setup',
-        'Create the base Agent in its own proposal. Add reach, capabilities, and schedules afterward.',
-      );
-    }
-    const operations = validateManagementOperations(
-      withTrustedSlackOriginGrant(actor, requestedOperations),
-    );
+    const operations = requestedOperations;
 
     const proposalId = `changeset_${this.randomId()}`;
     const targetRevisions: Record<string, number> = {};
@@ -1363,7 +1706,7 @@ export class WorkspaceManagementService {
         }
       }
       const policy = classifyManagementOperation(
-        await this.proposalPolicyFacts(actor, operation, operations),
+        await this.policyFacts(actor, operation),
       );
       if (!policy.allowed) {
         emitAgentAuthoringOutcome(actor, operations, { proposalOutcome: 'denied' });
@@ -1551,11 +1894,17 @@ export class WorkspaceManagementService {
       recovered = true;
     } else {
       try {
+        const proposalAgentIds = new Set(proposal.operations.flatMap((operation) =>
+          operation.kind === 'create_agent' ? [operation.agent.id] : []
+        ));
         for (const operation of proposal.operations) {
           const handoff = await this.actingAgentOperationHandoff(actor, operation);
           if (handoff) throw new ChickpeaHandoffRequired(handoff);
           const policy = classifyManagementOperation(
-            await this.proposalPolicyFacts(actor, operation, proposal.operations),
+            await this.policyFacts(actor, operation, {
+              agentCreatedInProposal: operation.kind === 'grant_agent_channel' &&
+                proposalAgentIds.has(operation.agentId!),
+            }),
           );
           if (!policy.allowed) {
             throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
@@ -1710,7 +2059,7 @@ export class WorkspaceManagementService {
     operation: ManagementOperation,
   ): Promise<ImmediateMutation | undefined> {
     const prepared = changeSetPreparedItem(proposal, operation);
-    const preparedResult = await this.reconcilePrepared(actor, prepared);
+    const preparedResult = await this.reconcilePrepared(actor, prepared, proposal.proposalId);
     if (preparedResult) return preparedResult;
     const changed = await this.reconcileChangeSetConfirmedOperation(actor, operation);
     if (!changed) return undefined;
@@ -1873,11 +2222,11 @@ export class WorkspaceManagementService {
           outcome.itemId === confirmedOutcome.itemId ? confirmedOutcome : outcome),
       };
     }
-    const resumed = await this.applyWorkspaceChanges({
+    const resumed = requireManagementApplyResult(await this.applyWorkspaceChanges({
       context,
       idempotencyKey: publicManagementIdempotencyKey(actor, request.idempotencyKey),
       operations: request.operations,
-    });
+    }));
     // Setup capabilities are response-only bearer secrets. Restore the one
     // produced by this confirmation only in the immediate response after the
     // parent request has durably saved its redacted progress/result.
@@ -1906,7 +2255,7 @@ export class WorkspaceManagementService {
       originalRequest.actorUserId === actor.userId &&
       originalRequest.actorMembershipId === actor.membershipId &&
       originalRequest.result?.receiptMetadata?.skillAction?.outcome === 'updated';
-    const result = await this.applyWorkspaceChanges({
+    const result = requireManagementApplyResult(await this.applyWorkspaceChanges({
       context: input.context,
       idempotencyKey: input.idempotencyKey,
       operations: [undo.inverse],
@@ -1916,7 +2265,7 @@ export class WorkspaceManagementService {
             trustedReversibleOperationIds: [undo.inverse.itemId],
           }
         : {}),
-    });
+    }));
     if (result.status === 'completed') {
       await this.stores.management.consumeUndo(input.operationId, this.now());
     }
@@ -2053,15 +2402,24 @@ export class WorkspaceManagementService {
       throw new ManagementError('invalid_request', 'Setup capability generation failed.');
     }
     const at = this.now();
+    const setupOperationId = `setup_${this.randomId()}`;
+    const target = input.action === 'catalog_connection'
+      ? {
+          ...input.target,
+          connectionId: `connection_${createHash('sha256')
+            .update(setupOperationId)
+            .digest('hex').slice(0, 32)}`,
+        }
+      : input.target;
     const record = await this.stores.management.putSetup({
       record: {
-        setupOperationId: `setup_${this.randomId()}`,
+        setupOperationId,
         organizationId: actor.organizationId,
         actorUserId: actor.userId,
         actorMembershipId: actor.membershipId,
         origin: actor.origin,
         action: input.action,
-        target: input.target,
+        target,
         scopes: [...input.scopes],
         tokenDigest: capabilityDigest(rawCapability),
         status: 'pending',
@@ -2362,6 +2720,59 @@ export class WorkspaceManagementService {
     return actor.actingAgentId && actor.actingAgentId !== CHICKPEA_AGENT_ID
       ? editable.filter(({ id }) => id === actor.actingAgentId)
       : editable;
+  }
+
+  private async duplicateAgentIdentityResult(
+    actor: LiveManagementActor,
+    operations: readonly ManagementOperation[],
+  ): Promise<ManagementDuplicateIdentityResult | undefined> {
+    const operation = operations[0];
+    if (operations.length !== 1 || operation?.kind !== 'create_agent') return undefined;
+    const candidates = (await this.editableAgents(actor))
+      .filter(({ id }) => id !== operation.agent.id)
+      .map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        normalizedName: normalizeAgentIdentityName(agent.name),
+        handle: agent.slackPresence?.normalizedHandle ?? normalizeAgentHandle(agent.name),
+      }));
+    const requestedName = operation.agent.name.trim();
+    const normalizedName = normalizeAgentIdentityName(requestedName);
+    const requestedHandle = normalizeAgentHandle(
+      operation.agent.requestedHandle ?? requestedName,
+    );
+    const handleMatches = candidates.filter(({ handle }) => handle === requestedHandle);
+    if (operation.duplicateResolution === 'create_distinct') {
+      if (handleMatches.length > 0) {
+        throw new ManagementError(
+          'invalid_request',
+          'Choose a unique Slack handle for the distinct Agent.',
+        );
+      }
+      return undefined;
+    }
+    const matches = candidates.filter(({ normalizedName: candidateName, handle }) =>
+      candidateName === normalizedName || handle === requestedHandle);
+    if (matches.length === 0) return undefined;
+    const projected = [...matches]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map(({ id, name, handle }) => ({ id, name, handle }));
+    return {
+      status: 'clarification_required',
+      clarification: {
+        kind: 'duplicate_agent_identity',
+        requested: { name: requestedName, handle: requestedHandle },
+        matches: projected,
+        options: ['use_existing', 'create_distinct'],
+      },
+      presentation: {
+        slack: projected.length === 1
+          ? `An editable Agent already matches this identity: ${
+            escapeSlackControlCharacters(projected[0]!.name)
+          } (@${projected[0]!.handle}). Ask whether to use it or create a distinct Agent.`
+          : `${projected.length} editable Agents already match this identity. Ask which existing Agent to use or whether to create a distinct Agent.`,
+      },
+    };
   }
 
   private async requesterAuthorizedSkillChange(
@@ -2935,6 +3346,8 @@ export class WorkspaceManagementService {
       allowIdempotentRoutineSaveReplay?: boolean;
       approvalBasis?: 'explicit_requester_command';
       trustedReversibleOperation?: boolean;
+      trustedSlackOriginGrant?: boolean;
+      agentCreatedInProposal?: boolean;
       operationCount?: number;
     } = {},
   ) {
@@ -3035,23 +3448,19 @@ export class WorkspaceManagementService {
       };
     }
     if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
-      await this.requireEditableAgent(actor, operation.agentId!);
-      return { actor, operation, agentEditable: true };
+      if (!options.agentCreatedInProposal) {
+        await this.requireEditableAgent(actor, operation.agentId!);
+      }
+      return {
+        actor,
+        operation,
+        agentEditable: true,
+        ...(operation.kind === 'grant_agent_channel' && options.trustedSlackOriginGrant
+          ? { trustedSlackOriginGrant: true }
+          : {}),
+      };
     }
     return { actor, operation };
-  }
-
-  private async proposalPolicyFacts(
-    actor: LiveManagementActor,
-    operation: ManagementOperation,
-    operations: readonly ManagementOperation[],
-  ) {
-    if (operation.kind === 'grant_agent_channel' && operation.agentId &&
-        operations.some((candidate) => candidate.kind === 'create_agent' &&
-          candidate.agent.id === operation.agentId)) {
-      return { actor, operation, agentEditable: true };
-    }
-    return this.policyFacts(actor, operation);
   }
 
   private async createProposal(
@@ -3244,7 +3653,7 @@ export class WorkspaceManagementService {
         this.now(),
       );
     }
-    const reconciled = await this.reconcilePrepared(actor, prepared);
+    const reconciled = await this.reconcilePrepared(actor, prepared, requestId);
     return reconciled ?? await this.executeImmediate(actor, requestId, operation, prepared);
   }
 
@@ -3461,7 +3870,11 @@ export class WorkspaceManagementService {
         const intended = prepared.intendedAfter as CustomAgentConfig;
         const { revision: _revision, ...createInput } = intended;
         const created = await this.stores.config.createAgent(createInput);
-        const published = await this.publishCreatedAgent(actor, created);
+        const published = await this.publishCreatedAgent(actor, created, {
+          inferredHandle: operation.agent.requestedHandle === undefined,
+          requestId: mutationId,
+          prepared,
+        });
         return mutationForAgent(
           published.agent,
           prepared.inverse,
@@ -3567,6 +3980,7 @@ export class WorkspaceManagementService {
   private async reconcilePrepared(
     actor: LiveManagementActor,
     prepared: ManagementPreparedItem,
+    requestId?: string,
   ): Promise<ImmediateMutation | undefined> {
     const operation = prepared.operation;
     if (!prepared.intendedAfter) return undefined;
@@ -3583,7 +3997,11 @@ export class WorkspaceManagementService {
       const current = await optionalAgent(this.stores.config, agentId);
       const intended = prepared.intendedAfter as CustomAgentConfig;
       if (current && agentCreationMatches(current, intended)) {
-        const published = await this.publishCreatedAgent(actor, current);
+        const published = await this.publishCreatedAgent(actor, current, {
+          inferredHandle: operation.agent.requestedHandle === undefined,
+          ...(requestId ? { requestId } : {}),
+          prepared,
+        });
         return mutationForAgent(
           published.agent,
           prepared.inverse,
@@ -3640,6 +4058,11 @@ export class WorkspaceManagementService {
   private async publishCreatedAgent(
     actor: LiveManagementActor,
     agent: CustomAgentConfig,
+    options: {
+      inferredHandle: boolean;
+      requestId?: string;
+      prepared: ManagementPreparedItem;
+    },
   ): Promise<{ agent: CustomAgentConfig; warning?: string }> {
     if (!this.stores.publishAgentPresence ||
         (agent.slackPresence?.desiredState === 'active' &&
@@ -3647,17 +4070,81 @@ export class WorkspaceManagementService {
       return { agent };
     }
     try {
-      return await this.stores.publishAgentPresence({ actor, agentId: agent.id });
+      return await this.stores.publishAgentPresence({
+        actor,
+        agentId: agent.id,
+        inferredHandle: options.inferredHandle,
+      });
     } catch (error) {
+      let publicationError = error;
+      if (options.inferredHandle && error instanceof AgentPresenceError &&
+          error.code === 'handle_collision' && error.suggestions[0]) {
+        const recovered = await this.selectInferredAgentHandle(
+          options.requestId,
+          options.prepared,
+          agent.id,
+          error.suggestions[0],
+        );
+        try {
+          return await this.stores.publishAgentPresence({
+            actor,
+            agentId: recovered.id,
+            inferredHandle: false,
+          });
+        } catch (retryError) {
+          publicationError = retryError;
+        }
+      }
       const current = await this.stores.config.getAgent(agent.id);
-      const detail = error instanceof AgentPresenceError
-        ? error.message
+      const detail = publicationError instanceof AgentPresenceError
+        ? publicationError.message
         : 'Slack handle publication did not complete. Retry it from the Agent settings.';
       return {
         agent: current,
         warning: `The Agent was created, but its Slack handle needs attention: ${detail}`,
       };
     }
+  }
+
+  private async selectInferredAgentHandle(
+    requestId: string | undefined,
+    prepared: ManagementPreparedItem,
+    agentId: string,
+    suggestion: string,
+  ): Promise<CustomAgentConfig> {
+    const current = await this.stores.config.getAgent(agentId);
+    const presence = current.slackPresence;
+    if (!presence) {
+      throw new ManagementError('invalid_state', 'The Agent Slack identity is unavailable.');
+    }
+    const selected = normalizeAgentHandle(suggestion);
+    const updated = await this.stores.config.updateAgent(agentId, {
+      slackPresence: {
+        ...presence,
+        requestedHandle: selected,
+        normalizedHandle: selected,
+        health: 'pending',
+      },
+    }, current.revision);
+    const intended = prepared.intendedAfter as CustomAgentConfig;
+    prepared.intendedAfter = {
+      ...intended,
+      slackPresence: {
+        ...intended.slackPresence!,
+        requestedHandle: selected,
+        normalizedHandle: selected,
+      },
+    };
+    if (requestId) {
+      const request = await this.stores.management.getRequest(requestId);
+      if (request?.status === 'applying') {
+        await this.stores.management.saveRequestProgress(requestId, {
+          ...request.progress,
+          prepared,
+        }, this.now());
+      }
+    }
+    return updated;
   }
 
   private async executeConfirmed(
@@ -4138,6 +4625,18 @@ function publicManagementIdempotencyKey(actor: LiveManagementActor, storageKey: 
   return storageKey.slice(prefix.length);
 }
 
+function requireManagementApplyResult(
+  result: ApplyWorkspaceChangesResult,
+): ManagementApplyResult {
+  if (result.status === 'clarification_required') {
+    throw new ManagementError(
+      'invalid_state',
+      'A non-creation management operation returned Agent identity clarification.',
+    );
+  }
+  return result;
+}
+
 function emitOperationOutcomes(
   surface: LiveManagementActor['origin']['kind'],
   result: ManagementApplyResult,
@@ -4151,6 +4650,25 @@ function emitOperationOutcomes(
     });
   }
   return result;
+}
+
+function emitAgentCreationApplyOutcome(
+  surface: LiveManagementActor['origin']['kind'],
+  requestedOperations: readonly ManagementOperation[],
+  result: ManagementApplyResult,
+): void {
+  const requestedCreation = requestedOperations.length === 1 &&
+      requestedOperations[0]?.kind === 'create_agent'
+    ? requestedOperations[0]
+    : undefined;
+  const creation = requestedCreation
+    ? result.outcomes.find(({ itemId }) => itemId === requestedCreation.itemId)
+    : undefined;
+  if (!creation) return;
+  emitManagementMetric('agent_creation.outcome', {
+    surface,
+    outcome: creation.disposition === 'applied' ? 'applied' : 'failed',
+  });
 }
 
 function emitAgentAuthoringOutcome(
@@ -4688,6 +5206,19 @@ function scopeTokens(scope?: string): string[] {
   return scope?.trim().split(/\s+/).filter(Boolean) ?? [];
 }
 
+function catalogConnectionScopes(preset: ConnectorCatalogPreset): string[] {
+  if ('url' in preset && typeof preset.url === 'string' &&
+      preset.auth?.kind === 'oauth') {
+    return scopeTokens(preset.auth.scope);
+  }
+  if ('api' in preset) return [...preset.api.methods];
+  return [];
+}
+
+function normalizeAgentIdentityName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
 function agentPatchMatches(agent: CustomAgentConfig, patch: ManagementAgentPatch): boolean {
   const before = { ...agent, revision: agent.revision - 1 };
   const expected = applyAgentPatch(before, projectManagementAgentPatch(before, patch));
@@ -4743,6 +5274,16 @@ function assertBaseAgentCreationContract(operations: readonly ManagementOperatio
   }
 }
 
+function assertStandaloneBaseAgentCreation(
+  operations: readonly ManagementOperation[],
+): void {
+  if (!operations.some(({ kind }) => kind === 'create_agent') || operations.length === 1) return;
+  throw new ManagementError(
+    'base_agent_capabilities_require_setup',
+    'Create the base Agent in its own request. Add reach, connections, repositories, and schedules afterward.',
+  );
+}
+
 function withTrustedSlackOriginGrant(
   actor: LiveManagementActor,
   operations: readonly ManagementOperation[],
@@ -4770,6 +5311,22 @@ function withTrustedSlackOriginGrant(
       expectedRevision: 0,
     },
   ];
+}
+
+function isTrustedSlackOriginGrant(
+  actor: LiveManagementActor,
+  operations: readonly ManagementOperation[],
+  operation: ManagementOperation,
+): boolean {
+  const creation = operations[0];
+  const grant = operations[1];
+  if (operations.length !== 2 || creation?.kind !== 'create_agent' ||
+      grant?.kind !== 'grant_agent_channel' || operation.itemId !== grant.itemId) {
+    return false;
+  }
+  const expected = withTrustedSlackOriginGrant(actor, [creation])[1];
+  return expected?.kind === 'grant_agent_channel' &&
+    canonicalJson(grant) === canonicalJson(expected);
 }
 
 function managementPreviewTarget(operation: ManagementOperation): string {

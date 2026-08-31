@@ -31,6 +31,7 @@ import { repairTerminalSlackPresentation } from '../src/slack/presentation-repai
 import { completeAgentWelcomeDelivery } from '../src/management/receipts.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
+import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -180,6 +181,7 @@ function v3PresentationHarness(
 test('runTurn acknowledges substantive work with a temporary eyes reaction', async () => {
   let reactionAdds = 0;
   let reactionRemoves = 0;
+  let managementRuntimeResolutions = 0;
   const client = {
     assistant: { threads: { setStatus: async () => ({ ok: true }) } },
     reactions: {
@@ -204,17 +206,23 @@ test('runTurn acknowledges substantive work with a temporary eyes reaction', asy
   await runTurn(workTurn('Ev_NO_SYNTHETIC_WORK_ACK'), assignment, undefined, {
     client,
     replayText: 'Verification complete.',
+    managementApproval: () => {
+      managementRuntimeResolutions += 1;
+      throw new Error('ordinary turns must not resolve the management runtime');
+    },
     usageRecordingEnabled: false,
   });
 
   assert.equal(reactionAdds, 1);
   assert.equal(reactionRemoves, 1);
+  assert.equal(managementRuntimeResolutions, 0);
 });
 
 test('runTurn applies a bound DM approval in the host without invoking the Agent', async () => {
   const f = await createManagementAdapterFixture('run-turn-host-approval');
   let promptCalls = 0;
   let historyCalls = 0;
+  let managementRuntimeResolutions = 0;
   const delivered: string[] = [];
   try {
     const managedAgent = await f.config.createAgent({
@@ -315,17 +323,21 @@ test('runTurn applies a bound DM approval in the host without invoking the Agent
         promptCalls += 1;
         throw new Error('the Agent must not handle an approved proposal');
       },
-      managementApproval: {
-        identity: f.identity,
-        config: f.config,
-        management: f.management,
-        service: f.service,
+      managementApproval: () => {
+        managementRuntimeResolutions += 1;
+        return {
+          identity: f.identity,
+          config: f.config,
+          management: f.management,
+          service: f.service,
+        };
       },
       usageRecordingEnabled: false,
     });
 
     assert.equal(promptCalls, 0);
     assert.equal(historyCalls, 0);
+    assert.equal(managementRuntimeResolutions, 1);
     assert.match(delivered.join('\n'), /Applied the approved changes\./);
     const applied = await f.config.getAgent(managedAgent.id);
     assert.equal(applied.description, 'Applied by the trusted Slack host.');
@@ -342,17 +354,231 @@ test('runTurn applies a bound DM approval in the host without invoking the Agent
         promptCalls += 1;
         throw new Error('the Agent must not handle an approved proposal replay');
       },
-      managementApproval: {
-        identity: f.identity,
-        config: f.config,
-        management: f.management,
-        service: f.service,
+      managementApproval: () => {
+        managementRuntimeResolutions += 1;
+        return {
+          identity: f.identity,
+          config: f.config,
+          management: f.management,
+          service: f.service,
+        };
       },
       usageRecordingEnabled: false,
     });
     assert.equal(promptCalls, 0);
+    assert.equal(managementRuntimeResolutions, 2);
     assert.equal((await f.config.getAgent(managedAgent.id)).revision, applied.revision);
     assert.equal(delivered.filter((text) => /Applied the approved changes\./.test(text)).length, 2);
+  } finally {
+    f.close();
+  }
+});
+
+test('runTurn suppresses model prose and defers one immediate-creation welcome', async () => {
+  const f = await createManagementAdapterFixture('run-turn-immediate-creation');
+  try {
+    const chickpea = await f.config.materializeChickpeaAgent();
+    const bootstrapAgent = await f.config.createAgent({
+      id: 'agent_run_turn_bootstrap',
+      name: 'Bootstrap',
+      instructions: 'Provide the initial Workspace routing target.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const installation = await f.config.ensureWorkspaceInstallation({
+      workspaceId: f.admin.binding.slackTeamId,
+      transportMode: 'direct',
+      defaultAgentId: bootstrapAgent.id,
+      teamId: f.admin.binding.slackTeamId,
+      botUserId: 'U_CHICKPEA',
+    });
+    await f.config.updateWorkspaceInstallation(
+      f.admin.binding.slackTeamId,
+      { runtimeContract: 'chickpea-v1', health: 'healthy' },
+      installation.revision,
+    );
+    const turn: NormalizedSlackTurn = {
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: 'D_IMMEDIATE_CREATION',
+      eventId: 'Ev_IMMEDIATE_CREATION',
+      text: 'Create a Deck Agent using Linear.',
+      userId: f.admin.binding.slackUserId,
+      actorMembershipId: f.admin.membership.id,
+      messageTs: '205.1',
+      threadTs: '205.1',
+      source: 'dm_message',
+      channelType: 'im',
+      contextMode: 'dm_history',
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    };
+    const chickpeaAssignment: ResolvedAssignment = {
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      agentId: CHICKPEA_AGENT_ID,
+      runtimeContract: 'chickpea-v1',
+      model: 'local-stub/management',
+      modelAttribution: { source: 'pinned', providerId: 'local-stub' },
+      agent: chickpea,
+    };
+    const context = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      actingAgentId: CHICKPEA_AGENT_ID,
+      origin: {
+        kind: 'slack' as const,
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        threadTs: turn.threadTs,
+        messageTs: turn.messageTs,
+        requestText: turn.text,
+        conversationKind: 'im' as const,
+        agentId: CHICKPEA_AGENT_ID,
+      },
+    };
+    const applied = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'turn-immediate-creation',
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: {
+          id: 'agent_run_turn_deck',
+          name: 'Deck',
+          description: 'Creates polished presentations.',
+          requestedHandle: 'run-turn-deck',
+          editPolicy: 'creator_and_admins',
+          instructions: 'Create polished presentations and track projects in Linear.',
+          enabled: true,
+          skills: [],
+          mcpServers: [],
+          apiConnections: [],
+          repositories: [],
+        },
+      }],
+    });
+    if (!('operationId' in applied)) assert.fail('expected applied creation');
+    const created = await f.config.getAgent('agent_run_turn_deck');
+    await f.config.updateAgent(created.id, {
+      slackPresence: {
+        ...created.slackPresence!,
+        desiredState: 'active',
+        health: 'healthy',
+        userGroupId: 'SRUNTURNDECK',
+      },
+    }, created.revision);
+    const storedCreation = await f.management.getRequest(applied.operationId);
+    assert.ok(storedCreation);
+    assert.equal(storedCreation.status, 'completed');
+    assert.equal(storedCreation.actorUserId, f.admin.user.id);
+    assert.equal(storedCreation.actorMembershipId, f.admin.membership.id);
+    assert.equal(
+      storedCreation.originKey,
+      `slack:${turn.workspaceId}:${turn.channelId}:${turn.threadTs}:im:agent:${CHICKPEA_AGENT_ID}`,
+    );
+
+    const visiblePosts: string[] = [];
+    const client = {
+      conversations: { history: async () => ({ ok: true, messages: [] }) },
+      chat: {
+        startStream: async (input: { markdown_text: string }) => {
+          visiblePosts.push(input.markdown_text);
+          return { ok: true, ts: '206.1' };
+        },
+        stopStream: async () => ({ ok: true }),
+        postMessage: async (input: { text: string }) => {
+          visiblePosts.push(input.text);
+          return { ok: true, channel: turn.channelId, ts: '206.1' };
+        },
+      },
+    } as unknown as WebClient;
+    let deferred = 0;
+    let delivered = 0;
+    let promptCalls = 0;
+    const runOptions = {
+      client,
+      turnId: 'turn_IMMEDIATE_CREATION',
+      agentPrompt: async (): Promise<AgentDispatchResult> => {
+        promptCalls += 1;
+        return {
+          text: 'The model says the Agent was created. This text must stay hidden.',
+          agentCreationTerminal: {
+            schemaVersion: 1,
+            operationId: applied.operationId,
+            creationItemId: 'create',
+            agentId: 'agent_run_turn_deck',
+            connectorMentions: ['Linear'],
+            followOnNotices: [],
+          },
+          requestedModel: 'local-stub/management',
+          returnedModel: { provider: 'local-stub', id: 'management' },
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        };
+      },
+      appStores: {
+        config: f.config,
+        identity: f.identity,
+        memory: f.memory,
+        management: f.management,
+      } as never,
+      onDeferredTerminal: () => { deferred += 1; },
+      onDelivered: () => { delivered += 1; },
+      usageRecordingEnabled: false,
+    };
+    await runTurn(turn, chickpeaAssignment, {
+      SLACK_TAG_PUBLIC_URL: 'https://chickpea.example',
+    }, runOptions);
+
+    assert.deepEqual(visiblePosts, []);
+    assert.equal(promptCalls, 1);
+    assert.equal(deferred, 1);
+    assert.equal(delivered, 0);
+    const outbox = await f.management.getOutboxForOperation(applied.operationId);
+    assert.ok(outbox && 'kind' in outbox.receipt &&
+      outbox.receipt.kind === 'agent_created_welcome');
+    if (!outbox || !('kind' in outbox.receipt) ||
+        outbox.receipt.kind !== 'agent_created_welcome') {
+      assert.fail('expected deferred Agent welcome');
+    }
+    assert.equal(outbox.receipt.turnJobId, 'turn_IMMEDIATE_CREATION');
+    assert.deepEqual(outbox.receipt.connectorActions?.map(({ label }) => label), [
+      'Linear',
+    ]);
+    assert.match(
+      outbox.receipt.connectorActions?.[0]?.setupUrl ?? '',
+      /^https:\/\/chickpea\.example\/setup\/setup_welcome_/,
+    );
+    const linearSetupId = outbox.receipt.connectorActions?.[0]?.setupOperationId;
+    assert.ok(linearSetupId);
+    const linearSetup = await f.management.getSetup(linearSetupId);
+    assert.equal(linearSetup?.action, 'catalog_connection');
+    assert.equal(linearSetup?.target.presetId, 'linear');
+    assert.equal(linearSetup?.target.agentId, 'agent_run_turn_deck');
+
+    const [claimed] = await f.management.claimDueOutbox(
+      outbox.nextAttemptAt,
+      1,
+      outbox.nextAttemptAt + 60_000,
+    );
+    assert.ok(claimed);
+    await f.management.settleOutbox({
+      outboxId: outbox.outboxId,
+      outcome: 'delivered',
+      at: outbox.nextAttemptAt + 1,
+      deliveryRef: 'slack:D_IMMEDIATE_CREATION:206.2',
+    });
+
+    await runTurn(turn, chickpeaAssignment, {
+      SLACK_TAG_PUBLIC_URL: 'https://chickpea.example',
+    }, runOptions);
+    assert.deepEqual(visiblePosts, []);
+    assert.equal(promptCalls, 2);
+    assert.equal(deferred, 1);
+    assert.equal(delivered, 1);
   } finally {
     f.close();
   }

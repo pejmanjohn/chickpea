@@ -5,6 +5,8 @@ export type ConnectorCategory = 'project' | 'dev' | 'data' | 'search' | 'docs' |
 interface ConnectorPresetCommon {
   id: string; // also seeds the connection id; MUST match /^[a-z0-9][a-z0-9-]{0,63}$/
   name: string;
+  /** Exact user-facing lookup names owned by this catalog entry. */
+  aliases?: string[];
   description: string;
   category: ConnectorCategory;
   accent: string; // hex color for the monogram chip, e.g. '#5E6AD2'
@@ -69,6 +71,7 @@ export interface GoogleWorkspaceServicePreset {
   /** Native Google OAuth fallback preset. Managed-only connectors omit this. */
   connectionPresetId?: 'google-workspace';
   name: string;
+  aliases?: string[];
   description: string;
   accent: string;
   logoId?: string;
@@ -79,6 +82,7 @@ export interface ManagedConnectorPreset {
   managedToolkit: string;
   providerId: string;
   name: string;
+  aliases?: string[];
   description: string;
   category: ConnectorCategory;
   accent: string;
@@ -91,6 +95,7 @@ export interface ManagedConnectorPreset {
 export const GOOGLE_WORKSPACE_SERVICE_PRESETS: GoogleWorkspaceServicePreset[] = [
   {
     id: 'gmail',
+    aliases: ['Google Mail'],
     service: 'gmail',
     managedToolkit: 'gmail',
     connectionPresetId: 'google-workspace',
@@ -100,6 +105,7 @@ export const GOOGLE_WORKSPACE_SERVICE_PRESETS: GoogleWorkspaceServicePreset[] = 
   },
   {
     id: 'google-calendar',
+    aliases: ['Calendar', 'GCal'],
     service: 'calendar',
     managedToolkit: 'googlecalendar',
     connectionPresetId: 'google-workspace',
@@ -109,6 +115,7 @@ export const GOOGLE_WORKSPACE_SERVICE_PRESETS: GoogleWorkspaceServicePreset[] = 
   },
   {
     id: 'google-drive',
+    aliases: ['Drive'],
     service: 'drive',
     managedToolkit: 'googledrive',
     connectionPresetId: 'google-workspace',
@@ -118,6 +125,7 @@ export const GOOGLE_WORKSPACE_SERVICE_PRESETS: GoogleWorkspaceServicePreset[] = 
   },
   {
     id: 'google-sheets',
+    aliases: ['Sheets'],
     managedToolkit: 'googlesheets',
     name: 'Google Sheets',
     description: 'Find spreadsheets, read ranges, and make bounded table updates.',
@@ -126,6 +134,7 @@ export const GOOGLE_WORKSPACE_SERVICE_PRESETS: GoogleWorkspaceServicePreset[] = 
   },
   {
     id: 'google-docs',
+    aliases: ['Docs'],
     managedToolkit: 'googledocs',
     name: 'Google Docs',
     description: 'Find, read, export, create, and update documents.',
@@ -134,6 +143,7 @@ export const GOOGLE_WORKSPACE_SERVICE_PRESETS: GoogleWorkspaceServicePreset[] = 
   },
   {
     id: 'google-slides',
+    aliases: ['Slides'],
     managedToolkit: 'googleslides',
     name: 'Google Slides',
     description: 'Read presentations and create or update slides through bounded operations.',
@@ -596,11 +606,25 @@ export const CONNECTION_CATALOG_PRESETS: ConnectorCatalogPreset[] = [
 export function resolveConnectorCatalogPreset(
   value: string,
 ): ConnectorCatalogPreset | undefined {
-  const normalized = normalizeConnectorLookup(value);
-  const matches = CONNECTION_CATALOG_PRESETS.filter(({ id, name }) =>
-    normalized === normalizeConnectorLookup(id) || normalized === normalizeConnectorLookup(name)
-  );
+  const matches = matchingConnectorCatalogPresets(value);
   return matches.length === 1 ? matches[0] : undefined;
+}
+
+export function matchingConnectorCatalogPresets(
+  value: string,
+  catalog: readonly ConnectorCatalogPreset[] = CONNECTION_CATALOG_PRESETS,
+): ConnectorCatalogPreset[] {
+  const normalized = normalizeConnectorLookup(value);
+  if (!normalized) return [];
+  return catalog.filter(({ id, name, aliases = [] }) =>
+    [id, name, ...aliases].some((candidate) =>
+      normalized === normalizeConnectorLookup(candidate)
+    )
+  );
+}
+
+export function connectorCatalogLookupNames(preset: ConnectorCatalogPreset): string[] {
+  return [preset.id, preset.name, ...(preset.aliases ?? [])];
 }
 
 export function presetLanes(preset: ConnectorPreset): { mcp: boolean; api: boolean } {

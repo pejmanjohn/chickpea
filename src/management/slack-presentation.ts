@@ -67,15 +67,10 @@ const PRESENTATION_FIELD_LABELS: Readonly<Record<string, string>> = {
 };
 
 const PROPOSAL_HEADER = '*Proposed changes*';
-const CREATE_HEADER = '*Ready to create*';
 const APPROVAL_INSTRUCTION =
   'Reply `approve` to apply these exact changes, or tell me what to adjust.';
-const CREATE_APPROVAL_INSTRUCTION =
-  'Reply `create it` to create this Agent and publish its Slack handle, or tell me what to adjust.';
 const TRUNCATED_APPROVAL_INSTRUCTION =
   'Reply `approve` to apply the full proposed changes, or tell me what to adjust.';
-const TRUNCATED_CREATE_APPROVAL_INSTRUCTION =
-  'Reply `create it` to create the full Agent and publish its Slack handle, or tell me what to adjust.';
 const TRUNCATION_NOTICE =
   '_Preview truncated to fit Slack. Approval applies the full proposed changes._';
 
@@ -97,14 +92,9 @@ function formatSlackProposal(
   leadingSections: readonly string[],
 ): string {
   const creation = slackCreationPreview(preview);
-  const creationOnly = creation !== undefined;
-  const header = creationOnly ? CREATE_HEADER : PROPOSAL_HEADER;
-  const approvalInstruction = creationOnly
-    ? CREATE_APPROVAL_INSTRUCTION
-    : APPROVAL_INSTRUCTION;
-  const truncatedApprovalInstruction = creationOnly
-    ? TRUNCATED_CREATE_APPROVAL_INSTRUCTION
-    : TRUNCATED_APPROVAL_INSTRUCTION;
+  const header = PROPOSAL_HEADER;
+  const approvalInstruction = APPROVAL_INSTRUCTION;
+  const truncatedApprovalInstruction = TRUNCATED_APPROVAL_INSTRUCTION;
   const sections = preview.changes.flatMap((change) => {
     if (creation?.originGrant === change) return [];
     const before = presentationRecord(change.operationKind, change.before);

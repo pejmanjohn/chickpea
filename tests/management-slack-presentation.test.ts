@@ -7,7 +7,7 @@ import {
 } from '../src/management/slack-presentation.ts';
 import type { ManagementChangeSetPreview } from '../src/management/types.ts';
 
-test('new Agent proposals show only the useful identity fields without before and after', () => {
+test('legacy Agent creation previews show useful identity fields without obsolete create-it copy', () => {
   const presentation = formatSlackChangeSetProposal({
     summary: '1 reviewed workspace change',
     changes: [{
@@ -41,7 +41,7 @@ test('new Agent proposals show only the useful identity fields without before an
   });
 
   assert.equal(presentation, [
-    '*Ready to create*',
+    '*Proposed changes*',
     '*New Agent*',
     '*Name*',
     '> Paid Marketing',
@@ -55,13 +55,13 @@ test('new Agent proposals show only the useful identity fields without before an
     '*Instructions*',
     '> Review spend, flag budget risks, and improve ad copy.',
     '',
-    'Reply `create it` to create this Agent and publish its Slack handle, or tell me what to adjust.',
+    'Reply `approve` to apply these exact changes, or tell me what to adjust.',
   ].join('\n'));
   assert.doesNotMatch(presentation, /Before|After|Slack Presence|Editing Authority|MCP Servers/);
   assert.doesNotMatch(presentation, /private-seed|Repositories|Lifecycle|Kind/);
 });
 
-test('Channel-created Agent proposals stay one concise creation review', () => {
+test('legacy Channel creation previews keep trusted reach concise', () => {
   const presentation = formatSlackChangeSetProposal({
     summary: '2 reviewed workspace changes',
     changes: [{
@@ -92,10 +92,10 @@ test('Channel-created Agent proposals stay one concise creation review', () => {
     missingSetup: [],
   });
 
-  assert.match(presentation, /^\*Ready to create\*/);
+  assert.match(presentation, /^\*Proposed changes\*/);
   assert.match(presentation, /\*Available in\*\n> This Channel/);
-  assert.match(presentation, /Reply `create it`/);
-  assert.doesNotMatch(presentation, /Proposed changes|Grant Agent Channel|channel_grant|Reply `approve`/);
+  assert.match(presentation, /Reply `approve`/);
+  assert.doesNotMatch(presentation, /Ready to create|Grant Agent Channel|channel_grant|Reply `create it`/);
 });
 
 test('Agent edits compare meaningful fields and project Slack presence to its handle', () => {

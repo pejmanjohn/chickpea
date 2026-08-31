@@ -86,6 +86,30 @@ test('Agent-authoring telemetry keeps only versioned outcome classes', () => {
   }]), 'mixed');
 });
 
+test('Agent creation telemetry keeps only bounded delivery classes and counts', () => {
+  const lines: string[] = [];
+  emitManagementMetric('agent_creation.welcome_claim', {
+    surface: 'slack',
+    outcome: 'created',
+    connectorActionCount: 3,
+    connectorNoticeCount: 1,
+    publicationStatus: 'complete',
+    deliveryPersona: 'agent',
+    requestText: 'PRIVATE_MEMORY_SENTINEL',
+    setupUrl: 'https://example.invalid/#oauth-code-private-123456',
+  }, { info: (line) => lines.push(line) });
+
+  assert.deepEqual(JSON.parse(lines[0]!.replace('[chickpea:management] ', '')), {
+    event: 'agent_creation.welcome_claim',
+    surface: 'slack',
+    outcome: 'created',
+    connectorActionCount: 3,
+    connectorNoticeCount: 1,
+    publicationStatus: 'complete',
+    deliveryPersona: 'agent',
+  });
+});
+
 test('tool discovery and portable recipe exports exclude secret and authority corpus', async () => {
   const descriptions = WORKSPACE_MANAGEMENT_TOOL_NAMES.map((name) => ({
     name,

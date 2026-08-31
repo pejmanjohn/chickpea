@@ -304,11 +304,16 @@ test('connector setup handoff and snapshot stay locked to the current Slack Agen
       resolveContext: async () => context,
     }, 'prepare_connector_setup', { connector: 'Linear', ownerKind: 'team' });
     assert.equal(teamOwner.ok, true);
-    assert.equal(
-      new URL((teamOwner as { ok: true; result: { handoffUrl: string } }).result.handoffUrl)
-        .pathname,
-      '/admin/agents/agent_support/connections/new/linear/team',
-    );
+    const linearHandoff = (teamOwner as { ok: true; result: {
+      handoffUrl: string;
+      setupOperationId: string;
+    } }).result;
+    assert.match(new URL(linearHandoff.handoffUrl).pathname, /^\/setup\/setup_/);
+    const linearSetup = await f.management.getSetup(linearHandoff.setupOperationId);
+    assert.equal(linearSetup?.action, 'catalog_connection');
+    assert.equal(linearSetup?.target.presetId, 'linear');
+    assert.equal(linearSetup?.target.ownerKind, 'team');
+    assert.match(linearSetup?.target.connectionId ?? '', /^connection_[a-f0-9]{32}$/);
 
     const unknown = await invokeWorkspaceManagementTool({
       service: f.service,
@@ -504,17 +509,9 @@ test('Slack management lets a member create an Agent and edit it through its spe
       },
     });
     assert.equal(created.ok, true);
-    const createProposal = (created as { ok: true; result: {
-      outcomes: Array<{ proposalId: string }>;
-    } }).result.outcomes[0]!.proposalId;
-    const confirmedCreate = await invokeSlackWorkspaceManagementTool({
-      signal,
-      identity: f.identity,
-      service: f.service,
-      name: 'confirm_workspace_change',
-      args: { proposalId: createProposal },
-    });
-    assert.equal(confirmedCreate.ok, true);
+    assert.equal((created as { ok: true; result: { outcomes: Array<{
+      disposition: string;
+    }> } }).result.outcomes[0]?.disposition, 'applied');
     let agent = await f.config.getAgent('agent_specialist');
     assert.equal(agent.creatorMembershipId, member.membership.id);
 
@@ -1259,10 +1256,14 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       args: { connector: 'Zendesk', ownerKind: 'member' },
     });
     assert.equal(connectorSetup.ok, true);
+    const zendeskSetup = (connectorSetup as { ok: true; result: {
+      handoffUrl: string;
+      setupOperationId: string;
+    } }).result;
+    assert.match(new URL(zendeskSetup.handoffUrl).pathname, /^\/setup\/setup_/);
     assert.equal(
-      new URL((connectorSetup as { ok: true; result: { handoffUrl: string } }).result.handoffUrl)
-        .pathname,
-      '/admin/agents/agent_support/connections/new/zendesk/member',
+      (await f.management.getSetup(zendeskSetup.setupOperationId))?.target.presetId,
+      'zendesk',
     );
 
     const created = await invokeSlackWorkspaceManagementTool({
@@ -1289,19 +1290,8 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       },
     });
     assert.equal(created.ok, true);
-    const proposedCreateResult = (created as { ok: true; result: {
+    const createdResult = (created as { ok: true; result: {
       operationId: string;
-      outcomes: Array<{ proposalId: string }>;
-    } }).result;
-    const confirmedCreate = await invokeSlackWorkspaceManagementTool({
-      signal: signal(CHICKPEA_AGENT_ID),
-      identity: f.identity,
-      service: f.service,
-      name: 'confirm_workspace_change',
-      args: { proposalId: proposedCreateResult.outcomes[0]!.proposalId },
-    });
-    assert.equal(confirmedCreate.ok, true);
-    const createdResult = (confirmedCreate as { ok: true; result: {
       outcomes: Array<{ handoffUrl?: string }>;
     } }).result;
     assert.equal(
@@ -1313,7 +1303,7 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       identity: f.identity,
       service: f.service,
       name: 'get_operation',
-      args: { operationId: proposedCreateResult.operationId },
+      args: { operationId: createdResult.operationId },
     });
     assert.equal(
       new URL((durableCreate as { ok: true; result: {

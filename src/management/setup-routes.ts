@@ -13,6 +13,8 @@ import type { AuthPrincipal } from '../auth/types.ts';
 
 import {
   completeApiOAuthAuthorization,
+  connectionAccountIdFromOAuthRef,
+  connectionAccountOAuthRef,
   saveApiOAuthClient,
   startApiOAuthAuthorization,
   type ApiOAuthDependencies,
@@ -20,6 +22,8 @@ import {
 import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
 import {
   clearConnectorCredential,
+  connectionAccountSecretSettingKey,
+  saveConnectionAccountSecret,
   saveConnectorCredential,
 } from '../config/connector-secrets.ts';
 import {
@@ -37,6 +41,7 @@ import {
 } from '../config/mcp-secrets.ts';
 import {
   completeMcpOAuthAuthorization,
+  McpOAuthError,
   resolveMcpOAuthAccessToken,
   startMcpOAuthAuthorization,
   type McpOAuthDependencies,
@@ -44,6 +49,10 @@ import {
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import { discoverMcpConnectionIdentity } from '../config/mcp-identity.ts';
 import { discoverMcpTools } from '../config/mcp-test.ts';
+import {
+  resolveConnectorCatalogPreset,
+  type ConnectorPreset,
+} from '../config/presets.ts';
 import { saveOpenAiAuthMethod } from '../config/openai-auth.ts';
 import { validateProviderApiKey } from '../config/provider-models.ts';
 import {
@@ -65,6 +74,7 @@ import type { ConfigStore } from '../config/store.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   type ConnectionAccount,
+  type ConnectionAccountPolicy,
   type CustomAgentConfig,
   type McpConnectionConfig,
 } from '../config/types.ts';
@@ -85,7 +95,10 @@ import {
   type ManagedConnectionProviderRegistry,
 } from '../connections/managed.ts';
 import { resolveManagedAuthorizationProviderContext } from '../connections/managed-provider-context.ts';
-import { ManagedConnectionProviderUnavailableError } from '../connections/store.ts';
+import {
+  ConnectionAccountService,
+  ManagedConnectionProviderUnavailableError,
+} from '../connections/store.ts';
 import {
   agentAvatarUrl,
   agentAvatarUrlForPresentation,
@@ -107,6 +120,7 @@ import {
 import { emitManagementMetric } from './telemetry.ts';
 import {
   renderManagedConnectionDeparturePage,
+  renderCatalogConnectionSetupPage,
   renderManagedConnectionSetupPage,
   renderManagedConnectionSuccessPage,
   renderManagedConnectionUnavailablePage,
@@ -131,6 +145,12 @@ export interface ManagementSetupRoutesOptions {
   deliverReceipt?: typeof deliverManagementReceiptToSlack;
   managedConnectionProviders?: ManagedConnectionProviderRegistry;
   managedConnectorCatalog?: ManagedConnectorCatalog;
+  /** Test seams for native connector setup without live provider traffic. */
+  startMcpOAuth?: typeof startMcpOAuthAuthorization;
+  completeMcpOAuth?: typeof completeMcpOAuthAuthorization;
+  resolveMcpOAuthToken?: typeof resolveMcpOAuthAccessToken;
+  discoverMcp?: typeof discoverMcpTools;
+  identifyMcp?: typeof discoverMcpConnectionIdentity;
   /** Test seam; production resolves the current Better Auth browser session. */
   authenticatePrincipal?: (request: Request) => Promise<AuthPrincipal | undefined>;
 }
@@ -188,6 +208,38 @@ export function createManagementSetupRoutes(
         : renderManagedConnectionSetupPage(page));
     }
 
+    if (setup?.action === 'catalog_connection') {
+      const authorized = await principalCanEditCatalogSetup(
+        principal,
+        setup,
+        dependencies.config,
+      );
+      if (setup.status === 'completed') {
+        if (!authorized) return unavailablePage(c);
+        const page = await catalogConnectionPageInput(c, setup, dependencies);
+        return page ? c.html(renderManagedConnectionSuccessPage(page)) : unavailablePage(c);
+      }
+      if (principal && !authorized) return unavailablePage(c);
+      const browserMatches = Boolean(
+        principal && session && sessionMatches(setup, session),
+      );
+      if (!principal || !session || !browserMatches) {
+        return c.html(renderClaimPage(setupId));
+      }
+      if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
+        return terminalPage(c, setup);
+      }
+      const page = await catalogConnectionPageInput(c, setup, dependencies);
+      return page
+        ? c.html(renderCatalogConnectionSetupPage({
+            ...page,
+            ...(setup.status === 'failed'
+              ? { failureMessage: 'Connection setup did not complete. Try again.' }
+              : {}),
+          }))
+        : unavailablePage(c);
+    }
+
     const browserMatches = setup && principal && session
       ? principalMatchesSetup(principal, setup) && sessionMatches(setup, session)
       : false;
@@ -230,7 +282,14 @@ export function createManagementSetupRoutes(
         }
         requireAgentEdit(principal, await currentManagedAgent(setup, dependencies.config));
       } else {
-        if (!principalMatchesSetup(principal, setup)) return genericDenied(c);
+        if (setup.action === 'catalog_connection') {
+          if (principal.organizationId !== setup.organizationId) {
+            throw new AuthorizationError();
+          }
+          requireAgentEdit(principal, await currentCatalogAgent(setup, dependencies.config));
+        } else if (!principalMatchesSetup(principal, setup)) {
+          return genericDenied(c);
+        }
         rawSession = (options.randomCapability ?? randomCapability)();
         if (!CAPABILITY_PATTERN.test(rawSession)) return genericDenied(c);
         await dependencies.management.exchangeSetup({
@@ -269,6 +328,10 @@ export function createManagementSetupRoutes(
     const fields = await readFormFields(c);
     if (!fields) return formFailure(c, setup, 'invalid_form');
     try {
+      if (setup.action === 'catalog_connection') {
+        if (principal.organizationId !== setup.organizationId) throw new AuthorizationError();
+        requireAgentEdit(principal, await currentCatalogAgent(setup, dependencies.config));
+      }
       await dependencies.management.authorizeSetup({
         setupOperationId: setupId,
         browserSessionDigest: digest(setupSession(c, setupId)!),
@@ -279,6 +342,7 @@ export function createManagementSetupRoutes(
       clearSetupCookie(c, setupId);
       return c.redirect(`/setup/${encodeURIComponent(setupId)}`, 303);
     } catch (error) {
+      if (error instanceof AuthorizationError) return genericDenied(c);
       await markSetupFailure(setup, c, dependencies.management, safeFailureCode(error), now());
       return formFailure(c, setup, safeFailureCode(error));
     }
@@ -343,12 +407,35 @@ export function createManagementSetupRoutes(
           : managedUnavailablePage(c);
       }
 
+      if (setup.action === 'catalog_connection') {
+        requireAgentEdit(principal, await currentCatalogAgent(setup, dependencies.config));
+      }
       activeSetup = await dependencies.management.authorizeSetup({
         setupOperationId: setupId,
         browserSessionDigest: digest(setupSession(c, setupId)!),
         at: now(),
       });
       await assertExactTarget(activeSetup, dependencies);
+      if (activeSetup.action === 'catalog_connection') {
+        const started = await beginCatalogConnectionSetup(
+          c,
+          activeSetup,
+          fields,
+          principal,
+          dependencies,
+          options,
+        );
+        if (started.authorizationUrl) {
+          if (authorizationJsonRequest(c)) {
+            return c.json({ authorizationUrl: started.authorizationUrl });
+          }
+          return c.redirect(started.authorizationUrl, 303);
+        }
+        await finishSetup(c, activeSetup, started.result, dependencies, options, now());
+        clearSetupCookie(c, setupId);
+        if (authorizationJsonRequest(c)) return c.json({ completed: true });
+        return c.redirect(`/setup/${encodeURIComponent(setupId)}`, 303);
+      }
       if (activeSetup.action === 'api_oauth') {
         const clientId = requiredField(fields, 'clientId', 512);
         const clientSecret = requiredField(fields, 'clientSecret', 2_048);
@@ -387,6 +474,16 @@ export function createManagementSetupRoutes(
         return page
           ? c.html(renderManagedConnectionSetupPage({ ...page, failureMessage: message }), 422)
           : managedUnavailablePage(c);
+      }
+      if (activeSetup.action === 'catalog_connection') {
+        const message = 'Chickpea could not prepare this connection. Check the details and try again.';
+        if (authorizationJsonRequest(c)) {
+          return c.json({ error: safeFailureCode(error), message }, 422);
+        }
+        const page = await catalogConnectionPageInput(c, activeSetup, dependencies);
+        return page
+          ? c.html(renderCatalogConnectionSetupPage({ ...page, failureMessage: message }), 422)
+          : unavailablePage(c);
       }
       return formFailure(c, activeSetup, safeFailureCode(error));
     }
@@ -605,10 +702,14 @@ export function createManagementSetupRoutes(
       : undefined;
     const state = c.req.query('state') ?? '';
     const code = c.req.query('code') ?? '';
-    if (!setup || setup.action !== 'mcp_oauth' || !state || !code) return genericDenied(c);
+    if (!setup || !principal || !['mcp_oauth', 'catalog_connection'].includes(setup.action) ||
+        !state || !code) return genericDenied(c);
     try {
+      if (setup.action === 'catalog_connection') {
+        requireAgentEdit(principal, await currentCatalogAgent(setup, dependencies.config));
+      }
       await assertExactTarget(setup, dependencies);
-      const completed = await completeMcpOAuthAuthorization(
+      const completed = await (options.completeMcpOAuth ?? completeMcpOAuthAuthorization)(
         { code, state },
         mcpOAuthDependencies(dependencies),
       );
@@ -617,11 +718,23 @@ export function createManagementSetupRoutes(
         dependencies,
         completed.ref,
         true,
+        options,
+        completed.accountRevision,
+        completed.oauthAttemptId,
       );
-      await finishSetup(c, setup, result, dependencies, options, now());
+      await finishSetup(c, setup, setup.action === 'catalog_connection'
+        ? {
+            ...result,
+            completedByUserId: principal.userId,
+            completedByMembershipId: principal.membershipId,
+          }
+        : result, dependencies, options, now());
       clearSetupCookie(c, setupId!);
       return c.redirect(`/setup/${encodeURIComponent(setupId!)}`, 303);
     } catch (error) {
+      if (error instanceof McpOAuthError && error.code === 'oauth_attempt_superseded') {
+        return c.redirect(`/setup/${encodeURIComponent(setupId!)}?status=superseded`, 303);
+      }
       await markSetupFailure(setup, c, dependencies.management, safeFailureCode(error), now());
       return c.redirect(`/setup/${encodeURIComponent(setupId!)}?status=failed`, 303);
     }
@@ -781,6 +894,34 @@ async function principalCanEditManagedSetup(
   }
 }
 
+async function currentCatalogAgent(
+  setup: ManagementSetupRecord,
+  config: ConfigStore,
+): Promise<CustomAgentConfig> {
+  if (setup.action !== 'catalog_connection' || !setup.target.agentId) {
+    throw new AuthorizationError();
+  }
+  const agent = await config.getAgent(setup.target.agentId);
+  if (agent.lifecycle === 'archived') throw new AuthorizationError();
+  return agent;
+}
+
+async function principalCanEditCatalogSetup(
+  principal: AuthPrincipal | undefined,
+  setup: ManagementSetupRecord,
+  config: ConfigStore,
+): Promise<boolean> {
+  if (!principal || principal.machine || principal.organizationId !== setup.organizationId) {
+    return false;
+  }
+  try {
+    requireAgentEdit(principal, await currentCatalogAgent(setup, config));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function managedConnectionPageInput(
   c: Context,
   setup: ManagementSetupRecord,
@@ -809,6 +950,331 @@ async function managedConnectionPageInput(
   } catch {
     return undefined;
   }
+}
+
+async function catalogConnectionPageInput(
+  c: Context,
+  setup: ManagementSetupRecord,
+  dependencies: SetupDependencies,
+) {
+  try {
+    if (setup.action !== 'catalog_connection' || !setup.target.agentId ||
+        !setup.target.presetId) return undefined;
+    const preset = resolveConnectorCatalogPreset(setup.target.presetId);
+    if (!preset || 'managedToolkit' in preset) return undefined;
+    const agent = await dependencies.config.getAgent(setup.target.agentId);
+    if (agent.lifecycle === 'archived') return undefined;
+    const avatarUrl = connectorPageAvatarUrl(agent, requestOrigin(c));
+    return { setup, agent, ...(avatarUrl ? { avatarUrl } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
+interface CatalogSetupResult {
+  connector: string;
+  accountLabel?: string;
+  connectionAccountId: string;
+  ownerKind: 'member' | 'team';
+  accessLane: 'read' | 'write';
+  completedByUserId: string;
+  completedByMembershipId: string;
+}
+
+async function beginCatalogConnectionSetup(
+  c: Context,
+  setup: ManagementSetupRecord,
+  fields: Record<string, string>,
+  principal: AuthPrincipal,
+  dependencies: SetupDependencies,
+  options: ManagementSetupRoutesOptions,
+): Promise<{ authorizationUrl?: string; result: CatalogSetupResult }> {
+  if (setup.action !== 'catalog_connection' || setup.origin.kind !== 'slack' ||
+      !setup.target.agentId || !setup.target.presetId || !setup.target.connectionId) {
+    throw new Error('target_changed');
+  }
+  const preset = resolveConnectorCatalogPreset(setup.target.presetId);
+  if (!preset || 'managedToolkit' in preset) throw new Error('target_changed');
+  requireAgentEdit(principal, await dependencies.config.getAgent(setup.target.agentId));
+  const ownerKind = fields.ownerKind?.trim();
+  if (ownerKind !== 'member' && ownerKind !== 'team') throw new Error('invalid_owner');
+  const accessLane = catalogAccessLane(setup.scopes);
+  const result = (account: ConnectionAccount): CatalogSetupResult => ({
+    connector: preset.name,
+    connectionAccountId: account.id,
+    ownerKind: account.ownerKind,
+    accessLane,
+    completedByUserId: principal.userId,
+    completedByMembershipId: principal.membershipId,
+    ...(account.identity?.accountName || account.identity?.workspaceName
+      ? { accountLabel: account.identity.accountName ?? account.identity.workspaceName }
+      : {}),
+  });
+
+  const prepared = await prepareCatalogConnection(preset, fields, options);
+  const requestedConnectionId = catalogSetupConnectionId(setup, ownerKind, principal.membershipId);
+  const accounts = await dependencies.config.listConnectionAccounts(setup.origin.workspaceId);
+  const generatedIds = [
+    requestedConnectionId.slice('connection_'.length),
+    randomUUID().replaceAll('-', ''),
+  ];
+  const service = new ConnectionAccountService({
+    config: dependencies.config,
+    settings: dependencies.settings,
+    randomId: () => generatedIds.shift() ?? randomUUID().replaceAll('-', ''),
+  });
+  let account = accounts.find(({ id }) => id === requestedConnectionId) ??
+    accounts.find(({ id, ownerKind: existingOwner }) =>
+      id === setup.target.connectionId && existingOwner === ownerKind
+    );
+  if (account) {
+    account = await service.getForManagement(principal, account.id);
+  }
+  const otherOwnerKind = ownerKind === 'member' ? 'team' : 'member';
+  const supersededIds = new Set([
+    setup.target.connectionId,
+    catalogSetupConnectionId(setup, otherOwnerKind, principal.membershipId),
+  ]);
+  for (const superseded of accounts.filter(({ id, lifecycle }) =>
+    id !== account?.id && supersededIds.has(id) && lifecycle !== 'revoked'
+  )) {
+    try {
+      await service.getForManagement(principal, superseded.id);
+    } catch (error) {
+      if (error instanceof AuthorizationError) continue;
+      throw error;
+    }
+    await service.revoke({
+      principal,
+      connectionAccountId: superseded.id,
+    });
+  }
+  if (account) {
+    const binding = await dependencies.config.getAgentConnectionBindingForAccount(account.id);
+    if (account.workspaceId !== setup.origin.workspaceId || account.providerId !== preset.id ||
+        !binding || binding.agentId !== setup.target.agentId || account.lifecycle === 'revoked' ||
+        account.ownerKind !== ownerKind || account.ownerKind === 'member' &&
+          account.ownerMembershipId !== principal.membershipId) {
+      throw new Error('target_changed');
+    }
+    const previousAccount = account;
+    const previousBinding = binding;
+    const credentialKey = connectionAccountSecretSettingKey(account.secretRefId);
+    const previousCredential = prepared.credential
+      ? await dependencies.settings.getSetting(credentialKey)
+      : undefined;
+    let updatedAccount: ConnectionAccount | undefined;
+    try {
+      updatedAccount = await dependencies.config.putConnectionAccount({
+        ...account,
+        policy: prepared.policy,
+        ...(prepared.identity ? { identity: prepared.identity } : {}),
+        lifecycle: prepared.credential ||
+            prepared.policy.kind === 'mcp' && prepared.policy.authMode === 'none'
+          ? 'ready'
+          : account.lifecycle,
+      }, account.revision);
+      await dependencies.config.putAgentConnectionBinding({
+        ...binding,
+        allowedCapabilities: prepared.allowedCapabilities,
+      });
+      if (prepared.credential) {
+        await saveConnectionAccountSecret(
+          account.secretRefId,
+          prepared.credential,
+          dependencies.platformEnv,
+          dependencies.settings,
+        );
+      }
+      account = updatedAccount;
+    } catch (error) {
+      const rollbackErrors: unknown[] = [];
+      if (updatedAccount) {
+        try {
+          await dependencies.config.putConnectionAccount(previousAccount, updatedAccount.revision);
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+        try {
+          await dependencies.config.putAgentConnectionBinding(previousBinding);
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      if (prepared.credential) {
+        try {
+          if (previousCredential === undefined) {
+            await dependencies.settings.deleteSetting(credentialKey);
+          } else {
+            await dependencies.settings.setSetting(credentialKey, previousCredential);
+          }
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...rollbackErrors],
+          'Connection replacement failed and its previous state could not be fully restored',
+        );
+      }
+      throw error;
+    }
+  } else {
+    const accountIdSuffix = requestedConnectionId.slice('connection_'.length);
+    if (!requestedConnectionId.startsWith('connection_') || !accountIdSuffix) {
+      throw new Error('target_changed');
+    }
+    account = (await service.createForAgent({
+      principal,
+      agentId: setup.target.agentId,
+      workspaceId: setup.origin.workspaceId,
+      ownerKind,
+      providerId: preset.id,
+      label: preset.name,
+      policy: prepared.policy,
+      ...(prepared.credential ? { credential: prepared.credential } : {}),
+      allowedCapabilities: prepared.allowedCapabilities,
+      ...(prepared.identity ? { identity: prepared.identity } : {}),
+    })).account;
+  }
+
+  if (account.policy.kind !== 'mcp' || account.policy.authMode !== 'oauth') {
+    return { result: result(account) };
+  }
+  const { identity: _identity, ...withoutIdentity } = account;
+  const pending = await dependencies.config.putConnectionAccount({
+    ...withoutIdentity,
+    lifecycle: 'pending',
+    policy: { ...withoutIdentity.policy, oauthAttemptId: randomUUID() },
+  }, account.revision);
+  if (pending.policy.kind !== 'mcp' || pending.policy.authMode !== 'oauth') {
+    throw new Error('target_changed');
+  }
+  const ref = connectionAccountOAuthRef(pending.id);
+  const started = await (options.startMcpOAuth ?? startMcpOAuthAuthorization)({
+    ref,
+    serverUrl: pending.policy.url,
+    callbackUrl: `${requestOrigin(c)}/setup/${encodeURIComponent(setup.setupOperationId)}/oauth/mcp/callback`,
+    ...(pending.policy.oauthScope ? { scope: pending.policy.oauthScope } : {}),
+    returnAgentId: setup.target.agentId,
+    accountRevision: pending.revision,
+    oauthAttemptId: pending.policy.oauthAttemptId!,
+  }, mcpOAuthDependencies(dependencies));
+  return {
+    authorizationUrl: managedAuthorizationUrl(started.authorizationUrl),
+    result: result(pending),
+  };
+}
+
+async function prepareCatalogConnection(
+  preset: ConnectorPreset,
+  fields: Record<string, string>,
+  options: ManagementSetupRoutesOptions,
+): Promise<{
+  policy: ConnectionAccountPolicy;
+  credential?: string;
+  allowedCapabilities: string[];
+  identity?: ConnectionAccount['identity'];
+}> {
+  if (typeof preset.url === 'string' && preset.transport && preset.auth) {
+    const validated = validateMcpUrl(preset.url);
+    if (!validated.ok) throw new Error('blocked_url');
+    const credential = fields.credential?.trim() ?? '';
+    const auth = preset.auth;
+    if ((auth.kind === 'bearer' || auth.kind === 'header' && !auth.optional) && !credential) {
+      throw new Error('credential_required');
+    }
+    const authMode = auth.kind === 'oauth' ? 'oauth' as const
+      : auth.kind === 'bearer' ? 'bearer' as const
+        : 'none' as const;
+    let discoveredTools: McpConnectionConfig['discoveredTools'] = [];
+    let identity: ConnectionAccount['identity'];
+    if (auth.kind !== 'oauth') {
+      const customHeaders = auth.kind === 'header' && credential
+        ? { [auth.headerName]: `${auth.valuePrefix ?? ''}${credential}` }
+        : {};
+      const headers = buildMcpRequestHeaders(authMode, {
+        ...(auth.kind === 'bearer' && credential ? { bearer: credential } : {}),
+        headers: customHeaders,
+      });
+      const discoveryInput = {
+        id: preset.id,
+        url: validated.url,
+        transport: preset.transport,
+        headers,
+      };
+      discoveredTools = (await (options.discoverMcp ?? discoverMcpTools)(discoveryInput)).tools;
+      identity = await (options.identifyMcp ?? discoverMcpConnectionIdentity)({
+        ...discoveryInput,
+        presetId: preset.id,
+      }).catch(() => undefined);
+    }
+    const allowedTools = discoveredTools.map(({ name }) => name);
+    return {
+      policy: {
+        kind: 'mcp',
+        url: validated.url,
+        transport: preset.transport,
+        authMode,
+        headerNames: auth.kind === 'header' ? [auth.headerName] : [],
+        ...(auth.kind === 'header'
+          ? {
+              credentialHeaderName: auth.headerName,
+              ...(auth.valuePrefix ? { credentialValuePrefix: auth.valuePrefix } : {}),
+              ...(auth.optional ? { credentialOptional: true } : {}),
+            }
+          : {}),
+        discoveredTools,
+        allowedTools,
+        ...(auth.kind === 'oauth' && auth.scope ? { oauthScope: auth.scope } : {}),
+        presetId: preset.id,
+      },
+      ...(credential ? { credential } : {}),
+      allowedCapabilities: allowedTools,
+      ...(identity ? { identity } : {}),
+    };
+  }
+
+  const credential = requiredField(fields, 'credential', 8_192);
+  const hosts = preset.api.hostTemplate
+    ? catalogTemplateHosts(preset.api.hosts, requiredField(fields, 'workspaceSubdomain', 63))
+    : [...preset.api.hosts];
+  return {
+    policy: {
+      kind: 'api',
+      allowedHosts: hosts,
+      pathPrefixes: [...(preset.api.pathPrefixes ?? [])],
+      headerName: preset.api.headerName,
+      ...(preset.api.valuePrefix ? { headerValuePrefix: preset.api.valuePrefix } : {}),
+      allowedMethods: [...preset.api.methods],
+      authMode: 'credential',
+      presetId: preset.id,
+    },
+    credential,
+    allowedCapabilities: [],
+  };
+}
+
+function catalogTemplateHosts(templates: readonly string[], rawSubdomain: string): string[] {
+  const subdomain = rawSubdomain.trim().toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(subdomain)) {
+    throw new Error('invalid_subdomain');
+  }
+  return templates.map((template) => {
+    const labels = template.split('.');
+    if (labels.length < 2 || labels[0] !== 'your-subdomain') {
+      throw new Error('invalid_host_template');
+    }
+    return [subdomain, ...labels.slice(1)].join('.');
+  });
+}
+
+function catalogAccessLane(scopes: readonly string[]): 'read' | 'write' {
+  return scopes.length === 0 || scopes.some((scope) =>
+    /(?:^|[:_\s])write(?:$|[:_\s])/i.test(scope) ||
+    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(scope.toUpperCase())
+  ) ? 'write' : 'read';
 }
 
 function managedSetupSelection(
@@ -1073,7 +1539,8 @@ async function finishSetup(
   at: number,
 ): Promise<void> {
   const browserSessionDigest = digest(setupSession(c, setup.setupOperationId)!);
-  const managedReceipt = setup.action === 'managed_connection' && setup.target.agentId
+  const connectionReceipt = ['managed_connection', 'catalog_connection'].includes(setup.action) &&
+      setup.target.agentId
     ? await dependencies.config.getAgent(setup.target.agentId).then((agent) => {
         const avatarUrl = agentAvatarUrlForPresentation(agent, requestOrigin(c));
         return {
@@ -1087,7 +1554,7 @@ async function finishSetup(
         };
       })
     : undefined;
-  const initiator = managedReceipt
+  const initiator = connectionReceipt
     ? setup.actorUserId
     : (await dependencies.identity.getUser(setup.actorUserId))?.displayName ?? setup.actorUserId;
   await completeManagementSetupReceipt(dependencies.management, {
@@ -1106,7 +1573,7 @@ async function finishSetup(
     ...(result.accountLabel ? { accountLabel: result.accountLabel } : {}),
     initiator,
     at,
-    ...(managedReceipt ?? {}),
+    ...(connectionReceipt ?? {}),
   });
   emitManagementMetric('setup.lifecycle', {
     action: setup.action,
@@ -1147,12 +1614,75 @@ async function verifyMcpConnection(
   dependencies: SetupDependencies,
   ref: { agentId: string; connectionId: string },
   oauth: boolean,
-): Promise<{ connector: string; accountLabel?: string }> {
+  options: ManagementSetupRoutesOptions = {},
+  accountRevision?: number,
+  oauthAttemptId?: string,
+): Promise<{
+  connector: string;
+  accountLabel?: string;
+  connectionAccountId?: string;
+  ownerKind?: 'member' | 'team';
+  accessLane?: 'read' | 'write';
+}> {
+  const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+  if (connectionAccountId) {
+    const account = await findConnectionAccount(dependencies.config, connectionAccountId);
+    const binding = account
+      ? await dependencies.config.getAgentConnectionBindingForAccount(account.id)
+      : undefined;
+    if (!account || account.lifecycle !== 'pending' || account.policy.kind !== 'mcp' ||
+        account.policy.authMode !== 'oauth' ||
+        accountRevision !== undefined && account.revision !== accountRevision ||
+        oauthAttemptId !== undefined && account.policy.oauthAttemptId !== oauthAttemptId ||
+        setup.origin.kind !== 'slack' || account.workspaceId !== setup.origin.workspaceId ||
+        account.providerId !== setup.target.presetId ||
+        binding?.agentId !== setup.target.agentId) {
+      throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+    }
+    const validated = validateMcpUrl(account.policy.url);
+    if (!validated.ok) throw new Error('blocked_url');
+    const bearer = await (options.resolveMcpOAuthToken ?? resolveMcpOAuthAccessToken)(
+      { ref, serverUrl: validated.url },
+      mcpOAuthDependencies(dependencies),
+    );
+    const headers = buildMcpRequestHeaders('oauth', { bearer, headers: {} });
+    const discoveryInput = {
+      id: account.id,
+      url: validated.url,
+      transport: account.policy.transport,
+      headers,
+    };
+    const discovery = await (options.discoverMcp ?? discoverMcpTools)(discoveryInput);
+    const identity = await (options.identifyMcp ?? discoverMcpConnectionIdentity)({
+      ...discoveryInput,
+      ...(account.policy.presetId ? { presetId: account.policy.presetId } : {}),
+    }).catch(() => undefined);
+    const previouslyAllowed = new Set(account.policy.allowedTools);
+    const allowedTools = account.policy.discoveredTools.length === 0
+      ? discovery.tools.map(({ name }) => name)
+      : discovery.tools.map(({ name }) => name)
+          .filter((name) => previouslyAllowed.has(name));
+    const ready = await dependencies.config.putConnectionAccount({
+      ...account,
+      lifecycle: 'ready',
+      policy: { ...account.policy, discoveredTools: discovery.tools, allowedTools },
+      ...(identity ? { identity } : {}),
+    }, account.revision);
+    return {
+      connector: setup.target.targetLabel,
+      connectionAccountId: ready.id,
+      ownerKind: ready.ownerKind,
+      accessLane: catalogAccessLane(setup.scopes),
+      ...(identity?.accountName || identity?.workspaceName
+        ? { accountLabel: identity.accountName ?? identity.workspaceName }
+        : {}),
+    };
+  }
   const { agent, connection } = await currentMcpConnection(setup, dependencies.config);
   const validated = validateMcpUrl(connection.url);
   if (!validated.ok) throw new Error('blocked_url');
   const bearer = oauth
-    ? await resolveMcpOAuthAccessToken(
+    ? await (options.resolveMcpOAuthToken ?? resolveMcpOAuthAccessToken)(
         { ref, serverUrl: validated.url },
         mcpOAuthDependencies(dependencies),
       )
@@ -1161,13 +1691,13 @@ async function verifyMcpConnection(
     ...(bearer ? { bearer } : {}),
     headers: {},
   });
-  const discovery = await discoverMcpTools({
+  const discovery = await (options.discoverMcp ?? discoverMcpTools)({
     id: connection.id,
     url: validated.url,
     transport: connection.transport,
     headers,
   });
-  const identity = await discoverMcpConnectionIdentity({
+  const identity = await (options.identifyMcp ?? discoverMcpConnectionIdentity)({
     id: connection.id,
     url: validated.url,
     transport: connection.transport,
@@ -1202,17 +1732,39 @@ async function assertExactTarget(
   }
   if (!setup.target.agentId) throw new Error('target_changed');
   const agent = await dependencies.config.getAgent(setup.target.agentId);
-  if (agent.revision !== setup.target.expectedRevision) throw new Error('target_changed');
+  if (!setup.setupOperationId.startsWith('setup_welcome_') &&
+      agent.revision !== setup.target.expectedRevision) throw new Error('target_changed');
   if (setup.target.kind === 'api_connection') {
     const connection = agent.apiConnections.find(({ id }) => id === setup.target.connectionId);
     if (!connection || connection.displayName !== setup.target.targetLabel) throw new Error('target_changed');
   } else if (setup.target.kind === 'mcp_connection') {
     const connection = agent.mcpServers.find(({ id }) => id === setup.target.connectionId);
     if (!connection || connection.displayName !== setup.target.targetLabel) throw new Error('target_changed');
+  } else if (setup.target.kind === 'catalog_connection') {
+    const preset = setup.target.presetId
+      ? resolveConnectorCatalogPreset(setup.target.presetId)
+      : undefined;
+    if (!preset || 'managedToolkit' in preset || preset.name !== setup.target.targetLabel) {
+      throw new Error('target_changed');
+    }
   } else {
     const repository = agent.repositories.find(({ id }) => id === setup.target.repositoryId);
     if (!repository || repository.fullName !== setup.target.targetLabel) throw new Error('target_changed');
   }
+}
+
+function catalogSetupConnectionId(
+  setup: ManagementSetupRecord,
+  ownerKind: 'member' | 'team',
+  membershipId: string,
+): string {
+  const base = setup.target.connectionId;
+  if (!base?.startsWith('connection_')) throw new Error('target_changed');
+  const suffix = createHash('sha256')
+    .update(`${base}:${ownerKind}:${ownerKind === 'member' ? membershipId : 'workspace'}`)
+    .digest('hex')
+    .slice(0, 32);
+  return `connection_${suffix}`;
 }
 
 async function currentMcpConnection(
@@ -1332,7 +1884,22 @@ function apiOAuthDependencies(dependencies: SetupDependencies): ApiOAuthDependen
 function mcpOAuthDependencies(dependencies: SetupDependencies): McpOAuthDependencies {
   return {
     settings: dependencies.settings,
-    validateConnection: async (ref, serverUrl) => {
+    validateConnection: async (ref, serverUrl, accountRevision, oauthAttemptId) => {
+      const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+      if (connectionAccountId) {
+        const account = await findConnectionAccount(dependencies.config, connectionAccountId);
+        if (!account || account.lifecycle === 'revoked' || account.policy.kind !== 'mcp' ||
+            account.policy.authMode !== 'oauth') return false;
+        const validated = validateMcpUrl(account.policy.url);
+        if (!validated.ok || validated.url !== serverUrl) return false;
+        if (accountRevision !== undefined && account.revision !== accountRevision) {
+          throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+        }
+        if (oauthAttemptId !== undefined && account.policy.oauthAttemptId !== oauthAttemptId) {
+          throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+        }
+        return true;
+      }
       try {
         const agent = await dependencies.config.getAgent(ref.agentId);
         const connection = agent.mcpServers.find(({ id }) => id === ref.connectionId);
@@ -1342,6 +1909,19 @@ function mcpOAuthDependencies(dependencies: SetupDependencies): McpOAuthDependen
       }
     },
   };
+}
+
+async function findConnectionAccount(
+  config: ConfigStore,
+  connectionAccountId: string,
+): Promise<ConnectionAccount | undefined> {
+  for (const installation of await config.listWorkspaceInstallations()) {
+    const account = (await config.listConnectionAccounts(installation.workspaceId)).find(
+      ({ id }) => id === connectionAccountId,
+    );
+    if (account) return account;
+  }
+  return undefined;
 }
 
 async function requireBrowserSetup(
@@ -1361,6 +1941,12 @@ async function requireBrowserSetup(
       : managedSetupSessionMatches(setup, session);
     return !principal.machine && principal.organizationId === setup.organizationId &&
         sessionAuthorized
+      ? setup
+      : undefined;
+  }
+  if (setup.action === 'catalog_connection') {
+    return !principal.machine && principal.organizationId === setup.organizationId &&
+        sessionMatches(setup, session)
       ? setup
       : undefined;
   }

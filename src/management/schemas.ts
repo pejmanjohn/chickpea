@@ -166,7 +166,13 @@ const zSetupTarget = z.discriminatedUnion('kind', [
 ]);
 
 export const managementOperationZodSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ ...zOperationBase, kind: z.literal('create_agent'), clientRef: zId.optional(), agent: zAgent }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('create_agent'),
+    clientRef: zId.optional(),
+    duplicateResolution: z.literal('create_distinct').optional(),
+    agent: zAgent,
+  }),
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('update_agent'),
@@ -495,7 +501,13 @@ const vSetupTarget = v.variant('kind', [
 ]);
 
 export const managementOperationValibotSchema = v.variant('kind', [
-  v.strictObject({ ...vOperationBase, kind: v.literal('create_agent'), clientRef: v.optional(vid), agent: vAgent }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('create_agent'),
+    clientRef: v.optional(vid),
+    duplicateResolution: v.optional(v.literal('create_distinct')),
+    agent: vAgent,
+  }),
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('update_agent'),
@@ -618,6 +630,12 @@ export const managementOperationValibotSchema = v.variant('kind', [
 export const applyWorkspaceChangesValibotSchema = v.strictObject({
   idempotencyKey: vt(256),
   operations: v.pipe(v.array(managementOperationValibotSchema), v.minLength(1), v.maxLength(25)),
+});
+/** Slack-only presentation hints. They are stripped before shared service invocation. */
+export const slackApplyWorkspaceChangesValibotSchema = v.strictObject({
+  idempotencyKey: vt(256),
+  operations: v.pipe(v.array(managementOperationValibotSchema), v.minLength(1), v.maxLength(25)),
+  connectorMentions: v.optional(v.pipe(v.array(vt(128)), v.maxLength(12))),
 });
 export const proposeWorkspaceChangesValibotSchema = v.strictObject({
   idempotencyKey: vt(256),

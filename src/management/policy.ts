@@ -15,6 +15,8 @@ export interface ManagementPolicyFacts {
   approvalBasis?: 'explicit_requester_command';
   /** The service proved the operation is local and can be reversed exactly. */
   reversibleLocalChange?: boolean;
+  /** The service derived this grant from the Slack Channel where it created the Agent. */
+  trustedSlackOriginGrant?: boolean;
 }
 
 export type ManagementPolicyDecision =
@@ -46,7 +48,14 @@ export function classifyManagementOperation(
     return { allowed: true, posture: 'confirmation', reason: 'irreversible_routine_delete' };
   }
   if (operation.kind === 'create_agent') {
-    return { allowed: true, posture: 'confirmation', reason: 'agent_creation' };
+    if (operation.agent.editPolicy === 'all_workspace_members') {
+      return {
+        allowed: true,
+        posture: 'confirmation',
+        reason: 'workspace_wide_agent_edit_authority',
+      };
+    }
+    return { allowed: true, posture: 'immediate', reason: 'base_agent_creation' };
   }
   if (operation.kind === 'save_routine' || operation.kind === 'run_routine') {
     return { allowed: true, posture: 'immediate', reason: 'safe_reversible_schedule_change' };
@@ -101,6 +110,13 @@ export function classifyManagementOperation(
     return { allowed: true, posture: 'confirmation', reason: 'archive_channel' };
   }
   if (operation.kind === 'grant_agent_channel') {
+    if (facts.trustedSlackOriginGrant) {
+      return {
+        allowed: true,
+        posture: 'immediate',
+        reason: 'source_channel_for_created_agent',
+      };
+    }
     return {
       allowed: true,
       posture: 'confirmation',

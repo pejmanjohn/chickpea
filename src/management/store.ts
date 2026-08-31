@@ -8,6 +8,8 @@ import {
   type ClaimManagementProposalInput,
   type ClaimManagementIntroductionInput,
   type ClaimManagementIntroductionResult,
+  type ClaimAgentCreationWelcomeInput,
+  type ClaimAgentCreationWelcomeResult,
   type AuthorizeManagementSetupInput,
   type CompleteManagementSetupInput,
   type ExchangeManagementSetupInput,
@@ -235,6 +237,9 @@ export interface ManagementStore {
   getUndo(operationId: string): Promise<ManagementUndoRecord | undefined>;
   consumeUndo(operationId: string, at: number): Promise<ManagementUndoRecord>;
   putSetup(input: PutManagementSetupInput): Promise<ManagementSetupRecord>;
+  claimAgentCreationWelcome(
+    input: ClaimAgentCreationWelcomeInput,
+  ): Promise<ClaimAgentCreationWelcomeResult>;
   getSetup(setupOperationId: string, at?: number): Promise<ManagementSetupRecord | undefined>;
   exchangeSetup(input: ExchangeManagementSetupInput): Promise<ManagementSetupRecord>;
   authorizeSetup(input: AuthorizeManagementSetupInput): Promise<ManagementSetupRecord>;
@@ -378,6 +383,11 @@ export class ManagementStoreLogic {
         return { kind: 'undo', undo: this.consumeUndo(request.operationId, request.at) };
       case 'put_setup':
         return { kind: 'setup', setup: this.putSetup(request.input) };
+      case 'claim_agent_creation_welcome':
+        return {
+          kind: 'agent_creation_welcome_claim',
+          result: this.claimAgentCreationWelcome(request.input),
+        };
       case 'get_setup':
         return {
           kind: 'setup',
@@ -982,6 +992,22 @@ export class ManagementStoreLogic {
     return this.requireSetup(record.setupOperationId);
   }
 
+  claimAgentCreationWelcome(
+    input: ClaimAgentCreationWelcomeInput,
+  ): ClaimAgentCreationWelcomeResult {
+    return this.db.transaction(() => {
+      const existing = this.getOutboxForOperation(input.operationId);
+      if (existing) return { outbox: existing, created: false };
+      if (input.outbox.operationId !== input.operationId ||
+          !('kind' in input.outbox.receipt) ||
+          input.outbox.receipt.kind !== 'agent_created_welcome') {
+        throw new ManagementError('invalid_request', 'Agent welcome claim is invalid.');
+      }
+      for (const setup of input.setups) this.putSetup(setup);
+      return { outbox: this.putOutbox(input.outbox), created: true };
+    });
+  }
+
   getSetup(setupOperationId: string, at?: number): ManagementSetupRecord | undefined {
     let row = this.db.get(
       'SELECT * FROM management_setup_operations WHERE setup_operation_id = ?',
@@ -1080,6 +1106,7 @@ export class ManagementStoreLogic {
     return this.db.transaction(() => {
       const existing = this.requireSetup(input.setupOperationId, input.at);
       const managed = existing.action === 'managed_connection';
+      const catalog = existing.action === 'catalog_connection';
       if (existing.status === 'completed') {
         if (managed) throw setupError('setup_unavailable');
         return existing;
@@ -1122,17 +1149,27 @@ export class ManagementStoreLogic {
           input.browserSessionDigest,
           input.at,
         );
-        if (setup.status !== 'authorizing') throw setupError('setup_unavailable');
-        completionActorUserId = setup.actorUserId;
-        completionActorMembershipId = setup.actorMembershipId;
-        authorization = 'initiating_membership_browser_session';
+        if (setup.status !== 'authorizing' || catalog &&
+            (!input.completedByUserId || !input.completedByMembershipId)) {
+          throw setupError('setup_unavailable');
+        }
+        completionActorUserId = catalog ? input.completedByUserId! : setup.actorUserId;
+        completionActorMembershipId = catalog
+          ? input.completedByMembershipId!
+          : setup.actorMembershipId;
+        authorization = catalog
+          ? 'eligible_agent_editor_browser_session'
+          : 'initiating_membership_browser_session';
         updated = this.db.run(
           `UPDATE management_setup_operations
            SET status = 'completed', receipt_json = ?, failure_code = NULL,
                token_digest = NULL, browser_session_digest = NULL,
+               completed_by_user_id = ?, completed_by_membership_id = ?,
                connection_account_id = ?, completed_at = ?, updated_at = ?
            WHERE setup_operation_id = ? AND status = 'authorizing'`,
           JSON.stringify(input.receipt),
+          completionActorUserId,
+          completionActorMembershipId,
           input.connectionAccountId ?? null,
           input.at,
           input.at,
