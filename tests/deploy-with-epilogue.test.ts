@@ -495,6 +495,76 @@ test('fresh deploy provisions AUTH_DB before migrations and rebuilds the binding
   assert.match(invoked.at(-1) ?? '', /^wrangler:\["deploy","--secrets-file",/);
 });
 
+test('target provisioning updates only its generated AUTH_DB config before upload', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'fern', databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'fern',
+    DEPLOY_TEST_URL: 'https://chickpea-fern.example.workers.dev',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const canonicalRoot = realpathSync(harness.root);
+  const generatedConfig = path.join(canonicalRoot, 'dist-cf', 'chickpea', 'wrangler.json');
+  const invoked = commands(harness.logPath);
+  assert.equal(
+    invoked.includes(
+      `wrangler:["d1","create","chickpea-auth-db-fern","--binding","AUTH_DB",` +
+      `"--update-config","--config","${generatedConfig}"]`,
+    ),
+    true,
+  );
+  assert.equal(invoked.some((command) => command.startsWith('npm:')), false);
+  const rootConfig = JSON.parse(readFileSync(path.join(canonicalRoot, 'wrangler.jsonc'), 'utf8'));
+  assert.equal(rootConfig.name, 'chickpea');
+  assert.equal(rootConfig.d1_databases[0].database_name, 'chickpea-auth-db');
+  assert.equal(rootConfig.d1_databases[0].database_id, '');
+  const targetConfig = JSON.parse(readFileSync(generatedConfig, 'utf8'));
+  assert.equal(targetConfig.name, 'chickpea-fern');
+  assert.equal(targetConfig.d1_databases[0].database_name, 'chickpea-auth-db-fern');
+  assert.equal(targetConfig.d1_databases[0].database_id, 'provisioned-database-id');
+});
+
+test('a disposable target refuses existing Worker and Durable Object state before migration', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'cobalt', databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'cobalt',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /disposable target cobalt.*existing Worker.*Durable Object state/i);
+  assert.deepEqual(commands(harness.logPath), [
+    `wrangler:["secret","list","--format","json","--config",` +
+      `"${path.join(realpathSync(harness.root), 'dist-cf', 'chickpea', 'wrangler.json')}"]`,
+  ]);
+});
+
+test('a disposable target refuses an existing named D1 before migration or upload', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    DEPLOY_TEST_D1_LIST: JSON.stringify([{
+      name: 'chickpea-auth-db-amber',
+      uuid: 'stale-amber-database-id',
+    }]),
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /disposable target amber.*existing AUTH_DB/i);
+  const invoked = commands(harness.logPath);
+  assert.equal(invoked.some((command) => command.includes('"migrations","apply"')), false);
+  assert.equal(invoked.some((command) => command.startsWith('wrangler:["deploy"')), false);
+});
+
 test('fresh source reuses an existing named AUTH_DB without creating another', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
@@ -848,6 +918,44 @@ test('dry-run never provisions a missing AUTH_DB', (context) => {
   assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
 });
 
+test('target dry-run prints one exact target tuple without Cloudflare mutation', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build', '--dry-run'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const tuple =
+    'Deployment target: target=amber worker=chickpea-amber ' +
+    'auth_db=AUTH_DB/chickpea-auth-db-amber auth_db_id=disposable ' +
+    'd1_schema=0002_mcp_oauth do_schema=v9 state=disposable';
+  assert.equal(result.stdout.match(new RegExp(tuple, 'g'))?.length, 1);
+  assert.doesNotMatch(result.stdout, /Provisioning|Applying reviewed Better Auth migrations/);
+  assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
+});
+
+test('target dry-run prints the selected immutable D1 and permanent generation', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'cobalt', databaseId: 'cobalt-database-id' });
+
+  const result = runHarness(harness, ['--skip-build', '--dry-run'], {
+    CHICKPEA_DEPLOY_TARGET: 'cobalt',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'cobalt-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /target=cobalt worker=chickpea-cobalt .*auth_db_id=cobalt-database-id .*state=permanent/,
+  );
+  assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
+});
+
 function commands(logPath: string): string[] {
   return readFileSync(logPath, 'utf8').trim().split('\n');
 }
@@ -871,6 +979,7 @@ function writeCutoverArtifact(
     databaseId?: string;
     profile?: 'core' | 'sandbox';
     workerName?: string;
+    target?: 'amber' | 'cobalt' | 'fern';
     sandboxBinding?: { name: string; class_name: string };
     sandboxContainer?: {
       class_name: string;
@@ -895,8 +1004,9 @@ function writeCutoverArtifact(
     instance_type: 'standard-1',
     max_instances: 25,
   };
+  const target = options.target;
   const config = {
-    name: options.workerName ?? 'chickpea',
+    name: options.workerName ?? (target ? `chickpea-${target}` : 'chickpea'),
     main: 'index.js',
     compatibility_date: options.compatibilityDate ?? '2026-06-01',
     compatibility_flags: options.publicGlobalFetch === false
@@ -908,6 +1018,13 @@ function writeCutoverArtifact(
       : { version_metadata: { binding: 'CF_VERSION_METADATA' } }),
     vars: {
       SLACK_TAG_LEDGER_CANARY_CHANNELS: options.selector ?? '',
+      ...(target ? {
+        CHICKPEA_DEPLOY_TARGET: target,
+        CHICKPEA_AUTH_DB_SCHEMA_GENERATION: '0002_mcp_oauth',
+        CHICKPEA_DURABLE_OBJECT_SCHEMA_GENERATION: 'v9',
+        CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+        CHICKPEA_DEPLOY_STATE_MODE: options.databaseId ? 'permanent' : 'disposable',
+      } : {}),
     },
     triggers: { crons: options.cron === false ? [] : ['* * * * *'] },
     durable_objects: { bindings: [
@@ -927,7 +1044,7 @@ function writeCutoverArtifact(
     ].filter((binding) => binding.name !== options.missingBinding) },
     d1_databases: [{
       binding: 'AUTH_DB',
-      database_name: 'chickpea-auth-db',
+      database_name: target ? `chickpea-auth-db-${target}` : 'chickpea-auth-db',
       database_id: options.databaseId ?? 'test-database-id',
       migrations_dir: '../../migrations/better-auth',
     }],
@@ -955,7 +1072,18 @@ function writeCutoverArtifact(
     ],
   };
   writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify(config));
-  writeFileSync(path.join(harness.root, 'wrangler.jsonc'), JSON.stringify(config));
+  const rootConfig = structuredClone(config);
+  if (target) {
+    rootConfig.name = 'chickpea';
+    rootConfig.d1_databases[0].database_name = 'chickpea-auth-db';
+    rootConfig.d1_databases[0].database_id = '';
+    delete rootConfig.vars.CHICKPEA_DEPLOY_TARGET;
+    delete rootConfig.vars.CHICKPEA_AUTH_DB_SCHEMA_GENERATION;
+    delete rootConfig.vars.CHICKPEA_DURABLE_OBJECT_SCHEMA_GENERATION;
+    delete rootConfig.vars.CHICKPEA_DEPLOY_SCHEMA_GENERATION;
+    delete rootConfig.vars.CHICKPEA_DEPLOY_STATE_MODE;
+  }
+  writeFileSync(path.join(harness.root, 'wrangler.jsonc'), JSON.stringify(rootConfig));
   const canarySeams = options.completeCanary === false
     ? 'SLACK_TAG_LEDGER_CANARY_CHANNELS'
     : 'SLACK_TAG_LEDGER_CANARY_CHANNELS delivery_receipt_persist_unknown slack_agent_bindings';

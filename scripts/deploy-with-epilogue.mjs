@@ -32,6 +32,8 @@ import { fileURLToPath } from 'node:url';
 
 import {
   classifyCloudflareDeploymentProfile,
+  formatCloudflareDeploymentTargetTuple,
+  readCloudflareDeploymentTargetTuple,
   resolveCloudflareDeploymentProfile,
 } from './cloudflare-deployment-profile.mjs';
 import {
@@ -220,7 +222,8 @@ function requireBuiltArtifact() {
   return { configPath, config, bundle };
 }
 
-function expectedWorkerName() {
+function expectedWorkerName(targetTuple) {
+  if (targetTuple) return targetTuple.workerName;
   const override = process.env.WRANGLER_CI_OVERRIDE_NAME?.trim();
   if (override) return override;
   try {
@@ -236,7 +239,8 @@ function expectedWorkerName() {
 function validateArtifactIdentity(artifact, { requireDatabaseId = false } = {}) {
   const { config, configPath } = artifact;
   const failures = [];
-  const expectedName = expectedWorkerName();
+  const targetTuple = readCloudflareDeploymentTargetTuple(config);
+  const expectedName = expectedWorkerName(targetTuple);
   if (typeof config.name !== 'string' || !config.name.trim()) {
     failures.push('a generated Worker name');
   } else if (expectedName && config.name !== expectedName) {
@@ -475,12 +479,18 @@ function validateDeploymentArtifact(artifact, options = {}) {
 }
 
 let builtArtifact;
+let deploymentTargetTuple;
 try {
   const artifact = requireBuiltArtifact();
   builtArtifact = validateDeploymentArtifact(artifact);
+  deploymentTargetTuple = readCloudflareDeploymentTargetTuple(builtArtifact.config);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
+}
+
+if (deploymentTargetTuple) {
+  process.stdout.write(`${formatCloudflareDeploymentTargetTuple(deploymentTargetTuple)}\n`);
 }
 
 if (preflightOnly) {
@@ -749,6 +759,7 @@ function ensureAuthDatabase(artifact, deployedDatabaseId) {
   const authDb = (artifact.config.d1_databases ?? []).find(
     (binding) => binding.binding === 'AUTH_DB',
   );
+  const targetTuple = readCloudflareDeploymentTargetTuple(artifact.config);
   if (deployedDatabaseId) {
     const generatedId = typeof authDb?.database_id === 'string'
       ? authDb.database_id.trim()
@@ -767,12 +778,19 @@ function ensureAuthDatabase(artifact, deployedDatabaseId) {
   if (typeof authDb?.database_id === 'string' && authDb.database_id.trim()) return artifact;
   const existingId = existingAuthDatabaseId(authDb?.database_name || 'chickpea-auth-db');
   if (existingId) {
+    if (targetTuple?.stateMode === 'disposable') {
+      throw new Error(
+        `Cloudflare disposable target ${targetTuple.target} already has an existing AUTH_DB. ` +
+        'Remove that disposable state or register its immutable ID and schema generation before deploying.',
+      );
+    }
     process.stdout.write('Reusing the customer-owned AUTH_DB database...\n');
     authDb.database_id = existingId;
     writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
     return validateDeploymentArtifact(requireBuiltArtifact(), { requireDatabaseId: true });
   }
   const rootConfig = path.join(projectRoot, 'wrangler.jsonc');
+  const provisionConfig = targetTuple ? artifact.configPath : rootConfig;
   process.stdout.write('Provisioning the customer-owned AUTH_DB database...\n');
   const provision = spawnSync(
     process.execPath,
@@ -785,7 +803,7 @@ function ensureAuthDatabase(artifact, deployedDatabaseId) {
       'AUTH_DB',
       '--update-config',
       '--config',
-      rootConfig,
+      provisionConfig,
       ...deploymentResourceArgs(),
     ],
     { cwd: projectRoot, stdio: 'inherit' },
@@ -800,6 +818,9 @@ function ensureAuthDatabase(artifact, deployedDatabaseId) {
       'wrangler.jsonc and rerun npm run deploy.',
     );
     process.exit(provision.status ?? 1);
+  }
+  if (targetTuple) {
+    return validateDeploymentArtifact(requireBuiltArtifact(), { requireDatabaseId: true });
   }
   buildCloudflareArtifact();
   const rebuilt = requireBuiltArtifact();
@@ -951,6 +972,13 @@ let expectedActiveDeploymentFingerprint;
 if (!deployArgs.includes('--dry-run')) {
   try {
     remoteWorker = inspectRemoteWorker(builtArtifact);
+    if (deploymentTargetTuple?.stateMode === 'disposable' && remoteWorker.exists) {
+      throw new Error(
+        `Cloudflare disposable target ${deploymentTargetTuple.target} already has an existing Worker ` +
+        'and Durable Object state. Remove that disposable state or register its immutable AUTH_DB ID ' +
+        'and schema generation before deploying.',
+      );
+    }
     const deployed = remoteWorker.exists
       ? deployedAuthDatabase(builtArtifact)
       : undefined;
