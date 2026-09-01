@@ -10,24 +10,12 @@
   <strong>AI teammates in Slack that answer questions, take on tasks, and use the accounts you give them — running on infrastructure you own.</strong>
 </p>
 
-<p align="center">
-  <img src="assets/chickpea-avatars/agent-defaults/01-sage.png" width="48" height="48" alt="">
-  <img src="assets/chickpea-avatars/agent-defaults/02-coral.png" width="48" height="48" alt="">
-  <img src="assets/chickpea-avatars/agent-defaults/03-lilac.png" width="48" height="48" alt="">
-  <img src="assets/chickpea-avatars/agent-defaults/04-mineral-blue.png" width="48" height="48" alt="">
-  <img src="assets/chickpea-avatars/agent-defaults/05-dusty-rose.png" width="48" height="48" alt="">
-  <img src="assets/chickpea-avatars/agent-defaults/06-deep-moss.png" width="48" height="48" alt="">
-  <br />
-  <sub><code>@support</code> · <code>@revops</code> · <code>@oncall</code> · <code>@docs</code> · <code>@data</code> · <code>@design</code></sub>
-</p>
-
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-555555.svg?labelColor=333333&color=2EA44F)](./LICENSE)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.19-555555?labelColor=333333&color=339933)](https://nodejs.org)
 [![Runs on](https://img.shields.io/badge/Runs_on-Cloudflare_Workers_or_Node-555555?labelColor=333333&color=F38020)](#install)
 [![Built on Flue](https://img.shields.io/badge/Built_on-Flue-555555?labelColor=333333&color=DDA126)](https://www.npmjs.com/package/@flue/runtime)
-[![Models](https://img.shields.io/badge/Models-Anthropic_%C2%B7_OpenAI_%C2%B7_OpenRouter_%C2%B7_Workers_AI-555555?labelColor=333333&color=8B5CF6)](#models-and-providers)
 
 <br />
 
@@ -35,13 +23,7 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea)
 
-<sub>or run it on your own box</sub>
-
-<pre><code>git clone https://github.com/pejmanjohn/chickpea &amp;&amp; cd chickpea
-npm install
-npm run setup:link -- https://your-chickpea.example</code></pre>
-
-<sub><em>Prints your private setup link plus two env values. Export those, then <code>npm run dev</code>. Full steps in <a href="#node">Install</a>.</em></sub>
+<sub><em>or run it on your own box — full steps in <a href="#node">Install</a></em></sub>
 
 <br />
 
