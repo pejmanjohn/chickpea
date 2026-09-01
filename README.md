@@ -71,24 +71,62 @@ Chickpea is for those teams. Each Agent keeps its own connected accounts and its
 
 ## How It Works
 
-Six nouns cover the system.
+### In Slack
 
-- **Agent** — the only thing with behavior of its own. Presentation, instructions, model, skills, repositories, connections, one memory, channel grants, schedules.
-- **Slack installation** — one native `@Chickpea` bot providing Events, DMs, App Home, and delivery. It is transport only.
-- **Agent handle** — a zero-member Slack user group. Slack renders the mention, Chickpea routes it and replies as that Agent.
-- **Channel grant** — permission for one Agent to work in one channel. Many Agents may share a channel.
-- **Thread route** — the Agent that owns a thread. Any current channel member may continue it.
-- **Connection account** — one team or personal authorization, belonging permanently to one Agent.
+Someone in `#billing` types:
 
-Publishing an Agent to a channel hands that channel's members everything the Agent can do and reach. Think about that before you publish.
+> **`@support`** can we refund order 4821? The customer says the card was charged twice.
 
-The agent runtime is [Flue](https://flueframework.com) ([`@flue/runtime`](https://www.npmjs.com/package/@flue/runtime)), the Apache-licensed open agent framework from the [Astro](https://astro.build) team, now part of Cloudflare. It supplies durable sessions that survive crashes and restarts, persistent state, subagents, tools, skills, and MCP, and runs the same code on Cloudflare Workers or Node against any model provider. Flue itself runs on Pi, the open agent harness behind OpenClaw. Production deploys use Workers, Durable Objects, D1, and Workers AI. Chickpea adds what those layers don't have: the Slack product, the authority model, and the admin panel.
+1. **Slack renders the mention.** `@support` is a Slack user group with zero members, created when the Agent was. To Slack it is an ordinary handle. To Chickpea it is an address.
+2. **Chickpea checks the grant.** One deployment holds every Agent, and a channel grant says which Agent may work in which channel. If `@support` has no grant for `#billing`, nothing happens. Two handles in one message get rejected as ambiguous rather than guessed.
+3. **The Agent runs as itself.** Its own instructions, its own memory, its own skills, and its own connected accounts, say Zendesk and Stripe. Nothing that belongs to `@revops` is in the room.
+4. **The reply lands in the thread under `@support`'s name and avatar,** streamed as it's written. The thread now belongs to `@support`. Anyone in the channel can follow up there without mentioning it again, and mentioning `@finance` in the same thread hands the work over in the open.
+
+Want another teammate? Ask `@Chickpea` for one, in Slack. [Run It From Slack](#run-it-from-slack) covers what else you can do there.
+
+Drawn out, a workspace looks like this. Solid lines are channel grants, dotted lines are connected accounts.
+
+```mermaid
+flowchart LR
+  zs["Zendesk · Stripe"] -.- support["@support"]
+  gh["GitHub · Sentry"] -.- oncall["@oncall"]
+  hs["HubSpot · Google Sheets"] -.- revops["@revops"]
+  subgraph cp["Chickpea, one deployment"]
+    support
+    oncall
+    revops
+  end
+  subgraph slack["Slack workspace"]
+    billing["#billing"]
+    eng["#eng"]
+    fin["#finance (private)"]
+  end
+  support --- billing
+  oncall --- billing
+  oncall --- eng
+  revops --- fin
+```
+
+`@oncall` can answer in `#billing` but has no Zendesk. `@support` has Zendesk but cannot see `#eng`. Publishing an Agent to a channel hands that channel's members everything the Agent can do and reach, so think about that before you publish.
+
+### Under the hood
+
+| Layer | What it does |
+|---|---|
+| **Slack app** | Events API, DMs, App Home, message delivery. Transport only. |
+| **Chickpea** | Routes mentions to Agents, enforces channel grants and confirmation policy, resolves credentials at the moment of each call, renders replies as the Agent, and runs Admin and the management MCP. |
+| **[Flue](https://flueframework.com)** | The agent runtime: durable sessions that survive crashes and restarts, persistent state, subagents, tools, skills, and MCP. Same code on Cloudflare Workers or Node. |
+| **Pi** | The open agent harness Flue runs on, also behind OpenClaw. |
+| **Model provider** | Anthropic, OpenAI, OpenRouter, or Cloudflare Workers AI, pinned per Agent. |
+| **State** | Durable Objects and D1 on Cloudflare. SQLite files on Node. |
+
+Chickpea has no agent loop of its own. That is Flue ([`@flue/runtime`](https://www.npmjs.com/package/@flue/runtime)), the Apache-licensed open agent framework from the [Astro](https://astro.build) team, now part of Cloudflare. Everything above the Flue row in the table is Chickpea's: the Slack product, the authority model, and the admin panel.
 
 ---
 
 ## Slack Experience
 
-Mention `@Chickpea` for the workspace default Agent, or an Agent handle like `@support` for that one. Two Agent handles in one message are rejected as ambiguous; Chickpea will not guess.
+Mention `@Chickpea` for the workspace default Agent, or an Agent handle like `@support` for that one.
 
 Publishing the first Agent to a public channel joins the base bot automatically. Private channels need someone to `/invite @Chickpea` first, and the grant stays pending until membership is verified.
 
