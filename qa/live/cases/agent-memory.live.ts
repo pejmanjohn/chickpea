@@ -1,5 +1,5 @@
 import { defineLiveCase, requiredSuitesForVariant, type AssertionToken } from '../schema.ts';
-import type { FoundationEvaluation } from './agent-lifecycle.live.ts';
+import type { FoundationEvaluation } from './_shared.ts';
 import { integerAt, markerAt, objectAt, recordsAt, result, sha256Utf8, stringAt, upstreamRecord } from './_shared.ts';
 
 export const AGENT_MEMORY_LIVE_BLOCKER =

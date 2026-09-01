@@ -4,6 +4,16 @@ import {
   type AssertionToken,
   type CleanupIntent,
 } from '../schema.ts';
+import {
+  hasSettledActivity,
+  integerAt,
+  markerAt,
+  maybeObject,
+  objectAt,
+  stringAt,
+  upstreamRecord,
+  type FoundationEvaluation,
+} from './_shared.ts';
 
 const agentResidue: CleanupIntent = {
   strategy: 'attributed_residue',
@@ -121,12 +131,6 @@ export const AGENT_LIFECYCLE_FAILURES = [
 
 export type AgentLifecycleFailure = typeof AGENT_LIFECYCLE_FAILURES[number];
 
-export interface FoundationEvaluation<Failure extends string> {
-  pass: boolean;
-  observedTokens: AssertionToken[];
-  failures: Failure[];
-}
-
 /**
  * Normalize Admin and Slack API response shapes. This module deliberately has
  * no network client. A live observer supplies the same response bodies that
@@ -165,7 +169,7 @@ function evaluateCreate(input: Record<string, unknown>): FoundationEvaluation<Ag
   const request = objectAt(input, 'request');
   const admin = objectAt(input, 'admin');
   const slack = objectAt(input, 'slack');
-  const marker = runMarker(stringAt(request, 'runMarker'));
+  const marker = markerAt(input);
   const expectedAgentName = stringAt(request, 'expectedAgentName');
   const sourceChannelId = stringAt(request, 'sourceChannelId');
   const sourceThreadTs = stringAt(request, 'sourceThreadTs');
@@ -180,13 +184,13 @@ function evaluateCreate(input: Record<string, unknown>): FoundationEvaluation<Ag
   const agentId = agent === undefined ? '' : stringAt(agent, 'id');
   const outboxes = arrayAt(admin, 'outboxes').filter(isRecord);
   const welcomeOutboxes = outboxes.filter((outbox) => {
-    const receipt = maybeRecord(outbox.receipt);
+    const receipt = maybeObject(outbox.receipt);
     return receipt?.kind === 'agent_created_welcome' && receipt.agentId === agentId;
   });
   const welcomeOutbox = welcomeOutboxes[0];
-  const receipt = maybeRecord(welcomeOutbox?.receipt);
-  const destination = maybeRecord(welcomeOutbox?.destination);
-  const publication = maybeRecord(receipt?.publication);
+  const receipt = maybeObject(welcomeOutbox?.receipt);
+  const destination = maybeObject(welcomeOutbox?.destination);
+  const publication = maybeObject(receipt?.publication);
   const messages = arrayAt(slack, 'messages').filter(isRecord);
   const deliveryMessageTs = deliveryTs(welcomeOutbox?.deliveryRef);
   const welcomes = messages.filter((message) =>
@@ -207,13 +211,13 @@ function evaluateCreate(input: Record<string, unknown>): FoundationEvaluation<Ag
     || publication?.status !== 'complete'
     || !Array.isArray(publication.incomplete)
     || publication.incomplete.length !== 0) failures.push('welcome_false_claim');
-  const presence = agent === undefined ? undefined : maybeRecord(agent.slackPresence);
+  const presence = agent === undefined ? undefined : maybeObject(agent.slackPresence);
   if (presence?.health !== 'healthy' || presence.desiredState !== 'active') failures.push('presence_missing');
   const grants = arrayAt(admin, 'channelGrants').filter(isRecord);
   if (!grants.some((grant) =>
     grant.agentId === agentId && grant.channelId === sourceChannelId && grant.status === 'active'
   )) failures.push('welcome_false_claim');
-  if (!activitySettled(admin)) failures.push('activity_lingering');
+  if (!hasSettledActivity(admin)) failures.push('activity_lingering');
 
   const observedTokens: AssertionToken[] = [];
   if (!failures.includes('agent_missing')) observedTokens.push('agent.exists');
@@ -233,12 +237,12 @@ function evaluateUpdate(input: Record<string, unknown>): FoundationEvaluation<Ag
   const requesterUserId = stringAt(request, 'requesterUserId');
   const requestThreadTs = stringAt(request, 'threadTs');
   const fullInstructions = stringAt(request, 'fullInstructions');
-  runMarker(stringAt(request, 'runMarker'));
+  markerAt(input);
   const failures: AgentLifecycleFailure[] = [];
 
   const operations = arrayAt(proposal, 'operations').filter(isRecord);
   const operation = operations.find((candidate) => candidate.kind === 'update_agent');
-  const patch = maybeRecord(operation?.patch);
+  const patch = maybeObject(operation?.patch);
   const expectedScopeKey = stringAt(request, 'approvalScopeKey');
   if (proposal.actorUserId !== requesterUserId
     || proposal.approvalScopeKey !== expectedScopeKey
@@ -258,16 +262,16 @@ function evaluateUpdate(input: Record<string, unknown>): FoundationEvaluation<Ag
   if (approvalMessages.length === 0 && approvalReactions.length > 0) failures.push('reaction_only_approval');
   if (patch?.instructions !== fullInstructions) failures.push('frozen_value_mismatch');
   if (stringAt(agent, 'instructions') !== fullInstructions) failures.push('durable_value_truncated');
-  if (numberAt(agent, 'revision') === numberAt(admin, 'beforeRevision')
+  if (integerAt(agent, 'revision') === integerAt(admin, 'beforeRevision')
     || !arrayAt(objectAt(proposal, 'result'), 'outcomes').filter(isRecord).some((outcome) =>
       optionalArrayAt(outcome, 'changed').filter(isRecord).some((changed) =>
-        changed.kind === 'agent' && changed.id === agentId && changed.revision === numberAt(agent, 'revision')
+        changed.kind === 'agent' && changed.id === agentId && changed.revision === integerAt(agent, 'revision')
       )
     )) {
     failures.push('revision_not_advanced');
   }
   if (proposal.status !== 'completed' || admin.preApprovalRevision !== admin.beforeRevision) failures.push('early_mutation');
-  if (!activitySettled(admin)) failures.push('activity_lingering');
+  if (!hasSettledActivity(admin)) failures.push('activity_lingering');
 
   const observedTokens: AssertionToken[] = [];
   if (!failures.some((failure) => [
@@ -278,28 +282,11 @@ function evaluateUpdate(input: Record<string, unknown>): FoundationEvaluation<Ag
   return { pass: failures.length === 0, observedTokens, failures };
 }
 
-function activitySettled(admin: Record<string, unknown>): boolean {
-  const presentation = objectAt(admin, 'presentation');
-  const projection = objectAt(presentation, 'activityProjection');
-  return projection.state === 'cleared' || projection.state === 'not_required';
-}
-
 function deliveryTs(input: unknown): string {
   if (typeof input !== 'string') throw new Error('INVALID_UPSTREAM_SHAPE');
   const match = /^slack:[A-Z0-9_]+:([0-9]+\.[0-9]+)$/u.exec(input);
   if (match?.[1] === undefined) throw new Error('INVALID_UPSTREAM_SHAPE');
   return match[1];
-}
-
-function upstreamRecord(input: unknown): Record<string, unknown> {
-  if (!isRecord(input) || 'observedTokens' in input) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return input;
-}
-
-function objectAt(input: Record<string, unknown>, key: string): Record<string, unknown> {
-  const value = input[key];
-  if (!isRecord(value)) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return value;
 }
 
 function arrayAt(input: Record<string, unknown>, key: string): unknown[] {
@@ -315,27 +302,6 @@ function optionalArrayAt(input: Record<string, unknown>, key: string): unknown[]
   return value;
 }
 
-function stringAt(input: Record<string, unknown>, key: string): string {
-  const value = input[key];
-  if (typeof value !== 'string' || value.length === 0) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return value;
-}
-
-function numberAt(input: Record<string, unknown>, key: string): number {
-  const value = input[key];
-  if (!Number.isSafeInteger(value)) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return value as number;
-}
-
-function maybeRecord(input: unknown): Record<string, unknown> | undefined {
-  return isRecord(input) ? input : undefined;
-}
-
 function isRecord(input: unknown): input is Record<string, unknown> {
   return input !== null && typeof input === 'object' && !Array.isArray(input);
-}
-
-function runMarker(input: string): string {
-  if (!/^qa-[a-z0-9]{6,40}$/u.test(input)) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return input;
 }

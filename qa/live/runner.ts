@@ -34,6 +34,7 @@ import {
   type AssertionRecord,
   type CaseOutcome,
   type PrimaryOutcome,
+  type ReadbackOutcome,
   type RunPhase,
   type RunnerRecord,
   type WaitingRecord,
@@ -48,7 +49,7 @@ export interface RunIdentity {
 
 export type RunnerSignal =
   | { type: 'action_receipt'; actionRef: string; outcome: ActionReceiptOutcome }
-  | { type: 'readback_result'; intentId: string; outcome: 'applied' | 'absent' | 'ambiguous' }
+  | { type: 'readback_result'; intentId: string; outcome: ReadbackOutcome }
   | { type: 'assertion_result'; variantId: string; result: PrimaryResult; reason?: TypedReason };
 
 export interface AdvanceLiveRunRequest {

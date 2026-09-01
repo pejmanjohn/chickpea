@@ -16,7 +16,11 @@ import {
   type PrimaryResult,
   type TypedReason,
 } from './schema.ts';
-import type { RunnerRecord } from './state.ts';
+import {
+  OPERATOR_ACTION_RECEIPT_OUTCOMES,
+  READBACK_OUTCOMES,
+  type RunnerRecord,
+} from './state.ts';
 
 export interface CliErrorRecord {
   kind: 'error';
@@ -153,21 +157,23 @@ function signalFromArguments(args: Map<string, string[]>): RunnerSignal | undefi
     .filter((value) => value !== undefined).length;
   if (signalCount > 1) throw new CliUsageError('MULTIPLE_SIGNALS');
   if (actionOutcome !== undefined) {
-    const outcomes = ['completed', 'denied', 'cancelled', 'expired', 'wrong_session', 'provider_error', 'ambiguous'] as const;
-    if (!outcomes.includes(actionOutcome as typeof outcomes[number])) throw new CliUsageError('INVALID_ACTION_OUTCOME');
+    if (!OPERATOR_ACTION_RECEIPT_OUTCOMES.includes(actionOutcome as typeof OPERATOR_ACTION_RECEIPT_OUTCOMES[number])) {
+      throw new CliUsageError('INVALID_ACTION_OUTCOME');
+    }
     return {
       type: 'action_receipt',
       actionRef: one(args, 'action-ref'),
-      outcome: actionOutcome as typeof outcomes[number],
+      outcome: actionOutcome as typeof OPERATOR_ACTION_RECEIPT_OUTCOMES[number],
     };
   }
   if (readbackOutcome !== undefined) {
-    const outcomes = ['applied', 'absent', 'ambiguous'] as const;
-    if (!outcomes.includes(readbackOutcome as typeof outcomes[number])) throw new CliUsageError('INVALID_READBACK_OUTCOME');
+    if (!READBACK_OUTCOMES.includes(readbackOutcome as typeof READBACK_OUTCOMES[number])) {
+      throw new CliUsageError('INVALID_READBACK_OUTCOME');
+    }
     return {
       type: 'readback_result',
       intentId: one(args, 'intent-id'),
-      outcome: readbackOutcome as typeof outcomes[number],
+      outcome: readbackOutcome as typeof READBACK_OUTCOMES[number],
     };
   }
   if (assertionResult !== undefined) {

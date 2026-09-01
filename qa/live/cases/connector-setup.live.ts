@@ -3,7 +3,17 @@ import {
   requiredSuitesForVariant,
   type AssertionToken,
 } from '../schema.ts';
-import type { FoundationEvaluation } from './agent-lifecycle.live.ts';
+import {
+  hasSettledActivity,
+  integerAt,
+  markerAt,
+  maybeObject,
+  objectAt,
+  result,
+  stringAt,
+  upstreamRecord,
+  type FoundationEvaluation,
+} from './_shared.ts';
 
 export const CONNECTOR_SETUP_CONTRACT = defineLiveCase({
   id: 'LC-04',
@@ -135,7 +145,7 @@ export function evaluateConnectorSetup(
   const request = objectAt(input, 'request');
   const admin = objectAt(input, 'admin');
   const provider = objectAt(input, 'provider');
-  const marker = runMarker(stringAt(request, 'runMarker'));
+  const marker = markerAt(input);
   const agentId = stringAt(request, 'agentId');
   const providerAccountId = stringAt(request, 'providerAccountId');
   const authorizedEditorIds = stringArrayAt(request, 'authorizedEditorIds');
@@ -154,7 +164,7 @@ export function evaluateConnectorSetup(
     .filter((setup) => setup.setupOperationId === setupOperationId);
   const completed = setups.filter((setup) => setup.status === 'completed');
   const completion = completed[0];
-  const target = maybeRecord(completion?.target);
+  const target = maybeObject(completion?.target);
   if (setupForm.ownerKind !== expectedOwnerKind || setupForm.access !== 'read') {
     failures.push('ownership_not_selected');
   }
@@ -186,7 +196,7 @@ export function evaluateConnectorSetup(
     .filter((grant) => grant.id === providerAccountId && grant.status === 'ACTIVE');
   if (grants.length !== 1) failures.push('provider_grant_missing');
   if (account?.policy !== undefined) {
-    const policy = maybeRecord(account.policy);
+    const policy = maybeObject(account.policy);
     if (policy?.kind !== 'managed' || policy.accountRef !== providerAccountId) {
       failures.push('provider_account_mismatch');
     }
@@ -194,7 +204,7 @@ export function evaluateConnectorSetup(
 
   const toolResult = objectAt(provider, 'tool_result');
   if (toolResult.successful !== true || toolResult.error !== null) failures.push('tool_read_failed');
-  const sheet = maybeRecord(toolResult.data);
+  const sheet = maybeObject(toolResult.data);
   if (sheet === undefined || !Array.isArray(sheet.values)
     || !Array.isArray(sheet.values[0])
     || !sameStrings(sheet.values[0], ['case_marker', 'status'])) {
@@ -207,13 +217,13 @@ export function evaluateConnectorSetup(
     if (completed.length !== 1 || grants.length > 1) failures.push('duplicate_completion');
     const callbacks = arrayAt(provider, 'callbacks').filter(isRecord);
     const successful = callbacks.filter((callback) => callback.result === 'completed')
-      .sort((left, right) => numberAt(left, 'sequence') - numberAt(right, 'sequence'));
+      .sort((left, right) => integerAt(left, 'sequence') - integerAt(right, 'sequence'));
     if (successful[0]?.completedByUserId !== completedBy) failures.push('stale_callback_won');
     if (callbacks.some((callback) => callback.afterCompletion === true && callback.result !== 'already_completed')) {
       failures.push('setup_replayed');
     }
   }
-  if (!activitySettled(admin)) {
+  if (!hasSettledActivity(admin)) {
     failures.push('activity_lingering');
   }
 
@@ -223,18 +233,7 @@ export function evaluateConnectorSetup(
   if (variantId === 'LC04-V3-editor-race' && !failures.some((failure) =>
     ['duplicate_completion', 'setup_replayed', 'stale_callback_won'].includes(failure)
   )) observedTokens.push('forbidden.no_duplicate');
-  return { pass: failures.length === 0, observedTokens: unique(observedTokens), failures: unique(failures) };
-}
-
-function upstreamRecord(input: unknown): Record<string, unknown> {
-  if (!isRecord(input) || 'observedTokens' in input) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return input;
-}
-
-function objectAt(input: Record<string, unknown>, key: string): Record<string, unknown> {
-  const value = input[key];
-  if (!isRecord(value)) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return value;
+  return result(observedTokens, failures);
 }
 
 function arrayAt(input: Record<string, unknown>, key: string): unknown[] {
@@ -249,41 +248,10 @@ function stringArrayAt(input: Record<string, unknown>, key: string): string[] {
   return values as string[];
 }
 
-function stringAt(input: Record<string, unknown>, key: string): string {
-  const value = input[key];
-  if (typeof value !== 'string' || value.length === 0) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return value;
-}
-
-function numberAt(input: Record<string, unknown>, key: string): number {
-  const value = input[key];
-  if (!Number.isSafeInteger(value)) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return value as number;
-}
-
-function maybeRecord(input: unknown): Record<string, unknown> | undefined {
-  return isRecord(input) ? input : undefined;
-}
-
 function isRecord(input: unknown): input is Record<string, unknown> {
   return input !== null && typeof input === 'object' && !Array.isArray(input);
 }
 
 function sameStrings(input: unknown[], expected: string[]): boolean {
   return input.length === expected.length && input.every((value, index) => value === expected[index]);
-}
-
-function activitySettled(admin: Record<string, unknown>): boolean {
-  const presentation = objectAt(admin, 'presentation');
-  const projection = objectAt(presentation, 'activityProjection');
-  return projection.state === 'cleared' || projection.state === 'not_required';
-}
-
-function unique<Value>(values: Value[]): Value[] {
-  return [...new Set(values)];
-}
-
-function runMarker(input: string): string {
-  if (!/^qa-[a-z0-9]{6,40}$/u.test(input)) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return input;
 }

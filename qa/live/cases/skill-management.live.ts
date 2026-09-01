@@ -1,5 +1,5 @@
 import { defineLiveCase, requiredSuitesForVariant, type AssertionToken } from '../schema.ts';
-import type { FoundationEvaluation } from './agent-lifecycle.live.ts';
+import type { FoundationEvaluation } from './_shared.ts';
 import {
   hasSettledActivity,
   integerAt,

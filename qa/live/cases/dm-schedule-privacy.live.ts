@@ -1,5 +1,5 @@
 import { defineLiveCase, requiredSuitesForVariant, type AssertionToken } from '../schema.ts';
-import type { FoundationEvaluation } from './agent-lifecycle.live.ts';
+import type { FoundationEvaluation } from './_shared.ts';
 import { markerAt, objectAt, recordsAt, result, stringAt, upstreamRecord } from './_shared.ts';
 
 export const DM_SCHEDULE_PRIVACY_LIVE_BLOCKER =

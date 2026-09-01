@@ -4,7 +4,15 @@ import {
   type AssertionToken,
   type CleanupIntent,
 } from '../schema.ts';
-import type { FoundationEvaluation } from './agent-lifecycle.live.ts';
+import {
+  hasSettledActivity,
+  integerAt,
+  markerAt,
+  objectAt,
+  stringAt,
+  upstreamRecord,
+  type FoundationEvaluation,
+} from './_shared.ts';
 
 const slackResidue: CleanupIntent = {
   strategy: 'attributed_residue',
@@ -179,7 +187,7 @@ export function evaluateRoutineCleanup(upstream: unknown): FoundationEvaluation<
 
 function evaluateCreateDue(input: Record<string, unknown>): FoundationEvaluation<ChannelScheduleFailure> {
   const request = objectAt(input, 'request');
-  const marker = runMarker(stringAt(request, 'runMarker'));
+  const marker = markerAt(input);
   const originChannelId = stringAt(request, 'originChannelId');
   const originThreadTs = stringAt(request, 'originThreadTs');
   const expectedRoutineName = stringAt(request, 'expectedRoutineName');
@@ -211,7 +219,7 @@ function evaluateCreateDue(input: Record<string, unknown>): FoundationEvaluation
   if (occurrences.length !== 1
     || occurrences[0]?.deliveryChannelId !== originChannelId
     || occurrences[0]?.deliveryMessageTs !== due[0]?.ts) failures.push('occurrence_missing');
-  if (!activitySettled(admin)) failures.push('activity_lingering');
+  if (!hasSettledActivity(admin)) failures.push('activity_lingering');
   const observedTokens: AssertionToken[] = [];
   if (!failures.includes('routine_missing')) observedTokens.push('routine.exists');
   if (!failures.some((failure) => [
@@ -222,11 +230,10 @@ function evaluateCreateDue(input: Record<string, unknown>): FoundationEvaluation
 }
 
 function evaluatePauseResume(input: Record<string, unknown>): FoundationEvaluation<ChannelScheduleFailure> {
-  const request = objectAt(input, 'request');
-  runMarker(stringAt(request, 'runMarker'));
+  markerAt(input);
   const admin = objectAt(input, 'admin');
   const events = arrayAt(admin, 'events').filter(isRecord)
-    .sort((left, right) => numberAt(left, 'createdAt') - numberAt(right, 'createdAt'));
+    .sort((left, right) => integerAt(left, 'createdAt') - integerAt(right, 'createdAt'));
   const baselineSchedule = stringAt(admin, 'baselineScheduleJson');
   const routine = objectAt(admin, 'routine');
   const pause = events.find((event) => event.eventType === 'routine.pause');
@@ -238,17 +245,17 @@ function evaluatePauseResume(input: Record<string, unknown>): FoundationEvaluati
     && run.status === 'succeeded' && run.deliveryStatus === 'delivered');
   const failures: ChannelScheduleFailure[] = [];
   if (pause === undefined || skipped === undefined
-    || numberAt(skipped ?? {}, 'queuedAt') < numberAt(pause ?? {}, 'createdAt')) {
+    || integerAt(skipped ?? {}, 'queuedAt') < integerAt(pause ?? {}, 'createdAt')) {
     failures.push('pause_not_effective');
   }
   if (resume === undefined || delivered === undefined
-    || numberAt(delivered ?? {}, 'queuedAt') < numberAt(resume ?? {}, 'createdAt')) {
+    || integerAt(delivered ?? {}, 'queuedAt') < integerAt(resume ?? {}, 'createdAt')) {
     failures.push('resume_not_effective');
   }
   if (stringAt(routine, 'scheduleJson') !== baselineSchedule) failures.push('schedule_drift');
   if (routine.state !== 'active'
-    || numberAt(routine, 'version') !== numberAt(admin, 'baselineVersion') + 2) failures.push('resume_not_effective');
-  if (!activitySettled(admin)) failures.push('activity_lingering');
+    || integerAt(routine, 'version') !== integerAt(admin, 'baselineVersion') + 2) failures.push('resume_not_effective');
+  if (!hasSettledActivity(admin)) failures.push('activity_lingering');
   const observedTokens: AssertionToken[] = [];
   if (!failures.includes('pause_not_effective')) observedTokens.push('routine.paused');
   if (!failures.includes('resume_not_effective')) observedTokens.push('routine.active');
@@ -260,10 +267,10 @@ function evaluatePauseResume(input: Record<string, unknown>): FoundationEvaluati
 
 function evaluateRunNow(input: Record<string, unknown>): FoundationEvaluation<ChannelScheduleFailure> {
   const request = objectAt(input, 'request');
-  runMarker(stringAt(request, 'runMarker'));
+  markerAt(input);
   const admin = objectAt(input, 'admin');
   const slack = objectAt(input, 'slack');
-  const baselineNextDueAt = numberAt(admin, 'baselineNextRunAt');
+  const baselineNextDueAt = integerAt(admin, 'baselineNextRunAt');
   const routine = objectAt(admin, 'routine');
   const occurrences = arrayAt(admin, 'runs').filter(isRecord)
     .filter((run) => run.triggerSource === 'run_now'
@@ -278,29 +285,12 @@ function evaluateRunNow(input: Record<string, unknown>): FoundationEvaluation<Ch
   if (messages.some((message) =>
     message.channel !== request.originChannelId || message.thread_ts !== request.originThreadTs
   )) failures.push('wrong_origin_thread');
-  if (numberAt(routine, 'nextRunAt') !== baselineNextDueAt) failures.push('schedule_drift');
+  if (integerAt(routine, 'nextRunAt') !== baselineNextDueAt) failures.push('schedule_drift');
   if (occurrences[0]?.deliveryMessageTs !== messages[0]?.ts) failures.push('occurrence_missing');
-  if (!activitySettled(admin)) failures.push('activity_lingering');
+  if (!hasSettledActivity(admin)) failures.push('activity_lingering');
   const observedTokens: AssertionToken[] = [];
   if (failures.length === 0) observedTokens.push('routine.run_once', 'forbidden.no_duplicate');
   return { pass: failures.length === 0, observedTokens, failures };
-}
-
-function activitySettled(admin: Record<string, unknown>): boolean {
-  const presentation = objectAt(admin, 'presentation');
-  const projection = objectAt(presentation, 'activityProjection');
-  return projection.state === 'cleared' || projection.state === 'not_required';
-}
-
-function upstreamRecord(input: unknown): Record<string, unknown> {
-  if (!isRecord(input) || 'observedTokens' in input) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return input;
-}
-
-function objectAt(input: Record<string, unknown>, key: string): Record<string, unknown> {
-  const value = input[key];
-  if (!isRecord(value)) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return value;
 }
 
 function arrayAt(input: Record<string, unknown>, key: string): unknown[] {
@@ -309,23 +299,6 @@ function arrayAt(input: Record<string, unknown>, key: string): unknown[] {
   return value;
 }
 
-function stringAt(input: Record<string, unknown>, key: string): string {
-  const value = input[key];
-  if (typeof value !== 'string' || value.length === 0) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return value;
-}
-
-function numberAt(input: Record<string, unknown>, key: string): number {
-  const value = input[key];
-  if (!Number.isSafeInteger(value)) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return value as number;
-}
-
 function isRecord(input: unknown): input is Record<string, unknown> {
   return input !== null && typeof input === 'object' && !Array.isArray(input);
-}
-
-function runMarker(input: string): string {
-  if (!/^qa-[a-z0-9]{6,40}$/u.test(input)) throw new Error('INVALID_UPSTREAM_SHAPE');
-  return input;
 }

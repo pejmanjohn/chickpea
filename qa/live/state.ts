@@ -22,15 +22,23 @@ export const RUN_PHASES = [
 
 export type RunPhase = typeof RUN_PHASES[number];
 export type RunnerOutputKind = 'action_required' | 'waiting' | 'assertion' | 'terminal';
-export type ActionReceiptOutcome =
-  | 'completed'
-  | 'denied'
-  | 'cancelled'
-  | 'expired'
-  | 'wrong_session'
-  | 'provider_error'
-  | 'ambiguous'
-  | 'not_applied';
+export const ACTION_RECEIPT_OUTCOMES = [
+  'completed',
+  'denied',
+  'cancelled',
+  'expired',
+  'wrong_session',
+  'provider_error',
+  'ambiguous',
+  'not_applied',
+] as const;
+export type ActionReceiptOutcome = typeof ACTION_RECEIPT_OUTCOMES[number];
+export const OPERATOR_ACTION_RECEIPT_OUTCOMES = ACTION_RECEIPT_OUTCOMES.filter(
+  (outcome): outcome is Exclude<ActionReceiptOutcome, 'not_applied'> => outcome !== 'not_applied',
+);
+
+export const READBACK_OUTCOMES = ['applied', 'absent', 'ambiguous'] as const;
+export type ReadbackOutcome = typeof READBACK_OUTCOMES[number];
 
 export interface PrimaryOutcome {
   result: PrimaryResult;

@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 
-import type { FoundationEvaluation } from './agent-lifecycle.live.ts';
+import type { AssertionToken } from '../schema.ts';
+
+export interface FoundationEvaluation<Failure extends string> {
+  pass: boolean;
+  observedTokens: AssertionToken[];
+  failures: Failure[];
+}
 
 export function upstreamRecord(input: unknown): Record<string, unknown> {
   if (!isRecord(input) || 'observedTokens' in input) throw new Error('INVALID_UPSTREAM_SHAPE');

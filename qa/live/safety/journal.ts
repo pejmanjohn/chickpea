@@ -32,6 +32,8 @@ import {
   type TypedReason,
 } from '../schema.ts';
 import {
+  ACTION_RECEIPT_OUTCOMES,
+  READBACK_OUTCOMES,
   RUN_PHASES,
   type ActionReceiptOutcome,
   type RunPhase,
@@ -459,12 +461,12 @@ function validateEventData(event: RunJournalEventData): void {
     case 'receipt':
       exactKeys(event, ['type', 'intentId', 'variantId', 'actionRef', 'outcome'], 'INVALID_EVENT');
       if (!nonEmpty(event.intentId) || !nonEmpty(event.variantId) || !nonEmpty(event.actionRef)
-        || !['completed', 'denied', 'cancelled', 'expired', 'wrong_session', 'provider_error', 'ambiguous', 'not_applied'].includes(event.outcome)) invalidEvent();
+        || !(ACTION_RECEIPT_OUTCOMES as readonly unknown[]).includes(event.outcome)) invalidEvent();
       return;
     case 'readback':
       exactKeys(event, ['type', 'intentId', 'variantId', 'actionRef', 'outcome'], 'INVALID_EVENT');
       if (!nonEmpty(event.intentId) || !nonEmpty(event.variantId) || !nonEmpty(event.actionRef)
-        || !['applied', 'absent', 'ambiguous'].includes(event.outcome)) invalidEvent();
+        || !(READBACK_OUTCOMES as readonly unknown[]).includes(event.outcome)) invalidEvent();
       return;
     case 'transition':
       exactKeys(event, [
