@@ -71,6 +71,10 @@ test('operator skill stays small, discoverable, and separate from contract asser
   assert.ok(skill.split('\n').length <= 120);
   assert.match(skill, /^---\nname: chickpea-live-verification\n/);
   assert.match(skill, /docs\/runbooks\/live-contract-verification\.md/);
+  assert.match(skill, /env claim <alias>/);
+  assert.match(skill, /env target <alias>/);
+  assert.match(skill, /env attest <alias>/);
+  assert.match(skill, /`deep` only against the exact target alias `dedicated-qa`/);
   assert.doesNotMatch(skill, /\bLC-\d{2}\b|\b(?:xox[baprs]-|sk-|gh[pousr]_)[A-Za-z0-9_-]{12,}/);
   assert.match(agents, /qa\/live\/operator\/SKILL\.md/);
   assert.match(readme, /copy `qa\/live\/operator`.+`chickpea-live-verification`/);

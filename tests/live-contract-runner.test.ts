@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -55,6 +55,21 @@ function cleanupProgress(status: 'pass' | 'failed' = 'pass') {
     }),
   };
 }
+
+test('suite policy rejects feature-lane deep before creating a journal', (context) => {
+  const request = setup(context);
+  const featureOverlay = structuredClone(overlay) as Record<string, unknown>;
+  featureOverlay.targetAlias = 'feature-lane-one';
+  featureOverlay.allowedSuites = ['case', 'smoke'];
+  assert.throws(
+    () => {
+      const { variantIds: _variantIds, ...withoutVariants } = request;
+      return advanceLiveRun({ ...withoutVariants, suite: 'deep', overlay: featureOverlay });
+    },
+    /SUITE_NOT_ALLOWED/,
+  );
+  assert.equal(existsSync(request.journalPath), false);
+});
 
 test('proof-first state machine flushes intent before exposing the first action', (context) => {
   const request = setup(context);

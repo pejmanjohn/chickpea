@@ -6,7 +6,7 @@ This directory is the public, credential-free behavior contract for Chickpea's l
 - `compiler.ts` validates the closed action, observer, assertion, fixture, cleanup, and inventory vocabulary and emits a deterministic content-addressed manifest.
 - `manifest.ts` exposes the frozen generated v1.1 manifest as data only; it never imports the authoring catalog or compiler at runtime.
 - `generated/feature-map.md` is derived from that manifest and must remain byte-for-byte fresh.
-- `target.example.json` demonstrates the private overlay shape using aliases only. A real overlay stays outside Git and may only bind every public required variant to matching fixtures; it cannot add or redefine coverage.
+- `target.example.json` demonstrates the private overlay shape using aliases only. `env target <alias>` supplies one selected target in that shape, and `env attest <alias>` supplies its doctor snapshot. Private config may name several targets, but a run binds one. Optional `allowedSuites` restricts where suites run without changing their variants; only `dedicated-qa` may run `deep`.
 
 Public contract data must never contain credentials, private workspace coordinates, executable fields, raw transcripts, screenshots, local paths, or arbitrary URLs. Live code must consume the compiled data-only manifest, not import authoring helpers. Production files under `src/` and Cloudflare build configuration must not import `qa/live`.
 

@@ -46,6 +46,7 @@ const privateConfig: PrivateLiveConfig = {
       evidenceRootAlias: 'private-evidence-root',
       timezoneAlias: 'qa-timezone',
       providerReadOnlyAuthConfigAlias: 'sheets-readonly-auth-config',
+      allowedSuites: ['case', 'smoke', 'deep'],
       bindingAliases: {
         AUTH_DB: 'binding-auth-db',
         TAG_STATE: 'binding-tag-state',
@@ -113,6 +114,13 @@ test('private QA aliases resolve lazily and attestation accepts one exact 100% d
 test('a non-allowlisted target blocks before any private alias is resolved', () => {
   const config = structuredClone(privateConfig);
   config.qaTargetAllowlist = ['some-other-target'];
+  config.targets = {
+    'some-other-target': {
+      ...config.targets['dedicated-qa']!,
+      targetAlias: 'some-other-target',
+      allowedSuites: ['case', 'smoke'],
+    },
+  };
   let reads = 0;
 
   assert.throws(
@@ -126,6 +134,25 @@ test('a non-allowlisted target blocks before any private alias is resolved', () 
       && error.code === 'TARGET_NOT_ALLOWLISTED',
   );
   assert.equal(reads, 0);
+});
+
+test('private config may name multiple targets while one overlay resolves exactly one', () => {
+  const config = structuredClone(privateConfig);
+  config.qaTargetAllowlist.push('feature-lane-one');
+  config.targets['feature-lane-one'] = {
+    ...config.targets['dedicated-qa']!,
+    targetAlias: 'feature-lane-one',
+    allowedSuites: ['case', 'smoke'],
+  };
+  const featureOverlay = {
+    ...overlay,
+    targetAlias: 'feature-lane-one',
+    allowedSuites: ['case', 'smoke'] as Array<'case' | 'smoke'>,
+  };
+  const resolution = createDoctorTargetResolution(featureOverlay, config, {
+    readOnly: async (alias) => aliases[alias as keyof typeof aliases],
+  });
+  assert.equal(resolution.targetAlias, 'feature-lane-one');
 });
 
 test('a missing read-only Sheets auth-config alias blocks before resolution', () => {

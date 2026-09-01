@@ -1,4 +1,5 @@
 import type { LiveTargetOverlay } from './privacy.ts';
+import { SUITES, type Suite } from './schema.ts';
 
 const ALIAS = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
@@ -12,6 +13,7 @@ export interface PrivateTargetAliases {
   timezoneAlias: string;
   providerReadOnlyAuthConfigAlias: string;
   bindingAliases: Record<string, string>;
+  allowedSuites?: Suite[];
 }
 
 export interface PrivateLiveConfig {
@@ -91,22 +93,44 @@ function validatePrivateConfig(
   if (!isRecord(config)
     || config.schemaVersion !== 'chickpea-live-private-config/v1'
     || !Array.isArray(config.qaTargetAllowlist)
-    || config.qaTargetAllowlist.length !== 1
+    || config.qaTargetAllowlist.length === 0
     || !config.qaTargetAllowlist.every(validAlias)
+    || new Set(config.qaTargetAllowlist).size !== config.qaTargetAllowlist.length
     || !isRecord(config.targets)
-    || Object.keys(config.targets).length !== 1) {
+    || !same(Object.keys(config.targets).sort(), [...config.qaTargetAllowlist].sort())) {
     throw new PrivateConfigError('INVALID_PRIVATE_CONFIG');
   }
-  if (config.qaTargetAllowlist[0] !== overlay.targetAlias) {
+  if (!config.qaTargetAllowlist.includes(overlay.targetAlias)) {
     throw new PrivateConfigError('TARGET_NOT_ALLOWLISTED');
+  }
+  for (const [targetAlias, candidate] of Object.entries(config.targets)) {
+    validateTargetAliases(targetAlias, candidate);
   }
   const target = config.targets[overlay.targetAlias];
   if (!isRecord(target)) throw new PrivateConfigError('TARGET_NOT_ALLOWLISTED');
+  if (!same([...(target.allowedSuites ?? [])].sort(), [...(overlay.allowedSuites ?? [])].sort())) {
+    throw new PrivateConfigError('TARGET_ALIAS_MISMATCH');
+  }
+  if (target.targetAlias !== overlay.targetAlias
+    || target.workerAlias !== overlay.workerAlias
+    || target.workspaceAlias !== overlay.workspaceAlias
+    || target.slackAppAlias !== overlay.slackAppAlias
+    || target.providerProjectAlias !== overlay.providerProjectAlias
+    || target.evidenceRootAlias !== overlay.evidenceRootAlias) {
+    throw new PrivateConfigError('TARGET_ALIAS_MISMATCH');
+  }
+  return target as unknown as PrivateTargetAliases;
+}
+
+function validateTargetAliases(targetKey: string, input: unknown): void {
+  if (!isRecord(input)) throw new PrivateConfigError('INVALID_PRIVATE_CONFIG');
+  const target = input;
   if (!exactKeys(target, [
     'targetAlias', 'workerAlias', 'workspaceAlias', 'slackAppAlias', 'providerProjectAlias',
-    'evidenceRootAlias', 'timezoneAlias', 'providerReadOnlyAuthConfigAlias', 'bindingAliases',
+    'evidenceRootAlias', 'timezoneAlias', 'providerReadOnlyAuthConfigAlias', 'bindingAliases', 'allowedSuites',
   ])
     || !validAlias(target.targetAlias)
+    || target.targetAlias !== targetKey
     || !validAlias(target.workerAlias)
     || !validAlias(target.workspaceAlias)
     || !validAlias(target.slackAppAlias)
@@ -118,18 +142,19 @@ function validatePrivateConfig(
     || Object.keys(target.bindingAliases).length === 0
     || Object.entries(target.bindingAliases).some(([binding, alias]) =>
       !/^[A-Z][A-Z0-9_]{0,63}$/.test(binding) || !validAlias(alias)
-    )) {
+    )
+    || !validAllowedSuites(target.allowedSuites, targetKey)) {
     throw new PrivateConfigError('INVALID_PRIVATE_CONFIG');
   }
-  if (target.targetAlias !== overlay.targetAlias
-    || target.workerAlias !== overlay.workerAlias
-    || target.workspaceAlias !== overlay.workspaceAlias
-    || target.slackAppAlias !== overlay.slackAppAlias
-    || target.providerProjectAlias !== overlay.providerProjectAlias
-    || target.evidenceRootAlias !== overlay.evidenceRootAlias) {
-    throw new PrivateConfigError('TARGET_ALIAS_MISMATCH');
-  }
-  return target as unknown as PrivateTargetAliases;
+}
+
+function validAllowedSuites(input: unknown, targetAlias: string): boolean {
+  if (input === undefined) return true;
+  return Array.isArray(input)
+    && input.length > 0
+    && input.every((suite) => typeof suite === 'string' && (SUITES as readonly string[]).includes(suite))
+    && new Set(input).size === input.length
+    && (targetAlias === 'dedicated-qa' || !input.includes('deep'));
 }
 
 function memoizedAliasReader(readOnly: (alias: string) => Promise<string>) {
@@ -167,4 +192,8 @@ function exactKeys(input: object, allowed: readonly string[]): boolean {
   const keys = Object.keys(input);
   const accepted = new Set(allowed);
   return keys.every((key) => accepted.has(key));
+}
+
+function same(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }

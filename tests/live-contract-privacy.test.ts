@@ -41,6 +41,19 @@ test('a private overlay cannot add, omit, downgrade, or redefine manifest varian
   }
 });
 
+test('target suite policy is optional, closed, and reserves deep for dedicated-qa', () => {
+  const dedicated = validateTargetOverlay(manifest, targetExample);
+  assert.deepEqual(dedicated.allowedSuites, ['case', 'smoke', 'deep']);
+
+  const feature = structuredClone(targetExample) as Record<string, unknown>;
+  feature.targetAlias = 'feature-lane-one';
+  feature.allowedSuites = ['case', 'smoke'];
+  assert.deepEqual(validateTargetOverlay(manifest, feature).allowedSuites, ['case', 'smoke']);
+
+  feature.allowedSuites = ['case', 'deep'];
+  assertCode(() => validateTargetOverlay(manifest, feature), 'INVALID_VALUE');
+});
+
 test('public and target data reject secret, executable, private, and raw-content fields without echoing values', () => {
   const sentinel = 'xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwxyz';
   const invalid: Array<[unknown, string]> = [

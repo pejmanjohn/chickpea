@@ -7,6 +7,7 @@
   "providerProjectAlias": "qa-provider-project",
   "evidenceRootAlias": "private-evidence-root",
   "lockLocationAlias": "private-target-lock",
+  "allowedSuites": ["case", "smoke", "deep"],
   "fixtures": {
     "qa-owner": { "kind": "actor", "resourceAlias": "owner-browser-profile" },
     "qa-admin": { "kind": "actor", "resourceAlias": "admin-browser-profile" },

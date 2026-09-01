@@ -89,6 +89,7 @@ export class LiveRunnerError extends Error {
   readonly code:
     | 'RUN_IDENTITY_DRIFT'
     | 'RUN_SELECTION_DRIFT'
+    | 'SUITE_NOT_ALLOWED'
     | 'RUN_ALREADY_COMPLETE'
     | 'INVALID_RUN_SIGNAL';
 
@@ -109,6 +110,14 @@ export function advanceLiveRun(
     overlay: request.overlay,
     source: { read: () => request.doctorSnapshot },
   });
+  let target: LiveTargetOverlay | undefined;
+  try {
+    target = validateTargetOverlay(LIVE_MANIFEST, request.overlay);
+  } catch {
+    // Doctor owns the bounded invalid-overlay result. It will stop before the
+    // runner reaches any path that requires a resolved target.
+  }
+  if (target !== undefined) assertTargetAllowsSuite(target, request.suite);
   let journal = readJournalIfPresent(request);
 
   if (journal === undefined) {
@@ -135,7 +144,7 @@ export function advanceLiveRun(
     if (journal === undefined) {
       append(request, { type: 'doctor', ready: doctor.ready, diagnosticCodes: doctor.diagnostics.map(({ code }) => code) }, at);
       if (!doctor.ready) return blockNewRun(request, variantIds, doctor.diagnostics[0]?.code, at);
-      const target = validateTargetOverlay(LIVE_MANIFEST, request.overlay);
+      if (target === undefined) throw new LiveRunnerError('RUN_SELECTION_DRIFT', 'validated target unavailable');
       return exposeNextAction(request, dependencies, target, variantIds[0] as string, 0, 'preflight', at);
     }
   }
@@ -148,7 +157,7 @@ export function advanceLiveRun(
   if (!doctor.ready) {
     return stopForDoctorFailure(request, journal, phase, doctor.diagnostics[0]?.code, at);
   }
-  const target = validateTargetOverlay(LIVE_MANIFEST, request.overlay);
+  if (target === undefined) throw new LiveRunnerError('RUN_SELECTION_DRIFT', 'validated target unavailable');
 
   const outstandingIntent = findOutstandingIntent(journal.events);
   if (outstandingIntent !== undefined && phase !== 'action_required' && phase !== 'recovery') {
@@ -177,6 +186,14 @@ export function advanceLiveRun(
     return exposeNextAction(request, dependencies, target, variantId, 0, 'preflight', at);
   }
   throw new RunStateError('INVALID_TRANSITION', `unsupported phase ${phase}`);
+}
+
+function assertTargetAllowsSuite(target: LiveTargetOverlay, suite: Suite): void {
+  const allowed = target.allowedSuites
+    ?? (target.targetAlias === 'dedicated-qa' ? ['case', 'smoke', 'deep'] : ['case', 'smoke']);
+  if ((suite === 'deep' && target.targetAlias !== 'dedicated-qa') || !allowed.includes(suite)) {
+    throw new LiveRunnerError('SUITE_NOT_ALLOWED', `${suite} is not permitted for target ${target.targetAlias}`);
+  }
 }
 
 function continuePendingAction(

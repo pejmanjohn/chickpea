@@ -1,12 +1,14 @@
 import { validateGitHubSourceBinding, type GitHubSourceBinding } from './public-sources.ts';
 import {
   FIXTURE_KINDS,
+  SUITES,
   alias,
   exactKeys,
   fail,
   record,
   type FixtureKind,
   type LiveManifest,
+  type Suite,
 } from './schema.ts';
 
 export { LiveContractValidationError } from './schema.ts';
@@ -53,6 +55,7 @@ export interface LiveTargetOverlay {
   providerProjectAlias: string;
   evidenceRootAlias: string;
   lockLocationAlias: string;
+  allowedSuites?: Suite[];
   fixtures: Record<string, TargetFixture>;
   bindings: Record<string, TargetVariantBinding>;
 }
@@ -66,9 +69,11 @@ export function validateTargetOverlay(manifest: LiveManifest, input: unknown): L
   const value = record(input, '$');
   exactKeys(value, [
     'schemaVersion', 'targetAlias', 'workspaceAlias', 'slackAppAlias', 'workerAlias', 'providerProjectAlias',
-    'evidenceRootAlias', 'lockLocationAlias', 'fixtures', 'bindings',
+    'evidenceRootAlias', 'lockLocationAlias', 'allowedSuites', 'fixtures', 'bindings',
   ], '$');
   if (value.schemaVersion !== 'chickpea-live-target/v1') fail('INVALID_VALUE', '$.schemaVersion');
+  const targetAlias = alias(value.targetAlias, '$.targetAlias');
+  const allowedSuites = validateAllowedSuites(value.allowedSuites, targetAlias);
   const fixtures = validateTargetFixtures(value.fixtures);
   const bindingsValue = record(value.bindings, '$.bindings');
   const expectedVariantIds = [...manifest.requiredVariants.deep].sort();
@@ -107,16 +112,29 @@ export function validateTargetOverlay(manifest: LiveManifest, input: unknown): L
   }
   return {
     schemaVersion: value.schemaVersion,
-    targetAlias: alias(value.targetAlias, '$.targetAlias'),
+    targetAlias,
     workspaceAlias: alias(value.workspaceAlias, '$.workspaceAlias'),
     slackAppAlias: alias(value.slackAppAlias, '$.slackAppAlias'),
     workerAlias: alias(value.workerAlias, '$.workerAlias'),
     providerProjectAlias: alias(value.providerProjectAlias, '$.providerProjectAlias'),
     evidenceRootAlias: alias(value.evidenceRootAlias, '$.evidenceRootAlias'),
     lockLocationAlias: alias(value.lockLocationAlias, '$.lockLocationAlias'),
+    ...(allowedSuites === undefined ? {} : { allowedSuites }),
     fixtures,
     bindings,
   };
+}
+
+function validateAllowedSuites(input: unknown, targetAlias: string): Suite[] | undefined {
+  if (input === undefined) return undefined;
+  if (!Array.isArray(input)
+    || input.length === 0
+    || !input.every((suite) => typeof suite === 'string' && (SUITES as readonly string[]).includes(suite))
+    || new Set(input).size !== input.length
+    || (targetAlias !== 'dedicated-qa' && input.includes('deep'))) {
+    fail('INVALID_VALUE', '$.allowedSuites');
+  }
+  return input as Suite[];
 }
 
 function validateTargetFixtures(input: unknown): Record<string, TargetFixture> {
