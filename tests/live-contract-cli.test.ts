@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { renderHumanRecord, serializeCliRecord } from '../qa/live/cli.ts';
+import { renderHumanRecord, runLiveCli, serializeCliRecord } from '../qa/live/cli.ts';
 import { aggregateRunReport } from '../qa/live/report.ts';
 import { assertStrictDeepInventory, selectSuiteVariants } from '../qa/live/suites.ts';
 import { LIVE_MANIFEST } from '../qa/live/manifest.ts';
@@ -56,4 +56,26 @@ test('runner source imports the frozen manifest but not authoring cases or compi
   const source = readFileSync(new URL('../qa/live/runner.ts', import.meta.url), 'utf8');
   assert.match(source, /from ['"]\.\/manifest\.ts['"]/);
   assert.doesNotMatch(source, /cases\/index|compiler\.ts|defineLiveCase/);
+});
+
+test('CLI refuses hand-authored cleanup verdicts before reading private inputs', () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  let privateReadAttempted = false;
+  const exitCode = runLiveCli(['case', '--cleanup-result', 'pass'], {
+    stdout: (value) => stdout.push(value),
+    stderr: (value) => stderr.push(value),
+    readJson: () => {
+      privateReadAttempted = true;
+      throw new Error('PRIVATE_INPUT_READ');
+    },
+  });
+
+  assert.equal(exitCode, 64);
+  assert.equal(privateReadAttempted, false);
+  assert.deepEqual(JSON.parse(stdout.join('')), {
+    kind: 'error',
+    code: 'CLEANUP_RECEIPT_REQUIRED',
+  });
+  assert.match(stderr.join(''), /CLEANUP_RECEIPT_REQUIRED/);
 });
