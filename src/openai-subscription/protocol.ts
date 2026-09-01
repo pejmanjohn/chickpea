@@ -1,3 +1,4 @@
+import { readBoundedText as readBoundedResponseText } from '../http/bounded-body.ts';
 import { isRecord } from '../security/content-validation.ts';
 import type {
   OpenAiDeviceAuthorizationPending,
@@ -293,34 +294,11 @@ export async function boundedOpenAiSubscriptionFetch(
 }
 
 async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
-  const contentLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-    throw new OpenAiSubscriptionProtocolError('invalid_response', { status: response.status });
-  }
-  if (!response.body) return '';
-  const reader = response.body.getReader();
-  let total = 0;
-  const chunks: Uint8Array[] = [];
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        throw new OpenAiSubscriptionProtocolError('invalid_response', { status: response.status });
-      }
-      chunks.push(value);
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
+  return readBoundedResponseText(response, {
+    maxBytes,
+    onOversize: () =>
+      new OpenAiSubscriptionProtocolError('invalid_response', { status: response.status }),
+  });
 }
 
 function requireSuccessfulJson(result: OpenAiSubscriptionBoundedFetchResult): Record<string, unknown> {

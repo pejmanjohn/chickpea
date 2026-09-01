@@ -1,4 +1,5 @@
 import type { SettingsStore } from '../config/settings-store.ts';
+import { declaredContentLength, readBoundedBytes } from '../http/bounded-body.ts';
 import {
   activateBundledModelCatalog,
   activateModelCatalog,
@@ -214,8 +215,8 @@ async function boundedCatalogFetch(
     }
     const headerBytes = responseHeaderBytes(response.headers);
     if (headerBytes > MODEL_CATALOG_MAX_BYTES) throw new Error('response_oversized');
-    const contentLength = response.headers.get('content-length');
-    if (contentLength && Number(contentLength) + headerBytes > MODEL_CATALOG_MAX_BYTES) {
+    const contentLength = declaredContentLength(response.headers);
+    if (contentLength !== undefined && contentLength + headerBytes > MODEL_CATALOG_MAX_BYTES) {
       throw new Error('response_oversized');
     }
     // Wrap the response so the caller's body read remains under this same
@@ -238,43 +239,15 @@ async function readBoundedBody(
   limit = MODEL_CATALOG_MAX_BYTES,
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
-  if (!response.body) return new Uint8Array();
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  let rejectAbort: ((reason: Error) => void) | undefined;
-  const aborted = new Promise<never>((_, reject) => {
-    rejectAbort = reject;
+  // The declared length is checked by the caller against the header budget, so
+  // the shared reader only enforces the remaining byte cap.
+  return readBoundedBytes(response, {
+    maxBytes: limit,
+    onOversize: () => new Error('response_oversized'),
+    onAbort: () => new Error('catalog_timeout'),
+    checkContentLength: false,
+    signal,
   });
-  const abort = () => {
-    void reader.cancel('model catalog response timed out').catch(() => undefined);
-    rejectAbort?.(new Error('catalog_timeout'));
-  };
-  signal?.addEventListener('abort', abort, { once: true });
-  try {
-    while (true) {
-      if (signal?.aborted) throw new Error('catalog_timeout');
-      const { done, value } = await (signal
-        ? Promise.race([reader.read(), aborted])
-        : reader.read());
-      if (done) break;
-      size += value.byteLength;
-      if (size > limit) {
-        await reader.cancel('model catalog response oversized').catch(() => undefined);
-        throw new Error('response_oversized');
-      }
-      chunks.push(value);
-    }
-  } finally {
-    signal?.removeEventListener('abort', abort);
-  }
-  const result = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return result;
 }
 
 function responseHeaderBytes(headers: Headers): number {

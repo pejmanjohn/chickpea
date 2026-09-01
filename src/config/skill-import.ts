@@ -4,6 +4,8 @@
 // with an injected fetch so it runs identically on the Node and Cloudflare
 // lanes and is unit-testable offline.
 
+import { declaredContentLength, readBoundedText } from '../http/bounded-body.ts';
+
 /** Parsed coordinates of a skill source. */
 export interface ParsedSkillSource {
   owner: string;
@@ -555,32 +557,15 @@ async function readResponseTextBounded(
   maxBytes: number,
   tooLargeMessage: string,
 ): Promise<string> {
-  const declaredLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    throw new SkillImportError('source_too_large', tooLargeMessage);
-  }
+  const tooLarge = () => new SkillImportError('source_too_large', tooLargeMessage);
   if (!response.body) {
+    const declaredLength = declaredContentLength(response.headers);
+    if (declaredLength !== undefined && declaredLength > maxBytes) throw tooLarge();
     const text = await response.text();
-    if (new TextEncoder().encode(text).byteLength > maxBytes) {
-      throw new SkillImportError('source_too_large', tooLargeMessage);
-    }
+    if (new TextEncoder().encode(text).byteLength > maxBytes) throw tooLarge();
     return text;
   }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let totalBytes = 0;
-  let text = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    totalBytes += value.byteLength;
-    if (totalBytes > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new SkillImportError('source_too_large', tooLargeMessage);
-    }
-    text += decoder.decode(value, { stream: true });
-  }
-  return text + decoder.decode();
+  return readBoundedText(response, { maxBytes, onOversize: tooLarge });
 }
 
 function encodeGithubPath(path: string): string {

@@ -1,3 +1,4 @@
+import { readBoundedText } from '../http/bounded-body.ts';
 import { constantTimeEquals } from '../security/constant-time.ts';
 import { sha256HexNode } from '../security/digest.ts';
 import { digestSetupCapability } from '../auth/setup-capability.mjs';
@@ -300,35 +301,13 @@ function createdSlackApp(payload: Record<string, unknown>): CreatedSlackApp {
 }
 
 async function boundedJson(response: Response): Promise<Record<string, unknown>> {
-  const declaredHeader = response.headers.get('content-length');
-  if (declaredHeader && (!/^\d+$/.test(declaredHeader) || Number(declaredHeader) > MAX_SLACK_RESPONSE_BYTES)) {
-    throw new Error('oversize');
-  }
-  if (!response.body) throw new Error('empty');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_SLACK_RESPONSE_BYTES) {
-        await reader.cancel('oversize');
-        throw new Error('oversize');
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return record(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)));
+  const text = await readBoundedText(response, {
+    maxBytes: MAX_SLACK_RESPONSE_BYTES,
+    onOversize: () => new Error('oversize'),
+    onMissingBody: () => new Error('empty'),
+    fatalDecoder: true,
+  });
+  return record(JSON.parse(text));
 }
 
 function configurationToken(value: string): string {

@@ -1,3 +1,4 @@
+import { readBoundedText as readBoundedResponseText } from '../http/bounded-body.ts';
 import { isRecord } from '../security/content-validation.ts';
 import {
   buildOpenAiSubscriptionHeaders,
@@ -402,22 +403,18 @@ function limitResponseBody(
   });
 }
 
+/**
+ * A provider failure body is only ever classified, never parsed, so an oversize
+ * body is truncated rather than rejected. The declared `content-length` is not
+ * consulted for the same reason: a body that announces itself as too large is
+ * still worth reading up to the cap.
+ */
 async function readBoundedText(response: Response, maximumBytes: number): Promise<string> {
-  if (!response.body) return '';
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let bytes = 0;
-  let text = '';
-  while (true) {
-    const next = await reader.read();
-    if (next.done) return text;
-    bytes += next.value.byteLength;
-    if (bytes > maximumBytes) {
-      await reader.cancel();
-      return text;
-    }
-    text += decoder.decode(next.value, { stream: true });
-  }
+  return readBoundedResponseText(response, {
+    maxBytes: maximumBytes,
+    onOversize: 'truncate',
+    checkContentLength: false,
+  });
 }
 
 async function discardResponseBody(response: Response): Promise<void> {

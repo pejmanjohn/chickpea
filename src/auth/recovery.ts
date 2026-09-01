@@ -1,5 +1,6 @@
 import { randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto';
 
+import { readBoundedText } from '../http/bounded-body.ts';
 import { sha256HexNode } from '../security/digest.ts';
 import { randomSecret } from '../security/random-secret.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
@@ -513,25 +514,13 @@ function tokenGrant(value: unknown, session: SlackRecoverySession) {
 }
 
 async function boundedJson(response: Response): Promise<unknown> {
-  const declared = Number(response.headers.get('content-length') ?? 0);
-  if (Number.isFinite(declared) && declared > MAX_SLACK_RESPONSE_BYTES) throw new Error('oversize');
-  if (!response.body) throw new Error('empty');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      total += next.value.byteLength;
-      if (total > MAX_SLACK_RESPONSE_BYTES) throw new Error('oversize');
-      chunks.push(next.value);
-    }
-  } finally { reader.releaseLock(); }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
+  const text = await readBoundedText(response, {
+    maxBytes: MAX_SLACK_RESPONSE_BYTES,
+    onOversize: () => new Error('oversize'),
+    onMissingBody: () => new Error('empty'),
+    fatalDecoder: true,
+  });
+  return JSON.parse(text) as unknown;
 }
 
 function mapBootstrapError(error: unknown): SlackCredentialRecoveryError {
