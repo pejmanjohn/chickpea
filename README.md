@@ -15,7 +15,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-555555.svg?labelColor=333333&color=2EA44F)](./LICENSE)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.19-555555?labelColor=333333&color=339933)](https://nodejs.org)
 [![Runs on](https://img.shields.io/badge/Runs_on-Cloudflare_Workers_or_Node-555555?labelColor=333333&color=F38020)](#install)
-[![Built on Flue](https://img.shields.io/badge/Built_on-Flue-555555?labelColor=333333&color=DDA126)](https://www.npmjs.com/package/@flue/runtime)
+[![Built on Flue](https://img.shields.io/badge/Built_on-Flue-555555?labelColor=333333&color=DDA126)](https://flueframework.com)
 
 <br />
 
@@ -34,6 +34,8 @@
 Chickpea gives your team AI coworkers in Slack. You address them by name. `@support` answers the billing question in the channel where someone asked it. `@revops` pulls the numbers every Monday morning without being asked twice. `@oncall` reads the repo before it answers. Each one has its own instructions, its own memory, its own connected accounts, and its own list of channels it's allowed to work in. You set all of that up by asking, in Slack.
 
 The difference is where they work. Chickpea is MIT-licensed and you deploy it yourself, to your own Cloudflare account or your own server, pointed at whichever model provider you want. Two optional exceptions, both yours to decline: the shared Slack gateway, and Composio if you want managed connectors instead of wiring OAuth yourself. Both are [explained below](#security-model).
+
+And Chickpea doesn't roll its own agent machinery. Every Agent runs on [Flue](https://flueframework.com), the open agent framework built by the Astro team at Cloudflare on top of **Pi**, the open agent harness behind OpenClaw. More on that in [How It Works](#how-it-works).
 
 ---
 
@@ -81,6 +83,8 @@ Six nouns, and you know the system.
 - **Connection account** — one team or personal authorization, belonging permanently to one Agent.
 
 Publishing an Agent to a channel gives that channel's members its complete boundary. Think about that before you publish.
+
+**Built on battle-tested layers.** Chickpea deliberately doesn't reinvent the hard parts. The agent runtime is [Flue](https://flueframework.com) ([`@flue/runtime`](https://www.npmjs.com/package/@flue/runtime)), the Apache-licensed open agent framework from the [Astro](https://astro.build) team, now part of Cloudflare: durable sessions that survive crashes and restarts, persistent state, subagents, tools, skills, and MCP, written once and deployed to Cloudflare Workers or Node against any model provider. Flue runs on **Pi**, the open agent harness that powers OpenClaw. And production deploys sit on Cloudflare's own platform primitives — Workers, Durable Objects, D1, Workers AI — not custom infrastructure. Chickpea is the layer those foundations don't provide: the Slack product, the authority model, the admin surface, and the deployment story.
 
 ---
 
@@ -361,7 +365,7 @@ Chickpea itself is MIT-licensed with no per-seat pricing and no metering. You pa
 Most of it is already visible: work happens in Slack threads, in the open, under the Agent's own name. In Admin, the Memory tab shows exactly what an Agent retained (and lets you edit or delete it), and the Schedules tab shows status, last run, next run, and a run-history and activity inspector for scheduled work. Be aware of the deliberate gap: activity telemetry is fixed-schema and content-free by design, and Admin has no searchable conversation archive. The conversation itself lives in Slack and in your deployment's transcript store.
 
 **"What is Flue?"**
-The agent runtime Chickpea is built on ([`@flue/runtime`](https://www.npmjs.com/package/@flue/runtime)). Chickpea is the Slack product, the authority model, the admin surface, and the deployment story around it.
+The open agent framework Chickpea is built on ([`@flue/runtime`](https://www.npmjs.com/package/@flue/runtime) · [flueframework.com](https://flueframework.com) · [github.com/withastro/flue](https://github.com/withastro/flue)). Flue comes from the Astro team, now part of Cloudflare, is Apache-2.0 licensed, and provides the programmable TypeScript harness: durable sessions, persistent state, subagents, tools, skills, and MCP. It runs on Pi, the open agent harness behind OpenClaw. Chickpea is the Slack product on top: the authority model, the admin surface, and the deployment story.
 
 ---
 
