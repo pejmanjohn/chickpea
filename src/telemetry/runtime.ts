@@ -85,7 +85,17 @@ export function resolveTelemetryEnvironment(
   env: Record<string, unknown> | undefined,
   target: ProductTelemetryRuntimeTarget,
 ): ProductTelemetryEnvironment {
-  const value = envValue(env, 'CHICKPEA_TELEMETRY_ENVIRONMENT') ?? envValue(env, 'NODE_ENV');
-  if (value === 'production' || value === 'development' || value === 'test') return value;
+  const configured = envValue(env, 'CHICKPEA_TELEMETRY_ENVIRONMENT');
+  if (configured !== undefined) {
+    return isTelemetryEnvironment(configured) ? configured : 'development';
+  }
+  const nodeEnvironment = envValue(env, 'NODE_ENV');
+  if (isTelemetryEnvironment(nodeEnvironment)) return nodeEnvironment;
   return target === 'cloudflare' ? 'production' : 'development';
+}
+
+function isTelemetryEnvironment(
+  value: string | undefined,
+): value is ProductTelemetryEnvironment {
+  return value === 'production' || value === 'development' || value === 'test';
 }

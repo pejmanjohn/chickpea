@@ -5,9 +5,11 @@ import type { SettingsStore } from '../src/config/settings-store.ts';
 import {
   createDetachedTelemetryLifecycle,
   createProductTelemetryRuntime,
+  createRequestTelemetryLifecycle,
   createWaitUntilTelemetryLifecycle,
   resolveTelemetryEnvironment,
 } from '../src/telemetry/runtime.ts';
+import { createPlatformProductTelemetry } from '../src/telemetry/platform.ts';
 
 const INSTALLATION_ID = '018f47ea-6f5b-7a2a-9c7b-8fd70ea7b863';
 
@@ -54,6 +56,21 @@ test('detached lifecycle handles rejections without an unhandledRejection signal
   }
 });
 
+test('request lifecycle registers Workers tasks and tolerates the throwing Node accessor', async () => {
+  const registered: Promise<unknown>[] = [];
+  createRequestTelemetryLifecycle({
+    executionCtx: { waitUntil(task) { registered.push(task); } },
+  })(Promise.resolve());
+  assert.equal(registered.length, 1);
+  await registered[0];
+
+  const nodeContext = {
+    get executionCtx(): never { throw new Error('Node has no execution context'); },
+  };
+  createRequestTelemetryLifecycle(nodeContext)(Promise.reject(new Error('private failure')));
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
 test('opt-out returns a real no-op before settings, endpoint, identity, or fetch construction', () => {
   let sideEffects = 0;
   const telemetry = createProductTelemetryRuntime({
@@ -73,11 +90,57 @@ test('opt-out returns a real no-op before settings, endpoint, identity, or fetch
   assert.equal(sideEffects, 0);
 });
 
+test('platform composition opt-out performs no settings, inventory, lifecycle, or network work', () => {
+  let sideEffects = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    sideEffects += 1;
+    return { status: 200 } as Response;
+  }) as typeof globalThis.fetch;
+  try {
+    const settings = emptySettings();
+    const telemetry = createPlatformProductTelemetry({
+      env: { CHICKPEA_DISABLE_TELEMETRY: 'yes' },
+      settings: {
+        ...settings,
+        getSetting: async (key) => { sideEffects += 1; return settings.getSetting(key); },
+        applySettingsPatch: async (patch) => {
+          sideEffects += 1;
+          return settings.applySettingsPatch(patch);
+        },
+      },
+      config: {
+        async summarizeAdoptionInventory() {
+          sideEffects += 1;
+          return {
+            workspaceCount: 0,
+            userAgentCount: 0,
+            readyConnectionCount: 0,
+            enabledScheduleCount: 0,
+          };
+        },
+      },
+      lifecycle: () => { sideEffects += 1; },
+    });
+    telemetry.capture({
+      event: 'workspace_connected', workspaceId: 'workspace', transportMode: 'direct',
+    });
+    assert.equal(sideEffects, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('telemetry environments are closed and target-aware', () => {
   assert.equal(resolveTelemetryEnvironment({ NODE_ENV: 'test' }, 'node'), 'test');
   assert.equal(resolveTelemetryEnvironment({ NODE_ENV: 'development' }, 'node'), 'development');
   assert.equal(resolveTelemetryEnvironment({ NODE_ENV: 'production' }, 'node'), 'production');
   assert.equal(resolveTelemetryEnvironment({ NODE_ENV: 'customer-name' }, 'node'), 'development');
+  assert.equal(resolveTelemetryEnvironment({ CHICKPEA_TELEMETRY_ENVIRONMENT: 'typo' }, 'cloudflare'), 'development');
+  assert.equal(resolveTelemetryEnvironment({
+    CHICKPEA_TELEMETRY_ENVIRONMENT: 'test',
+    NODE_ENV: 'production',
+  }, 'cloudflare'), 'test');
   assert.equal(resolveTelemetryEnvironment({}, 'cloudflare'), 'production');
 });
 

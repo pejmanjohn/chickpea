@@ -3120,6 +3120,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (c.req.query('gateway_return') === '1') {
           const result = await createGatewayDeploymentClient(
             c.env as PlatformEnv | undefined,
+            { productTelemetry: productTelemetry(c) },
           ).refreshClaim();
           gatewayState = result.state === 'bound' ? 'connected' : 'pending';
           if (gatewayState === 'connected') {
@@ -3196,6 +3197,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       } else if (action === 'gateway_refresh') {
         const result = await createGatewayDeploymentClient(
           c.env as PlatformEnv | undefined,
+          { productTelemetry: productTelemetry(c) },
         ).refreshClaim();
         if (result.state === 'bound') startNodeGatewaySession(c.env as PlatformEnv | undefined);
         return c.redirect('/admin/setup', 303);
@@ -8806,6 +8808,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const result = await createGatewayDeploymentClient(
         c.env as PlatformEnv | undefined,
+        { productTelemetry: productTelemetry(c) },
       ).refreshClaim();
       if (result.state !== 'bound') {
         return c.redirect('/admin/settings/slack?slack_reconnect=pending', 303);

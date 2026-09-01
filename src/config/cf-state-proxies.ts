@@ -22,6 +22,7 @@ import type { AgentIdentityField } from './agent-id.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import type { StateRpcResult, TagStateRpc } from './state-rpc.ts';
 import type {
+  AdoptionInventorySummary,
   ConfigAgentPatch,
   ConfigStore,
   OAuthReauthorizationTarget,
@@ -1444,6 +1445,10 @@ export class CfConfigStore implements ConfigStore {
   async listAgentScheduleReferences(agentId: string): Promise<AgentScheduleReference[]> {
     return unwrap(await this.stub.configListAgentScheduleReferences(agentId))
       .map(withScheduleReferenceDestination);
+  }
+
+  async summarizeAdoptionInventory(): Promise<AdoptionInventorySummary> {
+    return unwrap(await this.stub.configSummarizeAdoptionInventory());
   }
 
   async getAgentScheduleReference(scheduleId: string): Promise<AgentScheduleReference | undefined> {

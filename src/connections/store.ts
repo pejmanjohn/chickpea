@@ -620,7 +620,7 @@ export class ConnectionAccountService {
     providerGeneration?: number;
     providerLineage?: string;
   }): Promise<ConnectionAccount> {
-    const { account } = await this.requireAgentOwnedAccount(input);
+    const { account, binding } = await this.requireAgentOwnedAccount(input);
     if (account.revision !== input.expectedRevision || account.lifecycle === 'revoked' ||
         account.policy.kind !== 'managed' ||
         account.policy.adapterId.trim().toLowerCase() !== input.adapterId.trim().toLowerCase() ||
@@ -658,8 +658,7 @@ export class ConnectionAccountService {
       { ...account, policy, lifecycle },
       account.revision,
     );
-    const binding = await this.dependencies.config.getAgentConnectionBindingForAccount(account.id);
-    if (binding) this.captureConnectionReady(account.lifecycle, replaced, binding);
+    this.captureConnectionReady(account.lifecycle, replaced, binding);
     if (account.policy.accountRef !== policy.accountRef) {
       try {
         await provider.revoke({ policy: account.policy });
@@ -707,14 +706,18 @@ export class ConnectionAccountService {
     binding: AgentConnectionBinding,
   ): void {
     if (previousLifecycle === 'ready' || account.lifecycle !== 'ready' || !binding.enabled) return;
-    this.dependencies.productTelemetry?.capture({
-      event: 'connection_ready',
-      workspaceId: account.workspaceId,
-      agentId: binding.agentId,
-      connectionKind: account.policy.kind,
-      ownerKind: account.ownerKind,
-      surface: this.dependencies.telemetrySurface ?? 'other',
-    });
+    try {
+      this.dependencies.productTelemetry?.capture({
+        event: 'connection_ready',
+        workspaceId: account.workspaceId,
+        agentId: binding.agentId,
+        connectionKind: account.policy.kind,
+        ownerKind: account.ownerKind,
+        surface: this.dependencies.telemetrySurface ?? 'other',
+      });
+    } catch {
+      // Advisory telemetry never changes a committed connection transition.
+    }
   }
 
   private async requireAgentOwnedAccount(input: {

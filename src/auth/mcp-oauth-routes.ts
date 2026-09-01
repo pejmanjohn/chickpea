@@ -22,6 +22,7 @@ import {
 import { BetterAuthMcpOAuthContinuationStore } from './mcp-oauth-continuation.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
 import { createWorkspaceManagementMcpHandler } from '../management/mcp.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
 import {
   actualBodyLimit,
@@ -60,6 +61,7 @@ interface McpOAuthRuntimeOptions {
   identity?: IdentityStore;
   authSecret?: string;
   createServer?: McpServerFactory;
+  productTelemetry?: (c: Context) => ProductTelemetryCapture;
 }
 
 export function createMcpAuthenticatedRequestHandler(
@@ -273,6 +275,7 @@ async function dispatchMcp(c: Context, options: McpOAuthRuntimeOptions): Promise
         principal,
         c.env as PlatformEnv | undefined,
         runtime.environment.baseURL,
+        options.productTelemetry?.(c),
       )),
   });
   return handler(c.req.raw);

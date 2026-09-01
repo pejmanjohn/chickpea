@@ -6,10 +6,7 @@ export const PRODUCT_TELEMETRY_ACTIVE_DAY_SETTING = 'telemetry.active_day.v1';
 
 export type ProductTelemetryInventoryStore = Pick<
   ConfigStore,
-  | 'listWorkspaceInstallations'
-  | 'listUserAgents'
-  | 'listConnectionAccounts'
-  | 'listAgentScheduleReferences'
+  'summarizeAdoptionInventory'
 >;
 
 /** Claim the installation's UTC-day snapshot before performing any inventory reads. */
@@ -28,25 +25,10 @@ export async function claimDailyAdoptionSnapshot(input: {
   if (!claimed) return undefined;
 
   try {
-    const [workspaces, agents] = await Promise.all([
-      input.config.listWorkspaceInstallations(),
-      input.config.listUserAgents(),
-    ]);
-    const activeWorkspaces = workspaces.filter(({ health }) => health !== 'revoked');
-    const [accountsByWorkspace, schedulesByAgent] = await Promise.all([
-      Promise.all(activeWorkspaces.map(({ workspaceId }) =>
-        input.config.listConnectionAccounts(workspaceId)
-      )),
-      Promise.all(agents.map(({ id }) => input.config.listAgentScheduleReferences(id))),
-    ]);
+    const inventory = await input.config.summarizeAdoptionInventory();
     return {
       event: 'installation_active',
-      workspaceCount: activeWorkspaces.length,
-      userAgentCount: agents.length,
-      readyConnectionCount: accountsByWorkspace.flat()
-        .filter(({ lifecycle }) => lifecycle === 'ready').length,
-      enabledScheduleCount: schedulesByAgent.flat()
-        .filter(({ state }) => state === 'active').length,
+      ...inventory,
     };
   } catch {
     // The gate intentionally remains claimed. A partial or repeatedly retried

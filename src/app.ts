@@ -185,7 +185,7 @@ if (!isCloudflareTarget()) {
   oauthRepairTimer.unref();
 }
 app.route('/', createBetterAuthRuntimeRoutes());
-app.route('/', createMcpOAuthRuntimeRoutes());
+app.route('/', createMcpOAuthRuntimeRoutes({ productTelemetry: productTelemetryForRequest }));
 app.route('/', createManagementSetupRoutes({
   productTelemetry: productTelemetryForRequest,
 }));

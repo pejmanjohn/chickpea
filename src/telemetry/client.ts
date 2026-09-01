@@ -93,6 +93,7 @@ async function deliverEvent(
   options: DeliveryOptions,
 ): Promise<void> {
   try {
+    const capturedAt = (options.now ?? Date.now)();
     const identity = await loadOrCreateTelemetryIdentity({
       settings: options.settings,
       ...(options.env ? { env: options.env } : {}),
@@ -106,13 +107,13 @@ async function deliverEvent(
       ? await claimDailyAdoptionSnapshot({
           settings: options.settings,
           config: options.config,
-          ...(options.now ? { now: options.now } : {}),
+          now: () => capturedAt,
         })
       : undefined;
     const adoptionEvent = adoption
       ? await buildProductTelemetryEvent(adoption, identity)
       : undefined;
-    const timestamp = new Date((options.now ?? Date.now)()).toISOString();
+    const timestamp = new Date(capturedAt).toISOString();
     const body = serializeBatch(
       adoptionEvent ? [event, adoptionEvent] : [event],
       identity.installationId,
@@ -178,7 +179,13 @@ async function boundedFetch(
     body,
     redirect: 'manual',
     signal: controller.signal,
-  })).then(() => undefined, () => undefined);
+  })).then((response) => {
+    try {
+      void response.body?.cancel().catch(() => undefined);
+    } catch {
+      // Releasing the body is advisory; no response content is consumed.
+    }
+  }, () => undefined);
   await Promise.race([request, deadline]);
   if (timer !== undefined) clearTimeout(timer);
 }

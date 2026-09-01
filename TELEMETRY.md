@@ -12,7 +12,7 @@ Every event has:
 - `timestamp`: the UTC time when Chickpea attempted delivery.
 - `schema_version`: currently `1`.
 - `runtime_target`: `cloudflare` or `node`.
-- `app_version`: the Chickpea package version compiled into that release.
+- `app_version`: the Chickpea package version compiled into that release; the current pre-release package reports `0.0.0`.
 - `telemetry_environment`: `production`, `development`, or `test`.
 - `$process_person_profile: false`: tells PostHog not to create or update a person profile.
 - `$geoip_disable: true`: tells PostHog not to derive location from the request IP.

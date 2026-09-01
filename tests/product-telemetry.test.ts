@@ -337,26 +337,14 @@ test('the first concurrent event per UTC day appends one bucket-only adoption sn
   let inventoryReads = 0;
   let now = Date.UTC(2026, 8, 1, 23, 59);
   const config = {
-    async listWorkspaceInstallations() {
+    async summarizeAdoptionInventory() {
       inventoryReads += 1;
-      return [
-        { workspaceId: 'T_PRIVATE', health: 'healthy' },
-        { workspaceId: 'T_REVOKED', health: 'revoked' },
-      ];
-    },
-    async listUserAgents() {
-      inventoryReads += 1;
-      return Array.from({ length: 5 }, (_, index) => ({ id: `agent_${index}` }));
-    },
-    async listConnectionAccounts() {
-      inventoryReads += 1;
-      return [
-        { lifecycle: 'ready' }, { lifecycle: 'ready' }, { lifecycle: 'pending' },
-      ];
-    },
-    async listAgentScheduleReferences() {
-      inventoryReads += 1;
-      return [{ state: 'active' }, { state: 'paused' }];
+      return {
+        workspaceCount: 1,
+        userAgentCount: 5,
+        readyConnectionCount: 2,
+        enabledScheduleCount: 5,
+      };
     },
   } as unknown as ProductTelemetryInventoryStore;
   const client = createProductTelemetryClient({
@@ -399,7 +387,7 @@ test('the first concurrent event per UTC day appends one bucket-only adoption sn
     $process_person_profile: false,
     $geoip_disable: true,
   });
-  assert.equal(inventoryReads, 8, 'only the UTC-day gate winner inventories local state');
+  assert.equal(inventoryReads, 1, 'only the UTC-day gate winner inventories local state');
 
   now = Date.UTC(2026, 8, 2, 0, 1);
   client.capture({
@@ -416,10 +404,7 @@ test('a failed adoption inventory preserves the triggering product event', async
   const client = createProductTelemetryClient({
     settings: mappedSettings(),
     config: {
-      async listWorkspaceInstallations() { throw new Error('private inventory failure'); },
-      async listUserAgents() { return []; },
-      async listConnectionAccounts() { return []; },
-      async listAgentScheduleReferences() { return []; },
+      async summarizeAdoptionInventory() { throw new Error('private inventory failure'); },
     },
     fetch: async (_input, init) => {
       requests.push((JSON.parse(String(init?.body)) as { batch: Array<Record<string, unknown>> }).batch);
@@ -446,6 +431,7 @@ test('telemetry transport settles HTTP, redirect, network, timeout, and body fai
   for (const outcome of outcomes) {
     let attempts = 0;
     let bodyReads = 0;
+    let bodyCancels = 0;
     const tasks: Promise<void>[] = [];
     const client = createProductTelemetryClient({
       settings: memorySettings(),
@@ -459,6 +445,7 @@ test('telemetry transport settles HTTP, redirect, network, timeout, and body fai
         }
         return {
           status: outcome === 'redirect' ? 302 : 500,
+          body: { cancel() { bodyCancels += 1; return Promise.resolve(); } },
           json() { bodyReads += 1; throw new Error('private response body'); },
           text() { bodyReads += 1; throw new Error('private response body'); },
         } as unknown as Response;
@@ -477,6 +464,7 @@ test('telemetry transport settles HTTP, redirect, network, timeout, and body fai
     await tasks[0];
     assert.equal(attempts, 1, outcome);
     assert.equal(bodyReads, 0, outcome);
+    assert.equal(bodyCancels, outcome === 'redirect' || outcome === 'body' ? 1 : 0, outcome);
   }
 });
 
