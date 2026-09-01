@@ -44,6 +44,7 @@ export interface OperatorCompletionInput {
   expectedRole: 'owner' | 'admin' | 'member';
   browserProfileAlias: string;
   receiptId: string;
+  resourceBindingDigest: string;
 }
 
 export interface OperatorCompletionReceipt extends OperatorCompletionInput {
@@ -59,7 +60,7 @@ export type OperatorChallengeConsumeResult =
 export interface OperatorChallengeLedger {
   issue(challenge: OperatorActionView): void;
   consume(challengeId: string): OperatorChallengeConsumeResult;
-  recordCompletion(challengeId: string, receiptId: string): void;
+  recordCompletion(challengeId: string, receiptId: string, resourceBindingDigest: string): void;
 }
 
 export type OperatorChallengeErrorCode =
@@ -101,7 +102,7 @@ export class InMemoryOperatorChallengeLedger implements OperatorChallengeLedger 
     return { status: 'active', challenge };
   }
 
-  recordCompletion(challengeId: string, _receiptId: string): void {
+  recordCompletion(challengeId: string, _receiptId: string, _resourceBindingDigest: string): void {
     if (!this.consumed.has(challengeId) || this.completed.has(challengeId)) fail('INVALID_CHALLENGE');
     this.completed.add(challengeId);
   }
@@ -181,7 +182,7 @@ export class JournalOperatorChallengeLedger implements OperatorChallengeLedger {
     };
   }
 
-  recordCompletion(challengeId: string, receiptId: string): void {
+  recordCompletion(challengeId: string, receiptId: string, resourceBindingDigest: string): void {
     const challengeDigest = operatorChallengeDigest(challengeId);
     const receiptDigest = operatorReceiptDigest(receiptId);
     const journal = readRunJournal(this.journalPath, this.identity);
@@ -196,6 +197,7 @@ export class JournalOperatorChallengeLedger implements OperatorChallengeLedger {
       type: 'operator_challenge_completed',
       challengeDigest,
       operatorReceiptDigest: receiptDigest,
+      resourceBindingDigest,
     }, this.identity);
   }
 }
@@ -228,6 +230,7 @@ export class OperatorDriver {
     const action = result.challenge;
     if (this.now() >= action.expiresAt) fail('CHALLENGE_EXPIRED');
     if (!bounded(input.receiptId)
+      || !/^sha256:[a-f0-9]{64}$/u.test(input.resourceBindingDigest)
       || input.runId !== action.runId
       || input.caseId !== action.caseId
       || input.stepId !== action.stepId
@@ -239,7 +242,7 @@ export class OperatorDriver {
       || input.browserProfileAlias !== action.browserProfileAlias) {
       fail('CHALLENGE_MISMATCH');
     }
-    this.ledger.recordCompletion(action.challengeId, input.receiptId);
+    this.ledger.recordCompletion(action.challengeId, input.receiptId, input.resourceBindingDigest);
     return Object.freeze({
       challengeId: input.challengeId,
       runId: action.runId,
@@ -253,6 +256,7 @@ export class OperatorDriver {
       expectedRole: action.expectedRole,
       browserProfileAlias: action.browserProfileAlias,
       receiptId: input.receiptId,
+      resourceBindingDigest: input.resourceBindingDigest,
     });
   }
 }

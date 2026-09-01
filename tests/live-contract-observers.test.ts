@@ -31,6 +31,8 @@ import {
 } from '../qa/live/drivers/operator.ts';
 import { ASSERTION_TOKENS, OBSERVER_IDS } from '../qa/live/schema.ts';
 
+const RESOURCE_BINDING_DIGEST = `sha256:${'a'.repeat(64)}`;
+
 test('every declared observer and scored manifest assertion has a capability entry', () => {
   assert.deepEqual(Object.keys(CAPABILITY_INVENTORY).sort(), [...OBSERVER_IDS].sort());
   assert.deepEqual(new Set(Object.values(CAPABILITY_INVENTORY).flatMap((entry) => entry.allowedTokens)),
@@ -38,6 +40,9 @@ test('every declared observer and scored manifest assertion has a capability ent
   const inventory = inventoryManifestCapabilities(LIVE_MANIFEST);
   assert.equal(inventory.blocked.length > 0, true);
   assert.equal(inventory.resolved.length > 0, true);
+  assert.equal(CAPABILITY_INVENTORY['slack.messages.read'].source, 'computer_use_ui');
+  assert.equal(CAPABILITY_INVENTORY['agent.read'].source, 'computer_use_ui');
+  assert.equal(CAPABILITY_INVENTORY['provider.read'].source, 'computer_use_ui');
   assert.equal(LC02_AVATAR_SOURCE_CAPABILITY.status, 'blocked');
   assert.equal(LC02_AVATAR_SOURCE_CAPABILITY.reason, 'authoritative_projection_missing');
   assert.deepEqual(new Set([...inventory.resolved, ...inventory.blocked].map((entry) => entry.token)), new Set(
@@ -96,11 +101,50 @@ test('Slack 429 honors Retry-After by repeating only readback', async () => {
     },
   });
 
-  assert.equal(observation.status, 'observed');
-  assert.deepEqual(observation.tokens, ['slack.message_matches']);
+  assert.equal(observation.status, 'blocked');
+  assert.deepEqual(observation.tokens, []);
   assert.deepEqual(sleeps, [2_000]);
   assert.equal(reads, 2);
   assert.equal(actions, 1);
+});
+
+test('valid product API responses remain diagnostic-only and cannot emit scored proof', async () => {
+  const observations = await Promise.all([
+    observeChickpea({
+      observerId: 'agent.read',
+      read: async () => ({ status: 200, tokens: ['agent.exists'], revision: 'revision-1' }),
+    }),
+    observeProvider({
+      deadlineMs: 50,
+      read: async () => ({ status: 200, tokens: ['forbidden.no_duplicate'], count: 1 }),
+    }),
+    observeSlack({
+      observerId: 'slack.messages.read', deadlineMs: 50, sleep: async () => undefined,
+      read: async () => ({ status: 200, tokens: ['slack.message_matches'], count: 1 }),
+    }),
+  ]);
+  for (const observation of observations) {
+    assert.equal(observation.status, 'blocked');
+    assert.deepEqual(observation.tokens, []);
+  }
+});
+
+test('Slack observer bounds a hung read and treats an exact Retry-After deadline as rate limited', async () => {
+  const hung = await observeSlack({
+    observerId: 'slack.messages.read', deadlineMs: 5, sleep: async () => undefined,
+    read: async () => new Promise<never>(() => undefined),
+  });
+  assert.equal(hung.status, 'unavailable');
+
+  const boundary = await observeSlack({
+    observerId: 'slack.messages.read', deadlineMs: 2_000, now: () => 0,
+    sleep: async () => { throw new Error('must not sleep'); },
+    read: async () => ({ status: 429, retryAfter: '2' }),
+  });
+  assert.deepEqual(boundary, {
+    observerId: 'slack.messages.read', status: 'rate_limited', tokens: [],
+    metadata: { attempts: 1, retryAfterSeconds: 2 },
+  });
 });
 
 test('provider errors return bounded metadata and never the upstream error body', async () => {
@@ -157,6 +201,7 @@ test('operator challenges are one-use and expose semantic reminders only', () =>
     expectedRole: action.expectedRole,
     browserProfileAlias: action.browserProfileAlias,
     receiptId: 'receipt-one',
+    resourceBindingDigest: RESOURCE_BINDING_DIGEST,
   });
   assert.equal(receipt.receiptId, 'receipt-one');
   const driverC = new OperatorDriver(ledger, { now: () => 1_000 });
@@ -187,6 +232,7 @@ test('a mismatched actor-bound completion is consumed and cannot be retried', ()
     expectedRole: action.expectedRole,
     browserProfileAlias: action.browserProfileAlias,
     receiptId: 'receipt-wrong-actor',
+    resourceBindingDigest: RESOURCE_BINDING_DIGEST,
   } as const;
   assert.throws(
     () => driver.complete(wrong),

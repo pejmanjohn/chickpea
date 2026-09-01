@@ -4,6 +4,13 @@ import type { LiveTargetOverlay } from './privacy.ts';
 import { SUITES, type Suite } from './schema.ts';
 
 const ALIAS = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+export const PHASE_ONE_TARGET_ALIASES = ['amber', 'cobalt', 'fern'] as const;
+export const PHASE_ONE_SMOKE_VARIANTS = [
+  'LC01-V1-create-welcome',
+  'LC01-V2-update-approve',
+  'LC04-V1-personal-read',
+  'LC08-V1-create-due',
+] as const;
 
 export interface PrivateTargetAliases {
   targetAlias: string;
@@ -43,6 +50,7 @@ export interface DoctorTargetResolution {
   timezone(): Promise<string>;
   evidenceRoot(): Promise<string>;
   targetLockPath(): Promise<string>;
+  runJournalPath(runId: string): Promise<string>;
   bindingIdentities(): Promise<Record<string, string>>;
 }
 
@@ -50,7 +58,8 @@ export type PrivateConfigErrorCode =
   | 'INVALID_PRIVATE_CONFIG'
   | 'TARGET_NOT_ALLOWLISTED'
   | 'TARGET_ALIAS_MISMATCH'
-  | 'PRIVATE_ALIAS_UNAVAILABLE';
+  | 'PRIVATE_ALIAS_UNAVAILABLE'
+  | 'INVALID_RUN_ID';
 
 export class PrivateConfigError extends Error {
   readonly code: PrivateConfigErrorCode;
@@ -63,8 +72,9 @@ export class PrivateConfigError extends Error {
 }
 
 /**
- * Validate the private alias map without resolving any referenced value. The
- * v1 runner intentionally accepts one positive QA target and no wildcard.
+ * Validate the Phase 1 environment registry without resolving any referenced
+ * value. The public verifier stays role-agnostic; this boundary admits exactly
+ * the three provisioned color targets and their shared smoke inventory.
  */
 export function createDoctorTargetResolution(
   overlay: LiveTargetOverlay,
@@ -88,6 +98,12 @@ export function createDoctorTargetResolution(
     timezone: () => read(target.timezoneAlias),
     evidenceRoot: () => read(target.evidenceRootAlias),
     targetLockPath: async () => join(await read(target.evidenceRootAlias), 'target.lock'),
+    runJournalPath: async (runId: string) => {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(runId)) {
+        throw new PrivateConfigError('INVALID_RUN_ID');
+      }
+      return join(await read(target.evidenceRootAlias), 'runs', `${runId}.jsonl`);
+    },
     bindingIdentities: async () => Object.fromEntries(await Promise.all(
       bindingEntries.map(async ([binding, alias]) => [binding, await read(alias)] as const),
     )),
@@ -101,7 +117,7 @@ function validatePrivateConfig(
   if (!isRecord(config)
     || config.schemaVersion !== 'chickpea-live-private-config/v1'
     || !Array.isArray(config.qaTargetAllowlist)
-    || config.qaTargetAllowlist.length === 0
+    || !same([...config.qaTargetAllowlist].sort(), [...PHASE_ONE_TARGET_ALIASES].sort())
     || !config.qaTargetAllowlist.every(validAlias)
     || new Set(config.qaTargetAllowlist).size !== config.qaTargetAllowlist.length
     || !isRecord(config.targets)
@@ -142,6 +158,7 @@ function validateTargetAliases(targetKey: string, input: unknown): void {
     'evidenceRootAlias', 'timezoneAlias', 'providerReadOnlyAuthConfigAlias', 'bindingAliases', 'allowedSuites', 'allowedVariants',
   ])
     || !validAlias(target.targetAlias)
+    || !(PHASE_ONE_TARGET_ALIASES as readonly string[]).includes(target.targetAlias)
     || target.targetAlias !== targetKey
     || (target.transport !== 'gateway' && target.transport !== 'events')
     || !validAlias(target.workerAlias)
@@ -156,22 +173,17 @@ function validateTargetAliases(targetKey: string, input: unknown): void {
     || Object.entries(target.bindingAliases).some(([binding, alias]) =>
       !/^[A-Z][A-Z0-9_]{0,63}$/.test(binding) || !validAlias(alias)
     )
-    || !validAllowedSuites(target.allowedSuites, targetKey)
+    || !validAllowedSuites(target.allowedSuites)
     || !Array.isArray(target.allowedVariants)
-    || target.allowedVariants.length === 0
-    || !target.allowedVariants.every((variantId) => typeof variantId === 'string' && variantId.length > 0)
-    || new Set(target.allowedVariants).size !== target.allowedVariants.length) {
+    || !same([...target.allowedVariants].sort(), [...PHASE_ONE_SMOKE_VARIANTS].sort())) {
     throw new PrivateConfigError('INVALID_PRIVATE_CONFIG');
   }
 }
 
-function validAllowedSuites(input: unknown, targetAlias: string): boolean {
-  if (input === undefined) return true;
+function validAllowedSuites(input: unknown): boolean {
   return Array.isArray(input)
-    && input.length > 0
     && input.every((suite) => typeof suite === 'string' && (SUITES as readonly string[]).includes(suite))
-    && new Set(input).size === input.length
-    && (targetAlias === 'dedicated-qa' || !input.includes('deep'));
+    && same([...input].sort(), ['case', 'smoke']);
 }
 
 function memoizedAliasReader(readOnly: (alias: string) => Promise<string>) {

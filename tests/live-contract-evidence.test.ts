@@ -135,3 +135,35 @@ test('accepted run summary contains only the portable allowlisted inventory', (c
     rawResponse: 'not allowed',
   } as never), (error: unknown) => error instanceof EvidenceSafetyError);
 });
+
+test('a passing summary rejects partial inventory, non-pass cases, cleanup failure, or dirty postflight', (context) => {
+  const { repositoryRoot, packageRoot, evidenceRoot } = roots(context);
+  const base = {
+    schemaVersion: 'chickpea-live-summary/v1' as const,
+    suite: 'case' as const,
+    manifestDigest: 'sha256:manifest', targetFingerprint: 'sha256:target',
+    repositoryRevision: '0123456789abcdef', servingVersion: 'version-1',
+    aggregate: 'pass' as const,
+    declaredVariantIds: ['LC01-V1-create-welcome'],
+    executedVariantIds: ['LC01-V1-create-welcome'],
+    primaryCounts: { pass: 1, fail: 0, blocked: 0, ambiguous: 0, infrastructure_error: 0 },
+    cleanupCounts: { not_required: 0, pass: 1, failed: 0 },
+    postflight: { targetIdentityMatches: true, missingCount: 0, unexpectedCount: 0, unresolvedCount: 0 },
+  };
+  const invalid = [
+    { ...base, executedVariantIds: [] as string[], primaryCounts: { ...base.primaryCounts, pass: 0 }, cleanupCounts: { ...base.cleanupCounts, pass: 0 } },
+    { ...base, primaryCounts: { ...base.primaryCounts, pass: 0, fail: 1 } },
+    { ...base, cleanupCounts: { ...base.cleanupCounts, pass: 0, failed: 1 } },
+    { ...base, postflight: { ...base.postflight, unresolvedCount: 1 } },
+  ];
+  invalid.forEach((summary, index) => {
+    const runId = `run-invalid-summary-${index + 1}`;
+    const run = createEvidenceRun({
+      parent: evidenceRoot, runId, repositoryRoot, packageRoots: [packageRoot],
+    });
+    assert.throws(
+      () => writeRunSummary(run, { ...summary, runId }),
+      (error: unknown) => error instanceof EvidenceSafetyError && error.code === 'INVALID_EVIDENCE',
+    );
+  });
+});

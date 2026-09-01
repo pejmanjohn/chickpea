@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { validateGitHubSourceBinding, type GitHubSourceBinding } from './public-sources.ts';
 import {
   FIXTURE_KINDS,
@@ -76,7 +78,7 @@ export function validateTargetOverlay(manifest: LiveManifest, input: unknown): L
   if (value.schemaVersion !== 'chickpea-live-target/v1') fail('INVALID_VALUE', '$.schemaVersion');
   const targetAlias = alias(value.targetAlias, '$.targetAlias');
   const transport = validateTransport(value.transport);
-  const allowedSuites = validateAllowedSuites(value.allowedSuites, targetAlias);
+  const allowedSuites = validateAllowedSuites(value.allowedSuites);
   const allowedVariants = validateAllowedVariants(manifest, value.allowedVariants);
   const fixtures = validateTargetFixtures(value.fixtures);
   const bindingsValue = record(value.bindings, '$.bindings');
@@ -130,6 +132,10 @@ export function validateTargetOverlay(manifest: LiveManifest, input: unknown): L
   };
 }
 
+export function digestTargetOverlay(target: LiveTargetOverlay): string {
+  return `sha256:${createHash('sha256').update(stableJson(target)).digest('hex')}`;
+}
+
 export function requiredActorAliasesForTarget(
   manifest: LiveManifest,
   target: LiveTargetOverlay,
@@ -177,13 +183,12 @@ function validateAllowedVariants(manifest: LiveManifest, input: unknown): string
   return input as string[];
 }
 
-function validateAllowedSuites(input: unknown, targetAlias: string): Suite[] | undefined {
+function validateAllowedSuites(input: unknown): Suite[] | undefined {
   if (input === undefined) return undefined;
   if (!Array.isArray(input)
     || input.length === 0
     || !input.every((suite) => typeof suite === 'string' && (SUITES as readonly string[]).includes(suite))
-    || new Set(input).size !== input.length
-    || (targetAlias !== 'dedicated-qa' && input.includes('deep'))) {
+    || new Set(input).size !== input.length) {
     fail('INVALID_VALUE', '$.allowedSuites');
   }
   return input as Suite[];
@@ -235,11 +240,11 @@ function inspectData(input: unknown, path: string, seen: Set<object>): void {
     if (SECRET_FIELDS.has(normalized) ||
         /(?:api|access|refresh|bot|oauth|provider|slack|auth)token$/.test(normalized) ||
         /(?:secret|password|credential|cookie|authorization)$/.test(normalized)) {
-      fail('SECRET_FIELD', childPath);
+      fail('SECRET_FIELD', path);
     }
-    if (EXECUTABLE_FIELDS.has(normalized)) fail('EXECUTABLE_FIELD', childPath);
-    if (RAW_CONTENT_FIELDS.has(normalized)) fail('RAW_CONTENT_FIELD', childPath);
-    if (PRIVATE_COORDINATE_FIELDS.has(normalized)) fail('PRIVATE_COORDINATE', childPath);
+    if (EXECUTABLE_FIELDS.has(normalized)) fail('EXECUTABLE_FIELD', path);
+    if (RAW_CONTENT_FIELDS.has(normalized)) fail('RAW_CONTENT_FIELD', path);
+    if (PRIVATE_COORDINATE_FIELDS.has(normalized)) fail('PRIVATE_COORDINATE', path);
     inspectData(child, childPath, seen);
   }
   seen.delete(input);
@@ -247,4 +252,13 @@ function inspectData(input: unknown, path: string, seen: Set<object>): void {
 
 function same(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function stableJson(input: unknown): string {
+  if (Array.isArray(input)) return `[${input.map(stableJson).join(',')}]`;
+  if (input !== null && typeof input === 'object') {
+    const value = input as Record<string, unknown>;
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(input);
 }

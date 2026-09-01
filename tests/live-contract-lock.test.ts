@@ -52,10 +52,11 @@ test('the target lock is no-overwrite while its local PID is active', (context) 
   assert.deepEqual(JSON.parse(readFileSync(lockPath, 'utf8')), owner);
 });
 
-test('only the same run on the same host may reacquire after proving the PID inactive', (context) => {
-  const { lockPath } = tempFixture(context);
+test('a stale same-run lock must be safely cleared before a fresh exclusive acquire', (context) => {
+  const { lockPath, journalPath } = tempFixture(context);
   const owner = { runId: 'run-one', pid: 101, host: 'qa-host', startedAt: '2026-09-01T00:00:00.000Z' };
   acquireTargetLock(lockPath, owner, { isPidActive: () => false });
+  createJournal(journalPath);
 
   assert.throws(
     () => acquireTargetLock(lockPath, { ...owner, host: 'foreign-host', pid: 202 }, { isPidActive: () => false }),
@@ -66,11 +67,41 @@ test('only the same run on the same host may reacquire after proving the PID ina
     (error: unknown) => error instanceof TargetLockError && error.code === 'LOCK_DIFFERENT_RUN',
   );
 
-  assert.equal(
-    acquireTargetLock(lockPath, { ...owner, pid: 202 }, { isPidActive: (pid) => pid === 202 }),
-    'reacquired',
+  assert.throws(
+    () => acquireTargetLock(lockPath, { ...owner, pid: 202 }, { isPidActive: () => false }),
+    (error: unknown) => error instanceof TargetLockError && error.code === 'LOCK_ACTIVE',
   );
+  clearTargetLock(lockPath, {
+    runId: 'run-one', host: 'qa-host',
+    journal: readRunJournal(journalPath, { runId: 'run-one', manifestDigest: MANIFEST }),
+    isPidActive: () => false,
+  });
+  assert.equal(acquireTargetLock(lockPath, { ...owner, pid: 202 }), 'acquired');
   assert.equal(readTargetLock(lockPath)?.pid, 202);
+});
+
+test('--clear-lock refuses a durable product mutation without verified cleanup', (context) => {
+  const { lockPath, journalPath } = tempFixture(context);
+  acquireTargetLock(lockPath, {
+    runId: 'run-one', pid: 101, host: 'qa-host', startedAt: '2026-09-01T00:00:00.000Z',
+  });
+  createJournal(journalPath);
+  appendRunJournal(journalPath, {
+    type: 'mutation_receipt', receiptId: 'receipt-lock-mutation',
+    caseId: 'LC01-V1-create-welcome', stepId: 'create-agent', attempt: 1,
+    targetAlias: 'dedicated-qa', actionChallengeDigest: 'sha256:challenge',
+    operatorReceiptDigest: 'sha256:operator', beforeStateDigest: 'sha256:absent',
+    immutableId: 'agent_lock_mutation', beforeRevision: 'absent', revision: 'revision-1',
+    stateDigest: 'sha256:created', resourceKind: 'agent', mutation: 'create',
+    fixtureClass: 'run_owned', cleanupStrategy: 'exact_reversal', reversalActionId: 'agent.archive',
+    direction: 'forward',
+  }, { runId: 'run-one', manifestDigest: MANIFEST });
+
+  assert.throws(() => clearTargetLock(lockPath, {
+    runId: 'run-one', host: 'qa-host',
+    journal: readRunJournal(journalPath, { runId: 'run-one', manifestDigest: MANIFEST }),
+    isPidActive: () => false,
+  }), (error: unknown) => error instanceof TargetLockError && error.code === 'UNRESOLVED_CLEANUP');
 });
 
 test('--clear-lock requires a stopped local owner and no unresolved journal intent', (context) => {

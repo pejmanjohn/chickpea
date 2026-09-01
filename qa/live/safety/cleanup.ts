@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type {
   ActionId,
   AssertionToken,
@@ -55,6 +57,7 @@ export interface MutationReceiptInput {
   immutableId: string;
   beforeRevision: string;
   revision: string;
+  stateDigest: string;
   resourceKind: ProductResourceKind;
   mutation: MutationClass;
   fixtureClass: FixtureClass;
@@ -207,7 +210,15 @@ export function recordMutationReceipt(
       candidate.resourceKind === input.resourceKind && candidate.immutableId === input.immutableId
     );
     if (baseline === undefined) fail('MISSING_BASELINE');
-    if (baseline.revision !== input.beforeRevision || baseline.stateDigest !== input.beforeStateDigest) {
+    const previous = eventValues(journal, 'mutation_receipt').filter((candidate) =>
+      candidate.resourceKind === input.resourceKind
+      && candidate.immutableId === input.immutableId
+      && candidate.fixtureClass === 'resettable_fixture'
+      && candidate.direction === 'forward'
+    ).at(-1);
+    const expectedRevision = previous?.revision ?? baseline.revision;
+    const expectedStateDigest = previous?.stateDigest ?? baseline.stateDigest;
+    if (expectedRevision !== input.beforeRevision || expectedStateDigest !== input.beforeStateDigest) {
       fail('BASELINE_MISMATCH');
     }
   }
@@ -220,6 +231,7 @@ export function recordMutationReceipt(
     expectedRevision: input.beforeRevision,
     mutation: input.mutation,
     targetAlias: input.targetAlias,
+    resourceBindingDigest: exactResourceBindingDigest(input),
   }, 'completed');
   appendRunJournal(path, event, identity);
   return event;
@@ -334,8 +346,17 @@ function deriveCleanupPlanFromJournal(journal: ReadJournalResult): CleanupTarget
   const finalizedMutationIds = new Set(ledger.cleanupIntents
     .filter(({ cleanupIntentId }) => completedIntentIds.has(cleanupIntentId))
     .map(({ mutationReceiptId }) => mutationReceiptId));
+  const latestResettableReceiptByResource = new Map<string, string>();
+  for (const mutation of ledger.mutations) {
+    if (mutation.fixtureClass === 'resettable_fixture' && mutation.direction === 'forward') {
+      latestResettableReceiptByResource.set(resourceKey(mutation), mutation.receiptId);
+    }
+  }
+  const latestResettableReceiptIds = new Set(latestResettableReceiptByResource.values());
   return ledger.mutations
-    .filter(({ receiptId, direction }) => direction === 'forward' && !finalizedMutationIds.has(receiptId))
+    .filter(({ receiptId, direction, fixtureClass }) => direction === 'forward'
+      && !finalizedMutationIds.has(receiptId)
+      && (fixtureClass !== 'resettable_fixture' || latestResettableReceiptIds.has(receiptId)))
     .map((mutation) => cleanupTarget(
       mutation,
       ledger.baselines,
@@ -428,6 +449,13 @@ export function recordCleanupReceipt(
     expectedRevision: intent.expectedRevision,
     mutation: intent.mutation,
     targetAlias: intent.targetAlias,
+    resourceBindingDigest: exactResourceBindingDigest({
+      targetAlias: intent.targetAlias,
+      resourceKind: intent.resourceKind,
+      fixtureClass: intent.fixtureClass,
+      immutableId: intent.immutableId,
+      beforeRevision: intent.expectedRevision,
+    }),
   }, 'completed');
   validateCleanupOutcome(intent, input);
   appendRunJournal(path, event, identity);
@@ -503,8 +531,15 @@ export function verifyPostflight(
   const journal = read(path, identity);
   const ledger = projectProductLedger(journal);
   const declared = new Set(input.declaredResourceKinds);
+  const required = new Set([
+    ...ledger.baselines.map(({ resourceKind }) => resourceKind),
+    ...ledger.mutations.map(({ resourceKind }) => resourceKind),
+    ...ledger.cleanupIntents.map(({ resourceKind }) => resourceKind),
+  ]);
   if (declared.size !== input.declaredResourceKinds.length
-    || input.declaredResourceKinds.some((kind) => !(PRODUCT_RESOURCE_KINDS as readonly string[]).includes(kind))) {
+    || input.declaredResourceKinds.some((kind) => !(PRODUCT_RESOURCE_KINDS as readonly string[]).includes(kind))
+    || declared.size !== required.size
+    || [...required].some((kind) => !declared.has(kind))) {
     fail('INVALID_CLEANUP_CONTRACT');
   }
   for (const item of input.inventory) requireExactId(item.immutableId);
@@ -565,6 +600,14 @@ export function verifyPostflight(
   const cleanedMutationIds = new Set(ledger.cleanupIntents
     .filter(({ cleanupIntentId }) => successfulIntentIds.has(cleanupIntentId))
     .map(({ mutationReceiptId }) => mutationReceiptId));
+  for (const cleanedId of [...cleanedMutationIds]) {
+    const cleaned = ledger.mutations.find(({ receiptId }) => receiptId === cleanedId);
+    if (cleaned?.fixtureClass !== 'resettable_fixture') continue;
+    for (const mutation of ledger.mutations) {
+      if (mutation.fixtureClass === 'resettable_fixture'
+        && resourceKey(mutation) === resourceKey(cleaned)) cleanedMutationIds.add(mutation.receiptId);
+    }
+  }
   const unresolvedMutations = ledger.mutations.filter((mutation) =>
     declared.has(mutation.resourceKind)
       && mutation.fixtureClass !== 'immutable_baseline'
@@ -733,6 +776,7 @@ function requireChallengeBinding(
     expectedRevision: string;
     mutation: MutationClass;
     targetAlias: string;
+    resourceBindingDigest?: string;
   },
   phase: 'issued' | 'completed',
 ): void {
@@ -748,10 +792,29 @@ function requireChallengeBinding(
   if (phase === 'completed') {
     const completion = eventValues(journal, 'operator_challenge_completed')
       .find(({ challengeDigest }) => challengeDigest === binding.challengeDigest);
-    if (completion === undefined || completion.operatorReceiptDigest !== binding.operatorReceiptDigest) {
+    if (completion === undefined || completion.operatorReceiptDigest !== binding.operatorReceiptDigest
+      || (binding.resourceBindingDigest !== undefined
+        && completion.resourceBindingDigest !== binding.resourceBindingDigest)) {
       fail('CHALLENGE_MISMATCH');
     }
   }
+}
+
+export function exactResourceBindingDigest(input: {
+  targetAlias: string;
+  resourceKind: ProductResourceKind;
+  fixtureClass: FixtureClass;
+  immutableId: string;
+  beforeRevision: string;
+}): string {
+  const value = [
+    input.targetAlias,
+    input.resourceKind,
+    input.fixtureClass,
+    input.immutableId,
+    input.beforeRevision,
+  ].map((part) => `${part.length}:${part}`).join('|');
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
 function mutationForOperation(operation: ActionId): MutationClass {

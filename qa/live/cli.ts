@@ -9,18 +9,7 @@ import {
   type DoctorResult,
   type DoctorSnapshot,
 } from './doctor.ts';
-import { advanceLiveRun, type RunnerSignal } from './runner.ts';
-import {
-  PRIMARY_RESULTS,
-  TYPED_REASONS,
-  type PrimaryResult,
-  type TypedReason,
-} from './schema.ts';
-import {
-  OPERATOR_ACTION_RECEIPT_OUTCOMES,
-  READBACK_OUTCOMES,
-  type RunnerRecord,
-} from './state.ts';
+import type { RunnerRecord } from './state.ts';
 
 export interface CliErrorRecord {
   kind: 'error';
@@ -54,26 +43,10 @@ export function executeLiveCli(argv: readonly string[], io: CliIo = DEFAULT_IO):
   if (command !== 'case' && command !== 'smoke' && command !== 'deep') {
     throw new CliUsageError('UNKNOWN_COMMAND');
   }
-  const { overlay, snapshot } = readInputs(args, io);
-  const journalPath = one(args, 'journal');
-  const runId = one(args, 'run-id');
-  const variants = args.get('variant');
-  const signal = signalFromArguments(args);
-  return advanceLiveRun({
-    journalPath,
-    runId,
-    suite: command,
-    ...(variants === undefined ? {} : { variantIds: variants }),
-    overlay,
-    doctorSnapshot: snapshot,
-    identity: {
-      targetFingerprint: oneOr(args, 'target-fingerprint', snapshot.targetFingerprint),
-      repositoryRevision: oneOr(args, 'repository-revision', snapshot.repositoryRevision),
-      servingVersion: oneOr(args, 'serving-version', snapshot.servingVersion),
-    },
-    ...(signal === undefined ? {} : { signal }),
-    ...(args.has('now') ? { now: one(args, 'now') } : {}),
-  });
+  // V0 intentionally exposes no shell path for supplying scored outcomes.
+  // V1 will call the runner through its attended Computer Use coordinator,
+  // after challenge-bound receipts and visible assertions are durable.
+  throw new CliUsageError('COORDINATOR_REQUIRED');
 }
 
 export function serializeCliRecord(record: CliRecord): string {
@@ -149,64 +122,10 @@ function parseArguments(argv: readonly string[]): Map<string, string[]> {
   return result;
 }
 
-function signalFromArguments(args: Map<string, string[]>): RunnerSignal | undefined {
-  const actionOutcome = optionalOne(args, 'action-outcome');
-  const readbackOutcome = optionalOne(args, 'readback-outcome');
-  const assertionResult = optionalOne(args, 'assertion-result');
-  const signalCount = [actionOutcome, readbackOutcome, assertionResult]
-    .filter((value) => value !== undefined).length;
-  if (signalCount > 1) throw new CliUsageError('MULTIPLE_SIGNALS');
-  if (actionOutcome !== undefined) {
-    if (!OPERATOR_ACTION_RECEIPT_OUTCOMES.includes(actionOutcome as typeof OPERATOR_ACTION_RECEIPT_OUTCOMES[number])) {
-      throw new CliUsageError('INVALID_ACTION_OUTCOME');
-    }
-    return {
-      type: 'action_receipt',
-      actionRef: one(args, 'action-ref'),
-      outcome: actionOutcome as typeof OPERATOR_ACTION_RECEIPT_OUTCOMES[number],
-    };
-  }
-  if (readbackOutcome !== undefined) {
-    if (!READBACK_OUTCOMES.includes(readbackOutcome as typeof READBACK_OUTCOMES[number])) {
-      throw new CliUsageError('INVALID_READBACK_OUTCOME');
-    }
-    return {
-      type: 'readback_result',
-      intentId: one(args, 'intent-id'),
-      outcome: readbackOutcome as typeof READBACK_OUTCOMES[number],
-    };
-  }
-  if (assertionResult !== undefined) {
-    if (!(PRIMARY_RESULTS as readonly string[]).includes(assertionResult)) throw new CliUsageError('INVALID_ASSERTION_RESULT');
-    const reason = optionalOne(args, 'reason');
-    if (reason !== undefined && !(TYPED_REASONS as readonly string[]).includes(reason)) {
-      throw new CliUsageError('INVALID_REASON');
-    }
-    return {
-      type: 'assertion_result',
-      variantId: one(args, 'assertion-variant'),
-      result: assertionResult as PrimaryResult,
-      ...(reason === undefined ? {} : { reason: reason as TypedReason }),
-    };
-  }
-  return undefined;
-}
-
 function one(args: Map<string, string[]>, key: string): string {
   const values = args.get(key);
   if (values?.length !== 1) throw new CliUsageError(`REQUIRED_${key.toUpperCase().replaceAll('-', '_')}`);
   return values[0] as string;
-}
-
-function optionalOne(args: Map<string, string[]>, key: string): string | undefined {
-  const values = args.get(key);
-  if (values === undefined) return undefined;
-  if (values.length !== 1) throw new CliUsageError(`DUPLICATE_${key.toUpperCase().replaceAll('-', '_')}`);
-  return values[0];
-}
-
-function oneOr(args: Map<string, string[]>, key: string, fallback: string): string {
-  return optionalOne(args, key) ?? fallback;
 }
 
 function safeErrorRecord(error: unknown): CliErrorRecord {

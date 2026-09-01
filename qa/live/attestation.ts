@@ -5,6 +5,7 @@ import type { DoctorTargetResolution } from './private-config.ts';
 export interface WorkerDeployment {
   versionId: string;
   percentage: number;
+  activatedAt?: string;
 }
 
 export interface GatewayAttestationObservation {
@@ -18,6 +19,8 @@ export interface GatewayAttestationObservation {
 export interface EventsAttestationObservation {
   installationHealthy: boolean;
   signedEventReceiptFresh: boolean;
+  signedEventReceiptVersionId: string;
+  signedEventReceiptAt: string;
   installationRevision: number;
 }
 
@@ -59,6 +62,7 @@ export type AttestationErrorCode =
   | 'GATEWAY_VERSION_MISMATCH'
   | 'INSTALLATION_UNHEALTHY'
   | 'SIGNED_EVENT_RECEIPT_STALE'
+  | 'SIGNED_EVENT_RECEIPT_VERSION_MISMATCH'
   | 'TARGET_DRIFT';
 
 export class AttestationError extends Error {
@@ -119,6 +123,14 @@ export async function attestLiveTarget(
   } else {
     if (observed.events === undefined || !observed.events.installationHealthy) fail('INSTALLATION_UNHEALTHY');
     if (!observed.events.signedEventReceiptFresh) fail('SIGNED_EVENT_RECEIPT_STALE');
+    if (observed.events.signedEventReceiptVersionId !== servingVersion) {
+      fail('SIGNED_EVENT_RECEIPT_VERSION_MISMATCH');
+    }
+    const activatedAt = observed.deployments[0]?.activatedAt;
+    if (activatedAt === undefined
+      || Date.parse(observed.events.signedEventReceiptAt) < Date.parse(activatedAt)) {
+      fail('SIGNED_EVENT_RECEIPT_STALE');
+    }
   }
 
   const targetFingerprint = `sha256:${createHash('sha256').update(stableJson({
@@ -165,7 +177,8 @@ function validateObservation(input: LiveTargetObservation): void {
       || typeof deployment.percentage !== 'number'
       || !Number.isFinite(deployment.percentage)
       || deployment.percentage < 0
-      || deployment.percentage > 100)
+      || deployment.percentage > 100
+      || (deployment.activatedAt !== undefined && !timestamp(deployment.activatedAt)))
     || !stringRecord(input.bindingIdentities)
     || !isRecord(input.slack)
     || !bounded(input.slack.teamId)
@@ -196,8 +209,10 @@ function validEvents(input: unknown): input is EventsAttestationObservation {
   return isRecord(input)
     && typeof input.installationHealthy === 'boolean'
     && typeof input.signedEventReceiptFresh === 'boolean'
+    && bounded(input.signedEventReceiptVersionId)
+    && timestamp(input.signedEventReceiptAt)
     && Number.isSafeInteger(input.installationRevision)
-    && input.installationRevision >= 0;
+    && Number(input.installationRevision) >= 0;
 }
 
 function stableJson(input: unknown): string {
@@ -226,7 +241,11 @@ function bounded(input: unknown, max = 512): input is string {
   return typeof input === 'string' && input.length > 0 && input.length <= max;
 }
 
-function isRecord(input: unknown): input is Record<string, any> {
+function timestamp(input: unknown): input is string {
+  return typeof input === 'string' && Number.isFinite(Date.parse(input));
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
   return input !== null && typeof input === 'object' && !Array.isArray(input);
 }
 

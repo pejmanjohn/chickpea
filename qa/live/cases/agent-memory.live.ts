@@ -145,7 +145,8 @@ export function evaluateAgentMemory(
   if (integerAt(afterWrite, 'revision') !== integerAt(request, 'beforeRevision') + 1) {
     failures.push('revision_not_advanced');
   }
-  if (recordsAt(admin, 'surfaceReads').some((read) => {
+  const surfaceReads = recordsAt(admin, 'surfaceReads');
+  if (surfaceReads.some((read) => {
     const memory = typeof read.memory === 'object' && read.memory !== null
       ? read.memory as Record<string, unknown>
       : undefined;
@@ -153,7 +154,12 @@ export function evaluateAgentMemory(
       memory.agentId !== request.agentId ||
       typeof memory.body !== 'string' || sha256Utf8(memory.body) !== expectedDigest ||
       memory.revision !== afterWrite.revision;
-  }) || recordsAt(admin, 'surfaceReads').length !== 2) failures.push('surface_read_mismatch');
+  }) || surfaceReads.length !== 2
+    || new Set(surfaceReads.map((read) => String(read.surface))).size !== 2
+    || !surfaceReads.some((read) => read.surface === 'direct')
+    || !surfaceReads.some((read) => read.surface === 'channel')) {
+    failures.push('surface_read_mismatch');
+  }
 
   if (variantId === 'LC07-V3-conflict-replay-forget') {
     const retry = objectAt(admin, 'afterRetry');

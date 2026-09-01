@@ -69,6 +69,10 @@ export interface AdvanceLiveRunDependencies {
   afterIntentFlushed?: (intentId: string) => void;
   /** Crash-injection seam: the action receipt is already fsynced when this callback runs. */
   afterReceiptFlushed?: (intentId: string) => void;
+  /** Crash-injection seam: the cleanup result is already fsynced when this callback runs. */
+  afterCleanupResultFlushed?: (variantId: string) => void;
+  /** Crash-injection seam: the terminal transition is already fsynced when this callback runs. */
+  afterCompleteTransitionFlushed?: () => void;
   observationNotBefore?: (variantId: string) => string | undefined;
   /**
    * Advances at most one exact-ID cleanup step. The coordinator owns U4's
@@ -91,7 +95,6 @@ export class LiveRunnerError extends Error {
     | 'RUN_IDENTITY_DRIFT'
     | 'RUN_SELECTION_DRIFT'
     | 'SUITE_NOT_ALLOWED'
-    | 'RUN_ALREADY_COMPLETE'
     | 'INVALID_RUN_SIGNAL';
 
   constructor(code: LiveRunnerError['code'], detail: string) {
@@ -107,10 +110,6 @@ export function advanceLiveRun(
 ): RunnerRecord {
   const at = request.now ?? new Date().toISOString();
   if (!Number.isFinite(Date.parse(at))) throw new LiveRunnerError('INVALID_RUN_SIGNAL', 'invalid timestamp');
-  const doctor = diagnoseLiveTarget({
-    overlay: request.overlay,
-    source: { read: () => request.doctorSnapshot },
-  });
   let target: LiveTargetOverlay | undefined;
   try {
     target = validateTargetOverlay(LIVE_MANIFEST, request.overlay);
@@ -119,13 +118,19 @@ export function advanceLiveRun(
     // runner reaches any path that requires a resolved target.
   }
   if (target !== undefined) assertTargetAllowsSuite(target, request.suite);
+  const requestedVariantIds = selectSuiteVariants(request.suite, request.variantIds);
+  if (target !== undefined) assertTargetAllowsVariants(target, request.suite, requestedVariantIds);
+  const doctor = diagnoseLiveTarget({
+    overlay: request.overlay,
+    source: { read: () => request.doctorSnapshot },
+    variantIds: requestedVariantIds,
+  });
   let journal = readJournalIfPresent(request);
 
   if (journal === undefined) {
     if (request.signal !== undefined) throw new LiveRunnerError('INVALID_RUN_SIGNAL', 'new runs cannot begin with a signal');
     assertDoctorIdentity(request.identity, doctor);
-    const variantIds = selectSuiteVariants(request.suite, request.variantIds);
-    if (target !== undefined) assertTargetAllowsVariants(target, request.suite, variantIds);
+    const variantIds = requestedVariantIds;
     try {
       createRunJournal(request.journalPath, {
         runId: request.runId,
@@ -155,7 +160,7 @@ export function advanceLiveRun(
   if (target !== undefined) assertTargetAllowsVariants(target, request.suite, journal.header.variantIds);
   assertDoctorIdentity(request.identity, doctor);
   const phase = derivePhase(journal.events);
-  if (phase === 'complete') throw new LiveRunnerError('RUN_ALREADY_COMPLETE', request.runId);
+  if (phase === 'complete') return resumeTerminalRun(request, journal, at);
   append(request, { type: 'doctor', ready: doctor.ready, diagnosticCodes: doctor.diagnostics.map(({ code }) => code) }, at);
   if (!doctor.ready) {
     return stopForDoctorFailure(request, journal, phase, doctor.diagnostics[0]?.code, at);
@@ -203,9 +208,8 @@ function assertTargetAllowsVariants(
 }
 
 function assertTargetAllowsSuite(target: LiveTargetOverlay, suite: Suite): void {
-  const allowed = target.allowedSuites
-    ?? (target.targetAlias === 'dedicated-qa' ? ['case', 'smoke', 'deep'] : ['case', 'smoke']);
-  if ((suite === 'deep' && target.targetAlias !== 'dedicated-qa') || !allowed.includes(suite)) {
+  const allowed = target.allowedSuites ?? ['case', 'smoke'];
+  if (!allowed.includes(suite)) {
     throw new LiveRunnerError('SUITE_NOT_ALLOWED', `${suite} is not permitted for target ${target.targetAlias}`);
   }
 }
@@ -405,6 +409,10 @@ function recordCleanup(
 ): RunnerRecord {
   const variantId = variantAwaitingCleanup(journal.events);
   if (variantId === undefined) {
+    const transition = lastTransition(journal.events);
+    if (transition?.variantId !== undefined && completedVariantIds(journal.events).has(transition.variantId)) {
+      return continueSuite(request, dependencies, target, 'cleanup', at);
+    }
     throw new LiveRunnerError('INVALID_RUN_SIGNAL', 'cleanup has no pending variant');
   }
   if (request.signal !== undefined) {
@@ -431,6 +439,7 @@ function recordCleanup(
     variantId,
     result: progress.postflight.status === 'pass' ? 'pass' : 'failed',
   }, at);
+  dependencies.afterCleanupResultFlushed?.(variantId);
   return continueSuite(request, dependencies, target, 'cleanup', at);
 }
 
@@ -479,7 +488,7 @@ function continueSuite(
   if (nextVariantId !== undefined) {
     return exposeNextAction(request, dependencies, target, nextVariantId, 0, phase, at);
   }
-  return finishRun(request, journal, phase, at);
+  return finishRun(request, journal, phase, at, dependencies);
 }
 
 function exposeNextAction(
@@ -561,8 +570,34 @@ function finishRun(
   journal: ReadJournalResult,
   phase: 'preflight' | 'action_required' | 'recovery' | 'assertion' | 'cleanup',
   at: string,
+  dependencies: AdvanceLiveRunDependencies = {},
 ): RunnerRecord {
-  const report = aggregateRunReport({
+  const report = reportFromJournal(journal);
+  appendTransition(request, phase, 'complete', 'terminal', {}, at);
+  dependencies.afterCompleteTransitionFlushed?.();
+  append(request, { type: 'run_result', aggregate: report.aggregate }, at);
+  return { kind: 'terminal', runId: request.runId, report };
+}
+
+function resumeTerminalRun(
+  request: AdvanceLiveRunRequest,
+  journal: ReadJournalResult,
+  at: string,
+): RunnerRecord {
+  const report = reportFromJournal(journal);
+  const result = journal.events.findLast(({ event }) => event.type === 'run_result')?.event;
+  if (result?.type === 'run_result') {
+    if (result.aggregate !== report.aggregate) {
+      throw new RunStateError('INVALID_TRANSITION', 'terminal aggregate does not match the journal');
+    }
+  } else {
+    append(request, { type: 'run_result', aggregate: report.aggregate }, at);
+  }
+  return { kind: 'terminal', runId: request.runId, report };
+}
+
+function reportFromJournal(journal: ReadJournalResult) {
+  return aggregateRunReport({
     suite: journal.header.suite,
     manifestDigest: journal.header.manifestDigest,
     targetFingerprint: journal.header.targetFingerprint,
@@ -571,9 +606,6 @@ function finishRun(
     declaredVariantIds: journal.header.variantIds,
     cases: projectCaseOutcomes(journal.events),
   });
-  appendTransition(request, phase, 'complete', 'terminal', {}, at);
-  append(request, { type: 'run_result', aggregate: report.aggregate }, at);
-  return { kind: 'terminal', runId: request.runId, report };
 }
 
 function blockNewRun(

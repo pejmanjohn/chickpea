@@ -127,6 +127,12 @@ test('LC-04 catches hidden ownership, attribution, binding, provider, tool, repl
     ['editor_not_authorized', (fixture) => { fixture.admin.setups[0].completedByUserId = 'U_OTHER'; }],
     ['completion_attribution_mismatch', (fixture) => { fixture.admin.accounts[0].createdByMembershipId = 'membership_other'; }],
     ['agent_binding_missing', (fixture) => { fixture.admin.bindings = []; }],
+    ['cross_agent_reuse', (fixture) => {
+      fixture.admin.bindings.push({
+        agentId: 'agent_other', connectionAccountId: 'connection_sheets_alpha',
+        providerId: 'google', enabled: true,
+      });
+    }],
     ['provider_account_mismatch', (fixture) => { fixture.admin.accounts[0].policy.accountRef = 'ca_other'; }],
     ['provider_grant_missing', (fixture) => { fixture.provider.connected_accounts = []; }],
     ['tool_read_failed', (fixture) => { fixture.provider.tool_result.successful = false; }],

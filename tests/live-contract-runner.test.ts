@@ -4,11 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { LIVE_MANIFEST_DIGEST } from '../qa/live/manifest.ts';
+import { LIVE_MANIFEST, LIVE_MANIFEST_DIGEST } from '../qa/live/manifest.ts';
+import { digestTargetOverlay, validateTargetOverlay } from '../qa/live/privacy.ts';
 import { advanceLiveRun, type AdvanceLiveRunRequest } from '../qa/live/runner.ts';
 import { appendRunJournal, createRunJournal, readRunJournal } from '../qa/live/safety/journal.ts';
 
 const overlay = JSON.parse(readFileSync(new URL('../qa/live/target.example.json', import.meta.url), 'utf8')) as unknown;
+const validatedOverlay = validateTargetOverlay(LIVE_MANIFEST, overlay);
 const identity = {
   targetFingerprint: 'sha256:target',
   repositoryRevision: '0123456789abcdef',
@@ -17,7 +19,11 @@ const identity = {
 const doctorSnapshot = {
   schemaVersion: 'chickpea-live-doctor-snapshot/v1' as const,
   manifestDigest: LIVE_MANIFEST_DIGEST,
+  targetAlias: validatedOverlay.targetAlias,
+  transport: validatedOverlay.transport,
+  targetOverlayDigest: digestTargetOverlay(validatedOverlay),
   ...identity,
+  computerUseSurfaces: { bridgeAvailable: true, slackVisible: true, adminVisible: true },
   missingActorAliases: [],
   workspaceMatches: true,
   unavailableObserverIds: [],
@@ -25,6 +31,16 @@ const doctorSnapshot = {
   targetMatches: true,
   lock: { status: 'clear' as const },
 };
+
+function snapshotForOverlay(input: unknown) {
+  const target = validateTargetOverlay(LIVE_MANIFEST, input);
+  return {
+    ...doctorSnapshot,
+    targetAlias: target.targetAlias,
+    transport: target.transport,
+    targetOverlayDigest: digestTargetOverlay(target),
+  };
+}
 
 function setup(context: test.TestContext, variants = ['LC01-V1-create-welcome']): AdvanceLiveRunRequest {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-live-runner-'));
@@ -56,10 +72,10 @@ function cleanupProgress(status: 'pass' | 'failed' = 'pass') {
   };
 }
 
-test('suite policy rejects feature-lane deep before creating a journal', (context) => {
+test('suite policy rejects deep on a Phase 1 color target before creating a journal', (context) => {
   const request = setup(context);
   const featureOverlay = structuredClone(overlay) as Record<string, unknown>;
-  featureOverlay.targetAlias = 'feature-lane-one';
+  featureOverlay.targetAlias = 'amber';
   featureOverlay.allowedSuites = ['case', 'smoke'];
   assert.throws(
     () => {
@@ -79,11 +95,15 @@ test('target variant policy admits only selected cases and exact contained suite
   subsetOverlay.allowedVariants = [allowedVariant];
   subsetOverlay.bindings = { [allowedVariant]: subsetOverlay.bindings[allowedVariant] };
 
-  assert.equal(advanceLiveRun({ ...request, overlay: subsetOverlay }).kind, 'action_required');
+  assert.equal(advanceLiveRun({
+    ...request, overlay: subsetOverlay, doctorSnapshot: snapshotForOverlay(subsetOverlay),
+  }).kind, 'action_required');
 
   const denied = setup(context, ['LC01-V2-update-approve']);
   assert.throws(
-    () => advanceLiveRun({ ...denied, overlay: subsetOverlay }),
+    () => advanceLiveRun({
+      ...denied, overlay: subsetOverlay, doctorSnapshot: snapshotForOverlay(subsetOverlay),
+    }),
     /SUITE_NOT_ALLOWED/,
   );
   assert.equal(existsSync(denied.journalPath), false);
@@ -91,7 +111,12 @@ test('target variant policy admits only selected cases and exact contained suite
   const smoke = setup(context);
   const { variantIds: _variantIds, ...withoutVariants } = smoke;
   assert.throws(
-    () => advanceLiveRun({ ...withoutVariants, suite: 'smoke', overlay: subsetOverlay }),
+    () => advanceLiveRun({
+      ...withoutVariants,
+      suite: 'smoke',
+      overlay: subsetOverlay,
+      doctorSnapshot: snapshotForOverlay(subsetOverlay),
+    }),
     /SUITE_NOT_ALLOWED/,
   );
   assert.equal(existsSync(smoke.journalPath), false);
@@ -347,6 +372,58 @@ test('cleanup rejects asserted verdicts and waits for dependency-driven postflig
   const terminal = advanceLiveRun(request, cleanupProgress('failed'));
   assert.equal(terminal.kind, 'terminal');
   if (terminal.kind === 'terminal') assert.equal(terminal.report.aggregate, 'cleanup_failed');
+});
+
+test('resume after a durable cleanup result does not rerun cleanup', (context) => {
+  const request = setup(context);
+  const action = advanceLiveRun(request);
+  assert.equal(action.kind, 'action_required');
+  if (action.kind !== 'action_required') return;
+  advanceLiveRun({ ...request, signal: {
+    type: 'action_receipt', actionRef: action.actionRef, outcome: 'completed',
+  } });
+  advanceLiveRun({ ...request, signal: {
+    type: 'assertion_result', variantId: action.variantId, result: 'pass',
+  } });
+  let cleanupCalls = 0;
+  assert.throws(() => advanceLiveRun(request, {
+    progressCleanup: () => {
+      cleanupCalls += 1;
+      return cleanupProgress().progressCleanup();
+    },
+    afterCleanupResultFlushed: () => { throw new Error('cleanup-result crash'); },
+  }), /cleanup-result crash/);
+  const terminal = advanceLiveRun(request, {
+    progressCleanup: () => {
+      cleanupCalls += 1;
+      return { status: 'waiting' };
+    },
+  });
+  assert.equal(terminal.kind, 'terminal');
+  assert.equal(cleanupCalls, 1);
+});
+
+test('resume after the terminal transition reconstructs the report and appends one run result', (context) => {
+  const request = setup(context);
+  const action = advanceLiveRun(request);
+  assert.equal(action.kind, 'action_required');
+  if (action.kind !== 'action_required') return;
+  advanceLiveRun({ ...request, signal: {
+    type: 'action_receipt', actionRef: action.actionRef, outcome: 'completed',
+  } });
+  advanceLiveRun({ ...request, signal: {
+    type: 'assertion_result', variantId: action.variantId, result: 'pass',
+  } });
+  assert.throws(() => advanceLiveRun(request, {
+    ...cleanupProgress(),
+    afterCompleteTransitionFlushed: () => { throw new Error('terminal-transition crash'); },
+  }), /terminal-transition crash/);
+  const terminal = advanceLiveRun(request);
+  assert.equal(terminal.kind, 'terminal');
+  const journal = readRunJournal(request.journalPath, {
+    runId: request.runId, manifestDigest: LIVE_MANIFEST_DIGEST,
+  });
+  assert.equal(journal.events.filter(({ event }) => event.type === 'run_result').length, 1);
 });
 
 test('human gate terminal outcomes become typed results and proceed to cleanup without replay', (context) => {

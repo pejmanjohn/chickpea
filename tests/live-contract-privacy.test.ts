@@ -16,10 +16,12 @@ import { validateGitHubSourceBinding } from '../qa/live/public-sources.ts';
 const manifest = compileLiveCatalog(PUBLIC_LIVE_CATALOG);
 const targetExample = JSON.parse(readFileSync(new URL('../qa/live/target.example.json', import.meta.url), 'utf8')) as unknown;
 
-test('the alias-only target example binds every public variant without credentials', () => {
+test('the alias-only Phase 1 target binds the exact smoke inventory without credentials', () => {
   const target = validateTargetOverlay(manifest, targetExample);
-  assert.deepEqual(Object.keys(target.bindings).sort(), manifest.requiredVariants.deep);
-  assert.equal(target.fixtures['qa-routine']?.kind, 'routine');
+  assert.equal(target.targetAlias, 'fern');
+  assert.deepEqual(Object.keys(target.bindings).sort(), [...manifest.requiredVariants.smoke].sort());
+  assert.deepEqual(target.allowedSuites, ['case', 'smoke']);
+  assert.equal(target.fixtures['qa-routine'], undefined);
   assert.equal(JSON.stringify(target).includes('xoxb-'), false);
 });
 
@@ -60,17 +62,15 @@ test('a target may bind one nonempty manifest subset without redefining it', () 
   assertCode(() => validateTargetOverlay(manifest, subset), 'INVALID_VALUE');
 });
 
-test('target suite policy is optional, closed, and reserves deep for dedicated-qa', () => {
-  const dedicated = validateTargetOverlay(manifest, targetExample);
-  assert.deepEqual(dedicated.allowedSuites, ['case', 'smoke', 'deep']);
+test('public target contracts remain role-agnostic while the example declares Phase 1 policy', () => {
+  const continuation = structuredClone(targetExample) as Record<string, unknown>;
+  continuation.targetAlias = 'dedicated-qa';
+  continuation.allowedSuites = ['case', 'smoke', 'deep'];
+  assert.deepEqual(validateTargetOverlay(manifest, continuation).allowedSuites, ['case', 'smoke', 'deep']);
 
-  const feature = structuredClone(targetExample) as Record<string, unknown>;
-  feature.targetAlias = 'feature-lane-one';
-  feature.allowedSuites = ['case', 'smoke'];
-  assert.deepEqual(validateTargetOverlay(manifest, feature).allowedSuites, ['case', 'smoke']);
-
-  feature.allowedSuites = ['case', 'deep'];
-  assertCode(() => validateTargetOverlay(manifest, feature), 'INVALID_VALUE');
+  const phaseOne = structuredClone(targetExample) as Record<string, unknown>;
+  phaseOne.targetAlias = 'amber';
+  assert.deepEqual(validateTargetOverlay(manifest, phaseOne).allowedSuites, ['case', 'smoke']);
 });
 
 test('public and target data reject secret, executable, private, and raw-content fields without echoing values', () => {

@@ -28,7 +28,7 @@ export const INSTALLATION_APP_HOME_AUTH_CONTRACT = defineLiveCase({
           mutation: 'revoke',
           humanGate: 'login',
           fixtureSlots: ['admin', 'slack-app', 'agent'],
-          cleanup: { strategy: 'exact_reversal', fixtureClass: 'resettable_fixture', reversalActionId: 'slack.app.install' },
+          cleanup: { strategy: 'revision_restore', fixtureClass: 'resettable_fixture', reversalActionId: 'slack.app.install' },
         },
         {
           id: 'slack.app.install',

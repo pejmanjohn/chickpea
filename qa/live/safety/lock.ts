@@ -1,7 +1,6 @@
 import {
   closeSync,
   fsyncSync,
-  ftruncateSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -28,7 +27,8 @@ export type TargetLockErrorCode =
   | 'LOCK_DIFFERENT_RUN'
   | 'LOCK_CHANGED'
   | 'LOCK_MISSING'
-  | 'UNRESOLVED_INTENT';
+  | 'UNRESOLVED_INTENT'
+  | 'UNRESOLVED_CLEANUP';
 
 export class TargetLockError extends Error {
   readonly code: TargetLockErrorCode;
@@ -47,8 +47,8 @@ export interface TargetLockDependencies {
 export function acquireTargetLock(
   path: string,
   owner: TargetLockOwner,
-  dependencies: TargetLockDependencies = {},
-): 'acquired' | 'reacquired' {
+  _dependencies: TargetLockDependencies = {},
+): 'acquired' {
   validateOwner(owner);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   try {
@@ -63,25 +63,10 @@ export function acquireTargetLock(
   if (current === undefined) throw new TargetLockError('LOCK_MISSING');
   if (current.host !== owner.host) throw new TargetLockError('LOCK_FOREIGN_HOST');
   if (current.runId !== owner.runId) throw new TargetLockError('LOCK_DIFFERENT_RUN');
-  const isPidActive = dependencies.isPidActive ?? defaultPidActive;
-  if (isPidActive(current.pid)) throw new TargetLockError('LOCK_ACTIVE');
-
-  // Reacquisition is the one explicit replacement allowed by KTD10. Keep the
-  // existing inode open, revalidate its owner, then durably replace its stale
-  // same-run contents instead of unlinking a lock another process could steal.
-  const descriptor = openSync(path, 'r+');
-  try {
-    const rechecked = parseOwner(readFileSync(descriptor, 'utf8'));
-    if (rechecked.host !== owner.host || rechecked.runId !== owner.runId || rechecked.pid !== current.pid) {
-      throw new TargetLockError('LOCK_ACTIVE');
-    }
-    ftruncateSync(descriptor, 0);
-    writeSync(descriptor, `${JSON.stringify(owner)}\n`, 0, 'utf8');
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
-  return 'reacquired';
+  // V0 never performs an in-place stale takeover: two contenders could both
+  // observe the old owner and overwrite one another. The attended operator
+  // must clear a stopped, cleanup-safe lock before a new exclusive acquire.
+  throw new TargetLockError('LOCK_ACTIVE');
 }
 
 export function readTargetLock(path: string): TargetLockOwner | undefined {
@@ -116,6 +101,9 @@ export function clearTargetLock(
   if (unresolvedIntentIds(input.journal).length > 0) {
     throw new TargetLockError('UNRESOLVED_INTENT');
   }
+  if (unresolvedCleanupIds(input.journal).length > 0) {
+    throw new TargetLockError('UNRESOLVED_CLEANUP');
+  }
   const rechecked = readTargetLock(path);
   if (rechecked === undefined) throw new TargetLockError('LOCK_MISSING');
   if (!sameOwner(owner, rechecked)) throw new TargetLockError('LOCK_CHANGED');
@@ -134,6 +122,32 @@ export function unresolvedIntentIds(journal: ReadJournalResult): string[] {
     }
   }
   return [...unresolved].sort();
+}
+
+export function unresolvedCleanupIds(journal: ReadJournalResult): string[] {
+  const mutations = journal.events.flatMap(({ event }) => event.type === 'mutation_receipt' ? [event] : []);
+  const intents = journal.events.flatMap(({ event }) => event.type === 'cleanup_intent' ? [event] : []);
+  const receipts = journal.events.flatMap(({ event }) => event.type === 'cleanup_receipt' ? [event] : []);
+  const readbacks = journal.events.flatMap(({ event }) => event.type === 'cleanup_readback' ? [event] : []);
+  const unresolved = journal.events.flatMap(({ event }) => event.type === 'unresolved_outcome'
+    ? [event.referenceId]
+    : []);
+  const successfulIntentIds = new Set([
+    ...receipts.filter(({ outcome }) => outcome !== 'ambiguous').map(({ cleanupIntentId }) => cleanupIntentId),
+    ...readbacks.filter(({ outcome }) => outcome !== 'ambiguous').map(({ cleanupIntentId }) => cleanupIntentId),
+  ]);
+  const cleanedResources = new Set(intents
+    .filter(({ cleanupIntentId }) => successfulIntentIds.has(cleanupIntentId))
+    .map(({ resourceKind, immutableId }) => `${resourceKind}:${immutableId}`));
+  for (const mutation of mutations) {
+    if (!cleanedResources.has(`${mutation.resourceKind}:${mutation.immutableId}`)) {
+      unresolved.push(mutation.receiptId);
+    }
+  }
+  for (const intent of intents) {
+    if (!successfulIntentIds.has(intent.cleanupIntentId)) unresolved.push(intent.cleanupIntentId);
+  }
+  return [...new Set(unresolved)].sort();
 }
 
 function writeOwner(descriptor: number, owner: TargetLockOwner): void {

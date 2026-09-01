@@ -122,6 +122,7 @@ export const CONNECTOR_SETUP_FAILURES = [
   'editor_not_authorized',
   'completion_attribution_mismatch',
   'agent_binding_missing',
+  'cross_agent_reuse',
   'provider_account_mismatch',
   'provider_grant_missing',
   'connection_missing',
@@ -178,8 +179,9 @@ export function evaluateConnectorSetup(
   const accountId = completion?.connectionAccountId;
   const account = arrayAt(admin, 'accounts').filter(isRecord)
     .find((candidate) => candidate.id === accountId);
-  const binding = arrayAt(admin, 'bindings').filter(isRecord)
-    .find((candidate) => candidate.connectionAccountId === accountId && candidate.agentId === agentId);
+  const accountBindings = arrayAt(admin, 'bindings').filter(isRecord)
+    .filter((candidate) => candidate.connectionAccountId === accountId && candidate.enabled === true);
+  const binding = accountBindings.find((candidate) => candidate.agentId === agentId);
   if (account === undefined) {
     failures.push('connection_missing');
   } else {
@@ -191,6 +193,9 @@ export function evaluateConnectorSetup(
     if (account.lifecycle !== 'active') failures.push('connection_missing');
   }
   if (binding === undefined || binding.enabled !== true) failures.push('agent_binding_missing');
+  if (accountBindings.length !== 1 || accountBindings[0]?.agentId !== agentId) {
+    failures.push('cross_agent_reuse');
+  }
 
   const grants = arrayAt(provider, 'connected_accounts').filter(isRecord)
     .filter((grant) => grant.id === providerAccountId && grant.status === 'ACTIVE');
@@ -229,7 +234,9 @@ export function evaluateConnectorSetup(
 
   const observedTokens: AssertionToken[] = [];
   if (failures.length === 0) observedTokens.push(expectedToken);
-  if (!failures.includes('agent_binding_missing')) observedTokens.push('forbidden.no_cross_agent_reuse');
+  if (!failures.some((failure) => failure === 'agent_binding_missing' || failure === 'cross_agent_reuse')) {
+    observedTokens.push('forbidden.no_cross_agent_reuse');
+  }
   if (variantId === 'LC04-V3-editor-race' && !failures.some((failure) =>
     ['duplicate_completion', 'setup_replayed', 'stale_callback_won'].includes(failure)
   )) observedTokens.push('forbidden.no_duplicate');

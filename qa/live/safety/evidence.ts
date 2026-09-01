@@ -183,7 +183,29 @@ function validateRunSummary(input: SafeRunSummary): void {
   requireNonNegative(input.postflight.missingCount);
   requireNonNegative(input.postflight.unexpectedCount);
   requireNonNegative(input.postflight.unresolvedCount);
+  const declared = [...input.declaredVariantIds];
+  const executed = [...input.executedVariantIds];
+  if (new Set(declared).size !== declared.length || new Set(executed).size !== executed.length
+    || sumCounts(input.primaryCounts) !== executed.length
+    || sumCounts(input.cleanupCounts) !== executed.length) fail('INVALID_EVIDENCE');
+  if (input.aggregate === 'pass') {
+    const exactInventory = declared.length === executed.length
+      && [...declared].sort().every((variantId, index) => variantId === [...executed].sort()[index]);
+    const primaryPass = input.primaryCounts.pass === declared.length
+      && PRIMARY_RESULTS.filter((result) => result !== 'pass').every((result) => input.primaryCounts[result] === 0);
+    const cleanupPass = input.cleanupCounts.pass + input.cleanupCounts.not_required === declared.length
+      && input.cleanupCounts.failed === 0;
+    const postflightPass = input.postflight.targetIdentityMatches
+      && input.postflight.missingCount === 0
+      && input.postflight.unexpectedCount === 0
+      && input.postflight.unresolvedCount === 0;
+    if (!exactInventory || !primaryPass || !cleanupPass || !postflightPass) fail('INVALID_EVIDENCE');
+  }
   rejectUnsafe(input);
+}
+
+function sumCounts(input: Record<string, number>): number {
+  return Object.values(input).reduce((total, value) => total + value, 0);
 }
 
 function validateCountRecord(

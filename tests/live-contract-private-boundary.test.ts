@@ -22,7 +22,29 @@ test('live suite entrypoints stop before reading private inputs when required fi
   });
   assert.equal(exit, 64);
   assert.equal(reads, 0);
-  assert.deepEqual(JSON.parse(stdout.join('')), { kind: 'error', code: 'REQUIRED_TARGET' });
+  assert.deepEqual(JSON.parse(stdout.join('')), { kind: 'error', code: 'COORDINATOR_REQUIRED' });
+});
+
+test('public suite entrypoints reject every caller-authored scored signal before private reads', () => {
+  for (const [flag, value] of [
+    ['--action-outcome', 'completed'],
+    ['--readback-outcome', 'applied'],
+    ['--assertion-result', 'pass'],
+  ] as const) {
+    let reads = 0;
+    const stdout: string[] = [];
+    const exit = runLiveCli(['case', flag, value], {
+      stdout: (output) => stdout.push(output),
+      stderr: () => undefined,
+      readJson: () => {
+        reads += 1;
+        throw new Error('should not read');
+      },
+    });
+    assert.equal(exit, 64, flag);
+    assert.equal(reads, 0, flag);
+    assert.deepEqual(JSON.parse(stdout.join('')), { kind: 'error', code: 'COORDINATOR_REQUIRED' });
+  }
 });
 
 test('doctor reports an invalid alias-only overlay without invoking a live coordinator', () => {
@@ -31,9 +53,13 @@ test('doctor reports an invalid alias-only overlay without invoking a live coord
     snapshot: {
       schemaVersion: 'chickpea-live-doctor-snapshot/v1',
       manifestDigest: LIVE_MANIFEST_DIGEST,
+      targetAlias: 'fern',
+      transport: 'gateway',
+      targetOverlayDigest: `sha256:${'a'.repeat(64)}`,
       targetFingerprint: 'sha256:target-fixture',
       repositoryRevision: '0123456789abcdef',
       servingVersion: 'version-fixture',
+      computerUseSurfaces: { bridgeAvailable: true, slackVisible: true, adminVisible: true },
       missingActorAliases: [],
       workspaceMatches: true,
       unavailableObserverIds: [],
@@ -83,6 +109,14 @@ test('public data rejects coordinates, secrets, content captures, local paths, a
     resourceAlias: 'not-classified',
   };
   assert.throws(() => validateTargetOverlay(LIVE_MANIFEST, example));
+});
+
+test('privacy failures do not echo a secret-bearing field name', () => {
+  const secretBearingKey = 'customerPrivateApiToken';
+  assert.throws(
+    () => assertPublicData({ [secretBearingKey]: 'redacted' }),
+    (error: unknown) => error instanceof Error && !error.message.includes(secretBearingKey),
+  );
 });
 
 test('evidence root inside the repository or package root is rejected', (context) => {

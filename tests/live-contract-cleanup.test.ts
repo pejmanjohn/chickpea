@@ -12,6 +12,7 @@ import {
 import { aggregateRunReport, finalizeRunReport } from '../qa/live/report.ts';
 import {
   CleanupSafetyError,
+  exactResourceBindingDigest,
   PRODUCT_RESOURCE_KINDS,
   beginCleanup,
   deriveCleanupPlan,
@@ -70,6 +71,7 @@ function receipt(overrides: MutationReceiptOverrides = {}): MutationReceiptInput
     immutableId: 'agent_01HZZZZZZZZZZZZZZZZZZZZZZZ',
     beforeRevision: 'absent',
     revision: 'revision-1',
+    stateDigest: 'sha256:agent-after',
     resourceKind: 'agent' as const,
     mutation: 'create' as const,
     fixtureClass: 'run_owned' as const,
@@ -102,10 +104,15 @@ function issueChallenge(
   }, HEADER);
 }
 
-function completeChallenge(path: string, challengeDigest: string, operatorReceiptDigest: string): void {
+function completeChallenge(
+  path: string,
+  challengeDigest: string,
+  operatorReceiptDigest: string,
+  resourceBindingDigest: string,
+): void {
   appendRunJournal(path, { type: 'operator_challenge_consumed', challengeDigest }, HEADER);
   appendRunJournal(path, {
-    type: 'operator_challenge_completed', challengeDigest, operatorReceiptDigest,
+    type: 'operator_challenge_completed', challengeDigest, operatorReceiptDigest, resourceBindingDigest,
   }, HEADER);
 }
 
@@ -119,7 +126,7 @@ function recordBoundMutation(path: string, input: MutationReceiptInput) {
     mutation: input.mutation,
     targetAlias: input.targetAlias,
   });
-  completeChallenge(path, input.actionChallengeDigest, input.operatorReceiptDigest);
+  completeChallenge(path, input.actionChallengeDigest, input.operatorReceiptDigest, exactResourceBindingDigest(input));
   return recordMutationReceipt(path, input, HEADER);
 }
 
@@ -193,7 +200,8 @@ test('cleanup accepts only an exact declared run-owned target and is idempotent 
   }, HEADER);
   assert.deepEqual(resumedIntent, intent);
 
-  completeChallenge(path, 'sha256:cleanup-challenge-001', 'sha256:cleanup-operator-receipt-001');
+  completeChallenge(path, 'sha256:cleanup-challenge-001', 'sha256:cleanup-operator-receipt-001',
+    exactResourceBindingDigest({ ...target!, beforeRevision: target!.expectedRevision }));
   const completed = recordCleanupReceipt(path, {
     cleanupIntentId: intent.cleanupIntentId,
     receiptId: 'cleanup-receipt-001',
@@ -237,7 +245,8 @@ test('ambiguous cleanup keeps its exact ID in readback recovery and cannot be re
   const intent = beginCleanup(path, target!, {
     currentRevision: 'revision-1', actionChallengeDigest: 'sha256:cleanup-ambiguous-challenge',
   }, HEADER);
-  completeChallenge(path, 'sha256:cleanup-ambiguous-challenge', 'sha256:cleanup-ambiguous-operator-receipt');
+  completeChallenge(path, 'sha256:cleanup-ambiguous-challenge', 'sha256:cleanup-ambiguous-operator-receipt',
+    exactResourceBindingDigest({ ...target!, beforeRevision: target!.expectedRevision }));
   recordCleanupReceipt(path, {
     cleanupIntentId: intent.cleanupIntentId,
     receiptId: 'cleanup-ambiguous-receipt',
@@ -333,6 +342,69 @@ test('resettable fixtures restore the exact baseline revision and refuse revisio
   }, HEADER), (error: unknown) => error instanceof CleanupSafetyError && error.code === 'REVISION_DRIFT');
 });
 
+test('sequential resettable mutations chain from the latest state and collapse to one baseline restore', (context) => {
+  const path = setup(context);
+  recordBaselineFact(path, {
+    caseId: 'LC01-V2-update-approve', stepId: 'baseline-agent', targetAlias: 'dedicated-qa',
+    immutableId: 'agent_baseline_chain', revision: 'revision-7', stateDigest: 'sha256:state-a',
+    resourceKind: 'agent', fixtureClass: 'resettable_fixture',
+  }, HEADER);
+  recordBoundMutation(path, receipt({
+    receiptId: 'receipt-chain-1', caseId: 'LC01-V2-update-approve', stepId: 'update-agent-1',
+    immutableId: 'agent_baseline_chain', beforeRevision: 'revision-7',
+    beforeStateDigest: 'sha256:state-a', revision: 'revision-8', stateDigest: 'sha256:state-b',
+    mutation: 'update', fixtureClass: 'resettable_fixture', cleanupStrategy: 'revision_restore',
+    reversalActionId: 'agent.update', actionChallengeDigest: 'sha256:chain-challenge-1',
+    operatorReceiptDigest: 'sha256:chain-operator-1',
+  }));
+  recordBoundMutation(path, receipt({
+    receiptId: 'receipt-chain-2', caseId: 'LC01-V2-update-approve', stepId: 'update-agent-2',
+    immutableId: 'agent_baseline_chain', beforeRevision: 'revision-8',
+    beforeStateDigest: 'sha256:state-b', revision: 'revision-9', stateDigest: 'sha256:state-c',
+    mutation: 'update', fixtureClass: 'resettable_fixture', cleanupStrategy: 'revision_restore',
+    reversalActionId: 'agent.update', actionChallengeDigest: 'sha256:chain-challenge-2',
+    operatorReceiptDigest: 'sha256:chain-operator-2',
+  }));
+
+  const plan = deriveCleanupPlan(path, HEADER);
+  assert.equal(plan.length, 1);
+  assert.deepEqual(plan[0] && {
+    mutationReceiptId: plan[0].mutationReceiptId,
+    expectedRevision: plan[0].expectedRevision,
+    restoreRevision: plan[0].restoreRevision,
+    restoreStateDigest: plan[0].restoreStateDigest,
+  }, {
+    mutationReceiptId: 'receipt-chain-2',
+    expectedRevision: 'revision-9',
+    restoreRevision: 'revision-7',
+    restoreStateDigest: 'sha256:state-a',
+  });
+});
+
+test('mutation receipts require a completion bound to the exact resulting resource', (context) => {
+  const path = setup(context);
+  const input = receipt();
+  issueChallenge(path, {
+    challengeDigest: input.actionChallengeDigest,
+    caseId: input.caseId,
+    stepId: input.stepId,
+    attempt: input.attempt,
+    expectedRevision: input.beforeRevision,
+    mutation: input.mutation,
+    targetAlias: input.targetAlias,
+  });
+  completeChallenge(
+    path,
+    input.actionChallengeDigest,
+    input.operatorReceiptDigest,
+    `sha256:${'f'.repeat(64)}`,
+  );
+  assert.throws(
+    () => recordMutationReceipt(path, input, HEADER),
+    (error: unknown) => error instanceof CleanupSafetyError && error.code === 'CHALLENGE_MISMATCH',
+  );
+});
+
 test('immutable baselines cannot be mutated and attributed residue requires exact retained-state proof', (context) => {
   const path = setup(context);
   assert.throws(() => recordMutationReceipt(path, receipt({
@@ -358,7 +430,8 @@ test('immutable baselines cannot be mutated and attributed residue requires exac
   const intent = beginCleanup(path, target!, {
     currentRevision: 'revision-1', actionChallengeDigest: 'sha256:residue-challenge',
   }, HEADER);
-  completeChallenge(path, 'sha256:residue-challenge', 'sha256:residue-operator-receipt');
+  completeChallenge(path, 'sha256:residue-challenge', 'sha256:residue-operator-receipt',
+    exactResourceBindingDigest({ ...target!, beforeRevision: target!.expectedRevision }));
   assert.throws(() => recordCleanupReceipt(path, {
     cleanupIntentId: intent.cleanupIntentId,
     receiptId: 'cleanup-residue-01',
@@ -436,6 +509,19 @@ test('postflight rejects target drift, missing baseline, and unmatched run-windo
   const finalized = finalizeRunReport(initiallyPassing, failed);
   assert.equal(finalized.aggregate, 'cleanup_failed');
   assert.equal(finalized.cases[0]?.primary.result, 'pass');
+  for (const declaredResourceKinds of [[], ['agent', 'routine']] as const) {
+    assert.throws(() => verifyPostflight(path, {
+      identity: {
+        targetFingerprint: HEADER.targetFingerprint,
+        repositoryRevision: HEADER.repositoryRevision,
+        servingVersion: HEADER.servingVersion,
+      },
+      declaredResourceKinds: [...declaredResourceKinds],
+      inventory: [],
+    }, HEADER), (error: unknown) =>
+      error instanceof CleanupSafetyError && error.code === 'INVALID_CLEANUP_CONTRACT'
+    );
+  }
 });
 
 test('journal-backed operator challenges survive driver recreation without persisting action text or nonce', (context) => {
@@ -480,6 +566,7 @@ test('journal-backed operator challenges survive driver recreation without persi
     expectedRole: action.expectedRole,
     browserProfileAlias: action.browserProfileAlias,
     receiptId: 'receipt-driver-001',
+    resourceBindingDigest: `sha256:${'b'.repeat(64)}`,
   });
   assert.equal(readFileSync(path, 'utf8').includes('receipt-driver-001'), false);
   const driverC = new OperatorDriver(new JournalOperatorChallengeLedger(path, HEADER), {
@@ -497,5 +584,6 @@ test('journal-backed operator challenges survive driver recreation without persi
     expectedRole: action.expectedRole,
     browserProfileAlias: action.browserProfileAlias,
     receiptId: 'receipt-driver-002',
+    resourceBindingDigest: `sha256:${'b'.repeat(64)}`,
   }), (error: unknown) => error instanceof OperatorChallengeError && error.code === 'CHALLENGE_REPLAYED');
 });

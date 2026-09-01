@@ -110,6 +110,7 @@ export const OBSERVER_KINDS = [
   'provider_api',
   'cloudflare_api',
   'browser_screenshot',
+  'computer_use_ui',
 ] as const;
 
 export const ASSERTION_TOKENS = [
@@ -239,24 +240,24 @@ export const OBSERVER_REGISTRY: Readonly<Record<ObserverId, {
   kind: ObserverKind;
   authoritative: boolean;
 }>> = {
-  'slack.messages.read': { kind: 'slack_api', authoritative: true },
-  'agent.read': { kind: 'chickpea_api', authoritative: true },
-  'connection.read': { kind: 'chickpea_api', authoritative: true },
-  'routine.read': { kind: 'chickpea_api', authoritative: true },
-  'provider.read': { kind: 'provider_api', authoritative: true },
-  'provider.revocation.read': { kind: 'provider_api', authoritative: true },
-  'private.routine.read': { kind: 'chickpea_api', authoritative: true },
-  'app_home.read': { kind: 'slack_api', authoritative: true },
+  'slack.messages.read': { kind: 'computer_use_ui', authoritative: true },
+  'agent.read': { kind: 'computer_use_ui', authoritative: true },
+  'connection.read': { kind: 'computer_use_ui', authoritative: true },
+  'routine.read': { kind: 'computer_use_ui', authoritative: true },
+  'provider.read': { kind: 'computer_use_ui', authoritative: true },
+  'provider.revocation.read': { kind: 'computer_use_ui', authoritative: true },
+  'private.routine.read': { kind: 'computer_use_ui', authoritative: true },
+  'app_home.read': { kind: 'computer_use_ui', authoritative: true },
   'cloudflare.version.read': { kind: 'cloudflare_api', authoritative: true },
   'browser.screenshot': { kind: 'browser_screenshot', authoritative: false },
-  'agent.avatar.read': { kind: 'chickpea_api', authoritative: true },
-  'slack.persona.read': { kind: 'slack_api', authoritative: true },
-  'asset.digest.read': { kind: 'chickpea_api', authoritative: true },
-  'route.read': { kind: 'chickpea_api', authoritative: true },
-  'skill.read': { kind: 'chickpea_api', authoritative: true },
-  'memory.read': { kind: 'chickpea_api', authoritative: true },
-  'installation.read': { kind: 'chickpea_api', authoritative: true },
-  'app_home.publication.read': { kind: 'slack_api', authoritative: true },
+  'agent.avatar.read': { kind: 'computer_use_ui', authoritative: true },
+  'slack.persona.read': { kind: 'computer_use_ui', authoritative: true },
+  'asset.digest.read': { kind: 'computer_use_ui', authoritative: true },
+  'route.read': { kind: 'computer_use_ui', authoritative: true },
+  'skill.read': { kind: 'computer_use_ui', authoritative: true },
+  'memory.read': { kind: 'computer_use_ui', authoritative: true },
+  'installation.read': { kind: 'computer_use_ui', authoritative: true },
+  'app_home.publication.read': { kind: 'computer_use_ui', authoritative: true },
 };
 
 export const REQUIRED_LIVE_VARIANTS = {

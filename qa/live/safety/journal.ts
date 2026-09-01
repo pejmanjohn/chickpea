@@ -149,6 +149,7 @@ export type RunJournalEventData =
     immutableId: string;
     beforeRevision: string;
     revision: string;
+    stateDigest: string;
     resourceKind: ProductResourceKind;
     mutation: MutationClass;
     fixtureClass: FixtureClass;
@@ -232,7 +233,12 @@ export type RunJournalEventData =
     expiresAt: number;
   }
   | { type: 'operator_challenge_consumed'; challengeDigest: string }
-  | { type: 'operator_challenge_completed'; challengeDigest: string; operatorReceiptDigest: string }
+  | {
+    type: 'operator_challenge_completed';
+    challengeDigest: string;
+    operatorReceiptDigest: string;
+    resourceBindingDigest: string;
+  }
   | { type: 'run_result'; aggregate: string };
 
 export interface RunJournalEvent {
@@ -504,7 +510,7 @@ function validateEventData(event: RunJournalEventData): void {
       exactKeys(event, [
         'type', 'receiptId', 'caseId', 'stepId', 'attempt', 'targetAlias',
         'actionChallengeDigest', 'operatorReceiptDigest', 'beforeStateDigest', 'immutableId', 'beforeRevision',
-        'revision', 'resourceKind', 'mutation', 'fixtureClass', 'cleanupStrategy',
+        'revision', 'stateDigest', 'resourceKind', 'mutation', 'fixtureClass', 'cleanupStrategy',
         'reversalActionId', 'direction', 'expectedResidueStateDigest',
       ], 'INVALID_EVENT');
       if (!exactId(event.receiptId) || !nonEmpty(event.caseId) || !nonEmpty(event.stepId)
@@ -512,6 +518,7 @@ function validateEventData(event: RunJournalEventData): void {
         || !digest(event.actionChallengeDigest) || !digest(event.operatorReceiptDigest)
         || !digest(event.beforeStateDigest)
         || !exactId(event.immutableId) || !nonEmpty(event.beforeRevision) || !nonEmpty(event.revision)
+        || !digest(event.stateDigest)
         || !(PRODUCT_RESOURCE_KINDS as readonly unknown[]).includes(event.resourceKind)
         || !(MUTATION_CLASSES as readonly unknown[]).includes(event.mutation)
         || !(FIXTURE_CLASSES as readonly unknown[]).includes(event.fixtureClass)
@@ -597,8 +604,11 @@ function validateEventData(event: RunJournalEventData): void {
       if (!digest(event.challengeDigest)) invalidEvent();
       return;
     case 'operator_challenge_completed':
-      exactKeys(event, ['type', 'challengeDigest', 'operatorReceiptDigest'], 'INVALID_EVENT');
-      if (!digest(event.challengeDigest) || !digest(event.operatorReceiptDigest)) invalidEvent();
+      exactKeys(event, [
+        'type', 'challengeDigest', 'operatorReceiptDigest', 'resourceBindingDigest',
+      ], 'INVALID_EVENT');
+      if (!digest(event.challengeDigest) || !digest(event.operatorReceiptDigest)
+        || !digest(event.resourceBindingDigest)) invalidEvent();
       return;
     case 'run_result':
       exactKeys(event, ['type', 'aggregate'], 'INVALID_EVENT');

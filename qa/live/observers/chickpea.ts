@@ -1,4 +1,4 @@
-import type { AssertionToken, ObserverId } from '../schema.ts';
+import type { ObserverId } from '../schema.ts';
 import {
   blockedObservation,
   boundedObserverString,
@@ -7,7 +7,6 @@ import {
   nonNegativeObserverInteger,
   observerRecord,
   type ClosedObservation,
-  type ObserverMetadata,
 } from './capabilities.ts';
 
 type ChickpeaObserverId = Extract<ObserverId, 'agent.read' | 'connection.read' | 'routine.read'>;
@@ -33,17 +32,9 @@ export async function observeChickpea(input: {
       || (value.state !== undefined && !boundedObserverString(value.state))) {
       return blockedObservation(input.observerId);
     }
-    const metadata: ObserverMetadata = {
-      ...(value.revision === undefined ? {} : { revision: value.revision as string }),
-      ...(value.count === undefined ? {} : { count: value.count as number }),
-      ...(value.state === undefined ? {} : { state: value.state as string }),
-    };
-    return closedObservation({
-      observerId: input.observerId,
-      status: 'observed',
-      tokens: value.tokens as AssertionToken[],
-      metadata,
-    });
+    // Direct Admin APIs are diagnostic context only. V1's Computer Use
+    // adapter will be the sole source allowed to emit scored visible tokens.
+    return blockedObservation(input.observerId);
   } catch {
     return closedObservation({
       observerId: input.observerId,

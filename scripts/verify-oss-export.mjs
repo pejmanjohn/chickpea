@@ -35,6 +35,12 @@ const denyPatterns = [
   ['local user path', localUserPathPattern],
 ];
 
+const liveVerifierDenyPatterns = [
+  ['Slack token', /xox(?:b|p|a|r|s)-[A-Za-z0-9-]{12,}/i],
+  ['provider API key', /\bsk-[A-Za-z0-9_-]{16,}\b/],
+  ['Slack coordinate', /"(?:workspaceId|teamId|appId|channelId|userId)"\s*:\s*"[A-Z][A-Z0-9]{8,}"/],
+];
+
 // `canary` is public rollout vocabulary used by the ledger authority contract,
 // so it cannot also serve as a generic private rehearsal marker.
 
@@ -72,31 +78,37 @@ const forbiddenSourcePathRoots = [
 ];
 
 const liveVerifierExportPolicy = Object.freeze({
-  exactPaths: new Set([
-    exportPath('AGENTS.md'),
-    exportPath('docs', 'runbooks', 'live-contract-acceptance-v1.md'),
-    exportPath('docs', 'runbooks', 'live-contract-verification.md'),
-  ]),
-  roots: [exportPath('qa', 'live')],
   requiredPaths: new Set([
     exportPath('AGENTS.md'),
     exportPath('docs', 'runbooks', 'live-contract-verification.md'),
     exportPath('docs', 'runbooks', 'live-contract-acceptance-v1.md'),
     exportPath('qa', 'live', 'README.md'),
     exportPath('qa', 'live', 'attestation.ts'),
+    exportPath('qa', 'live', 'cases', '_shared.ts'),
     exportPath('qa', 'live', 'cases', 'agent-lifecycle.live.ts'),
+    exportPath('qa', 'live', 'cases', 'agent-memory.live.ts'),
+    exportPath('qa', 'live', 'cases', 'avatar-parity.live.ts'),
     exportPath('qa', 'live', 'cases', 'channel-schedule.live.ts'),
+    exportPath('qa', 'live', 'cases', 'connector-ownership-revocation.live.ts'),
     exportPath('qa', 'live', 'cases', 'connector-setup.live.ts'),
+    exportPath('qa', 'live', 'cases', 'dm-schedule-privacy.live.ts'),
     exportPath('qa', 'live', 'cases', 'index.ts'),
+    exportPath('qa', 'live', 'cases', 'installation-app-home-auth.live.ts'),
+    exportPath('qa', 'live', 'cases', 'skill-management.live.ts'),
+    exportPath('qa', 'live', 'cases', 'slack-routing.live.ts'),
     exportPath('qa', 'live', 'cli.ts'),
     exportPath('qa', 'live', 'compiler.ts'),
+    exportPath('qa', 'live', 'computer-use.ts'),
     exportPath('qa', 'live', 'doctor.ts'),
     exportPath('qa', 'live', 'drivers', 'operator.ts'),
+    exportPath('qa', 'live', 'fixtures', 'skills', 'qa-style-guard', 'SKILL.md'),
     exportPath('qa', 'live', 'generated', 'feature-map.md'),
     exportPath('qa', 'live', 'lessons', 'agent-and-routing.md'),
     exportPath('qa', 'live', 'lessons', 'connectors.md'),
+    exportPath('qa', 'live', 'lessons', 'installation-and-auth.md'),
     exportPath('qa', 'live', 'lessons', 'scenario-index.md'),
     exportPath('qa', 'live', 'lessons', 'schedules.md'),
+    exportPath('qa', 'live', 'lessons', 'skills-and-memory.md'),
     exportPath('qa', 'live', 'manifest.ts'),
     exportPath('qa', 'live', 'observers', 'capabilities.ts'),
     exportPath('qa', 'live', 'observers', 'chickpea.ts'),
@@ -494,8 +506,7 @@ function assertPublicSourceManifest(entries) {
 }
 
 function isLiveVerifierPublicPath(path) {
-  return liveVerifierExportPolicy.exactPaths.has(path) ||
-    liveVerifierExportPolicy.roots.some((root) => path === root || path.startsWith(`${root}/`));
+  return liveVerifierExportPolicy.requiredPaths.has(path);
 }
 
 function isForbiddenLiveVerifierArtifact(path) {
@@ -508,11 +519,14 @@ function assertLiveVerifierSourcePolicy(entries) {
   const forbidden = entries
     .map(({ path }) => path)
     .filter(isForbiddenLiveVerifierArtifact);
-  if (missing.length > 0 || forbidden.length > 0) {
+  const unexpected = entries.map(({ path }) => path)
+    .filter((path) => path.startsWith('qa/live/') && !liveVerifierExportPolicy.requiredPaths.has(path));
+  if (missing.length > 0 || forbidden.length > 0 || unexpected.length > 0) {
     fail([
       'OSS live verifier source policy failed:',
       ...missing.map((path) => `missing public verifier file: ${path}`),
       ...forbidden.map((path) => `forbidden private verifier artifact: ${path}`),
+      ...unexpected.map((path) => `unreviewed verifier file: ${path}`),
     ].join('\n'));
   }
 }
@@ -595,6 +609,11 @@ function scanExportTree(entries) {
     for (const [label, pattern] of denyPatterns) {
       if (pattern.test(text)) {
         findings.push(`${rel}: matched denied term ${label}`);
+      }
+    }
+    if (isLiveVerifierPublicPath(rel)) {
+      for (const [label, pattern] of liveVerifierDenyPatterns) {
+        if (pattern.test(text)) findings.push(`${rel}: matched denied verifier value ${label}`);
       }
     }
   }

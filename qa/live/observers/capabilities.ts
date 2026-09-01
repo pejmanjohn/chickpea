@@ -12,38 +12,39 @@ export type MinimumObserverAuthority =
   | 'provider_account_read'
   | 'slack_app_home_read'
   | 'slack_history_read'
+  | 'computer_use_visible'
   | 'none';
 
 export interface ObserverCapability {
   observerId: ObserverId;
   status: CapabilityStatus;
-  source: 'chickpea_admin' | 'cloudflare_control_plane' | 'provider_api' | 'slack_api' | 'none';
+  source: 'chickpea_admin' | 'cloudflare_control_plane' | 'provider_api' | 'slack_api' | 'computer_use_ui' | 'none';
   minimumAuthority: MinimumObserverAuthority;
   allowedTokens: readonly AssertionToken[];
   reason?: 'non_authoritative_context_only' | 'authoritative_projection_missing';
 }
 
 export const CAPABILITY_INVENTORY: Readonly<Record<ObserverId, ObserverCapability>> = Object.freeze({
-  'agent.read': capability('agent.read', 'chickpea_admin', 'admin_read', [
+  'agent.read': capability('agent.read', 'computer_use_ui', 'computer_use_visible', [
     'agent.exists', 'agent.instructions_equal', 'forbidden.no_early_mutation',
   ]),
-  'connection.read': capability('connection.read', 'chickpea_admin', 'admin_read', [
+  'connection.read': capability('connection.read', 'computer_use_ui', 'computer_use_visible', [
     'connection.owner_personal', 'connection.owner_team', 'connection.editor_attributed',
     'connection.agent_isolated', 'connection.needs_attention', 'connection.reconnected',
     'forbidden.no_cross_agent_reuse', 'forbidden.no_duplicate',
   ]),
-  'routine.read': capability('routine.read', 'chickpea_admin', 'admin_read', [
+  'routine.read': capability('routine.read', 'computer_use_ui', 'computer_use_visible', [
     'routine.exists', 'routine.paused', 'routine.active', 'routine.run_once',
     'routine.dependency_paused', 'routine.admin_omitted', 'forbidden.no_duplicate',
   ]),
-  'slack.messages.read': capability('slack.messages.read', 'slack_api', 'slack_history_read', [
+  'slack.messages.read': capability('slack.messages.read', 'computer_use_ui', 'computer_use_visible', [
     'slack.message_matches', 'routine.due_delivery', 'routine.private_delivery',
     'skill.behavior_matches', 'forbidden.no_duplicate',
   ]),
-  'app_home.read': capability('app_home.read', 'slack_api', 'slack_app_home_read', [
+  'app_home.read': capability('app_home.read', 'computer_use_ui', 'computer_use_visible', [
     'slack.message_matches', 'forbidden.no_duplicate',
   ]),
-  'provider.read': capability('provider.read', 'provider_api', 'provider_account_read', [
+  'provider.read': capability('provider.read', 'computer_use_ui', 'computer_use_visible', [
     'forbidden.no_duplicate', 'forbidden.no_cross_agent_reuse',
   ]),
   'provider.revocation.read': blockedCapability('provider.revocation.read', [
@@ -236,15 +237,19 @@ function blockedCapability(
 
 function validMetadata(metadata: ObserverMetadata): boolean {
   if (!isRecord(metadata)) return false;
-  const keys: readonly ObserverMetadataKey[] = [
-    'attempts', 'count', 'deadlineMs', 'generation', 'identityMatch', 'phase',
-    'retryAfterSeconds', 'revision', 'state', 'versionId',
-  ];
-  return Object.entries(metadata).every(([key, value]) => keys.includes(key as ObserverMetadataKey)
-    && (value === null
-      || typeof value === 'boolean'
-      || (typeof value === 'number' && Number.isFinite(value))
-      || (typeof value === 'string' && value.length <= 128)));
+  return Object.entries(metadata).every(([key, value]) => {
+    if (['attempts', 'count', 'deadlineMs', 'generation', 'retryAfterSeconds'].includes(key)) {
+      return Number.isSafeInteger(value) && Number(value) >= 0;
+    }
+    if (key === 'identityMatch') return typeof value === 'boolean';
+    if (key === 'revision' || key === 'versionId') {
+      return value === null || (typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value));
+    }
+    if (key === 'phase' || key === 'state') {
+      return typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/u.test(value);
+    }
+    return false;
+  });
 }
 
 const isRecord = observerRecord;

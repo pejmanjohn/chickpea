@@ -1,5 +1,15 @@
+import {
+  unavailableComputerUseObservers,
+  validComputerUseSurfaceSnapshot,
+  type ComputerUseSurfaceSnapshot,
+} from './computer-use.ts';
 import { LIVE_MANIFEST, LIVE_MANIFEST_DIGEST } from './manifest.ts';
-import { validateTargetOverlay } from './privacy.ts';
+import { inventoryManifestCapabilities } from './observers/capabilities.ts';
+import {
+  digestTargetOverlay,
+  validateTargetOverlay,
+  type LiveTargetOverlay,
+} from './privacy.ts';
 
 export interface DoctorLockSnapshot {
   status: 'clear' | 'live' | 'stale';
@@ -9,9 +19,13 @@ export interface DoctorLockSnapshot {
 export interface DoctorSnapshot {
   schemaVersion: 'chickpea-live-doctor-snapshot/v1';
   manifestDigest: string;
+  targetAlias: string;
+  transport: 'gateway' | 'events';
+  targetOverlayDigest: string;
   targetFingerprint: string;
   repositoryRevision: string;
   servingVersion: string;
+  computerUseSurfaces: ComputerUseSurfaceSnapshot;
   missingActorAliases: string[];
   workspaceMatches: boolean;
   unavailableObserverIds: string[];
@@ -26,7 +40,6 @@ export interface DoctorSnapshotSource {
 
 export type DoctorDiagnosticCode =
   | 'invalid_target_overlay'
-  | 'dirty_revision'
   | 'manifest_drift'
   | 'missing_actor'
   | 'wrong_workspace'
@@ -52,19 +65,19 @@ export interface DoctorResult {
   diagnostics: DoctorDiagnostic[];
 }
 
-export function diagnoseLiveTarget(input: { overlay: unknown; source: DoctorSnapshotSource }): DoctorResult {
+export function diagnoseLiveTarget(input: {
+  overlay: unknown;
+  source: DoctorSnapshotSource;
+  variantIds?: readonly string[];
+}): DoctorResult {
   const snapshot = input.source.read();
   validateDoctorSnapshot(snapshot);
   const diagnostics: DoctorDiagnostic[] = [];
-  let targetAlias: string | undefined;
+  let target: LiveTargetOverlay | undefined;
   try {
-    targetAlias = validateTargetOverlay(LIVE_MANIFEST, input.overlay).targetAlias;
+    target = validateTargetOverlay(LIVE_MANIFEST, input.overlay);
   } catch {
     diagnostics.push({ code: 'invalid_target_overlay', severity: 'blocked' });
-  }
-  if (snapshot.repositoryRevision.endsWith('-dirty')
-    && (targetAlias === 'dedicated-qa' || targetAlias === 'demo' || targetAlias?.startsWith('demo-') === true)) {
-    diagnostics.push({ code: 'dirty_revision', severity: 'blocked' });
   }
   if (snapshot.manifestDigest !== LIVE_MANIFEST_DIGEST) {
     diagnostics.push({ code: 'manifest_drift', severity: 'blocked' });
@@ -77,15 +90,33 @@ export function diagnoseLiveTarget(input: { overlay: unknown; source: DoctorSnap
     });
   }
   if (!snapshot.workspaceMatches) diagnostics.push({ code: 'wrong_workspace', severity: 'blocked' });
-  if (snapshot.unavailableObserverIds.length > 0) {
+  const selectedVariants = new Set(input.variantIds ?? target?.allowedVariants ?? []);
+  const catalogBlockedObserverIds = target === undefined ? [] : inventoryManifestCapabilities(LIVE_MANIFEST).blocked
+    .filter(({ variantId }) => selectedVariants.has(variantId))
+    .map(({ observerId }) => observerId);
+  const surfaceBlockedObserverIds = unavailableComputerUseObservers({
+    manifest: LIVE_MANIFEST,
+    variantIds: [...selectedVariants],
+    surfaces: snapshot.computerUseSurfaces,
+  });
+  const unavailableObserverIds = [...new Set([
+    ...snapshot.unavailableObserverIds,
+    ...catalogBlockedObserverIds,
+    ...surfaceBlockedObserverIds,
+  ])].sort();
+  if (unavailableObserverIds.length > 0) {
     diagnostics.push({
       code: 'unavailable_observer',
       severity: 'blocked',
-      items: [...snapshot.unavailableObserverIds].sort(),
+      items: unavailableObserverIds,
     });
   }
   if (!snapshot.evidenceRootSafe) diagnostics.push({ code: 'unsafe_evidence_root', severity: 'blocked' });
-  if (!snapshot.targetMatches) diagnostics.push({ code: 'target_drift', severity: 'blocked' });
+  if (!snapshot.targetMatches || (target !== undefined && (
+    snapshot.targetAlias !== target.targetAlias
+    || snapshot.transport !== target.transport
+    || snapshot.targetOverlayDigest !== digestTargetOverlay(target)
+  ))) diagnostics.push({ code: 'target_drift', severity: 'blocked' });
   if (snapshot.lock.status === 'live') diagnostics.push({ code: 'live_lock', severity: 'blocked' });
   if (snapshot.lock.status === 'stale') diagnostics.push({ code: 'stale_lock', severity: 'blocked' });
 
@@ -103,15 +134,21 @@ export function diagnoseLiveTarget(input: { overlay: unknown; source: DoctorSnap
 export function parseDoctorSnapshot(input: unknown): DoctorSnapshot {
   if (!isRecord(input)) throw new TypeError('INVALID_DOCTOR_SNAPSHOT');
   exactKeys(input, [
-    'schemaVersion', 'manifestDigest', 'targetFingerprint', 'repositoryRevision', 'servingVersion',
+    'schemaVersion', 'manifestDigest', 'targetAlias', 'transport', 'targetOverlayDigest',
+    'targetFingerprint', 'repositoryRevision', 'servingVersion',
+    'computerUseSurfaces',
     'missingActorAliases', 'workspaceMatches', 'unavailableObserverIds', 'evidenceRootSafe',
     'targetMatches', 'lock',
   ]);
   if (input.schemaVersion !== 'chickpea-live-doctor-snapshot/v1'
     || !nonEmpty(input.manifestDigest)
-    || !nonEmpty(input.targetFingerprint)
+    || !alias(input.targetAlias)
+    || (input.transport !== 'gateway' && input.transport !== 'events')
+    || !digest(input.targetOverlayDigest)
+    || !digest(input.targetFingerprint)
     || !validRepositoryRevision(input.repositoryRevision)
-    || !nonEmpty(input.servingVersion)
+    || !validServingVersion(input.servingVersion)
+    || !validComputerUseSurfaceSnapshot(input.computerUseSurfaces)
     || !stringArray(input.missingActorAliases)
     || typeof input.workspaceMatches !== 'boolean'
     || !stringArray(input.unavailableObserverIds)
@@ -140,6 +177,19 @@ function nonEmpty(input: unknown): input is string {
 
 function validRepositoryRevision(input: unknown): input is string {
   return typeof input === 'string' && /^[0-9a-f]{7,64}(?:-dirty)?$/u.test(input);
+}
+
+function alias(input: unknown): input is string {
+  return typeof input === 'string' && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(input);
+}
+
+function digest(input: unknown): input is string {
+  return typeof input === 'string' && /^sha256:[a-z0-9-]{3,128}$/u.test(input);
+}
+
+function validServingVersion(input: unknown): input is string {
+  return typeof input === 'string' && (/^version-[A-Za-z0-9._-]{1,96}$/u.test(input)
+    || /^[0-9a-f]{8}-[0-9a-f-]{27,55}$/u.test(input));
 }
 
 function stringArray(input: unknown): input is string[] {

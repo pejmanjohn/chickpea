@@ -44,11 +44,12 @@ test('blocked live truth is machine-visible and leaves foundation observers runn
   }
 });
 
-test('the alias-only target example binds every variant and pins the skill source', () => {
+test('the alias-only Phase 1 target binds only the exact smoke inventory', () => {
   const example = JSON.parse(readFileSync(new URL('../qa/live/target.example.json', import.meta.url), 'utf8'));
-  const overlay = validateTargetOverlay(compileLiveCatalog(PUBLIC_LIVE_CATALOG), example);
-  assert.equal(Object.keys(overlay.bindings).length, 26);
-  assert.equal(overlay.fixtures['qa-style-guard']?.source?.digest, QA_STYLE_GUARD_DIGEST);
+  const manifest = compileLiveCatalog(PUBLIC_LIVE_CATALOG);
+  const overlay = validateTargetOverlay(manifest, example);
+  assert.deepEqual(Object.keys(overlay.bindings).sort(), [...manifest.requiredVariants.smoke].sort());
+  assert.equal(overlay.fixtures['qa-style-guard'], undefined);
 });
 
 test('all seven evaluators reject pre-normalized assertion tokens', () => {
@@ -152,6 +153,9 @@ test('LC-07 rejects stale conflict, non-idempotent retry, cross-Agent leakage, a
   const exposed = memoryFixture('LC07-V1-explicit-memory');
   exposed.publicEvidence.memoryBody = exposed.admin.afterWrite.body;
   assert.ok(evaluateAgentMemory('LC07-V1-explicit-memory', exposed).failures.includes('raw_memory_exposed'));
+  const duplicateSurface = memoryFixture('LC07-V1-explicit-memory');
+  duplicateSurface.admin.surfaceReads[1]!.surface = 'direct';
+  assert.ok(evaluateAgentMemory('LC07-V1-explicit-memory', duplicateSurface).failures.includes('surface_read_mismatch'));
 });
 
 test('LC-09 proves one-shot and recurring DM delivery, Admin omission, and authority-loss disablement', () => {

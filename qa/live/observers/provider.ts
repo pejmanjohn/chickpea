@@ -1,4 +1,3 @@
-import type { AssertionToken } from '../schema.ts';
 import {
   blockedObservation,
   boundedObserverString,
@@ -8,7 +7,6 @@ import {
   observerRecord,
   validObserverDeadline,
   type ClosedObservation,
-  type ObserverMetadata,
 } from './capabilities.ts';
 
 export const PROVIDER_KNOWN_BAD_FIXTURE: unknown = Object.freeze({
@@ -33,19 +31,9 @@ export async function observeProvider(input: {
       || (value.identityMatch !== undefined && typeof value.identityMatch !== 'boolean')) {
       return blockedObservation('provider.read');
     }
-    const metadata: ObserverMetadata = {
-      attempts: 1,
-      deadlineMs: input.deadlineMs,
-      ...(value.count === undefined ? {} : { count: value.count as number }),
-      ...(value.state === undefined ? {} : { state: value.state as string }),
-      ...(value.identityMatch === undefined ? {} : { identityMatch: value.identityMatch as boolean }),
-    };
-    return closedObservation({
-      observerId: 'provider.read',
-      status: 'observed',
-      tokens: value.tokens as AssertionToken[],
-      metadata,
-    });
+    // Provider APIs may diagnose setup, but cannot satisfy a scored product
+    // assertion that the user must see through Computer Use.
+    return blockedObservation('provider.read');
   } catch {
     return closedObservation({
       observerId: 'provider.read',

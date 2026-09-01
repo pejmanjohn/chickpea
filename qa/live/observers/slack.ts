@@ -1,4 +1,6 @@
-import type { AssertionToken, ObserverId } from '../schema.ts';
+import { performance } from 'node:perf_hooks';
+
+import type { ObserverId } from '../schema.ts';
 import {
   blockedObservation,
   boundedObserverString,
@@ -8,7 +10,6 @@ import {
   observerRecord,
   validObserverDeadline,
   type ClosedObservation,
-  type ObserverMetadata,
 } from './capabilities.ts';
 
 type SlackObserverId = Extract<ObserverId, 'slack.messages.read' | 'app_home.read'>;
@@ -22,24 +23,23 @@ export const SLACK_KNOWN_BAD_FIXTURE: unknown = Object.freeze({
 export async function observeSlack(input: {
   observerId: SlackObserverId;
   deadlineMs: number;
-  read(): Promise<unknown>;
+  read(options: { signal: AbortSignal }): Promise<unknown>;
   sleep(milliseconds: number): Promise<void>;
+  now?: () => number;
 }): Promise<ClosedObservation> {
   if (!validObserverDeadline(input.deadlineMs, 120_000)) return blockedObservation(input.observerId);
-  let remainingMs = input.deadlineMs;
+  const now = input.now ?? (() => performance.now());
+  const deadlineAt = now() + input.deadlineMs;
   let attempts = 0;
   while (attempts < 6) {
+    const readBudget = Math.floor(deadlineAt - now());
+    if (readBudget <= 0) return unavailable(input.observerId, attempts);
     attempts += 1;
     let value: unknown;
     try {
-      value = await input.read();
+      value = await withinDeadline(readBudget, (signal) => input.read({ signal }));
     } catch {
-      return closedObservation({
-        observerId: input.observerId,
-        status: 'unavailable',
-        tokens: [],
-        metadata: { attempts },
-      });
+      return unavailable(input.observerId, attempts);
     }
     if (!observerRecord(value)) return blockedObservation(input.observerId);
     if (value.status === 429) {
@@ -48,7 +48,8 @@ export async function observeSlack(input: {
       }
       const retryAfterSeconds = parseRetryAfter(value.retryAfter);
       const waitMs = retryAfterSeconds * 1_000;
-      if (retryAfterSeconds <= 0 || waitMs > remainingMs) {
+      const remainingMs = Math.floor(deadlineAt - now());
+      if (retryAfterSeconds <= 0 || waitMs >= remainingMs) {
         return closedObservation({
           observerId: input.observerId,
           status: 'rate_limited',
@@ -56,8 +57,11 @@ export async function observeSlack(input: {
           metadata: { attempts, retryAfterSeconds },
         });
       }
-      await input.sleep(waitMs);
-      remainingMs -= waitMs;
+      try {
+        await withinDeadline(remainingMs, async () => input.sleep(waitMs));
+      } catch {
+        return unavailable(input.observerId, attempts);
+      }
       continue;
     }
     if (!hasOnlyObserverKeys(value, ['status', 'tokens', 'count', 'state'])
@@ -67,17 +71,9 @@ export async function observeSlack(input: {
       || (value.state !== undefined && !boundedObserverString(value.state))) {
       return blockedObservation(input.observerId);
     }
-    const metadata: ObserverMetadata = {
-      attempts,
-      ...(value.count === undefined ? {} : { count: value.count as number }),
-      ...(value.state === undefined ? {} : { state: value.state as string }),
-    };
-    return closedObservation({
-      observerId: input.observerId,
-      status: 'observed',
-      tokens: value.tokens as AssertionToken[],
-      metadata,
-    });
+    // Slack Web API reads are diagnostic context only; a visible Slack
+    // Computer Use observation is required for scored proof.
+    return blockedObservation(input.observerId);
   }
   return closedObservation({
     observerId: input.observerId,
@@ -85,6 +81,28 @@ export async function observeSlack(input: {
     tokens: [],
     metadata: { attempts },
   });
+}
+
+function unavailable(observerId: SlackObserverId, attempts: number): ClosedObservation {
+  return closedObservation({ observerId, status: 'unavailable', tokens: [], metadata: { attempts } });
+}
+
+async function withinDeadline<Value>(
+  milliseconds: number,
+  operation: (signal: AbortSignal) => Promise<Value>,
+): Promise<Value> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), milliseconds);
+  try {
+    return await Promise.race([
+      operation(controller.signal),
+      new Promise<never>((_, reject) => {
+        controller.signal.addEventListener('abort', () => reject(new Error('OBSERVER_DEADLINE')), { once: true });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function parseRetryAfter(value: string): number {
