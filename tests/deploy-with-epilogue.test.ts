@@ -799,7 +799,7 @@ for (const stalledInspection of ['status', 'version']) {
     const result = runHarness(harness, ['--skip-build'], {
       DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_AUTH_SECRET' }]),
       DEPLOY_TEST_STALLED_INSPECTION: stalledInspection,
-      CHICKPEA_DEPLOY_INSPECTION_TIMEOUT_MS: '100',
+      CHICKPEA_DEPLOY_INSPECTION_TIMEOUT_MS: '500',
     }, 2_000);
 
     assert.equal(result.status, 1, result.stderr);

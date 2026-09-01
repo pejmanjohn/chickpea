@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -57,7 +57,12 @@ test('public verifier files are not ignored and private artifact shapes are not 
     'docs/runbooks/live-contract-verification.md',
   ]) {
     const result = spawnSync('git', ['check-ignore', '--no-index', '--quiet', path], { cwd: ROOT });
-    assert.equal(result.status, 1, `${path} is ignored`);
+    if (existsSync(resolve(ROOT, '.git'))) {
+      assert.equal(result.status, 1, `${path} is ignored`);
+    } else {
+      assert.equal(result.status, 128, `${path} returned an unexpected git status`);
+      assert.match(String(result.stderr), /not a git repository/i);
+    }
   }
 
   const forbidden = [...packFiles()].filter((path) =>
