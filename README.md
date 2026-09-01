@@ -60,7 +60,7 @@ Chickpea is that alternative, and it's MIT-licensed. Deploy it to your own Cloud
 | **Addressable Agents** | Each Agent gets a real Slack handle (a zero-member user group like `@support`), a distinct generated avatar, and its own name on every reply. | |
 | **Agent memory** | One memory per Agent, shared across its DMs and every granted channel, editable and deletable in Admin. | [Details](#memory) |
 | **Connection accounts** | Team accounts and personal accounts, each owned permanently by one Agent: 35 connector presets (13 managed on a single Composio key, 22 more over hosted MCP or direct API), and native API and MCP for anything custom. | [Details](#connections-and-authority) |
-| **Model choice** | Anthropic, OpenAI, OpenRouter, Cloudflare Workers AI, or a ChatGPT subscription, pinned per Agent. | [Details](#models-and-providers) |
+| **Model choice** | Anthropic, OpenAI, OpenRouter, or Cloudflare Workers AI, pinned per Agent. | [Details](#models-and-providers) |
 | **Skills** | Paste a GitHub repo or `skills.sh` link in Admin, or hand the link to an Agent in Slack; either way Chickpea reads the `SKILL.md` files and shows exactly which skills it found before importing. | |
 | **Repositories** | Grant GitHub repositories to an Agent through the Chickpea GitHub App (Settings → GitHub). Access uses short-lived installation tokens scoped to the granted repositories. | |
 | **Coding sandbox** | Optional Cloudflare container tier for work needing a real checkout, package installation, tests, or a dev server. | [Details](#coding-sandbox) |
@@ -246,8 +246,6 @@ Every run rechecks the whole chain: is the Agent alive, does it still have the c
 
 Bring your own: **Anthropic**, **OpenAI**, **OpenRouter**, or **Cloudflare Workers AI**. Cloudflare deploys can use the keyless binding provider and skip the API token entirely. Keys go in environment variables or in Settings, whichever you prefer.
 
-You can also connect a **ChatGPT subscription** in Settings and use it as a model lane alongside API keys. The model catalog marks which models are reachable through the subscription and which need a key.
-
 Every Agent can be pinned to its own model. A cheap fast model for triage, a strong one for the Agent that writes.
 
 ---
@@ -359,7 +357,7 @@ The full surface, including per-connector Composio auth config IDs and the Googl
 Because then every channel that bot is in has every credential that bot holds, and everything it learns anywhere it can say anywhere. Agents exist so you can put a wall between support's Zendesk and finance's spreadsheets without running a second deployment.
 
 **"What does this cost to run?"**
-Chickpea itself is MIT-licensed with no per-seat pricing and no metering. You pay your model provider directly, whether that's an API key or a ChatGPT subscription. Workers, Durable Objects, D1, and Workers AI usage runs in your own Cloudflare account under whatever plan you're on, and the optional coding sandbox requires Workers Paid. Running on your own Node host, the infrastructure bill is whatever that host costs you.
+Chickpea itself is MIT-licensed with no per-seat pricing and no metering. You pay your model provider directly for API usage. Workers, Durable Objects, D1, and Workers AI usage runs in your own Cloudflare account under whatever plan you're on, and the optional coding sandbox requires Workers Paid. Running on your own Node host, the infrastructure bill is whatever that host costs you.
 
 **"How do I see what an Agent actually did?"**
 Most of it is already visible: work happens in Slack threads, in the open, under the Agent's own name. In Admin, the Memory tab shows exactly what an Agent retained (and lets you edit or delete it), and the Schedules tab shows status, last run, next run, and a run-history and activity inspector for scheduled work. Be aware of the deliberate gap: activity telemetry is fixed-schema and content-free by design, and Admin has no searchable conversation archive. The conversation itself lives in Slack and in your deployment's transcript store.
