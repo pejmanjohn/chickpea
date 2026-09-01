@@ -19,6 +19,7 @@
     "assets",
     "catalog",
     "docs/authentication.md",
+    "docs/shared-gateway-data-handling.md",
     "docs/runbooks/auth-db-deployment.md",
     "docs/runbooks/coding-sandbox-deployment.md",
     "docs/runbooks/composio-managed-connectors.md",

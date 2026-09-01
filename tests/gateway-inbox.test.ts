@@ -122,22 +122,33 @@ test('gateway inbox bounds in-flight work, scrubs completion, and retains dedup 
   }
 });
 
-test('terminal tombstone capacity cannot block a new active delivery', () => {
+test('unexpired terminal tombstones are never evicted to admit a new delivery', () => {
+  let now = NOW;
   const db = openStateDb(':memory:');
   try {
-    const inbox = new GatewayInboxStoreLogic(db, () => NOW, {
+    const inbox = new GatewayInboxStoreLogic(db, () => now, {
       maxTotalRows: 2,
       maxActiveRows: 2,
       maxInFlight: 2,
+      dedupRetentionMs: 1_000,
     });
     for (const id of ['delivery:Ev_OLD', 'delivery:Ev_RECENT']) {
       assert.equal(inbox.admit(eventDelivery(id, id)), 'accepted');
       assert.equal(inbox.complete(inbox.claimPending(1)[0]!.id), true);
     }
 
-    assert.equal(inbox.admit(eventDelivery('delivery:Ev_NEW', 'new body')), 'accepted');
+    assert.throws(
+      () => inbox.admit(eventDelivery('delivery:Ev_NEW', 'new body')),
+      GatewayInboxCapacityError,
+    );
     assert.equal(inbox.admit(eventDelivery('delivery:Ev_RECENT', 'retry body')), 'duplicate');
     assert.equal(db.get('SELECT COUNT(*) AS count FROM gateway_inbox')?.count, 2);
+
+    now += 1_000;
+    assert.equal(inbox.maintain().tombstonesPurged, 0);
+    now += 1;
+    assert.equal(inbox.admit(eventDelivery('delivery:Ev_NEW', 'new body')), 'accepted');
+    assert.equal(db.get('SELECT COUNT(*) AS count FROM gateway_inbox')?.count, 1);
     const active = db.get(
       "SELECT status, payload_json FROM gateway_inbox WHERE id = 'delivery:Ev_NEW'",
     );
@@ -148,10 +159,40 @@ test('terminal tombstone capacity cannot block a new active delivery', () => {
   }
 });
 
-test('gateway inbox bounds attempts and scrubs recovery-required bodies', () => {
+test('completed delivery identity remains body-free and deduplicates for 48 hours', () => {
+  let now = NOW;
   const db = openStateDb(':memory:');
   try {
-    const inbox = new GatewayInboxStoreLogic(db, () => NOW, { maxAttempts: 2 });
+    const inbox = new GatewayInboxStoreLogic(db, () => now);
+    const id = 'delivery:Ev_DELAYED_RETRY';
+    assert.equal(inbox.admit(eventDelivery(id, 'sensitive body')), 'accepted');
+    assert.equal(inbox.complete(inbox.claimPending(1)[0]!.id), true);
+    assert.equal(db.get(
+      'SELECT payload_json FROM gateway_inbox WHERE id = ?',
+      id,
+    )?.payload_json, null);
+
+    now += 24 * 60 * 60_000 + 1;
+    assert.equal(inbox.admit(eventDelivery(id, 'retry after one day')), 'duplicate');
+    now = NOW + 48 * 60 * 60_000;
+    assert.equal(inbox.maintain().tombstonesPurged, 0);
+    assert.equal(inbox.admit(eventDelivery(id, 'retry at boundary')), 'duplicate');
+    now += 1;
+    assert.equal(inbox.maintain().tombstonesPurged, 1);
+    assert.equal(inbox.admit(eventDelivery(id, 'new after expiry')), 'accepted');
+  } finally {
+    db.close();
+  }
+});
+
+test('gateway inbox bounds attempts and scrubs recovery-required bodies', () => {
+  let now = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const inbox = new GatewayInboxStoreLogic(db, () => now, {
+      maxAttempts: 2,
+      dedupRetentionMs: 1_000,
+    });
     assert.equal(inbox.admit(eventDelivery('delivery:Ev_FAIL', 'sensitive')), 'accepted');
     const first = inbox.claimPending(1)[0]!;
     assert.equal(inbox.retryOrRecover(first.id, 'transient_failure'), 'pending');
@@ -166,6 +207,13 @@ test('gateway inbox bounds attempts and scrubs recovery-required bodies', () => 
     assert.equal(row?.payload_bytes, 0);
     assert.equal(row?.status, 'recovery_required');
     assert.equal(row?.recovery_reason, 'transient_failure');
+
+    now += 1_000;
+    assert.equal(inbox.maintain().tombstonesPurged, 0);
+    assert.equal(inbox.admit(eventDelivery(second.id, 'retry at boundary')), 'duplicate');
+    now += 1;
+    assert.equal(inbox.maintain().tombstonesPurged, 1);
+    assert.equal(inbox.admit(eventDelivery(second.id, 'new after expiry')), 'accepted');
   } finally {
     db.close();
   }

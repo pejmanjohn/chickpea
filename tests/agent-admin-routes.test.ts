@@ -195,7 +195,6 @@ test('shared Slack connection backfills and persists the workspace display name'
       botUserId: 'U_BOT',
       gatewayBindingId: 'binding_test',
     });
-
     const response = await fixture.app.request('http://localhost/admin/api/slack-connection', {
       headers: auth(),
     });
@@ -206,6 +205,187 @@ test('shared Slack connection backfills and persists the workspace display name'
     assert.equal(body.teamId, 'T_TEST');
     assert.equal(body.teamName, 'Acme Inc');
     assert.equal(await fixture.settings.getSetting('slack.teamName'), 'Acme Inc');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('shared Slack connection read overlays live inbound health without persisting the probe', async () => {
+  const fixture = harness();
+  const env = {
+    SLACK_GATEWAY_SESSION: {
+      idFromName: (name: string) => name,
+      get: () => ({
+        status: async () => ({
+          healthy: false,
+          phase: 'retrying',
+          detail: 'gateway_session_offline',
+          generation: 4,
+        }),
+      }),
+    },
+  };
+  try {
+    const installed = await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      teamId: 'T_TEST',
+      transportMode: 'gateway',
+      appId: 'A_TEST',
+      botUserId: 'U_BOT',
+      gatewayBindingId: 'binding_test',
+    });
+    await fixture.store.updateWorkspaceInstallation('T_TEST', {
+      health: 'healthy',
+      healthDetail: null,
+    }, installed.revision);
+
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/slack-connection',
+      { headers: auth() },
+      env,
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json() as {
+      connected: boolean;
+      health: string;
+      healthDetail: string | null;
+    };
+    assert.deepEqual({
+      connected: body.connected,
+      health: body.health,
+      healthDetail: body.healthDetail,
+    }, {
+      connected: true,
+      health: 'needs_attention',
+      healthDetail: 'gateway_session_offline',
+    });
+    const persisted = await fixture.store.getWorkspaceInstallation('T_TEST');
+    assert.equal(persisted?.health, 'healthy');
+    assert.equal(persisted?.healthDetail ?? null, null);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('shared Slack connection read preserves persisted attention and detects a stale Worker session', async () => {
+  const fixture = harness();
+  let gatewayVersion = 'current-version';
+  const env = {
+    CF_VERSION_METADATA: { id: 'current-version' },
+    SLACK_GATEWAY_SESSION: {
+      idFromName: (name: string) => name,
+      get: () => ({
+        status: async () => ({
+          healthy: true,
+          phase: 'healthy',
+          detail: null,
+          generation: 5,
+          versionId: gatewayVersion,
+        }),
+      }),
+    },
+  };
+  try {
+    const installed = await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      teamId: 'T_TEST',
+      transportMode: 'gateway',
+      appId: 'A_TEST',
+      botUserId: 'U_BOT',
+      gatewayBindingId: 'binding_test',
+    });
+    await fixture.store.updateWorkspaceInstallation('T_TEST', {
+      health: 'needs_attention',
+      healthDetail: 'gateway_binding_mismatch',
+    }, installed.revision);
+
+    const preserved = await fixture.app.request(
+      'http://localhost/admin/api/slack-connection',
+      { headers: auth() },
+      env,
+    );
+    assert.equal((await preserved.json() as { healthDetail: string }).healthDetail, 'gateway_binding_mismatch');
+
+    const current = await fixture.store.getWorkspaceInstallation('T_TEST');
+    assert.ok(current);
+    await fixture.store.updateWorkspaceInstallation('T_TEST', {
+      health: 'healthy',
+      healthDetail: null,
+    }, current.revision);
+    gatewayVersion = 'old-version';
+    const stale = await fixture.app.request(
+      'http://localhost/admin/api/slack-connection',
+      { headers: auth() },
+      env,
+    );
+    assert.deepEqual(await stale.json().then((body: {
+      health: string;
+      healthDetail: string | null;
+    }) => ({ health: body.health, healthDetail: body.healthDetail })), {
+      health: 'needs_attention',
+      healthDetail: 'gateway_session_stale_version',
+    });
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('revoked shared Slack connection stays disconnected without probing live session health', async () => {
+  const fixture = harness();
+  let statusCalls = 0;
+  const env = {
+    SLACK_GATEWAY_SESSION: {
+      idFromName: (name: string) => name,
+      get: () => ({
+        status: async () => {
+          statusCalls += 1;
+          return {
+            healthy: true,
+            phase: 'healthy',
+            detail: null,
+            generation: 5,
+          };
+        },
+      }),
+    },
+  };
+  try {
+    const installed = await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      teamId: 'T_TEST',
+      transportMode: 'gateway',
+      appId: 'A_TEST',
+      botUserId: 'U_BOT',
+      gatewayBindingId: 'binding_test',
+    });
+    await fixture.store.updateWorkspaceInstallation('T_TEST', {
+      health: 'revoked',
+      healthDetail: 'gateway_binding_revoked',
+    }, installed.revision);
+
+    const response = await fixture.app.request(
+      'http://localhost/admin/api/slack-connection',
+      { headers: auth() },
+      env,
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json().then((body: {
+      connected: boolean;
+      health: string;
+      healthDetail: string | null;
+    }) => ({
+      connected: body.connected,
+      health: body.health,
+      healthDetail: body.healthDetail,
+    })), {
+      connected: false,
+      health: 'revoked',
+      healthDetail: 'gateway_binding_revoked',
+    });
+    assert.equal(statusCalls, 0);
   } finally {
     fixture.store.close();
     fixture.settings.close();

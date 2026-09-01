@@ -85,6 +85,7 @@ const forbiddenSourcePathRoots = [
 
 const allowedPublicDocs = new Set([
   exportPath('docs', 'authentication.md'),
+  exportPath('docs', 'shared-gateway-data-handling.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'design-qa.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'production-fidelity-qa.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'app.jsx'),
@@ -100,6 +101,8 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
   exportPath('docs', 'runbooks', 'composio-managed-connectors.md'),
   exportPath('docs', 'runbooks', 'product-telemetry.md'),
+  exportPath('docs', 'runbooks', 'memory-schedules-acceptance.md'),
+  exportPath('docs', 'runbooks', 'semantic-activity-status.md'),
   exportPath('docs', 'runbooks', 'slack-auth-recovery.md'),
   exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
   exportPath('docs', 'runbooks', 'chickpea-system-agent-cutover.md'),
@@ -573,6 +576,7 @@ function verifyNpmPackManifest() {
     'scripts/deploy-with-epilogue.mjs',
     'scripts/recover-auth.mjs',
     'docs/authentication.md',
+    'docs/shared-gateway-data-handling.md',
     'docs/runbooks/agent-authoring-evaluation.md',
     'docs/runbooks/auth-db-deployment.md',
     'docs/runbooks/agent-first-acceptance-2026-08-21.md',
