@@ -37,6 +37,7 @@ import {
   type RunPhase,
   type RunnerOutputKind,
 } from '../state.ts';
+import { isNodeError } from './errors.ts';
 
 export const RUN_JOURNAL_SCHEMA = 'chickpea-live-journal/v1' as const;
 
@@ -678,8 +679,4 @@ function nonNegativeInteger(input: unknown): input is number {
 
 function validTimestamp(input: unknown): input is string {
   return nonEmpty(input) && Number.isFinite(Date.parse(input));
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && 'code' in error;
 }

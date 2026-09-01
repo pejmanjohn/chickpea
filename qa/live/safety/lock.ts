@@ -10,6 +10,8 @@ import {
 } from 'node:fs';
 import { dirname } from 'node:path';
 
+import { isNodeError } from './errors.ts';
+
 import type { ReadJournalResult } from './journal.ts';
 
 export interface TargetLockOwner {
@@ -194,8 +196,4 @@ function exactKeys(input: object, expected: readonly string[]): boolean {
   const keys = Object.keys(input).sort();
   const wanted = [...expected].sort();
   return keys.length === wanted.length && keys.every((key, index) => key === wanted[index]);
-}
-
-function isNodeError(input: unknown): input is NodeJS.ErrnoException {
-  return input instanceof Error && 'code' in input;
 }

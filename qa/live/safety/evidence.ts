@@ -21,6 +21,7 @@ import {
   type Suite,
 } from '../schema.ts';
 import type { RunReport } from '../state.ts';
+import { isNodeError } from './errors.ts';
 
 export type EvidenceSafetyErrorCode =
   | 'UNSAFE_EVIDENCE_ROOT'
@@ -289,10 +290,6 @@ function rejectUnsafe(input: unknown): void {
 
 function privateCoordinate(input: string): boolean {
   return /^(?:[TCUWDA][A-Z0-9]{8,}|ca_[A-Za-z0-9_-]{6,}|ac_[A-Za-z0-9_-]{6,})$/u.test(input);
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && 'code' in error;
 }
 
 function fail(code: EvidenceSafetyErrorCode): never {

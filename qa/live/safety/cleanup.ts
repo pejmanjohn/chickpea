@@ -282,13 +282,7 @@ export function projectResourceLedger(journal: ReadJournalResult): ResourceLedge
       .find(({ cleanupIntentId }) => cleanupIntentId === intent.cleanupIntentId);
     const readback = intent === undefined ? undefined : product.cleanupReadbacks
       .find(({ cleanupIntentId }) => cleanupIntentId === intent.cleanupIntentId);
-    const state: ResourceLedgerEntry['state'] = intent === undefined
-      ? 'mutation_recorded'
-      : receipt === undefined
-        ? 'cleanup_pending'
-        : receipt.outcome === 'ambiguous' && (readback === undefined || readback.outcome === 'ambiguous')
-          ? 'cleanup_ambiguous'
-          : 'cleanup_verified';
+    const state = cleanupState(intent, receipt, readback);
     return {
       source: 'mutation',
       resourceKind: mutation.resourceKind,
@@ -303,8 +297,24 @@ export function projectResourceLedger(journal: ReadJournalResult): ResourceLedge
   return [...baselines, ...mutations];
 }
 
+function cleanupState(
+  intent: CleanupIntentRecord | undefined,
+  receipt: CleanupReceipt | undefined,
+  readback: CleanupReadback | undefined,
+): ResourceLedgerEntry['state'] {
+  if (intent === undefined) return 'mutation_recorded';
+  if (receipt === undefined) return 'cleanup_pending';
+  if (receipt.outcome === 'ambiguous'
+    && (readback === undefined || readback.outcome === 'ambiguous')) return 'cleanup_ambiguous';
+  return 'cleanup_verified';
+}
+
 export function deriveCleanupPlan(path: string, identity: JournalIdentity): CleanupTarget[] {
-  const ledger = projectProductLedger(read(path, identity));
+  return deriveCleanupPlanFromJournal(read(path, identity));
+}
+
+function deriveCleanupPlanFromJournal(journal: ReadJournalResult): CleanupTarget[] {
+  const ledger = projectProductLedger(journal);
   const resolvedReadbackIntentIds = new Set(ledger.cleanupReadbacks
     .filter(({ outcome }) => outcome !== 'ambiguous')
     .map(({ cleanupIntentId }) => cleanupIntentId));
@@ -342,7 +352,7 @@ export function beginCleanup(
   requireExactId(target.immutableId);
   if (target.resolution === 'authoritative_readback') fail('CLEANUP_AMBIGUOUS');
   const journal = read(path, identity);
-  const plan = deriveCleanupPlan(path, identity);
+  const plan = deriveCleanupPlanFromJournal(journal);
   const declared = plan.find(({ mutationReceiptId }) => mutationReceiptId === target.mutationReceiptId);
   if (declared === undefined || !same(declared, target)) fail('UNDECLARED_CLEANUP');
   if (input.currentRevision !== declared.expectedRevision) fail('REVISION_DRIFT');

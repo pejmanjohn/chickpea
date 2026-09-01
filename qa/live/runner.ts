@@ -1,5 +1,3 @@
-import { existsSync } from 'node:fs';
-
 import {
   diagnoseLiveTarget,
   type DoctorSnapshot,
@@ -21,6 +19,7 @@ import {
 import {
   appendRunJournal,
   createRunJournal,
+  JournalValidationError,
   readRunJournal,
   type RunJournalEvent,
   type RunJournalEventData,
@@ -93,35 +92,41 @@ export function advanceLiveRun(
 ): RunnerRecord {
   const at = request.now ?? new Date().toISOString();
   if (!Number.isFinite(Date.parse(at))) throw new LiveRunnerError('INVALID_RUN_SIGNAL', 'invalid timestamp');
-  const exists = existsSync(request.journalPath);
   const doctor = diagnoseLiveTarget({
     overlay: request.overlay,
     source: { read: () => request.doctorSnapshot },
   });
+  let journal = readJournalIfPresent(request);
 
-  if (!exists) {
+  if (journal === undefined) {
     if (request.signal !== undefined) throw new LiveRunnerError('INVALID_RUN_SIGNAL', 'new runs cannot begin with a signal');
     assertDoctorIdentity(request.identity, doctor);
     const variantIds = selectSuiteVariants(request.suite, request.variantIds);
-    createRunJournal(request.journalPath, {
-      runId: request.runId,
-      manifestDigest: LIVE_MANIFEST_DIGEST,
-      ...request.identity,
-      suite: request.suite,
-      variantIds,
-      createdAt: at,
-    });
-    append(request, { type: 'doctor', ready: doctor.ready, diagnosticCodes: doctor.diagnostics.map(({ code }) => code) }, at);
-    if (!doctor.ready) return blockNewRun(request, variantIds, doctor.diagnostics[0]?.code, at);
-    const target = validateTargetOverlay(LIVE_MANIFEST, request.overlay);
-    return exposeNextAction(request, dependencies, target, variantIds[0] as string, 0, 'preflight', at);
+    try {
+      createRunJournal(request.journalPath, {
+        runId: request.runId,
+        manifestDigest: LIVE_MANIFEST_DIGEST,
+        ...request.identity,
+        suite: request.suite,
+        variantIds,
+        createdAt: at,
+      });
+    } catch (error) {
+      if (!(error instanceof JournalValidationError) || error.code !== 'JOURNAL_EXISTS') throw error;
+      journal = readRunJournal(request.journalPath, {
+        runId: request.runId,
+        manifestDigest: LIVE_MANIFEST_DIGEST,
+        incompleteFinal: 'discard',
+      });
+    }
+    if (journal === undefined) {
+      append(request, { type: 'doctor', ready: doctor.ready, diagnosticCodes: doctor.diagnostics.map(({ code }) => code) }, at);
+      if (!doctor.ready) return blockNewRun(request, variantIds, doctor.diagnostics[0]?.code, at);
+      const target = validateTargetOverlay(LIVE_MANIFEST, request.overlay);
+      return exposeNextAction(request, dependencies, target, variantIds[0] as string, 0, 'preflight', at);
+    }
   }
 
-  const journal = readRunJournal(request.journalPath, {
-    runId: request.runId,
-    manifestDigest: LIVE_MANIFEST_DIGEST,
-    incompleteFinal: 'discard',
-  });
   assertHeader(request, journal);
   assertDoctorIdentity(request.identity, doctor);
   const phase = derivePhase(journal.events);
@@ -139,15 +144,15 @@ export function advanceLiveRun(
   if (phase === 'recovery') {
     const recoveryIntent = findRecoveryIntent(journal.events);
     if (recoveryIntent === undefined) throw new RunStateError('INVALID_TRANSITION', 'recovery has no intent');
-    return continueRecovery(request, dependencies, target, journal, recoveryIntent, at);
+    return continueRecovery(request, dependencies, target, recoveryIntent, at);
   }
   if (phase === 'action_required') {
     if (outstandingIntent === undefined) {
       const durable = findDurableActionReceipt(journal.events);
       if (durable === undefined) throw new RunStateError('INVALID_TRANSITION', 'action state has neither intent nor receipt');
-      return resumeDurableActionReceipt(request, dependencies, target, journal, durable.intent, durable.receipt, at);
+      return resumeDurableActionReceipt(request, dependencies, target, durable.intent, durable.receipt, at);
     }
-    return continuePendingAction(request, dependencies, target, journal, outstandingIntent, at);
+    return continuePendingAction(request, dependencies, target, outstandingIntent, at);
   }
   if (phase === 'waiting') return continueObservationWait(request, journal, at);
   if (phase === 'assertion') return recordAssertion(request, dependencies, target, journal, at);
@@ -165,7 +170,6 @@ function continuePendingAction(
   request: AdvanceLiveRunRequest,
   dependencies: AdvanceLiveRunDependencies,
   target: LiveTargetOverlay,
-  journal: ReadJournalResult,
   intent: Extract<RunJournalEventData, { type: 'intent' }>,
   at: string,
 ): RunnerRecord {
@@ -193,7 +197,7 @@ function continuePendingAction(
   const primary = primaryForReceiptOutcome(request.signal.outcome);
   if (primary !== undefined) {
     appendCaseResult(request, intent.variantId, primary, at);
-    return enterCleanupOrContinue(request, dependencies, target, journal, intent.variantId, 'action_required', at);
+    return enterCleanupOrContinue(request, dependencies, target, intent.variantId, primary, 'action_required', at);
   }
   return afterCompletedAction(request, dependencies, target, intent, 'action_required', at);
 }
@@ -202,7 +206,6 @@ function continueRecovery(
   request: AdvanceLiveRunRequest,
   dependencies: AdvanceLiveRunDependencies,
   target: LiveTargetOverlay,
-  journal: ReadJournalResult,
   intent: Extract<RunJournalEventData, { type: 'intent' }>,
   at: string,
 ): RunnerRecord {
@@ -225,10 +228,11 @@ function continueRecovery(
     outcome: request.signal.outcome,
   }, at);
   if (request.signal.outcome === 'ambiguous') {
-    appendCaseResult(request, intent.variantId, {
+    const primary: PrimaryOutcome = {
       result: 'ambiguous', reason: 'ambiguous_mutation',
-    }, at);
-    return enterCleanupOrContinue(request, dependencies, target, journal, intent.variantId, 'recovery', at);
+    };
+    appendCaseResult(request, intent.variantId, primary, at);
+    return enterCleanupOrContinue(request, dependencies, target, intent.variantId, primary, 'recovery', at);
   }
   if (request.signal.outcome === 'absent') {
     const actionIndex = actionIndexFromRef(intent.actionRef);
@@ -243,18 +247,18 @@ function continueRecovery(
       attemptFromRef(intent.actionRef) + 1,
     );
   }
-  appendCaseResult(request, intent.variantId, {
+  const primary: PrimaryOutcome = {
     result: 'ambiguous',
     reason: 'ambiguous_mutation',
-  }, at);
-  return enterCleanupOrContinue(request, dependencies, target, journal, intent.variantId, 'recovery', at);
+  };
+  appendCaseResult(request, intent.variantId, primary, at);
+  return enterCleanupOrContinue(request, dependencies, target, intent.variantId, primary, 'recovery', at);
 }
 
 function resumeDurableActionReceipt(
   request: AdvanceLiveRunRequest,
   dependencies: AdvanceLiveRunDependencies,
   target: LiveTargetOverlay,
-  journal: ReadJournalResult,
   intent: Extract<RunJournalEventData, { type: 'intent' }>,
   receipt: Extract<RunJournalEventData, { type: 'receipt' }>,
   at: string,
@@ -268,7 +272,7 @@ function resumeDurableActionReceipt(
   const primary = primaryForReceiptOutcome(receipt.outcome);
   if (primary !== undefined) {
     appendCaseResult(request, intent.variantId, primary, at);
-    return enterCleanupOrContinue(request, dependencies, target, journal, intent.variantId, 'action_required', at);
+    return enterCleanupOrContinue(request, dependencies, target, intent.variantId, primary, 'action_required', at);
   }
   return afterCompletedAction(request, dependencies, target, intent, 'action_required', at);
 }
@@ -343,8 +347,9 @@ function recordAssertion(
   };
   if (request.signal.reason !== undefined) assertionEvent.reason = request.signal.reason;
   append(request, assertionEvent, at);
-  appendCaseResult(request, variantId, outcome(request.signal.result, request.signal.reason), at);
-  return enterCleanupOrContinue(request, dependencies, target, journal, variantId, 'assertion', at);
+  const primary = outcome(request.signal.result, request.signal.reason);
+  appendCaseResult(request, variantId, primary, at);
+  return enterCleanupOrContinue(request, dependencies, target, variantId, primary, 'assertion', at);
 }
 
 function recordCleanup(
@@ -360,27 +365,26 @@ function recordCleanup(
     throw new LiveRunnerError('INVALID_RUN_SIGNAL', 'cleanup result must match the pending variant');
   }
   append(request, { type: 'cleanup_result', variantId, result: request.signal.result }, at);
-  return continueSuite(request, dependencies, target, journal, 'cleanup', at);
+  return continueSuite(request, dependencies, target, 'cleanup', at);
 }
 
 function enterCleanupOrContinue(
   request: AdvanceLiveRunRequest,
   dependencies: AdvanceLiveRunDependencies,
   target: LiveTargetOverlay,
-  journal: ReadJournalResult,
   variantId: string,
+  caseResult: PrimaryOutcome,
   phase: 'action_required' | 'recovery' | 'assertion',
   at: string,
 ): RunnerRecord {
   const cleanupRequired = variantById(variantId).actions.some(({ cleanup }) => cleanup.strategy !== 'not_required');
   if (!cleanupRequired) {
     append(request, { type: 'cleanup_result', variantId, result: 'not_required' }, at);
-    return continueSuite(request, dependencies, target, journal, phase, at);
+    return continueSuite(request, dependencies, target, phase, at);
   }
-  const caseResult = latestCaseResult(request.journalPath, request.runId, variantId);
   appendTransition(request, phase, 'cleanup', 'waiting', {
     variantId,
-    ...(caseResult?.reason === undefined ? {} : { reason: caseResult.reason }),
+    ...(caseResult.reason === undefined ? {} : { reason: caseResult.reason }),
   }, at);
   const waiting: WaitingRecord = {
     kind: 'waiting',
@@ -389,7 +393,7 @@ function enterCleanupOrContinue(
     variantId,
     waitingFor: 'cleanup',
   };
-  if (caseResult?.reason !== undefined) waiting.reason = caseResult.reason;
+  if (caseResult.reason !== undefined) waiting.reason = caseResult.reason;
   return waiting;
 }
 
@@ -397,7 +401,6 @@ function continueSuite(
   request: AdvanceLiveRunRequest,
   dependencies: AdvanceLiveRunDependencies,
   target: LiveTargetOverlay,
-  journalBeforeCurrentWrite: ReadJournalResult,
   phase: 'action_required' | 'recovery' | 'assertion' | 'cleanup',
   at: string,
 ): RunnerRecord {
@@ -405,14 +408,11 @@ function continueSuite(
     runId: request.runId,
     manifestDigest: LIVE_MANIFEST_DIGEST,
   });
-  const completeIds = new Set(journal.events
-    .filter((event) => event.event.type === 'cleanup_result')
-    .map((event) => (event.event as Extract<RunJournalEventData, { type: 'cleanup_result' }>).variantId));
+  const completeIds = completedVariantIds(journal.events);
   const nextVariantId = journal.header.variantIds.find((variantId) => !completeIds.has(variantId));
   if (nextVariantId !== undefined) {
     return exposeNextAction(request, dependencies, target, nextVariantId, 0, phase, at);
   }
-  void journalBeforeCurrentWrite;
   return finishRun(request, journal, phase, at);
 }
 
@@ -618,6 +618,19 @@ function append(request: AdvanceLiveRunRequest, event: RunJournalEventData, at: 
   });
 }
 
+function readJournalIfPresent(request: AdvanceLiveRunRequest): ReadJournalResult | undefined {
+  try {
+    return readRunJournal(request.journalPath, {
+      runId: request.runId,
+      manifestDigest: LIVE_MANIFEST_DIGEST,
+      incompleteFinal: 'discard',
+    });
+  } catch (error) {
+    if (error instanceof JournalValidationError && error.code === 'JOURNAL_MISSING') return undefined;
+    throw error;
+  }
+}
+
 function derivePhase(events: readonly RunJournalEvent[]): RunPhase {
   let phase: RunPhase = 'preflight';
   for (const record of events) {
@@ -709,19 +722,14 @@ function variantAwaitingCleanup(events: readonly RunJournalEvent[]): string | un
   return undefined;
 }
 
-function latestCaseResult(path: string, runId: string, variantId: string): PrimaryOutcome | undefined {
-  const journal = readRunJournal(path, { runId, manifestDigest: LIVE_MANIFEST_DIGEST });
-  for (let index = journal.events.length - 1; index >= 0; index -= 1) {
-    const event = journal.events[index]?.event;
-    if (event?.type === 'case_result' && event.variantId === variantId) return outcome(event.result, event.reason);
-  }
-  return undefined;
+function completedVariantIds(events: readonly RunJournalEvent[]): Set<string> {
+  return new Set(events.flatMap((record) =>
+    record.event.type === 'cleanup_result' ? [record.event.variantId] : []
+  ));
 }
 
 function activeVariantId(journal: ReadJournalResult): string | undefined {
-  const complete = new Set(journal.events
-    .filter((event) => event.event.type === 'cleanup_result')
-    .map((event) => (event.event as Extract<RunJournalEventData, { type: 'cleanup_result' }>).variantId));
+  const complete = completedVariantIds(journal.events);
   return journal.header.variantIds.find((variantId) => !complete.has(variantId));
 }
 
