@@ -1,14 +1,14 @@
 import type { StateDb } from '../../state/state-db.ts';
 import type { GatewayInboundDelivery } from './protocol.ts';
 
-const GATEWAY_INBOX_MAX_TOTAL_ROWS = 4_096;
+const GATEWAY_INBOX_MAX_TOTAL_ROWS = 1_000_000;
 const GATEWAY_INBOX_MAX_ACTIVE_ROWS = 512;
 const GATEWAY_INBOX_MAX_ACTIVE_BYTES = 32 * 1_048_576;
 const GATEWAY_INBOX_MAX_PAYLOAD_BYTES = 1_048_576;
 const GATEWAY_INBOX_MAX_ACTIVE_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
-// Slack's Events API retry sequence completes within minutes. Keep the
-// body-free identity for a full day so a delayed retry still deduplicates.
-const GATEWAY_INBOX_DEDUP_RETENTION_MS = 24 * 60 * 60 * 1_000;
+// Slack Delayed Events can retry for 24 hours. Keep the content-free identity
+// for twice that window so boundary retries and local recovery still dedupe.
+const GATEWAY_INBOX_DEDUP_RETENTION_MS = 48 * 60 * 60 * 1_000;
 const GATEWAY_INBOX_MAX_ATTEMPTS = 5;
 const GATEWAY_INBOX_MAX_IN_FLIGHT = 16;
 const GATEWAY_INBOX_LEASE_MS = 2 * 60_000;
@@ -104,6 +104,9 @@ export class GatewayInboxStoreLogic {
       )`,
     );
     db.exec('CREATE INDEX IF NOT EXISTS gateway_inbox_status_idx ON gateway_inbox(status, accepted_at)');
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS gateway_inbox_terminal_idx ON gateway_inbox(status, terminal_at)',
+    );
   }
 
   admit(delivery: GatewayInboundDelivery): GatewayInboxAdmissionOutcome {
@@ -142,21 +145,10 @@ export class GatewayInboxStoreLogic {
       ) {
         throw new GatewayInboxCapacityError('Gateway inbox capacity is exhausted.');
       }
-      const rowsToFree = Number(totals?.total_rows ?? 0) - this.limits.maxTotalRows + 1;
-      if (rowsToFree > 0) {
-        const deleted = this.db.run(
-          `DELETE FROM gateway_inbox
-           WHERE id IN (
-             SELECT id FROM gateway_inbox
-             WHERE status IN ('completed', 'recovery_required')
-             ORDER BY terminal_at, accepted_at, id
-             LIMIT ?
-          )`,
-          rowsToFree,
-        );
-        if (deleted.changes < rowsToFree) {
-          throw new GatewayInboxCapacityError('Gateway inbox capacity is exhausted.');
-        }
+      if (Number(totals?.total_rows ?? 0) >= this.limits.maxTotalRows) {
+        // Never trade dedup correctness for admission. maintain() already
+        // purged every expired tombstone before this transaction.
+        throw new GatewayInboxCapacityError('Gateway inbox capacity is exhausted.');
       }
       const inserted = this.db.run(
         `INSERT INTO gateway_inbox (

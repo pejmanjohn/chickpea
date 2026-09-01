@@ -788,7 +788,7 @@ function analyzeEffectAction(
     }
     // REST paths include structural parents and identity placeholders that the
     // requester should not have to recite (`/repos/:owner/:repo/issues`,
-    // `/users/me/messages/send`). The terminal recognized resource is the
+    // `users/me/messages/send`). The terminal recognized resource is the
     // endpoint's effect target; service identity is checked independently.
     const terminalTargetToken = candidateTargetTokens.at(-1);
     const rawTargetTokens = terminalTargetToken ? [terminalTargetToken] : [];

@@ -317,7 +317,7 @@ What the design guarantees:
 - **An editor may publish only to a channel they belong to.** Chickpea Admin status does not bypass Slack channel membership.
 - **Self-hosted state.** Runtime, model traffic, configuration, memory, and connector credentials stay in infrastructure you operate. The exception is opting into Composio-managed connectors, which delegates OAuth storage, refresh, and API execution for those accounts to Composio. Native API and MCP connections keep their credentials with you.
 
-The other exception is the optional shared Slack-app gateway, which exists so you can skip Slack app configuration entirely. It stores encrypted installation credentials and sanitized health metadata, and **no Slack event payloads**. It is online-only: when your deployment is offline, events are acknowledged and dropped rather than stored for replay. If you'd rather not have it in the path at all, pick the customer-owned Slack app lane, which talks directly to your deployment and never loads the gateway client.
+The other exception is the optional shared Slack-app gateway, which exists so you can skip Slack app configuration entirely. It stores encrypted installation credentials and sanitized health metadata, but does **not durably store Slack message or event bodies**. If it cannot hand an event to your deployment, it returns a failure so Slack can retry; with Slack's Delayed Events setting enabled, those retries can continue hourly for 24 hours. On Cloudflare, your deployment durably admits the event before acknowledging it, then scrubs the body as soon as processing reaches a terminal state and keeps only a content-free deduplication record for 48 hours. The Node target does not yet provide that durable-admission contract; use your own Slack app for reliable Node ingress. Read the exact retention and recovery boundaries in [Shared Slack gateway data handling](docs/shared-gateway-data-handling.md). If you'd rather not have the gateway in the path at all, pick the customer-owned Slack app lane, which talks directly to your deployment and never loads the gateway client.
 
 ---
 
@@ -388,7 +388,7 @@ The full list, including per-connector Composio auth config IDs and the Google A
 ## Good to Know
 
 - One deployment currently serves one Slack workspace.
-- The shared gateway is private infrastructure. Its implementation and Slack credentials are not in this public repository, and it does not queue Slack event bodies while your deployment is offline.
+- The shared gateway is private infrastructure. Its implementation and Slack credentials are not in this public repository, and it does not durably queue Slack event bodies. Delivery recovery relies on Slack retries plus deployment-owned admission; [the data-handling contract](docs/shared-gateway-data-handling.md) spells out what is stored, where, and for how long.
 - Updates are manual. The Cloudflare Deploy button clones this repository rather than forking it.
 - Node durability is single-host SQLite. Multi-instance Node needs a shared state service.
 - Cloudflare free-tier model and Durable Object limits are hard platform limits under load.

@@ -19,6 +19,7 @@ tmp/
 docs/
 !docs/
 docs/*
+!docs/shared-gateway-data-handling.md
 !docs/design/
 docs/design/*
 !docs/design/agent-first-admin-prototype/

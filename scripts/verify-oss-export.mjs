@@ -70,6 +70,7 @@ const forbiddenSourcePathRoots = [
 
 const allowedPublicDocs = new Set([
   exportPath('docs', 'authentication.md'),
+  exportPath('docs', 'shared-gateway-data-handling.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'design-qa.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'production-fidelity-qa.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'app.jsx'),
@@ -77,11 +78,15 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'styles.css'),
   exportPath('docs', 'plans', '2026-07-28-001-feat-openai-subscription-auth-plan.md'),
   exportPath('docs', 'plans', '2026-08-19-2302-feat-agent-first-slack-platform-plan.md'),
+  exportPath('docs', 'reference', 'scheduled-routines.md'),
+  exportPath('docs', 'runbooks', 'agent-private-use-acceptance-2026-08-27.md'),
   exportPath('docs', 'runbooks', 'agent-authoring-evaluation.md'),
   exportPath('docs', 'runbooks', 'auth-db-deployment.md'),
   exportPath('docs', 'runbooks', 'agent-first-acceptance-2026-08-21.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
   exportPath('docs', 'runbooks', 'composio-managed-connectors.md'),
+  exportPath('docs', 'runbooks', 'memory-schedules-acceptance.md'),
+  exportPath('docs', 'runbooks', 'semantic-activity-status.md'),
   exportPath('docs', 'runbooks', 'slack-auth-recovery.md'),
   exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
   exportPath('docs', 'runbooks', 'chickpea-system-agent-cutover.md'),
@@ -128,6 +133,10 @@ const allowedBinaryFiles = new Map([
   [
     exportPath('assets', 'chickpea-wordmark-512.png'),
     'f29e8f737ea742dc0cdf3410f8d59a2159c802abd98bc0d82693ac3a694b1799',
+  ],
+  [
+    exportPath('assets', 'chickpea-wordmark-512-dark.png'),
+    '04d4e57a100b3c3eee5215a20de4b74a239df1dd09a8cfe6213b9b9d01a9b22d',
   ],
   [
     exportPath('assets', 'bot-avatar.png'),
@@ -547,6 +556,7 @@ function verifyNpmPackManifest() {
     'scripts/deploy-with-epilogue.mjs',
     'scripts/recover-auth.mjs',
     'docs/authentication.md',
+    'docs/shared-gateway-data-handling.md',
     'docs/runbooks/agent-authoring-evaluation.md',
     'docs/runbooks/auth-db-deployment.md',
     'docs/runbooks/agent-first-acceptance-2026-08-21.md',
