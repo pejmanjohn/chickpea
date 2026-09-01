@@ -61,7 +61,7 @@ export function tableColumns(db: StateDb, table: string): Set<string> {
   return new Set(db.all(`PRAGMA table_info(${table})`).map((row) => String(row.name)));
 }
 
-/** Add a nullable column once; re-running an install must stay a no-op. */
+/** Add a column once; re-running an install must stay a no-op. */
 export function addColumnIfMissing(
   db: StateDb,
   table: string,

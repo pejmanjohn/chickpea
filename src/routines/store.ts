@@ -4,7 +4,7 @@ import { ConfigStoreLogic } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
-import { installLedgerLinks } from '../state/schema-links.ts';
+import { addColumnIfMissing, installLedgerLinks } from '../state/schema-links.ts';
 import type { SqlParam, StateDb } from '../state/state-db.ts';
 import {
   hashRoutineValue,
@@ -2602,7 +2602,6 @@ export class RoutineStoreLogic {
         last_missed_at INTEGER, trace_id TEXT, revision_json TEXT, revision_hash TEXT NOT NULL
       )`,
     );
-    const runColumns = this.db.all('PRAGMA table_info(routine_runs)');
     for (const [name, definition] of [
       ['usage_ledger_operation_id', 'TEXT'],
       ['usage_provenance', "TEXT NOT NULL DEFAULT 'legacy_routine'"],
@@ -2611,30 +2610,17 @@ export class RoutineStoreLogic {
       ['flue_agent_settlement_json', 'TEXT'],
       ['resolved_authority_receipt_id', 'TEXT'],
       ['resolved_runs_as_membership_id', 'TEXT'],
+      ['provider_auth_route', 'TEXT'],
     ] as const) {
-      if (!runColumns.some((column) => column.name === name)) {
-        this.db.exec(`ALTER TABLE routine_runs ADD COLUMN ${name} ${definition}`);
-      }
+      addColumnIfMissing(this.db, 'routine_runs', name, definition);
     }
-    if (!runColumns.some((row) => row.name === 'provider_auth_route')) {
-      this.db.exec('ALTER TABLE routine_runs ADD COLUMN provider_auth_route TEXT');
-    }
-    const routineColumns = this.db.all('PRAGMA table_info(routines)');
-    if (!routineColumns.some((row) => row.name === 'source_visibility')) {
-      this.db.exec(
-        "ALTER TABLE routines ADD COLUMN source_visibility TEXT NOT NULL DEFAULT 'unknown'",
-      );
-    }
-    if (!routineColumns.some((row) => row.name === 'destination_kind')) {
-      this.db.exec(
-        "ALTER TABLE routines ADD COLUMN destination_kind TEXT NOT NULL DEFAULT 'channel'",
-      );
-    }
-    if (!routineColumns.some((row) => row.name === 'direct_thread_ts')) {
-      this.db.exec('ALTER TABLE routines ADD COLUMN direct_thread_ts TEXT');
-    }
-    if (!routineColumns.some((row) => row.name === 'direct_owner_membership_id')) {
-      this.db.exec('ALTER TABLE routines ADD COLUMN direct_owner_membership_id TEXT');
+    for (const [name, definition] of [
+      ['source_visibility', "TEXT NOT NULL DEFAULT 'unknown'"],
+      ['destination_kind', "TEXT NOT NULL DEFAULT 'channel'"],
+      ['direct_thread_ts', 'TEXT'],
+      ['direct_owner_membership_id', 'TEXT'],
+    ] as const) {
+      addColumnIfMissing(this.db, 'routines', name, definition);
     }
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_pending_authority (

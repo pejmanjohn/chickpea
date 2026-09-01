@@ -1,4 +1,5 @@
 import type { StateDb } from '../../state/state-db.ts';
+import { addColumnIfMissing } from '../../state/schema-links.ts';
 import { UsageStateError } from '../store-error.ts';
 import { RELEASE_PRICE_CATALOGS } from './catalogs/2026-07-28.ts';
 import type { UsagePriceRate, UsagePriceVersion } from './types.ts';
@@ -34,13 +35,8 @@ export function installReleasePriceCatalogs(db: StateDb): UsagePriceVersion[] {
       PRIMARY KEY (price_version_id, provider_id, model_id)
     )`,
   );
-  const rateColumns = db.all('PRAGMA table_info(usage_price_rates)');
-  if (!rateColumns.some((row) => row.name === 'cache_read_micros_per_unit')) {
-    db.exec('ALTER TABLE usage_price_rates ADD COLUMN cache_read_micros_per_unit INTEGER');
-  }
-  if (!rateColumns.some((row) => row.name === 'cache_write_micros_per_unit')) {
-    db.exec('ALTER TABLE usage_price_rates ADD COLUMN cache_write_micros_per_unit INTEGER');
-  }
+  addColumnIfMissing(db, 'usage_price_rates', 'cache_read_micros_per_unit', 'INTEGER');
+  addColumnIfMissing(db, 'usage_price_rates', 'cache_write_micros_per_unit', 'INTEGER');
   const installed: UsagePriceVersion[] = [];
   for (const catalog of RELEASE_PRICE_CATALOGS) {
     if (installVersion(db, catalog)) installed.push(catalog);

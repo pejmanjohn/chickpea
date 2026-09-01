@@ -1,5 +1,5 @@
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
-import { installLedgerLinks } from '../state/schema-links.ts';
+import { addColumnIfMissing, installLedgerLinks } from '../state/schema-links.ts';
 import { promisify } from '../state/async-facade.ts';
 import type { StateDb } from '../state/state-db.ts';
 import { AuditStoreLogic } from '../audit/store.ts';
@@ -1321,16 +1321,12 @@ export class UsageStoreLogic {
       'CREATE INDEX IF NOT EXISTS usage_connector_attempts_operation_idx ON usage_connector_attempts (operation_id, run_id, run_execution_id)',
       'CREATE INDEX IF NOT EXISTS usage_connector_quota_period_idx ON usage_connector_quota_reservations (adapter_id, toolkit, bucket, period_start)',
     ]) this.db.exec(sql);
-    const measurementColumns = this.db.all('PRAGMA table_info(usage_measurements)');
-    if (!measurementColumns.some((row) => row.name === 'cache_read_tokens')) {
-      this.db.exec('ALTER TABLE usage_measurements ADD COLUMN cache_read_tokens INTEGER');
+    for (const [name, definition] of [
+      ['cache_read_tokens', 'INTEGER'],
+      ['cache_write_tokens', 'INTEGER'],
+    ] as const) {
+      addColumnIfMissing(this.db, 'usage_measurements', name, definition);
     }
-    if (!measurementColumns.some((row) => row.name === 'cache_write_tokens')) {
-      this.db.exec('ALTER TABLE usage_measurements ADD COLUMN cache_write_tokens INTEGER');
-    }
-    const operationColumns = new Set(
-      this.db.all('PRAGMA table_info(usage_operations)').map((row) => String(row.name)),
-    );
     for (const [name, definition] of [
       ['requester_membership_id', 'TEXT'],
       ['execution_principal_id', 'TEXT'],
@@ -1338,27 +1334,21 @@ export class UsageStoreLogic {
       ['workspace_default_revision', 'INTEGER'],
       ['catalog_revision', 'TEXT'],
     ] as const) {
-      if (!operationColumns.has(name)) {
-        this.db.exec(`ALTER TABLE usage_operations ADD COLUMN ${name} ${definition}`);
-      }
+      addColumnIfMissing(this.db, 'usage_operations', name, definition);
     }
-    const rollupColumns = this.db.all('PRAGMA table_info(usage_daily_rollups)');
-    if (!rollupColumns.some((row) => row.name === 'cache_read_tokens')) {
-      this.db.exec('ALTER TABLE usage_daily_rollups ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0');
+    for (const [name, definition] of [
+      ['cache_read_tokens', 'INTEGER NOT NULL DEFAULT 0'],
+      ['cache_write_tokens', 'INTEGER NOT NULL DEFAULT 0'],
+    ] as const) {
+      addColumnIfMissing(this.db, 'usage_daily_rollups', name, definition);
     }
-    if (!rollupColumns.some((row) => row.name === 'cache_write_tokens')) {
-      this.db.exec('ALTER TABLE usage_daily_rollups ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0');
-    }
-    const connectorColumns = this.db.all('PRAGMA table_info(usage_connector_attempts)');
-    if (!connectorColumns.some((row) => row.name === 'result_bytes')) {
-      this.db.exec('ALTER TABLE usage_connector_attempts ADD COLUMN result_bytes INTEGER');
-    }
-    const connectorRollupColumns = this.db.all('PRAGMA table_info(usage_connector_daily_rollups)');
-    if (!connectorRollupColumns.some((row) => row.name === 'result_bytes_total')) {
-      this.db.exec(
-        'ALTER TABLE usage_connector_daily_rollups ADD COLUMN result_bytes_total INTEGER NOT NULL DEFAULT 0',
-      );
-    }
+    addColumnIfMissing(this.db, 'usage_connector_attempts', 'result_bytes', 'INTEGER');
+    addColumnIfMissing(
+      this.db,
+      'usage_connector_daily_rollups',
+      'result_bytes_total',
+      'INTEGER NOT NULL DEFAULT 0',
+    );
     // The pointers into the Work ledger (usage_operations.run_id,
     // usage_measurements.run_execution_id) and their partial indexes are
     // installed by whichever store gets here first — see installLedgerLinks.

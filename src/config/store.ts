@@ -53,6 +53,7 @@ import {
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
+import { addColumnIfMissing, tableExists } from '../state/schema-links.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import {
@@ -2517,26 +2518,30 @@ export class ConfigStoreLogic {
       return;
     }
 
-    if (tableExists(this.db, 'config_agents') &&
-        !tableHasColumn(this.db, 'config_agents', 'agent_kind')) {
-      this.db.exec(
-        `ALTER TABLE config_agents ADD COLUMN agent_kind TEXT NOT NULL DEFAULT 'user'
+    if (tableExists(this.db, 'config_agents')) {
+      addColumnIfMissing(
+        this.db,
+        'config_agents',
+        'agent_kind',
+        `TEXT NOT NULL DEFAULT 'user'
          CHECK (agent_kind IN ('user', 'system'))`,
       );
     }
-    if (tableExists(this.db, 'config_workspace_installations') &&
-        !tableHasColumn(this.db, 'config_workspace_installations', 'runtime_contract')) {
-      this.db.exec(
-        `ALTER TABLE config_workspace_installations
-         ADD COLUMN runtime_contract TEXT NOT NULL DEFAULT 'legacy'
+    if (tableExists(this.db, 'config_workspace_installations')) {
+      addColumnIfMissing(
+        this.db,
+        'config_workspace_installations',
+        'runtime_contract',
+        `TEXT NOT NULL DEFAULT 'legacy'
          CHECK (runtime_contract IN ('legacy', 'chickpea-v1'))`,
       );
     }
-    if (tableExists(this.db, 'config_agent_thread_routes') &&
-        !tableHasColumn(this.db, 'config_agent_thread_routes', 'owner_incarnation')) {
-      this.db.exec(
-        `ALTER TABLE config_agent_thread_routes
-         ADD COLUMN owner_incarnation INTEGER NOT NULL DEFAULT 1
+    if (tableExists(this.db, 'config_agent_thread_routes')) {
+      addColumnIfMissing(
+        this.db,
+        'config_agent_thread_routes',
+        'owner_incarnation',
+        `INTEGER NOT NULL DEFAULT 1
          CHECK (owner_incarnation > 0)`,
       );
     }
@@ -2615,11 +2620,7 @@ export class ConfigStoreLogic {
         ['previous_agent_id', 'TEXT'],
         ['handoff_context_json', 'TEXT'],
       ] as const) {
-        if (!tableHasColumn(this.db, 'config_agent_thread_routes', column)) {
-          this.db.exec(
-            `ALTER TABLE config_agent_thread_routes ADD COLUMN ${column} ${declaration}`,
-          );
-        }
+        addColumnIfMissing(this.db, 'config_agent_thread_routes', column, declaration);
       }
     }
     this.db.run(
@@ -2663,21 +2664,6 @@ export class ConfigStoreLogic {
       Date.now(),
     );
   }
-}
-
-function tableExists(db: StateDb, table: string): boolean {
-  return Boolean(db.get(
-    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
-    table,
-  ));
-}
-
-function tableHasColumn(db: StateDb, table: string, column: string): boolean {
-  const sql = String(db.get(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-    table,
-  )?.sql ?? '');
-  return new RegExp(`(?:^|[^a-z0-9_])${column}(?:[^a-z0-9_]|$)`, 'i').test(sql);
 }
 
 function incompatibleConfigSchemaError(): Error {
