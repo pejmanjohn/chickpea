@@ -41,6 +41,7 @@ import type {
 } from './run-presentations.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
 import { SlackTransportError } from './transport/types.ts';
+import { slackPlatformErrorCode } from './errors.ts';
 
 /** Static failure copy keeps raw provider errors out of Slack (scenario S15). */
 export const PROVIDER_FAILURE_TEXT =
@@ -1240,15 +1241,6 @@ async function addReactionChain(
     }
   }
   throw lastError ?? new PersistedSlackDeliveryError('failed', 'slack_reaction_failed');
-}
-
-function slackPlatformErrorCode(error: unknown): string | undefined {
-  if (error instanceof SlackTransportError) return error.code;
-  if (!error || typeof error !== 'object') return undefined;
-  const data = (error as { data?: unknown }).data;
-  if (!data || typeof data !== 'object') return undefined;
-  const code = (data as { error?: unknown }).error;
-  return typeof code === 'string' ? code : undefined;
 }
 
 function slackRateRetryAfterMs(error: unknown): number | undefined {
