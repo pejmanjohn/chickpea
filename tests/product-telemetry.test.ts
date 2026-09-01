@@ -7,7 +7,11 @@ import {
   bucketTelemetryCount,
 } from '../src/telemetry/events.ts';
 import {
-  TELEMETRY_IDENTITY_SETTING,
+  POSTHOG_INGEST_ORIGIN,
+  POSTHOG_PROJECT_TOKEN,
+  createProductTelemetryClient,
+} from '../src/telemetry/client.ts';
+import {
   TelemetryIdentityUnavailableError,
   loadOrCreateTelemetryIdentity,
   telemetryPseudonym,
@@ -240,4 +244,152 @@ function settingsStub(overrides: {
   };
 }
 
-void TELEMETRY_IDENTITY_SETTING;
+function memorySettings(): SettingsStore {
+  let value: string | undefined;
+  return settingsStub({
+    async getSetting() { return value; },
+    async applySettingsPatch(patch) {
+      if ((patch.expected?.value ?? null) !== (value ?? null)) return false;
+      value = patch.set?.[0]?.value;
+      return true;
+    },
+  });
+}
+
+test('telemetry client sends one exact bounded PostHog batch', async () => {
+  const requests: Array<{
+    input: Parameters<typeof fetch>[0];
+    init: Parameters<typeof fetch>[1];
+  }> = [];
+  const tasks: Promise<void>[] = [];
+  const client = createProductTelemetryClient({
+    settings: memorySettings(),
+    fetch: async (input, init) => {
+      requests.push({ input, init });
+      return { status: 200 } as Response;
+    },
+    lifecycle: (task) => tasks.push(task),
+    runtimeTarget: 'node',
+    telemetryEnvironment: 'test',
+    appVersion: '0.0.0',
+    now: () => Date.UTC(2026, 8, 1, 17, 30),
+    randomUUID: () => INSTALLATION_ID,
+    randomBytes: () => new Uint8Array(32).fill(9),
+  });
+
+  client.capture({
+    event: 'workspace_connected',
+    workspaceId: 'T_PRIVATE',
+    transportMode: 'direct',
+  });
+  assert.equal(tasks.length, 1);
+  await tasks[0];
+
+  assert.equal(requests.length, 1);
+  assert.equal(String(requests[0]!.input), `${POSTHOG_INGEST_ORIGIN}/batch`);
+  assert.deepEqual(requests[0]!.init?.headers, { 'content-type': 'application/json' });
+  assert.equal(requests[0]!.init?.method, 'POST');
+  assert.equal(requests[0]!.init?.redirect, 'manual');
+  const body = JSON.parse(String(requests[0]!.init?.body)) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(body).sort(), ['api_key', 'batch']);
+  assert.equal(body.api_key, POSTHOG_PROJECT_TOKEN);
+  const batch = body.batch as Array<Record<string, unknown>>;
+  assert.equal(batch.length, 1);
+  assert.deepEqual(Object.keys(batch[0]!).sort(), [
+    'distinct_id', 'event', 'properties', 'timestamp',
+  ]);
+  assert.equal(batch[0]!.distinct_id, INSTALLATION_ID);
+  assert.equal(batch[0]!.timestamp, '2026-09-01T17:30:00.000Z');
+  assert.deepEqual(batch[0]!.properties, {
+    workspace_key: await telemetryPseudonym({
+      installationId: INSTALLATION_ID,
+      hmacKey: new Uint8Array(32).fill(9),
+    }, 'workspace', 'T_PRIVATE'),
+    transport_mode: 'direct',
+    schema_version: 1,
+    runtime_target: 'node',
+    app_version: '0.0.0',
+    telemetry_environment: 'test',
+    $process_person_profile: false,
+    $geoip_disable: true,
+  });
+});
+
+test('telemetry transport settles HTTP, redirect, network, timeout, and body failures without retries', async () => {
+  const outcomes: Array<'redirect' | 'rejected' | 'timeout' | 'body'> = [
+    'redirect', 'rejected', 'timeout', 'body',
+  ];
+  for (const outcome of outcomes) {
+    let attempts = 0;
+    let bodyReads = 0;
+    const tasks: Promise<void>[] = [];
+    const client = createProductTelemetryClient({
+      settings: memorySettings(),
+      fetch: async (_input, init) => {
+        attempts += 1;
+        if (outcome === 'rejected') throw new Error('private network failure');
+        if (outcome === 'timeout') {
+          return new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        }
+        return {
+          status: outcome === 'redirect' ? 302 : 500,
+          json() { bodyReads += 1; throw new Error('private response body'); },
+          text() { bodyReads += 1; throw new Error('private response body'); },
+        } as unknown as Response;
+      },
+      lifecycle: (task) => tasks.push(task),
+      runtimeTarget: 'cloudflare',
+      telemetryEnvironment: 'development',
+      appVersion: '0.0.0',
+      randomUUID: () => INSTALLATION_ID,
+      randomBytes: () => new Uint8Array(32).fill(7),
+      deadlineMs: 10,
+    });
+    client.capture({
+      event: 'agent_created', workspaceId: 'workspace', agentId: 'agent', surface: 'mcp',
+    });
+    await tasks[0];
+    assert.equal(attempts, 1, outcome);
+    assert.equal(bodyReads, 0, outcome);
+  }
+});
+
+test('telemetry transport fails closed before fetch for oversized or hostile input', async () => {
+  let fetches = 0;
+  const tasks: Promise<void>[] = [];
+  const client = createProductTelemetryClient({
+    settings: memorySettings(),
+    fetch: async () => { fetches += 1; return { status: 200 } as Response; },
+    lifecycle: (task) => tasks.push(task),
+    runtimeTarget: 'node',
+    telemetryEnvironment: 'test',
+    appVersion: '0.0.0',
+    randomUUID: () => INSTALLATION_ID,
+    randomBytes: () => new Uint8Array(32).fill(6),
+    maxBatchBytes: 64,
+  });
+  client.capture({
+    event: 'workspace_connected', workspaceId: 'workspace', transportMode: 'direct',
+  });
+  await tasks[0];
+  assert.equal(fetches, 0);
+
+  const hostileTasks: Promise<void>[] = [];
+  const hostile = createProductTelemetryClient({
+    settings: memorySettings(),
+    fetch: async () => { fetches += 1; return { status: 200 } as Response; },
+    lifecycle: (task) => hostileTasks.push(task),
+    runtimeTarget: 'node',
+    telemetryEnvironment: 'test',
+    appVersion: '0.0.0',
+    randomUUID: () => INSTALLATION_ID,
+    randomBytes: () => new Uint8Array(32).fill(6),
+  });
+  hostile.capture(Object.defineProperty({}, 'event', {
+    get() { throw new Error('private getter failure'); },
+  }) as never);
+  await hostileTasks[0];
+  assert.equal(fetches, 0);
+});
