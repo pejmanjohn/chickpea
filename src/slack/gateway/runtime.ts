@@ -6,6 +6,7 @@ import {
   type PlatformEnv,
 } from '../../config/state-backend.ts';
 import { GatewayDeploymentClient } from './client.ts';
+import { createPlatformProductTelemetry } from '../../telemetry/platform.ts';
 
 export const DEFAULT_CHICKPEA_GATEWAY_URL =
   'https://chickpea-slack-gateway.pejmanjohn.workers.dev';
@@ -23,11 +24,16 @@ export function resolveChickpeaGatewayUrl(env?: PlatformEnv): string {
 }
 
 export function createGatewayDeploymentClient(env?: PlatformEnv): GatewayDeploymentClient {
+  const settings = getSettingsStore(env);
   return new GatewayDeploymentClient({
-    settings: getSettingsStore(env),
+    settings,
     config: getConfigStore(env),
     identity: getIdentityStore(env),
     keyring: getSlackCredentialDependencies(env).keyring,
     gatewayBaseUrl: resolveChickpeaGatewayUrl(env),
+    productTelemetry: createPlatformProductTelemetry({
+      ...(env ? { env } : {}),
+      settings,
+    }),
   });
 }

@@ -282,10 +282,13 @@ test('a connection account cannot be bound to a second Agent', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
+  const productEvents: unknown[] = [];
   const service = new ConnectionAccountService({
     config,
     settings,
     randomId: () => `id${++nextId}`,
+    productTelemetry: { capture: (event) => productEvents.push(event) },
+    telemetrySurface: 'admin',
   });
   try {
     await config.createAgent(agent('agent_support', 'membership_creator'));
@@ -338,6 +341,14 @@ test('a connection account cannot be bound to a second Agent', async () => {
     assert.equal((await config.listAgentConnectionBindings('agent_support'))[0]?.enabled, true);
     assert.deepEqual(await config.listAgentConnectionBindings('agent_success'), []);
     assert.doesNotMatch(JSON.stringify(await service.listViews('T_CONNECTIONS')), /shared-token|secret_id/i);
+    assert.deepEqual(productEvents, [{
+      event: 'connection_ready',
+      workspaceId: 'T_CONNECTIONS',
+      agentId: 'agent_support',
+      connectionKind: 'api',
+      ownerKind: 'team',
+      surface: 'admin',
+    }]);
   } finally {
     config.close();
     settings.close();

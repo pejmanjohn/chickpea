@@ -5,6 +5,7 @@ import {
 } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { ConnectionAccount, CustomAgentConfig } from '../config/types.ts';
 import {
@@ -52,6 +53,8 @@ export interface ManagedAuthorizationFlowDependencies {
   settings: SettingsStore;
   catalog: ManagedConnectorCatalog;
   providerContext: ManagedAuthorizationProviderContext;
+  productTelemetry?: ProductTelemetryCapture;
+  telemetrySurface?: 'admin' | 'slack' | 'mcp' | 'other';
 }
 
 export class ManagedConnectionLaneExistsError extends Error {
@@ -630,6 +633,8 @@ function connectionAccounts(
     settings: dependencies.settings,
     managedProviders: dependencies.providerContext.providers,
     managedCatalog: dependencies.catalog,
+    ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
+    telemetrySurface: dependencies.telemetrySurface ?? 'other',
   });
 }
 

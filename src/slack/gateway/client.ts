@@ -1,6 +1,7 @@
 import type { ConfigStore } from '../../config/store.ts';
 import type { SettingsStore } from '../../config/settings-store.ts';
 import type { IdentityStore } from '../../identity/types.ts';
+import type { ProductTelemetryCapture } from '../../telemetry/client.ts';
 import { readBoundedBytes } from '../../http/bounded-body.ts';
 import { primeStoredSlackPublicUrl, SLACK_SETTING_KEYS } from '../credentials.ts';
 import type { CredentialKeyring } from '../secret-envelope.ts';
@@ -70,6 +71,7 @@ export interface GatewayClientDependencies {
   gatewayBaseUrl: string;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
+  productTelemetry?: ProductTelemetryCapture;
 }
 
 export interface GatewayOperationClient {
@@ -538,6 +540,13 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       delete: [GATEWAY_CLAIM_SETTING],
     });
     this.binding = binding;
+    if (current?.health !== 'healthy') {
+      this.dependencies.productTelemetry?.capture({
+        event: 'workspace_connected',
+        workspaceId: binding.workspaceId,
+        transportMode: 'gateway',
+      });
+    }
   }
 
   private async signedJson(

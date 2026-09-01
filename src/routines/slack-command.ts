@@ -71,7 +71,7 @@ export type SlackScheduleCommand =
     };
 
 type SlackScheduleCommandResult =
-  | { effect: 'saved'; routine: RoutineDefinition }
+  | { effect: 'saved'; routine: RoutineDefinition; created: boolean }
   | { effect: 'controlled'; routine: RoutineDefinition }
   | { effect: 'run_queued'; routine: RoutineDefinition; runId: string };
 
@@ -172,9 +172,9 @@ export async function executeSlackScheduleCommand(
       : command.schedule.kind === 'once'
         ? normalizeOneTimeSchedule(command.schedule.localDateTime, command.timezone, now())
         : normalizeRelativeOneTimeSchedule(command.schedule.minutes, command.timezone, now());
-    const existing = command.routineId
-      ? await dependencies.routines.getRoutine(command.routineId)
-      : undefined;
+    const existing = await dependencies.routines.getRoutine(
+      command.routineId ?? deterministicRoutineId(command.actionKey, command.itemId),
+    );
     const direct = Boolean(command.directDestination) || existing?.destination.kind === 'direct_thread';
     const definition = {
       name: command.name,
@@ -245,7 +245,7 @@ export async function executeSlackScheduleCommand(
           expectedReferenceRevision: reference.revision,
           destinationBindingDigest: digest,
         });
-        return { effect: 'saved', routine: activated };
+        return { effect: 'saved', routine: activated, created: !existing };
       }
     } catch {
       const pendingDirect = routine.destination.kind === 'direct_thread' &&
@@ -273,7 +273,7 @@ export async function executeSlackScheduleCommand(
         safeRoutine,
       );
     }
-    return { effect: 'saved', routine };
+    return { effect: 'saved', routine, created: !existing };
   } catch (error) {
     if (error instanceof SlackScheduleCommandError || error instanceof RoutineStateError) throw error;
     console.warn('[chickpea:routines] schedule command failed', JSON.stringify({

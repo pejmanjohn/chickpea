@@ -33,6 +33,8 @@ import {
   presentationToolPolicyInterceptor,
 } from './slack/presentation-tool-policy.ts';
 import { startNodeTurnRelay, wakeNodeTurnRelay } from './slack/node-turn-relay.ts';
+import { createPlatformProductTelemetry } from './telemetry/platform.ts';
+import { createRequestTelemetryLifecycle } from './telemetry/runtime.ts';
 import { startNodeGatewaySession } from './slack/gateway/node-runtime.ts';
 import { workModelInvocationInterceptor } from './work/model-invocation.ts';
 import {
@@ -173,9 +175,20 @@ if (!isCloudflareTarget()) {
 }
 app.route('/', createBetterAuthRuntimeRoutes());
 app.route('/', createMcpOAuthRuntimeRoutes());
-app.route('/', createManagementSetupRoutes());
+app.route('/', createManagementSetupRoutes({
+  productTelemetry: (c) => createPlatformProductTelemetry({
+    ...(c.env ? { env: c.env as PlatformEnv } : {}),
+    settings: getSettingsStore(c.env as PlatformEnv | undefined),
+    lifecycle: createRequestTelemetryLifecycle(c),
+  }),
+}));
 app.route('/', createAdminRoutes({
   onOAuthContinuationReady: resumeOAuthContinuation,
+  productTelemetry: (c) => createPlatformProductTelemetry({
+    ...(c.env ? { env: c.env as PlatformEnv } : {}),
+    settings: getSettingsStore(c.env as PlatformEnv | undefined),
+    lifecycle: createRequestTelemetryLifecycle(c),
+  }),
 }));
 app.route('/channels/slack', channel.route());
 

@@ -27,6 +27,7 @@ test('management-created schedules accept active grant-only destinations and bin
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const routines = new SqliteRoutineStore(':memory:', () => NOW);
+  const productEvents: unknown[] = [];
   try {
     await config.createAgent({
       id: 'agent_support',
@@ -65,6 +66,7 @@ test('management-created schedules accept active grant-only destinations and bin
       routineSchedulingAvailable: true,
       now: () => NOW,
       randomId: (() => { let sequence = 0; return () => `management_routine_${++sequence}`; })(),
+      productTelemetry: { capture: (event) => productEvents.push(event) },
     });
     const context = {
       userId: owner.user.id,
@@ -96,6 +98,33 @@ test('management-created schedules accept active grant-only destinations and bin
     assert.equal(authority?.agentId, 'agent_support');
     assert.equal(authority?.runsAsMembershipId, owner.membership.id);
     assert.equal(authority?.state, 'active');
+    assert.deepEqual(productEvents, [{
+      event: 'schedule_created',
+      workspaceId: 'T_MANAGEMENT_ROUTINE',
+      agentId: 'agent_support',
+      cadenceKind: 'recurring',
+      destinationKind: 'channel',
+    }]);
+
+    const replay = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'save-support-routine',
+      operations: [{
+        itemId: 'routine',
+        kind: 'save_routine',
+        agentId: 'agent_support',
+        workspaceId: 'T_MANAGEMENT_ROUTINE',
+        channelId: 'C_SUPPORT',
+        name: 'Morning triage',
+        description: 'Triage the overnight support queue.',
+        taskText: 'Summarize urgent support requests.',
+        schedule: { kind: 'cron', expression: '0 9 * * 1-5' },
+        timezone: 'UTC',
+        outputPolicy: 'post',
+      }],
+    });
+    assert.deepEqual(replay, result);
+    assert.equal(productEvents.length, 1);
 
     const snapshot = await service.inspectWorkspace(context);
     assert.equal(snapshot.agents[0]?.slackPresence?.normalizedHandle, 'support');

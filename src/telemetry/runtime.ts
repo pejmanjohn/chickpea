@@ -53,6 +53,23 @@ export function createWaitUntilTelemetryLifecycle(context: {
   return (task) => context.waitUntil(task.catch(() => undefined));
 }
 
+/**
+ * Hono exposes executionCtx only on Workers. Its Node implementation throws
+ * when the property is read, so the fallback must cover both an absent and a
+ * throwing context without changing the product operation.
+ */
+export function createRequestTelemetryLifecycle(context: {
+  readonly executionCtx?: { waitUntil(task: Promise<unknown>): void };
+}): ProductTelemetryLifecycle {
+  try {
+    const executionContext = context.executionCtx;
+    if (executionContext) return createWaitUntilTelemetryLifecycle(executionContext);
+  } catch {
+    // Node requests do not have an ExecutionContext.
+  }
+  return createDetachedTelemetryLifecycle();
+}
+
 export function createDetachedTelemetryLifecycle(
   onSettled?: () => void,
 ): ProductTelemetryLifecycle {
@@ -69,4 +86,3 @@ export function resolveTelemetryEnvironment(
   if (value === 'production' || value === 'development' || value === 'test') return value;
   return target === 'cloudflare' ? 'production' : 'development';
 }
-

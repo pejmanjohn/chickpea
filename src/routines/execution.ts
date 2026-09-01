@@ -96,6 +96,7 @@ import type {
   RoutineRun,
   RoutineStore,
 } from './types.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 
 export type RoutineExecutionOutcome = 'completed' | 'resumable' | 'superseded';
 
@@ -116,6 +117,7 @@ interface RoutineExecutionDependencies {
   settingsStore?: SettingsStore;
   workStore?: WorkStore;
   persistenceTelemetrySink?: RoutinePersistenceTelemetrySink;
+  productTelemetry?: ProductTelemetryCapture;
 }
 
 interface PreparedExecution {
@@ -132,6 +134,7 @@ interface PreparedExecution {
   persistence: RoutinePersistenceTracker;
   usedCloudflareSandbox: boolean;
   sandboxUnavailableFallback: boolean;
+  productTelemetry?: ProductTelemetryCapture;
 }
 
 /** Execute or reattach one durable routine attempt from app-owned checkpoints. */
@@ -579,6 +582,7 @@ async function prepareExecution(
     persistence,
     usedCloudflareSandbox: prepareSandbox,
     sandboxUnavailableFallback,
+    ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
   };
 }
 
@@ -808,6 +812,7 @@ async function finalizeSettlement(
           usageCompleteness: usage.completeness,
           toolCallCount: settlement.result.toolCallCount,
         });
+        captureScheduledRun(prepared, 'failed');
         await deliverRoutineRecoveryNotice({
           store: prepared.store,
           run: prepared.run,
@@ -841,6 +846,10 @@ async function finalizeSettlement(
         changeKeyHash: settlement.result.changeKeyHash,
         suppressedAsNoOp: settlement.result.suppressedAsNoOp,
       });
+      captureScheduledRun(
+        prepared,
+        settlement.result.status === 'succeeded' ? 'succeeded' : 'no_op',
+      );
     } catch (error) {
       if (delivered) {
         throw new RoutineRuntimeError(
@@ -872,8 +881,22 @@ async function finalizeSettlement(
       : {}),
     usageCompleteness: settlement.usage?.completeness ?? 'not_reported',
   });
+  captureScheduledRun(prepared, 'failed');
   await deliverFailureNoticeBestEffort(prepared, settlement.publicError);
   await deliverPauseNoticeBestEffort(prepared);
+}
+
+function captureScheduledRun(
+  prepared: PreparedExecution,
+  outcome: 'succeeded' | 'no_op' | 'failed',
+): void {
+  prepared.productTelemetry?.capture({
+    event: 'run_completed',
+    workspaceId: prepared.routine.workspaceId,
+    agentId: prepared.access.config.agentId,
+    triggerKind: 'scheduled',
+    outcome,
+  });
 }
 
 async function recordUsage(

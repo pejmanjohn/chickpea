@@ -26,6 +26,9 @@ import {
   ModelResolutionError,
 } from '../config/errors.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
+import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
+import { createRequestTelemetryLifecycle } from '../telemetry/runtime.ts';
 import type { AssignmentSurface } from '../config/resolver.ts';
 import {
   getOrCreateSnapshot,
@@ -314,7 +317,16 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
       { rawBody, signature, timestamp },
     );
     if (recorded.accepted) {
-      await finalizePendingWorkspaceInstallation(resolveStores(platformEnv), platformEnv);
+      const stores = resolveStores(platformEnv);
+      await finalizePendingWorkspaceInstallation(
+        stores,
+        platformEnv,
+        createPlatformProductTelemetry({
+          ...(platformEnv ? { env: platformEnv } : {}),
+          settings: stores.settings,
+          lifecycle: createRequestTelemetryLifecycle(c),
+        }),
+      );
     }
   }
   return response;
@@ -337,6 +349,7 @@ async function readSlackIngressBody(
 async function finalizePendingWorkspaceInstallation(
   stores: AppStores,
   platformEnv: PlatformEnv | undefined,
+  productTelemetry?: ProductTelemetryCapture,
 ): Promise<void> {
   try {
     const setup = await stores.identity.getSlackSetupTransaction('setup_default');
@@ -346,6 +359,7 @@ async function finalizePendingWorkspaceInstallation(
       credentials: getSlackCredentialDependencies(platformEnv),
       config: stores.config,
       settings: stores.settings,
+      ...(productTelemetry ? { productTelemetry } : {}),
     }).finalizeWaitingInstallation(setup.id);
   } catch (error) {
     console.error('[chickpea] Slack Events URL completion failed:', sanitizeError(error));

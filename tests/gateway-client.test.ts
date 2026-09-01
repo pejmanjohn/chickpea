@@ -28,6 +28,7 @@ import {
 import { gatewayReconnectAt, gatewaySessionHealthy } from '../src/slack/gateway/session.ts';
 import { createGatewaySlackTransport } from '../src/slack/transport/gateway.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
+import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import {
   resolveSlackInstallationExecutionContext,
   verifySlackInstallationTurnAccess,
@@ -355,6 +356,7 @@ test('shared-app claim binds one workspace without storing Slack credentials', a
   const config = configStore();
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const gateway = new FakeGateway();
+  const productEvents: ProductTelemetryEventInput[] = [];
   const client = new GatewayDeploymentClient({
     settings,
     config,
@@ -363,6 +365,7 @@ test('shared-app claim binds one workspace without storing Slack credentials', a
     gatewayBaseUrl: 'https://gateway.chickpea.test',
     fetch: gateway.fetch,
     now: () => NOW,
+    productTelemetry: { capture: (event) => productEvents.push(event) },
   });
   try {
     const setup = await identity.reserveSlackSetupTransaction({
@@ -401,6 +404,12 @@ test('shared-app claim binds one workspace without storing Slack credentials', a
     const installedSetup = await identity.getSlackSetupTransaction(setup.id);
     assert.equal(installedSetup?.state, 'bot_installed');
     assert.equal(installedSetup?.installerSlackUserId, 'UINSTALLER');
+
+    assert.deepEqual(productEvents, [{
+      event: 'workspace_connected',
+      workspaceId: 'TGATEWAY',
+      transportMode: 'gateway',
+    }]);
 
     const storedIdentity = await settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING);
     assert.ok(storedIdentity);

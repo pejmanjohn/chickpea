@@ -25,6 +25,7 @@ import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
 import { managedProviderAvailability } from '../connections/managed.ts';
 import { resolveManagedAuthorizationProviderContext } from '../connections/managed-provider-context.ts';
 import { ConnectionAccountService } from '../connections/store.ts';
+import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
@@ -108,6 +109,10 @@ export function createLiveWorkspaceManagementService(
     config: config as ConfigStore,
     transport: await slackTransport(workspaceId),
   });
+  const productTelemetry = overrides.productTelemetry ?? createPlatformProductTelemetry({
+    ...(env ? { env } : {}),
+    settings,
+  });
   return new WorkspaceManagementService({
     identity: overrides.identity ?? identity,
     config,
@@ -116,6 +121,7 @@ export function createLiveWorkspaceManagementService(
     routines: getRoutineStore(env),
     work: getWorkStore(env),
     routineSchedulingAvailable: isCloudflareTarget(),
+    productTelemetry,
     providerCredentialSource: async (providerId) =>
       (await describeProviderKeySources(env, settings))[providerId],
     providerCredentialRevision: async (providerId) =>

@@ -208,6 +208,9 @@ import type { IdentityStore } from './identity/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from './identity/types.ts';
 import { ManagementStoreLogic, type ManagementStore } from './management/store.ts';
 import { createLiveWorkspaceManagementService } from './management/live-service.ts';
+import { createPlatformProductTelemetry } from './telemetry/platform.ts';
+import type { ProductTelemetryCapture } from './telemetry/client.ts';
+import { createWaitUntilTelemetryLifecycle } from './telemetry/runtime.ts';
 import {
   invokeSlackWorkspaceManagementTool,
   resolveSlackManagementActor,
@@ -1512,6 +1515,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       throw new Error(`state store unavailable in alarm: ${this.initError ?? 'unknown'}`);
     }
     const stores = this.stores;
+    const productTelemetry = createPlatformProductTelemetry({
+      env: this.env as PlatformEnv,
+      settings: localSettingsStore(stores),
+    });
     stores.management.cleanupRetention(Date.now(), 250);
     const gatewayNeedsRetry = await drainGatewayInbox(
       stores,
@@ -1525,6 +1532,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         stores,
         this.env as PlatformEnv,
         resolveInstallation,
+        productTelemetry,
       );
       if (cleanupPending) {
         await drainSlackInteractionCleanups(stores, resolveInstallation);
@@ -1737,10 +1745,19 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           // Record terminal delivery before runTurn's post-delivery Sandbox
           // teardown. A hung control-plane destroy must never leave an
           // already-posted Slack final eligible for relay retry.
-          onDelivered: () => {
+          onDelivered: (outcome) => {
             stores.turnJobs.markDelivered(job.id);
             if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
             delivered = true;
+            if (outcome) {
+              productTelemetry.capture({
+                event: 'run_completed',
+                workspaceId: job.turn.workspaceId,
+                agentId: job.assignment.agentId,
+                triggerKind: 'interactive',
+                outcome,
+              });
+            }
           },
           onDeferredTerminal: () => {
             deferredTerminal = true;
@@ -1848,6 +1865,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       stores,
       this.env as PlatformEnv,
       resolveInstallation,
+      productTelemetry,
     );
     identityRetryDelayMs = runDriverRetryDelayMs(ledgerDrain, identityRetryDelayMs);
     await drainSlackInteractionCleanups(stores, resolveInstallation);
@@ -2174,6 +2192,7 @@ async function drainLedgerRuns(
   stores: TagStateStores,
   platformEnv: PlatformEnv,
   resolveInstallation: SlackInstallationExecutionResolver,
+  productTelemetry: ProductTelemetryCapture,
 ): Promise<RunDriverDrainResult> {
   return new DurableRunDriver(stores.work, {
     ownerId: 'cloudflare_ledger_run_driver',
@@ -2197,6 +2216,7 @@ async function drainLedgerRuns(
         stores.slack.setActiveWork(key, generation, active),
       onPublicMessageDelivered: (turn, assignment, delivery) =>
         recordDeliveredSlackAgentMessage(stores.config, turn, assignment, delivery),
+      productTelemetry,
     }),
   }).drain();
 }
@@ -2216,6 +2236,10 @@ async function drainGatewayInbox(
       identity: appStores.identity,
       keyring: loadCredentialKeyring(platformEnv),
       gatewayBaseUrl: resolveChickpeaGatewayUrl(platformEnv),
+      productTelemetry: createPlatformProductTelemetry({
+        env: platformEnv,
+        settings: appStores.settings,
+      }),
     });
   } catch {
     for (const item of pending) {
@@ -2426,15 +2450,21 @@ async function runRoutineHeartbeat(
   scheduledTime: number,
   owner: string,
   rawEnv: Record<string, unknown>,
+  context: { waitUntil(promise: Promise<unknown>): void },
 ): Promise<void> {
   const store = getRoutineStore(rawEnv);
+  const productTelemetry = createPlatformProductTelemetry({
+    env: rawEnv,
+    settings: getSettingsStore(rawEnv),
+    lifecycle: createWaitUntilTelemetryLifecycle(context),
+  });
   const admissions = new RoutineAdmissionController(store, {
     execute: (run, attempt) => executeRoutineOccurrence({
       env: rawEnv,
       store,
       occurrenceId: run.id,
       attempt: attempt.attempt,
-    }),
+    }, { productTelemetry }),
   });
   await new RoutineScheduler(store, admissions).heartbeat(scheduledTime, owner);
   await drainRoutinePauseNotices({ store, env: rawEnv as PlatformEnv });

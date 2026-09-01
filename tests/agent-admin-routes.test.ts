@@ -413,6 +413,25 @@ async function createAgent(app: Hono, name = 'Support Triage') {
   return (await response.json()) as { agent: Record<string, any> };
 }
 
+test('Admin Agent creation emits only the committed product milestone', async () => {
+  const productEvents: unknown[] = [];
+  const fixture = harness(new FakeTransport(), {
+    productTelemetry: () => ({ capture: (event) => productEvents.push(event) }),
+  });
+  try {
+    await createAgent(fixture.app);
+    assert.deepEqual(productEvents, [{
+      event: 'agent_created',
+      workspaceId: 'T_TEST',
+      agentId: 'agent_support',
+      surface: 'admin',
+    }]);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 function composioSetupClient(): ComposioClientLike {
   const configs = new Map<string, {
     id: string;

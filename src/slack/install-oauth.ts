@@ -6,6 +6,7 @@ import { randomSecret } from '../security/random-secret.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import { safeSetupDestination } from '../auth/setup-handoff.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import type { IdentityStore, SlackOAuthAttempt, SlackSetupTransaction } from '../identity/types.ts';
@@ -74,6 +75,7 @@ interface SlackInstallOAuthDependencies {
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
   verification?: SlackInstallationVerificationDeps;
+  productTelemetry?: ProductTelemetryCapture;
 }
 
 interface SlackInstallOAuthStartInput {
@@ -497,6 +499,7 @@ export class SlackInstallOAuthService {
     let installation = await this.dependencies.config.getWorkspaceInstallation(
       setup.slackTeamId,
     );
+    const wasHealthy = installation?.health === 'healthy';
     if (!installation) {
       installation = await this.dependencies.config.ensureWorkspaceInstallation({
         workspaceId: setup.slackTeamId,
@@ -513,10 +516,17 @@ export class SlackInstallOAuthService {
       installation.botUserId === setup.botUserId &&
       installation.health === health &&
       installation.healthDetail === healthDetail
-    ) return;
-    await this.dependencies.config.updateWorkspaceInstallation(
-      setup.slackTeamId,
-      {
+    ) {
+      if (health === 'healthy' && !wasHealthy) {
+        this.dependencies.productTelemetry?.capture({
+          event: 'workspace_connected',
+          workspaceId: setup.slackTeamId,
+          transportMode: 'direct',
+        });
+      }
+      return;
+    }
+    await this.dependencies.config.updateWorkspaceInstallation(setup.slackTeamId, {
         transportMode: 'direct',
         teamId: setup.slackTeamId,
         appId: setup.appId,
@@ -524,9 +534,14 @@ export class SlackInstallOAuthService {
         gatewayBindingId: null,
         health,
         healthDetail: healthDetail ?? null,
-      },
-      installation.revision,
-    );
+    }, installation.revision);
+    if (health === 'healthy' && !wasHealthy) {
+      this.dependencies.productTelemetry?.capture({
+        event: 'workspace_connected',
+        workspaceId: setup.slackTeamId,
+        transportMode: 'direct',
+      });
+    }
   }
 }
 
