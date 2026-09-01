@@ -30,5 +30,6 @@ docs/runbooks/*
 !docs/runbooks/composio-managed-connectors.md
 !docs/runbooks/semantic-activity-status.md
 !docs/runbooks/live-contract-verification.md
+!docs/runbooks/live-contract-acceptance-v1.md
 design-qa.md
 !docs/design/agent-first-admin-prototype/design-qa.md

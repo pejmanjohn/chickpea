@@ -35,6 +35,7 @@ test('npm package includes every public live verifier file and discovery entrypo
   const packaged = packFiles();
   const required = [
     'AGENTS.md',
+    'docs/runbooks/live-contract-acceptance-v1.md',
     'docs/runbooks/live-contract-verification.md',
     ...filesBelow('qa/live'),
   ];
@@ -43,6 +44,7 @@ test('npm package includes every public live verifier file and discovery entrypo
   const packageJson = JSON.parse(read('package.json')) as { files?: string[] };
   assert.ok(packageJson.files?.includes('AGENTS.md'));
   assert.ok(packageJson.files?.includes('qa/live'));
+  assert.ok(packageJson.files?.includes('docs/runbooks/live-contract-acceptance-v1.md'));
   assert.ok(packageJson.files?.includes('docs/runbooks/live-contract-verification.md'));
 });
 
@@ -51,6 +53,7 @@ test('public verifier files are not ignored and private artifact shapes are not 
     'AGENTS.md',
     'qa/live/operator/SKILL.md',
     'qa/live/generated/feature-map.md',
+    'docs/runbooks/live-contract-acceptance-v1.md',
     'docs/runbooks/live-contract-verification.md',
   ]) {
     const result = spawnSync('git', ['check-ignore', '--no-index', '--quiet', path], { cwd: ROOT });

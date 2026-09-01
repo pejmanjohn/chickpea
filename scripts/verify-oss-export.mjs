@@ -74,12 +74,14 @@ const forbiddenSourcePathRoots = [
 const liveVerifierExportPolicy = Object.freeze({
   exactPaths: new Set([
     exportPath('AGENTS.md'),
+    exportPath('docs', 'runbooks', 'live-contract-acceptance-v1.md'),
     exportPath('docs', 'runbooks', 'live-contract-verification.md'),
   ]),
   roots: [exportPath('qa', 'live')],
   requiredPaths: new Set([
     exportPath('AGENTS.md'),
     exportPath('docs', 'runbooks', 'live-contract-verification.md'),
+    exportPath('docs', 'runbooks', 'live-contract-acceptance-v1.md'),
     exportPath('qa', 'live', 'README.md'),
     exportPath('qa', 'live', 'attestation.ts'),
     exportPath('qa', 'live', 'cases', 'agent-lifecycle.live.ts'),
@@ -139,6 +141,7 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'runbooks', 'agent-first-acceptance-2026-08-21.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
   exportPath('docs', 'runbooks', 'composio-managed-connectors.md'),
+  exportPath('docs', 'runbooks', 'live-contract-acceptance-v1.md'),
   exportPath('docs', 'runbooks', 'live-contract-verification.md'),
   exportPath('docs', 'runbooks', 'slack-auth-recovery.md'),
   exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
@@ -617,6 +620,7 @@ function verifyNpmPackManifest(entries, packageJson) {
   const requiredPackageEntries = [
     'AGENTS.md',
     'qa/live',
+    'docs/runbooks/live-contract-acceptance-v1.md',
     'docs/runbooks/live-contract-verification.md',
   ];
   const missingPackageEntries = requiredPackageEntries.filter((path) => !declaredFiles.has(path));
@@ -646,6 +650,7 @@ function verifyNpmPackManifest(entries, packageJson) {
     'docs/runbooks/agent-first-acceptance-2026-08-21.md',
     'docs/runbooks/coding-sandbox-deployment.md',
     'docs/runbooks/composio-managed-connectors.md',
+    'docs/runbooks/live-contract-acceptance-v1.md',
     'docs/runbooks/live-contract-verification.md',
     'docs/runbooks/slack-auth-recovery.md',
     'docs/runbooks/workspace-management-mcp.md',
