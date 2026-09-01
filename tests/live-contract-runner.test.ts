@@ -41,6 +41,21 @@ function setup(context: test.TestContext, variants = ['LC01-V1-create-welcome'])
   };
 }
 
+function cleanupProgress(status: 'pass' | 'failed' = 'pass') {
+  return {
+    progressCleanup: () => ({
+      status: 'complete' as const,
+      postflight: {
+        status,
+        targetIdentityMatches: true,
+        missingAliases: status === 'pass' ? [] : ['agent:baseline:1'],
+        unexpectedAliases: [],
+        unresolvedAliases: [],
+      },
+    }),
+  };
+}
+
 test('proof-first state machine flushes intent before exposing the first action', (context) => {
   const request = setup(context);
   const record = advanceLiveRun(request);
@@ -139,9 +154,7 @@ test('resume adopts a terminal human-gate receipt flushed before transition and 
   const cleanup = advanceLiveRun(request);
   assert.equal(cleanup.kind, 'waiting');
   if (cleanup.kind === 'waiting') assert.equal(cleanup.waitingFor, 'cleanup');
-  const terminal = advanceLiveRun({ ...request, signal: {
-    type: 'cleanup_result', variantId: action.variantId, result: 'pass',
-  } });
+  const terminal = advanceLiveRun(request, cleanupProgress());
   assert.equal(terminal.kind, 'terminal');
   if (terminal.kind === 'terminal') {
     assert.deepEqual(terminal.report.cases[0]?.primary, {
@@ -199,9 +212,7 @@ test('authoritative readback of an applied crash intent enters cleanup-only reco
   } });
   assert.equal(cleanup.kind, 'waiting');
   if (cleanup.kind === 'waiting') assert.equal(cleanup.waitingFor, 'cleanup');
-  const terminal = advanceLiveRun({ ...request, signal: {
-    type: 'cleanup_result', variantId: waiting.variantId, result: 'pass',
-  } });
+  const terminal = advanceLiveRun(request, cleanupProgress());
   assert.equal(terminal.kind, 'terminal');
   if (terminal.kind === 'terminal') {
     assert.deepEqual(terminal.report.cases[0]?.primary, {
@@ -224,9 +235,7 @@ test('serial suite does not expose the next mutation until assertion and cleanup
     type: 'assertion_result', variantId: first.variantId, result: 'pass',
   } });
   assert.equal(cleanup.kind, 'waiting');
-  const second = advanceLiveRun({ ...request, signal: {
-    type: 'cleanup_result', variantId: first.variantId, result: 'pass',
-  } });
+  const second = advanceLiveRun(request, cleanupProgress());
   assert.equal(second.kind, 'action_required');
   if (second.kind === 'action_required') assert.equal(second.variantId, 'LC04-V1-personal-read');
 });
@@ -266,9 +275,7 @@ test('primary and cleanup results remain orthogonal in the final report', (conte
     advanceLiveRun({ ...request, signal: primary === 'fail'
       ? { type: 'assertion_result', variantId: action.variantId, result: primary, reason: 'assertion_failed' }
       : { type: 'assertion_result', variantId: action.variantId, result: primary } });
-    const terminal = advanceLiveRun({ ...request, signal: {
-      type: 'cleanup_result', variantId: action.variantId, result: cleanup,
-    } });
+    const terminal = advanceLiveRun(request, cleanupProgress(cleanup === 'failed' ? 'failed' : 'pass'));
     assert.equal(terminal.kind, 'terminal');
     if (terminal.kind !== 'terminal') continue;
     assert.equal(terminal.report.cases[0]?.primary.result, primary);
@@ -276,6 +283,29 @@ test('primary and cleanup results remain orthogonal in the final report', (conte
     assert.equal(terminal.report.aggregate, aggregate);
     assert.equal(JSON.stringify(terminal.report).includes('Create the run-marked'), false);
   }
+});
+
+test('cleanup rejects asserted verdicts and waits for dependency-driven postflight proof', (context) => {
+  const request = setup(context);
+  const action = advanceLiveRun(request);
+  assert.equal(action.kind, 'action_required');
+  if (action.kind !== 'action_required') return;
+  advanceLiveRun({ ...request, signal: {
+    type: 'action_receipt', actionRef: action.actionRef, outcome: 'completed',
+  } });
+  advanceLiveRun({ ...request, signal: {
+    type: 'assertion_result', variantId: action.variantId, result: 'pass',
+  } });
+
+  assert.throws(() => advanceLiveRun({
+    ...request,
+    signal: { type: 'cleanup_result', variantId: action.variantId, result: 'pass' } as never,
+  }), /does not accept an asserted result/);
+  const waiting = advanceLiveRun(request, { progressCleanup: () => ({ status: 'waiting' }) });
+  assert.equal(waiting.kind, 'waiting');
+  const terminal = advanceLiveRun(request, cleanupProgress('failed'));
+  assert.equal(terminal.kind, 'terminal');
+  if (terminal.kind === 'terminal') assert.equal(terminal.report.aggregate, 'cleanup_failed');
 });
 
 test('human gate terminal outcomes become typed results and proceed to cleanup without replay', (context) => {
@@ -296,9 +326,7 @@ test('human gate terminal outcomes become typed results and proceed to cleanup w
       type: 'action_receipt', actionRef: action.actionRef, outcome,
     } });
     assert.equal(waiting.kind, 'waiting');
-    const terminal = advanceLiveRun({ ...request, signal: {
-      type: 'cleanup_result', variantId: action.variantId, result: 'pass',
-    } });
+    const terminal = advanceLiveRun(request, cleanupProgress());
     assert.equal(terminal.kind, 'terminal');
     if (terminal.kind !== 'terminal') continue;
     assert.deepEqual(terminal.report.cases[0]?.primary, { result: primary, reason });

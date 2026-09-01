@@ -6,7 +6,6 @@ import { LIVE_MANIFEST, LIVE_MANIFEST_DIGEST } from './manifest.ts';
 import { validateTargetOverlay, type LiveTargetOverlay } from './privacy.ts';
 import { aggregateRunReport } from './report.ts';
 import {
-  CLEANUP_RESULTS,
   PRIMARY_RESULTS,
   TYPED_REASONS,
   type CleanupResult,
@@ -16,6 +15,7 @@ import {
   type Suite,
   type TypedReason,
 } from './schema.ts';
+import type { PostflightProof } from './safety/cleanup.ts';
 import {
   appendRunJournal,
   createRunJournal,
@@ -49,8 +49,7 @@ export interface RunIdentity {
 export type RunnerSignal =
   | { type: 'action_receipt'; actionRef: string; outcome: ActionReceiptOutcome }
   | { type: 'readback_result'; intentId: string; outcome: 'applied' | 'absent' | 'ambiguous' }
-  | { type: 'assertion_result'; variantId: string; result: PrimaryResult; reason?: TypedReason }
-  | { type: 'cleanup_result'; variantId: string; result: CleanupResult };
+  | { type: 'assertion_result'; variantId: string; result: PrimaryResult; reason?: TypedReason };
 
 export interface AdvanceLiveRunRequest {
   journalPath: string;
@@ -70,6 +69,20 @@ export interface AdvanceLiveRunDependencies {
   /** Crash-injection seam: the action receipt is already fsynced when this callback runs. */
   afterReceiptFlushed?: (intentId: string) => void;
   observationNotBefore?: (variantId: string) => string | undefined;
+  /**
+   * Advances at most one exact-ID cleanup step. The coordinator owns U4's
+   * challenge, intent, receipt, and readback calls. The runner accepts only a
+   * content-free postflight proof, never a hand-authored cleanup verdict.
+   */
+  progressCleanup?: (input: {
+    journalPath: string;
+    runId: string;
+    manifestDigest: string;
+    variantId: string;
+    identity: RunIdentity;
+  }) =>
+    | { status: 'waiting' }
+    | { status: 'complete'; postflight: PostflightProof };
 }
 
 export class LiveRunnerError extends Error {
@@ -360,11 +373,33 @@ function recordCleanup(
   at: string,
 ): RunnerRecord {
   const variantId = variantAwaitingCleanup(journal.events);
-  if (variantId === undefined || request.signal?.type !== 'cleanup_result' || request.signal.variantId !== variantId
-    || !(CLEANUP_RESULTS as readonly string[]).includes(request.signal.result)) {
-    throw new LiveRunnerError('INVALID_RUN_SIGNAL', 'cleanup result must match the pending variant');
+  if (variantId === undefined) {
+    throw new LiveRunnerError('INVALID_RUN_SIGNAL', 'cleanup has no pending variant');
   }
-  append(request, { type: 'cleanup_result', variantId, result: request.signal.result }, at);
+  if (request.signal !== undefined) {
+    throw new LiveRunnerError('INVALID_RUN_SIGNAL', 'cleanup does not accept an asserted result');
+  }
+  const progress = dependencies.progressCleanup?.({
+    journalPath: request.journalPath,
+    runId: request.runId,
+    manifestDigest: LIVE_MANIFEST_DIGEST,
+    variantId,
+    identity: request.identity,
+  });
+  if (progress === undefined || progress.status === 'waiting') {
+    return {
+      kind: 'waiting',
+      runId: request.runId,
+      suite: request.suite,
+      variantId,
+      waitingFor: 'cleanup',
+    };
+  }
+  append(request, {
+    type: 'cleanup_result',
+    variantId,
+    result: progress.postflight.status === 'pass' ? 'pass' : 'failed',
+  }, at);
   return continueSuite(request, dependencies, target, 'cleanup', at);
 }
 

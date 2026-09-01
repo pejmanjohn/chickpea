@@ -11,10 +11,8 @@ import {
 } from './doctor.ts';
 import { advanceLiveRun, type RunnerSignal } from './runner.ts';
 import {
-  CLEANUP_RESULTS,
   PRIMARY_RESULTS,
   TYPED_REASONS,
-  type CleanupResult,
   type PrimaryResult,
   type TypedReason,
 } from './schema.ts';
@@ -42,6 +40,9 @@ const DEFAULT_IO: CliIo = {
 export function executeLiveCli(argv: readonly string[], io: CliIo = DEFAULT_IO): CliRecord {
   const [command, ...rest] = argv;
   const args = parseArguments(rest);
+  if (args.has('cleanup-result') || args.has('cleanup-variant')) {
+    throw new CliUsageError('CLEANUP_RECEIPT_REQUIRED');
+  }
   if (command === 'doctor') {
     const { overlay, snapshot } = readInputs(args, io);
     return diagnoseLiveTarget({ overlay, source: { read: () => snapshot } });
@@ -148,8 +149,7 @@ function signalFromArguments(args: Map<string, string[]>): RunnerSignal | undefi
   const actionOutcome = optionalOne(args, 'action-outcome');
   const readbackOutcome = optionalOne(args, 'readback-outcome');
   const assertionResult = optionalOne(args, 'assertion-result');
-  const cleanupResult = optionalOne(args, 'cleanup-result');
-  const signalCount = [actionOutcome, readbackOutcome, assertionResult, cleanupResult]
+  const signalCount = [actionOutcome, readbackOutcome, assertionResult]
     .filter((value) => value !== undefined).length;
   if (signalCount > 1) throw new CliUsageError('MULTIPLE_SIGNALS');
   if (actionOutcome !== undefined) {
@@ -181,14 +181,6 @@ function signalFromArguments(args: Map<string, string[]>): RunnerSignal | undefi
       variantId: one(args, 'assertion-variant'),
       result: assertionResult as PrimaryResult,
       ...(reason === undefined ? {} : { reason: reason as TypedReason }),
-    };
-  }
-  if (cleanupResult !== undefined) {
-    if (!(CLEANUP_RESULTS as readonly string[]).includes(cleanupResult)) throw new CliUsageError('INVALID_CLEANUP_RESULT');
-    return {
-      type: 'cleanup_result',
-      variantId: one(args, 'cleanup-variant'),
-      result: cleanupResult as CleanupResult,
     };
   }
   return undefined;
