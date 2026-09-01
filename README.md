@@ -19,6 +19,10 @@
 
 <br />
 
+<img src="assets/admin-agent.png" alt="Chickpea Admin, showing the Sprout Agent: its Slack destination, and the Google Docs, Drive, Sheets, Gmail, and Calendar accounts it can use" width="880">
+
+<br />
+
 **Deploy it**
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea)

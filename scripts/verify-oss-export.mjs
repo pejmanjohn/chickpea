@@ -186,8 +186,8 @@ const allowedBinaryFiles = new Map([
     '04653890b4cf6ffed29cec436ee32733dc014d87f0601988ef602b957d145b8c',
   ],
   [
-    exportPath('assets', 'admin-page.png'),
-    '68c94f054f6492300e77c62304f896735ef2fc3c81a37225c9539f179c073098',
+    exportPath('assets', 'admin-agent.png'),
+    'f8a4c44962a044fb8caea27aa24e55f74ba60e47994bab8db3ada886a2428e16',
   ],
   [
     exportPath('docs', 'design', 'agent-first-admin-prototype', 'qa-agent-first-channel.png'),
@@ -536,7 +536,7 @@ function verifyNpmPackManifest() {
     'LICENSE',
     'README.md',
     'SETUP_AGENT.md',
-    'assets/admin-page.png',
+    'assets/admin-agent.png',
     'assets/bot-avatar.png',
     'assets/chickpea-favicon-32.png',
     'assets/chickpea-mark-128.png',
