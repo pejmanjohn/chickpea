@@ -82,6 +82,7 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'runbooks', 'agent-first-acceptance-2026-08-21.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
   exportPath('docs', 'runbooks', 'composio-managed-connectors.md'),
+  exportPath('docs', 'runbooks', 'product-telemetry.md'),
   exportPath('docs', 'runbooks', 'slack-auth-recovery.md'),
   exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
   exportPath('docs', 'runbooks', 'chickpea-system-agent-cutover.md'),
@@ -536,6 +537,7 @@ function verifyNpmPackManifest() {
     'LICENSE',
     'README.md',
     'SETUP_AGENT.md',
+    'TELEMETRY.md',
     'assets/admin-page.png',
     'assets/bot-avatar.png',
     'assets/chickpea-favicon-32.png',
@@ -552,6 +554,7 @@ function verifyNpmPackManifest() {
     'docs/runbooks/agent-first-acceptance-2026-08-21.md',
     'docs/runbooks/coding-sandbox-deployment.md',
     'docs/runbooks/composio-managed-connectors.md',
+    'docs/runbooks/product-telemetry.md',
     'docs/runbooks/slack-auth-recovery.md',
     'docs/runbooks/workspace-management-mcp.md',
     'migrations/better-auth/0001_better_auth.sql',
@@ -613,6 +616,17 @@ function verifyAuthenticationExportContract(packageJson) {
   if (!/^COMPOSIO_API_KEY=$/m.test(environmentExample) ||
       /^COMPOSIO_API_KEY=.+$/m.test(environmentExample)) {
     fail('OSS environment example must keep the Composio project key optional and empty');
+  }
+  for (const key of [
+    'DO_NOT_TRACK',
+    'CHICKPEA_DISABLE_TELEMETRY',
+    'CHICKPEA_TELEMETRY_ENVIRONMENT',
+  ]) {
+    const emptyEntry = new RegExp(`^${key}=$`, 'm');
+    const populatedEntry = new RegExp(`^${key}=.+$`, 'm');
+    if (!emptyEntry.test(environmentExample) || populatedEntry.test(environmentExample)) {
+      fail(`OSS environment example must expose ${key} as an optional empty value`);
+    }
   }
   const wrangler = readFileSync(join(scratch, 'wrangler.jsonc'), 'utf8');
   if (/"vars"\s*:/.test(wrangler)) {
