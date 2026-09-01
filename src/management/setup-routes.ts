@@ -3,7 +3,6 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 
-import { requestOrigin } from '../http/request-origin.ts';
 import { escapeHtml } from '../security/html-escape.ts';
 import { isRecord } from '../security/content-validation.ts';
 import { sha256HexNode } from '../security/digest.ts';
@@ -2105,6 +2104,16 @@ function sameOriginFormMutation(c: Context): boolean {
     requireJson: false,
     allowOpaqueOriginFormNavigation: true,
   }).ok;
+}
+
+// Deliberately narrower than admin's requestOrigin: setup origins feed CSRF
+// comparisons and externally registered OAuth/GitHub callback URLs, so only
+// the pinned public URL or the request URL itself may define them — never
+// forwarded headers.
+function requestOrigin(c: Context): string {
+  const pinned = process.env.SLACK_TAG_PUBLIC_URL?.trim();
+  if (pinned) return new URL(pinned).origin;
+  return new URL(c.req.url).origin;
 }
 
 function setupIdFromContext(c: Context): string | undefined {

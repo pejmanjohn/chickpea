@@ -1,5 +1,6 @@
 import { readBoundedText as readBoundedResponseText } from '../http/bounded-body.ts';
 import { isRecord } from '../security/content-validation.ts';
+import { decodeBase64Url } from '../security/base64url.ts';
 import type {
   OpenAiDeviceAuthorizationPending,
   OpenAiDeviceAuthorizationPoll,
@@ -376,7 +377,7 @@ function parseJwtClaims(
   }
   let claims: unknown;
   try {
-    claims = JSON.parse(decodeBase64Url(encodedPayload));
+    claims = JSON.parse(decodeBase64UrlText(encodedPayload));
   } catch (cause) {
     throw new OpenAiSubscriptionProtocolError('protocol_drift', { cause });
   }
@@ -402,12 +403,8 @@ function parseJwtClaims(
   return claims;
 }
 
-function decodeBase64Url(value: string): string {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-  const binary = atob(padded);
-  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
+function decodeBase64UrlText(value: string): string {
+  return new TextDecoder().decode(decodeBase64Url(value));
 }
 
 function accountIdFromClaims(claims: Record<string, unknown>): string | undefined {

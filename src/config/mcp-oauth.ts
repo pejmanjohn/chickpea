@@ -1,4 +1,5 @@
 import { isRecord } from '../security/content-validation.ts';
+import { decodeBase64Url, encodeBase64Url } from '../security/base64url.ts';
 import {
   discoverAuthorizationServerMetadata,
   discoverOAuthProtectedResourceMetadata,
@@ -889,10 +890,9 @@ function validateAuthorizationServerMetadata(
 }
 
 function encodeState(ref: McpSecretRef, nonce: string): string {
-  const encoded = btoa(
+  return encodeBase64Url(new TextEncoder().encode(
     JSON.stringify({ a: ref.agentId, c: ref.connectionId, n: nonce }),
-  );
-  return encoded.replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+  ));
 }
 
 /**
@@ -910,10 +910,7 @@ function decodeStateRef(state: string): McpSecretRef {
     throw new McpOAuthError('invalid_state', 'OAuth state is malformed');
   }
   try {
-    const padded = state.replaceAll('-', '+').replaceAll('_', '/');
-    const decoded = JSON.parse(
-      atob(padded + '='.repeat((4 - (padded.length % 4)) % 4)),
-    ) as unknown;
+    const decoded = JSON.parse(new TextDecoder().decode(decodeBase64Url(state))) as unknown;
     if (
       !isRecord(decoded) ||
       typeof decoded.a !== 'string' ||

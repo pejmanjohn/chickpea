@@ -2515,10 +2515,10 @@ function rejectSecretBearingValue(value: unknown, path = 'config'): void {
 
 function rejectSecretString(value: string, path: string): void {
   if (
-    hasCredentialLikeContent(value) ||
     /(?:https?|wss?):\/\//i.test(value) ||
     /(?:bearer\s+|-----BEGIN |\b(?:sk|xox[baprs]|gh[pousr])[-_][A-Za-z0-9_-]{8,})/i.test(value) ||
-    /chickpea-openai-subscription|internal.*provider|transport[_-]?marker/i.test(value)
+    /chickpea-openai-subscription|internal.*provider|transport[_-]?marker/i.test(value) ||
+    hasCredentialLikeContent(value)
   ) {
     throw workError('work_secret_rejected', `Secret-bearing value is not allowed at ${path}.`);
   }

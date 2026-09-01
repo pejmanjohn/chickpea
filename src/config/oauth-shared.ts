@@ -53,7 +53,7 @@ export function oauthSleep(
     : new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function isNewerOAuthAttempt(
+function isNewerOAuthAttempt(
   current: OAuthAttemptFence,
   next: OAuthAttemptFence,
 ): boolean {

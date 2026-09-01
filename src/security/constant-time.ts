@@ -11,9 +11,11 @@ export function constantTimeEquals(
     timingSafeEqual(candidateBuffer, expectedBuffer);
 }
 
+const utf8 = new TextEncoder();
+
 export function constantTimeTextEqual(left: string, right: string): boolean {
-  const leftBytes = new TextEncoder().encode(left);
-  const rightBytes = new TextEncoder().encode(right);
+  const leftBytes = utf8.encode(left);
+  const rightBytes = utf8.encode(right);
   const length = Math.max(leftBytes.byteLength, rightBytes.byteLength);
   let difference = leftBytes.byteLength ^ rightBytes.byteLength;
   for (let index = 0; index < length; index += 1) {

@@ -28,9 +28,12 @@ export interface BoundedBodyOptions {
    */
   onMissingBody?: (() => Error) | undefined;
   /**
-   * Reject the declared `content-length` before reading when it already exceeds
-   * the cap. Defaults to `true`; disable where the header is untrustworthy (a
-   * transparently decompressed hop) or where the caller checks it itself.
+   * Check the declared `content-length` before reading: a declared length over
+   * the cap — or a header present but malformed — raises `onOversize` without
+   * reading the body. Defaults to `true`; disable where the header is
+   * untrustworthy (a transparently decompressed hop) or where the caller checks
+   * it itself. Ignored when `onOversize` is `'truncate'`, which always streams
+   * up to the cap.
    */
   checkContentLength?: boolean | undefined;
   /** Abort the read when this signal fires. */
@@ -46,10 +49,18 @@ export interface BoundedBodyOptions {
 }
 
 /**
+ * Byte reads cannot signal truncation through their return value, so they only
+ * accept an error factory for the oversize case.
+ */
+export interface BoundedBytesOptions extends BoundedBodyOptions {
+  onOversize: () => Error;
+}
+
+/**
  * The `content-length` header as a trustworthy byte count, or `undefined` when
- * the header is absent or malformed. A malformed header is never trusted — the
- * body is streamed under the cap instead of being waved through by a `NaN`
- * comparison.
+ * the header is absent or malformed. A malformed header is never trusted as a
+ * length; the readers above additionally fail closed on one when their
+ * declared-length check is enabled.
  */
 export function declaredContentLength(headers: Headers): number | undefined {
   const raw = headers.get('content-length');
@@ -61,7 +72,7 @@ export function declaredContentLength(headers: Headers): number | undefined {
 /** Collect the body into a single `Uint8Array`, bounded by `options.maxBytes`. */
 export async function readBoundedBytes(
   response: Response,
-  options: BoundedBodyOptions,
+  options: BoundedBytesOptions,
 ): Promise<Uint8Array> {
   const preallocated = options.expectedBytes === undefined
     ? undefined
@@ -118,15 +129,17 @@ async function* boundedBodyChunks(
   state: { truncated: boolean },
 ): AsyncGenerator<Uint8Array, void, void> {
   const { maxBytes, onOversize, signal } = options;
-  if (options.checkContentLength !== false) {
-    const declared = declaredContentLength(response.headers);
-    if (declared !== undefined && declared > maxBytes) {
-      await cancelBody(response);
-      if (onOversize === 'truncate') {
-        state.truncated = true;
-        return;
+  if (options.checkContentLength !== false && onOversize !== 'truncate') {
+    // Fail closed on a header that is present but not a plain byte count — an
+    // ambiguous declared length (multi-valued, hex, exponential) is the same
+    // smuggling surface as an oversize one.
+    const raw = response.headers.get('content-length');
+    if (raw !== null) {
+      const declared = declaredContentLength(response.headers);
+      if (declared === undefined || declared > maxBytes) {
+        await cancelBody(response);
+        throw onOversize();
       }
-      throw onOversize();
     }
   }
   if (!response.body) {
@@ -149,13 +162,17 @@ async function* boundedBodyChunks(
     signal.addEventListener('abort', onSignalAbort, { once: true });
   }
   let total = 0;
+  let consumed = false;
   try {
     while (true) {
       if (signal?.aborted) throw abortError();
       const next = aborted
         ? await Promise.race([reader.read(), aborted])
         : await reader.read();
-      if (next.done) break;
+      if (next.done) {
+        consumed = true;
+        break;
+      }
       total += next.value.byteLength;
       if (total > maxBytes) {
         if (onOversize === 'truncate') {
@@ -168,7 +185,7 @@ async function* boundedBodyChunks(
     }
   } finally {
     if (signal && onSignalAbort) signal.removeEventListener('abort', onSignalAbort);
-    await cancelReader(reader);
+    if (!consumed) await cancelReader(reader);
     releaseReader(reader);
   }
 }

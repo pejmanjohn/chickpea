@@ -415,7 +415,8 @@ export class SqliteSlackStateStore {
     const turnJobs = new TurnJobStoreLogic(this.db, now);
     const presentations = new SlackRunPresentationStoreLogic(this.db, now);
     const work = new WorkStoreLogic(this.db, { now });
-    Object.assign(this, localSlackStateStore({ slack, work, turnJobs, presentations }));
+    const facade: SlackStateStore = localSlackStateStore({ slack, work, turnJobs, presentations });
+    Object.assign(this, facade);
   }
 
   close(): void {
