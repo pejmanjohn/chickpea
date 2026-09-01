@@ -16,10 +16,10 @@
  *   3. mention full turn       -> conversations.history (24h window), status
  *      set then cleared, ONE streamed final (startStream+stopStream) carrying
  *      the stub reply marker
- *   4. status rejected         -> a durable plain progress post precedes the
- *      final, final still delivered, no status retry storm
+ *   4. status rejected         -> final still delivered, no legacy progress
+ *      post fallback, no status retry storm
  *   5. provider 500            -> one sanitized Slack failure, no raw provider
- *      error marker, status cleared
+ *      error marker, status cleared when one was set
  *   6. NET_GUARD_LOG empty     -> zero external traffic across all scenarios
  *
  * A suitable Node >= 22.19 builds and spawns the Flue server; the shared
@@ -50,7 +50,7 @@ const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_THREAD_TS = '1782770400.000100';
 
 // Load the TypeScript fake backend through tsx's runtime loader.
-const { FakeSlackBackend, STUB_REPLY_MARKER, RAW_PROVIDER_ERROR_MARKER, isMarkdownPost } =
+const { FakeSlackBackend, STUB_REPLY_MARKER, RAW_PROVIDER_ERROR_MARKER } =
   await loadFake();
 const { AGENT_FAILURE_TEXT } = await loadTsModule('src/slack/web-client-presenter.ts');
 
@@ -217,8 +217,8 @@ try {
     );
   }
 
-  // Check 4: status rejection falls back to a durable progress post before the
-  // final and does not storm setStatus.
+  // Check 4: status rejection latches native semantic activity off without
+  // reviving the legacy chat-message progress fallback or storming setStatus.
   {
     backend.reset();
     backend.configure({ slack: { rejectSetStatus: true }, provider: { mode: 'ok' } });
@@ -230,9 +230,6 @@ try {
     const [final] = finals;
 
     const progressPosts = backend.progressPosts();
-    const firstProgressIndex = backend.wireLog.findIndex(
-      (entry) => entry.method === 'chat.postMessage' && !isMarkdownPost(entry.body),
-    );
     const nonEmpty = backend
       .statusCalls()
       .filter((entry) => String(entry.body.status) !== '');
@@ -240,15 +237,13 @@ try {
     const passed =
       finals.length === 1 &&
       final !== undefined &&
-      progressPosts.length >= 1 &&
-      firstProgressIndex >= 0 &&
-      firstProgressIndex < final.index &&
+      progressPosts.length === 0 &&
       nonEmpty.length <= 2;
     record(
-      'status rejected -> durable progress post precedes the final',
+      'status rejected -> final delivered without legacy progress fallback',
       passed,
       `finals=${finals.length} progressPosts=${progressPosts.length} ` +
-        `progressIndex=${firstProgressIndex} finalIndex=${final?.index} nonEmptyStatus=${nonEmpty.length}`,
+        `finalIndex=${final?.index} nonEmptyStatus=${nonEmpty.length}`,
     );
   }
 
@@ -264,14 +259,14 @@ try {
     const finals = await waitForFinals(backend, 1, 15_000);
     const [final] = finals;
     const lastStatus = backend.statusCalls().at(-1);
+    const statusCleared = lastStatus === undefined || String(lastStatus.body.status) === '';
     const slackWire = JSON.stringify(backend.wireLog);
 
     const passed =
       finals.length === 1 &&
       final?.text === AGENT_FAILURE_TEXT &&
       !slackWire.includes(RAW_PROVIDER_ERROR_MARKER) &&
-      lastStatus !== undefined &&
-      String(lastStatus.body.status) === '';
+      statusCleared;
     record(
       'provider 500 -> one sanitized final, status cleared, no raw error leak',
       passed,
