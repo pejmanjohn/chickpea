@@ -7,6 +7,8 @@ import {
   connectionAccountSecretSettingKey,
   resolveConnectionAccountSecret,
 } from '../src/config/connector-secrets.ts';
+import type { OAuthAuthorizationAuthority } from '../src/config/oauth-authorization.ts';
+import { McpOAuthError } from '../src/config/mcp-oauth.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import {
@@ -22,7 +24,15 @@ import { createSlackOwner } from './helpers/slack-owner.ts';
 const NOW = 1_800_200_000_000;
 const CAPABILITY = 'c'.repeat(43);
 
-test('a native connector welcome link stays on the dedicated setup surface until Continue', async () => {
+function mcpOAuthState(
+  ref: { agentId: string; connectionId: string },
+  nonce: string,
+): string {
+  return Buffer.from(JSON.stringify({ a: ref.agentId, c: ref.connectionId, n: nonce }))
+    .toString('base64url');
+}
+
+test('a native connector welcome link stays on the dedicated setup surface until Continue', async (t) => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, { now: NOW, suffix: 'native-connector-landing' });
   const config = new SqliteConfigStore(':memory:', { agents: [] });
@@ -30,6 +40,34 @@ test('a native connector welcome link stays on the dedicated setup surface until
   const settings = new SqliteSettingsStore(':memory:');
 
   try {
+    const editorLocatorHash = createHash('sha256').update('native-connector-editor').digest('hex');
+    const editorInvitation = await identity.createInvitation({
+      organizationId: owner.membership.organizationId,
+      slackTeamId: owner.user.slackTeamId,
+      slackUserId: 'U_NATIVE_CONNECTOR_EDITOR',
+      displayName: 'Connector Editor',
+      role: 'admin',
+      locatorHash: editorLocatorHash,
+      inviterMembershipId: owner.membership.id,
+      expiresAt: NOW + 60_000,
+    });
+    const editor = await identity.consumeInvitation({
+      invitationId: editorInvitation.id,
+      locatorHash: editorLocatorHash,
+      slackTeamId: owner.user.slackTeamId,
+      slackUserId: editorInvitation.slackUserId,
+      displayName: 'Connector Editor',
+      betterAuthUserId: 'ba_user_native_connector_editor',
+      betterAuthMembershipId: 'ba_member_native_connector_editor',
+    });
+    await identity.updateMembershipAuthority({
+      membershipId: editor.membership.id,
+      role: 'member',
+      actorMembershipId: owner.membership.id,
+      authenticationSurface: 'better_auth',
+      correlationId: 'native_connector_editor_initial_member',
+      reasonCode: 'connector_editor_member',
+    });
     const agent = await config.createAgent({
       id: 'agent_project_guide',
       name: 'Project Guide',
@@ -109,8 +147,8 @@ test('a native connector welcome link stays on the dedicated setup surface until
     };
     const completingPrincipal: AuthPrincipal = {
       ...issuerPrincipal,
-      userId: 'user_native_connector_editor',
-      membershipId: 'membership_native_connector_editor',
+      userId: editor.user.id,
+      membershipId: editor.membership.id,
       role: 'member',
       credentialId: 'session_native_connector_editor',
       correlationId: 'native_connector_editor',
@@ -123,25 +161,70 @@ test('a native connector welcome link stays on the dedicated setup surface until
       returnAgentId?: string;
       accountRevision?: number;
       oauthAttemptId?: string;
+      authorizationAuthority?: OAuthAuthorizationAuthority;
     }> = [];
+    const states: string[] = [];
     let completeCalls = 0;
+    let authorizationChecks = 0;
+    let tokenCalls = 0;
+    let discoverCalls = 0;
+    let identifyCalls = 0;
+    let settingWrites = 0;
+    let duringDiscovery: (() => Promise<void>) | undefined;
+    const routeSettings = new Proxy(settings, {
+      get(target, property, receiver) {
+        if (property === 'setSetting') {
+          return async (...args: Parameters<SqliteSettingsStore['setSetting']>) => {
+            settingWrites += 1;
+            return settings.setSetting(...args);
+          };
+        }
+        if (property === 'deleteSetting') {
+          return async (...args: Parameters<SqliteSettingsStore['deleteSetting']>) => {
+            settingWrites += 1;
+            return settings.deleteSetting(...args);
+          };
+        }
+        if (property === 'applySettingsPatch') {
+          return async (...args: Parameters<SqliteSettingsStore['applySettingsPatch']>) => {
+            settingWrites += 1;
+            return settings.applySettingsPatch(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
     const app = createManagementSetupRoutes({
       identity,
       config,
       management,
-      settings,
+      settings: routeSettings,
       now: () => NOW,
       authenticatePrincipal: async () => principal,
       startMcpOAuth: async (input) => {
         starts.push(input);
+        const state = mcpOAuthState(input.ref, `nonce_${starts.length}`);
+        states.push(state);
         return {
           authorizationUrl: new URL('https://linear.example/oauth/authorize'),
-          state: 'linear-state',
+          state,
         };
       },
-      completeMcpOAuth: async () => {
-        completeCalls += 1;
+      completeMcpOAuth: async (_input, oauthDependencies) => {
         const latest = starts.at(-1)!;
+        authorizationChecks += 1;
+        if (oauthDependencies.validateAuthorization &&
+            !(await oauthDependencies.validateAuthorization(
+              latest.authorizationAuthority,
+              latest.ref,
+            ))) {
+          throw new McpOAuthError(
+            'authorization_expired',
+            'OAuth initiating authority is no longer current',
+          );
+        }
+        completeCalls += 1;
         return {
           ref: latest.ref,
           ...(latest.accountRevision !== undefined
@@ -150,15 +233,26 @@ test('a native connector welcome link stays on the dedicated setup surface until
           ...(latest.oauthAttemptId
             ? { oauthAttemptId: latest.oauthAttemptId }
             : {}),
+          ...(latest.authorizationAuthority
+            ? { authorizationAuthority: latest.authorizationAuthority }
+            : {}),
           returnAgentId: agent.id,
         };
       },
-      resolveMcpOAuthToken: async () => 'linear-access-token',
+      resolveMcpOAuthToken: async () => {
+        tokenCalls += 1;
+        return 'linear-access-token';
+      },
       discoverMcp: async (input) => {
+        discoverCalls += 1;
+        await duringDiscovery?.();
         assert.equal(input.headers.Authorization, 'Bearer linear-access-token');
         return { tools: [{ name: 'search_issues' }, { name: 'create_issue' }] };
       },
-      identifyMcp: async () => ({ workspaceName: 'Acme Linear', accountName: 'Pejman' }),
+      identifyMcp: async () => {
+        identifyCalls += 1;
+        return { workspaceName: 'Acme Linear', accountName: 'Pejman' };
+      },
       deliverReceipt: async () => ({ deliveryRef: 'slack:D_NATIVE_CONNECTOR:receipt.1' }),
     });
 
@@ -215,7 +309,7 @@ test('a native connector welcome link stays on the dedicated setup surface until
     assert.equal((await config.listAgentConnectionBindings(agent.id)).length, 1);
 
     const callback = await app.request(
-      `http://localhost/setup/${setupId}/oauth/mcp/callback?state=linear-state&code=linear-code`,
+      `http://localhost/setup/${setupId}/oauth/mcp/callback?state=${states[0]}&code=linear-code`,
       { headers: { cookie } },
     );
     assert.equal(callback.status, 303, await callback.clone().text());
@@ -327,27 +421,128 @@ test('a native connector welcome link stays on the dedicated setup surface until
 
     principal = completingPrincipal;
     const deniedCallback = await app.request(
-      `http://localhost/setup/${privateSetupId}/oauth/mcp/callback?state=linear-state&code=linear-code`,
+      `http://localhost/setup/${privateSetupId}/oauth/mcp/callback?state=${states[1]}&code=linear-code`,
       { headers: { cookie: privateCookie } },
     );
-    assert.equal(deniedCallback.status, 303);
-    assert.equal(deniedCallback.headers.get('location'),
-      `/setup/${privateSetupId}?status=failed`);
+    assert.equal(deniedCallback.status, 403);
     assert.equal(completeCalls, 1);
-    assert.equal((await management.getSetup(privateSetupId))?.status, 'failed');
+    assert.equal((await management.getSetup(privateSetupId))?.status, 'authorizing');
 
-    principal = issuerPrincipal;
+    await identity.updateMembershipAuthority({
+      membershipId: editor.membership.id,
+      role: 'admin',
+      actorMembershipId: owner.membership.id,
+      authenticationSurface: 'better_auth',
+      correlationId: 'native_connector_editor_promoted',
+      reasonCode: 'connector_editor_admin',
+    });
+    principal = { ...completingPrincipal, role: 'admin' };
     const switchedOwner = await authorize(app, privateSetupId, privateCookie, {
       ownerKind: 'team',
     });
     assert.equal(switchedOwner.status, 200, await switchedOwner.clone().text());
     assert.equal(starts.length, 3);
+    assert.deepEqual(starts[2]!.authorizationAuthority, {
+      organizationId: owner.membership.organizationId,
+      workspaceId: owner.user.slackTeamId,
+      membershipId: editor.membership.id,
+      agentId: privateAgent.id,
+      ownerKind: 'team',
+    });
     const switchedAccounts = (await config.listConnectionAccounts(owner.user.slackTeamId))
       .filter(({ providerId }) => providerId === 'linear');
-    assert.equal(switchedAccounts.filter(({ lifecycle }) => lifecycle === 'revoked').length, 1);
+    assert.equal(switchedAccounts.filter(({ lifecycle }) => lifecycle === 'revoked').length, 0);
+    assert.equal(switchedAccounts.filter(({ ownerKind, ownerMembershipId, lifecycle }) =>
+      ownerKind === 'member' && ownerMembershipId === issuerPrincipal.membershipId &&
+        lifecycle === 'pending'
+    ).length, 1);
     assert.equal(switchedAccounts.filter(({ ownerKind, lifecycle }) =>
       ownerKind === 'team' && lifecycle === 'pending'
     ).length, 1);
+
+    await t.test('a demoted Team catalog OAuth initiator cannot finish the callback', async () => {
+      const teamPending = switchedAccounts.find(({ ownerKind, lifecycle }) =>
+        ownerKind === 'team' && lifecycle === 'pending'
+      )!;
+      const before = {
+        completeCalls,
+        authorizationChecks,
+        tokenCalls,
+        discoverCalls,
+        identifyCalls,
+        settingWrites,
+      };
+      await identity.updateMembershipAuthority({
+        membershipId: editor.membership.id,
+        role: 'member',
+        actorMembershipId: owner.membership.id,
+        authenticationSurface: 'better_auth',
+        correlationId: 'native_connector_editor_demoted',
+        reasonCode: 'connector_editor_member',
+      });
+      // Keep the request principal stale to prove the durable OAuth authority
+      // check observes the live membership role before provider exchange.
+      const denied = await app.request(
+        `http://localhost/setup/${privateSetupId}/oauth/mcp/callback?state=${states[2]}&code=linear-code`,
+        { headers: { cookie: privateCookie } },
+      );
+      assert.equal(denied.status, 403, await denied.clone().text());
+      assert.deepEqual(await denied.json(), { error: 'setup_unavailable' });
+      assert.equal(completeCalls, before.completeCalls);
+      assert.equal(authorizationChecks, before.authorizationChecks + 1);
+      assert.equal(tokenCalls, before.tokenCalls);
+      assert.equal(discoverCalls, before.discoverCalls);
+      assert.equal(identifyCalls, before.identifyCalls);
+      assert.equal(settingWrites, before.settingWrites);
+      const after = (await config.listConnectionAccounts(owner.user.slackTeamId))
+        .find(({ id }) => id === teamPending.id)!;
+      assert.equal(after.lifecycle, 'pending');
+      assert.equal(after.revision, teamPending.revision);
+      assert.deepEqual(after.policy, teamPending.policy);
+      assert.equal((await management.getSetup(privateSetupId))?.status, 'authorizing');
+    });
+
+    await t.test('Team catalog OAuth rechecks authority immediately before ready commit', async () => {
+      await identity.updateMembershipAuthority({
+        membershipId: editor.membership.id,
+        role: 'admin',
+        actorMembershipId: owner.membership.id,
+        authenticationSurface: 'better_auth',
+        correlationId: 'native_connector_editor_repromoted',
+        reasonCode: 'connector_editor_admin',
+      });
+      const restarted = await authorize(app, privateSetupId, privateCookie, {
+        ownerKind: 'team',
+      });
+      assert.equal(restarted.status, 200, await restarted.clone().text());
+      assert.equal(starts.length, 4);
+      const pendingBeforeCallback = (await config.listConnectionAccounts(owner.user.slackTeamId))
+        .find(({ ownerKind, providerId, lifecycle }) =>
+          ownerKind === 'team' && providerId === 'linear' && lifecycle === 'pending'
+        )!;
+      duringDiscovery = async () => {
+        duringDiscovery = undefined;
+        await identity.updateMembershipAuthority({
+          membershipId: editor.membership.id,
+          role: 'member',
+          actorMembershipId: owner.membership.id,
+          authenticationSurface: 'better_auth',
+          correlationId: 'native_connector_editor_demoted_during_discovery',
+          reasonCode: 'connector_editor_member',
+        });
+      };
+      const settingWritesBeforeCallback = settingWrites;
+      const denied = await app.request(
+        `http://localhost/setup/${privateSetupId}/oauth/mcp/callback?state=${states[3]}&code=linear-code`,
+        { headers: { cookie: privateCookie } },
+      );
+      assert.equal(denied.status, 403, await denied.clone().text());
+      const pendingAfterCallback = (await config.listConnectionAccounts(owner.user.slackTeamId))
+        .find(({ id }) => id === pendingBeforeCallback.id)!;
+      assert.equal(pendingAfterCallback.lifecycle, 'pending');
+      assert.equal(pendingAfterCallback.revision, pendingBeforeCallback.revision);
+      assert.equal(settingWrites, settingWritesBeforeCallback + 1);
+    });
   } finally {
     identity.close();
     config.close();
@@ -427,6 +622,10 @@ test('catalog replacement requires management authority and rolls back failed wr
       correlationId: 'catalog_owner',
       machine: false,
     };
+    const ownerAdminPrincipal: AuthPrincipal = {
+      ...ownerPrincipal,
+      role: 'admin',
+    };
     const secondEditor: AuthPrincipal = {
       ...ownerPrincipal,
       userId: 'user_catalog_second_editor',
@@ -435,6 +634,8 @@ test('catalog replacement requires management authority and rolls back failed wr
       correlationId: 'catalog_second_editor',
     };
     let setupSequence = 0;
+    let discoverCalls = 0;
+    let identifyCalls = 0;
     const createSetup = async (label: string) => {
       const setupId = `setup_catalog_replace_${label}_${++setupSequence}`;
       await management.putSetup({
@@ -474,19 +675,29 @@ test('catalog replacement requires management authority and rolls back failed wr
       });
       return setupId;
     };
-    const createApp = (routeConfig: ConfigStore, principal: AuthPrincipal) =>
+    const createApp = (
+      routeConfig: ConfigStore,
+      principal: AuthPrincipal,
+      routeSettings = settings,
+    ) =>
       createManagementSetupRoutes({
         identity,
         config: routeConfig,
         management,
-        settings,
+        settings: routeSettings,
         now: () => NOW,
         authenticatePrincipal: async () => principal,
-        discoverMcp: async () => ({ tools: [{ name: 'replacement_tool' }] }),
-        identifyMcp: async () => ({
-          workspaceName: 'Replacement Stripe',
-          accountName: 'replacement@example.test',
-        }),
+        discoverMcp: async () => {
+          discoverCalls += 1;
+          return { tools: [{ name: 'replacement_tool' }] };
+        },
+        identifyMcp: async () => {
+          identifyCalls += 1;
+          return {
+            workspaceName: 'Replacement Stripe',
+            accountName: 'replacement@example.test',
+          };
+        },
         deliverReceipt: async () => ({
           deliveryRef: 'slack:D_CATALOG_REPLACEMENT:receipt.1',
         }),
@@ -510,8 +721,49 @@ test('catalog replacement requires management authority and rolls back failed wr
       );
     };
 
+    let deniedInventoryCalls = 0;
+    let deniedAccountWrites = 0;
+    let deniedBindingWrites = 0;
+    let deniedSettingWrites = 0;
+    const deniedConfig = new Proxy<ConfigStore>(config, {
+      get(target, property, receiver) {
+        if (property === 'listConnectionAccounts') {
+          return async (...args: Parameters<ConfigStore['listConnectionAccounts']>) => {
+            deniedInventoryCalls += 1;
+            return config.listConnectionAccounts(...args);
+          };
+        }
+        if (property === 'putConnectionAccount') {
+          return async (...args: Parameters<ConfigStore['putConnectionAccount']>) => {
+            deniedAccountWrites += 1;
+            return config.putConnectionAccount(...args);
+          };
+        }
+        if (property === 'putAgentConnectionBinding') {
+          return async (...args: Parameters<ConfigStore['putAgentConnectionBinding']>) => {
+            deniedBindingWrites += 1;
+            return config.putAgentConnectionBinding(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const deniedSettings = new Proxy(settings, {
+      get(target, property, receiver) {
+        if (property === 'setSetting') {
+          return async (...args: Parameters<SqliteSettingsStore['setSetting']>) => {
+            deniedSettingWrites += 1;
+            return settings.setSetting(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
     const unauthorizedSetupId = await createSetup('unauthorized');
-    const unauthorizedApp = createApp(config, secondEditor);
+    const unauthorizedApp = createApp(deniedConfig, secondEditor, deniedSettings);
     const unauthorizedExchange = await exchange(unauthorizedApp, unauthorizedSetupId);
     const unauthorizedCookie = unauthorizedExchange.headers.get('set-cookie')!.split(';')[0]!;
     const unauthorized = await authorize(
@@ -520,7 +772,36 @@ test('catalog replacement requires management authority and rolls back failed wr
       unauthorizedCookie,
       { ownerKind: 'team', credential: 'unauthorized-token' },
     );
-    assert.ok(unauthorized.status >= 400, await unauthorized.clone().text());
+    assert.equal(unauthorized.status, 403, await unauthorized.clone().text());
+    assert.deepEqual(await unauthorized.json(), { error: 'setup_unavailable' });
+    assert.equal((await management.getSetup(unauthorizedSetupId))?.status, 'claimed');
+    assert.equal(discoverCalls, 0);
+    assert.equal(identifyCalls, 0);
+    assert.equal(deniedInventoryCalls, 0);
+    assert.equal(deniedAccountWrites, 0);
+    assert.equal(deniedBindingWrites, 0);
+    assert.equal(deniedSettingWrites, 0);
+    await assertOriginalState();
+
+    const demotedCreatorSetupId = await createSetup('demoted-creator');
+    const demotedCreatorApp = createApp(deniedConfig, ownerPrincipal, deniedSettings);
+    const demotedCreatorExchange = await exchange(demotedCreatorApp, demotedCreatorSetupId);
+    const demotedCreatorCookie = demotedCreatorExchange.headers.get('set-cookie')!.split(';')[0]!;
+    const demotedCreator = await authorize(
+      demotedCreatorApp,
+      demotedCreatorSetupId,
+      demotedCreatorCookie,
+      { ownerKind: 'team', credential: 'demoted-creator-token' },
+    );
+    assert.equal(demotedCreator.status, 403, await demotedCreator.clone().text());
+    assert.deepEqual(await demotedCreator.json(), { error: 'setup_unavailable' });
+    assert.equal((await management.getSetup(demotedCreatorSetupId))?.status, 'claimed');
+    assert.equal(discoverCalls, 0);
+    assert.equal(identifyCalls, 0);
+    assert.equal(deniedInventoryCalls, 0);
+    assert.equal(deniedAccountWrites, 0);
+    assert.equal(deniedBindingWrites, 0);
+    assert.equal(deniedSettingWrites, 0);
     await assertOriginalState();
 
     const personalSetupId = await createSetup('personal');
@@ -581,7 +862,7 @@ test('catalog replacement requires management authority and rolls back failed wr
         },
       });
       const setupId = await createSetup(failurePoint);
-      const app = createApp(failingConfig, ownerPrincipal);
+      const app = createApp(failingConfig, ownerAdminPrincipal);
       const exchanged = await exchange(app, setupId);
       const cookie = exchanged.headers.get('set-cookie')!.split(';')[0]!;
       const response = await authorize(app, setupId, cookie, {
@@ -786,13 +1067,14 @@ test('the managed connector link is reusable and completes from the dedicated pa
     assert.equal(memberExchange.status, 200, await memberExchange.clone().text());
     const memberCookie = memberExchange.headers.get('set-cookie')!.split(';')[0]!;
     const memberAuthorize = await authorize(app, setupId, memberCookie, {
-      ownerKind: 'team',
+      ownerKind: 'member',
       access: 'read',
     });
     assert.equal(memberAuthorize.status, 200, await memberAuthorize.clone().text());
     assert.equal(authorizeInputs.length, 2);
-    assert.equal(authorizeInputs[0]!.principalRef, authorizeInputs[1]!.principalRef);
     assert.match(authorizeInputs[0]!.principalRef, /^chickpea:organization:/);
+    assert.match(authorizeInputs[1]!.principalRef, /^chickpea:membership:/);
+    assert.notEqual(authorizeInputs[0]!.principalRef, authorizeInputs[1]!.principalRef);
     assert.match(authorizeInputs[0]!.returnUrl ?? '', new RegExp(`/setup/${setupId}\\?poll=1$`));
 
     principal = ownerPrincipal;

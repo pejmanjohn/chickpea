@@ -156,8 +156,9 @@ const opsAgent = {
   model: 'local-stub/ops',
 };
 
-function inlineScript(usageAdminUi = false): string {
-  const script = renderAdminPage({ usageAdminUi }).match(/<script>([\s\S]*?)<\/script>/)?.[1];
+function inlineScript(usageAdminUi = false, workspaceAdminUi = true): string {
+  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi })
+    .match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script, 'admin page should include one inline script');
   return script;
 }
@@ -461,6 +462,7 @@ function runAdminPageHarness(
     deferAgentPatch?: boolean;
     initialSearch?: string;
     usageAdminUi?: boolean;
+    workspaceAdminUi?: boolean;
     usageApiError?: boolean;
     usageCoverage?: { pricedOperationCount: number; meteredOperationCount: number };
     usageAgentLabel?: string | null;
@@ -498,6 +500,7 @@ function runAdminPageHarness(
   historyReplaces: string[];
   usageApiCalls: string[];
   scheduledApiCalls: string[];
+  fetchCalls: Array<{ path: string; method: string }>;
   channelListCalls: string[];
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
@@ -1264,8 +1267,10 @@ function runAdminPageHarness(
       priceVersionId: 'openai_2026-07-28', priceUnknownReason: null, recordedAt: usageNow - 55_000,
     }],
   };
+  const fetchCalls: Array<{ path: string; method: string }> = [];
   const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string>; cache?: string }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
+    fetchCalls.push({ path, method });
     if (
       method === 'GET' &&
       ['/admin/api/github/status', '/admin/api/egress', '/admin/api/sandbox/status'].includes(path)
@@ -2646,6 +2651,7 @@ function runAdminPageHarness(
     inlineScriptFor(
       options.cloudflare ?? false,
       options.usageAdminUi ?? false,
+      options.workspaceAdminUi ?? true,
     ),
     {
       document,
@@ -2726,6 +2732,7 @@ function runAdminPageHarness(
     historyReplaces,
     usageApiCalls,
     scheduledApiCalls,
+    fetchCalls,
     channelListCalls,
     providerKeyPosts,
     providerKeyDeletes,
@@ -2855,15 +2862,16 @@ async function openReleaseAttachPicker(
 function inlineScriptFor(
   cloudflare: boolean,
   usageAdminUi = false,
+  workspaceAdminUi = true,
 ): string {
-  if (!cloudflare) return inlineScript(usageAdminUi);
+  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     value: { userAgent: 'Cloudflare-Workers' },
     configurable: true,
   });
   try {
-    return inlineScript(usageAdminUi);
+    return inlineScript(usageAdminUi, workspaceAdminUi);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else delete (globalThis as { navigator?: unknown }).navigator;
@@ -2893,6 +2901,37 @@ function connectedSlackFixture(): SlackConnectionFixture {
     manifestUrl: 'https://api.slack.com/apps?new_app=1&manifest_json=%7B%22a%22%3A1%7D',
   };
 }
+
+test('Member Admin shell exposes only Agent navigation and skips workspace bootstrap requests', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin',
+    workspaceAdminUi: false,
+    usageAdminUi: true,
+    slackConnection: connectedSlackFixture(),
+  });
+  await flushAsync();
+
+  const sectionSwitcher = harness.app.innerHTML.match(
+    /<nav class="section-switcher"[^>]*>[\s\S]*?<\/nav>/,
+  )?.[0];
+  assert.ok(sectionSwitcher);
+  assert.match(sectionSwitcher, />Agents<\/button>/);
+  assert.doesNotMatch(sectionSwitcher, />Destinations<\/button>|>Team<\/button>|>Usage<\/button>|>Settings<\/button>/);
+
+  const fetchedPaths = harness.fetchCalls
+    .filter(({ method }) => method === 'GET')
+    .map(({ path }) => path);
+  assert.ok(fetchedPaths.includes('/admin/api/agents'));
+  assert.ok(fetchedPaths.includes('/admin/api/models'));
+  for (const path of [
+    '/admin/api/slack-connection',
+    '/admin/api/onboarding',
+    '/admin/api/channels',
+    '/admin/api/workspace-model-default',
+  ]) {
+    assert.equal(fetchedPaths.includes(path), false, `${path} must not be fetched`);
+  }
+});
 
 function channelsFixture(
   channels: SlackChannelFixture[] = [

@@ -550,6 +550,94 @@ test('deliverFinal sanitizes emphasized URLs before streaming them to Slack', as
   );
 });
 
+test('deliverFinal redacts credential-shaped content before streaming it to Slack', async () => {
+  const starts: Array<Record<string, unknown>> = [];
+  const approvedOutputs: string[] = [];
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async startStream(input: Record<string, unknown>) {
+          starts.push(input);
+          return { ok: true, ts: '1782770400.000301' };
+        },
+        async stopStream() {
+          return { ok: true };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND',
+      threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER',
+      workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent',
+      agentId: 'agent_test',
+    },
+    {
+      async beforeDelivery(input) {
+        approvedOutputs.push(input.approvedOutput);
+        return 'attempt-redacted-output';
+      },
+      async afterDelivery() {},
+    },
+  );
+  const canaries = [
+    'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789',
+    ['x', 'app'].join('') + '-1-A0123456789-abcdefghijklmnopqrstuvwx',
+    ['gh', 'o_'].join('') + 'abcdefghijklmnopqrstuvwxyz012',
+  ];
+
+  await presenter.deliverFinal(`Credentials: ${canaries.join(' ')}`, 'markdown');
+
+  assert.equal(starts.length, 1);
+  assert.equal(approvedOutputs.length, 1);
+  for (const output of [String(starts[0]?.markdown_text), approvedOutputs[0]!]) {
+    for (const canary of canaries) assert.doesNotMatch(output, new RegExp(canary));
+    assert.match(output, /\[credential redacted\]/);
+  }
+});
+
+test('deliverFinal removes an algorithm-labeled PEM key before streaming or durable observation', async () => {
+  const starts: Array<Record<string, unknown>> = [];
+  const approvedOutputs: string[] = [];
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async startStream(input: Record<string, unknown>) {
+          starts.push(input);
+          return { ok: true, ts: '1782770400.000302' };
+        },
+        async stopStream() { return { ok: true }; },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND', threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER', workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent', agentId: 'agent_test',
+    },
+    {
+      async beforeDelivery(input) {
+        approvedOutputs.push(input.approvedOutput);
+        return 'attempt-pem-redaction';
+      },
+      async afterDelivery() {},
+    },
+  );
+  const pem = [
+    '-----BEGIN DSA PRIVATE KEY-----',
+    'MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEA',
+    'c2VjcmV0LWJ5dGVzLXRoYXQtbXVzdC1ub3Qtc3Vydml2ZQ==',
+    '-----END DSA PRIVATE KEY-----',
+  ].join('\n');
+
+  await presenter.deliverFinal(`Credential:\n${pem}\nDone.`, 'markdown');
+
+  for (const output of [String(starts[0]?.markdown_text), approvedOutputs[0]!]) {
+    assert.match(output, /\[credential redacted\]/);
+    assert.doesNotMatch(output, /MIIE|c2VjcmV0|END DSA PRIVATE KEY/);
+  }
+});
+
 test('deliverFinal attaches a native static table before the footer', async () => {
   const starts: Array<Record<string, unknown>> = [];
   const stops: Array<Record<string, unknown>> = [];
@@ -664,6 +752,36 @@ test('only a confirmed public final enters the handoff delivery callback', async
     messageTs: '1782770400.000350',
     text: 'Visible answer.',
   }]);
+});
+
+test('the public handoff callback receives the credential-safe Slack rendering', async () => {
+  const delivered: Array<{ messageTs: string; text: string }> = [];
+  const presenter = new WebClientPresenter(
+    {
+      chat: {
+        async startStream() {
+          return { ok: true, ts: '1782770400.000351' };
+        },
+        async stopStream() {
+          return { ok: true };
+        },
+      },
+    } as unknown as WebClient,
+    {
+      channelId: 'C_BOUND', threadTs: '1782770400.000100',
+      userId: 'U_REQUESTER', workspaceId: 'T_WORKSPACE',
+      agentName: 'Test agent', agentId: 'agent_test',
+    },
+    undefined,
+    { onPublicDelivery: (delivery) => { delivered.push(delivery); } },
+  );
+  const canary = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789';
+
+  await presenter.deliverFinal(`Credential: ${canary}`, 'markdown');
+
+  assert.equal(delivered.length, 1);
+  assert.doesNotMatch(delivered[0]!.text, new RegExp(canary));
+  assert.match(delivered[0]!.text, /\[credential redacted\]/);
 });
 
 test('deliverRequesterOnly posts an ephemeral response to the requesting member', async () => {

@@ -5,6 +5,7 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import {
   appendSlackReplyFooter,
   buildSlackAdminUrl,
+  canonicalSlackReplyText,
   escapeSlackControlCharacters,
   renderSlackMessage,
   type RenderedSlackMessage,
@@ -126,7 +127,7 @@ export async function deliverRoutineResult(
   client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
 ): Promise<RoutineDeliveryReceipt> {
   return deliverRoutineSlackMessage(
-    { ...input, approvedOutput: input.message },
+    { ...input, approvedOutput: canonicalSlackReplyText(input.message, 'markdown') },
     renderRoutineDelivery(
       input.routine,
       input.run,
@@ -167,7 +168,11 @@ export async function deliverRoutineFailureNotice(
         : []),
   ].join('\n');
   return deliverRoutineSlackMessage(
-    { ...input, changeKeyHash: null, approvedOutput: text },
+    {
+      ...input,
+      changeKeyHash: null,
+      approvedOutput: canonicalSlackReplyText(text, 'markdown'),
+    },
     appendSlackReplyFooter(
       appendRoutineRunContext(
         renderSlackMessage(text, 'markdown'),

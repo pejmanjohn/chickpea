@@ -182,7 +182,11 @@ function validateConnector(definition: ManagedConnectorDefinition): ManagedConne
   for (const capability of definition.capabilities) {
     if (!ID_PATTERN.test(capability.id) || !TOOL_NAME_PATTERN.test(capability.toolName) ||
         !Number.isInteger(capability.maxResultBytes) || capability.maxResultBytes < 1 ||
-        capability.maxResultBytes > 256 * 1024) {
+        capability.maxResultBytes > 256 * 1024 ||
+        capability.effect !== 'read' && (
+          !capability.sideEffectLabel?.trim() || capability.sideEffectLabel.length > 240 ||
+          capability.sideEffectLabel !== capability.sideEffectLabel.trim()
+        )) {
       throw new Error(`Managed connector ${toolkit} has an invalid capability`);
     }
     if (capability.semantic !== undefined &&

@@ -27,9 +27,11 @@ function principal(role: AuthPrincipal['role']): AuthPrincipal {
 test('team authority is split so Admin can inspect but only Owner can mutate membership', () => {
   assert.equal(permissionForRole('member').has('agent.create'), true);
   assert.equal(permissionForRole('member').has('connection.create_personal'), true);
+  assert.equal(permissionForRole('member').has('connection.create_team'), false);
   assert.equal(permissionForRole('member').has('team.view'), false);
   assert.equal(permissionForRole('owner').has('auth.manage'), true);
   assert.equal(permissionForRole('admin').has('admin.configure'), true);
+  assert.equal(permissionForRole('admin').has('connection.create_team'), true);
   assert.equal(permissionForRole('admin').has('auth.manage'), false);
   assert.equal(permissionForRole('admin').has('team.view'), true);
   assert.equal(permissionForRole('admin').has('team.manage_members'), false);

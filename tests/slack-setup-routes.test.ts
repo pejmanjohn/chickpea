@@ -14,6 +14,7 @@ import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { recordPendingSlackChallenge } from '../src/slack/installation-handshake.ts';
 import { buildSlackAppManifest } from '../src/slack/app-manifest.ts';
+import { SLACK_SETUP_TTL_MS } from '../src/slack/app-creation.ts';
 import { SLACK_INSTALL_PROCESSING_LEASE_MS } from '../src/slack/install-oauth.ts';
 import { REQUIRED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 
@@ -227,6 +228,16 @@ test('Admin setup rejects a chunk-sized oversized form before parsing or calling
       }),
     }, setupEnv(authority));
     assert.equal(response.status, 413);
+
+    const falseLength = await app.request(`${ORIGIN}/admin/setup`, {
+      method: 'POST',
+      headers: { ...formHeaders(), 'content-length': '1' },
+      body: new URLSearchParams({
+        action: 'create', capability: authority.capability,
+        configurationToken: `${CONFIG_TOKEN}${'x'.repeat(9_000)}`,
+      }),
+    }, setupEnv(authority));
+    assert.equal(falseLength.status, 413);
     assert.equal(calls, 0);
   } finally {
     identity.close();
@@ -357,7 +368,7 @@ test('public bot-install routes use an independent narrow browser cookie and nev
 
     const setupAfterApproval = await identity.getSlackSetupTransaction('setup_default');
     assert.equal(setupAfterApproval?.state, 'approval_pending');
-    assert.equal(setupAfterApproval?.expiresAt, NOW + (7 * 24 * 60 * 60_000));
+    assert.equal(setupAfterApproval?.expiresAt, NOW + SLACK_SETUP_TTL_MS);
     exchangeMode = 'success';
     const resume = await app.request(`${ORIGIN}/auth/slack/install/resume`, {
       method: 'POST', headers: formHeaders(), body: new URLSearchParams({

@@ -8,7 +8,7 @@ import type { FlueDispatchReceiptV1, FlueObservationTarget } from './turn-job-ty
 import { activityStatus, type ActivityStatus } from '../activity/status.ts';
 import {
   appendSlackReplyFooter,
-  canonicalSlackMarkdownText,
+  canonicalSlackReplyText,
   renderSlackMessage,
   streamableSlackMarkdownPrefix,
   type SlackReplyFooter,
@@ -798,9 +798,7 @@ export class SlackAgentViewPresentation {
       };
     }
 
-    const approved = format === 'markdown'
-      ? canonicalSlackMarkdownText(text)
-      : text.replace(/\r\n?/g, '\n').trim();
+    const approved = canonicalSlackReplyText(text, format);
     const renderedTable = tablePresentation
       ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - approved.length - 2))
       : undefined;
@@ -821,7 +819,7 @@ export class SlackAgentViewPresentation {
       const stop = { blocks: footerBlocks };
       const attemptId = await observer.before({
         method: 'slack_chat_stream',
-        approvedOutput: text,
+        approvedOutput: approved,
         renderedPayload: JSON.stringify({
           method: 'slack_chat_stream',
           start: startPayload,
@@ -886,7 +884,6 @@ export class SlackAgentViewPresentation {
     if (!prefixMatches) {
       return this.correctDivergentStream(
         presentation,
-        text,
         approved,
         terminalTaskStatus,
         observer,
@@ -903,7 +900,7 @@ export class SlackAgentViewPresentation {
       : { blocks: footerBlocks };
     const attemptId = await observer.before({
       method: 'slack_chat_stream_resume',
-      approvedOutput: text,
+      approvedOutput: approved,
       renderedPayload: JSON.stringify({
         method: 'slack_chat_stream_resume',
         channel: presentation.root.channelId,
@@ -1222,7 +1219,6 @@ export class SlackAgentViewPresentation {
 
   private async correctDivergentStream(
     presentation: SlackRunPresentation,
-    approvedOutput: string,
     approved: string,
     terminalTaskStatus: 'complete' | 'error',
     observer: SlackPresentationDeliveryObserver,
@@ -1257,7 +1253,7 @@ export class SlackAgentViewPresentation {
     };
     const attemptId = await observer.before({
       method: payload.method,
-      approvedOutput,
+      approvedOutput: approved,
       renderedPayload: JSON.stringify(payload),
     });
     presentation = await this.transition(presentation, {

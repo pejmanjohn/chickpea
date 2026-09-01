@@ -219,6 +219,132 @@ test('Google callback consumes state, stores tokens, and returns only bounded ac
   }
 });
 
+test('Google callback rejects stale initiating authority before provider exchange', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const google = fakeGoogle();
+  let authorityActive = true;
+  const authority = {
+    organizationId: 'org_test',
+    workspaceId: 'T_TEST',
+    membershipId: 'membership_admin',
+    agentId: REF.agentId,
+    ownerKind: 'team',
+  } as const;
+  const dependencies = {
+    settings,
+    fetchFn: google.fetchFn,
+    randomId: () => 'nonce',
+    validateAuthorization: () => authorityActive,
+  };
+  try {
+    await saveApiOAuthClient(
+      REF,
+      { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+      settings,
+    );
+    const started = await startApiOAuthAuthorization(
+      {
+        ref: REF,
+        provider: 'google',
+        callbackUrl: CALLBACK_URL,
+        scopes: SCOPES,
+        authorizationAuthority: authority,
+      } as Parameters<typeof startApiOAuthAuthorization>[0],
+      dependencies,
+    );
+    assert.deepEqual(
+      (JSON.parse((await settings.getSetting(apiOAuthSettingKeys(REF)[1]))!) as {
+        authorizationAuthority?: unknown;
+      }).authorizationAuthority,
+      authority,
+    );
+    authorityActive = false;
+
+    await assert.rejects(
+      completeApiOAuthAuthorization(
+        { code: 'provider-code', state: started.state },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof ApiOAuthError && error.code === 'authorization_expired',
+    );
+    assert.equal(google.counts.exchanges, 0);
+    assert.equal(await settings.getSetting(apiOAuthSettingKeys(REF)[2]), undefined);
+  } finally {
+    settings.close();
+  }
+});
+
+test('Google callback fails closed for pending state minted before authority binding', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const google = fakeGoogle();
+  try {
+    await saveApiOAuthClient(
+      REF,
+      { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+      settings,
+    );
+    const started = await startApiOAuthAuthorization({
+      ref: REF, provider: 'google', callbackUrl: CALLBACK_URL, scopes: SCOPES,
+    }, { settings, randomId: () => 'legacy-nonce' });
+
+    await assert.rejects(
+      completeApiOAuthAuthorization(
+        { code: 'provider-code', state: started.state },
+        { settings, fetchFn: google.fetchFn, validateAuthorization: () => true },
+      ),
+      (error: unknown) =>
+        error instanceof ApiOAuthError && error.code === 'authorization_expired',
+    );
+    assert.equal(google.counts.exchanges, 0);
+  } finally {
+    settings.close();
+  }
+});
+
+test('Google callback rechecks authority after exchange before storing minted tokens', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const google = fakeGoogle();
+  let authorityActive = true;
+  const authority = {
+    organizationId: 'org_test', workspaceId: 'T_TEST', membershipId: 'membership_admin',
+    agentId: REF.agentId, ownerKind: 'team',
+  } as const;
+  const fetchFn: typeof fetch = async (input, init) => {
+    const response = await google.fetchFn(input, init);
+    const request = new Request(input, init);
+    if (request.url === 'https://oauth2.googleapis.com/token') authorityActive = false;
+    return response;
+  };
+  const dependencies = {
+    settings, fetchFn, randomId: () => 'nonce',
+    validateAuthorization: () => authorityActive,
+  };
+  try {
+    await saveApiOAuthClient(
+      REF,
+      { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+      settings,
+    );
+    const started = await startApiOAuthAuthorization({
+      ref: REF, provider: 'google', callbackUrl: CALLBACK_URL, scopes: SCOPES,
+      authorizationAuthority: authority,
+    }, dependencies);
+
+    await assert.rejects(
+      completeApiOAuthAuthorization(
+        { code: 'provider-code', state: started.state }, dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof ApiOAuthError && error.code === 'authorization_expired',
+    );
+    assert.equal(google.counts.exchanges, 1);
+    assert.equal(await settings.getSetting(apiOAuthSettingKeys(REF)[2]), undefined);
+  } finally {
+    settings.close();
+  }
+});
+
 test('failed Google exchange retains the initiating Agent callback context', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const google = fakeGoogle({ exchangeError: 'invalid_grant' });

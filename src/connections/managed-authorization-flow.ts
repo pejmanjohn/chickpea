@@ -1,4 +1,8 @@
-import { AuthorizationError, requirePermission } from '../auth/permissions.ts';
+import {
+  AuthorizationError,
+  requireAgentEdit,
+  requirePermission,
+} from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
@@ -98,6 +102,7 @@ export async function startManagedAuthorizationFlow(
   const service = connectionAccounts(dependencies);
   const { providers, generation, lineage } = dependencies.providerContext;
   try {
+    requireAgentEdit(input.principal, await dependencies.config.getAgent(input.agent.id));
     const replacement = input.connectionAccountId
       ? await replacementAccount(dependencies, service, {
           ...input,
@@ -105,10 +110,7 @@ export async function startManagedAuthorizationFlow(
         })
       : undefined;
     if (!replacement) {
-      requirePermission(
-        input.principal,
-        input.ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal',
-      );
+      requireManagedOwnerLanePermission(input.principal, input.ownerKind);
     }
     const replacementPolicy = replacement?.policy.kind === 'managed'
       ? replacement.policy
@@ -168,7 +170,7 @@ export async function startManagedAuthorizationFlow(
     await cleanupExistingAttempt(
       dependencies,
       service,
-      input.principal.membershipId,
+      input.principal,
       input.existingBrowserSecret,
       input.attemptScopeId,
     );
@@ -273,6 +275,21 @@ export async function pollManagedAuthorizationFlow(
         attempt.connectionAccountId,
       );
       if (binding?.agentId !== input.agent.id) throw new AuthorizationError();
+    }
+    try {
+      requireAgentEdit(input.principal, await dependencies.config.getAgent(attempt.agentId));
+      // The browser secret proves attempt continuity, not current authority.
+      // Recheck the live owner lane before even asking the provider for status.
+      requireManagedOwnerLanePermission(input.principal, attempt.ownerKind);
+    } catch (error) {
+      if (!(error instanceof AuthorizationError)) throw error;
+      await discardManagedAuthorizationAfterAuthorityLoss(dependencies, {
+        principal: input.principal,
+        browserSecret: input.browserSecret,
+        ...(input.attemptScopeId ? { attemptScopeId: input.attemptScopeId } : {}),
+        attempt,
+      });
+      throw error;
     }
     const providerContext = dependencies.providerContext;
     assertManagedAuthorizationProvider(attempt, providerContext);
@@ -390,8 +407,9 @@ export async function pollManagedAuthorizationFlow(
       account = created.account;
       accountMutation = { kind: 'created', accountId: account.id };
     }
-    if (input.commit && !await input.commit(account)) {
-      throw new ManagedSetupCompletionLostError();
+    if (input.commit) {
+      requireManagedOwnerLanePermission(input.principal, attempt.ownerKind);
+      if (!await input.commit(account)) throw new ManagedSetupCompletionLostError();
     }
     accountMutation = undefined;
     try {
@@ -508,6 +526,18 @@ export async function cancelManagedAuthorizationFlow(
     throw error;
   }
   const service = connectionAccounts(dependencies);
+  try {
+    requireManagedOwnerLanePermission(input.principal, attempt.ownerKind);
+  } catch (error) {
+    if (!(error instanceof AuthorizationError)) throw error;
+    await discardManagedAuthorizationAfterAuthorityLoss(dependencies, {
+      principal: input.principal,
+      browserSecret: input.browserSecret,
+      attemptScopeId: input.attemptScopeId,
+      attempt,
+    });
+    throw error;
+  }
   const remoteRef = managedAuthorizationRemoteRef(attempt);
   const committed = remoteRef ? await service.hasManagedRemoteRef({
     adapterId: attempt.adapterId,
@@ -547,6 +577,51 @@ function managedAuthorizationRemoteRef(
   return attempt.accountRef ?? attempt.authorizationRef;
 }
 
+/**
+ * Make a browser-bound remote authorization safe after the actor loses its
+ * management lane. This deliberately does not poll the provider or import,
+ * replace, validate, or revoke any local ConnectionAccount.
+ */
+export async function discardManagedAuthorizationAfterAuthorityLoss(
+  dependencies: ManagedAuthorizationFlowDependencies,
+  input: {
+    principal: AuthPrincipal;
+    browserSecret: string;
+    attemptScopeId?: string;
+    attempt: ManagedAuthorizationAttempt;
+  },
+): Promise<void> {
+  if (input.attempt.actorMembershipId !== input.principal.membershipId) {
+    throw new AuthorizationError();
+  }
+  const remoteRef = managedAuthorizationRemoteRef(input.attempt);
+  if (remoteRef) {
+    const service = connectionAccounts(dependencies);
+    const imported = await service.hasManagedRemoteRef({
+      adapterId: input.attempt.adapterId,
+      accountRef: remoteRef,
+    });
+    if (!imported) {
+      assertManagedAuthorizationProvider(input.attempt, dependencies.providerContext);
+      const provider = dependencies.providerContext.providers.get(input.attempt.adapterId);
+      if (!provider) {
+        throw new ManagedConnectionProviderUnavailableError(input.attempt.adapterId);
+      }
+      if (provider.cleanupRemoteAccount) {
+        await provider.cleanupRemoteAccount({ accountRef: remoteRef });
+      } else {
+        await provider.revoke({ policy: managedPolicy(input.attempt, remoteRef) });
+      }
+    }
+  }
+  await abandonManagedAuthorizationForRestart({
+    settings: dependencies.settings,
+    actorMembershipId: input.principal.membershipId,
+    ...(input.attemptScopeId ? { attemptScopeId: input.attemptScopeId } : {}),
+    browserSecret: input.browserSecret,
+  });
+}
+
 function connectionAccounts(
   dependencies: ManagedAuthorizationFlowDependencies,
 ): ConnectionAccountService {
@@ -556,6 +631,17 @@ function connectionAccounts(
     managedProviders: dependencies.providerContext.providers,
     managedCatalog: dependencies.catalog,
   });
+}
+
+function requireManagedOwnerLanePermission(
+  principal: AuthPrincipal,
+  ownerKind: 'team' | 'member' | undefined,
+): void {
+  if (!ownerKind) throw new ManagedAuthorizationError('invalid');
+  requirePermission(
+    principal,
+    ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal',
+  );
 }
 
 function frozenCapabilities(
@@ -587,7 +673,7 @@ async function replacementAccount(
 async function cleanupExistingAttempt(
   dependencies: ManagedAuthorizationFlowDependencies,
   service: ConnectionAccountService,
-  actorMembershipId: string,
+  principal: AuthPrincipal,
   existingBrowserSecret: string | undefined,
   attemptScopeId: string | undefined,
 ): Promise<void> {
@@ -596,7 +682,7 @@ async function cleanupExistingAttempt(
     try {
       existingAttempt = await inspectManagedAuthorizationForCleanup({
         settings: dependencies.settings,
-        actorMembershipId,
+        actorMembershipId: principal.membershipId,
         ...(attemptScopeId ? { attemptScopeId } : {}),
         browserSecret: existingBrowserSecret,
       });
@@ -606,6 +692,9 @@ async function cleanupExistingAttempt(
     const existingRemoteRef = existingAttempt
       ? managedAuthorizationRemoteRef(existingAttempt)
       : undefined;
+    if (existingAttempt) {
+      requireManagedOwnerLanePermission(principal, existingAttempt.ownerKind);
+    }
     if (existingAttempt && existingRemoteRef && !await service.hasManagedRemoteRef({
       adapterId: existingAttempt.adapterId,
       accountRef: existingRemoteRef,
@@ -617,7 +706,7 @@ async function cleanupExistingAttempt(
     if (existingAttempt) {
       await abandonManagedAuthorizationForRestart({
         settings: dependencies.settings,
-        actorMembershipId,
+        actorMembershipId: principal.membershipId,
         ...(attemptScopeId ? { attemptScopeId } : {}),
         browserSecret: existingBrowserSecret,
       });
@@ -630,12 +719,13 @@ async function cleanupExistingAttempt(
   try {
     staleAttempt = await inspectStaleManagedAuthorization({
       settings: dependencies.settings,
-      actorMembershipId,
+      actorMembershipId: principal.membershipId,
     });
   } catch (error) {
     if (!(error instanceof ManagedAuthorizationError && error.code === 'invalid')) throw error;
   }
   const staleRemoteRef = staleAttempt ? managedAuthorizationRemoteRef(staleAttempt) : undefined;
+  if (staleAttempt) requireManagedOwnerLanePermission(principal, staleAttempt.ownerKind);
   if (staleAttempt && staleRemoteRef && !await service.hasManagedRemoteRef({
     adapterId: staleAttempt.adapterId,
     accountRef: staleRemoteRef,
@@ -647,7 +737,7 @@ async function cleanupExistingAttempt(
   if (staleAttempt) {
     await abandonStaleManagedAuthorization({
       settings: dependencies.settings,
-      actorMembershipId,
+      actorMembershipId: principal.membershipId,
     });
   }
 }

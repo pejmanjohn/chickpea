@@ -7,7 +7,11 @@ import {
   hydrateSlackPublicHandoffFallback,
 } from '../src/slack/web-client-context.ts';
 import {
+  CURRENT_REQUEST_ENVELOPE_V2_END,
+  CURRENT_REQUEST_ENVELOPE_V2_START,
   currentRequestOffersProgressiveStreaming,
+  MEMORY_CURRENT_REQUEST_ENVELOPE_END,
+  MEMORY_CURRENT_REQUEST_ENVELOPE_START,
   parseCurrentRequestEnvelope,
   serializeCurrentRequestEnvelope,
 } from '../src/memory/tool-policy.ts';
@@ -308,4 +312,36 @@ test('only the terminal V2 envelope can offer the presentation tool', () => {
   assert.equal(legacy?.schemaVersion, 1);
   assert.equal(currentRequestOffersProgressiveStreaming(legacy), false);
   assert.equal(slackPresentationIntentCapability(legacy), undefined);
+});
+
+test('pre-scope V1 and V2 envelopes remain readable but lose coarse write authority', () => {
+  const legacyShared = {
+    memoryInfluenced: false,
+    explicitExternalSideEffectIntent: true,
+    explicitArtifactDeliveryIntent: false,
+    slackActorId: 'U_LEGACY',
+    slackMessageTs: '1785700401.000100',
+  };
+  const v1 = [
+    MEMORY_CURRENT_REQUEST_ENVELOPE_START,
+    JSON.stringify({ schemaVersion: 1, ...legacyShared }),
+    MEMORY_CURRENT_REQUEST_ENVELOPE_END,
+  ].join('\n');
+  const v2 = [
+    CURRENT_REQUEST_ENVELOPE_V2_START,
+    JSON.stringify({
+      schemaVersion: 2,
+      ...legacyShared,
+      progressiveStreamingOffered: true,
+    }),
+    CURRENT_REQUEST_ENVELOPE_V2_END,
+  ].join('\n');
+
+  for (const parsed of [parseCurrentRequestEnvelope(v1), parseCurrentRequestEnvelope(v2)]) {
+    assert.ok(parsed);
+    assert.equal(parsed.explicitExternalSideEffectIntent, false);
+    assert.deepEqual(parsed.externalSideEffectIntents, []);
+    assert.equal(parsed.slackActorId, 'U_LEGACY');
+  }
+  assert.equal(currentRequestOffersProgressiveStreaming(parseCurrentRequestEnvelope(v2)), true);
 });

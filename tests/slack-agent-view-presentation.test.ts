@@ -1460,6 +1460,9 @@ test('legacy checklist cleanup cannot make a proven native stream ambiguous', as
 
 test('a divergent terminal answer corrects the exact stream instead of posting a second answer', async () => {
   const h = harness();
+  const deliveryEvents: Array<Record<string, unknown>> = [];
+  const credentialCanary = ['xox', 'b'].join('') + '-' +
+    ['1234567890', 'abcdefghijklmnop'].join('-');
   try {
     const relay = await prepareReceipt(h, {
       instanceId: 'instance_correction',
@@ -1482,7 +1485,12 @@ test('a divergent terminal answer corrects the exact stream instead of posting a
     });
     await relay.closeAndDrain();
 
-    await h.presentation.finalize('Approved answer', 'markdown', 'complete', observer([]));
+    await h.presentation.finalize(
+      `Approved answer ${credentialCanary}`,
+      'markdown',
+      'complete',
+      observer(deliveryEvents),
+    );
     assert.deepEqual(
       h.calls.filter((call) => call.method.startsWith('chat.')).map((call) => call.method),
       ['chat.startStream', 'chat.stopStream', 'chat.update'],
@@ -1491,6 +1499,10 @@ test('a divergent terminal answer corrects the exact stream instead of posting a
     assert.equal(update?.ts, '1785700100.000201');
     assert.match(JSON.stringify(update), /Approved answer/);
     assert.match(JSON.stringify(update), /Corrected/);
+    for (const durableOutput of [JSON.stringify(update), JSON.stringify(deliveryEvents)]) {
+      assert.equal(durableOutput.includes(credentialCanary), false);
+      assert.match(durableOutput, /credential redacted/);
+    }
     assert.equal(h.store.get(h.runId)?.stream.presentationOutcome, 'corrected');
   } finally {
     h.db.close();

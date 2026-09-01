@@ -31,7 +31,10 @@ export function validateMutationProvenance(
   return validateBrowserMutationProvenance(request, options);
 }
 
-/** Exact-origin and bounded-body gate for unauthenticated browser forms. */
+/**
+ * Exact-origin and declared-length precheck for unauthenticated browser forms.
+ * Production routes must run actualBodyLimit before this synchronous check.
+ */
 export function validateBrowserMutationProvenance(
   request: Request,
   options: MutationProvenanceOptions,

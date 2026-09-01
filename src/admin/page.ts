@@ -27,7 +27,7 @@ const SLACK_LOGO_DATA_URL =
   'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTQiIGhlaWdodD0iNTQiIHZpZXdCb3g9IjAgMCA1NCA1NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGcgY2xpcC1wYXRoPSJ1cmwoI2NsaXAwXzQxMjdfNzAxMDUpIj4KPHBhdGggZD0iTTExLjM3OSAzMy45OTkzQzExLjM3OSAzNy4xMzU4IDguODQ1MTIgMzkuNjUwNyA1LjcyNzYgMzkuNjUwN0MyLjYxMDA4IDM5LjY1MDcgMC4wNTcyMjA1IDM3LjExNjggMC4wNTcyMjA1IDMzLjk5OTNDMC4wNTcyMjA1IDMwLjg4MTcgMi41OTExIDI4LjM0NzkgNS43MDg2MiAyOC4zNDc5SDExLjM2VjMzLjk5OTNIMTEuMzc5WiIgZmlsbD0iI0UwMUU1QSIvPgo8cGF0aCBkPSJNMTQuMTk2MiAzMy45OTk3QzE0LjE5NjIgMzAuODYzMiAxNi43MzAxIDI4LjM0ODMgMTkuODQ3NiAyOC4zNDgzQzIyLjk2NTEgMjguMzQ4MyAyNS40OTkgMzAuODgyMiAyNS40OTkgMzMuOTk5N1Y0OC4xMzUzQzI1LjQ5OSA1MS4yNzE4IDIyLjk2NTEgNTMuNzg2NyAxOS44NDc2IDUzLjc4NjdDMTYuNzMwMSA1My43ODY3IDE0LjE5NjIgNTEuMjcxOCAxNC4xOTYyIDQ4LjEzNTNWMzMuOTk5N1oiIGZpbGw9IiNFMDFFNUEiLz4KPHBhdGggZD0iTTE5Ljg2NjIgMTEuMjY3M0MxNi43Mjk2IDExLjI2NzMgMTQuMjE0OCA4LjczMzQ3IDE0LjIxNDggNS42MTU5NEMxNC4yMTQ4IDIuNDk4NDIgMTYuNzQ4NiAtMC4wMzU0NTM4IDE5Ljg2NjIgLTAuMDM1NDUzOEMyMi45ODM3IC0wLjAzNTQ1MzggMjUuNTE3NSAyLjQ5ODQyIDI1LjUxNzUgNS42MTU5NFYxMS4yNjczSDE5Ljg2NjJaIiBmaWxsPSIjMzZDNUYwIi8+CjxwYXRoIGQ9Ik0xOS44NjgyIDE0LjEzMzRDMjMuMDA0NyAxNC4xMzM0IDI1LjUxOTYgMTYuNjY3MyAyNS41MTk2IDE5Ljc4NDhDMjUuNTE5NiAyMi45MDIzIDIyLjk4NTcgMjUuNDM2MiAxOS44NjgyIDI1LjQzNjJINS42NzU2NkMyLjUzOTE2IDI1LjQzNjIgMC4wMjQyNjE1IDIyLjkwMjMgMC4wMjQyNjE1IDE5Ljc4NDhDMC4wMjQyNjE1IDE2LjY2NzMgMi41NTgxNCAxNC4xMzM0IDUuNjc1NjYgMTQuMTMzNEgxOS44NjgyWiIgZmlsbD0iIzM2QzVGMCIvPgo8cGF0aCBkPSJNNDIuNTMyMyAxOS43ODUzQzQyLjUzMjMgMTYuNjQ4OCA0NS4wNjYyIDE0LjEzMzkgNDguMTgzNyAxNC4xMzM5QzUxLjMwMTIgMTQuMTMzOSA1My44MzUxIDE2LjY2NzggNTMuODM1MSAxOS43ODUzQzUzLjgzNTEgMjIuOTAyOCA1MS4zMDEyIDI1LjQzNjcgNDguMTgzNyAyNS40MzY3SDQyLjUzMjNWMTkuNzg1M1oiIGZpbGw9IiMyRUI2N0QiLz4KPHBhdGggZD0iTTM5LjcxMjYgMTkuNzkzNEMzOS43MTI2IDIyLjkyOTkgMzcuMTc4NyAyNS40NDQ4IDM0LjA2MTIgMjUuNDQ0OEMzMC45NDM2IDI1LjQ0NDggMjguNDA5OCAyMi45MTEgMjguNDA5OCAxOS43OTM0VjUuNjE5ODZDMjguNDA5OCAyLjQ4MzM2IDMwLjk0MzYgLTAuMDMxNTM5OSAzNC4wNjEyIC0wLjAzMTUzOTlDMzcuMTc4NyAtMC4wMzE1Mzk5IDM5LjcxMjYgMi40ODMzNiAzOS43MTI2IDUuNjE5ODZWMTkuNzkzNFoiIGZpbGw9IiMyRUI2N0QiLz4KPHBhdGggZD0iTTM0LjAzNzYgNDIuNDgyQzM3LjE3NDEgNDIuNDgyIDM5LjY4OSA0NS4wMTU4IDM5LjY4OSA0OC4xMzM0QzM5LjY4OSA1MS4yNTA5IDM3LjE1NTIgNTMuNzg0OCAzNC4wMzc2IDUzLjc4NDhDMzAuOTIwMSA1My43ODQ4IDI4LjM4NjIgNTEuMjUwOSAyOC4zODYyIDQ4LjEzMzRWNDIuNDgySDM0LjAzNzZaIiBmaWxsPSIjRUNCMjJFIi8+CjxwYXRoIGQ9Ik0zNC4wMzgxIDM5LjY1MDdDMzAuOTAxNiAzOS42NTA3IDI4LjM4NjcgMzcuMTE2OCAyOC4zODY3IDMzLjk5OTNDMjguMzg2NyAzMC44ODE4IDMwLjkyMDYgMjguMzQ3OSAzNC4wMzgxIDI4LjM0NzlINDguMjMwNkM1MS4zNjcxIDI4LjM0NzkgNTMuODgyIDMwLjg4MTggNTMuODgyIDMzLjk5OTNDNTMuODgyIDM3LjExNjggNTEuMzQ4MiAzOS42NTA3IDQ4LjIzMDYgMzkuNjUwN0gzNC4wMzgxWiIgZmlsbD0iI0VDQjIyRSIvPgo8L2c+CjxkZWZzPgo8Y2xpcFBhdGggaWQ9ImNsaXAwXzQxMjdfNzAxMDUiPgo8cmVjdCB3aWR0aD0iNTQiIGhlaWdodD0iNTQiIGZpbGw9IndoaXRlIi8+CjwvY2xpcFBhdGg+CjwvZGVmcz4KPC9zdmc+Cg==';
 
 export function renderAdminPage(
-  options: { usageAdminUi?: boolean } = {},
+  options: { usageAdminUi?: boolean; workspaceAdminUi?: boolean } = {},
 ): string {
   // Target-aware setup and provider copy differs between the Node and
   // Cloudflare runtimes. The primary Admin chrome intentionally stays
@@ -35,6 +35,9 @@ export function renderAdminPage(
   const isCloudflare = isCloudflareTarget();
   const targetChip = isCloudflare ? 'cloudflare · workers' : 'local · node';
   const usageAdminUi = options.usageAdminUi === true;
+  // Omission preserves the full Admin shell for callers and tests that do not
+  // have a request principal. The authenticated route passes this explicitly.
+  const workspaceAdminUi = options.workspaceAdminUi !== false;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -3135,6 +3138,7 @@ button.capability-pill { cursor: pointer; }
   // of its own — this is interpolated as a literal boolean at render time).
   var IS_CLOUDFLARE = ${isCloudflare};
   var USAGE_ADMIN_UI = ${usageAdminUi};
+  var WORKSPACE_ADMIN_UI = ${workspaceAdminUi};
   var CONNECTOR_PRESETS = ${JSON.stringify(CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = ${JSON.stringify(GOOGLE_WORKSPACE_SERVICE_PRESETS).replace(/</g, '\\u003c')};
   var MANAGED_CONNECTOR_PRESETS = ${JSON.stringify(MANAGED_CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
@@ -3958,6 +3962,12 @@ button.capability-pill { cursor: pointer; }
       try { return decodeURIComponent(part); } catch (err) { return part; }
     });
     state.leavePrompt = null;
+    if (!WORKSPACE_ADMIN_UI && parts[1] && parts[1] !== "agents") {
+      var memberAgent = state.agents[0] || null;
+      if (memberAgent) return openProfileEditor(memberAgent);
+      enterProfiles(null);
+      return;
+    }
     if (parts[1] === "onboarding") {
       state.view = "onboarding";
       state.channelScreen = "overview";
@@ -4300,14 +4310,16 @@ button.capability-pill { cursor: pointer; }
       : "";
     var scoped = isAgentChannelSurface();
     var mobileRoster = scoped && state.mobileAgentRosterOpen;
-    var actions = mobileRoster
-      ? mobileAgentRosterHtml()
-      : connectedBadge +
-        '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="' + (scoped ? "mobile-agents-open" : "open-profiles") + '" data-section-switcher="true">Agents</button>' +
-        '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-destinations" data-section-switcher="true">Destinations</button>' +
+    var agentsAction = '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="' + (scoped ? "mobile-agents-open" : "open-profiles") + '" data-section-switcher="true">Agents</button>';
+    var workspaceActions = WORKSPACE_ADMIN_UI
+      ? '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-destinations" data-section-switcher="true">Destinations</button>' +
         '<button type="button" class="btn btn-soft' + (primarySection() === "team" ? " nav-active" : "") + '" data-action="open-team" data-section-switcher="true">Team</button>' +
         (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
-        '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>';
+        '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>'
+      : "";
+    var actions = mobileRoster
+      ? mobileAgentRosterHtml()
+      : (WORKSPACE_ADMIN_UI ? connectedBadge : "") + agentsAction + workspaceActions;
     // The brand doubles as a home affordance to the canonical Agent.
     return '<header class="topbar' + (scoped ? ' admin-mobile-topbar' : '') + '">' +
       '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button></div>' +
@@ -4387,12 +4399,16 @@ button.capability-pill { cursor: pointer; }
   function sectionSwitcherHtml() {
     var active = primarySection();
     var sections = [
-      { id: "profiles", label: "Agents", action: "open-profiles" },
-      { id: "channels", label: "Destinations", action: "open-destinations" },
-      { id: "team", label: "Team", action: "open-team" }
+      { id: "profiles", label: "Agents", action: "open-profiles" }
     ];
-    if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
-    sections.push({ id: "settings", label: "Settings", action: "open-settings" });
+    if (WORKSPACE_ADMIN_UI) {
+      sections.push(
+        { id: "channels", label: "Destinations", action: "open-destinations" },
+        { id: "team", label: "Team", action: "open-team" }
+      );
+      if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
+      sections.push({ id: "settings", label: "Settings", action: "open-settings" });
+    }
     return '<nav class="section-switcher" aria-label="Admin navigation">' +
       sections.map(function (section) {
         var selected = active === section.id;
@@ -12911,28 +12927,40 @@ button.capability-pill { cursor: pointer; }
   }
 
   function refreshData(renderAfterRefresh) {
+    var slackRequest = WORKSPACE_ADMIN_UI
+      ? api("/admin/api/slack-connection").catch(function () { return null; })
+      : Promise.resolve(null);
+    var onboardingRequest = WORKSPACE_ADMIN_UI
+      ? api("/admin/api/onboarding").then(function (body) {
+          return { body: body, error: "" };
+        }).catch(function (error) {
+          return {
+            body: null,
+            error: error && error.message === "onboarding_not_found"
+              ? "This install does not have an active setup journey."
+              : ((error && (error.serverMessage || error.message)) || "Could not load setup.")
+          };
+        })
+      : Promise.resolve({ body: null, error: "" });
+    var channelsRequest = WORKSPACE_ADMIN_UI
+      ? api("/admin/api/channels").then(function (body) {
+          return { channels: body.channels || [], error: "" };
+        }).catch(function (error) {
+          return { channels: [], error: (error && (error.serverMessage || error.message)) || "Could not load Channels." };
+        })
+      : Promise.resolve({ channels: [], error: "" });
+    var workspaceDefaultRequest = WORKSPACE_ADMIN_UI
+      ? api("/admin/api/workspace-model-default", { cache: "no-store" }).catch(function () { return null; })
+      : Promise.resolve(null);
     return Promise.all([
       api("/admin/api/agents"),
       api("/admin/api/models"),
       // Resilient on purpose: the connection card is auxiliary — if this
       // endpoint fails, the rest of the admin page must still render.
-      api("/admin/api/slack-connection").catch(function () { return null; }),
-      api("/admin/api/onboarding").then(function (body) {
-        return { body: body, error: "" };
-      }).catch(function (error) {
-        return {
-          body: null,
-          error: error && error.message === "onboarding_not_found"
-            ? "This install does not have an active setup journey."
-            : ((error && (error.serverMessage || error.message)) || "Could not load setup.")
-        };
-      }),
-      api("/admin/api/channels").then(function (body) {
-        return { channels: body.channels || [], error: "" };
-      }).catch(function (error) {
-        return { channels: [], error: (error && (error.serverMessage || error.message)) || "Could not load Channels." };
-      }),
-      api("/admin/api/workspace-model-default", { cache: "no-store" }).catch(function () { return null; })
+      slackRequest,
+      onboardingRequest,
+      channelsRequest,
+      workspaceDefaultRequest
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
       state.grants = [];
@@ -14878,7 +14906,7 @@ button.capability-pill { cursor: pointer; }
         loads.push(loadVisibleAgentDetail(state.profileDraft.id));
         loads.push(revalidateProfileTab(state.profileTab));
       }
-      loads.push(loadVisibleSlackStatus());
+      if (WORKSPACE_ADMIN_UI) loads.push(loadVisibleSlackStatus());
     } else if (state.view === "channels") {
       loads.push(loadVisibleSlackStatus());
     } else if (state.view === "settings" && state.settingsSection === "slack") {

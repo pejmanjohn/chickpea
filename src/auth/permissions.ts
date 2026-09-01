@@ -17,7 +17,6 @@ export type Permission =
 const MEMBER = new Set<Permission>([
   'account.view',
   'agent.create',
-  'connection.create_team',
   'connection.create_personal',
   'schedule.create',
 ]);
@@ -25,6 +24,7 @@ const ADMIN = new Set<Permission>([
   ...MEMBER,
   'admin.configure',
   'team.view',
+  'connection.create_team',
 ]);
 const OWNER = new Set<Permission>([
   ...ADMIN,

@@ -113,6 +113,28 @@ test('plain progress replies disable Slack markup parsing and escape control cha
   assert.equal(rendered.text, 'Progress for &lt;@U123&gt; &amp; &lt;!channel&gt;');
 });
 
+test('plain Slack replies redact credential-shaped content', () => {
+  const canary = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789';
+  const rendered = renderSlackMessage(`Credential: ${canary}`, 'plain_text');
+
+  assert.doesNotMatch(rendered.text, new RegExp(canary));
+  assert.match(rendered.text, /\[credential redacted\]/);
+});
+
+test('Markdown and plain Slack replies remove complete PEM armor', () => {
+  const pem = [
+    '-----BEGIN OPENSSH PRIVATE KEY-----',
+    'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ==',
+    'c2VjcmV0LWJ5dGVzLXRoYXQtbXVzdC1ub3Qtc3Vydml2ZQ==',
+    '-----END OPENSSH PRIVATE KEY-----',
+  ].join('\n');
+  for (const format of ['markdown', 'plain_text'] as const) {
+    const rendered = JSON.stringify(renderSlackMessage(`Credential:\n${pem}\nDone.`, format));
+    assert.match(rendered, /\[credential redacted\]/);
+    assert.doesNotMatch(rendered, /b3BlbnNza|c2VjcmV0|END OPENSSH PRIVATE KEY/);
+  }
+});
+
 test('markdown blocks are capped at Slack markdown block limits', () => {
   const rendered = renderSlackMessage('x'.repeat(slackMarkdownBlockTextLimit + 50), 'markdown');
   const block = rendered.blocks?.[0];

@@ -53,11 +53,16 @@ import {
 } from './oauth-shared.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { ConfigStore } from './store.ts';
+import {
+  parseOAuthAuthorizationAuthority,
+  type OAuthAuthorizationAuthority,
+} from './oauth-authorization.ts';
 
 const OAUTH_FETCH_TIMEOUT_MS = 8_000;
 const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 type McpOAuthErrorCode =
+  | 'authorization_expired'
   | 'connection_missing'
   | 'invalid_state'
   | 'oauth_attempt_superseded'
@@ -103,6 +108,10 @@ export interface McpOAuthDependencies {
     accountRevision?: number,
     oauthAttemptId?: string,
   ) => boolean | Promise<boolean>;
+  validateAuthorization?: (
+    authority: OAuthAuthorizationAuthority | undefined,
+    ref: McpSecretRef,
+  ) => boolean | Promise<boolean>;
   onReauthorizationRequired?: (
     ref: McpSecretRef,
     serverUrl: string,
@@ -120,6 +129,7 @@ export interface StartMcpOAuthInput {
   accountRevision?: number;
   /** Stable attempt identity retained after the account revision advances. */
   oauthAttemptId?: string;
+  authorizationAuthority?: OAuthAuthorizationAuthority;
 }
 
 export interface CompleteMcpOAuthInput {
@@ -151,6 +161,7 @@ interface PendingAuthorization {
   returnAgentId?: string;
   accountRevision?: number;
   oauthAttemptId?: string;
+  authorizationAuthority?: OAuthAuthorizationAuthority;
 }
 
 interface StoredTokenBundle {
@@ -256,6 +267,7 @@ export async function startMcpOAuthAuthorization(
     input.oauthAttemptId,
     () => new McpOAuthError('oauth_unavailable', 'OAuth attempt identity is invalid'),
   );
+  await requireCurrentAuthorization(input.ref, input.authorizationAuthority, dependencies);
   const settings = dependencies.settings;
   const oauthKeys = mcpOAuthSettingKeys(input.ref);
   const [, pendingKey] = oauthKeys;
@@ -355,6 +367,9 @@ export async function startMcpOAuthAuthorization(
     ...(input.returnAgentId ? { returnAgentId: input.returnAgentId } : {}),
     ...(input.accountRevision !== undefined ? { accountRevision: input.accountRevision } : {}),
     ...(input.oauthAttemptId ? { oauthAttemptId: input.oauthAttemptId } : {}),
+    ...(input.authorizationAuthority
+      ? { authorizationAuthority: input.authorizationAuthority }
+      : {}),
   };
   await publishFencedOAuthState(
     pendingKey,
@@ -388,6 +403,7 @@ export async function completeMcpOAuthAuthorization(
   accountRevision?: number;
   oauthAttemptId?: string;
   returnAgentId?: string;
+  authorizationAuthority?: OAuthAuthorizationAuthority;
 }> {
   const { ref, pending } = await consumePendingAuthorization(
     input.state,
@@ -395,6 +411,7 @@ export async function completeMcpOAuthAuthorization(
   );
   try {
     const settings = dependencies.settings;
+    await requireCurrentAuthorization(ref, pending.authorizationAuthority, dependencies);
     await requireCurrentConnection(
       ref, pending.serverUrl, dependencies, pending.accountRevision, pending.oauthAttemptId,
     );
@@ -418,6 +435,7 @@ export async function completeMcpOAuthAuthorization(
       );
     }
     assertBearerTokens(tokens);
+    await requireCurrentAuthorization(ref, pending.authorizationAuthority, dependencies);
     const [, , tokenKey] = mcpOAuthSettingKeys(ref);
     const bundle: StoredTokenBundle = {
       serverUrl: pending.serverUrl,
@@ -456,6 +474,9 @@ export async function completeMcpOAuthAuthorization(
         : {}),
       ...(pending.oauthAttemptId ? { oauthAttemptId: pending.oauthAttemptId } : {}),
       ...(pending.returnAgentId ? { returnAgentId: pending.returnAgentId } : {}),
+      ...(pending.authorizationAuthority
+        ? { authorizationAuthority: pending.authorizationAuthority }
+        : {}),
     };
   } catch (error) {
     const oauthError = error instanceof McpOAuthError
@@ -669,6 +690,15 @@ export async function deleteMcpOAuthSettings(
   await settings.applySettingsPatch({ delete: mcpOAuthSettingKeys(ref) });
 }
 
+/** Clear authorization state while preserving reusable OAuth client registration. */
+export async function invalidateMcpOAuthAuthorization(
+  ref: McpSecretRef,
+  settings: SettingsStore,
+): Promise<void> {
+  const [, pending, tokens, , refreshLease] = mcpOAuthSettingKeys(ref);
+  await settings.applySettingsPatch({ delete: [pending, tokens, refreshLease] });
+}
+
 async function resolveClientInformation(
   ref: McpSecretRef,
   authorizationServerUrl: string,
@@ -848,6 +878,22 @@ async function requireCurrentConnection(
   }
 }
 
+async function requireCurrentAuthorization(
+  ref: McpSecretRef,
+  authority: OAuthAuthorizationAuthority | undefined,
+  dependencies: McpOAuthDependencies,
+): Promise<void> {
+  if (
+    dependencies.validateAuthorization &&
+    (!authority || !(await dependencies.validateAuthorization(authority, ref)))
+  ) {
+    throw new McpOAuthError(
+      'authorization_expired',
+      'OAuth initiating authority is no longer current',
+    );
+  }
+}
+
 function assertTokenResource(bundle: StoredTokenBundle, serverUrl: string): void {
   if (bundle.serverUrl !== serverUrl) {
     throw new McpOAuthError(
@@ -934,6 +980,14 @@ function parsePendingAuthorization(
   raw: string,
 ): PendingAuthorization & { codeVerifier: string } {
   const value = parseStoredRecord(raw);
+  let authorizationAuthority: OAuthAuthorizationAuthority | undefined;
+  try {
+    authorizationAuthority = value.authorizationAuthority === undefined
+      ? undefined
+      : parseOAuthAuthorizationAuthority(value.authorizationAuthority);
+  } catch {
+    throw invalidStorage();
+  }
   if (
     typeof value.state !== 'string' ||
     typeof value.expiresAt !== 'number' ||
@@ -970,6 +1024,7 @@ function parsePendingAuthorization(
     ...(typeof value.oauthAttemptId === 'string'
       ? { oauthAttemptId: value.oauthAttemptId }
       : {}),
+    ...(authorizationAuthority ? { authorizationAuthority } : {}),
   };
 }
 

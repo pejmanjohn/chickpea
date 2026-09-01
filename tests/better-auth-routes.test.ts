@@ -113,6 +113,17 @@ test('the unauthenticated auth routes cap the request body before buffering it',
     duplex: 'half',
   }));
   assert.equal(response.status, 413);
+
+  const falseLength = await app.request(new Request(`${ORIGIN}/api/auth/sign-in/email`, {
+    method: 'POST',
+    headers: {
+      origin: ORIGIN,
+      'content-type': 'application/json',
+      'content-length': '1',
+    },
+    body: 'x'.repeat(32 * 1024 + 1),
+  }));
+  assert.equal(falseLength.status, 413);
   identity.close();
 });
 

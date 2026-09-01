@@ -33,6 +33,7 @@ interface DnsAnswer {
 }
 
 interface DnsResponse {
+  Status?: unknown;
   Answer?: unknown;
 }
 
@@ -256,7 +257,13 @@ export function createScopedFetch(params: {
   return async (url, options) => {
     const method = (options?.method || 'GET').toUpperCase();
     if (method !== 'GET' && method !== 'HEAD') {
-      assertCurrentRequestSideEffectAllowed(`${method} ${new URL(url).origin}`);
+      const requestUrl = new URL(url);
+      // Preserve the credential-free route shape for effect classification.
+      // Origin-only admission lets one allowed POST authorize a destructive
+      // POST endpoint on the same API. Never include query/fragment data here.
+      assertCurrentRequestSideEffectAllowed(
+        `${method} ${requestUrl.origin}${requestUrl.pathname}`,
+      );
     }
     // Several scopes can share a prefix (one guarded /search/code scope per
     // installation), so a guard rejection falls through to the NEXT matching
@@ -343,8 +350,6 @@ function normalizeDomain(domain: string): string | undefined {
   }
 }
 
-// A-records only for now; IPv6/AAAA rebinding is not covered and needs a follow-up.
-//
 // NOT cached: just-bash calls this to validate that a hostname resolves to a
 // public address, then fetches by hostname (it does not pin to the validated
 // address). Caching the first result would let a rebinding hostname — public at
@@ -357,8 +362,30 @@ function dohResolve(hostname: string): Promise<DnsResult[]> {
 }
 
 async function fetchDns(hostname: string): Promise<DnsResult[]> {
+  const results = (await Promise.all([
+    fetchDnsFamily(hostname, 'A', 1, 4),
+    fetchDnsFamily(hostname, 'AAAA', 28, 6),
+  ])).flat();
+
+  if (results.length === 0) {
+    // Do not use ENODATA/ENOTFOUND here. just-bash deliberately treats those
+    // resolver codes as permission to continue with unpinned system DNS,
+    // which would turn a DoH failure into a private-range validation bypass.
+    throw new Error('DoH returned no A or AAAA records for ' + hostname);
+  }
+
+  return results;
+}
+
+async function fetchDnsFamily(
+  hostname: string,
+  queryType: 'A' | 'AAAA',
+  answerType: 1 | 28,
+  family: 4 | 6,
+): Promise<DnsResult[]> {
   const response = await globalThis.fetch(
-    'https://cloudflare-dns.com/dns-query?name=' + encodeURIComponent(hostname) + '&type=A',
+    'https://cloudflare-dns.com/dns-query?name=' + encodeURIComponent(hostname) +
+      '&type=' + queryType,
     { headers: { accept: 'application/dns-json' } },
   );
   if (!response.ok) {
@@ -366,18 +393,13 @@ async function fetchDns(hostname: string): Promise<DnsResult[]> {
   }
 
   const payload = (await response.json()) as DnsResponse;
-  const answers = Array.isArray(payload.Answer) ? (payload.Answer as DnsAnswer[]) : [];
-  const results = answers
-    .filter((answer) => answer.type === 1 && typeof answer.data === 'string')
-    .map((answer) => ({ address: answer.data as string, family: 4 }));
-
-  if (results.length === 0) {
-    const error = new Error('DoH returned no A records for ' + hostname) as Error & {
-      code?: string;
-    };
-    error.code = 'ENODATA';
-    throw error;
+  if (!Number.isInteger(payload.Status) || payload.Status !== 0) {
+    throw new Error(
+      'DoH DNS status ' + (typeof payload.Status === 'number' ? payload.Status : 'invalid'),
+    );
   }
-
-  return results;
+  const answers = Array.isArray(payload.Answer) ? (payload.Answer as DnsAnswer[]) : [];
+  return answers
+    .filter((answer) => answer.type === answerType && typeof answer.data === 'string')
+    .map((answer) => ({ address: answer.data as string, family }));
 }

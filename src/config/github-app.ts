@@ -79,7 +79,7 @@ interface GithubManifestConversion {
 interface GithubSetupState {
   state: string;
   mintedAt: number;
-  membershipId: string | null;
+  membershipId: string;
 }
 
 const GITHUB_SETUP_STATE_TTL_MS = 15 * 60 * 1_000;
@@ -88,12 +88,10 @@ export async function saveGithubSetupState(
   settings: SettingsStore,
   input: GithubSetupState,
 ): Promise<void> {
-  const membershipIdValid = input.membershipId === null || (
-    input.membershipId === input.membershipId.trim() &&
+  const membershipIdValid = input.membershipId === input.membershipId.trim() &&
     input.membershipId.length > 0 &&
     input.membershipId.length <= 256 &&
-    !/[\u0000-\u001f\u007f]/.test(input.membershipId)
-  );
+    !/[\u0000-\u001f\u007f]/.test(input.membershipId);
   if (!/^[a-f0-9]{32}$/.test(input.state) || !Number.isSafeInteger(input.mintedAt) ||
       !membershipIdValid) {
     throw new Error('GitHub setup state is invalid.');
@@ -129,7 +127,7 @@ function parseGithubSetupState(raw: string): GithubSetupState | undefined {
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed) || parsed.version !== 2 || typeof parsed.state !== 'string' ||
         typeof parsed.mintedAt !== 'number' ||
-        !(typeof parsed.membershipId === 'string' || parsed.membershipId === null)) {
+        typeof parsed.membershipId !== 'string') {
       return undefined;
     }
     return {
@@ -138,12 +136,9 @@ function parseGithubSetupState(raw: string): GithubSetupState | undefined {
       membershipId: parsed.membershipId,
     };
   } catch {
-    // Migration compatibility for setup states minted by the legacy callback.
-    const separator = raw.lastIndexOf(':');
-    if (separator <= 0) return undefined;
-    const state = raw.slice(0, separator);
-    const mintedAt = Number(raw.slice(separator + 1));
-    return Number.isSafeInteger(mintedAt) ? { state, mintedAt, membershipId: null } : undefined;
+    // Pre-membership setup states carried durable global authority without a
+    // live actor to recheck. Invalidate them across the upgrade boundary.
+    return undefined;
   }
 }
 

@@ -18,6 +18,10 @@ import {
   type StoredOAuthLease,
   validateOAuthAttemptId,
 } from './oauth-shared.ts';
+import {
+  parseOAuthAuthorizationAuthority,
+  type OAuthAuthorizationAuthority,
+} from './oauth-authorization.ts';
 
 const FETCH_TIMEOUT_MS = 10_000;
 const IDENTITY_TEXT_MAX = 160;
@@ -77,6 +81,10 @@ export interface ApiOAuthDependencies {
     accountRevision?: number,
     oauthAttemptId?: string,
   ) => boolean | Promise<boolean>;
+  validateAuthorization?: (
+    authority: OAuthAuthorizationAuthority | undefined,
+    ref: ApiOAuthRef,
+  ) => boolean | Promise<boolean>;
   onReauthorizationRequired?: (
     ref: ApiOAuthRef,
     provider: ApiOAuthProvider,
@@ -84,6 +92,7 @@ export interface ApiOAuthDependencies {
 }
 
 type ApiOAuthErrorCode =
+  | 'authorization_expired'
   | 'client_missing'
   | 'connection_missing'
   | 'invalid_state'
@@ -133,6 +142,7 @@ interface PendingAuthorization {
   returnAgentId?: string;
   accountRevision?: number;
   oauthAttemptId?: string;
+  authorizationAuthority?: OAuthAuthorizationAuthority;
 }
 
 interface StoredTokenBundle {
@@ -226,6 +236,7 @@ export async function startApiOAuthAuthorization(
     accountRevision?: number;
     /** Stable attempt identity retained after the account revision advances. */
     oauthAttemptId?: string;
+    authorizationAuthority?: OAuthAuthorizationAuthority;
   },
   dependencies: ApiOAuthDependencies,
 ): Promise<{ authorizationUrl: URL; state: string }> {
@@ -244,6 +255,7 @@ export async function startApiOAuthAuthorization(
     () => new ApiOAuthError('oauth_unavailable', 'OAuth attempt identity is invalid'),
   );
   const scopes = validatedGoogleScopes(input.scopes);
+  await requireCurrentAuthorization(input.ref, input.authorizationAuthority, dependencies);
   await requireCurrentConnection(
     input.ref, selectedProvider, dependencies, input.accountRevision, input.oauthAttemptId,
   );
@@ -266,6 +278,9 @@ export async function startApiOAuthAuthorization(
     ...(input.returnAgentId ? { returnAgentId: input.returnAgentId } : {}),
     ...(input.accountRevision !== undefined ? { accountRevision: input.accountRevision } : {}),
     ...(input.oauthAttemptId ? { oauthAttemptId: input.oauthAttemptId } : {}),
+    ...(input.authorizationAuthority
+      ? { authorizationAuthority: input.authorizationAuthority }
+      : {}),
   };
   await publishFencedOAuthState(
     apiOAuthSettingKeys(input.ref)[1],
@@ -312,9 +327,11 @@ export async function completeApiOAuthAuthorization(
   accountRevision?: number;
   oauthAttemptId?: string;
   returnAgentId?: string;
+  authorizationAuthority?: OAuthAuthorizationAuthority;
 }> {
   const { ref, pending } = await consumePending(input.state, dependencies);
   try {
+    await requireCurrentAuthorization(ref, pending.authorizationAuthority, dependencies);
     await requireCurrentConnection(
       ref,
       pending.provider,
@@ -343,6 +360,7 @@ export async function completeApiOAuthAuthorization(
       dependencies,
     );
     const tokens = await tokenResponse(response, undefined);
+    await requireCurrentAuthorization(ref, pending.authorizationAuthority, dependencies);
     const tokenKey = apiOAuthSettingKeys(ref)[2];
     const bundle: StoredTokenBundle = {
       provider: pending.provider,
@@ -384,6 +402,9 @@ export async function completeApiOAuthAuthorization(
         : {}),
       ...(pending.oauthAttemptId ? { oauthAttemptId: pending.oauthAttemptId } : {}),
       ...(pending.returnAgentId ? { returnAgentId: pending.returnAgentId } : {}),
+      ...(pending.authorizationAuthority
+        ? { authorizationAuthority: pending.authorizationAuthority }
+        : {}),
     };
   } catch (error) {
     const oauthError = error instanceof ApiOAuthError
@@ -677,6 +698,14 @@ async function readClient(ref: ApiOAuthRef, settings: SettingsStore): Promise<St
 
 function parsePending(raw: string): PendingAuthorization {
   const value = parseStoredRecord(raw);
+  let authorizationAuthority: OAuthAuthorizationAuthority | undefined;
+  try {
+    authorizationAuthority = value.authorizationAuthority === undefined
+      ? undefined
+      : parseOAuthAuthorizationAuthority(value.authorizationAuthority);
+  } catch {
+    throw invalidStorage();
+  }
   if (
     typeof value.state !== 'string' ||
     value.provider !== 'google' ||
@@ -706,6 +735,9 @@ function parsePending(raw: string): PendingAuthorization {
       : {}),
     ...(typeof value.oauthAttemptId === 'string'
       ? { oauthAttemptId: value.oauthAttemptId }
+      : {}),
+    ...(authorizationAuthority
+      ? { authorizationAuthority }
       : {}),
   };
 }
@@ -827,6 +859,22 @@ async function requireCurrentConnection(
         ref, selectedProvider, accountRevision, oauthAttemptId,
       ))) {
     throw new ApiOAuthError('connection_missing', 'OAuth connection is no longer current');
+  }
+}
+
+async function requireCurrentAuthorization(
+  ref: ApiOAuthRef,
+  authority: OAuthAuthorizationAuthority | undefined,
+  dependencies: ApiOAuthDependencies,
+): Promise<void> {
+  if (
+    dependencies.validateAuthorization &&
+    (!authority || !(await dependencies.validateAuthorization(authority, ref)))
+  ) {
+    throw new ApiOAuthError(
+      'authorization_expired',
+      'OAuth initiating authority is no longer current',
+    );
   }
 }
 

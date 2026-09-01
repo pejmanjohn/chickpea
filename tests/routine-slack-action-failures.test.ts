@@ -56,6 +56,7 @@ test('a third unexpected schedule failure terminates its request, replays durabl
     eventId: 'Ev_TERMINAL_FAILURE',
     messageTs: '1787883925.000100',
     turnJobId: 'turn_TERMINAL_FAILURE',
+    requesterText: 'Schedule this in 5 minutes: Private task text that must become eligible for retention. Only post when the result changes.',
   };
   const operation = {
     itemId: 'schedule',

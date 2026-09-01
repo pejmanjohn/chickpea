@@ -410,6 +410,10 @@ export class ConnectionAccountService {
     adapterId: string;
     toolkit: string;
   }): Promise<void> {
+    requirePermission(
+      input.principal,
+      input.ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal',
+    );
     const agent = await this.dependencies.config.getAgent(input.agentId);
     if (!canEditAgent(input.principal, agent)) throw new AuthorizationError();
     const normalizedAdapterId = input.adapterId.trim().toLowerCase();
@@ -539,13 +543,25 @@ export class ConnectionAccountService {
       );
     }
     const bindings = await this.dependencies.config.listAgentConnectionBindings(input.agentId);
-    const revoked: ConnectionAccount[] = [];
+    const ownedAccounts: ConnectionAccount[] = [];
     for (const binding of bindings) {
       const currentBinding = await this.dependencies.config.getAgentConnectionBindingForAccount(
         binding.connectionAccountId,
       );
       if (currentBinding?.agentId !== input.agentId) throw new AuthorizationError();
-      revoked.push(await this.revokeOwnedAccount(await this.findAccount(binding.connectionAccountId)));
+      const account = await this.findAccount(binding.connectionAccountId);
+      // Agent deletion must not turn edit access into authority over a Team
+      // connection after its creator has been demoted. Preflight every Team
+      // account before revoking anything so a denial cannot leave partial
+      // cleanup behind.
+      if (account.ownerKind === 'team') {
+        requirePermission(input.principal, 'connection.create_team');
+      }
+      ownedAccounts.push(account);
+    }
+    const revoked: ConnectionAccount[] = [];
+    for (const account of ownedAccounts) {
+      revoked.push(await this.revokeOwnedAccount(account));
     }
     return revoked;
   }
@@ -860,7 +876,6 @@ export class ConnectionAccountService {
   private requireManage(principal: AuthPrincipal, account: ConnectionAccount): void {
     if (principal.role === 'owner' || principal.role === 'admin') return;
     if (account.ownerKind === 'member' && account.ownerMembershipId === principal.membershipId) return;
-    if (account.ownerKind === 'team' && account.createdByMembershipId === principal.membershipId) return;
     throw new AuthorizationError();
   }
 
