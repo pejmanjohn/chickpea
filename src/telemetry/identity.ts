@@ -132,4 +132,3 @@ function validLocalId(value: unknown): value is string {
 function secureRandomBytes(length: number): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(length));
 }
-

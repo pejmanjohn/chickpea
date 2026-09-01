@@ -1,5 +1,5 @@
 import { instrument } from '@flue/runtime';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from './agents/names.ts';
@@ -156,6 +156,16 @@ async function repairOAuthResumes(env?: PlatformEnv): Promise<void> {
   });
 }
 
+function productTelemetryForRequest(c: Context) {
+  const platformEnv = c.env as PlatformEnv | undefined;
+  return createPlatformProductTelemetry({
+    ...(platformEnv ? { env: platformEnv } : {}),
+    settings: getSettingsStore(platformEnv),
+    config: getConfigStore(platformEnv),
+    lifecycle: createRequestTelemetryLifecycle(c),
+  });
+}
+
 if (!isCloudflareTarget()) {
   let oauthRepairInFlight: Promise<void> | undefined;
   const runOAuthRepair = () => {
@@ -177,21 +187,11 @@ if (!isCloudflareTarget()) {
 app.route('/', createBetterAuthRuntimeRoutes());
 app.route('/', createMcpOAuthRuntimeRoutes());
 app.route('/', createManagementSetupRoutes({
-  productTelemetry: (c) => createPlatformProductTelemetry({
-    ...(c.env ? { env: c.env as PlatformEnv } : {}),
-    settings: getSettingsStore(c.env as PlatformEnv | undefined),
-    config: getConfigStore(c.env as PlatformEnv | undefined),
-    lifecycle: createRequestTelemetryLifecycle(c),
-  }),
+  productTelemetry: productTelemetryForRequest,
 }));
 app.route('/', createAdminRoutes({
   onOAuthContinuationReady: resumeOAuthContinuation,
-  productTelemetry: (c) => createPlatformProductTelemetry({
-    ...(c.env ? { env: c.env as PlatformEnv } : {}),
-    settings: getSettingsStore(c.env as PlatformEnv | undefined),
-    config: getConfigStore(c.env as PlatformEnv | undefined),
-    lifecycle: createRequestTelemetryLifecycle(c),
-  }),
+  productTelemetry: productTelemetryForRequest,
 }));
 app.route('/channels/slack', channel.route());
 

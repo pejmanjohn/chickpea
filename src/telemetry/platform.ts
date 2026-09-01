@@ -10,12 +10,13 @@ export function createPlatformProductTelemetry(input: {
   config?: ProductTelemetryInventoryStore;
   lifecycle?: ProductTelemetryLifecycle;
 }): ProductTelemetryCapture {
+  const config = input.config;
   return createProductTelemetryRuntime({
     ...(input.env ? { env: input.env } : {}),
     settings: () => input.settings,
     fetch: globalThis.fetch.bind(globalThis),
     lifecycle: input.lifecycle ?? createDetachedTelemetryLifecycle(),
     runtimeTarget: isCloudflareTarget() ? 'cloudflare' : 'node',
-    ...(input.config ? { config: () => input.config! } : {}),
+    ...(config ? { config: () => config } : {}),
   });
 }

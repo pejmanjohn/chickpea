@@ -201,4 +201,3 @@ function enumValue<T extends string>(
 ): T {
   return typeof value === 'string' && allowed.has(value as T) ? value as T : fallback;
 }
-
