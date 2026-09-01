@@ -67,7 +67,7 @@ export function safeMcpFailureText(err: unknown): string {
 /** Operator-log context retained for call-site compatibility only. Sensitive
  * values are deliberately never interpolated into the resulting diagnostic.
  */
-export interface McpDebugRedactionContext {
+interface McpDebugRedactionContext {
   /** The configured endpoint; accepted so callers do not need a second API. */
   url?: string;
   /** Outbound auth/header values; accepted but never inspected or logged. */

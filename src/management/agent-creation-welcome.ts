@@ -5,26 +5,26 @@ import {
   type ConnectorCatalogPreset,
 } from '../config/presets.ts';
 
-export type AgentCreationConnectorNoticeKind =
+type AgentCreationConnectorNoticeKind =
   | 'ambiguous'
   | 'unsupported'
   | 'unavailable'
   | 'already_attached'
   | 'overflow';
 
-export interface AgentCreationConnectorCandidate {
+interface AgentCreationConnectorCandidate {
   presetId: string;
   label: string;
   source: 'explicit' | 'inferred';
 }
 
-export interface AgentCreationConnectorNotice {
+interface AgentCreationConnectorNotice {
   kind: AgentCreationConnectorNoticeKind;
   label: string;
   text: string;
 }
 
-export interface AgentCreationConnectorPlan {
+interface AgentCreationConnectorPlan {
   candidates: AgentCreationConnectorCandidate[];
   notices: AgentCreationConnectorNotice[];
 }

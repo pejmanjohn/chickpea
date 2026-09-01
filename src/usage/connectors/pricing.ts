@@ -1,4 +1,4 @@
-export interface ConnectorPriceComponent {
+interface ConnectorPriceComponent {
   id:
     | 'own_app_tool_call'
     | 'managed_app_tool_call'
@@ -11,7 +11,7 @@ export interface ConnectorPriceComponent {
   microsPerUnit: number;
 }
 
-export interface ConnectorPriceVersion {
+interface ConnectorPriceVersion {
   id: string;
   providerId: 'composio';
   sourceUrl: string;

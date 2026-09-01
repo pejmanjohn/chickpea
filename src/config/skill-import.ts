@@ -17,7 +17,7 @@ export interface ParsedSkillSource {
 }
 
 /** One importable skill discovered in a source. */
-export interface ResolvedSkillCandidate {
+interface ResolvedSkillCandidate {
   name: string;
   description: string;
   instructions: string;
@@ -46,7 +46,7 @@ export interface SkillResolution {
   skipped: number;
 }
 
-export interface SkillResolutionAccess {
+interface SkillResolutionAccess {
   token: string;
 }
 

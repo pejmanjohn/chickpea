@@ -16,7 +16,7 @@ import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
  * per-use (per test / per turn), so a stale cache would be a footgun.
  */
 
-export type McpSecretSource = 'env' | 'stored' | 'missing';
+type McpSecretSource = 'env' | 'stored' | 'missing';
 
 export interface ResolvedMcpSecrets {
   /** Resolved bearer value (env wins over stored); absent when neither is set. */
@@ -25,7 +25,7 @@ export interface ResolvedMcpSecrets {
   headers: Record<string, string>;
 }
 
-export interface McpSecretSources {
+interface McpSecretSources {
   bearer: McpSecretSource;
   headers: Record<string, McpSecretSource>;
 }

@@ -1,6 +1,6 @@
 import type { PlatformEnv } from '../config/state-backend.ts';
 
-export const SLACK_PROGRESSIVE_STREAMING_ENV_KEY = 'SLACK_TAG_PROGRESSIVE_STREAMING';
+const SLACK_PROGRESSIVE_STREAMING_ENV_KEY = 'SLACK_TAG_PROGRESSIVE_STREAMING';
 
 const EXPLICIT_FALSE_VALUES = new Set(['false', '0', 'off', 'no']);
 

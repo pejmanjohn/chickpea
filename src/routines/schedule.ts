@@ -10,24 +10,24 @@ const ROLLING_DAY_MS = 24 * 60 * 60 * 1_000;
 const MAX_ENUMERATED_OCCURRENCES =
   PROJECTION_DAYS * Math.ceil(ROLLING_DAY_MS / ROUTINE_LIMITS.minimumIntervalMs) + 2;
 
-export interface CanonicalRecurringRoutineSchedule {
+interface CanonicalRecurringRoutineSchedule {
   version: 1;
   kind: 'cron';
   expression: string;
 }
 
-export interface CanonicalOneTimeRoutineSchedule {
+interface CanonicalOneTimeRoutineSchedule {
   version: 1;
   kind: 'once';
   localDateTime: string;
   at: number;
 }
 
-export type CanonicalRoutineSchedule =
+type CanonicalRoutineSchedule =
   | CanonicalRecurringRoutineSchedule
   | CanonicalOneTimeRoutineSchedule;
 
-export interface RoutineScheduleProjection<T extends CanonicalRoutineSchedule = CanonicalRoutineSchedule> {
+interface RoutineScheduleProjection<T extends CanonicalRoutineSchedule = CanonicalRoutineSchedule> {
   schedule: T;
   scheduleJson: string;
   nextRunAt: number;
@@ -294,7 +294,7 @@ export function nextRoutineOccurrence(
   }
 }
 
-export function enumerateRoutineSchedule(
+function enumerateRoutineSchedule(
   schedule: CanonicalRecurringRoutineSchedule,
   timezone: string,
   after: number,

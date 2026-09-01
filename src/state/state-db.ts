@@ -32,7 +32,7 @@ export interface StateDb {
   transaction<T>(fn: () => T): T;
 }
 
-export interface StateDbIntegrity {
+interface StateDbIntegrity {
   foreignKeysEnabled: boolean;
   foreignKeyViolationCount: number;
 }

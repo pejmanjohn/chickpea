@@ -13,9 +13,9 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import { hasCredentialLikeContent, hasDisallowedControlCharacter } from '../security/content-validation.ts';
 import type { AgentDispatchResult } from './flue-dispatch.ts';
 
-export const SLACK_INTERACTION_DISPOSITIONS = ['ignore', 'react_only', 'reply', 'work'] as const;
+const SLACK_INTERACTION_DISPOSITIONS = ['ignore', 'react_only', 'reply', 'work'] as const;
 
-export const SLACK_INTERACTION_REASONS = [
+const SLACK_INTERACTION_REASONS = [
   'pure_ack',
   'substantive_request',
   'other_addressed',
@@ -25,7 +25,7 @@ export const SLACK_INTERACTION_REASONS = [
   'unsafe_or_unclear',
   'classifier_fallback',
 ] as const;
-export type SlackInteractionReason = (typeof SLACK_INTERACTION_REASONS)[number];
+type SlackInteractionReason = (typeof SLACK_INTERACTION_REASONS)[number];
 
 export const SEMANTIC_REACTIONS = [
   'agreement',
@@ -57,8 +57,8 @@ export const SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS = [
 ].join('\n');
 export type SemanticReaction = (typeof SEMANTIC_REACTIONS)[number];
 
-export type ReactionTarget = 'trigger' | 'thread_root' | 'latest_user';
-export type SlackInteractionSource =
+type ReactionTarget = 'trigger' | 'thread_root' | 'latest_user';
+type SlackInteractionSource =
   | 'app_mention'
   | 'agent_mention'
   | 'implicit_thread_reply'
@@ -71,7 +71,7 @@ export type SlackInteractionIntent =
   | { disposition: 'reply'; reason: SlackInteractionReason }
   | { disposition: 'work'; reason: SlackInteractionReason; checklist: string[] };
 
-export interface SlackInteractionIntentContext {
+interface SlackInteractionIntentContext {
   workspaceId: string;
   channelId: string;
   eventId: string;
@@ -181,7 +181,7 @@ export async function resolveSlackInteractionIntent(
   return (await classifySlackInteraction(context, env, prompt, timeoutMs)).intent;
 }
 
-export interface SlackInteractionClassification {
+interface SlackInteractionClassification {
   intent: SlackInteractionIntent;
   result?: AgentDispatchResult;
   failed: boolean;
@@ -372,7 +372,7 @@ function obviousWorkChecklist(text: string): string[] | null {
   return ['Investigation result', 'Supporting evidence'];
 }
 
-export type InteractionIntentPrompt = (
+type InteractionIntentPrompt = (
   context: SlackInteractionIntentContext,
   env: PlatformEnv | undefined,
 ) => Promise<string | AgentDispatchResult>;

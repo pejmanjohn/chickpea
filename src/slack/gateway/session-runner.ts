@@ -17,7 +17,7 @@ export interface GatewaySocket {
   addEventListener(type: 'error', listener: () => void): void;
 }
 
-export interface GatewaySessionRunnerOptions {
+interface GatewaySessionRunnerOptions {
   client: GatewayDeploymentClient;
   onEvent(delivery: GatewayInboundDelivery): Promise<'accepted' | 'duplicate' | 'rejected'>;
   createSocket?: (url: string) => GatewaySocket;
@@ -28,7 +28,7 @@ export interface GatewaySessionRunnerOptions {
   waitUntil?: (promise: Promise<unknown>) => void;
 }
 
-export type GatewaySessionRunnerPhase =
+type GatewaySessionRunnerPhase =
   | 'stopped'
   | 'starting'
   | 'connecting'
@@ -37,7 +37,7 @@ export type GatewaySessionRunnerPhase =
   | 'needs_attention'
   | 'stale';
 
-export type GatewaySessionScheduledAction = 'ready_timeout' | 'rotate' | 'retry';
+type GatewaySessionScheduledAction = 'ready_timeout' | 'rotate' | 'retry';
 
 export interface GatewaySessionRunnerHealthSnapshot {
   generation: number;
@@ -51,7 +51,7 @@ export interface GatewaySessionRunnerHealthSnapshot {
   scheduledAt?: number;
 }
 
-export interface GatewaySessionRunnerHealthInput {
+interface GatewaySessionRunnerHealthInput {
   generation: number;
   stopped: boolean;
   starting: boolean;

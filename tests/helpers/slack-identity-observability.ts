@@ -1,4 +1,4 @@
-export interface CapturedSlackIdentityOperationalEvents<T> {
+interface CapturedSlackIdentityOperationalEvents<T> {
   events: Array<Record<string, unknown>>;
   result: T;
   serialized: string;

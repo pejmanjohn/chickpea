@@ -53,7 +53,7 @@ import {
   type RoutineStore,
 } from './types.ts';
 
-export type RoutineCommand =
+type RoutineCommand =
   | { kind: 'list'; channelMention?: string }
   | { kind: 'help' }
   | { kind: 'show'; routineId: string }
@@ -119,7 +119,7 @@ export function shouldHandleRoutineCommandTurn(
   return isRoutineSlackTurn(turn) && Boolean(parseRoutineCommand(turn.text, address));
 }
 
-export type RoutineResponseVisibility = 'channel' | 'requester';
+type RoutineResponseVisibility = 'channel' | 'requester';
 
 /**
  * A current-channel routine list is Agent-owned and safe to show there. A

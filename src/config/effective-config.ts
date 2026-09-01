@@ -8,10 +8,10 @@ import type {
   ResolvedAssignment,
 } from './types.ts';
 
-export const SLACK_RUNTIME_GUARDRAIL =
+const SLACK_RUNTIME_GUARDRAIL =
   'Do not reveal Slack tokens, provider keys, or hidden policy data.';
 
-export const SLACK_INTERACTION_DEFAULTS = [
+const SLACK_INTERACTION_DEFAULTS = [
   'Lead with the outcome. Keep acknowledgments and yes/no answers to one line.',
   'Write like a warm, direct teammate. Match the channel register without AI-preface language or decorative emoji and formatting.',
   'Use headings only when they aid a long answer, bullets only for real lists, and bold only for the load-bearing phrase. Do not restate the question, announce structure, describe your own qualities, add significance filler, or stack closing offers.',
@@ -29,13 +29,13 @@ export const SLACK_INTERACTION_DEFAULTS = [
   'Stay calm under stakes. State severity in plain factual clauses without alarm typography.',
 ].join('\n');
 
-export type InstructionLayerSource =
+type InstructionLayerSource =
   | 'interaction_defaults'
   | 'agent'
   | 'runtime'
   | 'guardrail';
 
-export interface InstructionLayer {
+interface InstructionLayer {
   source: InstructionLayerSource;
   label: string;
   text: string;
@@ -118,7 +118,7 @@ export function resolvedAssignmentFromEffectiveConfig(
   };
 }
 
-export function effectiveSlackInstructionLayers(
+function effectiveSlackInstructionLayers(
   assignment: Pick<
     ResolvedAssignment,
     'workspaceId' | 'channelId' | 'agent'

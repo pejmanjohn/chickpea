@@ -12,7 +12,7 @@ export type MemoryCommand =
   | { kind: 'clear_request' }
   | { kind: 'invalid'; hint: string };
 
-export type ParsedMemoryCommand = MemoryCommand | { kind: 'candidate' };
+type ParsedMemoryCommand = MemoryCommand | { kind: 'candidate' };
 
 const TARGET = '[a-z0-9][a-z0-9/-]{0,128}';
 const DASH = '\\s+(?:—|-)\\s+';

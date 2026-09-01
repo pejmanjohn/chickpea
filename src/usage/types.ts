@@ -9,18 +9,7 @@ import type {
   ConnectorQuotaReservation,
 } from './connectors/types.ts';
 
-export type {
-  ConnectorRetryClassification,
-  ConnectorUsageOutcome,
-  ConnectorUsageRecord,
-  ConnectorUsageSummary,
-  ConnectorUsageSummaryGroup,
-  ConnectorUsageSummaryQuery,
-  RecordConnectorUsageInput,
-  ReserveConnectorQuotaInput,
-  ReleaseConnectorQuotaInput,
-  ConnectorQuotaReservation,
-} from './connectors/types.ts';
+export type { ConnectorUsageRecord, ConnectorUsageSummary, ConnectorUsageSummaryQuery, RecordConnectorUsageInput, ReserveConnectorQuotaInput, ReleaseConnectorQuotaInput, ConnectorQuotaReservation, } from "./connectors/types.ts";
 import type { AgentModelSource } from '../config/types.ts';
 
 export const USAGE_TELEMETRY_SCHEMA_VERSION = 2;
@@ -43,7 +32,7 @@ export type UsageOperationStatus = (typeof USAGE_OPERATION_STATUSES)[number];
 export type UsageTerminalStatus = Exclude<UsageOperationStatus, 'admitted'>;
 
 export const USAGE_COMPLETENESS_VALUES = ['complete', 'partial', 'not_reported'] as const;
-export type UsageCompleteness = (typeof USAGE_COMPLETENESS_VALUES)[number];
+type UsageCompleteness = (typeof USAGE_COMPLETENESS_VALUES)[number];
 
 export const USAGE_UNKNOWN_REASONS = [
   'usage_not_reported',
@@ -60,14 +49,14 @@ export const ESTIMATE_COMPLETENESS_VALUES = [
   'partial',
   'unknown',
 ] as const;
-export type EstimateCompleteness = (typeof ESTIMATE_COMPLETENESS_VALUES)[number];
+type EstimateCompleteness = (typeof ESTIMATE_COMPLETENESS_VALUES)[number];
 
 export const PRICE_UNKNOWN_REASONS = [
   'price_unknown',
   'price_stale',
   'pricing_dimension_unknown',
 ] as const;
-export type PriceUnknownReason = (typeof PRICE_UNKNOWN_REASONS)[number];
+type PriceUnknownReason = (typeof PRICE_UNKNOWN_REASONS)[number];
 
 export const USAGE_CONVERSATION_KINDS = [
   'named_channel',
@@ -202,7 +191,7 @@ export interface UsageFilters {
   status?: UsageOperationStatus[];
 }
 
-export interface UsageCursor {
+interface UsageCursor {
   startedAt: number;
   operationId: string;
 }
@@ -248,7 +237,7 @@ export interface UsageRollupValues {
   estimateAmountMicros: number | null;
 }
 
-export interface UsageRollupGroup extends UsageRollupValues {
+interface UsageRollupGroup extends UsageRollupValues {
   key: string;
   label: string;
 }
@@ -292,7 +281,7 @@ export const MODEL_CREDENTIAL_SOURCE_KINDS = [
   'cloudflare_binding',
   'custom',
 ] as const;
-export type ModelCredentialSourceKind = (typeof MODEL_CREDENTIAL_SOURCE_KINDS)[number];
+type ModelCredentialSourceKind = (typeof MODEL_CREDENTIAL_SOURCE_KINDS)[number];
 
 export interface PutModelCredentialInput {
   credentialRefId: string;

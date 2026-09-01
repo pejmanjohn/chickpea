@@ -12,14 +12,14 @@ import {
   UNATTENDED_AGENT_NAMES,
 } from '../agents/names.ts';
 
-export const MEMORY_CURRENT_REQUEST_ENVELOPE_START =
+const MEMORY_CURRENT_REQUEST_ENVELOPE_START =
   '--- BEGIN CHICKPEA CURRENT REQUEST POLICY v1 ---';
-export const MEMORY_CURRENT_REQUEST_ENVELOPE_END =
+const MEMORY_CURRENT_REQUEST_ENVELOPE_END =
   '--- END CHICKPEA CURRENT REQUEST POLICY v1 ---';
 
-export const CURRENT_REQUEST_ENVELOPE_V2_START =
+const CURRENT_REQUEST_ENVELOPE_V2_START =
   '--- BEGIN CHICKPEA CURRENT REQUEST POLICY v2 ---';
-export const CURRENT_REQUEST_ENVELOPE_V2_END =
+const CURRENT_REQUEST_ENVELOPE_V2_END =
   '--- END CHICKPEA CURRENT REQUEST POLICY v2 ---';
 
 interface CurrentRequestEnvelopeBase {
@@ -32,11 +32,11 @@ interface CurrentRequestEnvelopeBase {
   slackMessageTs?: string;
 }
 
-export interface CurrentRequestEnvelopeV1 extends CurrentRequestEnvelopeBase {
+interface CurrentRequestEnvelopeV1 extends CurrentRequestEnvelopeBase {
   schemaVersion: 1;
 }
 
-export interface CurrentRequestEnvelopeV2 extends CurrentRequestEnvelopeBase {
+interface CurrentRequestEnvelopeV2 extends CurrentRequestEnvelopeBase {
   schemaVersion: 2;
   progressiveStreamingOffered: boolean;
 }
@@ -94,18 +94,18 @@ const TARGETED_EXTERNAL_WRITE_VERBS = new Set([
   'update',
 ]);
 
-export const EXTERNAL_WRITE_VERB_PATTERN = [
+const EXTERNAL_WRITE_VERB_PATTERN = [
   ...INTRINSIC_EXTERNAL_WRITE_VERBS,
   ...TARGETED_EXTERNAL_WRITE_VERBS,
 ].sort((left, right) => right.length - left.length).join('|');
 
-export const EXTERNAL_TARGET_PATTERN =
+const EXTERNAL_TARGET_PATTERN =
   'account|branch|calendar|card|comment|deployment|document|event|file|folder|issue|item|job|meeting|member|message|order|page|payment|project|pull request|record|repo(?:sitory)?|row|task|ticket|tracker|user|workflow';
 const EXTERNAL_TARGET = new RegExp(`\\b(?:${EXTERNAL_TARGET_PATTERN})\\b`, 'i');
 
-export const ARTIFACT_ACTION_PATTERN =
+const ARTIFACT_ACTION_PATTERN =
   'attach|capture|create|generate|give|include|make|post|render|send|share|show|screenshot|take|upload';
-export const ARTIFACT_TARGET_PATTERN =
+const ARTIFACT_TARGET_PATTERN =
   'artifact|document|file|image|report|screenshot|video';
 const ARTIFACT_ACTION = new RegExp(`\\b(?:${ARTIFACT_ACTION_PATTERN})\\b`, 'i');
 const ARTIFACT_TARGET = new RegExp(`\\b(?:${ARTIFACT_TARGET_PATTERN})\\b`, 'i');
@@ -277,7 +277,7 @@ function isSlackMessageTs(value: unknown): value is string {
  * when the final Slack request itself is phrased as a direct action request.
  * Quoted, historical, or advisory text is never inspected here.
  */
-export function hasExplicitExternalSideEffectIntent(
+function hasExplicitExternalSideEffectIntent(
   currentRequest: string,
 ): boolean {
   const request = normalizedCurrentRequest(currentRequest);
@@ -329,7 +329,7 @@ function explicitActionClauses(request: string): string[] {
  * task request must name both creation/delivery work and the artifact itself;
  * merely asking to review an existing screenshot does not authorize upload.
  */
-export function hasExplicitArtifactDeliveryIntent(
+function hasExplicitArtifactDeliveryIntent(
   currentRequest: string,
 ): boolean {
   const request = normalizedCurrentRequest(currentRequest);
@@ -338,7 +338,7 @@ export function hasExplicitArtifactDeliveryIntent(
   return DIRECT_TASK_START.test(task) && ARTIFACT_ACTION.test(task) && ARTIFACT_TARGET.test(task);
 }
 
-export function isReadOnlyMcpToolName(toolName: string): boolean {
+function isReadOnlyMcpToolName(toolName: string): boolean {
   if (!toolName.startsWith('mcp__')) return false;
   const bareName = toolName.slice(toolName.lastIndexOf('__') + 2);
   const tokens = bareName

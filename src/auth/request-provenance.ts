@@ -1,6 +1,6 @@
 import type { AuthPrincipal } from './types.ts';
 
-export interface MutationProvenanceOptions {
+interface MutationProvenanceOptions {
   canonicalOrigin: string;
   maxBodyBytes: number;
   requireJson?: boolean;
@@ -13,7 +13,7 @@ export interface MutationProvenanceOptions {
   allowOpaqueOriginFormNavigation?: boolean;
 }
 
-export type MutationProvenanceResult =
+type MutationProvenanceResult =
   | { ok: true }
   | { ok: false; code: 'cross_origin_denied' | 'content_type_denied' | 'body_too_large' };
 

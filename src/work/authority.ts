@@ -7,13 +7,13 @@ export const LEDGER_CANARY_CHANNELS_KEY = 'SLACK_TAG_LEDGER_CANARY_CHANNELS';
 const SLACK_ID = /^[A-Za-z][A-Za-z0-9_-]{1,63}$/;
 const MAX_CANARY_BINDINGS = 20;
 
-export interface InteractiveExecutionAuthority {
+interface InteractiveExecutionAuthority {
   authority: RunExecutionAuthority;
   coordinatorKind: Extract<RunCoordinatorKind, 'interactive'>;
   authorityEpoch: number;
 }
 
-export interface SlackExecutionAuthorityInput {
+interface SlackExecutionAuthorityInput {
   workspaceId: string;
   channelId: string;
   assignment: ResolvedAssignment;
@@ -66,7 +66,7 @@ export function selectSlackExecutionAuthority(
  * paired durable action receipts. The receipt boundary exists, but enabling a
  * connector or coding workspace before it is wired would make recovery unsafe.
  */
-export function ledgerCanarySupportsAssignment(
+function ledgerCanarySupportsAssignment(
   assignment: ResolvedAssignment,
   egressPolicy: EgressPolicy,
 ): boolean {

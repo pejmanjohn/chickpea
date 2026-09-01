@@ -37,7 +37,7 @@ export interface McpAuthenticatedPrincipal {
 }
 
 export type McpRequestHandler = (request: Request) => Promise<Response>;
-export type McpServerFactory = (
+type McpServerFactory = (
   principal: McpAuthenticatedPrincipal,
 ) => Promise<McpRequestHandler> | McpRequestHandler;
 

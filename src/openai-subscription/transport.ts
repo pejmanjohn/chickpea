@@ -31,12 +31,12 @@ const ALLOWED_BODY_KEYS = new Set([
   'tools',
 ]);
 
-export interface OpenAiSubscriptionTransportCredentials {
+interface OpenAiSubscriptionTransportCredentials {
   accessToken: string;
   accountId: string;
 }
 
-export interface OpenAiSubscriptionFetchBoundaryOptions {
+interface OpenAiSubscriptionFetchBoundaryOptions {
   credentials?: () => OpenAiSubscriptionTransportCredentials;
   allowedModels?: () => ReadonlySet<string>;
   binding?: (marker: string) => ActiveTransportBinding | undefined;
@@ -113,7 +113,7 @@ export function createOpenAiSubscriptionTransportMarker(
   return marker;
 }
 
-export function installOpenAiSubscriptionFetchBoundary(): void {
+function installOpenAiSubscriptionFetchBoundary(): void {
   const current = globalThis.fetch as typeof globalThis.fetch & { [WRAPPED_FETCH]?: boolean };
   if (current[WRAPPED_FETCH]) return;
   const boundary = createOpenAiSubscriptionFetchBoundary({

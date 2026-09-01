@@ -102,7 +102,7 @@ export function assertRoutineTaskBoundToPrevious(
   }
 }
 
-export function normalizeAuthorityText(text: string): string {
+function normalizeAuthorityText(text: string): string {
   return text
     .replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '')
     .trim()

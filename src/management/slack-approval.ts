@@ -34,7 +34,7 @@ export interface SlackManagementApprovalDependencies {
   publicUrl?: string;
 }
 
-export type HostSlackManagementApprovalResult =
+type HostSlackManagementApprovalResult =
   | { kind: 'message'; text: string }
   | { kind: 'agent_welcome_queued'; outboxId: string };
 

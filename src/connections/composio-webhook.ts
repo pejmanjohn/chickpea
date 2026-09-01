@@ -3,7 +3,7 @@ const IDENTIFIER_PATTERN = /^[A-Za-z0-9_.:@-]{1,256}$/;
 const TOOLKIT_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const EVENT_TYPE_PATTERN = /^[a-z0-9._-]{1,128}$/;
 
-export type VerifiedComposioWebhook =
+type VerifiedComposioWebhook =
   | { kind: 'expired_account'; accountRef: string; toolkit: string }
   | { kind: 'ignored'; type: string };
 

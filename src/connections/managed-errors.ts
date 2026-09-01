@@ -6,7 +6,7 @@ export class ManagedAuthorizationExpiredError extends Error {
   }
 }
 
-export type ManagedProviderFailureCode =
+type ManagedProviderFailureCode =
   | 'validation_failed'
   | 'throttled'
   | 'provider_unavailable'

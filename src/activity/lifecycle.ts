@@ -11,7 +11,7 @@ import {
   type SemanticActivityTelemetrySink,
 } from './telemetry.ts';
 
-export interface ActivityLifecycleObservation {
+interface ActivityLifecycleObservation {
   readonly type: string;
   readonly instanceId?: string | undefined;
   readonly submissionId?: string | undefined;

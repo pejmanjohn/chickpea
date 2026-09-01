@@ -16,7 +16,7 @@ export interface McpIdentityInput {
   presetId?: string;
 }
 
-export interface McpIdentityProbe {
+interface McpIdentityProbe {
   name: string;
   arguments: Record<string, unknown>;
 }

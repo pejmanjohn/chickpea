@@ -65,7 +65,7 @@ class ManagedSetupCompletionLostError extends Error {
   readonly name = 'ManagedSetupCompletionLostError';
 }
 
-export interface StartManagedAuthorizationFlowInput {
+interface StartManagedAuthorizationFlowInput {
   principal: AuthPrincipal;
   agent: CustomAgentConfig;
   workspaceId: string;
@@ -82,7 +82,7 @@ export interface StartManagedAuthorizationFlowInput {
   randomSecret?: () => string;
 }
 
-export interface StartManagedAuthorizationFlowResult {
+interface StartManagedAuthorizationFlowResult {
   authorizationUrl: URL;
   browserSecret: string;
   attempt: ManagedAuthorizationAttempt;
@@ -231,7 +231,7 @@ export async function startManagedAuthorizationFlow(
   }
 }
 
-export type PollManagedAuthorizationFlowResult =
+type PollManagedAuthorizationFlowResult =
   | { status: 'pending' }
   | { status: 'lost' }
   | { status: 'terminal'; reason: 'disabled' | 'expired' | 'failed' | 'inactive' | 'revoked' }
@@ -531,7 +531,7 @@ export async function cancelManagedAuthorizationFlow(
   return committed ? 'committed' : 'discarded';
 }
 
-export function managedPrincipalRef(
+function managedPrincipalRef(
   principal: AuthPrincipal,
   ownerKind: 'team' | 'member',
 ): string | undefined {
@@ -541,7 +541,7 @@ export function managedPrincipalRef(
   return value.length <= MAX_MANAGED_PRINCIPAL_REF_LENGTH ? value : undefined;
 }
 
-export function managedAuthorizationRemoteRef(
+function managedAuthorizationRemoteRef(
   attempt: ManagedAuthorizationAttempt,
 ): string | undefined {
   return attempt.accountRef ?? attempt.authorizationRef;

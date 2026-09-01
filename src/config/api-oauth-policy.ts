@@ -21,7 +21,7 @@ export const GOOGLE_WORKSPACE_SCOPE_OPTIONS = {
 
 export type GoogleWorkspaceService = keyof typeof GOOGLE_WORKSPACE_SCOPE_OPTIONS;
 
-export interface DerivedApiOAuthPolicy {
+interface DerivedApiOAuthPolicy {
   allowedHosts: string[];
   pathPrefixes: string[];
   headerName: string;

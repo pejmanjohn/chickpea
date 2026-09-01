@@ -176,7 +176,7 @@ export function getNodeBetterAuthBackend(
   return cached.backend;
 }
 
-export function resolveBetterAuthDbPath(env: NodeJS.ProcessEnv = process.env): string {
+function resolveBetterAuthDbPath(env: NodeJS.ProcessEnv = process.env): string {
   if (env.CHICKPEA_AUTH_DB_PATH) return env.CHICKPEA_AUTH_DB_PATH;
   const statePath = resolveStateDbPath(env);
   return statePath === ':memory:' ? ':memory:' : `${statePath}.auth`;

@@ -1,17 +1,17 @@
-export type SlackInstallationOperationalOperation =
+type SlackInstallationOperationalOperation =
   | 'binding_rejected'
   | 'egress_unavailable'
   | 'ingress_rejected'
   | 'setup_handshake';
 
-export type SlackInstallationOperationalOutcome =
+type SlackInstallationOperationalOutcome =
   | 'accepted'
   | 'ignored'
   | 'operator_repair'
   | 'rejected'
   | 'retry';
 
-export interface SlackInstallationOperationalEvent {
+interface SlackInstallationOperationalEvent {
   operation: SlackInstallationOperationalOperation;
   workspaceId: string;
   appId?: string;
@@ -23,7 +23,7 @@ export interface SlackInstallationOperationalEvent {
 const SAFE_OPERATIONAL_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$/;
 
 /** Emit one allowlisted, content-free operational record. */
-export function recordSlackInstallationOperationalEvent(
+function recordSlackInstallationOperationalEvent(
   input: SlackInstallationOperationalEvent,
 ): void {
   const event = {

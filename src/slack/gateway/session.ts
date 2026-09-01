@@ -1,9 +1,9 @@
-export const GATEWAY_SESSION_ROTATION_MS = 12 * 60_000;
+const GATEWAY_SESSION_ROTATION_MS = 12 * 60_000;
 export const GATEWAY_HEARTBEAT_TIMEOUT_MS = 90_000;
-export const GATEWAY_RECONNECT_BASE_MS = 1_000;
-export const GATEWAY_RECONNECT_MAX_MS = 60_000;
+const GATEWAY_RECONNECT_BASE_MS = 1_000;
+const GATEWAY_RECONNECT_MAX_MS = 60_000;
 
-export type GatewaySessionHealth =
+type GatewaySessionHealth =
   | 'disconnected'
   | 'connecting'
   | 'healthy'

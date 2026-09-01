@@ -12,9 +12,9 @@ import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
  * would be a footgun.
  */
 
-export type ConnectorCredentialSource = 'env' | 'stored' | 'missing';
+type ConnectorCredentialSource = 'env' | 'stored' | 'missing';
 
-export interface ConnectorCredentialRef {
+interface ConnectorCredentialRef {
   agentId: string;
   connectionId: string;
 }

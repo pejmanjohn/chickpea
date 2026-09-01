@@ -4,7 +4,7 @@ import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import type { CustomAgentConfig } from './types.ts';
 
-export function mcpConnectionsWithChangedOrigin(
+function mcpConnectionsWithChangedOrigin(
   current: CustomAgentConfig['mcpServers'],
   next: CustomAgentConfig['mcpServers'] | undefined,
 ): { connectionId: string; headerNames: string[] }[] {

@@ -52,7 +52,7 @@ import {
   testManagedMcpConnection,
 } from './discovery.ts';
 
-export interface LiveWorkspaceManagementServiceOptions {
+interface LiveWorkspaceManagementServiceOptions {
   identity?: IdentityStore;
   settings?: SettingsStore;
   usage?: UsageStore;

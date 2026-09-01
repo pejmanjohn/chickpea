@@ -8,10 +8,10 @@ import {
   isDefaultAgentAvatarSeed,
 } from './default-avatar-pool.ts';
 
-export const MAX_AGENT_AVATAR_BYTES = 512 * 1_024;
-export const MAX_AGENT_AVATAR_SOURCE_DIMENSION = 4_096;
-export const MAX_AGENT_AVATAR_SOURCE_PIXELS = 16_777_216;
-export const NORMALIZED_AGENT_AVATAR_DIMENSION = 512;
+const MAX_AGENT_AVATAR_BYTES = 512 * 1_024;
+const MAX_AGENT_AVATAR_SOURCE_DIMENSION = 4_096;
+const MAX_AGENT_AVATAR_SOURCE_PIXELS = 16_777_216;
+const NORMALIZED_AGENT_AVATAR_DIMENSION = 512;
 const MAX_NORMALIZED_AGENT_AVATAR_BYTES = 2 * 1_024 * 1_024;
 
 interface StoredAvatarAsset {
@@ -303,7 +303,7 @@ function requiredPresence(agent: CustomAgentConfig) {
   return agent.slackPresence;
 }
 
-export function normalizeRaster(
+function normalizeRaster(
   bytes: Uint8Array,
   declared: string,
 ): { contentType: StoredAvatarAsset['contentType']; bytes: Uint8Array } {

@@ -7,7 +7,7 @@ const SECRET_PATTERN = /^[a-f0-9]{64}$/;
 const ID_PATTERN = /^[A-Za-z0-9_.:@-]{1,256}$/;
 const TOOLKIT_PATTERN = /^[a-z0-9_-]{1,128}$/;
 
-export interface ManagedAuthorizationInput {
+interface ManagedAuthorizationInput {
   workspaceId: string;
   agentId: string;
   actorMembershipId: string;

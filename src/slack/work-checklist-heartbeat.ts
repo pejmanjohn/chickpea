@@ -1,11 +1,11 @@
-export interface WorkChecklistHeartbeat {
+interface WorkChecklistHeartbeat {
   /** Cancel future refreshes without waiting for an active Slack request. */
   cancel(): void;
   /** Cancel future refreshes and wait a bounded time for the active request. */
   stop(): Promise<boolean>;
 }
 
-export interface WorkChecklistHeartbeatOptions {
+interface WorkChecklistHeartbeatOptions {
   intervalMs: number;
   drainTimeoutMs?: number;
   update(): void | Promise<void>;

@@ -175,10 +175,6 @@ export function managementApprovalScopeKey(
   return context.actingAgentId ? `${scope}:agent:${context.actingAgentId}` : scope;
 }
 
-export function managementActorKey(context: ManagementActorContext): string {
-  return `${context.organizationId}:${context.userId}:${context.membershipId}`;
-}
-
 export function effectiveConfigurationRevision(refs: readonly ManagementObjectRef[]): string {
   const normalized = refs.map((ref) => ({
     kind: ref.kind,

@@ -23,7 +23,7 @@ export interface WorkExecutionDescriptor {
   deferRoute?: boolean;
 }
 
-export interface WorkActionStartInput {
+interface WorkActionStartInput {
   actionAttemptId: string;
   actionClass: string;
   targetKind: string;
@@ -31,7 +31,7 @@ export interface WorkActionStartInput {
   createdAt?: number;
 }
 
-export interface WorkActionOutcomeInput extends WorkActionStartInput {
+interface WorkActionOutcomeInput extends WorkActionStartInput {
   status: 'succeeded' | 'failed' | 'unknown';
   reasonCode?: string | null;
 }
@@ -41,18 +41,18 @@ export interface WorkActionOutcomeInput extends WorkActionStartInput {
  * correlation and outcome only; it deliberately has no argument/result/body
  * fields and is not wired to enable any side-effectful capability in v1.
  */
-export interface WorkActionReceiptBoundary {
+interface WorkActionReceiptBoundary {
   executionId: RunExecutionId;
   recordStart(input: WorkActionStartInput): Promise<void>;
   recordOutcome(input: WorkActionOutcomeInput): Promise<void>;
 }
 
-export interface WorkExecutionBoundary {
+interface WorkExecutionBoundary {
   lifecycle: ShadowWorkLifecycle;
   actions: WorkActionReceiptBoundary;
 }
 
-export interface WorkExecutionBoundaryOptions {
+interface WorkExecutionBoundaryOptions {
   now?: () => number;
   onGap?: ConstructorParameters<typeof ShadowWorkLifecycle>[0]['onGap'];
   mode?: ConstructorParameters<typeof ShadowWorkLifecycle>[0]['mode'];

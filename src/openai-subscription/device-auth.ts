@@ -39,7 +39,7 @@ export interface OpenAiSubscriptionAuthorizationDependencies {
   randomBytes?: (length: number) => Uint8Array;
 }
 
-export interface OpenAiSubscriptionAuthorizationStarted {
+interface OpenAiSubscriptionAuthorizationStarted {
   state: 'authorizing';
   verificationUri: string;
   userCode: string;
@@ -48,7 +48,7 @@ export interface OpenAiSubscriptionAuthorizationStarted {
   attemptCapability: string;
 }
 
-export type OpenAiSubscriptionAuthorizationResult =
+type OpenAiSubscriptionAuthorizationResult =
   | { state: 'pending'; expiresAt: number; nextPollAt: number }
   | OpenAiSubscriptionCredentialStatus;
 

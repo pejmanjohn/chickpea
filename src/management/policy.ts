@@ -1,7 +1,7 @@
 import type { AgentReferenceSummary, CustomAgentConfig } from '../config/types.ts';
 import type { LiveManagementActor, ManagementOperation } from './types.ts';
 
-export interface ManagementPolicyFacts {
+interface ManagementPolicyFacts {
   actor: LiveManagementActor;
   operation: ManagementOperation;
   currentAgent?: CustomAgentConfig;
@@ -19,7 +19,7 @@ export interface ManagementPolicyFacts {
   trustedSlackOriginGrant?: boolean;
 }
 
-export type ManagementPolicyDecision =
+type ManagementPolicyDecision =
   | { allowed: false; reason: 'owner_required' | 'operational_access_required' }
   | { allowed: true; posture: 'immediate' | 'confirmation'; reason: string };
 

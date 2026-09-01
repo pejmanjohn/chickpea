@@ -1,6 +1,6 @@
 import type { SlackUserFacts } from './credentials.ts';
 
-export type MemorySlackUserClass =
+type MemorySlackUserClass =
   | 'eligible_human'
   | 'chickpea_bot'
   | 'guest'
@@ -9,7 +9,7 @@ export type MemorySlackUserClass =
   | 'deleted'
   | 'unknown';
 
-export function classifyMemorySlackUser(
+function classifyMemorySlackUser(
   user: SlackUserFacts | undefined,
   workspaceId: string,
   botUserId: string,

@@ -1,4 +1,4 @@
-export const SLACK_AGENT_HANDLE_MAX_LENGTH = 80;
+const SLACK_AGENT_HANDLE_MAX_LENGTH = 80;
 
 /** Slack-compatible user-group handle derived from editable user input. */
 export function normalizeAgentHandle(value: string): string {

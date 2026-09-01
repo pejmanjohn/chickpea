@@ -1,28 +1,28 @@
 import type { SettingsStore } from '../config/settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 
-export const SLACK_BEHAVIOR_KEYS = [
+const SLACK_BEHAVIOR_KEYS = [
   'unassignedHint',
   'welcomeOnJoin',
 ] as const;
 
-export type SlackBehaviorKey = (typeof SLACK_BEHAVIOR_KEYS)[number];
-export type SlackBehaviorSource = 'env' | 'stored' | 'default';
+type SlackBehaviorKey = (typeof SLACK_BEHAVIOR_KEYS)[number];
+type SlackBehaviorSource = 'env' | 'stored' | 'default';
 
-export interface SlackBehaviorSetting {
+interface SlackBehaviorSetting {
   value: boolean;
   source: SlackBehaviorSource;
 }
 
-export type SlackBehaviorSettings = Record<SlackBehaviorKey, SlackBehaviorSetting>;
+type SlackBehaviorSettings = Record<SlackBehaviorKey, SlackBehaviorSetting>;
 export type SlackBehaviorPatch = Partial<Record<SlackBehaviorKey, boolean>>;
 
-export const SLACK_BEHAVIOR_SETTING_KEYS: Record<SlackBehaviorKey, string> = {
+const SLACK_BEHAVIOR_SETTING_KEYS: Record<SlackBehaviorKey, string> = {
   unassignedHint: 'slack.behavior.unassignedHint',
   welcomeOnJoin: 'slack.behavior.welcomeOnJoin',
 };
 
-export const SLACK_BEHAVIOR_ENV_KEYS: Record<SlackBehaviorKey, string> = {
+const SLACK_BEHAVIOR_ENV_KEYS: Record<SlackBehaviorKey, string> = {
   unassignedHint: 'SLACK_TAG_UNASSIGNED_HINT',
   welcomeOnJoin: 'SLACK_TAG_WELCOME_ON_JOIN',
 };

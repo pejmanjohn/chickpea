@@ -9,7 +9,7 @@ import type {
 
 type MaybePromise<T> = T | Promise<T>;
 
-export interface RunDriverStore {
+interface RunDriverStore {
   claimNextInteractiveRun(
     input: ClaimNextInteractiveRunInput,
   ): MaybePromise<InteractiveRunClaim | undefined>;
@@ -27,7 +27,7 @@ export type RunDriverHandlerResult =
       terminalDisposition: Extract<RunDisposition, 'skipped' | 'cancelled' | 'superseded'>;
     };
 
-export interface DurableRunDriverOptions {
+interface DurableRunDriverOptions {
   ownerId: string;
   authorityEpoch: number;
   leaseDurationMs: number;

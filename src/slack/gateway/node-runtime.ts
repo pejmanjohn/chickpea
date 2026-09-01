@@ -21,7 +21,7 @@ let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let clearRetryTimer: (timer: ReturnType<typeof setTimeout>) => void = clearTimeout;
 const NODE_GATEWAY_RETRY_MS = 5_000;
 
-export interface NodeGatewayRuntimeDependencies {
+interface NodeGatewayRuntimeDependencies {
   isCloudflare?: () => boolean;
   readBinding?: (env?: PlatformEnv) => Promise<string | undefined>;
   createRunner?: (env?: PlatformEnv) => NodeGatewayRunner;

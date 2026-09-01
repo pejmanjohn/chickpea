@@ -77,7 +77,7 @@ export interface SlackPresentationStatePort {
   ): MaybePromise<FlueObservationTarget | undefined>;
 }
 
-export type SlackActivityCleanupPreparation =
+type SlackActivityCleanupPreparation =
   | {
       kind: 'prepared';
       operationId: string;
@@ -101,15 +101,15 @@ export interface SlackPresentationDeliveryObserver {
   }): Promise<void>;
 }
 
-export interface FrozenProgressiveEligibilityDecision extends ProgressiveEligibilityDecision {
+interface FrozenProgressiveEligibilityDecision extends ProgressiveEligibilityDecision {
   presentationSchemaVersion: 1 | 2 | 3;
 }
 
-export type AgentViewFinalResult =
+type AgentViewFinalResult =
   | { handled: true; messageTs?: string }
   | { handled: false; fallbackPresentation: boolean; operationId?: string };
 
-export interface AgentViewPresentationOptions {
+interface AgentViewPresentationOptions {
   client: WebClient;
   state: SlackPresentationStatePort;
   runId: string;
@@ -122,19 +122,13 @@ export interface AgentViewPresentationOptions {
   onFinalized?: (record: SlackPresentationFinalizationRecord) => MaybePromise<void>;
 }
 
-export interface SlackMilestoneTransition {
+interface SlackMilestoneTransition {
   taskId: string;
   to: 'in_progress' | SlackPresentationTaskOutcome;
   detail?: string;
 }
 
-/** Typed seam for authoritative Run milestone events; no tool arguments are inferred here. */
-export interface SlackMilestoneTransitionPort {
-  transitionMilestone(input: SlackMilestoneTransition): Promise<void>;
-  recordExecutionFailure(reason: string): Promise<void>;
-}
-
-export interface PreparedSlackActivityWrite {
+interface PreparedSlackActivityWrite {
   operationId: string;
   surface: 'message' | 'assistant_status';
   messageTs?: string;

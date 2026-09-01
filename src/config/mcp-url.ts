@@ -6,9 +6,9 @@ import { isCloudflareTarget } from './runtime-target.ts';
  * localhost and RFC-1918 space directly, so private targets are rejected
  * up front — at save/test time in the admin routes and again at turn time.
  */
-export type McpUrlResult = { ok: true; url: string } | { ok: false; reason: string };
+type McpUrlResult = { ok: true; url: string } | { ok: false; reason: string };
 
-export interface McpResolvedAddress {
+interface McpResolvedAddress {
   address: string;
   family: number;
 }
@@ -17,7 +17,7 @@ export type McpAddressResolver = (
   hostname: string,
 ) => Promise<readonly McpResolvedAddress[]>;
 
-export type McpPinnedFetch = (
+type McpPinnedFetch = (
   request: Request,
   addresses: readonly McpResolvedAddress[],
 ) => Promise<Response>;

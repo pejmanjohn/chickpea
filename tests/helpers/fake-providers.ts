@@ -4,7 +4,7 @@ export const FAKE_PROVIDER_KEYS = {
   openrouter: 'openrouter-valid-key',
 } as const;
 
-export interface FakeProviderCall {
+interface FakeProviderCall {
   method: string;
   url: string;
   headers: Record<string, string>;

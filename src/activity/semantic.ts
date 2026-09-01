@@ -5,9 +5,9 @@ import type {
   ManagedEffectClass,
 } from '../connections/catalog/types.ts';
 
-export const ACTIVITY_STATUS_TEXT_LIMIT = 50;
+const ACTIVITY_STATUS_TEXT_LIMIT = 50;
 
-export const SEMANTIC_OPERATIONS = [
+const SEMANTIC_OPERATIONS = [
   'inspect',
   'search',
   'list',
@@ -26,9 +26,9 @@ export const SEMANTIC_OPERATIONS = [
   'share',
 ] as const;
 
-export type SemanticOperation = typeof SEMANTIC_OPERATIONS[number];
+type SemanticOperation = typeof SEMANTIC_OPERATIONS[number];
 
-export const SEMANTIC_OBJECTS = [
+const SEMANTIC_OBJECTS = [
   'account',
   'activities',
   'ad groups',
@@ -104,7 +104,7 @@ export const SEMANTIC_OBJECTS = [
   'the response',
 ] as const;
 
-export type SemanticObject = typeof SEMANTIC_OBJECTS[number];
+type SemanticObject = typeof SEMANTIC_OBJECTS[number];
 
 export type SemanticTargetFamily =
   | 'managed_connector'
@@ -128,11 +128,11 @@ export type SemanticActivityPhase =
   | 'drafting'
   | 'reassessing';
 
-export type SemanticLifecycleRole = 'work' | 'answer_generation' | 'internal_hidden';
-export type SemanticTrustTier = 'managed_catalog' | 'built_in' | 'customer_configuration' | 'unknown';
-export type SemanticEffectClass = ManagedEffectClass | 'none';
+type SemanticLifecycleRole = 'work' | 'answer_generation' | 'internal_hidden';
+type SemanticTrustTier = 'managed_catalog' | 'built_in' | 'customer_configuration' | 'unknown';
+type SemanticEffectClass = ManagedEffectClass | 'none';
 
-export interface ManagedSemanticLabelReference {
+interface ManagedSemanticLabelReference {
   readonly kind: 'managed_connector';
   /** Stable product-controlled catalog identity. */
   readonly id: string;
@@ -155,7 +155,7 @@ export interface ManagedCapabilitySemanticOverride {
   object?: SemanticObject | undefined;
 }
 
-export type SemanticLifecycleEvent =
+type SemanticLifecycleEvent =
   | { phase: 'started' }
   | { phase: 'settled'; outcome: 'succeeded' | 'failed' | 'ambiguous' };
 

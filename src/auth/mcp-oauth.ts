@@ -1,11 +1,11 @@
 export const MCP_WORKSPACE_SCOPE = 'chickpea:workspace';
-export const MCP_RESOURCE_PATH = '/mcp';
-export const MAX_MCP_DCR_BODY_BYTES = 16 * 1024;
+const MCP_RESOURCE_PATH = '/mcp';
+const MAX_MCP_DCR_BODY_BYTES = 16 * 1024;
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const ALLOWED_GRANTS = new Set(['authorization_code', 'refresh_token']);
 
-export type McpClientRegistrationValidation =
+type McpClientRegistrationValidation =
   | { ok: true }
   | { ok: false; code: string };
 

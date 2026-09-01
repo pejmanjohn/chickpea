@@ -41,7 +41,7 @@ export class AuthorizationError extends Error {
   }
 }
 
-export interface AgentAuthorityDescriptor {
+interface AgentAuthorityDescriptor {
   creatorMembershipId?: string;
   editPolicy?: 'creator_and_admins' | 'all_workspace_members';
 }

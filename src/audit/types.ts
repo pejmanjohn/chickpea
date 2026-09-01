@@ -1,4 +1,4 @@
-export type AuditDomain =
+type AuditDomain =
   | 'identity'
   | 'memory'
   | 'scheduled_work'

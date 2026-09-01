@@ -1,4 +1,4 @@
-export type IdentityErrorCode =
+type IdentityErrorCode =
   | 'organization_missing'
   | 'owner_claim_conflict'
   | 'owner_claim_missing'

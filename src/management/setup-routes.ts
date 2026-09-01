@@ -132,7 +132,7 @@ const SETUP_ID_PATTERN = /^setup_[A-Za-z0-9_-]{1,128}$/;
 const MAX_FORM_BYTES = 16 * 1024;
 const SESSION_COOKIE = '__Secure-chickpea-setup';
 
-export interface ManagementSetupRoutesOptions {
+interface ManagementSetupRoutesOptions {
   management?: ManagementStore;
   config?: ConfigStore;
   settings?: SettingsStore;

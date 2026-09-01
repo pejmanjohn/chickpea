@@ -15,7 +15,7 @@ export const MAX_SLACK_ATTACHMENT_TOTAL_BYTES = 12 * 1_024 * 1_024;
 export const MAX_SLACK_PDF_PAGES = 100;
 export const MAX_SLACK_ATTACHMENT_CHARACTERS = 32_000;
 export const MAX_SLACK_ATTACHMENT_TOTAL_CHARACTERS = 48_000;
-export const MAX_SLACK_PDF_IMAGE_PIXELS = 16_777_216;
+const MAX_SLACK_PDF_IMAGE_PIXELS = 16_777_216;
 const DEFAULT_NORMALIZATION_DEADLINE_PER_ATTACHMENT_MS = 13_000;
 const APPROVED_TEXT_APPLICATION_MIME_TYPES = new Set([
   'application/graphql',
@@ -59,12 +59,12 @@ interface NormalizedAttachmentIdentity {
   contentType: string;
 }
 
-export interface NormalizedSlackTextAttachment extends NormalizedAttachmentIdentity {
+interface NormalizedSlackTextAttachment extends NormalizedAttachmentIdentity {
   kind: 'text';
   text: string;
 }
 
-export interface NormalizedSlackImageAttachment extends NormalizedAttachmentIdentity {
+interface NormalizedSlackImageAttachment extends NormalizedAttachmentIdentity {
   kind: 'image';
   image: { type: 'image'; data: string; mimeType: string };
 }

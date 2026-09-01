@@ -32,21 +32,21 @@ interface SetupLease {
   expiresAt: number;
 }
 
-export interface ComposioConnectorPreparationResult {
+interface ComposioConnectorPreparationResult {
   toolkit: string;
   status: 'ready' | 'failed';
   authConfigId?: string;
   issueCode?: string;
 }
 
-export interface ComposioPreparationResult {
+interface ComposioPreparationResult {
   status: 'ready' | 'partial' | 'failed';
   authConfigIds: ComposioAuthConfigIds;
   connectors: ComposioConnectorPreparationResult[];
   issueCodes: string[];
 }
 
-export interface ComposioSetupOptions extends ComposioConfigurationOptions {
+interface ComposioSetupOptions extends ComposioConfigurationOptions {
   createClient?: (input: { apiKey: string }) => Promise<ComposioClientLike>;
   signal?: AbortSignal;
   now?: () => number;

@@ -8,7 +8,7 @@ import {
 import type { SlackPresentationOwner } from './run-presentations.ts';
 import { WebClientPresenter } from './web-client-presenter.ts';
 
-export interface AdmittedSlackActivityInput {
+interface AdmittedSlackActivityInput {
   client: WebClient;
   state: SlackPresentationStatePort;
   runId: string;

@@ -1,2 +1,2 @@
-export { UsageStateError, UsageStoreLogic, SqliteUsageStore } from './store.ts';
+export { UsageStateError } from "./store.ts";
 export * from './types.ts';

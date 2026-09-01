@@ -5,29 +5,7 @@ import { discoverMcpTools } from '../config/mcp-test.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
-import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
-import type { IdentityStore } from '../identity/types.ts';
-import { listSlackChannels } from '../slack/channels.ts';
-import { resolveSlackInstallationCredentials } from '../slack/installation-credentials.ts';
 import { ManagementError } from './types.ts';
-
-export async function discoverManagedSlackChannels(
-  refresh: boolean,
-  env: PlatformEnv | undefined,
-  identity: IdentityStore,
-) {
-  const [organization, credentials] = await Promise.all([
-    identity.getOrganization(),
-    managedSlackCredentials(env, identity),
-  ]);
-  if (!organization?.slackTeamId || !credentials.botToken) throw slackUnavailable();
-  try {
-    const result = await listSlackChannels(credentials.botToken, { refresh });
-    return { teamId: organization.slackTeamId, ...result };
-  } catch {
-    throw slackUnavailable();
-  }
-}
 
 export async function testManagedMcpConnection(input: {
   agentId: string;
@@ -67,20 +45,4 @@ export async function testManagedMcpConnection(input: {
       message: safeMcpFailureText(error),
     };
   }
-}
-
-async function managedSlackCredentials(env: PlatformEnv | undefined, identity: IdentityStore) {
-  try {
-    return await resolveSlackInstallationCredentials(
-      WORKSPACE_SLACK_INSTALLATION_ID,
-      env,
-      { state: identity, ...(env ? { env } : {}) },
-    );
-  } catch {
-    throw slackUnavailable();
-  }
-}
-
-function slackUnavailable(): ManagementError {
-  return new ManagementError('invalid_request', 'The connected Slack directory is unavailable.');
 }

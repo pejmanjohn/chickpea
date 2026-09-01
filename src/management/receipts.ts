@@ -57,7 +57,7 @@ const PERSONA_FALLBACK_CODES = new Set([
   'invalid_name',
 ]);
 
-export interface CompleteManagementSetupReceiptInput {
+interface CompleteManagementSetupReceiptInput {
   setup: ManagementSetupRecord;
   browserSessionDigest: string;
   completedByUserId?: string;
@@ -165,11 +165,11 @@ export function formatManagementSetupReceipt(receipt: ManagementReceipt): string
   return `${lead}\n${details.join(' · ')}`;
 }
 
-export interface ManagementReceiptDeliveryResult {
+interface ManagementReceiptDeliveryResult {
   deliveryRef: string;
 }
 
-export interface AgentWelcomePresentationRuntime {
+interface AgentWelcomePresentationRuntime {
   state: SlackPresentationStatePort;
   resolveClient(workspaceId: string): Promise<WebClient>;
 }
@@ -517,13 +517,13 @@ function receiptDestination(setup: ManagementSetupRecord): ManagementReceiptDest
   };
 }
 
-export function isRoutineSavedAcknowledgement(
+function isRoutineSavedAcknowledgement(
   receipt: ManagementReceipt,
 ): receipt is ManagementRoutineSavedAcknowledgement {
   return 'kind' in receipt && receipt.kind === 'routine_saved_reaction';
 }
 
-export function isScheduleActionAcknowledgement(
+function isScheduleActionAcknowledgement(
   receipt: ManagementReceipt,
 ): receipt is ManagementScheduleActionAcknowledgement {
   return 'kind' in receipt && receipt.kind === 'schedule_action';
@@ -535,7 +535,7 @@ export function isAgentCreatedWelcome(
   return 'kind' in receipt && receipt.kind === 'agent_created_welcome';
 }
 
-export function isChickpeaIntroduction(
+function isChickpeaIntroduction(
   receipt: ManagementReceipt,
 ): receipt is ManagementChickpeaIntroduction {
   return 'kind' in receipt && receipt.kind === 'chickpea_introduction';
@@ -637,7 +637,7 @@ function boundedFollowOnNoticeText(
   return boundedSlackText(notice.text, notice.kind === 'proposal' ? 3_000 : 500);
 }
 
-export function isConnectorConnectedReceipt(
+function isConnectorConnectedReceipt(
   receipt: ManagementReceipt,
 ): receipt is ManagementConnectorConnectedReceipt {
   return 'kind' in receipt && receipt.kind === 'connector_connected';

@@ -201,7 +201,7 @@ export type ManagementOperation =
       target: ManagementSetupRequestTarget;
     });
 
-export type ManagementSetupRequestTarget =
+type ManagementSetupRequestTarget =
   | {
       kind: 'api_connection';
       agentId?: string;
@@ -226,7 +226,7 @@ export type ManagementSetupRequestTarget =
     }
   ;
 
-export type ManagementDisposition =
+type ManagementDisposition =
   | 'applied'
   | 'confirmation_required'
   | 'setup_required'
@@ -270,7 +270,7 @@ export interface ManagementItemOutcome {
   warning?: string;
 }
 
-export type ManagementSetupAction =
+type ManagementSetupAction =
   | 'api_oauth'
   | 'api_credential'
   | 'mcp_oauth'
@@ -280,7 +280,7 @@ export type ManagementSetupAction =
   | 'repository_access'
   | 'provider_credential';
 
-export type ManagementSetupStatus =
+type ManagementSetupStatus =
   | 'pending'
   | 'claimed'
   | 'authorizing'
@@ -331,7 +331,7 @@ export interface ManagementConnectorConnectedReceipt {
   completedAt: number;
 }
 
-export type ManagementSetupCompletionReceipt =
+type ManagementSetupCompletionReceipt =
   | ManagementSetupReceipt
   | ManagementConnectorConnectedReceipt;
 
@@ -487,7 +487,7 @@ export type ManagementReceiptDestination =
       messageTs: string;
     };
 
-export type ManagementReceiptOutboxStatus =
+type ManagementReceiptOutboxStatus =
   | 'pending'
   | 'delivering'
   | 'delivered'
@@ -564,7 +564,7 @@ export type ApplyWorkspaceChangesResult =
   | ManagementApplyResult
   | ManagementDuplicateIdentityResult;
 
-export interface SkillImportReceiptMetadata {
+interface SkillImportReceiptMetadata {
   sourceUrl: string;
   path: string;
   name: string;

@@ -3,9 +3,9 @@ import type { ProviderAuthRoute } from '../config/runtime-model.ts';
 import type { SourceVisibility } from '../work/types.ts';
 
 export type RoutineState = 'pending_authority' | 'active' | 'paused' | 'disabled' | 'completed';
-export type RoutineTriggerKind = 'schedule' | 'once';
+type RoutineTriggerKind = 'schedule' | 'once';
 export type RoutineOutputPolicy = 'post' | 'post_on_change';
-export type RoutineAuthorityMode = 'live_channel_v1' | 'live_direct_member_v1';
+type RoutineAuthorityMode = 'live_channel_v1' | 'live_direct_member_v1';
 export type RoutineDestination =
   | { kind: 'channel'; channelId: string }
   | {
@@ -14,8 +14,8 @@ export type RoutineDestination =
       threadTs: string;
       ownerMembershipId: string;
     };
-export type RoutineActorClass = 'member' | 'operator' | 'system';
-export type RoutineControlAction = 'pause' | 'resume' | 'disable';
+type RoutineActorClass = 'member' | 'operator' | 'system';
+type RoutineControlAction = 'pause' | 'resume' | 'disable';
 export type RoutineRunStatus =
   | 'queued'
   | 'admitting'
@@ -26,8 +26,8 @@ export type RoutineRunStatus =
   | 'skipped'
   | 'cancelled'
   | 'superseded';
-export type RoutineTriggerSource = 'schedule' | 'once' | 'run_now';
-export type RoutineAdmissionStatus =
+type RoutineTriggerSource = 'schedule' | 'once' | 'run_now';
+type RoutineAdmissionStatus =
   | 'attempting'
   | 'attached'
   | 'superseded'
@@ -116,8 +116,8 @@ export interface RoutineRevision {
   createdAt: number;
 }
 
-export type RoutineRequestSourceKind = 'slack_request' | 'slack_clone';
-export type RoutineAuthoritySource = 'current_request' | 'previous_revision' | 'cloned_revision';
+type RoutineRequestSourceKind = 'slack_request' | 'slack_clone';
+type RoutineAuthoritySource = 'current_request' | 'previous_revision' | 'cloned_revision';
 
 export interface RoutineRequestProvenanceInput {
   sourceKind: RoutineRequestSourceKind;
@@ -226,7 +226,7 @@ export interface ActivateDirectRoutineInput {
   destinationBindingDigest: string;
 }
 
-export type RoutineRecoveryDeliveryStatus =
+type RoutineRecoveryDeliveryStatus =
   | 'pending'
   | 'accepted'
   | 'definitive_failure'
@@ -361,7 +361,7 @@ export interface RoutineAdmissionAttempt {
   safeError: string | null;
 }
 
-export interface RoutineAgentDispatchEnvelopeV1 {
+interface RoutineAgentDispatchEnvelopeV1 {
   schemaVersion: 1;
   attemptId: string;
   instanceId: string;
@@ -370,7 +370,7 @@ export interface RoutineAgentDispatchEnvelopeV1 {
   initialData: unknown;
 }
 
-export interface RoutineScheduleSignalV2 {
+interface RoutineScheduleSignalV2 {
   kind: 'signal';
   type: 'schedule';
   body: string;
@@ -419,7 +419,7 @@ export interface RoutineAgentUsageV1 {
   completeness: 'complete' | 'partial' | 'not_reported';
 }
 
-export interface RoutineAgentCompletedResultV1 {
+interface RoutineAgentCompletedResultV1 {
   status: 'succeeded' | 'no_op';
   message: string;
   changeKeyHash: string | null;
@@ -581,7 +581,7 @@ export interface RoutineAdminPage {
   nextCursor: number | null;
 }
 
-export type RoutineScheduleActionStatus = 'pending' | 'applied' | 'failed';
+type RoutineScheduleActionStatus = 'pending' | 'applied' | 'failed';
 
 export type RoutineScheduleActionResult =
   | {

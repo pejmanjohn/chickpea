@@ -13,7 +13,7 @@ import { missingRequiredSlackBotScopes } from './scopes.ts';
 
 const SLACK_APP_ID_PATTERN = /^A[A-Z0-9]{2,}$/;
 
-export type SlackInstallationVerificationErrorCode =
+type SlackInstallationVerificationErrorCode =
   | 'slack_auth_failed'
   | 'slack_missing_scopes'
   | 'slack_scope_unverified'
@@ -41,7 +41,7 @@ export class SlackInstallationVerificationError extends Error {
   }
 }
 
-export interface ValidatedSlackInstallation {
+interface ValidatedSlackInstallation {
   teamId: string;
   teamName?: string;
   appId: string;
@@ -205,13 +205,13 @@ export async function validateSlackBotInstallation(
   };
 }
 
-export function slackAppConsoleUrl(appId: string | undefined): string {
+function slackAppConsoleUrl(appId: string | undefined): string {
   return appId && SLACK_APP_ID_PATTERN.test(appId)
     ? `https://api.slack.com/apps/${appId}/general`
     : 'https://api.slack.com/apps';
 }
 
-export function slackAppOAuthUrl(appId: string | undefined): string | undefined {
+function slackAppOAuthUrl(appId: string | undefined): string | undefined {
   return appId && SLACK_APP_ID_PATTERN.test(appId)
     ? `https://api.slack.com/apps/${appId}/oauth`
     : undefined;

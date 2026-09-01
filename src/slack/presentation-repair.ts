@@ -12,7 +12,7 @@ import {
 } from './run-presentations.ts';
 import { WebClientPresenter } from './web-client-presenter.ts';
 
-export interface SlackPresentationRepairDrainOptions {
+interface SlackPresentationRepairDrainOptions {
   presentations: readonly SlackRunPresentationV3[];
   state: SlackPresentationStatePort;
   resolveClient(workspaceId: string): Promise<WebClient>;
@@ -20,8 +20,8 @@ export interface SlackPresentationRepairDrainOptions {
   onFailure?(presentation: SlackRunPresentationV3, error: unknown): void;
 }
 
-export const SLACK_PRESENTATION_REPAIR_MIN_BACKOFF_MS = 30_000;
-export const SLACK_PRESENTATION_REPAIR_MAX_BACKOFF_MS = 15 * 60_000;
+const SLACK_PRESENTATION_REPAIR_MIN_BACKOFF_MS = 30_000;
+const SLACK_PRESENTATION_REPAIR_MAX_BACKOFF_MS = 15 * 60_000;
 
 export interface SlackPresentationRepairDrainResult {
   attempted: number;
@@ -29,7 +29,7 @@ export interface SlackPresentationRepairDrainResult {
   nextRetryAt?: number;
 }
 
-export type SlackPresentationRepairStage =
+type SlackPresentationRepairStage =
   | 'presentation_load'
   | 'terminal_intent_prepare'
   | 'terminal_intent_reload'
@@ -46,7 +46,7 @@ export type SlackPresentationRepairStage =
   | 'presentation_reload';
 
 /** Content-free stage marker for durable repair telemetry and diagnosis. */
-export class SlackPresentationRepairError extends Error {
+class SlackPresentationRepairError extends Error {
   constructor(
     readonly stage: SlackPresentationRepairStage,
     options?: ErrorOptions,

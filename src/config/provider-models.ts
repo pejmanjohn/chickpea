@@ -5,7 +5,7 @@ import type { PlatformEnv } from './state-backend.ts';
 import { listActiveCatalogModels } from '../model-catalog/index.ts';
 
 export type AdminProviderId = ProviderKeyId | 'workers-ai';
-export type FavoriteProviderId = 'openrouter' | 'workers-ai';
+type FavoriteProviderId = 'openrouter' | 'workers-ai';
 
 export interface ProviderModel {
   id: string;
@@ -17,7 +17,7 @@ export interface ProviderModel {
   pricing?: Record<string, string>;
 }
 
-export interface ProviderModelsResult {
+interface ProviderModelsResult {
   models: ProviderModel[];
   cached: boolean;
 }
@@ -58,7 +58,7 @@ export const WORKERS_AI_DEFAULT_FAVORITES = [
   '@cf/meta/llama-4-scout-17b-16e-instruct',
 ] as const;
 
-export const PROVIDER_FAVORITES_SETTING_KEYS = {
+const PROVIDER_FAVORITES_SETTING_KEYS = {
   openrouter: 'provider.openrouter.favorites',
   'workers-ai': 'provider.workers-ai.favorites',
 } as const;

@@ -11,7 +11,7 @@ import {
 
 export const SLACK_PRESENT_TABLE_TOOL_NAME = 'present_table';
 export const SLACK_TABLE_PRESENTATION_DATA_NAME = 'slackTablePresentation';
-export const SLACK_PRESENT_TABLE_ACKNOWLEDGEMENT =
+const SLACK_PRESENT_TABLE_ACKNOWLEDGEMENT =
   'Table recorded. Finish with a short conclusion that does not repeat the rows.';
 
 export const SLACK_PRESENT_TABLE_INSTRUCTION = [
@@ -23,12 +23,12 @@ export const SLACK_PRESENT_TABLE_INSTRUCTION = [
   'The caption must say what the rows represent. The row-header column must uniquely name each row. Mark a column numeric only when every value in it is a real number so Slack can sort it numerically.',
 ].join(' ');
 
-export const SlackTableCellSchema = v.union([
+const SlackTableCellSchema = v.union([
   v.pipe(v.string(), v.minLength(1), v.maxLength(1_000)),
   v.number(),
 ]);
 
-export const SlackTableColumnSchema = v.strictObject({
+const SlackTableColumnSchema = v.strictObject({
   header: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
   type: v.optional(v.picklist(['text', 'number'])),
   align: v.optional(v.picklist(['left', 'center', 'right'])),
@@ -52,24 +52,24 @@ export const SlackTablePresentationSchema = v.strictObject({
   rowHeaderIndex: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(19))),
 });
 
-export type SlackTableCell = string | number;
-export type SlackTableColumn = v.InferOutput<typeof SlackTableColumnSchema>;
+type SlackTableCell = string | number;
+type SlackTableColumn = v.InferOutput<typeof SlackTableColumnSchema>;
 export type SlackTablePresentation = v.InferOutput<typeof SlackTablePresentationSchema>;
 
-export interface SlackRawTextTableCell {
+interface SlackRawTextTableCell {
   type: 'raw_text';
   text: string;
 }
 
-export interface SlackRawNumberTableCell {
+interface SlackRawNumberTableCell {
   type: 'raw_number';
   value: number;
   text: string;
 }
 
-export type SlackNativeTableCell = SlackRawTextTableCell | SlackRawNumberTableCell;
+type SlackNativeTableCell = SlackRawTextTableCell | SlackRawNumberTableCell;
 
-export interface SlackTableBlock {
+interface SlackTableBlock {
   type: 'table';
   rows: SlackNativeTableCell[][];
   column_settings: Array<{
@@ -78,7 +78,7 @@ export interface SlackTableBlock {
   }>;
 }
 
-export interface SlackDataTableBlock {
+interface SlackDataTableBlock {
   type: 'data_table';
   caption: string;
   rows: SlackNativeTableCell[][];
@@ -240,7 +240,7 @@ export function appendSlackTableToRenderedMessage(
   };
 }
 
-export function tableCellCharacterCount(presentation: SlackTablePresentation): number {
+function tableCellCharacterCount(presentation: SlackTablePresentation): number {
   return presentation.columns.reduce((sum, column) => sum + column.header.length, 0) +
     presentation.rows.reduce<number>((sum, row) =>
       sum + row.reduce<number>((rowSum, cell) => rowSum + String(cell).length, 0), 0

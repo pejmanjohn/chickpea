@@ -20,7 +20,7 @@ interface InvocationState {
   marking?: Promise<void>;
 }
 
-export interface ActiveFlueObservationContext {
+interface ActiveFlueObservationContext {
   instanceId: string;
   submissionId: string;
   target?: FlueObservationTarget;
@@ -125,7 +125,7 @@ async function markPersistedInvocation(correlation: WorkTraceCorrelation): Promi
   await markWorkModelInvocation(store, correlation);
 }
 
-export async function markWorkModelInvocation(
+async function markWorkModelInvocation(
   store: WorkStore,
   correlation: WorkTraceCorrelation,
   invokedAt = Date.now(),

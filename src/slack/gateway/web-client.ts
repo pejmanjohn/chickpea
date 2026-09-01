@@ -8,9 +8,9 @@ import {
 
 type ApiMethod = (input?: Record<string, unknown>) => Promise<WebAPICallResult>;
 
-export type AgentSessionStatus = 'active' | 'processing' | 'suspended' | 'closed';
+type AgentSessionStatus = 'active' | 'processing' | 'suspended' | 'closed';
 
-export interface AgentSessionSetStatusArguments {
+interface AgentSessionSetStatusArguments {
   channel_id?: string;
   thread_ts?: string;
   status: AgentSessionStatus;

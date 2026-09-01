@@ -16,7 +16,7 @@ interface WorkspaceArtifactCapabilityOptions {
   postArtifact(input: SlackArtifactInput): Promise<SlackArtifactResult>;
 }
 
-export interface WorkspaceArtifactToolOptions {
+interface WorkspaceArtifactToolOptions {
   channel: string;
   threadTs: string;
   postArtifact(input: SlackArtifactInput): Promise<SlackArtifactResult>;

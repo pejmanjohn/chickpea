@@ -8,7 +8,7 @@ export type RoutineContentAccess =
   | 'private_nonmember'
   | 'authorization_unknown';
 
-export interface RoutineAdminSlackActor {
+interface RoutineAdminSlackActor {
   slackTeamId: string;
   slackUserId: string;
 }

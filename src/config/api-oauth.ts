@@ -80,14 +80,14 @@ type ApiOAuthErrorCode =
   | 'oauth_unavailable'
   | 'reauthorization_required';
 
-export interface ApiOAuthCallbackContext {
+interface ApiOAuthCallbackContext {
   ref: ApiOAuthRef;
   accountRevision?: number;
   oauthAttemptId?: string;
   returnAgentId?: string;
 }
 
-export interface ApiOAuthErrorOptions extends ErrorOptions {
+interface ApiOAuthErrorOptions extends ErrorOptions {
   callbackContext?: ApiOAuthCallbackContext;
 }
 

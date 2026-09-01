@@ -1,7 +1,7 @@
 import type { SettingsStore } from './settings-store.ts';
 
 export const GITHUB_API_BASE = 'https://api.github.com';
-export const GITHUB_APP_MANAGED_HOSTS = ['api.github.com', 'github.com'] as const;
+const GITHUB_APP_MANAGED_HOSTS = ['api.github.com', 'github.com'] as const;
 
 const GITHUB_APP_MANAGED_HOST_SET = new Set<string>(GITHUB_APP_MANAGED_HOSTS);
 
@@ -16,7 +16,7 @@ export function isGithubAppManagedHost(host: string): boolean {
 // repository. GitHub logins are alphanumeric+hyphen; repo names allow
 // [A-Za-z0-9._-] but never `.` or `..` alone.
 export const GITHUB_OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?$/;
-export const GITHUB_REPO_NAME_PATTERN = /^(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/;
+const GITHUB_REPO_NAME_PATTERN = /^(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/;
 
 export function isValidRepositoryFullName(fullName: string): boolean {
   const slash = fullName.indexOf('/');
@@ -46,26 +46,26 @@ export type GithubConnection =
       privateKeyPem: string;
     };
 
-export interface GithubInstallation {
+interface GithubInstallation {
   id: number;
   accountLogin: string;
   accountType: string;
 }
 
-export interface GithubRepository {
+interface GithubRepository {
   fullName: string;
   private: boolean;
   defaultBranch: string;
 }
 
-export interface GithubRepositoryPage {
+interface GithubRepositoryPage {
   repositories: GithubRepository[];
   totalCount: number;
   /** True when the page cap stopped enumeration before the account's full repository list. */
   truncated: boolean;
 }
 
-export interface GithubManifestConversion {
+interface GithubManifestConversion {
   id: number;
   slug: string;
   privateKeyPem: string;
@@ -74,7 +74,7 @@ export interface GithubManifestConversion {
   webhookSecret?: string;
 }
 
-export interface GithubSetupState {
+interface GithubSetupState {
   state: string;
   mintedAt: number;
   membershipId: string | null;

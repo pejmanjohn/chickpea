@@ -10,14 +10,14 @@ import { hasCredentialLikeContent } from '../security/content-validation.ts';
 
 export const SLACK_PRESENTATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const SLACK_PRESENTATION_FINALIZED_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
-export const MAX_SLACK_PENDING_APPEND_BYTES = 128 * 1_024;
+const MAX_SLACK_PENDING_APPEND_BYTES = 128 * 1_024;
 
 export const DEFAULT_SLACK_APPEND_BUDGET = {
   capacity: 1,
   refillWindowMs: 1_000,
 } as const;
 
-export const DEFAULT_SLACK_ACTIVITY_STATUS_BUDGET = {
+const DEFAULT_SLACK_ACTIVITY_STATUS_BUDGET = {
   // Admission and the first observed phase may occur in the same second.
   // Later observed phases are already serialized by the one-second turn queue.
   capacity: 2,
@@ -34,7 +34,7 @@ export type SlackProgressiveEligibilityReason =
   | 'concurrent_join'
   | 'other';
 
-export type SlackProgressiveEligibility =
+type SlackProgressiveEligibility =
   | { status: 'pending' }
   | {
       status: 'frozen';
@@ -42,7 +42,7 @@ export type SlackProgressiveEligibility =
       reason: SlackProgressiveEligibilityReason;
     };
 
-export type SlackPresentationStreamState =
+type SlackPresentationStreamState =
   | 'absent'
   | 'starting'
   | 'streaming'
@@ -53,7 +53,7 @@ export type SlackPresentationStreamState =
   | 'fallback'
   | 'unknown';
 
-export type SlackPresentationOutcome =
+type SlackPresentationOutcome =
   | 'progressive'
   | 'terminal_only'
   | 'fallback'
@@ -61,7 +61,7 @@ export type SlackPresentationOutcome =
   | 'withdrawn'
   | 'unknown';
 
-export type SlackPresentationDegradationReason =
+type SlackPresentationDegradationReason =
   | 'budget_exhausted'
   | 'workspace_cooldown'
   | 'rate_limited'
@@ -97,7 +97,7 @@ export type SlackProgressiveIntent =
       decidedAt: number;
     };
 
-export interface SlackPresentationPersona {
+interface SlackPresentationPersona {
   name: string;
   avatarUrl: string;
   avatarRevision: number;
@@ -113,12 +113,12 @@ export type SlackPresentationReceiptCertainty =
   | 'failed'
   | 'unknown';
 
-export interface SlackPresentationOperationReceipt {
+interface SlackPresentationOperationReceipt {
   operationId: string;
   certainty: SlackPresentationReceiptCertainty;
 }
 
-export type SlackPresentationActivityKind = ActivityKind;
+type SlackPresentationActivityKind = ActivityKind;
 
 export interface SlackPresentationActivity {
   kind: SlackPresentationActivityKind;
@@ -153,7 +153,7 @@ export type SlackPresentationTaskOutcome =
   | 'failed'
   | 'not_run';
 
-export type SlackPresentationLifecyclePhase =
+type SlackPresentationLifecyclePhase =
   | 'admitted'
   | 'active'
   | 'terminal_intended'
@@ -167,7 +167,7 @@ export type SlackPresentationAgentSessionState =
   | 'suspended'
   | 'closed';
 
-export interface SlackPresentationAgentSession {
+interface SlackPresentationAgentSession {
   desired: SlackPresentationAgentSessionState;
   acknowledged: SlackPresentationAgentSessionState | 'none';
   operation?: SlackPresentationOperationReceipt;
@@ -175,7 +175,7 @@ export interface SlackPresentationAgentSession {
   disposition?: 'superseded' | 'unavailable';
 }
 
-export type SlackPresentationTerminalDelivery =
+type SlackPresentationTerminalDelivery =
   | { state: 'none' }
   | {
       state: 'intended';
@@ -189,7 +189,7 @@ export type SlackPresentationTerminalDelivery =
       operation: SlackPresentationOperationReceipt & { certainty: 'failed' };
     };
 
-export type SlackPresentationCleanup =
+type SlackPresentationCleanup =
   | { state: 'not_required'; disposition?: 'superseded' }
   | {
       state: 'required';
@@ -197,7 +197,7 @@ export type SlackPresentationCleanup =
       operation: SlackPresentationOperationReceipt;
     };
 
-export interface SlackPresentationRepairSchedule {
+interface SlackPresentationRepairSchedule {
   attempts: number;
   nextRetryAt: number;
 }
@@ -209,7 +209,7 @@ export interface SlackPresentationRoot {
   requesterUserId: string;
 }
 
-export interface SlackPresentationStream {
+interface SlackPresentationStream {
   state: SlackPresentationStreamState;
   messageTs?: string;
   flue?: {
@@ -231,7 +231,7 @@ export interface SlackPresentationStream {
   degradationReason?: SlackPresentationDegradationReason;
 }
 
-export interface SlackPresentationPlan {
+interface SlackPresentationPlan {
   displayMode: 'timeline' | 'plan';
   tasks: Array<{
     id: string;
@@ -240,7 +240,7 @@ export interface SlackPresentationPlan {
   }>;
 }
 
-export interface SlackPresentationTaskV3 {
+interface SlackPresentationTaskV3 {
   id: string;
   title: string;
   /** Slack-compatible projection status; semantic outcome remains authoritative. */
@@ -254,7 +254,7 @@ export interface SlackPresentationPlanV3 {
   tasks: SlackPresentationTaskV3[];
 }
 
-export interface SlackPresentationTelemetry {
+interface SlackPresentationTelemetry {
   eligibilityDecidedAt?: number;
   firstProgressiveEffectAt?: number;
 }
@@ -277,7 +277,7 @@ interface SlackRunPresentationBase {
   updatedAt: number;
 }
 
-export interface SlackRunPresentationV1 extends SlackRunPresentationBase {
+interface SlackRunPresentationV1 extends SlackRunPresentationBase {
   schemaVersion: 1;
   /** Immutable legacy Agent authorship captured before any Slack effect. */
   persona?: SlackPresentationPersona;
@@ -288,7 +288,7 @@ export interface SlackRunPresentationV1 extends SlackRunPresentationBase {
   };
 }
 
-export interface SlackRunPresentationV2 extends SlackRunPresentationBase {
+interface SlackRunPresentationV2 extends SlackRunPresentationBase {
   schemaVersion: 2;
   /** Immutable legacy Agent authorship captured before any Slack effect. */
   persona?: SlackPresentationPersona;
@@ -404,7 +404,7 @@ interface SlackRunPresentationCreateInputBase {
   taskLabels?: readonly string[];
 }
 
-export type SlackRunPresentationCreateInput =
+type SlackRunPresentationCreateInput =
   | (SlackRunPresentationCreateInputBase & {
       /** Test and migration seam only. New admissions continue to default to V2. */
       schemaVersion?: 1 | 2;
@@ -557,12 +557,12 @@ export type SlackAppendReservation =
   | { outcome: 'cooldown'; retryAt: number; budgetVersion: number }
   | { outcome: 'exhausted'; retryAt: number; budgetVersion: number };
 
-export interface SlackAppendBudgetPolicy {
+interface SlackAppendBudgetPolicy {
   capacity: number;
   refillWindowMs: number;
 }
 
-export interface SlackPresentationRetentionTombstone {
+interface SlackPresentationRetentionTombstone {
   streamState: SlackPresentationStreamState;
   repairRequired: boolean;
   expiredAt: number;
@@ -588,7 +588,7 @@ export interface SlackPresentationSummary {
   };
 }
 
-export interface SlackPresentationLatencySummary {
+interface SlackPresentationLatencySummary {
   count: number;
   min: number | null;
   p50: number | null;

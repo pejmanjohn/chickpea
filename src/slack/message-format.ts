@@ -2,7 +2,7 @@ import { credentialMarkers, redactCredentialLikeContent } from '../security/cont
 import type { SlackNativeTableBlock } from './table-presentation.ts';
 
 export const slackMarkdownBlockTextLimit = 12_000;
-export const slackFallbackTextLimit = 4_000;
+const slackFallbackTextLimit = 4_000;
 
 export const SLACK_ACTION_LINK_INSTRUCTION = [
   'In Slack replies, never display a raw URL for an action link supplied by Chickpea or a tool.',
@@ -13,33 +13,33 @@ export const SLACK_ACTION_LINK_INSTRUCTION = [
 
 export type SlackReplyFormat = 'plain_text' | 'mrkdwn' | 'markdown';
 
-export interface SlackMarkdownBlock {
+interface SlackMarkdownBlock {
   type: 'markdown';
   text: string;
 }
 
-export interface SlackMrkdwnTextElement {
+interface SlackMrkdwnTextElement {
   type: 'mrkdwn';
   text: string;
 }
 
-export interface SlackContextBlock {
+interface SlackContextBlock {
   type: 'context';
   elements: SlackMrkdwnTextElement[];
 }
 
-export interface SlackPlainTextObject {
+interface SlackPlainTextObject {
   type: 'plain_text';
   text: string;
   emoji: false;
 }
 
-export interface SlackSectionBlock {
+interface SlackSectionBlock {
   type: 'section';
   text: SlackPlainTextObject;
 }
 
-export type SlackMessageBlock =
+type SlackMessageBlock =
   | SlackMarkdownBlock
   | SlackSectionBlock
   | SlackContextBlock
@@ -51,7 +51,7 @@ export interface RenderedSlackMessage {
   mrkdwn?: boolean;
 }
 
-export interface SlackAdminUrlParams {
+interface SlackAdminUrlParams {
   agentId?: string;
   channelId?: string;
 }
@@ -244,7 +244,7 @@ export function renderSlackReplyFooterBlock(footer: SlackReplyFooter): SlackCont
 // (an mrkdwn <url|label>, or plain "Configure" when no URL is configured). Both
 // the reply footer and the channel onboarding message render through this so the
 // link syntax and copy never drift between them.
-export function renderSlackConfigureLink(
+function renderSlackConfigureLink(
   publicUrl: string | undefined,
   params: SlackAdminUrlParams = {},
 ): string {

@@ -39,7 +39,7 @@ export interface SlackScheduleActionRpcRequest {
   operation: SlackScheduleManagementOperation;
 }
 
-export interface SlackScheduleActionDependencies {
+interface SlackScheduleActionDependencies {
   management: ManagementStore;
   routines: RoutineStore;
   service: WorkspaceManagementService;

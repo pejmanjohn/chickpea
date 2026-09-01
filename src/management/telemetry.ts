@@ -3,7 +3,7 @@ import { AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
 
 export type ManagementMetricValue = boolean | number | string;
 
-export type AgentAuthoringArtifactClass =
+type AgentAuthoringArtifactClass =
   | 'identity'
   | 'instructions'
   | 'skill'
@@ -130,7 +130,7 @@ const REASON_TOKENS = new Set([
   'slack_unavailable', 'slack_operation_failed',
 ]);
 
-export interface ManagementTelemetrySink {
+interface ManagementTelemetrySink {
   info(message: string): void;
 }
 

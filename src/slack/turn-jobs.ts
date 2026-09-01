@@ -64,8 +64,8 @@ export const MAX_TURN_DRAIN_BATCH = 16;
 // Terminal rows need only outlive Slack's redelivery horizon. Nonterminal rows
 // and their claims are retained until explicitly resolved and terminalized.
 export const TURN_JOB_TTL_MS = CLAIM_TTL_MS;
-export const SLACK_AGENT_BINDING_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
-export const TURN_JOB_RECOVERY_BACKSTOP_MS = SLACK_AGENT_BINDING_TTL_MS;
+const SLACK_AGENT_BINDING_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const TURN_JOB_RECOVERY_BACKSTOP_MS = SLACK_AGENT_BINDING_TTL_MS;
 
 /** A pending job the alarm should run, decoded from its row. */
 export interface PendingTurnJob {

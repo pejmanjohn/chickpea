@@ -1,5 +1,5 @@
-export const SLACK_SECRET_ENVELOPE_VERSION = 1 as const;
-export const SLACK_SECRET_ENVELOPE_ALGORITHM = 'AES-GCM-256' as const;
+const SLACK_SECRET_ENVELOPE_VERSION = 1 as const;
+const SLACK_SECRET_ENVELOPE_ALGORITHM = 'AES-GCM-256' as const;
 
 export type SlackCredentialIdentityClass = 'workspace_installation';
 export type SlackCredentialPurpose =

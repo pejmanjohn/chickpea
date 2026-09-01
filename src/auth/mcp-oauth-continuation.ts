@@ -5,11 +5,11 @@ import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
 const CONTINUATION_TTL_MS = 10 * 60_000;
 const AUTHORIZATION_PATH = '/api/auth/oauth2/authorize';
 
-export interface McpOAuthContinuation {
+interface McpOAuthContinuation {
   authorizationPath: string;
 }
 
-export interface IssuedMcpOAuthContinuation {
+interface IssuedMcpOAuthContinuation {
   id: string;
   expiresAt: number;
 }

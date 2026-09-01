@@ -1,7 +1,7 @@
 import type { SettingsStore } from '../config/settings-store.ts';
 
 export const RECOMMENDED_SANDBOX_MONTHLY_SESSION_CAP = 200;
-export const SANDBOX_MONTHLY_SESSION_USAGE_PREFIX = 'sandbox.monthlySessions.';
+const SANDBOX_MONTHLY_SESSION_USAGE_PREFIX = 'sandbox.monthlySessions.';
 
 const MAX_RESERVATION_IDS = 1_000;
 const MAX_CAS_ATTEMPTS = 12;
@@ -11,7 +11,7 @@ interface MonthlySessionUsage {
   reservationIds: string[];
 }
 
-export interface MonthlySessionReservation {
+interface MonthlySessionReservation {
   allowed: boolean;
   cap: number;
   count: number;
@@ -28,7 +28,7 @@ export function parseMonthlySessionCap(raw: string | undefined): number {
   return value;
 }
 
-export function sandboxSessionMonth(now: Date): string {
+function sandboxSessionMonth(now: Date): string {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 

@@ -63,7 +63,7 @@ interface BoundCompatibilityCredential {
 const capturedRegistrations = new Map<string, CapturedCompatibilityRegistration>();
 const boundCredentials = new Map<ApiKeyCompatibilityProvider, BoundCompatibilityCredential>();
 
-export interface ModelCompatibilityStreamAdapters {
+interface ModelCompatibilityStreamAdapters {
   openAiStream?: typeof streamOpenAi;
   openAiStreamSimple?: typeof streamSimpleOpenAi;
   anthropicStream?: typeof streamAnthropic;

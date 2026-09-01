@@ -22,13 +22,13 @@ export const SLACK_OIDC_TOKEN_URL = 'https://slack.com/api/openid.connect.token'
 export const SLACK_OIDC_USERINFO_URL = 'https://slack.com/api/openid.connect.userInfo';
 export const SLACK_OIDC_JWKS_URL = 'https://slack.com/openid/connect/keys';
 export const SLACK_OIDC_SCOPES = ['openid', 'profile', 'email'] as const;
-export const MAX_SLACK_OIDC_RESPONSE_BYTES = 64 * 1_024;
+const MAX_SLACK_OIDC_RESPONSE_BYTES = 64 * 1_024;
 
 const TEAM_CLAIM = 'https://slack.com/team_id';
 const USER_CLAIM = 'https://slack.com/user_id';
 const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
 
-export type SlackOidcErrorCode =
+type SlackOidcErrorCode =
   | 'invalid_state'
   | 'expired_state'
   | 'wrong_browser'

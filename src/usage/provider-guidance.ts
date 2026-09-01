@@ -1,4 +1,4 @@
-export interface UsageProviderGuidance {
+interface UsageProviderGuidance {
   providerId: string;
   displayName: string;
   authModes: string[];

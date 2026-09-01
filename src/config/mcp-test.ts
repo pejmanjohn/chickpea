@@ -32,7 +32,7 @@ const NAME_MAX = 120;
 const DESCRIPTION_MAX = 400;
 const TOOL_NAME_PREFIX = /^mcp__[^_]+(?:_[^_]+)*__/;
 
-export interface McpDiscoveredTool {
+interface McpDiscoveredTool {
   name: string;
   title?: string;
   description?: string;

@@ -1,4 +1,4 @@
-export type MemoryMetricValue = boolean | number | string;
+type MemoryMetricValue = boolean | number | string;
 
 const MEMORY_METRIC_FIELDS = new Set([
   'action',

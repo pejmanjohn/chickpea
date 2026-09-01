@@ -1,27 +1,22 @@
 import type { StateDb } from '../../state/state-db.ts';
 import type { GatewayInboundDelivery } from './protocol.ts';
 
-export const GATEWAY_INBOX_MAX_TOTAL_ROWS = 4_096;
-export const GATEWAY_INBOX_MAX_ACTIVE_ROWS = 512;
-export const GATEWAY_INBOX_MAX_ACTIVE_BYTES = 32 * 1_048_576;
-export const GATEWAY_INBOX_MAX_PAYLOAD_BYTES = 1_048_576;
-export const GATEWAY_INBOX_MAX_ACTIVE_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+const GATEWAY_INBOX_MAX_TOTAL_ROWS = 4_096;
+const GATEWAY_INBOX_MAX_ACTIVE_ROWS = 512;
+const GATEWAY_INBOX_MAX_ACTIVE_BYTES = 32 * 1_048_576;
+const GATEWAY_INBOX_MAX_PAYLOAD_BYTES = 1_048_576;
+const GATEWAY_INBOX_MAX_ACTIVE_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 // Slack's Events API retry sequence completes within minutes. Keep the
 // body-free identity for a full day so a delayed retry still deduplicates.
-export const GATEWAY_INBOX_DEDUP_RETENTION_MS = 24 * 60 * 60 * 1_000;
-export const GATEWAY_INBOX_MAX_ATTEMPTS = 5;
-export const GATEWAY_INBOX_MAX_IN_FLIGHT = 16;
-export const GATEWAY_INBOX_LEASE_MS = 2 * 60_000;
+const GATEWAY_INBOX_DEDUP_RETENTION_MS = 24 * 60 * 60 * 1_000;
+const GATEWAY_INBOX_MAX_ATTEMPTS = 5;
+const GATEWAY_INBOX_MAX_IN_FLIGHT = 16;
+const GATEWAY_INBOX_LEASE_MS = 2 * 60_000;
 export const GATEWAY_INBOX_MAX_DRAIN_BATCH = 16;
 
 export type GatewayInboxAdmissionOutcome = 'accepted' | 'duplicate';
-export type GatewayInboxStatus =
-  | 'pending'
-  | 'in_flight'
-  | 'completed'
-  | 'recovery_required';
 
-export interface GatewayInboxLimits {
+interface GatewayInboxLimits {
   maxTotalRows: number;
   maxActiveRows: number;
   maxActiveBytes: number;
@@ -33,7 +28,7 @@ export interface GatewayInboxLimits {
   leaseMs: number;
 }
 
-export interface PendingGatewayDelivery {
+interface PendingGatewayDelivery {
   id: string;
   delivery: GatewayInboundDelivery;
   attempts: number;
@@ -58,7 +53,7 @@ export class GatewayInboxCapacityError extends Error {
   override readonly name = 'GatewayInboxCapacityError';
 }
 
-export class GatewayInboxConflictError extends Error {
+class GatewayInboxConflictError extends Error {
   override readonly name = 'GatewayInboxConflictError';
 }
 

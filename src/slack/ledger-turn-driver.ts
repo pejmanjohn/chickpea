@@ -58,7 +58,7 @@ import type {
 
 type MaybePromise<T> = T | Promise<T>;
 
-export interface LedgerSlackTurnStore {
+interface LedgerSlackTurnStore {
   getPendingByRunId(runId: string): MaybePromise<PendingTurnJob | undefined>;
   freezeRuntimePlan(
     id: string,
@@ -96,7 +96,7 @@ export type LedgerSlackTurnExecutor = (
   options?: RunTurnOptions,
 ) => Promise<void>;
 
-export interface LedgerSlackRunHandlerOptions {
+interface LedgerSlackRunHandlerOptions {
   work: WorkStore;
   turns: LedgerSlackTurnStore;
   client?: WebClient;
