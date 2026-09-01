@@ -27,7 +27,7 @@
 
 <br />
 
-[Why it exists](#why-chickpea-exists) · [Features](#what-your-workspace-gets) · [How it works](#how-it-works) · [Run it from Slack](#run-it-from-slack) · [Security](#security-model) · [Install](#install) · [Good to know](#good-to-know) · [FAQ](#faq)
+[Why it exists](#why-chickpea-exists) · [Features](#what-your-workspace-gets) · [How it works](#how-it-works) · [Managing](#managing-chickpea) · [Security](#security-model) · [Install](#install) · [Good to know](#good-to-know) · [FAQ](#faq)
 
 </div>
 
@@ -63,8 +63,9 @@ Chickpea is for those teams. Each Agent keeps its own connected accounts and its
 | **Repositories** | Grant GitHub repositories to an Agent through the Chickpea GitHub App (Settings → GitHub). Access uses short-lived installation tokens scoped to the granted repositories. | |
 | **Coding sandbox** | Optional Cloudflare container tier for Agents that need to clone a repo, install packages, and run tests. | [Details](#coding-sandbox) |
 | **Schedules** | Agent-owned recurring or one-time work, set up conversationally in Slack, delivered to a granted channel or a private DM thread. | [Details](#schedules) |
-| **Run it from Slack** | Create Agents, install skills, set schedules, edit memory, and start connector setup by asking, with consequential changes gated behind an approval. Also exposed as an MCP server. | [Details](#run-it-from-slack) |
+| **Manage from Slack** | Admin, Slack, and an MCP server are three doors to the same controls. Create Agents, install skills, set schedules, and edit memory by asking, with consequential changes gated behind an approval. | [Details](#managing-chickpea) |
 | **Slack-native answers** | Progressive streaming for long replies, adaptive tables (prose, inline Markdown, or a native sortable Slack table) when the data earns one, and task cards for multi-step work. | |
+| **Reads attachments** | Images, PDFs, UTF-8 text and source files, and Slack's generated previews for docs, slides, and sheets. Attachment turns are read-only: a file can inform an answer but cannot authorize a tool or a change. | |
 | **Live activity status** | Slack's native under-composer status shows real phases as they happen: `Checking Gmail…`, `Drafting the response…`. | |
 
 ---
@@ -82,7 +83,7 @@ Someone in `#billing` types:
 3. **The Agent runs as itself.** Its own instructions, its own memory, its own skills, and its own connected accounts, say Zendesk and Stripe. Nothing that belongs to `@revops` is in the room.
 4. **The reply lands in the thread under `@support`'s name and avatar,** streamed as it's written. The thread now belongs to `@support`. Anyone in the channel can follow up there without mentioning it again, and mentioning `@finance` in the same thread hands the work over in the open.
 
-Want another teammate? Ask `@Chickpea` for one, in Slack. [Run It From Slack](#run-it-from-slack) covers what else you can do there.
+Want another teammate? Ask `@Chickpea` for one, in Slack or in Admin. [Managing Chickpea](#managing-chickpea) covers what else you can do from each.
 
 Drawn out, a workspace looks like this. Solid lines are channel grants, dotted lines are connected accounts.
 
@@ -109,32 +110,9 @@ flowchart LR
 
 `@oncall` can answer in `#billing` but has no Zendesk. `@support` has Zendesk but cannot see `#eng`. Publishing an Agent to a channel hands that channel's members everything the Agent can do and reach, so think about that before you publish.
 
-### Under the hood
+Publishing to a public channel joins the bot automatically. Private channels need someone to `/invite @Chickpea` first, and the grant stays pending until then. Where an Agent is published also decides who can DM it. In a public channel, any workspace member can. Only in private channels, only those members can. Unpublished, only its creator can.
 
-| Layer | What it does |
-|---|---|
-| **Slack app** | Events API, DMs, App Home, message delivery. Transport only. |
-| **Chickpea** | Routes mentions to Agents, enforces channel grants and confirmation policy, resolves credentials at the moment of each call, renders replies as the Agent, and runs Admin and the management MCP. |
-| **[Flue](https://flueframework.com)** | The agent runtime: durable sessions that survive crashes and restarts, persistent state, subagents, tools, skills, and MCP. Same code on Cloudflare Workers or Node. |
-| **Pi** | The open agent harness Flue runs on, also behind OpenClaw. |
-| **Model provider** | Anthropic, OpenAI, OpenRouter, or Cloudflare Workers AI, pinned per Agent. |
-| **State** | Durable Objects and D1 on Cloudflare. SQLite files on Node. |
-
-Chickpea has no agent loop of its own. That is Flue ([`@flue/runtime`](https://www.npmjs.com/package/@flue/runtime)), the Apache-licensed open agent framework from the [Astro](https://astro.build) team, now part of Cloudflare. Everything above the Flue row in the table is Chickpea's: the Slack product, the authority model, and the admin panel.
-
----
-
-## Slack Experience
-
-Mention `@Chickpea` for the workspace default Agent, or an Agent handle like `@support` for that one.
-
-Publishing the first Agent to a public channel joins the base bot automatically. Private channels need someone to `/invite @Chickpea` first, and the grant stays pending until membership is verified.
-
-Where an Agent is published decides who can DM it. Publish it to a public channel and any workspace member can. Keep it to private channels and only those members can. Leave it unpublished and only its creator can.
-
-**Root chatter is ignored.** A message that doesn't mention anyone is never classified and never spends a model token. Chickpea is not sitting in your channels forming opinions.
-
-Chickpea reads images, PDFs, UTF-8 text and source files, and Slack's generated previews for docs, slides, and sheets. Attachment turns are read-only: file contents can inform an answer but cannot authorize a tool or a change.
+In every channel, a top-level message that mentions no one is dropped before any model is involved. Chickpea is not sitting in your channels forming opinions.
 
 <details>
 <summary><strong>If Slack blocks user-group creation</strong></summary>
@@ -150,12 +128,18 @@ On Enterprise Grid it's the equivalent setting under **Organization settings →
 
 </details>
 
-<details>
-<summary><strong>Attachment limits</strong></summary>
+### Under the hood
 
-Per turn: 4 files, 8 MiB each, 12 MiB total, 100 PDF pages, 32,000 characters per file and 48,000 total. Images use Slack's bounded thumbnails when available. Anything over a limit, or without a safe conversion, gets a file-specific next action instead of a quiet partial read. Slack installations predating the `files:read` scope must reconnect once.
+| Layer | What it does |
+|---|---|
+| **Slack app** | Events API, DMs, App Home, message delivery. Transport only. |
+| **Chickpea** | Routes mentions to Agents, enforces channel grants and confirmation policy, resolves credentials at the moment of each call, renders replies as the Agent, and runs Admin and the management MCP. |
+| **[Flue](https://flueframework.com)** | The agent runtime: durable sessions that survive crashes and restarts, persistent state, subagents, tools, skills, and MCP. Same code on Cloudflare Workers or Node. |
+| **Pi** | The open agent harness Flue runs on, also behind OpenClaw. |
+| **Model provider** | Anthropic, OpenAI, OpenRouter, or Cloudflare Workers AI, pinned per Agent. |
+| **State** | Durable Objects and D1 on Cloudflare. SQLite files on Node. |
 
-</details>
+Chickpea has no agent loop of its own. That is Flue ([`@flue/runtime`](https://www.npmjs.com/package/@flue/runtime)), the Apache-licensed open agent framework from the [Astro](https://astro.build) team, now part of Cloudflare. Everything above the Flue row in the table is Chickpea's: the Slack product, the authority model, and the admin panel.
 
 ---
 
@@ -246,17 +230,39 @@ Managed connectors run through one Composio project key, added under **Settings 
 
 ---
 
-## Run It From Slack
+## Managing Chickpea
 
-You don't open the admin panel to add a teammate. You ask for one.
+Chickpea has an Admin panel. It is not the only way in. The same controls have three front doors, with the same permissions and the same approvals behind each one.
+
+- **Admin**, the browser UI on your deployment.
+- **Slack**, by asking `@Chickpea`, or asking any Agent about itself.
+- **MCP**, from any MCP client you already use, through the management MCP server.
+
+Most days the Slack door is the one you want.
 
 > **`@Chickpea`** make me a support agent that answers billing questions and knows our refund policy
 
-It creates the Agent, gives it a handle and an avatar, and publishes it to a channel you name. Everything after that stays in Slack too. Hand an Agent a GitHub link and it reads the `SKILL.md` files and shows you which skills it found before importing any of them. Schedules, memory edits, archiving, and publishing to another channel you're in all work the same way. Connecting a service is the one step that leaves Slack: the Agent hands back a Chickpea link, and OAuth sign-in finishes in the browser. Admin is still there for the setup that isn't day-to-day: the Composio project key, the GitHub App, the coding sandbox install.
+That one message creates the Agent, gives it a handle and an avatar, and publishes it to a channel you name. Where each job can be done:
 
-The base Chickpea Agent can create Agents and edit any Agent you're permitted to edit. A routed Agent can inspect and edit only itself, still bound by your permissions. Two kinds of change arrive as a frozen read-only proposal: anything the Agent inferred rather than you stated, and anything that changes what an Agent can do, reach, or delete. Nothing applies until you approve it. Simple reversible single-field edits skip the ceremony.
+| | Slack | Admin | MCP |
+|---|:---:|:---:|:---:|
+| Create, edit, archive, and restore Agents | ✓ | ✓ | ✓ |
+| Change an Agent's instructions, model, or handle | ✓ | ✓ | ✓ |
+| Publish an Agent to a channel, or pull it out | ✓ | ✓ | ✓ |
+| Import skills from a GitHub repo or a `skills.sh` link | ✓ | ✓ | ✓ |
+| Edit an Agent's memory | ✓ | ✓ | ✓ |
+| Set up and manage schedules | ✓ | ✓ | ✓ |
+| Connect a service, grant a repository, add a provider key | link | ✓ | link |
+| Composio project key, GitHub App, coding sandbox install | | ✓ | |
 
-The same controls are exposed as an MCP server, so any MCP client you already use can drive Chickpea too, scoped to that requester's permissions and held to the same approvals. The authoring guide is published at `chickpea://guide/agent-authoring/v1`. See the [workspace management MCP runbook](docs/runbooks/workspace-management-mcp.md) for authority and proposal semantics.
+"Link" means the Agent hands back a Chickpea link and the rest finishes in the browser, because OAuth sign-in and secrets never pass through a Slack message. When you hand an Agent a GitHub link for skills, it reads the `SKILL.md` files and shows you which skills it found before importing any of them.
+
+What keeps a chat window from being a loophole:
+
+- **Who can change what.** `@Chickpea` can create Agents and edit any Agent you're permitted to edit. A routed Agent can inspect and edit only itself, still bound by your permissions.
+- **Proposals before consequences.** Two kinds of change arrive as a frozen read-only proposal: anything the Agent inferred rather than you stated, and anything that changes what an Agent can do, reach, or delete. Nothing applies until you approve it.
+- **No ceremony for small edits.** Simple reversible single-field changes apply directly, and you can undo them.
+- **MCP gets the same treatment.** Requests are scoped to that requester's permissions and held to the same approvals. The authoring guide is published at `chickpea://guide/agent-authoring/v1`, and the [workspace management MCP runbook](docs/runbooks/workspace-management-mcp.md) covers authority and proposal semantics.
 
 ---
 
@@ -384,6 +390,13 @@ The full list, including per-connector Composio auth config IDs and the Google A
 - Cloudflare free-tier model and Durable Object limits are hard platform limits under load.
 - The coding sandbox and scheduled execution are Cloudflare-only. Node uses the in-memory execution path and no scheduler.
 - This is a clean-slate pre-release schema. There is no migration or compatibility promise for earlier databases.
+
+<details>
+<summary><strong>Attachment limits</strong></summary>
+
+Per turn: 4 files, 8 MiB each, 12 MiB total, 100 PDF pages, 32,000 characters per file and 48,000 total. Images use Slack's bounded thumbnails when available. Anything over a limit, or without a safe conversion, gets a file-specific next action instead of a quiet partial read. Slack installations predating the `files:read` scope must reconnect once.
+
+</details>
 
 ---
 
