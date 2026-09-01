@@ -10,6 +10,7 @@ import {
   type CredentialKeyring,
   type SlackSecretEnvelopeContext,
 } from '../slack/secret-envelope.ts';
+import { envValue } from './env-value.ts';
 import type { EncryptedCredentialStore, SettingsStore } from './settings-store.ts';
 import {
   getSettingsStore,
@@ -918,9 +919,3 @@ function fingerprint(apiKey: string): string {
   return createHash('sha256').update(apiKey).digest('hex').slice(0, 24);
 }
 
-function envValue(env: PlatformEnv | undefined, name: string): string | undefined {
-  const bound = env?.[name];
-  const value = typeof bound === 'string' ? bound : process.env[name];
-  const normalized = value?.trim();
-  return normalized || undefined;
-}

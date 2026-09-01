@@ -34,16 +34,26 @@ import {
   type McpSecretRef,
 } from './mcp-secrets.ts';
 import { createMcpGuardedFetch, validateMcpUrl } from './mcp-url.ts';
+import {
+  isOAuthAttemptId,
+  LEASE_ATTEMPTS,
+  LEASE_MAX_RETRY_MS,
+  LEASE_RETRY_MS,
+  LEASE_TTL_MS,
+  oauthNow,
+  oauthRandomId,
+  oauthSleep,
+  parseOAuthLease,
+  PENDING_TTL_MS,
+  publishFencedOAuthState,
+  REFRESH_SKEW_MS,
+  type StoredOAuthLease,
+  validateOAuthAttemptId,
+} from './oauth-shared.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { ConfigStore } from './store.ts';
 
-const PENDING_TTL_MS = 10 * 60_000;
-const LEASE_TTL_MS = 20_000;
-const LEASE_RETRY_MS = 25;
-const LEASE_MAX_RETRY_MS = 400;
-const LEASE_ATTEMPTS = 64;
 const OAUTH_FETCH_TIMEOUT_MS = 8_000;
-const REFRESH_SKEW_MS = 60_000;
 const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 type McpOAuthErrorCode =
@@ -154,11 +164,6 @@ interface StoredTokenBundle {
   oauthAttemptId?: string;
 }
 
-interface StoredLease {
-  owner: string;
-  expiresAt: number;
-}
-
 export function mcpOAuthSettingKeys(ref: McpSecretRef): [
   client: string,
   pending: string,
@@ -246,7 +251,10 @@ export async function startMcpOAuthAuthorization(
       (!Number.isSafeInteger(input.accountRevision) || input.accountRevision < 1)) {
     throw new McpOAuthError('oauth_unavailable', 'OAuth account revision is invalid');
   }
-  validateOAuthAttemptId(input.oauthAttemptId);
+  validateOAuthAttemptId(
+    input.oauthAttemptId,
+    () => new McpOAuthError('oauth_unavailable', 'OAuth attempt identity is invalid'),
+  );
   const settings = dependencies.settings;
   const oauthKeys = mcpOAuthSettingKeys(input.ref);
   const [, pendingKey] = oauthKeys;
@@ -322,7 +330,7 @@ export async function startMcpOAuthAuthorization(
     input.scope,
     dependencies,
   );
-  const state = encodeState(input.ref, randomId(dependencies));
+  const state = encodeState(input.ref, oauthRandomId(dependencies));
   const { authorizationUrl, codeVerifier } = await startAuthorization(
     authorizationServerUrl,
     {
@@ -336,7 +344,7 @@ export async function startMcpOAuthAuthorization(
   );
   const pending: PendingAuthorization = {
     state,
-    expiresAt: now(dependencies) + PENDING_TTL_MS,
+    expiresAt: oauthNow(dependencies) + PENDING_TTL_MS,
     serverUrl,
     callbackUrl,
     authorizationServerUrl,
@@ -347,10 +355,16 @@ export async function startMcpOAuthAuthorization(
     ...(input.accountRevision !== undefined ? { accountRevision: input.accountRevision } : {}),
     ...(input.oauthAttemptId ? { oauthAttemptId: input.oauthAttemptId } : {}),
   };
-  await storePendingAuthorization(
+  await publishFencedOAuthState(
     pendingKey,
     { ...pending, codeVerifier },
     settings,
+    {
+      parseCurrent: parsePendingAuthorization,
+      superseded: attemptSuperseded,
+      unavailable: () =>
+        new McpOAuthError('oauth_unavailable', 'Could not publish OAuth authorization'),
+    },
   );
   try {
     await requireCurrentConnection(
@@ -411,13 +425,18 @@ export async function completeMcpOAuthAuthorization(
       resource: pending.resource,
       clientInformation: pending.clientInformation,
       tokens,
-      obtainedAt: now(dependencies),
+      obtainedAt: oauthNow(dependencies),
       ...(pending.accountRevision !== undefined
         ? { accountRevision: pending.accountRevision }
         : {}),
       ...(pending.oauthAttemptId ? { oauthAttemptId: pending.oauthAttemptId } : {}),
     };
-    await storeCompletedTokenBundle(tokenKey, bundle, settings);
+    await publishFencedOAuthState(tokenKey, bundle, settings, {
+      parseCurrent: parseStoredTokenBundle,
+      superseded: attemptSuperseded,
+      unavailable: () =>
+        new McpOAuthError('oauth_unavailable', 'Could not publish OAuth credentials'),
+    });
 
     try {
       await requireCurrentConnection(
@@ -482,11 +501,11 @@ export async function resolveMcpOAuthAccessToken(
   await requireCurrentConnection(
     input.ref, serverUrl, dependencies, undefined, initial.oauthAttemptId,
   );
-  if (!tokenNeedsRefresh(initial, now(dependencies))) {
+  if (!tokenNeedsRefresh(initial, oauthNow(dependencies))) {
     return initial.tokens.access_token;
   }
   if (!initial.tokens.refresh_token) {
-    if (!tokenHardExpired(initial, now(dependencies))) {
+    if (!tokenHardExpired(initial, oauthNow(dependencies))) {
       return initial.tokens.access_token;
     }
     throw new McpOAuthError(
@@ -499,8 +518,8 @@ export async function resolveMcpOAuthAccessToken(
   const lease = leaseRaw ? parseLease(leaseRaw) : undefined;
   if (
     lease &&
-    lease.expiresAt > now(dependencies) &&
-    !tokenHardExpired(initial, now(dependencies))
+    lease.expiresAt > oauthNow(dependencies) &&
+    !tokenHardExpired(initial, oauthNow(dependencies))
   ) {
     return initial.tokens.access_token;
   }
@@ -521,12 +540,12 @@ export async function resolveMcpOAuthAccessToken(
       await requireCurrentConnection(
         input.ref, serverUrl, dependencies, undefined, current.oauthAttemptId,
       );
-      if (!tokenNeedsRefresh(current, now(dependencies))) {
+      if (!tokenNeedsRefresh(current, oauthNow(dependencies))) {
         return current.tokens.access_token;
       }
       const refreshToken = current.tokens.refresh_token;
       if (!refreshToken) {
-        if (!tokenHardExpired(current, now(dependencies))) {
+        if (!tokenHardExpired(current, oauthNow(dependencies))) {
           return current.tokens.access_token;
         }
         throw new McpOAuthError(
@@ -592,7 +611,7 @@ export async function resolveMcpOAuthAccessToken(
       const refreshed: StoredTokenBundle = {
         ...current,
         tokens: refreshedTokens,
-        obtainedAt: now(dependencies),
+        obtainedAt: oauthNow(dependencies),
       };
       const stored = await dependencies.settings.applySettingsPatch({
         expected: { key: tokenKey, value: currentRaw },
@@ -685,7 +704,7 @@ async function resolveClientInformation(
         stored.authorizationServerUrl === authorizationServerUrl &&
         stored.callbackUrl === callbackUrl &&
         stored.scope === scope &&
-        !clientInformationExpired(stored.clientInformation, now(dependencies))
+        !clientInformationExpired(stored.clientInformation, oauthNow(dependencies))
       ) {
         return stored.clientInformation;
       }
@@ -734,7 +753,7 @@ async function consumePendingAuthorization(
   if (pending.state !== state) {
     throw new McpOAuthError('invalid_state', 'OAuth state is invalid or expired');
   }
-  if (pending.expiresAt <= now(dependencies)) {
+  if (pending.expiresAt <= oauthNow(dependencies)) {
     await settings.applySettingsPatch({
       expected: { key: pendingKey, value: raw },
       delete: [pendingKey],
@@ -756,17 +775,17 @@ async function withLease<T>(
   dependencies: McpOAuthDependencies,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const owner = randomId(dependencies);
+  const owner = oauthRandomId(dependencies);
   const settings = dependencies.settings;
   let retryDelay = LEASE_RETRY_MS;
   for (let attempt = 0; attempt < LEASE_ATTEMPTS; attempt += 1) {
     const currentRaw = await settings.getSetting(key);
     const current = currentRaw ? parseLease(currentRaw) : undefined;
-    if (!current || current.expiresAt <= now(dependencies)) {
+    if (!current || current.expiresAt <= oauthNow(dependencies)) {
       const leaseRaw = JSON.stringify({
         owner,
-        expiresAt: now(dependencies) + LEASE_TTL_MS,
-      } satisfies StoredLease);
+        expiresAt: oauthNow(dependencies) + LEASE_TTL_MS,
+      } satisfies StoredOAuthLease);
       const acquired = await settings.applySettingsPatch({
         expected: { key, value: currentRaw ?? null },
         set: [{ key, value: leaseRaw }],
@@ -782,7 +801,7 @@ async function withLease<T>(
         }
       }
     }
-    await (dependencies.sleep ?? defaultSleep)(retryDelay);
+    await oauthSleep(dependencies, retryDelay);
     retryDelay = Math.min(retryDelay * 2, LEASE_MAX_RETRY_MS);
   }
   throw new McpOAuthError('oauth_unavailable', 'OAuth operation is already in progress');
@@ -826,74 +845,6 @@ async function requireCurrentConnection(
   ) {
     throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
   }
-}
-
-async function storeCompletedTokenBundle(
-  tokenKey: string,
-  bundle: StoredTokenBundle,
-  settings: SettingsStore,
-): Promise<void> {
-  const nextRaw = JSON.stringify(bundle);
-  for (let attempt = 0; attempt < 16; attempt += 1) {
-    const currentRaw = await settings.getSetting(tokenKey);
-    if (currentRaw) {
-      const current = parseStoredTokenBundle(currentRaw);
-      if (isNewerOAuthAttempt(current, bundle)) {
-        throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
-      }
-    }
-    const stored = await settings.applySettingsPatch({
-      expected: { key: tokenKey, value: currentRaw ?? null },
-      set: [{ key: tokenKey, value: nextRaw }],
-    });
-    if (stored) return;
-  }
-  throw new McpOAuthError('oauth_unavailable', 'Could not publish OAuth credentials');
-}
-
-async function storePendingAuthorization(
-  pendingKey: string,
-  pending: PendingAuthorization & { codeVerifier: string },
-  settings: SettingsStore,
-): Promise<void> {
-  const nextRaw = JSON.stringify(pending);
-  for (let attempt = 0; attempt < 16; attempt += 1) {
-    const currentRaw = await settings.getSetting(pendingKey);
-    if (currentRaw) {
-      const current = parsePendingAuthorization(currentRaw);
-      if (isNewerOAuthAttempt(current, pending)) {
-        throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
-      }
-    }
-    const stored = await settings.applySettingsPatch({
-      expected: { key: pendingKey, value: currentRaw ?? null },
-      set: [{ key: pendingKey, value: nextRaw }],
-    });
-    if (stored) return;
-  }
-  throw new McpOAuthError('oauth_unavailable', 'Could not publish OAuth authorization');
-}
-
-function isNewerOAuthAttempt(
-  current: Pick<PendingAuthorization | StoredTokenBundle, 'accountRevision' | 'oauthAttemptId'>,
-  next: Pick<PendingAuthorization | StoredTokenBundle, 'accountRevision' | 'oauthAttemptId'>,
-): boolean {
-  return current.accountRevision !== undefined &&
-    (next.accountRevision === undefined ||
-      current.accountRevision > next.accountRevision ||
-      (current.accountRevision === next.accountRevision &&
-        current.oauthAttemptId !== next.oauthAttemptId));
-}
-
-function validateOAuthAttemptId(value: string | undefined): void {
-  if (value !== undefined && !isOAuthAttemptId(value)) {
-    throw new McpOAuthError('oauth_unavailable', 'OAuth attempt identity is invalid');
-  }
-}
-
-function isOAuthAttemptId(value: unknown): value is string {
-  return typeof value === 'string' &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function assertTokenResource(bundle: StoredTokenBundle, serverUrl: string): void {
@@ -1103,12 +1054,8 @@ function parseTokens(value: Record<string, unknown>): OAuthTokens {
   return parsed.data;
 }
 
-function parseLease(raw: string): StoredLease {
-  const value = parseStoredRecord(raw);
-  if (typeof value.owner !== 'string' || typeof value.expiresAt !== 'number') {
-    throw invalidStorage();
-  }
-  return { owner: value.owner, expiresAt: value.expiresAt };
+function parseLease(raw: string): StoredOAuthLease {
+  return parseOAuthLease(raw, parseStoredRecord, invalidStorage);
 }
 
 function parseStoredRecord(raw: string): Record<string, unknown> {
@@ -1127,6 +1074,10 @@ function invalidStorage(cause?: unknown): McpOAuthError {
     'Stored MCP OAuth state is invalid',
     cause === undefined ? undefined : { cause },
   );
+}
+
+function attemptSuperseded(): McpOAuthError {
+  return new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
 }
 
 function isConnectionMissing(error: unknown): boolean {
@@ -1167,10 +1118,6 @@ function validateCallbackUrl(value: string): URL {
   return url;
 }
 
-function now(dependencies: McpOAuthDependencies): number {
-  return (dependencies.now ?? Date.now)();
-}
-
 function guardedOAuthFetch(dependencies: McpOAuthDependencies): typeof fetch {
   return createMcpGuardedFetch(
     dependencies.fetchFn
@@ -1181,12 +1128,4 @@ function guardedOAuthFetch(dependencies: McpOAuthDependencies): typeof fetch {
         }
       : { signal: AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS) },
   );
-}
-
-function randomId(dependencies: McpOAuthDependencies): string {
-  return (dependencies.randomId ?? (() => crypto.randomUUID()))();
-}
-
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

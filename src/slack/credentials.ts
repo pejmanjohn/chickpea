@@ -14,6 +14,7 @@ import {
 } from './installation-credentials.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import { parseSlackGrantedScopes } from './scopes.ts';
+import { nonEmpty } from '../security/content-validation.ts';
 
 /**
  * Slack credential resolution is backed by one complete encrypted TAG_STATE
@@ -83,11 +84,6 @@ interface StoredSlackCredentials {
 }
 
 type SlackConnectionRevision = string | null;
-
-// An empty-string token/secret is never a usable credential.
-function nonEmpty(value: string | undefined): string | undefined {
-  return value ? value : undefined;
-}
 
 export async function resolveSlackCredentials(
   env?: PlatformEnv,
