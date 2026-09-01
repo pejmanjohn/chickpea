@@ -1,10 +1,13 @@
+import { join } from 'node:path';
+
 import type { LiveTargetOverlay } from './privacy.ts';
 import { SUITES, type Suite } from './schema.ts';
 
-const ALIAS = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+const ALIAS = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 export interface PrivateTargetAliases {
   targetAlias: string;
+  transport: 'gateway' | 'events';
   workerAlias: string;
   workspaceAlias: string;
   slackAppAlias: string;
@@ -14,6 +17,7 @@ export interface PrivateTargetAliases {
   providerReadOnlyAuthConfigAlias: string;
   bindingAliases: Record<string, string>;
   allowedSuites?: Suite[];
+  allowedVariants: string[];
 }
 
 export interface PrivateLiveConfig {
@@ -30,6 +34,7 @@ export interface PrivateAliasResolvers {
 
 export interface DoctorTargetResolution {
   readonly targetAlias: string;
+  readonly transport: 'gateway' | 'events';
   workerName(): Promise<string>;
   workspaceId(): Promise<string>;
   slackAppId(): Promise<string>;
@@ -37,6 +42,7 @@ export interface DoctorTargetResolution {
   providerReadOnlyAuthConfigId(): Promise<string>;
   timezone(): Promise<string>;
   evidenceRoot(): Promise<string>;
+  targetLockPath(): Promise<string>;
   bindingIdentities(): Promise<Record<string, string>>;
 }
 
@@ -73,6 +79,7 @@ export function createDoctorTargetResolution(
 
   return Object.freeze({
     targetAlias: overlay.targetAlias,
+    transport: target.transport,
     workerName: () => read(target.workerAlias),
     workspaceId: () => read(target.workspaceAlias),
     slackAppId: () => read(target.slackAppAlias),
@@ -80,6 +87,7 @@ export function createDoctorTargetResolution(
     providerReadOnlyAuthConfigId: () => read(target.providerReadOnlyAuthConfigAlias),
     timezone: () => read(target.timezoneAlias),
     evidenceRoot: () => read(target.evidenceRootAlias),
+    targetLockPath: async () => join(await read(target.evidenceRootAlias), 'target.lock'),
     bindingIdentities: async () => Object.fromEntries(await Promise.all(
       bindingEntries.map(async ([binding, alias]) => [binding, await read(alias)] as const),
     )),
@@ -111,7 +119,11 @@ function validatePrivateConfig(
   if (!same([...(target.allowedSuites ?? [])].sort(), [...(overlay.allowedSuites ?? [])].sort())) {
     throw new PrivateConfigError('TARGET_ALIAS_MISMATCH');
   }
+  if (!same([...target.allowedVariants].sort(), [...overlay.allowedVariants].sort())) {
+    throw new PrivateConfigError('TARGET_ALIAS_MISMATCH');
+  }
   if (target.targetAlias !== overlay.targetAlias
+    || target.transport !== overlay.transport
     || target.workerAlias !== overlay.workerAlias
     || target.workspaceAlias !== overlay.workspaceAlias
     || target.slackAppAlias !== overlay.slackAppAlias
@@ -126,11 +138,12 @@ function validateTargetAliases(targetKey: string, input: unknown): void {
   if (!isRecord(input)) throw new PrivateConfigError('INVALID_PRIVATE_CONFIG');
   const target = input;
   if (!exactKeys(target, [
-    'targetAlias', 'workerAlias', 'workspaceAlias', 'slackAppAlias', 'providerProjectAlias',
-    'evidenceRootAlias', 'timezoneAlias', 'providerReadOnlyAuthConfigAlias', 'bindingAliases', 'allowedSuites',
+    'targetAlias', 'transport', 'workerAlias', 'workspaceAlias', 'slackAppAlias', 'providerProjectAlias',
+    'evidenceRootAlias', 'timezoneAlias', 'providerReadOnlyAuthConfigAlias', 'bindingAliases', 'allowedSuites', 'allowedVariants',
   ])
     || !validAlias(target.targetAlias)
     || target.targetAlias !== targetKey
+    || (target.transport !== 'gateway' && target.transport !== 'events')
     || !validAlias(target.workerAlias)
     || !validAlias(target.workspaceAlias)
     || !validAlias(target.slackAppAlias)
@@ -143,7 +156,11 @@ function validateTargetAliases(targetKey: string, input: unknown): void {
     || Object.entries(target.bindingAliases).some(([binding, alias]) =>
       !/^[A-Z][A-Z0-9_]{0,63}$/.test(binding) || !validAlias(alias)
     )
-    || !validAllowedSuites(target.allowedSuites, targetKey)) {
+    || !validAllowedSuites(target.allowedSuites, targetKey)
+    || !Array.isArray(target.allowedVariants)
+    || target.allowedVariants.length === 0
+    || !target.allowedVariants.every((variantId) => typeof variantId === 'string' && variantId.length > 0)
+    || new Set(target.allowedVariants).size !== target.allowedVariants.length) {
     throw new PrivateConfigError('INVALID_PRIVATE_CONFIG');
   }
 }

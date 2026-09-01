@@ -8,6 +8,7 @@ import {
   record,
   type FixtureKind,
   type LiveManifest,
+  type ObserverId,
   type Suite,
 } from './schema.ts';
 
@@ -49,13 +50,14 @@ export interface TargetVariantBinding {
 export interface LiveTargetOverlay {
   schemaVersion: 'chickpea-live-target/v1';
   targetAlias: string;
+  transport: 'gateway' | 'events';
   workspaceAlias: string;
   slackAppAlias: string;
   workerAlias: string;
   providerProjectAlias: string;
   evidenceRootAlias: string;
-  lockLocationAlias: string;
   allowedSuites?: Suite[];
+  allowedVariants: string[];
   fixtures: Record<string, TargetFixture>;
   bindings: Record<string, TargetVariantBinding>;
 }
@@ -68,15 +70,17 @@ export function validateTargetOverlay(manifest: LiveManifest, input: unknown): L
   assertPublicData(input);
   const value = record(input, '$');
   exactKeys(value, [
-    'schemaVersion', 'targetAlias', 'workspaceAlias', 'slackAppAlias', 'workerAlias', 'providerProjectAlias',
-    'evidenceRootAlias', 'lockLocationAlias', 'allowedSuites', 'fixtures', 'bindings',
+    'schemaVersion', 'targetAlias', 'transport', 'workspaceAlias', 'slackAppAlias', 'workerAlias', 'providerProjectAlias',
+    'evidenceRootAlias', 'allowedSuites', 'allowedVariants', 'fixtures', 'bindings',
   ], '$');
   if (value.schemaVersion !== 'chickpea-live-target/v1') fail('INVALID_VALUE', '$.schemaVersion');
   const targetAlias = alias(value.targetAlias, '$.targetAlias');
+  const transport = validateTransport(value.transport);
   const allowedSuites = validateAllowedSuites(value.allowedSuites, targetAlias);
+  const allowedVariants = validateAllowedVariants(manifest, value.allowedVariants);
   const fixtures = validateTargetFixtures(value.fixtures);
   const bindingsValue = record(value.bindings, '$.bindings');
-  const expectedVariantIds = [...manifest.requiredVariants.deep].sort();
+  const expectedVariantIds = [...allowedVariants].sort();
   if (!same(Object.keys(bindingsValue).sort(), expectedVariantIds)) {
     fail('OVERLAY_VARIANT_MISMATCH', '$.bindings');
   }
@@ -113,16 +117,64 @@ export function validateTargetOverlay(manifest: LiveManifest, input: unknown): L
   return {
     schemaVersion: value.schemaVersion,
     targetAlias,
+    transport,
     workspaceAlias: alias(value.workspaceAlias, '$.workspaceAlias'),
     slackAppAlias: alias(value.slackAppAlias, '$.slackAppAlias'),
     workerAlias: alias(value.workerAlias, '$.workerAlias'),
     providerProjectAlias: alias(value.providerProjectAlias, '$.providerProjectAlias'),
     evidenceRootAlias: alias(value.evidenceRootAlias, '$.evidenceRootAlias'),
-    lockLocationAlias: alias(value.lockLocationAlias, '$.lockLocationAlias'),
     ...(allowedSuites === undefined ? {} : { allowedSuites }),
+    allowedVariants,
     fixtures,
     bindings,
   };
+}
+
+export function requiredActorAliasesForTarget(
+  manifest: LiveManifest,
+  target: LiveTargetOverlay,
+): string[] {
+  const actors = new Set<string>();
+  const variants = new Map(manifest.contracts.flatMap(({ variants: contractVariants }) =>
+    contractVariants.map((variant) => [variant.id, variant] as const)
+  ));
+  for (const variantId of target.allowedVariants) {
+    const variant = variants.get(variantId);
+    const binding = target.bindings[variantId];
+    if (variant === undefined || binding === undefined) continue;
+    for (const requirement of variant.fixtures.filter(({ kind }) => kind === 'actor')) {
+      const fixtureAlias = binding.fixtures[requirement.slot];
+      const fixture = fixtureAlias === undefined ? undefined : target.fixtures[fixtureAlias];
+      if (fixture?.kind === 'actor') actors.add(fixture.resourceAlias);
+    }
+  }
+  return [...actors].sort();
+}
+
+export function requiredObserverIdsForTarget(
+  manifest: LiveManifest,
+  target: LiveTargetOverlay,
+): ObserverId[] {
+  const allowed = new Set(target.allowedVariants);
+  return [...new Set(manifest.contracts.flatMap(({ variants }) => variants)
+    .filter(({ id }) => allowed.has(id))
+    .flatMap(({ observers }) => observers))].sort();
+}
+
+function validateTransport(input: unknown): 'gateway' | 'events' {
+  if (input !== 'gateway' && input !== 'events') fail('INVALID_VALUE', '$.transport');
+  return input;
+}
+
+function validateAllowedVariants(manifest: LiveManifest, input: unknown): string[] {
+  if (!Array.isArray(input)
+    || input.length === 0
+    || !input.every((variantId) => typeof variantId === 'string'
+      && manifest.requiredVariants.deep.includes(variantId))
+    || new Set(input).size !== input.length) {
+    fail('INVALID_VALUE', '$.allowedVariants');
+  }
+  return input as string[];
 }
 
 function validateAllowedSuites(input: unknown, targetAlias: string): Suite[] | undefined {

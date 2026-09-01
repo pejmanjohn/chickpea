@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import {
   diagnoseLiveTarget,
+  parseDoctorSnapshot,
   type DoctorSnapshot,
 } from '../qa/live/doctor.ts';
 import { LIVE_MANIFEST_DIGEST } from '../qa/live/manifest.ts';
@@ -69,4 +70,24 @@ test('doctor rejects manifest drift before live adapter work', () => {
   });
   assert.equal(result.ready, false);
   assert.equal(result.diagnostics[0]?.code, 'manifest_drift');
+});
+
+test('doctor permits dirty feature revisions but blocks dedicated QA and demo', () => {
+  const dirty = { ...READY, repositoryRevision: '0123456789abcdef-dirty' };
+  assert.equal(diagnoseLiveTarget({ overlay, source: { read: () => dirty } }).ready, false);
+
+  const featureOverlay = {
+    ...(overlay as Record<string, unknown>),
+    targetAlias: 'feature-lane-one',
+    allowedSuites: ['case', 'smoke'],
+  };
+  assert.equal(diagnoseLiveTarget({ overlay: featureOverlay, source: { read: () => dirty } }).ready, true);
+
+  const demoOverlay = { ...(overlay as Record<string, unknown>), targetAlias: 'demo', allowedSuites: ['case', 'smoke'] };
+  assert.equal(diagnoseLiveTarget({ overlay: demoOverlay, source: { read: () => dirty } }).ready, false);
+});
+
+test('doctor snapshots accept only a source SHA with feature-lane dirty suffix', () => {
+  assert.doesNotThrow(() => parseDoctorSnapshot({ ...READY, repositoryRevision: 'abcdef012345-dirty' }));
+  assert.throws(() => parseDoctorSnapshot({ ...READY, repositoryRevision: 'working-tree-dirty' }), /INVALID_DOCTOR_SNAPSHOT/);
 });

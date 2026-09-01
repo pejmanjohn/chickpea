@@ -26,6 +26,7 @@ export interface DoctorSnapshotSource {
 
 export type DoctorDiagnosticCode =
   | 'invalid_target_overlay'
+  | 'dirty_revision'
   | 'manifest_drift'
   | 'missing_actor'
   | 'wrong_workspace'
@@ -55,10 +56,15 @@ export function diagnoseLiveTarget(input: { overlay: unknown; source: DoctorSnap
   const snapshot = input.source.read();
   validateDoctorSnapshot(snapshot);
   const diagnostics: DoctorDiagnostic[] = [];
+  let targetAlias: string | undefined;
   try {
-    validateTargetOverlay(LIVE_MANIFEST, input.overlay);
+    targetAlias = validateTargetOverlay(LIVE_MANIFEST, input.overlay).targetAlias;
   } catch {
     diagnostics.push({ code: 'invalid_target_overlay', severity: 'blocked' });
+  }
+  if (snapshot.repositoryRevision.endsWith('-dirty')
+    && (targetAlias === 'dedicated-qa' || targetAlias === 'demo' || targetAlias?.startsWith('demo-') === true)) {
+    diagnostics.push({ code: 'dirty_revision', severity: 'blocked' });
   }
   if (snapshot.manifestDigest !== LIVE_MANIFEST_DIGEST) {
     diagnostics.push({ code: 'manifest_drift', severity: 'blocked' });
@@ -104,7 +110,7 @@ export function parseDoctorSnapshot(input: unknown): DoctorSnapshot {
   if (input.schemaVersion !== 'chickpea-live-doctor-snapshot/v1'
     || !nonEmpty(input.manifestDigest)
     || !nonEmpty(input.targetFingerprint)
-    || !nonEmpty(input.repositoryRevision)
+    || !validRepositoryRevision(input.repositoryRevision)
     || !nonEmpty(input.servingVersion)
     || !stringArray(input.missingActorAliases)
     || typeof input.workspaceMatches !== 'boolean'
@@ -130,6 +136,10 @@ function isRecord(input: unknown): input is Record<string, unknown> {
 
 function nonEmpty(input: unknown): input is string {
   return typeof input === 'string' && input.length > 0 && input.length <= 512;
+}
+
+function validRepositoryRevision(input: unknown): input is string {
+  return typeof input === 'string' && /^[0-9a-f]{7,64}(?:-dirty)?$/u.test(input);
 }
 
 function stringArray(input: unknown): input is string[] {

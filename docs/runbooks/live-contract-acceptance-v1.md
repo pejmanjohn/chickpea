@@ -6,11 +6,11 @@ This record separates deterministic verifier checks from live Chickpea acceptanc
 
 | Field | Result |
 | --- | --- |
-| Verifier source revision | `14b221fb09e47a651391d640056bfe0dda474eab` |
+| Readiness-audit source revision | `14b221fb09e47a651391d640056bfe0dda474eab` |
 | Manifest digest | `sha256:a47cc8fa80a94fa16b9cc5b7811356cea9c52754e5206afe03f9c2255888c468` |
 | Required smoke variants | 4 |
 | Required deep variants | 26 across LC-01 through LC-10 |
-| Deterministic verifier checks | Pass: typecheck and 115 verifier/package tests |
+| Deterministic verifier checks | Pass: typecheck, 120 verifier/package tests, 2,483 repository tests, production build, and immutable OSS export |
 | Live doctor | Blocked before a scored run |
 | Live smoke | Not started |
 | Live deep | Not started |
@@ -21,9 +21,9 @@ This is not a v1 live acceptance pass.
 
 ## Why live execution is blocked
 
-The candidate environment does not yet provide `env target <alias>` and `env attest <alias>` outputs in the verifier schemas. No private coordinator is installed to issue one-use challenges, persist receipts, perform authoritative readback, execute exact product-state cleanup, and provide postflight proof.
+The candidate environment does not yet provide `env target <alias>` and `env attest <alias>` outputs in the verifier schemas. The verifier-owned attended coordinator is not implemented to acquire the target lock and UI mutex, issue one-use challenges, persist receipts, drive real Slack/Admin journeys through Computer Use, execute exact product-state cleanup, and provide postflight proof.
 
-The read-only readiness audit also found that the candidate target is not a clean dedicated fixture estate. It has one usable browser actor instead of four distinct role apps, unresolved in-flight or recovery work, and missing exact Slack-app, provider-project, read-only auth-config, and gateway attestations. The verifier source under test is not deployed to that candidate.
+The read-only readiness audit also found that the candidate target is not a clean dedicated fixture estate. It has one usable browser actor instead of the roles required by the selected suite, unresolved in-flight or recovery work, and missing exact Slack-app, provider-project, read-only auth-config, and transport attestations. The verifier source under test is not deployed to that candidate.
 
 Several v1.1 contracts also declare missing authoritative capabilities as blockers:
 
@@ -35,17 +35,19 @@ Several v1.1 contracts also declare missing authoritative capabilities as blocke
 - private-routine existence and authority state;
 - installation baseline, App Home publication, and selected-route state.
 
-Do not replace these with screenshots, response text, operator-entered outcomes, or local store reads.
+Before live scoring, expose any required durable truth through a bounded read-only Admin diagnostic surface that Computer Use can inspect. Do not replace a user journey with a direct product API, database assertion, hidden HTTP observer, operator-entered outcome, or local store read.
 
 ## What must be true before the first smoke
 
 1. Claim one permitted target. Consume `env target <alias>` and `env attest <alias>` without copying immutable IDs into another format.
-2. Resolve Owner, Admin, Member, and second-member aliases to four distinct Computer Use-addressable browser apps in that workspace.
-3. Install the private coordinator and prove challenge, receipt, readback, exact cleanup, postflight, and per-target lock behavior without a product mutation.
-4. Make every smoke observer available, run doctor, and require a ready result.
+2. Resolve every actor required by the selected target's `allowedVariants` to distinct Computer Use-addressable browser apps. The full deep target uses Owner, Admin, Member, and second-member roles.
+3. Implement the verifier-owned attended coordinator and prove target lock, safe clear-lock, UI mutex/browser reservation, challenge, receipt, visible readback, exact cleanup, and postflight behavior without a product mutation.
+4. Make every selected UI observation recipe available, run transport-aware doctor, and require a ready result.
 5. Start a new immutable scored smoke run. If it passes with cleanup proof, use `dedicated-qa` for the first deep run.
 
-Feature targets may run `case` and `smoke` only. `deep` is reserved for `dedicated-qa`. Different targets may run concurrently on one host; only semantic Computer Use action windows take the short host-local UI mutex.
+Feature targets run selected `case` variants and may run `smoke` only when they contain its exact inventory. `deep` is reserved for `dedicated-qa`. Different targets may run concurrently on one host; only Computer Use action, input, or observation windows take the short host-local UI mutex.
+
+Fable 5.1's final code-backed review approved this foundation/live-completion split and required the target subset, transport-aware attestation, derived lock path, UI-only scored journey, and verifier-owned coordinator boundaries recorded above.
 
 ## Acceptance rule
 

@@ -39,6 +39,7 @@ const privateConfig: PrivateLiveConfig = {
   targets: {
     'dedicated-qa': {
       targetAlias: 'dedicated-qa',
+      transport: 'gateway',
       workerAlias: 'qa-worker',
       workspaceAlias: 'qa-workspace',
       slackAppAlias: 'qa-slack-app',
@@ -47,6 +48,7 @@ const privateConfig: PrivateLiveConfig = {
       timezoneAlias: 'qa-timezone',
       providerReadOnlyAuthConfigAlias: 'sheets-readonly-auth-config',
       allowedSuites: ['case', 'smoke', 'deep'],
+      allowedVariants: [...overlay.allowedVariants],
       bindingAliases: {
         AUTH_DB: 'binding-auth-db',
         TAG_STATE: 'binding-tag-state',
@@ -57,6 +59,7 @@ const privateConfig: PrivateLiveConfig = {
 
 const observed: LiveTargetObservation = {
   targetAlias: 'dedicated-qa',
+  transport: 'gateway',
   workerName: 'worker-qa',
   deployments: [{ versionId: 'version-1', percentage: 100 }],
   bindingIdentities: { AUTH_DB: 'd1-auth-qa', TAG_STATE: 'do-tag-state-qa' },
@@ -76,10 +79,10 @@ const observed: LiveTargetObservation = {
   },
 };
 
-function resolutionHarness(config = privateConfig) {
+function resolutionHarness(config = privateConfig, targetOverlay = overlay) {
   const readAliases: string[] = [];
   let mutationResolutions = 0;
-  const resolution = createDoctorTargetResolution(overlay, config, {
+  const resolution = createDoctorTargetResolution(targetOverlay, config, {
     readOnly: async (alias) => {
       readAliases.push(alias);
       const value = aliases[alias as keyof typeof aliases];
@@ -109,6 +112,35 @@ test('private QA aliases resolve lazily and attestation accepts one exact 100% d
   assert.deepEqual(new Set(fixture.readAliases), new Set(Object.keys(aliases)));
   assert.equal(JSON.stringify(attestation).includes('/private/evidence/qa'), false);
   assert.equal(JSON.stringify(attestation).includes('T_QA'), false);
+  assert.equal(await fixture.resolution.targetLockPath(), '/private/evidence/qa/target.lock');
+});
+
+test('events transport attests installation health and a fresh signed event without a gateway', async () => {
+  const eventsOverlay = { ...overlay, transport: 'events' as const };
+  const config = structuredClone(privateConfig);
+  config.targets['dedicated-qa']!.transport = 'events';
+  const { gateway: _gateway, ...baseObservation } = observed;
+  const eventsObservation: LiveTargetObservation = {
+    ...baseObservation,
+    transport: 'events',
+    events: {
+      installationHealthy: true,
+      signedEventReceiptFresh: true,
+      installationRevision: 7,
+    },
+  };
+
+  await assert.doesNotReject(() => attestLiveTarget(
+    resolutionHarness(config, eventsOverlay).resolution,
+    eventsObservation,
+  ));
+  await assert.rejects(
+    () => attestLiveTarget(resolutionHarness(config, eventsOverlay).resolution, {
+      ...eventsObservation,
+      events: { ...eventsObservation.events!, signedEventReceiptFresh: false },
+    }),
+    (error: unknown) => error instanceof AttestationError && error.code === 'SIGNED_EVENT_RECEIPT_STALE',
+  );
 });
 
 test('a non-allowlisted target blocks before any private alias is resolved', () => {
@@ -116,8 +148,8 @@ test('a non-allowlisted target blocks before any private alias is resolved', () 
   config.qaTargetAllowlist = ['some-other-target'];
   config.targets = {
     'some-other-target': {
-      ...config.targets['dedicated-qa']!,
-      targetAlias: 'some-other-target',
+    ...config.targets['dedicated-qa']!,
+    targetAlias: 'some-other-target',
       allowedSuites: ['case', 'smoke'],
     },
   };
@@ -186,7 +218,7 @@ test('split traffic and every exact identity drift fail with content-free codes'
     [{ provider: { ...observed.provider, readOnlyAuthConfigId: 'other-auth-config' } }, 'PROVIDER_AUTH_CONFIG_MISMATCH'],
     [{ timezone: 'UTC' }, 'TIMEZONE_MISMATCH'],
     [{ evidenceRoot: '/other/evidence' }, 'EVIDENCE_ROOT_MISMATCH'],
-    [{ gateway: { ...observed.gateway, versionId: 'version-0' } }, 'GATEWAY_VERSION_MISMATCH'],
+    [{ gateway: { ...observed.gateway!, versionId: 'version-0' } }, 'GATEWAY_VERSION_MISMATCH'],
   ];
 
   for (const [change, code] of cases) {
@@ -207,13 +239,13 @@ test('serving deployment drift between cases blocks the next action', async () =
   const first = await attestLiveTarget(resolutionHarness().resolution, observed);
   const restartedGateway = await attestLiveTarget(resolutionHarness().resolution, {
     ...observed,
-    gateway: { ...observed.gateway, generation: 5 },
+    gateway: { ...observed.gateway!, generation: 5 },
   });
   assert.doesNotThrow(() => assertStableAttestation(first, restartedGateway));
   const next = await attestLiveTarget(resolutionHarness().resolution, {
     ...observed,
     deployments: [{ versionId: 'version-2', percentage: 100 }],
-    gateway: { ...observed.gateway, versionId: 'version-2' },
+    gateway: { ...observed.gateway!, versionId: 'version-2' },
   });
 
   assert.throws(

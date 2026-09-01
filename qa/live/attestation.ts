@@ -15,8 +15,15 @@ export interface GatewayAttestationObservation {
   versionId: string | null;
 }
 
+export interface EventsAttestationObservation {
+  installationHealthy: boolean;
+  signedEventReceiptFresh: boolean;
+  installationRevision: number;
+}
+
 export interface LiveTargetObservation {
   targetAlias: string;
+  transport: 'gateway' | 'events';
   workerName: string;
   deployments: WorkerDeployment[];
   bindingIdentities: Record<string, string>;
@@ -24,7 +31,8 @@ export interface LiveTargetObservation {
   provider: { projectId: string; readOnlyAuthConfigId: string };
   timezone: string;
   evidenceRoot: string;
-  gateway: GatewayAttestationObservation;
+  gateway?: GatewayAttestationObservation;
+  events?: EventsAttestationObservation;
 }
 
 export interface LiveTargetAttestation {
@@ -37,6 +45,7 @@ export interface LiveTargetAttestation {
 export type AttestationErrorCode =
   | 'INVALID_ATTESTATION'
   | 'TARGET_ALIAS_MISMATCH'
+  | 'TRANSPORT_MISMATCH'
   | 'WORKER_MISMATCH'
   | 'DEPLOYMENT_VECTOR_MISMATCH'
   | 'BINDING_MISMATCH'
@@ -48,6 +57,8 @@ export type AttestationErrorCode =
   | 'EVIDENCE_ROOT_MISMATCH'
   | 'GATEWAY_UNHEALTHY'
   | 'GATEWAY_VERSION_MISMATCH'
+  | 'INSTALLATION_UNHEALTHY'
+  | 'SIGNED_EVENT_RECEIPT_STALE'
   | 'TARGET_DRIFT';
 
 export class AttestationError extends Error {
@@ -66,6 +77,7 @@ export async function attestLiveTarget(
 ): Promise<LiveTargetAttestation> {
   validateObservation(observed);
   if (observed.targetAlias !== expected.targetAlias) fail('TARGET_ALIAS_MISMATCH');
+  if (observed.transport !== expected.transport) fail('TRANSPORT_MISMATCH');
   if (observed.deployments.length !== 1 || observed.deployments[0]?.percentage !== 100) {
     fail('DEPLOYMENT_VECTOR_MISMATCH');
   }
@@ -101,11 +113,17 @@ export async function attestLiveTarget(
   }
   if (observed.timezone !== timezone) fail('TIMEZONE_MISMATCH');
   if (observed.evidenceRoot !== evidenceRoot) fail('EVIDENCE_ROOT_MISMATCH');
-  if (!observed.gateway.healthy) fail('GATEWAY_UNHEALTHY');
-  if (observed.gateway.versionId !== servingVersion) fail('GATEWAY_VERSION_MISMATCH');
+  if (observed.transport === 'gateway') {
+    if (observed.gateway === undefined || !observed.gateway.healthy) fail('GATEWAY_UNHEALTHY');
+    if (observed.gateway.versionId !== servingVersion) fail('GATEWAY_VERSION_MISMATCH');
+  } else {
+    if (observed.events === undefined || !observed.events.installationHealthy) fail('INSTALLATION_UNHEALTHY');
+    if (!observed.events.signedEventReceiptFresh) fail('SIGNED_EVENT_RECEIPT_STALE');
+  }
 
   const targetFingerprint = `sha256:${createHash('sha256').update(stableJson({
     targetAlias: expected.targetAlias,
+    transport: expected.transport,
     workerName,
     workspaceId,
     slackAppId,
@@ -138,6 +156,7 @@ export function assertStableAttestation(
 function validateObservation(input: LiveTargetObservation): void {
   if (!isRecord(input)
     || !bounded(input.targetAlias)
+    || (input.transport !== 'gateway' && input.transport !== 'events')
     || !bounded(input.workerName)
     || !Array.isArray(input.deployments)
     || input.deployments.length === 0
@@ -156,14 +175,29 @@ function validateObservation(input: LiveTargetObservation): void {
     || !bounded(input.provider.readOnlyAuthConfigId)
     || !bounded(input.timezone)
     || !bounded(input.evidenceRoot, 2_048)
-    || !isRecord(input.gateway)
-    || typeof input.gateway.healthy !== 'boolean'
-    || !bounded(input.gateway.phase)
-    || (input.gateway.detail !== null && !bounded(input.gateway.detail))
-    || (input.gateway.generation !== null && !Number.isSafeInteger(input.gateway.generation))
-    || (input.gateway.versionId !== null && !bounded(input.gateway.versionId))) {
+    || (input.transport === 'gateway' && !validGateway(input.gateway))
+    || (input.transport === 'events' && !validEvents(input.events))
+    || (input.transport === 'gateway' && input.events !== undefined)
+    || (input.transport === 'events' && input.gateway !== undefined)) {
     fail('INVALID_ATTESTATION');
   }
+}
+
+function validGateway(input: unknown): input is GatewayAttestationObservation {
+  return isRecord(input)
+    && typeof input.healthy === 'boolean'
+    && bounded(input.phase)
+    && (input.detail === null || bounded(input.detail))
+    && (input.generation === null || Number.isSafeInteger(input.generation))
+    && (input.versionId === null || bounded(input.versionId));
+}
+
+function validEvents(input: unknown): input is EventsAttestationObservation {
+  return isRecord(input)
+    && typeof input.installationHealthy === 'boolean'
+    && typeof input.signedEventReceiptFresh === 'boolean'
+    && Number.isSafeInteger(input.installationRevision)
+    && input.installationRevision >= 0;
 }
 
 function stableJson(input: unknown): string {

@@ -32,7 +32,7 @@ test('doctor reports an invalid alias-only overlay without invoking a live coord
       schemaVersion: 'chickpea-live-doctor-snapshot/v1',
       manifestDigest: LIVE_MANIFEST_DIGEST,
       targetFingerprint: 'sha256:target-fixture',
-      repositoryRevision: 'revision-fixture',
+      repositoryRevision: '0123456789abcdef',
       servingVersion: 'version-fixture',
       missingActorAliases: [],
       workspaceMatches: true,

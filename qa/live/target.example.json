@@ -1,13 +1,24 @@
 {
   "schemaVersion": "chickpea-live-target/v1",
   "targetAlias": "dedicated-qa",
+  "transport": "gateway",
   "workspaceAlias": "qa-workspace",
   "slackAppAlias": "qa-slack-app",
   "workerAlias": "qa-worker",
   "providerProjectAlias": "qa-provider-project",
   "evidenceRootAlias": "private-evidence-root",
-  "lockLocationAlias": "private-target-lock",
   "allowedSuites": ["case", "smoke", "deep"],
+  "allowedVariants": [
+    "LC01-V1-create-welcome", "LC01-V2-update-approve", "LC02-V1-avatar-parity",
+    "LC03-V1-ingress-root-thread", "LC03-V2-handoff", "LC03-V3-archive-restore",
+    "LC04-V1-personal-read", "LC04-V2-team-read", "LC04-V3-editor-race",
+    "LC05-V1-personal-isolation", "LC05-V2-team-isolation", "LC05-V3-revoke-reconnect",
+    "LC06-V1-import-behavior-remove", "LC06-V2-cross-agent-denial",
+    "LC07-V1-explicit-memory", "LC07-V2-implicit-preference", "LC07-V3-conflict-replay-forget",
+    "LC08-V1-create-due", "LC08-V2-pause-resume", "LC08-V3-run-now",
+    "LC09-V1-one-shot-dm", "LC09-V2-recurring-dm", "LC09-V3-admin-omission-authority-loss",
+    "LC10-V1-install-route", "LC10-V2-app-home-selection", "LC10-V3-stale-membership-denial"
+  ],
   "fixtures": {
     "qa-owner": { "kind": "actor", "resourceAlias": "owner-browser-profile" },
     "qa-admin": { "kind": "actor", "resourceAlias": "admin-browser-profile" },

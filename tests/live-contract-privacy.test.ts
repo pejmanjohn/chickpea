@@ -7,6 +7,8 @@ import { PUBLIC_LIVE_CATALOG } from '../qa/live/cases/index.ts';
 import {
   assertPublicData,
   LiveContractValidationError,
+  requiredActorAliasesForTarget,
+  requiredObserverIdsForTarget,
   validateTargetOverlay,
 } from '../qa/live/privacy.ts';
 import { validateGitHubSourceBinding } from '../qa/live/public-sources.ts';
@@ -39,6 +41,23 @@ test('a private overlay cannot add, omit, downgrade, or redefine manifest varian
     first[attemptedField] = attemptedField === 'required' ? false : 'agent.delete';
     assertCode(() => validateTargetOverlay(manifest, redefined), 'UNKNOWN_FIELD');
   }
+});
+
+test('a target may bind one nonempty manifest subset without redefining it', () => {
+  const subset = structuredClone(targetExample) as Record<string, any>;
+  const variantId = 'LC01-V1-create-welcome';
+  subset.allowedSuites = ['case'];
+  subset.allowedVariants = [variantId];
+  subset.bindings = { [variantId]: subset.bindings[variantId] };
+
+  const target = validateTargetOverlay(manifest, subset);
+  assert.deepEqual(target.allowedVariants, [variantId]);
+  assert.deepEqual(Object.keys(target.bindings), [variantId]);
+  assert.deepEqual(requiredActorAliasesForTarget(manifest, target), ['owner-browser-profile']);
+  assert.deepEqual(requiredObserverIdsForTarget(manifest, target), ['agent.read', 'slack.messages.read']);
+
+  subset.allowedVariants = ['LC99-V1-private'];
+  assertCode(() => validateTargetOverlay(manifest, subset), 'INVALID_VALUE');
 });
 
 test('target suite policy is optional, closed, and reserves deep for dedicated-qa', () => {

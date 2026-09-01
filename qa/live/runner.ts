@@ -125,6 +125,7 @@ export function advanceLiveRun(
     if (request.signal !== undefined) throw new LiveRunnerError('INVALID_RUN_SIGNAL', 'new runs cannot begin with a signal');
     assertDoctorIdentity(request.identity, doctor);
     const variantIds = selectSuiteVariants(request.suite, request.variantIds);
+    if (target !== undefined) assertTargetAllowsVariants(target, request.suite, variantIds);
     try {
       createRunJournal(request.journalPath, {
         runId: request.runId,
@@ -151,6 +152,7 @@ export function advanceLiveRun(
   }
 
   assertHeader(request, journal);
+  if (target !== undefined) assertTargetAllowsVariants(target, request.suite, journal.header.variantIds);
   assertDoctorIdentity(request.identity, doctor);
   const phase = derivePhase(journal.events);
   if (phase === 'complete') throw new LiveRunnerError('RUN_ALREADY_COMPLETE', request.runId);
@@ -187,6 +189,17 @@ export function advanceLiveRun(
     return exposeNextAction(request, dependencies, target, variantId, 0, 'preflight', at);
   }
   throw new RunStateError('INVALID_TRANSITION', `unsupported phase ${phase}`);
+}
+
+function assertTargetAllowsVariants(
+  target: LiveTargetOverlay,
+  suite: Suite,
+  variantIds: readonly string[],
+): void {
+  const allowed = new Set(target.allowedVariants);
+  if (variantIds.some((variantId) => !allowed.has(variantId))) {
+    throw new LiveRunnerError('SUITE_NOT_ALLOWED', `${suite} inventory is not available on target ${target.targetAlias}`);
+  }
 }
 
 function assertTargetAllowsSuite(target: LiveTargetOverlay, suite: Suite): void {

@@ -71,6 +71,32 @@ test('suite policy rejects feature-lane deep before creating a journal', (contex
   assert.equal(existsSync(request.journalPath), false);
 });
 
+test('target variant policy admits only selected cases and exact contained suite inventories', (context) => {
+  const request = setup(context);
+  const subsetOverlay = structuredClone(overlay) as Record<string, any>;
+  const allowedVariant = 'LC01-V1-create-welcome';
+  subsetOverlay.allowedSuites = ['case', 'smoke'];
+  subsetOverlay.allowedVariants = [allowedVariant];
+  subsetOverlay.bindings = { [allowedVariant]: subsetOverlay.bindings[allowedVariant] };
+
+  assert.equal(advanceLiveRun({ ...request, overlay: subsetOverlay }).kind, 'action_required');
+
+  const denied = setup(context, ['LC01-V2-update-approve']);
+  assert.throws(
+    () => advanceLiveRun({ ...denied, overlay: subsetOverlay }),
+    /SUITE_NOT_ALLOWED/,
+  );
+  assert.equal(existsSync(denied.journalPath), false);
+
+  const smoke = setup(context);
+  const { variantIds: _variantIds, ...withoutVariants } = smoke;
+  assert.throws(
+    () => advanceLiveRun({ ...withoutVariants, suite: 'smoke', overlay: subsetOverlay }),
+    /SUITE_NOT_ALLOWED/,
+  );
+  assert.equal(existsSync(smoke.journalPath), false);
+});
+
 test('proof-first state machine flushes intent before exposing the first action', (context) => {
   const request = setup(context);
   const record = advanceLiveRun(request);
