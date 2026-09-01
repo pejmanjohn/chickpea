@@ -188,6 +188,8 @@ npm run verify:cf-smoke
 npm run verify:oss-export
 ```
 
+Live Slack verification uses [the canonical operator skill](qa/live/operator/SKILL.md) and [runbook](docs/runbooks/live-contract-verification.md); copy `qa/live/operator` into your personal Codex skills directory as `chickpea-live-verification` if you want it outside this repository.
+
 `verify:slack-streaming-policy` validates the content-free model-decision fixture corpus. A
 provider evaluation is deliberately separate and opt-in: run
 `npm run verify:slack-streaming-policy:live -- --live --lane <lane> --model <id>` only when
