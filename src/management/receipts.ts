@@ -15,7 +15,7 @@ import {
   acknowledgeDeferredTerminalSlackDelivery,
   slackPresentationRepairFailureCode,
 } from '../slack/presentation-repair.ts';
-import { SlackTransportError } from '../slack/transport/types.ts';
+import { slackPlatformErrorCode } from '../slack/errors.ts';
 import {
   handoffCreatedAgentThread,
   type CreatedAgentHandoffConfig,
@@ -777,15 +777,6 @@ function reactionDeliveryRef(record: ManagementReceiptOutboxRecord): string {
   const destination = record.destination;
   if (destination.kind !== 'reaction') throw new Error('Reaction destination is unavailable.');
   return `slack:${destination.channelId}:${destination.messageTs}:reaction`;
-}
-
-function slackPlatformErrorCode(error: unknown): string | undefined {
-  if (error instanceof SlackTransportError) return error.code;
-  if (!error || typeof error !== 'object') return undefined;
-  const data = (error as { data?: unknown }).data;
-  if (!data || typeof data !== 'object') return undefined;
-  const code = (data as { error?: unknown }).error;
-  return typeof code === 'string' ? code : undefined;
 }
 
 /** Content-free failure classification: a Slack error code or an error name. */

@@ -1,4 +1,5 @@
 import type { AgentDispatchResult } from '../slack/flue-dispatch.ts';
+import { slackTimestampMs } from '../slack/timestamp.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { AgentModelAttribution, ResolvedAssignment } from '../config/types.ts';
@@ -581,12 +582,6 @@ function installationId(
 function boundedBudget(value: number | undefined): number {
   if (value === undefined) return DEFAULT_USAGE_WRITE_BUDGET_MS;
   return Number.isFinite(value) ? Math.max(1, Math.min(250, Math.floor(value))) : DEFAULT_USAGE_WRITE_BUDGET_MS;
-}
-
-function slackTimestampMs(value: string): number | null {
-  if (!/^\d+(?:\.\d+)?$/.test(value)) return null;
-  const milliseconds = Math.floor(Number(value) * 1_000);
-  return Number.isSafeInteger(milliseconds) && milliseconds >= 0 ? milliseconds : null;
 }
 
 async function withinBudget(

@@ -1,5 +1,8 @@
-import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
+import { randomBytes as nodeRandomBytes } from 'node:crypto';
 
+import { readBoundedBytes } from '../http/bounded-body.ts';
+import { sha256HexNode } from '../security/digest.ts';
+import { randomSecret } from '../security/random-secret.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
@@ -133,8 +136,8 @@ export class SlackInstallOAuthService {
       purpose: 'setup_bot_install',
       setupId: setup.id,
       setupRevision: setup.revision,
-      stateHash: hashSecret(state),
-      browserHash: hashSecret(input.browserBinding),
+      stateHash: sha256HexNode(state),
+      browserHash: sha256HexNode(input.browserBinding),
       appId: appCredentials.appId,
       clientId: appCredentials.clientId,
       credentialRevision: appCredentials.connectionRevision,
@@ -392,8 +395,8 @@ export class SlackInstallOAuthService {
     const now = this.now();
     try {
       return await this.dependencies.identity.acquireSlackOAuthAttempt({
-        stateHash: hashSecret(state),
-        browserHash: hashSecret(browserBinding),
+        stateHash: sha256HexNode(state),
+        browserHash: sha256HexNode(browserBinding),
         kind: 'slack_bot_install',
         purpose: 'setup_bot_install',
         redirectUri,
@@ -597,32 +600,11 @@ function parseTokenResponse(value: unknown): SlackBotTokenResponse {
 }
 
 async function boundedJson(response: Response): Promise<unknown> {
-  const declared = Number(response.headers.get('content-length') ?? 0);
-  if (Number.isFinite(declared) && declared > MAX_SLACK_INSTALL_RESPONSE_BYTES) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new SlackInstallOAuthError('invalid_response');
-  }
-  if (!response.body) throw new SlackInstallOAuthError('invalid_response');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      size += next.value.byteLength;
-      if (size > MAX_SLACK_INSTALL_RESPONSE_BYTES) {
-        await reader.cancel().catch(() => undefined);
-        throw new SlackInstallOAuthError('invalid_response');
-      }
-      chunks.push(next.value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  const bytes = await readBoundedBytes(response, {
+    maxBytes: MAX_SLACK_INSTALL_RESPONSE_BYTES,
+    onOversize: () => new SlackInstallOAuthError('invalid_response'),
+    onMissingBody: () => new SlackInstallOAuthError('invalid_response'),
+  });
   try {
     return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
   } catch {
@@ -664,14 +646,6 @@ function requiredText(value: string | undefined, maximum: number): string {
     throw new SlackInstallOAuthError('invalid_response');
   }
   return value;
-}
-
-function randomSecret(randomBytes: (length: number) => Uint8Array, length: number): string {
-  return Buffer.from(randomBytes(length)).toString('base64url');
-}
-
-function hashSecret(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
 }
 
 function isApprovalPending(error: string): boolean {

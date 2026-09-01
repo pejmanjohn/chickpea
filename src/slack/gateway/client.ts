@@ -1,6 +1,7 @@
 import type { ConfigStore } from '../../config/store.ts';
 import type { SettingsStore } from '../../config/settings-store.ts';
 import type { IdentityStore } from '../../identity/types.ts';
+import { readBoundedBytes } from '../../http/bounded-body.ts';
 import { primeStoredSlackPublicUrl, SLACK_SETTING_KEYS } from '../credentials.ts';
 import type { CredentialKeyring } from '../secret-envelope.ts';
 import { SlackTransportError } from '../transport/types.ts';
@@ -1067,39 +1068,16 @@ async function boundedResponseBytes(
   operation: string,
   expectedBytes?: number,
 ): Promise<Uint8Array> {
-  const reader = response.body?.getReader();
-  if (!reader) return new Uint8Array();
-  const preallocated = expectedBytes === undefined
-    ? undefined
-    : new Uint8Array(expectedBytes);
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maximumBytes) {
-      await reader.cancel();
-      throw new SlackTransportError(operation, 'gateway_response_too_large');
-    }
-    if (preallocated) {
-      if (total > preallocated.byteLength) {
-        await reader.cancel();
-        throw new SlackTransportError(operation, 'attachment_content_length_mismatch');
-      }
-      preallocated.set(value, total - value.byteLength);
-    } else {
-      chunks.push(value);
-    }
-  }
-  if (preallocated) return preallocated.subarray(0, total);
-  const joined = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    joined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return joined;
+  // `content-length` is hop-sensitive here (see the attachment reader above), so
+  // the declared length is deliberately not consulted.
+  return readBoundedBytes(response, {
+    maxBytes: maximumBytes,
+    onOversize: () => new SlackTransportError(operation, 'gateway_response_too_large'),
+    onExpectedBytesExceeded: () =>
+      new SlackTransportError(operation, 'attachment_content_length_mismatch'),
+    checkContentLength: false,
+    expectedBytes,
+  });
 }
 
 function requestId(prefix = 'request'): string {

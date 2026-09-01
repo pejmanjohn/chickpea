@@ -56,8 +56,13 @@ export function tableExists(db: StateDb, table: string): boolean {
   );
 }
 
-/** Add a nullable column once; re-running an install must stay a no-op. */
-function addColumnIfMissing(
+/** The table's current column names, for migrations that branch on shape. */
+export function tableColumns(db: StateDb, table: string): Set<string> {
+  return new Set(db.all(`PRAGMA table_info(${table})`).map((row) => String(row.name)));
+}
+
+/** Add a column once; re-running an install must stay a no-op. */
+export function addColumnIfMissing(
   db: StateDb,
   table: string,
   column: string,

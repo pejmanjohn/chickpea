@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
 import {
   createRemoteJWKSet,
@@ -7,6 +7,8 @@ import {
   type JWTVerifyGetKey,
 } from 'jose';
 
+import { readBoundedBytes } from '../http/bounded-body.ts';
+import { constantTimeEquals } from '../security/constant-time.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import type { SlackOidcAttempt } from '../identity/types.ts';
 import {
@@ -246,7 +248,7 @@ export class SlackOidcGateway implements SlackOidcProvider {
       if ((audiences.length > 1 || claims.azp !== undefined) && claims.azp !== input.clientId) {
         throw new SlackOidcError('invalid_token');
       }
-      if (typeof claims.at_hash !== 'string' || !constantTimeTextEqual(
+      if (typeof claims.at_hash !== 'string' || !constantTimeEquals(
         claims.at_hash,
         createHash('sha256').update(input.accessToken).digest().subarray(0, 16).toString('base64url'),
       )) {
@@ -294,35 +296,11 @@ function slackUserFacts(value: unknown) {
 }
 
 async function boundedJson(response: Response): Promise<Record<string, unknown>> {
-  const declared = Number(response.headers.get('content-length') ?? 0);
-  if (Number.isFinite(declared) && declared > MAX_SLACK_OIDC_RESPONSE_BYTES) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new SlackOidcError('invalid_response');
-  }
-  if (!response.body) throw new SlackOidcError('invalid_response');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      size += next.value.byteLength;
-      if (size > MAX_SLACK_OIDC_RESPONSE_BYTES) {
-        await reader.cancel().catch(() => undefined);
-        throw new SlackOidcError('invalid_response');
-      }
-      chunks.push(next.value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
+  const bytes = await readBoundedBytes(response, {
+    maxBytes: MAX_SLACK_OIDC_RESPONSE_BYTES,
+    onOversize: () => new SlackOidcError('invalid_response'),
+    onMissingBody: () => new SlackOidcError('invalid_response'),
+  });
   let parsed: unknown;
   try {
     parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
@@ -377,11 +355,5 @@ function boundedSecret(value: string, field: string): string {
 }
 
 function secretHashMatches(secret: string, expectedHash: string): boolean {
-  return constantTimeTextEqual(createHash('sha256').update(secret).digest('hex'), expectedHash);
-}
-
-function constantTimeTextEqual(left: string, right: string): boolean {
-  const a = Buffer.from(left);
-  const b = Buffer.from(right);
-  return a.length === b.length && timingSafeEqual(a, b);
+  return constantTimeEquals(createHash('sha256').update(secret).digest('hex'), expectedHash);
 }

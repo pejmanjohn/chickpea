@@ -1,3 +1,5 @@
+import { nonEmpty } from '../security/content-validation.ts';
+import { createSecretCleanupKeys, encodeEnvSegment } from './secret-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
 
@@ -11,6 +13,12 @@ import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
  * No cache here: connector credentials are resolved per-use, so a stale cache
  * would be a footgun.
  */
+
+const cleanupKeys = createSecretCleanupKeys({
+  keyPrefix: 'connector.',
+  invalidKeyMessage: 'Invalid connector secret-cleanup key',
+  invalidMarkerMessage: 'Invalid connector secret-cleanup marker',
+});
 
 type ConnectorCredentialSource = 'env' | 'stored' | 'missing';
 
@@ -99,12 +107,12 @@ export async function stageConnectorSecretCleanup(
 ): Promise<void> {
   const settings = store ?? getSettingsStore(env);
   const markerKey = connectorSecretCleanupMarkerKey(agentId);
-  const keys = validateCleanupKeys(
+  const keys = cleanupKeys.validate(
     agentId,
     connectionIds.map((connectionId) => connectorCredentialSettingKey(agentId, connectionId)),
   );
   const merged = await settings.mergeSettingStringSet(markerKey, keys);
-  validateCleanupKeys(agentId, merged);
+  cleanupKeys.validate(agentId, merged);
 }
 
 /** Stage additional fixed connector settings (for example BYO OAuth records). */
@@ -117,9 +125,9 @@ export async function stageConnectorSettingCleanup(
   if (settingKeys.length === 0) return;
   const settings = store ?? getSettingsStore(env);
   const markerKey = connectorSecretCleanupMarkerKey(agentId);
-  const keys = validateCleanupKeys(agentId, settingKeys);
+  const keys = cleanupKeys.validate(agentId, settingKeys);
   const merged = await settings.mergeSettingStringSet(markerKey, keys);
-  validateCleanupKeys(agentId, merged);
+  cleanupKeys.validate(agentId, merged);
 }
 
 export async function finishConnectorSecretCleanup(
@@ -132,7 +140,7 @@ export async function finishConnectorSecretCleanup(
   const raw = await settings.getSetting(markerKey);
   if (raw === undefined) return false;
 
-  const keys = parseCleanupKeys(agentId, raw);
+  const keys = cleanupKeys.parse(agentId, raw);
   for (const key of keys) {
     await settings.deleteSetting(key);
   }
@@ -201,49 +209,10 @@ export async function deleteConnectorSecrets(
   }
 }
 
-/**
- * Encode ids exactly like MCP secret environment names. Escaping every
- * non-alphanumeric character prevents valid hyphenated and underscored ids
- * from colliding.
- */
-function encodeEnvSegment(value: string): string {
-  return value
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, (character) =>
-      '_' + character.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'),
-    );
-}
-
 function validatedSecretRefId(value: string): string {
   const normalized = value.trim();
   if (!/^[a-z0-9][a-z0-9_-]{0,127}$/.test(normalized)) {
     throw new Error('Connection account secret reference is invalid');
   }
   return normalized;
-}
-
-function validateCleanupKeys(agentId: string, settingKeys: readonly string[]): string[] {
-  const expectedPrefix = 'connector.' + agentId + '.';
-  const keys = [...new Set(settingKeys)];
-  if (!keys.every((key) => key.startsWith(expectedPrefix))) {
-    throw new Error('Invalid connector secret-cleanup key');
-  }
-  return keys;
-}
-
-function parseCleanupKeys(agentId: string, raw: string): string[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error('Invalid connector secret-cleanup marker');
-  }
-  if (!Array.isArray(parsed) || !parsed.every((key) => typeof key === 'string')) {
-    throw new Error('Invalid connector secret-cleanup marker');
-  }
-  return validateCleanupKeys(agentId, parsed);
-}
-
-function nonEmpty(value: string | undefined): string | undefined {
-  return value ? value : undefined;
 }

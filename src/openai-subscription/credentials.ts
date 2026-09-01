@@ -1,3 +1,4 @@
+import { sha256Hex } from '../security/digest.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { OPENAI_AUTH_METHOD_SETTING_KEY } from '../config/openai-auth.ts';
 import { OpenAiSubscriptionError, asOpenAiSubscriptionError } from './errors.ts';
@@ -132,7 +133,7 @@ export async function commitOpenAiSubscriptionCredentials(
     updatedAt: currentTime,
     accountFingerprint: fingerprint,
     connectedAt,
-    credentialRevision: await credentialRevision(storedRaw),
+    credentialRevision: await sha256Hex(storedRaw),
   };
   const applied = await dependencies.settings.applySettingsPatch({
     ...(options.expectedPendingRaw === undefined
@@ -215,7 +216,7 @@ export async function openAiSubscriptionCredentialsAreCurrent(
   const expectedRevision = credentialRevisions.get(credentials);
   if (!expectedRevision) return false;
   const raw = await settings.getSetting(SETTING_KEYS.tokens);
-  return raw !== undefined && await credentialRevision(raw) === expectedRevision;
+  return raw !== undefined && await sha256Hex(raw) === expectedRevision;
 }
 
 export async function recordOpenAiSubscriptionAuthenticationFailure(
@@ -238,7 +239,7 @@ export async function recordOpenAiSubscriptionAuthenticationFailure(
     const current = parseStatus(raw);
     if (expectedRevision) {
       const currentRevision = current.credentialRevision ??
-        (tokenRaw ? await credentialRevision(tokenRaw) : undefined);
+        (tokenRaw ? await sha256Hex(tokenRaw) : undefined);
       if (currentRevision !== expectedRevision) return false;
     }
     if (
@@ -336,7 +337,7 @@ async function refreshCredentials(
     updatedAt: now(dependencies),
     accountFingerprint: current.accountFingerprint,
     connectedAt: current.connectedAt,
-    credentialRevision: await credentialRevision(nextRaw),
+    credentialRevision: await sha256Hex(nextRaw),
   };
   const stored = await dependencies.settings.applySettingsPatch({
     expected: { key: SETTING_KEYS.tokens, value: expectedRaw },
@@ -366,7 +367,7 @@ async function markReconnectRequired(
     accountFingerprint: current.accountFingerprint,
     connectedAt: current.connectedAt,
     failureCode,
-    credentialRevision: await credentialRevision(expectedRaw),
+    credentialRevision: await sha256Hex(expectedRaw),
   };
   const applied = await dependencies.settings.applySettingsPatch({
     expected: { key: SETTING_KEYS.tokens, value: expectedRaw },
@@ -531,13 +532,8 @@ async function resolvedCredentials(
     accountId: bundle.accountId,
     accountFingerprint: bundle.accountFingerprint,
   };
-  credentialRevisions.set(credentials, await credentialRevision(raw));
+  credentialRevisions.set(credentials, await sha256Hex(raw));
   return credentials;
-}
-
-async function credentialRevision(raw: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function validateTokenBundle(bundle: OpenAiSubscriptionTokenBundle): void {

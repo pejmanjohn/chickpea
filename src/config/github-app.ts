@@ -1,3 +1,5 @@
+import { encodeBase64Url } from '../security/base64url.ts';
+import { trimmedNonEmpty } from '../security/content-validation.ts';
 import type { SettingsStore } from './settings-store.ts';
 
 export const GITHUB_API_BASE = 'https://api.github.com';
@@ -210,7 +212,7 @@ export async function mintAppJwt(input: {
     key,
     new TextEncoder().encode(signingInput),
   );
-  return `${signingInput}.${base64UrlBytes(new Uint8Array(signature))}`;
+  return `${signingInput}.${encodeBase64Url(new Uint8Array(signature))}`;
 }
 
 export async function getGithubConnection(settings: SettingsStore): Promise<GithubConnection> {
@@ -219,11 +221,11 @@ export async function getGithubConnection(settings: SettingsStore): Promise<Gith
     GITHUB_SETTING_KEYS.appSlug,
     GITHUB_SETTING_KEYS.privateKey,
   ]);
-  const appId = nonEmpty(process.env.GITHUB_APP_ID) ?? nonEmpty(storedAppId);
+  const appId = trimmedNonEmpty(process.env.GITHUB_APP_ID) ?? trimmedNonEmpty(storedAppId);
   const privateKey =
-    nonEmpty(process.env.GITHUB_APP_PRIVATE_KEY) ?? nonEmpty(storedPrivateKey);
+    trimmedNonEmpty(process.env.GITHUB_APP_PRIVATE_KEY) ?? trimmedNonEmpty(storedPrivateKey);
   if (appId && privateKey) {
-    const appSlug = nonEmpty(storedAppSlug);
+    const appSlug = trimmedNonEmpty(storedAppSlug);
     return {
       mode: 'app',
       appId,
@@ -639,11 +641,7 @@ function armorPem(label: string, bytes: Uint8Array): string {
 }
 
 function base64UrlJson(value: object): string {
-  return base64UrlBytes(new TextEncoder().encode(JSON.stringify(value)));
-}
-
-function base64UrlBytes(bytes: Uint8Array): string {
-  return base64Bytes(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return encodeBase64Url(new TextEncoder().encode(JSON.stringify(value)));
 }
 
 function base64Bytes(bytes: Uint8Array): string {
@@ -661,10 +659,6 @@ function copiedArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return copy.buffer;
 }
 
-function nonEmpty(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed || undefined;
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';

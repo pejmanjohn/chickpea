@@ -1,3 +1,4 @@
+import { envValue } from '../config/env-value.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import {
   ComposioConfigurationStateError,
@@ -192,74 +193,74 @@ export function createManagedConnectionProviderRegistry(
 export function createDefaultManagedConnectionProviderRegistry(
   env?: PlatformEnv,
 ): ManagedConnectionProviderRegistry {
-  const apiKey = managedProviderSecret(env, 'COMPOSIO_API_KEY');
-  const googleAdsAccessLevel = managedProviderSecret(
+  const apiKey = envValue(env, 'COMPOSIO_API_KEY');
+  const googleAdsAccessLevel = envValue(
     env, 'COMPOSIO_GOOGLE_ADS_ACCESS_LEVEL',
   );
-  const googleAdsPermissibleUse = managedProviderSecret(
+  const googleAdsPermissibleUse = envValue(
     env, 'COMPOSIO_GOOGLE_ADS_PERMISSIBLE_USE',
   );
-  const youtubeGeneralDailyQuota = managedProviderSecret(
+  const youtubeGeneralDailyQuota = envValue(
     env, 'COMPOSIO_YOUTUBE_GENERAL_DAILY_QUOTA_UNITS',
   );
-  const youtubeSearchDailyLimit = managedProviderSecret(
+  const youtubeSearchDailyLimit = envValue(
     env, 'COMPOSIO_YOUTUBE_SEARCH_DAILY_CALL_LIMIT',
   );
-  const youtubeUploadDailyLimit = managedProviderSecret(
+  const youtubeUploadDailyLimit = envValue(
     env, 'COMPOSIO_YOUTUBE_UPLOAD_DAILY_CALL_LIMIT',
   );
-  const youtubeQuotaAuditApproved = managedProviderSecret(
+  const youtubeQuotaAuditApproved = envValue(
     env, 'COMPOSIO_YOUTUBE_QUOTA_AUDIT_APPROVED',
   );
   const authConfigIds: ComposioManagedAuthConfigIds = {
     gmail: {
-      read: managedProviderSecret(env, 'COMPOSIO_GMAIL_READ_AUTH_CONFIG_ID'),
-      write: managedProviderSecret(env, 'COMPOSIO_GMAIL_WRITE_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_GMAIL_READ_AUTH_CONFIG_ID'),
+      write: envValue(env, 'COMPOSIO_GMAIL_WRITE_AUTH_CONFIG_ID'),
     },
     googlecalendar: {
-      read: managedProviderSecret(env, 'COMPOSIO_CALENDAR_READ_AUTH_CONFIG_ID'),
-      write: managedProviderSecret(env, 'COMPOSIO_CALENDAR_WRITE_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_CALENDAR_READ_AUTH_CONFIG_ID'),
+      write: envValue(env, 'COMPOSIO_CALENDAR_WRITE_AUTH_CONFIG_ID'),
     },
     googledrive: {
-      read: managedProviderSecret(env, 'COMPOSIO_DRIVE_READ_AUTH_CONFIG_ID'),
-      write: managedProviderSecret(env, 'COMPOSIO_DRIVE_WRITE_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_DRIVE_READ_AUTH_CONFIG_ID'),
+      write: envValue(env, 'COMPOSIO_DRIVE_WRITE_AUTH_CONFIG_ID'),
     },
     googlesheets: {
-      read: managedProviderSecret(env, 'COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID'),
-      write: managedProviderSecret(env, 'COMPOSIO_SHEETS_WRITE_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID'),
+      write: envValue(env, 'COMPOSIO_SHEETS_WRITE_AUTH_CONFIG_ID'),
     },
     googledocs: {
-      read: managedProviderSecret(env, 'COMPOSIO_DOCS_READ_AUTH_CONFIG_ID'),
-      write: managedProviderSecret(env, 'COMPOSIO_DOCS_WRITE_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_DOCS_READ_AUTH_CONFIG_ID'),
+      write: envValue(env, 'COMPOSIO_DOCS_WRITE_AUTH_CONFIG_ID'),
     },
     googleslides: {
-      read: managedProviderSecret(env, 'COMPOSIO_SLIDES_READ_AUTH_CONFIG_ID'),
-      write: managedProviderSecret(env, 'COMPOSIO_SLIDES_WRITE_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_SLIDES_READ_AUTH_CONFIG_ID'),
+      write: envValue(env, 'COMPOSIO_SLIDES_WRITE_AUTH_CONFIG_ID'),
     },
     notion: {
-      read: managedProviderSecret(env, 'COMPOSIO_NOTION_READ_AUTH_CONFIG_ID'),
-      write: managedProviderSecret(env, 'COMPOSIO_NOTION_WRITE_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_NOTION_READ_AUTH_CONFIG_ID'),
+      write: envValue(env, 'COMPOSIO_NOTION_WRITE_AUTH_CONFIG_ID'),
     },
     google_search_console: {
-      read: managedProviderSecret(env, 'COMPOSIO_SEARCH_CONSOLE_READ_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_SEARCH_CONSOLE_READ_AUTH_CONFIG_ID'),
     },
     google_analytics: {
-      read: managedProviderSecret(env, 'COMPOSIO_ANALYTICS_READ_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_ANALYTICS_READ_AUTH_CONFIG_ID'),
     },
     hubspot: {
-      read: managedProviderSecret(env, 'COMPOSIO_HUBSPOT_READ_AUTH_CONFIG_ID'),
-      write: managedProviderSecret(env, 'COMPOSIO_HUBSPOT_WRITE_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_HUBSPOT_READ_AUTH_CONFIG_ID'),
+      write: envValue(env, 'COMPOSIO_HUBSPOT_WRITE_AUTH_CONFIG_ID'),
     },
     gong: {
-      read: managedProviderSecret(env, 'COMPOSIO_GONG_READ_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_GONG_READ_AUTH_CONFIG_ID'),
     },
     googleads: {
-      read: managedProviderSecret(env, 'COMPOSIO_GOOGLE_ADS_READ_AUTH_CONFIG_ID'),
-      write: managedProviderSecret(env, 'COMPOSIO_GOOGLE_ADS_WRITE_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_GOOGLE_ADS_READ_AUTH_CONFIG_ID'),
+      write: envValue(env, 'COMPOSIO_GOOGLE_ADS_WRITE_AUTH_CONFIG_ID'),
     },
     youtube: {
-      read: managedProviderSecret(env, 'COMPOSIO_YOUTUBE_READ_AUTH_CONFIG_ID'),
-      write: managedProviderSecret(env, 'COMPOSIO_YOUTUBE_WRITE_AUTH_CONFIG_ID'),
+      read: envValue(env, 'COMPOSIO_YOUTUBE_READ_AUTH_CONFIG_ID'),
+      write: envValue(env, 'COMPOSIO_YOUTUBE_WRITE_AUTH_CONFIG_ID'),
     },
   };
   const authConfigEntries: readonly (readonly [string, string | undefined])[] = [
@@ -756,13 +757,6 @@ function connectorTerminal(
   };
 }
 
-function managedProviderSecret(env: PlatformEnv | undefined, name: string): string | undefined {
-  const bound = env?.[name];
-  const value = typeof bound === 'string' ? bound : process.env[name];
-  const normalized = value?.trim();
-  return normalized || undefined;
-}
-
 function optionalProviderPrerequisites(env: PlatformEnv | undefined): {
   googleAdsAccessLevel?: string;
   googleAdsPermissibleUse?: string;
@@ -772,18 +766,18 @@ function optionalProviderPrerequisites(env: PlatformEnv | undefined): {
   youtubeQuotaAuditApproved?: string;
 } {
   const values = {
-    googleAdsAccessLevel: managedProviderSecret(env, 'COMPOSIO_GOOGLE_ADS_ACCESS_LEVEL'),
-    googleAdsPermissibleUse: managedProviderSecret(env, 'COMPOSIO_GOOGLE_ADS_PERMISSIBLE_USE'),
-    youtubeGeneralDailyQuota: managedProviderSecret(
+    googleAdsAccessLevel: envValue(env, 'COMPOSIO_GOOGLE_ADS_ACCESS_LEVEL'),
+    googleAdsPermissibleUse: envValue(env, 'COMPOSIO_GOOGLE_ADS_PERMISSIBLE_USE'),
+    youtubeGeneralDailyQuota: envValue(
       env, 'COMPOSIO_YOUTUBE_GENERAL_DAILY_QUOTA_UNITS',
     ),
-    youtubeSearchDailyLimit: managedProviderSecret(
+    youtubeSearchDailyLimit: envValue(
       env, 'COMPOSIO_YOUTUBE_SEARCH_DAILY_CALL_LIMIT',
     ),
-    youtubeUploadDailyLimit: managedProviderSecret(
+    youtubeUploadDailyLimit: envValue(
       env, 'COMPOSIO_YOUTUBE_UPLOAD_DAILY_CALL_LIMIT',
     ),
-    youtubeQuotaAuditApproved: managedProviderSecret(
+    youtubeQuotaAuditApproved: envValue(
       env, 'COMPOSIO_YOUTUBE_QUOTA_AUDIT_APPROVED',
     ),
   };

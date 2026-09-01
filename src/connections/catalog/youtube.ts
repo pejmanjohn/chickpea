@@ -1,6 +1,7 @@
 import * as v from 'valibot';
 
 import type { ManagedConnectorDefinition } from './types.ts';
+import { boundedOptionalTimestampRange } from './ranges.ts';
 
 const DEFAULT_RESULT_LIMIT = 256 * 1024;
 const ResourceHandle = v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9_-]{0,127}$/));
@@ -24,7 +25,7 @@ const ActivitiesSchema = v.pipe(v.strictObject({
   pageToken: v.optional(Cursor),
   publishedAfter: v.optional(Timestamp),
   publishedBefore: v.optional(Timestamp),
-}), v.check((input) => boundedTimestampRange(input.publishedAfter, input.publishedBefore, 31),
+}), v.check((input) => boundedOptionalTimestampRange(input.publishedAfter, input.publishedBefore, 31),
   'YouTube activity range must be valid and no longer than 31 days'));
 const ChannelVideosSchema = v.strictObject({
   channelHandle: ResourceHandle,
@@ -60,7 +61,7 @@ const SearchSchema = v.pipe(v.strictObject({
   pageToken: v.optional(Cursor),
   publishedAfter: v.optional(Timestamp),
   publishedBefore: v.optional(Timestamp),
-}), v.check((input) => boundedTimestampRange(input.publishedAfter, input.publishedBefore, 366),
+}), v.check((input) => boundedOptionalTimestampRange(input.publishedAfter, input.publishedBefore, 366),
   'YouTube search range must be valid and no longer than 366 days'));
 const PlaylistCreateSchema = v.strictObject({
   channelHandle: ResourceHandle,
@@ -202,16 +203,4 @@ function write(
     description, input, maxResultBytes: DEFAULT_RESULT_LIMIT, sideEffectLabel,
     quota: [{ bucket: 'general_units', units: quotaUnits }],
   };
-}
-
-function boundedTimestampRange(
-  start: string | undefined,
-  end: string | undefined,
-  maxDays: number,
-): boolean {
-  if (!start || !end) return true;
-  const startMs = Date.parse(start);
-  const endMs = Date.parse(end);
-  return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs &&
-    (endMs - startMs) / 86_400_000 <= maxDays;
 }

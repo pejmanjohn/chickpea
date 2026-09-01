@@ -2,6 +2,7 @@ import {
   hasCredentialLikeContent,
   hasDisallowedControlCharacter,
 } from '../security/content-validation.ts';
+import { stripLeadingUserMentions } from '../slack/command-address.ts';
 import { isOpaqueRoutineId } from './ids.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
 import {
@@ -103,8 +104,7 @@ export function assertRoutineTaskBoundToPrevious(
 }
 
 function normalizeAuthorityText(text: string): string {
-  return text
-    .replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '')
+  return stripLeadingUserMentions(text)
     .trim()
     .replace(/\s+/g, ' ');
 }

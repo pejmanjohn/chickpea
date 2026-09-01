@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 
-import { constantTimeEquals } from '../admin/constant-time.ts';
+import { constantTimeEquals } from '../security/constant-time.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 
 const MAX_PENDING_SLACK_CHALLENGE_BYTES = 1_048_576;

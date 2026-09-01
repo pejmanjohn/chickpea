@@ -1,3 +1,4 @@
+import { escapeHtml } from '../security/html-escape.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
 import { MODEL_PROVIDER_LOGOS } from './model-provider-logos.ts';
@@ -16912,25 +16913,25 @@ function renderSlackJourneyPage(input: {
   rootAttributes?: string;
 }): string {
   const alert = input.alert
-    ? `<div class="auth-alert" id="auth-error" role="alert" tabindex="-1">${escapeHtmlAttribute(input.alert)}</div>`
+    ? `<div class="auth-alert" id="auth-error" role="alert" tabindex="-1">${escapeHtml(input.alert)}</div>`
     : '';
   const status = input.status
-    ? `<p class="auth-status"${input.statusId ? ` id="${escapeHtmlAttribute(input.statusId)}"` : ''} role="status" aria-live="polite">${escapeHtmlAttribute(input.status)}</p>`
+    ? `<p class="auth-status"${input.statusId ? ` id="${escapeHtml(input.statusId)}"` : ''} role="status" aria-live="polite">${escapeHtml(input.status)}</p>`
     : '';
   const title = input.titleSuccess
-    ? `<div class="auth-title-line"><span class="auth-title-success" aria-hidden="true">&#10003;</span><h1 class="auth-title" id="auth-title">${escapeHtmlAttribute(input.title)}</h1></div>`
-    : `<h1 class="auth-title" id="auth-title">${escapeHtmlAttribute(input.title)}</h1>`;
+    ? `<div class="auth-title-line"><span class="auth-title-success" aria-hidden="true">&#10003;</span><h1 class="auth-title" id="auth-title">${escapeHtml(input.title)}</h1></div>`
+    : `<h1 class="auth-title" id="auth-title">${escapeHtml(input.title)}</h1>`;
   const intro = input.intro
-    ? `<p class="auth-intro">${escapeHtmlAttribute(input.intro)}</p>`
+    ? `<p class="auth-intro">${escapeHtml(input.intro)}</p>`
     : '';
-  return `<!doctype html><html lang="en" data-slack-auth-surface="${escapeHtmlAttribute(input.surface)}"${input.rootAttributes ? ` ${input.rootAttributes}` : ''}><head>
+  return `<!doctype html><html lang="en" data-slack-auth-surface="${escapeHtml(input.surface)}"${input.rootAttributes ? ` ${input.rootAttributes}` : ''}><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
-<title>Chickpea · ${escapeHtmlAttribute(input.title)}</title>${CHICKPEA_FAVICON_HTML}
+<title>Chickpea · ${escapeHtml(input.title)}</title>${CHICKPEA_FAVICON_HTML}
 <style>
 :root{${CHICKPEA_WORDMARK_CSS}}
 :root{--canvas:#f4ebd8;--card:#fffdf6;--well:#f8f1df;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--gold-press:#b27e1f;--line:rgba(59,50,32,.16);--danger:#a83f34;--focus:#b05415;--success:#4f8a3f}*{box-sizing:border-box}html{color-scheme:light}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:clamp(12px,4vw,32px);overflow-wrap:anywhere}.auth-card{width:min(600px,100%);background:var(--card);border:1px solid var(--line);border-radius:22px;padding:clamp(22px,6vw,46px);box-shadow:0 14px 38px rgba(59,50,32,.1)}.auth-brand{display:flex;align-items:center;gap:10px;margin-bottom:30px}.auth-brand-mark{width:42px;height:42px;display:block}.auth-brand-name{font-weight:850;font-size:1.15rem}.auth-eyebrow{margin:0;color:var(--muted);font-size:.76rem;font-weight:850;letter-spacing:.09em;text-transform:uppercase}.auth-title-line{align-items:center;display:flex;gap:13px;margin:8px 0 10px}.auth-title{margin:8px 0 10px;font-size:clamp(1.75rem,7vw,2.7rem);line-height:1.05;letter-spacing:-.035em}.auth-title-line .auth-title{margin:0}.auth-title-success{align-items:center;background:var(--success);border-radius:50%;color:#fff;display:inline-flex;flex:0 0 auto;font-size:1.15rem;font-weight:850;height:36px;justify-content:center;width:36px}.auth-intro,.auth-status,.auth-help{color:var(--muted);line-height:1.55}.auth-status{min-height:1.5em;margin:14px 0}.auth-alert{margin:18px 0;border-left:4px solid var(--danger);border-radius:8px;background:#fff3ee;color:var(--danger);padding:12px 14px;font-weight:750;line-height:1.45}.auth-section{margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:15px;background:var(--well)}.auth-section h2{margin:0 0 8px;font-size:1.08rem}label{display:block;margin:17px 0 6px;font-weight:750}label span{display:block;margin-top:2px;color:var(--muted);font-size:.78rem;font-weight:500}input,textarea{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;color:var(--ink);padding:11px 12px;font:inherit}textarea{min-height:220px;resize:vertical}details{margin-top:20px;border-top:1px solid var(--line);padding-top:17px}summary{cursor:pointer;font-weight:800}.auth-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}.auth-button,.auth-link{display:inline-flex;align-items:center;justify-content:center;min-height:48px;border:0;border-radius:12px;padding:11px 17px;background:var(--gold);box-shadow:0 3px 0 var(--gold-press);color:var(--ink);font:inherit;font-weight:850;text-decoration:none;cursor:pointer}.auth-button{width:100%}.slack-provider-button{gap:12px;background:#fff;border:1px solid var(--line);box-shadow:0 1px 2px rgba(45,44,47,.04);color:#2d2c2f;font-weight:750}.slack-provider-button:hover{background:#fbfbfb;border-color:rgba(59,50,32,.32);box-shadow:0 2px 7px rgba(45,44,47,.09)}.slack-provider-logo{width:24px;height:24px}.auth-button.secondary,.auth-link.secondary{background:transparent;border:1px solid var(--line);box-shadow:none}.auth-button:active,.auth-link:active{transform:translateY(2px);box-shadow:none}.auth-button:focus-visible,.auth-link:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible,.auth-alert:focus-visible{outline:3px solid color-mix(in srgb,var(--focus) 48%,transparent);outline-offset:3px}.slack-provider-button:focus-visible{outline:2px solid #656468;outline-offset:2px}.auth-warning{margin-top:22px;border:1px solid rgba(168,63,52,.25);border-radius:13px;background:#fff3ee;padding:15px}.auth-warning strong{display:block;margin-bottom:5px}.auth-meta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.83rem}.auth-manifest{max-height:280px;overflow:auto;white-space:pre-wrap;font-size:.75rem}.slack-logo-image{background:url("${SLACK_LOGO_DATA_URL}") center/contain no-repeat;display:inline-block}.setup-token-callout{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center;margin:22px 0;padding:15px 17px;border-left:3px solid var(--gold-press);border-radius:12px;background:var(--well)}.setup-token-callout strong{display:block;margin-bottom:3px}.setup-token-callout p{margin:0;color:var(--muted);font-size:.86rem;line-height:1.45}.setup-slack-link{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:9px 13px;border:1px solid var(--line);border-radius:11px;background:var(--card);color:var(--ink);font-weight:800;text-decoration:none;white-space:nowrap}.setup-slack-logo{width:22px;height:22px}.setup-token-note{display:flex;gap:8px;align-items:flex-start;margin:13px 0 0;color:var(--muted);font-size:.8rem;line-height:1.45}.setup-manual-choice p{margin-bottom:14px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-card,html[data-slack-auth-surface="owner-complete"] .auth-card{padding-block:56px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-brand,html[data-slack-auth-surface="owner-complete"] .auth-brand{margin-bottom:38px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title,html[data-slack-auth-surface="owner-complete"] .auth-title{margin:14px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title-line{margin:14px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title-line .auth-title{margin:0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-intro{margin:18px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-intro+form{margin-top:28px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] form+details{margin-top:30px}html[data-slack-auth-surface="owner-complete"] .auth-actions{margin-top:32px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:440px){body{padding:8px}.auth-card{border-radius:14px;padding:21px 16px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-card,html[data-slack-auth-surface="owner-complete"] .auth-card{padding-block:32px}.auth-actions{display:grid}.auth-link,.auth-button{width:100%}.auth-section{padding:16px 13px}.setup-token-callout{grid-template-columns:1fr}.setup-slack-link{width:100%;justify-content:center}}
 .brand-wordmark{aspect-ratio:2106/518;background-color:currentColor;display:block;flex:0 0 auto;height:36px;-webkit-print-color-adjust:exact;print-color-adjust:exact;-webkit-mask:var(--chickpea-wordmark-image) center/contain no-repeat;mask:var(--chickpea-wordmark-image) center/contain no-repeat}@media(forced-colors:active){.brand-wordmark{background-color:CanvasText;forced-color-adjust:none}}
-</style></head><body><main class="auth-card" aria-labelledby="auth-title">${AUTH_BRAND_HTML}<p class="auth-eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p>${title}${intro}${alert}${status}${input.body}</main></body></html>`;
+</style></head><body><main class="auth-card" aria-labelledby="auth-title">${AUTH_BRAND_HTML}<p class="auth-eyebrow">${escapeHtml(input.eyebrow)}</p>${title}${intro}${alert}${status}${input.body}</main></body></html>`;
 }
 
 /** Complete a same-origin POST before navigating across the strict form-action CSP boundary. */
@@ -16942,7 +16943,7 @@ export function renderSlackAuthorizationHandoffPage(authorizationUrl: string): s
       target.username || target.password || target.hash) {
     throw new TypeError('Slack authorization URL is invalid.');
   }
-  const safeTarget = escapeHtmlAttribute(target.toString());
+  const safeTarget = escapeHtml(target.toString());
   return renderSlackJourneyPage({
     surface: 'authorization-handoff',
     eyebrow: 'Secure Slack handoff',
@@ -16960,7 +16961,7 @@ export function renderSlackSignInPage(destination: string): string {
     eyebrow: 'Chickpea control plane',
     title: 'Welcome back',
     intro: 'Sign in with the Slack account you use with Chickpea in this workspace.',
-    body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="login"><input type="hidden" name="destination" value="${escapeHtmlAttribute(safeDestination)}"><button class="auth-button slack-provider-button" type="submit" autofocus><span class="slack-provider-logo slack-logo-image" aria-hidden="true"></span>Continue with Slack</button></form>`,
+    body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="login"><input type="hidden" name="destination" value="${escapeHtml(safeDestination)}"><button class="auth-button slack-provider-button" type="submit" autofocus><span class="slack-provider-logo slack-logo-image" aria-hidden="true"></span>Continue with Slack</button></form>`,
   });
 }
 
@@ -16994,7 +16995,7 @@ export function renderSlackAccessDeniedPage(input: {
       ? 'No Chickpea account or role was created.'
       : 'No Chickpea account or role was created. If access was suspended or removed, ask an Owner to restore it.',
     alert: cancelled || expired ? undefined : 'This Slack identity does not match the required Chickpea access.',
-    body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="${input.purpose}">${capability}<input type="hidden" name="destination" value="${escapeHtmlAttribute(safeDestination)}"><button class="auth-button" type="submit" autofocus>Try another Slack account</button></form>${setupScript}`,
+    body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="${input.purpose}">${capability}<input type="hidden" name="destination" value="${escapeHtml(safeDestination)}"><button class="auth-button" type="submit" autofocus>Try another Slack account</button></form>${setupScript}`,
   });
 }
 
@@ -17004,7 +17005,7 @@ export function renderSlackOwnerCompletePage(destination: string): string {
     surface: 'owner-complete',
     eyebrow: 'Setup complete',
     title: '🎉 Installation successful',
-    body: `<div class="auth-actions"><a class="auth-link" href="${escapeHtmlAttribute(safeDestination)}" autofocus>Open Chickpea</a></div>`,
+    body: `<div class="auth-actions"><a class="auth-link" href="${escapeHtml(safeDestination)}" autofocus>Open Chickpea</a></div>`,
   });
 }
 
@@ -17037,8 +17038,8 @@ export function renderSlackInvitationCompletePage(destination: string): string {
     surface: 'invitation-complete', eyebrow: 'Invitation accepted', title: 'You’re in',
     intro: 'Your exact Slack identity is now linked to this Chickpea workspace.',
     status: 'Opening the Team page…',
-    rootAttributes: `data-invitation-state="complete" data-destination="${escapeHtmlAttribute(safeDestination)}"`,
-    body: `<noscript><a class="auth-link" href="${escapeHtmlAttribute(safeDestination)}">Open Chickpea</a></noscript><script src="/auth/slack/invite/client.js" defer></script>`,
+    rootAttributes: `data-invitation-state="complete" data-destination="${escapeHtml(safeDestination)}"`,
+    body: `<noscript><a class="auth-link" href="${escapeHtml(safeDestination)}">Open Chickpea</a></noscript><script src="/auth/slack/invite/client.js" defer></script>`,
   });
 }
 
@@ -17063,15 +17064,15 @@ export function renderSlackManualSetupPage(input: {
 }): string {
   const state = input.setup?.state ?? 'capability_required';
   const destination = safeSlackPageDestination(input.destination);
-  const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtmlAttribute(destination)}">`;
-  const manifestJson = escapeHtmlAttribute(JSON.stringify(input.manifest, null, 2));
+  const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtml(destination)}">`;
+  const manifestJson = escapeHtml(JSON.stringify(input.manifest, null, 2));
   const initialStep = input.error ? 'credentials' : 'create';
   const alert = input.error
-    ? `<div class="onboarding-error" role="alert" tabindex="-1"><p class="field-error">${escapeHtmlAttribute(slackSetupPageMessage(input.error))}</p><p class="hint">For your safety, every secret field has been cleared.</p></div>`
+    ? `<div class="onboarding-error" role="alert" tabindex="-1"><p class="field-error">${escapeHtml(slackSetupPageMessage(input.error))}</p><p class="hint">For your safety, every secret field has been cleared.</p></div>`
     : '';
   const capabilityPanel = `<section class="onboarding-panel" data-manual-step-panel="create"><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Resume manual setup</h1><p class="onboarding-lede" id="slack-setup-status">Reading the private setup capability from this browser tab.</p><form id="slack-setup-open-form" method="post" action="/admin/setup/manual"><input type="hidden" name="action" value="open">${hidden}<button class="btn btn-primary" type="submit">Continue manual setup</button></form></section>`;
   const createPanelHidden = initialStep === 'create' ? '' : ' hidden';
-  const createPanel = `<section class="onboarding-panel" data-manual-step-panel="create"${createPanelHidden}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Create Chickpea</h1><p class="onboarding-lede">Slack opens in a new tab. Come back here after Chickpea is created.</p><div class="onboarding-instructions">${manualSlackInstruction(1, 'Choose your workspace, then click Next.', '', 'create-workspace', 'onboarding-shot-viewport', 'Slack Create from manifest screen with the workspace picker and Next button')}${manualSlackInstruction(2, 'Review Chickpea, then click Create and Install.', '', 'create-review', 'onboarding-shot-viewport', 'Slack app review screen showing Chickpea permissions and Create and Install')}</div><div class="onboarding-guide-actions"><span></span><a class="btn btn-primary" href="${escapeHtmlAttribute(input.manifestPrefillUrl)}" target="_blank" rel="noreferrer" data-manual-step-target="finish"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Create Chickpea in Slack <span aria-hidden="true">↗</span></a></div></section>`;
+  const createPanel = `<section class="onboarding-panel" data-manual-step-panel="create"${createPanelHidden}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Create Chickpea</h1><p class="onboarding-lede">Slack opens in a new tab. Come back here after Chickpea is created.</p><div class="onboarding-instructions">${manualSlackInstruction(1, 'Choose your workspace, then click Next.', '', 'create-workspace', 'onboarding-shot-viewport', 'Slack Create from manifest screen with the workspace picker and Next button')}${manualSlackInstruction(2, 'Review Chickpea, then click Create and Install.', '', 'create-review', 'onboarding-shot-viewport', 'Slack app review screen showing Chickpea permissions and Create and Install')}</div><div class="onboarding-guide-actions"><span></span><a class="btn btn-primary" href="${escapeHtml(input.manifestPrefillUrl)}" target="_blank" rel="noreferrer" data-manual-step-target="finish"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Create Chickpea in Slack <span aria-hidden="true">↗</span></a></div></section>`;
   const finishPanel = `<section class="onboarding-panel" data-manual-step-panel="finish" hidden><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Finish creating Chickpea</h1><p class="onboarding-lede">Two quick actions in the Slack tab you just opened.</p><div class="onboarding-instructions">${manualSlackInstruction(1, 'Review the permissions, then click Allow.', '', 'allow', 'onboarding-shot-focused', 'Slack permission approval screen with the Allow button')}${manualSlackInstruction(2, 'When Slack says Chickpea is ready, click Go to App Settings.', '', 'ready', 'onboarding-shot-ready', 'Slack Chickpea is ready dialog with the Go to App Settings button')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="create">Back</button><button class="btn btn-primary" type="button" data-manual-step-target="events">Next: Verify Event URL</button></div></section>`;
   const eventsPanel = `<section class="onboarding-panel" data-manual-step-panel="events" hidden><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Verify the Event URL</h1><p class="onboarding-lede">Slack needs one manual check before it can send messages to Chickpea.</p><a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">↗</span></a><div class="onboarding-instructions"><section class="onboarding-instruction"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In the left sidebar, open Event Subscriptions.</span></h2></section>${manualSlackInstruction(2, 'Beside Request URL, click Retry.', '', 'events-retry', 'onboarding-shot-wide', 'Slack Event Subscriptions showing the Retry button')}${manualSlackInstruction(3, 'When Request URL says Verified, click Save Changes.', 'If it still says your URL did not respond, wait a few seconds and click Retry again.', 'events', 'onboarding-shot-focused onboarding-shot-events', 'Slack Event Subscriptions showing Request URL Verified')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="finish">Back</button><button class="btn btn-primary" type="button" data-manual-step-target="credentials">I saved changes</button></div></section>`;
   const credentialsPanel = `<section class="onboarding-panel" data-manual-step-panel="credentials"${initialStep === 'credentials' ? '' : ' hidden'}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Add app credentials</h1><p class="onboarding-lede">Paste these values once. Chickpea validates the app, encrypts its credentials, and then uses Slack OAuth for the bot token and installer identity.</p><a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">↗</span></a><form class="onboarding-credential-form" method="post" action="/admin/setup/manual"><input type="hidden" name="action" value="adopt">${hidden}<section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In Basic Information, copy the app credentials.</span></h2><div class="onboarding-credential-grid"><div class="onboarding-shot onboarding-shot-secret"><img src="/admin/assets/onboarding/signing-secret.webp" alt="Slack Basic Information showing the Signing Secret" loading="lazy" decoding="async"></div><div class="onboarding-credential-help"><label class="field" for="manual-app-id"><span class="field-label">App ID</span><input class="input mono" id="manual-app-id" name="appId" type="text" autocomplete="off" maxlength="64" required></label><label class="field" for="manual-client-id"><span class="field-label">Client ID</span><input class="input mono" id="manual-client-id" name="clientId" type="text" autocomplete="off" maxlength="256" required></label><label class="field" for="manual-client-secret"><span class="field-label">Client Secret</span><input class="input mono" id="manual-client-secret" name="clientSecret" type="password" autocomplete="off" maxlength="4096" required></label><label class="field" for="manual-signing-secret"><span class="field-label">Signing Secret</span><span class="onboarding-credential-subtext">Use Signing Secret — not Client Secret.</span><input class="input mono" id="manual-signing-secret" name="signingSecret" type="password" autocomplete="off" maxlength="4096" required></label></div></div></section><section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">2</span><span>Export the app manifest as JSON and paste it here.</span></h2><label class="field" for="manual-manifest"><span class="field-label">Exported app manifest (JSON)</span><textarea class="input mono" id="manual-manifest" name="observedManifest" maxlength="7500" required>${manifestJson}</textarea></label></section>${alert}<div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="events">Back</button><button class="btn btn-primary" type="submit">Validate and continue</button></div></form></section>`;
@@ -17080,7 +17081,7 @@ export function renderSlackManualSetupPage(input: {
     : state === 'awaiting_app_creation'
       ? `${createPanel}${finishPanel}${eventsPanel}${credentialsPanel}`
       : `<section class="onboarding-panel" data-manual-step-panel="create"><p class="onboarding-eyebrow">Manual setup</p><h1 class="onboarding-title" tabindex="-1">Continue shared setup</h1><p class="onboarding-lede">The app is ready. Continue with the encrypted Slack installation and Owner verification.</p><div class="onboarding-actions"><a class="btn btn-primary" href="/admin/setup">Continue setup</a></div></section>`;
-  return `<!doctype html><html lang="en" data-slack-manual-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}" data-manual-initial-step="${initialStep}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Chickpea · Manual Slack setup</title>${CHICKPEA_FAVICON_HTML}<style>${SLACK_MANUAL_SETUP_CSS}</style></head><body><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">${AUTH_BRAND_HTML}<span class="onboarding-environment">private setup</span></div><ol class="onboarding-orientation" role="list" aria-label="Onboarding progress"><li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Connect Slack</span></li><li><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li><li><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li><li><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol><div class="onboarding-stage" aria-live="polite">${panels}</div></div></main><script src="/admin/setup/manual/client.js" defer></script></body></html>`;
+  return `<!doctype html><html lang="en" data-slack-manual-setup-state="${escapeHtml(state)}" data-slack-setup-state="${escapeHtml(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}" data-manual-initial-step="${initialStep}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Chickpea · Manual Slack setup</title>${CHICKPEA_FAVICON_HTML}<style>${SLACK_MANUAL_SETUP_CSS}</style></head><body><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">${AUTH_BRAND_HTML}<span class="onboarding-environment">private setup</span></div><ol class="onboarding-orientation" role="list" aria-label="Onboarding progress"><li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Connect Slack</span></li><li><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li><li><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li><li><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol><div class="onboarding-stage" aria-live="polite">${panels}</div></div></main><script src="/admin/setup/manual/client.js" defer></script></body></html>`;
 }
 
 function manualSlackInstruction(
@@ -17091,7 +17092,7 @@ function manualSlackInstruction(
   imageClass: string,
   alt: string,
 ): string {
-  return `<section class="onboarding-instruction"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">${number}</span><span>${escapeHtmlAttribute(title)}</span></h2>${note ? `<p class="onboarding-instruction-note">${escapeHtmlAttribute(note)}</p>` : ''}<div class="onboarding-shot ${escapeHtmlAttribute(imageClass)}"><img src="/admin/assets/onboarding/${escapeHtmlAttribute(imageName)}.webp" alt="${escapeHtmlAttribute(alt)}" loading="lazy" decoding="async"></div></section>`;
+  return `<section class="onboarding-instruction"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">${number}</span><span>${escapeHtml(title)}</span></h2>${note ? `<p class="onboarding-instruction-note">${escapeHtml(note)}</p>` : ''}<div class="onboarding-shot ${escapeHtml(imageClass)}"><img src="/admin/assets/onboarding/${escapeHtml(imageName)}.webp" alt="${escapeHtml(alt)}" loading="lazy" decoding="async"></div></section>`;
 }
 
 const SLACK_MANUAL_SETUP_CSS = `
@@ -17115,13 +17116,13 @@ export function renderSlackSetupPage(input: {
   const destination = safeSlackPageDestination(input.destination);
   const notice = input.notice ? slackSetupPageMessage(input.notice) : undefined;
   const error = input.error ? slackSetupPageMessage(input.error) : undefined;
-  const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtmlAttribute(destination)}">`;
-  const manifestJson = escapeHtmlAttribute(JSON.stringify(input.manifest, null, 2));
+  const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtml(destination)}">`;
+  const manifestJson = escapeHtml(JSON.stringify(input.manifest, null, 2));
   let title = 'Resume private setup';
   let intro = 'Chickpea keeps this seven-day setup checkpoint without turning the setup link into a user session.';
   let body = '';
   if (state === 'capability_required') {
-    body = `<form id="slack-setup-open-form" method="post" action="/admin/setup"><input type="hidden" name="action" value="open">${hidden}${input.notice ? `<input type="hidden" name="notice" value="${escapeHtmlAttribute(input.notice)}">` : ''}<button class="auth-button" data-primary-action="resume-private" type="submit" autofocus>Continue private setup</button></form>`;
+    body = `<form id="slack-setup-open-form" method="post" action="/admin/setup"><input type="hidden" name="action" value="open">${hidden}${input.notice ? `<input type="hidden" name="notice" value="${escapeHtml(input.notice)}">` : ''}<button class="auth-button" data-primary-action="resume-private" type="submit" autofocus>Continue private setup</button></form>`;
   } else if (state === 'awaiting_app_creation') {
     title = input.gatewayState === 'connected' ? 'Slack is connected' : 'Add Chickpea to Slack';
     intro = input.gatewayState === 'connected'
@@ -17156,7 +17157,7 @@ export function renderSlackSetupPage(input: {
     const eventsUrl = input.setup?.appId
       ? `https://api.slack.com/apps/${encodeURIComponent(input.setup.appId)}/event-subscriptions`
       : 'https://api.slack.com/apps';
-    body = `<div class="auth-warning" role="note"><strong>If Slack has not delivered the challenge</strong>Open Event Subscriptions, click Retry beside Request URL, then click Save Changes.</div><div class="auth-actions"><a class="auth-link secondary" href="${escapeHtmlAttribute(eventsUrl)}" target="_blank" rel="noreferrer">Open Event Subscriptions</a></div><form method="post" action="/auth/slack/install/finalize">${hidden}<button class="auth-button" data-primary-action="verify-events" type="submit" autofocus>Check signed Events verification</button></form>`;
+    body = `<div class="auth-warning" role="note"><strong>If Slack has not delivered the challenge</strong>Open Event Subscriptions, click Retry beside Request URL, then click Save Changes.</div><div class="auth-actions"><a class="auth-link secondary" href="${escapeHtml(eventsUrl)}" target="_blank" rel="noreferrer">Open Event Subscriptions</a></div><form method="post" action="/auth/slack/install/finalize">${hidden}<button class="auth-button" data-primary-action="verify-events" type="submit" autofocus>Check signed Events verification</button></form>`;
   } else if (state === 'bot_installed') {
     title = 'Become the first Owner';
     intro = 'Sign in as the same Slack member who installed the app. Installation alone does not grant Chickpea access.';
@@ -17168,7 +17169,7 @@ export function renderSlackSetupPage(input: {
   } else {
     title = 'Slack setup is complete';
     intro = 'The setup capability no longer grants any action.';
-    body = `<div class="auth-actions"><a class="auth-link" href="${escapeHtmlAttribute(destination)}" autofocus>Open Chickpea</a></div>`;
+    body = `<div class="auth-actions"><a class="auth-link" href="${escapeHtml(destination)}" autofocus>Open Chickpea</a></div>`;
   }
   const eyebrow = state === 'awaiting_app_creation'
     ? 'Slack setup'
@@ -17180,7 +17181,7 @@ export function renderSlackSetupPage(input: {
       : {}),
     ...(state === 'awaiting_app_creation' ? {} : { status: slackSetupPageMessage(state) }),
     alert: error ?? notice,
-    rootAttributes: `data-slack-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}"`,
+    rootAttributes: `data-slack-setup-state="${escapeHtml(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}"`,
     body: `${body}<script src="/admin/setup/client.js" defer></script>`,
   });
 }
@@ -17263,8 +17264,8 @@ export function renderSlackRecoveryPage(options: {
       alert: options.error,
       body: `<form method="post" action="/admin/recovery">
         <input type="hidden" name="action" value="stage">
-        <label for="app-id">Slack app ID</label><input id="app-id" name="appId" required maxlength="64" autocomplete="off" value="${escapeHtmlAttribute(options.expectedAppId ?? '')}">
-        <label for="team-id">Slack team ID</label><input id="team-id" name="teamId" required maxlength="64" autocomplete="off" value="${escapeHtmlAttribute(options.expectedTeamId ?? '')}">
+        <label for="app-id">Slack app ID</label><input id="app-id" name="appId" required maxlength="64" autocomplete="off" value="${escapeHtml(options.expectedAppId ?? '')}">
+        <label for="team-id">Slack team ID</label><input id="team-id" name="teamId" required maxlength="64" autocomplete="off" value="${escapeHtml(options.expectedTeamId ?? '')}">
         <label for="client-id">Client ID</label><input id="client-id" name="clientId" required maxlength="256" autocomplete="off">
         <label for="client-secret">Client secret</label><input id="client-secret" name="clientSecret" type="password" required maxlength="4096" autocomplete="off">
         <label for="signing-secret">Signing secret</label><input id="signing-secret" name="signingSecret" type="password" required maxlength="4096" autocomplete="off">
@@ -17285,13 +17286,4 @@ export function renderSlackRecoveryPage(options: {
       <button class="auth-button" type="submit" autofocus>Start 15-minute repair</button>
     </form>`,
   });
-}
-
-function escapeHtmlAttribute(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
 }

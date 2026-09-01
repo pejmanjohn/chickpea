@@ -1,3 +1,4 @@
+import { escapeHtml } from '../security/html-escape.ts';
 import { CHICKPEA_FAVICON_HTML, CHICKPEA_WORDMARK_CSS, CHICKPEA_WORDMARK_HTML } from '../brand/chickpea-mark.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
 import { resolveConnectorCatalogPreset } from '../config/presets.ts';
@@ -311,16 +312,6 @@ function monogram(value: string): string {
   const parts = value.match(/[A-Za-z0-9]+/g) ?? [];
   if (parts.length > 1) return `${parts[0]![0]}${parts[1]![0]}`.toUpperCase();
   return (parts[0] ?? '?').slice(0, 2).toUpperCase();
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>'"]/g, (character) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    "'": '&#39;',
-    '"': '&quot;',
-  })[character]!);
 }
 
 const PAGE_CSS = `

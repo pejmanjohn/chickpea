@@ -85,3 +85,17 @@ export function redactCredentialLikeContent(text: string): string {
 export function credentialMarkers(): readonly string[] {
   return CREDENTIAL_MARKERS;
 }
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** An empty string is never a usable credential, id, or label. */
+export function nonEmpty(value: string | undefined): string | undefined {
+  return value ? value : undefined;
+}
+
+/** As `nonEmpty`, for values whose surrounding whitespace is not significant. */
+export function trimmedNonEmpty(value: string | undefined): string | undefined {
+  return value?.trim() || undefined;
+}

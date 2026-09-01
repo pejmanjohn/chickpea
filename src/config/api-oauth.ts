@@ -1,12 +1,24 @@
+import { decodeBase64Url, encodeBase64Url } from '../security/base64url.ts';
+import { isRecord } from '../security/content-validation.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { AGENT_ID_PATTERN } from './agent-id.ts';
+import {
+  isOAuthAttemptId,
+  LEASE_ATTEMPTS,
+  LEASE_MAX_RETRY_MS,
+  LEASE_RETRY_MS,
+  LEASE_TTL_MS,
+  oauthNow,
+  oauthRandomId,
+  oauthSleep,
+  parseOAuthLease,
+  PENDING_TTL_MS,
+  publishFencedOAuthState,
+  REFRESH_SKEW_MS,
+  type StoredOAuthLease,
+  validateOAuthAttemptId,
+} from './oauth-shared.ts';
 
-const PENDING_TTL_MS = 10 * 60_000;
-const REFRESH_SKEW_MS = 60_000;
-const LEASE_TTL_MS = 20_000;
-const LEASE_RETRY_MS = 25;
-const LEASE_MAX_RETRY_MS = 400;
-const LEASE_ATTEMPTS = 64;
 const FETCH_TIMEOUT_MS = 10_000;
 const IDENTITY_TEXT_MAX = 160;
 // Agent-scoped connection-account ids include an underscore and carry a generated
@@ -135,11 +147,6 @@ interface StoredTokenBundle {
   oauthAttemptId?: string;
 }
 
-interface StoredLease {
-  owner: string;
-  expiresAt: number;
-}
-
 export function apiOAuthSettingKeys(ref: ApiOAuthRef): [
   client: string,
   pending: string,
@@ -232,7 +239,10 @@ export async function startApiOAuthAuthorization(
       (!Number.isSafeInteger(input.accountRevision) || input.accountRevision < 1)) {
     throw new ApiOAuthError('oauth_unavailable', 'OAuth account revision is invalid');
   }
-  validateOAuthAttemptId(input.oauthAttemptId);
+  validateOAuthAttemptId(
+    input.oauthAttemptId,
+    () => new ApiOAuthError('oauth_unavailable', 'OAuth attempt identity is invalid'),
+  );
   const scopes = validatedGoogleScopes(input.scopes);
   await requireCurrentConnection(
     input.ref, selectedProvider, dependencies, input.accountRevision, input.oauthAttemptId,
@@ -240,9 +250,9 @@ export async function startApiOAuthAuthorization(
 
   const client = await readClient(input.ref, dependencies.settings);
   if (client.provider !== selectedProvider) throw invalidStorage();
-  const state = encodeState(input.ref, selectedProvider, randomId(dependencies));
+  const state = encodeState(input.ref, selectedProvider, oauthRandomId(dependencies));
   const codeVerifier = [0, 1, 2, 3, 4, 5, 6, 7]
-    .map(() => randomId(dependencies))
+    .map(() => oauthRandomId(dependencies))
     .join('-')
     .slice(0, 128);
   const codeChallenge = await sha256Base64Url(codeVerifier);
@@ -252,15 +262,21 @@ export async function startApiOAuthAuthorization(
     callbackUrl,
     scopes,
     codeVerifier,
-    expiresAt: now(dependencies) + PENDING_TTL_MS,
+    expiresAt: oauthNow(dependencies) + PENDING_TTL_MS,
     ...(input.returnAgentId ? { returnAgentId: input.returnAgentId } : {}),
     ...(input.accountRevision !== undefined ? { accountRevision: input.accountRevision } : {}),
     ...(input.oauthAttemptId ? { oauthAttemptId: input.oauthAttemptId } : {}),
   };
-  await storePendingAuthorization(
+  await publishFencedOAuthState(
     apiOAuthSettingKeys(input.ref)[1],
     pending,
     dependencies.settings,
+    {
+      parseCurrent: parsePending,
+      superseded: attemptSuperseded,
+      unavailable: () =>
+        new ApiOAuthError('oauth_unavailable', 'Could not publish OAuth authorization state'),
+    },
   );
   try {
     await requireCurrentConnection(
@@ -328,15 +344,21 @@ export async function completeApiOAuthAuthorization(
     );
     const tokens = await tokenResponse(response, undefined);
     const tokenKey = apiOAuthSettingKeys(ref)[2];
-    await storeCompletedTokenBundle(tokenKey, {
+    const bundle: StoredTokenBundle = {
       provider: pending.provider,
       ...tokens,
-      obtainedAt: now(dependencies),
+      obtainedAt: oauthNow(dependencies),
       ...(pending.accountRevision !== undefined
         ? { accountRevision: pending.accountRevision }
         : {}),
       ...(pending.oauthAttemptId ? { oauthAttemptId: pending.oauthAttemptId } : {}),
-    }, dependencies.settings);
+    };
+    await publishFencedOAuthState(tokenKey, bundle, dependencies.settings, {
+      parseCurrent: parseTokenBundle,
+      superseded: attemptSuperseded,
+      unavailable: () =>
+        new ApiOAuthError('oauth_unavailable', 'Could not publish OAuth credentials'),
+    });
     try {
       await requireCurrentConnection(
         ref,
@@ -411,10 +433,10 @@ export async function resolveApiOAuthAccessToken(
   await requireCurrentConnection(
     input.ref, selectedProvider, dependencies, undefined, bundle.oauthAttemptId,
   );
-  if (!tokenNeedsRefresh(bundle, now(dependencies))) return bundle.accessToken;
+  if (!tokenNeedsRefresh(bundle, oauthNow(dependencies))) return bundle.accessToken;
   if (!bundle.refreshToken) throw reauthorizationRequired();
 
-  const owner = randomId(dependencies);
+  const owner = oauthRandomId(dependencies);
   let retryDelay = LEASE_RETRY_MS;
   for (let attempt = 0; attempt < LEASE_ATTEMPTS; attempt += 1) {
     raw = await dependencies.settings.getSetting(tokenKey);
@@ -423,11 +445,11 @@ export async function resolveApiOAuthAccessToken(
     await requireCurrentConnection(
       input.ref, selectedProvider, dependencies, undefined, bundle.oauthAttemptId,
     );
-    if (!tokenNeedsRefresh(bundle, now(dependencies))) return bundle.accessToken;
+    if (!tokenNeedsRefresh(bundle, oauthNow(dependencies))) return bundle.accessToken;
 
     const leaseRaw = await dependencies.settings.getSetting(leaseKey);
     const lease = leaseRaw ? parseLease(leaseRaw) : undefined;
-    const currentTime = now(dependencies);
+    const currentTime = oauthNow(dependencies);
     if (lease && lease.expiresAt > currentTime && !tokenHardExpired(bundle, currentTime)) {
       // One caller refreshes near-expiry credentials; concurrent turns can use
       // the still-valid token instead of blocking on settings-store polling.
@@ -463,7 +485,7 @@ export async function resolveApiOAuthAccessToken(
         }
       }
     }
-    await sleep(dependencies, retryDelay);
+    await oauthSleep(dependencies, retryDelay);
     retryDelay = Math.min(retryDelay * 2, LEASE_MAX_RETRY_MS);
   }
   throw new ApiOAuthError('oauth_unavailable', 'Timed out waiting for OAuth refresh');
@@ -521,7 +543,7 @@ async function refreshAccessToken(
     provider: selectedProvider,
     ...refreshed,
     ...(refreshed.scope === undefined && bundle.scope !== undefined ? { scope: bundle.scope } : {}),
-    obtainedAt: now(dependencies),
+    obtainedAt: oauthNow(dependencies),
     ...(bundle.accountRevision !== undefined ? { accountRevision: bundle.accountRevision } : {}),
     ...(bundle.oauthAttemptId ? { oauthAttemptId: bundle.oauthAttemptId } : {}),
   };
@@ -573,7 +595,7 @@ async function consumePending(
     delete: [pendingKey],
   });
   if (!consumed) throw invalidState();
-  if (pending.expiresAt <= now(dependencies)) throw invalidState();
+  if (pending.expiresAt <= oauthNow(dependencies)) throw invalidState();
   return { ref: decoded.ref, pending };
 }
 
@@ -723,10 +745,8 @@ function parseTokenBundle(raw: string): StoredTokenBundle {
   };
 }
 
-function parseLease(raw: string): StoredLease {
-  const value = parseStoredRecord(raw);
-  if (typeof value.owner !== 'string' || typeof value.expiresAt !== 'number') throw invalidStorage();
-  return { owner: value.owner, expiresAt: value.expiresAt };
+function parseLease(raw: string): StoredOAuthLease {
+  return parseOAuthLease(raw, parseStoredRecord, invalidStorage);
 }
 
 function tokenNeedsRefresh(bundle: StoredTokenBundle, currentTime: number): boolean {
@@ -740,13 +760,13 @@ function tokenHardExpired(bundle: StoredTokenBundle, currentTime: number): boole
 }
 
 function encodeState(ref: ApiOAuthRef, selectedProvider: ApiOAuthProvider, nonce: string): string {
-  return base64Url(new TextEncoder().encode(JSON.stringify({ a: ref.agentId, c: ref.connectionId, p: selectedProvider, n: nonce })));
+  return encodeBase64Url(new TextEncoder().encode(JSON.stringify({ a: ref.agentId, c: ref.connectionId, p: selectedProvider, n: nonce })));
 }
 
 function decodeState(state: string): { ref: ApiOAuthRef; provider: ApiOAuthProvider } {
   try {
     if (!state || state.length > 2_048 || !/^[A-Za-z0-9_-]+$/.test(state)) throw new Error('bad state');
-    const value: unknown = JSON.parse(new TextDecoder().decode(base64UrlDecode(state)));
+    const value: unknown = JSON.parse(new TextDecoder().decode(decodeBase64Url(state)));
     if (!isRecord(value) || typeof value.a !== 'string' || typeof value.c !== 'string' || value.p !== 'google' || typeof value.n !== 'string' || !value.n) {
       throw new Error('bad state');
     }
@@ -810,90 +830,9 @@ async function requireCurrentConnection(
   }
 }
 
-async function storeCompletedTokenBundle(
-  tokenKey: string,
-  bundle: StoredTokenBundle,
-  settings: SettingsStore,
-): Promise<void> {
-  const nextRaw = JSON.stringify(bundle);
-  for (let attempt = 0; attempt < 16; attempt += 1) {
-    const currentRaw = await settings.getSetting(tokenKey);
-    if (currentRaw) {
-      const current = parseTokenBundle(currentRaw);
-      if (isNewerOAuthAttempt(current, bundle)) {
-        throw new ApiOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
-      }
-    }
-    const stored = await settings.applySettingsPatch({
-      expected: { key: tokenKey, value: currentRaw ?? null },
-      set: [{ key: tokenKey, value: nextRaw }],
-    });
-    if (stored) return;
-  }
-  throw new ApiOAuthError('oauth_unavailable', 'Could not publish OAuth credentials');
-}
-
-async function storePendingAuthorization(
-  pendingKey: string,
-  pending: PendingAuthorization,
-  settings: SettingsStore,
-): Promise<void> {
-  const nextRaw = JSON.stringify(pending);
-  for (let attempt = 0; attempt < 16; attempt += 1) {
-    const currentRaw = await settings.getSetting(pendingKey);
-    if (currentRaw) {
-      const current = parsePending(currentRaw);
-      if (isNewerOAuthAttempt(current, pending)) {
-        throw new ApiOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
-      }
-    }
-    const stored = await settings.applySettingsPatch({
-      expected: { key: pendingKey, value: currentRaw ?? null },
-      set: [{ key: pendingKey, value: nextRaw }],
-    });
-    if (stored) return;
-  }
-  throw new ApiOAuthError('oauth_unavailable', 'Could not publish OAuth authorization state');
-}
-
-function isNewerOAuthAttempt(
-  current: Pick<PendingAuthorization | StoredTokenBundle, 'accountRevision' | 'oauthAttemptId'>,
-  next: Pick<PendingAuthorization | StoredTokenBundle, 'accountRevision' | 'oauthAttemptId'>,
-): boolean {
-  return current.accountRevision !== undefined &&
-    (next.accountRevision === undefined ||
-      current.accountRevision > next.accountRevision ||
-      (current.accountRevision === next.accountRevision &&
-        current.oauthAttemptId !== next.oauthAttemptId));
-}
-
-function validateOAuthAttemptId(value: string | undefined): void {
-  if (value !== undefined && !isOAuthAttemptId(value)) {
-    throw new ApiOAuthError('oauth_unavailable', 'OAuth attempt identity is invalid');
-  }
-}
-
-function isOAuthAttemptId(value: unknown): value is string {
-  return typeof value === 'string' &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
-
 async function sha256Base64Url(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
-  return base64Url(new Uint8Array(digest));
-}
-
-function base64Url(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function base64UrlDecode(value: string): Uint8Array {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
-  const binary = atob(padded);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return encodeBase64Url(new Uint8Array(digest));
 }
 
 function parseStoredRecord(raw: string): Record<string, unknown> {
@@ -930,18 +869,6 @@ function requiredBounded(value: string, maxLength: number): string {
   return normalized;
 }
 
-function now(dependencies: ApiOAuthDependencies): number {
-  return (dependencies.now ?? Date.now)();
-}
-
-function randomId(dependencies: ApiOAuthDependencies): string {
-  return (dependencies.randomId ?? (() => crypto.randomUUID()))();
-}
-
-function sleep(dependencies: ApiOAuthDependencies, ms: number): Promise<void> {
-  return dependencies.sleep ? dependencies.sleep(ms) : new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function invalidState(cause?: unknown): ApiOAuthError {
   return new ApiOAuthError('invalid_state', 'OAuth state is invalid', cause ? { cause } : undefined);
 }
@@ -954,10 +881,10 @@ function reauthorizationRequired(): ApiOAuthError {
   return new ApiOAuthError('reauthorization_required', 'OAuth authorization must be renewed');
 }
 
-function isConnectionMissing(error: unknown): boolean {
-  return error instanceof ApiOAuthError && error.code === 'connection_missing';
+function attemptSuperseded(): ApiOAuthError {
+  return new ApiOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+function isConnectionMissing(error: unknown): boolean {
+  return error instanceof ApiOAuthError && error.code === 'connection_missing';
 }

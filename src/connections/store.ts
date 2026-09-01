@@ -1,3 +1,4 @@
+import { sha256Hex } from '../security/digest.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { canEditAgent, requirePermission, AuthorizationError } from '../auth/permissions.ts';
 import {
@@ -911,9 +912,7 @@ function applyManagedValidation(
 }
 
 async function managedResourceHandle(resourceKey: string, providerRef: string): Promise<string> {
-  const bytes = new TextEncoder().encode(`${resourceKey}\u0000${providerRef}`);
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  const hex = [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  const hex = await sha256Hex(`${resourceKey}\u0000${providerRef}`);
   return `resource_${hex.slice(0, 32)}`;
 }
 

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent, WorkAuditEventType } from '../audit/types.ts';
 import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
+import { hasCredentialLikeContent } from '../security/content-validation.ts';
 import { promisify } from '../state/async-facade.ts';
 import { tableExists } from '../state/schema-links.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
@@ -2516,7 +2517,8 @@ function rejectSecretString(value: string, path: string): void {
   if (
     /(?:https?|wss?):\/\//i.test(value) ||
     /(?:bearer\s+|-----BEGIN |\b(?:sk|xox[baprs]|gh[pousr])[-_][A-Za-z0-9_-]{8,})/i.test(value) ||
-    /chickpea-openai-subscription|internal.*provider|transport[_-]?marker/i.test(value)
+    /chickpea-openai-subscription|internal.*provider|transport[_-]?marker/i.test(value) ||
+    hasCredentialLikeContent(value)
   ) {
     throw workError('work_secret_rejected', `Secret-bearing value is not allowed at ${path}.`);
   }

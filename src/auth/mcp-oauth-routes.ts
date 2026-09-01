@@ -3,6 +3,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { constantTimeEqual, makeSignature } from 'better-auth/crypto';
 
+import { escapeHtml } from '../security/html-escape.ts';
 import {
   getIdentityStore,
   type PlatformEnv,
@@ -451,9 +452,4 @@ function validClientRedirect(value: string): boolean {
   } catch {
     return false;
   }
-}
-
-function escapeHtml(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }

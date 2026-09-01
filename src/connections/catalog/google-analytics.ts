@@ -1,6 +1,7 @@
 import * as v from 'valibot';
 
 import type { ManagedConnectorDefinition } from './types.ts';
+import { boundedDateRange } from './ranges.ts';
 
 const DEFAULT_RESULT_LIMIT = 256 * 1024;
 const ResourceHandle = v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9_-]{0,127}$/));
@@ -176,13 +177,4 @@ function capability(
     input,
     maxResultBytes: DEFAULT_RESULT_LIMIT,
   };
-}
-
-function boundedDateRange(start: string, end: string, maxDays: number): boolean {
-  const startMs = Date.parse(`${start}T00:00:00Z`);
-  const endMs = Date.parse(`${end}T00:00:00Z`);
-  return Number.isFinite(startMs) && Number.isFinite(endMs) &&
-    new Date(startMs).toISOString().slice(0, 10) === start &&
-    new Date(endMs).toISOString().slice(0, 10) === end && endMs >= startMs &&
-    (endMs - startMs) / 86_400_000 <= maxDays;
 }

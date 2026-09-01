@@ -1,3 +1,5 @@
+import { nonEmpty } from '../security/content-validation.ts';
+import { createSecretCleanupKeys, encodeEnvSegment } from './secret-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
 
@@ -15,6 +17,12 @@ import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
  * No cache here: unlike provider keys, connection secrets are resolved
  * per-use (per test / per turn), so a stale cache would be a footgun.
  */
+
+const cleanupKeys = createSecretCleanupKeys({
+  keyPrefix: 'mcp.',
+  invalidKeyMessage: 'Invalid MCP secret-cleanup key',
+  invalidMarkerMessage: 'Invalid MCP secret-cleanup marker',
+});
 
 type McpSecretSource = 'env' | 'stored' | 'missing';
 
@@ -60,9 +68,9 @@ export async function stageMcpSecretCleanup(
   store: SettingsStore,
 ): Promise<void> {
   const markerKey = mcpSecretCleanupMarkerKey(agentId);
-  const keys = validateCleanupKeys(agentId, settingKeys);
+  const keys = cleanupKeys.validate(agentId, settingKeys);
   const merged = await store.mergeSettingStringSet(markerKey, keys);
-  validateCleanupKeys(agentId, merged);
+  cleanupKeys.validate(agentId, merged);
 }
 
 /**
@@ -78,7 +86,7 @@ export async function finishMcpSecretCleanup(
   const raw = await store.getSetting(markerKey);
   if (raw === undefined) return false;
 
-  const keys = parseCleanupKeys(agentId, raw);
+  const keys = cleanupKeys.parse(agentId, raw);
   for (const key of keys) {
     await store.deleteSetting(key);
   }
@@ -212,42 +220,6 @@ export function buildMcpRequestHeaders(
   return headers;
 }
 
-/**
- * Encode a validated id/header segment into a shell-safe, reversible spelling.
- * Escaping every non-alphanumeric character by its ASCII code matters here:
- * replacing both `-` and `_` with `_` would make two valid agent ids share one
- * environment override even though their stored settings are isolated.
- */
-function encodeEnvSegment(value: string): string {
-  return value
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, (character) =>
-      '_' + character.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'),
-    );
-}
-
-function validateCleanupKeys(agentId: string, settingKeys: readonly string[]): string[] {
-  const expectedPrefix = 'mcp.' + agentId + '.';
-  const keys = [...new Set(settingKeys)];
-  if (!keys.every((key) => key.startsWith(expectedPrefix))) {
-    throw new Error('Invalid MCP secret-cleanup key');
-  }
-  return keys;
-}
-
-function parseCleanupKeys(agentId: string, raw: string): string[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error('Invalid MCP secret-cleanup marker');
-  }
-  if (!Array.isArray(parsed) || !parsed.every((key) => typeof key === 'string')) {
-    throw new Error('Invalid MCP secret-cleanup marker');
-  }
-  return validateCleanupKeys(agentId, parsed);
-}
-
 async function resolveOne(
   envVar: string,
   settingKey: string,
@@ -271,6 +243,3 @@ async function sourceOf(
   return nonEmpty(await settings.getSetting(settingKey)) ? 'stored' : 'missing';
 }
 
-function nonEmpty(value: string | undefined): string | undefined {
-  return value ? value : undefined;
-}
