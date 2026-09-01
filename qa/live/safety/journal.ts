@@ -11,14 +11,22 @@ import { dirname } from 'node:path';
 
 import {
   ACTION_IDS,
+  ASSERTION_TOKENS,
+  CLEANUP_STRATEGIES,
   CLEANUP_RESULTS,
+  FIXTURE_CLASSES,
   MUTATION_CLASSES,
+  OBSERVER_IDS,
   PRIMARY_RESULTS,
   SUITES,
   TYPED_REASONS,
   type ActionId,
+  type AssertionToken,
+  type CleanupStrategy,
   type CleanupResult,
+  type FixtureClass,
   type MutationClass,
+  type ObserverId,
   type PrimaryResult,
   type Suite,
   type TypedReason,
@@ -31,6 +39,33 @@ import {
 } from '../state.ts';
 
 export const RUN_JOURNAL_SCHEMA = 'chickpea-live-journal/v1' as const;
+
+export const PRODUCT_RESOURCE_KINDS = [
+  'agent',
+  'grant',
+  'memory',
+  'connection',
+  'skill',
+  'routine',
+  'route',
+  'setup',
+  'revision_restoration',
+  'attributed_residue',
+] as const;
+export type ProductResourceKind = typeof PRODUCT_RESOURCE_KINDS[number];
+
+export const UNRESOLVED_CATEGORIES = [
+  'forward_ambiguous',
+  'cleanup_ambiguous',
+  'restoration_mismatch',
+  'foreign_effect',
+] as const;
+export type UnresolvedCategory = typeof UNRESOLVED_CATEGORIES[number];
+
+export const CLEANUP_RECEIPT_OUTCOMES = ['absent', 'restored', 'retained', 'ambiguous'] as const;
+export type CleanupReceiptOutcome = typeof CLEANUP_RECEIPT_OUTCOMES[number];
+
+export type CleanupOperation = ActionId | 'verify_retained';
 
 export interface RunJournalHeaderInput {
   runId: string;
@@ -87,6 +122,114 @@ export type RunJournalEventData =
   | { type: 'assertion'; variantId: string; result: PrimaryResult; reason?: TypedReason }
   | { type: 'case_result'; variantId: string; result: PrimaryResult; reason?: TypedReason }
   | { type: 'cleanup_result'; variantId: string; result: CleanupResult }
+  | {
+    type: 'baseline_fact';
+    caseId: string;
+    stepId: string;
+    targetAlias: string;
+    immutableId: string;
+    revision: string;
+    stateDigest: string;
+    resourceKind: ProductResourceKind;
+    fixtureClass: Extract<FixtureClass, 'immutable_baseline' | 'resettable_fixture'>;
+  }
+  | {
+    type: 'mutation_receipt';
+    receiptId: string;
+    caseId: string;
+    stepId: string;
+    attempt: number;
+    targetAlias: string;
+    actionChallengeDigest: string;
+    operatorReceiptDigest: string;
+    beforeStateDigest: string;
+    immutableId: string;
+    beforeRevision: string;
+    revision: string;
+    resourceKind: ProductResourceKind;
+    mutation: MutationClass;
+    fixtureClass: FixtureClass;
+    cleanupStrategy: CleanupStrategy;
+    reversalActionId?: ActionId;
+    direction: 'forward' | 'reversal';
+    expectedResidueStateDigest?: string;
+  }
+  | {
+    type: 'cleanup_intent';
+    cleanupIntentId: string;
+    mutationReceiptId: string;
+    caseId: string;
+    stepId: string;
+    attempt: number;
+    targetAlias: string;
+    actionChallengeDigest: string;
+    immutableId: string;
+    resourceKind: ProductResourceKind;
+    fixtureClass: FixtureClass;
+    operation: CleanupOperation;
+    mutation: MutationClass;
+    expectedRevision: string;
+    restoreRevision?: string;
+    restoreStateDigest?: string;
+    expectedResidueStateDigest?: string;
+  }
+  | {
+    type: 'cleanup_receipt';
+    cleanupIntentId: string;
+    receiptId: string;
+    actionChallengeDigest: string;
+    operatorReceiptDigest: string;
+    immutableId: string;
+    priorRevision: string;
+    resultingRevision: string;
+    resultingStateDigest: string;
+    outcome: CleanupReceiptOutcome;
+  }
+  | {
+    type: 'cleanup_readback';
+    cleanupIntentId: string;
+    cleanupReceiptId: string;
+    readbackId: string;
+    observerId: ObserverId;
+    immutableId: string;
+    observedRevision: string;
+    observedStateDigest: string;
+    outcome: CleanupReceiptOutcome;
+  }
+  | {
+    type: 'assertion_tokens';
+    caseId: string;
+    stepId: string;
+    observerId: ObserverId;
+    expectedTokens: AssertionToken[];
+    observedTokens: AssertionToken[];
+    pollAttempt: number;
+    pollElapsedMs: number;
+  }
+  | {
+    type: 'unresolved_outcome';
+    caseId: string;
+    stepId: string;
+    attempt: number;
+    referenceId: string;
+    category: UnresolvedCategory;
+  }
+  | {
+    type: 'operator_challenge_issued';
+    challengeDigest: string;
+    caseId: string;
+    stepId: string;
+    attempt: number;
+    expectedRevision: string;
+    mutation: MutationClass;
+    targetAlias: string;
+    actorAlias: string;
+    expectedRole: 'owner' | 'admin' | 'member';
+    browserProfileAlias: string;
+    expiresAt: number;
+  }
+  | { type: 'operator_challenge_consumed'; challengeDigest: string }
+  | { type: 'operator_challenge_completed'; challengeDigest: string; operatorReceiptDigest: string }
   | { type: 'run_result'; aggregate: string };
 
 export interface RunJournalEvent {
@@ -344,6 +487,116 @@ function validateEventData(event: RunJournalEventData): void {
       exactKeys(event, ['type', 'variantId', 'result'], 'INVALID_EVENT');
       if (!nonEmpty(event.variantId) || !(CLEANUP_RESULTS as readonly unknown[]).includes(event.result)) invalidEvent();
       return;
+    case 'baseline_fact':
+      exactKeys(event, [
+        'type', 'caseId', 'stepId', 'targetAlias', 'immutableId', 'revision', 'stateDigest',
+        'resourceKind', 'fixtureClass',
+      ], 'INVALID_EVENT');
+      if (!nonEmpty(event.caseId) || !nonEmpty(event.stepId) || !nonEmpty(event.targetAlias)
+        || !exactId(event.immutableId) || !nonEmpty(event.revision) || !digest(event.stateDigest)
+        || !(PRODUCT_RESOURCE_KINDS as readonly unknown[]).includes(event.resourceKind)
+        || !['immutable_baseline', 'resettable_fixture'].includes(event.fixtureClass)) invalidEvent();
+      return;
+    case 'mutation_receipt':
+      exactKeys(event, [
+        'type', 'receiptId', 'caseId', 'stepId', 'attempt', 'targetAlias',
+        'actionChallengeDigest', 'operatorReceiptDigest', 'beforeStateDigest', 'immutableId', 'beforeRevision',
+        'revision', 'resourceKind', 'mutation', 'fixtureClass', 'cleanupStrategy',
+        'reversalActionId', 'direction', 'expectedResidueStateDigest',
+      ], 'INVALID_EVENT');
+      if (!exactId(event.receiptId) || !nonEmpty(event.caseId) || !nonEmpty(event.stepId)
+        || !positiveInteger(event.attempt) || !nonEmpty(event.targetAlias)
+        || !digest(event.actionChallengeDigest) || !digest(event.operatorReceiptDigest)
+        || !digest(event.beforeStateDigest)
+        || !exactId(event.immutableId) || !nonEmpty(event.beforeRevision) || !nonEmpty(event.revision)
+        || !(PRODUCT_RESOURCE_KINDS as readonly unknown[]).includes(event.resourceKind)
+        || !(MUTATION_CLASSES as readonly unknown[]).includes(event.mutation)
+        || !(FIXTURE_CLASSES as readonly unknown[]).includes(event.fixtureClass)
+        || !(CLEANUP_STRATEGIES as readonly unknown[]).includes(event.cleanupStrategy)
+        || (event.reversalActionId !== undefined && !(ACTION_IDS as readonly unknown[]).includes(event.reversalActionId))
+        || !['forward', 'reversal'].includes(event.direction)
+        || (event.expectedResidueStateDigest !== undefined && !digest(event.expectedResidueStateDigest))) invalidEvent();
+      return;
+    case 'cleanup_intent':
+      exactKeys(event, [
+        'type', 'cleanupIntentId', 'mutationReceiptId', 'caseId', 'stepId', 'attempt',
+        'targetAlias', 'actionChallengeDigest', 'immutableId', 'resourceKind', 'fixtureClass',
+        'operation', 'mutation', 'expectedRevision', 'restoreRevision', 'restoreStateDigest',
+        'expectedResidueStateDigest',
+      ], 'INVALID_EVENT');
+      if (!exactId(event.cleanupIntentId) || !exactId(event.mutationReceiptId)
+        || !nonEmpty(event.caseId) || !nonEmpty(event.stepId) || !positiveInteger(event.attempt)
+        || !nonEmpty(event.targetAlias) || !digest(event.actionChallengeDigest)
+        || !exactId(event.immutableId)
+        || !(PRODUCT_RESOURCE_KINDS as readonly unknown[]).includes(event.resourceKind)
+        || !(FIXTURE_CLASSES as readonly unknown[]).includes(event.fixtureClass)
+        || (!(ACTION_IDS as readonly unknown[]).includes(event.operation) && event.operation !== 'verify_retained')
+        || !(MUTATION_CLASSES as readonly unknown[]).includes(event.mutation)
+        || !nonEmpty(event.expectedRevision)
+        || (event.restoreRevision !== undefined && !nonEmpty(event.restoreRevision))
+        || (event.restoreStateDigest !== undefined && !digest(event.restoreStateDigest))
+        || (event.expectedResidueStateDigest !== undefined && !digest(event.expectedResidueStateDigest))) invalidEvent();
+      return;
+    case 'cleanup_receipt':
+      exactKeys(event, [
+        'type', 'cleanupIntentId', 'receiptId', 'actionChallengeDigest', 'immutableId',
+        'operatorReceiptDigest', 'priorRevision', 'resultingRevision', 'resultingStateDigest', 'outcome',
+      ], 'INVALID_EVENT');
+      if (!exactId(event.cleanupIntentId) || !exactId(event.receiptId)
+        || !digest(event.actionChallengeDigest) || !digest(event.operatorReceiptDigest)
+        || !exactId(event.immutableId)
+        || !nonEmpty(event.priorRevision) || !nonEmpty(event.resultingRevision)
+        || !digest(event.resultingStateDigest)
+        || !(CLEANUP_RECEIPT_OUTCOMES as readonly unknown[]).includes(event.outcome)) invalidEvent();
+      return;
+    case 'cleanup_readback':
+      exactKeys(event, [
+        'type', 'cleanupIntentId', 'cleanupReceiptId', 'readbackId', 'observerId',
+        'immutableId', 'observedRevision', 'observedStateDigest', 'outcome',
+      ], 'INVALID_EVENT');
+      if (!exactId(event.cleanupIntentId) || !exactId(event.cleanupReceiptId)
+        || !exactId(event.readbackId) || !(OBSERVER_IDS as readonly unknown[]).includes(event.observerId)
+        || !exactId(event.immutableId) || !nonEmpty(event.observedRevision)
+        || !digest(event.observedStateDigest)
+        || !(CLEANUP_RECEIPT_OUTCOMES as readonly unknown[]).includes(event.outcome)) invalidEvent();
+      return;
+    case 'assertion_tokens':
+      exactKeys(event, [
+        'type', 'caseId', 'stepId', 'observerId', 'expectedTokens', 'observedTokens',
+        'pollAttempt', 'pollElapsedMs',
+      ], 'INVALID_EVENT');
+      if (!nonEmpty(event.caseId) || !nonEmpty(event.stepId)
+        || !(OBSERVER_IDS as readonly unknown[]).includes(event.observerId)
+        || !enumArray(event.expectedTokens, ASSERTION_TOKENS)
+        || !enumArray(event.observedTokens, ASSERTION_TOKENS)
+        || !positiveInteger(event.pollAttempt) || !nonNegativeInteger(event.pollElapsedMs)) invalidEvent();
+      return;
+    case 'unresolved_outcome':
+      exactKeys(event, ['type', 'caseId', 'stepId', 'attempt', 'referenceId', 'category'], 'INVALID_EVENT');
+      if (!nonEmpty(event.caseId) || !nonEmpty(event.stepId) || !positiveInteger(event.attempt)
+        || !exactId(event.referenceId)
+        || !(UNRESOLVED_CATEGORIES as readonly unknown[]).includes(event.category)) invalidEvent();
+      return;
+    case 'operator_challenge_issued':
+      exactKeys(event, [
+        'type', 'challengeDigest', 'caseId', 'stepId', 'attempt', 'expectedRevision',
+        'mutation', 'targetAlias', 'actorAlias', 'expectedRole', 'browserProfileAlias', 'expiresAt',
+      ], 'INVALID_EVENT');
+      if (!digest(event.challengeDigest) || !nonEmpty(event.caseId) || !nonEmpty(event.stepId)
+        || !positiveInteger(event.attempt) || !nonEmpty(event.expectedRevision)
+        || !(MUTATION_CLASSES as readonly unknown[]).includes(event.mutation)
+        || !nonEmpty(event.targetAlias) || !nonEmpty(event.actorAlias)
+        || !['owner', 'admin', 'member'].includes(event.expectedRole)
+        || !nonEmpty(event.browserProfileAlias) || !positiveInteger(event.expiresAt)) invalidEvent();
+      return;
+    case 'operator_challenge_consumed':
+      exactKeys(event, ['type', 'challengeDigest'], 'INVALID_EVENT');
+      if (!digest(event.challengeDigest)) invalidEvent();
+      return;
+    case 'operator_challenge_completed':
+      exactKeys(event, ['type', 'challengeDigest', 'operatorReceiptDigest'], 'INVALID_EVENT');
+      if (!digest(event.challengeDigest) || !digest(event.operatorReceiptDigest)) invalidEvent();
+      return;
     case 'run_result':
       exactKeys(event, ['type', 'aggregate'], 'INVALID_EVENT');
       if (!['pass', 'fail', 'blocked', 'ambiguous', 'infrastructure_error', 'cleanup_failed', 'incomplete'].includes(event.aggregate)) invalidEvent();
@@ -364,7 +617,7 @@ function assertContentFree(input: unknown): void {
     return;
   }
   if (!isRecord(input)) {
-    if (typeof input === 'string' && /(?:xox[baprs]-|Bearer\s+|-----BEGIN .*PRIVATE KEY-----)/i.test(input)) {
+    if (typeof input === 'string' && /(?:xox[baprs]-|sk-[A-Za-z0-9]|Bearer\s+|-----BEGIN .*PRIVATE KEY-----)/i.test(input)) {
       throw new JournalValidationError('UNSAFE_RECORD');
     }
     return;
@@ -396,6 +649,31 @@ function nonEmpty(input: unknown): input is string {
 
 function stringArray(input: unknown): input is string[] {
   return Array.isArray(input) && input.every(nonEmpty);
+}
+
+function enumArray<const Value extends string>(input: unknown, values: readonly Value[]): input is Value[] {
+  return Array.isArray(input) && input.every((value) => values.includes(value));
+}
+
+function exactId(input: unknown): input is string {
+  return nonEmpty(input)
+    && input.length >= 3
+    && !/[\s*?\[\]{}\\/]/u.test(input)
+    && input !== '.'
+    && input !== '..'
+    && !input.startsWith('-');
+}
+
+function digest(input: unknown): input is string {
+  return typeof input === 'string' && /^sha256:[A-Za-z0-9_-]{3,128}$/u.test(input);
+}
+
+function positiveInteger(input: unknown): input is number {
+  return Number.isSafeInteger(input) && (input as number) > 0;
+}
+
+function nonNegativeInteger(input: unknown): input is number {
+  return Number.isSafeInteger(input) && (input as number) >= 0;
 }
 
 function validTimestamp(input: unknown): input is string {

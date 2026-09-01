@@ -4,6 +4,7 @@ import {
   type Suite,
 } from './schema.ts';
 import type { CaseOutcome, RunReport } from './state.ts';
+import type { PostflightProof } from './safety/cleanup.ts';
 
 export interface AggregateRunReportInput {
   suite: Suite;
@@ -46,17 +47,26 @@ export function aggregateRunReport(input: AggregateRunReportInput): RunReport {
   };
 }
 
+/** A run cannot retain a pass after target or inventory postflight fails. */
+export function finalizeRunReport(report: RunReport, postflight: PostflightProof): RunReport {
+  if (postflight.status === 'pass') return report;
+  return { ...report, aggregate: 'cleanup_failed' };
+}
+
 function aggregateResult(
   cases: readonly CaseOutcome[],
   missingVariantIds: readonly string[],
 ): RunReport['aggregate'] {
   if (missingVariantIds.length > 0) return 'incomplete';
+  // Cleanup is orthogonal to the product verdict kept on every case. Surface
+  // cleanup failure at the run level so residue cannot be hidden by an earlier
+  // product failure, while preserving that product result in cases[].primary.
+  if (cases.some((outcome) => outcome.cleanup === 'failed')) return 'cleanup_failed';
   const primary = cases.map((outcome) => outcome.primary.result);
   if (primary.includes('infrastructure_error')) return 'infrastructure_error';
   if (primary.includes('ambiguous')) return 'ambiguous';
   if (primary.includes('blocked')) return 'blocked';
   if (primary.includes('fail')) return 'fail';
-  if (cases.some((outcome) => outcome.cleanup === 'failed')) return 'cleanup_failed';
   return 'pass';
 }
 

@@ -1,6 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { MutationClass } from '../schema.ts';
+import {
+  appendRunJournal,
+  readRunJournal,
+  type RunJournalHeaderInput,
+} from '../safety/journal.ts';
 
 export interface OperatorChallengeBinding {
   runId: string;
@@ -22,6 +27,11 @@ export interface OperatorActionView extends OperatorChallengeBinding {
   challengeId: string;
 }
 
+export type OperatorDurableChallenge = Omit<
+  OperatorActionView,
+  'semanticAction' | 'completionSignal'
+>;
+
 export interface OperatorCompletionInput {
   challengeId: string;
   runId: string;
@@ -41,7 +51,7 @@ export interface OperatorCompletionReceipt extends OperatorCompletionInput {
 }
 
 export type OperatorChallengeConsumeResult =
-  | { status: 'active'; challenge: OperatorActionView }
+  | { status: 'active'; challenge: OperatorDurableChallenge }
   | { status: 'consumed' }
   | { status: 'missing' };
 
@@ -49,6 +59,7 @@ export type OperatorChallengeConsumeResult =
 export interface OperatorChallengeLedger {
   issue(challenge: OperatorActionView): void;
   consume(challengeId: string): OperatorChallengeConsumeResult;
+  recordCompletion(challengeId: string, receiptId: string): void;
 }
 
 export type OperatorChallengeErrorCode =
@@ -69,14 +80,16 @@ export class OperatorChallengeError extends Error {
 
 /** Explicit transient ledger for tests; U4 may back the same interface by the journal. */
 export class InMemoryOperatorChallengeLedger implements OperatorChallengeLedger {
-  private readonly active = new Map<string, OperatorActionView>();
+  private readonly active = new Map<string, OperatorDurableChallenge>();
   private readonly consumed = new Set<string>();
+  private readonly completed = new Set<string>();
 
   issue(challenge: OperatorActionView): void {
     if (this.active.has(challenge.challengeId) || this.consumed.has(challenge.challengeId)) {
       fail('INVALID_CHALLENGE');
     }
-    this.active.set(challenge.challengeId, challenge);
+    const { semanticAction: _semanticAction, completionSignal: _completionSignal, ...durable } = challenge;
+    this.active.set(challenge.challengeId, durable);
   }
 
   consume(challengeId: string): OperatorChallengeConsumeResult {
@@ -86,6 +99,104 @@ export class InMemoryOperatorChallengeLedger implements OperatorChallengeLedger 
     this.active.delete(challengeId);
     this.consumed.add(challengeId);
     return { status: 'active', challenge };
+  }
+
+  recordCompletion(challengeId: string, _receiptId: string): void {
+    if (!this.consumed.has(challengeId) || this.completed.has(challengeId)) fail('INVALID_CHALLENGE');
+    this.completed.add(challengeId);
+  }
+}
+
+/**
+ * Durable one-use ledger backed by the run's existing append-only journal.
+ * Only a nonce digest and content-free binding fields are persisted.
+ */
+export class JournalOperatorChallengeLedger implements OperatorChallengeLedger {
+  private readonly identity: Pick<RunJournalHeaderInput, 'runId' | 'manifestDigest'>;
+
+  constructor(
+    private readonly journalPath: string,
+    identity: Pick<RunJournalHeaderInput, 'runId' | 'manifestDigest'>,
+  ) {
+    this.identity = { runId: identity.runId, manifestDigest: identity.manifestDigest };
+  }
+
+  issue(challenge: OperatorActionView): void {
+    if (challenge.runId !== this.identity.runId) fail('INVALID_CHALLENGE');
+    const challengeDigest = operatorChallengeDigest(challenge.challengeId);
+    const journal = readRunJournal(this.journalPath, this.identity);
+    if (journal.events.some(({ event }) =>
+      (event.type === 'operator_challenge_issued' || event.type === 'operator_challenge_consumed')
+        && event.challengeDigest === challengeDigest
+    )) fail('INVALID_CHALLENGE');
+    appendRunJournal(this.journalPath, {
+      type: 'operator_challenge_issued',
+      challengeDigest,
+      caseId: challenge.caseId,
+      stepId: challenge.stepId,
+      attempt: challenge.attempt,
+      expectedRevision: challenge.expectedRevision,
+      mutation: challenge.mutation,
+      targetAlias: challenge.targetAlias,
+      actorAlias: challenge.actorAlias,
+      expectedRole: challenge.expectedRole,
+      browserProfileAlias: challenge.browserProfileAlias,
+      expiresAt: challenge.expiresAt,
+    }, this.identity);
+  }
+
+  consume(challengeId: string): OperatorChallengeConsumeResult {
+    const challengeDigest = operatorChallengeDigest(challengeId);
+    const journal = readRunJournal(this.journalPath, this.identity);
+    const consumed = journal.events.some(({ event }) =>
+      event.type === 'operator_challenge_consumed' && event.challengeDigest === challengeDigest
+    );
+    if (consumed) return { status: 'consumed' };
+    const issued = journal.events.map(({ event }) => event).findLast((event) =>
+      event.type === 'operator_challenge_issued' && event.challengeDigest === challengeDigest
+    );
+    if (issued?.type !== 'operator_challenge_issued') return { status: 'missing' };
+    // Consumption is flushed before the caller validates the completion. A
+    // wrong or crashing response can never turn into a replayed browser action.
+    appendRunJournal(this.journalPath, {
+      type: 'operator_challenge_consumed',
+      challengeDigest,
+    }, this.identity);
+    return {
+      status: 'active',
+      challenge: {
+        challengeId,
+        runId: this.identity.runId,
+        caseId: issued.caseId,
+        stepId: issued.stepId,
+        attempt: issued.attempt,
+        expectedRevision: issued.expectedRevision,
+        mutation: issued.mutation,
+        targetAlias: issued.targetAlias,
+        actorAlias: issued.actorAlias,
+        expectedRole: issued.expectedRole,
+        browserProfileAlias: issued.browserProfileAlias,
+        expiresAt: issued.expiresAt,
+      },
+    };
+  }
+
+  recordCompletion(challengeId: string, receiptId: string): void {
+    const challengeDigest = operatorChallengeDigest(challengeId);
+    const receiptDigest = operatorReceiptDigest(receiptId);
+    const journal = readRunJournal(this.journalPath, this.identity);
+    const consumed = journal.events.some(({ event }) =>
+      event.type === 'operator_challenge_consumed' && event.challengeDigest === challengeDigest
+    );
+    const existing = journal.events.map(({ event }) => event).findLast((event) =>
+      event.type === 'operator_challenge_completed' && event.challengeDigest === challengeDigest
+    );
+    if (!consumed || existing !== undefined) fail('INVALID_CHALLENGE');
+    appendRunJournal(this.journalPath, {
+      type: 'operator_challenge_completed',
+      challengeDigest,
+      operatorReceiptDigest: receiptDigest,
+    }, this.identity);
   }
 }
 
@@ -128,6 +239,7 @@ export class OperatorDriver {
       || input.browserProfileAlias !== action.browserProfileAlias) {
       fail('CHALLENGE_MISMATCH');
     }
+    this.ledger.recordCompletion(action.challengeId, input.receiptId);
     return Object.freeze({
       challengeId: input.challengeId,
       runId: action.runId,
@@ -169,4 +281,12 @@ function bounded(input: unknown, max = 128): input is string {
 
 function fail(code: OperatorChallengeErrorCode): never {
   throw new OperatorChallengeError(code);
+}
+
+export function operatorChallengeDigest(challengeId: string): string {
+  return `sha256:${createHash('sha256').update(challengeId, 'utf8').digest('hex')}`;
+}
+
+export function operatorReceiptDigest(receiptId: string): string {
+  return `sha256:${createHash('sha256').update(`operator-receipt:${receiptId}`, 'utf8').digest('hex')}`;
 }
