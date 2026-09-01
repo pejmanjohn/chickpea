@@ -1,7 +1,7 @@
 import { opaqueId } from '../work/admission.ts';
 import type { WorkRunListItem, WorkStore } from '../work/types.ts';
 
-export interface OnboardingReplyTarget {
+interface OnboardingReplyTarget {
   workspaceId: string;
   slackUserId: string;
   tryStartedAt: number;

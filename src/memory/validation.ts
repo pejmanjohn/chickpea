@@ -22,7 +22,7 @@ const MemoryContentSchema = v.object({
   type: v.picklist(MEMORY_ENTRY_TYPES),
 });
 
-export interface ValidMemoryContent {
+interface ValidMemoryContent {
   description: string;
   body: string;
   type: typeof MEMORY_ENTRY_TYPES[number];

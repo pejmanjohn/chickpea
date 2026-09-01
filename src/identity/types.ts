@@ -7,8 +7,8 @@ import type {
 
 export type OrganizationRole = 'owner' | 'admin' | 'member';
 export type MembershipStatus = 'active' | 'suspended' | 'removed';
-export type AuthMode = 'unconfigured' | 'slack_active';
-export type AuthHealthGate = 'normal' | 'recovery_only';
+type AuthMode = 'unconfigured' | 'slack_active';
+type AuthHealthGate = 'normal' | 'recovery_only';
 
 export interface Organization {
   id: string;
@@ -46,8 +46,6 @@ export interface SlackIdentityBinding {
   createdAt: number;
   updatedAt: number;
 }
-
-export type ExternalIdentityBinding = SlackIdentityBinding;
 
 export interface Membership {
   id: string;
@@ -123,7 +121,7 @@ export interface AuthRateLimitState {
 }
 
 export type AuthOperationKind = 'first_owner_claim' | 'invitation_admission' | 'login';
-export type AuthOperationStatus = 'reserved' | 'reconciling' | 'active' | 'tombstoned' | 'expired';
+type AuthOperationStatus = 'reserved' | 'reconciling' | 'active' | 'tombstoned' | 'expired';
 
 export interface AuthControl {
   installationId: string;
@@ -145,7 +143,7 @@ export interface SlackCredentialControl {
   updatedAt: number;
 }
 
-export type SlackCredentialRevisionStatus = 'candidate' | 'active' | 'tombstoned';
+type SlackCredentialRevisionStatus = 'candidate' | 'active' | 'tombstoned';
 
 /** Internal encrypted-state record. It is deliberately absent from exports/admin projections. */
 export interface SlackCredentialRevision {
@@ -232,7 +230,7 @@ export interface SlackCredentialRetentionResult {
   scrubbedCredentialCandidates: number;
 }
 
-export type SlackRecoveryStatus =
+type SlackRecoveryStatus =
   | 'active'
   | 'credentials_staged'
   | 'oauth_pending'
@@ -331,7 +329,7 @@ export interface PromoteSlackRecoveryCandidateInput {
   expectedRotationEpoch: number;
 }
 
-export type SlackSetupState =
+type SlackSetupState =
   | 'awaiting_app_creation'
   | 'app_creation_pending'
   | 'ambiguous_external_effect'
@@ -405,9 +403,9 @@ export interface RecordSharedSlackInstallationInput extends SlackSetupTransition
   botUserId: string;
 }
 
-export type SlackOAuthAttemptKind = 'slack_bot_install';
-export type SlackOAuthAttemptPurpose = 'setup_bot_install';
-export type SlackOAuthAttemptStatus =
+type SlackOAuthAttemptKind = 'slack_bot_install';
+type SlackOAuthAttemptPurpose = 'setup_bot_install';
+type SlackOAuthAttemptStatus =
   | 'pending'
   | 'processing'
   | 'validated'
@@ -444,7 +442,7 @@ export interface SlackOAuthAttempt {
 }
 
 export type SlackOidcPurpose = 'first_owner' | 'invitation' | 'login';
-export type SlackOidcAttemptStatus =
+type SlackOidcAttemptStatus =
   | 'pending'
   | 'processing'
   | 'admitted'
@@ -736,9 +734,7 @@ export interface ActivateInvitationInput {
   at?: number;
 }
 
-export type BootstrapTokenOwnerInput = ClaimOwnerInput;
-
-export interface UpdateMembershipInput {
+interface UpdateMembershipInput {
   membershipId: string;
   role?: OrganizationRole;
   status?: MembershipStatus;

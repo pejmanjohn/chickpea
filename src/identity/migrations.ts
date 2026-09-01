@@ -1,10 +1,9 @@
 import type { StateDb } from '../state/state-db.ts';
 
-export const IDENTITY_SCHEMA_VERSION = 1;
 export const IDENTITY_SCHEMA_MARKER = 'slack-native-v1';
 
 /** Fresh Slack-native TAG_STATE schema. Earlier ledgers are incompatible by design. */
-export const IDENTITY_SCHEMA_V1_STATEMENTS = [
+const IDENTITY_SCHEMA_V1_STATEMENTS = [
   `CREATE TABLE identity_schema_metadata (
     schema_key TEXT PRIMARY KEY CHECK (schema_key = 'identity'), schema_marker TEXT NOT NULL
   )`,

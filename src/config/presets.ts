@@ -1,6 +1,6 @@
 import type { GoogleWorkspaceService } from './api-oauth-policy.ts';
 
-export type ConnectorCategory = 'project' | 'dev' | 'data' | 'search' | 'docs' | 'business';
+type ConnectorCategory = 'project' | 'dev' | 'data' | 'search' | 'docs' | 'business';
 
 interface ConnectorPresetCommon {
   id: string; // also seeds the connection id; MUST match /^[a-z0-9][a-z0-9-]{0,63}$/
@@ -56,7 +56,7 @@ export type ConnectorPreset = ConnectorPresetCommon &
     | (McpPresetLane & ApiPresetLane)
   );
 
-export interface GoogleWorkspaceServicePreset {
+interface GoogleWorkspaceServicePreset {
   id: string;
   /** Native Google OAuth fallback. Managed-only connectors intentionally omit this. */
   service?: GoogleWorkspaceService;
@@ -77,7 +77,7 @@ export interface GoogleWorkspaceServicePreset {
   logoId?: string;
 }
 
-export interface ManagedConnectorPreset {
+interface ManagedConnectorPreset {
   id: string;
   managedToolkit: string;
   providerId: string;

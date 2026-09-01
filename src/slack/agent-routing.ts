@@ -15,22 +15,22 @@ import {
 import type { SlackTransport } from './transport/types.ts';
 import type { PrivateAgentAccessResult } from './agent-access.ts';
 
-export type AgentRouteSurface = 'channel' | 'direct';
-export type AgentRouteSource =
+type AgentRouteSurface = 'channel' | 'direct';
+type AgentRouteSource =
   | 'agent_handle'
   | 'thread_owner'
   | 'default_agent'
   | 'app_home'
   | 'creation_handoff';
 
-export type AgentRoutingDenialReason =
+type AgentRoutingDenialReason =
   | 'not_available'
   | 'multiple_agents'
   | 'member_required'
   | 'installation_unavailable'
   | 'temporarily_unavailable';
 
-export interface AgentRouteAlternative {
+interface AgentRouteAlternative {
   id: string;
   name: string;
   handle: string;
@@ -59,7 +59,7 @@ export interface AgentRoutingActor {
   fullMember: boolean;
 }
 
-export interface ResolveAgentRouteInput {
+interface ResolveAgentRouteInput {
   turn: NormalizedSlackTurn;
   surface: AgentRouteSurface;
   actor: AgentRoutingActor;

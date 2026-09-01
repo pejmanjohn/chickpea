@@ -1,7 +1,7 @@
 import type { OpenAiSubscriptionFailureCode } from './types.ts';
 import { OpenAiSubscriptionProtocolError } from './protocol.ts';
 
-export type OpenAiSubscriptionErrorCode =
+type OpenAiSubscriptionErrorCode =
   | OpenAiSubscriptionFailureCode
   | 'account_change_confirmation_required'
   | 'authorization_missing'

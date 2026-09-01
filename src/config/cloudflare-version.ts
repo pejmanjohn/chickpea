@@ -4,7 +4,7 @@ interface WorkerVersionMetadataBinding {
   id?: unknown;
 }
 
-export const CLOUDFLARE_VERSION_METADATA_BINDING = 'CF_VERSION_METADATA';
+const CLOUDFLARE_VERSION_METADATA_BINDING = 'CF_VERSION_METADATA';
 
 export function cloudflareWorkerVersionId(rawEnv: unknown): string | undefined {
   const env = rawEnv as PlatformEnv | undefined;

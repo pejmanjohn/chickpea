@@ -146,7 +146,7 @@ import {
   type UndoWorkspaceChangeInput,
 } from './types.ts';
 
-export const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
+const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
 const SETUP_TTL_MS = 24 * 60 * 60_000;
 const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];

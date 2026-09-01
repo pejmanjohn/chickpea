@@ -72,14 +72,7 @@ export async function resolveBetterAuthBootstrapEnvironment(
   };
 }
 
-export function recoverySecret(env: PlatformEnv | undefined): string | undefined {
-  const bound = env?.CHICKPEA_RECOVERY_TOKEN;
-  if (typeof bound === 'string' && bound) return bound;
-  const local = process.env.CHICKPEA_RECOVERY_TOKEN;
-  return local || undefined;
-}
-
-export function authSecret(env: PlatformEnv | undefined): string | undefined {
+function authSecret(env: PlatformEnv | undefined): string | undefined {
   const bound = env?.CHICKPEA_AUTH_SECRET;
   if (typeof bound === 'string' && bound) return validStableAuthSecret(bound);
   const local = process.env.CHICKPEA_AUTH_SECRET;

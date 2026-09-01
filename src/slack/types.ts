@@ -42,7 +42,7 @@ export interface SlackMessageEvent {
   app_context?: unknown;
 }
 
-export interface SlackFileEvent {
+interface SlackFileEvent {
   id?: string;
   name?: string;
   mimetype?: string;
@@ -76,7 +76,7 @@ export interface SlackAppContextChangedEvent {
   context?: unknown;
 }
 
-export interface SlackMemberJoinedChannelEvent {
+interface SlackMemberJoinedChannelEvent {
   type: 'member_joined_channel';
   user: string;
   channel: string;
@@ -86,7 +86,7 @@ export interface SlackMemberJoinedChannelEvent {
   event_ts: string;
 }
 
-export interface SlackReactionAddedEvent {
+interface SlackReactionAddedEvent {
   type: 'reaction_added';
   user: string;
   reaction: string;
@@ -99,11 +99,11 @@ export interface SlackReactionAddedEvent {
   event_ts: string;
 }
 
-export interface SlackAppUninstalledEvent {
+interface SlackAppUninstalledEvent {
   type: 'app_uninstalled';
 }
 
-export interface SlackTokensRevokedEvent {
+interface SlackTokensRevokedEvent {
   type: 'tokens_revoked';
   tokens?: {
     oauth?: string[];
@@ -151,7 +151,7 @@ export type SlackTurnSource =
   | 'dm_message'
   | 'reaction_added';
 export type SlackContextMode = 'thread' | 'channel_history' | 'dm_history';
-export type SlackTurnIgnoreReason =
+type SlackTurnIgnoreReason =
   | 'non_event_callback'
   | 'self_message'
   | 'missing_bot_user_id'
@@ -199,12 +199,12 @@ export interface NormalizedSlackTurn {
   managementApprovalProposalId?: string;
 }
 
-export interface IgnoredSlackTurn {
+interface IgnoredSlackTurn {
   status: 'ignored';
   reason: SlackTurnIgnoreReason;
 }
 
-export interface RunnableSlackTurn {
+interface RunnableSlackTurn {
   status: 'runnable';
   turn: NormalizedSlackTurn;
 }

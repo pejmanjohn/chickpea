@@ -3,7 +3,7 @@ import { validEnabledRepositoryGrants } from './egress-handler.ts';
 
 export type SandboxSelection = 'bash' | 'cloudflare';
 
-export interface SandboxSelectionInput {
+interface SandboxSelectionInput {
   target: 'cloudflare' | 'node';
   /** Live binding availability, never a persisted proxy for installation. */
   installed: boolean;

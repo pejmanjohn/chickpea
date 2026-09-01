@@ -15,5 +15,3 @@ export const RoutineIntentSchema = v.strictObject({
   timezoneWasDefaulted: v.optional(v.boolean()),
   outputPolicy: v.optional(v.picklist(['post', 'post_on_change'])),
 });
-
-export type RoutineIntent = v.InferOutput<typeof RoutineIntentSchema>;

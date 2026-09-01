@@ -49,7 +49,7 @@ export function safeMutationRequest(c: Context): boolean {
   return Boolean(origin);
 }
 
-export function sessionFingerprint(c: Context): string {
+function sessionFingerprint(c: Context): string {
   const credential = c.req.header('authorization') ?? c.req.header('cookie') ?? '';
   return sha256(`admin-session\0${credential}`);
 }

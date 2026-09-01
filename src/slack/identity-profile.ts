@@ -1,4 +1,4 @@
-export interface SlackIdentityProfile {
+interface SlackIdentityProfile {
   displayName: string | undefined;
   avatarUrl: string | undefined;
   appId: string | undefined;

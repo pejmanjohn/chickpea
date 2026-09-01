@@ -16,13 +16,13 @@ import {
 } from './app-manifest.ts';
 
 export const SLACK_SETUP_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
-export const SLACK_APP_CREATION_INTERRUPT_GRACE_MS = 60_000;
+const SLACK_APP_CREATION_INTERRUPT_GRACE_MS = 60_000;
 const SLACK_MANIFEST_CREATE_URL = 'https://slack.com/api/apps.manifest.create';
 const MAX_SLACK_RESPONSE_BYTES = 64 * 1_024;
 const MAX_CONFIGURATION_TOKEN_LENGTH = 512;
 const MAX_SECRET_LENGTH = 4_096;
 
-export type SlackAppCreationErrorCode =
+type SlackAppCreationErrorCode =
   | 'setup_invalid'
   | 'setup_expired'
   | 'setup_conflict'
@@ -36,7 +36,7 @@ export class SlackAppCreationError extends Error {
   constructor(readonly code: SlackAppCreationErrorCode, message: string) { super(message); }
 }
 
-export interface SlackSetupAuthority {
+interface SlackSetupAuthority {
   digest: string;
   issuedAt: number;
 }
@@ -82,7 +82,7 @@ export async function openSlackSetupTransaction(
   }
 }
 
-export interface SlackAppCreationServiceDependencies {
+interface SlackAppCreationServiceDependencies {
   identity: IdentityStore;
   credentials: SlackCredentialDependencies;
   fetch?: typeof fetch;

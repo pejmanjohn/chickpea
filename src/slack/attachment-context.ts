@@ -38,7 +38,7 @@ export type SlackAttachmentIntake =
       count: number;
     };
 
-export interface SlackAttachmentManifestEntry {
+interface SlackAttachmentManifestEntry {
   ordinal: number;
   filename?: string;
   representation?: NormalizedSlackAttachment['representation'];
@@ -47,7 +47,7 @@ export interface SlackAttachmentManifestEntry {
   nextAction: SlackAttachmentNextAction | 'none';
 }
 
-export interface SlackAttachmentAnalysisResult {
+interface SlackAttachmentAnalysisResult {
   attachmentCount: number;
   successCount: number;
   failureCount: number;
@@ -61,7 +61,7 @@ interface SlackAttachmentPromptOptions {
   signal?: AbortSignal;
 }
 
-export interface SlackAttachmentAnalysisInput {
+interface SlackAttachmentAnalysisInput {
   intake: Exclude<SlackAttachmentIntake, { kind: 'none' }>;
   gateway: GatewayAttachmentClient;
   model?: string;

@@ -3,7 +3,7 @@ import { SlackTransportError } from '../transport/types.ts';
 
 const MAX_AVATAR_PUBLICATION_ATTEMPTS = 3;
 
-export interface PublishedGeneratedAgentAvatar {
+interface PublishedGeneratedAgentAvatar {
   url: string;
   revision: number;
 }

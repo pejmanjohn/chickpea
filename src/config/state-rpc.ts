@@ -128,7 +128,7 @@ export type StateRpcErrorCode =
   | 'slack_presentation'
   | 'internal';
 
-export interface StateRpcError {
+interface StateRpcError {
   code: StateRpcErrorCode;
   /** Human-readable failure text (safe to log; never shown to Slack users). */
   message: string;
@@ -152,7 +152,7 @@ export interface SlackTurnRecoveryItem {
   enqueuedAt: number;
 }
 
-export type RuntimeDrainCategories = SlackRuntimeDrainCounts & GatewayInboxDrainCounts & {
+type RuntimeDrainCategories = SlackRuntimeDrainCounts & GatewayInboxDrainCounts & {
   executingRuns: number;
   admittingOrRunningRoutineOccurrences: number;
 };
@@ -567,7 +567,7 @@ export interface TagStateRpc {
  * binding — just enough to obtain the singleton stub. Declared here (not via
  * workers-types) so the node lane compiles without Cloudflare's global types.
  */
-export interface TagStateNamespace {
+interface TagStateNamespace {
   getByName(name: string): TagStateRpc;
 }
 

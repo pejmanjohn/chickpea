@@ -1,7 +1,7 @@
 import type { ConfigStore } from './store.ts';
 import type { CustomAgentConfig } from './types.ts';
 
-export interface ProviderRuntimeImpact {
+interface ProviderRuntimeImpact {
   pinnedAgents: CustomAgentConfig[];
   inheritingAgents: CustomAgentConfig[];
   activeInheritingAgentCount: number;

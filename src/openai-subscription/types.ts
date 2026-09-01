@@ -1,4 +1,4 @@
-export const OPENAI_SUBSCRIPTION_FAILURE_CODES = [
+const OPENAI_SUBSCRIPTION_FAILURE_CODES = [
   'authorization_denied',
   'authorization_expired',
   'auth_reconnect_required',

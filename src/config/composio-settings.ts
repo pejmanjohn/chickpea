@@ -26,14 +26,14 @@ const LEGACY_AUTH_CONFIG_FAILURE_CACHE_TTL_MS = 5 * 60_000;
 const LEGACY_AUTH_CONFIG_CACHE_LIMIT = 16;
 let warnedUnpreparedLegacyAuthConfigIds = false;
 
-export type ComposioConfigurationSource = 'env' | 'stored' | 'missing';
-export type ComposioDesiredState = 'enabled' | 'disabled';
+type ComposioConfigurationSource = 'env' | 'stored' | 'missing';
+type ComposioDesiredState = 'enabled' | 'disabled';
 export type ComposioAuthConfigIds = Readonly<Record<
   string,
   Readonly<Partial<Record<ManagedAccessLane, string>>> | undefined
 >>;
 
-export interface ComposioConfigurationMetadata {
+interface ComposioConfigurationMetadata {
   version: typeof METADATA_VERSION;
   desiredState: ComposioDesiredState;
   generation: number;
@@ -63,7 +63,7 @@ export interface ResolvedComposioConfiguration {
   lastSetupResult?: ComposioConfigurationMetadata['lastSetupResult'];
 }
 
-export interface ComposioConfigurationStatus {
+interface ComposioConfigurationStatus {
   source: ComposioConfigurationSource;
   configured: boolean;
   readOnly: boolean;
@@ -77,7 +77,7 @@ export interface ComposioConfigurationStatus {
   lastSetupResult?: ComposioConfigurationMetadata['lastSetupResult'];
 }
 
-export interface ComposioInspectedAuthConfig {
+interface ComposioInspectedAuthConfig {
   id: string;
   toolkit: string;
   enabled: boolean;
@@ -85,7 +85,7 @@ export interface ComposioInspectedAuthConfig {
   unrestricted: boolean;
 }
 
-export interface RecordComposioPreparationInput {
+interface RecordComposioPreparationInput {
   expectedGeneration: number;
   authConfigIds: ComposioAuthConfigIds;
   status: 'ready' | 'partial' | 'failed';

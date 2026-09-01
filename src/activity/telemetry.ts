@@ -4,9 +4,9 @@ import type {
   TypedActivityStatus,
 } from './semantic.ts';
 
-export const SEMANTIC_ACTIVITY_TELEMETRY_SCHEMA_VERSION = 1;
+const SEMANTIC_ACTIVITY_TELEMETRY_SCHEMA_VERSION = 1;
 
-export type SemanticActivityTelemetryPhase = SemanticActivityPhase;
+type SemanticActivityTelemetryPhase = SemanticActivityPhase;
 
 export type SemanticActivityTelemetrySurface = 'assistant_status' | 'legacy_message';
 
@@ -20,37 +20,37 @@ export type SemanticActivityQueueDisposition =
   | 'throttled'
   | 'relay_failed';
 
-export type SemanticActivityTransportOutcome =
+type SemanticActivityTransportOutcome =
   | 'acknowledged'
   | 'rejected'
   | 'ambiguous'
   | 'latched_off';
 
-export type SemanticActivityClearOutcome =
+type SemanticActivityClearOutcome =
   | 'acknowledged'
   | 'rejected'
   | 'ambiguous'
   | 'skipped';
 
-export type SemanticActivityRefreshOutcome =
+type SemanticActivityRefreshOutcome =
   | 'scheduled'
   | 'attempted'
   | 'canceled'
   | 'stale_dropped';
 
-export type SemanticActivityRateOutcome =
+type SemanticActivityRateOutcome =
   | 'reserved'
   | 'cooldown'
   | 'exhausted'
   | 'unavailable';
 
-export type SemanticActivityWorkOutcome = 'succeeded' | 'failed' | 'ambiguous';
+type SemanticActivityWorkOutcome = 'succeeded' | 'failed' | 'ambiguous';
 
 export interface SemanticActivityTelemetrySink {
   info(message: string): void;
 }
 
-export type SemanticActivityTelemetryEvent =
+type SemanticActivityTelemetryEvent =
   | {
       event: 'activity.produced';
       family: SemanticTargetFamily;

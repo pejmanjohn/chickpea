@@ -30,7 +30,7 @@ export type ProgressiveIntentTransition =
   | { kind: 'not_requested' }
   | { kind: 'denied'; reason: SlackProgressiveIntentDenialReason };
 
-export interface ProgressiveRelaySummary {
+interface ProgressiveRelaySummary {
   acceptedChunks: number;
   acceptedBytes: number;
   targetMessageCompleted: boolean;
@@ -38,7 +38,7 @@ export interface ProgressiveRelaySummary {
   invalidationReason?: ProgressiveRelayInvalidationReason;
 }
 
-export interface ProgressiveTextSink {
+interface ProgressiveTextSink {
   append(chunk: ProgressiveTextChunk): Promise<void>;
   invalidate(reason: ProgressiveRelayInvalidationReason): Promise<void>;
   /** Omitted only for retained V1 presentations with the legacy immediate relay. */

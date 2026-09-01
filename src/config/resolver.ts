@@ -11,7 +11,7 @@ import {
 
 // Store readers are async — the Cloudflare backend answers over Durable
 // Object RPC — and the Node SQLite stores resolve immediately.
-export interface AgentReader {
+interface AgentReader {
   getAgent(agentId: string): Promise<CustomAgentConfig>;
 }
 
@@ -22,7 +22,7 @@ export interface AgentReader {
 // and never fall through to the global wildcard.
 export type AssignmentSurface = 'channel' | 'direct';
 
-export interface AssignmentLookupOptions {
+interface AssignmentLookupOptions {
   surface?: AssignmentSurface;
   env?: NodeJS.ProcessEnv;
 }
@@ -45,7 +45,7 @@ export function surfaceForChannelId(channelId: string): AssignmentSurface {
   return channelId.startsWith('D') ? 'direct' : 'channel';
 }
 
-export interface GrantReader {
+interface GrantReader {
   listAgentChannelGrants(
     workspaceId?: string,
     channelId?: string,
@@ -60,7 +60,7 @@ export interface ConfigStores {
   channels?: ChannelReader;
 }
 
-export interface ChannelReader {
+interface ChannelReader {
   getChannel(workspaceId: string, channelId: string): Promise<ChannelConfig | undefined>;
 }
 

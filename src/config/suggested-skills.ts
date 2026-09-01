@@ -1,17 +1,17 @@
-export type SuggestedSkillCategoryId =
+type SuggestedSkillCategoryId =
   | 'marketing'
   | 'writing'
   | 'research'
   | 'operations'
   | 'engineering';
 
-export interface SuggestedSkillCategory {
+interface SuggestedSkillCategory {
   id: 'featured' | SuggestedSkillCategoryId;
   label: string;
   summary: string;
 }
 
-export interface SuggestedSkill {
+interface SuggestedSkill {
   /** Stable catalog identity, persisted on a copied snapshot. */
   id: string;
   /** Runtime-valid skill name. */

@@ -59,21 +59,6 @@ let autoWakeSuspended = false;
 
 export { slackPresentationStatePort } from './presentation-state-port.ts';
 
-/**
- * Test seam: suspend the admission-triggered auto-wake so a test can admit a
- * turn through the real ingress and then drive `drainNodeTurnRelayOnce` itself,
- * making execution timing deterministic instead of racing the background drain.
- * Node-only — the Cloudflare alarm relay is unaffected (`wakeNodeTurnRelay`
- * already returns early there). Returns a restore function; call it in a
- * `finally` so the suspension never leaks to sibling tests.
- */
-export function suspendNodeTurnRelayAutoWake(): () => void {
-  autoWakeSuspended = true;
-  return () => {
-    autoWakeSuspended = false;
-  };
-}
-
 function scheduleNodeTurnRelayRetry(
   env: PlatformEnv | undefined,
   delayMs = NODE_RETRY_BACKOFF_MS,
@@ -128,7 +113,7 @@ export async function wakeNodeTurnRelay(
   return draining;
 }
 
-export interface NodeTurnRelayDrainOptions {
+interface NodeTurnRelayDrainOptions {
   env?: PlatformEnv;
   /** Test seam for proving the real Node relay wiring without global stores. */
   state?: SlackStateStore;
@@ -140,7 +125,7 @@ export interface NodeTurnRelayDrainOptions {
   executeTurn?: LedgerSlackTurnExecutor;
 }
 
-export async function drainNodeTurnRelayOnce(
+async function drainNodeTurnRelayOnce(
   options: NodeTurnRelayDrainOptions = {},
 ): Promise<void> {
   const env = options.env;

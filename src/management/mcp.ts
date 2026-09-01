@@ -37,7 +37,6 @@ import {
   invokeWorkspaceManagementTool,
   workspaceManagementToolDescription,
   WORKSPACE_MANAGEMENT_TOOL_NAMES,
-  type WorkspaceManagementToolArguments,
   type WorkspaceManagementToolResult,
 } from './tool-adapter.ts';
 import type { ManagementActorContext, ManagementOperation } from './types.ts';
@@ -50,7 +49,7 @@ export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI =
   'chickpea://schema/operations/v2' as const;
 export const WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI =
   AGENT_AUTHORING_GUIDE_URI;
-export interface WorkspaceManagementMcpServerInput {
+interface WorkspaceManagementMcpServerInput {
   principal: McpAuthenticatedPrincipal;
   service: WorkspaceManagementService;
 }
@@ -345,5 +344,3 @@ function mcpResult(result: WorkspaceManagementToolResult) {
     ...(result.ok ? {} : { isError: true }),
   };
 }
-
-export type { WorkspaceManagementToolArguments };

@@ -3,31 +3,31 @@ import { createHmac } from 'node:crypto';
 import { constantTimeEquals } from '../admin/constant-time.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 
-export const MAX_PENDING_SLACK_CHALLENGE_BYTES = 1_048_576;
-export const SLACK_REQUEST_FRESHNESS_MS = 5 * 60_000;
-export const PENDING_SLACK_CHALLENGE_TTL_MS = 24 * 60 * 60_000;
+const MAX_PENDING_SLACK_CHALLENGE_BYTES = 1_048_576;
+const SLACK_REQUEST_FRESHNESS_MS = 5 * 60_000;
+const PENDING_SLACK_CHALLENGE_TTL_MS = 24 * 60 * 60_000;
 export const SLACK_PENDING_ENVELOPE_SETTING = 'slack.pendingEnvelope';
 const MAX_CHALLENGE_TEXT_LENGTH = 4_096;
 
-export interface PendingSlackChallengeInput {
+interface PendingSlackChallengeInput {
   rawBody: string;
   signature: string;
   timestamp: string;
 }
 
-export interface PendingSlackChallengeEnvelope extends PendingSlackChallengeInput {
+interface PendingSlackChallengeEnvelope extends PendingSlackChallengeInput {
   receivedAt: number;
   expiresAt: number;
 }
 
-export type RecordPendingSlackChallengeResult =
+type RecordPendingSlackChallengeResult =
   | { accepted: true; challenge: string; expiresAt: number; appId?: string; teamId?: string }
   | {
       accepted: false;
       reason: 'oversized' | 'invalid_envelope' | 'stale_timestamp' | 'changed';
     };
 
-export type VerifyPendingSlackChallengeResult =
+type VerifyPendingSlackChallengeResult =
   | { verified: true; purgeReceipt: string; appId?: string; teamId?: string }
   | {
       verified: false;
@@ -71,20 +71,6 @@ export async function recordPendingSlackChallenge(
     if (applied) return acceptedChallenge(body, envelope.expiresAt);
   }
   return { accepted: false, reason: 'changed' };
-}
-
-export async function readPendingSlackChallenge(
-  store: SettingsStore,
-  options: { now?: number } = {},
-): Promise<PendingSlackChallengeEnvelope | undefined> {
-  const raw = await store.getSetting(SLACK_PENDING_ENVELOPE_SETTING);
-  if (!raw) return undefined;
-  const envelope = parseStoredEnvelope(raw);
-  if (!envelope || envelope.expiresAt <= (options.now ?? Date.now())) {
-    await purgePendingSlackChallenge(store, raw);
-    return undefined;
-  }
-  return envelope;
 }
 
 export async function verifyPendingSlackChallenge(

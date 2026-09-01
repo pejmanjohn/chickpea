@@ -1,24 +1,19 @@
 import { readFileSync } from 'node:fs';
 
 import type {
-  SlackAppContextChangedEvent,
-  SlackAppHomeOpenedEvent,
   SlackAppMentionEvent,
   SlackEventFixture,
   SlackMessageEvent,
 } from '../../src/slack/types.ts';
 
-export type AppMentionFixture = SlackEventFixture & { event: SlackAppMentionEvent };
-export type MessageFixture = SlackEventFixture & { event: SlackMessageEvent };
+type AppMentionFixture = SlackEventFixture & { event: SlackAppMentionEvent };
+type MessageFixture = SlackEventFixture & { event: SlackMessageEvent };
 
-export type AppMentionFixtureOverrides = Omit<Partial<SlackEventFixture>, 'event'> & {
+type AppMentionFixtureOverrides = Omit<Partial<SlackEventFixture>, 'event'> & {
   event?: Partial<SlackAppMentionEvent>;
 };
-export type MessageFixtureOverrides = Omit<Partial<SlackEventFixture>, 'event'> & {
+type MessageFixtureOverrides = Omit<Partial<SlackEventFixture>, 'event'> & {
   event?: Partial<SlackMessageEvent>;
-};
-export type MemberJoinedFixtureOverrides = Omit<Partial<SlackEventFixture>, 'event'> & {
-  event?: Record<string, unknown>;
 };
 
 type MessageFixtureFile =
@@ -59,39 +54,6 @@ export function topLevelChannelMessage(overrides: MessageFixtureOverrides = {}):
 
 export function dmMessage(overrides: MessageFixtureOverrides = {}): MessageFixture {
   return messageFixture('message-im.json', overrides);
-}
-
-export function appHomeOpened(): SlackEventFixture & { event: SlackAppHomeOpenedEvent } {
-  return slackFixture<SlackEventFixture & { event: SlackAppHomeOpenedEvent }>(
-    'app-home-opened.json',
-  );
-}
-
-export function appContextChanged(): SlackEventFixture & { event: SlackAppContextChangedEvent } {
-  return slackFixture<SlackEventFixture & { event: SlackAppContextChangedEvent }>(
-    'app-context-changed.json',
-  );
-}
-
-export function memberJoinedChannel(overrides: MemberJoinedFixtureOverrides = {}): SlackEventFixture {
-  return {
-    token: 'verification-token-not-a-secret',
-    team_id: 'TDEMO',
-    api_app_id: 'ADEMO',
-    event_id: 'Ev_MEMBER_JOINED_CHANNEL',
-    event_time: 1782771200,
-    type: 'event_callback',
-    ...overrides,
-    event: {
-      type: 'member_joined_channel',
-      user: 'UBOT',
-      channel: 'C_ENG',
-      channel_type: 'C',
-      team: 'TDEMO',
-      event_ts: '1782771200.000100',
-      ...overrides.event,
-    },
-  } as unknown as SlackEventFixture;
 }
 
 function messageFixture(

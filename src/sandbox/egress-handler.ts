@@ -40,7 +40,7 @@ export type SandboxEgressDecision =
       repositories: string[];
     };
 
-export interface SandboxEgressInput {
+interface SandboxEgressInput {
   url: string;
   method: string;
   grants: readonly RepositoryGrant[];
@@ -67,7 +67,7 @@ export function validEnabledRepositoryGrants(
   );
 }
 
-export function repositoryGrantMatches(
+function repositoryGrantMatches(
   grant: RepositoryGrant,
   repository: string,
 ): boolean {

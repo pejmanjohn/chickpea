@@ -20,7 +20,7 @@ import { boundedSlackPublicHandoff, type SlackPublicHandoffMessage } from './pub
 
 export const SLACK_SELF_MENTION_PLACEHOLDER = '[[CHICKPEA_SELF_MENTION]]';
 
-export interface SlackPromptApp {
+interface SlackPromptApp {
   botUserId: string;
   displayName?: string;
 }
@@ -42,7 +42,7 @@ export interface SlackPromptApp {
  * Any hydration failure degrades to current-message-only context so the turn
  * still completes.
  */
-export interface HydrateSlackContextOptions {
+interface HydrateSlackContextOptions {
   maxMessages?: number;
   maxPages?: number;
 }

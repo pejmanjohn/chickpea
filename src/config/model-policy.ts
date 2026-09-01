@@ -32,12 +32,12 @@ export function resolveAgentModel(
   );
 }
 
-export interface ResolvedAgentModelPolicy {
+interface ResolvedAgentModelPolicy {
   model: string;
   attribution: AgentModelAttribution;
 }
 
-export interface WorkspaceModelPolicyReader {
+interface WorkspaceModelPolicyReader {
   getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined>;
   getWorkspaceModelDefault(workspaceId: string): Promise<WorkspaceModelDefault | undefined>;
 }

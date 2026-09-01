@@ -15,7 +15,7 @@
  */
 
 /** The async view of a synchronous logic class: every method returns a promise. */
-export type Promisified<L> = {
+type Promisified<L> = {
   [K in keyof L]: L[K] extends (...args: infer A) => infer R
     ? (...args: A) => Promise<Awaited<R>>
     : never;

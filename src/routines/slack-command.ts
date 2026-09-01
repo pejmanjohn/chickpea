@@ -70,7 +70,7 @@ export type SlackScheduleCommand =
       routineId: string;
     };
 
-export type SlackScheduleCommandResult =
+type SlackScheduleCommandResult =
   | { effect: 'saved'; routine: RoutineDefinition }
   | { effect: 'controlled'; routine: RoutineDefinition }
   | { effect: 'run_queued'; routine: RoutineDefinition; runId: string };
@@ -91,7 +91,7 @@ export class SlackScheduleCommandError extends Error {
   }
 }
 
-export interface SlackScheduleCommandDependencies {
+interface SlackScheduleCommandDependencies {
   routines: RoutineStore;
   config: ConfigStore;
   identity: IdentityStore;

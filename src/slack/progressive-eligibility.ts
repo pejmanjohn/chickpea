@@ -1,7 +1,7 @@
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { SlackProgressiveEligibilityReason } from './run-presentations.ts';
 
-export interface ProgressiveEligibilityInput {
+interface ProgressiveEligibilityInput {
   runtimePlan?: RuntimePlanV2;
   operationsEnabled: boolean;
   memorySelected: boolean;

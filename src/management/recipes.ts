@@ -16,7 +16,7 @@ import {
 import { canonicalJson } from './contracts.ts';
 import { ManagementError, type ManagementOperation } from './types.ts';
 
-export const WORKSPACE_RECIPE_SCHEMA_VERSION = 1 as const;
+const WORKSPACE_RECIPE_SCHEMA_VERSION = 1 as const;
 
 const recipeText = (max: number) => z.string().min(1).max(max);
 const recipeOptionalText = (max: number) => z.string().max(max);
@@ -81,7 +81,7 @@ export interface WorkspaceRecipe {
   agents: WorkspaceRecipeAgent[];
 }
 
-export interface WorkspaceRecipeAgent {
+interface WorkspaceRecipeAgent {
   symbol: string;
   name: string;
   instructions: string;

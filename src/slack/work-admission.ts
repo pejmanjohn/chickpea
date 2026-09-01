@@ -15,7 +15,7 @@ import {
 import type { NormalizedSlackTurn } from './types.ts';
 import { classifySlackUserForAdmission } from './user-classification.ts';
 
-export type SlackAdmissionTruthReason =
+type SlackAdmissionTruthReason =
   | 'eligible'
   | 'slack_truth_unavailable'
   | 'ineligible_actor'
@@ -35,7 +35,7 @@ export type SlackAdmissionTruth =
       reason: Exclude<SlackAdmissionTruthReason, 'eligible'>;
     };
 
-export interface SlackAdmissionTruthReader {
+interface SlackAdmissionTruthReader {
   user(userId: string): Promise<{ ok: boolean; user?: SlackUserFacts }>;
   conversation(
     channelId: string,

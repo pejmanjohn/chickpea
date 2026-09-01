@@ -11,13 +11,13 @@ import {
 } from './errors.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from './handles.ts';
 
-export interface AgentPresenceReconcilerDependencies {
+interface AgentPresenceReconcilerDependencies {
   config: ConfigStore;
   transport: SlackTransport;
   now?: () => number;
 }
 
-export interface PublishAgentInput {
+interface PublishAgentInput {
   workspaceId: string;
   agentId: string;
   channelId: string;
@@ -25,7 +25,7 @@ export interface PublishAgentInput {
   actorSlackUserId: string;
 }
 
-export interface AgentPublicationResult {
+interface AgentPublicationResult {
   agent: CustomAgentConfig;
   grant: AgentChannelGrant;
 }
@@ -35,7 +35,7 @@ type MentionRepairConfig = Pick<
   'listAgents' | 'listAgentChannelGrants' | 'updateAgent'
 >;
 
-export type MentionedAgentUserGroupRepairResult =
+type MentionedAgentUserGroupRepairResult =
   | { kind: 'repaired'; agent: CustomAgentConfig }
   | { kind: 'not_available' | 'temporarily_unavailable' };
 
@@ -690,7 +690,7 @@ function withoutPendingCreate(
   return clean;
 }
 
-export function hasAmbiguousCreateOwnershipProof(
+function hasAmbiguousCreateOwnershipProof(
   agent: Pick<CustomAgentConfig, 'slackPresence'>,
   group: SlackUserGroup,
 ): boolean {

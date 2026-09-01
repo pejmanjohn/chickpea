@@ -155,7 +155,7 @@ export type WorkspaceManagementToolResult =
   | { ok: true; result: unknown }
   | { ok: false; error: { code: string; message: string } };
 
-export interface WorkspaceManagementToolAdapterInput {
+interface WorkspaceManagementToolAdapterInput {
   service: WorkspaceManagementService;
   resolveContext(): Promise<ManagementActorContext>;
 }

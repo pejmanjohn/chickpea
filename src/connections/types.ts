@@ -6,7 +6,7 @@ import type {
   ManagedBindingResourceConstraints,
 } from '../config/types.ts';
 
-export type ManagedConnectionAccountViewPolicy = Omit<
+type ManagedConnectionAccountViewPolicy = Omit<
   ConnectionAccountManagedPolicy,
   | 'principalRef'
   | 'accountRef'
@@ -66,7 +66,7 @@ export interface ConnectionRequestResolution {
   }>;
 }
 
-export type OAuthContinuationStatus =
+type OAuthContinuationStatus =
   | 'pending'
   | 'authorized'
   | 'resumed'

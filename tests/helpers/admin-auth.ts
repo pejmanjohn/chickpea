@@ -2,7 +2,7 @@ import { AuthDeniedError } from '../../src/auth/service.ts';
 import type { AdminAuthenticationService, AuthPrincipal } from '../../src/auth/types.ts';
 import type { AuthControl, IdentityStore, Organization } from '../../src/identity/types.ts';
 
-export const TEST_ADMIN_ORIGIN = 'http://localhost';
+const TEST_ADMIN_ORIGIN = 'http://localhost';
 
 const defaultPrincipal: AuthPrincipal = {
   userId: 'user_test_owner',

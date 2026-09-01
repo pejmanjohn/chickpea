@@ -7,11 +7,11 @@ export interface RoutineCapability {
   reason: 'enabled' | 'unsupported_target';
 }
 
-export interface RoutineScheduledController {
+interface RoutineScheduledController {
   scheduledTime: number;
 }
 
-export interface RoutineExecutionContext {
+interface RoutineExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
 }
 

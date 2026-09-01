@@ -6,7 +6,7 @@ import type {
 } from './types.ts';
 import type { RoutineExecutionOutcome } from './execution.ts';
 
-export const ADMISSION_SCAN_LIMIT = 100;
+const ADMISSION_SCAN_LIMIT = 100;
 
 export interface RoutineExecutionAdapter {
   execute(run: RoutineRun, attempt: RoutineAdmissionAttempt): Promise<RoutineExecutionOutcome>;

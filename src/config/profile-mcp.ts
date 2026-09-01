@@ -51,7 +51,7 @@ import { ConnectionCredentialUnavailableError } from '../connections/errors.ts';
 const NODE_CLOSE_DELAY_MS = 600_000; // 10 minutes — bounded leak on the node lane.
 const TOOL_NAME_PREFIX = /^mcp__[^_]+(?:_[^_]+)*__/;
 
-export interface ResolveProfileMcpToolsOptions {
+interface ResolveProfileMcpToolsOptions {
   /** Immutable profile id used to scope connection secrets. */
   agentId: string;
   // `undefined` is explicit: the slack-thread seam passes a possibly-undefined
@@ -74,7 +74,7 @@ export interface ResolveProfileMcpToolsOptions {
   onConnectionStart?: (connection: { id: string; displayName: string }) => void;
 }
 
-export interface ResolveProfileMcpConnectionsOptions {
+interface ResolveProfileMcpConnectionsOptions {
   /** Durable profile id; definitions close over this id, never a token. */
   agentId: string;
   env?: PlatformEnv | undefined;
@@ -87,7 +87,7 @@ export interface ResolveProfileMcpConnectionsOptions {
   createGuardedFetch?: typeof createMcpGuardedFetch;
 }
 
-export function isProfileMcpServerEligible(server: McpConnectionConfig): boolean {
+function isProfileMcpServerEligible(server: McpConnectionConfig): boolean {
   return server.enabled && server.lifecycleStatus === 'ready' && server.allowedTools.length > 0;
 }
 

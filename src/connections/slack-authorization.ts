@@ -32,7 +32,7 @@ const AuthorizePersonalConnectionSchema = v.strictObject({
   accountLabel: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
 });
 
-export type PersonalConnectionAuthorizationResult =
+type PersonalConnectionAuthorizationResult =
   | {
     kind: 'authorization_required';
     providerId: string;

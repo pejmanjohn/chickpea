@@ -5,7 +5,7 @@ import type {
   UsageRollupValues,
 } from './types.ts';
 
-export interface UsageWhereClause {
+interface UsageWhereClause {
   sql: string;
   params: SqlParam[];
 }

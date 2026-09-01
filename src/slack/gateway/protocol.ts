@@ -2,11 +2,10 @@ import type { SlackInboundEnvelope } from '../transport/types.ts';
 
 export const CHICKPEA_GATEWAY_PROTOCOL_VERSION = 1 as const;
 export const MAX_GATEWAY_FRAME_BYTES = 1_048_576;
-export const MAX_GATEWAY_CLOCK_SKEW_MS = 5 * 60_000;
 export const GATEWAY_DURABLE_ADMISSION_CAPABILITY = 'durable_admission_v1' as const;
 export type GatewaySessionCapability = typeof GATEWAY_DURABLE_ADMISSION_CAPABILITY;
 
-export const GATEWAY_SLACK_OPERATIONS = [
+const GATEWAY_SLACK_OPERATIONS = [
   'auth.test',
   'users.info',
   'users.list',
@@ -100,7 +99,7 @@ export interface GatewaySessionHello extends GatewaySignedRequest {
   capabilities?: GatewaySessionCapability[];
 }
 
-export interface GatewaySessionReady {
+interface GatewaySessionReady {
   protocolVersion: typeof CHICKPEA_GATEWAY_PROTOCOL_VERSION;
   kind: 'session.ready';
   bindingId: string;
@@ -119,7 +118,7 @@ export interface GatewayEventDelivery {
   envelope: SlackInboundEnvelope;
 }
 
-export interface GatewayAgentSelectionDelivery {
+interface GatewayAgentSelectionDelivery {
   protocolVersion: typeof CHICKPEA_GATEWAY_PROTOCOL_VERSION;
   kind: 'interaction.agent_selected';
   deliveryId: string;
@@ -138,7 +137,7 @@ export interface GatewayEventAck {
   outcome: 'accepted' | 'duplicate' | 'rejected';
 }
 
-export interface GatewayHeartbeat {
+interface GatewayHeartbeat {
   protocolVersion: typeof CHICKPEA_GATEWAY_PROTOCOL_VERSION;
   kind: 'session.ping' | 'session.pong';
   at: number;
@@ -170,7 +169,7 @@ export interface GatewayAttachmentReadRequest extends GatewaySignedRequest {
   maxBytes: number;
 }
 
-export interface GatewayOperationResponse {
+interface GatewayOperationResponse {
   protocolVersion: typeof CHICKPEA_GATEWAY_PROTOCOL_VERSION;
   requestId: string;
   ok: boolean;
@@ -182,7 +181,7 @@ export interface GatewayOperationResponse {
   };
 }
 
-export interface GatewayAvatarPublishResponse {
+interface GatewayAvatarPublishResponse {
   url: string;
 }
 
@@ -198,14 +197,14 @@ const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const KEY_PART_PATTERN = /^[A-Za-z0-9_-]{16,256}$/;
 const OPERATION_SET = new Set<string>(GATEWAY_SLACK_OPERATIONS);
 
-export class GatewayProtocolError extends Error {
+class GatewayProtocolError extends Error {
   constructor(readonly code: string) {
     super(`Chickpea gateway protocol error (${code})`);
     this.name = 'GatewayProtocolError';
   }
 }
 
-export function parseGatewayServerFrame(value: unknown): GatewayServerFrame {
+function parseGatewayServerFrame(value: unknown): GatewayServerFrame {
   const record = exactRecord(value, 'invalid_frame');
   requireProtocolVersion(record.protocolVersion);
   switch (record.kind) {

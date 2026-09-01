@@ -1,9 +1,9 @@
 import type { McpConnectionConfig } from './types.ts';
 
-export type McpHttpOutcome = 'ok' | 'http_error' | 'network_error';
+type McpHttpOutcome = 'ok' | 'http_error' | 'network_error';
 type McpAuthMode = McpConnectionConfig['authMode'];
 
-export interface McpHttpTelemetryEvent {
+interface McpHttpTelemetryEvent {
   event: 'chickpea.mcp.http';
   connectionId: string;
   authMode: McpAuthMode;

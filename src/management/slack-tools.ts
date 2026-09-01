@@ -100,7 +100,7 @@ const scheduleActionInputSchema = v.object({
   outputPolicy: v.optional(v.picklist(['post', 'post_on_change'])),
 });
 
-export type SlackScheduleToolArguments = v.InferOutput<typeof scheduleActionInputSchema>;
+type SlackScheduleToolArguments = v.InferOutput<typeof scheduleActionInputSchema>;
 
 export interface SlackManagementSignal {
   /** Trusted Agent selected by Slack routing, never by model text. */
@@ -145,7 +145,7 @@ const MUTATING_TOOLS = new Set<WorkspaceManagementToolName>([
   'undo_workspace_change',
 ]);
 
-export interface SlackManagementConfirmationFailure {
+interface SlackManagementConfirmationFailure {
   code: string;
   proposalId: string;
   outcome?: 'known_failure' | 'unknown' | undefined;
@@ -167,7 +167,7 @@ export interface SlackAgentCreationTurnState {
   terminalIntent?: SlackAgentCreationTerminalIntent;
 }
 
-export interface SlackAgentCreationTurnCoordinator {
+interface SlackAgentCreationTurnCoordinator {
   prepare(input: {
     idempotencyKey: string;
     operations: ManagementOperation[];
@@ -433,7 +433,7 @@ function boundedFollowOnNotice(
   return { kind, text: trimmed.length <= maxLength ? trimmed : overflowText };
 }
 
-export interface SlackManagementTurnGuard {
+interface SlackManagementTurnGuard {
   confirmationFailure(): SlackManagementConfirmationFailure | undefined;
   recordConfirmationFailure(failure: SlackManagementConfirmationFailure): void;
 }

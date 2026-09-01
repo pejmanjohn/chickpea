@@ -19,7 +19,7 @@ interface FlueDispatchEnvelopeBase {
 }
 
 /** Pre-management admission input retained for pending durable retries. */
-export interface LegacyFlueDispatchEnvelopeV1 extends FlueDispatchEnvelopeBase {
+interface LegacyFlueDispatchEnvelopeV1 extends FlueDispatchEnvelopeBase {
   schemaVersion: 1;
   message: {
     kind: 'user';
@@ -28,7 +28,7 @@ export interface LegacyFlueDispatchEnvelopeV1 extends FlueDispatchEnvelopeBase {
 }
 
 /** Current Flue 2 admission input with requester facts bound to the signal. */
-export interface FlueDispatchEnvelopeV2 extends FlueDispatchEnvelopeBase {
+interface FlueDispatchEnvelopeV2 extends FlueDispatchEnvelopeBase {
   schemaVersion: 2;
   message: {
     kind: 'signal';

@@ -32,7 +32,7 @@ import {
 import { decodeRecoverySecret, digestSlackRecoveryGrant } from './recovery-secret.ts';
 
 export const SLACK_RECOVERY_TTL_MS = 15 * 60_000;
-export const SLACK_RECOVERY_PROCESSING_LEASE_MS = 10 * 60_000;
+const SLACK_RECOVERY_PROCESSING_LEASE_MS = 10 * 60_000;
 const SLACK_BOT_AUTHORIZE_URL = 'https://slack.com/oauth/v2/authorize';
 const SLACK_BOT_TOKEN_URL = 'https://slack.com/api/oauth.v2.access';
 const SLACK_MANIFEST_EXPORT_URL = 'https://slack.com/api/apps.manifest.export';
@@ -40,7 +40,7 @@ const SLACK_MANIFEST_UPDATE_URL = 'https://slack.com/api/apps.manifest.update';
 const MAX_SLACK_RESPONSE_BYTES = 64 * 1_024;
 const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
 
-export type SlackCredentialRecoveryErrorCode =
+type SlackCredentialRecoveryErrorCode =
   | 'invalid_grant'
   | 'grant_reused'
   | 'parallel_recovery'
@@ -73,7 +73,7 @@ interface RecoveryAuthority {
   browserBinding: string;
 }
 
-export interface SlackCredentialRecoveryDependencies {
+interface SlackCredentialRecoveryDependencies {
   identity: IdentityStore;
   credentials: SlackCredentialDependencies;
   config: ConfigStore;

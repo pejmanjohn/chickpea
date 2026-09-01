@@ -9,7 +9,7 @@ import type {
   WorkStore,
 } from './types.ts';
 
-export interface ShadowWorkLifecycleOptions {
+interface ShadowWorkLifecycleOptions {
   store: WorkStore;
   runId: RunId;
   attemptNumber: number;
@@ -34,7 +34,7 @@ export interface ShadowWorkLifecycleOptions {
   observeWriteBudgetMs?: number;
 }
 
-export type ShadowLifecycleStage =
+type ShadowLifecycleStage =
   | 'prepare_input'
   | 'create_execution'
   | 'record_route'
@@ -44,9 +44,9 @@ export type ShadowLifecycleStage =
   | 'start_delivery'
   | 'finalize_delivery';
 
-export type ShadowDeliveryOutcome = 'delivered' | 'failed' | 'unknown';
+type ShadowDeliveryOutcome = 'delivered' | 'failed' | 'unknown';
 
-export function shadowRunExecutionId(runId: RunId, attemptNumber: number): RunExecutionId {
+function shadowRunExecutionId(runId: RunId, attemptNumber: number): RunExecutionId {
   return opaqueId('execution', `${runId}:${attemptNumber}`) as RunExecutionId;
 }
 

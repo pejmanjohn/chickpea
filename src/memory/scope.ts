@@ -12,7 +12,7 @@ import { slackWebClientUserFacts } from '../slack/user-classification.ts';
 const PAGE_LIMIT = 200;
 const MAX_PAGES = 5;
 
-export interface MemoryScopeSlackResult<T> {
+interface MemoryScopeSlackResult<T> {
   ok: boolean;
   error?: string;
   retryAfterMs?: number;

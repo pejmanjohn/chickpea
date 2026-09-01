@@ -14,10 +14,10 @@ export const SANDBOX_PACKAGE_REGISTRY_HOSTS = [
   'files.pythonhosted.org',
 ] as const;
 
-export const SANDBOX_INSTANCE_TYPE = 'standard-1' as const;
-export type SandboxInstanceType = typeof SANDBOX_INSTANCE_TYPE;
+const SANDBOX_INSTANCE_TYPE = 'standard-1' as const;
+type SandboxInstanceType = typeof SANDBOX_INSTANCE_TYPE;
 
-export interface SandboxSettings {
+interface SandboxSettings {
   installRequested: boolean;
   enabled: boolean;
   instanceType: SandboxInstanceType;

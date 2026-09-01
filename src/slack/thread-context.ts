@@ -7,7 +7,7 @@ export interface SlackContextMessage {
   isTrigger: boolean;
 }
 
-export interface SlackContextWindow {
+interface SlackContextWindow {
   mode: SlackContextMode;
   latest?: string;
   oldest?: string;

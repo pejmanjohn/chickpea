@@ -12,11 +12,11 @@ export function isAgentId(value: string): boolean {
  * Collapse the separators and punctuation people commonly use to imitate a
  * protected product identity. NFKC also catches compatibility glyph variants.
  */
-export function canonicalAgentIdentity(value: string): string {
+function canonicalAgentIdentity(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase('en-US').replace(/[^\p{L}\p{N}]/gu, '');
 }
 
-export function isReservedAgentIdentity(
+function isReservedAgentIdentity(
   field: AgentIdentityField,
   value: string,
 ): boolean {

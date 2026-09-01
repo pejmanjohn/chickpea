@@ -47,7 +47,7 @@ import {
   SANDBOX_SESSION_CAP_FAILURE_TEXT,
 } from './web-client-presenter.ts';
 
-export type AgentPromptFailureKind =
+type AgentPromptFailureKind =
   | 'agent'
   | 'provider'
   | 'openai-subscription-reconnect'
@@ -56,9 +56,9 @@ export type AgentPromptFailureKind =
   | 'sandbox'
   | 'sandbox-session-cap';
 
-export type AgentUsageCompleteness = 'complete' | 'partial' | 'not_reported';
+type AgentUsageCompleteness = 'complete' | 'partial' | 'not_reported';
 
-export interface AgentReportedUsage {
+interface AgentReportedUsage {
   inputTokens: number | null;
   outputTokens: number | null;
   cacheReadTokens?: number | null;
@@ -66,7 +66,7 @@ export interface AgentReportedUsage {
   totalTokens: number | null;
 }
 
-export interface AgentReturnedModel {
+interface AgentReturnedModel {
   provider: string;
   id: string;
 }
@@ -125,7 +125,7 @@ export interface SlackFlueDispatchState {
   markRecoveryRequired(reason: string): void | Promise<void>;
 }
 
-export interface PromptSlackAgentInput {
+interface PromptSlackAgentInput {
   message: string;
   state: SlackFlueDispatchState;
   turnId: string;

@@ -16,14 +16,14 @@ export type EffectiveConfigRevisionId = string & { readonly [configRevisionIdBra
 export type LedgerContentRef = string & { readonly [ledgerContentRefBrand]: true };
 
 export type WorkKind = 'conversation' | 'routine' | 'web_admin';
-export type WorkLifecycle = 'open' | 'closed' | 'expired';
-export type WorkSensitivity = 'public' | 'private';
+type WorkLifecycle = 'open' | 'closed' | 'expired';
+type WorkSensitivity = 'public' | 'private';
 export type BindingAdapterKind = 'slack' | 'routine' | 'web_admin' | 'conformance';
-export type BindingLifecycle = 'active' | 'closed' | 'expired';
+type BindingLifecycle = 'active' | 'closed' | 'expired';
 export type SourceVisibility = 'public' | 'private' | 'unknown';
 export type BindingConfigMode = 'frozen_on_open' | 'resolve_each_run';
 export type RunKind = 'interactive' | 'routine' | 'operator';
-export type RunStatus =
+type RunStatus =
   | 'admitted'
   | 'queued'
   | 'preparing_input'
@@ -40,7 +40,7 @@ export type RunDisposition =
   | 'cancelled'
   | 'superseded'
   | 'quarantined';
-export type RunDeliveryStatus =
+type RunDeliveryStatus =
   | 'not_ready'
   | 'pending'
   | 'delivered'
@@ -50,13 +50,13 @@ export type RunDeliveryStatus =
 export type RunExecutionAuthority = 'legacy' | 'ledger';
 export type RunCoordinatorKind = 'interactive' | 'flue_workflow';
 export type ActorTrustTier = 'member' | 'operator' | 'system' | 'unknown';
-export type RunExecutionOutcome =
+type RunExecutionOutcome =
   | 'pending'
   | 'not_submitted'
   | 'succeeded'
   | 'failed'
   | 'ambiguous';
-export type ModelInvocationStatus = 'not_invoked' | 'ready' | 'invoked' | 'settled';
+type ModelInvocationStatus = 'not_invoked' | 'ready' | 'invoked' | 'settled';
 export type ContentSensitivity = 'public' | 'private';
 
 export interface WorkRecord {
@@ -310,7 +310,7 @@ export interface ReleaseRunLeaseInput {
   releasedAt: number;
 }
 
-export interface WorkRunCursor {
+interface WorkRunCursor {
   createdAt: number;
   runId: RunId;
 }

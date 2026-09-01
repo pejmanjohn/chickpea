@@ -3,7 +3,7 @@ import {
 } from '../model-catalog/types.ts';
 import { resolveActiveCatalogRoute } from '../model-catalog/catalog.ts';
 
-export class UnsupportedBuiltinModelError extends Error {
+class UnsupportedBuiltinModelError extends Error {
   constructor(readonly canonicalModel: string) {
     super(`Model ${canonicalModel} is not supported by this Chickpea release.`);
     this.name = 'UnsupportedBuiltinModelError';

@@ -21,7 +21,7 @@ import {
   withCurrentWorkersAiModels,
 } from './workers-ai-models.ts';
 
-export type PiBuiltinProviderId = 'anthropic' | 'openai' | 'openrouter';
+type PiBuiltinProviderId = 'anthropic' | 'openai' | 'openrouter';
 
 interface PiProviderCredential {
   apiKey?: string;

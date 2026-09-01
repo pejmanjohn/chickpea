@@ -5,7 +5,7 @@ import type { SlackUserChangeEvent } from '../slack/types.ts';
 
 const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
 
-export interface ApplySlackUserChangeInput {
+interface ApplySlackUserChangeInput {
   identity: IdentityStore;
   betterAuth?: Pick<BetterAuthDatabaseBackend, 'deleteSessionsForUser'>;
   credentialRevision: string;
@@ -15,7 +15,7 @@ export interface ApplySlackUserChangeInput {
   event: SlackUserChangeEvent;
 }
 
-export interface ApplyGatewaySlackUserChangeInput {
+interface ApplyGatewaySlackUserChangeInput {
   identity: IdentityStore;
   betterAuth?: Pick<BetterAuthDatabaseBackend, 'deleteSessionsForUser'>;
   payloadTeamId: string;
@@ -24,7 +24,7 @@ export interface ApplyGatewaySlackUserChangeInput {
   event: SlackUserChangeEvent;
 }
 
-export type SlackUserChangeResult = {
+type SlackUserChangeResult = {
   outcome: 'suspended' | 'duplicate' | 'ignored';
 };
 

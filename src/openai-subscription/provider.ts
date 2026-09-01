@@ -53,7 +53,7 @@ import {
 } from './transport.ts';
 
 export const OPENAI_SUBSCRIPTION_PROVIDER_ID = 'openai-subscription';
-export const OPENAI_SUBSCRIPTION_API = 'chickpea-openai-subscription-responses';
+const OPENAI_SUBSCRIPTION_API = 'chickpea-openai-subscription-responses';
 
 const SUBSCRIPTION_MODELS = listOpenAiSubscriptionModels();
 const SUBSCRIPTION_MODELS_BY_ID = new Map(
@@ -91,7 +91,7 @@ const hostedSubscriptionRegistrations = new Map<string, CapturedSubscriptionRegi
 const subscriptionTransportMarkers = new Map<string, string>();
 const boundSubscriptionProviders = new Map<string, ReturnType<typeof createChickpeaPiProvider>>();
 
-export interface BindOpenAiSubscriptionProviderOptions {
+interface BindOpenAiSubscriptionProviderOptions {
   settings: SettingsStore;
   now?: () => number;
   modelId?: string;

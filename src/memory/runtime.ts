@@ -37,7 +37,7 @@ import { renderMemoryContent, validateMemoryContent } from './validation.ts';
 
 const NODE_RECEIPT_RETRY_DELAYS_MS = [100, 500] as const;
 
-export interface PreparedMemoryTurn {
+interface PreparedMemoryTurn {
   conversationKey: string;
   memoryEpoch: number;
   promptBlock?: string;
@@ -60,7 +60,7 @@ interface AgentMemoryRuntime {
   platformEnv: PlatformEnv | undefined;
 }
 
-export interface AgentMemoryRuntimeDependencies {
+interface AgentMemoryRuntimeDependencies {
   state?: MemoryStateStore;
   config?: ConfigStore;
   identity?: IdentityStore;
@@ -532,7 +532,7 @@ function memoryMutationDigest(command: MemoryCommand): string {
   return createHash('sha256').update(JSON.stringify(command)).digest('hex');
 }
 
-export async function isAuthorizedAgentMemoryMember(
+async function isAuthorizedAgentMemoryMember(
   turn: Pick<NormalizedSlackTurn, 'workspaceId' | 'userId'>,
   platformEnv: PlatformEnv | undefined,
   store?: IdentityStore,

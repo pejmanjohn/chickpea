@@ -28,7 +28,7 @@ import { isDirectSlackTurn } from './work-admission.ts';
 
 type MaybePromise<T> = T | Promise<T>;
 
-export interface SlackInstallationReader {
+interface SlackInstallationReader {
   getWorkspaceInstallation(
     workspaceId: string,
   ): MaybePromise<WorkspaceInstallation | undefined>;

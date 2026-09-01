@@ -1642,10 +1642,10 @@ async function resolveRuntimePlanSandboxSelection(
   return resolveCloudflareSandboxDecision(assignment, env, store);
 }
 
-export const MEMORY_CHANGED_RETRY_TEXT =
+const MEMORY_CHANGED_RETRY_TEXT =
   'Agent memory or Slack access changed while I was answering, so I withheld the draft. Before trying again, check whether any requested external action already completed.';
 
-export function resolveMemoryDeliveryText(
+function resolveMemoryDeliveryText(
   draft: string,
   recoveredText: string | undefined,
   leaseValid: boolean,
@@ -1705,7 +1705,7 @@ function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): s
   }
 }
 
-export function applyVisibilityBarrier(
+function applyVisibilityBarrier(
   context: SlackTurnContext,
   barrierAt: number | null,
 ): SlackTurnContext {

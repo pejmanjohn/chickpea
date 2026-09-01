@@ -13,7 +13,7 @@ import {
   type GatewaySessionStatusSnapshot,
 } from './session-runner.ts';
 
-export interface SlackGatewaySessionRpc {
+interface SlackGatewaySessionRpc {
   wake(): Promise<void>;
   restart(): Promise<void>;
   status(): Promise<GatewaySessionStatusSnapshot>;

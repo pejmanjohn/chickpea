@@ -18,7 +18,7 @@ import type { IdentityStore } from '../identity/types.ts';
 import { routineDestinationBindingDigest } from './ids.ts';
 import type { RoutineDefinition } from './types.ts';
 
-export type RoutineAuthorityFailure =
+type RoutineAuthorityFailure =
   | 'schedule_authority_missing'
   | 'agent_unavailable'
   | 'destination_unavailable'

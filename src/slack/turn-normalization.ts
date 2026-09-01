@@ -13,7 +13,7 @@ import {
 } from './types.ts';
 import type { SlackInboundEnvelope } from './transport/types.ts';
 
-export interface SlackTurnNormalizationOptions {
+interface SlackTurnNormalizationOptions {
   botUserId?: string;
 }
 

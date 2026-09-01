@@ -1,4 +1,4 @@
-export interface ManagedConnectorReadCopy {
+interface ManagedConnectorReadCopy {
   setupAction: string;
   accessSummary: string;
   receiptAction: string;

@@ -3,7 +3,7 @@ import type { NetworkConfig, SecureFetch } from 'just-bash';
 import { assertCurrentRequestSideEffectAllowed } from '../memory/tool-policy.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
 
-export type EgressMode = 'allowlist' | 'open' | 'off';
+type EgressMode = 'allowlist' | 'open' | 'off';
 
 export interface EgressPolicy {
   mode: EgressMode;
@@ -54,14 +54,14 @@ interface ConnectorScopeSpec {
 // exactly this connector's. Each scope becomes its own secure-fetch delegate, so
 // a redirect off a connector host cannot reach — or carry an elevated method to —
 // any host outside the connector's own allow-list.
-export interface EgressScope {
+interface EgressScope {
   prefixes: string[];
   methods: Set<string>;
   network: NetworkConfig;
   matchesRequest?: (url: string) => boolean;
 }
 
-export interface EgressPlan {
+interface EgressPlan {
   scopes: EgressScope[];
   // Requests matching no connector scope (operator "Domains" and, in open mode,
   // arbitrary hosts) go through this network at the baseline method set.
@@ -83,7 +83,7 @@ export interface ScopedDelegate {
 // The methods permitted for any host NOT governed by a specific connection —
 // operator "Domains" and, in `open` mode, arbitrary internet hosts. A connector
 // requesting a broader method must not widen this baseline for unrelated hosts.
-export const BASE_EGRESS_METHODS = ['GET', 'HEAD', 'POST'] as const;
+const BASE_EGRESS_METHODS = ['GET', 'HEAD', 'POST'] as const;
 
 export function parseEgressPolicy(raw: string | undefined): EgressPolicy {
   if (raw === undefined) return DEFAULT_EGRESS_POLICY;

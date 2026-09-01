@@ -21,7 +21,7 @@ export const RoutineModelResultSchema = v.strictObject({
   changeKey: v.optional(v.string()),
 });
 
-export type RoutineModelResult = v.InferOutput<typeof RoutineModelResultSchema>;
+type RoutineModelResult = v.InferOutput<typeof RoutineModelResultSchema>;
 
 export interface PreparedRoutinePrompt {
   prompt: string;
@@ -31,7 +31,7 @@ export interface PreparedRoutinePrompt {
   validateMemoryLease(): Promise<boolean>;
 }
 
-export interface NormalizedRoutineResult {
+interface NormalizedRoutineResult {
   status: 'succeeded' | 'no_op';
   message: string;
   changeKeyHash: string | null;

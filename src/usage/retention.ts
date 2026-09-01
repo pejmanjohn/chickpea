@@ -4,7 +4,7 @@ export const USAGE_RETENTION_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
-export interface UsageRetentionCutoffs {
+interface UsageRetentionCutoffs {
   rawBefore: number;
   aggregatesBefore: number;
 }

@@ -36,19 +36,19 @@ export const DIRECT_ROUTINE_RECOVERY_NOTICE =
   'Chickpea paused private scheduled work because its original thread could not receive a reply. Ask Chickpea here to list private schedules.';
 export const DIRECT_ROUTINE_CONSECUTIVE_FAILURE_NOTICE =
   'Chickpea paused private scheduled work after repeated failures. Ask Chickpea here to list private schedules and resume it after reviewing the issue.';
-export const DIRECT_ROUTINE_UNKNOWN_OUTCOME_NOTICE =
+const DIRECT_ROUTINE_UNKNOWN_OUTCOME_NOTICE =
   'Chickpea paused private scheduled work because a result may have been delivered without a confirmed outcome. Ask Chickpea here to list private schedules before resuming it.';
 export const CHANNEL_ROUTINE_CONSECUTIVE_FAILURE_NOTICE =
   'Chickpea paused scheduled work after repeated failures. Ask Chickpea in this channel to list schedules and resume it after reviewing the issue.';
 export const CHANNEL_ROUTINE_UNKNOWN_OUTCOME_NOTICE =
   'Chickpea paused scheduled work because a result may have been delivered without a confirmed outcome. Ask Chickpea in this channel to list schedules before resuming it.';
 
-export interface RoutineDeliveryReceipt {
+interface RoutineDeliveryReceipt {
   channelId: string;
   messageTs: string;
 }
 
-export type RoutineRecoveryDeliveryOutcome =
+type RoutineRecoveryDeliveryOutcome =
   | 'accepted'
   | 'definitive_failure'
   | 'unknown'

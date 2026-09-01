@@ -54,14 +54,14 @@ type McpOAuthErrorCode =
   | 'oauth_unavailable'
   | 'reauthorization_required';
 
-export interface McpOAuthCallbackContext {
+interface McpOAuthCallbackContext {
   ref: McpSecretRef;
   accountRevision?: number;
   oauthAttemptId?: string;
   returnAgentId?: string;
 }
 
-export interface McpOAuthErrorOptions extends ErrorOptions {
+interface McpOAuthErrorOptions extends ErrorOptions {
   callbackContext?: McpOAuthCallbackContext;
 }
 

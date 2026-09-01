@@ -4,7 +4,7 @@ import {
 } from '../model-catalog/index.ts';
 import { OPENAI_SUBSCRIPTION_MODELS } from './protocol.ts';
 
-export interface OpenAiSubscriptionModelCatalogEntry {
+interface OpenAiSubscriptionModelCatalogEntry {
   id: string;
   name: string;
   contextWindow: number;

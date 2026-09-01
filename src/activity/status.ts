@@ -32,17 +32,17 @@ export {
   type TypedActivityStatus,
 } from './semantic.ts';
 
-export interface ActivitySkill {
+interface ActivitySkill {
   name: string;
   displayName?: string;
 }
 
-export interface ActivityConnection {
+interface ActivityConnection {
   id: string;
   displayName: string;
 }
 
-export interface ApiConnectionActivity {
+interface ApiConnectionActivity {
   displayName: string;
   allowedHosts: readonly string[];
   pathPrefixes: readonly string[];

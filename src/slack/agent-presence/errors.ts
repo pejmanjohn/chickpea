@@ -1,6 +1,6 @@
 import { SlackTransportError } from '../transport/types.ts';
 
-export type AgentPresenceErrorCode =
+type AgentPresenceErrorCode =
   | 'paid_plan_required'
   | 'user_group_policy_denied'
   | 'two_factor_required'
@@ -133,7 +133,7 @@ export function classifyAgentPresenceError(error: unknown): AgentPresenceError {
   );
 }
 
-export interface AgentPresenceRecovery {
+interface AgentPresenceRecovery {
   title: string;
   explanation: string;
   steps: string[];

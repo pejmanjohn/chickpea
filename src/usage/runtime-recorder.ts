@@ -16,11 +16,11 @@ import {
   usageEstimatesEnabled,
 } from './pricing/estimate.ts';
 
-export const DEFAULT_USAGE_WRITE_BUDGET_MS = 100;
+const DEFAULT_USAGE_WRITE_BUDGET_MS = 100;
 
 type UsagePersistenceMode = 'bounded' | 'durable';
-export type UsagePersistencePhase = 'admission' | 'terminal' | 'repair';
-export type UsagePersistenceOutcome = 'recorded' | 'timed_out' | 'failed';
+type UsagePersistencePhase = 'admission' | 'terminal' | 'repair';
+type UsagePersistenceOutcome = 'recorded' | 'timed_out' | 'failed';
 
 export interface UsagePersistenceEvent {
   phase: UsagePersistencePhase;
@@ -28,7 +28,7 @@ export interface UsagePersistenceEvent {
   executionId: string;
 }
 
-export interface InteractiveUsageRecorderOptions {
+interface InteractiveUsageRecorderOptions {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
   requestedModel: string | null;
@@ -208,7 +208,7 @@ export class InteractiveUsageRecorder {
   }
 }
 
-export interface RoutineUsageRecorderOptions {
+interface RoutineUsageRecorderOptions {
   operationId: string;
   executionId: string;
   runId?: string;
@@ -239,7 +239,7 @@ export interface RoutineUsageRecorderOptions {
   onPersistence?: (event: UsagePersistenceEvent) => void;
 }
 
-export interface RoutineReportedUsage {
+interface RoutineReportedUsage {
   input: number;
   output: number;
   cacheRead?: number;
@@ -247,7 +247,7 @@ export interface RoutineReportedUsage {
   totalTokens: number;
 }
 
-export interface InteractionUsageRecorderOptions {
+interface InteractionUsageRecorderOptions {
   operationId: string;
   executionId: string;
   runId?: string;
@@ -273,7 +273,7 @@ export interface InteractionUsageRecorderOptions {
   onPersistence?: (event: UsagePersistenceEvent) => void;
 }
 
-export interface InteractionReportedUsage {
+interface InteractionReportedUsage {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens?: number;

@@ -24,7 +24,7 @@ const ENV_PREFIXES: Record<ProviderKeyId, string> = {
 
 const BUILTIN_PROVIDERS = new Set<ProviderKeyId>(['anthropic', 'openai', 'openrouter']);
 
-export interface StoredCredentialMetadata {
+interface StoredCredentialMetadata {
   credentialRefId: string;
   version: number;
   active: boolean;

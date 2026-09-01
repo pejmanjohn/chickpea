@@ -8,7 +8,7 @@ import {
 } from '../activity/telemetry.ts';
 import { isSafeTypedActivityStatus } from '../activity/status.ts';
 
-export interface SlackStatusTurnRegistration {
+interface SlackStatusTurnRegistration {
   setStatus(update: SlackStatusUpdate): Promise<boolean>;
   drain(): Promise<void>;
   /** Fence narration and drop queued work before final delivery. */
@@ -24,7 +24,7 @@ interface StatusPresenter {
   refreshStatus?(update: SlackStatusUpdate): Promise<boolean>;
 }
 
-export interface SlackStatusTurnOptions {
+interface SlackStatusTurnOptions {
   /** Opaque identity for the logical turn that owns observed activity. */
   generation: string;
   /** Monotonic admitted-message generation used by canonical V3 turns. */
