@@ -12,12 +12,16 @@ import {
 import { createPlatformProductTelemetry } from '../src/telemetry/platform.ts';
 
 const INSTALLATION_ID = '018f47ea-6f5b-7a2a-9c7b-8fd70ea7b863';
+const TELEMETRY_ENABLED_TEST_ENV = Object.freeze({
+  DO_NOT_TRACK: '0',
+  CHICKPEA_DISABLE_TELEMETRY: '0',
+});
 
 test('waitUntil lifecycle registers a bounded task without changing the product result', async () => {
   const registered: Promise<unknown>[] = [];
   let fetchStarted = false;
   const telemetry = createProductTelemetryRuntime({
-    env: {},
+    env: TELEMETRY_ENABLED_TEST_ENV,
     settings: () => emptySettings(),
     fetch: async () => { fetchStarted = true; return { status: 503 } as Response; },
     lifecycle: createWaitUntilTelemetryLifecycle({

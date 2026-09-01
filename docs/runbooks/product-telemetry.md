@@ -111,7 +111,24 @@ FROM persons
 - Privacy result: `persons_count = 0`; `$ip` and `$geoip_country_code` are absent; the project reports `anonymize_ips = true`; the exact-property integrity query returns no rows.
 - Dashboard result: all nine product queries and both stop signals compiled and refreshed. The persisted dashboard filter is `telemetry_environment = production`, so the test canary does not affect product metrics.
 
-Cloudflare/Slack acceptance and the one-hour and 24-hour volume checks are recorded here only after their deployed evidence exists; a source build, upload, or test canary alone is not release acceptance.
+### 2026-09-01 — Cloudflare/Admin/Slack canary
+
+- Deployment: disposable Worker `chickpea-agent-first-disposable`, version `2ab5b182-86cb-48c6-806f-a65f339c49fe`, serving 100% of traffic with the expected production bindings and `CHICKPEA_TELEMETRY_ENVIRONMENT=test`.
+- Admin proof: the signed-in Admin created `Telemetry Canary Sep 1` (`telemetry-canary-sep1`); the API returned HTTP 201 and the Agent appeared in inventory.
+- Slack proof: a real DM asked the canary Agent to reply with an exact phrase. Chickpea returned `telemetry canary ok` and identified the serving model as `openai/gpt-5.6-terra`.
+- Stored creation events: PostHog received `agent_created` and the same-batch `installation_active` at `2026-09-01T21:30:09.601Z`.
+- Stored run event: PostHog received `run_completed` at `2026-09-01T21:34:55.123Z` with `trigger = interactive`, `outcome = succeeded`, and `agent_origin = user_created`.
+- Identity result: all three events share one random installation `distinct_id`; the creation and run events use the same pseudonymous `workspace_key` and `agent_key`. No source Slack or Chickpea identifiers are present.
+- Privacy result: all three events report `schema_version = 1`, `runtime_target = cloudflare`, `telemetry_environment = test`, `$process_person_profile = false`, and `$geoip_disable = true`. The integrity query returns no rows and `persons_count = 0`.
+- Dashboard result: the production-filtered product tiles remain at zero, so the canary does not affect adoption reporting.
+
+### 2026-09-01 — Test-process isolation
+
+- The live PostHog inspection revealed privacy-safe `development` events from local integration tests that exercised default-on Node runtime composition without a mocked telemetry boundary.
+- The repository-wide test command now sets `DO_NOT_TRACK=1`. Only telemetry-specific tests explicitly opt back in, and every such test uses a mocked fetch transport.
+- A follow-up targeted run produced no additional `development` events in PostHog. This prevents ordinary local and CI test runs from consuming telemetry quota or distorting development observations.
+
+The one-hour and 24-hour checks verify bounded event volume, the exact event/property allowlist, zero person profiles, and absent IP/GeoIP enrichment after the canary.
 
 ## Maintenance
 

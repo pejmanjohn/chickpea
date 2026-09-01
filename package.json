@@ -51,7 +51,7 @@
     }
   },
   "scripts": {
-    "test": "npm run typecheck && node --test --import tsx tests/*.test.ts tests/usage/*.test.ts",
+    "test": "npm run typecheck && DO_NOT_TRACK=1 node --test --import tsx tests/*.test.ts tests/usage/*.test.ts",
     "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
     "dev": "vite dev --config vite.node.config.ts",

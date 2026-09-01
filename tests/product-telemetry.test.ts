@@ -20,6 +20,10 @@ import {
 import type { ProductTelemetryInventoryStore } from '../src/telemetry/adoption.ts';
 
 const INSTALLATION_ID = '018f47ea-6f5b-7a2a-9c7b-8fd70ea7b863';
+const TELEMETRY_ENABLED_TEST_ENV = Object.freeze({
+  DO_NOT_TRACK: '0',
+  CHICKPEA_DISABLE_TELEMETRY: '0',
+});
 const IDENTITY: TelemetryIdentity = {
   installationId: INSTALLATION_ID,
   hmacKey: Uint8Array.from({ length: 32 }, (_, index) => index + 1),
@@ -176,11 +180,13 @@ test('telemetry identity creation converges on one atomic winner', async () => {
   const identities = await Promise.all([
     loadOrCreateTelemetryIdentity({
       settings,
+      env: TELEMETRY_ENABLED_TEST_ENV,
       randomUUID: () => `018f47ea-6f5b-7a2a-9c7b-8fd70ea7b86${uuidIndex++}`,
       randomBytes: () => new Uint8Array(32).fill(1),
     }),
     loadOrCreateTelemetryIdentity({
       settings,
+      env: TELEMETRY_ENABLED_TEST_ENV,
       randomUUID: () => `018f47ea-6f5b-7a2a-9c7b-8fd70ea7b86${uuidIndex++}`,
       randomBytes: () => new Uint8Array(32).fill(2),
     }),
@@ -203,7 +209,7 @@ test('malformed stored telemetry identity fails closed without replacement', asy
   });
 
   await assert.rejects(
-    loadOrCreateTelemetryIdentity({ settings }),
+    loadOrCreateTelemetryIdentity({ settings, env: TELEMETRY_ENABLED_TEST_ENV }),
     TelemetryIdentityUnavailableError,
   );
   assert.equal(writes, 0);
@@ -279,6 +285,7 @@ test('telemetry client sends one exact bounded PostHog batch', async () => {
   const tasks: Promise<void>[] = [];
   const client = createProductTelemetryClient({
     settings: memorySettings(),
+    env: TELEMETRY_ENABLED_TEST_ENV,
     fetch: async (input, init) => {
       requests.push({ input, init });
       return { status: 200 } as Response;
@@ -349,6 +356,7 @@ test('the first concurrent event per UTC day appends one bucket-only adoption sn
   } as unknown as ProductTelemetryInventoryStore;
   const client = createProductTelemetryClient({
     settings,
+    env: TELEMETRY_ENABLED_TEST_ENV,
     config,
     fetch: async (_input, init) => {
       requests.push((JSON.parse(String(init?.body)) as { batch: Array<Record<string, unknown>> }).batch);
@@ -403,6 +411,7 @@ test('a failed adoption inventory preserves the triggering product event', async
   const tasks: Promise<void>[] = [];
   const client = createProductTelemetryClient({
     settings: mappedSettings(),
+    env: TELEMETRY_ENABLED_TEST_ENV,
     config: {
       async summarizeAdoptionInventory() { throw new Error('private inventory failure'); },
     },
@@ -435,6 +444,7 @@ test('telemetry transport settles HTTP, redirect, network, timeout, and body fai
     const tasks: Promise<void>[] = [];
     const client = createProductTelemetryClient({
       settings: memorySettings(),
+      env: TELEMETRY_ENABLED_TEST_ENV,
       fetch: async (_input, init) => {
         attempts += 1;
         if (outcome === 'rejected') throw new Error('private network failure');
@@ -473,6 +483,7 @@ test('telemetry transport fails closed before fetch for oversized or hostile inp
   const tasks: Promise<void>[] = [];
   const client = createProductTelemetryClient({
     settings: memorySettings(),
+    env: TELEMETRY_ENABLED_TEST_ENV,
     fetch: async () => { fetches += 1; return { status: 200 } as Response; },
     lifecycle: (task) => tasks.push(task),
     runtimeTarget: 'node',
@@ -491,6 +502,7 @@ test('telemetry transport fails closed before fetch for oversized or hostile inp
   const hostileTasks: Promise<void>[] = [];
   const hostile = createProductTelemetryClient({
     settings: memorySettings(),
+    env: TELEMETRY_ENABLED_TEST_ENV,
     fetch: async () => { fetches += 1; return { status: 200 } as Response; },
     lifecycle: (task) => hostileTasks.push(task),
     runtimeTarget: 'node',
