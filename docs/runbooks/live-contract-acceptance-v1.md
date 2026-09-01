@@ -6,14 +6,15 @@ This record separates deterministic verifier checks from live Chickpea acceptanc
 
 | Field | Result |
 | --- | --- |
-| Readiness-audit source revision | `14b221fb09e47a651391d640056bfe0dda474eab` |
-| Manifest digest | `sha256:a47cc8fa80a94fa16b9cc5b7811356cea9c52754e5206afe03f9c2255888c468` |
+| Verifier implementation revision | `c98b7496e42b9d31a032ad8c3b551ddab6591c8e` |
+| Manifest digest | `sha256:058579964b9814fa8b1ca0759a7954da0710923b8c3387ca92d2aa30fe594c38` |
 | Required smoke variants | 4 |
 | Required deep variants | 26 across LC-01 through LC-10 |
-| Deterministic verifier checks | Pass: typecheck, 120 verifier/package tests, 2,483 repository tests, production build, and immutable OSS export |
+| Phase 1 active targets | `amber`, `cobalt`, `fern` in one Slack Developer sandbox |
+| Deterministic verifier checks | Pass: typecheck, 131 verifier tests, 2,502 repository tests, production build, and immutable OSS export |
 | Live doctor | Blocked before a scored run |
 | Live smoke | Not started |
-| Live deep | Not started |
+| Live deep | Continuation-only; not a Phase 1 gate |
 | Live product mutations | 0 |
 | Cleanup or residue verdict | Not applicable; no scored mutation was exposed |
 
@@ -40,15 +41,16 @@ Before live scoring, expose any required durable truth through a bounded read-on
 ## What must be true before the first smoke
 
 1. Claim one permitted target. Consume `env target <alias>` and `env attest <alias>` without copying immutable IDs into another format.
-2. Resolve every actor required by the selected target's `allowedVariants` to distinct Computer Use-addressable browser apps. The full deep target uses Owner, Admin, Member, and second-member roles.
+2. Resolve every actor required by the selected color target's smoke variants to distinct Computer Use-addressable browser apps.
 3. Implement the verifier-owned attended coordinator and prove target lock, safe clear-lock, UI mutex/browser reservation, challenge, receipt, visible readback, exact cleanup, and postflight behavior without a product mutation.
 4. Make every selected UI observation recipe available, run transport-aware doctor, and require a ready result.
-5. Start a new immutable scored smoke run. If it passes with cleanup proof, use `dedicated-qa` for the first deep run.
+5. Take an ordinary exclusive claim on clean `fern` and start one immutable protected origin/main Computer Use smoke at `LC01-V1-create-welcome`.
+6. If it passes with cleanup proof, clean and release `fern`, then return it to normal branch-lane use. Do not persist a qualification mode or dual-role registry state.
 
-Feature targets run selected `case` variants and may run `smoke` only when they contain its exact inventory. `deep` is reserved for `dedicated-qa`. Different targets may run concurrently on one host; only Computer Use action, input, or observation windows take the short host-local UI mutex.
+The three color targets bind the same exact four-variant smoke inventory. They run a selected `case` from that inventory or the complete `smoke`; the Phase 1 environment registry rejects `deep`. Different targets may run concurrently on one host; only Computer Use action, input, or observation windows take the short host-wide UI mutex.
 
-Fable 5.1's final code-backed review approved this foundation/live-completion split and required the target subset, transport-aware attestation, derived lock path, UI-only scored journey, and verifier-owned coordinator boundaries recorded above.
+Fable 5.1's final plan review required this foundation/live-completion split, exact shared smoke inventory, transport-aware attestation, derived lock path, UI-only scored journey, host-wide UI mutex, and verifier-owned coordinator boundaries. The environment scope keeps first-install automation and deep qualification beyond Phase 1.
 
 ## Acceptance rule
 
-A future update may mark smoke or deep accepted only after every required variant executes under one attested target and source identity, all product assertions pass, exact cleanup or attributed residue is proven, postflight finds no unmatched run-era state, and the report contains no private coordinate or content.
+Phase 1 may mark smoke accepted only after its four variants execute under one clean attested `fern` claim and source identity, all product assertions pass, exact cleanup or attributed residue is proven, postflight finds no unmatched run-era state, and the report contains no private coordinate or content. Deep acceptance is continuation work.
