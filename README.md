@@ -152,22 +152,22 @@ What you can connect:
     <th colspan="5" align="left">Managed · one Composio key</th>
   </tr>
   <tr>
-    <td><img src="https://cdn.simple-icons.org/gmail" width="14" height="14" alt=""> Gmail</td>
-    <td><img src="https://cdn.simple-icons.org/googlecalendar" width="14" height="14" alt=""> Google Calendar</td>
-    <td><img src="https://cdn.simple-icons.org/googledrive" width="14" height="14" alt=""> Google Drive</td>
-    <td><img src="https://cdn.simple-icons.org/googlesheets" width="14" height="14" alt=""> Google Sheets</td>
-    <td><img src="https://cdn.simple-icons.org/googledocs" width="14" height="14" alt=""> Google Docs</td>
+    <td><img src="https://cdn.simpleicons.org/gmail" width="14" height="14" alt=""> Gmail</td>
+    <td><img src="https://cdn.simpleicons.org/googlecalendar" width="14" height="14" alt=""> Google Calendar</td>
+    <td><img src="https://cdn.simpleicons.org/googledrive" width="14" height="14" alt=""> Google Drive</td>
+    <td><img src="https://cdn.simpleicons.org/googlesheets" width="14" height="14" alt=""> Google Sheets</td>
+    <td><img src="https://cdn.simpleicons.org/googledocs" width="14" height="14" alt=""> Google Docs</td>
   </tr>
   <tr>
-    <td><img src="https://cdn.simple-icons.org/googleslides" width="14" height="14" alt=""> Google Slides</td>
-    <td><img src="https://cdn.simple-icons.org/googlesearchconsole" width="14" height="14" alt=""> Search Console</td>
-    <td><img src="https://cdn.simple-icons.org/googleanalytics" width="14" height="14" alt=""> Google Analytics</td>
-    <td><img src="https://cdn.simple-icons.org/notion/000000/ffffff" width="14" height="14" alt=""> Notion</td>
-    <td><img src="https://cdn.simple-icons.org/hubspot" width="14" height="14" alt=""> HubSpot</td>
+    <td><img src="https://cdn.simpleicons.org/googleslides" width="14" height="14" alt=""> Google Slides</td>
+    <td><img src="https://cdn.simpleicons.org/googlesearchconsole" width="14" height="14" alt=""> Search Console</td>
+    <td><img src="https://cdn.simpleicons.org/googleanalytics" width="14" height="14" alt=""> Google Analytics</td>
+    <td><img src="https://cdn.simpleicons.org/notion/000000/ffffff" width="14" height="14" alt=""> Notion</td>
+    <td><img src="https://cdn.simpleicons.org/hubspot" width="14" height="14" alt=""> HubSpot</td>
   </tr>
   <tr>
-    <td><img src="https://cdn.simple-icons.org/googleads" width="14" height="14" alt=""> Google Ads</td>
-    <td><img src="https://cdn.simple-icons.org/youtube" width="14" height="14" alt=""> YouTube</td>
+    <td><img src="https://cdn.simpleicons.org/googleads" width="14" height="14" alt=""> Google Ads</td>
+    <td><img src="https://cdn.simpleicons.org/youtube" width="14" height="14" alt=""> YouTube</td>
     <td>Gong</td>
     <td colspan="2"></td>
   </tr>
@@ -176,9 +176,9 @@ What you can connect:
   </tr>
   <tr>
     <td>Ahrefs</td>
-    <td><img src="https://cdn.simple-icons.org/airtable" width="14" height="14" alt=""> Airtable</td>
-    <td><img src="https://cdn.simple-icons.org/atlassian" width="14" height="14" alt=""> Atlassian</td>
-    <td><img src="https://cdn.simple-icons.org/cloudflare" width="14" height="14" alt=""> Cloudflare</td>
+    <td><img src="https://cdn.simpleicons.org/airtable" width="14" height="14" alt=""> Airtable</td>
+    <td><img src="https://cdn.simpleicons.org/atlassian" width="14" height="14" alt=""> Atlassian</td>
+    <td><img src="https://cdn.simpleicons.org/cloudflare" width="14" height="14" alt=""> Cloudflare</td>
     <td>Exa</td>
   </tr>
   <tr>
@@ -186,28 +186,28 @@ What you can connect:
     <td>Fireflies</td>
     <td>Gamma</td>
     <td>Granola</td>
-    <td><img src="https://cdn.simple-icons.org/huggingface" width="14" height="14" alt=""> Hugging Face</td>
+    <td><img src="https://cdn.simpleicons.org/huggingface" width="14" height="14" alt=""> Hugging Face</td>
   </tr>
   <tr>
     <td>incident.io</td>
-    <td><img src="https://cdn.simple-icons.org/intercom/000000/ffffff" width="14" height="14" alt=""> Intercom</td>
-    <td><img src="https://cdn.simple-icons.org/linear" width="14" height="14" alt=""> Linear</td>
+    <td><img src="https://cdn.simpleicons.org/intercom/000000/ffffff" width="14" height="14" alt=""> Intercom</td>
+    <td><img src="https://cdn.simpleicons.org/linear" width="14" height="14" alt=""> Linear</td>
     <td>LunarCrush</td>
     <td>Monday.com</td>
   </tr>
   <tr>
     <td>Neon</td>
-    <td><img src="https://cdn.simple-icons.org/posthog" width="14" height="14" alt=""> PostHog</td>
-    <td><img src="https://cdn.simple-icons.org/sentry/362D59/ffffff" width="14" height="14" alt=""> Sentry</td>
-    <td><img src="https://cdn.simple-icons.org/stripe" width="14" height="14" alt=""> Stripe</td>
-    <td><img src="https://cdn.simple-icons.org/supabase" width="14" height="14" alt=""> Supabase</td>
+    <td><img src="https://cdn.simpleicons.org/posthog" width="14" height="14" alt=""> PostHog</td>
+    <td><img src="https://cdn.simpleicons.org/sentry/362D59/ffffff" width="14" height="14" alt=""> Sentry</td>
+    <td><img src="https://cdn.simpleicons.org/stripe" width="14" height="14" alt=""> Stripe</td>
+    <td><img src="https://cdn.simpleicons.org/supabase" width="14" height="14" alt=""> Supabase</td>
   </tr>
   <tr>
     <th colspan="5" align="left">Presets · direct HTTP API</th>
   </tr>
   <tr>
-    <td><img src="https://cdn.simple-icons.org/asana" width="14" height="14" alt=""> Asana</td>
-    <td><img src="https://cdn.simple-icons.org/zendesk/03363D/ffffff" width="14" height="14" alt=""> Zendesk</td>
+    <td><img src="https://cdn.simpleicons.org/asana" width="14" height="14" alt=""> Asana</td>
+    <td><img src="https://cdn.simpleicons.org/zendesk/03363D/ffffff" width="14" height="14" alt=""> Zendesk</td>
     <td colspan="3"></td>
   </tr>
   <tr>
