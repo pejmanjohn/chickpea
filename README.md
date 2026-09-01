@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <strong>AI teammates in Slack that answer questions, take on tasks, and use the accounts you give them — running on infrastructure you own.</strong>
+  <strong>AI teammates in Slack that answer questions, take on tasks, and use the accounts you give them, all on infrastructure you own.</strong>
 </p>
 
 <div align="center">
@@ -23,7 +23,7 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea)
 
-<sub><em>or run it on your own box — full steps in <a href="#node">Install</a></em></sub>
+<sub><em>or run it on your own box. Full steps in <a href="#node">Install</a>.</em></sub>
 
 <br />
 
@@ -31,25 +31,23 @@
 
 </div>
 
-Chickpea gives your team AI coworkers in Slack. You address them by name. `@support` answers the billing question in the channel where someone asked it. `@revops` pulls the numbers every Monday morning without being asked twice. `@oncall` reads the repo before it answers. Each one has its own instructions, its own memory, its own connected accounts, and its own list of channels it's allowed to work in. You set all of that up by asking, in Slack.
+Chickpea gives your team AI teammates in Slack. You address them by name. `@support` answers the billing question in the channel where someone asked it. `@revops` posts Monday's pipeline numbers from HubSpot on a schedule. `@oncall` reads the repo before it answers. Each one has its own instructions, memory, connected accounts, and list of channels it's allowed to work in. You set all of that up by asking, in Slack.
 
-The difference is where they work. Chickpea is MIT-licensed and you deploy it yourself, to your own Cloudflare account or your own server, pointed at whichever model provider you want. Two optional exceptions, both yours to decline: the shared Slack gateway, and Composio if you want managed connectors instead of wiring OAuth yourself. Both are [explained below](#security-model).
-
-And Chickpea doesn't roll its own agent machinery. Every Agent runs on [Flue](https://flueframework.com), the open agent framework built by the Astro team at Cloudflare on top of **Pi**, the open agent harness behind OpenClaw. More on that in [How It Works](#how-it-works).
+The difference is where they work. Chickpea is MIT-licensed and you deploy it yourself, to your own Cloudflare account or your own server, pointed at whichever model provider you want. Under the hood every Agent runs on [Flue](https://flueframework.com), the open agent framework from the Astro team, now part of Cloudflare. More in [How It Works](#how-it-works).
 
 ---
 
 ## Why Chickpea Exists
 
-Your team already uses AI all day, one person at a time in a private tab. The answers never make it back to anyone else. Ask in the channel instead:
+Your team already uses AI all day, one person at a time in a private tab, and the answer stays in that one person's history. Ask in the channel instead:
 
 > **`@growth`** which pages lost impressions in Search Console last month?
 
-`@growth` checks Search Console, cross-references Google Analytics, and answers in the thread. `@sales` pulls the recurring objections out of this week's Gong calls. `@eng` names the top new Sentry issue since Friday's deploy. `@ops` reads the quarterly deck in Drive and takes questions on it. Ask any of them to update a HubSpot record or move something on your Google Calendar and they confirm with you first. Everyone in the channel sees the answer, and anyone can pick it up later without starting over.
+`@growth` checks Search Console, cross-references Google Analytics, and answers in the thread. `@sales` pulls the recurring objections out of this week's Gong calls. `@eng` names the top new Sentry issue since Friday's deploy. Ask any of them to update a HubSpot record or move something on your Google Calendar and they confirm with you first. Everyone in the channel sees the answer, and anyone can pick it up later without starting over.
 
-The hosted versions of this idea work at the vendor: their infrastructure, their model, their roadmap. Good products, and for a lot of teams that trade is fine. For the rest, the alternative has mostly been nothing.
+The hosted versions of this idea run on the vendor's infrastructure, with the vendor's model, on the vendor's schedule. Good products, and for a lot of teams that trade is fine. Some teams can't make it, for reasons of policy or data, and they have mostly gone without.
 
-Chickpea is that alternative, and it's MIT-licensed. Deploy it to your own Cloudflare account or your own Node host, and point each Agent at whichever model provider you want. Each Agent keeps its own memory, its own connected accounts, and its own list of channels. The support Agent can't read finance's inbox, because nobody ever gave it to them. Need isolation? Make another Agent. That is the whole mental model.
+Chickpea is for those teams. Each Agent keeps its own connected accounts and its own channels, so the support Agent can't read finance's inbox; nobody ever gave it to them. If you need a wall between two jobs, make a second Agent.
 
 ---
 
@@ -59,13 +57,13 @@ Chickpea is that alternative, and it's MIT-licensed. Deploy it to your own Cloud
 |---|---|---|
 | **Addressable Agents** | Each Agent gets a real Slack handle (a zero-member user group like `@support`), a distinct generated avatar, and its own name on every reply. | |
 | **Agent memory** | One memory per Agent, shared across its DMs and every granted channel, editable and deletable in Admin. | [Details](#memory) |
-| **Connection accounts** | Team accounts and personal accounts, each owned permanently by one Agent: 35 connector presets (13 managed on a single Composio key, 22 more over hosted MCP or direct API), and native API and MCP for anything custom. | [Details](#connections-and-authority) |
+| **Connection accounts** | Team accounts and personal accounts, each owned by one Agent. 35 connector presets, plus native API and MCP for anything custom. | [Details](#connections-and-authority) |
 | **Model choice** | Anthropic, OpenAI, OpenRouter, or Cloudflare Workers AI, pinned per Agent. | [Details](#models-and-providers) |
-| **Skills** | Paste a GitHub repo or `skills.sh` link in Admin, or hand the link to an Agent in Slack; either way Chickpea reads the `SKILL.md` files and shows exactly which skills it found before importing. | |
+| **Skills** | Import from a GitHub repo or a `skills.sh` link, in Admin or by handing the link to an Agent in Slack. You see which skills were found before anything is installed. | |
 | **Repositories** | Grant GitHub repositories to an Agent through the Chickpea GitHub App (Settings → GitHub). Access uses short-lived installation tokens scoped to the granted repositories. | |
-| **Coding sandbox** | Optional Cloudflare container tier for work needing a real checkout, package installation, tests, or a dev server. | [Details](#coding-sandbox) |
+| **Coding sandbox** | Optional Cloudflare container tier for Agents that need to clone a repo, install packages, and run tests. | [Details](#coding-sandbox) |
 | **Schedules** | Agent-owned recurring or one-time work, set up conversationally in Slack, delivered to a granted channel or a private DM thread. | [Details](#schedules) |
-| **Run it from Slack** | Create Agents, install skills, set schedules, edit memory, and start connector setup by asking, with consequential changes gated behind an approval. The same surface is an MCP server, so any MCP client you already use can drive it too. | [Details](#run-it-from-slack) |
+| **Run it from Slack** | Create Agents, install skills, set schedules, edit memory, and start connector setup by asking, with consequential changes gated behind an approval. Also exposed as an MCP server. | [Details](#run-it-from-slack) |
 | **Slack-native answers** | Progressive streaming for long replies, adaptive tables (prose, inline Markdown, or a native sortable Slack table) when the data earns one, and task cards for multi-step work. | |
 | **Live activity status** | Slack's native under-composer status shows real phases as they happen: `Checking Gmail…`, `Drafting the response…`. | |
 
@@ -73,18 +71,18 @@ Chickpea is that alternative, and it's MIT-licensed. Deploy it to your own Cloud
 
 ## How It Works
 
-Six nouns, and you know the system.
+Six nouns cover the system.
 
-- **Agent** — the only behavior boundary. Presentation, instructions, model, skills, repositories, connections, one memory, channel grants, schedules.
-- **Slack installation** — one native `@Chickpea` bot providing Events, DMs, App Home, and delivery. It is transport, not a second kind of Agent.
+- **Agent** — the only thing with behavior of its own. Presentation, instructions, model, skills, repositories, connections, one memory, channel grants, schedules.
+- **Slack installation** — one native `@Chickpea` bot providing Events, DMs, App Home, and delivery. It is transport only.
 - **Agent handle** — a zero-member Slack user group. Slack renders the mention, Chickpea routes it and replies as that Agent.
 - **Channel grant** — permission for one Agent to work in one channel. Many Agents may share a channel.
 - **Thread route** — the Agent that owns a thread. Any current channel member may continue it.
 - **Connection account** — one team or personal authorization, belonging permanently to one Agent.
 
-Publishing an Agent to a channel gives that channel's members its complete boundary. Think about that before you publish.
+Publishing an Agent to a channel hands that channel's members everything the Agent can do and reach. Think about that before you publish.
 
-**Built on battle-tested layers.** Chickpea deliberately doesn't reinvent the hard parts. The agent runtime is [Flue](https://flueframework.com) ([`@flue/runtime`](https://www.npmjs.com/package/@flue/runtime)), the Apache-licensed open agent framework from the [Astro](https://astro.build) team, now part of Cloudflare: durable sessions that survive crashes and restarts, persistent state, subagents, tools, skills, and MCP, written once and deployed to Cloudflare Workers or Node against any model provider. Flue runs on **Pi**, the open agent harness that powers OpenClaw. And production deploys sit on Cloudflare's own platform primitives — Workers, Durable Objects, D1, Workers AI — not custom infrastructure. Chickpea is the layer those foundations don't provide: the Slack product, the authority model, the admin surface, and the deployment story.
+The agent runtime is [Flue](https://flueframework.com) ([`@flue/runtime`](https://www.npmjs.com/package/@flue/runtime)), the Apache-licensed open agent framework from the [Astro](https://astro.build) team, now part of Cloudflare. It supplies durable sessions that survive crashes and restarts, persistent state, subagents, tools, skills, and MCP, and runs the same code on Cloudflare Workers or Node against any model provider. Flue itself runs on Pi, the open agent harness behind OpenClaw. Production deploys use Workers, Durable Objects, D1, and Workers AI. Chickpea adds what those layers don't have: the Slack product, the authority model, and the admin panel.
 
 ---
 
@@ -94,16 +92,16 @@ Mention `@Chickpea` for the workspace default Agent, or an Agent handle like `@s
 
 Publishing the first Agent to a public channel joins the base bot automatically. Private channels need someone to `/invite @Chickpea` first, and the grant stays pending until membership is verified.
 
-Who can DM an Agent follows from where it's published: publish to a public channel and any workspace member can DM it, keep it only in private channels and only those members can, leave it unpublished and it stays creator-only.
+Where an Agent is published decides who can DM it. Publish it to a public channel and any workspace member can. Keep it to private channels and only those members can. Leave it unpublished and only its creator can.
 
-**Root chatter is ignored.** A message that doesn't mention anyone never triggers classification, model spend, memory writes, or work. Chickpea is not sitting in your channels forming opinions.
+**Root chatter is ignored.** A message that doesn't mention anyone is never classified and never spends a model token. Chickpea is not sitting in your channels forming opinions.
 
 Chickpea reads images, PDFs, UTF-8 text and source files, and Slack's generated previews for docs, slides, and sheets. Attachment turns are read-only: file contents can inform an answer but cannot authorize a tool or a change.
 
 <details>
 <summary><strong>If Slack blocks user-group creation</strong></summary>
 
-Agent handles are Slack user groups, which some plans restrict. If Slack blocks the group, Chickpea keeps the Agent and shows the exact fix:
+Agent handles are Slack user groups, which some plans restrict. If Slack blocks the group, Chickpea keeps the Agent and shows the fix:
 
 1. A Workspace Owner or Admin opens **Roles & permissions → Account types** at `slack.com/admin`.
 2. Next to **Create and edit user groups**, choose **Edit permission**.
@@ -127,11 +125,11 @@ Per turn: 4 files, 8 MiB each, 12 MiB total, 100 PDF pages, 32,000 characters pe
 
 Every connection belongs to one Agent for its lifetime. A **team account** is shared authority the Agent's editors manage, like the support team's Zendesk. A **personal account** belongs to one member inside one Agent, like your work Gmail, and runtime use requires both that Agent's connection and your identity. Authorizing the same external account for a second Agent creates a separate connection with its own consent.
 
-**Credentials never enter model context or the tool arguments the model writes.** The model picks a connection by ID; the runtime resolves the secret at the moment of the call and injects it at egress. An interrupted OAuth flow resumes bound to the provider, the account owner, the Agent, and the exact Slack task it left. Disconnecting revokes that one connection, tombstones secret access, and retires it from dependent schedules.
+**Credentials never enter model context or the tool arguments the model writes.** The model picks a connection by ID and the secret goes in at egress. An interrupted OAuth flow resumes bound to the provider, the account owner, the Agent, and the Slack task it left. Disconnecting revokes that one connection, tombstones secret access, and retires it from dependent schedules.
 
-Minor reversible writes may proceed without confirmation. Consequential ones (sending a message or email, deleting, publishing, broad or bulk changes) require confirmation unless the saved Agent instructions explicitly authorize that class of action. **Conversation cannot expand authority:** no message text and no API response can talk an Agent into more than it was given.
+Minor reversible writes may proceed without confirmation. Consequential ones (sending a message or email, deleting, publishing, broad or bulk changes) require confirmation unless the saved Agent instructions explicitly authorize that class of action. Nothing said in a conversation, and nothing returned by an API, gives an Agent more than it was granted. The [Security Model](#security-model) has the full list.
 
-What you can connect:
+What you can connect, 35 presets in all. 13 run through a single Composio key; the other 22 go through the vendor's hosted MCP server or a direct API:
 
 <table>
   <tr>
@@ -206,7 +204,7 @@ What you can connect:
 
 <sub>Gmail, Google Calendar, and Google Drive can also connect through your own Google Cloud OAuth client instead of Composio.</sub>
 
-Managed connectors run through one Composio project key, added under **Settings → Connectors**. Sign-in happens in Composio's hosted UI and Chickpea polls for completion, so a self-hosted install needs no public OAuth callback URL. Opting in means Composio holds OAuth storage, refresh, and API execution for those accounts; Chickpea still owns account selection, capability limits, confirmation policy, and the exact provider account used on every call. See the [managed connector runbook](docs/runbooks/composio-managed-connectors.md).
+Managed connectors run through one Composio project key, added under **Settings → Connectors**. Sign-in happens in Composio's hosted UI and Chickpea polls for completion, so a self-hosted install needs no public OAuth callback URL. Opting in means Composio holds OAuth storage, refresh, and API execution for those accounts; Chickpea still owns account selection, capability limits, confirmation policy, and which provider account is used on every call. See the [managed connector runbook](docs/runbooks/composio-managed-connectors.md).
 
 ---
 
@@ -216,11 +214,11 @@ You don't open the admin panel to add a teammate. You ask for one.
 
 > **`@Chickpea`** make me a support agent that answers billing questions and knows our refund policy
 
-It creates the Agent, gives it a handle and an avatar, and publishes it to a channel you name. Everything after that stays in Slack too. Hand an Agent a GitHub link and it reads the `SKILL.md` files and shows you which skills it found before importing any of them. Tell it to check in every Monday and it saves the schedule. Ask it to update its memory, archive an Agent, or publish to another channel you're in, and it does. Ask it to connect a service and it hands back a secure Chickpea link, because OAuth sign-in finishes in the browser. Admin is still there for the setup that isn't day-to-day: the Composio project key, the GitHub App, the coding sandbox install.
+It creates the Agent, gives it a handle and an avatar, and publishes it to a channel you name. Everything after that stays in Slack too. Hand an Agent a GitHub link and it reads the `SKILL.md` files and shows you which skills it found before importing any of them. Schedules, memory edits, archiving, and publishing to another channel you're in all work the same way. Connecting a service is the one step that leaves Slack: the Agent hands back a Chickpea link, and OAuth sign-in finishes in the browser. Admin is still there for the setup that isn't day-to-day: the Composio project key, the GitHub App, the coding sandbox install.
 
-The base Chickpea Agent can create Agents and edit any Agent you're permitted to edit. A routed Agent can inspect and edit only itself, still bound by your permissions. Anything it inferred rather than you stated, and anything touching what an Agent can do, where it can go, or what gets deleted, arrives as a frozen read-only proposal. Nothing applies until you approve it. Simple reversible single-field edits skip the ceremony.
+The base Chickpea Agent can create Agents and edit any Agent you're permitted to edit. A routed Agent can inspect and edit only itself, still bound by your permissions. Two kinds of change arrive as a frozen read-only proposal: anything the Agent inferred rather than you stated, and anything that changes what an Agent can do, reach, or delete. Nothing applies until you approve it. Simple reversible single-field edits skip the ceremony.
 
-The same management surface is an MCP server, so any MCP client you already use can drive Chickpea too, scoped to that requester's permissions and held to the same approvals. The authoring guide is published at `chickpea://guide/agent-authoring/v1`. See the [workspace management MCP runbook](docs/runbooks/workspace-management-mcp.md) for authority and proposal semantics.
+The same controls are exposed as an MCP server, so any MCP client you already use can drive Chickpea too, scoped to that requester's permissions and held to the same approvals. The authoring guide is published at `chickpea://guide/agent-authoring/v1`. See the [workspace management MCP runbook](docs/runbooks/workspace-management-mcp.md) for authority and proposal semantics.
 
 ---
 
@@ -228,7 +226,7 @@ The same management surface is an MCP server, so any MCP client you already use 
 
 One memory per Agent, no partitions. The same body informs its DMs and every granted channel.
 
-That simplicity has a real consequence worth stating plainly: **something learned in a private conversation can influence a later channel answer.** If you need an isolation boundary, use a separate Agent. Memory is not it.
+One consequence of that: **something learned in a private conversation can influence a later channel answer.** If you need isolation, use a separate Agent. Memory is not it.
 
 Memory is advisory, never policy. Live instructions, current permissions, and verified grant state win. Secrets, tokens, sensitive personal data, and untrusted quoted instructions are rejected on the way in.
 
@@ -244,7 +242,7 @@ Every run rechecks the whole chain: is the Agent alive, does it still have the c
 
 ## Models and Providers
 
-Bring your own: **Anthropic**, **OpenAI**, **OpenRouter**, or **Cloudflare Workers AI**. Cloudflare deploys can use the keyless binding provider and skip the API token entirely. Keys go in environment variables or in Settings, whichever you prefer.
+Bring your own: Anthropic, OpenAI, OpenRouter, or Cloudflare Workers AI. Cloudflare deploys can use the keyless binding provider and skip the API token entirely. Keys go in environment variables or in Settings, whichever you prefer.
 
 Every Agent can be pinned to its own model. A cheap fast model for triage, a strong one for the Agent that writes.
 
@@ -254,24 +252,24 @@ Every Agent can be pinned to its own model. A cheap fast model for triage, a str
 
 The default Cloudflare deploy is the **core profile**: no container, no image build, small and fast. Normal Slack replies, administration, GitHub browsing, and repository-aware model work need none of it.
 
-Install the coding sandbox when an Agent needs a real checkout, package installation, tests, or a dev server. Open **Settings → Coding sandbox**, request installation, redeploy. It requires **Workers Paid**, since the container application and Ubuntu-based image live in, and may incur costs on, your Cloudflare account, and the first image build takes several minutes. Node installations always use the standard in-memory bash sandbox and never touch the host filesystem or host git and SSH. Full procedure in the [coding sandbox runbook](docs/runbooks/coding-sandbox-deployment.md).
+Install the coding sandbox when an Agent needs a real checkout, package installation, tests, or a dev server. Open **Settings → Coding sandbox**, request installation, redeploy. It requires **Workers Paid**. The container application and its Ubuntu-based image live in your Cloudflare account and may incur costs on it, and the first image build takes several minutes. Node installations always use the standard in-memory bash sandbox and never touch the host filesystem or host git and SSH. Full procedure in the [coding sandbox runbook](docs/runbooks/coding-sandbox-deployment.md).
 
 ---
 
 ## Security Model
 
-The short version of why this shape is safer than the alternatives:
+What the design guarantees:
 
 - **No ambient listening.** Unmentioned root messages never trigger classification, model spend, memory writes, or work. There is no "read the channel and decide if you're needed" mode.
 - **Credentials never reach the model.** Never in model context, never in the tool arguments the model writes. The model picks a connection by ID; the runtime resolves the secret at the moment of the call and injects it at egress.
 - **Conversation cannot expand authority.** Authority comes from stored grants and saved instructions, read from stored state and re-checked at the moment of each use, never from anything produced during the turn. Message text, retrieved content, and tool output are data, never permission.
 - **Confirmation for consequential actions**, unless saved Agent instructions explicitly authorize that class.
 - **Per-Agent isolation.** Connections, memory, skills, repositories, and reach all stop at the Agent. Nothing is reused across Agents implicitly.
-- **Slack OIDC is the only human sign-in.** No passwords. The first installer becomes the first Owner, bound to an exact workspace and user tuple. Email is mutable contact information, never the identity key. See [authentication](docs/authentication.md).
+- **Slack OIDC is the only human sign-in.** No passwords. The first installer becomes the first Owner, bound to an exact workspace and user tuple. Email is mutable contact information, not the identity key. See [authentication](docs/authentication.md).
 - **An editor may publish only to a channel they belong to.** Chickpea Admin status does not bypass Slack channel membership.
 - **Self-hosted state.** Runtime, model traffic, configuration, memory, and connector credentials stay in infrastructure you operate. The exception is opting into Composio-managed connectors, which delegates OAuth storage, refresh, and API execution for those accounts to Composio. Native API and MCP connections keep their credentials with you.
 
-The other exception is the optional shared Slack-app gateway, which exists so you can skip Slack app configuration entirely. It stores encrypted installation credentials and sanitized health metadata, and **no Slack event payloads**. It is online-only: when your deployment is offline, events are acknowledged and dropped rather than stored for replay. If you'd rather it not exist in your path, pick the customer-owned Slack app lane, which talks directly to your deployment and never loads the gateway client.
+The other exception is the optional shared Slack-app gateway, which exists so you can skip Slack app configuration entirely. It stores encrypted installation credentials and sanitized health metadata, and **no Slack event payloads**. It is online-only: when your deployment is offline, events are acknowledged and dropped rather than stored for replay. If you'd rather not have it in the path at all, pick the customer-owned Slack app lane, which talks directly to your deployment and never loads the gateway client.
 
 ---
 
@@ -284,11 +282,11 @@ The other exception is the optional shared Slack-app gateway, which exists so yo
 Deploy, then open the private setup link and pick a Slack lane:
 
 - **Add to Slack** installs the unlisted shared Chickpea app through the private gateway. No configuration token, client secret, signing secret, public Events URL, or app-level token required from you.
-- **Use your own Slack app** creates and installs a customer-owned app from the reviewed manifest. The compact configuration-token path is primary, with the illustrated manual manifest journey as fallback. Step-by-step in [SETUP_AGENT.md](SETUP_AGENT.md).
+- **Use your own Slack app** creates and installs a customer-owned app from the reviewed manifest. Paste a configuration token and it's done; a manual manifest path with screenshots is the fallback. Step-by-step in [SETUP_AGENT.md](SETUP_AGENT.md).
 
 Setup then runs four steps: connect Slack, choose a provider, choose a model, and try it. The last step has you message Chickpea in Slack. A real reply is the proof.
 
-App installation and browser sign-in are deliberately two different OAuth jobs. Installation grants bot scopes; sign-in requests `openid profile email` and binds you as the first Owner.
+App installation and browser sign-in are two different OAuth jobs. Installation grants bot scopes; sign-in requests `openid profile email` and binds you as the first Owner.
 
 Uses Cloudflare Workers, Durable Objects, D1, and Workers AI.
 
@@ -306,7 +304,7 @@ export CHICKPEA_AUTH_SECRET=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 npm run setup:link -- https://your-chickpea.example
 ```
 
-`setup:link` takes the URL your deployment will answer on and prints three things: a `CHICKPEA_SETUP_CAPABILITY_DIGEST`, a `CHICKPEA_SETUP_CAPABILITY_ISSUED_AT`, and the private setup link itself. Export the first two:
+`setup:link` takes the URL your deployment will answer on and prints a `CHICKPEA_SETUP_CAPABILITY_DIGEST`, a `CHICKPEA_SETUP_CAPABILITY_ISSUED_AT`, and the private setup link itself. Export the two variables:
 
 ```bash
 export CHICKPEA_SETUP_CAPABILITY_DIGEST=...
@@ -333,16 +331,16 @@ Chickpea is offline-safe by default. Left unset, most variables take a local pat
 | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | optional | Enable REST Workers AI. Cloudflare deploys can use the keyless binding provider instead. |
 | `COMPOSIO_API_KEY` | optional | Deployment-managed alternative to adding the project key in **Settings → Connectors**. Never enters a runtime plan or model context. |
 | `TAG_DB_PATH` / `SLACK_STATE_DB_PATH` | optional, Node | SQLite paths for durable transcripts and app-owned state. |
-| `CHICKPEA_RECOVERY_TOKEN` | optional break-glass | One short-lived repair capability. Never a login credential. |
+| `CHICKPEA_RECOVERY_TOKEN` | optional break-glass | One short-lived repair capability. Not a login credential. |
 
-The full surface, including per-connector Composio auth config IDs and the Google Ads and YouTube quota and policy assertions, is documented in [.env.example](.env.example), with setup procedures in the [managed connector runbook](docs/runbooks/composio-managed-connectors.md) and repair steps in the [Slack auth recovery runbook](docs/runbooks/slack-auth-recovery.md).
+The full list, including per-connector Composio auth config IDs and the Google Ads and YouTube quota and policy assertions, is documented in [.env.example](.env.example), with setup procedures in the [managed connector runbook](docs/runbooks/composio-managed-connectors.md) and repair steps in the [Slack auth recovery runbook](docs/runbooks/slack-auth-recovery.md).
 
 ---
 
 ## Good to Know
 
 - One deployment currently serves one Slack workspace.
-- The shared gateway is private infrastructure. Its implementation and Slack credentials are intentionally absent from this public repository, and it does not queue Slack event bodies while your deployment is offline.
+- The shared gateway is private infrastructure. Its implementation and Slack credentials are not in this public repository, and it does not queue Slack event bodies while your deployment is offline.
 - Updates are manual. The Cloudflare Deploy button clones this repository rather than forking it.
 - Node durability is single-host SQLite. Multi-instance Node needs a shared state service.
 - Cloudflare free-tier model and Durable Object limits are hard platform limits under load.
@@ -360,10 +358,10 @@ Because then every channel that bot is in has every credential that bot holds, a
 Chickpea itself is MIT-licensed with no per-seat pricing and no metering. You pay your model provider directly for API usage. Workers, Durable Objects, D1, and Workers AI usage runs in your own Cloudflare account under whatever plan you're on, and the optional coding sandbox requires Workers Paid. Running on your own Node host, the infrastructure bill is whatever that host costs you.
 
 **"How do I see what an Agent actually did?"**
-Most of it is already visible: work happens in Slack threads, in the open, under the Agent's own name. In Admin, the Memory tab shows exactly what an Agent retained (and lets you edit or delete it), and the Schedules tab shows status, last run, next run, and a run-history and activity inspector for scheduled work. Be aware of the deliberate gap: activity telemetry is fixed-schema and content-free by design, and Admin has no searchable conversation archive. The conversation itself lives in Slack and in your deployment's transcript store.
+Most of it is already visible: work happens in Slack threads, in the open, under the Agent's own name. In Admin, the Memory tab shows exactly what an Agent retained (and lets you edit or delete it), and the Schedules tab shows status, last run, next run, and a run-history and activity inspector for scheduled work. One deliberate gap: activity telemetry is fixed-schema and content-free, and Admin has no searchable conversation archive. The conversation itself lives in Slack and in your deployment's transcript store.
 
 **"What is Flue?"**
-The open agent framework Chickpea is built on ([`@flue/runtime`](https://www.npmjs.com/package/@flue/runtime) · [flueframework.com](https://flueframework.com) · [github.com/withastro/flue](https://github.com/withastro/flue)). Flue comes from the Astro team, now part of Cloudflare, is Apache-2.0 licensed, and provides the programmable TypeScript harness: durable sessions, persistent state, subagents, tools, skills, and MCP. It runs on Pi, the open agent harness behind OpenClaw. Chickpea is the Slack product on top: the authority model, the admin surface, and the deployment story.
+The open agent framework Chickpea runs on: [`@flue/runtime`](https://www.npmjs.com/package/@flue/runtime) · [flueframework.com](https://flueframework.com) · [github.com/withastro/flue](https://github.com/withastro/flue). Apache-2.0, from the Astro team, now part of Cloudflare. Flue is the TypeScript harness; Chickpea is the Slack product on top of it. More in [How It Works](#how-it-works).
 
 ---
 
@@ -392,4 +390,4 @@ Node **>=22.19.0** is pinned in `.nvmrc`. Several `verify:*:live` variants exist
 
 ## License
 
-[MIT](LICENSE) — use it, fork it, run it for your company, sell what you build on it.
+[MIT](LICENSE). Use it, fork it, run it for your company, sell what you build on it.
