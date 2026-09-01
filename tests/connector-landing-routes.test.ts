@@ -19,6 +19,7 @@ import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
+import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = 1_800_200_000_000;
@@ -170,6 +171,7 @@ test('a native connector welcome link stays on the dedicated setup surface until
     let discoverCalls = 0;
     let identifyCalls = 0;
     let settingWrites = 0;
+    const productEvents: ProductTelemetryEventInput[] = [];
     let duringDiscovery: (() => Promise<void>) | undefined;
     const routeSettings = new Proxy(settings, {
       get(target, property, receiver) {
@@ -200,6 +202,7 @@ test('a native connector welcome link stays on the dedicated setup surface until
       config,
       management,
       settings: routeSettings,
+      productTelemetry: () => ({ capture: (event) => productEvents.push(event) }),
       now: () => NOW,
       authenticatePrincipal: async () => principal,
       startMcpOAuth: async (input) => {
@@ -329,6 +332,14 @@ test('a native connector welcome link stays on the dedicated setup surface until
     assert.equal(completedSetup?.receipt && 'kind' in completedSetup.receipt
       ? completedSetup.receipt.accessLane
       : undefined, 'write');
+    assert.deepEqual(productEvents, [{
+      event: 'connection_ready',
+      workspaceId: owner.user.slackTeamId,
+      agentId: agent.id,
+      connectionKind: 'mcp',
+      ownerKind: 'member',
+      surface: 'slack',
+    }]);
 
     const success = await app.request(`http://localhost/setup/${setupId}`);
     assert.equal(success.status, 200);

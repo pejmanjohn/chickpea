@@ -924,6 +924,7 @@ test('a Channel-origin direct create atomically includes its trusted source-Chan
   const channelId = 'C_AGENT_CREATE';
   let membershipChecks = 0;
   let publishCalls = 0;
+  const productEvents: unknown[] = [];
   const context: ManagementActorContext = {
     userId: f.admin.user.id,
     membershipId: f.admin.membership.id,
@@ -944,6 +945,7 @@ test('a Channel-origin direct create atomically includes its trusted source-Chan
     management: f.management,
     now: () => 1_800_000_000_000,
     randomId: () => 'channel_create_origin_grant',
+    productTelemetry: { capture: (event) => productEvents.push(event) },
     assertAgentChannelMembership: async ({ actor, workspaceId: actualWorkspaceId, channelId: actualChannelId }) => {
       membershipChecks += 1;
       assert.equal(actor.membershipId, context.membershipId);
@@ -1011,6 +1013,12 @@ test('a Channel-origin direct create atomically includes its trusted source-Chan
     assert.equal((await f.config.listAgentChannelGrants(workspaceId, channelId))[0]?.status, 'active');
     assert.equal(membershipChecks, 1);
     assert.equal(publishCalls, 1);
+    assert.deepEqual(productEvents, [{
+      event: 'agent_created',
+      workspaceId,
+      agentId: agentInput.id,
+      surface: 'slack',
+    }]);
 
     const replay = await service.applyWorkspaceChanges({
       context,
@@ -1020,6 +1028,7 @@ test('a Channel-origin direct create atomically includes its trusted source-Chan
     assert.deepEqual(replay, created);
     assert.equal(membershipChecks, 1);
     assert.equal(publishCalls, 1);
+    assert.equal(productEvents.length, 1);
   } finally {
     f.close();
   }

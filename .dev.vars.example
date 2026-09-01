@@ -16,6 +16,13 @@
 # `CHICKPEA_LIVE_CHANNEL_CONFIG=false` restores write-once thread snapshots for
 # new Channel admissions without changing already admitted TurnJobs.
 
+# Anonymous, content-free product telemetry is enabled by default. To disable
+# it completely, add DO_NOT_TRACK or CHICKPEA_DISABLE_TELEMETRY after deploy as
+# a dashboard variable, or run `npx wrangler secret put DO_NOT_TRACK`. To label
+# a non-production deployment, add CHICKPEA_TELEMETRY_ENVIRONMENT=test as a
+# dashboard variable. These remain comments so the Deploy button adds no prompt.
+# See TELEMETRY.md for the complete event and privacy contract.
+
 # Channel memory is always on for eligible assigned channels. There is no
 # memory feature flag or opt-out secret to configure.
 

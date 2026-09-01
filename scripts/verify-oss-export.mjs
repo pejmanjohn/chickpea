@@ -14,11 +14,25 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = mkdtempSync(join(tmpdir(), 'chickpea-export-'));
+const offlineVerificationEnv = {
+  ...process.env,
+  // This verifier proves the exported package works without external traffic.
+  // Exercise the same public opt-out contract users can select at runtime.
+  DO_NOT_TRACK: '1',
+};
 
 const term = (...parts) => parts.join('');
 const exportPath = (...parts) => posix.join(...parts);
 const localUserPathPattern = new RegExp(
-  term('(?<![-A-Za-z0-9._/])', '\\/', 'users', '\\/', '[^\\/\\s]+', '\\/'),
+  term(
+    '(?<![-A-Za-z0-9._/])',
+    '\\/',
+    'users',
+    '\\/',
+    '(?!me(?:\\/|$))',
+    '[^\\/\\s]+',
+    '\\/',
+  ),
   'i',
 );
 
@@ -50,6 +64,7 @@ for (const value of [
   term('/api/1.0/', 'users', '/', 'me'),
   term('/api/v2/', 'users', '/', 'me.json'),
   term('https://gmail.googleapis.com/gmail/v1/', 'users', '/', 'me/messages'),
+  term('/', 'users', '/', 'me', '/messages/send'),
 ]) {
   if (localUserPathPattern.test(value)) {
     throw new Error(`API route allow fixture matched local user path pattern: ${value}`);
@@ -77,15 +92,20 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'styles.css'),
   exportPath('docs', 'plans', '2026-07-28-001-feat-openai-subscription-auth-plan.md'),
   exportPath('docs', 'plans', '2026-08-19-2302-feat-agent-first-slack-platform-plan.md'),
+  exportPath('docs', 'reference', 'scheduled-routines.md'),
+  exportPath('docs', 'runbooks', 'agent-private-use-acceptance-2026-08-27.md'),
   exportPath('docs', 'runbooks', 'agent-authoring-evaluation.md'),
   exportPath('docs', 'runbooks', 'auth-db-deployment.md'),
   exportPath('docs', 'runbooks', 'agent-first-acceptance-2026-08-21.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
   exportPath('docs', 'runbooks', 'composio-managed-connectors.md'),
+  exportPath('docs', 'runbooks', 'product-telemetry.md'),
   exportPath('docs', 'runbooks', 'slack-auth-recovery.md'),
   exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
   exportPath('docs', 'runbooks', 'chickpea-system-agent-cutover.md'),
+  exportPath('docs', 'runbooks', 'memory-schedules-acceptance.md'),
   exportPath('docs', 'runbooks', 'openai-subscription.md'),
+  exportPath('docs', 'runbooks', 'semantic-activity-status.md'),
   exportPath('docs', 'runbooks', 'slack-interaction-operations.md'),
   exportPath('docs', 'runbooks', 'workspace-management-mcp.md'),
 ]);
@@ -128,6 +148,10 @@ const allowedBinaryFiles = new Map([
   [
     exportPath('assets', 'chickpea-wordmark-512.png'),
     'f29e8f737ea742dc0cdf3410f8d59a2159c802abd98bc0d82693ac3a694b1799',
+  ],
+  [
+    exportPath('assets', 'chickpea-wordmark-512-dark.png'),
+    '04d4e57a100b3c3eee5215a20de4b74a239df1dd09a8cfe6213b9b9d01a9b22d',
   ],
   [
     exportPath('assets', 'bot-avatar.png'),
@@ -303,6 +327,7 @@ function run(command, args, options = {}) {
   console.log(`$ ${[command, ...args].join(' ')}`);
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? REPO_ROOT,
+    env: options.env ?? process.env,
     stdio: 'inherit',
   });
   if (result.status !== 0) {
@@ -536,6 +561,7 @@ function verifyNpmPackManifest() {
     'LICENSE',
     'README.md',
     'SETUP_AGENT.md',
+    'TELEMETRY.md',
     'assets/admin-agent.png',
     'assets/bot-avatar.png',
     'assets/chickpea-favicon-32.png',
@@ -552,6 +578,7 @@ function verifyNpmPackManifest() {
     'docs/runbooks/agent-first-acceptance-2026-08-21.md',
     'docs/runbooks/coding-sandbox-deployment.md',
     'docs/runbooks/composio-managed-connectors.md',
+    'docs/runbooks/product-telemetry.md',
     'docs/runbooks/slack-auth-recovery.md',
     'docs/runbooks/workspace-management-mcp.md',
     'migrations/better-auth/0001_better_auth.sql',
@@ -614,6 +641,17 @@ function verifyAuthenticationExportContract(packageJson) {
       /^COMPOSIO_API_KEY=.+$/m.test(environmentExample)) {
     fail('OSS environment example must keep the Composio project key optional and empty');
   }
+  for (const key of [
+    'DO_NOT_TRACK',
+    'CHICKPEA_DISABLE_TELEMETRY',
+    'CHICKPEA_TELEMETRY_ENVIRONMENT',
+  ]) {
+    const emptyEntry = new RegExp(`^${key}=$`, 'm');
+    const populatedEntry = new RegExp(`^${key}=.+$`, 'm');
+    if (!emptyEntry.test(environmentExample) || populatedEntry.test(environmentExample)) {
+      fail(`OSS environment example must expose ${key} as an optional empty value`);
+    }
+  }
   const wrangler = readFileSync(join(scratch, 'wrangler.jsonc'), 'utf8');
   if (/"vars"\s*:/.test(wrangler)) {
     fail('Cloudflare Deploy config must not expose runtime defaults as customer-editable fields');
@@ -670,9 +708,18 @@ try {
 
   run('npm', ['ci'], { cwd: scratch });
   run('npm', ['run', 'test:ci'], { cwd: scratch });
-  run('node', ['scripts/verify-flue-offline-turn.mjs'], { cwd: scratch });
-  run('npm', ['run', 'verify:durability'], { cwd: scratch });
-  run('npm', ['run', 'verify:providers'], { cwd: scratch });
+  run('node', ['scripts/verify-flue-offline-turn.mjs'], {
+    cwd: scratch,
+    env: offlineVerificationEnv,
+  });
+  run('npm', ['run', 'verify:durability'], {
+    cwd: scratch,
+    env: offlineVerificationEnv,
+  });
+  run('npm', ['run', 'verify:providers'], {
+    cwd: scratch,
+    env: offlineVerificationEnv,
+  });
   // The default source export is the slim core profile, so its full build and
   // Wrangler dry run must succeed without a Docker-specific escape hatch.
   run('npm', ['run', 'deploy', '--', '--dry-run'], { cwd: scratch });

@@ -1022,11 +1022,13 @@ test('replay delivery skips model activity and never invokes the agent provider'
     ...workTurn('Ev_REPLAY_NO_MODEL'),
     interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
   };
+  const terminalOutcomes: Array<string | undefined> = [];
 
   await runTurn(turn, assignment, undefined, {
     client,
     replayText: 'Previously completed answer.',
     usageRecordingEnabled: false,
+    onDelivered: (outcome) => { terminalOutcomes.push(outcome); },
     async agentPrompt(): Promise<AgentDispatchResult> {
       agentCalls += 1;
       throw new Error('replay must not invoke the agent provider');
@@ -1034,6 +1036,7 @@ test('replay delivery skips model activity and never invokes the agent provider'
   });
 
   assert.equal(agentCalls, 0);
+  assert.deepEqual(terminalOutcomes, [undefined]);
   assert.equal(
     statusCalls.some((call) =>
       call.loading_messages?.includes(`Using ${assignment.model}`)
@@ -1220,6 +1223,7 @@ test('activity remains visible until final delivery and omits model or context n
   const lifecycle: string[] = [];
   const activity: Array<Record<string, unknown>> = [];
   const nativeStatuses: Array<Record<string, unknown>> = [];
+  const terminalOutcomes: Array<string | undefined> = [];
   const client = {
     assistant: {
       threads: {
@@ -1258,6 +1262,7 @@ test('activity remains visible until final delivery and omits model or context n
   const outcome = runTurn(turn, assignment, undefined, {
     client,
     usageRecordingEnabled: false,
+    onDelivered: (terminalOutcome) => { terminalOutcomes.push(terminalOutcome); },
     async agentPrompt(): Promise<AgentDispatchResult> {
       agentStarted.resolve(undefined);
       return {
@@ -1279,6 +1284,7 @@ test('activity remains visible until final delivery and omits model or context n
     'native status is set once and cleared once',
   );
   assert.deepEqual(activity, []);
+  assert.deepEqual(terminalOutcomes, ['succeeded']);
   assert.doesNotMatch(JSON.stringify(nativeStatuses), /local-stub|message(?:s)? of|is thinking/i);
   assert.deepEqual(
     lifecycle.slice(0, 2),
@@ -1375,6 +1381,7 @@ test('a lease lost after visible activity and agent completion settles a frozen-
   await config.updateWorkspaceInstallation(assignment.workspaceId, { health: 'healthy' }, installation.revision);
   const finalPayloads: Array<Record<string, unknown>> = [];
   let delivered = 0;
+  const terminalOutcomes: Array<string | undefined> = [];
   const client = {
     apiCall: async () => ({ ok: true }),
     assistant: { threads: { setStatus: async () => ({ ok: true }) } },
@@ -1398,7 +1405,10 @@ test('a lease lost after visible activity and agent completion settles a frozen-
       executionAuthority: 'ledger',
       usageRecordingEnabled: false,
       appStores: { config, memory, identity: {} } as never,
-      onDelivered: () => { delivered += 1; },
+      onDelivered: (outcome) => {
+        delivered += 1;
+        terminalOutcomes.push(outcome);
+      },
       async agentPrompt(): Promise<AgentDispatchResult> {
         const live = await config.getAgent(assignment.agentId);
         await config.updateAgent(assignment.agentId, { enabled: false }, live.revision);
@@ -1415,6 +1425,7 @@ test('a lease lost after visible activity and agent completion settles a frozen-
     assert.equal(finalPayloads.length, 1);
     assert.match(String(finalPayloads[0]?.markdown_text), /agent run failed before completion/);
     assert.equal(delivered, 1, 'the terminal failure still writes the delivery tombstone');
+    assert.deepEqual(terminalOutcomes, ['failed']);
     const persisted = h.store.get(runId);
     assert.equal(persisted?.schemaVersion, 3);
     if (persisted?.schemaVersion !== 3) return;

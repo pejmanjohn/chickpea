@@ -1,9 +1,10 @@
 import { instrument } from '@flue/runtime';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from './agents/names.ts';
 import {
+  getConfigStore,
   getIdentityStore,
   getSettingsStore,
   getSlackStateStore,
@@ -33,6 +34,8 @@ import {
   presentationToolPolicyInterceptor,
 } from './slack/presentation-tool-policy.ts';
 import { startNodeTurnRelay, wakeNodeTurnRelay } from './slack/node-turn-relay.ts';
+import { createPlatformProductTelemetry } from './telemetry/platform.ts';
+import { createRequestTelemetryLifecycle } from './telemetry/runtime.ts';
 import { startNodeGatewaySession } from './slack/gateway/node-runtime.ts';
 import { workModelInvocationInterceptor } from './work/model-invocation.ts';
 import {
@@ -153,6 +156,16 @@ async function repairOAuthResumes(env?: PlatformEnv): Promise<void> {
   });
 }
 
+function productTelemetryForRequest(c: Context) {
+  const platformEnv = c.env as PlatformEnv | undefined;
+  return createPlatformProductTelemetry({
+    ...(platformEnv ? { env: platformEnv } : {}),
+    settings: getSettingsStore(platformEnv),
+    config: getConfigStore(platformEnv),
+    lifecycle: createRequestTelemetryLifecycle(c),
+  });
+}
+
 if (!isCloudflareTarget()) {
   let oauthRepairInFlight: Promise<void> | undefined;
   const runOAuthRepair = () => {
@@ -172,10 +185,13 @@ if (!isCloudflareTarget()) {
   oauthRepairTimer.unref();
 }
 app.route('/', createBetterAuthRuntimeRoutes());
-app.route('/', createMcpOAuthRuntimeRoutes());
-app.route('/', createManagementSetupRoutes());
+app.route('/', createMcpOAuthRuntimeRoutes({ productTelemetry: productTelemetryForRequest }));
+app.route('/', createManagementSetupRoutes({
+  productTelemetry: productTelemetryForRequest,
+}));
 app.route('/', createAdminRoutes({
   onOAuthContinuationReady: resumeOAuthContinuation,
+  productTelemetry: productTelemetryForRequest,
 }));
 app.route('/channels/slack', channel.route());
 

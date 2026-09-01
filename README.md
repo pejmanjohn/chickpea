@@ -316,6 +316,7 @@ What the design guarantees:
 - **Slack OIDC is the only human sign-in.** No passwords. The first installer becomes the first Owner, bound to an exact workspace and user tuple. Email is mutable contact information, not the identity key. See [authentication](docs/authentication.md).
 - **An editor may publish only to a channel they belong to.** Chickpea Admin status does not bypass Slack channel membership.
 - **Self-hosted state.** Runtime, model traffic, configuration, memory, and connector credentials stay in infrastructure you operate. The exception is opting into Composio-managed connectors, which delegates OAuth storage, refresh, and API execution for those accounts to Composio. Native API and MCP connections keep their credentials with you.
+- **Minimal product telemetry.** Chickpea sends six content-free, anonymous product events to measure adoption. It sends no messages, prompts, tool data, customer identity, or error text; it creates no person profile and can be disabled completely. The exhaustive field list and opt-out instructions are in [Product telemetry](TELEMETRY.md).
 
 The other exception is the optional shared Slack-app gateway, which exists so you can skip Slack app configuration entirely. It stores encrypted installation credentials and sanitized health metadata, and **no Slack event payloads**. It is online-only: when your deployment is offline, events are acknowledged and dropped rather than stored for replay. If you'd rather not have it in the path at all, pick the customer-owned Slack app lane, which talks directly to your deployment and never loads the gateway client.
 
@@ -378,6 +379,8 @@ Chickpea is offline-safe by default. Left unset, most variables take a local pat
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` | optional | Enable the matching provider. Can be stored in Settings instead. |
 | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | optional | Enable REST Workers AI. Cloudflare deploys can use the keyless binding provider instead. |
 | `COMPOSIO_API_KEY` | optional | Deployment-managed alternative to adding the project key in **Settings → Connectors**. Never enters a runtime plan or model context. |
+| `DO_NOT_TRACK` / `CHICKPEA_DISABLE_TELEMETRY` | optional | Set either to `1`, `true`, or `yes` to disable anonymous [product telemetry](TELEMETRY.md) completely. |
+| `CHICKPEA_TELEMETRY_ENVIRONMENT` | optional | Label telemetry as `production`, `development`, or `test`; defaults to production on Cloudflare and development on Node. |
 | `TAG_DB_PATH` / `SLACK_STATE_DB_PATH` | optional, Node | SQLite paths for durable transcripts and app-owned state. |
 | `CHICKPEA_RECOVERY_TOKEN` | optional break-glass | One short-lived repair capability. Not a login credential. |
 
@@ -392,6 +395,7 @@ The full list, including per-connector Composio auth config IDs and the Google A
 - Updates are manual. The Cloudflare Deploy button clones this repository rather than forking it.
 - Node durability is single-host SQLite. Multi-instance Node needs a shared state service.
 - Cloudflare free-tier model and Durable Object limits are hard platform limits under load.
+- Anonymous, content-free [product telemetry](TELEMETRY.md) is enabled by default and has a complete operator opt-out.
 - The coding sandbox and scheduled execution are Cloudflare-only. Node uses the in-memory execution path and no scheduler.
 - This is a clean-slate pre-release schema. There is no migration or compatibility promise for earlier databases.
 

@@ -25,6 +25,7 @@ import type {
 } from '../config/types.ts';
 import { MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY } from '../config/types.ts';
 import type { ConnectionAccountView } from './types.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type {
   ManagedConnectionProviderRegistry,
   ManagedConnectionValidationResult,
@@ -46,6 +47,8 @@ export interface ConnectionAccountServiceDependencies {
   managedProviders?: ManagedConnectionProviderRegistry;
   managedCatalog?: ManagedConnectorCatalog;
   randomId?: () => string;
+  productTelemetry?: ProductTelemetryCapture;
+  telemetrySurface?: 'admin' | 'slack' | 'mcp' | 'other';
 }
 
 export class ManagedConnectionConflictError extends Error {
@@ -178,7 +181,7 @@ export class ConnectionAccountService {
         );
         secretSaved = true;
       }
-      return await this.dependencies.config.createAgentOwnedConnection({
+      const created = await this.dependencies.config.createAgentOwnedConnection({
         account: accountInput,
         binding: {
           agentId: input.agentId,
@@ -189,6 +192,8 @@ export class ConnectionAccountService {
           enabled: true,
         },
       });
+      this.captureConnectionReady(undefined, created.account, created.binding);
+      return created;
     } catch (error) {
       const setupError = error instanceof ManagedRemoteAccountAlreadyUsedError
         ? new ManagedConnectionConflictError(error.message)
@@ -378,6 +383,7 @@ export class ConnectionAccountService {
       ...binding,
       resourceConstraints: input.resourceConstraints,
     });
+    this.captureConnectionReady(account.lifecycle, updatedAccount, updatedBinding);
     if (updatedAccount.lifecycle === 'ready') {
       try {
         await resumeDependentSchedules(this.dependencies.config, updatedAccount.id);
@@ -614,7 +620,7 @@ export class ConnectionAccountService {
     providerGeneration?: number;
     providerLineage?: string;
   }): Promise<ConnectionAccount> {
-    const { account } = await this.requireAgentOwnedAccount(input);
+    const { account, binding } = await this.requireAgentOwnedAccount(input);
     if (account.revision !== input.expectedRevision || account.lifecycle === 'revoked' ||
         account.policy.kind !== 'managed' ||
         account.policy.adapterId.trim().toLowerCase() !== input.adapterId.trim().toLowerCase() ||
@@ -652,6 +658,7 @@ export class ConnectionAccountService {
       { ...account, policy, lifecycle },
       account.revision,
     );
+    this.captureConnectionReady(account.lifecycle, replaced, binding);
     if (account.policy.accountRef !== policy.accountRef) {
       try {
         await provider.revoke({ policy: account.policy });
@@ -691,6 +698,26 @@ export class ConnectionAccountService {
       if (account) return account;
     }
     throw new Error(`Unknown connection account ${id}`);
+  }
+
+  private captureConnectionReady(
+    previousLifecycle: ConnectionAccount['lifecycle'] | undefined,
+    account: ConnectionAccount,
+    binding: AgentConnectionBinding,
+  ): void {
+    if (previousLifecycle === 'ready' || account.lifecycle !== 'ready' || !binding.enabled) return;
+    try {
+      this.dependencies.productTelemetry?.capture({
+        event: 'connection_ready',
+        workspaceId: account.workspaceId,
+        agentId: binding.agentId,
+        connectionKind: account.policy.kind,
+        ownerKind: account.ownerKind,
+        surface: this.dependencies.telemetrySurface ?? 'other',
+      });
+    } catch {
+      // Advisory telemetry never changes a committed connection transition.
+    }
   }
 
   private async requireAgentOwnedAccount(input: {

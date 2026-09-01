@@ -369,6 +369,7 @@ export interface ConfigStore {
   ): Promise<AgentConnectionBinding | undefined>;
   putAgentConnectionBinding(input: AgentConnectionBindingInput): Promise<AgentConnectionBinding>;
   listAgentScheduleReferences(agentId: string): Promise<AgentScheduleReference[]>;
+  summarizeAdoptionInventory(): Promise<AdoptionInventorySummary>;
   getAgentScheduleReference(scheduleId: string): Promise<AgentScheduleReference | undefined>;
   putAgentScheduleReference(
     input: AgentScheduleReferenceInput,
@@ -381,6 +382,13 @@ export interface ConfigStore {
   getAgentReferences(agentId: string): Promise<AgentReferenceSummary>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
+}
+
+export interface AdoptionInventorySummary {
+  workspaceCount: number;
+  userAgentCount: number;
+  readyConnectionCount: number;
+  enabledScheduleCount: number;
 }
 
 /**
@@ -1624,6 +1632,22 @@ export class ConfigStoreLogic {
     return this.db
       .all("SELECT * FROM config_agents WHERE agent_kind = 'user' ORDER BY id")
       .map((row) => rowToAgent(row as unknown as AgentRow));
+  }
+
+  summarizeAdoptionInventory(): AdoptionInventorySummary {
+    const workspaces = this.listWorkspaceInstallations()
+      .filter(({ health }) => health !== 'revoked');
+    const agents = this.listUserAgents();
+    return {
+      workspaceCount: workspaces.length,
+      userAgentCount: agents.length,
+      readyConnectionCount: workspaces.flatMap(({ workspaceId }) =>
+        this.listConnectionAccounts(workspaceId)
+      ).filter(({ lifecycle }) => lifecycle === 'ready').length,
+      enabledScheduleCount: agents.flatMap(({ id }) =>
+        this.listAgentScheduleReferences(id)
+      ).filter(({ state }) => state === 'active').length,
+    };
   }
 
   getAgent(agentId: string): CustomAgentConfig {

@@ -129,6 +129,7 @@ import {
   type ManagementSetupRecord,
 } from './types.ts';
 import { emitManagementMetric } from './telemetry.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
   renderManagedConnectionDeparturePage,
   renderCatalogConnectionSetupPage,
@@ -154,6 +155,7 @@ interface ManagementSetupRoutesOptions {
   >;
   usage?: UsageStore;
   platformEnv?: PlatformEnv;
+  productTelemetry?: ((c: Context) => ProductTelemetryCapture) | undefined;
   now?: () => number;
   randomCapability?: () => string;
   validateProviderKey?: typeof validateProviderApiKey;
@@ -711,6 +713,8 @@ export function createManagementSetupRoutes(
         agent,
         completed.ref.connectionId,
         completed.identity?.accountName,
+        dependencies.productTelemetry,
+        setup.origin.kind === 'slack' ? setup.origin.workspaceId : undefined,
       );
       await finishSetup(
         c,
@@ -923,6 +927,7 @@ interface SetupDependencies {
   usage: UsageStore;
   catalog: ManagedConnectorCatalog;
   platformEnv?: PlatformEnv;
+  productTelemetry?: ProductTelemetryCapture;
 }
 
 function setupDependencies(c: Context, options: ManagementSetupRoutesOptions): SetupDependencies {
@@ -934,6 +939,7 @@ function setupDependencies(c: Context, options: ManagementSetupRoutesOptions): S
     identity: options.identity ?? getIdentityStore(platformEnv),
     usage: options.usage ?? getUsageStore(platformEnv),
     catalog: options.managedConnectorCatalog ?? MANAGED_CONNECTOR_CATALOG,
+    ...(options.productTelemetry ? { productTelemetry: options.productTelemetry(c) } : {}),
     ...(platformEnv ? { platformEnv } : {}),
   };
 }
@@ -953,6 +959,8 @@ async function managedFlowDependencies(
         ? { providers: options.managedConnectionProviders }
         : {}),
     }),
+    ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
+    telemetrySurface: 'slack',
   };
 }
 
@@ -1149,6 +1157,8 @@ async function beginCatalogConnectionSetup(
     config: dependencies.config,
     settings: dependencies.settings,
     randomId: () => generatedIds.shift() ?? randomUUID().replaceAll('-', ''),
+    ...(dependencies.productTelemetry ? { productTelemetry: dependencies.productTelemetry } : {}),
+    telemetrySurface: 'slack',
   });
   let account = accounts.find(({ id }) => id === requestedConnectionId) ??
     accounts.find(({ id, ownerKind: existingOwner }) =>
@@ -1714,7 +1724,14 @@ async function completeFormAction(
     );
     try {
       const agent = await dependencies.config.getAgent(ref.agentId);
-      await setApiConnectionReady(dependencies.config, agent, ref.connectionId);
+      await setApiConnectionReady(
+        dependencies.config,
+        agent,
+        ref.connectionId,
+        undefined,
+        dependencies.productTelemetry,
+        setup.origin.kind === 'slack' ? setup.origin.workspaceId : undefined,
+      );
     } catch (error) {
       await clearConnectorCredential(
         ref.agentId,
@@ -1759,7 +1776,15 @@ async function completeFormAction(
       dependencies.settings,
     );
     try {
-      await setMcpConnectionReady(dependencies.config, agent, connection, discovery.tools, identity);
+      await setMcpConnectionReady(
+        dependencies.config,
+        agent,
+        connection,
+        discovery.tools,
+        identity,
+        dependencies.productTelemetry,
+        setup.origin.kind === 'slack' ? setup.origin.workspaceId : undefined,
+      );
     } catch (error) {
       await deleteMcpSecrets(
         { agentId: agent.id, connectionId: connection.id },
@@ -1939,6 +1964,14 @@ async function verifyMcpConnection(
       policy: { ...account.policy, discoveredTools: discovery.tools, allowedTools },
       ...(identity ? { identity } : {}),
     }, account.revision);
+    dependencies.productTelemetry?.capture({
+      event: 'connection_ready',
+      workspaceId: account.workspaceId,
+      agentId: binding!.agentId,
+      connectionKind: 'mcp',
+      ownerKind: account.ownerKind,
+      surface: 'slack',
+    });
     return {
       connector: setup.target.targetLabel,
       connectionAccountId: ready.id,
@@ -1975,7 +2008,15 @@ async function verifyMcpConnection(
     headers,
     ...(connection.presetId ? { presetId: connection.presetId } : {}),
   }).catch(() => undefined);
-  await setMcpConnectionReady(dependencies.config, agent, connection, discovery.tools, identity);
+  await setMcpConnectionReady(
+    dependencies.config,
+    agent,
+    connection,
+    discovery.tools,
+    identity,
+    dependencies.productTelemetry,
+    setup.origin.kind === 'slack' ? setup.origin.workspaceId : undefined,
+  );
   return {
     connector: setup.target.targetLabel,
     ...(identity?.accountName || identity?.workspaceName
@@ -2053,6 +2094,8 @@ async function setApiConnectionReady(
   agent: CustomAgentConfig,
   connectionId: string,
   accountName?: string,
+  productTelemetry?: ProductTelemetryCapture,
+  workspaceId?: string,
 ): Promise<void> {
   const index = agent.apiConnections.findIndex(({ id }) => id === connectionId);
   if (index < 0) throw new Error('target_changed');
@@ -2068,6 +2111,16 @@ async function setApiConnectionReady(
     ...(accountName ? { identity: { accountName } } : {}),
   };
   await config.updateAgent(agent.id, { apiConnections }, agent.revision);
+  if (connection.lifecycleStatus !== 'ready' && workspaceId) {
+    productTelemetry?.capture({
+      event: 'connection_ready',
+      workspaceId,
+      agentId: agent.id,
+      connectionKind: 'api',
+      ownerKind: 'team',
+      surface: 'slack',
+    });
+  }
 }
 
 async function setMcpConnectionReady(
@@ -2076,6 +2129,8 @@ async function setMcpConnectionReady(
   original: McpConnectionConfig,
   discoveredTools: McpConnectionConfig['discoveredTools'],
   identity?: McpConnectionConfig['identity'],
+  productTelemetry?: ProductTelemetryCapture,
+  workspaceId?: string,
 ): Promise<void> {
   const index = agent.mcpServers.findIndex(({ id, url }) => id === original.id && url === original.url);
   if (index < 0) throw new Error('target_changed');
@@ -2095,6 +2150,16 @@ async function setMcpConnectionReady(
     ...(identity ? { identity } : {}),
   };
   await config.updateAgent(agent.id, { mcpServers }, agent.revision);
+  if (current.lifecycleStatus !== 'ready' && workspaceId) {
+    productTelemetry?.capture({
+      event: 'connection_ready',
+      workspaceId,
+      agentId: agent.id,
+      connectionKind: 'mcp',
+      ownerKind: 'team',
+      surface: 'slack',
+    });
+  }
 }
 
 async function beginRepositorySetup(

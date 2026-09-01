@@ -179,7 +179,7 @@ export interface RunTurnOptions {
   /** Persist sandbox side effects before the final Slack delivery can fail. */
   beforeDelivery?: () => Promise<string | undefined>;
   /** Persist terminal delivery before post-delivery workspace teardown begins. */
-  onDelivered?: () => void | Promise<void>;
+  onDelivered?: (outcome?: 'succeeded' | 'no_op' | 'failed') => void | Promise<void>;
   /** A durable outbox now owns the terminal; keep the TurnJob open until it settles. */
   onDeferredTerminal?: () => void | Promise<void>;
   /** Record a confirmed Slack-visible final for future owner handoffs. */
@@ -744,10 +744,12 @@ export async function runTurn(
       console.warn('[chickpea] Slack work acknowledgment cleanup failed');
     }
   };
-  const finishDelivery = async (): Promise<void> => {
+  const finishDelivery = async (
+    outcome?: 'succeeded' | 'no_op' | 'failed',
+  ): Promise<void> => {
     // Delivery gets its durable tombstone before the best-effort repair so a
     // slow reporting backend can never make Slack retry already-delivered work.
-    await options.onDelivered?.();
+    await options.onDelivered?.(outcome);
     await presenter.markCanonicalPresentationFinalized();
     await usageRecorder?.repairAfterDelivery();
     if (workChecklistTs && workChecklist &&
@@ -1162,7 +1164,7 @@ export async function runTurn(
         await statusTurn.prepareFinal();
         await presenter.deliverFinal(agentFailureText(err), 'plain_text', 'error');
         await finishStatus('failure');
-        await finishDelivery();
+        await finishDelivery('failed');
         return;
       }
     }
@@ -1248,7 +1250,7 @@ export async function runTurn(
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
       await finishStatus('failure');
-      await finishDelivery();
+      await finishDelivery('failed');
       return;
     }
     text = resolveMemoryDeliveryText(
@@ -1271,7 +1273,11 @@ export async function runTurn(
     // reliably trigger Slack's automatic app-status cleanup, and clearing
     // before delivery can leave the custom status visible after the reply.
     await finishStatus(terminalResult);
-    await finishDelivery();
+    await finishDelivery(
+      options.replayText === undefined
+        ? terminalResult === 'failure' ? 'failed' : 'succeeded'
+        : undefined,
+    );
   } catch (err) {
     if (!(err instanceof AgentPromptFailure && err.retryable)) {
       await usageRecorder?.recordFailure();

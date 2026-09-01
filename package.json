@@ -15,12 +15,14 @@
     "LICENSE",
     "README.md",
     "SETUP_AGENT.md",
+    "TELEMETRY.md",
     "assets",
     "catalog",
     "docs/authentication.md",
     "docs/runbooks/auth-db-deployment.md",
     "docs/runbooks/coding-sandbox-deployment.md",
     "docs/runbooks/composio-managed-connectors.md",
+    "docs/runbooks/product-telemetry.md",
     "docs/runbooks/agent-authoring-evaluation.md",
     "docs/runbooks/agent-first-acceptance-2026-08-21.md",
     "docs/runbooks/slack-auth-recovery.md",
@@ -49,7 +51,7 @@
     }
   },
   "scripts": {
-    "test": "npm run typecheck && node --test --import tsx tests/*.test.ts tests/usage/*.test.ts",
+    "test": "npm run typecheck && DO_NOT_TRACK=1 node --test --import tsx tests/*.test.ts tests/usage/*.test.ts",
     "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
     "dev": "vite dev --config vite.node.config.ts",

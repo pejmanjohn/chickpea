@@ -54,7 +54,12 @@ export async function runWithGuaranteedFinalizer(
 }
 
 export function createRoutineScheduledHandler(input: {
-  heartbeat: (scheduledTime: number, owner: string, env: Record<string, unknown>) => Promise<unknown>;
+  heartbeat: (
+    scheduledTime: number,
+    owner: string,
+    env: Record<string, unknown>,
+    context: RoutineExecutionContext,
+  ) => Promise<unknown>;
   maintenance?: (scheduledTime: number, env: Record<string, unknown>) => Promise<unknown>;
 }): {
   scheduled(
@@ -72,7 +77,7 @@ export function createRoutineScheduledHandler(input: {
       if (input.maintenance) {
         tasks.push(() => input.maintenance!(controller.scheduledTime, env));
       }
-      tasks.push(() => input.heartbeat(controller.scheduledTime, owner, env));
+      tasks.push(() => input.heartbeat(controller.scheduledTime, owner, env, context));
       context.waitUntil(settleScheduledDuties(tasks));
     },
   };

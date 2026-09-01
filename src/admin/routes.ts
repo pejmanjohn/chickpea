@@ -302,6 +302,7 @@ import { validEnabledRepositoryGrants } from '../sandbox/egress-handler.ts';
 import { sandboxBindingInstalled } from '../sandbox/select.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
   getAgentSnapshotStore,
   getConfigStore,
@@ -538,6 +539,7 @@ interface AdminRoutesOptions {
   snapshots?: AgentSnapshotStore | undefined;
   // Same seam for the Slack-connection wizard's settings persistence.
   settings?: SettingsStore | undefined;
+  productTelemetry?: ((c: Context) => ProductTelemetryCapture) | undefined;
   memory?: MemoryStateStore | undefined;
   routines?: RoutineStore | undefined;
   usage?: UsageStore | undefined;
@@ -1334,6 +1336,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.identity ?? getIdentityStore(c.env as PlatformEnv | undefined);
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
+  const productTelemetry = (c: Context) => options.productTelemetry?.(c);
   const composioConfiguration = (c: Context): ComposioConfigurationOptions => ({
     ...options.composioConfiguration,
     settings: settings(c),
@@ -1428,6 +1431,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const env = c.env as PlatformEnv | undefined;
     const identityStore = identity(c);
     const settingsStore = settings(c);
+    const telemetry = productTelemetry(c);
     return createLiveWorkspaceManagementService(env, {
       identity: identityStore,
       settings: settingsStore,
@@ -1439,6 +1443,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         routines: routines(c),
         work: work(c),
         setupBaseUrl: requestOrigin(c),
+        ...(telemetry ? { productTelemetry: telemetry } : {}),
       },
     });
   };
@@ -1544,11 +1549,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const credentials = slackCredentialDependencies(c);
     if (!credentials) return undefined;
     const apiBaseUrl = slackApiBaseUrl(c);
+    const telemetry = productTelemetry(c);
     return new SlackInstallOAuthService({
       identity: identity(c),
       credentials,
       config: store(c),
       settings: settings(c),
+      ...(telemetry ? { productTelemetry: telemetry } : {}),
       ...(apiBaseUrl ? { apiBaseUrl } : {}),
       ...(options.slackInstallFetch ? { fetch: options.slackInstallFetch } : {}),
       ...(options.slackInstallNow ? { now: options.slackInstallNow } : {}),
@@ -1955,13 +1962,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const connectionAccounts = (
     c: Context,
     providers: ManagedConnectionProviderRegistry = managedProviders(c),
-  ): ConnectionAccountService =>
-    new ConnectionAccountService({
+  ): ConnectionAccountService => {
+    const telemetry = productTelemetry(c);
+    return new ConnectionAccountService({
       config: store(c),
       settings: settings(c),
       managedProviders: providers,
       managedCatalog,
+      ...(telemetry ? { productTelemetry: telemetry } : {}),
+      telemetrySurface: 'admin',
     });
+  };
   const resumeComposioReconciliation = async (
     c: Context,
     requestSignal?: AbortSignal,
@@ -3109,6 +3120,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (c.req.query('gateway_return') === '1') {
           const result = await createGatewayDeploymentClient(
             c.env as PlatformEnv | undefined,
+            { productTelemetry: productTelemetry(c) },
           ).refreshClaim();
           gatewayState = result.state === 'bound' ? 'connected' : 'pending';
           if (gatewayState === 'connected') {
@@ -3185,6 +3197,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       } else if (action === 'gateway_refresh') {
         const result = await createGatewayDeploymentClient(
           c.env as PlatformEnv | undefined,
+          { productTelemetry: productTelemetry(c) },
         ).refreshClaim();
         if (result.state === 'bound') startNodeGatewaySession(c.env as PlatformEnv | undefined);
         return c.redirect('/admin/setup', 303);
@@ -6403,6 +6416,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ),
       };
       const created = await configStore.createAgent(agent);
+      try {
+        const actor = await agentActor(c);
+        productTelemetry(c)?.capture({
+          event: 'agent_created',
+          workspaceId: actor.slackTeamId,
+          agentId: created.id,
+          surface: 'admin',
+        });
+      } catch {
+        // A completed Agent creation never depends on advisory telemetry.
+      }
       return c.json({
         agent: await agentAdminProjectionForRequest(c, created),
         ...providerWarnings(agent.model, providerIds()),
@@ -8784,6 +8808,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const result = await createGatewayDeploymentClient(
         c.env as PlatformEnv | undefined,
+        { productTelemetry: productTelemetry(c) },
       ).refreshClaim();
       if (result.state !== 'bound') {
         return c.redirect('/admin/settings/slack?slack_reconnect=pending', 303);
