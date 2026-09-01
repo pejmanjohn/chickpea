@@ -71,9 +71,14 @@ function jsonHeaders(): HeadersInit {
   return { ...auth(), 'content-type': 'application/json' };
 }
 
-async function adminApp(store: SqliteConfigStore, settings: SqliteSettingsStore): Promise<Hono> {
+async function adminApp(
+  store: SqliteConfigStore,
+  settings: SqliteSettingsStore,
+  observeMembership?: (membershipId: string) => void,
+): Promise<Hono> {
   const identity = new SqliteIdentityStore(':memory:');
   const owner = await createSlackOwner(identity, { suffix: `github_${Math.random().toString(16).slice(2)}` });
+  observeMembership?.(owner.membership.id);
   const control = (await identity.getAuthControl())!;
   await identity.updateAuthControl({
     expectedRevision: control.revision,
@@ -827,10 +832,16 @@ test('GitHub manifest callback stores a normalized private key and redirects to 
     );
   };
   try {
-    await settings.setSetting('github.setup_state', `valid-state:${Date.now()}`);
+    let membershipId = '';
+    const app = await adminApp(store, settings, (value) => { membershipId = value; });
+    await saveGithubSetupState(settings, {
+      state: 'a'.repeat(32),
+      mintedAt: Date.now(),
+      membershipId,
+    });
     await withFetch(fetchImpl, async () => {
-      const response = await (await adminApp(store, settings)).request(
-        '/oauth/github/setup/callback?code=setup-code&state=valid-state',
+      const response = await app.request(
+        `/oauth/github/setup/callback?code=setup-code&state=${'a'.repeat(32)}`,
         { redirect: 'manual' },
       );
       assert.equal(response.status, 302);
@@ -930,6 +941,61 @@ test('GitHub setup state is membership-bound, public at callback time, and consu
   }
 });
 
+test('a system-suspended sole Owner cannot exchange a GitHub manifest callback', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const identity = new SqliteIdentityStore(':memory:');
+  const owner = await createSlackOwner(identity);
+  const organization = (await identity.getOrganization())!;
+  const state = 'e'.repeat(32);
+  let conversions = 0;
+  try {
+    await saveGithubSetupState(settings, {
+      state,
+      mintedAt: Date.now(),
+      membershipId: owner.membership.id,
+    });
+    const suspended = await identity.updateMembershipAuthority({
+      membershipId: owner.membership.id,
+      status: 'suspended',
+      authenticationSurface: 'slack_event',
+      correlationId: 'Ev_GITHUB_OWNER_DEACTIVATED',
+      reasonCode: 'slack_user_deactivated',
+      idempotencyKey: 'slack-user-change:Ev_GITHUB_OWNER_DEACTIVATED',
+    });
+    assert.equal(suspended.membership.status, 'active');
+    assert.equal(
+      (await identity.getMembershipAccessOverlay(owner.membership.id))?.accessStatus,
+      'suspended',
+    );
+    const app = createAdminRoutes({
+      store,
+      settings,
+      identity,
+      knownProviders: new Set(['local-stub']),
+    });
+    await withFetch(async () => {
+      conversions += 1;
+      return Response.json({ id: 1, slug: 'must-not-store', pem: 'must-not-store' });
+    }, async () => {
+      const response = await app.request(
+        `/oauth/github/setup/callback?code=setup-code&state=${state}`,
+        { redirect: 'manual' },
+      );
+      assert.equal(response.status, 403, await response.clone().text());
+    });
+    assert.equal(conversions, 0);
+    assert.equal(await settings.getSetting('github.app.id'), undefined);
+    assert.equal(await settings.getSetting('github.app.private_key'), undefined);
+    assert.equal(await settings.getSetting('github.setup_state'), undefined);
+    assert.equal(organization.id, owner.membership.organizationId);
+  } finally {
+    identity.close();
+    settings.close();
+    store.close();
+  }
+});
+
 test('GitHub setup callback validates canonical Slack authority against the human directory', async () => {
   const { pkcs1 } = rsaKeys();
   const store = new SqliteConfigStore(':memory:', { agents: [] });
@@ -1019,10 +1085,16 @@ test('GitHub manifest callback succeeds when the App has no webhook secret', asy
   try {
     // A stale secret from a prior install must be cleared, not left dangling.
     await settings.setSetting('github.app.webhook_secret', 'stale-secret');
-    await settings.setSetting('github.setup_state', `valid-state:${Date.now()}`);
+    let membershipId = '';
+    const app = await adminApp(store, settings, (value) => { membershipId = value; });
+    await saveGithubSetupState(settings, {
+      state: 'b'.repeat(32),
+      mintedAt: Date.now(),
+      membershipId,
+    });
     await withFetch(fetchImpl, async () => {
-      const response = await (await adminApp(store, settings)).request(
-        '/admin/api/github/setup/callback?code=setup-code&state=valid-state',
+      const response = await app.request(
+        `/admin/api/github/setup/callback?code=setup-code&state=${'b'.repeat(32)}`,
         { headers: auth(), redirect: 'manual' },
       );
       assert.equal(response.status, 302);
@@ -1179,8 +1251,16 @@ test('GitHub manifest callback refuses missing, mismatched, stale, and replayed 
     await withFetch(fetchImpl, async () => {
       // No state ever minted.
       assert.equal((await request('code=c1&state=whatever')).status, 403);
+      // Pre-membership state is deliberately invalidated across the upgrade.
+      await settings.setSetting('github.setup_state', `legacy-state:${Date.now()}`);
+      assert.equal((await request('code=legacy&state=legacy-state')).status, 403);
+      assert.equal(exchanges, 0);
       // Mismatched state.
-      await settings.setSetting('github.setup_state', `expected:${Date.now()}`);
+      await saveGithubSetupState(settings, {
+        state: 'c'.repeat(32),
+        mintedAt: Date.now(),
+        membershipId: 'membership_rejected_state',
+      });
       assert.equal((await request('code=c2&state=wrong')).status, 403);
       assert.equal(
         await settings.getSetting('github.setup_state') !== undefined,
@@ -1188,13 +1268,14 @@ test('GitHub manifest callback refuses missing, mismatched, stale, and replayed 
         'a mismatched public callback must not consume the real pending state',
       );
       // Stale state (minted 16 minutes ago).
-      await settings.setSetting(
-        'github.setup_state',
-        `stale-state:${Date.now() - 16 * 60 * 1_000}`,
-      );
-      assert.equal((await request('code=c4&state=stale-state')).status, 403);
+      await saveGithubSetupState(settings, {
+        state: 'd'.repeat(32),
+        mintedAt: Date.now() - 16 * 60 * 1_000,
+        membershipId: 'membership_rejected_state',
+      });
+      assert.equal((await request(`code=c4&state=${'d'.repeat(32)}`)).status, 403);
       assert.equal(await settings.getSetting('github.setup_state'), undefined);
-      assert.equal((await request('code=c5&state=stale-state')).status, 403);
+      assert.equal((await request(`code=c5&state=${'d'.repeat(32)}`)).status, 403);
     });
     assert.equal(exchanges, 0, 'no rejected callback may reach the code exchange');
     assert.equal(await settings.getSetting('github.app.id'), undefined);

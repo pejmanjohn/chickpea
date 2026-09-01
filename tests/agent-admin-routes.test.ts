@@ -7,7 +7,7 @@ import * as v from 'valibot';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
-import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
@@ -17,12 +17,18 @@ import {
   ApiOAuthError,
   apiOAuthSettingKeys,
   connectionAccountOAuthRef,
+  startApiOAuthAuthorization,
 } from '../src/config/api-oauth.ts';
 import {
   McpOAuthError,
   mcpOAuthSettingKeys,
   type StartMcpOAuthInput,
 } from '../src/config/mcp-oauth.ts';
+import {
+  mcpBearerSettingKey,
+  mcpHeaderSettingKey,
+} from '../src/config/mcp-secrets.ts';
+import { connectorCredentialSettingKey } from '../src/config/connector-secrets.ts';
 import type {
   SlackAppHomeReference,
   SlackChannel,
@@ -108,6 +114,7 @@ function identity(): IdentityStore {
           updatedAt: 1,
         }
       : undefined,
+    getMembershipAccessOverlay: async () => undefined,
     recordAuthAudit: async () => undefined,
   } as unknown as IdentityStore;
 }
@@ -1073,6 +1080,141 @@ test('hostless poll and cancel reject an authorization from a previously connect
     assert.equal(cancel.status, 403);
     assert.equal(pollCalls, 0);
     assert.equal(revokeCalls, 0);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('a demoted Team creator cannot poll or cancel a hostless managed authorization', async () => {
+  let pollCalls = 0;
+  let revokeCalls = 0;
+  const cleanedRemoteRefs: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async pollAuthorization() { pollCalls += 1; return { status: 'pending' }; },
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke() { revokeCalls += 1; },
+    async cleanupRemoteAccount({ accountRef }) { cleanedRemoteRefs.push(accountRef); },
+  };
+  const demotedCreator: AuthPrincipal = {
+    userId: 'user_test_owner',
+    membershipId: 'membership_test_owner',
+    organizationId: 'org_oss',
+    role: 'member',
+    authenticatorKind: 'test_slack_session',
+    credentialId: 'session_test_owner',
+    correlationId: 'request_demoted_team_creator',
+    machine: false,
+  };
+  const fixture = harness(new FakeTransport(), {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+  }, {}, demotedCreator);
+  try {
+    await fixture.store.createAgent({
+      id: 'agent_support',
+      name: 'Support',
+      instructions: 'Use the Team connection.',
+      enabled: true,
+      creatorMembershipId: demotedCreator.membershipId,
+      editPolicy: 'creator_and_admins',
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST',
+      transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const started = await beginManagedAuthorization({
+      settings: fixture.settings,
+      input: {
+        workspaceId: 'T_TEST',
+        agentId: 'agent_support',
+        actorMembershipId: demotedCreator.membershipId,
+        ownerKind: 'team',
+        providerId: 'google',
+        adapterId: 'composio',
+        toolkit: 'gmail',
+        label: 'Team Gmail',
+        principalRef: 'chickpea:organization:org_oss',
+        allowedCapabilities: ['gmail.profile.read'],
+        bindingCapabilities: ['gmail.profile.read'],
+        providerGeneration: 1,
+        providerLineage: '0'.repeat(24),
+      },
+      randomSecret: () => '7'.repeat(64),
+    });
+    await recordManagedAuthorizationRequest({
+      settings: fixture.settings,
+      actorMembershipId: demotedCreator.membershipId,
+      browserSecret: started.browserSecret,
+      authorizationRef: 'authorization_demoted_team_creator',
+    });
+    const headers = {
+      ...auth(),
+      cookie: `__Secure-chickpea_managed_authorization=${started.browserSecret}`,
+    };
+
+    const poll = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/poll',
+      { method: 'POST', headers, body: '{}' },
+    );
+    const cancelAttempt = await beginManagedAuthorization({
+      settings: fixture.settings,
+      input: {
+        workspaceId: 'T_TEST',
+        agentId: 'agent_support',
+        actorMembershipId: demotedCreator.membershipId,
+        ownerKind: 'team',
+        providerId: 'google',
+        adapterId: 'composio',
+        toolkit: 'gmail',
+        label: 'Team Gmail',
+        principalRef: 'chickpea:organization:org_oss',
+        allowedCapabilities: ['gmail.profile.read'],
+        bindingCapabilities: ['gmail.profile.read'],
+        providerGeneration: 1,
+        providerLineage: '0'.repeat(24),
+      },
+      randomSecret: () => '8'.repeat(64),
+    });
+    await recordManagedAuthorizationRequest({
+      settings: fixture.settings,
+      actorMembershipId: demotedCreator.membershipId,
+      browserSecret: cancelAttempt.browserSecret,
+      authorizationRef: 'authorization_demoted_team_cancel',
+    });
+    const cancel = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections/managed/cancel',
+      {
+        method: 'POST',
+        headers: {
+          ...auth(),
+          cookie: `__Secure-chickpea_managed_authorization=${cancelAttempt.browserSecret}`,
+        },
+        body: '{}',
+      },
+    );
+
+    assert.equal(poll.status, 403, await poll.clone().text());
+    assert.equal(cancel.status, 403, await cancel.clone().text());
+    assert.equal(pollCalls, 0);
+    assert.equal(revokeCalls, 0);
+    assert.deepEqual(cleanedRemoteRefs, [
+      'authorization_demoted_team_creator',
+      'authorization_demoted_team_cancel',
+    ]);
+    assert.equal(
+      await fixture.settings.getSetting(
+        await managedAuthorizationSettingKey(demotedCreator.membershipId),
+      ),
+      undefined,
+    );
   } finally {
     fixture.store.close();
     fixture.settings.close();
@@ -2813,6 +2955,9 @@ test('Agent-owned MCP OAuth accounts start and complete against the account refe
         ? { accountRevision: startedInput.accountRevision }
         : {}),
       ...(startedInput?.oauthAttemptId ? { oauthAttemptId: startedInput.oauthAttemptId } : {}),
+      ...(startedInput?.authorizationAuthority
+        ? { authorizationAuthority: startedInput.authorizationAuthority }
+        : {}),
       returnAgentId: 'agent_support',
     }),
     resolveMcpOAuthToken: async () => 'oauth-access-token',
@@ -2899,18 +3044,23 @@ test('Agent-owned MCP OAuth accounts start and complete against the account refe
 
 test('revoking during Agent-owned MCP OAuth verification cannot reactivate the account', async () => {
   let accountId = '';
+  let startedAuthority: StartMcpOAuthInput['authorizationAuthority'];
   let releaseDiscovery: (() => void) | undefined;
   let markDiscoveryStarted: (() => void) | undefined;
   const discoveryStarted = new Promise<void>((resolve) => { markDiscoveryStarted = resolve; });
   const discoveryReleased = new Promise<void>((resolve) => { releaseDiscovery = resolve; });
   const fixture = harness(new FakeTransport(), {
-    startMcpOAuth: async () => ({
-      authorizationUrl: new URL('https://linear.example.test/oauth?state=opaque'),
-      state: 'opaque',
-    }),
+    startMcpOAuth: async (input) => {
+      startedAuthority = input.authorizationAuthority;
+      return {
+        authorizationUrl: new URL('https://linear.example.test/oauth?state=opaque'),
+        state: 'opaque',
+      };
+    },
     completeMcpOAuth: async () => ({
       ref: { agentId: accountId, connectionId: 'account' },
       returnAgentId: 'agent_support',
+      ...(startedAuthority ? { authorizationAuthority: startedAuthority } : {}),
     }),
     resolveMcpOAuthToken: async () => 'oauth-access-token',
     discoverMcp: async () => {
@@ -2978,14 +3128,7 @@ test('revoking during Agent-owned MCP OAuth verification cannot reactivate the a
 
 test('Agent-owned API OAuth accounts return to the initiating Agent and become ready', async () => {
   let accountId = '';
-  let startedInput: {
-    ref: { agentId: string; connectionId: string };
-    provider: string;
-    scopes: readonly string[];
-    returnAgentId?: string;
-    accountRevision?: number;
-    oauthAttemptId?: string;
-  } | undefined;
+  let startedInput: Parameters<typeof startApiOAuthAuthorization>[0] | undefined;
   const fixture = harness(new FakeTransport(), {
     startApiOAuth: async (input) => {
       startedInput = input;
@@ -3002,6 +3145,9 @@ test('Agent-owned API OAuth accounts return to the initiating Agent and become r
         ? { accountRevision: startedInput.accountRevision }
         : {}),
       ...(startedInput?.oauthAttemptId ? { oauthAttemptId: startedInput.oauthAttemptId } : {}),
+      ...(startedInput?.authorizationAuthority
+        ? { authorizationAuthority: startedInput.authorizationAuthority }
+        : {}),
       returnAgentId: 'agent_support',
     }),
   });
@@ -3071,6 +3217,410 @@ test('Agent-owned API OAuth accounts return to the initiating Agent and become r
       .find((candidate) => candidate.id === accountId);
     assert.equal(account?.lifecycle, 'ready');
     assert.deepEqual(account?.identity, { accountName: 'operator@acme.test' });
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('a system-suspended sole Owner cannot exchange an API account callback', async () => {
+  let accessStatus: 'active' | 'suspended' = 'active';
+  let accountId = '';
+  let providerExchanges = 0;
+  let startedAuthority: Parameters<typeof startApiOAuthAuthorization>[0]['authorizationAuthority'];
+  const liveIdentity = {
+    ...identity(),
+    getOrganization: async () => ({
+      id: 'org_oss', displayName: 'Acme', slackTeamId: 'T_TEST',
+      authMode: 'slack_active' as const, canonicalAdminOrigin: 'http://localhost',
+      createdAt: 1, updatedAt: 1,
+    }),
+    getAuthControl: async () => ({
+      installationId: 'installation_test', authMode: 'slack_active' as const,
+      healthGate: 'normal' as const, canonicalAdminOrigin: 'http://localhost',
+      betterAuthOrganizationId: 'better_auth_org_test', revision: 1,
+      createdAt: 1, updatedAt: 1,
+    }),
+    getMembershipAccessOverlay: async (id: string) => id === 'membership_test_owner'
+      ? {
+          membershipId: id, organizationId: 'org_oss', accessStatus,
+          membershipVersion: 1, createdAt: 1, updatedAt: 1,
+        }
+      : undefined,
+  } as unknown as IdentityStore;
+  const fixture = harness(new FakeTransport(), {
+    identity: liveIdentity,
+    startApiOAuth: async (input) => {
+      startedAuthority = input.authorizationAuthority;
+      return {
+        authorizationUrl: new URL('https://accounts.google.com/o/oauth2/v2/auth?state=opaque'),
+        state: 'opaque',
+      };
+    },
+    completeApiOAuth: async (_input, dependencies) => {
+      const ref = { agentId: accountId, connectionId: 'account' };
+      if (!startedAuthority ||
+          !(await dependencies.validateAuthorization?.(startedAuthority, ref))) {
+        throw new ApiOAuthError('authorization_expired', 'initiating authority expired', {
+          callbackContext: { ref, returnAgentId: 'agent_support' },
+        });
+      }
+      providerExchanges += 1;
+      return {
+        ref,
+        provider: 'google' as const,
+        identity: { accountName: 'owner@acme.test' },
+        returnAgentId: 'agent_support',
+        authorizationAuthority: startedAuthority,
+      };
+    },
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const created = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({
+          workspaceId: 'T_TEST', ownerKind: 'team', providerId: 'google', label: 'Work Gmail',
+          allowedCapabilities: [],
+          api: {
+            id: 'google-workspace', displayName: 'Work Gmail',
+            allowedHosts: ['gmail.googleapis.com'], pathPrefixes: ['/gmail/v1/users/me'],
+            headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+            allowedMethods: ['GET', 'HEAD'], enabled: true, authMode: 'oauth',
+            oauthProvider: 'google',
+            oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+            oauthAppType: 'external', lifecycleStatus: 'pending', statusText: '',
+          },
+        }),
+      },
+    );
+    assert.equal(created.status, 201, await created.clone().text());
+    accountId = ((await created.json()) as Record<string, any>).account.id as string;
+    const started = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/oauth/api/start`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    accessStatus = 'suspended';
+
+    const callback = await fixture.app.request(
+      'http://localhost/oauth/api/callback?state=opaque&code=accepted',
+    );
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal(
+      callback.headers.get('location'),
+      `/admin/agents/agent_support?oauth=failed&connection=${encodeURIComponent(accountId)}&lane=api`,
+    );
+    assert.equal(providerExchanges, 0);
+    assert.equal(
+      (await fixture.store.listConnectionAccounts('T_TEST'))
+        .find((candidate) => candidate.id === accountId)?.lifecycle,
+      'pending',
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('a system-suspended sole Owner cannot exchange an MCP account callback', async () => {
+  let accessStatus: 'active' | 'suspended' = 'active';
+  let accountId = '';
+  let startedAuthority: StartMcpOAuthInput['authorizationAuthority'];
+  let providerExchanges = 0;
+  let discoveryCalls = 0;
+  const liveIdentity = {
+    ...identity(),
+    getOrganization: async () => ({
+      id: 'org_oss', displayName: 'Acme', slackTeamId: 'T_TEST',
+      authMode: 'slack_active' as const, canonicalAdminOrigin: 'http://localhost',
+      createdAt: 1, updatedAt: 1,
+    }),
+    getAuthControl: async () => ({
+      installationId: 'installation_test', authMode: 'slack_active' as const,
+      healthGate: 'normal' as const, canonicalAdminOrigin: 'http://localhost',
+      betterAuthOrganizationId: 'better_auth_org_test', revision: 1,
+      createdAt: 1, updatedAt: 1,
+    }),
+    getMembership: async (id: string) => id === 'membership_test_owner'
+      ? {
+          id,
+          organizationId: 'org_oss',
+          userId: 'user_test_owner',
+          role: 'owner' as const,
+          status: 'active' as const,
+          createdAt: 1,
+          updatedAt: 1,
+        }
+      : undefined,
+    getMembershipAccessOverlay: async (id: string) => id === 'membership_test_owner'
+      ? {
+          membershipId: id, organizationId: 'org_oss', accessStatus,
+          membershipVersion: 1, createdAt: 1, updatedAt: 1,
+        }
+      : undefined,
+  } as unknown as IdentityStore;
+  const fixture = harness(new FakeTransport(), {
+    identity: liveIdentity,
+    startMcpOAuth: async (input) => {
+      startedAuthority = input.authorizationAuthority;
+      return {
+        authorizationUrl: new URL('https://linear.example.test/oauth?state=opaque'),
+        state: 'opaque',
+      };
+    },
+    completeMcpOAuth: async (_input, dependencies) => {
+      const ref = { agentId: accountId, connectionId: 'account' };
+      if (!startedAuthority ||
+          !(await dependencies.validateAuthorization?.(startedAuthority, ref))) {
+        throw new McpOAuthError('authorization_expired', 'initiating authority expired', {
+          callbackContext: { ref, returnAgentId: 'agent_support' },
+        });
+      }
+      providerExchanges += 1;
+      return {
+        ref,
+        returnAgentId: 'agent_support',
+        authorizationAuthority: startedAuthority,
+      };
+    },
+    resolveMcpOAuthToken: async () => 'oauth-access-token',
+    discoverMcp: async () => {
+      discoveryCalls += 1;
+      return { tools: [{ name: 'search_issues' }] };
+    },
+    identifyMcp: async () => ({ workspaceName: 'Acme Linear' }),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const created = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({
+          workspaceId: 'T_TEST', ownerKind: 'team', providerId: 'linear', label: 'Linear',
+          allowedCapabilities: [],
+          mcp: {
+            id: 'linear', displayName: 'Linear', url: 'https://mcp.linear.app/mcp',
+            transport: 'streamable-http', authMode: 'oauth', headerNames: [], enabled: true,
+            lifecycleStatus: 'pending', statusText: '', discoveredTools: [], allowedTools: [],
+          },
+        }),
+      },
+    );
+    accountId = ((await created.json()) as Record<string, any>).account.id as string;
+    const started = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/oauth/mcp/start`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    assert.equal(startedAuthority?.ownerKind, 'team');
+    accessStatus = 'suspended';
+
+    const callback = await fixture.app.request(
+      'http://localhost/oauth/callback?state=opaque&code=accepted',
+    );
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal(
+      callback.headers.get('location'),
+      `/admin/agents/agent_support?oauth=failed&connection=${encodeURIComponent(accountId)}&lane=mcp`,
+    );
+    assert.equal(providerExchanges, 0);
+    assert.equal(discoveryCalls, 0);
+    assert.equal(
+      (await fixture.store.listConnectionAccounts('T_TEST'))
+        .find((candidate) => candidate.id === accountId)?.lifecycle,
+      'pending',
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('a current Member can finish OAuth for their personal Agent account', async () => {
+  const memberPrincipal: AuthPrincipal = {
+    userId: 'user_test_owner', membershipId: 'membership_test_owner',
+    organizationId: 'org_oss', role: 'member', authenticatorKind: 'test_slack_session',
+    credentialId: 'session_personal_oauth', correlationId: 'personal_oauth', machine: false,
+  };
+  const liveIdentity = {
+    ...identity(),
+    getOrganization: async () => ({
+      id: 'org_oss', displayName: 'Acme', slackTeamId: 'T_TEST',
+      authMode: 'slack_active' as const, canonicalAdminOrigin: 'http://localhost',
+      createdAt: 1, updatedAt: 1,
+    }),
+    getAuthControl: async () => ({
+      installationId: 'installation_test', authMode: 'slack_active' as const,
+      healthGate: 'normal' as const, canonicalAdminOrigin: 'http://localhost',
+      betterAuthOrganizationId: 'better_auth_org_test', revision: 1,
+      createdAt: 1, updatedAt: 1,
+    }),
+    getMembership: async (id: string) => id === memberPrincipal.membershipId
+      ? {
+          id, organizationId: 'org_oss', userId: memberPrincipal.userId,
+          role: 'member' as const, status: 'active' as const, createdAt: 1, updatedAt: 1,
+        }
+      : undefined,
+  } as unknown as IdentityStore;
+  let accountId = '';
+  let startedAuthority: Parameters<typeof startApiOAuthAuthorization>[0]['authorizationAuthority'];
+  const fixture = harness(new FakeTransport(), {
+    identity: liveIdentity,
+    startApiOAuth: async (input) => {
+      startedAuthority = input.authorizationAuthority;
+      return {
+        authorizationUrl: new URL('https://accounts.google.com/o/oauth2/v2/auth?state=opaque'),
+        state: 'opaque',
+      };
+    },
+    completeApiOAuth: async () => ({
+      ref: { agentId: accountId, connectionId: 'account' }, provider: 'google',
+      identity: { accountName: 'member@acme.test' }, returnAgentId: 'agent_support',
+      ...(startedAuthority ? { authorizationAuthority: startedAuthority } : {}),
+    }),
+  }, {}, memberPrincipal);
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const created = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({
+          workspaceId: 'T_TEST', ownerKind: 'member', providerId: 'google', label: 'My Gmail',
+          allowedCapabilities: [],
+          api: {
+            id: 'google-workspace', displayName: 'My Gmail',
+            allowedHosts: ['gmail.googleapis.com'], pathPrefixes: ['/gmail/v1/users/me'],
+            headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+            allowedMethods: ['GET', 'HEAD'], enabled: true, authMode: 'oauth',
+            oauthProvider: 'google',
+            oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+            oauthAppType: 'external', lifecycleStatus: 'pending', statusText: '',
+          },
+        }),
+      },
+    );
+    assert.equal(created.status, 201, await created.clone().text());
+    accountId = ((await created.json()) as Record<string, any>).account.id as string;
+    const started = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/oauth/api/start`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    assert.equal(startedAuthority?.ownerKind, 'member');
+
+    const callback = await fixture.app.request(
+      'http://localhost/oauth/api/callback?state=opaque&code=accepted',
+    );
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal(
+      (await fixture.store.listConnectionAccounts('T_TEST'))
+        .find((candidate) => candidate.id === accountId)?.lifecycle,
+      'ready',
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('a former Agent editor cannot finish a legacy API OAuth callback', async () => {
+  let liveRole: 'owner' | 'member' = 'owner';
+  let startedAuthority: Parameters<typeof startApiOAuthAuthorization>[0]['authorizationAuthority'];
+  const liveIdentity = {
+    ...identity(),
+    getOrganization: async () => ({
+      id: 'org_oss', displayName: 'Acme', slackTeamId: 'T_TEST',
+      authMode: 'slack_active' as const, canonicalAdminOrigin: 'http://localhost',
+      createdAt: 1, updatedAt: 1,
+    }),
+    getAuthControl: async () => ({
+      installationId: 'installation_test', authMode: 'slack_active' as const,
+      healthGate: 'normal' as const, canonicalAdminOrigin: 'http://localhost',
+      betterAuthOrganizationId: 'better_auth_org_test', revision: 1,
+      createdAt: 1, updatedAt: 1,
+    }),
+    getMembership: async (id: string) => id === 'membership_test_owner'
+      ? {
+          id,
+          organizationId: 'org_oss',
+          userId: 'user_test_owner',
+          role: liveRole,
+          status: 'active' as const,
+          createdAt: 1,
+          updatedAt: 1,
+        }
+      : undefined,
+  } as unknown as IdentityStore;
+  const fixture = harness(new FakeTransport(), {
+    identity: liveIdentity,
+    startApiOAuth: async (input) => {
+      startedAuthority = input.authorizationAuthority;
+      return {
+        authorizationUrl: new URL('https://accounts.google.com/o/oauth2/v2/auth?state=opaque'),
+        state: 'opaque',
+      };
+    },
+    completeApiOAuth: async () => ({
+      ref: { agentId: 'agent_support', connectionId: 'google-workspace' },
+      provider: 'google',
+      identity: { accountName: 'former-editor@acme.test' },
+      ...(startedAuthority ? { authorizationAuthority: startedAuthority } : {}),
+    }),
+  });
+  try {
+    await createAgent(fixture.app);
+    const agent = await fixture.store.getAgent('agent_support');
+    await fixture.store.updateAgent('agent_support', {
+      apiConnections: [{
+        id: 'google-workspace', displayName: 'Google Workspace',
+        allowedHosts: ['gmail.googleapis.com'], pathPrefixes: ['/gmail/v1/users/me'],
+        headerName: 'Authorization', headerValuePrefix: 'Bearer ', allowedMethods: ['GET', 'HEAD'],
+        enabled: true, authMode: 'oauth', oauthProvider: 'google',
+        oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+        oauthAppType: 'external', lifecycleStatus: 'pending', statusText: 'Not connected',
+      }],
+    }, agent.revision);
+    const started = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/api-connections/oauth/google-workspace/start',
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    assert.equal(startedAuthority?.ownerKind, 'legacy_agent');
+    const afterStart = await fixture.store.getAgent('agent_support');
+    await fixture.store.updateAgent('agent_support', {
+      creatorMembershipId: 'membership_other',
+      editPolicy: 'creator_and_admins',
+    }, afterStart.revision);
+    liveRole = 'member';
+
+    const callback = await fixture.app.request(
+      'http://localhost/oauth/api/callback?state=opaque&code=accepted',
+    );
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal(
+      callback.headers.get('location'),
+      '/admin/agents/agent_support?oauth=failed&connection=google-workspace&lane=api',
+    );
+    const current = (await fixture.store.getAgent('agent_support')).apiConnections[0];
+    assert.equal(current?.lifecycleStatus, 'pending');
+    assert.equal(current?.identity, undefined);
   } finally {
     fixture.store.close();
     fixture.settings.close();
@@ -3300,6 +3850,527 @@ test('shared-gateway channel discovery uses the credential-free transport', asyn
     assert.equal(channelsBody.discovery.connected, true);
     assert.equal(channelsBody.channels[0].channelId, 'C_SUPPORT');
     assert.equal(channelsBody.channels[0].isPrivate, true);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('workspace Members cannot enumerate global destination metadata', async () => {
+  const member: AuthPrincipal = {
+    userId: 'user_test_member',
+    membershipId: 'membership_test_member',
+    organizationId: 'org_oss',
+    role: 'member',
+    authenticatorKind: 'test_slack_session',
+    credentialId: 'session_test_member',
+    correlationId: 'request_test_member',
+    machine: false,
+  };
+  const transport = new FakeTransport();
+  transport.channel = {
+    id: 'C_PRIVATE', name: 'private-leadership', private: true, member: true, archived: false,
+  };
+  transport.memberAllowed = false;
+  const fixture = harness(transport, {}, {}, member);
+  try {
+    const allowedPaths = [
+      '/admin',
+      '/admin/agents',
+      '/admin/agents/agent_support',
+      '/admin/api/agents',
+      '/admin/api/models',
+    ];
+    const allowedStatuses = Object.fromEntries(await Promise.all(allowedPaths.map(async (path) => [
+      path,
+      (await fixture.app.request(`http://localhost${path}`, { headers: auth() })).status,
+    ])));
+    assert.deepEqual(allowedStatuses, Object.fromEntries(allowedPaths.map((path) => [path, 200])));
+
+    const adminShell = await fixture.app.request('http://localhost/admin', { headers: auth() });
+    assert.match(await adminShell.text(), /var WORKSPACE_ADMIN_UI = false;/);
+
+    const protectedPaths = [
+      '/admin/channels',
+      '/admin/destinations/slack',
+      '/admin/settings/providers',
+      '/admin/team',
+      '/admin/usage',
+      '/admin/audit-logs/scheduled-work',
+      '/admin/api/channels',
+      '/admin/api/slack-channels',
+      '/admin/api/slack-connection',
+    ];
+    const statuses = Object.fromEntries(await Promise.all(protectedPaths.map(async (path) => [
+      path,
+      (await fixture.app.request(`http://localhost${path}`, { headers: auth() })).status,
+    ])));
+    assert.deepEqual(statuses, Object.fromEntries(protectedPaths.map((path) => [path, 403])));
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('workspace Members cannot read private Agent Channel metadata they do not share', async () => {
+  const member: AuthPrincipal = {
+    userId: 'user_test_member',
+    membershipId: 'membership_test_member',
+    organizationId: 'org_oss',
+    role: 'member',
+    authenticatorKind: 'test_slack_session',
+    credentialId: 'session_test_member',
+    correlationId: 'request_test_member',
+    machine: false,
+  };
+  const memberDirectory = {
+    ...identity(),
+    getMembership: async (id: string) => id === member.membershipId
+      ? {
+          id,
+          organizationId: member.organizationId,
+          userId: member.userId,
+          role: 'member' as const,
+          status: 'active' as const,
+          createdAt: 1,
+          updatedAt: 1,
+        }
+      : undefined,
+    getUser: async (id: string) => id === member.userId
+      ? {
+          id,
+          slackTeamId: 'T_TEST',
+          slackUserId: 'U_MEMBER',
+          displayName: 'Member',
+          contactEmail: 'member@example.test',
+          createdAt: 1,
+          updatedAt: 1,
+        }
+      : undefined,
+  } as IdentityStore;
+  const transport = new FakeTransport();
+  transport.channel = {
+    id: 'C_PRIVATE_CANARY',
+    name: 'live-board-secrets-canary',
+    private: true,
+    member: true,
+    archived: false,
+  };
+  transport.memberAllowed = false;
+  const snapshots = {
+    listLiveRootsByAgent: async (agentId: string) => agentId === 'agent_member_private'
+      ? [{
+          threadKey: 'T_TEST:C_PRIVATE_CANARY:1700000000.000001',
+          agentId,
+          lastActivityAt: 1,
+        }]
+      : [],
+  } as unknown as AgentSnapshotStore;
+  const fixture = harness(transport, {
+    identity: testAdminAuthority(TOKEN, undefined, memberDirectory, member).identity,
+    snapshots,
+  }, {}, member);
+  try {
+    const agent = await fixture.store.createAgent({
+      id: 'agent_member_private',
+      name: 'Member Agent',
+      instructions: 'Help.',
+      enabled: true,
+      lifecycle: 'active',
+      creatorMembershipId: member.membershipId,
+      editPolicy: 'creator_and_admins',
+      model: 'local-stub/member-private',
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    await fixture.store.putAgentChannelGrant({
+      workspaceId: 'T_TEST',
+      channelId: transport.channel.id,
+      agentId: agent.id,
+      status: 'active',
+      createdByMembershipId: member.membershipId,
+      channelLabel: 'stored-leadership-secrets-canary',
+      channelIsPrivate: true,
+    });
+
+    for (const path of ['/admin/api/agents', `/admin/api/agents/${agent.id}`]) {
+      const response = await fixture.app.request(`http://localhost${path}`, { headers: auth() });
+      assert.equal(response.status, 200, await response.clone().text());
+      const responseText = await response.text();
+      assert.doesNotMatch(responseText, /C_PRIVATE_CANARY/);
+      assert.doesNotMatch(responseText, /live-board-secrets-canary/);
+      assert.doesNotMatch(responseText, /stored-leadership-secrets-canary/);
+      const body = JSON.parse(responseText) as Record<string, any>;
+      const projected = path === '/admin/api/agents'
+        ? body.agents.find((candidate: Record<string, unknown>) => candidate.id === agent.id)
+        : body.agent;
+      assert.deepEqual(projected.whereItWorks.channels, []);
+      assert.deepEqual(projected.deletion.references.channelGrants, []);
+      assert.deepEqual(projected.deletion.liveSnapshotRoots, []);
+    }
+
+    const mutationResponse = await fixture.app.request(
+      `http://localhost/admin/api/agents/${agent.id}`,
+      {
+        method: 'PATCH',
+        headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: agent.revision,
+          description: 'Updated without exposing unrelated private reach.',
+        }),
+      },
+    );
+    assert.equal(mutationResponse.status, 200, await mutationResponse.clone().text());
+    const mutationText = await mutationResponse.text();
+    assert.doesNotMatch(mutationText, /C_PRIVATE_CANARY/);
+    assert.doesNotMatch(mutationText, /live-board-secrets-canary/);
+    assert.doesNotMatch(mutationText, /stored-leadership-secrets-canary/);
+
+    transport.memberAllowed = true;
+    const sharedResponse = await fixture.app.request(
+      'http://localhost/admin/api/agents',
+      { headers: auth() },
+    );
+    assert.equal(sharedResponse.status, 200, await sharedResponse.clone().text());
+    const sharedText = await sharedResponse.text();
+    assert.match(sharedText, /C_PRIVATE_CANARY/);
+    assert.match(sharedText, /live-board-secrets-canary/);
+    assert.doesNotMatch(sharedText, /stored-leadership-secrets-canary/);
+
+    const ownerFixture = harness(transport, {}, {
+      store: fixture.store,
+      settings: fixture.settings,
+    });
+    const ownerResponse = await ownerFixture.app.request(
+      'http://localhost/admin/api/agents',
+      { headers: auth() },
+    );
+    assert.equal(ownerResponse.status, 200, await ownerResponse.clone().text());
+    const ownerText = await ownerResponse.text();
+    assert.match(ownerText, /C_PRIVATE_CANARY/);
+    assert.match(ownerText, /stored-leadership-secrets-canary/);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('workspace Members cannot use legacy connector authority from a creator-only Agent', async () => {
+  const member: AuthPrincipal = {
+    userId: 'user_test_member',
+    membershipId: 'membership_test_member',
+    organizationId: 'org_oss',
+    role: 'member',
+    authenticatorKind: 'test_slack_session',
+    credentialId: 'session_test_member',
+    correlationId: 'request_test_member',
+    machine: false,
+  };
+  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const agentId = 'agent_other_creator';
+  const mcpConnectionId = 'legacy-mcp';
+  const apiOAuthConnectionId = 'legacy-google';
+  const apiCredentialConnectionId = 'legacy-api-key';
+  const mcpRef = { agentId, connectionId: mcpConnectionId };
+  const apiOAuthRef = { agentId, connectionId: apiOAuthConnectionId };
+  const watchedSettingKeys = [
+    mcpBearerSettingKey(mcpRef),
+    mcpHeaderSettingKey(mcpRef, 'X-Api-Key'),
+    connectorCredentialSettingKey(agentId, apiCredentialConnectionId),
+    ...apiOAuthSettingKeys(apiOAuthRef),
+  ];
+  try {
+    await store.createAgent({
+      id: agentId,
+      name: 'Another Creator Agent',
+      instructions: 'Help.',
+      enabled: true,
+      lifecycle: 'active',
+      creatorMembershipId: 'membership_other_creator',
+      editPolicy: 'creator_and_admins',
+      model: 'local-stub/legacy-connector-auth',
+      skills: [],
+      mcpServers: [{
+        id: mcpConnectionId,
+        displayName: 'Legacy MCP',
+        url: 'https://mcp.example.com/rpc',
+        transport: 'streamable-http',
+        authMode: 'oauth',
+        headerNames: ['X-Api-Key'],
+        enabled: true,
+        lifecycleStatus: 'ready',
+        statusText: '',
+        discoveredTools: [],
+        allowedTools: [],
+        oauthScope: 'read write',
+      }],
+      apiConnections: [{
+        id: apiOAuthConnectionId,
+        displayName: 'Legacy Google',
+        allowedHosts: ['gmail.googleapis.com'],
+        pathPrefixes: ['/gmail/v1/users/me'],
+        headerName: 'Authorization',
+        headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET', 'HEAD'],
+        enabled: true,
+        authMode: 'oauth',
+        oauthProvider: 'google',
+        oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+        oauthAppType: 'external',
+        lifecycleStatus: 'ready',
+        statusText: '',
+      }, {
+        id: apiCredentialConnectionId,
+        displayName: 'Legacy API key',
+        allowedHosts: ['api.example.com'],
+        pathPrefixes: ['/v1'],
+        headerName: 'Authorization',
+        headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET'],
+        enabled: true,
+        authMode: 'credential',
+      }],
+      repositories: [],
+    });
+    await Promise.all(watchedSettingKeys.map((key, index) =>
+      settings.setSetting(key, `preserved-secret-${index}`)));
+    const settingsBefore = await settings.getSettings(watchedSettingKeys);
+    const agentBefore = await store.getAgent(agentId);
+    const settingMutations: string[] = [];
+    const mutatingMethods = new Set([
+      'setSetting',
+      'deleteSetting',
+      'applySettingsPatch',
+      'mergeSettingStringSet',
+    ]);
+    const monitoredSettings = new Proxy(settings, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver) as unknown;
+        if (typeof property === 'string' && mutatingMethods.has(property) &&
+            typeof value === 'function') {
+          return (...args: unknown[]) => {
+            settingMutations.push(property);
+            return Reflect.apply(value, target, args);
+          };
+        }
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as SettingsStore;
+    const externalCalls = {
+      startMcpOAuth: 0,
+      startApiOAuth: 0,
+      resolveMcpOAuthToken: 0,
+      discoverMcp: 0,
+    };
+    const fixture = harness(new FakeTransport(), {
+      settings: monitoredSettings,
+      startMcpOAuth: async () => {
+        externalCalls.startMcpOAuth += 1;
+        return {
+          authorizationUrl: new URL('https://mcp.example.com/oauth?state=allowed'),
+          state: 'allowed',
+        };
+      },
+      startApiOAuth: async () => {
+        externalCalls.startApiOAuth += 1;
+        return {
+          authorizationUrl: new URL('https://accounts.google.com/o/oauth2/auth?state=allowed'),
+          state: 'allowed',
+        };
+      },
+      resolveMcpOAuthToken: async () => {
+        externalCalls.resolveMcpOAuthToken += 1;
+        return 'should-not-resolve';
+      },
+      discoverMcp: async () => {
+        externalCalls.discoverMcp += 1;
+        return { tools: [] };
+      },
+    }, { store, settings }, member);
+    const requests: Array<{ method: string; path: string; body?: object }> = [
+      {
+        method: 'POST',
+        path: `/admin/api/agents/${agentId}/mcp/oauth/${mcpConnectionId}/start`,
+        body: { scope: 'read write' },
+      },
+      {
+        method: 'PUT',
+        path: `/admin/api/agents/${agentId}/api-connections/oauth/${apiOAuthConnectionId}/client`,
+        body: {
+          provider: 'google',
+          clientId: 'attacker-client',
+          clientSecret: 'attacker-secret',
+        },
+      },
+      {
+        method: 'POST',
+        path: `/admin/api/agents/${agentId}/api-connections/oauth/${apiOAuthConnectionId}/start`,
+        body: {},
+      },
+      {
+        method: 'POST',
+        path: `/admin/api/agents/${agentId}/mcp/test`,
+        body: {
+          id: mcpConnectionId,
+          url: 'https://mcp.example.com/rpc',
+          transport: 'streamable-http',
+          authMode: 'bearer',
+          headerNames: ['X-Api-Key'],
+        },
+      },
+      {
+        method: 'PUT',
+        path: `/admin/api/agents/${agentId}/mcp/secrets/${mcpConnectionId}`,
+        body: {
+          bearerToken: 'attacker-bearer',
+          headers: { 'X-Api-Key': 'attacker-header' },
+          headerNames: ['X-Api-Key'],
+          clearOAuth: true,
+        },
+      },
+      {
+        method: 'DELETE',
+        path: `/admin/api/agents/${agentId}/mcp/secrets/${mcpConnectionId}`,
+        body: { headerNames: ['X-Api-Key'] },
+      },
+      {
+        method: 'PUT',
+        path: `/admin/api/agents/${agentId}/api-connections/secrets/${apiCredentialConnectionId}`,
+        body: { credential: 'attacker-api-key' },
+      },
+      {
+        method: 'DELETE',
+        path: `/admin/api/agents/${agentId}/api-connections/secrets/${apiCredentialConnectionId}`,
+      },
+      {
+        method: 'DELETE',
+        path: `/admin/api/agents/${agentId}/api-connections/secrets/${apiOAuthConnectionId}`,
+      },
+    ];
+
+    for (const request of requests) {
+      const response = await fixture.app.request(`http://localhost${request.path}`, {
+        method: request.method,
+        headers: auth(),
+        ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
+      });
+      assert.equal(response.status, 403, `${request.method} ${request.path}: ${await response.text()}`);
+    }
+    assert.deepEqual(settingMutations, []);
+    assert.deepEqual(await settings.getSettings(watchedSettingKeys), settingsBefore);
+    assert.deepEqual(await store.getAgent(agentId), agentBefore);
+    assert.deepEqual(externalCalls, {
+      startMcpOAuth: 0,
+      startApiOAuth: 0,
+      resolveMcpOAuthToken: 0,
+      discoverMcp: 0,
+    });
+
+    await store.updateAgent(
+      agentId,
+      { editPolicy: 'all_workspace_members' },
+      agentBefore.revision,
+    );
+    for (const request of requests) {
+      const response = await fixture.app.request(`http://localhost${request.path}`, {
+        method: request.method,
+        headers: auth(),
+        ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
+      });
+      assert.equal(response.status, 200, `${request.method} ${request.path}: ${await response.text()}`);
+    }
+    assert.deepEqual(externalCalls, {
+      startMcpOAuth: 1,
+      startApiOAuth: 1,
+      resolveMcpOAuthToken: 0,
+      discoverMcp: 1,
+    });
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('workspace Members can manage personal Agent connections but not Team connections', async () => {
+  const member: AuthPrincipal = {
+    userId: 'user_test_member',
+    membershipId: 'membership_test_member',
+    organizationId: 'org_oss',
+    role: 'member',
+    authenticatorKind: 'test_slack_session',
+    credentialId: 'session_test_member',
+    correlationId: 'request_test_member',
+    machine: false,
+  };
+  const fixture = harness(new FakeTransport(), {}, {}, member);
+  const connectionBody = (ownerKind: 'member' | 'team') => JSON.stringify({
+    workspaceId: 'T_TEST',
+    ownerKind,
+    providerId: 'custom',
+    label: ownerKind === 'member' ? 'Personal API' : 'Team API',
+    allowedCapabilities: [],
+    api: {
+      id: `${ownerKind}-api`,
+      displayName: ownerKind === 'member' ? 'Personal API' : 'Team API',
+      allowedHosts: ['api.example.com'],
+      pathPrefixes: ['/v1'],
+      headerName: 'Authorization',
+      allowedMethods: ['GET'],
+      enabled: true,
+    },
+  });
+  try {
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+    });
+    await createAgent(fixture.app);
+
+    const personal = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections',
+      { method: 'POST', headers: auth(), body: connectionBody('member') },
+    );
+    assert.equal(personal.status, 201, await personal.clone().text());
+    const personalId = (await personal.json() as { account: { id: string } }).account.id;
+
+    const team = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections',
+      { method: 'POST', headers: auth(), body: connectionBody('team') },
+    );
+    assert.equal(team.status, 403, await team.clone().text());
+
+    const legacyTeam = await fixture.store.putConnectionAccount({
+      id: 'connection_legacy_member_team',
+      workspaceId: 'T_TEST',
+      ownerKind: 'team',
+      createdByMembershipId: member.membershipId,
+      providerId: 'custom',
+      label: 'Legacy Team API',
+      policy: {
+        kind: 'api',
+        allowedHosts: ['api.example.test'],
+        pathPrefixes: ['/v1'],
+        headerName: 'Authorization',
+        allowedMethods: ['GET'],
+        authMode: 'credential',
+      },
+      secretRefId: 'secret_legacy_member_team',
+      lifecycle: 'ready',
+    }, 0);
+    const legacyTeamRevoke = await fixture.app.request(
+      `http://localhost/admin/api/connections/${legacyTeam.id}/revoke`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(legacyTeamRevoke.status, 403, await legacyTeamRevoke.clone().text());
+
+    const revoked = await fixture.app.request(
+      `http://localhost/admin/api/connections/${personalId}/revoke`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(revoked.status, 200, await revoked.clone().text());
+    assert.equal((await revoked.json() as { account: { lifecycle: string } }).account.lifecycle, 'revoked');
   } finally {
     fixture.store.close();
     fixture.settings.close();

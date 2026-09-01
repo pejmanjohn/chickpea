@@ -177,7 +177,10 @@ import {
   type RoutineRpcRequest,
   type RoutineRpcResponse,
 } from './routines/types.ts';
-import { createRoutineScheduledHandler } from './routines/scheduler-adapter.ts';
+import {
+  createRoutineScheduledHandler,
+  runWithGuaranteedFinalizer,
+} from './routines/scheduler-adapter.ts';
 import {
   GATEWAY_INBOX_MAX_DRAIN_BATCH,
   GatewayInboxStoreLogic,
@@ -2388,12 +2391,12 @@ async function runWorkMaintenance(
   scheduledTime: number,
   rawEnv: Record<string, unknown>,
 ): Promise<void> {
-  const result = await tagStateStub(rawEnv).maintainWork(scheduledTime);
-  if (!result.ok) {
-    throw new Error(`Work maintenance failed: ${result.error.message}`);
-  }
-  const platformEnv = rawEnv as PlatformEnv;
-  try {
+  await runWithGuaranteedFinalizer(async () => {
+    const result = await tagStateStub(rawEnv).maintainWork(scheduledTime);
+    if (!result.ok) {
+      throw new Error(`Work maintenance failed: ${result.error.message}`);
+    }
+    const platformEnv = rawEnv as PlatformEnv;
     await repairPendingOAuthContinuationResumes({
       settings: getSettingsStore(platformEnv),
       onReady: async (continuation) => {
@@ -2410,11 +2413,11 @@ async function runWorkMaintenance(
         if (!resumed) throw new Error('OAuth continuation task is unavailable.');
       },
     });
-  } finally {
+  }, async () => {
     // The gateway session is the ingress lifeline for the shared Slack lane.
-    // OAuth repair failures must never suppress its periodic wake.
+    // Work or OAuth repair failures must never suppress its periodic wake.
     await wakeCloudflareGatewaySession(rawEnv);
-  }
+  });
 }
 
 export { SlackGatewaySession };

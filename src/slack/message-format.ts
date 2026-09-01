@@ -79,8 +79,7 @@ export interface SlackReplyFooter {
 }
 
 export function renderSlackMessage(text: string, format: SlackReplyFormat): RenderedSlackMessage {
-  const normalized = normalizeMessageText(text);
-  const displayText = format === 'markdown' ? canonicalSlackMarkdownText(normalized) : normalized;
+  const displayText = canonicalSlackReplyText(text, format);
 
   if (format === 'markdown') {
     return {
@@ -104,6 +103,14 @@ export function renderSlackMessage(text: string, format: SlackReplyFormat): Rend
   return {
     text: truncateText(displayText, slackFallbackTextLimit),
   };
+}
+
+/** Canonical credential-safe text shared by every terminal Slack delivery path. */
+export function canonicalSlackReplyText(text: string, format: SlackReplyFormat): string {
+  const normalized = normalizeMessageText(text);
+  return format === 'markdown'
+    ? canonicalSlackMarkdownText(normalized)
+    : redactCredentialLikeContent(normalized);
 }
 
 /** Canonical answer formatter shared by progressive and terminal delivery. */

@@ -79,6 +79,10 @@ import { parseMemoryCommand } from '../memory/commands.ts';
 import { parseRoutineCommand } from '../routines/commands.ts';
 import { isRoutineSlackTurn } from '../routines/slack-context.ts';
 import {
+  readBoundedRequestBody,
+  requestWithBufferedBody,
+} from '../security/request-body-limit.ts';
+import {
   resolveSlackCredentials,
   resolveSlackPublicUrl,
   slackAuthTest,
@@ -141,7 +145,7 @@ import { resolveHostSlackManagementApproval } from '../management/slack-approval
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import { initialActivityStatus } from '../activity/status.ts';
 
-const MAX_SLACK_INGRESS_BYTES = 1_048_576;
+export const MAX_SLACK_INGRESS_BYTES = 1_048_576;
 
 /**
  * Run `task` past the events ack. On Cloudflare the response completing would
@@ -280,7 +284,15 @@ type SlackRouteHandler = SlackChannel['routes'][number]['handler'];
 
 const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   const platformEnv = c.env as PlatformEnv | undefined;
-  const rawBody = await c.req.raw.clone().text();
+  const ingress = await readSlackIngressBody(c.req.raw);
+  if (!ingress.ok) {
+    return c.json(
+      { error: ingress.status === 413 ? 'request_too_large' : 'invalid_request' },
+      ingress.status,
+    );
+  }
+  c.req.raw = requestWithBufferedBody(c.req.raw, ingress.body);
+  const rawBody = new TextDecoder().decode(ingress.body);
   const signature = c.req.header('x-slack-signature') ?? '';
   const timestamp = c.req.header('x-slack-request-timestamp') ?? '';
   const credentials = await resolveSlackInstallationCredentials(
@@ -307,6 +319,20 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   }
   return response;
 };
+
+async function readSlackIngressBody(
+  request: Request,
+): Promise<
+  | { ok: true; body: Uint8Array }
+  | { ok: false; status: 400 | 413 }
+> {
+  const result = await readBoundedRequestBody(request, MAX_SLACK_INGRESS_BYTES);
+  if (result.ok) return { ok: true, body: result.body ?? new Uint8Array() };
+  return {
+    ok: false,
+    status: result.reason === 'body_too_large' ? 413 : 400,
+  };
+}
 
 async function finalizePendingWorkspaceInstallation(
   stores: AppStores,

@@ -141,6 +141,72 @@ test('buildEgressNetworkConfig attaches the DoH resolver on Cloudflare', () => {
   assert.equal(typeof network._dnsResolve, 'function');
 });
 
+test('the Cloudflare DoH resolver validates both IPv4 and IPv6 answers', async () => {
+  const network = buildEgressNetworkConfig(
+    { mode: 'allowlist', domains: ['dual-stack.example'] },
+    { cloudflare: true },
+  );
+  const resolver = network._dnsResolve;
+  assert.ok(resolver);
+  const queries: string[] = [];
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    queries.push(url);
+    if (url.endsWith('&type=A')) {
+      return Response.json({ Status: 0, Answer: [{ type: 1, data: '93.184.216.34' }] });
+    }
+    return Response.json({ Status: 0, Answer: [{ type: 28, data: 'fd00::1' }] });
+  };
+  try {
+    assert.deepEqual(await resolver('dual-stack.example'), [
+      { address: '93.184.216.34', family: 4 },
+      { address: 'fd00::1', family: 6 },
+    ]);
+    assert.equal(queries.length, 2);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('Cloudflare DoH empty and negative answers fail closed before target fetch', async () => {
+  for (const dnsPayload of [
+    { Status: 0, Answer: [] },
+    { Status: 3 },
+    { Answer: [{ type: 1, data: '127.0.0.1' }] },
+  ]) {
+    const network = buildEgressNetworkConfig(
+      { mode: 'allowlist', domains: ['target.example'] },
+      { cloudflare: true },
+    );
+    const instance = new Bash({
+      fs: new InMemoryFs(),
+      network,
+    }) as unknown as { secureFetch?: SecureFetch };
+    assert.ok(instance.secureFetch);
+    let targetFetches = 0;
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.startsWith('https://cloudflare-dns.com/dns-query?')) {
+        return Response.json(dnsPayload);
+      }
+      targetFetches += 1;
+      return new Response('must not be reached');
+    };
+    try {
+      await assert.rejects(
+        instance.secureFetch('https://target.example/private'),
+        (error: unknown) =>
+          error instanceof Error && error.name === 'NetworkAccessDeniedError',
+      );
+      assert.equal(targetFetches, 0, JSON.stringify(dnsPayload));
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  }
+});
+
 test('buildEgressNetworkConfig blocks all egress in off mode', () => {
   const network = buildEgressNetworkConfig(
     { mode: 'off', domains: ['api.github.com'] },

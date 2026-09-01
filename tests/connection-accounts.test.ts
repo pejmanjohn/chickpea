@@ -296,7 +296,7 @@ test('a connection account cannot be bound to a second Agent', async () => {
       defaultAgentId: 'agent_support',
     });
     const { account, binding } = await service.createForAgent({
-      principal: principal('membership_creator'),
+      principal: principal('membership_creator', 'admin'),
       agentId: 'agent_support',
       workspaceId: 'T_CONNECTIONS',
       ownerKind: 'team',
@@ -362,7 +362,7 @@ test('Agent-scoped creation rolls back its account, binding, and staged secret t
     });
     await assert.rejects(
       service.createForAgent({
-        principal: principal('membership_creator'),
+        principal: principal('membership_creator', 'admin'),
         agentId: 'agent_support',
         workspaceId: 'T_OTHER',
         ownerKind: 'team',
@@ -1222,7 +1222,7 @@ test('a retry finishes terminal schedule cleanup after revocation already tombst
       workspaceId: 'T_CONNECTIONS', transportMode: 'direct', defaultAgentId: 'agent_support',
     });
     const { account } = await service.createForAgent({
-      principal: principal('membership_creator'), agentId: 'agent_support',
+      principal: principal('membership_creator', 'admin'), agentId: 'agent_support',
       workspaceId: 'T_CONNECTIONS', ownerKind: 'team',
       providerId: 'zendesk', label: 'Zendesk', policy: {
         kind: 'api', allowedHosts: ['acme.zendesk.com'], pathPrefixes: ['/api/'],
@@ -1245,7 +1245,7 @@ test('a retry finishes terminal schedule cleanup after revocation already tombst
     };
     await assert.rejects(
       service.revoke({
-        principal: principal('membership_creator'), connectionAccountId: account.id,
+        principal: principal('membership_creator', 'admin'), connectionAccountId: account.id,
       }),
       ConnectionScheduleConflictError,
     );
@@ -1261,7 +1261,7 @@ test('a retry finishes terminal schedule cleanup after revocation already tombst
     assert.deepEqual(pendingCleanup?.connectionPauseAccountIds, [account.id]);
     config.putAgentScheduleReference = putSchedule;
     const revoked = await service.revoke({
-      principal: principal('membership_creator'), connectionAccountId: account.id,
+      principal: principal('membership_creator', 'admin'), connectionAccountId: account.id,
     });
     assert.equal(revoked.lifecycle, 'revoked');
     const schedule = (await config.listAgentScheduleReferences('agent_support'))[0];

@@ -211,7 +211,7 @@ function createCapabilityTool(
       async run({ data, harness, signal }) {
         if (definition.effect !== 'read') {
           assertCurrentRequestSideEffectAllowed(
-            definition.sideEffectLabel ?? definition.description,
+            managedSideEffectAction(definition.id),
           );
         }
         if (!isRecord(data)) throw new Error('Managed connection tool input is invalid');
@@ -252,7 +252,7 @@ function createCapabilityTool(
     async run({ data, signal }) {
       if (definition.effect !== 'read') {
         assertCurrentRequestSideEffectAllowed(
-          definition.sideEffectLabel ?? definition.description,
+          managedSideEffectAction(definition.id),
         );
       }
       if (!isRecord(data)) {
@@ -261,6 +261,12 @@ function createCapabilityTool(
       return { output: await execute(connection, capability, data, context, signal) };
     },
   });
+}
+
+function managedSideEffectAction(capabilityId: string): string {
+  // The prompt envelope selects exact repo-owned capability IDs from the
+  // current request. Free-form model output never chooses this authority.
+  return `managed_capability__${capabilityId}`;
 }
 
 function validateArtifactSignature(bytes: Uint8Array, mimeType: string): void {

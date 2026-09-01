@@ -118,6 +118,48 @@ test('routine delivery claims once, posts at top level, and records the Slack re
   assert.match(JSON.stringify(rendered.blocks?.at(-1)), /Default.*anthropic\/claude-sonnet-4.*Configure/);
 });
 
+test('routine delivery redacts credential-shaped content from blocks and fallback text', () => {
+  const canary = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789';
+  const rendered = renderRoutineDelivery(routine, run, `Result: ${canary}`);
+  const blocks = JSON.stringify(rendered.blocks);
+
+  assert.doesNotMatch(blocks, new RegExp(canary));
+  assert.match(blocks, /\[credential redacted\]/);
+  assert.doesNotMatch(rendered.text, new RegExp(canary));
+  assert.match(rendered.text, /\[credential redacted\]/);
+});
+
+test('routine Work observation receives only credential-safe approved output', async () => {
+  const canary = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789';
+  const approvedOutputs: string[] = [];
+  const workLifecycle = {
+    async beforeDelivery(input: { approvedOutput: string }) {
+      approvedOutputs.push(input.approvedOutput);
+      return 'delivery_redacted_routine';
+    },
+    async afterDelivery() {},
+  } as unknown as ShadowWorkLifecycle;
+  const client = new WebClient('xoxb-test', {
+    slackApiUrl: 'https://slack.invalid/api/', retryConfig: { retries: 0 },
+    fetch: async () => new Response(
+      JSON.stringify({ ok: true, channel: 'C_TEST', ts: '1785000000.000150' }),
+      { headers: { 'content-type': 'application/json' } },
+    ),
+  });
+
+  await deliverRoutineResult({
+    store: store([]), run, routine, access,
+    message: `Result: ${canary}`,
+    changeKeyHash: null,
+    workLifecycle,
+    now: () => 1_500,
+  }, client);
+
+  assert.equal(approvedOutputs.length, 1);
+  assert.doesNotMatch(approvedOutputs[0]!, new RegExp(canary));
+  assert.match(approvedOutputs[0]!, /\[credential redacted\]/);
+});
+
 test('private routine results and failure notices stay in the originating thread without Admin links', async () => {
   const events: string[] = [];
   const requests: Array<Record<string, string>> = [];

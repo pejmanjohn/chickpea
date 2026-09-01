@@ -9,10 +9,9 @@ import {
 import { isSafeTypedActivityStatus } from '../activity/status.ts';
 import {
   appendSlackReplyFooter,
-  canonicalSlackMarkdownText,
+  canonicalSlackReplyText,
   renderSlackMessage,
   renderSlackReplyFooterBlock,
-  sanitizeSlackMarkdownLinks,
   type SlackReplyFormat,
   type SlackReplyFooter,
 } from './message-format.ts';
@@ -613,11 +612,7 @@ export class WebClientPresenter {
     tablePresentation?: SlackTablePresentation,
   ): Promise<void> {
     const footer = this.replyFooter();
-    const displayText = format === 'markdown'
-      ? this.options.agentViewPresentation
-        ? canonicalSlackMarkdownText(text)
-        : sanitizeSlackMarkdownLinks(text)
-      : text;
+    const displayText = canonicalSlackReplyText(text, format);
     const renderedTable = tablePresentation
       ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - displayText.length - 2))
       : undefined;
@@ -636,7 +631,7 @@ export class WebClientPresenter {
         tablePresentation,
       );
       if (result.handled) {
-        if (result.messageTs) await this.notifyPublicDelivery(result.messageTs, text);
+        if (result.messageTs) await this.notifyPublicDelivery(result.messageTs, displayText);
         return;
       }
       forcePostFallback = result.fallbackPresentation;
@@ -658,7 +653,7 @@ export class WebClientPresenter {
       ];
       const attemptId = await this.observeBeforeDelivery({
         method: 'slack_chat_stream',
-        approvedOutput: text,
+        approvedOutput: displayText,
         renderedPayload: JSON.stringify({
           method: 'slack_chat_stream',
           start: startPayload,
@@ -703,7 +698,7 @@ export class WebClientPresenter {
           outcome: 'delivered',
           deliveryRef: slackDeliveryRef(this.target.channelId, started.ts),
         });
-        await this.notifyPublicDelivery(String(started.ts), text);
+        await this.notifyPublicDelivery(String(started.ts), displayText);
         return;
       }
     }
@@ -727,7 +722,7 @@ export class WebClientPresenter {
     };
     const attemptId = await this.observeBeforeDelivery({
       method: 'slack_chat_post_message',
-      approvedOutput: text,
+      approvedOutput: displayText,
       renderedPayload: JSON.stringify({ method: 'slack_chat_post_message', payload: postPayload }),
     });
     try {
@@ -743,7 +738,7 @@ export class WebClientPresenter {
         deliveryRef: slackDeliveryRef(this.target.channelId, posted.ts),
       });
       if (typeof posted.ts === 'string' && posted.ts) {
-        await this.notifyPublicDelivery(posted.ts, text);
+        await this.notifyPublicDelivery(posted.ts, displayText);
       }
     } catch (error) {
       const outcome = this.deliveryOutcome(error);
@@ -772,7 +767,7 @@ export class WebClientPresenter {
     if (!this.target.userId) {
       throw new Error('Requester-only Slack delivery requires a target user.');
     }
-    const displayText = format === 'markdown' ? sanitizeSlackMarkdownLinks(text) : text;
+    const displayText = canonicalSlackReplyText(text, format);
     const renderedTable = tablePresentation
       ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - displayText.length - 2))
       : undefined;
@@ -792,7 +787,7 @@ export class WebClientPresenter {
     };
     const attemptId = await this.observeBeforeDelivery({
       method: 'slack_chat_post_ephemeral',
-      approvedOutput: text,
+      approvedOutput: displayText,
       renderedPayload: JSON.stringify({ method: 'slack_chat_post_ephemeral', payload }),
     });
     try {

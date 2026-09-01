@@ -1,6 +1,5 @@
 import { createLocalJWKSet, jwtVerify, type JWK, type JWTPayload } from 'jose';
 import { Hono, type Context } from 'hono';
-import { bodyLimit } from 'hono/body-limit';
 import { constantTimeEqual, makeSignature } from 'better-auth/crypto';
 
 import {
@@ -23,8 +22,14 @@ import { BetterAuthMcpOAuthContinuationStore } from './mcp-oauth-continuation.ts
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
 import { createWorkspaceManagementMcpHandler } from '../management/mcp.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
+import {
+  actualBodyLimit,
+  readBoundedRequestBody,
+  requestWithBufferedBody,
+} from '../security/request-body-limit.ts';
 
 const MCP_BROWSER_BODY_LIMIT_BYTES = 16 * 1024;
+export const MCP_PROTOCOL_BODY_LIMIT_BYTES = 1_048_576;
 
 export interface McpAuthenticatedPrincipal {
   betterAuthUserId: string;
@@ -120,10 +125,23 @@ export function createMcpAuthenticatedRequestHandler(
 
 export function createMcpOAuthRuntimeRoutes(options: McpOAuthRuntimeOptions = {}): Hono {
   const app = new Hono();
-  app.use('/auth/mcp/consent', bodyLimit({
+  app.use('/auth/mcp/consent', actualBodyLimit({
     maxSize: MCP_BROWSER_BODY_LIMIT_BYTES,
     onError: (c) => c.json({ error: 'request_too_large' }, 413),
   }));
+  app.use('/mcp', async (c, next) => {
+    const ingress = await readMcpProtocolBody(c.req.raw);
+    if (!ingress.ok) {
+      return c.json(
+        { error: ingress.status === 413 ? 'request_too_large' : 'invalid_request' },
+        ingress.status,
+      );
+    }
+    if (ingress.body) {
+      c.req.raw = requestWithBufferedBody(c.req.raw, ingress.body);
+    }
+    await next();
+  });
   app.get('/auth/mcp/login', (c) => beginMcpLogin(c, options));
   app.get('/auth/mcp/resume/:continuation', (c) => resumeMcpLogin(c, options));
   app.get('/auth/mcp/consent', (c) => showMcpConsent(c, options));
@@ -140,6 +158,20 @@ export function createMcpOAuthRuntimeRoutes(options: McpOAuthRuntimeOptions = {}
     }
   });
   return app;
+}
+
+async function readMcpProtocolBody(
+  request: Request,
+): Promise<
+  | { ok: true; body: Uint8Array | null }
+  | { ok: false; status: 400 | 413 }
+> {
+  const result = await readBoundedRequestBody(request, MCP_PROTOCOL_BODY_LIMIT_BYTES);
+  if (result.ok) return result;
+  return {
+    ok: false,
+    status: result.reason === 'body_too_large' ? 413 : 400,
+  };
 }
 
 async function beginMcpLogin(c: Context, options: McpOAuthRuntimeOptions): Promise<Response> {

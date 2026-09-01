@@ -1,6 +1,10 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
-import { digestSetupCapability } from '../auth/setup-capability.mjs';
+import {
+  digestSetupCapability,
+  SETUP_CAPABILITY_CLOCK_SKEW_MS,
+  SETUP_CAPABILITY_TTL_MS,
+} from '../auth/setup-capability.mjs';
 import { safeSetupDestination } from '../auth/setup-handoff.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
@@ -15,7 +19,7 @@ import {
   type SlackAppManifest,
 } from './app-manifest.ts';
 
-export const SLACK_SETUP_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
+export const SLACK_SETUP_TTL_MS = SETUP_CAPABILITY_TTL_MS;
 export const SLACK_APP_CREATION_INTERRUPT_GRACE_MS = 60_000;
 const SLACK_MANIFEST_CREATE_URL = 'https://slack.com/api/apps.manifest.create';
 const MAX_SLACK_RESPONSE_BYTES = 64 * 1_024;
@@ -53,7 +57,7 @@ export async function openSlackSetupTransaction(
 ): Promise<SlackSetupTransaction> {
   const now = input.now?.() ?? Date.now();
   if (!Number.isSafeInteger(input.authority.issuedAt) ||
-      input.authority.issuedAt > now + 5 * 60_000 ||
+      input.authority.issuedAt > now + SETUP_CAPABILITY_CLOCK_SKEW_MS ||
       now >= input.authority.issuedAt + SLACK_SETUP_TTL_MS) {
     throw new SlackAppCreationError('setup_expired', 'This private setup link expired. Create a new deployment setup link.');
   }

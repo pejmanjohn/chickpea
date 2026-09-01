@@ -15,6 +15,44 @@ export interface RoutineExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
 }
 
+async function settleScheduledDuties(tasks: Array<() => Promise<unknown>>): Promise<void> {
+  const results = await Promise.allSettled(tasks.map((task) => Promise.resolve().then(task)));
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : []
+  );
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, 'Multiple scheduled duties failed');
+  }
+}
+
+export async function runWithGuaranteedFinalizer(
+  task: () => Promise<unknown>,
+  finalizer: () => Promise<unknown>,
+): Promise<void> {
+  let taskFailed = false;
+  let taskFailure: unknown;
+  try {
+    await task();
+  } catch (error) {
+    taskFailed = true;
+    taskFailure = error;
+    throw error;
+  } finally {
+    try {
+      await finalizer();
+    } catch (finalizerFailure) {
+      if (taskFailed) {
+        throw new AggregateError(
+          [taskFailure, finalizerFailure],
+          'Scheduled duty and its finalizer both failed',
+        );
+      }
+      throw finalizerFailure;
+    }
+  }
+}
+
 export function createRoutineScheduledHandler(input: {
   heartbeat: (scheduledTime: number, owner: string, env: Record<string, unknown>) => Promise<unknown>;
   maintenance?: (scheduledTime: number, env: Record<string, unknown>) => Promise<unknown>;
@@ -28,14 +66,14 @@ export function createRoutineScheduledHandler(input: {
   return {
     scheduled(controller, env, context): void {
       const owner = `heartbeat:${controller.scheduledTime}`;
-      const tasks: Promise<unknown>[] = [];
+      const tasks: Array<() => Promise<unknown>> = [];
       // Generic Work recovery/retention cannot dispatch an agent, call a model,
       // or deliver Slack output; the Routine heartbeat is tracked alongside it.
       if (input.maintenance) {
-        tasks.push(input.maintenance(controller.scheduledTime, env));
+        tasks.push(() => input.maintenance!(controller.scheduledTime, env));
       }
-      tasks.push(input.heartbeat(controller.scheduledTime, owner, env));
-      context.waitUntil(Promise.all(tasks));
+      tasks.push(() => input.heartbeat(controller.scheduledTime, owner, env));
+      context.waitUntil(settleScheduledDuties(tasks));
     },
   };
 }
