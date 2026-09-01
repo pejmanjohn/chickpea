@@ -8240,6 +8240,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         installation?.transportMode === 'gateway' &&
         Boolean(installation.gatewayBindingId) &&
         installation.health !== 'revoked';
+      const gateway = installation?.transportMode === 'gateway'
+        ? await readGatewaySessionStatus(c.env)
+        : null;
       if (gatewayConnected && !teamInfo.teamName) {
         const descriptor = await slackWorkspaceDescriptor(c);
         if (descriptor && (!teamInfo.teamId || descriptor.teamId === teamInfo.teamId)) {
@@ -8258,6 +8261,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         transportMode: installation?.transportMode ?? 'direct',
         health: installation?.health ?? 'pending',
         healthDetail: installation?.healthDetail ?? null,
+        gateway: gateway === null ? null : {
+          healthy: gateway.healthy,
+          phase: gateway.phase,
+          detail: gateway.detail,
+          generation: gateway.generation,
+          versionId: gateway.versionId ?? null,
+        },
         requestUrl,
         manifestUrl: slackManifestUrl(requestUrl),
       });
