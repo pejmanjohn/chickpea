@@ -112,6 +112,7 @@ export function createLiveWorkspaceManagementService(
   const productTelemetry = overrides.productTelemetry ?? createPlatformProductTelemetry({
     ...(env ? { env } : {}),
     settings,
+    config,
   });
   return new WorkspaceManagementService({
     identity: overrides.identity ?? identity,

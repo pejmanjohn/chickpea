@@ -8,6 +8,10 @@ import {
   loadOrCreateTelemetryIdentity,
   productTelemetryDisabled,
 } from './identity.ts';
+import {
+  claimDailyAdoptionSnapshot,
+  type ProductTelemetryInventoryStore,
+} from './adoption.ts';
 
 export const POSTHOG_INGEST_ORIGIN = 'https://us.i.posthog.com';
 export const POSTHOG_PROJECT_TOKEN = 'phc_naCFTFeQnRCscQz56o35i6itkkCKWa4EsjzovGiHpcFt';
@@ -35,6 +39,7 @@ export interface ProductTelemetryClientOptions {
   now?: () => number;
   randomUUID?: () => string;
   randomBytes?: (length: number) => Uint8Array;
+  config?: ProductTelemetryInventoryStore;
   /** Test-only dependency override; production composition never supplies it. */
   host?: string;
   /** Test-only dependency override; production composition never supplies it. */
@@ -97,9 +102,19 @@ async function deliverEvent(
     if (!identity) return;
     const event = await buildProductTelemetryEvent(input, identity);
     if (!event) return;
+    const adoption = options.config
+      ? await claimDailyAdoptionSnapshot({
+          settings: options.settings,
+          config: options.config,
+          ...(options.now ? { now: options.now } : {}),
+        })
+      : undefined;
+    const adoptionEvent = adoption
+      ? await buildProductTelemetryEvent(adoption, identity)
+      : undefined;
     const timestamp = new Date((options.now ?? Date.now)()).toISOString();
     const body = serializeBatch(
-      [event],
+      adoptionEvent ? [event, adoptionEvent] : [event],
       identity.installationId,
       timestamp,
       options,

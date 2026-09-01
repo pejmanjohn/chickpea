@@ -324,6 +324,7 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
         createPlatformProductTelemetry({
           ...(platformEnv ? { env: platformEnv } : {}),
           settings: stores.settings,
+          config: stores.config,
           lifecycle: createRequestTelemetryLifecycle(c),
         }),
       );

@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { createAdminRoutes } from './admin/routes.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from './agents/names.ts';
 import {
+  getConfigStore,
   getIdentityStore,
   getSettingsStore,
   getSlackStateStore,
@@ -179,6 +180,7 @@ app.route('/', createManagementSetupRoutes({
   productTelemetry: (c) => createPlatformProductTelemetry({
     ...(c.env ? { env: c.env as PlatformEnv } : {}),
     settings: getSettingsStore(c.env as PlatformEnv | undefined),
+    config: getConfigStore(c.env as PlatformEnv | undefined),
     lifecycle: createRequestTelemetryLifecycle(c),
   }),
 }));
@@ -187,6 +189,7 @@ app.route('/', createAdminRoutes({
   productTelemetry: (c) => createPlatformProductTelemetry({
     ...(c.env ? { env: c.env as PlatformEnv } : {}),
     settings: getSettingsStore(c.env as PlatformEnv | undefined),
+    config: getConfigStore(c.env as PlatformEnv | undefined),
     lifecycle: createRequestTelemetryLifecycle(c),
   }),
 }));

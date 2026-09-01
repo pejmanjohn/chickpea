@@ -140,6 +140,7 @@ async function drainNodeTurnRelayOnce(
     ? createPlatformProductTelemetry({
         ...(env ? { env } : {}),
         settings: getSettingsStore(env),
+        config,
       })
     : undefined);
   const shouldResolveIdentity = Boolean(options.resolveInstallation) ||

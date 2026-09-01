@@ -63,6 +63,7 @@ import { buildRuntimeDrainStatus, tagStateStub } from './config/state-rpc.ts';
 import { promiseBackedStatePort } from './config/local-state-port.ts';
 import { localSlackStateStore } from './slack/local-state-store.ts';
 import {
+  getConfigStore,
   getIdentityStore,
   getRoutineStore,
   getSettingsStore,
@@ -1518,6 +1519,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const productTelemetry = createPlatformProductTelemetry({
       env: this.env as PlatformEnv,
       settings: localSettingsStore(stores),
+      config: localGatewayAppStores(stores).config,
     });
     stores.management.cleanupRetention(Date.now(), 250);
     const gatewayNeedsRetry = await drainGatewayInbox(
@@ -2239,6 +2241,7 @@ async function drainGatewayInbox(
       productTelemetry: createPlatformProductTelemetry({
         env: platformEnv,
         settings: appStores.settings,
+        config: appStores.config,
       }),
     });
   } catch {
@@ -2456,6 +2459,7 @@ async function runRoutineHeartbeat(
   const productTelemetry = createPlatformProductTelemetry({
     env: rawEnv,
     settings: getSettingsStore(rawEnv),
+    config: getConfigStore(rawEnv),
     lifecycle: createWaitUntilTelemetryLifecycle(context),
   });
   const admissions = new RoutineAdmissionController(store, {

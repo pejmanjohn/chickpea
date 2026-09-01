@@ -185,6 +185,7 @@ export interface WorkspaceManagementServiceInput {
     | 'deleteAgentChannelGrant'
     | 'getAgentReferences'
     | 'getAgentScheduleReference'
+    | 'listAgentScheduleReferences'
     | 'putAgentScheduleReference'
     | 'listConnectionAccounts'
     | 'listAgentConnectionBindings'

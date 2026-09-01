@@ -59,6 +59,7 @@ test('opt-out returns a real no-op before settings, endpoint, identity, or fetch
   const telemetry = createProductTelemetryRuntime({
     env: { DO_NOT_TRACK: '1' },
     settings: () => { sideEffects += 1; return emptySettings(); },
+    config: () => { sideEffects += 1; return {} as never; },
     fetch: async () => { sideEffects += 1; return { status: 200 } as Response; },
     lifecycle: () => { sideEffects += 1; },
     runtimeTarget: 'node',

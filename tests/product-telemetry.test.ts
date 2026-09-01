@@ -17,6 +17,7 @@ import {
   telemetryPseudonym,
   type TelemetryIdentity,
 } from '../src/telemetry/identity.ts';
+import type { ProductTelemetryInventoryStore } from '../src/telemetry/adoption.ts';
 
 const INSTALLATION_ID = '018f47ea-6f5b-7a2a-9c7b-8fd70ea7b863';
 const IDENTITY: TelemetryIdentity = {
@@ -256,6 +257,20 @@ function memorySettings(): SettingsStore {
   });
 }
 
+function mappedSettings(): SettingsStore {
+  const values = new Map<string, string>();
+  return settingsStub({
+    async getSetting(key) { return values.get(key); },
+    async applySettingsPatch(patch) {
+      const expected = patch.expected;
+      if (expected && (values.get(expected.key) ?? null) !== expected.value) return false;
+      for (const write of patch.set ?? []) values.set(write.key, write.value);
+      for (const key of patch.delete ?? []) values.delete(key);
+      return true;
+    },
+  });
+}
+
 test('telemetry client sends one exact bounded PostHog batch', async () => {
   const requests: Array<{
     input: Parameters<typeof fetch>[0];
@@ -313,6 +328,115 @@ test('telemetry client sends one exact bounded PostHog batch', async () => {
     $process_person_profile: false,
     $geoip_disable: true,
   });
+});
+
+test('the first concurrent event per UTC day appends one bucket-only adoption snapshot', async () => {
+  const settings = mappedSettings();
+  const requests: Array<Array<Record<string, unknown>>> = [];
+  const tasks: Promise<void>[] = [];
+  let inventoryReads = 0;
+  let now = Date.UTC(2026, 8, 1, 23, 59);
+  const config = {
+    async listWorkspaceInstallations() {
+      inventoryReads += 1;
+      return [
+        { workspaceId: 'T_PRIVATE', health: 'healthy' },
+        { workspaceId: 'T_REVOKED', health: 'revoked' },
+      ];
+    },
+    async listUserAgents() {
+      inventoryReads += 1;
+      return Array.from({ length: 5 }, (_, index) => ({ id: `agent_${index}` }));
+    },
+    async listConnectionAccounts() {
+      inventoryReads += 1;
+      return [
+        { lifecycle: 'ready' }, { lifecycle: 'ready' }, { lifecycle: 'pending' },
+      ];
+    },
+    async listAgentScheduleReferences() {
+      inventoryReads += 1;
+      return [{ state: 'active' }, { state: 'paused' }];
+    },
+  } as unknown as ProductTelemetryInventoryStore;
+  const client = createProductTelemetryClient({
+    settings,
+    config,
+    fetch: async (_input, init) => {
+      requests.push((JSON.parse(String(init?.body)) as { batch: Array<Record<string, unknown>> }).batch);
+      return { status: 200 } as Response;
+    },
+    lifecycle: (task) => tasks.push(task),
+    runtimeTarget: 'node',
+    telemetryEnvironment: 'test',
+    appVersion: '0.0.0',
+    now: () => now,
+    randomUUID: () => INSTALLATION_ID,
+    randomBytes: () => new Uint8Array(32).fill(8),
+  });
+
+  client.capture({
+    event: 'run_completed', workspaceId: 'T_PRIVATE', agentId: 'agent_default',
+    triggerKind: 'interactive', outcome: 'succeeded',
+  });
+  client.capture({
+    event: 'agent_created', workspaceId: 'T_PRIVATE', agentId: 'agent_custom', surface: 'admin',
+  });
+  await Promise.all(tasks.splice(0));
+
+  assert.equal(requests.length, 2);
+  const active = requests.flat().filter(({ event }) => event === 'installation_active');
+  assert.equal(active.length, 1);
+  assert.deepEqual(active[0]!.properties, {
+    workspace_count: '1',
+    user_agent_count: '5_plus',
+    ready_connection_count: '2_4',
+    enabled_schedule_count: '5_plus',
+    schema_version: 1,
+    runtime_target: 'node',
+    app_version: '0.0.0',
+    telemetry_environment: 'test',
+    $process_person_profile: false,
+    $geoip_disable: true,
+  });
+  assert.equal(inventoryReads, 8, 'only the UTC-day gate winner inventories local state');
+
+  now = Date.UTC(2026, 8, 2, 0, 1);
+  client.capture({
+    event: 'run_completed', workspaceId: 'T_PRIVATE', agentId: 'agent_default',
+    triggerKind: 'interactive', outcome: 'succeeded',
+  });
+  await Promise.all(tasks.splice(0));
+  assert.equal(requests.flat().filter(({ event }) => event === 'installation_active').length, 2);
+});
+
+test('a failed adoption inventory preserves the triggering product event', async () => {
+  const requests: Array<Array<Record<string, unknown>>> = [];
+  const tasks: Promise<void>[] = [];
+  const client = createProductTelemetryClient({
+    settings: mappedSettings(),
+    config: {
+      async listWorkspaceInstallations() { throw new Error('private inventory failure'); },
+      async listUserAgents() { return []; },
+      async listConnectionAccounts() { return []; },
+      async listAgentScheduleReferences() { return []; },
+    },
+    fetch: async (_input, init) => {
+      requests.push((JSON.parse(String(init?.body)) as { batch: Array<Record<string, unknown>> }).batch);
+      return { status: 200 } as Response;
+    },
+    lifecycle: (task) => tasks.push(task),
+    runtimeTarget: 'node', telemetryEnvironment: 'test', appVersion: '0.0.0',
+    randomUUID: () => INSTALLATION_ID,
+    randomBytes: () => new Uint8Array(32).fill(7),
+  });
+  client.capture({
+    event: 'workspace_connected', workspaceId: 'T_PRIVATE', transportMode: 'direct',
+  });
+  await Promise.all(tasks);
+  assert.deepEqual(requests.map((batch) => batch.map(({ event }) => event)), [[
+    'workspace_connected',
+  ]]);
 });
 
 test('telemetry transport settles HTTP, redirect, network, timeout, and body failures without retries', async () => {

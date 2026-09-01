@@ -8,6 +8,7 @@ import {
   type ProductTelemetryRuntimeTarget,
 } from './client.ts';
 import { productTelemetryDisabled } from './identity.ts';
+import type { ProductTelemetryInventoryStore } from './adoption.ts';
 
 export const CHICKPEA_APP_VERSION = '0.0.0';
 
@@ -21,6 +22,7 @@ interface ProductTelemetryRuntimeOptions {
   appVersion?: string;
   randomUUID?: () => string;
   randomBytes?: (length: number) => Uint8Array;
+  config?: () => ProductTelemetryInventoryStore;
 }
 
 const NOOP_TELEMETRY: ProductTelemetryCapture = Object.freeze({ capture() {} });
@@ -44,6 +46,7 @@ export function createProductTelemetryRuntime(
     ...(options.env ? { env: options.env } : {}),
     ...(options.randomUUID ? { randomUUID: options.randomUUID } : {}),
     ...(options.randomBytes ? { randomBytes: options.randomBytes } : {}),
+    ...(options.config ? { config: options.config() } : {}),
   });
 }
 

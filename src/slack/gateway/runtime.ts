@@ -25,15 +25,17 @@ export function resolveChickpeaGatewayUrl(env?: PlatformEnv): string {
 
 export function createGatewayDeploymentClient(env?: PlatformEnv): GatewayDeploymentClient {
   const settings = getSettingsStore(env);
+  const config = getConfigStore(env);
   return new GatewayDeploymentClient({
     settings,
-    config: getConfigStore(env),
+    config,
     identity: getIdentityStore(env),
     keyring: getSlackCredentialDependencies(env).keyring,
     gatewayBaseUrl: resolveChickpeaGatewayUrl(env),
     productTelemetry: createPlatformProductTelemetry({
       ...(env ? { env } : {}),
       settings,
+      config,
     }),
   });
 }
