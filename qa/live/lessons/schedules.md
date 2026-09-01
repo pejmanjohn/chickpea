@@ -19,3 +19,9 @@ Run now requires one `RoutineRun` with `triggerSource: run_now`, one Slack deliv
 Cleanup deletes the exact Routine ID and reads it back as absent. It never deletes by display name.
 
 The current Channel delivery implementation posts scheduled Channel results at the Channel top level, while LC-08's proposed contract requires the origin thread. The live case should expose that mismatch as a product failure. The dedicated QA target is also not drained or fixture-complete, so no live schedule mutation is authorized yet.
+
+## Private DM additions
+
+LC-09 requires one private `RoutineDefinition` with `destination.kind: direct_thread`, one durable run receipt, and one delivery in the same DM thread. The recurring variant also requires `triggerKind: schedule`, `state: active`, and a valid `nextRunAt`; it does not wait for two windows merely to prove recurrence.
+
+Shared Admin must omit the private routine, its runs, and its audit events. That omission cannot also prove private existence. A separate content-free private-routine observer is required and remains blocked. When the runs-as member becomes ineligible, the private routine must reach `state: disabled` with `disabledReason: creator_ineligible` and must not duplicate delivery after an ambiguous outcome.

@@ -13,18 +13,49 @@
     "qa-member-one": { "kind": "actor", "resourceAlias": "member-one-browser-profile" },
     "qa-member-two": { "kind": "actor", "resourceAlias": "member-two-browser-profile" },
     "qa-channel": { "kind": "slack_channel", "resourceAlias": "acceptance-channel" },
+    "qa-dm": { "kind": "slack_dm", "resourceAlias": "acceptance-dm" },
     "qa-agent": { "kind": "agent", "resourceAlias": "foundation-agent" },
+    "qa-agent-two": { "kind": "agent", "resourceAlias": "isolation-agent" },
     "qa-routine": { "kind": "routine", "resourceAlias": "foundation-routine" },
-    "synthetic-provider": { "kind": "provider_account", "resourceAlias": "synthetic-read-only-account" }
+    "synthetic-provider": { "kind": "provider_account", "resourceAlias": "synthetic-read-only-account" },
+    "qa-slack-app": { "kind": "slack_app", "resourceAlias": "resettable-qa-app" },
+    "qa-style-guard": {
+      "kind": "source_fixture",
+      "resourceAlias": "pinned-style-guard-source",
+      "source": {
+        "repository": "example/verification-fixtures",
+        "commit": "1111111111111111111111111111111111111111",
+        "path": "skills/qa-style-guard",
+        "digest": "sha256:d57c79be705f98b4f4cc5ef19f095c32068253d68e3515d5488ecbd98bc57811"
+      }
+    }
   },
   "bindings": {
     "LC01-V1-create-welcome": { "fixtures": { "owner": "qa-owner", "channel": "qa-channel" } },
     "LC01-V2-update-approve": { "fixtures": { "owner": "qa-owner", "agent": "qa-agent" } },
+    "LC02-V1-avatar-parity": { "fixtures": { "agent": "qa-agent" } },
+    "LC03-V1-ingress-root-thread": { "fixtures": { "member": "qa-member-one", "channel": "qa-channel", "agent": "qa-agent" } },
+    "LC03-V2-handoff": { "fixtures": { "member": "qa-member-one", "channel": "qa-channel", "agent": "qa-agent" } },
+    "LC03-V3-archive-restore": { "fixtures": { "member": "qa-member-one", "channel": "qa-channel", "agent": "qa-agent" } },
     "LC04-V1-personal-read": { "fixtures": { "member": "qa-member-one", "provider": "synthetic-provider", "agent": "qa-agent" } },
     "LC04-V2-team-read": { "fixtures": { "admin": "qa-admin", "provider": "synthetic-provider", "agent": "qa-agent" } },
     "LC04-V3-editor-race": { "fixtures": { "editor-one": "qa-member-one", "editor-two": "qa-member-two", "provider": "synthetic-provider", "agent": "qa-agent" } },
+    "LC05-V1-personal-isolation": { "fixtures": { "member-one": "qa-member-one", "member-two": "qa-member-two", "provider": "synthetic-provider", "agent-one": "qa-agent", "agent-two": "qa-agent-two" } },
+    "LC05-V2-team-isolation": { "fixtures": { "admin": "qa-admin", "member-two": "qa-member-two", "provider": "synthetic-provider", "agent-one": "qa-agent", "agent-two": "qa-agent-two" } },
+    "LC05-V3-revoke-reconnect": { "fixtures": { "admin": "qa-admin", "provider": "synthetic-provider", "agent": "qa-agent", "routine": "qa-routine" } },
+    "LC06-V1-import-behavior-remove": { "fixtures": { "editor": "qa-owner", "agent": "qa-agent", "qa-style-guard": "qa-style-guard" } },
+    "LC06-V2-cross-agent-denial": { "fixtures": { "editor": "qa-owner", "agent-one": "qa-agent", "agent-two": "qa-agent-two", "qa-style-guard": "qa-style-guard" } },
+    "LC07-V1-explicit-memory": { "fixtures": { "member": "qa-member-one", "agent": "qa-agent", "dm": "qa-dm", "channel": "qa-channel" } },
+    "LC07-V2-implicit-preference": { "fixtures": { "member": "qa-member-one", "agent": "qa-agent", "dm": "qa-dm", "channel": "qa-channel" } },
+    "LC07-V3-conflict-replay-forget": { "fixtures": { "member": "qa-member-one", "agent": "qa-agent", "other-agent": "qa-agent-two" } },
     "LC08-V1-create-due": { "fixtures": { "member": "qa-member-one", "channel": "qa-channel", "agent": "qa-agent" } },
     "LC08-V2-pause-resume": { "fixtures": { "member": "qa-member-one", "routine": "qa-routine" } },
-    "LC08-V3-run-now": { "fixtures": { "member": "qa-member-one", "channel": "qa-channel", "routine": "qa-routine" } }
+    "LC08-V3-run-now": { "fixtures": { "member": "qa-member-one", "channel": "qa-channel", "routine": "qa-routine" } },
+    "LC09-V1-one-shot-dm": { "fixtures": { "member": "qa-member-one", "dm": "qa-dm", "agent": "qa-agent" } },
+    "LC09-V2-recurring-dm": { "fixtures": { "member": "qa-member-one", "dm": "qa-dm", "agent": "qa-agent" } },
+    "LC09-V3-admin-omission-authority-loss": { "fixtures": { "member": "qa-member-one", "dm": "qa-dm", "agent": "qa-agent", "routine": "qa-routine" } },
+    "LC10-V1-install-route": { "fixtures": { "admin": "qa-admin", "slack-app": "qa-slack-app", "agent": "qa-agent" } },
+    "LC10-V2-app-home-selection": { "fixtures": { "member": "qa-member-one", "slack-app": "qa-slack-app", "dm": "qa-dm", "agent": "qa-agent" } },
+    "LC10-V3-stale-membership-denial": { "fixtures": { "member": "qa-member-two", "slack-app": "qa-slack-app", "dm": "qa-dm", "agent": "qa-agent" } }
   }
 }

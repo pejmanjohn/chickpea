@@ -36,11 +36,11 @@ test('every declared observer and scored manifest assertion has a capability ent
   assert.deepEqual(new Set(Object.values(CAPABILITY_INVENTORY).flatMap((entry) => entry.allowedTokens)),
     new Set(ASSERTION_TOKENS));
   const inventory = inventoryManifestCapabilities(LIVE_MANIFEST);
-  assert.deepEqual(inventory.blocked, []);
+  assert.equal(inventory.blocked.length > 0, true);
   assert.equal(inventory.resolved.length > 0, true);
   assert.equal(LC02_AVATAR_SOURCE_CAPABILITY.status, 'blocked');
   assert.equal(LC02_AVATAR_SOURCE_CAPABILITY.reason, 'authoritative_projection_missing');
-  assert.deepEqual(new Set(inventory.resolved.map((entry) => entry.token)), new Set(
+  assert.deepEqual(new Set([...inventory.resolved, ...inventory.blocked].map((entry) => entry.token)), new Set(
     LIVE_MANIFEST.contracts.flatMap((contract) => contract.variants.flatMap((variant) =>
       [...variant.expected, ...variant.forbidden].map((assertion) => assertion.token)
     )),

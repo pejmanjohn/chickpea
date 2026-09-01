@@ -6,12 +6,13 @@ import {
   diagnoseLiveTarget,
   type DoctorSnapshot,
 } from '../qa/live/doctor.ts';
+import { LIVE_MANIFEST_DIGEST } from '../qa/live/manifest.ts';
 
 const overlay = JSON.parse(readFileSync(new URL('../qa/live/target.example.json', import.meta.url), 'utf8')) as unknown;
 
 const READY: DoctorSnapshot = {
   schemaVersion: 'chickpea-live-doctor-snapshot/v1',
-  manifestDigest: 'sha256:7a5da73ad0bc208cedc23d73f4c217208d4c08429ec74cb55a4f65b705733385',
+  manifestDigest: LIVE_MANIFEST_DIGEST,
   targetFingerprint: 'sha256:target',
   repositoryRevision: '0123456789abcdef',
   servingVersion: 'version-1',

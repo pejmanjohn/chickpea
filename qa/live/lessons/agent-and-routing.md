@@ -25,3 +25,11 @@ The Agent revision must advance and the proposal result must name the same Agent
 ## Known live limit
 
 The deterministic adapter reads the product's durable `activityProjection`. The current QA target does not yet expose that record through an attested live observer, so live LC-01 must block instead of guessing from message text.
+
+## Avatar and routing additions
+
+LC-02 hashes the canonical source bytes and the published bytes. Admin and Slack URLs may differ because Slack can re-host an image. Screenshots and decoded-pixel similarity do not establish the canonical source digest. Live LC-02 stays blocked until one authenticated observer binds that digest to the Admin Agent and Slack persona revisions.
+
+LC-03 grades `AgentThreadRoute`, active `AgentChannelGrant`, durable turn admission, target-version stability, and one terminal Slack delivery. Final reply text is not route proof. An explicit handoff must carry the previous Agent and transfer message. Ambiguous or unauthorized routing attempts must leave the route revision unchanged.
+
+The route and persona facts currently exist only in internal durable projections. No authenticated read-only endpoint exposes them together, so live LC-03 stops before mutation.

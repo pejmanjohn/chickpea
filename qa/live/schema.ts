@@ -45,6 +45,15 @@ export const ACTION_IDS = [
   'routine.update',
   'routine.delete',
   'routine.run_now',
+  'route.handoff',
+  'skill.import',
+  'skill.remove',
+  'memory.write',
+  'memory.forget',
+  'app_home.open',
+  'app_home.select',
+  'slack.app.uninstall',
+  'slack.app.install',
 ] as const;
 
 export const GENERATED_EFFECT_IDS = [
@@ -80,9 +89,19 @@ export const OBSERVER_IDS = [
   'connection.read',
   'routine.read',
   'provider.read',
+  'provider.revocation.read',
+  'private.routine.read',
   'app_home.read',
   'cloudflare.version.read',
   'browser.screenshot',
+  'agent.avatar.read',
+  'slack.persona.read',
+  'asset.digest.read',
+  'route.read',
+  'skill.read',
+  'memory.read',
+  'installation.read',
+  'app_home.publication.read',
 ] as const;
 
 export const OBSERVER_KINDS = [
@@ -108,6 +127,33 @@ export const ASSERTION_TOKENS = [
   'forbidden.no_duplicate',
   'forbidden.no_cross_agent_reuse',
   'forbidden.no_early_mutation',
+  'avatar.source_digest_parity',
+  'avatar.presentation_parity',
+  'route.ingress_admitted',
+  'route.owner_exact',
+  'slack.persona_matches',
+  'connection.agent_isolated',
+  'connection.needs_attention',
+  'connection.reconnected',
+  'routine.dependency_paused',
+  'skill.provenance_pinned',
+  'skill.enabled',
+  'skill.removed',
+  'skill.behavior_matches',
+  'memory.digest_equal',
+  'memory.revision_advanced',
+  'memory.conflict_rejected',
+  'memory.forgotten',
+  'routine.private_exists',
+  'routine.admin_omitted',
+  'routine.private_delivery',
+  'routine.authority_disabled',
+  'installation.authorized',
+  'installation.baseline_restored',
+  'app_home.published',
+  'route.app_home_selected',
+  'forbidden.no_unauthorized_mutation',
+  'forbidden.no_raw_memory',
 ] as const;
 
 export const PRIMARY_RESULTS = [
@@ -147,6 +193,8 @@ export const FIXTURE_KINDS = [
   'routine',
   'provider_account',
   'source_fixture',
+  'slack_dm',
+  'slack_app',
 ] as const;
 export const CLEANUP_STRATEGIES = [
   'not_required',
@@ -196,9 +244,19 @@ export const OBSERVER_REGISTRY: Readonly<Record<ObserverId, {
   'connection.read': { kind: 'chickpea_api', authoritative: true },
   'routine.read': { kind: 'chickpea_api', authoritative: true },
   'provider.read': { kind: 'provider_api', authoritative: true },
+  'provider.revocation.read': { kind: 'provider_api', authoritative: true },
+  'private.routine.read': { kind: 'chickpea_api', authoritative: true },
   'app_home.read': { kind: 'slack_api', authoritative: true },
   'cloudflare.version.read': { kind: 'cloudflare_api', authoritative: true },
   'browser.screenshot': { kind: 'browser_screenshot', authoritative: false },
+  'agent.avatar.read': { kind: 'chickpea_api', authoritative: true },
+  'slack.persona.read': { kind: 'slack_api', authoritative: true },
+  'asset.digest.read': { kind: 'chickpea_api', authoritative: true },
+  'route.read': { kind: 'chickpea_api', authoritative: true },
+  'skill.read': { kind: 'chickpea_api', authoritative: true },
+  'memory.read': { kind: 'chickpea_api', authoritative: true },
+  'installation.read': { kind: 'chickpea_api', authoritative: true },
+  'app_home.publication.read': { kind: 'slack_api', authoritative: true },
 };
 
 export const REQUIRED_LIVE_VARIANTS = {

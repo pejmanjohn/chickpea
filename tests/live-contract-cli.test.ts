@@ -24,8 +24,13 @@ test('suite selection is manifest-owned and smoke inventory is exact', () => {
   assert.throws(() => selectSuiteVariants('smoke', ['LC01-V1-create-welcome']), /exact|select/i);
 });
 
-test('strict deep inventory rejects the foundation-only manifest', () => {
-  assert.throws(() => assertStrictDeepInventory(LIVE_MANIFEST), /LC-02|complete deep inventory/i);
+test('strict deep inventory accepts v1.1 and still rejects an incomplete manifest', () => {
+  assert.doesNotThrow(() => assertStrictDeepInventory(LIVE_MANIFEST));
+  const incomplete = {
+    ...LIVE_MANIFEST,
+    contracts: LIVE_MANIFEST.contracts.filter(({ id }) => id !== 'LC-02'),
+  };
+  assert.throws(() => assertStrictDeepInventory(incomplete), /LC-02|complete deep inventory/i);
 });
 
 test('JSON and human views derive from the same safe record', () => {

@@ -23,7 +23,12 @@ test('foundation case modules cover exactly the manifest foundation variants', (
     CONNECTOR_SETUP_CONTRACT,
     CHANNEL_SCHEDULE_CONTRACT,
   ].flatMap(({ variants }) => variants.map(({ id }) => id)).sort();
-  assert.deepEqual(authored, LIVE_MANIFEST.requiredVariants.deep);
+  const foundationContractIds = new Set(['LC-01', 'LC-04', 'LC-08']);
+  const generated = LIVE_MANIFEST.contracts
+    .filter(({ id }) => foundationContractIds.has(id))
+    .flatMap(({ variants }) => variants.map(({ id }) => id))
+    .sort();
+  assert.deepEqual(authored, generated);
 });
 
 test('case adapters reject normalized assertion tokens as upstream input', () => {

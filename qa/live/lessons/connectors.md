@@ -19,3 +19,9 @@ The Sheets check requires a successful `sheets.values.get` result with the expec
 ## Known live limit
 
 The dedicated QA target still lacks the attested read-only Sheets account, four actor fixtures, and a live reader for the durable activity projection. LC-04 therefore remains blocked on that target until doctor can prove those fixtures.
+
+## Isolation and revocation additions
+
+LC-05 treats each `ConnectionAccount` and `AgentConnectionBinding` as Agent-owned. Two Agents may use the same synthetic provider identity only through distinct local account IDs and distinct bindings. Personal ownership must name the completing membership. Team ownership still cannot create a binding on another Agent.
+
+Revocation must record `needs_attention`, pause dependent work, and require an exact reconnect before that work becomes active. The provider has no reviewed non-secret revocation seam for the resettable QA grant. The provider-revocation observer is therefore blocked for live runs; deterministic protocol coverage cannot make the live variant pass.

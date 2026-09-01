@@ -9,7 +9,7 @@ import {
   validateLiveContract,
 } from '../qa/live/schema.ts';
 import { compileLiveCatalog } from '../qa/live/compiler.ts';
-import { PUBLIC_LIVE_CATALOG } from '../qa/live/cases/index.ts';
+import { FOUNDATION_LIVE_CASES, PUBLIC_LIVE_CATALOG } from '../qa/live/cases/index.ts';
 
 function readonlyContract(
   id = 'LC-01',
@@ -56,6 +56,15 @@ function fullV11Catalog(): LiveCatalog {
   };
 }
 
+function foundationV10Catalog(): LiveCatalog {
+  return {
+    schemaVersion: 'chickpea-live-catalog/v1',
+    release: 'v1.0',
+    pendingContractIds: ['LC-02', 'LC-03', 'LC-05', 'LC-06', 'LC-07', 'LC-09', 'LC-10'],
+    contracts: [...FOUNDATION_LIVE_CASES],
+  };
+}
+
 test('a minimal read-only contract retains its stable behavior vocabulary', () => {
   const contract = validateLiveContract(readonlyContract());
   assert.equal(contract.id, 'LC-01');
@@ -82,16 +91,17 @@ test('catalog construction rejects duplicate stable contract and variant IDs', (
 });
 
 test('v1.0 requires exact foundation variants and seven explicit pending contract IDs', () => {
-  assert.doesNotThrow(() => compileLiveCatalog(PUBLIC_LIVE_CATALOG));
+  const foundation = foundationV10Catalog();
+  assert.doesNotThrow(() => compileLiveCatalog(foundation));
 
-  const missingPending = structuredClone(PUBLIC_LIVE_CATALOG);
+  const missingPending = structuredClone(foundation);
   missingPending.pendingContractIds.pop();
   assert.throws(
     () => compileLiveCatalog(missingPending),
     (error: unknown) => hasCode(error, 'INVENTORY_MISMATCH'),
   );
 
-  const missingVariant = structuredClone(PUBLIC_LIVE_CATALOG);
+  const missingVariant = structuredClone(foundation);
   missingVariant.contracts[0]?.variants.pop();
   assert.throws(
     () => compileLiveCatalog(missingVariant),
@@ -195,7 +205,7 @@ test('foundation Slack outputs are product-generated effects with attributed res
     'LC08-V1-create-due',
     'LC08-V3-run-now',
   ]);
-  for (const contract of PUBLIC_LIVE_CATALOG.contracts) {
+  for (const contract of FOUNDATION_LIVE_CASES) {
     for (const variant of contract.variants) {
       assert.equal(variant.actions.some((action) => action.id === 'slack.message.send'), false);
       if (generatedVariantIds.has(variant.id)) {

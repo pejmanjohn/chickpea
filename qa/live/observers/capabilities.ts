@@ -20,7 +20,7 @@ export interface ObserverCapability {
   source: 'chickpea_admin' | 'cloudflare_control_plane' | 'provider_api' | 'slack_api' | 'none';
   minimumAuthority: MinimumObserverAuthority;
   allowedTokens: readonly AssertionToken[];
-  reason?: 'non_authoritative_context_only';
+  reason?: 'non_authoritative_context_only' | 'authoritative_projection_missing';
 }
 
 export const CAPABILITY_INVENTORY: Readonly<Record<ObserverId, ObserverCapability>> = Object.freeze({
@@ -29,20 +29,28 @@ export const CAPABILITY_INVENTORY: Readonly<Record<ObserverId, ObserverCapabilit
   ]),
   'connection.read': capability('connection.read', 'chickpea_admin', 'admin_read', [
     'connection.owner_personal', 'connection.owner_team', 'connection.editor_attributed',
+    'connection.agent_isolated', 'connection.needs_attention', 'connection.reconnected',
     'forbidden.no_cross_agent_reuse', 'forbidden.no_duplicate',
   ]),
   'routine.read': capability('routine.read', 'chickpea_admin', 'admin_read', [
     'routine.exists', 'routine.paused', 'routine.active', 'routine.run_once',
-    'forbidden.no_duplicate',
+    'routine.dependency_paused', 'routine.admin_omitted', 'forbidden.no_duplicate',
   ]),
   'slack.messages.read': capability('slack.messages.read', 'slack_api', 'slack_history_read', [
-    'slack.message_matches', 'routine.due_delivery', 'forbidden.no_duplicate',
+    'slack.message_matches', 'routine.due_delivery', 'routine.private_delivery',
+    'skill.behavior_matches', 'forbidden.no_duplicate',
   ]),
   'app_home.read': capability('app_home.read', 'slack_api', 'slack_app_home_read', [
     'slack.message_matches', 'forbidden.no_duplicate',
   ]),
   'provider.read': capability('provider.read', 'provider_api', 'provider_account_read', [
     'forbidden.no_duplicate', 'forbidden.no_cross_agent_reuse',
+  ]),
+  'provider.revocation.read': blockedCapability('provider.revocation.read', [
+    'connection.needs_attention',
+  ]),
+  'private.routine.read': blockedCapability('private.routine.read', [
+    'routine.private_exists', 'routine.authority_disabled',
   ]),
   'cloudflare.version.read': capability(
     'cloudflare.version.read',
@@ -58,6 +66,34 @@ export const CAPABILITY_INVENTORY: Readonly<Record<ObserverId, ObserverCapabilit
     allowedTokens: [],
     reason: 'non_authoritative_context_only',
   },
+  'agent.avatar.read': blockedCapability('agent.avatar.read', [
+    'avatar.presentation_parity',
+  ]),
+  'slack.persona.read': blockedCapability('slack.persona.read', [
+    'avatar.presentation_parity', 'slack.persona_matches',
+  ]),
+  'asset.digest.read': blockedCapability('asset.digest.read', [
+    'avatar.source_digest_parity',
+  ]),
+  'route.read': blockedCapability('route.read', [
+    'route.ingress_admitted', 'route.owner_exact', 'route.app_home_selected',
+    'forbidden.no_unauthorized_mutation',
+  ]),
+  'skill.read': blockedCapability('skill.read', [
+    'skill.provenance_pinned', 'skill.enabled', 'skill.removed',
+    'skill.behavior_matches', 'forbidden.no_unauthorized_mutation',
+  ]),
+  'memory.read': blockedCapability('memory.read', [
+    'memory.digest_equal', 'memory.revision_advanced', 'memory.conflict_rejected',
+    'memory.forgotten', 'forbidden.no_unauthorized_mutation', 'forbidden.no_raw_memory',
+  ]),
+  'installation.read': blockedCapability('installation.read', [
+    'installation.authorized', 'installation.baseline_restored',
+    'forbidden.no_unauthorized_mutation',
+  ]),
+  'app_home.publication.read': blockedCapability('app_home.publication.read', [
+    'app_home.published',
+  ]),
 });
 
 /** LC-02 remains deliberately blocked until an authoritative source projection exists. */
@@ -182,6 +218,20 @@ function capability(
   allowedTokens: readonly AssertionToken[],
 ): ObserverCapability {
   return { observerId, status: 'present', source, minimumAuthority, allowedTokens };
+}
+
+function blockedCapability(
+  observerId: ObserverId,
+  allowedTokens: readonly AssertionToken[],
+): ObserverCapability {
+  return {
+    observerId,
+    status: 'blocked',
+    source: 'none',
+    minimumAuthority: 'none',
+    allowedTokens,
+    reason: 'authoritative_projection_missing',
+  };
 }
 
 function validMetadata(metadata: ObserverMetadata): boolean {
