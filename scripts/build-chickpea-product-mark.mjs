@@ -12,6 +12,9 @@ const DERIVATIVES = [
   { source: MARK_MASTER, file: 'chickpea-mark-128.png', width: 128, height: 128 },
   { source: MARK_MASTER, file: 'chickpea-favicon-32.png', width: 32, height: 32 },
   { source: WORDMARK_MASTER, file: 'chickpea-wordmark-512.png', width: 512, height: 126 },
+  // White-on-dark counterpart per BRAND.md (cocoa on light surfaces, white on
+  // dark); the README's <picture> lockup swaps to it under dark color schemes.
+  { source: WORDMARK_MASTER, file: 'chickpea-wordmark-512-dark.png', width: 512, height: 126, tint: '#ffffff' },
 ];
 const ASSETS = [
   { exportName: 'CHICKPEA_MARK_DATA_URL', file: 'chickpea-mark-128.png', width: 128, height: 128 },
@@ -45,6 +48,25 @@ if (wordmarkAlpha.min !== 0 || wordmarkAlpha.max !== 255) {
 
 for (const derivative of DERIVATIVES) {
   const output = join(ROOT, 'assets', derivative.file);
+  if (derivative.tint) {
+    const alpha = await sharp(derivative.source)
+      .resize(derivative.width, derivative.height, { fit: 'fill' })
+      .ensureAlpha()
+      .extractChannel(3)
+      .toBuffer();
+    await sharp({
+      create: {
+        width: derivative.width,
+        height: derivative.height,
+        channels: 3,
+        background: derivative.tint,
+      },
+    })
+      .joinChannel(alpha)
+      .png(PNG_OPTIONS)
+      .toFile(output);
+    continue;
+  }
   await sharp(derivative.source)
     .resize(derivative.width, derivative.height, { fit: 'fill' })
     .png(PNG_OPTIONS)

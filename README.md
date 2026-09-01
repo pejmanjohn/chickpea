@@ -1,10 +1,13 @@
 <p align="center">
-  <img src="assets/chickpea-mark.png" alt="Chickpea" width="96" height="96">
+  <img src="assets/chickpea-mark.png" alt="" width="96" height="96">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/chickpea-wordmark-512-dark.png">
+    <img src="assets/chickpea-wordmark-512.png" alt="Chickpea" height="56">
+  </picture>
 </p>
 
 <p align="center">
-  <strong>Your coworkers work at your company. Your AI should too.</strong><br>
-  <em>AI teammates in Slack that answer questions, take on tasks, and use the accounts you give them. running on infrastructure you own.</em>
+  <strong>AI teammates in Slack that answer questions, take on tasks, and use the accounts you give them — running on infrastructure you own.</strong>
 </p>
 
 <p align="center">
@@ -20,11 +23,11 @@
 
 <div align="center">
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-555555.svg?labelColor=333333&color=666666)](./LICENSE)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A522.19-555555?labelColor=333333&color=666666)](https://nodejs.org)
-[![Runs on](https://img.shields.io/badge/Runs_on-Cloudflare_Workers_or_Node-555555?labelColor=333333&color=666666)](#install)
-[![Built on Flue](https://img.shields.io/badge/Built_on-Flue-555555?labelColor=333333&color=666666)](https://www.npmjs.com/package/@flue/runtime)
-[![Models](https://img.shields.io/badge/Models-Anthropic_%C2%B7_OpenAI_%C2%B7_OpenRouter_%C2%B7_Workers_AI-555555?labelColor=333333&color=666666)](#models-and-providers)
+[![License: MIT](https://img.shields.io/badge/License-MIT-555555.svg?labelColor=333333&color=2EA44F)](./LICENSE)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A522.19-555555?labelColor=333333&color=339933)](https://nodejs.org)
+[![Runs on](https://img.shields.io/badge/Runs_on-Cloudflare_Workers_or_Node-555555?labelColor=333333&color=F38020)](#install)
+[![Built on Flue](https://img.shields.io/badge/Built_on-Flue-555555?labelColor=333333&color=DDA126)](https://www.npmjs.com/package/@flue/runtime)
+[![Models](https://img.shields.io/badge/Models-Anthropic_%C2%B7_OpenAI_%C2%B7_OpenRouter_%C2%B7_Workers_AI-555555?labelColor=333333&color=8B5CF6)](#models-and-providers)
 
 <br />
 
@@ -49,24 +52,6 @@ npm run setup:link -- https://your-chickpea.example</code></pre>
 Chickpea gives your team AI coworkers in Slack. You address them by name. `@support` answers the billing question in the channel where someone asked it. `@revops` pulls the numbers every Monday morning without being asked twice. `@oncall` reads the repo before it answers. Each one has its own instructions, its own memory, its own connected accounts, and its own list of channels it's allowed to work in. You set all of that up by asking, in Slack.
 
 The difference is where they work. Chickpea is MIT-licensed and you deploy it yourself, to your own Cloudflare account or your own server, pointed at whichever model provider you want. Two optional exceptions, both yours to decline: the shared Slack gateway, and Composio if you want managed connectors instead of wiring OAuth yourself. Both are [explained below](#security-model).
-
-```text
-#billing-questions
-
-you            @support what's our refund window on annual plans?
-
-Support  APP   Pro-rata within 30 days, per the current policy doc in Notion.
-
-you          ↳ does that hold for plans sold through resellers?    ← thread reply, no mention needed
-
-Support  APP  ↳ Not automatically. Reseller terms are contractual and separate.
-
-you          ↳ @billing can you take this one?                     ← visible handoff to another Agent
-
-Billing  APP  ↳ Reseller refunds settle through the partner. Pulling the agreement now…
-```
-
-One Slack app. Two Agents, two faces, two sets of credentials, one visible handoff.
 
 ---
 
@@ -167,22 +152,22 @@ What you can connect:
     <th colspan="5" align="left">Managed · one Composio key</th>
   </tr>
   <tr>
-    <td><img src="https://cdn.simple-icons.org/gmail/8b949e" width="14" height="14" alt=""> Gmail</td>
-    <td><img src="https://cdn.simple-icons.org/googlecalendar/8b949e" width="14" height="14" alt=""> Google Calendar</td>
-    <td><img src="https://cdn.simple-icons.org/googledrive/8b949e" width="14" height="14" alt=""> Google Drive</td>
-    <td><img src="https://cdn.simple-icons.org/googlesheets/8b949e" width="14" height="14" alt=""> Google Sheets</td>
-    <td><img src="https://cdn.simple-icons.org/googledocs/8b949e" width="14" height="14" alt=""> Google Docs</td>
+    <td><img src="https://cdn.simple-icons.org/gmail" width="14" height="14" alt=""> Gmail</td>
+    <td><img src="https://cdn.simple-icons.org/googlecalendar" width="14" height="14" alt=""> Google Calendar</td>
+    <td><img src="https://cdn.simple-icons.org/googledrive" width="14" height="14" alt=""> Google Drive</td>
+    <td><img src="https://cdn.simple-icons.org/googlesheets" width="14" height="14" alt=""> Google Sheets</td>
+    <td><img src="https://cdn.simple-icons.org/googledocs" width="14" height="14" alt=""> Google Docs</td>
   </tr>
   <tr>
-    <td><img src="https://cdn.simple-icons.org/googleslides/8b949e" width="14" height="14" alt=""> Google Slides</td>
-    <td><img src="https://cdn.simple-icons.org/googlesearchconsole/8b949e" width="14" height="14" alt=""> Search Console</td>
-    <td><img src="https://cdn.simple-icons.org/googleanalytics/8b949e" width="14" height="14" alt=""> Google Analytics</td>
-    <td><img src="https://cdn.simple-icons.org/notion/8b949e" width="14" height="14" alt=""> Notion</td>
-    <td><img src="https://cdn.simple-icons.org/hubspot/8b949e" width="14" height="14" alt=""> HubSpot</td>
+    <td><img src="https://cdn.simple-icons.org/googleslides" width="14" height="14" alt=""> Google Slides</td>
+    <td><img src="https://cdn.simple-icons.org/googlesearchconsole" width="14" height="14" alt=""> Search Console</td>
+    <td><img src="https://cdn.simple-icons.org/googleanalytics" width="14" height="14" alt=""> Google Analytics</td>
+    <td><img src="https://cdn.simple-icons.org/notion/000000/ffffff" width="14" height="14" alt=""> Notion</td>
+    <td><img src="https://cdn.simple-icons.org/hubspot" width="14" height="14" alt=""> HubSpot</td>
   </tr>
   <tr>
-    <td><img src="https://cdn.simple-icons.org/googleads/8b949e" width="14" height="14" alt=""> Google Ads</td>
-    <td><img src="https://cdn.simple-icons.org/youtube/8b949e" width="14" height="14" alt=""> YouTube</td>
+    <td><img src="https://cdn.simple-icons.org/googleads" width="14" height="14" alt=""> Google Ads</td>
+    <td><img src="https://cdn.simple-icons.org/youtube" width="14" height="14" alt=""> YouTube</td>
     <td>Gong</td>
     <td colspan="2"></td>
   </tr>
@@ -191,9 +176,9 @@ What you can connect:
   </tr>
   <tr>
     <td>Ahrefs</td>
-    <td><img src="https://cdn.simple-icons.org/airtable/8b949e" width="14" height="14" alt=""> Airtable</td>
-    <td><img src="https://cdn.simple-icons.org/atlassian/8b949e" width="14" height="14" alt=""> Atlassian</td>
-    <td><img src="https://cdn.simple-icons.org/cloudflare/8b949e" width="14" height="14" alt=""> Cloudflare</td>
+    <td><img src="https://cdn.simple-icons.org/airtable" width="14" height="14" alt=""> Airtable</td>
+    <td><img src="https://cdn.simple-icons.org/atlassian" width="14" height="14" alt=""> Atlassian</td>
+    <td><img src="https://cdn.simple-icons.org/cloudflare" width="14" height="14" alt=""> Cloudflare</td>
     <td>Exa</td>
   </tr>
   <tr>
@@ -201,28 +186,28 @@ What you can connect:
     <td>Fireflies</td>
     <td>Gamma</td>
     <td>Granola</td>
-    <td><img src="https://cdn.simple-icons.org/huggingface/8b949e" width="14" height="14" alt=""> Hugging Face</td>
+    <td><img src="https://cdn.simple-icons.org/huggingface" width="14" height="14" alt=""> Hugging Face</td>
   </tr>
   <tr>
     <td>incident.io</td>
-    <td><img src="https://cdn.simple-icons.org/intercom/8b949e" width="14" height="14" alt=""> Intercom</td>
-    <td><img src="https://cdn.simple-icons.org/linear/8b949e" width="14" height="14" alt=""> Linear</td>
+    <td><img src="https://cdn.simple-icons.org/intercom/000000/ffffff" width="14" height="14" alt=""> Intercom</td>
+    <td><img src="https://cdn.simple-icons.org/linear" width="14" height="14" alt=""> Linear</td>
     <td>LunarCrush</td>
     <td>Monday.com</td>
   </tr>
   <tr>
     <td>Neon</td>
-    <td><img src="https://cdn.simple-icons.org/posthog/8b949e" width="14" height="14" alt=""> PostHog</td>
-    <td><img src="https://cdn.simple-icons.org/sentry/8b949e" width="14" height="14" alt=""> Sentry</td>
-    <td><img src="https://cdn.simple-icons.org/stripe/8b949e" width="14" height="14" alt=""> Stripe</td>
-    <td><img src="https://cdn.simple-icons.org/supabase/8b949e" width="14" height="14" alt=""> Supabase</td>
+    <td><img src="https://cdn.simple-icons.org/posthog" width="14" height="14" alt=""> PostHog</td>
+    <td><img src="https://cdn.simple-icons.org/sentry/362D59/ffffff" width="14" height="14" alt=""> Sentry</td>
+    <td><img src="https://cdn.simple-icons.org/stripe" width="14" height="14" alt=""> Stripe</td>
+    <td><img src="https://cdn.simple-icons.org/supabase" width="14" height="14" alt=""> Supabase</td>
   </tr>
   <tr>
     <th colspan="5" align="left">Presets · direct HTTP API</th>
   </tr>
   <tr>
-    <td><img src="https://cdn.simple-icons.org/asana/8b949e" width="14" height="14" alt=""> Asana</td>
-    <td><img src="https://cdn.simple-icons.org/zendesk/8b949e" width="14" height="14" alt=""> Zendesk</td>
+    <td><img src="https://cdn.simple-icons.org/asana" width="14" height="14" alt=""> Asana</td>
+    <td><img src="https://cdn.simple-icons.org/zendesk/03363D/ffffff" width="14" height="14" alt=""> Zendesk</td>
     <td colspan="3"></td>
   </tr>
   <tr>
