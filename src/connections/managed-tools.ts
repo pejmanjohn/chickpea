@@ -4,6 +4,7 @@ import type {
   RuntimePlanManagedConnectionV2,
   RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
+import { isRecord } from '../security/content-validation.ts';
 import type { ConfigStore } from '../config/store.ts';
 import {
   getConfigStore,
@@ -274,10 +275,6 @@ function validateArtifactSignature(bytes: Uint8Array, mimeType: string): void {
       mimeType === 'video/webm' && !isEbml) {
     throw new Error('Managed connection artifact content does not match its MIME type');
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function execute(

@@ -1,3 +1,4 @@
+import { sha256Hex } from '../security/digest.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   parseModelCatalogBytes,
@@ -264,14 +265,6 @@ function validateCandidateMetadata(candidate: ModelCatalogCandidate): void {
   }
   nonNegativeInteger(candidate.checkedAt, 'checkedAt');
   nonNegativeInteger(candidate.nextRefreshAt, 'nextRefreshAt');
-}
-
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const input = bytes.slice().buffer;
-  const digest = await crypto.subtle.digest('SHA-256', input);
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
 }
 
 function boundedHeader(value: unknown, label: string, max: number): string {

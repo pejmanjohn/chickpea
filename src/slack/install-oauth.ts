@@ -1,5 +1,7 @@
-import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
+import { randomBytes as nodeRandomBytes } from 'node:crypto';
 
+import { sha256HexNode } from '../security/digest.ts';
+import { randomSecret } from '../security/random-secret.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
@@ -133,8 +135,8 @@ export class SlackInstallOAuthService {
       purpose: 'setup_bot_install',
       setupId: setup.id,
       setupRevision: setup.revision,
-      stateHash: hashSecret(state),
-      browserHash: hashSecret(input.browserBinding),
+      stateHash: sha256HexNode(state),
+      browserHash: sha256HexNode(input.browserBinding),
       appId: appCredentials.appId,
       clientId: appCredentials.clientId,
       credentialRevision: appCredentials.connectionRevision,
@@ -392,8 +394,8 @@ export class SlackInstallOAuthService {
     const now = this.now();
     try {
       return await this.dependencies.identity.acquireSlackOAuthAttempt({
-        stateHash: hashSecret(state),
-        browserHash: hashSecret(browserBinding),
+        stateHash: sha256HexNode(state),
+        browserHash: sha256HexNode(browserBinding),
         kind: 'slack_bot_install',
         purpose: 'setup_bot_install',
         redirectUri,
@@ -664,14 +666,6 @@ function requiredText(value: string | undefined, maximum: number): string {
     throw new SlackInstallOAuthError('invalid_response');
   }
   return value;
-}
-
-function randomSecret(randomBytes: (length: number) => Uint8Array, length: number): string {
-  return Buffer.from(randomBytes(length)).toString('base64url');
-}
-
-function hashSecret(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
 }
 
 function isApprovalPending(error: string): boolean {

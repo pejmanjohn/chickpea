@@ -85,3 +85,7 @@ export function redactCredentialLikeContent(text: string): string {
 export function credentialMarkers(): readonly string[] {
   return CREDENTIAL_MARKERS;
 }
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

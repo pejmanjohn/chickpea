@@ -1,5 +1,6 @@
-import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
+import { randomBytes as nodeRandomBytes } from 'node:crypto';
 
+import { sha256HexNode } from '../security/digest.ts';
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
 
 const CONTINUATION_TTL_MS = 10 * 60_000;
@@ -69,7 +70,7 @@ export class BetterAuthMcpOAuthContinuationStore {
     const createdAt = this.now();
     const expiresAt = createdAt + CONTINUATION_TTL_MS;
     await this.options.backend.putMcpOAuthContinuation({
-      idHash: continuationHash(id),
+      idHash: sha256HexNode(id),
       authorizationPath,
       expiresAt,
       createdAt,
@@ -80,7 +81,7 @@ export class BetterAuthMcpOAuthContinuationStore {
   async consume(id: string): Promise<McpOAuthContinuation | undefined> {
     if (!/^[A-Za-z0-9_-]{32,128}$/.test(id)) return undefined;
     const authorizationPath = await this.options.backend.consumeMcpOAuthContinuation(
-      continuationHash(id),
+      sha256HexNode(id),
       this.now(),
     );
     return authorizationPath ? { authorizationPath } : undefined;
@@ -97,8 +98,4 @@ function validatedAuthorizationPath(value: string): string {
     throw new TypeError('MCP authorization path must be a local Better Auth authorization path.');
   }
   return `${parsed.pathname}${parsed.search}`;
-}
-
-function continuationHash(id: string): string {
-  return createHash('sha256').update(id).digest('hex');
 }

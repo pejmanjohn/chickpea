@@ -1,3 +1,4 @@
+import { isRecord } from '../security/content-validation.ts';
 import {
   buildOpenAiSubscriptionHeaders,
   isSafeOpenAiSubscriptionModelId,
@@ -425,8 +426,4 @@ async function discardResponseBody(response: Response): Promise<void> {
   } catch {
     // The response is already being discarded; cancellation failure is immaterial.
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

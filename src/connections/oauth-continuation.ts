@@ -1,5 +1,6 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 
+import { sha256HexNode } from '../security/digest.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { isActiveConnectionActor } from './runtime.ts';
@@ -46,7 +47,7 @@ export async function createOAuthContinuation(input: {
     taskId: input.taskId,
     providerId: input.providerId,
     accountId: input.accountId,
-    stateHash: hash(capability),
+    stateHash: sha256HexNode(capability),
     status: 'pending',
     createdAt: now,
     expiresAt: now + (input.ttlMs ?? DEFAULT_TTL_MS),
@@ -68,7 +69,7 @@ export async function authorizeOAuthContinuation(input: {
   const raw = await input.settings.getSetting(settingKey);
   if (!raw) throw new OAuthContinuationError('invalid_state');
   const continuation = parse(raw);
-  if (!safeHashEqual(continuation.stateHash, hash(capability))) {
+  if (!safeHashEqual(continuation.stateHash, sha256HexNode(capability))) {
     throw new OAuthContinuationError('invalid_state');
   }
   if (continuation.actorMembershipId !== input.actorMembershipId) {
@@ -108,7 +109,7 @@ export async function authorizeOAuthContinuationFromProvider(input: {
   const raw = await input.settings.getSetting(settingKey);
   if (!raw) throw new OAuthContinuationError('invalid_state');
   const continuation = parse(raw);
-  if (!safeHashEqual(continuation.stateHash, hash(capability))) {
+  if (!safeHashEqual(continuation.stateHash, sha256HexNode(capability))) {
     throw new OAuthContinuationError('invalid_state');
   }
   if (continuation.status !== 'pending') throw new OAuthContinuationError('replayed');
@@ -142,7 +143,7 @@ export async function inspectOAuthContinuationFromProvider(input: {
   const raw = await input.settings.getSetting(key(id));
   if (!raw) throw new OAuthContinuationError('invalid_state');
   const continuation = parse(raw);
-  if (!safeHashEqual(continuation.stateHash, hash(capability))) {
+  if (!safeHashEqual(continuation.stateHash, sha256HexNode(capability))) {
     throw new OAuthContinuationError('invalid_state');
   }
   if (continuation.status !== 'pending') throw new OAuthContinuationError('replayed');
@@ -181,7 +182,7 @@ export async function cancelOAuthContinuationFromProvider(input: {
   const raw = await input.settings.getSetting(settingKey);
   if (!raw) throw new OAuthContinuationError('invalid_state');
   const continuation = parse(raw);
-  if (!safeHashEqual(continuation.stateHash, hash(capability))) {
+  if (!safeHashEqual(continuation.stateHash, sha256HexNode(capability))) {
     throw new OAuthContinuationError('invalid_state');
   }
   if (continuation.status !== 'pending') throw new OAuthContinuationError('replayed');
@@ -340,7 +341,7 @@ function providerStateKey(providerState: string): string {
   if (!providerState || providerState.length > 2_048) {
     throw new OAuthContinuationError('invalid_state');
   }
-  return `connection-oauth-provider-state.${hash(providerState)}`;
+  return `connection-oauth-provider-state.${sha256HexNode(providerState)}`;
 }
 
 async function pendingResumeIds(settings: SettingsStore): Promise<string[]> {
@@ -411,10 +412,6 @@ function parse(raw: string): OAuthContinuation {
   } catch {
     throw new OAuthContinuationError('invalid_state');
   }
-}
-
-function hash(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
 }
 
 function safeHashEqual(left: string, right: string): boolean {

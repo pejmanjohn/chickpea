@@ -1,3 +1,4 @@
+import { isRecord } from '../security/content-validation.ts';
 import type {
   OpenAiDeviceAuthorizationPending,
   OpenAiDeviceAuthorizationPoll,
@@ -469,8 +470,4 @@ function requiredString(value: unknown): string | undefined {
 function numberLike(value: unknown): number | undefined {
   const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
   return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -10,7 +10,11 @@ import {
 } from '../config/provider-keys.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import { hasCredentialLikeContent, hasDisallowedControlCharacter } from '../security/content-validation.ts';
+import {
+  hasCredentialLikeContent,
+  hasDisallowedControlCharacter,
+  isRecord,
+} from '../security/content-validation.ts';
 import type { AgentDispatchResult } from './flue-dispatch.ts';
 
 export const SLACK_INTERACTION_DISPOSITIONS = ['ignore', 'react_only', 'reply', 'work'] as const;
@@ -494,10 +498,6 @@ function parseJsonObject(text: string): unknown {
   } catch {
     return null;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function stringValue(value: unknown): string | null {

@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
 import {
   createRemoteJWKSet,
@@ -7,6 +7,7 @@ import {
   type JWTVerifyGetKey,
 } from 'jose';
 
+import { constantTimeEquals } from '../security/constant-time.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import type { SlackOidcAttempt } from '../identity/types.ts';
 import {
@@ -246,7 +247,7 @@ export class SlackOidcGateway implements SlackOidcProvider {
       if ((audiences.length > 1 || claims.azp !== undefined) && claims.azp !== input.clientId) {
         throw new SlackOidcError('invalid_token');
       }
-      if (typeof claims.at_hash !== 'string' || !constantTimeTextEqual(
+      if (typeof claims.at_hash !== 'string' || !constantTimeEquals(
         claims.at_hash,
         createHash('sha256').update(input.accessToken).digest().subarray(0, 16).toString('base64url'),
       )) {
@@ -377,11 +378,5 @@ function boundedSecret(value: string, field: string): string {
 }
 
 function secretHashMatches(secret: string, expectedHash: string): boolean {
-  return constantTimeTextEqual(createHash('sha256').update(secret).digest('hex'), expectedHash);
-}
-
-function constantTimeTextEqual(left: string, right: string): boolean {
-  const a = Buffer.from(left);
-  const b = Buffer.from(right);
-  return a.length === b.length && timingSafeEqual(a, b);
+  return constantTimeEquals(createHash('sha256').update(secret).digest('hex'), expectedHash);
 }

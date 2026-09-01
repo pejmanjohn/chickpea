@@ -1,3 +1,4 @@
+import { isRecord } from '../../security/content-validation.ts';
 import { MANAGED_GOOGLE_WORKSPACE_CONNECTORS } from './google-workspace.ts';
 import { MANAGED_GOOGLE_PRODUCTIVITY_CONNECTORS } from './google-productivity.ts';
 import { MANAGED_GOOGLE_ANALYTICS_CONNECTORS } from './google-analytics.ts';
@@ -243,10 +244,6 @@ function parseBindingHandles(value: unknown): string[] | undefined {
   }
   const handles = [...new Set(value)];
   return handles.length === value.length ? handles : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 export type {

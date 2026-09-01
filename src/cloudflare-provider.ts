@@ -1,4 +1,5 @@
 import { setProvider } from '@flue/runtime';
+import { isRecord } from './security/content-validation.ts';
 import {
   cloudflareBindingProvider,
   type CloudflareAIBinding,
@@ -98,8 +99,4 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
       );
     },
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

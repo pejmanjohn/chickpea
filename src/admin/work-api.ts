@@ -2,12 +2,12 @@ import { Hono, type Context } from 'hono';
 import * as v from 'valibot';
 
 import type { AuditEvent } from '../audit/types.ts';
+import { sha256HexNode } from '../security/digest.ts';
 import {
   adminCredential,
   readIdempotencyKey,
   readJson,
   safeMutationRequest,
-  sha256,
 } from './api-support.ts';
 import type { UsageOperationDetail, UsageStore } from '../usage/types.ts';
 import {
@@ -122,7 +122,7 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
         return c.json({ error: 'session_not_found' }, 404);
       }
       const credential = adminCredential(c);
-      const requestId = `request_${sha256(`quarantine\0${idempotencyKey}`).slice(0, 32)}`;
+      const requestId = `request_${sha256HexNode(`quarantine\0${idempotencyKey}`).slice(0, 32)}`;
       const run = await store.quarantineRun({
         runId,
         adminCredentialId: credential.id,
@@ -161,7 +161,7 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
       }
 
       const retiredAt = now();
-      const identity = sha256(`retire-stale\0${idempotencyKey}`).slice(0, 32);
+      const identity = sha256HexNode(`retire-stale\0${idempotencyKey}`).slice(0, 32);
       if (run.status !== 'settled') {
         const resumesPartialRetirement =
           run.status === 'recovery_required' &&

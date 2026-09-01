@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
+import { isRecord } from '../security/content-validation.ts';
 import { createMcpGuardedFetch } from './mcp-url.ts';
 import type { McpConnectionIdentity } from './types.ts';
 
@@ -150,8 +151,4 @@ function boundedLabel(value: unknown): string | undefined {
   const normalized = value.replace(/\s+/g, ' ').trim();
   if (!normalized) return undefined;
   return normalized.slice(0, IDENTITY_TEXT_MAX);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

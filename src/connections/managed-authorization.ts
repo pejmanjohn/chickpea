@@ -1,3 +1,6 @@
+import { constantTimeTextEqual } from '../security/constant-time.ts';
+import { isRecord } from '../security/content-validation.ts';
+import { sha256Hex, toHex } from '../security/digest.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 
 const MANAGED_AUTHORIZATION_TTL_MS = 30 * 60_000;
@@ -103,7 +106,7 @@ export async function beginManagedAuthorization(input: {
     version: 1,
     status: 'pending',
     ...structuredClone(input.input),
-    browserSecretHash: await sha256(browserSecret),
+    browserSecretHash: await sha256Hex(browserSecret),
     createdAt: now,
     expiresAt: now + MANAGED_AUTHORIZATION_TTL_MS,
     updatedAt: now,
@@ -382,7 +385,7 @@ async function load(input: {
   if (
     attempt.actorMembershipId !== input.actorMembershipId ||
     attempt.attemptScopeId !== input.attemptScopeId ||
-    !constantTimeEqual(attempt.browserSecretHash, await sha256(input.browserSecret))
+    !constantTimeTextEqual(attempt.browserSecretHash, await sha256Hex(input.browserSecret))
   ) {
     throw new ManagedAuthorizationError('invalid');
   }
@@ -497,33 +500,11 @@ async function settingKey(actorMembershipId: string, attemptScopeId?: string): P
   const identity = attemptScopeId === undefined
     ? actorMembershipId
     : `${actorMembershipId}\u0000${attemptScopeId}`;
-  return `${SETTING_PREFIX}${(await sha256(identity)).slice(0, 32)}`;
+  return `${SETTING_PREFIX}${(await sha256Hex(identity)).slice(0, 32)}`;
 }
 
 function secureRandomSecret(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
-  return hex(bytes);
-}
-
-async function sha256(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
-  return hex(new Uint8Array(digest));
-}
-
-function hex(bytes: Uint8Array): string {
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function constantTimeEqual(left: string, right: string): boolean {
-  let difference = left.length ^ right.length;
-  const length = Math.max(left.length, right.length);
-  for (let index = 0; index < length; index += 1) {
-    difference |= (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
-  }
-  return difference === 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
+  return toHex(bytes);
 }

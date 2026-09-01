@@ -5,6 +5,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 
+import { isRecord } from '../security/content-validation.ts';
 import {
   renderAdminPage,
   renderSlackAccessDeniedPage,
@@ -9625,10 +9626,6 @@ function safeAdminReturnPath(candidate: string | null | undefined): string {
   } catch {
     return '/admin';
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function toAgentConfig(input: v.InferOutput<typeof agentSchema>): AgentCreateInput {

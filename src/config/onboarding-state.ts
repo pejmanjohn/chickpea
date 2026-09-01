@@ -1,3 +1,4 @@
+import { isRecord } from '../security/content-validation.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { modelBelongsToProvider as providerOwnsModel } from './provider-impact.ts';
 
@@ -261,8 +262,4 @@ function channelName(value: string): string {
     throw new Error('channelName is invalid.');
   }
   return normalized;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }

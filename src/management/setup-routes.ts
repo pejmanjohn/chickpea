@@ -3,6 +3,9 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 
+import { escapeHtml } from '../security/html-escape.ts';
+import { isRecord } from '../security/content-validation.ts';
+import { sha256HexNode } from '../security/digest.ts';
 import { BetterAuthDirectory, BetterAuthSessionAuthenticator } from '../auth/better-auth-principal.ts';
 import { resolveBetterAuthEnvironment } from '../auth/better-auth-environment.ts';
 import { setCookieValues } from '../auth/cookies.ts';
@@ -382,7 +385,7 @@ export function createManagementSetupRoutes(
         }
         const browserSession = setupSession(c, setupId);
         if (!browserSession) throw new ManagedAuthorizationError('invalid');
-        const browserSecret = managedBrowserSecret(browserSession);
+        const browserSecret = sha256HexNode(browserSession);
         const started = await startManagedAuthorizationFlow(
           await managedFlowDependencies(dependencies, options),
           {
@@ -512,7 +515,7 @@ export function createManagementSetupRoutes(
           await managedFlowDependencies(dependencies, options),
           {
             principal,
-            browserSecret: managedBrowserSecret(setupSession(c, setupId)!),
+            browserSecret: sha256HexNode(setupSession(c, setupId)!),
             attemptScopeId: setupId,
           },
         );
@@ -531,7 +534,7 @@ export function createManagementSetupRoutes(
           principal,
           agent,
           workspaceId: setup.origin.workspaceId,
-          browserSecret: managedBrowserSecret(setupSession(c, setupId)!),
+          browserSecret: sha256HexNode(setupSession(c, setupId)!),
           attemptScopeId: setupId,
           commit: async (account) => {
             try {
@@ -639,7 +642,7 @@ export function createManagementSetupRoutes(
         await managedFlowDependencies(dependencies, options),
         {
           principal,
-          browserSecret: managedBrowserSecret(setupSession(c, setupId)!),
+          browserSecret: sha256HexNode(setupSession(c, setupId)!),
           attemptScopeId: setupId,
         },
       );
@@ -2203,10 +2206,6 @@ function digest(value: string): string {
   return createHash('sha256').update(value).digest('base64url');
 }
 
-function managedBrowserSecret(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
 function safeFailureCode(error: unknown): string {
   if (error instanceof ManagementError) return error.code;
   if (error instanceof ManagedConnectionProviderUnavailableError) {
@@ -2225,14 +2224,4 @@ function genericDenied(c: Context): Response {
 
 function authenticationRequired(c: Context): Response {
   return c.json({ error: 'authentication_required' }, 401);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  })[character]!);
 }

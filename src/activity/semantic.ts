@@ -1,4 +1,4 @@
-import { hasCredentialLikeContent } from '../security/content-validation.ts';
+import { hasCredentialLikeContent, isRecord } from '../security/content-validation.ts';
 import type {
   ManagedCapabilityDefinition,
   ManagedConnectorDefinition,
@@ -747,10 +747,6 @@ function isActivityKind(value: unknown): value is ActivityKind {
 function truncate(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {

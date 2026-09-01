@@ -1,3 +1,4 @@
+import { encodeBase64Url } from '../security/base64url.ts';
 import type { SettingsStore } from './settings-store.ts';
 
 export const GITHUB_API_BASE = 'https://api.github.com';
@@ -210,7 +211,7 @@ export async function mintAppJwt(input: {
     key,
     new TextEncoder().encode(signingInput),
   );
-  return `${signingInput}.${base64UrlBytes(new Uint8Array(signature))}`;
+  return `${signingInput}.${encodeBase64Url(new Uint8Array(signature))}`;
 }
 
 export async function getGithubConnection(settings: SettingsStore): Promise<GithubConnection> {
@@ -639,11 +640,7 @@ function armorPem(label: string, bytes: Uint8Array): string {
 }
 
 function base64UrlJson(value: object): string {
-  return base64UrlBytes(new TextEncoder().encode(JSON.stringify(value)));
-}
-
-function base64UrlBytes(bytes: Uint8Array): string {
-  return base64Bytes(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return encodeBase64Url(new TextEncoder().encode(JSON.stringify(value)));
 }
 
 function base64Bytes(bytes: Uint8Array): string {

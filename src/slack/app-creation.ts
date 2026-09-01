@@ -1,5 +1,5 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
-
+import { constantTimeEquals } from '../security/constant-time.ts';
+import { sha256HexNode } from '../security/digest.ts';
 import { digestSetupCapability } from '../auth/setup-capability.mjs';
 import { safeSetupDestination } from '../auth/setup-handoff.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
@@ -61,12 +61,12 @@ export async function openSlackSetupTransaction(
   try { actualDigest = await digestSetupCapability(input.capability); } catch {
     throw new SlackAppCreationError('setup_invalid', 'This private setup link is invalid.');
   }
-  if (!safeEqual(actualDigest, input.authority.digest)) {
+  if (!constantTimeEquals(actualDigest, input.authority.digest)) {
     throw new SlackAppCreationError('setup_invalid', 'This private setup link is invalid.');
   }
   try {
     const transaction = await store.reserveSlackSetupTransaction({
-      locatorHash: sha256Hex(input.capability),
+      locatorHash: sha256HexNode(input.capability),
       issuedAt: input.authority.issuedAt,
       expiresAt: input.authority.issuedAt + SLACK_SETUP_TTL_MS,
       destination: safeSetupDestination(input.destination),
@@ -351,12 +351,6 @@ function safeSlackError(value: unknown): string {
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
-}
-function sha256Hex(value: string): string { return createHash('sha256').update(value).digest('hex'); }
-function safeEqual(left: string, right: string): boolean {
-  const leftBytes = Buffer.from(left);
-  const rightBytes = Buffer.from(right);
-  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 function ambiguousError(): SlackAppCreationError {
   return new SlackAppCreationError(

@@ -1,5 +1,5 @@
 import { AuditStoreLogic } from '../audit/store.ts';
-import { constantTimeEquals } from '../admin/constant-time.ts';
+import { constantTimeEquals } from '../security/constant-time.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
@@ -1038,7 +1038,7 @@ export class ManagementStoreLogic {
       const setup = this.requireSetup(input.setupOperationId, input.at);
       if (setup.status === 'expired') throw setupError('setup_expired');
       if (setup.status !== 'pending' || !setup.tokenDigest ||
-          !constantDigestEquals(setup.tokenDigest, input.tokenDigest)) {
+          !constantTimeEquals(setup.tokenDigest, input.tokenDigest)) {
         throw setupError('setup_unavailable');
       }
       const updated = this.db.run(
@@ -1119,7 +1119,7 @@ export class ManagementStoreLogic {
       let updated: { changes: number };
       if (managed) {
         if (existing.status !== 'pending' || !existing.tokenDigest ||
-            !constantDigestEquals(existing.tokenDigest, input.browserSessionDigest) ||
+            !constantTimeEquals(existing.tokenDigest, input.browserSessionDigest) ||
             !input.completedByUserId || !input.completedByMembershipId) {
           throw setupError('setup_unavailable');
         }
@@ -1748,7 +1748,7 @@ export class ManagementStoreLogic {
     const setup = this.requireSetup(setupOperationId, at);
     if (setup.status === 'expired') throw setupError('setup_expired');
     if (!setup.browserSessionDigest ||
-        !constantDigestEquals(setup.browserSessionDigest, browserSessionDigest)) {
+        !constantTimeEquals(setup.browserSessionDigest, browserSessionDigest)) {
       throw setupError('setup_session_mismatch');
     }
     return setup;
@@ -1956,10 +1956,6 @@ function introductionClaimFromRow(row: ManagementIntroductionClaimRow): Manageme
     outboxId: row.outbox_id,
     createdAt: Number(row.created_at),
   };
-}
-
-function constantDigestEquals(left: string, right: string): boolean {
-  return constantTimeEquals(left, right);
 }
 
 function boundedFailureCode(value: string): string {

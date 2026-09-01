@@ -1,5 +1,6 @@
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
+import { isRecord } from '../security/content-validation.ts';
 import {
   emitSemanticActivityTelemetry,
   semanticTelemetryForStatus,
@@ -1193,10 +1194,6 @@ function terminalTaskStatusField(
   return record.terminalTaskStatus === 'complete' || record.terminalTaskStatus === 'error'
     ? { terminalTaskStatus: record.terminalTaskStatus }
     : {};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function stringField(value: unknown, key: string): string | undefined {

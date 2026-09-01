@@ -12,6 +12,7 @@ import type {
 import {
   hasCredentialLikeContent,
   hasDisallowedControlCharacter,
+  isRecord,
 } from '../security/content-validation.ts';
 import { canonicalJson } from './contracts.ts';
 import { ManagementError, type ManagementOperation } from './types.ts';
@@ -482,8 +483,4 @@ function allocatePortableAgentId(
   }
   allocated.add(candidate);
   return candidate;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }

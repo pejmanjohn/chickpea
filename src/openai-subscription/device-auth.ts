@@ -1,3 +1,5 @@
+import { isRecord } from '../security/content-validation.ts';
+import { constantTimeTextEqual } from '../security/constant-time.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   commitOpenAiSubscriptionCredentials,
@@ -8,7 +10,6 @@ import {
 } from './credentials.ts';
 import { OpenAiSubscriptionError, asOpenAiSubscriptionError } from './errors.ts';
 import {
-  constantTimeTextEqual,
   hashOpenAiSubscriptionCapability,
   randomOpenAiSubscriptionCapability,
 } from './identity.ts';
@@ -418,10 +419,6 @@ function parseRecord(raw: string): Record<string, unknown> {
     // Fall through to the safe storage error.
   }
   throw new OpenAiSubscriptionError('storage_invalid');
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function now(dependencies: Pick<OpenAiSubscriptionAuthorizationDependencies, 'now'>): number {

@@ -1,3 +1,4 @@
+import { isRecord } from '../security/content-validation.ts';
 import {
   discoverAuthorizationServerMetadata,
   discoverOAuthProtectedResourceMetadata,
@@ -1188,8 +1189,4 @@ function randomId(dependencies: McpOAuthDependencies): string {
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

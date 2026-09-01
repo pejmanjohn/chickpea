@@ -1,3 +1,6 @@
+import { constantTimeTextEqual } from '../security/constant-time.ts';
+import { isRecord } from '../security/content-validation.ts';
+
 const MAX_WEBHOOK_AGE_SECONDS = 300;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9_.:@-]{1,256}$/;
 const TOOLKIT_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -32,7 +35,7 @@ export async function verifyComposioWebhook(input: {
     input.secret,
     `${input.webhookId}.${input.webhookTimestamp}.${input.rawBody}`,
   );
-  if (!signatures.some((candidate) => constantTimeEqual(candidate, expected))) {
+  if (!signatures.some((candidate) => constantTimeTextEqual(candidate, expected))) {
     throw new Error('Composio webhook signature is invalid');
   }
 
@@ -85,17 +88,4 @@ async function hmacSha256Base64(secret: string, message: string): Promise<string
   let binary = '';
   for (const byte of signature) binary += String.fromCharCode(byte);
   return btoa(binary);
-}
-
-function constantTimeEqual(left: string, right: string): boolean {
-  let difference = left.length ^ right.length;
-  const length = Math.max(left.length, right.length);
-  for (let index = 0; index < length; index += 1) {
-    difference |= (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
-  }
-  return difference === 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }

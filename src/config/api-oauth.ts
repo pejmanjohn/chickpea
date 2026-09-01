@@ -1,3 +1,5 @@
+import { decodeBase64Url, encodeBase64Url } from '../security/base64url.ts';
+import { isRecord } from '../security/content-validation.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { AGENT_ID_PATTERN } from './agent-id.ts';
 
@@ -740,13 +742,13 @@ function tokenHardExpired(bundle: StoredTokenBundle, currentTime: number): boole
 }
 
 function encodeState(ref: ApiOAuthRef, selectedProvider: ApiOAuthProvider, nonce: string): string {
-  return base64Url(new TextEncoder().encode(JSON.stringify({ a: ref.agentId, c: ref.connectionId, p: selectedProvider, n: nonce })));
+  return encodeBase64Url(new TextEncoder().encode(JSON.stringify({ a: ref.agentId, c: ref.connectionId, p: selectedProvider, n: nonce })));
 }
 
 function decodeState(state: string): { ref: ApiOAuthRef; provider: ApiOAuthProvider } {
   try {
     if (!state || state.length > 2_048 || !/^[A-Za-z0-9_-]+$/.test(state)) throw new Error('bad state');
-    const value: unknown = JSON.parse(new TextDecoder().decode(base64UrlDecode(state)));
+    const value: unknown = JSON.parse(new TextDecoder().decode(decodeBase64Url(state)));
     if (!isRecord(value) || typeof value.a !== 'string' || typeof value.c !== 'string' || value.p !== 'google' || typeof value.n !== 'string' || !value.n) {
       throw new Error('bad state');
     }
@@ -880,20 +882,7 @@ function isOAuthAttemptId(value: unknown): value is string {
 
 async function sha256Base64Url(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
-  return base64Url(new Uint8Array(digest));
-}
-
-function base64Url(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function base64UrlDecode(value: string): Uint8Array {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
-  const binary = atob(padded);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return encodeBase64Url(new Uint8Array(digest));
 }
 
 function parseStoredRecord(raw: string): Record<string, unknown> {
@@ -956,8 +945,4 @@ function reauthorizationRequired(): ApiOAuthError {
 
 function isConnectionMissing(error: unknown): boolean {
   return error instanceof ApiOAuthError && error.code === 'connection_missing';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
