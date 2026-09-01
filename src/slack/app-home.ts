@@ -2,6 +2,7 @@ import type { View } from '@slack/types';
 import type { SlackInteractionPayload } from '@flue/slack';
 
 import type { CustomAgentConfig } from '../config/types.ts';
+import { escapeSlackControlCharacters } from './message-format.ts';
 
 export const START_AGENT_ACTION_ID = 'chickpea.agent.start';
 
@@ -52,8 +53,8 @@ export function agentDirectoryAppHome(
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*${escapeSlack(agent.name)}*${handle ? `  ·  \`@${escapeSlack(handle)}\`` : ''}${
-            description ? `\n${escapeSlack(description)}` : ''
+          text: `*${escapeSlackControlCharacters(agent.name)}*${handle ? `  ·  \`@${escapeSlackControlCharacters(handle)}\`` : ''}${
+            description ? `\n${escapeSlackControlCharacters(description)}` : ''
           }`,
         },
         accessory: {
@@ -113,8 +114,4 @@ export function parseAgentAppHomeSelection(
 
 function safeAgentId(value: string): boolean {
   return value.length > 0 && value.length <= 128 && /^[A-Za-z0-9_.:-]+$/.test(value);
-}
-
-function escapeSlack(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }

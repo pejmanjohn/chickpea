@@ -62,6 +62,7 @@ import type { WorkStore } from '../work/types.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
+import { stripLeadingUserMentions } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import {
@@ -5736,8 +5737,7 @@ function explicitSkillReplacementRequest(
 }
 
 function normalizedRequesterText(value: string): string {
-  return value
-    .replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '')
+  return stripLeadingUserMentions(value)
     .replace(/<((?:https?:\/\/)[^>|]+)(?:\|[^>]*)?>/gi, '$1')
     .replace(/&amp;/gi, '&')
     .trim()

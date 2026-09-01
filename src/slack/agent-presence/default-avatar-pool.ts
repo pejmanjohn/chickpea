@@ -2,6 +2,7 @@ import {
   DEFAULT_AGENT_AVATAR_FILES,
   DEFAULT_AGENT_AVATAR_PNG_BASE64,
 } from './default-avatar-pool.generated.ts';
+import { base64ToBytes, fnv1aHash } from './hash.ts';
 
 export { DEFAULT_AGENT_AVATAR_FILES };
 
@@ -41,12 +42,7 @@ export function defaultAgentAvatarPng(seed: string): Uint8Array {
 }
 
 function stableHash(seed: string): number {
-  let hash = 2166136261;
-  for (const character of seed) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
+  return fnv1aHash(seed) >>> 0;
 }
 
 function encodedAvatarIndex(seed: string): number | undefined {
@@ -54,9 +50,4 @@ function encodedAvatarIndex(seed: string): number | undefined {
   if (!selected) return undefined;
   const index = Number(selected) - 1;
   return index >= 0 && index < DEFAULT_AGENT_AVATAR_FILES.length ? index : undefined;
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }

@@ -57,6 +57,7 @@ import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { registerSlackStatusTurn } from './status-registry.ts';
 import { currentMessageOnlyContext, type SlackTurnContext } from './thread-context.ts';
 import { slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
+import { slackTimestampMs } from './timestamp.ts';
 import { formatSlackPublicHandoff } from './public-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import {
@@ -1423,12 +1424,6 @@ async function recordExplicitInteractionClassifierUsage(input: {
       : 'usage_not_reported',
   });
   await recorder.repairAfterTerminal();
-}
-
-function slackTimestampMs(value: string): number | null {
-  if (!/^\d+(?:\.\d+)?$/.test(value)) return null;
-  const milliseconds = Math.floor(Number(value) * 1_000);
-  return Number.isSafeInteger(milliseconds) && milliseconds >= 0 ? milliseconds : null;
 }
 
 function resolveReactionCoordinate(

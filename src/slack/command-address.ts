@@ -44,6 +44,12 @@ export function hasLeadingSlackUserAddress(rawText: string): boolean {
   return /^\s*<@[^>\s]+>/i.test(rawText);
 }
 
+/** Drop leading user mentions ahead of text normalization. User mentions only;
+ * it deliberately leaves user-group addresses in place. */
+export function stripLeadingUserMentions(text: string): string {
+  return text.replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '');
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

@@ -7,6 +7,7 @@ import {
   defaultAgentAvatarPng,
   isDefaultAgentAvatarSeed,
 } from './default-avatar-pool.ts';
+import { base64ToBytes, fnv1aHash } from './hash.ts';
 
 export const MAX_AGENT_AVATAR_BYTES = 512 * 1_024;
 export const MAX_AGENT_AVATAR_SOURCE_DIMENSION = 4_096;
@@ -446,21 +447,11 @@ function avatarAssetKey(agentId: string, revision: number): string {
 }
 
 function stableHue(seed: string): number {
-  let hash = 2166136261;
-  for (const character of seed) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return Math.abs(hash) % 360;
+  return Math.abs(fnv1aHash(seed)) % 360;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
