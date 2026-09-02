@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
 import { createBetterAuthRuntimeRoutes } from '../src/auth/better-auth-runtime.ts';
@@ -127,9 +129,50 @@ test('the unauthenticated auth routes cap the request body before buffering it',
   identity.close();
 });
 
-test('runtime DCR rate limits persist across fresh per-request handlers', async () => {
+test('public DCR validation rejects malformed and oversized bodies before registration', async () => {
+  const backend = new NodeBetterAuthBackend(':memory:');
+  const handler = createBetterAuthPublicHandler({ backend, baseURL: ORIGIN, secret: SECRET });
+  try {
+    for (const [body, length, status] of [
+      ['', undefined, 400],
+      ['{', undefined, 400],
+      ['{}', 'invalid', 400],
+      ['x'.repeat(32 * 1024 + 1), undefined, 413],
+      ['x'.repeat(32 * 1024 + 1), '1', 413],
+    ] as const) {
+      const response = await handler(new Request(`${ORIGIN}/api/auth/oauth2/register`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(length === undefined ? {} : { 'content-length': length }),
+        },
+        body,
+      }));
+      assert.equal(response.status, status);
+      assert.deepEqual(await response.json(), {
+        error: status === 413 ? 'request_too_large' : 'invalid_client_metadata',
+      });
+    }
+    assert.equal(await backend.countMcpOAuthClients(), 0);
+  } finally {
+    backend.close();
+  }
+});
+
+test('runtime DCR rate limits persist across fresh per-request handlers', async (context) => {
   const identity = new SqliteIdentityStore(':memory:');
   const backend = new NodeBetterAuthBackend(':memory:');
+  if (global.gc) {
+    const countClients = backend.countMcpOAuthClients.bind(backend);
+    context.mock.method(backend, 'countMcpOAuthClients', async () => {
+      // Validation has finished; collect its temporary Request before Better
+      // Auth reads the original. Do not mock clone() and retain its results.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      global.gc?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      return countClients();
+    });
+  }
   try {
     await createSlackOwner(identity, { suffix: 'runtime-dcr' });
     const control = await identity.getAuthControl();
@@ -172,6 +215,21 @@ test('runtime DCR rate limits persist across fresh per-request handlers', async 
     backend.close();
     identity.close();
   }
+});
+
+test('runtime DCR survives request-clone garbage collection', { timeout: 30_000 }, () => {
+  const env = { ...process.env };
+  // A nested test runner must not inherit the parent's worker protocol.
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(process.execPath, [
+    '--expose-gc', '--import', 'tsx', '--test',
+    '--test-reporter=tap',
+    '--test-name-pattern=^runtime DCR rate limits persist across fresh per-request handlers$',
+    fileURLToPath(import.meta.url),
+  ], { env, encoding: 'utf8', timeout: 25_000, maxBuffer: 2 * 1024 * 1024 });
+  assert.equal(result.status, 0, `${result.error?.message ?? ''}\n${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /# tests 1\r?\n/);
+  assert.match(result.stdout, /# fail 0\r?\n/);
 });
 
 function jsonRequest(
