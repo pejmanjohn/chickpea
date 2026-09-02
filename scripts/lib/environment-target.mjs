@@ -34,8 +34,7 @@ export function createVerifierTargetInputs(target, registration, registrations =
     allowedVariants,
   });
   const aliases = aliasesFor(target);
-  const targetOverlay = Object.freeze({
-    schemaVersion: LIVE_TARGET_SCHEMA,
+  const sharedTarget = Object.freeze({
     targetAlias: target,
     transport: registration.transport,
     workerAlias: aliases.worker,
@@ -46,22 +45,18 @@ export function createVerifierTargetInputs(target, registration, registrations =
     allowedSuites: policy.allowedSuites,
     allowedVariants: policy.allowedVariants,
   });
+  const targetOverlay = Object.freeze({
+    schemaVersion: LIVE_TARGET_SCHEMA,
+    ...sharedTarget,
+  });
   const privateTarget = Object.freeze({
-    targetAlias: target,
-    transport: registration.transport,
-    workerAlias: aliases.worker,
-    workspaceAlias: aliases.workspace,
-    slackAppAlias: aliases.slackApp,
-    providerProjectAlias: aliases.providerProject,
-    evidenceRootAlias: aliases.evidenceRoot,
+    ...sharedTarget,
     timezoneAlias: aliases.timezone,
     providerReadOnlyAuthConfigAlias: aliases.providerReadOnlyAuthConfig,
     bindingAliases: Object.freeze({
       AUTH_DB: aliases.authDb,
       TAG_STATE: aliases.tagState,
     }),
-    allowedSuites: policy.allowedSuites,
-    allowedVariants: policy.allowedVariants,
   });
   const privateConfig = Object.freeze({
     schemaVersion: 'chickpea-live-private-config/v1',

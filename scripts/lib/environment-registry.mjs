@@ -315,11 +315,14 @@ export function recordEnvironmentAttestation(target, result, options = {}) {
 }
 
 export function resolveEnvironmentAlias(alias, options = {}) {
-  const match = /^env-(amber|cobalt|fern)-([a-z0-9]+(?:-[a-z0-9]+)*)$/u.exec(alias);
-  if (!match) throw fail('INVALID_ALIAS');
-  const [, target, field] = match;
+  const { target } = parseEnvironmentAlias(alias);
   const registry = readEnvironmentRegistry(options);
-  const registration = registry.targets[target];
+  return resolveEnvironmentRegistrationAlias(alias, registry.targets[target]);
+}
+
+export function resolveEnvironmentRegistrationAlias(alias, registration) {
+  const { target, field } = parseEnvironmentAlias(alias);
+  if (registration?.target !== target) throw fail('INVALID_ALIAS');
   const fields = {
     worker: registration.workerName,
     workspace: registration.workspaceId,
@@ -334,6 +337,12 @@ export function resolveEnvironmentAlias(alias, options = {}) {
   const value = fields[field];
   if (value === undefined) throw fail('INVALID_ALIAS');
   return value;
+}
+
+function parseEnvironmentAlias(alias) {
+  const match = /^env-(amber|cobalt|fern)-([a-z0-9]+(?:-[a-z0-9]+)*)$/u.exec(alias);
+  if (!match) throw fail('INVALID_ALIAS');
+  return { target: match[1], field: match[2] };
 }
 
 /** Fleet-wide read-only projection. It never creates the root, a marker, or an attestation. */
@@ -940,14 +949,14 @@ function readLatestRegistrySnapshot(root) {
 }
 
 function registryDigest(registry) {
-  return createHash('sha256').update(stableJson(registry)).digest('hex');
+  return createHash('sha256').update(stableEnvironmentJson(registry)).digest('hex');
 }
 
-function stableJson(input) {
-  if (Array.isArray(input)) return `[${input.map(stableJson).join(',')}]`;
+export function stableEnvironmentJson(input) {
+  if (Array.isArray(input)) return `[${input.map(stableEnvironmentJson).join(',')}]`;
   if (isRecord(input)) {
     return `{${Object.keys(input).sort().map((key) =>
-      `${JSON.stringify(key)}:${stableJson(input[key])}`
+      `${JSON.stringify(key)}:${stableEnvironmentJson(input[key])}`
     ).join(',')}}`;
   }
   return JSON.stringify(input);

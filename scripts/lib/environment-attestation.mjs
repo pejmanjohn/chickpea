@@ -12,7 +12,8 @@ import {
   EnvironmentRegistryError,
   readEnvironmentTargetLockStatus,
   recordEnvironmentAttestation,
-  resolveEnvironmentAlias,
+  resolveEnvironmentRegistrationAlias,
+  stableEnvironmentJson,
 } from './environment-registry.mjs';
 import { createVerifierTargetInputs } from './environment-target.mjs';
 
@@ -33,7 +34,7 @@ export async function attestEnvironment(target, observation, options = {}) {
     inputs.targetOverlay,
     inputs.privateConfig,
     {
-      readOnly: async (alias) => resolveEnvironmentAlias(alias, options),
+      readOnly: async (alias) => resolveEnvironmentRegistrationAlias(alias, registration),
     },
   );
   const liveObservation = options.observeLiveTarget
@@ -106,15 +107,5 @@ function environmentFailure(code) {
 }
 
 function digest(input) {
-  return `sha256:${createHash('sha256').update(stableJson(input)).digest('hex')}`;
-}
-
-function stableJson(input) {
-  if (Array.isArray(input)) return `[${input.map(stableJson).join(',')}]`;
-  if (input !== null && typeof input === 'object') {
-    return `{${Object.keys(input).sort().map((key) =>
-      `${JSON.stringify(key)}:${stableJson(input[key])}`
-    ).join(',')}}`;
-  }
-  return JSON.stringify(input);
+  return `sha256:${createHash('sha256').update(stableEnvironmentJson(input)).digest('hex')}`;
 }
