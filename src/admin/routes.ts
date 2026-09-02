@@ -455,7 +455,7 @@ import {
 } from '../slack/agent-access.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
-import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
+import { createGatewayDeploymentClient, resolveChickpeaGatewayUrl } from '../slack/gateway/runtime.ts';
 import { cloudflareWorkerVersionId } from '../config/cloudflare-version.ts';
 import {
   GATEWAY_BINDING_SETTING,
@@ -2990,6 +2990,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.body(slackSetupClientScript());
   });
 
+  app.get('/admin/setup/gateway-continue.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    return c.body(slackAuthorizationHandoffScript(
+      new URL(resolveChickpeaGatewayUrl(c.env as PlatformEnv | undefined)).origin,
+    ));
+  });
+
   app.get('/admin/setup/manual/client.js', (c) => {
     authResponseHeaders(c);
     c.header('Content-Type', 'application/javascript; charset=UTF-8');
@@ -3195,7 +3203,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           limiter.recordSuccess(`slack_setup_operation_${action}`, setup.id),
           limiter.recordSuccess('slack_setup_deployment', 'deployment'),
         ]);
-        return c.redirect(claim.authorizationUrl, 303);
+        return c.html(renderSlackAuthorizationHandoffPage(
+          claim.authorizationUrl,
+          new URL(resolveChickpeaGatewayUrl(c.env as PlatformEnv | undefined)).origin,
+        ));
       } else if (action === 'gateway_refresh') {
         const result = await createGatewayDeploymentClient(
           c.env as PlatformEnv | undefined,

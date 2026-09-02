@@ -16963,22 +16963,29 @@ function renderSlackJourneyPage(input: {
 }
 
 /** Complete a same-origin POST before navigating across the strict form-action CSP boundary. */
-export function renderSlackAuthorizationHandoffPage(authorizationUrl: string): string {
+export function renderSlackAuthorizationHandoffPage(
+  authorizationUrl: string,
+  gatewayOrigin?: string,
+): string {
   const target = new URL(authorizationUrl);
-  const allowedPath = target.pathname === '/oauth/v2/authorize' ||
-    target.pathname === '/openid/connect/authorize';
-  if (target.origin !== 'https://slack.com' || !allowedPath ||
+  const slackAuthorization = target.origin === 'https://slack.com' &&
+    (target.pathname === '/oauth/v2/authorize' || target.pathname === '/openid/connect/authorize');
+  // Only deployment configuration may opt into the shared-app claim handoff.
+  const gatewayAuthorization = target.origin === gatewayOrigin &&
+    /^\/install\/[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(target.pathname) && !target.search;
+  if (target.protocol !== 'https:' || (!slackAuthorization && !gatewayAuthorization) ||
       target.username || target.password || target.hash) {
     throw new TypeError('Slack authorization URL is invalid.');
   }
   const safeTarget = escapeHtml(target.toString());
+  const script = gatewayAuthorization ? '/admin/setup/gateway-continue.js' : '/auth/slack/continue.js';
   return renderSlackJourneyPage({
     surface: 'authorization-handoff',
     eyebrow: 'Secure Slack handoff',
     title: 'Opening Slack…',
     intro: 'Chickpea prepared a fresh, short-lived Slack authorization request.',
     status: 'If Slack does not open automatically, use the button below.',
-    body: `<div class="auth-actions"><a class="auth-link" data-slack-authorization-link href="${safeTarget}" rel="noreferrer" autofocus>Continue to Slack</a></div><script src="/auth/slack/continue.js" defer></script>`,
+    body: `<div class="auth-actions"><a class="auth-link" data-slack-authorization-link href="${safeTarget}" rel="noreferrer" autofocus>Continue to Slack</a></div><script src="${script}" defer></script>`,
   });
 }
 
