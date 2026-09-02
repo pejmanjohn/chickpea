@@ -562,6 +562,7 @@ function verifyNpmPackManifest() {
     '.dev.vars.example',
     '.env.example',
     'LICENSE',
+    'NOTICE',
     'README.md',
     'SETUP_AGENT.md',
     'TELEMETRY.md',
@@ -700,9 +701,12 @@ try {
   if (!existsSync(join(scratch, 'LICENSE'))) {
     fail('Export is missing LICENSE');
   }
+  if (!existsSync(join(scratch, 'NOTICE'))) {
+    fail('Export is missing NOTICE');
+  }
 
   const packageJson = JSON.parse(readFileSync(join(scratch, 'package.json'), 'utf8'));
-  if (packageJson.private !== true || !packageJson.description || packageJson.license !== 'MIT' || !packageJson.repository) {
+  if (packageJson.private !== true || !packageJson.description || packageJson.license !== 'Apache-2.0' || !packageJson.repository) {
     fail('Export package.json must remain private and include its source metadata');
   }
 

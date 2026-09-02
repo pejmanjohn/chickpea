@@ -12,7 +12,7 @@
 
 <div align="center">
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-555555.svg?labelColor=333333&color=2EA44F)](./LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-555555.svg?labelColor=333333&color=2EA44F)](./LICENSE)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.19-555555?labelColor=333333&color=339933)](https://nodejs.org)
 [![Runs on](https://img.shields.io/badge/Runs_on-Cloudflare_Workers_or_Node-555555?labelColor=333333&color=F38020)](#install)
 [![Built on Flue](https://img.shields.io/badge/Built_on-Flue-555555?labelColor=333333&color=DDA126)](https://flueframework.com)
@@ -37,7 +37,7 @@
 
 Chickpea gives your team AI teammates in Slack. You address them by name. `@support` answers the billing question in the channel where someone asked it. `@revops` posts Monday's pipeline numbers from HubSpot on a schedule. `@oncall` reads the repo before it answers. Each one has its own instructions, memory, connected accounts, and list of channels it's allowed to work in. You set all of that up by asking, in Slack.
 
-The difference is where they work. Chickpea is MIT-licensed and you deploy it yourself, to your own Cloudflare account or your own server, pointed at whichever model provider you want. Under the hood every Agent runs on [Flue](https://flueframework.com), the open agent framework from the Astro team, now part of Cloudflare. More in [How It Works](#how-it-works).
+The difference is where they work. Chickpea is licensed under Apache 2.0 and you deploy it yourself, to your own Cloudflare account or your own server, pointed at whichever model provider you want. Under the hood every Agent runs on [Flue](https://flueframework.com), the open agent framework from the Astro team, now part of Cloudflare. More in [How It Works](#how-it-works).
 
 ---
 
@@ -414,7 +414,7 @@ Per turn: 4 files, 8 MiB each, 12 MiB total, 100 PDF pages, 32,000 characters pe
 Because then every channel that bot is in has every credential that bot holds, and everything it learns anywhere it can say anywhere. Agents exist so you can put a wall between support's Zendesk and finance's spreadsheets without running a second deployment.
 
 **"What does this cost to run?"**
-Chickpea itself is MIT-licensed with no per-seat pricing and no metering. You pay your model provider directly for API usage. Workers, Durable Objects, D1, and Workers AI usage runs in your own Cloudflare account under whatever plan you're on, and the optional coding sandbox requires Workers Paid. Running on your own Node host, the infrastructure bill is whatever that host costs you.
+Chickpea itself is licensed under Apache 2.0 with no per-seat pricing and no metering. You pay your model provider directly for API usage. Workers, Durable Objects, D1, and Workers AI usage runs in your own Cloudflare account under whatever plan you're on, and the optional coding sandbox requires Workers Paid. Running on your own Node host, the infrastructure bill is whatever that host costs you.
 
 **"How do I see what an Agent actually did?"**
 Most of it is already visible: work happens in Slack threads, in the open, under the Agent's own name. In Admin, the Memory tab shows exactly what an Agent retained (and lets you edit or delete it), and the Schedules tab shows status, last run, next run, and a run-history and activity inspector for scheduled work. One deliberate gap: activity telemetry is fixed-schema and content-free, and Admin has no searchable conversation archive. The conversation itself lives in Slack and in your deployment's transcript store.
@@ -449,4 +449,6 @@ Node **>=22.19.0** is pinned in `.nvmrc`. Several `verify:*:live` variants exist
 
 ## License
 
-[MIT](LICENSE). Use it, fork it, run it for your company, sell what you build on it.
+[Apache License 2.0](LICENSE). Use it, fork it, run it for your company, sell what you build on it, subject to the license terms.
+
+Copyright (c) 2026 Pejman Pour-Moezzi. See [NOTICE](NOTICE).
