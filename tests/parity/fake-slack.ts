@@ -101,6 +101,10 @@ export interface FakeSlackBehaviorConfig {
   channelMembers?: Record<string, string[]>;
   /** Workspace directory served by users.list/users.info. */
   workspaceUsers?: FakeSlackUser[];
+  /** Explicit user-to-DM mapping returned by conversations.open. */
+  directMessages?: Record<string, string>;
+  /** Inject a conversations.open failure; null restores normal DM behavior. */
+  conversationsOpenError?: string | null;
   /**
    * Force `conversations.join` to answer `{ ok:false, error }` (e.g.
    * `missing_scope` for installs that predate the `channels:join` scope). When
@@ -238,6 +242,8 @@ export class FakeSlackBackend {
   private reactionsRemoveError: string | undefined;
   private channelMembers: Record<string, string[]>;
   private workspaceUsers: FakeSlackUser[];
+  private directMessages: Record<string, string>;
+  private conversationsOpenError: string | undefined;
   private userGroups: Array<{
     id: string;
     name: string;
@@ -285,6 +291,8 @@ export class FakeSlackBackend {
     this.reactionsRemoveError = slack.reactionsRemoveError;
     this.channelMembers = slack.channelMembers ?? {};
     this.workspaceUsers = slack.workspaceUsers ?? [];
+    this.directMessages = slack.directMessages ?? {};
+    this.conversationsOpenError = slack.conversationsOpenError ?? undefined;
     this.oauth = slack.oauth;
     this.providerMode = config.provider?.mode ?? 'ok';
     this.replyText = config.provider?.replyText ?? STUB_REPLY_MARKER;
@@ -523,6 +531,12 @@ export class FakeSlackBackend {
       }
       if (config.slack.workspaceUsers !== undefined) {
         this.workspaceUsers = config.slack.workspaceUsers;
+      }
+      if (config.slack.directMessages !== undefined) {
+        this.directMessages = config.slack.directMessages;
+      }
+      if (config.slack.conversationsOpenError !== undefined) {
+        this.conversationsOpenError = config.slack.conversationsOpenError ?? undefined;
       }
       if (config.slack.oauth !== undefined) {
         this.oauth = config.slack.oauth;
@@ -873,6 +887,14 @@ export class FakeSlackBackend {
         };
       case 'conversations.list':
         return this.conversationsListResponse(body);
+      case 'conversations.open': {
+        if (this.conversationsOpenError) return { ok: false, error: this.conversationsOpenError };
+        const user = String(body.users ?? '');
+        const id = this.directMessages[user];
+        return id
+          ? { ok: true, channel: { id, is_im: true, user } }
+          : { ok: false, error: 'channel_not_found' };
+      }
       case 'conversations.info': {
         const channelId = String(body.channel ?? '');
         const found = this.channels.find((channel) => channel.id === channelId);
@@ -922,7 +944,7 @@ export class FakeSlackBackend {
           return { ok: false, error: handle ? 'handle_already_exists' : 'invalid_arguments' };
         }
         const group = {
-          id: `S_FAKE_${this.userGroups.length + 1}`,
+          id: `SFAKE${this.userGroups.length + 1}`,
           name: String(body.name ?? handle),
           handle,
           ...(body.description ? { description: String(body.description) } : {}),

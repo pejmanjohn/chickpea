@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { keepEventLoopAlive } from './helpers/keep-event-loop-alive.ts';
 
 import {
   MAX_SLACK_ATTACHMENT_BYTES,
@@ -452,7 +453,8 @@ test('corrupt PDFs and parser deadline exhaustion are named failures with no par
   assert.deepEqual(deadline.failures.map(({ code }) => code), ['attachment_deadline_exceeded']);
 });
 
-test('one normalization deadline aborts a blocking later gateway read', async () => {
+test('one normalization deadline aborts a blocking later gateway read', { timeout: 5_000 }, async (t) => {
+  keepEventLoopAlive(t);
   const startedAt = Date.now();
   let secondSignal: AbortSignal | undefined;
   const result = await normalizeSlackAttachments({
@@ -481,7 +483,8 @@ test('one normalization deadline aborts a blocking later gateway read', async ()
   }]);
 });
 
-test('a blocked PDF operation invokes cancellation at the remaining deadline', async () => {
+test('a blocked PDF operation invokes cancellation at the remaining deadline', { timeout: 5_000 }, async (t) => {
+  keepEventLoopAlive(t);
   let cancellations = 0;
   await assert.rejects(
     () => awaitAttachmentPdfOperation(

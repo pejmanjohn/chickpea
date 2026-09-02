@@ -21,6 +21,7 @@ import {
   renderSlackSignInPage,
 } from './page.ts';
 import { onboardingAssetBytes } from './onboarding-assets.ts';
+import { createPublicAssetRoutes } from '../assets/routes.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import {
   RoutineContentAccessResolver,
@@ -1308,6 +1309,7 @@ const turnRecoveryResolveSchema = v.strictObject({
 });
 export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const app = new Hono();
+  app.route('/', createPublicAssetRoutes());
   const principalByContext = new WeakMap<object, AuthPrincipal>();
   const betterAuthByContext = new WeakMap<object, Promise<BetterAuthContext | undefined>>();
   const managedProvidersByContext = new WeakMap<object, ManagedConnectionProviderRegistry>();
@@ -2996,8 +2998,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // The pre-owner manual setup journey embeds these immutable historical
   // screenshots, so they must remain available before the Admin auth gate.
-  app.get('/admin/assets/onboarding/:name', (c) => {
-    const bytes = onboardingAssetBytes(c.req.param('name'));
+  app.get('/admin/assets/onboarding/:name', async (c) => {
+    const bytes = await onboardingAssetBytes(c.req.param('name'));
     if (!bytes) return c.notFound();
     c.header('Cache-Control', 'public, max-age=31536000, immutable');
     c.header('Content-Type', 'image/webp');

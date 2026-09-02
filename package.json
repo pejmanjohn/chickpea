@@ -15,6 +15,9 @@
     "LICENSE",
     "NOTICE",
     "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "AGENTS.md",
     "SETUP_AGENT.md",
     "TELEMETRY.md",
     "assets",
@@ -22,6 +25,8 @@
     "docs/authentication.md",
     "docs/shared-gateway-data-handling.md",
     "docs/runbooks/auth-db-deployment.md",
+    "docs/runbooks/operations.md",
+    "docs/runbooks/releasing.md",
     "docs/runbooks/coding-sandbox-deployment.md",
     "docs/runbooks/composio-managed-connectors.md",
     "docs/runbooks/product-telemetry.md",
@@ -44,6 +49,12 @@
     "wrangler.jsonc"
   ],
   "type": "module",
+  "imports": {
+    "#chickpea-assets": {
+      "workerd": "./src/assets/read.cloudflare.ts",
+      "default": "./src/assets/read.node.ts"
+    }
+  },
   "engines": {
     "node": ">=22.19.0"
   },

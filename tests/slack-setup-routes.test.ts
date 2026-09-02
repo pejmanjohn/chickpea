@@ -104,7 +104,10 @@ test('manual setup is a separate capability-gated journey that adopts into share
       action: 'open', capability: authority.capability,
     });
     assert.equal(opened.status, 200);
-    assert.match(await opened.text(), /Create Chickpea/);
+    const openedHtml = await opened.text();
+    assert.match(openedHtml, /Create Chickpea/);
+    assert.match(openedHtml, /src="\/onboarding\/create-workspace\.webp"/);
+    assert.doesNotMatch(openedHtml, /\/admin\/assets\/onboarding\//);
 
     const expectedManifest = buildExpectedManifest();
     const invalid = await postManualSetup(app, env, {

@@ -31,11 +31,11 @@ test('a shuffled cycle assigns every default avatar before repeating one', () =>
     /^chickpea-avatar-v1:\d{2}:nonce-repeat$/);
 });
 
-test('the runtime pool is byte-identical to the twelve committed PNG assets', () => {
+test('the runtime pool is byte-identical to the twelve committed PNG assets', async () => {
   for (let index = 0; index < DEFAULT_AGENT_AVATAR_FILES.length; index += 1) {
     const seed = `chickpea-avatar-v1:${String(index + 1).padStart(2, '0')}:asset-check`;
     const expected = readFileSync(`${AVATAR_ROOT}/${DEFAULT_AGENT_AVATAR_FILES[index]}`);
-    assert.deepEqual(Buffer.from(defaultAgentAvatarPng(seed)), expected);
+    assert.deepEqual(Buffer.from(await defaultAgentAvatarPng(seed)), expected);
   }
 });
 

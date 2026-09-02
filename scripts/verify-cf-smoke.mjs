@@ -32,6 +32,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
+import { hasScheduledComposition } from './worker-artifact.mjs';
 
 import {
   REPO_ROOT,
@@ -40,6 +41,7 @@ import {
   assertNodeVersion,
   getFreePort,
   loadFake,
+  loadTsModule,
   postSignedEvent,
   delay,
 } from './lib/offline-harness.mjs';
@@ -104,6 +106,7 @@ const SLOW_TURN_DELAY_MS = Number(process.env.SMOKE_SLOW_TURN_DELAY_MS ?? 36_000
 
 const failures = [];
 let adminCookie = '';
+let defaultAgentMention = '';
 function check(ok, label, detail = '') {
   const status = ok ? 'ok  ' : 'FAIL';
   console.log(`  [${status}] ${label}${detail ? ` — ${detail}` : ''}`);
@@ -258,8 +261,7 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
     'built artifact enables Workers Traces for metadata-only Flue spans',
   );
   check(
-    bundle.includes('heartbeat: runRoutineHeartbeat') &&
-      bundle.includes('maintenance: runWorkMaintenance') &&
+    hasScheduledComposition(readFileSync(join(artifactRoot, config.main), 'utf8')) &&
       bundle.includes('chickpea-slack-v2') &&
       bundle.includes('chickpea-routine-intent-v2') &&
       bundle.includes('chickpea-routine-execution-v2') &&
@@ -272,7 +274,8 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
     bundle.includes('routine_schedule_actions') &&
       bundle.includes('manage_scheduled_work') &&
       bundle.includes('slackScheduleActionInvoke') &&
-      bundle.includes('retryDueSlackScheduleActions'),
+      bundle.includes('claimDueScheduleActions') &&
+      bundle.includes('schedule_action_payload_unavailable'),
     'built Worker carries the durable schedule-action ledger, tool, RPC, and alarm recovery path',
   );
 }
@@ -548,7 +551,7 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
   );
 
   const providerCallsBeforeInstall = backend.providerCalls().length;
-  const preInstall = await postSignedEvent(eventsUrl, mentionEvent('Ev_SMOKE_PRE_INSTALL'));
+  const preInstall = await postSignedEvent(eventsUrl, mentionEvent('Ev_SMOKE_PRE_INSTALL', { baseApp: true }));
   await backend.quiesce();
   check(
     preInstall.status === 200 && backend.providerCalls().length === providerCallsBeforeInstall &&
@@ -632,9 +635,9 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
     .join(',');
   check(
     ownerCallback.status === 200 && Boolean(adminCookie) &&
-      ownerCallbackBody.includes('You’re the first Owner'),
+      ownerCallbackBody.includes('data-slack-auth-surface="owner-complete"'),
     'exact installer OIDC creates the first Owner and only then issues a Better Auth session',
-    `HTTP ${ownerCallback.status} cookies=${callbackCookieNames || 'none'} session=${Boolean(adminCookie)} ownerPage=${ownerCallbackBody.includes('You’re the first Owner')}`,
+    `HTTP ${ownerCallback.status} cookies=${callbackCookieNames || 'none'} session=${Boolean(adminCookie)} ownerPage=${ownerCallbackBody.includes('data-slack-auth-surface="owner-complete"')}`,
   );
 
   const unauthenticated = await fetch(`${baseUrl}/admin/api/agents`);
@@ -812,7 +815,8 @@ async function measureRepresentativeStateWrite(baseUrl) {
   return { count: samples.length, p95 };
 }
 
-function mentionEvent(eventId = 'Ev_SMOKE_MENTION_1') {
+function mentionEvent(eventId = 'Ev_SMOKE_MENTION_1', { baseApp = false } = {}) {
+  if (!baseApp && !defaultAgentMention) throw new Error('Publish the Default Agent before sending its mention.');
   return {
     token: 'verification-token-not-a-secret',
     team_id: WORKSPACE,
@@ -821,9 +825,10 @@ function mentionEvent(eventId = 'Ev_SMOKE_MENTION_1') {
     event_time: 1782770400,
     type: 'event_callback',
     event: {
-      type: 'app_mention',
+      type: baseApp ? 'app_mention' : 'message',
+      ...(!baseApp ? { channel_type: 'channel' } : {}),
       user: OWNER_USER_ID,
-      text: `<@${BOT_USER_ID}> smoke: please draft a short reply`,
+      text: `${baseApp ? `<@${BOT_USER_ID}>` : defaultAgentMention} smoke: please draft a short reply`,
       ts: MENTION_TS,
       channel: CHANNEL,
       event_ts: MENTION_TS,
@@ -857,7 +862,7 @@ function memoryRememberEvent() {
     ...mentionEvent('Ev_SMOKE_MEMORY_1'),
     event: {
       ...mentionEvent('Ev_SMOKE_MEMORY_1').event,
-      text: `<@${BOT_USER_ID}> !remember release-guidance — Use the release checklist.\nRun focused tests before release.`,
+      text: `${defaultAgentMention} !remember release-guidance — Use the release checklist.\nRun focused tests before release.`,
       ts: MEMORY_TS,
       event_ts: MEMORY_TS,
     },
@@ -865,7 +870,7 @@ function memoryRememberEvent() {
 }
 
 function aiMentionEvent() {
-  const payload = mentionEvent('Ev_SMOKE_AI_PRIVACY_1');
+  const payload = mentionEvent('Ev_SMOKE_AI_PRIVACY_1', { baseApp: true });
   return {
     ...payload,
     event: {
@@ -887,9 +892,10 @@ function slowMentionEvent(eventId = 'Ev_SMOKE_SLOW_1') {
     event_time: 1782771000,
     type: 'event_callback',
     event: {
-      type: 'app_mention',
+      type: 'message',
+      channel_type: 'channel',
       user: OWNER_USER_ID,
-      text: `<@${BOT_USER_ID}> slow: take as long as you need`,
+      text: `${defaultAgentMention} slow: take as long as you need`,
       ts: SLOW_MENTION_TS,
       channel: SLOW_CHANNEL,
       event_ts: SLOW_MENTION_TS,
@@ -1013,6 +1019,10 @@ async function main() {
         { id: OWNER_USER_ID, teamId: WORKSPACE },
         { id: BOT_USER_ID, teamId: WORKSPACE, isBot: true, isAppUser: true },
       ],
+      directMessages: { [OWNER_USER_ID]: ONBOARDING_DM_CHANNEL },
+      // A transient welcome-DM failure must not hold new turns behind the
+      // receipt outbox's exponential-backoff alarm. Restored after that probe.
+      conversationsOpenError: 'internal_error',
     },
   });
   const fakePort = await getFreePort();
@@ -1023,10 +1033,22 @@ async function main() {
   const baseUrl = `http://127.0.0.1:${PORT}`;
   const eventsUrl = `${baseUrl}${EVENTS_PATH}`;
   let wrangler = spawnWranglerDev();
+  const previousWorkerOutputs = [];
 
   try {
     console.log('• waiting for wrangler dev (round 1)…');
     await waitForSetupReady(wrangler, baseUrl);
+    const { PUBLIC_ASSET_PATHS } = await loadTsModule('src/assets/public-assets.ts');
+    for (const assetPath of PUBLIC_ASSET_PATHS) {
+      const response = await fetch(`${baseUrl}/${assetPath}`);
+      check(response.status === 200 &&
+        Buffer.from(await response.arrayBuffer()).equals(readFileSync(join(REPO_ROOT, 'assets', assetPath))),
+      `Cloudflare static asset preserves ${assetPath}`);
+    }
+    const onboardingImage = await fetch(`${baseUrl}/admin/assets/onboarding/ready.webp`);
+    check(onboardingImage.status === 200 &&
+      Buffer.from(await onboardingImage.arrayBuffer()).equals(readFileSync(join(REPO_ROOT, 'assets/onboarding/ready.webp'))),
+    'Worker ASSETS binding preserves the legacy onboarding image URL');
     await completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend);
     const agentsResult = await adminFetch(baseUrl, '/admin/api/agents');
     if (agentsResult.status !== 200 || !Array.isArray(agentsResult.body?.agents)) {
@@ -1144,7 +1166,7 @@ async function main() {
 
     const seededWorkersFavorites = await adminFetch(baseUrl, '/admin/api/providers/workers-ai/favorites');
     const expectedWorkersSeed = [
-      '@cf/zai-org/glm-5.2',
+      '@cf/zai-org/glm-5.3-flash',
       '@cf/moonshotai/kimi-k2.7-code',
       '@cf/openai/gpt-oss-120b',
       '@cf/meta/llama-4-scout-17b-16e-instruct',
@@ -1349,6 +1371,11 @@ async function main() {
       'Agent publication created the active Channel grant and Slack handle',
       `HTTP ${put.status}`,
     );
+    const userGroupId = put.body?.agent?.slackPresence?.userGroupId;
+    if (typeof userGroupId !== 'string' || !/^S[A-Z0-9]+$/.test(userGroupId)) {
+      throw new Error('Published Default Agent has no valid Slack handle.');
+    }
+    defaultAgentMention = `<!subteam^${userGroupId}>`;
     const onboardingBeforeProvider = await adminFetch(baseUrl, '/admin/api/onboarding');
     check(
       onboardingBeforeProvider.status === 200 && onboardingBeforeProvider.body?.stage === 'choose_provider',
@@ -1475,21 +1502,43 @@ async function main() {
     });
     check(patch.status === 200, 'admin PATCH pinned the agent model', `HTTP ${patch.status}`);
 
-    // The real turn: signed app_mention → admission → in-process dispatch →
-    // agent DO → local-stub provider → final delivered to fake Slack.
+    // Observe a fresh third-or-later failed receipt delivery. Its next retry
+    // is at least 20 seconds away, longer than the new-turn budget below.
+    const retryLogOffset = wrangler.getOutput().length;
+    const retryDeadline = Date.now() + 90_000;
+    let sawDeferredReceipt = false;
+    while (Date.now() < retryDeadline) {
+      const attempts = [...wrangler.getOutput().slice(retryLogOffset).matchAll(
+        /receipt delivery failed[^\n]*"attempt":(\d+)[^\n]*"terminal":false[^\n]*"failureCode":"internal_error"/g,
+      )];
+      sawDeferredReceipt = attempts.some((match) => Number(match[1]) >= 3);
+      if (sawDeferredReceipt) break;
+      await delay(100);
+    }
+    check(sawDeferredReceipt, 'transient welcome failure armed a later receipt retry');
+    if (!sawDeferredReceipt) throw new Error('could not establish the receipt retry regression precondition');
+    await backend.quiesce(250, 2000);
+
+    // Address the published Default Agent, not the base app. After onboarding,
+    // a base-app mention targets Chickpea management, which has its own model
+    // and intentionally does not expose a user Agent's memory.
     const turnStartedAt = Date.now();
     const admission = await postSignedEvent(eventsUrl, mentionEvent());
     check(
       admission.status === 200 || admission.status === 202,
-      'signed app_mention admitted',
+      'signed Default Agent mention admitted',
       `HTTP ${admission.status}`,
     );
-    const finals = await waitForFinalCount(backend, 1, 90_000);
+    const finals = await waitForFinalCount(backend, 1, 10_000);
     const turnWallTimeMs = Date.now() - turnStartedAt;
+    check(finals.length === 1 && turnWallTimeMs < 10_000,
+      'new turn does not wait behind the welcome receipt retry', `${turnWallTimeMs}ms`);
+    backend.configure({ slack: { conversationsOpenError: null } });
     check(finals.length === 1, 'turn delivered exactly one final', `${finals.length} finals`);
     check(
       Boolean(finals[0]?.text.includes(STUB_REPLY_MARKER)),
       'final carries the stub provider reply',
+      finals[0]?.text ?? 'no final',
     );
     check(finals[0]?.channel === CHANNEL, 'final landed in the mention channel');
     console.log(`• measured turn wall-time: ${turnWallTimeMs}ms (signed POST → final on the wire)`);
@@ -1561,6 +1610,7 @@ async function main() {
     // and the config all live in the state DO's SQLite and must survive.
     console.log('• restarting wrangler dev (persistence round)…');
     await stopWrangler(wrangler);
+    previousWorkerOutputs.push(wrangler.getOutput());
     wrangler = spawnWranglerDev();
     await waitForAdminReady(wrangler, baseUrl);
 
@@ -1700,7 +1750,8 @@ async function main() {
     );
   } catch (err) {
     console.error(`\nFAIL cf-smoke: ${err instanceof Error ? err.message : String(err)}`);
-    const chickpeaDiagnostics = wrangler.getOutput()
+    const output = [...previousWorkerOutputs, wrangler.getOutput()].join('\n');
+    const chickpeaDiagnostics = output
       .split('\n')
       .filter((line) => line.includes('[chickpea]') || line.includes('[work]'));
     if (chickpeaDiagnostics.length > 0) {
@@ -1708,7 +1759,7 @@ async function main() {
       console.error(chickpeaDiagnostics.join('\n'));
     }
     console.error('\n--- wrangler dev output (tail) ---');
-    console.error(wrangler.getOutput().split('\n').slice(-60).join('\n'));
+    console.error(output.split('\n').slice(-60).join('\n'));
     console.error('\n--- fake Slack wire log (methods) ---');
     console.error(backend.wireLog.map((entry) => `${entry.kind}:${entry.method}`).join('\n'));
     process.exitCode = 1;

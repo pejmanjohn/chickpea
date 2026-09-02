@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DO_NOT_TRACK: '1'
+  WRANGLER_SEND_METRICS: 'false'
+
+jobs:
+  test:
+    name: Tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '24']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:lockfile-integrity
+      # Build first so the artifact contract test runs instead of skipping.
+      # Never run build and test concurrently in the same checkout.
+      - run: npm run build
+      - run: npm run test:ci
+        env:
+          TAG_DB_PATH: ':memory:'
+          SLACK_STATE_DB_PATH: ':memory:'
+          CHICKPEA_AUTH_DB_PATH: ':memory:'
+      - run: npm run verify:admin-ui
+      - run: node scripts/verify-flue-offline-turn.mjs
+
+  source-export:
+    name: Clean source export
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      # This gate installs and tests an immutable HEAD archive, not this tree.
+      - run: npm run verify:oss-export
+
+  workerd:
+    name: Cloudflare runtime smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:cf-smoke
+
+  release-checks:
+    name: Release checks
+    if: always()
+    needs: [test, source-export, workerd]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every gate to pass
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          EXPORT_RESULT: ${{ needs.source-export.result }}
+          WORKERD_RESULT: ${{ needs.workerd.result }}
+        run: |
+          test "$TEST_RESULT" = success
+          test "$EXPORT_RESULT" = success
+          test "$WORKERD_RESULT" = success

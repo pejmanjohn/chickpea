@@ -233,22 +233,31 @@ test(
     assert.doesNotMatch(mainBundle, /x-flue-internal-token|\/agents\/slack-thread|\/workflows\//);
 
     const bundle = await builtJavaScript();
-    assert.match(bundle, /#region node_modules\/agents\/dist\/agent-tool-types\.js/);
-    assert.match(bundle, /var Agent = class Agent extends Server/);
-    assert.match(bundle, /async function getAgentByName\(/);
-    assert.match(bundle, /async schedule\(when, callback, payload, options\)/);
-    assert.match(bundle, /async runFiber\(name, fn\)/);
-    assert.match(bundle, /async onFiberRecovered\(_ctx\)/);
-    assert.match(bundle, /async runWorkflow\(workflowName, params, options\)/);
-    assert.match(bundle, /class FlueGeneratedAgent extends Base/);
-    assert.match(bundle, /return \(await getAgentByName\(binding, instanceId\)\)\.fetch\(request\)/);
-    for (const className of V2_CLASSES) {
-      assert.equal(
-        bundle.includes(`var ${className} = createFlueAgentClass({`),
-        true,
-        `${className} must be generated from the installed Agents base`,
-      );
+    // Minification renames locals and strips source-region comments. Inspect
+    // retained module provenance and public contracts instead of those spellings.
+    const modules = JSON.parse(await readFile(
+      path.join(path.dirname(configPath), 'bundle-modules.json'), 'utf8',
+    )) as Array<{ id: string; renderedLength: number }>;
+    const retainedModules = modules.filter((module) => module.renderedLength > 0);
+    assert.ok(retainedModules.some((module) =>
+      module.id.includes('node_modules/agents/dist/agent-tool-types.js')
+    ));
+    assert.ok(retainedModules.some((module) =>
+      module.id.includes('node_modules/@flue/runtime/')
+    ));
+    for (const method of ['schedule', 'runFiber', 'onFiberRecovered', 'runWorkflow']) {
+      assert.match(bundle, new RegExp(`async ${method}\\(`));
     }
-    assert.doesNotMatch(bundle, /#region node_modules\/(?:ai|@ai-sdk|@cloudflare\/codemode)\//);
+    for (const className of V2_CLASSES) {
+      assert.match(
+        mainBundle,
+        new RegExp(`AgentBase:[^,]+,runtime:[^,]+,className:["'\x60]${className}["'\x60]`),
+        `${className} must retain its Agents base and runtime wiring`,
+      );
+      assert.match(mainBundle, new RegExp(`\\bas ${className}\\b`));
+    }
+    assert.deepEqual(retainedModules.filter((module) =>
+      /node_modules\/(?:ai|@ai-sdk|@cloudflare\/codemode)\//.test(module.id)
+    ), []);
   },
 );

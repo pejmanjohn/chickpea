@@ -1,0 +1,97 @@
+# Contributing to Chickpea
+
+Chickpea is a self-hosted Slack agent. Small, focused contributions are welcome.
+For a substantial feature or behavior change, open an issue first so we can
+agree on the problem and scope. Report security vulnerabilities privately;
+see [SECURITY.md](SECURITY.md).
+
+## Local development
+
+Use Node 22.19.0 or later. CI exercises the minimum version and Node 24.
+
+```sh
+npm ci
+npm run dev
+```
+
+See [the setup guide](SETUP_AGENT.md) for local Slack configuration. Use your
+own test workspace, credentials, and data. Never commit `.env`, `.dev.vars`,
+SQLite databases, credential keyrings, setup links, or live test transcripts.
+Production Node hosting is described in [the operations guide](docs/runbooks/operations.md).
+
+## Pull requests
+
+1. Fork the repository if you do not have push access. Create a topic branch
+   from current `origin/main` (or `upstream/main` in your fork).
+2. Make the change and add regression coverage for changed behavior. Keep
+   unrelated refactors and generated-asset changes out of the PR.
+3. Push the topic branch and open a GitHub pull request against `main`. Explain
+   the problem, the change, and what you actually verified. Link the issue if
+   there is one.
+4. Resolve feedback and let the required **Release checks** pass. Maintainers
+   squash-merge on GitHub, then update their local `main` from origin.
+
+Do not merge a worktree into local `main` and push it directly. Do not force-push
+`main`. A PR merge does not deploy Chickpea or publish a release.
+
+## Verification
+
+Run builds and tests **serially**: tests inspect generated artifacts, so a
+concurrent build can make them read a partially written artifact.
+
+```sh
+npm run build
+TAG_DB_PATH=:memory: SLACK_STATE_DB_PATH=:memory: CHICKPEA_AUTH_DB_PATH=:memory: npm run test:ci
+npm run verify:admin-ui
+DO_NOT_TRACK=1 node scripts/verify-flue-offline-turn.mjs
+DO_NOT_TRACK=1 npm run verify:durability
+DO_NOT_TRACK=1 npm run verify:providers
+DO_NOT_TRACK=1 npm run verify:cf-smoke
+npm run verify:lockfile-integrity
+```
+
+The offline verifiers use fake Slack/provider services and isolated local state.
+They do not require production credentials. `verify:cf-smoke` builds both
+Cloudflare profiles and runs the core profile in local workerd; it takes several
+minutes. Do not run it against a directory whose `.wrangler-state` you need to
+keep: that directory is disposable smoke-test state.
+
+After committing the proposed source, run `npm run verify:oss-export`. It checks
+an archive of **HEAD**, not uncommitted edits, installs from the lockfile, and
+runs tests, offline runtime checks, and a deployment dry run in a temporary
+directory. Private working documents must stay outside the public export;
+adding a public document requires updating the explicit export allowlist.
+
+CI cannot establish real Slack/provider acceptance. Changes to setup, authority,
+delivery, or persistence also need the relevant attended checks from the
+[release checklist](docs/runbooks/releasing.md). Do not describe a build or
+fake-backend result as live acceptance.
+
+## Where things live
+
+| Area | Source |
+| --- | --- |
+| Slack transport, delivery, attachments, avatars | `src/slack/` |
+| Agent execution | `src/agents/` |
+| Admin pages and HTTP routes | `src/admin/` |
+| Authentication and workspace identity | `src/auth/`, `src/identity/` |
+| Connections and credentialed tools | `src/connections/` |
+| Configuration, state, routines | `src/config/`, `src/state/`, `src/routines/` |
+| Public images and runtime asset readers | `assets/`, `src/assets/` |
+| Deployment and acceptance checks | `scripts/`, `tests/` |
+
+Keep authorization checks at every state-changing boundary. Preserve the
+content-free telemetry contract in [TELEMETRY.md](TELEMETRY.md). If a dependency
+changes, include the lockfile and run `npm audit --omit=dev` and lockfile
+verification. Do not edit generated files by hand; use their documented builder.
+
+Keep public raster images in `assets/`, not base64 strings in TypeScript. The
+Cloudflare build uploads that directory as Static Assets alongside the single
+Worker. Node serves the explicit paths in `src/assets/public-assets.ts` from the
+release checkout. Add new runtime images to that list and the source-export
+binary allowlist. Use `npm run avatars:build` or `npm run brand:build` after
+changing their source assets. PDF parsing and uploaded-avatar conversion remain
+server-side and are not public assets.
+
+Contributions are provided under the repository's [Apache-2.0 license](LICENSE).
+Be respectful in issues and reviews; criticize the work, not the person.

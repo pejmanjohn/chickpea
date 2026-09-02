@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { keepEventLoopAlive } from './helpers/keep-event-loop-alive.ts';
 
 import { Hono } from 'hono';
 import { PhotonImage } from '@cf-wasm/photon';
@@ -728,7 +729,8 @@ test('owner setup is write-only, returns Agent continuation, and disable reconci
   }
 });
 
-test('setup shares one request deadline and reports a saved key when preparation exhausts it', async () => {
+test('setup shares one request deadline and reports a saved key when preparation exhausts it', { timeout: 5_000 }, async (t) => {
+  keepEventLoopAlive(t);
   const settings = new SqliteSettingsStore(':memory:');
   const credentials = {
     store: settings,
@@ -791,7 +793,8 @@ test('setup shares one request deadline and reports a saved key when preparation
   }
 });
 
-test('managed reconciliation uses one aggregate admin-request deadline', async () => {
+test('managed reconciliation uses one aggregate admin-request deadline', { timeout: 5_000 }, async (t) => {
+  keepEventLoopAlive(t);
   const settings = new SqliteSettingsStore(':memory:');
   const credentials = {
     store: settings,
@@ -2069,7 +2072,7 @@ test('Agent create owns its handle, generated avatar, edit policy, and creator',
     assert.equal(avatar.headers.get('content-type'), 'image/png');
     const avatarBytes = new Uint8Array(await avatar.arrayBuffer());
     assert.deepEqual([...avatarBytes.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
-    assert.deepEqual(avatarBytes, defaultAgentAvatarPng(agent.slackPresence.avatar.seed));
+    assert.deepEqual(avatarBytes, await defaultAgentAvatarPng(agent.slackPresence.avatar.seed));
     assert.match(avatar.headers.get('cache-control') ?? '', /immutable/);
   } finally {
     fixture.store.close();
@@ -4731,7 +4734,7 @@ test('Slack retry repairs a legacy gateway rendering with the selected gallery b
     assert.equal(response.status, 200, await response.clone().text());
     const body = await response.json() as Record<string, any>;
     assert.deepEqual(published.map(({ revision }) => revision), [1, 2]);
-    assert.deepEqual(published[0]?.bytes, defaultAgentAvatarPng(agent.slackPresence.avatar.seed));
+    assert.deepEqual(published[0]?.bytes, await defaultAgentAvatarPng(agent.slackPresence.avatar.seed));
     assert.deepEqual(published[1]?.bytes, published[0]?.bytes);
     assert.equal(body.agent.slackPresence.avatar.kind, 'generated');
     assert.equal(body.agent.slackPresence.avatar.revision, 2);

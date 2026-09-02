@@ -15,7 +15,10 @@ declare module 'cloudflare:workers' {
    * because the Node and Cloudflare lanes share one TypeScript project.
    */
   interface WorkerEnv {
-    AI: import('@flue/runtime/cloudflare').CloudflareAIBinding;
+    AI: import('@flue/runtime/cloudflare/workers-ai').CloudflareAIBinding;
+    // `wrangler types --include-runtime false` generates ASSETS: Fetcher.
+    // Import its module-scoped type without adding Workers globals to Node.
+    ASSETS: import('@cloudflare/workers-types').Fetcher;
   }
 
   const env: WorkerEnv;
