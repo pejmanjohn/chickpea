@@ -119,6 +119,7 @@ type OnboardingFixture = {
   agentId?: string;
   redirectTo?: string;
 };
+type EnvironmentStatusFixture = Record<string, unknown>;
 type GithubStatusFixture = {
   mode: 'none' | 'app';
   appSlug?: string;
@@ -463,6 +464,7 @@ function runAdminPageHarness(
     initialSearch?: string;
     usageAdminUi?: boolean;
     workspaceAdminUi?: boolean;
+    environmentStatus?: EnvironmentStatusFixture;
     usageApiError?: boolean;
     usageCoverage?: { pricedOperationCount: number; meteredOperationCount: number };
     usageAgentLabel?: string | null;
@@ -2621,6 +2623,11 @@ function runAdminPageHarness(
         ? Promise.resolve(jsonResponse(slackConnection))
         : Promise.resolve(jsonResponse({ error: 'not_found' }, 404));
     }
+    if (path === '/admin/api/environment/status' && method === 'GET') {
+      return harnessOptions.environmentStatus
+        ? Promise.resolve(jsonResponse(harnessOptions.environmentStatus))
+        : Promise.resolve(jsonResponse({ error: 'environment_status_unavailable' }, 404));
+    }
     if (path.startsWith('/admin/api/effective-config?')) {
       if (effectiveError) {
         return Promise.resolve(
@@ -2902,6 +2909,70 @@ function connectedSlackFixture(): SlackConnectionFixture {
   };
 }
 
+function liveEnvironmentFixture(
+  amberHealth: 'ready' | 'unreachable' | 'stale_claim' | 'identity_mismatch' | 'expired_claim',
+): EnvironmentStatusFixture {
+  const target = (name: 'amber' | 'cobalt' | 'fern', health = 'ready') => ({
+    target: name,
+    health,
+    sourceSha: '1234567890abcdef1234567890abcdef12345678',
+    dirty: name === 'amber',
+    servingVersion: `version-${name}`,
+    transport: 'events',
+    workspaceAlias: `env-${name}-workspace`,
+    workspaceLabel: `${name} workspace`,
+    appAlias: `env-${name}-slack-app`,
+    appLabel: `${name} app`,
+    claim: name === 'amber' ? {
+      holderId: 'holder-0123456789abcdef',
+      leaseAgeMs: 120_000,
+      expiresAt: '2026-09-01T20:00:00.000Z',
+    } : null,
+    verifierLock: { status: name === 'amber' ? 'live' : 'clear', ...(name === 'amber' ? { ownerRunId: 'run-amber' } : {}) },
+    schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
+    lastAttestedRevision: '1234567890abcdef1234567890abcdef12345678-dirty',
+    recoveryAction: name === 'amber' ? 'Untrusted recovery text with xoxb-never-render-this' : 'No recovery needed.',
+    credentialToken: 'xoxb-never-render-this',
+  });
+  return {
+    schemaVersion: 'chickpea-environment-status/v1',
+    generatedAt: '2026-09-01T12:00:00.000Z',
+    registryRevision: 9,
+    selectedTarget: 'amber',
+    targets: [target('amber', amberHealth), target('cobalt'), target('fern')],
+    sandbox: {
+      archiveDate: '2027-01-15T00:00:00.000Z',
+      daysUntilArchive: 136,
+      warning: 'none',
+      warningDays: [45, 30, 14],
+      unusedWorkspaceSlots: 2,
+      integrationHeadroom: 37,
+      browserProfilePath: '/private/browser-profile',
+    },
+  };
+}
+
+test('Admin renders the CLI environment identity and all five health states without credential fields', async () => {
+  for (const health of [
+    'ready', 'unreachable', 'stale_claim', 'identity_mismatch', 'expired_claim',
+  ] as const) {
+    const harness = runAdminPageHarness({ environmentStatus: liveEnvironmentFixture(health) });
+    await flushAsync();
+    assert.ok(harness.fetchCalls.some(({ path }) => path === '/admin/api/environment/status'));
+    assert.match(harness.app.innerHTML, new RegExp(`data-environment-target="amber" data-environment-health="${health}"`));
+    assert.match(harness.app.innerHTML, /1234567890abcdef1234567890abcdef12345678 \(dirty\)/);
+    assert.match(harness.app.innerHTML, /version-amber/);
+    assert.match(harness.app.innerHTML, /env-amber-workspace/);
+    assert.match(harness.app.innerHTML, /env-amber-slack-app/);
+    assert.match(harness.app.innerHTML, /holder-0123456789abcdef/);
+    assert.doesNotMatch(harness.app.innerHTML, /worktrees\/amber-owner|codex\/amber-owner/);
+    assert.match(harness.app.innerHTML, /run-amber/);
+    assert.match(harness.app.innerHTML, /d1:0002_mcp_oauth;do:v9/);
+    assert.match(harness.app.innerHTML, /Unused workspace slots: 2/);
+    assert.doesNotMatch(harness.app.innerHTML, /xoxb-never-render-this|private\/browser-profile|credentialToken/);
+  }
+});
+
 test('Member Admin shell exposes only Agent navigation and skips workspace bootstrap requests', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin',
@@ -2928,6 +2999,7 @@ test('Member Admin shell exposes only Agent navigation and skips workspace boots
     '/admin/api/onboarding',
     '/admin/api/channels',
     '/admin/api/workspace-model-default',
+    '/admin/api/environment/status',
   ]) {
     assert.equal(fetchedPaths.includes(path), false, `${path} must not be fetched`);
   }

@@ -8,11 +8,16 @@ import { fileURLToPath } from 'node:url';
 
 import { renderAdminPage } from '../src/admin/page.ts';
 import {
+  createAdminRoutes,
+  projectAdminEnvironmentStatus,
+} from '../src/admin/routes.ts';
+import {
   ONBOARDING_JOURNEY_KEY,
   readOnboardingJourney,
 } from '../src/config/onboarding-state.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
+import { testAdminAuthority } from './helpers/admin-auth.ts';
 
 interface VisualFixture {
   address: string;
@@ -125,6 +130,84 @@ async function waitForFixtureStatePath(child: ReturnType<typeof spawn>): Promise
   });
 }
 
+function runtimeEnvironmentStatus() {
+  const target = (name: 'amber' | 'cobalt' | 'fern', health = 'ready') => ({
+    target: name,
+    health,
+    sourceSha: '1234567890abcdef1234567890abcdef12345678',
+    dirty: false,
+    servingVersion: `version-${name}`,
+    transport: 'events',
+    workspaceAlias: `env-${name}-workspace`,
+    workspaceLabel: `${name} workspace`,
+    appAlias: `env-${name}-slack-app`,
+    appLabel: `${name} app`,
+    claim: name === 'amber' ? {
+      holderId: 'holder-0123456789abcdef',
+      leaseAgeMs: 120_000,
+      expiresAt: '2026-09-01T20:00:00.000Z',
+    } : null,
+    verifierLock: { status: 'clear' },
+    schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
+    lastAttestedRevision: null,
+    recoveryAction: 'xoxb-untrusted-recovery',
+  });
+  return {
+    schemaVersion: 'chickpea-environment-status/v1',
+    generatedAt: '2026-09-01T12:00:00.000Z',
+    registryRevision: 12,
+    selectedTarget: 'amber',
+    targets: [target('amber', 'unreachable'), target('cobalt'), target('fern')],
+    sandbox: {
+      archiveDate: '2027-01-15T00:00:00.000Z',
+      daysUntilArchive: 136,
+      warning: 'none',
+      warningDays: [45, 30, 14],
+      unusedWorkspaceSlots: 2,
+      integrationHeadroom: 37,
+    },
+  };
+}
+
+test('real Admin routes project the optional runtime environment snapshot without trusting recovery text', async () => {
+  const app = createAdminRoutes(testAdminAuthority('environment-status-token'));
+  const input = runtimeEnvironmentStatus();
+  const response = await app.request(
+    'http://localhost/admin/api/environment/status',
+    { headers: { authorization: 'Bearer environment-status-token' } },
+    { CHICKPEA_ENVIRONMENT_STATUS: JSON.stringify(input) },
+  );
+  assert.equal(response.status, 200);
+  const projected = await response.json() as ReturnType<typeof runtimeEnvironmentStatus>;
+  assert.equal(projected.targets[0]?.recoveryAction, 'Check amber Worker and Slack transport reachability.');
+  assert.equal(projected.targets[0]?.claim?.holderId, 'holder-0123456789abcdef');
+  assert.doesNotMatch(JSON.stringify(projected), /xoxb-|worktrees\//iu);
+
+  const oversized = await app.request(
+    'http://localhost/admin/api/environment/status',
+    { headers: { authorization: 'Bearer environment-status-token' } },
+    { CHICKPEA_ENVIRONMENT_STATUS: ' '.repeat(65_537) },
+  );
+  assert.equal(oversized.status, 503);
+});
+
+test('Admin environment projection rejects secret-shaped values in every displayed string', () => {
+  for (const mutate of [
+    (input: any) => { input.generatedAt = '2026-09-01T12:00:00Z'; },
+    (input: any) => { input.targets[0].workspaceLabel = 'xoxb-not-a-label'; },
+    (input: any) => { input.targets[0].workspaceLabel = 'T0123456789'; },
+    (input: any) => { input.targets[0].appLabel = 'owner@example.test'; },
+    (input: any) => { input.targets[0].schemaGeneration = '/private/browser-profile'; },
+    (input: any) => { input.targets[0].verifierLock.ownerRunId = 'credential-token'; },
+    (input: any) => { input.targets[0].verifierLock.ownerRunId = 'U0123456789'; },
+    (input: any) => { input.targets[0].claim.holderId = '/absolute/worktree'; },
+  ]) {
+    const input = runtimeEnvironmentStatus();
+    mutate(input);
+    assert.throws(() => projectAdminEnvironmentStatus(input), /INVALID_ENVIRONMENT_STATUS/u);
+  }
+});
+
 test('visual fixture seeds the real Agent, Channel, readiness, capability, and memory projections', async () => {
   const { startAdminVisualFixture } = await loadFixtureModule();
   const fixture = await startAdminVisualFixture();
@@ -139,6 +222,31 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
     assert.equal(research.capabilityPreviews.skills[0]?.name, 'research-brief');
     assert.equal(research.capabilityPreviews.connectors[0]?.name, 'Linear');
     assert.equal(research.capabilityPreviews.repositories[0]?.name, 'acme/research');
+
+    const environment = await fixtureJson<{
+      selectedTarget: string;
+      targets: Array<{
+        target: string;
+        health: string;
+        sourceSha: string;
+        servingVersion: string;
+        workspaceAlias: string;
+        appAlias: string;
+        recoveryAction: string;
+      }>;
+      sandbox: { unusedWorkspaceSlots: number; integrationHeadroom: number };
+    }>(fixture, '/admin/api/environment/status');
+    assert.equal(environment.selectedTarget, 'amber');
+    assert.deepEqual(environment.targets.map(({ target }) => target), ['amber', 'cobalt', 'fern']);
+    assert.deepEqual(environment.targets.map(({ health }) => health), ['ready', 'unreachable', 'expired_claim']);
+    assert.equal(environment.targets[0]?.sourceSha, '1234567890abcdef1234567890abcdef12345678');
+    assert.equal(environment.targets[0]?.servingVersion, 'version-amber');
+    assert.equal(environment.targets[0]?.workspaceAlias, 'env-amber-workspace');
+    assert.equal(environment.targets[0]?.appAlias, 'env-amber-slack-app');
+    assert.equal(environment.targets[0]?.recoveryAction, 'No recovery needed.');
+    assert.equal(environment.sandbox.unusedWorkspaceSlots, 2);
+    assert.equal(environment.sandbox.integrationHeadroom, 37);
+    assert.doesNotMatch(JSON.stringify(environment), /xoxb-|browser-profile|credentialToken/i);
 
     const releaseConnections = await fixtureJson<{
       attached: Array<{ account: { label: string; lifecycle: string; ownerKind: string } }>;

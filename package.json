@@ -91,6 +91,7 @@
     "verify:slack-streaming-policy:live": "node --import tsx scripts/verify-slack-streaming-policy-live.mjs",
     "verify:oss-export": "node scripts/verify-oss-export.mjs",
     "verify:lockfile-integrity": "node scripts/verify-lockfile-integrity.mjs",
+    "env": "node --import tsx scripts/chickpea-environment.mjs",
     "auth:recover": "node --import tsx scripts/recover-auth.mjs",
     "slack:bridge": "node scripts/slack-socket-bridge.mjs",
     "reset:test-env": "node scripts/reset-test-env.mjs"

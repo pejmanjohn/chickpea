@@ -338,6 +338,58 @@ button, input, textarea, select { font: inherit; }
 .badge .dot { background: currentColor; border-radius: 999px; height: 5px; width: 5px; }
 .badge-on { background: var(--ok-solid); box-shadow: 0 1.5px 0 rgba(78, 122, 62, 0.6); color: #fffdf6; }
 .badge-off { background: rgba(59, 50, 32, 0.1); color: #8a7a5c; }
+.environment-status { min-width: 0; position: relative; }
+.environment-status > summary { cursor: pointer; list-style: none; }
+.environment-status > summary::-webkit-details-marker { display: none; }
+.environment-health {
+  align-items: center;
+  background: rgba(59, 50, 32, .08);
+  border-radius: 999px;
+  color: var(--text-2);
+  display: inline-flex;
+  font-size: .6875rem;
+  font-weight: 750;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+.environment-health .dot { background: currentColor; border-radius: 50%; height: 6px; width: 6px; }
+.environment-health-ready { background: var(--ok-tint); color: var(--ok); }
+.environment-health-unreachable,
+.environment-health-stale_claim,
+.environment-health-expired_claim { background: #faedca; color: #8a6410; }
+.environment-health-identity_mismatch { background: var(--danger-tint); color: var(--danger); }
+.environment-status-panel {
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  box-shadow: var(--pop-shadow);
+  color: var(--text);
+  display: grid;
+  gap: 10px;
+  max-height: min(720px, calc(100dvh - 84px));
+  overflow: auto;
+  padding: 14px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(430px, calc(100vw - 32px));
+  z-index: 60;
+}
+.environment-status-head,
+.environment-target-head { align-items: center; display: flex; gap: 10px; justify-content: space-between; }
+.environment-status-head > div { display: grid; gap: 2px; }
+.environment-target { border: 1px solid var(--line); border-radius: 12px; display: grid; gap: 9px; padding: 11px; }
+.environment-target-head strong { text-transform: capitalize; }
+.environment-grid { display: grid; gap: 6px; margin: 0; }
+.environment-grid > div { display: grid; gap: 8px; grid-template-columns: 92px minmax(0, 1fr); }
+.environment-grid dt { color: var(--text-3); font-size: .6875rem; font-weight: 700; }
+.environment-grid dd { font-size: .6875rem; margin: 0; overflow-wrap: anywhere; }
+.environment-claim { display: grid; gap: 2px; }
+.environment-empty { color: var(--text-3); }
+.environment-recovery { background: var(--well); border-radius: 8px; font-size: .6875rem; line-height: 1.45; margin: 0; padding: 8px; }
+.environment-sandbox { display: grid; font-size: .6875rem; gap: 3px; padding: 3px 2px; }
 .chip {
   background: rgba(59, 50, 32, 0.08);
   border-radius: 8px;
@@ -1599,9 +1651,18 @@ details[open].advanced summary::before {
   display: flex;
   gap: 11px;
   padding: 0 3px 25px;
+  flex-wrap: wrap;
 }
 .primary-admin-shell .primary-shell-brand .brand-home { flex: 1; }
 .primary-admin-shell .primary-shell-brand .brand-wordmark { height: 28px; }
+.primary-admin-shell .primary-shell-brand .environment-status { flex: 0 0 100%; width: 100%; }
+.primary-admin-shell .primary-shell-brand .environment-status > summary { display: flex; }
+.primary-admin-shell .primary-shell-brand .environment-status-panel {
+  left: 0;
+  max-height: calc(100dvh - 130px);
+  right: auto;
+  width: 100%;
+}
 .primary-admin-shell .primary-shell-sidebar .rail-context { padding-bottom: 14px; }
 .primary-admin-shell .primary-shell-sidebar .rail-head { padding-left: 3px; padding-right: 3px; }
 .primary-admin-shell .primary-shell-sidebar .section-switcher { border-color: var(--admin-visual-line); }
@@ -1724,6 +1785,7 @@ details[open].advanced summary::before {
   .primary-admin-shell .topbar .topbar-menu,
   .primary-admin-shell .topbar .topbar-menu > summary { display: inline-flex; }
   .primary-admin-shell .topbar .actions-list { display: none; }
+  .primary-admin-shell .topbar .environment-status-panel { left: 0; right: auto; }
   .primary-admin-shell .topbar-menu[open] ~ .actions-list {
     align-items: stretch;
     background: var(--bg);
@@ -3165,6 +3227,7 @@ button.capability-pill { cursor: pointer; }
   var state = {
     agents: [],
     grants: [],
+    environmentStatus: null,
     models: { providers: [] },
     active: null,
     effective: null,
@@ -4301,6 +4364,73 @@ button.capability-pill { cursor: pointer; }
       '<button type="button" class="btn btn-primary" data-action="managed-auth-open"' + (cancelling ? ' disabled' : '') + '>Open sign-in &nearr;</button></div></div></div>';
   }
 
+  function environmentHealthLabel(health) {
+    return ({
+      ready: "Ready",
+      unreachable: "Unreachable",
+      stale_claim: "Stale claim",
+      identity_mismatch: "Identity mismatch",
+      expired_claim: "Expired claim"
+    })[health] || "Unavailable";
+  }
+
+  function environmentStatusValue(value, fallback) {
+    return value === null || value === undefined || value === "" ? fallback : String(value);
+  }
+
+  function environmentRecoveryAction(health, target) {
+    if (health === "ready") return "No recovery needed.";
+    if (health === "unreachable") return "Check " + target + " Worker and Slack transport reachability.";
+    if (health === "stale_claim") return "Run npm run env -- reclaim " + target + " from the intended worktree.";
+    if (health === "expired_claim") return "Run npm run env -- reclaim " + target + ".";
+    return "Run npm run env -- reconciliation " + target + ".";
+  }
+
+  function environmentClaimHtml(claim) {
+    if (!claim) return '<span class="environment-empty">Unclaimed</span>';
+    var leaseMinutes = Math.floor(Number(claim.leaseAgeMs || 0) / 60000);
+    return '<span class="environment-claim"><span class="mono">' + esc(claim.holderId) + '</span>' +
+      '<span>' + leaseMinutes + 'm old &middot; expires ' + esc(claim.expiresAt) + '</span></span>';
+  }
+
+  function environmentTargetStatusHtml(target) {
+    var source = environmentStatusValue(target.sourceSha, "unknown") + (target.dirty ? " (dirty)" : "");
+    var workspace = environmentStatusValue(target.workspaceLabel, target.workspaceAlias) + " · " + target.workspaceAlias;
+    var slackApp = environmentStatusValue(target.appLabel, target.appAlias) + " · " + target.appAlias;
+    var lock = environmentStatusValue(target.verifierLock && target.verifierLock.status, "unknown");
+    if (target.verifierLock && target.verifierLock.ownerRunId) lock += " · " + target.verifierLock.ownerRunId;
+    return '<section class="environment-target" data-environment-target="' + esc(target.target) + '" data-environment-health="' + esc(target.health) + '">' +
+      '<div class="environment-target-head"><strong>' + esc(target.target) + '</strong><span class="environment-health environment-health-' + esc(target.health) + '"><span class="dot"></span>' + esc(environmentHealthLabel(target.health)) + '</span></div>' +
+      '<dl class="environment-grid">' +
+        '<div><dt>Source</dt><dd class="mono">' + esc(source) + '</dd></div>' +
+        '<div><dt>Serving</dt><dd class="mono">' + esc(environmentStatusValue(target.servingVersion, "unknown")) + '</dd></div>' +
+        '<div><dt>Transport</dt><dd>' + esc(environmentStatusValue(target.transport, "unknown")) + '</dd></div>' +
+        '<div><dt>Workspace</dt><dd>' + esc(workspace) + '</dd></div>' +
+        '<div><dt>Slack app</dt><dd>' + esc(slackApp) + '</dd></div>' +
+        '<div><dt>Claim</dt><dd>' + environmentClaimHtml(target.claim) + '</dd></div>' +
+        '<div><dt>Verifier lock</dt><dd class="mono">' + esc(lock) + '</dd></div>' +
+        '<div><dt>Schema</dt><dd class="mono">' + esc(environmentStatusValue(target.schemaGeneration, "unknown")) + '</dd></div>' +
+        '<div><dt>Attested source</dt><dd class="mono">' + esc(environmentStatusValue(target.lastAttestedRevision, "not attested")) + '</dd></div>' +
+      '</dl><p class="environment-recovery"><strong>Recovery:</strong> ' + esc(environmentRecoveryAction(target.health, target.target)) + '</p></section>';
+  }
+
+  function environmentStatusHtml(placement) {
+    var status = state.environmentStatus;
+    if (!status || !Array.isArray(status.targets) || !status.targets.length) return "";
+    var selected = status.targets[0];
+    status.targets.forEach(function (target) {
+      if (target.target === status.selectedTarget) selected = target;
+    });
+    var sandbox = status.sandbox || {};
+    var archive = sandbox.archiveDate
+      ? environmentStatusValue(sandbox.daysUntilArchive, "?") + " days · " + sandbox.archiveDate
+      : "Unavailable";
+    return '<details class="environment-status environment-status-' + placement + '"><summary aria-label="Live environment status"><span class="environment-health environment-health-' + esc(selected.health) + '"><span class="dot"></span>' + esc(selected.target) + ' · ' + esc(environmentHealthLabel(selected.health)) + '</span></summary>' +
+      '<div class="environment-status-panel"><div class="environment-status-head"><div><span class="section-eyebrow">Live environments</span><strong>Three-lane fleet</strong></div><span class="mono">registry r' + esc(environmentStatusValue(status.registryRevision, "—")) + '</span></div>' +
+      status.targets.map(environmentTargetStatusHtml).join("") +
+      '<section class="environment-sandbox"><strong>Slack sandbox</strong><span>Archive: ' + esc(archive) + '</span><span>Unused workspace slots: ' + esc(environmentStatusValue(sandbox.unusedWorkspaceSlots, "2")) + '</span><span>Integration headroom: ' + esc(environmentStatusValue(sandbox.integrationHeadroom, "unavailable")) + '</span></section></div></details>';
+  }
+
   function topbarHtml() {
     // Desktop section navigation lives persistently at the bottom of the rail.
     // This duplicate action row is mobile-only and is revealed by the hamburger.
@@ -4322,7 +4452,7 @@ button.capability-pill { cursor: pointer; }
       : (WORKSPACE_ADMIN_UI ? connectedBadge : "") + agentsAction + workspaceActions;
     // The brand doubles as a home affordance to the canonical Agent.
     return '<header class="topbar' + (scoped ? ' admin-mobile-topbar' : '') + '">' +
-      '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button></div>' +
+      '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button>' + environmentStatusHtml('topbar') + '</div>' +
       '<details class="topbar-menu"' + (mobileRoster ? ' open' : '') + '><summary aria-label="Menu" data-role="mobile-menu-trigger">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + actions + '</div>' +
       "</header>";
@@ -4437,7 +4567,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function primaryShellBrandHtml() {
-    return '<div class="primary-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button></div>';
+    return '<div class="primary-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button>' + environmentStatusHtml('rail') + '</div>';
   }
 
   function onboardingRailHtml() {
@@ -12952,6 +13082,9 @@ button.capability-pill { cursor: pointer; }
     var workspaceDefaultRequest = WORKSPACE_ADMIN_UI
       ? api("/admin/api/workspace-model-default", { cache: "no-store" }).catch(function () { return null; })
       : Promise.resolve(null);
+    var environmentStatusRequest = WORKSPACE_ADMIN_UI
+      ? api("/admin/api/environment/status", { cache: "no-store" }).catch(function () { return null; })
+      : Promise.resolve(null);
     return Promise.all([
       api("/admin/api/agents"),
       api("/admin/api/models"),
@@ -12960,7 +13093,8 @@ button.capability-pill { cursor: pointer; }
       slackRequest,
       onboardingRequest,
       channelsRequest,
-      workspaceDefaultRequest
+      workspaceDefaultRequest,
+      environmentStatusRequest
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
       state.grants = [];
@@ -12980,6 +13114,7 @@ button.capability-pill { cursor: pointer; }
       });
       state.channelIndexError = parts[4].error;
       if (parts[5] && parts[5].workspaceDefault) applyWorkspaceDefault(parts[5].workspaceDefault, false);
+      state.environmentStatus = parts[6];
       syncChannelFormWorkspacePrefill();
       if (renderAfterRefresh) renderAfterRefresh();
       else render();

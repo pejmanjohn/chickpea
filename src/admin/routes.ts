@@ -531,6 +531,171 @@ interface BetterAuthContext {
   organizationId: string;
 }
 
+const ADMIN_ENVIRONMENT_TARGETS = ['amber', 'cobalt', 'fern'] as const;
+const ADMIN_ENVIRONMENT_HEALTH = [
+  'ready', 'unreachable', 'stale_claim', 'identity_mismatch', 'expired_claim',
+] as const;
+
+/**
+ * Copy the machine-local fleet status into an intentionally small Admin
+ * projection. Unknown fields are discarded so a malformed provider cannot
+ * accidentally expose immutable IDs, credentials, or registry internals.
+ */
+export function projectAdminEnvironmentStatus(input: unknown): Record<string, unknown> {
+  if (!isRecord(input)
+    || input.schemaVersion !== 'chickpea-environment-status/v1'
+    || !adminEnvironmentTimestamp(input.generatedAt)
+    || !(input.registryRevision === null
+      || (Number.isSafeInteger(input.registryRevision) && Number(input.registryRevision) >= 0))
+    || !(input.selectedTarget === null
+      || ADMIN_ENVIRONMENT_TARGETS.includes(input.selectedTarget as typeof ADMIN_ENVIRONMENT_TARGETS[number]))
+    || !Array.isArray(input.targets)
+    || !isRecord(input.sandbox)) {
+    throw new Error('INVALID_ENVIRONMENT_STATUS');
+  }
+  const targets = input.targets.map(projectAdminEnvironmentTarget);
+  const targetNames = targets.map((target) => target.target).sort();
+  if (targetNames.join(',') !== [...ADMIN_ENVIRONMENT_TARGETS].sort().join(',')) {
+    throw new Error('INVALID_ENVIRONMENT_STATUS');
+  }
+  const warningDays = input.sandbox.warningDays;
+  if (!(input.sandbox.archiveDate === null || adminEnvironmentTimestamp(input.sandbox.archiveDate))
+    || !(input.sandbox.daysUntilArchive === null || Number.isSafeInteger(input.sandbox.daysUntilArchive))
+    || typeof input.sandbox.warning !== 'string'
+    || !['none', '45_days', '30_days', '14_days', 'unavailable'].includes(input.sandbox.warning)
+    || !Array.isArray(warningDays)
+    || warningDays.join(',') !== '45,30,14'
+    || input.sandbox.unusedWorkspaceSlots !== 2
+    || !(input.sandbox.integrationHeadroom === null
+      || (Number.isSafeInteger(input.sandbox.integrationHeadroom)
+        && Number(input.sandbox.integrationHeadroom) >= 0))) {
+    throw new Error('INVALID_ENVIRONMENT_STATUS');
+  }
+  return {
+    schemaVersion: 'chickpea-environment-status/v1',
+    generatedAt: input.generatedAt,
+    registryRevision: input.registryRevision,
+    selectedTarget: input.selectedTarget,
+    targets,
+    sandbox: {
+      archiveDate: input.sandbox.archiveDate,
+      daysUntilArchive: input.sandbox.daysUntilArchive,
+      warning: input.sandbox.warning,
+      warningDays: [45, 30, 14],
+      unusedWorkspaceSlots: 2,
+      integrationHeadroom: input.sandbox.integrationHeadroom,
+    },
+  };
+}
+
+function projectAdminEnvironmentTarget(input: unknown): Record<string, unknown> {
+  if (!isRecord(input)
+    || !ADMIN_ENVIRONMENT_TARGETS.includes(input.target as typeof ADMIN_ENVIRONMENT_TARGETS[number])
+    || !ADMIN_ENVIRONMENT_HEALTH.includes(input.health as typeof ADMIN_ENVIRONMENT_HEALTH[number])
+    || !(input.sourceSha === null
+      || (typeof input.sourceSha === 'string' && /^[0-9a-f]{7,64}$/u.test(input.sourceSha)))
+    || typeof input.dirty !== 'boolean'
+    || !(input.servingVersion === null
+      || (typeof input.servingVersion === 'string'
+        && /^version-[A-Za-z0-9._-]{1,96}$/u.test(input.servingVersion)))
+    || !(input.transport === null || input.transport === 'gateway' || input.transport === 'events')
+    || input.workspaceAlias !== `env-${String(input.target)}-workspace`
+    || input.appAlias !== `env-${String(input.target)}-slack-app`
+    || !adminEnvironmentLabel(input.workspaceLabel)
+    || !adminEnvironmentLabel(input.appLabel)
+    || !(input.schemaGeneration === null
+      || adminEnvironmentDisplay(
+        input.schemaGeneration,
+        /^d1:[A-Za-z0-9._-]{1,64};do:[A-Za-z0-9._-]{1,64}$/u,
+      ))
+    || !(input.lastAttestedRevision === null
+      || (typeof input.lastAttestedRevision === 'string'
+        && /^[0-9a-f]{7,64}(?:-dirty)?$/u.test(input.lastAttestedRevision)))
+    || !isRecord(input.verifierLock)
+    || typeof input.verifierLock.status !== 'string'
+    || !['clear', 'live', 'stale', 'foreign'].includes(input.verifierLock.status)
+    || !(input.verifierLock.ownerRunId === undefined
+      || adminEnvironmentRunId(input.verifierLock.ownerRunId))) {
+    throw new Error('INVALID_ENVIRONMENT_STATUS');
+  }
+  let claim: Record<string, unknown> | null = null;
+  if (input.claim !== null) {
+    if (!isRecord(input.claim)
+      || !adminEnvironmentDisplay(input.claim.holderId, /^holder-[a-f0-9]{16,64}$/u)
+      || !Number.isSafeInteger(input.claim.leaseAgeMs) || Number(input.claim.leaseAgeMs) < 0
+      || !adminEnvironmentTimestamp(input.claim.expiresAt)) {
+      throw new Error('INVALID_ENVIRONMENT_STATUS');
+    }
+    claim = {
+      holderId: input.claim.holderId,
+      leaseAgeMs: input.claim.leaseAgeMs,
+      expiresAt: input.claim.expiresAt,
+    };
+  }
+  return {
+    target: input.target,
+    health: input.health,
+    sourceSha: input.sourceSha,
+    dirty: input.dirty,
+    servingVersion: input.servingVersion,
+    transport: input.transport,
+    workspaceAlias: input.workspaceAlias,
+    workspaceLabel: input.workspaceLabel,
+    appAlias: input.appAlias,
+    appLabel: input.appLabel,
+    claim,
+    verifierLock: {
+      status: input.verifierLock.status,
+      ...(input.verifierLock.ownerRunId === undefined
+        ? {}
+        : { ownerRunId: input.verifierLock.ownerRunId }),
+    },
+    schemaGeneration: input.schemaGeneration,
+    lastAttestedRevision: input.lastAttestedRevision,
+    recoveryAction: adminEnvironmentRecoveryAction(String(input.health), String(input.target)),
+  };
+}
+
+const ADMIN_ENVIRONMENT_SECRET_LIKE = /(?:xox[abprs]-|xoxe[.-]|sk-[A-Za-z0-9]|-----BEGIN|\b(?:secret|token|password|credential|cookie|private[ _-]?key|browser[ _-]?profile)\b|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:^|[ (])\/(?:Users|home|private|var|tmp)\/)/iu;
+
+function adminEnvironmentDisplay(input: unknown, grammar: RegExp): input is string {
+  return typeof input === 'string'
+    && grammar.test(input)
+    && !ADMIN_ENVIRONMENT_SECRET_LIKE.test(input);
+}
+
+function adminEnvironmentLabel(input: unknown): input is string {
+  return adminEnvironmentDisplay(input, /^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,95}$/u)
+    && !/^[ATUWCB][A-Z0-9]{7,}$/u.test(input);
+}
+
+function adminEnvironmentRunId(input: unknown): input is string {
+  return adminEnvironmentDisplay(input, /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u)
+    && !/^[ATUWCB][A-Z0-9]{7,}$/u.test(input);
+}
+
+function adminEnvironmentRecoveryAction(health: string, target: string): string {
+  if (health === 'ready') return 'No recovery needed.';
+  if (health === 'unreachable') return `Check ${target} Worker and Slack transport reachability.`;
+  if (health === 'stale_claim') return `Run npm run env -- reclaim ${target} from the intended worktree.`;
+  if (health === 'expired_claim') return `Run npm run env -- reclaim ${target}.`;
+  return `Run npm run env -- reconciliation ${target}.`;
+}
+
+function adminEnvironmentString(input: unknown, maximum: number): input is string {
+  return typeof input === 'string' && input.length > 0 && input.length <= maximum
+    && !/[\u0000-\u001f\u007f]/u.test(input);
+}
+
+function adminEnvironmentTimestamp(input: unknown): input is string {
+  if (!adminEnvironmentString(input, 64) || !Number.isFinite(Date.parse(input))) return false;
+  try {
+    return new Date(input).toISOString() === input;
+  } catch {
+    return false;
+  }
+}
+
 interface AdminRoutesOptions {
   // Injection seam for tests/harnesses: any async ConfigStore serves the
   // routes; absent, the platform backend is resolved per request (c.env is the
@@ -547,6 +712,7 @@ interface AdminRoutesOptions {
   routineCapability?: ((c: Context) => RoutineCapability) | undefined;
   slackState?: SlackStateStore | undefined;
   runtimeDrain?: ((env?: PlatformEnv) => Promise<RuntimeDrainStatus>) | undefined;
+  environmentStatus?: (() => unknown | Promise<unknown>) | undefined;
   usageAdminUi?: boolean | undefined;
   authService?: AdminAuthenticationService | undefined;
   betterAuthEnvironment?: BetterAuthEnvironment | undefined;
@@ -3835,7 +4001,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // admin middleware reconcile provider keys or pin request-origin state.
     if (c.req.method === 'GET' &&
         (c.req.path === '/admin/api/runtime/drain' ||
-          c.req.path === '/admin/api/runtime/recovery-turns')) {
+          c.req.path === '/admin/api/runtime/recovery-turns' ||
+          c.req.path === '/admin/api/environment/status')) {
       return next();
     }
     const settingsStore = settings(c);
@@ -5314,6 +5481,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch {
       console.error('[chickpea] runtime drain state unavailable');
       return c.json({ error: 'runtime_drain_unavailable' }, 503);
+    }
+  });
+
+  app.get('/admin/api/environment/status', async (c) => {
+    const runtimeBinding = (c.env as { CHICKPEA_ENVIRONMENT_STATUS?: unknown } | undefined)
+      ?.CHICKPEA_ENVIRONMENT_STATUS;
+    if (!options.environmentStatus && runtimeBinding === undefined) {
+      c.header('Cache-Control', 'no-store');
+      return c.json({ error: 'environment_status_unavailable' }, 404);
+    }
+    try {
+      if (typeof runtimeBinding === 'string' && runtimeBinding.length > 65_536) {
+        throw new Error('INVALID_ENVIRONMENT_STATUS');
+      }
+      const raw = options.environmentStatus
+        ? await options.environmentStatus()
+        : typeof runtimeBinding === 'string'
+          ? JSON.parse(runtimeBinding)
+          : runtimeBinding;
+      const status = projectAdminEnvironmentStatus(raw);
+      c.header('Cache-Control', 'no-store');
+      return c.json(status);
+    } catch {
+      console.error('[chickpea] environment status unavailable');
+      c.header('Cache-Control', 'no-store');
+      return c.json({ error: 'environment_status_unavailable' }, 503);
     }
   });
 
