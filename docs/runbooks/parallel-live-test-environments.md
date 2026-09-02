@@ -11,14 +11,23 @@ or deep testing.
 ## Safety and evidence contract
 
 1. Use Computer Use for every Slack or browser UI action and observation.
-   Read-only provider APIs/CLI may inventory metadata and quota.
-2. Stop for action-time confirmation immediately before:
+   Authorized provider APIs/CLI may set up, inventory, deploy, attest, and
+   tear down infrastructure. They cannot perform or score end-user behavior.
+2. Apply the active Computer Use confirmation policy to UI actions, not to
+   ordinary terminal/API operations. For UI actions, stop for action-time
+   confirmation immediately before:
    - creating a sandbox, workspace, Slack app, configuration token, OAuth key,
      or other persistent access;
    - changing permissions, access, app approvals, or policy;
    - deleting a workspace, app, or sandbox;
    - typing sensitive identity, address, billing, token, or credential data;
    - solving a CAPTCHA.
+   Specific prior approval may cover sensitive-data transmission when the
+   active policy permits it. Do not repeat approvals for non-UI setup already
+   authorized by the user. Keep those operations inside the agreed target
+   scope, inspect exact identities before mutation, and reconcile ambiguous
+   outcomes before retrying. This distinction never authorizes out-of-scope
+   access, browser-session extraction, or API-based product verdicts.
 3. The user enters billing details, secret values, OTPs, and unavailable
    credentials directly. Never retain them in the repository, shell history,
    prompts, screenshots, logs, or evidence.
@@ -227,10 +236,11 @@ Build a three-column observation table for the pilot workspaces. Record:
 - relevant channel/member policy;
 - integration count.
 
-Select one reversible workspace-level pilot setting. After action-time
-confirmation, change it in the first workspace and observe the other two with
-Computer Use. Restore the first workspace after a second confirmation if the
-restore changes access or permissions.
+Select one reversible workspace-level pilot setting. A UI change or restore
+that changes access or permissions requires action-time confirmation. An
+already authorized setup API follows the scope and identity checks above.
+Change the first workspace, observe the other two with Computer Use, then
+restore the first workspace and verify the original state.
 
 Separately record the baseline settings Slack intentionally inherits from the
 Enterprise organization. Org-wide inheritance is acceptable only when Phase 1
@@ -253,20 +263,36 @@ This is a provider capability test, not first-install scoring.
 2. Build the canonical Chickpea manifest with a pilot HTTPS origin. Compare the
    safe contract fields: app/bot names, bot and OIDC scopes, redirect URLs,
    Events URL/events, interactivity URL, App Home, and Agent view.
-3. Pause immediately before `apps.manifest.create` because it creates a Slack
-   app and returns persistent credentials. After confirmation, submit once.
+3. `apps.manifest.create` creates a Slack app and returns persistent
+   credentials. When the user has authorized the pilot, an ordinary API call
+   needs no additional Computer Use confirmation. A UI submission still does.
+   Bind the token to the exact workspace using its observed token-dashboard
+   row or the `team_id` in its rotation response; do not trust an extra
+   `team_id` request parameter to select the workspace. Process one workspace
+   token at a time. Verify the submitted manifest, then submit once.
 4. Record only the app ID, workspace ID, manifest fingerprint, and result. Do
    not retain client secret, signing secret, configuration token, bot token,
-   OAuth code/state, or cookies.
+   OAuth code/state, or cookies. Independently verify through Computer Use
+   that the returned app ID appears under the intended workspace before
+   recording that mapping as confirmed. If the mapping cannot be established,
+   stop and reconcile; another confirmation does not substitute for identity.
 5. Export the live manifest read-only and compare the safe contract/fingerprint.
-6. Rotate the pilot configuration token only after a fresh confirmation. Verify
-   that the prior token is no longer the active one without printing either.
-7. Create one separate pilot app in each of the other workspaces after separate
-   creation confirmations. Verify three different app/install identities.
+6. Rotate the pilot configuration token using the authorized setup API. Verify
+   that the replacement differs, belongs to the same workspace, and works.
+   Probe both tokens only with read-only `apps.manifest.export` of the
+   recorded pilot app ID, never a create/update/delete request.
+   Check the old access token separately; rotation must not be reported as
+   immediate revocation if the old token still works. Keep both values out of
+   output and evidence. Record the observed validity window and cleanup needs.
+7. Create one separate pilot app in each of the other workspaces. Apply the
+   API/UI authority distinction above, and confirm UI credential generation
+   when required. Verify three different app/install identities.
 8. Make one reversible workspace-level app/approval change and prove the other
    two apps/workspaces do not change.
-9. Delete only the throwaway lifecycle app after action-time confirmation and
-   an exact-ID receipt. The permanent target apps do not exist during U12.
+9. Delete only the throwaway lifecycle app with an exact-ID creation receipt.
+   An authorized teardown API needs no additional Computer Use confirmation;
+   a UI deletion requires it. Reconcile the outcome before retrying. The
+   permanent target apps do not exist during U12.
 
 Any Enterprise restriction must be recorded by its visible Slack error/state.
 Do not weaken the manifest or scopes just to obtain a pass.
@@ -276,9 +302,11 @@ Do not weaken the manifest or scopes just to obtain a pass.
 To prove lifecycle quota recovery without touching the three target workspaces:
 
 1. Record the current workspace count.
-2. After action-time confirmation, create one explicitly throwaway workspace.
+2. Create one explicitly throwaway workspace within the authorized pilot.
+   A UI creation requires action-time confirmation.
 3. Record its exact immutable ID and the count increase.
-4. Pause for a separate deletion confirmation. Delete only that exact ID.
+4. Delete only that exact throwaway ID within the authorized teardown scope.
+   A UI deletion requires a separate action-time confirmation.
 5. Observe the count return to the recorded baseline.
 
 If deletion does not restore quota, or provider state is ambiguous, stop. Never
@@ -286,7 +314,8 @@ delete another workspace to investigate.
 
 ## Gate 7: Cloudflare headroom
 
-Use authenticated read-only API/CLI calls and emit counts only. At minimum,
+Use authenticated read-only API/CLI calls or Computer Use and retain only
+the relevant counts and aggregate usage, never credentials. At minimum,
 record:
 
 - Worker service count versus the current Workers plan limit;
