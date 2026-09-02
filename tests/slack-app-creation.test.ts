@@ -301,7 +301,11 @@ test('manual adoption validates exact configuration and converges at app_created
       expectedRevision: setup.revision,
       appId: 'A12345678', clientId: '123.456',
       clientSecret: 'client-secret-value', signingSecret: 'signing-secret-value',
-      expectedManifest: manifest, observedManifest: manifest,
+      expectedManifest: manifest,
+      observedManifest: structuredClone({
+        ...manifest,
+        oauth_config: { ...manifest.oauth_config, pkce_enabled: false },
+      }),
     });
     assert.equal(adopted.state, 'app_created');
     assert.doesNotMatch(JSON.stringify(adopted), /client-secret|signing-secret/);
