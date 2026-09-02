@@ -104,35 +104,11 @@ fleet:
 | `cobalt` | `Chickpea Cobalt` | `chickpea-cobalt` | By invite only |
 | `fern` | `Chickpea Fern` | `chickpea-fern` | By invite only |
 
-Observed capability inventory on 2026-09-01:
-
-| Lane | Immutable workspace ID | Current live name/domain | Access | Members | Apps |
-|---|---|---|---|---:|---:|
-| `amber` source | `T0BTV3LC679` | `Chickpea Amber` title observed after save; intended `chickpea-amber.slack.com` pending full re-read | By request at last complete inventory | 2 | 0 |
-| `cobalt` | `T0BTW4Y1KE3` | `Chickpea Cobalt` / `chickpea-cobalt.slack.com` | By invite only | 1 | 0 |
-| `fern` | `T0BTWA3DZ3R` | `Chickpea Fern` / `chickpea-fern.slack.com` | By invite only | 1 | 0 |
-
-The live organization reports exactly three workspaces, two people, six
-channels, and zero integrations. Under Slack's documented five-workspace limit,
-exactly two workspace slots remain unused. The shared actor is Primary
-Workspace Owner in all three workspaces and can open each lane's `#general` and
-`#random` entries from one authenticated Chrome Computer Use session without
-sending a message.
-
 The initial generated workspace must be mapped to Amber; renaming it is a
 confirmation-gated workspace mutation. Do not create a separate Amber workspace
 and leave the initial workspace unused. Slack's empty template also creates a
 Demo User. That identity consumes one human-user slot but is not part of the
 minimum smoke actor pool.
-
-The user clicked the prepared Amber **Save Changes** control. Computer Use then
-observed the Chrome title `Admin Settings | Chickpea Amber Slack`, confirming
-the renamed name at title level. Chrome's accessibility bridge subsequently
-returned only the window title and no screenshot, so the intended
-`chickpea-amber.slack.com` domain, immutable ID, organization count, and access
-state still require a full post-save read. The rename did not include an access
-change; moving Amber from **By request** to **By invite only** remains a
-separate confirmation boundary.
 
 For each workspace:
 
@@ -148,17 +124,13 @@ The one actor may fill both `owner` and `member` fixture slots because the exact
 smoke inventory has no two-person or denial comparison. Preserve one synthetic
 provider account for `LC04-V1-personal-read`; it is not a second Slack actor.
 
-On the observed initial workspace, the actor is Primary Org Owner and Primary
-Workspace Owner; the generated Demo User is a normal Member. The actor is also
-the observed Primary Workspace Owner of Cobalt and Fern. Invite-only access
-keeps unrelated organization members from joining those two lanes without an
-explicit Workspace Owner/Admin invitation; Amber still requires the separate
-access change described above.
+The shared actor must be a full member and Chickpea Owner in all three
+workspaces. Invite-only access keeps unrelated organization members from
+joining a lane without an explicit Workspace Owner/Admin invitation.
 
 Pass only when the same actor is independently addressable in all three
-workspaces and the live workspace count shows two unused slots. Those two
-conditions are now observed; the overall capability verdict remains provisional
-until the later app, isolation, and lifecycle gates pass.
+workspaces and the live workspace count shows two unused slots. Record the live
+result in private capability evidence, not this public runbook.
 
 ## Gate 4: workspace and org policy isolation
 
@@ -183,10 +155,9 @@ OAuth/OIDC, Agent, or access setting cannot be isolated because of unavoidable
 org coupling, stop and mark the one-sandbox topology failed. Do not silently
 add another sandbox or paid workspace.
 
-The observed Apps organization-policy page began with no configured policy.
-Slack states that adding a policy there changes every workspace and prevents
-workspace overrides for that setting. Preserve the empty org-policy baseline
-during isolation proof; use workspace-level settings for the reversible check.
+Preserve an empty org-policy baseline during isolation proof; use
+workspace-level settings for the reversible check. Record any inherited policy
+and its exact provider behavior in private capability evidence.
 
 ## Gate 5: configuration-token and app lifecycle pilot
 
@@ -215,12 +186,6 @@ This is a provider capability test, not first-install scoring.
 
 Any Enterprise restriction must be recorded by its visible Slack error/state.
 Do not weaken the manifest or scopes just to obtain a pass.
-
-The read-only Slack API preflight reached the **From a manifest** flow. Its JSON
-editor was accessible, and the workspace selector listed the Amber source,
-Cobalt, and Fern workspaces. The same page exposes **Generate Token**. No
-workspace was selected, no manifest was submitted, and neither **Generate
-Token** nor any app-creation action was invoked.
 
 ## Gate 6: workspace deletion and quota recovery
 

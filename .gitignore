@@ -35,7 +35,6 @@ docs/runbooks/*
 docs/plans/*
 !docs/plans/evidence/
 docs/plans/evidence/*
-!docs/plans/evidence/slack-sandbox-capability.md
 design-qa.md
 !docs/design/agent-first-admin-prototype/design-qa.md
 
