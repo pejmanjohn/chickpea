@@ -30,6 +30,90 @@ or deep testing.
 6. A label never authorizes deletion or reuse. Require the exact immutable ID
    and its creation receipt.
 
+## Phase 1 baseline recipe
+
+The public baseline definitions are
+`config/environments/qa/workspace-recipe.json` and
+`config/environments/qa/desired-state.json`. They contain portable logical
+names only. Workspace IDs, Slack user IDs, account addresses, credentials, and
+Computer Use browser aliases belong in the owner-only environment root.
+
+The recipe is derived from the verifier's four Phase 1 smoke variants. It
+defines only these reusable resources:
+
+| Resource | Scope | Fixture class | Purpose |
+|---|---|---|---|
+| primary actor | shared | `immutable_baseline` | fills the `owner` and `member` slots in all three workspaces |
+| QA channel | per target | `immutable_baseline` | receives welcome and due-routine observations |
+| smoke Agent | per target | `resettable_fixture` | supports update, connection, and routine cases |
+| Agent-channel grant | per target | `resettable_fixture` | keeps the smoke Agent authorized for the QA channel |
+| synthetic Google account | shared | `immutable_baseline` | supplies the provider fixture without adding a Slack actor |
+| Personal Google Sheets binding | per target | `resettable_fixture` | grants only search, metadata, value-read, and table-query capabilities |
+
+The environment baseline library reads the verifier manifest to bind fixture
+slots to this recipe. It rejects undeclared or deep-only variants and any
+fixture class other than `immutable_baseline` or `resettable_fixture`.
+Run-created Agents, connections, routines, messages, and attributed residue
+remain verifier-owned product state. Do not add them to this recipe or an
+infrastructure cleanup plan.
+
+Before one-time provisioning, build a plan with
+`createPhaseOneBaselinePlan(target)`, then call `inspectPhaseOneBaseline` with
+read-only alias and product-resource observers. Print only
+`describePhaseOneBaselineDryRun(plan, report)`. A fresh target will list the
+logical aliases and resource keys that are missing; it never returns resolved
+values or observer errors. A drift report is diagnostic only: it does not
+create, reset, delete, grade, or clean product state.
+
+Resource observers must return the requested target and logical resource key,
+plus a boolean for every named health check in the request. A generic `ready`
+label is insufficient. Checks include the full-member/Owner actor role, the
+signed-in Computer Use profile, exact Agent-channel grant, model availability,
+and Agent-owned Personal read-only Sheets binding. The request includes the
+expected scopes and capabilities so the observer can compare the actual state.
+
+The infrastructure aliases come from the registry. Resolve the fixture aliases
+through separate private bindings: `actor-identity`, `computer-use-profile`,
+`channel-identity`, `agent-identity`, `model-provider`,
+`agent-channel-grant-identity`, `synthetic-account-identity`, and
+`sheets-binding-identity`, each prefixed with `env-<target>-`. The same actor and
+synthetic account may resolve in all three targets; mutable fixture IDs must
+resolve within the target's attested Worker/D1 and Slack workspace. A bare
+local Agent ID may repeat in different databases; compare the full target and
+resource identity, not that string alone. `model-provider` names a
+non-production provider source, never its API key.
+
+Pass the report and a separately attested snapshot to
+`diagnosePhaseOneBaseline(plan, report, snapshot)`. Missing prerequisites block
+the existing verifier doctor. This helper cannot override a failed Computer
+Use preflight or create a product verdict. Do not use a baseline connection as
+proof of `LC04-V1-personal-read`: that case must authorize its own run-owned
+connection through the UI and clean it through the verifier. Its local
+connection ID and managed-provider account reference must differ from the
+standing baseline binding. Attribute both to the run before reversal, delete
+only the run-owned remote account, and recheck baseline health afterward.
+Do not revoke the shared upstream Google grant.
+
+Inspect afresh before each run; do not reuse an older ready report. Always show
+the content-free dry-run report alongside doctor output: a non-actor fixture
+failure blocks doctor with `target_drift`, while the dry-run report names the
+exact missing alias or drifted resource.
+
+Provision missing reusable fixtures only after the ordinary target claim and
+live-identity preflight succeed. Resolve the actor identity, its Computer Use
+profile, and the synthetic provider identity from private bindings. After
+provisioning, store resolved product IDs in the target's protected-resource
+inventory with `projectProtectedProductInventory`; the infrastructure cleanup
+projection for this baseline must remain empty.
+
+Baseline health requires all environment aliases to resolve, the actor and its
+Computer Use profile to be available, the channel and Agent to be visible, the
+grant to be exact, and the Google Sheets binding to remain Personal and
+read-only. Doctor owns readiness checks; the verifier owns suite policy,
+visible product observations, run journals, evidence, cleanup, and verdicts.
+Baseline code must not inspect verifier journals or perform scored product
+actions.
+
 ## Gate 1: operating-host preflight
 
 Before any provider mutation:

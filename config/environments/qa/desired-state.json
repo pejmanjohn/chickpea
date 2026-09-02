@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "chickpea-environment-desired-state/v1",
+  "targets": [
+    {
+      "targetAlias": "amber",
+      "allowedSuites": ["case", "smoke"],
+      "smokeVariants": [
+        "LC01-V1-create-welcome",
+        "LC01-V2-update-approve",
+        "LC04-V1-personal-read",
+        "LC08-V1-create-due"
+      ],
+      "requiredEnvironmentAliases": [
+        "env-amber-worker",
+        "env-amber-workspace",
+        "env-amber-slack-app",
+        "env-amber-provider-project",
+        "env-amber-provider-read-only-auth-config",
+        "env-amber-evidence-root",
+        "env-amber-timezone",
+        "env-amber-auth-db",
+        "env-amber-tag-state"
+      ]
+    },
+    {
+      "targetAlias": "cobalt",
+      "allowedSuites": ["case", "smoke"],
+      "smokeVariants": [
+        "LC01-V1-create-welcome",
+        "LC01-V2-update-approve",
+        "LC04-V1-personal-read",
+        "LC08-V1-create-due"
+      ],
+      "requiredEnvironmentAliases": [
+        "env-cobalt-worker",
+        "env-cobalt-workspace",
+        "env-cobalt-slack-app",
+        "env-cobalt-provider-project",
+        "env-cobalt-provider-read-only-auth-config",
+        "env-cobalt-evidence-root",
+        "env-cobalt-timezone",
+        "env-cobalt-auth-db",
+        "env-cobalt-tag-state"
+      ]
+    },
+    {
+      "targetAlias": "fern",
+      "allowedSuites": ["case", "smoke"],
+      "smokeVariants": [
+        "LC01-V1-create-welcome",
+        "LC01-V2-update-approve",
+        "LC04-V1-personal-read",
+        "LC08-V1-create-due"
+      ],
+      "requiredEnvironmentAliases": [
+        "env-fern-worker",
+        "env-fern-workspace",
+        "env-fern-slack-app",
+        "env-fern-provider-project",
+        "env-fern-provider-read-only-auth-config",
+        "env-fern-evidence-root",
+        "env-fern-timezone",
+        "env-fern-auth-db",
+        "env-fern-tag-state"
+      ]
+    }
+  ]
+}

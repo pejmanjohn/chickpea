@@ -570,6 +570,8 @@ function verifyNpmPackManifest() {
     'assets/chickpea-mark.png',
     'assets/chickpea-wordmark-512.png',
     'assets/chickpea-wordmark-mask.png',
+    'config/environments/qa/desired-state.json',
+    'config/environments/qa/workspace-recipe.json',
     'scripts/cloudflare-deployment-profile.mjs',
     'scripts/deploy-with-epilogue.mjs',
     'scripts/recover-auth.mjs',
@@ -584,6 +586,13 @@ function verifyNpmPackManifest() {
     'docs/runbooks/slack-auth-recovery.md',
     'docs/runbooks/workspace-management-mcp.md',
     'migrations/better-auth/0001_better_auth.sql',
+    'qa/live/manifest.ts',
+    'qa/live/schema.ts',
+    'qa/live/doctor.ts',
+    'qa/live/attestation.ts',
+    'qa/live/private-config.ts',
+    'qa/live/safety/lock.ts',
+    'scripts/lib/environment-baseline.mjs',
     'scripts/flue-build-cf.mjs',
     'slack-app-manifest.json',
     'src/app.ts',
@@ -599,6 +608,10 @@ function verifyNpmPackManifest() {
       path.startsWith('.claude/') ||
       path.startsWith('.github/') ||
       path.startsWith('design/') ||
+      (path.startsWith('config/environments/qa/') && ![
+        'config/environments/qa/desired-state.json',
+        'config/environments/qa/workspace-recipe.json',
+      ].includes(path)) ||
       (path.startsWith('docs/') && !allowedPublicDocs.has(path)) ||
       path.startsWith('tmp/'),
   );

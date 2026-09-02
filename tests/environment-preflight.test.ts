@@ -13,6 +13,8 @@ import { EnvironmentPreflightError, assertEnvironmentReleaseAllowed, beginEnviro
 import { acquireTargetLock, readTargetLock } from '../qa/live/safety/lock.ts';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { attestEnvironment } from '../scripts/lib/environment-attestation.mjs';
+// @ts-expect-error Executable environment modules intentionally have no declarations.
+import { createPhaseOneBaselinePlan, projectProtectedProductInventory } from '../scripts/lib/environment-baseline.mjs';
 
 const NOW = Date.parse('2026-09-01T12:00:00.000Z');
 const DEAD_PID = 2_147_483_647;
@@ -1196,6 +1198,25 @@ test('cleanup authorization validates every receipt and independently denies per
     }),
     readProviderResource: () => { readbackCalls += 1; return protectedByProductInventory.readback; },
   }), rejects('PROTECTED_PERMANENT_RESOURCE'));
+  assert.equal(readbackCalls, 0);
+  const projectedInventories = TARGETS.map((target) => {
+    const plan = createPhaseOneBaselinePlan(target);
+    return projectProtectedProductInventory(plan, Object.fromEntries(
+      plan.resources.map(({ key }: { key: string }) => [key, `${target}-${key}`]),
+    ));
+  });
+  for (const inventory of projectedInventories) {
+    for (const resource of [...inventory.baseline, ...inventory.productOwned]) {
+      const chain = writeChain(resource.id, resource.id);
+      assert.throws(() => authorizeEnvironmentCleanupPlan([
+        { provider: 'cloudflare', kind: 'worker', id: resource.id },
+      ], {
+        ...f.options, target: 'amber', receiptPaths: [chain.receiptPath],
+        allowSuppliedProtectedInventories: true, protectedInventories: projectedInventories,
+        readProviderResource: () => { readbackCalls += 1; return chain.readback; },
+      }), rejects('PROTECTED_PERMANENT_RESOURCE'));
+    }
+  }
   assert.equal(readbackCalls, 0);
   const forged = JSON.parse(readFileSync(disposable.receiptPath, 'utf8'));
   forged.id = 'mixed-worker';
