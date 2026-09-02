@@ -460,13 +460,13 @@ test('attestation requires the matching live claim and composes verifier-owned c
   } as const;
   await assert.rejects(
     attestEnvironment('amber', observed, {
-      ...registryOptions(f.root), worktreePath: f.first.path,
+      ...registryOptions(f.root), worktreePath: f.first.path, allowSuppliedObservation: true,
     }),
     rejectsCode('CLAIM_REQUIRED'),
   );
   claimEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
   const result = await attestEnvironment('amber', observed, {
-    ...registryOptions(f.root), worktreePath: f.first.path,
+    ...registryOptions(f.root), worktreePath: f.first.path, allowSuppliedObservation: true,
   });
   assert.equal(result.attestation.schemaVersion, 'chickpea-live-attestation/v1');
   assert.equal(result.doctorSnapshot.schemaVersion, 'chickpea-live-doctor-snapshot/v1');
@@ -488,6 +488,7 @@ test('CLI dispatches claim, status, target, attest, reclaim, release, and reconc
       stderr: (value: string) => { stderr += value; },
       env: { CHICKPEA_HOST_FINGERPRINT: 'spoofed-host' },
       hostFingerprint: 'host-fixture',
+      allowSuppliedObservation: true,
     });
     assert.equal(code, 0, stderr);
     return JSON.parse(stdout);
@@ -528,6 +529,17 @@ test('CLI dispatches claim, status, target, attest, reclaim, release, and reconc
       installationRevision: 1,
     },
   }));
+  let refusedError = '';
+  const refused = await runEnvironmentCli(
+    ['attest', 'amber', ...base, '--observation', observationPath],
+    {
+      hostFingerprint: 'host-fixture',
+      stdout: () => {},
+      stderr: (value: string) => { refusedError += value; },
+    },
+  );
+  assert.equal(refused, 2);
+  assert.match(refusedError, /CALLER_OBSERVATION_REFUSED/);
   const attested = await invoke(['attest', 'amber', ...base, '--observation', observationPath]);
   assert.equal(attested.doctor.ready, true);
   const beforeReconciliation = readFileSync(join(f.root, 'registry.json'), 'utf8');
@@ -1041,7 +1053,7 @@ test('attestation binds registration source and serving identity and rechecks ex
     ...registryOptions(f.root), worktreePath: f.first.path, leaseDurationMs: 1_000,
   });
   await assert.rejects(attestEnvironment('amber', observation, {
-    ...registryOptions(f.root), worktreePath: f.first.path,
+    ...registryOptions(f.root), worktreePath: f.first.path, allowSuppliedObservation: true,
   }), rejectsCode('SOURCE_IDENTITY_MISMATCH'));
   rmSync(join(f.first.path, 'dirty.txt'));
 
@@ -1049,14 +1061,14 @@ test('attestation binds registration source and serving identity and rechecks ex
   wrongVersion.deployments[0]!.versionId = 'version-unregistered';
   wrongVersion.events.signedEventReceiptVersionId = 'version-unregistered';
   await assert.rejects(attestEnvironment('amber', wrongVersion, {
-    ...registryOptions(f.root), worktreePath: f.first.path,
+    ...registryOptions(f.root), worktreePath: f.first.path, allowSuppliedObservation: true,
   }), rejectsCode('SERVING_VERSION_MISMATCH'));
 
   let calls = 0;
   await assert.rejects(attestEnvironment('amber', observation, {
     ...registryOptions(f.root),
     now: () => (calls++ === 0 ? NOW + 500 : NOW + 1_500),
-    worktreePath: f.first.path,
+    worktreePath: f.first.path, allowSuppliedObservation: true,
   }), rejectsCode('CLAIM_EXPIRED_RECLAIM_REQUIRED'));
   assert.equal(readEnvironmentRegistry({ ...registryOptions(f.root), now: () => NOW + 500 })
     .targets.amber.lastAttestation, null);
@@ -1067,7 +1079,7 @@ test('attestation binds registration source and serving identity and rechecks ex
   });
   await assert.rejects(attestEnvironment('amber', observation, {
     ...registryOptions(f.root), now: () => NOW + 2_500,
-    worktreePath: f.first.path,
+    worktreePath: f.first.path, allowSuppliedObservation: true,
     beforeAttestationRecord: () => reclaimEnvironment('amber', {
       ...registryOptions(f.root), now: () => NOW + 2_500,
       worktreePath: f.first.path, leaseDurationMs: 60_000,

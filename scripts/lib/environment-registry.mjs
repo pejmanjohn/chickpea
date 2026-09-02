@@ -21,7 +21,11 @@ import { hostname, homedir } from 'node:os';
 import path, { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-import { readTargetLockStatus, targetLockPath } from '../../qa/live/safety/lock.ts';
+import {
+  readTargetLock,
+  readTargetLockStatus,
+  targetLockPath,
+} from '../../qa/live/safety/lock.ts';
 
 export const activeEnvironmentTargets = Object.freeze(['amber', 'cobalt', 'fern']);
 export const inactiveEnvironmentTargets = Object.freeze([
@@ -41,6 +45,7 @@ const MARKER_FILE = '.chickpea-environment';
 const MACHINE_IDENTITY_SCHEMA = 'chickpea-machine-identity/v1';
 const SECRET_FIELD = /(?:^|_)(?:secret|token|password|credential|cookie|private[_-]?key|browser[_-]?profile|email)(?:$|_)/iu;
 const SECRET_VALUE = /^(?:xox[abprs]-|xoxe[.-]|sk-[A-Za-z0-9]|gh[opusr]_|-----BEGIN (?:RSA |EC )?PRIVATE KEY-----)/u;
+const DEPLOY_PRIOR_STATE_FILE = 'deploy-prior-state.json';
 const TARGET_KEYS = Object.freeze([
   'target', 'role', 'transport', 'workerName', 'authDatabaseBinding',
   'authDatabaseName', 'authDatabaseId', 'workspaceId', 'workspaceLabel',
@@ -53,6 +58,25 @@ const TARGET_KEYS = Object.freeze([
 const CLAIM_KEYS = Object.freeze([
   'schemaVersion', 'target', 'canonicalWorktreePath', 'branch', 'leaseNonce',
   'claimedRevision', 'registryRevision', 'hostFingerprint', 'claimedAt', 'expiresAt',
+]);
+const DEPLOY_RECEIPT_KEYS = Object.freeze([
+  'schemaVersion', 'target', 'sourceRevision', 'sourceDirty', 'claimNonce',
+  'registryRevision', 'schemaGeneration', 'workerName', 'authDatabaseBinding',
+  'authDatabaseId', 'tagStateId', 'slackTeamId', 'slackAppId', 'slackBotUserId',
+  'transport', 'activeVersion', 'manifestDigest', 'setupContractDigest',
+  'baselineDigest', 'issuedAt', 'receiptDigest',
+]);
+const DEPLOY_INTENT_KEYS = Object.freeze([
+  'schemaVersion', 'target', 'runId', 'intentId', 'claimNonce', 'claimedRevision',
+  'sourceDirty', 'registryRevision', 'schemaGeneration', 'workerName',
+  'authDatabaseId', 'tagStateId', 'priorServingVersion', 'priorSchemaGeneration', 'providerContext',
+  'deploymentMetadata', 'createdAt', 'intentDigest',
+]);
+const DEPLOYMENT_METADATA_KEYS = Object.freeze([
+  'target', 'sourceRevision', 'sourceDirty', 'claimNonce', 'registryRevision',
+  'schemaGeneration', 'workerName', 'authDatabaseId', 'tagStateId',
+  'slackTeamId', 'slackAppId', 'slackBotUserId', 'manifestDigest',
+  'setupContractDigest', 'baselineDigest',
 ]);
 
 export class EnvironmentRegistryError extends Error {
@@ -208,6 +232,7 @@ export function reclaimEnvironment(target, options = {}) {
     const worktree = resolveWorktree(options.worktreePath ?? process.cwd(), options);
     const registry = readRegistryAt(root, false);
     assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
+    assertTargetMutationUnlocked(registry.targets[target], options);
     const now = nowMs(options);
     assertWorktreeClaimAvailable(registry, worktree, target, now);
     const previous = registry.targets[target].claim;
@@ -240,6 +265,7 @@ export function releaseEnvironment(target, options = {}) {
     const registry = readRegistryAt(root, false);
     assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
     const claim = assertMatchingClaim(registry, target, worktree, options);
+    assertTargetMutationUnlocked(registry.targets[target], options);
     const now = nowMs(options);
     const nextRevision = registry.revision + 1;
     const next = structuredClone(registry);
@@ -258,6 +284,72 @@ export function releaseEnvironment(target, options = {}) {
   }, options);
 }
 
+export function recordEnvironmentDeploymentIntent(target, intent, options = {}) {
+  assertActiveTarget(target);
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  return withRegistryLock(root, () => {
+    const worktree = resolveWorktree(options.worktreePath ?? process.cwd(), options);
+    const registry = readRegistryAt(root, false);
+    assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
+    const claim = assertMatchingClaim(registry, target, worktree, options);
+    assertTargetMutationUnlocked(registry.targets[target], {
+      ...options, expectedTargetLockRunId: intent?.runId,
+    });
+    const unsigned = isRecord(intent)
+      ? Object.fromEntries(Object.entries(intent).filter(([key]) => key !== 'intentDigest'))
+      : undefined;
+    const registration = registry.targets[target];
+    if (!isRecord(intent) || !exactKeys(intent, DEPLOY_INTENT_KEYS)
+      || intent.schemaVersion !== 'chickpea-environment-deploy-intent/v1'
+      || intent.target !== target || intent.claimNonce !== claim.leaseNonce
+      || !/^[A-Za-z0-9._-]{1,128}$/u.test(intent.runId ?? '')
+      || !/^[A-Za-z0-9._-]{1,128}$/u.test(intent.intentId ?? '')
+      || intent.claimedRevision !== claim.claimedRevision
+      || intent.sourceDirty !== worktree.dirty
+      || !Number.isSafeInteger(intent.registryRevision)
+      || intent.registryRevision < claim.registryRevision
+      || intent.registryRevision > registry.revision
+      || !/^d1:[A-Za-z0-9._-]{1,64};do:[A-Za-z0-9._-]{1,64}$/u.test(intent.schemaGeneration ?? '')
+      || intent.workerName !== registration.workerName
+      || intent.authDatabaseId !== registration.authDatabaseId
+      || intent.tagStateId !== registration.bindingIdentities.TAG_STATE
+      || intent.priorServingVersion !== registration.servingVersion
+      || intent.priorSchemaGeneration !== registration.schemaGeneration
+      || !validProviderContext(intent.providerContext)
+      || !validDeploymentMetadata(intent.deploymentMetadata, intent, registration)
+      || !timestamp(intent.createdAt) || new Date(intent.createdAt).toISOString() !== intent.createdAt
+      || intent.intentDigest !== `sha256:${createHash('sha256')
+        .update(stableEnvironmentJson(unsigned)).digest('hex')}`) {
+      throw fail('INVALID_DEPLOY_INTENT');
+    }
+    validateMutationLeaseAuthority(registry, registration, claim, worktree, {
+      runId: intent.runId,
+      intentDigest: intent.intentDigest,
+      claimNonce: intent.claimNonce,
+    }, options);
+    // Capture the exact health/attestation state while the registry lock is
+    // held, immediately before the target_deploy_intent CAS. The earlier
+    // preflight revision is source authority, not rollback authority: another
+    // valid attestation may have landed between preflight and this boundary.
+    atomicJsonWrite(
+      join(registration.evidenceRoot, DEPLOY_PRIOR_STATE_FILE),
+      makeDeploymentPriorState(target, claim, registration, registry.revision, intent.intentDigest),
+    );
+    optionsHook(options.afterDeploymentPriorStatePublished);
+    const nextRevision = registry.revision + 1;
+    const next = structuredClone(registry);
+    next.revision = nextRevision;
+    next.targets[target].reachable = false;
+    next.targets[target].identityMatches = false;
+    next.targets[target].lastAttestation = null;
+    next.audit.push(auditEvent('target_deploy_intent', target, nowMs(options), nextRevision));
+    trimAudit(next.audit);
+    validateRegistry(next);
+    writeRegistryRevision(root, next, options);
+    return Object.freeze({ target, registryRevision: nextRevision, intentDigest: intent.intentDigest });
+  }, options);
+}
+
 export function assertLiveEnvironmentClaim(target, options = {}) {
   assertActiveTarget(target);
   const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
@@ -267,6 +359,321 @@ export function assertLiveEnvironmentClaim(target, options = {}) {
   const claim = assertMatchingClaim(registry, target, worktree, options);
   if (Date.parse(claim.expiresAt) <= nowMs(options)) throw fail('CLAIM_EXPIRED_RECLAIM_REQUIRED');
   return { registry, registration: registry.targets[target], claim, worktree };
+}
+
+export function assertEnvironmentMutationClaim(target, authority, options = {}) {
+  assertActiveTarget(target);
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  const worktree = resolveWorktree(options.worktreePath ?? process.cwd(), options);
+  const registry = readRegistryAt(root, false);
+  assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
+  const claim = assertMatchingClaim(registry, target, worktree, options);
+  const registration = registry.targets[target];
+  validateMutationLeaseAuthority(registry, registration, claim, worktree, authority, options);
+  return Object.freeze({
+    registry,
+    registration: Object.freeze({ ...registration }),
+    claim: Object.freeze({ ...claim }),
+    worktree: Object.freeze({ revision: worktree.revision, dirty: worktree.dirty }),
+  });
+}
+
+/**
+ * Transfer one dead deployment lock to the recovering process. The registry
+ * lock serializes contenders, while the target-lock inode check makes the
+ * replacement conditional on the exact stale owner that was inspected.
+ */
+export function adoptEnvironmentMutationLock(target, authority, options = {}) {
+  assertActiveTarget(target);
+  if (!isRecord(authority)
+    || !exactKeys(authority, ['runId', 'intentId', 'intentDigest', 'claimNonce'])
+    || !/^[A-Za-z0-9._-]{1,128}$/u.test(authority.intentId ?? '')) {
+    throw fail('MUTATION_LEASE_AUTHORITY_REQUIRED');
+  }
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  return withRegistryLock(root, () => {
+    const worktree = resolveWorktree(options.worktreePath ?? process.cwd(), options);
+    const registry = readRegistryAt(root, false);
+    assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
+    const claim = assertMatchingClaim(registry, target, worktree, options);
+    const registration = registry.targets[target];
+    const intent = validateMutationLeaseAuthority(
+      registry,
+      registration,
+      claim,
+      worktree,
+      {
+        runId: authority.runId,
+        intentDigest: authority.intentDigest,
+        claimNonce: authority.claimNonce,
+      },
+      { ...options, allowMissingTargetLock: options.allowMissingTargetLock === true },
+    );
+    if (intent.intentId !== authority.intentId) {
+      throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+    }
+
+    const evidenceRoot = assertSafeEvidenceRoot(registration.evidenceRoot, options);
+    const lockPath = targetLockPath(evidenceRoot);
+    const host = options.lockHost ?? hostname();
+    const currentStat = lstatIfPresent(lockPath);
+    const currentOwner = currentStat ? readOwnedTargetLock(lockPath, currentStat) : undefined;
+    if (currentOwner) {
+      if (currentOwner.host !== host
+        || currentOwner.runId !== authority.runId) {
+        throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+      }
+      if (pidIsActive(currentOwner.pid, options)) {
+        throw fail('TARGET_LOCK_LIVE', { target, ownerRunId: currentOwner.runId });
+      }
+    } else if (options.allowMissingTargetLock !== true) {
+      throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+    }
+
+    const adoptedOwner = Object.freeze({
+      runId: authority.runId,
+      pid: process.pid,
+      host,
+      startedAt: new Date(nowMs(options)).toISOString(),
+    });
+    const temporary = join(
+      evidenceRoot,
+      `.target.lock.adopt.${process.pid}.${randomUUID()}.tmp`,
+    );
+    try {
+      writeExclusiveOwnerOnlyJson(temporary, adoptedOwner);
+      if (currentStat) {
+        const recheckedStat = lstatIfPresent(lockPath);
+        if (!recheckedStat || !sameInode(currentStat, recheckedStat)) {
+          throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+        }
+        const recheckedOwner = readOwnedTargetLock(lockPath, recheckedStat);
+        if (recheckedOwner.runId !== currentOwner.runId
+          || recheckedOwner.pid !== currentOwner.pid
+          || recheckedOwner.host !== currentOwner.host
+          || recheckedOwner.startedAt !== currentOwner.startedAt
+          || pidIsActive(recheckedOwner.pid, options)) {
+          throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+        }
+        renameSync(temporary, lockPath);
+      } else {
+        try {
+          linkSync(temporary, lockPath);
+        } catch (error) {
+          if (isNodeError(error, 'EEXIST')) throw fail('TARGET_LOCK_LIVE', { target });
+          throw error;
+        }
+        unlinkSync(temporary);
+      }
+      fsyncDirectory(evidenceRoot);
+    } finally {
+      try { unlinkSync(temporary); } catch (error) {
+        if (!isNodeError(error, 'ENOENT')) throw error;
+      }
+    }
+
+    const adoptedStat = lstatIfPresent(lockPath);
+    const persisted = adoptedStat ? readOwnedTargetLock(lockPath, adoptedStat) : undefined;
+    if (!adoptedStat || !persisted
+      || persisted.runId !== adoptedOwner.runId
+      || persisted.pid !== adoptedOwner.pid
+      || persisted.host !== adoptedOwner.host) {
+      throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+    }
+    return Object.freeze({
+      owner: adoptedOwner,
+      lockPath,
+      lockDev: adoptedStat.dev,
+      lockIno: adoptedStat.ino,
+      registryRevision: registry.revision,
+    });
+  }, options);
+}
+
+export function abortEnvironmentDeploymentIntent(target, intent, options = {}) {
+  assertActiveTarget(target);
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  return withRegistryLock(root, () => {
+    const worktree = resolveWorktree(options.worktreePath ?? process.cwd(), options);
+    const registry = readRegistryAt(root, false);
+    assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
+    const claim = assertMatchingClaim(registry, target, worktree, options);
+    const registration = registry.targets[target];
+    const authority = {
+      runId: intent?.runId,
+      intentDigest: intent?.intentDigest,
+      claimNonce: intent?.claimNonce,
+    };
+    validateMutationLeaseAuthority(registry, registration, claim, worktree, authority, {
+      ...options,
+      allowMissingTargetLock: options.allowMissingTargetLock === true,
+    });
+    if (!isRecord(intent)
+      || intent.target !== target
+      || intent.claimedRevision !== claim.claimedRevision
+      || intent.sourceDirty !== worktree.dirty
+      || !Number.isSafeInteger(intent.registryRevision)
+      || intent.registryRevision < claim.registryRevision
+      || intent.registryRevision > registry.revision) {
+      throw fail('INVALID_DEPLOY_INTENT');
+    }
+    let priorState;
+    try {
+      priorState = readDeploymentPriorState(registration.evidenceRoot, intent);
+    } catch (error) {
+      if (!(error instanceof EnvironmentRegistryError)
+        || error.code !== 'DEPLOY_PRIOR_STATE_MISSING') throw error;
+      // The prior-state publication is ordered before the registry CAS. Its
+      // absence therefore proves this intent stopped at an earlier begin
+      // boundary and there is no central health state to roll back.
+      if (registration.servingVersion !== intent.priorServingVersion
+        || registration.schemaGeneration !== intent.priorSchemaGeneration
+        || registration.sourceRevision !== intent.claimedRevision
+        || registration.sourceDirty !== intent.sourceDirty) {
+        throw fail('DEPLOY_ABORT_STATE_CHANGED');
+      }
+      return Object.freeze({
+        target,
+        aborted: true,
+        registryRevision: registry.revision,
+        servingVersion: intent.priorServingVersion,
+      });
+    }
+    const prior = validateRegistry(readOwnerOnlyJson(
+      snapshotPath(root, priorState.registryRevision),
+      'INVALID_REGISTRY_REVISION_HISTORY',
+    ));
+    const priorRegistration = prior.targets[target];
+    if (!sameClaim(priorRegistration.claim, claim)
+      || !deploymentPriorStateMatchesRegistration(priorState, priorRegistration)
+      || registration.servingVersion !== intent.priorServingVersion
+      || registration.schemaGeneration !== intent.priorSchemaGeneration
+      || registration.sourceRevision !== priorRegistration.sourceRevision
+      || registration.sourceDirty !== priorRegistration.sourceDirty) {
+      throw fail('DEPLOY_ABORT_STATE_CHANGED');
+    }
+    // A crash after the abort registry CAS but before journal/lock cleanup is
+    // idempotent, including when the exact prior state was unhealthy.
+    if (deploymentPriorStateMatchesRegistration(priorState, registration)) {
+      return Object.freeze({
+        target,
+        aborted: true,
+        registryRevision: registry.revision,
+        servingVersion: intent.priorServingVersion,
+      });
+    }
+    if (registration.reachable !== false || registration.identityMatches !== false
+      || registration.lastAttestation !== null) {
+      throw fail('DEPLOY_ABORT_STATE_CHANGED');
+    }
+    const nextRevision = registry.revision + 1;
+    const next = structuredClone(registry);
+    next.revision = nextRevision;
+    next.targets[target].reachable = priorState.reachable;
+    next.targets[target].identityMatches = priorState.identityMatches;
+    next.targets[target].lastAttestation = priorState.lastAttestation;
+    next.audit.push(auditEvent('target_deploy_aborted', target, nowMs(options), nextRevision));
+    trimAudit(next.audit);
+    validateRegistry(next);
+    writeRegistryRevision(root, next, options);
+    return Object.freeze({
+      target,
+      aborted: true,
+      registryRevision: nextRevision,
+      servingVersion: intent.priorServingVersion,
+    });
+  }, options);
+}
+
+export function isEnvironmentDeploymentAbortState(target, intent, options = {}) {
+  assertActiveTarget(target);
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  const worktree = resolveWorktree(options.worktreePath ?? process.cwd(), options);
+  const registry = readRegistryAt(root, false);
+  assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
+  const claim = assertMatchingClaim(registry, target, worktree, options);
+  const registration = registry.targets[target];
+  if (!isRecord(intent) || intent.target !== target || intent.claimNonce !== claim.leaseNonce) {
+    throw fail('INVALID_DEPLOY_INTENT');
+  }
+  let priorState;
+  try {
+    priorState = readDeploymentPriorState(registration.evidenceRoot, intent);
+  } catch (error) {
+    if (error instanceof EnvironmentRegistryError
+      && error.code === 'DEPLOY_PRIOR_STATE_MISSING') return false;
+    throw error;
+  }
+  return deploymentPriorStateMatchesRegistration(priorState, registration);
+}
+
+function makeDeploymentPriorState(target, claim, registration, registryRevision, intentDigest) {
+  const unsigned = {
+    schemaVersion: 'chickpea-environment-deploy-prior-state/v1',
+    target,
+    claimNonce: claim.leaseNonce,
+    intentDigest,
+    registryRevision,
+    sourceRevision: registration.sourceRevision,
+    sourceDirty: registration.sourceDirty,
+    servingVersion: registration.servingVersion,
+    schemaGeneration: registration.schemaGeneration,
+    reachable: registration.reachable,
+    identityMatches: registration.identityMatches,
+    lastAttestation: registration.lastAttestation,
+  };
+  return Object.freeze({
+    ...unsigned,
+    stateDigest: `sha256:${createHash('sha256')
+      .update(stableEnvironmentJson(unsigned)).digest('hex')}`,
+  });
+}
+
+function readDeploymentPriorState(evidenceRoot, intent) {
+  const input = readOwnerOnlyJson(
+    join(evidenceRoot, DEPLOY_PRIOR_STATE_FILE),
+    'DEPLOY_PRIOR_STATE_MISSING',
+  );
+  const unsigned = isRecord(input)
+    ? Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'stateDigest'))
+    : undefined;
+  if (!isRecord(input)
+    || !exactKeys(input, [
+      'schemaVersion', 'target', 'claimNonce', 'intentDigest', 'registryRevision',
+      'sourceRevision', 'sourceDirty', 'servingVersion', 'schemaGeneration',
+      'reachable', 'identityMatches', 'lastAttestation', 'stateDigest',
+    ])
+    || input.schemaVersion !== 'chickpea-environment-deploy-prior-state/v1'
+    || input.target !== intent?.target
+    || input.claimNonce !== intent?.claimNonce
+    || input.intentDigest !== intent?.intentDigest
+    || !Number.isSafeInteger(input.registryRevision) || input.registryRevision < 1
+    || typeof input.sourceRevision !== 'string' || !/^[0-9a-f]{7,64}$/u.test(input.sourceRevision)
+    || typeof input.sourceDirty !== 'boolean'
+    || !validServingVersion(input.servingVersion)
+    || typeof input.schemaGeneration !== 'string'
+    || !/^d1:[A-Za-z0-9._-]{1,64};do:[A-Za-z0-9._-]{1,64}$/u.test(input.schemaGeneration)
+    || typeof input.reachable !== 'boolean'
+    || typeof input.identityMatches !== 'boolean'
+    || !(input.lastAttestation === null
+      || validateLastAttestation(input.lastAttestation) !== undefined)
+    || input.stateDigest !== `sha256:${createHash('sha256')
+      .update(stableEnvironmentJson(unsigned)).digest('hex')}`) {
+    throw fail('INVALID_DEPLOY_PRIOR_STATE');
+  }
+  return input;
+}
+
+function deploymentPriorStateMatchesRegistration(priorState, registration) {
+  return priorState.target === registration.target
+    && priorState.sourceRevision === registration.sourceRevision
+    && priorState.sourceDirty === registration.sourceDirty
+    && priorState.servingVersion === registration.servingVersion
+    && priorState.schemaGeneration === registration.schemaGeneration
+    && priorState.reachable === registration.reachable
+    && priorState.identityMatches === registration.identityMatches
+    && stableEnvironmentJson(priorState.lastAttestation)
+      === stableEnvironmentJson(registration.lastAttestation);
 }
 
 export function recordEnvironmentAttestation(target, result, options = {}) {
@@ -284,6 +691,7 @@ export function recordEnvironmentAttestation(target, result, options = {}) {
     }
     if (Date.parse(claim.expiresAt) <= now) throw fail('CLAIM_EXPIRED_RECLAIM_REQUIRED');
     const registration = registry.targets[target];
+    assertTargetMutationUnlocked(registration, options);
     const registeredSourceIdentity = `${registration.sourceRevision}${registration.sourceDirty ? '-dirty' : ''}`;
     const currentSourceIdentity = `${claim.claimedRevision}${worktree.dirty ? '-dirty' : ''}`;
     if (currentSourceIdentity !== registeredSourceIdentity
@@ -311,6 +719,132 @@ export function recordEnvironmentAttestation(target, result, options = {}) {
     validateRegistry(next);
     writeRegistryRevision(root, next, options);
     return lastAttestation;
+  }, options);
+}
+
+export function recordEnvironmentDeployment(target, receipt, options = {}) {
+  assertActiveTarget(target);
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  return withRegistryLock(root, () => {
+    const worktree = resolveWorktree(options.worktreePath ?? process.cwd(), options);
+    const registry = readRegistryAt(root, false);
+    assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
+    const claim = assertMatchingClaim(registry, target, worktree, options);
+    const now = nowMs(options);
+    const registration = registry.targets[target];
+    assertTargetMutationUnlocked(registration, options);
+    validateMutationLeaseAuthority(
+      registry,
+      registration,
+      claim,
+      worktree,
+      options.mutationLeaseAuthority,
+      options,
+    );
+    const unsignedReceipt = isRecord(receipt)
+      ? Object.fromEntries(Object.entries(receipt).filter(([key]) => key !== 'receiptDigest'))
+      : undefined;
+    if (!isRecord(receipt)
+      || !exactKeys(receipt, DEPLOY_RECEIPT_KEYS)
+      || receipt.schemaVersion !== 'chickpea-environment-deploy-receipt/v1'
+      || receipt.receiptDigest !== `sha256:${createHash('sha256')
+        .update(stableEnvironmentJson(unsignedReceipt)).digest('hex')}`
+      || receipt.target !== target
+      || receipt.claimNonce !== claim.leaseNonce
+      || !Number.isSafeInteger(receipt.registryRevision)
+      || receipt.registryRevision < claim.registryRevision
+      || receipt.registryRevision > registry.revision
+      || receipt.sourceRevision !== claim.claimedRevision
+      || receipt.sourceDirty !== worktree.dirty
+      || receipt.workerName !== registration.workerName
+      || receipt.authDatabaseBinding !== registration.authDatabaseBinding
+      || receipt.authDatabaseId !== registration.authDatabaseId
+      || receipt.tagStateId !== registration.bindingIdentities.TAG_STATE
+      || receipt.slackTeamId !== registration.workspaceId
+      || receipt.slackAppId !== registration.slackAppId
+      || receipt.slackBotUserId !== registration.botUserId
+      || typeof receipt.schemaGeneration !== 'string'
+      || !/^d1:[A-Za-z0-9._-]{1,64};do:[A-Za-z0-9._-]{1,64}$/u.test(receipt.schemaGeneration)
+      || receipt.transport !== registration.transport
+      || typeof receipt.issuedAt !== 'string'
+      || !Number.isFinite(Date.parse(receipt.issuedAt))
+      || new Date(receipt.issuedAt).toISOString() !== receipt.issuedAt
+      || !/^sha256:[a-f0-9]{64}$/u.test(receipt.manifestDigest)
+      || !/^sha256:[a-f0-9]{64}$/u.test(receipt.setupContractDigest)
+      || !/^sha256:[a-f0-9]{64}$/u.test(receipt.baselineDigest)
+      || !validServingVersion(receipt.activeVersion)) {
+      throw fail('INVALID_DEPLOY_RECEIPT');
+    }
+    const baseline = readOwnerOnlyJson(
+      join(registration.evidenceRoot, 'environment-baseline.json'),
+      'INVALID_DEPLOY_RECEIPT',
+    );
+    if (!isRecord(baseline)
+      || baseline.target !== target
+      || baseline.manifestDigest !== receipt.manifestDigest
+      || baseline.setupContractDigest !== receipt.setupContractDigest
+      || receipt.baselineDigest !== `sha256:${createHash('sha256')
+        .update(stableEnvironmentJson(baseline)).digest('hex')}`) {
+      throw fail('INVALID_DEPLOY_RECEIPT');
+    }
+    if (receipt.schemaGeneration !== registration.schemaGeneration) {
+      const schemaIntent = readOwnerOnlyJson(
+        join(registration.evidenceRoot, 'schema-advancement-intent.json'),
+        'INVALID_SCHEMA_ADVANCEMENT',
+      );
+      if (!isRecord(schemaIntent)
+        || !exactKeys(schemaIntent, [
+          'schemaVersion', 'target', 'claimNonce', 'registryRevision',
+          'fromGeneration', 'toGeneration', 'successorOf', 'historyDigest', 'createdAt',
+        ])
+        || schemaIntent.schemaVersion !== 'chickpea-environment-schema-advancement-intent/v1'
+        || schemaIntent.target !== target
+        || schemaIntent.claimNonce !== claim.leaseNonce
+        || schemaIntent.fromGeneration !== registration.schemaGeneration
+        || schemaIntent.successorOf !== registration.schemaGeneration
+        || schemaIntent.toGeneration !== receipt.schemaGeneration
+        || typeof schemaIntent.historyDigest !== 'string'
+        || !/^sha256:[a-f0-9]{64}$/u.test(schemaIntent.historyDigest)
+        || !Number.isSafeInteger(schemaIntent.registryRevision)
+        || schemaIntent.registryRevision > registry.revision
+        || !timestamp(schemaIntent.createdAt)) {
+        throw fail('INVALID_SCHEMA_ADVANCEMENT');
+      }
+    }
+    if (typeof options.publishPendingReceipt !== 'function'
+      || typeof options.finalizeReceipt !== 'function') {
+      throw fail('DEPLOY_RECEIPT_PUBLICATION_REQUIRED');
+    }
+    // Two registry snapshots make the cross-directory publication
+    // crash-explicit. The first snapshot records the new identity as
+    // unreachable; only after the pending receipt is atomically finalized can
+    // the second snapshot make the lane ready.
+    options.publishPendingReceipt();
+    const pendingRevision = registry.revision + 1;
+    const pending = structuredClone(registry);
+    pending.revision = pendingRevision;
+    pending.targets[target].sourceRevision = receipt.sourceRevision;
+    pending.targets[target].sourceDirty = receipt.sourceDirty;
+    pending.targets[target].servingVersion = receipt.activeVersion;
+    pending.targets[target].schemaGeneration = receipt.schemaGeneration;
+    pending.targets[target].reachable = false;
+    pending.targets[target].identityMatches = false;
+    pending.targets[target].lastAttestation = null;
+    pending.audit.push(auditEvent('target_deploy_pending', target, now, pendingRevision));
+    trimAudit(pending.audit);
+    validateRegistry(pending);
+    writeRegistryRevision(root, pending, options);
+    options.finalizeReceipt();
+    const finalRevision = pendingRevision + 1;
+    const final = structuredClone(pending);
+    final.revision = finalRevision;
+    final.targets[target].reachable = true;
+    final.targets[target].identityMatches = true;
+    final.audit.push(auditEvent('target_deployed', target, now, finalRevision));
+    trimAudit(final.audit);
+    validateRegistry(final);
+    writeRegistryRevision(root, final, options);
+    return Object.freeze({ target, registryRevision: finalRevision, servingVersion: receipt.activeVersion });
   }, options);
 }
 
@@ -498,8 +1032,7 @@ function validateTarget(input, target) {
     || !validBindings(input.bindingIdentities, input.authDatabaseId)
     || typeof input.schemaGeneration !== 'string'
     || !/^d1:[A-Za-z0-9._-]{1,64};do:[A-Za-z0-9._-]{1,64}$/u.test(input.schemaGeneration)
-    || typeof input.servingVersion !== 'string'
-    || !/^version-[A-Za-z0-9._-]{1,96}$/u.test(input.servingVersion)
+    || !validServingVersion(input.servingVersion)
     || typeof input.sourceRevision !== 'string' || !/^[0-9a-f]{7,64}$/u.test(input.sourceRevision)
     || typeof input.sourceDirty !== 'boolean'
     || typeof input.reachable !== 'boolean'
@@ -541,7 +1074,7 @@ function validateLastAttestation(input) {
     || !timestamp(input.attestedAt)
     || !Number.isSafeInteger(input.registryRevision) || input.registryRevision < 1
     || typeof input.sourceRevision !== 'string' || !/^[0-9a-f]{7,64}(?:-dirty)?$/u.test(input.sourceRevision)
-    || typeof input.servingVersion !== 'string' || !/^version-[A-Za-z0-9._-]{1,96}$/u.test(input.servingVersion)
+    || !validServingVersion(input.servingVersion)
     || typeof input.targetFingerprint !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(input.targetFingerprint)
     || !validVerifierLock(input.verifierLock)) {
     throw fail('INVALID_ATTESTATION_RECORD');
@@ -755,6 +1288,28 @@ function readRegistryLock(lockPath) {
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
+}
+
+function readOwnedTargetLock(lockPath, expectedStat) {
+  const stat = lstatIfPresent(lockPath);
+  if (!stat || stat.isSymbolicLink() || !stat.isFile()) {
+    throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+  }
+  assertOwnershipAndMode(stat, 0o600);
+  if (expectedStat && !sameInode(expectedStat, stat)) {
+    throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+  }
+  let owner;
+  try {
+    owner = readTargetLock(lockPath);
+  } catch {
+    throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+  }
+  const rechecked = lstatIfPresent(lockPath);
+  if (!rechecked || !sameInode(stat, rechecked)) {
+    throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+  }
+  return owner;
 }
 
 function pidIsActive(pid, options) {
@@ -1080,6 +1635,87 @@ export function readEnvironmentTargetLockStatus(evidenceRoot, options = {}) {
   return readTargetLockStatus(lockPath, options);
 }
 
+function assertTargetMutationUnlocked(registration, options = {}) {
+  const pendingIntentPath = join(registration.evidenceRoot, 'deploy-intent.json');
+  const pendingIntentStat = lstatIfPresent(pendingIntentPath);
+  if (pendingIntentStat) {
+    const pendingIntent = readOwnerOnlyJson(pendingIntentPath, 'MUTATION_LEASE_AUTHORITY_CHANGED');
+    if (!isRecord(pendingIntent)
+      || pendingIntent.target !== registration.target
+      || pendingIntent.runId !== options.expectedTargetLockRunId) {
+      throw fail('TARGET_MUTATION_LOCKED', {
+        target: registration.target,
+        status: 'intent',
+        ...(safeBounded(pendingIntent?.runId, 128) ? { ownerRunId: pendingIntent.runId } : {}),
+      });
+    }
+  }
+  const status = readEnvironmentTargetLockStatus(registration.evidenceRoot, {
+    host: options.lockHost ?? hostname(),
+    ...(options.isPidActive ? { isPidActive: options.isPidActive } : {}),
+  });
+  if (status.status === 'clear') return;
+  if (options.expectedTargetLockRunId !== undefined
+    && status.ownerRunId === options.expectedTargetLockRunId
+    && status.status !== 'foreign') return;
+  throw fail('TARGET_MUTATION_LOCKED', {
+    target: registration.target, status: status.status,
+    ...(status.ownerRunId ? { ownerRunId: status.ownerRunId } : {}),
+  });
+}
+
+function validateMutationLeaseAuthority(
+  registry,
+  registration,
+  claim,
+  worktree,
+  authority,
+  options = {},
+) {
+  if (!isRecord(authority)
+    || !exactKeys(authority, ['runId', 'intentDigest', 'claimNonce'])
+    || !/^[A-Za-z0-9._-]{1,128}$/u.test(authority.runId ?? '')
+    || !/^sha256:[a-f0-9]{64}$/u.test(authority.intentDigest ?? '')
+    || authority.claimNonce !== claim.leaseNonce) {
+    throw fail('MUTATION_LEASE_AUTHORITY_REQUIRED');
+  }
+  const intentPath = join(registration.evidenceRoot, 'deploy-intent.json');
+  const intent = readOwnerOnlyJson(intentPath, 'MUTATION_LEASE_AUTHORITY_REQUIRED');
+  const unsigned = isRecord(intent)
+    ? Object.fromEntries(Object.entries(intent).filter(([key]) => key !== 'intentDigest'))
+    : undefined;
+  if (!isRecord(intent)
+    || intent.schemaVersion !== 'chickpea-environment-deploy-intent/v1'
+    || intent.target !== registration.target
+    || intent.runId !== authority.runId
+    || intent.claimNonce !== authority.claimNonce
+    || intent.intentDigest !== authority.intentDigest
+    || intent.claimedRevision !== claim.claimedRevision
+    || intent.sourceDirty !== worktree.dirty
+    || intent.workerName !== registration.workerName
+    || intent.authDatabaseId !== registration.authDatabaseId
+    || intent.tagStateId !== registration.bindingIdentities.TAG_STATE
+    || intent.intentDigest !== `sha256:${createHash('sha256')
+      .update(stableEnvironmentJson(unsigned)).digest('hex')}`) {
+    throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+  }
+  const status = readEnvironmentTargetLockStatus(registration.evidenceRoot, {
+    host: options.lockHost ?? hostname(),
+    ...(options.isPidActive ? { isPidActive: options.isPidActive } : {}),
+  });
+  if (status.status === 'clear') {
+    if (options.allowMissingTargetLock !== true) {
+      throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+    }
+  } else if (status.status === 'foreign' || status.ownerRunId !== authority.runId) {
+    throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+  }
+  if (registry.targets[registration.target].claim?.leaseNonce !== authority.claimNonce) {
+    throw fail('MUTATION_LEASE_AUTHORITY_CHANGED');
+  }
+  return intent;
+}
+
 function assertSafeClaimWorktreeDirectory(worktreePath) {
   const stat = lstatIfPresent(worktreePath);
   if (!stat || stat.isSymbolicLink() || !stat.isDirectory()
@@ -1217,10 +1853,42 @@ function validVerifierLock(input) {
     && (input.ownerRunId === undefined || safeBounded(input.ownerRunId, 128));
 }
 
+function validProviderContext(input) {
+  if (!Array.isArray(input) || input.length % 2 !== 0 || input.length > 4) return false;
+  const seen = new Set();
+  for (let index = 0; index < input.length; index += 2) {
+    const flag = input[index];
+    const value = input[index + 1];
+    if (!['--profile', '--env'].includes(flag) || seen.has(flag)
+      || typeof value !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/u.test(value)) return false;
+    seen.add(flag);
+  }
+  return true;
+}
+
+function validDeploymentMetadata(input, intent, registration) {
+  return isRecord(input)
+    && exactKeys(input, DEPLOYMENT_METADATA_KEYS)
+    && input.target === intent.target
+    && input.sourceRevision === intent.claimedRevision
+    && input.sourceDirty === intent.sourceDirty
+    && input.claimNonce === intent.claimNonce
+    && input.registryRevision === intent.registryRevision
+    && input.schemaGeneration === intent.schemaGeneration
+    && input.workerName === registration.workerName
+    && input.authDatabaseId === registration.authDatabaseId
+    && input.tagStateId === registration.bindingIdentities.TAG_STATE
+    && input.slackTeamId === registration.workspaceId
+    && input.slackAppId === registration.slackAppId
+    && input.slackBotUserId === registration.botUserId
+    && [input.manifestDigest, input.setupContractDigest, input.baselineDigest]
+      .every((value) => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/u.test(value));
+}
+
 function validateAudit(input) {
   if (!isRecord(input)
     || !exactKeys(input, ['event', 'target', 'at', 'registryRevision'])
-    || !['claim_created', 'claim_reclaimed', 'claim_released', 'target_attested'].includes(input.event)
+    || !['claim_created', 'claim_reclaimed', 'claim_released', 'target_attested', 'target_deploy_intent', 'target_deploy_aborted', 'target_deploy_pending', 'target_deployed'].includes(input.event)
     || !activeEnvironmentTargets.includes(input.target)
     || !timestamp(input.at)
     || !Number.isSafeInteger(input.registryRevision) || input.registryRevision < 1) {
@@ -1377,6 +2045,13 @@ function safePublicRunId(input) {
 function timestamp(input) {
   if (typeof input !== 'string' || input.length !== 24 || !Number.isFinite(Date.parse(input))) return false;
   try { return new Date(input).toISOString() === input; } catch { return false; }
+}
+
+function validServingVersion(input) {
+  return typeof input === 'string' && (
+    /^version-[A-Za-z0-9._-]{1,96}$/u.test(input)
+    || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(input)
+  );
 }
 
 function stringArray(input) {

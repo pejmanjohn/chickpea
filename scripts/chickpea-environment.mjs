@@ -11,6 +11,10 @@ import {
   releaseEnvironment,
 } from './lib/environment-registry.mjs';
 import { targetEnvironment } from './lib/environment-target.mjs';
+import {
+  reconcileEnvironmentDeployment,
+  withEnvironmentReleaseFence,
+} from './lib/environment-preflight.mjs';
 
 export async function runEnvironmentCli(argv, io = {}) {
   const stdout = io.stdout ?? ((value) => process.stdout.write(value));
@@ -21,9 +25,18 @@ export async function runEnvironmentCli(argv, io = {}) {
       ...(parsed.flags.root ? { root: parsed.flags.root } : {}),
       ...(parsed.flags.worktree ? { worktreePath: parsed.flags.worktree } : {}),
       ...(parsed.flags.leaseMs ? { leaseDurationMs: numberFlag(parsed.flags.leaseMs) } : {}),
+      ...((parsed.flags.profile || parsed.flags.environment) ? {
+        providerContext: [
+          ...(parsed.flags.profile ? ['--profile', parsed.flags.profile] : []),
+          ...(parsed.flags.environment ? ['--env', parsed.flags.environment] : []),
+        ],
+      } : {}),
       // Direct injection is intentionally available only to unit harnesses.
       // The executable never accepts a host identity from argv or env.
       ...(io.hostFingerprint ? { hostFingerprint: io.hostFingerprint } : {}),
+      // Test harnesses must opt in explicitly; this is never derived from argv,
+      // environment variables, or the injected machine identity.
+      ...(io.allowSuppliedObservation === true ? { allowSuppliedObservation: true } : {}),
     };
     let result;
     if (parsed.command === 'claim') {
@@ -38,17 +51,37 @@ export async function runEnvironmentCli(argv, io = {}) {
       result = targetEnvironment(parsed.target, options);
     } else if (parsed.command === 'attest') {
       requireTarget(parsed.target);
-      if (!parsed.flags.observation) throw new EnvironmentRegistryError('OBSERVATION_REQUIRED');
-      const observation = JSON.parse(readFileSync(parsed.flags.observation, 'utf8'));
+      if (parsed.flags.observation && io.allowSuppliedObservation !== true) {
+        throw new EnvironmentRegistryError('CALLER_OBSERVATION_REFUSED');
+      }
+      if (!parsed.flags.observation && io.allowSuppliedObservation === true) {
+        throw new EnvironmentRegistryError('OBSERVATION_REQUIRED');
+      }
+      const observation = parsed.flags.observation
+        ? JSON.parse(readFileSync(parsed.flags.observation, 'utf8'))
+        : undefined;
       result = await attestEnvironment(parsed.target, observation, options);
     } else if (parsed.command === 'release') {
       requireTarget(parsed.target);
-      result = releaseEnvironment(parsed.target, options);
+      result = withEnvironmentReleaseFence(
+        parsed.target,
+        options,
+        (fence) => releaseEnvironment(parsed.target, {
+          ...options,
+          expectedTargetLockRunId: fence.runId,
+        }),
+      );
     } else if (parsed.command === 'reclaim') {
       requireTarget(parsed.target);
       result = reclaimEnvironment(parsed.target, options);
     } else if (parsed.command === 'reconciliation') {
-      result = reconcileEnvironment(parsed.target, options);
+      const recoveredDeployment = parsed.target
+        ? await reconcileEnvironmentDeployment(parsed.target, options)
+        : null;
+      result = {
+        ...reconcileEnvironment(parsed.target, options),
+        deploymentRecovered: recoveredDeployment !== null,
+      };
     } else {
       throw new EnvironmentRegistryError('INVALID_COMMAND');
     }
@@ -81,6 +114,8 @@ function parseArgs(argv) {
       '--worktree': 'worktree',
       '--lease-ms': 'leaseMs',
       '--observation': 'observation',
+      '--profile': 'profile',
+      '--env': 'environment',
     }[value];
     if (field) {
       const next = argv[index + 1];

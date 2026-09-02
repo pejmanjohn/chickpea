@@ -16,6 +16,7 @@ import {
   stableEnvironmentJson,
 } from './environment-registry.mjs';
 import { createVerifierTargetInputs } from './environment-target.mjs';
+import { observeReceiptBackedEnvironment } from './environment-preflight.mjs';
 
 /**
  * Convert one matching live claim into the verifier-owned attestation and
@@ -37,6 +38,15 @@ export async function attestEnvironment(target, observation, options = {}) {
       readOnly: async (alias) => resolveEnvironmentRegistrationAlias(alias, registration),
     },
   );
+  const suppliedObservationAllowed = options.allowSuppliedObservation === true;
+  if (observation !== undefined && !suppliedObservationAllowed) {
+    throw environmentFailure('CALLER_OBSERVATION_REFUSED');
+  }
+  if (options.observeLiveTarget !== undefined
+    && (options.allowTestLiveTargetObserver !== true
+      || typeof options.observeLiveTarget !== 'function')) {
+    throw environmentFailure('TEST_LIVE_OBSERVER_REFUSED');
+  }
   const liveObservation = options.observeLiveTarget
     ? await options.observeLiveTarget({
       target,
@@ -44,7 +54,10 @@ export async function attestEnvironment(target, observation, options = {}) {
       registration: Object.freeze({ ...registration }),
       providedObservation: observation,
     })
-    : observation;
+    : suppliedObservationAllowed
+      ? observation
+      : await observeReceiptBackedEnvironment(target, options);
+  if (liveObservation === undefined) throw environmentFailure('LIVE_OBSERVATION_REQUIRED');
   const attestation = await attestLiveTarget(resolution, liveObservation);
   if (attestation.servingVersion !== registration.servingVersion) {
     throw environmentFailure('SERVING_VERSION_MISMATCH');
