@@ -6,12 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { experimental_readRawConfig } from 'wrangler';
 
 // @ts-expect-error The cross-platform executable .mjs intentionally has no declaration file.
-import {
-  ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS,
-  applyCloudflareDeploymentProfile,
-  classifyCloudflareDeploymentProfile,
-  resolveCloudflareDeploymentProfile,
-} from '../scripts/cloudflare-deployment-profile.mjs';
+import { ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS, applyCloudflareDeploymentProfile, classifyCloudflareDeploymentProfile, resolveCloudflareDeploymentProfile } from '../scripts/cloudflare-deployment-profile.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 

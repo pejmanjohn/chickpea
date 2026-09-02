@@ -1075,8 +1075,8 @@ function writeCutoverArtifact(
   const rootConfig = structuredClone(config);
   if (target) {
     rootConfig.name = 'chickpea';
-    rootConfig.d1_databases[0].database_name = 'chickpea-auth-db';
-    rootConfig.d1_databases[0].database_id = '';
+    rootConfig.d1_databases[0]!.database_name = 'chickpea-auth-db';
+    rootConfig.d1_databases[0]!.database_id = '';
     delete rootConfig.vars.CHICKPEA_DEPLOY_TARGET;
     delete rootConfig.vars.CHICKPEA_AUTH_DB_SCHEMA_GENERATION;
     delete rootConfig.vars.CHICKPEA_DURABLE_OBJECT_SCHEMA_GENERATION;
