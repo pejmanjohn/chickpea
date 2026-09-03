@@ -475,12 +475,22 @@ function traceLaneFailure(env: PlatformEnv | undefined, stage: string, error: un
     'cloudflare_ai_binding_error', 'invalid_provider_registration',
   ]);
   const names = new Set(['Error', 'TypeError', 'RangeError', 'AgentRunError', 'FlueError', 'ZodError']);
-  const chain: Array<{ type: string; name: string }> = [];
+  const signals = [
+    'json', 'schema', 'tool', 'parse', 'context', 'input', 'token', 'rate', 'quota',
+    'limit', 'auth', 'unauthorized', 'permission', 'forbidden', 'empty', 'timeout',
+    'network', 'fetch', 'request', 'body', 'serialization', 'abort', 'invalid',
+    'unsupported', 'required', 'model', 'provider', 'durable', 'storage',
+  ];
+  const chain: Array<{ type: string; name: string; signals: string[]; status: number | null }> = [];
   let current = asRecord(error);
   for (let depth = 0; current && depth < 5; depth += 1) {
+    const message = typeof current.message === 'string' ? current.message.toLowerCase() : '';
     chain.push({
       type: typeof current.type === 'string' && types.has(current.type) ? current.type : 'other',
       name: typeof current.name === 'string' && names.has(current.name) ? current.name : 'other',
+      signals: signals.filter((signal) => new RegExp(`\\b${signal}\\b`, 'u').test(message)),
+      status: [400, 401, 403, 404, 408, 413, 422, 429, 500, 502, 503, 504]
+        .find((status) => new RegExp(`\\b${status}\\b`, 'u').test(message)) ?? null,
     });
     current = asRecord(current.cause);
   }
