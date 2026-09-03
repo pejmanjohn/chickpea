@@ -123,6 +123,111 @@ test('deployment-key setup persists safe prepared IDs for later provider resolut
   });
 });
 
+test('stored-key preparation retains a verified read-only override without replacing the write default', async () => {
+  await withDependencies(async ({ dependencies }) => {
+    const key = 'ak_stored_read_only_override';
+    await saveStoredComposioProjectKey(key, dependencies);
+    const configs = new Map<string, ComposioAuthConfigLike[]>();
+    for (const { toolkit } of MANAGED_CONNECTOR_CATALOG.list()) {
+      configs.set(toolkit, [compatible(toolkit, `ac_${toolkit}_default`)]);
+    }
+    const options = {
+      ...dependencies,
+      env: { COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID: 'ac_sheets_read_only' },
+      inspectAuthConfig: async (input: { apiKey: string; authConfigId: string }) => {
+        assert.equal(input.apiKey, key);
+        assert.equal(input.authConfigId, 'ac_sheets_read_only');
+        return {
+          id: input.authConfigId, toolkit: 'googlesheets', enabled: true,
+          managed: true, unrestricted: true,
+        };
+      },
+      createClient: async () => setupClient(configs),
+    };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const prepared = await prepareResolvedComposioManagedAuthConfigs(options);
+      assert.equal(prepared.status, 'ready');
+      assert.deepEqual(prepared.authConfigIds.googlesheets, {
+        read: 'ac_sheets_read_only', write: 'ac_googlesheets_default',
+      });
+      const runtime = await resolveComposioConfiguration({
+        ...options,
+        inspectAuthConfig: async () => { throw new Error('runtime must not inspect'); },
+      });
+      assert.equal(runtime.source, 'stored');
+      assert.deepEqual(runtime.authConfigIds.googlesheets, prepared.authConfigIds.googlesheets);
+    }
+  });
+});
+
+test('an unverifiable read-only override cannot silently prepare a broader default', async () => {
+  await withDependencies(async ({ dependencies, settings }) => {
+    await saveStoredComposioProjectKey('ak_reject_unverified_override', dependencies);
+    const prepared = await prepareResolvedComposioManagedAuthConfigs({
+      ...dependencies,
+      env: { COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID: 'ac_wrong_project_read_only' },
+      inspectAuthConfig: async () => { throw new Error('not in this project'); },
+      createClient: async () => setupClient(new Map()),
+    });
+    assert.equal(prepared.status, 'partial');
+    assert.equal(prepared.authConfigIds.googlesheets?.read, undefined);
+    assert.ok(prepared.authConfigIds.googlesheets?.write);
+    assert.ok(prepared.authConfigIds.gmail?.read);
+    const runtime = await resolveComposioConfiguration(dependencies);
+    assert.equal(runtime.authConfigIds.googlesheets?.read, undefined);
+    assert.equal((await settings.getSetting('managed.composio.configuration'))?.includes('not in this project'), false);
+  });
+});
+
+test('override retries preserve verified IDs during outages but never cache rejection or failure', async () => {
+  await withDependencies(async ({ dependencies }) => {
+    await saveStoredComposioProjectKey('ak_override_retry_recovery', dependencies);
+    const configs = new Map<string, ComposioAuthConfigLike[]>();
+    for (const { toolkit } of MANAGED_CONNECTOR_CATALOG.list()) {
+      configs.set(toolkit, [compatible(toolkit, `ac_${toolkit}_verified`)]);
+    }
+    // The durable configuration was verified in an earlier preparation. This
+    // isolate has never inspected the deployment override (its cache is cold).
+    await prepareResolvedComposioManagedAuthConfigs({
+      ...dependencies, createClient: async () => setupClient(configs),
+    });
+    let outcome = 'unavailable';
+    let inspections = 0;
+    const options = {
+      ...dependencies,
+      env: { COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID: 'ac_googlesheets_verified' },
+      inspectAuthConfig: async ({ authConfigId }: { authConfigId: string }) => {
+        inspections += 1;
+        if (outcome === 'unavailable') throw new Error('transient upstream failure');
+        return { id: authConfigId, toolkit: 'googlesheets', enabled: outcome === 'valid',
+          managed: true, unrestricted: true };
+      },
+      createClient: async () => setupClient(configs),
+    };
+    const unavailable = await prepareResolvedComposioManagedAuthConfigs(options);
+    assert.equal(unavailable.status, 'partial');
+    assert.equal(unavailable.authConfigIds.googlesheets?.read, 'ac_googlesheets_verified');
+    assert.ok(unavailable.issueCodes.includes('auth_config_override_unavailable.googlesheets'));
+    outcome = 'valid';
+    const retry = await prepareResolvedComposioManagedAuthConfigs(options);
+    assert.equal(retry.status, 'ready');
+    assert.equal(inspections, 2, 'an explicit retry must re-inspect immediately');
+    outcome = 'incompatible';
+    const rejected = await prepareResolvedComposioManagedAuthConfigs(options);
+    assert.equal(rejected.authConfigIds.googlesheets?.read, undefined);
+    outcome = 'unavailable';
+    const stillRejected = await prepareResolvedComposioManagedAuthConfigs(options);
+    assert.equal(stillRejected.authConfigIds.googlesheets?.read, undefined);
+    assert.equal(inspections, 4, 'a subsequent outage must not resurrect a rejected ID');
+    outcome = 'valid';
+    assert.equal((await prepareResolvedComposioManagedAuthConfigs(options)).status, 'ready');
+    options.env.COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID = 'ac_other_read_only';
+    outcome = 'unavailable';
+    assert.equal((await prepareResolvedComposioManagedAuthConfigs(options)).authConfigIds.googlesheets?.read,
+      undefined, 'an unavailable different override must not retain the old lane');
+  });
+});
+
 test('setup creates missing defaults, retains partial successes, and persists safe issues', async () => {
   await withDependencies(async ({ dependencies }) => {
     await saveStoredComposioProjectKey('ak_partial_setup_key', dependencies);
