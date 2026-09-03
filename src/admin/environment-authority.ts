@@ -35,18 +35,26 @@ export async function environmentAuthorityResponse(input: {
     || !supplied || !timingSafeEqual(Buffer.from(token), Buffer.from(supplied))) {
     return new Response('{}', { status: 404, headers });
   }
+  let stage = 'worker_version';
   try {
     const version = cloudflareWorkerVersionId(input.env);
     if (!version) throw new Error('missing version');
+    stage = 'installation';
     const gateway = input.gateway();
     const installation = await gateway.installationAuthority();
     if (installation.health === 'revoked') throw new Error('revoked');
+    stage = 'slack_identity';
     const auth = await gateway.call('auth.test', {});
     const binding = installation.binding;
     if (auth.ok !== true || auth.team_id !== binding.workspaceId || auth.user_id !== binding.botUserId
       || (auth.app_id !== undefined && auth.app_id !== binding.appId)) throw new Error('Slack identity mismatch');
+    stage = 'session_read';
     const session = await input.session();
-    if (!session.healthy || session.versionId !== version) throw new Error('stale session');
+    stage = 'session_version';
+    if (session.versionId !== version) throw new Error('stale session');
+    stage = 'session_health';
+    if (!session.healthy) throw new Error('unhealthy session');
+    stage = 'credential_fingerprints';
     const authKey = decodeRecoverySecret(requiredString(input.env.CHICKPEA_AUTH_SECRET));
     const recoveryKey = decodeRecoverySecret(requiredString(input.env.CHICKPEA_RECOVERY_TOKEN));
     const keyring = loadWorkerCredentialKeyring(input.env);
@@ -75,8 +83,9 @@ export async function environmentAuthorityResponse(input: {
       },
     }, { headers });
   } catch {
-    // Neither remote diagnostics nor environment/credential values leave this boundary.
-    return new Response('{"error":"environment_authority_unavailable"}', { status: 503, headers });
+    // Only this locally chosen stage leaves the boundary, never remote error
+    // text, environment values, credential values, or message content.
+    return Response.json({ error: 'environment_authority_unavailable', stage }, { status: 503, headers });
   }
 }
 

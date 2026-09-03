@@ -5661,6 +5661,21 @@ button.capability-pill { cursor: pointer; }
       slackDestinationTabsHtml() + panels + '</div>';
   }
 
+  function slackSessionDiagnosticsHtml() {
+    var gateway = state.slack && state.slack.gateway;
+    if (!gateway) return "";
+    var phases = ["stopped", "starting", "connecting", "retrying", "healthy", "needs_attention", "stale", "offline"];
+    var phase = phases.indexOf(gateway.phase) >= 0 ? gateway.phase : "unavailable";
+    var version = typeof gateway.versionId === "string" &&
+      /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|version-[A-Za-z0-9._-]{1,96})$/i.test(gateway.versionId)
+      ? gateway.versionId : "unavailable";
+    var generation = Number.isSafeInteger(gateway.generation) && gateway.generation >= 0
+      ? gateway.generation : "unavailable";
+    return '<details class="hint" style="margin-top:12px;overflow-wrap:anywhere;"><summary>Inbound session · ' + esc(phase) + '</summary>' +
+      '<p>Session phase: ' + esc(phase) + '<br>Generation: ' + esc(generation) + '<br>Worker version: <span class="mono">' + esc(version) + '</span></p>' +
+      '<p>Live session at last refresh. The workspace warning may also reflect a saved authorization or connection issue.</p></details>';
+  }
+
   function slackWorkspaceSettingsHtml() {
     if (!state.slack) {
       return '<section class="section"><div class="empty"><p class="field-label">Slack settings are unavailable</p><p class="hint">Reload the page to try the connection again.</p></div></section>';
@@ -5684,7 +5699,7 @@ button.capability-pill { cursor: pointer; }
     var connection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connection</h2>' +
       '<p class="hint">Manage this Slack workspace connection.</p></div></div>' +
       '<div class="action-well">' + testButton +
-      slackConnectionStatusHtml() + '</div>' +
+      slackConnectionStatusHtml() + '</div>' + slackSessionDiagnosticsHtml() +
       (!mutable ? '<div class="action-well"><div class="danger-copy"><span class="danger-title">Reconnect the shared Slack app</span>' +
       '<span class="hint">Refresh Slack authorization without changing Agents, Channel grants, or saved settings.</span></div>' +
       '<button type="button" class="btn btn-soft i-lead" data-action="slack-gateway-refresh"' +

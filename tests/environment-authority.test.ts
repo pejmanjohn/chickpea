@@ -91,23 +91,24 @@ test('environment authority projects only actual bindings and fresh Slack/versio
   assert.deepEqual(f.calls, ['installation', 'auth.test', 'session']);
 });
 
-test('environment authority fails closed without leaking diagnostics on any authority failure', async () => {
-  for (const mutate of [
-    (f: ReturnType<typeof fixture>) => { f.installation.health = 'revoked'; },
-    (f: ReturnType<typeof fixture>) => { f.auth.team_id = 'TOTHER'; },
-    (f: ReturnType<typeof fixture>) => { f.auth.user_id = 'UOTHER'; },
-    (f: ReturnType<typeof fixture>) => { f.auth.app_id = 'AOTHER'; },
-    (f: ReturnType<typeof fixture>) => { f.auth.ok = false; },
-    (f: ReturnType<typeof fixture>) => { f.session.versionId = 'old'; },
-    (f: ReturnType<typeof fixture>) => { f.session.healthy = false; },
-    (f: ReturnType<typeof fixture>) => { delete f.env.CF_VERSION_METADATA; },
-    (f: ReturnType<typeof fixture>) => { f.env.CHICKPEA_AUTH_SECRET = 'private-invalid-value'; },
-    (f: ReturnType<typeof fixture>) => { f.input.gateway = () => { throw new Error('private diagnostic'); }; },
-  ]) {
+test('environment authority reports only a fixed failure stage, never remote diagnostics or values', async () => {
+  for (const [stage, mutate] of [
+    ['installation', (f) => { f.installation.health = 'revoked'; }],
+    ['slack_identity', (f) => { f.auth.team_id = 'TOTHER'; }],
+    ['slack_identity', (f) => { f.auth.user_id = 'UOTHER'; }],
+    ['slack_identity', (f) => { f.auth.app_id = 'AOTHER'; }],
+    ['slack_identity', (f) => { f.auth.ok = false; }],
+    ['session_version', (f) => { f.session.versionId = 'old'; }],
+    ['session_health', (f) => { f.session.healthy = false; }],
+    ['worker_version', (f) => { delete f.env.CF_VERSION_METADATA; }],
+    ['credential_fingerprints', (f) => { f.env.CHICKPEA_AUTH_SECRET = 'private-invalid-value'; }],
+    ['installation', (f) => { f.input.gateway = () => { throw new Error('private diagnostic'); }; }],
+    ['session_read', (f) => { f.input.session = async () => { throw new Error('private diagnostic'); }; }],
+  ] satisfies Array<[string, (f: ReturnType<typeof fixture>) => void]>) {
     const f = fixture();
     mutate(f);
     const response = await environmentAuthorityResponse(f.input);
     assert.equal(response.status, 503);
-    assert.deepEqual(await response.json(), { error: 'environment_authority_unavailable' });
+    assert.deepEqual(await response.json(), { error: 'environment_authority_unavailable', stage });
   }
 });

@@ -94,6 +94,7 @@ type SlackConnectionFixture = {
   health?: 'pending' | 'healthy' | 'needs_attention' | 'revoked' | 'degraded';
   healthDetail?: string | null;
   transportMode?: 'direct' | 'gateway';
+  gateway?: { healthy: boolean; phase: string; detail: string | null; generation: number | null; versionId: string | null };
   teamId?: string | null;
   teamName?: string | null;
   requestUrl: string;
@@ -3255,6 +3256,35 @@ test('an offline inbound Slack session renders a specific retryable status', asy
 
   assert.match(harness.app.innerHTML, /inbound event session is offline/i);
   assert.match(harness.app.innerHTML, /badge badge-off[^>]*>[\s\S]*?Needs attention/);
+});
+
+test('Slack connection shows bounded live session diagnostics separately from saved health', async () => {
+  for (const phase of ['healthy', 'retrying', 'starting', 'stale']) {
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/settings/slack/identities',
+      slackConnection: {
+        ...connectedSlackFixture(), transportMode: 'gateway',
+        health: 'needs_attention', healthDetail: 'gateway_session_offline',
+        gateway: { healthy: phase === 'healthy', phase, detail: null, generation: 3,
+          versionId: '11111111-2222-3333-4444-555555555555' },
+      },
+    });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, /Inbound session/);
+    assert.match(harness.app.innerHTML, new RegExp('Session phase: ' + phase));
+    assert.match(harness.app.innerHTML, /Generation: 3/);
+    assert.match(harness.app.innerHTML, /11111111-2222-3333-4444-555555555555/);
+    assert.match(harness.app.innerHTML, /Needs attention/);
+  }
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/slack/identities',
+    slackConnection: { ...connectedSlackFixture(), transportMode: 'gateway',
+      gateway: { healthy: false, phase: 'private remote error', detail: 'private remote error',
+        generation: -1, versionId: 'private remote error' } },
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Session phase: unavailable/);
+  assert.doesNotMatch(harness.app.innerHTML, /private remote error|Generation: -1/);
 });
 
 test('a successful Slack re-test clears an earlier inbound-session warning', async () => {
