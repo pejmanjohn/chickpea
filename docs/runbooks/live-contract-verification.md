@@ -4,9 +4,9 @@ This runbook covers attended verification of Chickpea in real Admin, Slack, and 
 
 ## Phase 1 operating model
 
-Phase 1 has exactly three active targets—`amber`, `cobalt`, and `fern`—inside one Slack Developer sandbox. Each target binds the same exact four-variant smoke inventory; a run claims one color and may use `case` or `smoke`. The Phase 1 environment registry and allocator refuse `deep` and reject `dedicated-qa`, `install`, `demo`, `spare`, a second sandbox, and deep-fixture roles before records or resources are created. The public verifier schema remains role-agnostic and retains dormant deep contracts for continuation. Runs stay serial per target. The runner never deploys or repairs Chickpea. A local test, deployed version, traffic percentage, screenshot, or correct final reply is supporting context, not live-contract proof.
+Phase 1 starts with exactly two active targets, `amber` and `cobalt`. The environment handoff owns their workspace and app configuration. Each target binds the same exact four-variant smoke inventory; a run claims one color and may use `case` or `smoke`. The Phase 1 environment registry and allocator refuse `deep` and continuation roles. `fern` is inactive and must not become a prerequisite or substitute target. The public verifier schema remains role-agnostic and retains dormant deep contracts for continuation. Runs stay serial per target. The runner never deploys or repairs Chickpea. A local test, deployed version, traffic percentage, screenshot, or correct final reply is supporting context, not live-contract proof.
 
-The environment layer provisions the three color targets and owns their Workers, D1, shared Developer sandbox, Slack apps, gateway, worktree claims, deployment fences and receipts, target lifecycle, and infrastructure cleanup. Demo promotion, deep qualification, first-install automation, and a second sandbox are continuation modules. The Live Contract Verifier owns contracts, suites, its run journal, the per-target run lock, semantic actions, human gates, observers, product-state cleanup or residue, evidence, reports, and this operator skill.
+The environment layer provisions the two color targets and owns their Workers, D1, Slack workspaces and app installations, transport, worktree claims, deployment fences and receipts, target lifecycle, and infrastructure cleanup. Demo promotion, deep qualification, first-install automation, and additional environments are continuation modules. The Live Contract Verifier owns contracts, suites, its run journal, the per-target run lock, semantic actions, human gates, observers, product-state cleanup or residue, evidence, reports, and this operator skill.
 
 The public V0 CLI is intentionally narrower than the internal runner protocol. `doctor` validates a private overlay and exact snapshot. The `case`, `smoke`, and `deep` commands return `COORDINATOR_REQUIRED` before reading private inputs or accepting caller-authored outcomes. V0 cannot authenticate to Slack, Cloudflare, Composio, or a browser and is not live-complete V1. The next-phase coordinator must supply all of these controls:
 
@@ -16,7 +16,7 @@ The public V0 CLI is intentionally narrower than the internal runner protocol. `
 - exact-ID reversal or revision-checked restoration;
 - a final target, inventory, and cleanup postflight.
 
-That coordinator does not ship in V0. Without it, doctor and deterministic checks may run, but live mutation is blocked. After U0 and V1, claim clean `fern` normally and exclusively for one protected origin/main Computer Use smoke, clean it, release it, then return `fern` to ordinary branch-lane use. Do not add a persistent qualification mode or dual-role registry state.
+That coordinator does not ship in V0. Without it, doctor and deterministic checks may run, but live mutation is blocked. After U0 and V1, claim clean `cobalt` normally and exclusively for one protected origin/main Computer Use smoke, clean it, release it, then return it to ordinary branch-lane use. If another task owns the claim, wait for release. Do not add a persistent qualification mode or dual-role registry state.
 
 The coordinator remains verifier-owned when implemented. It acquires the per-target lock, sequences variants, journals one-use challenges and content-free receipts, packages evidence, performs exact cleanup bookkeeping, and owns the host-local UI mutex. Codex carries out scored product actions and observations as a real user through Computer Use in the actual Slack and Chickpea Admin interfaces. It must not substitute direct product APIs, database reads, hidden HTTP observers, or an API actor for that journey.
 
@@ -40,7 +40,7 @@ The public fixture kinds are exact: `actor`, `slack_channel`, `slack_dm`, `slack
 
 Use one canonical absolute evidence root outside the repository and every npm package root. The private coordinator creates run directories with mode `0700` and files with mode `0600`. A run directory contains its journal, content-free observations, receipts, and failure capsules. Raw Slack or provider content never belongs in a public report.
 
-The environment may reuse its four role users across `amber`, `cobalt`, and `fern`, with each target overlay binding those actor aliases to its workspace. Doctor resolves only the distinct Computer Use-addressable aliases required by the selected variants; the exact Phase 1 smoke needs Owner and Member. Admin and second-member remain available for later cases rather than becoming a smoke prerequisite. Do not substitute tabs in one ambiguous browser session or use an API actor for a scored journey.
+Each target overlay binds actor aliases to its own workspace. Doctor resolves only the distinct Computer Use-addressable aliases required by the selected variants; the exact Phase 1 smoke needs Owner and Member. Admin and second-member remain available for later cases rather than becoming a smoke prerequisite. Do not substitute tabs in one ambiguous browser session or use an API actor for a scored journey.
 
 The target lock is derived as `<evidenceRoot>/target.lock`. It records the run ID, PID, host, and start time and uses no-overwrite creation. Different targets have different locks and evidence roots; there is no separate lock-path alias to drift.
 
@@ -63,13 +63,13 @@ There is no host-wide run lock. Different targets may run concurrently on one ho
 5. Run `npm run verify:live:doctor -- --target <private-overlay> --snapshot <private-snapshot>`.
 6. Require a ready doctor result before resolving any mutating credential or browser app.
 
-Doctor must bind the repository and manifest digests to the serving version, one 100-percent deployment, deployment bindings, Slack workspace and app, provider project and read-only auth config, timezone, the minimum actor aliases and UI observation recipes required by the selected variants, evidence root, and target lock. Gateway targets require matching healthy gateway identity. Events targets instead require a healthy installation verification and a fresh signed-event receipt. Color branch lanes may use an explicit `<sha>-dirty` revision; the protected fern origin/main smoke is claimed only from a clean attestation. Missing required actors, observer gaps, target drift, an unsafe evidence root, or any lock blocks the run.
+Doctor must bind the repository and manifest digests to the serving version, one 100-percent deployment, deployment bindings, Slack workspace and app, provider project and read-only auth config, timezone, the minimum actor aliases and UI observation recipes required by the selected variants, evidence root, and target lock. Gateway targets require matching healthy gateway identity. Events targets instead require a healthy installation verification and a fresh signed-event receipt. Color branch lanes may use an explicit `<sha>-dirty` revision; the protected origin/main smoke is claimed only from a clean attestation. Missing required actors, observer gaps, target drift, an unsafe evidence root, or any lock blocks the run.
 
 ## Choose the smallest suite
 
 - `case` runs selected variants while developing or investigating one feature.
 - `smoke` is the Phase 1 live finish line and normal release check.
-- `deep` is continuation work. The environment registry rejects it on `amber`, `cobalt`, and `fern`, even though its contracts remain in the public catalog.
+- `deep` is continuation work. The environment registry rejects it on `amber` and `cobalt`, even though its contracts remain in the public catalog.
 
 Use the generated [feature map](../../qa/live/generated/feature-map.md) to find contracts, entry points, actors, and fixtures. Contract assertions live in the catalog, not this runbook.
 
@@ -89,7 +89,7 @@ Keep the accepted content-free summary. Delete superseded private run directorie
 
 Keep the per-target file lock while runs are attended and single-host for that target. Different claimed targets may run in parallel without sharing a lock; only their Computer Use action/input windows serialize. Design a remote lease with fencing only before same-target multi-host, same-target parallel, or unattended operation. Implement the verifier-owned UI coordinator only after the environment can produce the target, claim, and attestation contracts above. Do not put resolved bindings in the OSS package.
 
-First-install automation is a continuation module. Phase 1 starts from the three provisioned color targets and scored verification begins at `LC01-V1-create-welcome`. Do not create an installation runner or score setup APIs as product proof.
+First-install automation is a continuation module. Phase 1 starts from the two provisioned color targets and scored verification begins at `LC01-V1-create-welcome`. Do not create an installation runner or score setup APIs as product proof.
 
 ## Verifier upkeep
 

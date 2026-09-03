@@ -5,7 +5,7 @@ description: Run or maintain Chickpea's live Slack behavior verification when a 
 
 # Chickpea live verification
 
-Use the public catalog to grade behavior on one claimed target. Read `docs/runbooks/live-contract-verification.md` before any live action.
+Use the public catalog to grade behavior on one claimed target. Read `../../../docs/runbooks/live-contract-verification.md` before any live action.
 
 ## Select and attest one target
 
@@ -14,7 +14,7 @@ Use the public catalog to grade behavior on one claimed target. Read `docs/runbo
 3. Get its verifier inputs with `env target <alias>` and `env attest <alias>`. Consume those files as the private overlay/config aliases and doctor snapshot. Do not copy immutable IDs into another format.
 4. Run `npm run verify:live:doctor -- --target <private-overlay> --snapshot <private-snapshot>` through the private coordinator.
 5. Stop if claim, target resolution, attestation, or doctor is blocked. Never deploy, repair, reconnect, clear a lock, or change a fixture to make doctor pass.
-6. Use `case` first, then `smoke` if the color target contains its exact inventory. Reject `deep` on `amber`, `cobalt`, and `fern`.
+6. Use only `amber` or `cobalt`. Run `case` first, then `smoke` if the selected target contains its exact inventory. Reject `deep` on both targets. Do not claim or require `fern`.
 
 The public catalog retains dormant deep contracts for a later qualification module; they are not an active Phase 1 gate.
 
@@ -34,7 +34,7 @@ The environment layer owns target infrastructure, deployment fences, claims, san
 - After ambiguity, do readback and cleanup only. Never replay the mutation unless exact readback proves absence.
 - Clean only exact run-owned IDs or restore the recorded prior revision. Finish with authoritative postflight.
 
-Phase 1 starts from provisioned color targets; first-install automation is continuation work. Begin scored verification at `LC01-V1-create-welcome` after attestation. For the first protected smoke, take an ordinary exclusive claim on clean `fern`, clean and release it afterward, then return it to normal branch-lane use.
+Phase 1 starts from provisioned `amber` and `cobalt` targets; first-install automation is continuation work. Begin scored verification at `LC01-V1-create-welcome` after attestation. The environment handoff selects clean `cobalt` for the first protected smoke. Take an ordinary exclusive claim, clean and release it afterward, then return it to normal branch-lane use. If it is occupied, wait rather than reuse another task's claim.
 
 ## Keep evidence private
 
@@ -45,7 +45,7 @@ Store resolved aliases, locks, journals, receipts, transcripts, screenshots, and
 When a drive surprises you:
 
 1. Rerun doctor.
-2. Check `qa/live/generated/feature-map.md` freshness.
+2. Check `../generated/feature-map.md` freshness.
 3. Inspect the smallest affected contract and its lesson file.
 4. Update verifier-owned files only when product intent is clear.
 5. Rerun the smallest relevant deterministic check and OSS export check.

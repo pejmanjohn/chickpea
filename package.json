@@ -9,6 +9,7 @@
     "url": "git+https://github.com/pejmanjohn/chickpea.git"
   },
   "files": [
+    ".agents/skills/chickpea-live-verification",
     ".dev.vars.example",
     ".env.example",
     ".nvmrc",

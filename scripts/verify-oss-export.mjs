@@ -77,8 +77,13 @@ const forbiddenSourcePathRoots = [
   exportPath('tmp'),
 ];
 
+const allowedAgentSkillPaths = new Set([
+  exportPath('.agents', 'skills', 'chickpea-live-verification', 'SKILL.md'),
+]);
+
 const liveVerifierExportPolicy = Object.freeze({
   requiredPaths: new Set([
+    exportPath('.agents', 'skills', 'chickpea-live-verification', 'SKILL.md'),
     exportPath('AGENTS.md'),
     exportPath('docs', 'runbooks', 'live-contract-verification.md'),
     exportPath('docs', 'runbooks', 'live-contract-acceptance-v1.md'),
@@ -489,7 +494,8 @@ function assertPublicSourceManifest(entries) {
           !allowedBinaryFiles.has(normalizedPath)) ||
         forbiddenSourcePathRoots.some(
           (root) =>
-            normalizedPath === root || normalizedPath.startsWith(`${root}/`),
+            (normalizedPath === root || normalizedPath.startsWith(`${root}/`)) &&
+            !allowedAgentSkillPaths.has(normalizedPath),
         )
       );
     },
@@ -641,6 +647,7 @@ function verifyNpmPackManifest(entries, packageJson) {
   const files = new Set((manifest[0]?.files ?? []).map((entry) => entry.path));
   const declaredFiles = new Set(packageJson.files ?? []);
   const requiredPackageEntries = [
+    '.agents/skills/chickpea-live-verification',
     'AGENTS.md',
     'qa/live',
     'docs/runbooks/live-contract-acceptance-v1.md',
@@ -651,6 +658,7 @@ function verifyNpmPackManifest(entries, packageJson) {
     .map(({ path }) => path)
     .filter(isLiveVerifierPublicPath);
   const required = [
+    '.agents/skills/chickpea-live-verification/SKILL.md',
     '.dev.vars.example',
     '.env.example',
     'AGENTS.md',
