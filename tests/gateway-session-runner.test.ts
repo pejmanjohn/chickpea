@@ -139,6 +139,93 @@ test('session runner reconnects and rotates a renewable logical session', async 
   }
 });
 
+test('Durable Object reconnect recreates a client whose state RPC stub has failed', async () => {
+  let clock = NOW;
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const keyring = generateCredentialKeyring('key_gateway');
+  const makeClient = () => new GatewayDeploymentClient({
+    settings, config, keyring, gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch, now: () => clock,
+  });
+  const clients: GatewayDeploymentClient[] = [];
+  const runners: GatewaySessionRunner[] = [];
+  const sockets: FakeSocket[] = [];
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  const source = ts.createSourceFile('cloudflare-session.ts',
+    readFileSync(new URL('../src/slack/gateway/cloudflare-session.ts', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node) =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackGatewaySession');
+  assert.ok(declaration);
+  const compiled = ts.transpileModule(
+    declaration.getText(source).replace(/^export /u, '') + '\nSlackGatewaySession',
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const Probe = vm.runInNewContext(compiled, {
+    DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    getSettingsStore: () => ({ getSetting: async () => 'configured' }),
+    GATEWAY_BINDING_SETTING: 'binding',
+    GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
+    createGatewayDeploymentClient: () => {
+      const client = makeClient(); clients.push(client); return client;
+    },
+    cloudflareWorkerVersionId: () => 'test-version',
+    reconcileGatewaySessionStatus,
+    GatewaySessionRunnerSupervisor,
+    GatewaySessionRunner: class extends GatewaySessionRunner {
+      constructor(options: ConstructorParameters<typeof GatewaySessionRunner>[0]) {
+        super({ ...options, now: () => clock,
+          createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
+          setTimer: ((callback: () => void, delay: number) => {
+            timers.push({ callback, delay });
+            return timers.length as unknown as ReturnType<typeof setTimeout>;
+          }), clearTimer: () => {},
+        });
+        runners.push(this);
+      }
+    },
+  }) as new (context: object, env: object) => { wake(): Promise<void> };
+  try {
+    const bootstrap = makeClient();
+    await bootstrap.beginClaim();
+    await bootstrap.refreshClaim();
+    const object = new Probe({ waitUntil() {} }, {});
+    await object.wake();
+    sockets[0]!.open();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    ready(sockets[0]!, 'session_before_rpc_failure');
+    await waitFor(() => timers.some(({ delay }) => delay === 90_000)
+      && runners[0]!.healthSnapshot().healthy);
+    // A Cloudflare RPC stub remains broken after a transport exception. Merely
+    // retrying the same client's checkpoint read cannot recover that stub.
+    clients[0]!.loadSessionCheckpoint = async () => { throw new Error('RPC stub is broken'); };
+    clients[0]!.recordSessionCheckpoint = async () => { throw new Error('RPC stub is broken'); };
+    sockets[0]!.disconnect();
+    await spin();
+    clock += 2_000;
+    timers.at(-1)!.callback();
+    await spin();
+    await spin();
+    assert.equal(clients.length, 2, 'reconnect must refresh the captured state RPC clients');
+    await waitFor(() => sockets.length === 2);
+    sockets[1]!.open();
+    await waitFor(() => sockets[1]!.sent.length === 1);
+    ready(sockets[1]!, 'session_after_rpc_failure');
+    await waitFor(() => runners[0]!.healthSnapshot().healthy);
+    await waitFor(async () => {
+      const checkpoint = JSON.parse((await settings.getSetting(GATEWAY_SESSION_SETTING)) ?? '{}');
+      return checkpoint.health === 'healthy' && checkpoint.connectedAt === clock;
+    });
+    assert.equal(runners.length, 1, 'reconnect recovers without a manual supervisor restart');
+  } finally {
+    for (const runner of runners) runner.stop();
+    settings.close();
+    config.close();
+  }
+});
+
 test('session rotation keeps the predecessor live until its successor is ready', async () => {
   const settings = new SqliteSettingsStore(':memory:', () => NOW);
   const config = configStore();

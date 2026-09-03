@@ -18,7 +18,8 @@ export interface GatewaySocket {
 }
 
 interface GatewaySessionRunnerOptions {
-  client: GatewayDeploymentClient;
+  // Long-lived Cloudflare sessions need fresh RPC stubs after a failed attempt.
+  client: GatewayDeploymentClient | (() => GatewayDeploymentClient);
   onEvent(delivery: GatewayInboundDelivery): Promise<'accepted' | 'duplicate' | 'rejected'>;
   createSocket?: (url: string) => GatewaySocket;
   now?: () => number;
@@ -227,6 +228,7 @@ export class GatewaySessionRunnerSupervisor {
 
 /** Keeps exactly one renewable, credential-free delivery socket per process. */
 export class GatewaySessionRunner implements GatewaySessionRunnerControl {
+  private client: GatewayDeploymentClient;
   private active: GatewaySessionEndpoint | undefined;
   private candidate: GatewaySessionEndpoint | undefined;
   private handoffPredecessor: GatewaySessionEndpoint | undefined;
@@ -248,6 +250,7 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
   private readonly clearTimer: NonNullable<GatewaySessionRunnerOptions['clearTimer']>;
 
   constructor(private readonly options: GatewaySessionRunnerOptions) {
+    this.client = typeof options.client === 'function' ? options.client() : options.client;
     this.now = options.now ?? Date.now;
     this.setTimer = options.setTimer ?? setTimeout;
     this.clearTimer = options.clearTimer ?? clearTimeout;
@@ -265,9 +268,12 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     this.retireCandidate('restart');
     this.retireCurrentSocket('restart');
     try {
+      if (generation > 1 && typeof this.options.client === 'function') {
+        this.client = this.options.client();
+      }
       const [binding, prior] = await Promise.all([
-        this.options.client.loadBinding(),
-        this.options.client.loadSessionCheckpoint(),
+        this.client.loadBinding(),
+        this.client.loadSessionCheckpoint(),
       ]);
       if (!this.current(generation)) return false;
       if (!binding) {
@@ -385,7 +391,7 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     generation: number,
   ): Promise<GatewaySessionEndpoint | undefined> {
     let endpoint: GatewaySessionEndpoint | undefined;
-    const session = await this.options.client.createSession(
+    const session = await this.client.createSession(
       (frame) => {
         if (this.current(generation) && endpoint && this.endpointCurrent(endpoint) &&
             endpoint.socket.readyState === 1) {
@@ -459,7 +465,7 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
   }
 
   private async openCandidate(generation: number): Promise<void> {
-    const binding = await this.options.client.loadBinding();
+    const binding = await this.client.loadBinding();
     if (!binding || !this.current(generation) || !this.renewalPending || this.candidate) return;
     const connecting = {
       health: 'connecting' as const,
@@ -655,8 +661,9 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     checkpoint: GatewaySessionCheckpoint,
     allowed: () => boolean = () => true,
   ): Promise<void> {
+    const client = this.client;
     const write = this.checkpointWrites.then(async () => {
-      if (allowed()) await this.options.client.recordSessionCheckpoint(checkpoint);
+      if (allowed()) await client.recordSessionCheckpoint(checkpoint);
     });
     this.checkpointWrites = write.catch(() => undefined);
     return write;
