@@ -3480,6 +3480,28 @@ test('Where it works can remove an Agent Channel grant', async () => {
   assert.match(harness.app.innerHTML, /Only the creator can DM this Agent/);
 });
 
+test('saved Agent details expose exact persisted identity without inventing a revision or serializing private fields', async () => {
+  const agent = { id: 'agent_details', revision: 7, name: 'Details Agent', lifecycle: 'active', enabled: true,
+    instructions: 'Saved instructions', secret: 'never-display-this-secret',
+    slackPresence: { normalizedHandle: 'details', health: 'healthy', desiredState: 'active', userGroupId: 'S_DETAILS' } };
+  const harness = runAdminPageHarness({ agents: [agent] });
+  await flushAsync();
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': agent.id }) });
+  await flushAsync();
+  const details = harness.app.innerHTML.split('<summary>Saved Agent details</summary>')[1]?.split('</details>')[0];
+  assert.ok(details);
+  assert.match(details, /Agent ID[^]*agent_details/);
+  assert.match(details, /Saved revision[^]*>7</);
+  assert.match(details, /Presence health[^]*healthy/);
+  assert.match(details, /Slack user group ID[^]*S_DETAILS/);
+  assert.doesNotMatch(details, /never-display-this-secret|Saved instructions/);
+  const missing = runAdminPageHarness({ agents: [{ ...agent, revision: undefined }] });
+  await flushAsync();
+  missing.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': agent.id }) });
+  await flushAsync();
+  assert.match(missing.app.innerHTML, /Saved revision[^]*>unavailable</);
+});
+
 test('the profile editor presents reversible archive semantics for an assigned Agent', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
@@ -6640,6 +6662,28 @@ test('Agent connections expose Agent-owned Team and personal accounts with manag
   assert.doesNotMatch(page, /ask Composio to revoke Google access/);
   assert.match(page, /\/connections\?workspaceId=/);
   assert.match(page, /\/oauth\/api\/start/);
+});
+
+test('saved connection details use a closed identity and revision allowlist', async () => {
+  const account = { id: 'connection_exact', revision: 4, workspaceId: 'T_DESIGN', ownerKind: 'member',
+    ownerMembershipId: 'membership_exact', createdByMembershipId: 'membership_creator', providerId: 'google',
+    label: 'Google Sheets', lifecycle: 'ready', credential: 'never-show-credential',
+    policy: { kind: 'managed', adapterId: 'composio', toolkit: 'googlesheets', accountRef: 'ca_exact',
+      allowedCapabilities: ['sheets.spreadsheets.get'], accessToken: 'never-show-access' } };
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()],
+    connectionAccounts: { attached: [ownedConnection(account)], managedConnectors: { composio: true } } });
+  await flushAsync();
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  const details = harness.app.innerHTML.split('<summary>Saved connection details</summary>')[1]?.split('</details>')[0];
+  assert.ok(details);
+  assert.match(details, /Connection ID[^]*connection_exact/);
+  assert.match(details, /Saved revision[^]*>4</);
+  assert.match(details, /Ownership[^]*Personal/);
+  assert.match(details, /Bound Agent ID[^]*agent_conn/);
+  assert.doesNotMatch(details, /ca_exact|never-show-credential|never-show-access|accessToken/);
 });
 
 test('connection accounts use the compact prototype states without provider implementation details', async () => {

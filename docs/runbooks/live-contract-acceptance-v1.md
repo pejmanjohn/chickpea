@@ -19,6 +19,13 @@ a separate empty connector-test Agent per lane; its actual provisioning and
 private binding are still pending. Existing lane canaries and doctor reports
 do not establish readiness for this new fixture or count as formal smoke.
 
+The environment task has now issued its explicit U0 live handoff. The coordinator
+has a tested explicit same-run recovery path, including real-process contention
+and recovery-process crash checks. Existing Agent and connection screens now have
+closed-field saved-record disclosures for visible exact identity/revision reads.
+These local changes are not yet deployed or live-accepted. The private attended
+driver, operator entrypoint, fixture provisioning, and formal smoke remain pending.
+
 ## Historical V0 result
 
 | Field | Result |
@@ -60,7 +67,7 @@ Before live scoring, expose any required durable truth through a bounded read-on
 ## What must be true before the first smoke
 
 1. Claim one permitted target. Consume `env target <alias>` and `env attest <alias>` without copying immutable IDs into another format.
-2. Resolve every actor required by the selected color target's smoke variants to distinct Computer Use-addressable browser apps.
+2. Resolve every required actor alias to a Computer Use-addressable browser session. The same Owner-capable actor may fulfill the Owner and Member aliases for these non-denial smoke variants; do not infer coverage of distinct-role or access-denial scenarios.
 3. Implement the verifier-owned attended coordinator and prove target lock, safe clear-lock, UI mutex/browser reservation, challenge, receipt, visible readback, exact cleanup, and postflight behavior without a product mutation.
 4. Make every selected UI observation recipe available, run transport-aware doctor, and require a ready result.
 5. After the environment handoff releases it, take an ordinary exclusive claim on clean `cobalt` and start one immutable protected origin/main Computer Use smoke at `LC01-V1-create-welcome`.

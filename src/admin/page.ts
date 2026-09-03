@@ -8590,7 +8590,24 @@ button.capability-pill { cursor: pointer; }
       '<span class="connection-account-copy"><span class="connection-account-name">' + esc(displayName) + '</span>' +
       '<span class="connection-account-identity">' + (identity ? esc(identity) + ' &middot; ' : '') + owner + '</span></span>' +
       status + connectionAccountCapabilitiesHtml(account, entry.binding ? entry.binding.allowedCapabilities : null) + action + menu +
+      '<div class="connection-row-editor">' + connectionSavedRecordHtml(entry) + '</div>' +
       (resourceEditor ? '<div class="connection-row-editor">' + resourceEditor + '</div>' : '') + '</div>';
+  }
+
+  function connectionSavedRecordHtml(entry) {
+    var account = entry.account;
+    var binding = entry.binding || {};
+    // An explicit allowlist: never serialize the account or its credential policy.
+    return '<details class="scheduled-technical"><summary>Saved connection details</summary><div class="scheduled-meta">' +
+      scheduledMeta("Connection ID", account.id, true) +
+      scheduledMeta("Saved revision", Number.isInteger(account.revision) ? account.revision : "unavailable", true) +
+      scheduledMeta("Lifecycle", account.lifecycle, false) +
+      scheduledMeta("Ownership", account.ownerKind === "member" ? "Personal" : account.ownerKind === "team" ? "Team" : "unavailable", false) +
+      scheduledMeta("Owner membership", account.ownerMembershipId || "none", true) +
+      scheduledMeta("Created by membership", account.createdByMembershipId, true) +
+      scheduledMeta("Bound Agent ID", binding.agentId, true) +
+      scheduledMeta("Binding enabled", binding.enabled === true ? "yes" : binding.enabled === false ? "no" : "unavailable", false) +
+      '</div></details>';
   }
 
   function connectionAccountEndpointHtml(form, preset, oauth) {
@@ -9602,6 +9619,7 @@ button.capability-pill { cursor: pointer; }
       agentDestinationsHtml(draft, readOnly, replyIdentityLabel) +
       profileTabsHtml(draft) +
       (readOnly ? '<fieldset class="agent-readonly-fields" disabled>' + agentAdvancedHtml(draft) + '</fieldset>' : agentAdvancedHtml(draft)) +
+      agentSavedRecordHtml(draft) +
       (readOnly ? "" : '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + (saveBarCueActive() ? " cue" : "") + '">' +
       '<div class="save-bar-inner">' +
       '<p class="save-note">&#9679; Unsaved changes &mdash; applies to new threads</p>' +
@@ -9609,6 +9627,24 @@ button.capability-pill { cursor: pointer; }
       '<button type="button" class="btn btn-primary" data-action="save-profile">Save changes</button>' +
       '</div></div>') +
       '<div aria-hidden="true" style="height:56px"></div></div>';
+  }
+
+  function agentSavedRecordHtml(draft) {
+    // Use the saved response, never unsaved edits or cloneAgent's fallback revision.
+    var saved = state.agents.find(function (agent) { return agent.id === draft.id; });
+    if (!saved) return '';
+    var presence = saved.slackPresence || {};
+    var grants = channelGrantsForAgent(saved.id);
+    return '<details class="scheduled-technical"><summary>Saved Agent details</summary><div class="scheduled-meta">' +
+      scheduledMeta("Agent ID", saved.id, true) +
+      scheduledMeta("Saved revision", Number.isInteger(saved.revision) ? saved.revision : "unavailable", true) +
+      scheduledMeta("Lifecycle", saved.lifecycle, false) +
+      scheduledMeta("Slack user group ID", presence.userGroupId || "unavailable", true) +
+      scheduledMeta("Slack handle", presence.normalizedHandle || "unavailable", true) +
+      scheduledMeta("Presence health", presence.health || "unavailable", false) +
+      scheduledMeta("Desired presence", presence.desiredState || "unavailable", false) +
+      scheduledMeta("Channel grant IDs", grants.length ? grants.map(function (grant) { return grant.channelId; }).sort().join(", ") : "none", true) +
+      '</div></details>';
   }
 
   function agentAdvancedHtml(draft) {

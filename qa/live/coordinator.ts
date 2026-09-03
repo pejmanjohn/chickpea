@@ -11,16 +11,17 @@ import { advanceLiveRun, type AdvanceLiveRunRequest } from './runner.ts';
 import { PHASE_ONE_SMOKE_VARIANTS, PHASE_ONE_TARGET_ALIASES,
   type ObserverId, type AssertionToken, type LiveAction } from './schema.ts';
 import { beginCleanup, deriveCleanupPlan, exactResourceBindingDigest, recordAssertionTokens,
-  recordBaselineFact, recordCleanupReceipt, recordMutationReceipt, verifyPostflight,
+  recordBaselineFact, recordCleanupReceipt, recordCleanupReadback, recordMutationReceipt, verifyPostflight,
+  projectProductLedger,
   validatePendingMutationReceipt,
   type BaselineFactInput, type CleanupTarget, type MutationReceiptInput, type PostflightInput,
   type PostflightProof } from './safety/cleanup.ts';
 import { appendRunJournal, createRunJournal, readRunJournal } from './safety/journal.ts';
 import { assertPrivateEvidencePath } from './safety/evidence.ts';
-import { acquireTargetLock, readTargetLock, releaseOwnedTargetLock, targetLockPath,
+import { acquireTargetLock, readTargetLock, recoverTargetLock, releaseOwnedTargetLock, targetLockPath,
   type TargetLockOwner } from './safety/lock.ts';
 import { HostUiMutex, type UiWindowLease } from './safety/ui-mutex.ts';
-import type { ActionRequiredRecord, AssertionRecord, RunnerRecord, TerminalRecord } from './state.ts';
+import type { ActionRequiredRecord, AssertionRecord, RunnerRecord, TerminalRecord, WaitingRecord } from './state.ts';
 
 export interface WindowCapture<Value> {
   transport: 'computer_use';
@@ -43,12 +44,18 @@ export interface PreparedAction {
   baselines: BaselineFactInput[];
 }
 
-type ResourceEffect = Pick<MutationReceiptInput,
+export type ResourceEffect = Pick<MutationReceiptInput,
   'immutableId' | 'resourceKind' | 'beforeRevision' | 'revision' | 'beforeStateDigest' | 'stateDigest'
   | 'expectedResidueStateDigest'>;
 
 export interface ActionReadback {
   outcome: 'completed' | 'denied' | 'cancelled' | 'expired' | 'wrong_session' | 'provider_error' | 'ambiguous';
+  resource?: ResourceEffect;
+  generatedEffects?: ResourceEffect[];
+}
+
+export interface InterruptedActionReadback {
+  outcome: 'applied' | 'absent' | 'ambiguous';
   resource?: ResourceEffect;
   generatedEffects?: ResourceEffect[];
 }
@@ -75,9 +82,13 @@ export interface ComputerUseDriver {
   actorAlias: string;
   prepare(action: ActionRequiredRecord, ui: UiWindow): Promise<WindowCapture<PreparedAction>>;
   act(action: ActionRequiredRecord, challenge: OperatorActionView, ui: UiWindow): Promise<WindowCapture<ActionReadback>>;
+  /** Observe only. This method is never permitted to replay the interrupted action. */
+  readbackAction(action: ActionRequiredRecord, ui: UiWindow): Promise<WindowCapture<InterruptedActionReadback>>;
   observe(assertion: AssertionRecord, ui: UiWindow): Promise<WindowCapture<VisibleAssertion[]>>;
   inspectCleanup(target: CleanupTarget, ui: UiWindow): Promise<WindowCapture<{ revision: string }>>;
   cleanup(target: CleanupTarget, challenge: OperatorActionView, ui: UiWindow): Promise<WindowCapture<CleanupReadback>>;
+  /** Observe only against an already durable cleanup intent. */
+  readbackCleanup(target: CleanupTarget, ui: UiWindow): Promise<WindowCapture<CleanupReadback>>;
   inventory(variantId: string, ui: UiWindow): Promise<WindowCapture<PostflightInput>>;
 }
 
@@ -94,12 +105,14 @@ export class CoordinatorError extends Error {
 export class AttendedLiveCoordinator {
   private readonly target: LiveTargetOverlay;
   private readonly identity;
-  private readonly owner: TargetLockOwner;
+  private owner: TargetLockOwner;
   private readonly lockPath: string;
   private readonly operator: OperatorDriver;
   private readonly uiMutex: HostUiMutex;
   private readonly usedCaptures = new Set<string>();
   private readonly cleanupProofs = new Map<string, PostflightProof>();
+  private started = false;
+  private busy = false;
 
   constructor(private readonly request: Omit<AdvanceLiveRunRequest, 'signal' | 'now'>,
     private readonly dependencies: {
@@ -144,6 +157,55 @@ export class AttendedLiveCoordinator {
   }
 
   async run(): Promise<TerminalRecord> {
+    if (this.busy) throw new CoordinatorError('TARGET_DRIFT');
+    this.busy = true;
+    try { return await this.start(); } finally { this.busy = false; }
+  }
+
+  /** Explicit continuation of the original journal; never an implicit lock takeover. */
+  async resume(): Promise<TerminalRecord> {
+    if (this.busy) throw new CoordinatorError('TARGET_DRIFT');
+    this.busy = true;
+    try {
+      const journal = readRunJournal(this.request.journalPath, { ...this.identity, incompleteFinal: 'preserve' });
+      const selected = this.request.variantIds ?? LIVE_MANIFEST.requiredVariants[this.request.suite];
+      if (journal.incompleteFinalRecord !== undefined || journal.header.suite !== this.request.suite
+        || JSON.stringify(journal.header.variantIds) !== JSON.stringify(selected)
+        || Object.entries(this.request.identity).some(([key, value]) => journal.header[key as keyof typeof journal.header] !== value)) {
+        throw new CoordinatorError('TARGET_DRIFT');
+      }
+      const snapshot = await this.snapshot(false);
+      const current = readTargetLock(this.lockPath);
+      if (!current || current.runId !== this.request.runId || current.host !== hostname()
+        || (snapshot.lock.status !== 'clear' && snapshot.lock.ownerRunId !== current.runId)) {
+        throw new CoordinatorError('TARGET_DRIFT');
+      }
+      const doctor = diagnoseLiveTarget({ overlay: this.target,
+        source: { read: () => ({ ...snapshot, lock: { status: 'clear' as const } }) }, variantIds: selected });
+      if (!doctor.ready) throw new CoordinatorError('DOCTOR_BLOCKED');
+      if (!this.started || JSON.stringify(current) !== JSON.stringify(this.owner)) {
+        recoverTargetLock(this.lockPath, this.owner, { journalPath: this.request.journalPath,
+          expected: { ...this.identity, ...this.request.identity } });
+      }
+      this.started = true;
+      for (const { event } of journal.events) {
+        if (event.type === 'computer_use_window') this.usedCaptures.add(event.captureDigest);
+      }
+      await this.snapshot(true);
+      let record = await this.advance();
+      // An exposed action from an existing intent may already have been clicked.
+      // A durable receipt is adopted by the runner; an unresolved one gets readback.
+      if (record.kind === 'action_required') {
+        const actionRef = record.actionRef;
+        if (journal.events.some(({ event }) => event.type === 'intent' && event.actionRef === actionRef)) {
+          record = await this.advance({ type: 'action_receipt', actionRef, outcome: 'ambiguous' });
+        }
+      }
+      return await this.drive(record);
+    } finally { this.busy = false; }
+  }
+
+  private async start(): Promise<TerminalRecord> {
     const initial = await this.snapshot(false);
     const doctor = diagnoseLiveTarget({ overlay: this.target, source: { read: () => initial },
       variantIds: this.request.variantIds ?? LIVE_MANIFEST.requiredVariants[this.request.suite] });
@@ -156,6 +218,7 @@ export class AttendedLiveCoordinator {
       variantIds: [...(this.request.variantIds ?? LIVE_MANIFEST.requiredVariants[this.request.suite])],
       createdAt: this.at() });
     acquireTargetLock(this.lockPath, this.owner);
+    this.started = true;
     // Exceptions deliberately preserve the target lock and journal for exact readback.
     let record: RunnerRecord;
     try {
@@ -165,6 +228,10 @@ export class AttendedLiveCoordinator {
       catch { /* Any persisted intent or changed owner keeps its recovery lock. */ }
       throw error;
     }
+    return this.drive(record);
+  }
+
+  private async drive(record: RunnerRecord): Promise<TerminalRecord> {
     while (record.kind !== 'terminal') {
       this.dependencies.onProgress?.(record);
       if (record.kind === 'action_required') {
@@ -228,6 +295,8 @@ export class AttendedLiveCoordinator {
         if (!Number.isFinite(notBefore)) throw new CoordinatorError('OBSERVATION_WAIT');
         await this.wait(Math.max(1, Math.min(notBefore - this.now(), 1_000)));
         record = await this.advance();
+      } else if (record.waitingFor === 'authoritative_readback') {
+        record = await this.readback(record);
       } else {
         throw new CoordinatorError('EXACT_READBACK_REQUIRED');
       }
@@ -237,6 +306,75 @@ export class AttendedLiveCoordinator {
       releaseOwnedTargetLock(this.lockPath, this.owner, this.request.journalPath);
     }
     return record;
+  }
+
+  private async readback(record: WaitingRecord): Promise<RunnerRecord> {
+    const journal = readRunJournal(this.request.journalPath, this.identity);
+    const intent = journal.events.map(({ event }) => event).findLast((event) => event.type === 'intent'
+      && event.actionRef === record.actionRef && event.variantId === record.variantId);
+    if (intent?.type !== 'intent') throw new CoordinatorError('EXACT_READBACK_REQUIRED');
+    const variant = this.variant(record.variantId);
+    const action = variant.actions.find(({ id }) => id === intent.actionId);
+    if (!action) throw new CoordinatorError('UNSUPPORTED_VARIANT');
+    const actionRecord: ActionRequiredRecord = { kind: 'action_required', runId: this.request.runId,
+      suite: this.request.suite, variantId: record.variantId, actionRef: intent.actionRef, actionId: action.id,
+      mutation: action.mutation, humanGate: action.humanGate,
+      fixtureAliases: action.fixtureSlots.map((slot) => this.target.bindings[record.variantId]!.fixtures[slot]!),
+      semanticAction: 'Read back the interrupted action only; do not repeat it.' };
+    const result = await this.window(record.variantId, `${intent.actionRef}:readback`,
+      (ui) => this.dependencies.driver.readbackAction(actionRecord, ui));
+    const mutations = projectProductLedger(journal).mutations.filter((mutation) =>
+      mutation.caseId === record.variantId && (mutation.stepId === intent.actionRef || mutation.stepId.startsWith(`${intent.actionRef}:`)));
+    if (!['applied', 'absent', 'ambiguous'].includes(result.outcome) || result.outcome === 'ambiguous'
+      || (result.outcome === 'absent' && (mutations.length || result.resource || result.generatedEffects?.length))) {
+      throw new CoordinatorError('EXACT_READBACK_REQUIRED');
+    }
+    const consumed = new Set(journal.events.flatMap(({ event }) =>
+      event.type === 'operator_challenge_consumed' ? [event.challengeDigest] : []));
+    for (const { event } of journal.events) {
+      if (event.type === 'operator_challenge_issued' && event.stepId === intent.actionRef
+        && !consumed.has(event.challengeDigest)) {
+        // Invalidate the old nonce after readback; do not invent its completion.
+        appendRunJournal(this.request.journalPath, { type: 'operator_challenge_consumed',
+          challengeDigest: event.challengeDigest }, this.identity);
+      }
+    }
+    if (result.outcome === 'applied') {
+      const expectedKind = ({ 'agent.create': 'agent', 'agent.update': 'agent',
+        'connection.authorize': 'connection', 'routine.create': 'routine' } as const)[action.id as
+          'agent.create' | 'agent.update' | 'connection.authorize' | 'routine.create'];
+      if (!result.resource || result.resource.resourceKind !== expectedKind
+        || (result.generatedEffects ?? []).length !== variant.generatedEffects.length) {
+        throw new CoordinatorError('EXACT_READBACK_REQUIRED');
+      }
+      const issued = journal.events.map(({ event }) => event).findLast((event) =>
+        event.type === 'operator_challenge_issued' && event.stepId === intent.actionRef);
+      const expectedRevision = issued?.type === 'operator_challenge_issued' ? issued.expectedRevision
+        : action.id === 'agent.update' ? projectProductLedger(journal).baselines.find((baseline) =>
+          baseline.resourceKind === 'agent' && baseline.immutableId === result.resource!.immutableId)?.revision : 'absent';
+      if (!expectedRevision || result.resource.beforeRevision !== expectedRevision
+        || (action.id !== 'agent.update' && expectedRevision !== 'absent')) {
+        throw new CoordinatorError('EXACT_READBACK_REQUIRED');
+      }
+      const resources = [{ effect: result.resource, cleanup: action.cleanup, stepId: `${intent.actionRef}:readback`, generated: false },
+        ...(result.generatedEffects ?? []).map((effect, index) => ({ effect, cleanup: variant.generatedEffects[index]!.cleanup,
+          stepId: `${intent.actionRef}:generated:${index}:readback`, generated: true }))];
+      for (const { effect, cleanup, stepId, generated } of resources) {
+        if (generated && effect.resourceKind !== 'attributed_residue') throw new CoordinatorError('EXACT_READBACK_REQUIRED');
+        const existing = mutations.find((mutation) => mutation.immutableId === effect.immutableId
+          && mutation.resourceKind === effect.resourceKind);
+        if (existing) {
+          if (Object.entries(effect).some(([key, value]) => existing[key as keyof typeof existing] !== value)) {
+            throw new CoordinatorError('EXACT_READBACK_REQUIRED');
+          }
+          continue;
+        }
+        const challenge = this.challenge(record.variantId, stepId, effect.beforeRevision,
+          generated ? 'create' : action.mutation, 'Record exact visible recovery evidence; no product mutation is authorized.');
+        this.effect(challenge, effect, cleanup, true);
+      }
+    }
+    return this.advance({ type: 'readback_result', intentId: intent.intentId, outcome: result.outcome });
   }
 
   private async observe(assertion: AssertionRecord): Promise<RunnerRecord> {
@@ -295,7 +433,27 @@ export class AttendedLiveCoordinator {
     appendRunJournal(this.request.journalPath, { type: 'postflight_required', caseId: variantId }, this.identity);
     for (const target of deriveCleanupPlan(this.request.journalPath, this.identity)
       .filter(({ caseId }) => caseId === variantId)) {
-      if (target.resolution !== 'execute') throw new CoordinatorError('CLEANUP_READBACK_REQUIRED');
+      if (target.resolution === 'authoritative_readback') {
+        const ledger = projectProductLedger(readRunJournal(this.request.journalPath, this.identity));
+        const intent = ledger.cleanupIntents.find(({ mutationReceiptId }) => mutationReceiptId === target.mutationReceiptId);
+        if (!intent) throw new CoordinatorError('CLEANUP_READBACK_REQUIRED');
+        const receipt = ledger.cleanupReceipts.find(({ cleanupIntentId }) => cleanupIntentId === intent.cleanupIntentId);
+        const result = await this.window(variantId, `${target.stepId}:cleanup-readback`,
+          (ui) => this.dependencies.driver.readbackCleanup(target, ui));
+        if (result.immutableId !== target.immutableId || result.priorRevision !== target.expectedRevision) {
+          throw new CoordinatorError('EXACT_READBACK_REQUIRED');
+        }
+        const observerId = ({ agent: 'agent.read', connection: 'connection.read', routine: 'routine.read',
+          attributed_residue: 'slack.messages.read' } as const)[target.resourceKind as
+            'agent' | 'connection' | 'routine' | 'attributed_residue'];
+        if (!observerId) throw new CoordinatorError('CLEANUP_READBACK_REQUIRED');
+        recordCleanupReadback(this.request.journalPath, { cleanupIntentId: intent.cleanupIntentId,
+          ...(receipt ? { cleanupReceiptId: receipt.receiptId } : {}), readbackId: randomUUID(), observerId,
+          immutableId: result.immutableId, observedRevision: result.resultingRevision,
+          observedStateDigest: result.resultingStateDigest, outcome: result.outcome }, this.identity);
+        if (result.outcome === 'ambiguous') throw new CoordinatorError('CLEANUP_READBACK_REQUIRED');
+        continue;
+      }
       const before = await this.window(variantId, `${target.stepId}:cleanup-before`,
         (ui) => this.dependencies.driver.inspectCleanup(target, ui));
       await this.snapshot(true);
@@ -323,7 +481,7 @@ export class AttendedLiveCoordinator {
     this.cleanupProofs.set(variantId, proof);
   }
 
-  private effect(challenge: OperatorActionView, effect: ResourceEffect, cleanup: LiveAction['cleanup']): void {
+  private effect(challenge: OperatorActionView, effect: ResourceEffect, cleanup: LiveAction['cleanup'], recoveryReadback = false): void {
     const binding = { targetAlias: this.target.targetAlias, ...effect, fixtureClass: cleanup.fixtureClass };
     const receiptId = randomUUID();
     const input: MutationReceiptInput = { ...effect,
@@ -331,6 +489,7 @@ export class AttendedLiveCoordinator {
       targetAlias: challenge.targetAlias, actionChallengeDigest: operatorChallengeDigest(challenge.challengeId),
       operatorReceiptDigest: operatorReceiptDigest(receiptId), mutation: challenge.mutation,
       fixtureClass: cleanup.fixtureClass, cleanupStrategy: cleanup.strategy, direction: 'forward',
+      ...(recoveryReadback ? { recoveryReadback: true as const } : {}),
       ...(cleanup.reversalActionId ? { reversalActionId: cleanup.reversalActionId } : {}),
     };
     validatePendingMutationReceipt(this.request.journalPath, input, this.identity);

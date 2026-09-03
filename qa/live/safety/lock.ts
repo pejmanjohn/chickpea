@@ -2,13 +2,19 @@ import {
   closeSync,
   fsyncSync,
   mkdirSync,
+  linkSync,
+  lstatSync,
   openSync,
   readFileSync,
+  renameSync,
   unlinkSync,
   writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { hostname } from 'node:os';
+import { createHash, randomUUID } from 'node:crypto';
+import { appendRunJournal, readRunJournal, type RunJournalHeaderInput } from './journal.ts';
+import { assertPrivateEvidencePath } from './evidence.ts';
 
 export interface TargetLockOwner {
   runId: string;
@@ -108,6 +114,114 @@ export function readTargetLock(path: string): TargetLockOwner | undefined {
   return validateOwner(input);
 }
 
+/**
+ * Explicit same-run crash recovery. Acquisition and safe-clear stay unchanged.
+ * An immutable transition link fences contenders before atomic replacement of
+ * target.lock, so the product target is never unlocked during recovery. If a
+ * recoverer dies, a later explicit recovery follows its immutable link and
+ * fences that dead owner in turn; it never deletes or steals a transition.
+ */
+export function recoverTargetLock(path: string, next: TargetLockOwner, input: {
+  journalPath: string;
+  expected: Pick<RunJournalHeaderInput, 'runId' | 'manifestDigest' | 'targetFingerprint'
+    | 'repositoryRevision' | 'servingVersion'>;
+}, dependencies: {
+  probePid?: (pid: number) => void;
+  afterGuardPublished?: () => void;
+  afterOwnerPublished?: () => void;
+} = {}): void {
+  validateOwner(next);
+  if (next.pid !== process.pid || next.host !== hostname()) throw new TargetLockError('LOCK_FOREIGN_HOST');
+  const root = dirname(path);
+  assertPrivateEvidencePath(path, root);
+  assertPrivateEvidencePath(input.journalPath, root);
+  const journal = readRunJournal(input.journalPath, { ...input.expected, incompleteFinal: 'preserve' });
+  if (journal.incompleteFinalRecord !== undefined || Object.entries(input.expected)
+    .some(([key, value]) => journal.header[key as keyof typeof journal.header] !== value)) {
+    throw new TargetLockError('INVALID_JOURNAL');
+  }
+  const original = readTargetLock(path);
+  if (!original) throw new TargetLockError('LOCK_MISSING');
+  if (original.host !== next.host) throw new TargetLockError('LOCK_FOREIGN_HOST');
+  if (original.runId !== next.runId || input.expected.runId !== next.runId) {
+    throw new TargetLockError('LOCK_DIFFERENT_RUN');
+  }
+  const guardRoot = `${path}.recovery`;
+  assertPrivateEvidencePath(guardRoot, root);
+  mkdirSync(guardRoot, { recursive: true, mode: 0o700 });
+  const probe = dependencies.probePid ?? ((pid: number) => { process.kill(pid, 0); });
+  let previous = original;
+  let guardPath = '';
+  for (let depth = 0; ; depth += 1) {
+    if (depth >= 100) throw new TargetLockError('INVALID_LOCK');
+    assertStoppedPid(previous.pid, probe);
+    guardPath = join(guardRoot, `${ownerDigest(previous).slice(7)}.json`);
+    assertPrivateEvidencePath(guardPath, root);
+    let guard: unknown;
+    try { guard = JSON.parse(readFileSync(guardPath, 'utf8')); }
+    catch (error) {
+      if (isNodeError(error, 'ENOENT')) break;
+      throw new TargetLockError('INVALID_LOCK');
+    }
+    if (!isRecord(guard) || !exactKeys(guard, ['previous', 'next'])
+      || !sameOwner(validateOwner(guard.previous), previous)) throw new TargetLockError('INVALID_LOCK');
+    const successor = validateOwner(guard.next);
+    if (successor.host !== next.host || successor.runId !== next.runId || sameOwner(successor, previous)) {
+      throw new TargetLockError('INVALID_LOCK');
+    }
+    previous = successor;
+  }
+  publishOwnerTransition(guardRoot, guardPath, previous, next);
+  dependencies.afterGuardPublished?.();
+  const current = readTargetLock(path);
+  if (!current || !sameOwner(current, original)) throw new TargetLockError('LOCK_CHANGED');
+  assertStoppedPid(original.pid, probe);
+  const transition = { type: 'target_lock_recovery' as const,
+    previousOwnerDigest: ownerDigest(original), guardOwnerDigest: ownerDigest(previous), ownerDigest: ownerDigest(next),
+    previousPid: original.pid, pid: next.pid, hostDigest: digest(next.host) };
+  appendRunJournal(input.journalPath, { ...transition, stage: 'prepared' }, input.expected);
+  const replacement = join(guardRoot, `.owner-${randomUUID()}`);
+  writeDurably(replacement, next);
+  renameSync(replacement, path);
+  syncDirectory(root);
+  dependencies.afterOwnerPublished?.();
+  appendRunJournal(input.journalPath, { ...transition, stage: 'published' }, input.expected);
+}
+
+function assertStoppedPid(pid: number, probe: (pid: number) => void): void {
+  try { probe(pid); }
+  catch (error) { if (isNodeError(error, 'ESRCH')) return; }
+  // EPERM, reused/live PIDs, and every unknown result are not death proof.
+  throw new TargetLockError('LOCK_ACTIVE');
+}
+
+function ownerDigest(owner: TargetLockOwner): string { return digest(JSON.stringify(owner)); }
+function digest(value: string): string { return `sha256:${createHash('sha256').update(value).digest('hex')}`; }
+function publishOwnerTransition(root: string, path: string, previous: TargetLockOwner, next: TargetLockOwner): void {
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(root);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) {
+    throw new TargetLockError('INVALID_LOCK');
+  }
+  const candidate = join(root, `.candidate-${randomUUID()}`);
+  writeDurably(candidate, { previous, next });
+  try { linkSync(candidate, path); }
+  catch (error) {
+    if (isNodeError(error, 'EEXIST')) throw new TargetLockError('LOCK_ACTIVE');
+    throw error;
+  } finally { unlinkSync(candidate); }
+  syncDirectory(root);
+}
+function writeDurably(path: string, value: unknown): void {
+  const descriptor = openSync(path, 'wx', 0o600);
+  try { writeSync(descriptor, `${JSON.stringify(value)}\n`, undefined, 'utf8'); fsyncSync(descriptor); }
+  finally { closeSync(descriptor); }
+}
+function syncDirectory(path: string): void {
+  const descriptor = openSync(path, 'r');
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+}
+
 /** Read-only status for environment and doctor consumers. */
 export function readTargetLockStatus(
   path: string,
@@ -203,6 +317,15 @@ export function clearTargetLock(
   if (rechecked === undefined) throw new TargetLockError('LOCK_MISSING');
   if (!sameOwner(owner, rechecked)) throw new TargetLockError('LOCK_CHANGED');
   if (isPidActive(rechecked.pid)) throw new TargetLockError('LOCK_ACTIVE');
+  // Clearing competes for the same immutable owner transition as recovery.
+  // Otherwise a safe-clear process could unlink between a recoverer's check
+  // and publication, opening a gap for a different run to acquire the target.
+  const guardRoot = `${path}.recovery`;
+  publishOwnerTransition(guardRoot, join(guardRoot, `${ownerDigest(owner).slice(7)}.json`), owner,
+    { runId: owner.runId, pid: process.pid, host: owner.host, startedAt: new Date().toISOString() });
+  const fenced = readTargetLock(path);
+  if (!fenced || !sameOwner(fenced, owner)) throw new TargetLockError('LOCK_CHANGED');
+  if (isPidActive(fenced.pid)) throw new TargetLockError('LOCK_ACTIVE');
   unlinkSync(path);
 }
 

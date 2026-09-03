@@ -65,6 +65,8 @@ export interface MutationReceiptInput {
   cleanupStrategy: CleanupStrategy;
   reversalActionId?: ActionId;
   direction: 'forward' | 'reversal';
+  /** This receipt certifies recovery observation, not the interrupted click. */
+  recoveryReadback?: true;
   expectedResidueStateDigest?: string;
 }
 

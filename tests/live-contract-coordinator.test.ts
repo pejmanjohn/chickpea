@@ -51,6 +51,7 @@ function fixture(context: test.TestContext) {
         beforeStateDigest: digest('absent'), stateDigest: digest('welcome'), expectedResidueStateDigest: digest('welcome'),
       }] });
     },
+    readbackAction: async (_action, ui) => capture(ui, { outcome: 'ambiguous' }),
     observe: async (record, ui) => capture(ui, [...new Set(record.tokens.map(({ observerId }) => observerId))]
       .map((observerId) => ({ observerId, observedTokens: record.tokens.filter((token) => token.observerId === observerId).map(({ token }) => token) }))),
     inspectCleanup: async (target, ui) => capture(ui, { revision: target.expectedRevision }),
@@ -60,6 +61,9 @@ function fixture(context: test.TestContext) {
         resultingRevision: target.resourceKind === 'agent' ? '2' : '1',
         resultingStateDigest: target.expectedResidueStateDigest!, outcome: 'retained' });
     },
+    readbackCleanup: async (target, ui) => capture(ui, { immutableId: target.immutableId,
+      priorRevision: target.expectedRevision, resultingRevision: 'unknown',
+      resultingStateDigest: digest('unknown'), outcome: 'ambiguous' }),
     inventory: async (_variantId, ui) => capture(ui, { identity,
       declaredResourceKinds: ['agent', 'attributed_residue'], inventory: [
         { immutableId: 'agent-run-test', resourceKind: 'agent', revision: '2', stateDigest: digest('archived'), fixtureClass: 'attributed_residue' },
@@ -174,6 +178,108 @@ test('the same coordinator traverses all four smoke variants and preserves share
   assert.equal(inventory.get('baseline-agent')?.stateDigest, digest('baseline-agent'));
   assert.equal(inventory.get('baseline-connection')?.revision, '1');
   assert.equal(readRunJournalStatus(request.journalPath, request.runId).safeToClear, true);
+});
+
+test('resuming an applied interrupted action uses fresh readback and cleanup without replay or a pass', async (context) => {
+  const f = fixture(context);
+  const act = f.deps.driver.act;
+  let applied: Awaited<ReturnType<ComputerUseDriver['act']>>['value'] | undefined;
+  f.deps.driver.act = async (...args) => {
+    applied = (await act(...args)).value;
+    throw new Error('interrupted after product applied');
+  };
+  f.deps.driver.readbackAction = async (_action, ui) => f.capture(ui, { ...applied!, outcome: 'applied' });
+  const coordinator = new AttendedLiveCoordinator(f.request, f.deps);
+  await assert.rejects(coordinator.run(), /interrupted/);
+  const result = await coordinator.resume();
+  assert.equal(result.report.aggregate, 'ambiguous');
+  assert.equal(f.counts().actions, 1);
+  assert.equal(f.counts().cleanups, 2);
+  assert.equal(existsSync(join(f.root, 'evidence', 'target.lock')), false);
+  const events = readFileSync(f.request.journalPath, 'utf8').trim().split('\n').slice(1)
+    .map((line) => JSON.parse(line).event);
+  assert.equal(events.filter((event) => event.type === 'mutation_receipt' && event.recoveryReadback === true).length, 2);
+  assert.equal(events.filter((event) => event.type === 'receipt' && event.outcome === 'completed').length, 0);
+});
+
+test('an ambiguous recovery observation keeps the exact intent and target locked', async (context) => {
+  const f = fixture(context);
+  f.deps.driver.act = async () => { throw new Error('interrupted'); };
+  const coordinator = new AttendedLiveCoordinator(f.request, f.deps);
+  await assert.rejects(coordinator.run(), /interrupted/);
+  await assert.rejects(coordinator.resume(), /EXACT_READBACK_REQUIRED/);
+  assert.equal(f.counts().cleanups, 0);
+  assert.equal(readRunJournalStatus(f.request.journalPath, f.request.runId).safeToClear, false);
+  assert.equal(existsSync(join(f.root, 'evidence', 'target.lock')), true);
+});
+
+test('resume refuses source or actor-readiness drift before changing the original journal', async (context) => {
+  for (const drift of ['source', 'actor']) {
+    const f = fixture(context);
+    f.deps.driver.act = async () => { throw new Error('interrupted'); };
+    const coordinator = new AttendedLiveCoordinator(f.request, f.deps);
+    await assert.rejects(coordinator.run(), /interrupted/);
+    const before = readFileSync(f.request.journalPath, 'utf8');
+    if (drift === 'source') f.snapshot.repositoryRevision = 'fedcba9876543210';
+    else f.snapshot.missingActorAliases = [f.deps.driver.actorAlias];
+    await assert.rejects(coordinator.resume(), /TARGET_DRIFT|DOCTOR_BLOCKED/);
+    assert.equal(readFileSync(f.request.journalPath, 'utf8'), before);
+    assert.equal(f.counts().cleanups, 0);
+  }
+});
+
+test('interrupted cleanup resumes from its exact visible readback, not a repeated cleanup action', async (context) => {
+  const f = fixture(context);
+  const cleanup = f.deps.driver.cleanup;
+  let interrupted: Awaited<ReturnType<ComputerUseDriver['cleanup']>>['value'] | undefined;
+  f.deps.driver.cleanup = async (...args) => {
+    const result = await cleanup(...args);
+    if (!interrupted) { interrupted = result.value; throw new Error('cleanup interrupted after application'); }
+    return result;
+  };
+  f.deps.driver.readbackCleanup = async (_target, ui) => f.capture(ui, interrupted!);
+  const coordinator = new AttendedLiveCoordinator(f.request, f.deps);
+  await assert.rejects(coordinator.run(), /cleanup interrupted/);
+  const result = await coordinator.resume();
+  assert.equal(result.report.aggregate, 'pass');
+  assert.equal(f.counts().actions, 1);
+  assert.equal(f.counts().cleanups, 2);
+  const events = readFileSync(f.request.journalPath, 'utf8').trim().split('\n').slice(1)
+    .map((line) => JSON.parse(line).event);
+  const readbacks = events.filter((event) => event.type === 'cleanup_readback');
+  assert.equal(readbacks.length, 1);
+  assert.equal(readbacks[0].cleanupReceiptId, undefined);
+  assert.equal(events.filter((event) => event.type === 'cleanup_receipt').length, 1);
+});
+
+test('a new process resumes a crash-exposed action only after visible absence and a fresh attempt', async (context) => {
+  const f = fixture(context);
+  const script = `import { AttendedLiveCoordinator } from ${JSON.stringify(new URL('../qa/live/coordinator.ts', import.meta.url).href)};
+    const request = ${JSON.stringify(f.request)};
+    const capture = (ui, value) => ui.capture({ transport: 'computer_use', observationScope: 'window',
+      windowId: 'crash-window', captureDigest: ${JSON.stringify(digest('child-capture'))}, observedAt: ${JSON.stringify(new Date(NOW).toISOString())}, value });
+    const driver = { transport: 'computer_use', actorAlias: 'owner-browser-profile', browserAlias: 'test-browser',
+      prepare: async (action, ui) => capture(ui, { expectedRevision: 'absent', baselines: [] }),
+      act: async () => process.exit(91) };
+    await new AttendedLiveCoordinator(request, { driver, uiMutexRoot: ${JSON.stringify(f.deps.uiMutexRoot)},
+      attest: async () => request.doctorSnapshot, now: () => ${NOW} }).run();`;
+  const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { encoding: 'utf8' });
+  assert.equal(child.status, 91, child.stderr);
+  // UI crash reservations have their own explicit dead-owner recovery; they
+  // never clear or replace the product target lock.
+  const { HostUiMutex } = await import('../qa/live/safety/ui-mutex.ts');
+  new HostUiMutex(f.deps.uiMutexRoot).clearStoppedOwner(f.request.runId, f.deps.driver.browserAlias);
+  let readbacks = 0;
+  f.deps.driver.readbackAction = async (_action, ui) => { readbacks += 1; return f.capture(ui, { outcome: 'absent' }); };
+  const result = await new AttendedLiveCoordinator(f.request, f.deps).resume();
+  assert.equal(result.report.aggregate, 'pass');
+  assert.equal(readbacks, 1);
+  assert.equal(f.counts().actions, 1);
+  const events = readFileSync(f.request.journalPath, 'utf8').trim().split('\n').slice(1)
+    .map((line) => JSON.parse(line).event);
+  assert.deepEqual(events.filter((event) => event.type === 'intent').map((event) => event.actionRef),
+    ['LC01-V1-create-welcome:1:1', 'LC01-V1-create-welcome:1:2']);
+  assert.equal(events.filter((event) => event.type === 'target_lock_recovery' && event.stage === 'published').length, 1);
 });
 
 test('observation polling releases the host UI mutex while retaining the target lock', async (context) => {

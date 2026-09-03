@@ -30,8 +30,10 @@ The incremental `qa/live/coordinator.ts` core now binds the existing runner to
 one-use challenges, certified window captures, exact cleanup, postflight, and
 the host UI mutex. Observation polling releases that mutex between visible
 checks, retains the target lock, and has a bounded deadline. Its deterministic
-tests are not live qualification. The private Computer Use driver, complete
-interrupted-run readback/resumption, and evidence packaging must be wired and verified before
+tests are not live qualification. Explicit `resume()` now reattests the original
+identity, resumes interrupted actions through visible readback, and resolves
+interrupted cleanup against its existing intent. The private Computer Use driver,
+operator entrypoint, and evidence packaging must still be wired and verified before
 the first live smoke. The public CLI continues to return `COORDINATOR_REQUIRED`.
 Do not feed hand-authored assertion tokens to the core and call that a live run.
 
@@ -89,12 +91,24 @@ The two workspaces may reuse one paid account; each target binds its own workspa
 The target lock is derived as `<evidenceRoot>/target.lock`. It records the run ID, PID, host, and start time and uses no-overwrite creation. Different targets have different locks and evidence roots; there is no separate lock-path alias to drift.
 
 - A live PID blocks every run.
-- No run may overwrite or reacquire an existing lock in place, including the same run on the same host.
+- Ordinary acquisition never overwrites or reacquires an existing lock, including the same run on the same host.
+- Explicit recovery may transfer the same run's lock on the same host only after an actual `ESRCH` proves the prior process is gone. Live/reused PIDs, permission errors, unknown errors, identity drift, and a missing matching environment claim block recovery. It must not deploy another source to make recovery fit.
 - A different run or foreign host cannot take over a stale lock.
 - A stopped run may clear its lock only after proving the PID is inactive and the journal has no unresolved action, product mutation, cleanup intent, or ambiguous cleanup outcome. A fresh run then acquires a new lock atomically.
 - An unresolved intent forces cleanup-only recovery. Read back the exact effect before deciding whether to reverse it. Never replay the original mutation on an unknown outcome.
 
 The public lock module enforces these rules. The foundation CLI does not yet acquire or clear that lock; the verifier-owned coordinator must wire lock lifecycle and a safe `--clear-lock` command before the first live smoke.
+
+`recoverTargetLock` uses an immutable exclusive transition record before atomically
+publishing the new owner. The original target lock remains continuously present;
+the same journal audits the old-to-new ownership. A later explicit recovery can
+follow a crashed recoverer's transition only after proving that process stopped.
+Safe lock clearing competes for that same transition fence; it cannot open a gap
+under an in-progress recovery. An interrupted transition is resumed explicitly.
+It does not clear unresolved intent, award a pass, or bypass cleanup/postflight.
+An applied interrupted action remains an ambiguous primary result. A new attempt
+is possible only when visible readback proves absence and the existing runner
+requests it. Recovery observations are labeled separately from click receipts.
 
 The incremental core writes a no-overwrite journal header before acquiring
 the target lock, but does not write an intent or perform UI work until it owns

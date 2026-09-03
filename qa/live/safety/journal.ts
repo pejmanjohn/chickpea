@@ -89,6 +89,9 @@ export interface RunJournalHeader extends RunJournalHeaderInput {
 
 export type RunJournalEventData =
   | { type: 'doctor'; ready: boolean; diagnosticCodes: string[] }
+  | { type: 'target_lock_recovery'; stage: 'prepared' | 'published';
+    previousOwnerDigest: string; guardOwnerDigest: string; ownerDigest: string;
+    previousPid: number; pid: number; hostDigest: string }
   | { type: 'computer_use_window'; caseId: string; stepId: string; targetAlias: string;
     captureDigest: string; windowDigest: string; observedAt: string }
   | { type: 'postflight_required'; caseId: string }
@@ -162,6 +165,7 @@ export type RunJournalEventData =
     reversalActionId?: ActionId;
     direction: 'forward' | 'reversal';
     expectedResidueStateDigest?: string;
+    recoveryReadback?: true;
   }
   | {
     type: 'cleanup_intent';
@@ -482,6 +486,13 @@ function validateEventData(event: RunJournalEventData): void {
         || !digest(event.captureDigest) || !digest(event.windowDigest)
         || typeof event.observedAt !== 'string' || !Number.isFinite(Date.parse(event.observedAt))) invalidEvent();
       return;
+    case 'target_lock_recovery':
+      exactKeys(event, ['type', 'stage', 'previousOwnerDigest', 'guardOwnerDigest', 'ownerDigest',
+        'previousPid', 'pid', 'hostDigest'], 'INVALID_EVENT');
+      if (!['prepared', 'published'].includes(String(event.stage)) || !digest(event.previousOwnerDigest)
+        || !digest(event.guardOwnerDigest) || !digest(event.ownerDigest) || !digest(event.hostDigest)
+        || !positiveInteger(event.previousPid) || !positiveInteger(event.pid)) invalidEvent();
+      return;
     case 'doctor':
       exactKeys(event, ['type', 'ready', 'diagnosticCodes'], 'INVALID_EVENT');
       if (typeof event.ready !== 'boolean' || !stringArray(event.diagnosticCodes)) invalidEvent();
@@ -542,7 +553,7 @@ function validateEventData(event: RunJournalEventData): void {
         'type', 'receiptId', 'caseId', 'stepId', 'attempt', 'targetAlias',
         'actionChallengeDigest', 'operatorReceiptDigest', 'beforeStateDigest', 'immutableId', 'beforeRevision',
         'revision', 'stateDigest', 'resourceKind', 'mutation', 'fixtureClass', 'cleanupStrategy',
-        'reversalActionId', 'direction', 'expectedResidueStateDigest',
+        'reversalActionId', 'direction', 'expectedResidueStateDigest', 'recoveryReadback',
       ], 'INVALID_EVENT');
       if (!exactId(event.receiptId) || !nonEmpty(event.caseId) || !nonEmpty(event.stepId)
         || !positiveInteger(event.attempt) || !nonEmpty(event.targetAlias)
@@ -556,6 +567,7 @@ function validateEventData(event: RunJournalEventData): void {
         || !(CLEANUP_STRATEGIES as readonly unknown[]).includes(event.cleanupStrategy)
         || (event.reversalActionId !== undefined && !(ACTION_IDS as readonly unknown[]).includes(event.reversalActionId))
         || !['forward', 'reversal'].includes(event.direction)
+        || (event.recoveryReadback !== undefined && event.recoveryReadback !== true)
         || (event.expectedResidueStateDigest !== undefined && !digest(event.expectedResidueStateDigest))) invalidEvent();
       return;
     case 'cleanup_intent':
