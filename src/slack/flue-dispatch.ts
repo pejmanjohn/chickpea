@@ -279,6 +279,7 @@ export async function promptSlackThreadAgent(
       throw new AgentPromptFailure('agent', 503, false, true);
     }
     const kind = classifyFlueRunFailure(error);
+    logDispatchFailure('settlement_failed', receipt.submissionId);
     let checkpoint: FlueSettlementCheckpointV1;
     try {
       checkpoint = await input.state.recordSettlement({
@@ -300,6 +301,7 @@ export async function promptSlackThreadAgent(
   try {
     completed = resultFromAgentReply(reply, input.requestedModel);
   } catch {
+    logDispatchFailure('invalid_result', receipt.submissionId);
     let checkpoint: FlueSettlementCheckpointV1;
     try {
       checkpoint = await input.state.recordSettlement({
@@ -332,6 +334,21 @@ export async function promptSlackThreadAgent(
   await progressiveRelay?.closeAndDrain();
   await input.beforeResult?.();
   return resultFromSettlement(checkpoint);
+}
+
+/** Distinguish terminal failure boundaries without logging error or reply content. */
+function logDispatchFailure(
+  stage: 'settlement_failed' | 'invalid_result',
+  submissionId: string,
+): void {
+  try {
+    console.error('[chickpea] agent dispatch failed:', {
+      stage,
+      submissionRef: opaqueId('fluesubmission', submissionId),
+    });
+  } catch {
+    // Diagnostics must not interrupt settlement or change retry behavior.
+  }
 }
 
 function dispatchReconciliationReason(error: unknown): string | undefined {
