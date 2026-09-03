@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
+import type { Api, Model } from '@earendil-works/pi-ai';
 
 import type { CloudflareAIBinding } from '@flue/runtime/cloudflare/workers-ai';
 import {
@@ -13,7 +14,8 @@ import {
   cloudflareBindingProviderOptions,
   registerCloudflareBindingProvider,
 } from '../src/cloudflare-provider.ts';
-import { setWorkersAiRestPiProvider } from '../src/config/pi-provider.ts';
+import { createWorkersAiRestPiProvider, setWorkersAiRestPiProvider } from '../src/config/pi-provider.ts';
+import { withWorkersAiPayloadPolicy } from '../src/config/workers-ai-payload.ts';
 import { runWithAttachmentModelContext } from '../src/slack/attachment-model-context.ts';
 
 beforeEach(() => resetModelsForTests());
@@ -254,6 +256,99 @@ test('the Cloudflare binding registration does not alter the REST Workers AI pro
   assert.equal(model.baseUrl, 'https://workers-ai.example.invalid/v1');
   assert.equal(Object.hasOwn(model, 'binding'), false);
   assert.equal(Object.hasOwn(model, 'gateway'), false);
+});
+
+for (const [method, hookStyle] of [
+  ['stream', 'none'], ['stream', 'mutating'], ['stream', 'replacement'],
+  ['streamSimple', 'none'], ['streamSimple', 'mutating'], ['streamSimple', 'replacement'],
+] as const) {
+  test(`REST ${method} repairs GPT-OSS tool replay with a ${hookStyle} payload hook`, async () => {
+    const provider = createWorkersAiRestPiProvider({
+      baseUrl: 'https://workers-ai.example.invalid/v1',
+      contextWindowFloor: 32_768,
+      maxTokens: 2_048,
+    });
+    const model = provider.getModels().find(({ id }) => id === '@cf/openai/gpt-oss-120b');
+    assert.ok(model);
+    let hookPayload: unknown;
+    let hookCalls = 0;
+    let requests = 0;
+    const context = {
+      messages: [
+        { role: 'user' as const, content: 'Read the fixture.', timestamp: 1 },
+        {
+          role: 'assistant' as const, api: model.api, provider: model.provider, model: model.id,
+          content: [{ type: 'toolCall' as const, id: 'call_read', name: 'read_fixture', arguments: {} }],
+          stopReason: 'toolUse' as const, timestamp: 2,
+          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        },
+        { role: 'toolResult' as const, toolCallId: 'call_read', toolName: 'read_fixture',
+          content: [{ type: 'text' as const, text: 'synthetic result' }], isError: false, timestamp: 3 },
+      ],
+    };
+    const before = structuredClone(context);
+    const result = await provider[method](model, context, {
+      apiKey: 'synthetic-key',
+      maxRetries: 0,
+      ...(hookStyle === 'none' ? {} : { onPayload: async (payload: unknown, hookModel: Model<Api>) => {
+        hookCalls += 1;
+        assert.equal(hookModel.id, model.id);
+        hookPayload = payload;
+        if (hookStyle === 'mutating') {
+          (payload as Record<string, unknown>).temperature = 0.25;
+          return undefined;
+        }
+        return { ...(payload as Record<string, unknown>), temperature: 0.25 };
+      } }),
+      fetch: async (input, init) => {
+        requests += 1;
+        const request = new Request(input, init);
+        assert.equal(request.url, 'https://workers-ai.example.invalid/v1/chat/completions');
+        const payload = await request.json() as { messages: Array<Record<string, unknown>>; temperature: number };
+        const assistant = payload.messages.find(({ role }) => role === 'assistant');
+        if (assistant?.content === null) {
+          return new Response('Bad input: assistant content must not be null', { status: 400 });
+        }
+        assert.equal(assistant?.content, '');
+        assert.deepEqual(assistant?.tool_calls, [{
+          id: 'call_read', type: 'function', function: { name: 'read_fixture', arguments: '{}' },
+        }]);
+        if (hookStyle !== 'none') {
+          assert.equal(payload.temperature, 0.25, 'caller hook must run before normalization');
+        }
+        return new Response(`data: ${JSON.stringify({ choices: [{
+          index: 0, delta: { content: 'Fixture read.' }, finish_reason: 'stop',
+        }] })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+      },
+    }).result();
+
+    assert.equal(result.stopReason, 'stop', result.errorMessage ?? 'REST tool replay should complete');
+    assert.equal(hookCalls, hookStyle === 'none' ? 0 : 1);
+    assert.equal(requests, 1);
+    assert.deepEqual(context, before);
+    if (hookStyle !== 'none') {
+      assert.equal((hookPayload as { messages: Array<Record<string, unknown>> }).messages
+        .find(({ role }) => role === 'assistant')?.content, null, 'do not mutate the caller payload');
+    }
+  });
+}
+
+test('Workers AI replay policy leaves non-null content and other models byte-identical', () => {
+  const toolCalls = [{ id: 'call_read', type: 'function', function: { name: 'read_fixture', arguments: '{}' } }];
+  const payload = { messages: [
+    { role: 'assistant', content: 'Reading now.', tool_calls: toolCalls },
+    { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] },
+    { role: 'tool', content: null },
+    { role: 'user', content: null },
+  ] };
+  const before = structuredClone(payload);
+  assert.equal(withWorkersAiPayloadPolicy('@cf/openai/gpt-oss-120b', payload), payload);
+  assert.deepEqual(payload, before);
+  const replay = { messages: [{ role: 'assistant', content: null, tool_calls: toolCalls }] };
+  for (const modelId of ['@cf/zai-org/glm-5.2', '@cf/zai-org/glm-5.3-flash', 'openai/gpt-5.4']) {
+    assert.equal(withWorkersAiPayloadPolicy(modelId, replay), replay);
+  }
 });
 
 test('the Cloudflare binding provider receives the same request-local attachment baseline', async () => {

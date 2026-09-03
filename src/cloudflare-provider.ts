@@ -6,6 +6,7 @@ import {
 } from '@flue/runtime/cloudflare/workers-ai';
 
 import { SEED_CLOUDFLARE_MODEL_ID } from './config/seed.ts';
+import { withWorkersAiPayloadPolicy } from './config/workers-ai-payload.ts';
 import {
   CURRENT_WORKERS_AI_MODEL_ID,
   withCurrentWorkersAiModels,
@@ -48,14 +49,12 @@ export function cloudflareBindingProviderOptions(
 function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAIBinding {
   return {
     run(modelId, inputs, options) {
-      if (modelId === '@cf/openai/gpt-oss-120b') {
-        return binding.run(modelId, withNonNullAssistantContent(inputs), options);
-      }
+      const wireInputs = withWorkersAiPayloadPolicy(modelId, inputs);
       if (
         modelId !== SEED_CLOUDFLARE_MODEL_ID &&
         modelId !== CURRENT_WORKERS_AI_MODEL_ID
       ) {
-        return binding.run(modelId, inputs, options);
+        return binding.run(modelId, wireInputs, options);
       }
 
       // Workers AI enables GLM thinking by default. The Pi provider represents
@@ -72,7 +71,7 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
         chat_template_kwargs,
         max_completion_tokens: requestedMaxTokens,
         ...rest
-      } = inputs;
+      } = wireInputs;
       const existingTemplateOptions = isRecord(chat_template_kwargs)
         ? chat_template_kwargs
         : {};
@@ -102,22 +101,4 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
       );
     },
   };
-}
-
-function withNonNullAssistantContent(inputs: Record<string, unknown>): Record<string, unknown> {
-  if (!Array.isArray(inputs.messages)) return inputs;
-  let changed = false;
-  const messages = inputs.messages.map((message: unknown) => {
-    if (!isRecord(message) || message.role !== 'assistant' || message.content !== null) {
-      return message;
-    }
-    // Pi replays tool-call-only assistant messages with null content. GPT-OSS's
-    // Workers AI schema requires a string or text-parts array, so its next model
-    // turn otherwise fails after the tool has already succeeded. Preserve every
-    // other field and never mutate the shared conversation.
-    // https://github.com/cloudflare/cloudflare-os/issues/54
-    changed = true;
-    return { ...message, content: '' };
-  });
-  return changed ? { ...inputs, messages } : inputs;
 }
