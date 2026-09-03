@@ -995,7 +995,9 @@ export async function observeReceiptBackedEnvironment(target, options = {}) {
   const context = assertLiveEnvironmentClaim(target, options);
   const receipt = readEnvironmentDeployReceipt(context.registration.evidenceRoot);
   const baseline = readEnvironmentBaseline(context.registration.evidenceRoot);
-  assertReceiptMatchesClaim(receipt, context);
+  // The current claim authorizes this observation. The receipt preserves the
+  // original deployment claim, which is checked against live metadata below.
+  assertReceiptMatchesDeployment(receipt, context);
   const observe = selectAuthorityObserver(options);
   const authority = validateAuthority(await observe({
     target,
@@ -1047,8 +1049,14 @@ export async function observeReceiptBackedEnvironment(target, options = {}) {
 }
 
 function assertReceiptMatchesClaim(receipt, context) {
+  if (receipt.claimNonce !== context.claim.leaseNonce) {
+    throw fail('DEPLOY_RECEIPT_CLAIM_MISMATCH');
+  }
+  assertReceiptMatchesDeployment(receipt, context);
+}
+
+function assertReceiptMatchesDeployment(receipt, context) {
   if (receipt.target !== context.registration.target
-    || receipt.claimNonce !== context.claim.leaseNonce
     || receipt.sourceRevision !== context.claim.claimedRevision
     || receipt.sourceDirty !== context.worktree.dirty
     || receipt.activeVersion !== context.registration.servingVersion

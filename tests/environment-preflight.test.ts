@@ -1398,6 +1398,56 @@ test('receipt publication is crash-explicit and receipt-backed observation rejec
   }), rejects('DEPLOY_RECEIPT_LIVE_MISMATCH'));
 });
 
+test('a new claim can attest the same deployment without rewriting its original receipt', async (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const original = claimEnvironment('amber', f.options);
+  const preflight = await preflightEnvironmentMutation('amber', {
+    ...f.options, baseline: baseline(), localContract: localContract(), observeAuthority: async () => authority(),
+  });
+  const mutationLease = beginEnvironmentDeployment(preflight, {
+    ...f.options, localContract: preflight.localContract,
+  });
+  const liveAuthority = () => authority('amber', {
+    activeVersion: 'version-reused', deploymentMetadata: preflight.deploymentMetadata,
+  });
+  await completeEnvironmentDeployment(preflight, {
+    ...f.options, deployedVersion: 'version-reused', mutationLease, observeAuthority: async () => liveAuthority(),
+  });
+  const receiptPath = environmentDeployReceiptPath(f.records[0]!.evidenceRoot);
+  const originalReceipt = readFileSync(receiptPath, 'utf8');
+  withEnvironmentReleaseFence('amber', f.options, (fence: { runId: string }) =>
+    releaseEnvironment('amber', { ...f.options, expectedTargetLockRunId: fence.runId }));
+  const current = claimEnvironment('amber', f.options);
+  assert.notEqual(current.leaseNonce, original.leaseNonce);
+  const observed = await observeReceiptBackedEnvironment('amber', {
+    ...f.options, observeAuthority: async () => liveAuthority(),
+  });
+  assert.equal(observed.deployments[0].versionId, 'version-reused');
+  assert.equal(readFileSync(receiptPath, 'utf8'), originalReceipt);
+  const attested = await attestEnvironment('amber', undefined, {
+    ...f.options, observeAuthority: async () => liveAuthority(),
+  });
+  assert.equal(attested.attestation.servingVersion, 'version-reused');
+  assert.equal(readFileSync(receiptPath, 'utf8'), originalReceipt);
+  // A fresh lease does not authorize changing the deployment's provenance.
+  await assert.rejects(observeReceiptBackedEnvironment('amber', {
+    ...f.options, observeAuthority: async () => ({ ...liveAuthority(),
+      deploymentMetadata: { ...preflight.deploymentMetadata, claimNonce: current.leaseNonce } }),
+  }), rejects('DEPLOY_RECEIPT_LIVE_MISMATCH'));
+  withEnvironmentReleaseFence('amber', f.options, (fence: { runId: string }) =>
+    releaseEnvironment('amber', { ...f.options, expectedTargetLockRunId: fence.runId }));
+  writeFileSync(join(f.worktree, 'source.txt'), 'changed source\n');
+  git(f.worktree, 'add', 'source.txt');
+  git(f.worktree, 'commit', '-m', 'changed source');
+  claimEnvironment('amber', f.options);
+  let called = false;
+  await assert.rejects(observeReceiptBackedEnvironment('amber', {
+    ...f.options, observeAuthority: async () => { called = true; return liveAuthority(); },
+  }), rejects('DEPLOY_RECEIPT_CLAIM_MISMATCH'));
+  assert.equal(called, false);
+});
+
 test('cleanup authorization validates every receipt and independently denies permanent IDs', (context) => {
   const f = fixture();
   context.after(() => rmSync(f.parent, { recursive: true, force: true }));
