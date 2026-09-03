@@ -60,6 +60,31 @@ test('the explicit OSS verifier allowlist stays complete without admitting priva
   assert.deepEqual(paths.sort(), filesBelow('qa/live'));
 });
 
+test('source privacy policy permits only the exact discoverable skill path', () => {
+  const script = read('scripts/verify-oss-export.mjs');
+  const roots = script.slice(script.indexOf('const forbiddenSourcePathRoots ='),
+    script.indexOf('const liveVerifierExportPolicy ='));
+  const policy = script.slice(script.indexOf('function assertPublicSourceManifest(entries)'),
+    script.indexOf('function isLiveVerifierPublicPath(path)'));
+  // Run the real source-path filter without invoking the export/install pipeline.
+  const check = new Function(`
+    const exportPath = (...parts) => parts.join('/');
+    ${roots}
+    const forbiddenSourcePaths = new Set();
+    const allowedPublicDocs = new Set();
+    const allowedBinaryFiles = new Set();
+    const assertLiveVerifierSourcePolicy = () => {};
+    const fail = (message) => { throw new Error(message); };
+    ${policy}
+    return assertPublicSourceManifest;
+  `)() as (entries: Array<{ path: string }>) => void;
+  assert.doesNotThrow(() => check([{ path: '.agents/skills/chickpea-live-verification/SKILL.md' }]));
+  for (const path of ['.agents/private.json', '.agents/skills/another/SKILL.md',
+    '.agents/skills/chickpea-live-verification/evidence.json', '.agents/skills/chickpea-live-verification/skill.md']) {
+    assert.throws(() => check([{ path }]), /forbidden public-source paths/u);
+  }
+});
+
 test('public verifier files are not ignored and private artifact shapes are not packaged', () => {
   for (const path of [
     '.agents/skills/chickpea-live-verification/SKILL.md',

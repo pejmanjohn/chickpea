@@ -537,7 +537,7 @@ function assertPublicSourceManifest(entries) {
         forbiddenSourcePathRoots.some(
           (root) =>
             (normalizedPath === root || normalizedPath.startsWith(`${root}/`)) &&
-            !allowedAgentSkillPaths.has(normalizedPath),
+            !allowedAgentSkillPaths.has(path),
         )
       );
     },
