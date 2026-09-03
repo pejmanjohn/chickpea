@@ -393,7 +393,7 @@ test('revoked shared Slack connection stays disconnected without probing live se
   }
 });
 
-test('shared Slack connection test requires inbound session health even when outbound Slack succeeds', async () => {
+test('shared Slack connection test reports transient outages without poisoning installation health', async () => {
   const fixture = harness();
   let inboundHealthy = false;
   let statusCalls = 0;
@@ -427,6 +427,11 @@ test('shared Slack connection test requires inbound session health even when out
       gatewayBindingId: 'binding_test',
     });
 
+    const installed = await fixture.store.getWorkspaceInstallation('T_TEST');
+    await fixture.store.updateWorkspaceInstallation('T_TEST', {
+      health: 'healthy', healthDetail: null,
+    }, installed!.revision);
+    const before = await fixture.store.getWorkspaceInstallation('T_TEST');
     const offline = await fixture.app.request(
       'http://localhost/admin/api/slack-connection/test',
       { method: 'POST', headers: auth(), body: '{}' },
@@ -439,11 +444,13 @@ test('shared Slack connection test requires inbound session health even when out
     });
     assert.equal(statusCalls, 2);
     assert.equal(restartCalls, 1);
-    assert.equal((await fixture.store.getWorkspaceInstallation('T_TEST'))?.health, 'needs_attention');
-    assert.equal(
-      (await fixture.store.getWorkspaceInstallation('T_TEST'))?.healthDetail,
-      'gateway_session_offline',
-    );
+    assert.deepEqual(await fixture.store.getWorkspaceInstallation('T_TEST'), before);
+
+    // Older deployments may have saved this transient warning. A successful
+    // explicit retry must still clear it without a reinstall.
+    await fixture.store.updateWorkspaceInstallation('T_TEST', {
+      health: 'needs_attention', healthDetail: 'gateway_session_offline',
+    }, before!.revision);
 
     inboundHealthy = true;
     const recovered = await fixture.app.request(
@@ -486,7 +493,7 @@ test('shared Slack connection test requires inbound session health even when out
   }
 });
 
-test('shared Slack connection test rejects a healthy session from an older Worker version', async () => {
+test('shared Slack connection test rejects an old Worker session without persisting its transient warning', async () => {
   const fixture = harness();
   let gatewayVersion = 'old-version';
   let restartCalls = 0;
@@ -518,6 +525,11 @@ test('shared Slack connection test rejects a healthy session from an older Worke
       gatewayBindingId: 'binding_test',
     });
 
+    const installed = await fixture.store.getWorkspaceInstallation('T_TEST');
+    await fixture.store.updateWorkspaceInstallation('T_TEST', {
+      health: 'healthy', healthDetail: null,
+    }, installed!.revision);
+    const before = await fixture.store.getWorkspaceInstallation('T_TEST');
     const stale = await fixture.app.request(
       'http://localhost/admin/api/slack-connection/test',
       { method: 'POST', headers: auth(), body: '{}' },
@@ -529,10 +541,7 @@ test('shared Slack connection test rejects a healthy session from an older Worke
       detail: 'gateway_session_stale_version',
     });
     assert.equal(restartCalls, 1);
-    assert.equal(
-      (await fixture.store.getWorkspaceInstallation('T_TEST'))?.healthDetail,
-      'gateway_session_stale_version',
-    );
+    assert.deepEqual(await fixture.store.getWorkspaceInstallation('T_TEST'), before);
 
     gatewayVersion = 'current-version';
     const current = await fixture.app.request(

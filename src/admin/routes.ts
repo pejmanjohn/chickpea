@@ -8910,22 +8910,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         if (!inboundStatus.healthy) {
           const healthDetail = inboundStatus.detail ?? 'gateway_session_offline';
-          try {
-            const current = await store(c).getWorkspaceInstallation(installation.workspaceId);
-            if (
-              current &&
-              (current.health !== 'needs_attention' ||
-                current.healthDetail !== healthDetail)
-            ) {
-              await store(c).updateWorkspaceInstallation(installation.workspaceId, {
-                health: 'needs_attention',
-                healthDetail,
-              }, current.revision);
-            }
-          } catch {
-            // This response still reports current live health; reload reconciles
-            // a concurrent installation write.
-          }
+          // A reconnect can still be opening immediately after restart. Report
+          // live transport health, but do not persist it as an installation
+          // failure: that stale warning would survive recovery and downgrade
+          // selected-Agent presentation. GET already projects current outages.
           return c.json({
             error: 'slack_gateway_unreachable',
             detail: healthDetail,
