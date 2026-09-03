@@ -194,6 +194,7 @@ interface WorkerHandle {
 function startWorker(configPath: string, persistTo: string, port: number): WorkerHandle {
   const child = spawn(WRANGLER, [
     'dev', '--config', configPath, '--port', String(port), '--persist-to', persistTo,
+    '--inspector-port', '0',
   ], {
     cwd: ROOT,
     env: { ...process.env, CI: '1' },
