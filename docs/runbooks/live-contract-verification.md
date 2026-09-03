@@ -18,6 +18,14 @@ The public V0 CLI is intentionally narrower than the internal runner protocol. `
 
 That coordinator does not ship in V0. Without it, doctor and deterministic checks may run, but live mutation is blocked. After U0 and V1, claim clean `cobalt` normally and exclusively for one protected origin/main Computer Use smoke, clean it, release it, then return `cobalt` to ordinary branch-lane use. Do not add a persistent qualification mode or dual-role registry state.
 
+The incremental `qa/live/coordinator.ts` core now binds the existing runner to
+one-use challenges, certified window captures, exact cleanup, postflight, and
+the host UI mutex. Its deterministic tests are not live qualification. The
+private Computer Use driver, complete interrupted-run readback/resumption,
+observation waits, and evidence packaging must be wired and verified before
+the first live smoke. The public CLI continues to return `COORDINATOR_REQUIRED`.
+Do not feed hand-authored assertion tokens to the core and call that a live run.
+
 The coordinator remains verifier-owned when implemented. It acquires the per-target lock, sequences variants, journals one-use challenges and content-free receipts, packages evidence, performs exact cleanup bookkeeping, and owns the host-local UI mutex. Codex carries out scored product actions and observations as a real user through Computer Use in the actual Slack and Chickpea Admin interfaces. It must not substitute direct product APIs, database reads, hidden HTTP observers, or an API actor for that journey.
 
 ## Public and private inputs
@@ -57,7 +65,21 @@ The target lock is derived as `<evidenceRoot>/target.lock`. It records the run I
 
 The public lock module enforces these rules. The foundation CLI does not yet acquire or clear that lock; the verifier-owned coordinator must wire lock lifecycle and a safe `--clear-lock` command before the first live smoke.
 
+The incremental core writes a no-overwrite journal header before acquiring
+the target lock, but does not write an intent or perform UI work until it owns
+the lock. This leaves a recoverable header even if the process dies immediately
+after acquisition. Exact cleanup alone is insufficient to release the lock:
+failed or interrupted postflight remains unresolved in the durable journal.
+
 There is no host-wide run lock. Different targets may run concurrently on one host. The coordinator uses one host-local Computer Use mutex only while it executes a semantic UI action or input window. A waiting human gate releases that mutex and reserves only its actor/browser. Reacquire the mutex for the short confirmation interaction, then release it after the visible page advances. Another run needing the same browser bounded-waits and becomes operationally `blocked`, never a product failure. Captures are window-scoped; never capture during secret entry or before the page advances. Environment commands and lock/journal bookkeeping on other targets do not take the UI mutex.
+
+`HostUiMutex.clearStoppedOwner(runId, browserAlias)` is an explicit local crash
+recovery primitive, never an automatic takeover. It refuses live or foreign-host
+owners and removes only matching stopped-owner interaction/reservation files.
+It does not release a target lock or resolve a product mutation. After recovery,
+inspect the actual browser and leave any interrupted secret-entry page before
+capturing evidence or starting another journey. A resumed gate reattests the
+target before reacquiring its UI window.
 
 ## Before a live run
 

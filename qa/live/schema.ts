@@ -578,7 +578,7 @@ function validateCleanup(input: unknown, path: string): CleanupIntent {
     if (value.residue !== undefined || fixtureClass === 'immutable_baseline') fail('INVALID_VALUE', path);
     return { strategy, fixtureClass, reversalActionId };
   }
-  if (value.reversalActionId !== undefined || fixtureClass !== 'attributed_residue') fail('INVALID_RESIDUE', path);
+  if (fixtureClass !== 'attributed_residue') fail('INVALID_RESIDUE', path);
   const residuePath = `${path}.residue`;
   const residueValue = record(value.residue, residuePath);
   exactKeys(residueValue, ['kind', 'markerRequired', 'expectedState'], residuePath);
@@ -591,7 +591,12 @@ function validateCleanup(input: unknown, path: string): CleanupIntent {
     markerRequired: true as const,
     expectedState: boundedString(residueValue.expectedState, `${residuePath}.expectedState`, 1, 300),
   };
-  return { strategy, fixtureClass, residue };
+  if (value.reversalActionId !== undefined
+    && (residue.kind !== 'agent_tombstone' || value.reversalActionId !== 'agent.archive')) {
+    fail('INVALID_RESIDUE', path);
+  }
+  return { strategy, fixtureClass, residue,
+    ...(value.reversalActionId === undefined ? {} : { reversalActionId: 'agent.archive' as const }) };
 }
 
 function assertionArray(input: unknown, path: string, observers: readonly ObserverId[]): LiveAssertion[] {

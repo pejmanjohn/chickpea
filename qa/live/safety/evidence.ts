@@ -1,12 +1,14 @@
 import {
   closeSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   realpathSync,
   writeSync,
+  type Stats,
 } from 'node:fs';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import {
   ASSERTION_TOKENS,
@@ -86,6 +88,34 @@ export interface SafeRunSummary {
     unexpectedCount: number;
     unresolvedCount: number;
   };
+}
+
+/** Guard journal/lock paths even when an attestation claims the root is safe. */
+export function assertPrivateEvidencePath(path: string, root: string): void {
+  if (!isAbsolute(path) || resolve(path) !== path || !isAbsolute(root)
+    || resolve(root) !== root || !isWithin(path, root)) fail('UNSAFE_EVIDENCE_ROOT');
+  for (let candidate = path; ; candidate = dirname(candidate)) {
+    const stat = optionalStat(candidate);
+    if (stat) {
+      if (stat.isSymbolicLink() || (!stat.isDirectory() && (candidate !== path || !stat.isFile()))) {
+        fail('UNSAFE_EVIDENCE_ROOT');
+      }
+      if (isWithin(candidate, root) && (stat.uid !== process.getuid?.() || (stat.mode & 0o077))) {
+        fail('UNSAFE_EVIDENCE_ROOT');
+      }
+      if (stat.isDirectory() && (optionalStat(join(candidate, '.git')) || optionalStat(join(candidate, 'package.json')))) {
+        fail('UNSAFE_EVIDENCE_ROOT');
+      }
+    }
+    if (candidate === dirname(candidate)) break;
+  }
+}
+
+function optionalStat(path: string): Stats | undefined {
+  try { return lstatSync(path); } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') return undefined;
+    fail('UNSAFE_EVIDENCE_ROOT');
+  }
 }
 
 export function createEvidenceRun(input: {

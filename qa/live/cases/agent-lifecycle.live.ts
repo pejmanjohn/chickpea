@@ -18,6 +18,7 @@ import {
 const agentResidue: CleanupIntent = {
   strategy: 'attributed_residue',
   fixtureClass: 'attributed_residue',
+  reversalActionId: 'agent.archive',
   residue: {
     kind: 'agent_tombstone',
     markerRequired: true,

@@ -8,6 +8,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { hostname } from 'node:os';
 
 export interface TargetLockOwner {
   runId: string;
@@ -205,6 +206,19 @@ export function clearTargetLock(
   unlinkSync(path);
 }
 
+/** The running coordinator can release only its own cleanup-safe journal. */
+export function releaseOwnedTargetLock(path: string, owner: TargetLockOwner, journalPath: string): void {
+  if (owner.pid !== process.pid || owner.host !== hostname()) throw new TargetLockError('LOCK_FOREIGN_HOST');
+  const current = readTargetLock(path);
+  if (!current || !sameOwner(current, owner)) throw new TargetLockError('LOCK_CHANGED');
+  const journal = readRunJournalStatus(journalPath, owner.runId);
+  if (journal.unresolvedIntentIds.length) throw new TargetLockError('UNRESOLVED_INTENT');
+  if (journal.unresolvedCleanupIds.length || !journal.safeToClear) throw new TargetLockError('UNRESOLVED_CLEANUP');
+  const rechecked = readTargetLock(path);
+  if (!rechecked || !sameOwner(rechecked, owner)) throw new TargetLockError('LOCK_CHANGED');
+  unlinkSync(path);
+}
+
 function unresolvedIntentIdsFrom(events: readonly Record<string, unknown>[]): string[] {
   const unresolved = new Set<string>();
   for (const event of events) {
@@ -242,6 +256,14 @@ function unresolvedCleanupIdsFrom(events: readonly Record<string, unknown>[]): s
     }
     if (event.type === 'unresolved_outcome' && typeof event.referenceId === 'string') {
       unresolved.add(event.referenceId);
+    }
+    if (event.type === 'postflight_required' && typeof event.caseId === 'string') {
+      unresolved.add(`postflight:${event.caseId}`);
+    }
+    if (event.type === 'postflight_receipt' && typeof event.caseId === 'string') {
+      const key = `postflight:${event.caseId}`;
+      if (event.result === 'pass') unresolved.delete(key);
+      else unresolved.add(key);
     }
   }
   return [...unresolved].sort();

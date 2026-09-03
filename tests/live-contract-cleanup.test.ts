@@ -405,6 +405,19 @@ test('mutation receipts require a completion bound to the exact resulting resour
   );
 });
 
+test('a created Agent must be archived before its attributed tombstone can pass cleanup', (context) => {
+  const path = setup(context);
+  const created = receipt({
+    fixtureClass: 'attributed_residue', cleanupStrategy: 'attributed_residue',
+    reversalActionId: 'agent.archive', expectedResidueStateDigest: 'sha256:archived-agent',
+  });
+  recordBoundMutation(path, created);
+  const [target] = deriveCleanupPlan(path, HEADER);
+  assert.equal(target?.operation, 'agent.archive');
+  assert.equal(target?.mutation, 'archive');
+  assert.equal(target?.expectedResidueStateDigest, 'sha256:archived-agent');
+});
+
 test('immutable baselines cannot be mutated and attributed residue requires exact retained-state proof', (context) => {
   const path = setup(context);
   assert.throws(() => recordMutationReceipt(path, receipt({
