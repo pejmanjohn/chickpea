@@ -208,6 +208,29 @@ test('Admin environment projection rejects secret-shaped values in every display
   }
 });
 
+test('real Admin routes preserve actual or unknown workspace headroom', async () => {
+  const app = createAdminRoutes(testAdminAuthority('environment-capacity-token'));
+  for (const unusedWorkspaceSlots of [0, 1, 2, null]) {
+    const input = runtimeEnvironmentStatus();
+    const response = await app.request(
+      'http://localhost/admin/api/environment/status',
+      { headers: { authorization: 'Bearer environment-capacity-token' } },
+      { CHICKPEA_ENVIRONMENT_STATUS: JSON.stringify({
+        ...input, sandbox: { ...input.sandbox, unusedWorkspaceSlots },
+      }) },
+    );
+    assert.equal(response.status, 200);
+    const projected = await response.json() as { sandbox: { unusedWorkspaceSlots: number | null } };
+    assert.equal(projected.sandbox.unusedWorkspaceSlots, unusedWorkspaceSlots);
+  }
+  for (const unusedWorkspaceSlots of [-1, 3, 0.5, '1', undefined, Number.NaN, Infinity]) {
+    const input = runtimeEnvironmentStatus();
+    assert.throws(() => projectAdminEnvironmentStatus({
+      ...input, sandbox: { ...input.sandbox, unusedWorkspaceSlots },
+    }), /INVALID_ENVIRONMENT_STATUS/u);
+  }
+});
+
 test('visual fixture seeds the real Agent, Channel, readiness, capability, and memory projections', async () => {
   const { startAdminVisualFixture } = await loadFixtureModule();
   const fixture = await startAdminVisualFixture();

@@ -832,20 +832,33 @@ test('reclaim respects the shared target mutation lock and stale release locks r
   }, () => 'released-after-recovery'), 'released-after-recovery');
 });
 
-test('production authority is assembled from Slack and Wrangler reads, never caller observation JSON', async () => {
+for (const transport of ['events', 'gateway']) test(`production ${transport} authority uses live reads without shadow credentials`, async () => {
   const calls: string[] = [];
-  const result = await observeProductionEnvironmentAuthority({
+  const context = {
     target: 'amber',
     registration: {
-      workerName: 'chickpea-amber', transport: 'events',
+      workerName: 'chickpea-amber', transport,
       authDatabaseName: 'chickpea-auth-db-amber', authDatabaseId: 'd1-amber',
       schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
       bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'chickpea-amber:TagStateStore' },
     },
     phase: 'before',
-  }, {
+  };
+  const runtime = runtimeAuthorities();
+  const gatewayRuntime = Object.fromEntries(TARGETS.map((target) => [target, {
+    ...runtime[target], schemaVersion: 'chickpea-environment-runtime-authority/v2',
+    secretFingerprints: {
+      ...runtime[target]!.secretFingerprints,
+      schemaVersion: 'chickpea-environment-runtime-secret-fingerprints/v2',
+      sourceBindings: { ...RUNTIME_SECRET_SOURCE_BINDINGS, cookie: 'CHICKPEA_AUTH_SECRET',
+        signing: 'slack.gateway.deploymentIdentity.v1.deploymentId' },
+    },
+    slack: authority(target).slack,
+    transportAuthority: { healthy: true, phase: 'healthy', detail: null, generation: 1, versionId: `version-${target}` },
+  }]));
+  const options = {
     env: {
-      CHICKPEA_ENV_AMBER_SLACK_BOT_TOKEN: 'test-only-token',
+      ...(transport === 'events' ? { CHICKPEA_ENV_AMBER_SLACK_BOT_TOKEN: 'test-only-token' } : {}),
       // Legacy shadow values are deliberately identical. Live runtime authority,
       // derived from the actual Worker bindings, is the only fingerprint source.
       CHICKPEA_ENV_AMBER_AUTH_SECRET: 'ignored-shadow-value',
@@ -896,8 +909,9 @@ test('production authority is assembled from Slack and Wrangler reads, never cal
       };
     },
     allowTestRuntimeAuthorityReader: true,
-    readFleetRuntimeAuthorities: async () => runtimeAuthorities(),
-  });
+    readFleetRuntimeAuthorities: async () => transport === 'gateway' ? gatewayRuntime : runtime,
+  };
+  const result = await observeProductionEnvironmentAuthority(context, options);
   assert.equal(result.slack.botUserId, 'U_AMBER_BOT');
   assert.equal(result.bindingIdentities.AUTH_DB, 'd1-amber');
   assert.equal(result.activeVersion, 'version-amber');
@@ -905,8 +919,47 @@ test('production authority is assembled from Slack and Wrangler reads, never cal
     'deployments status --json --name chickpea-amber',
     'versions view version-amber --json --name chickpea-amber',
     'd1 execute chickpea-auth-db-amber --remote --json --command SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1',
-    'https://slack.com/api/auth.test',
+    ...(transport === 'events' ? ['https://slack.com/api/auth.test'] : []),
   ]);
+  if (transport === 'gateway') {
+    const valid = structuredClone(gatewayRuntime);
+    for (const [mutate, code] of [
+      [() => { gatewayRuntime.amber!.observedAt = new Date(NOW - 60_001).toISOString(); }, 'RUNTIME_AUTHORITY_INVALID'],
+      [() => { gatewayRuntime.amber!.slack.teamId = 'OTHER'; }, 'SLACK_AUTHORITY_MISMATCH'],
+      [() => { gatewayRuntime.amber!.transportAuthority.versionId = 'old'; }, 'RUNTIME_AUTHORITY_INVALID'],
+      [() => { gatewayRuntime.cobalt!.secretFingerprints.fingerprints = fingerprints('amber'); }, 'CREDENTIAL_FINGERPRINT_REUSED'],
+    ] as const) {
+      mutate();
+      await assert.rejects(observeProductionEnvironmentAuthority(context, options), rejects(code));
+      Object.assign(gatewayRuntime, structuredClone(valid));
+    }
+    const bridgeEnv = Object.fromEntries(TARGETS.flatMap((target) => [
+      [`CHICKPEA_ENV_${target.toUpperCase()}_LIVE_AUTHORITY_URL`, `https://${target}.test/internal/environment/authority`],
+      [`CHICKPEA_ENV_${target.toUpperCase()}_LIVE_AUTHORITY_READ_TOKEN`, Buffer.alloc(32, target.charCodeAt(0)).toString('base64url')],
+    ]));
+    let oversized = false;
+    let bridgeCalls = 0;
+    const realBridgeOptions = { ...options, env: bridgeEnv, readFleetRuntimeAuthorities: undefined,
+      fetchImpl: async (url: URL, init: RequestInit) => {
+        bridgeCalls += 1;
+        const target = url.hostname.split('.')[0]!;
+        assert.equal(new Headers(init.headers).get('authorization'), `Bearer ${Buffer.alloc(32, target.charCodeAt(0)).toString('base64url')}`);
+        assert.equal(init.redirect, 'error');
+        assert.ok(init.signal);
+        return oversized ? new Response('x'.repeat(65_537)) : Response.json(gatewayRuntime[target]);
+      },
+    };
+    assert.equal((await observeProductionEnvironmentAuthority(context, realBridgeOptions)).slack.teamId, 'T_AMBER');
+    const tokenName = 'CHICKPEA_ENV_AMBER_LIVE_AUTHORITY_READ_TOKEN';
+    const validToken = bridgeEnv[tokenName]!;
+    bridgeEnv[tokenName] = 'a'.repeat(64);
+    bridgeCalls = 0;
+    await assert.rejects(observeProductionEnvironmentAuthority(context, realBridgeOptions), rejects('LIVE_AUTHORITY_READ_TOKEN_INVALID'));
+    assert.equal(bridgeCalls, 0);
+    bridgeEnv[tokenName] = validToken;
+    oversized = true;
+    await assert.rejects(observeProductionEnvironmentAuthority(context, realBridgeOptions), rejects('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE'));
+  }
 });
 
 test('Cloudflare authority forwards the exact resolved profile and environment to every read', async () => {

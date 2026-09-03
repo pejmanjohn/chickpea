@@ -2968,8 +2968,23 @@ test('Admin renders the CLI environment identity and all five health states with
     assert.doesNotMatch(harness.app.innerHTML, /worktrees\/amber-owner|codex\/amber-owner/);
     assert.match(harness.app.innerHTML, /run-amber/);
     assert.match(harness.app.innerHTML, /d1:0002_mcp_oauth;do:v9/);
-    assert.match(harness.app.innerHTML, /Unused workspace slots: 2/);
+    assert.match(harness.app.innerHTML, /Recorded unused workspace slots: 2/);
+    assert.match(harness.app.innerHTML, /Capacity is a registry snapshot/);
     assert.doesNotMatch(harness.app.innerHTML, /xoxb-never-render-this|private\/browser-profile|credentialToken/);
+  }
+});
+
+test('Admin renders recorded workspace capacity and does not invent unknown headroom', async () => {
+  for (const unusedWorkspaceSlots of [0, 1, 2, null]) {
+    const status = liveEnvironmentFixture('ready');
+    const harness = runAdminPageHarness({ environmentStatus: {
+      ...status,
+      sandbox: { ...(status.sandbox as Record<string, unknown>), unusedWorkspaceSlots },
+    } });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, new RegExp(
+      `Recorded unused workspace slots: ${unusedWorkspaceSlots === null ? 'unavailable' : unusedWorkspaceSlots}`,
+    ));
   }
 });
 

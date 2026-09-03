@@ -68,6 +68,11 @@ const RUNTIME_SECRET_SOURCE_BINDINGS = Object.freeze({
   setup: 'CHICKPEA_SETUP_CAPABILITY_DIGEST',
   encryption: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID+CHICKPEA_CREDENTIAL_KEY_<ID>',
 });
+const GATEWAY_RUNTIME_SECRET_SOURCE_BINDINGS = Object.freeze({
+  ...RUNTIME_SECRET_SOURCE_BINDINGS,
+  cookie: 'CHICKPEA_AUTH_SECRET',
+  signing: 'slack.gateway.deploymentIdentity.v1.deploymentId',
+});
 
 export class EnvironmentPreflightError extends Error {
   constructor(code, details = undefined) {
@@ -1573,7 +1578,7 @@ export async function observeProductionEnvironmentAuthority(context, options = {
   });
   const validatedRuntimeAuthorities = Object.fromEntries(activeEnvironmentTargets.map((lane) => [
     lane,
-    validateRuntimeAuthority(runtimeAuthorities?.[lane], lane),
+    validateRuntimeAuthority(runtimeAuthorities?.[lane], lane, options.now ? options.now() : Date.now()),
   ]));
   const fleetCredentialFingerprints = Object.fromEntries(activeEnvironmentTargets.map((lane) => [
     lane,
@@ -1581,12 +1586,49 @@ export async function observeProductionEnvironmentAuthority(context, options = {
   ]));
   assertUniqueCredentialFingerprints(fleetCredentialFingerprints);
   const credentialFingerprints = fleetCredentialFingerprints[target];
+  const runtimeAuthority = validatedRuntimeAuthorities[target];
+  const transportAuthority = runtimeAuthority.transportAuthority;
+  let slackAuthority;
+  if (context.registration.transport === 'gateway') {
+    if (runtimeAuthority.schemaVersion !== 'chickpea-environment-runtime-authority/v2'
+      || !validTransportAuthority('gateway', transportAuthority, activeVersion)) {
+      throw fail('RUNTIME_AUTHORITY_INVALID', { target });
+    }
+    slackAuthority = runtimeAuthority.slack;
+    if (slackAuthority.teamId !== stampedMetadata.slackTeamId
+      || slackAuthority.appId !== stampedMetadata.slackAppId
+      || slackAuthority.botUserId !== stampedMetadata.slackBotUserId) {
+      throw fail('SLACK_AUTHORITY_MISMATCH');
+    }
+  } else {
+    if (runtimeAuthority.schemaVersion !== 'chickpea-environment-runtime-authority/v1') {
+      throw fail('RUNTIME_AUTHORITY_INVALID', { target });
+    }
+    slackAuthority = await readDirectSlackAuthority(target, env, options.fetchImpl ?? fetch);
+  }
+  return Object.freeze({
+    target,
+    observedAt: canonicalTimestamp(options.now ? options.now() : Date.now()),
+    workerName,
+    activeVersion,
+    activePercentage: 100,
+    bindingIdentities: Object.freeze({ AUTH_DB: authDatabaseId, TAG_STATE: tagStateId }),
+    slack: Object.freeze(slackAuthority),
+    transport: context.registration.transport,
+    transportAuthority,
+    schemaGeneration,
+    credentialFingerprints: Object.freeze(credentialFingerprints),
+    fleetCredentialFingerprints: Object.freeze(fleetCredentialFingerprints),
+    deploymentMetadata: stampedMetadata,
+  });
+}
+
+async function readDirectSlackAuthority(target, env, fetchImpl) {
   const tokenName = `CHICKPEA_ENV_${target.toUpperCase()}_SLACK_BOT_TOKEN`;
   const token = env[tokenName];
   if (typeof token !== 'string' || token.length < 8 || token.length > 512) {
     throw fail('SLACK_AUTHORITY_UNAVAILABLE');
   }
-  const fetchImpl = options.fetchImpl ?? fetch;
   let response;
   let slack;
   try {
@@ -1608,28 +1650,13 @@ export async function observeProductionEnvironmentAuthority(context, options = {
     || !validObservedScopes(scopes)) {
     throw fail('SLACK_AUTHORITY_UNAVAILABLE');
   }
-  const transportAuthority = validatedRuntimeAuthorities[target].transportAuthority;
-  return Object.freeze({
-    target,
-    observedAt: canonicalTimestamp(options.now ? options.now() : Date.now()),
-    workerName,
-    activeVersion,
-    activePercentage: 100,
-    bindingIdentities: Object.freeze({ AUTH_DB: authDatabaseId, TAG_STATE: tagStateId }),
-    slack: Object.freeze({
+  return {
       teamId: slack.team_id,
       appId: slack.app_id ?? slack.api_app_id,
       botUserId: slack.user_id,
       replySenderId: slack.user_id,
       scopes: Object.freeze(scopes),
-    }),
-    transport: context.registration.transport,
-    transportAuthority,
-    schemaGeneration,
-    credentialFingerprints: Object.freeze(credentialFingerprints),
-    fleetCredentialFingerprints: Object.freeze(fleetCredentialFingerprints),
-    deploymentMetadata: stampedMetadata,
-  });
+  };
 }
 
 function selectAuthorityObserver(options) {
@@ -1661,45 +1688,82 @@ function validateProviderContext(input) {
 }
 
 async function readProductionFleetRuntimeAuthorities(_request, { env, fetchImpl }) {
-  return Object.fromEntries(await Promise.all(activeEnvironmentTargets.map(async (target) => {
+  const endpoints = activeEnvironmentTargets.map((target) => {
     const prefix = `CHICKPEA_ENV_${target.toUpperCase()}_LIVE_AUTHORITY`;
     const url = env[`${prefix}_URL`];
     const token = env[`${prefix}_READ_TOKEN`];
-    if (typeof url !== 'string' || url.length > 2_048
-      || typeof token !== 'string' || token.length < 16 || token.length > 4_096) {
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(token)) {
+      throw fail('LIVE_AUTHORITY_READ_TOKEN_INVALID', { target });
+    }
+    if (typeof url !== 'string' || url.length > 2_048) {
       throw fail('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE', { target });
     }
     try {
       const endpoint = new URL(url);
-      if (endpoint.protocol !== 'https:') throw new Error('unsafe');
+      if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password || endpoint.hash) throw new Error('unsafe');
+      return { target, endpoint, token };
+    } catch {
+      throw fail('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE', { target });
+    }
+  });
+  return Object.fromEntries(await Promise.all(endpoints.map(async ({ target, endpoint, token }) => {
+    try {
       const response = await fetchImpl(endpoint, {
         method: 'GET', headers: { Authorization: `Bearer ${token}` }, redirect: 'error',
+        signal: AbortSignal.timeout(30_000),
       });
       if (!response.ok) throw new Error('unavailable');
-      return [target, await response.json()];
+      return [target, await readBoundedAuthorityJson(response)];
     } catch {
       throw fail('LIVE_AUTHORITY_BRIDGE_UNAVAILABLE', { target });
     }
   })));
 }
 
-function validateRuntimeAuthority(input, target) {
+async function readBoundedAuthorityJson(response) {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('missing authority body');
+  const chunks = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 65_536) throw new Error('authority body too large');
+      chunks.push(value);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } finally {
+    await reader.cancel();
+  }
+}
+
+function validateRuntimeAuthority(input, target, now) {
+  const gateway = input?.schemaVersion === 'chickpea-environment-runtime-authority/v2';
+  const version = gateway ? 'v2' : 'v1';
   if (!isRecord(input)
     || !exactKeys(input, [
       'schemaVersion', 'target', 'observedAt', 'secretFingerprints', 'transportAuthority',
+      ...(gateway ? ['slack'] : []),
     ])
-    || input.schemaVersion !== 'chickpea-environment-runtime-authority/v1'
+    || input.schemaVersion !== `chickpea-environment-runtime-authority/${version}`
     || input.target !== target
     || canonicalTimestamp(input.observedAt) !== input.observedAt
+    || (gateway && Math.abs(Date.parse(input.observedAt) - now) > 60_000)
     || !isRecord(input.secretFingerprints)
     || !exactKeys(input.secretFingerprints, [
       'schemaVersion', 'sourceBindings', 'fingerprints',
     ])
     || input.secretFingerprints.schemaVersion
-      !== 'chickpea-environment-runtime-secret-fingerprints/v1'
+      !== `chickpea-environment-runtime-secret-fingerprints/${version}`
     || stableEnvironmentJson(input.secretFingerprints.sourceBindings)
-      !== stableEnvironmentJson(RUNTIME_SECRET_SOURCE_BINDINGS)
-    || !validFingerprints(input.secretFingerprints.fingerprints)) {
+      !== stableEnvironmentJson(gateway ? GATEWAY_RUNTIME_SECRET_SOURCE_BINDINGS : RUNTIME_SECRET_SOURCE_BINDINGS)
+    || !validFingerprints(input.secretFingerprints.fingerprints)
+    || (gateway && (!isRecord(input.slack)
+      || !exactKeys(input.slack, ['teamId', 'appId', 'botUserId', 'replySenderId', 'scopes'])
+      || !bounded(input.slack.teamId) || !bounded(input.slack.appId) || !bounded(input.slack.botUserId)
+      || input.slack.replySenderId !== input.slack.botUserId || !validObservedScopes(input.slack.scopes)))) {
     throw fail('RUNTIME_AUTHORITY_INVALID', { target });
   }
   return input;

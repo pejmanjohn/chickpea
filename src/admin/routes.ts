@@ -34,6 +34,7 @@ import { requestOrigin } from '../http/request-origin.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
+import { ENVIRONMENT_AUTHORITY_PATH, environmentAuthorityResponse } from './environment-authority.ts';
 import {
   ConnectionScheduleConflictError,
   ConnectionAccountService,
@@ -565,7 +566,10 @@ export function projectAdminEnvironmentStatus(input: unknown): Record<string, un
     || !['none', '45_days', '30_days', '14_days', 'unavailable'].includes(input.sandbox.warning)
     || !Array.isArray(warningDays)
     || warningDays.join(',') !== '45,30,14'
-    || input.sandbox.unusedWorkspaceSlots !== 2
+    || !(input.sandbox.unusedWorkspaceSlots === null
+      || (Number.isSafeInteger(input.sandbox.unusedWorkspaceSlots)
+        && Number(input.sandbox.unusedWorkspaceSlots) >= 0
+        && Number(input.sandbox.unusedWorkspaceSlots) <= 2))
     || !(input.sandbox.integrationHeadroom === null
       || (Number.isSafeInteger(input.sandbox.integrationHeadroom)
         && Number(input.sandbox.integrationHeadroom) >= 0))) {
@@ -582,7 +586,7 @@ export function projectAdminEnvironmentStatus(input: unknown): Record<string, un
       daysUntilArchive: input.sandbox.daysUntilArchive,
       warning: input.sandbox.warning,
       warningDays: [45, 30, 14],
-      unusedWorkspaceSlots: 2,
+      unusedWorkspaceSlots: input.sandbox.unusedWorkspaceSlots,
       integrationHeadroom: input.sandbox.integrationHeadroom,
     },
   };
@@ -1619,7 +1623,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.use('*', async (c, next) => {
     // Deployment activation has its own short-lived bearer capability and
     // must remain callable while an older release left Admin in recovery.
-    if (c.req.path === '/internal/deployment/ready') return next();
+    if (c.req.path === '/internal/deployment/ready' || c.req.path === ENVIRONMENT_AUTHORITY_PATH) return next();
     const control = await identity(c).getAuthControl();
     if (control?.healthGate === 'recovery_only' &&
         c.req.path !== '/admin/recovery' &&
@@ -1665,6 +1669,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return digest && Number.isSafeInteger(issuedAt) ? { digest, issuedAt } : undefined;
   };
 
+  // Operator-only lane attestation has its own token, separate from Admin auth.
+  app.get(ENVIRONMENT_AUTHORITY_PATH, (c) => environmentAuthorityResponse({
+    authorization: c.req.header('authorization'),
+    env: (c.env ?? {}) as PlatformEnv,
+    gateway: () => createGatewayDeploymentClient(c.env as PlatformEnv | undefined),
+    session: () => readGatewaySessionStatus(c.env),
+  }));
   // A deploy is not ready merely because one edge serves the new module. For
   // an installed shared Slack gateway, its long-lived Durable Object must also
   // report the same Worker version before the deploy wrapper announces success.
@@ -3228,7 +3239,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           clientSecret: boundedSetupField(rawForm.clientSecret, 4_096),
           signingSecret: boundedSetupField(rawForm.signingSecret, 4_096),
           expectedManifest: manifest,
-          observedManifest: JSON.parse(boundedSetupField(rawForm.observedManifest, 7_500)),
+          observedManifest: parseSetupManifest(rawForm.observedManifest),
         });
       } else if (action !== 'open') {
         throw new AuthDeniedError();
@@ -3380,7 +3391,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           clientSecret: boundedSetupField(rawForm.clientSecret, 4_096),
           signingSecret: boundedSetupField(rawForm.signingSecret, 4_096),
           expectedManifest: manifest,
-          observedManifest: JSON.parse(boundedSetupField(rawForm.observedManifest, 7_500)),
+          observedManifest: parseSetupManifest(rawForm.observedManifest),
         });
       } else if (action === 'restart') {
         setup = await service.restart({ setupId: setup.id, expectedRevision: setup.revision });
@@ -9746,6 +9757,16 @@ function boundedSetupField(value: string | undefined, maximum: number): string {
     throw new SlackAppCreationError('setup_invalid', 'Slack setup input is invalid.');
   }
   return normalized;
+}
+
+function parseSetupManifest(value: string | undefined): unknown {
+  const normalized = value?.trim() ?? '';
+  if (!normalized || normalized.length > 7_500) {
+    throw new SlackAppCreationError('setup_invalid', 'Slack setup input is invalid.');
+  }
+  // Exported manifests and our own form use multiline JSON. Let the JSON parser
+  // validate its whitespace; credentials still use the strict single-line guard.
+  return JSON.parse(normalized);
 }
 
 function slackInstallResultRedirect(result: SlackInstallOAuthResult): string {

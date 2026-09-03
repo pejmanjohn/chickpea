@@ -369,6 +369,7 @@ test('fleet status is read-only and projects all five health states with one rec
   context.after(() => rmSync(join(emptyRoot, '..'), { recursive: true, force: true }));
   const emptyStatus = readEnvironmentStatus({ root: emptyRoot, hostFingerprint: 'host-fixture' });
   assert.equal(emptyStatus.targets.length, 3);
+  assert.equal(emptyStatus.sandbox.unusedWorkspaceSlots, null);
   assert.equal(existsSync(emptyRoot), false);
 
   const f = fixture((targets) => {
@@ -393,6 +394,57 @@ test('fleet status is read-only and projects all five health states with one rec
   assert.doesNotMatch(JSON.stringify(status), /T_AMBER|A_AMBER|U_AMBER_BOT|provider-read|d1-amber/);
   assert.deepEqual(status.sandbox.warningDays, [45, 30, 14]);
   assert.equal(status.sandbox.unusedWorkspaceSlots, 2);
+});
+
+test('unmanaged workspaces consume capacity without becoming claimable lanes', (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  for (const used of [3, 4, 5]) {
+    const root = join(f.parent, `capacity-${used}`);
+    createEnvironmentRegistry({
+      root,
+      hostFingerprint: 'host-fixture',
+      targets: f.targets,
+      sandbox: {
+        archiveDate: '2027-01-15T00:00:00.000Z',
+        workspaceSlotsTotal: 5,
+        workspaceSlotsUsed: used,
+        integrationHeadroom: 37,
+      },
+    });
+    const status = readEnvironmentStatus(registryOptions(root));
+    assert.deepEqual(status.targets.map((target: { target: string }) => target.target), TARGETS);
+    assert.equal(status.sandbox.unusedWorkspaceSlots, 5 - used);
+    const claim = claimEnvironment('amber', {
+      ...registryOptions(root), worktreePath: f.first.path,
+    });
+    assert.equal(claim.target, 'amber');
+    releaseEnvironment('amber', { ...registryOptions(root), worktreePath: f.first.path });
+    assert.throws(() => claimEnvironment('probe', {
+      ...registryOptions(root), worktreePath: f.first.path,
+    }), rejectsCode('INACTIVE_TARGET'));
+  }
+});
+
+test('workspace capacity rejects malformed, undercounted, and over-limit inventories before writes', (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const invalidUsed = [null, undefined, '4', 2, -1, 3.5, 6, Number.NaN, Infinity];
+  invalidUsed.forEach((used, index) => {
+    const root = join(f.parent, `invalid-capacity-${index}`);
+    assert.throws(() => createEnvironmentRegistry({
+      root,
+      hostFingerprint: 'host-fixture',
+      targets: f.targets,
+      sandbox: {
+        archiveDate: '2027-01-15T00:00:00.000Z',
+        workspaceSlotsTotal: 5,
+        workspaceSlotsUsed: used,
+        integrationHeadroom: 37,
+      },
+    }), rejectsCode('INVALID_SANDBOX'));
+    assert.equal(existsSync(root), false);
+  });
 });
 
 test('target and private outputs validate for all colors and refuse deep and inactive roles', (context) => {
@@ -624,6 +676,38 @@ test('registry rejects duplicate immutable target identities across every indepe
         integrationHeadroom: 37,
       },
     }), rejectsCode('DUPLICATE_TARGET_IDENTITY'), name);
+  }
+});
+
+test('gateway lanes may share the app while retaining separate workspace and deployment identities', (context) => {
+  const f = fixture((targets) => {
+    for (const target of targets) {
+      target.transport = 'gateway';
+      target.slackAppId = 'A_SHARED_CHICKPEA';
+      target.slackAppLabel = 'Chickpea';
+    }
+  });
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const registry = readEnvironmentRegistry(registryOptions(f.root));
+  assert.equal(new Set(Object.values(registry.targets).map((target: any) => target.slackAppId)).size, 1);
+  assert.equal(new Set(Object.values(registry.targets).map((target: any) => target.workspaceId)).size, 3);
+  const claimed = claimEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
+  assert.equal(claimed.target, 'amber');
+});
+
+test('an Events lane cannot share an app ID with a gateway lane in either order', (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  for (const eventIndex of [0, 1]) {
+    const targets = structuredClone(f.targets) as Array<Record<string, any>>;
+    targets[0]!.transport = 'gateway';
+    targets[1]!.transport = 'gateway';
+    targets[eventIndex]!.transport = 'events';
+    targets[1]!.slackAppId = targets[0]!.slackAppId;
+    assert.throws(() => createEnvironmentRegistry({
+      root: join(f.parent, `mixed-${eventIndex}`), hostFingerprint: 'host-fixture', targets,
+      sandbox: { archiveDate: '2027-01-15T00:00:00.000Z', workspaceSlotsTotal: 5, workspaceSlotsUsed: 3, integrationHeadroom: 37 },
+    }), rejectsCode('DUPLICATE_TARGET_IDENTITY'));
   }
 });
 

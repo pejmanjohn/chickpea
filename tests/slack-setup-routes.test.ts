@@ -80,7 +80,7 @@ test('capability-gated Admin setup creates an app without reflecting or retainin
   }
 });
 
-test('manual setup is a separate capability-gated journey that adopts into shared installation', async () => {
+test('manual setup adopts the multiline manifest supplied by its own form', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const authority = await mintSetupCapability({ now: () => NOW });
   try {
@@ -123,7 +123,7 @@ test('manual setup is a separate capability-gated journey that adopts into share
       action: 'adopt', capability: authority.capability,
       appId: 'A12345678', clientId: '123.456',
       clientSecret: 'route-client-secret-value', signingSecret: 'route-signing-secret-value',
-      observedManifest: JSON.stringify(expectedManifest),
+      observedManifest: JSON.stringify(expectedManifest, null, 2),
     });
     assert.equal(adopted.status, 303);
     assert.equal(adopted.headers.get('location'), '/admin/setup');
@@ -150,6 +150,50 @@ test('manual setup is absent without this deployment capability authority', asyn
     identity.close();
   }
 });
+
+for (const endpoint of ['setup', 'setup/manual']) {
+  test(`${endpoint} manifest adoption preserves JSON and credential validation boundaries`, async () => {
+    const manifest = buildExpectedManifest();
+    const cases = [
+      { label: 'JSON whitespace', manifest: JSON.stringify(manifest, null, '\t').replaceAll('\n', '\r\n'), valid: true },
+      { label: 'malformed JSON', manifest: '{', valid: false },
+      { label: 'non-object JSON', manifest: 'null', valid: false },
+      { label: 'raw control character', manifest: JSON.stringify(manifest).replace('Chickpea', 'Chick\u0000pea'), valid: false },
+      { label: 'oversized manifest', manifest: JSON.stringify({ ...manifest, padding: 'x'.repeat(7_500) }), valid: false },
+      { label: 'multiline credential', manifest: JSON.stringify(manifest), clientSecret: 'route-client\nsecret', valid: false },
+    ];
+    for (const entry of cases) {
+      const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+      const authority = await mintSetupCapability({ now: () => NOW });
+      try {
+        const app = createAdminRoutes({
+          identity,
+          slackCredentials: { state: identity, keyring: generateCredentialKeyring('key_v1') },
+          slackAppCreationNow: () => NOW,
+        });
+        const response = await app.request(`${ORIGIN}/admin/${endpoint}`, {
+          method: 'POST', headers: formHeaders(), body: new URLSearchParams({
+            action: 'adopt', capability: authority.capability,
+            appId: 'A12345678', clientId: '123.456',
+            clientSecret: entry.clientSecret ?? 'route-client-secret-value',
+            signingSecret: 'route-signing-secret-value', observedManifest: entry.manifest,
+          }),
+        }, setupEnv(authority));
+        if (entry.valid) {
+          assert.equal(response.status, endpoint === 'setup/manual' ? 303 : 200, entry.label);
+          assert.equal((await identity.getSlackSetupTransaction('setup_default'))?.state, 'app_created');
+        } else {
+          assert.ok([400, 413].includes(response.status), `${entry.label}: ${response.status}`);
+          assert.notEqual((await identity.getSlackSetupTransaction('setup_default'))?.state, 'app_created');
+        }
+        assert.doesNotMatch(await response.text(), /route-client-secret-value|route-signing-secret-value/);
+        assert.doesNotMatch(JSON.stringify(await identity.exportSummary()), /route-client-secret-value|route-signing-secret-value/);
+      } finally {
+        identity.close();
+      }
+    }
+  });
+}
 
 test('manual setup screenshots are public before the first Owner exists', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });

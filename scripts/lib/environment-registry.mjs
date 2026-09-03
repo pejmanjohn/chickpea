@@ -1004,11 +1004,14 @@ function assertUniqueTargetIdentities(targets) {
     ['evidenceRoot', (target) => target.evidenceRoot],
   ];
   for (const [field, select] of identities) {
-    const seen = new Set();
+    const seen = new Map();
     for (const target of activeEnvironmentTargets) {
       const value = select(targets[target]);
-      if (seen.has(value)) throw fail('DUPLICATE_TARGET_IDENTITY', { field });
-      seen.add(value);
+      const previous = seen.get(value);
+      const sharedGatewayApp = field === 'slackAppId'
+        && previous?.transport === 'gateway' && targets[target].transport === 'gateway';
+      if (previous && !sharedGatewayApp) throw fail('DUPLICATE_TARGET_IDENTITY', { field });
+      seen.set(value, targets[target]);
     }
   }
 }
@@ -1089,7 +1092,9 @@ function validateSandbox(input) {
     ])
     || !timestamp(input.archiveDate)
     || input.workspaceSlotsTotal !== 5
-    || input.workspaceSlotsUsed !== 3
+    || !Number.isSafeInteger(input.workspaceSlotsUsed)
+    || input.workspaceSlotsUsed < activeEnvironmentTargets.length
+    || input.workspaceSlotsUsed > input.workspaceSlotsTotal
     || !Number.isSafeInteger(input.integrationHeadroom)
     || input.integrationHeadroom < 0 || input.integrationHeadroom > 10_000) {
     throw fail('INVALID_SANDBOX');
@@ -1803,7 +1808,7 @@ function unregisteredStatus(target, now) {
       daysUntilArchive: null,
       warning: 'unavailable',
       warningDays: Object.freeze([45, 30, 14]),
-      unusedWorkspaceSlots: 2,
+      unusedWorkspaceSlots: null,
       integrationHeadroom: null,
     }),
   });

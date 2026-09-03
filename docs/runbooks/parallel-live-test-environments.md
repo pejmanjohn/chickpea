@@ -1,12 +1,85 @@
 # Parallel live test environments
 
-This runbook covers the Slack and Cloudflare capability pilot that gates the
-three Phase 1 targets. It does not authorize scored Chickpea behavior or any
-continuation environment.
+This runbook covers the Slack and Cloudflare capability pilot and the
+three Phase 1 targets. Product acceptance runs belong to the Live Contract
+Verifier. This runbook does not authorize any continuation environment.
 
 Phase 1 has exactly three target names: `amber`, `cobalt`, and `fern`. Do not
 create resources for `dedicated-qa`, `install`, `demo`, `spare`, qualification,
 or deep testing.
+
+## Everyday lanes use the Chickpea-owned app
+
+The three everyday lanes use Chickpea's recommended **Add to Slack** flow,
+with one shared app and three workspace installation bindings. Each lane keeps
+its own Worker, D1, Durable Object state, deployment signing identity,
+auth/encryption roots, Agents, connector bindings, fixtures, and evidence root.
+The app ID may repeat only for gateway-transport lanes. It does not identify a
+lane on its own.
+
+Keep the color in workspace names, Admin badges, CLI status, and verifier
+reports. Do not rename the shared app for a lane. Claims and attestation must
+check the workspace, installation binding, deployment identity, and live Worker
+revision together. Never infer routing from a Slack subdomain or display name.
+Within an Enterprise organization, visibly prove the intended lane receives
+each DM and channel request before declaring the workspaces independent.
+
+The shared gateway and app-global configuration are common dependencies.
+Ordinary lane work may install and use the app, but must not deploy, change
+permissions on, revoke, or delete those shared resources. Gateway deployments
+must not receive the shared app's bot token or signing secret. Preflight needs
+live installation authority, including granted permissions, without copying
+those secrets into a lane. A manifest describes requested permissions; it is
+not proof of an existing installation's granted permissions.
+
+### First bootstrap and runtime authority
+
+All three permanent lanes use gateway transport. The built-in
+`/internal/environment/authority` endpoint supports that topology only; the
+legacy Events authority contract requires a separate private adapter and is
+not the bootstrap recipe for this fleet. Do not mix a manual pilot into the
+permanent registry.
+
+Before the registry exists, bootstrap each **fresh, unregistered** target with
+the normal deployment wrapper after proving its exact Worker and D1 names do
+not exist. This one-time bootstrap must not claim guarded-deployment readiness:
+the guard requires all three authority endpoints and complete registrations.
+Keep creation receipts, provision independent secrets, install through Add to
+Slack, and verify real UI behavior before recording baselines. Once registered,
+use the claimed target and guarded wrapper for every deployment.
+
+Provision a separate 32-byte random base64url read token (43 characters) in the
+Worker's `CHICKPEA_ENV_AUTHORITY_READ_TOKEN` and the host's corresponding
+`CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_READ_TOKEN`; the host URL is
+`CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_URL`. Keep these values owner-only outside
+the repository. They are not Slack credentials. Invalid token shapes fail
+locally before any authority request.
+
+The gateway projection reports its installed binding and recorded OAuth
+grants, not a fresh Slack scope-header observation. Runtime attestation also
+requires a successful fresh `auth.test` for the same workspace/bot and a
+current-version gateway session. It does not replace real inbound Slack proof.
+Stored health can be stale after a Slack error; a failed fresh authentication
+check always blocks readiness. Binding mismatch stops the lane; never
+automatically reinstall and displace another deployment.
+
+The customer-owned app lifecycle below is a disposable compatibility pilot,
+not the permanent lane recipe. Finish one representative manual installation
+through real Slack and signed-in Admin, fix and verify observed defects, then
+remove only its receipted pilot resources. Existing additional manual pilot
+apps may be cleaned up without completing every redundant installation.
+Preserve the three workspaces and any accepted unmanaged workspace. Record
+the manual-test evidence separately from final fleet readiness.
+
+Manual app scopes do not change Slack workspace policy. The canonical manifest
+already requests user-group read/write scopes; follow the separate
+[Agent handle prerequisite](../../SETUP_AGENT.md#agent-handle-prerequisite-for-a-customer-owned-app)
+and prove a real Agent mention/reply after any permission recovery. Confirm the
+workspace before changing policy; a generic Slack admin link may open another
+signed-in workspace.
+
+Capacity in Admin is a recorded registry snapshot, not a live Slack inventory.
+Recheck actual workspace usage in Slack before provisioning more resources.
 
 ## Safety and evidence contract
 
@@ -185,8 +258,10 @@ those are new sensitive-data transmission actions requiring fresh confirmation.
 ## Gate 3: workspace and actor pilot
 
 An empty sandbox begins with one workspace. Use it as the first pilot workspace;
-create exactly two more pilot workspaces so the sandbox has three total. Do not
-create five and do not label the unused capacity as an environment.
+create exactly two more lane workspaces. Only these three are managed targets.
+Do not create workspaces merely to fill capacity. Existing unused development
+workspaces may remain outside the registry; count their slots without treating
+them as lanes or giving them deployment resources.
 
 Use the final low-cognitive-lift identities throughout the pilot and permanent
 fleet:
@@ -222,8 +297,10 @@ workspaces. Invite-only access keeps unrelated organization members from
 joining a lane without an explicit Workspace Owner/Admin invitation.
 
 Pass only when the same actor is independently addressable in all three
-workspaces and the live workspace count shows two unused slots. Record the live
-result in private capability evidence, not this public runbook.
+lane workspaces and the live workspace count fits the sandbox capacity. Record
+actual unused slots, including any unmanaged development workspace usage.
+Two free slots are not a readiness requirement. Keep live results in private
+capability evidence, not this public runbook.
 
 ## Gate 4: workspace and org policy isolation
 
@@ -284,22 +361,30 @@ This is a provider capability test, not first-install scoring.
    Check the old access token separately; rotation must not be reported as
    immediate revocation if the old token still works. Keep both values out of
    output and evidence. Record the observed validity window and cleanup needs.
-7. Create one separate pilot app in each of the other workspaces. Apply the
-   API/UI authority distinction above, and confirm UI credential generation
-   when required. Verify three different app/install identities.
+7. Do not create one permanent custom app per lane. If separate manual pilot
+   apps already exist, inventory their exact IDs and installation states.
+   Complete one representative manual installation; leave redundant uninstalled
+   pilots uninstalled until cleanup.
 8. Make one reversible workspace-level app/approval change and prove the other
-   two apps/workspaces do not change.
-9. Delete only the throwaway lifecycle app with an exact-ID creation receipt.
+   two workspaces do not change. Preserve a previously completed proof rather
+   than repeating access changes merely because an installation path changed.
+9. Delete only throwaway pilot resources with exact-ID creation receipts.
    An authorized teardown API needs no additional Computer Use confirmation;
    a UI deletion requires it. Reconcile the outcome before retrying. The
-   permanent target apps do not exist during U12.
+   shared Chickpea app and gateway are never pilot cleanup targets.
 
 Any Enterprise restriction must be recorded by its visible Slack error/state.
 Do not weaken the manifest or scopes just to obtain a pass.
 
-## Gate 6: workspace deletion and quota recovery
+## Optional maintenance: workspace deletion and quota recovery
 
-To prove lifecycle quota recovery without touching the three target workspaces:
+Workspace deletion is not a Phase 1 readiness gate. If an unused development
+workspace remains and the three lanes fit, retain it outside the lane registry,
+report actual capacity, and continue. Do not create another lifecycle probe or
+contact provider support just to recover a slot that is not needed. Revisit
+cleanup when capacity is needed or the user requests it.
+
+For a separately requested lifecycle-recovery check:
 
 1. Record the current workspace count.
 2. Create one explicitly throwaway workspace within the authorized pilot.
@@ -309,8 +394,10 @@ To prove lifecycle quota recovery without touching the three target workspaces:
    A UI deletion requires a separate action-time confirmation.
 5. Observe the count return to the recorded baseline.
 
-If deletion does not restore quota, or provider state is ambiguous, stop. Never
-delete another workspace to investigate.
+If deletion does not restore quota, or provider state is ambiguous, stop that
+cleanup operation and record the residual. Never delete another workspace or
+the whole sandbox to investigate. An unresolved optional cleanup operation does
+not block independent lane setup when sufficient capacity remains.
 
 ## Gate 7: Cloudflare headroom
 
@@ -336,13 +423,14 @@ Approve one sandbox for Phase 1 only when all of these are observed:
 
 - active Developer Program membership, active sandbox, archive date, and
   renewal path;
-- exactly three pilot workspaces with two unused slots;
-- three distinct apps/installations with enough integration headroom;
+- exactly three managed lane workspaces, with actual workspace usage within
+  the sandbox limit; unused development workspaces remain unmanaged;
+- three workspace installations of the shared Chickpea app with enough
+  integration headroom, exact deployment bindings, and live routing proof;
 - Agent behavior, App Home, OAuth/OIDC, scopes, and actor roles;
 - workspace-level independence and acceptable org-wide inheritance;
-- configuration-token generation/rotation and manifest create/export/delete;
+- the representative manual-install and disposable app-lifecycle evidence;
 - one-actor Computer Use accessibility across all three workspaces;
-- throwaway workspace deletion restores quota;
 - Cloudflare Worker, D1, Durable Object, and Workers AI capacity recorded
   separately.
 

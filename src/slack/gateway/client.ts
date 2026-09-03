@@ -43,6 +43,7 @@ import {
   gatewaySessionRotationAt,
   type GatewaySessionCheckpoint,
 } from './session.ts';
+import { parseGatewayInstallationAuthority, type GatewayInstallationAuthority } from './installation-authority.ts';
 
 export const GATEWAY_CLAIM_SETTING = 'slack.gateway.claim.v1';
 export const GATEWAY_BINDING_SETTING = 'slack.gateway.binding.v1';
@@ -245,6 +246,24 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       await this.dependencies.settings.deleteSetting(GATEWAY_CLAIM_SETTING);
     }
     return response;
+  }
+
+  async installationAuthority(): Promise<GatewayInstallationAuthority> {
+    const binding = await this.loadBinding();
+    if (!binding) throw new SlackTransportError('installation.status', 'gateway_not_connected');
+    const identity = await this.identity();
+    const request = await signGatewayRequest(identity, {
+      protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+      kind: 'installation.status', deploymentId: identity.deploymentId,
+      requestId: requestId(), issuedAt: this.now(), nonce: requestId('nonce'),
+      bindingId: binding.bindingId, workspaceId: binding.workspaceId,
+    });
+    const response = await this.requestJson('/v1/installations/status', {
+      method: 'POST', body: JSON.stringify(request),
+    });
+    return parseGatewayInstallationAuthority(response, {
+      binding, deploymentId: identity.deploymentId, requestId: request.requestId, now: this.now(),
+    });
   }
 
   async call(
