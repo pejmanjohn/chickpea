@@ -4,6 +4,7 @@ import type {
   RuntimePlanManagedConnectionV2,
   RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
+import { isRecord } from '../security/content-validation.ts';
 import type { ConfigStore } from '../config/store.ts';
 import {
   getConfigStore,
@@ -211,7 +212,7 @@ function createCapabilityTool(
       async run({ data, harness, signal }) {
         if (definition.effect !== 'read') {
           assertCurrentRequestSideEffectAllowed(
-            definition.sideEffectLabel ?? definition.description,
+            managedSideEffectAction(definition.id),
           );
         }
         if (!isRecord(data)) throw new Error('Managed connection tool input is invalid');
@@ -252,7 +253,7 @@ function createCapabilityTool(
     async run({ data, signal }) {
       if (definition.effect !== 'read') {
         assertCurrentRequestSideEffectAllowed(
-          definition.sideEffectLabel ?? definition.description,
+          managedSideEffectAction(definition.id),
         );
       }
       if (!isRecord(data)) {
@@ -261,6 +262,12 @@ function createCapabilityTool(
       return { output: await execute(connection, capability, data, context, signal) };
     },
   });
+}
+
+function managedSideEffectAction(capabilityId: string): string {
+  // The prompt envelope selects exact repo-owned capability IDs from the
+  // current request. Free-form model output never chooses this authority.
+  return `managed_capability__${capabilityId}`;
 }
 
 function validateArtifactSignature(bytes: Uint8Array, mimeType: string): void {
@@ -274,10 +281,6 @@ function validateArtifactSignature(bytes: Uint8Array, mimeType: string): void {
       mimeType === 'video/webm' && !isEbml) {
     throw new Error('Managed connection artifact content does not match its MIME type');
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function execute(

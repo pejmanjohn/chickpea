@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import { resolveConnectorCredential } from '../src/config/connector-secrets.ts';
@@ -11,6 +12,7 @@ import {
   saveProviderApiKey,
 } from '../src/config/provider-keys.ts';
 import { storedCredentialMetadata } from '../src/config/model-credential-refs.ts';
+import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { formatManagementSetupReceipt } from '../src/management/receipts.ts';
@@ -424,6 +426,20 @@ test('public setup routes reject oversized streamed bodies before buffering', as
       duplex: 'half',
     }));
     assert.equal(response.status, 413);
+
+    const falseLength = await app.request(new Request(
+      'http://localhost/setup/setup_missing/exchange',
+      {
+        method: 'POST',
+        headers: {
+          origin: 'http://localhost',
+          'content-type': 'application/json',
+          'content-length': '1',
+        },
+        body: 'x'.repeat(20 * 1024),
+      },
+    ));
+    assert.equal(falseLength.status, 413);
   } finally {
     management.close();
     config.close();
@@ -648,6 +664,334 @@ test('a provider key is validated in the browser lane and never enters MCP state
     management.close();
     settings.close();
     usage.close();
+  }
+});
+
+test('provider setup rechecks current Admin authority before claim and completion', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'provider-authority' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const usage = new SqliteUsageStore(':memory:');
+  try {
+    const service = new WorkspaceManagementService({
+      identity,
+      config,
+      management,
+      setupBaseUrl: 'http://localhost',
+      providerCredentialSource: async () => 'missing',
+      now: () => START,
+      randomId: () => 'provider_authority',
+      randomCapability: () => 'a'.repeat(43),
+    });
+    const result = await service.applyWorkspaceChanges({
+      context: {
+        userId: owner.user.id,
+        membershipId: owner.membership.id,
+        organizationId: owner.membership.organizationId,
+        origin: { kind: 'mcp', clientId: 'codex' },
+      },
+      idempotencyKey: 'provider-authority',
+      operations: [{
+        itemId: 'openai',
+        kind: 'request_setup',
+        target: { kind: 'provider_credential', providerId: 'openai' },
+      }],
+    });
+    requireMutationResult(result);
+    const setupId = result.outcomes[0]!.setupOperationId!;
+    let principal: AuthPrincipal = { ...browserPrincipal(owner), role: 'member' };
+    let validationCalls = 0;
+    const app = createManagementSetupRoutes({
+      management,
+      config,
+      settings,
+      usage,
+      identity,
+      now: () => START,
+      randomCapability: () => 'b'.repeat(43),
+      authenticatePrincipal: async () => principal,
+      validateProviderKey: async () => {
+        validationCalls += 1;
+        return [];
+      },
+    });
+
+    const deniedExchange = await app.request(`http://localhost/setup/${setupId}/exchange`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ capability: 'a'.repeat(43) }),
+    });
+    assert.equal(deniedExchange.status, 403);
+    assert.equal((await management.getSetup(setupId))?.status, 'pending');
+    assert.ok((await management.getSetup(setupId))?.tokenDigest);
+
+    principal = browserPrincipal(owner);
+    const exchange = await app.request(`http://localhost/setup/${setupId}/exchange`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ capability: 'a'.repeat(43) }),
+    });
+    assert.equal(exchange.status, 200, await exchange.clone().text());
+    const cookie = exchange.headers.get('set-cookie')!;
+
+    principal = { ...principal, role: 'member' };
+    const deniedComplete = await app.request(`http://localhost/setup/${setupId}/complete`, {
+      method: 'POST',
+      headers: {
+        origin: 'http://localhost',
+        cookie,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({ apiKey: 'sk-must-not-be-validated' }).toString(),
+    });
+    assert.equal(deniedComplete.status, 403);
+    assert.equal(validationCalls, 0);
+    assert.equal((await management.getSetup(setupId))?.status, 'claimed');
+    assert.equal(await settings.getSetting(PROVIDER_KEY_SETTING_KEYS.openai), undefined);
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+    usage.close();
+  }
+});
+
+test('legacy Agent OAuth setup rechecks current edit authority before start and callback', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'legacy-oauth-authority' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.createAgent({
+      id: 'agent_private_oauth',
+      name: 'Private OAuth Agent',
+      creatorMembershipId: 'membership_original_creator',
+      editPolicy: 'creator_and_admins',
+      instructions: 'Use the authorized connection.',
+      enabled: true,
+      skills: [],
+      mcpServers: [{
+        id: 'linear',
+        displayName: 'Linear',
+        url: 'https://mcp.linear.app/mcp',
+        transport: 'streamable-http',
+        authMode: 'oauth',
+        headerNames: [],
+        enabled: true,
+        lifecycleStatus: 'pending',
+        statusText: 'Not connected',
+        discoveredTools: [],
+        allowedTools: [],
+        oauthScope: 'read',
+      }],
+      apiConnections: [],
+      repositories: [],
+    });
+    const service = new WorkspaceManagementService({
+      identity,
+      config,
+      management,
+      setupBaseUrl: 'http://localhost',
+      now: () => START,
+      randomId: () => 'legacy_oauth_authority',
+      randomCapability: () => 'o'.repeat(43),
+    });
+    const result = await service.applyWorkspaceChanges({
+      context: {
+        userId: owner.user.id,
+        membershipId: owner.membership.id,
+        organizationId: owner.membership.organizationId,
+        origin: { kind: 'mcp', clientId: 'codex' },
+      },
+      idempotencyKey: 'legacy-oauth-authority',
+      operations: [{
+        itemId: 'linear',
+        kind: 'request_setup',
+        target: {
+          kind: 'mcp_connection',
+          agentId: 'agent_private_oauth',
+          connectionId: 'linear',
+        },
+      }],
+    });
+    requireMutationResult(result);
+    const setupId = result.outcomes[0]!.setupOperationId!;
+    let principal: AuthPrincipal = browserPrincipal(owner);
+    let completeCalls = 0;
+    const app = createManagementSetupRoutes({
+      management,
+      config,
+      settings,
+      identity,
+      now: () => START,
+      randomCapability: () => 's'.repeat(43),
+      authenticatePrincipal: async () => principal,
+      completeMcpOAuth: async () => {
+        completeCalls += 1;
+        return {
+          ref: { agentId: 'agent_private_oauth', connectionId: 'linear' },
+          returnAgentId: 'agent_private_oauth',
+        };
+      },
+    });
+    const exchange = await app.request(`http://localhost/setup/${setupId}/exchange`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ capability: 'o'.repeat(43) }),
+    });
+    assert.equal(exchange.status, 200, await exchange.clone().text());
+    const cookie = exchange.headers.get('set-cookie')!;
+
+    principal = { ...principal, role: 'member' };
+    const deniedStart = await app.request(`http://localhost/setup/${setupId}/authorize`, {
+      method: 'POST',
+      headers: {
+        origin: 'http://localhost',
+        cookie,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: '',
+    });
+    assert.equal(deniedStart.status, 403);
+    assert.equal((await management.getSetup(setupId))?.status, 'claimed');
+
+    await management.authorizeSetup({
+      setupOperationId: setupId,
+      browserSessionDigest: createHash('sha256')
+        .update('s'.repeat(43))
+        .digest('base64url'),
+      at: START,
+    });
+    assert.equal((await management.getSetup(setupId))?.status, 'authorizing');
+
+    principal = { ...principal, role: 'member' };
+    const deniedCallback = await app.request(
+      `http://localhost/setup/${setupId}/oauth/mcp/callback?state=opaque-state&code=accepted`,
+      { headers: { cookie } },
+    );
+    assert.equal(deniedCallback.status, 403);
+    assert.equal(completeCalls, 0);
+    assert.equal((await management.getSetup(setupId))?.status, 'authorizing');
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
+test('repository setup reserves workspace-global GitHub App creation for current Admins', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'repository-authority' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.createAgent({
+      id: 'agent_shared_repository',
+      name: 'Shared Repository Agent',
+      creatorMembershipId: owner.membership.id,
+      editPolicy: 'all_workspace_members',
+      instructions: 'Work in the configured repository.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [{
+        id: 'repo_private',
+        installationId: null,
+        accountLogin: 'acme',
+        fullName: 'acme/private',
+        enabled: true,
+      }],
+    });
+    const service = new WorkspaceManagementService({
+      identity,
+      config,
+      management,
+      setupBaseUrl: 'http://localhost',
+      now: () => START,
+      randomId: () => 'repository_authority',
+      randomCapability: () => 'r'.repeat(43),
+    });
+    const result = await service.applyWorkspaceChanges({
+      context: {
+        userId: owner.user.id,
+        membershipId: owner.membership.id,
+        organizationId: owner.membership.organizationId,
+        origin: { kind: 'mcp', clientId: 'codex' },
+      },
+      idempotencyKey: 'repository-authority',
+      operations: [{
+        itemId: 'repository',
+        kind: 'request_setup',
+        target: {
+          kind: 'repository_access',
+          agentId: 'agent_shared_repository',
+          repositoryId: 'repo_private',
+        },
+      }],
+    });
+    requireMutationResult(result);
+    const setupId = result.outcomes[0]!.setupOperationId!;
+    const browserSession = 's'.repeat(43);
+    const principal: AuthPrincipal = { ...browserPrincipal(owner), role: 'member' };
+    const app = createManagementSetupRoutes({
+      management,
+      config,
+      settings,
+      identity,
+      now: () => START,
+      randomCapability: () => browserSession,
+      authenticatePrincipal: async () => principal,
+    });
+    const exchange = await app.request(`http://localhost/setup/${setupId}/exchange`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ capability: 'r'.repeat(43) }),
+    });
+    assert.equal(exchange.status, 200, await exchange.clone().text());
+    const cookie = exchange.headers.get('set-cookie')!;
+
+    const deniedStart = await app.request(`http://localhost/setup/${setupId}/authorize`, {
+      method: 'POST',
+      headers: {
+        origin: 'http://localhost',
+        cookie,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({ organization: 'acme' }).toString(),
+    });
+    assert.equal(deniedStart.status, 403);
+    assert.equal((await management.getSetup(setupId))?.status, 'claimed');
+    assert.equal(await settings.getSetting(`management.${setupId}.github-state`), undefined);
+
+    await management.authorizeSetup({
+      setupOperationId: setupId,
+      browserSessionDigest: createHash('sha256').update(browserSession).digest('base64url'),
+      at: START,
+    });
+    const callbackState = 'github-state-that-must-not-be-consumed';
+    const stateKey = `management.${setupId}.github-state`;
+    const stateDigest = createHash('sha256').update(callbackState).digest('base64url');
+    await settings.setSetting(stateKey, stateDigest);
+    const deniedCallback = await app.request(
+      `http://localhost/setup/${setupId}/github/callback?code=must-not-exchange&state=${callbackState}`,
+      { headers: { cookie } },
+    );
+    assert.equal(deniedCallback.status, 403);
+    assert.equal(await settings.getSetting(stateKey), stateDigest);
+    assert.equal(await settings.getSetting(GITHUB_SETTING_KEYS.appId), undefined);
+    assert.equal(await settings.getSetting(GITHUB_SETTING_KEYS.privateKey), undefined);
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
   }
 });
 

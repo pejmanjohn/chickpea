@@ -5,6 +5,7 @@ import {
   getConfigStore,
   getIdentityStore,
   getManagementStore,
+  getSettingsStore,
   getWorkStore,
   isCloudflareTarget,
   type PlatformEnv,
@@ -47,6 +48,8 @@ import { MAX_POST_DISPATCH_ATTEMPTS } from './turn-jobs.ts';
 import { slackPresentationStatePort } from './presentation-state-port.ts';
 import { recordDeliveredSlackAgentMessage } from './public-context.ts';
 import { drainSlackPresentationRepairs } from './presentation-repair.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
+import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 
 const NODE_RECONCILE_INTERVAL_MS = 30_000;
 const NODE_RETRY_BACKOFF_MS = 2_000;
@@ -123,6 +126,7 @@ interface NodeTurnRelayDrainOptions {
   resolveInstallation?: SlackInstallationExecutionResolver;
   verifyInstallationAccess?: SlackInstallationAccessVerifier;
   executeTurn?: LedgerSlackTurnExecutor;
+  productTelemetry?: ProductTelemetryCapture;
 }
 
 async function drainNodeTurnRelayOnce(
@@ -132,6 +136,13 @@ async function drainNodeTurnRelayOnce(
   const state = options.state ?? getSlackStateStore(env);
   const config = getConfigStore(env);
   const executeTurn = options.executeTurn ?? runTurn;
+  const productTelemetry = options.productTelemetry ?? (!options.state
+    ? createPlatformProductTelemetry({
+        ...(env ? { env } : {}),
+        settings: getSettingsStore(env),
+        config,
+      })
+    : undefined);
   const shouldResolveIdentity = Boolean(options.resolveInstallation) ||
     (!options.client && !options.executeTurn);
   const resolveInstallation = options.resolveInstallation ??
@@ -201,6 +212,7 @@ async function drainNodeTurnRelayOnce(
       }
       const attempt = job.attempts + 1;
       let deferredTerminal = false;
+      let terminalDelivered = false;
       let activeWorkKey = job.turn.interactionIntent?.disposition === 'work'
         ? slackAgentThreadKey(job.turn, job.assignment)
         : undefined;
@@ -287,9 +299,23 @@ async function drainNodeTurnRelayOnce(
             deferredTerminal = true;
             if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
           },
+          onDelivered: async (outcome) => {
+            await markTurnDelivered(job.id);
+            terminalDelivered = true;
+            if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
+            if (outcome) {
+              productTelemetry?.capture({
+                event: 'run_completed',
+                workspaceId: job.turn.workspaceId,
+                agentId: job.assignment.agentId,
+                triggerKind: 'interactive',
+                outcome,
+              });
+            }
+          },
         });
         if (deferredTerminal) return true;
-        await markTurnDelivered(job.id);
+        if (!terminalDelivered) await markTurnDelivered(job.id);
         if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
         return true;
       } catch (error) {
@@ -344,6 +370,7 @@ async function drainNodeTurnRelayOnce(
     ...(options.client ? { client: options.client } : {}),
     ...(shouldResolveIdentity ? { resolveInstallation: installationFor, verifyInstallationAccess } : {}),
     ...(env ? { env } : {}),
+    ...(productTelemetry ? { productTelemetry } : {}),
   });
   await drainSlackInteractionCleanups(
     state,
@@ -467,6 +494,7 @@ async function drainLedgerRuns(input: {
   resolveInstallation?: SlackInstallationExecutionResolver;
   verifyInstallationAccess?: SlackInstallationAccessVerifier;
   env?: PlatformEnv;
+  productTelemetry?: ProductTelemetryCapture;
 }): Promise<void> {
   const { state, work } = input;
   if (
@@ -526,6 +554,7 @@ async function drainLedgerRuns(input: {
         ? { verifyInstallationAccess: input.verifyInstallationAccess }
         : {}),
       ...(input.env ? { platformEnv: input.env } : {}),
+      ...(input.productTelemetry ? { productTelemetry: input.productTelemetry } : {}),
     }),
   });
   await driver.drain();

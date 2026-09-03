@@ -181,6 +181,13 @@ export const TYPED_REASONS = [
 
 export const CLEANUP_RESULTS = ['not_required', 'pass', 'failed'] as const;
 export const SUITES = ['case', 'smoke', 'deep'] as const;
+export const PHASE_ONE_TARGET_ALIASES = ['amber', 'cobalt'] as const;
+export const PHASE_ONE_SMOKE_VARIANTS = [
+  'LC01-V1-create-welcome',
+  'LC01-V2-update-approve',
+  'LC04-V1-personal-read',
+  'LC08-V1-create-due',
+] as const;
 export const FIXTURE_CLASSES = [
   'immutable_baseline',
   'resettable_fixture',
@@ -230,6 +237,7 @@ export type PrimaryResult = typeof PRIMARY_RESULTS[number];
 export type TypedReason = typeof TYPED_REASONS[number];
 export type CleanupResult = typeof CLEANUP_RESULTS[number];
 export type Suite = typeof SUITES[number];
+export type PhaseOneTargetAlias = typeof PHASE_ONE_TARGET_ALIASES[number];
 export type FixtureClass = typeof FIXTURE_CLASSES[number];
 export type FixtureKind = typeof FIXTURE_KINDS[number];
 export type CleanupStrategy = typeof CLEANUP_STRATEGIES[number];
@@ -239,26 +247,35 @@ export type EvidenceField = typeof EVIDENCE_FIELDS[number];
 export const OBSERVER_REGISTRY: Readonly<Record<ObserverId, {
   kind: ObserverKind;
   authoritative: boolean;
+  authority: 'product' | 'infrastructure' | 'context';
 }>> = {
-  'slack.messages.read': { kind: 'computer_use_ui', authoritative: true },
-  'agent.read': { kind: 'computer_use_ui', authoritative: true },
-  'connection.read': { kind: 'computer_use_ui', authoritative: true },
-  'routine.read': { kind: 'computer_use_ui', authoritative: true },
-  'provider.read': { kind: 'computer_use_ui', authoritative: true },
-  'provider.revocation.read': { kind: 'computer_use_ui', authoritative: true },
-  'private.routine.read': { kind: 'computer_use_ui', authoritative: true },
-  'app_home.read': { kind: 'computer_use_ui', authoritative: true },
-  'cloudflare.version.read': { kind: 'cloudflare_api', authoritative: true },
-  'browser.screenshot': { kind: 'browser_screenshot', authoritative: false },
-  'agent.avatar.read': { kind: 'computer_use_ui', authoritative: true },
-  'slack.persona.read': { kind: 'computer_use_ui', authoritative: true },
-  'asset.digest.read': { kind: 'computer_use_ui', authoritative: true },
-  'route.read': { kind: 'computer_use_ui', authoritative: true },
-  'skill.read': { kind: 'computer_use_ui', authoritative: true },
-  'memory.read': { kind: 'computer_use_ui', authoritative: true },
-  'installation.read': { kind: 'computer_use_ui', authoritative: true },
-  'app_home.publication.read': { kind: 'computer_use_ui', authoritative: true },
+  'slack.messages.read': productObserver(),
+  'agent.read': productObserver(),
+  'connection.read': productObserver(),
+  'routine.read': productObserver(),
+  'provider.read': productObserver(),
+  'provider.revocation.read': productObserver(),
+  'private.routine.read': productObserver(),
+  'app_home.read': productObserver(),
+  'cloudflare.version.read': {
+    kind: 'cloudflare_api', authoritative: true, authority: 'infrastructure',
+  },
+  'browser.screenshot': {
+    kind: 'browser_screenshot', authoritative: false, authority: 'context',
+  },
+  'agent.avatar.read': productObserver(),
+  'slack.persona.read': productObserver(),
+  'asset.digest.read': productObserver(),
+  'route.read': productObserver(),
+  'skill.read': productObserver(),
+  'memory.read': productObserver(),
+  'installation.read': productObserver(),
+  'app_home.publication.read': productObserver(),
 };
+
+function productObserver() {
+  return { kind: 'computer_use_ui', authoritative: true, authority: 'product' } as const;
+}
 
 export const REQUIRED_LIVE_VARIANTS = {
   'LC-01': ['LC01-V1-create-welcome', 'LC01-V2-update-approve'],
@@ -561,7 +578,7 @@ function validateCleanup(input: unknown, path: string): CleanupIntent {
     if (value.residue !== undefined || fixtureClass === 'immutable_baseline') fail('INVALID_VALUE', path);
     return { strategy, fixtureClass, reversalActionId };
   }
-  if (value.reversalActionId !== undefined || fixtureClass !== 'attributed_residue') fail('INVALID_RESIDUE', path);
+  if (fixtureClass !== 'attributed_residue') fail('INVALID_RESIDUE', path);
   const residuePath = `${path}.residue`;
   const residueValue = record(value.residue, residuePath);
   exactKeys(residueValue, ['kind', 'markerRequired', 'expectedState'], residuePath);
@@ -574,7 +591,12 @@ function validateCleanup(input: unknown, path: string): CleanupIntent {
     markerRequired: true as const,
     expectedState: boundedString(residueValue.expectedState, `${residuePath}.expectedState`, 1, 300),
   };
-  return { strategy, fixtureClass, residue };
+  if (value.reversalActionId !== undefined
+    && (residue.kind !== 'agent_tombstone' || value.reversalActionId !== 'agent.archive')) {
+    fail('INVALID_RESIDUE', path);
+  }
+  return { strategy, fixtureClass, residue,
+    ...(value.reversalActionId === undefined ? {} : { reversalActionId: 'agent.archive' as const }) };
 }
 
 function assertionArray(input: unknown, path: string, observers: readonly ObserverId[]): LiveAssertion[] {
@@ -665,4 +687,86 @@ function enumValue<const Values extends readonly string[]>(
 
 function unique(values: readonly string[], path: string): void {
   if (new Set(values).size !== values.length) fail('DUPLICATE_ID', path);
+}
+
+export type ProductReceiptTransport = 'computer_use' | 'api_observation' | 'api_mutation';
+export type ProductObservationScope = 'window' | 'screen' | 'transport';
+export type ProductReceiptResult = 'pass' | 'fail' | 'blocked' | 'ambiguous';
+
+export interface ProductReceipt {
+  schemaVersion: 'chickpea-live-product-receipt/v1';
+  variantId: string;
+  observerId: ObserverId;
+  result: ProductReceiptResult;
+  transport: ProductReceiptTransport;
+  observationScope: ProductObservationScope;
+  windowId?: string;
+  observedAt: string;
+}
+
+export class ProductReceiptError extends Error {
+  readonly code: 'INVALID_PRODUCT_RECEIPT' | 'UNSCORABLE_PRODUCT_RECEIPT';
+
+  constructor(code: ProductReceiptError['code']) {
+    super(code);
+    this.name = 'ProductReceiptError';
+    this.code = code;
+  }
+}
+
+/**
+ * Close the product-evidence boundary. APIs may supply diagnostic failures or
+ * blockers, but only a window-scoped Computer Use observation can score pass.
+ */
+export function createProductReceipt(input: unknown): ProductReceipt {
+  if (!isPlainRecord(input)
+    || !hasOnlyKeys(input, [
+      'schemaVersion', 'variantId', 'observerId', 'result', 'transport',
+      'observationScope', 'windowId', 'observedAt',
+    ])
+    || input.schemaVersion !== 'chickpea-live-product-receipt/v1'
+    || typeof input.variantId !== 'string'
+    || input.variantId.length === 0
+    || !(OBSERVER_IDS as readonly unknown[]).includes(input.observerId)
+    || !['pass', 'fail', 'blocked', 'ambiguous'].includes(String(input.result))
+    || !['computer_use', 'api_observation', 'api_mutation'].includes(String(input.transport))
+    || !['window', 'screen', 'transport'].includes(String(input.observationScope))
+    || typeof input.observedAt !== 'string'
+    || !Number.isFinite(Date.parse(input.observedAt))
+    || (input.windowId !== undefined && (typeof input.windowId !== 'string'
+      || input.windowId.length === 0 || input.windowId.length > 256))) {
+    throw new ProductReceiptError('INVALID_PRODUCT_RECEIPT');
+  }
+  const receipt = input as unknown as ProductReceipt;
+  const observer = OBSERVER_REGISTRY[receipt.observerId];
+  if (receipt.result === 'pass' && (
+    observer.authority !== 'product'
+    || observer.kind !== 'computer_use_ui'
+    || receipt.transport !== 'computer_use'
+    || receipt.observationScope !== 'window'
+    || receipt.windowId === undefined
+  )) {
+    throw new ProductReceiptError('UNSCORABLE_PRODUCT_RECEIPT');
+  }
+  return Object.freeze(receipt.windowId === undefined
+    ? {
+      schemaVersion: receipt.schemaVersion,
+      variantId: receipt.variantId,
+      observerId: receipt.observerId,
+      result: receipt.result,
+      transport: receipt.transport,
+      observationScope: receipt.observationScope,
+      observedAt: receipt.observedAt,
+    }
+    : { ...receipt });
+}
+
+function isPlainRecord(input: unknown): input is Record<string, unknown> {
+  return input !== null && typeof input === 'object' && !Array.isArray(input)
+    && Object.getPrototypeOf(input) === Object.prototype;
+}
+
+function hasOnlyKeys(input: object, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(input).every((key) => allowed.has(key));
 }

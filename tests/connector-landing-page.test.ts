@@ -109,7 +109,7 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
     };
     const renderedSetup = renderManagedConnectionSetupPage(page);
     assert.match(renderedSetup, /role="img" aria-label="Chickpea"/);
-    assert.match(renderedSetup, /--chickpea-wordmark-image:url\("data:image\/png;base64,/);
+    assert.match(renderedSetup, /--chickpea-wordmark-image:url\("\/chickpea-wordmark-512\.png\?v=[a-f0-9]{12}"\)/);
     assert.match(renderedSetup, /Connect HubSpot to Sprout/);
     assert.match(renderedSetup, /Who uses this connection\?/);
     assert.match(renderedSetup, /Pick one to continue\./);
@@ -120,8 +120,9 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
     assert.match(renderedSetup, /<input[^>]+type="radio"[^>]+name="ownerKind"[^>]+value="team"/);
     assert.doesNotMatch(renderedSetup, /<input[^>]+name="ownerKind"[^>]+checked/);
     assert.match(renderedSetup, /<button[^>]+value="authorize"[^>]+disabled/);
-    assert.match(renderedSetup, /<input[^>]+type="radio"[^>]+name="access"[^>]+value="read"[^>]+checked/);
-    assert.match(renderedSetup, /<input[^>]+type="radio"[^>]+name="access"[^>]+value="write"/);
+    assert.match(renderedSetup, /<input[^>]+type="hidden"[^>]+name="access"[^>]+value="read"/);
+    assert.doesNotMatch(renderedSetup, /<input[^>]+type="radio"[^>]+name="access"|>Read-only</);
+    assert.match(renderedSetup, /Review the permissions requested on the provider/);
     assert.doesNotMatch(renderedSetup, /Read and write unavailable in this flow/);
     assert.match(renderedSetup, /Continue to HubSpot/);
     assert.match(renderedSetup, /<form method="post" action="\/setup\/setup_connector_page\/cancel">/);
@@ -130,6 +131,7 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
 
     const sheetsSetup = renderManagedConnectionSetupPage({
       ...page,
+      writeAvailable: true,
       setup: {
         ...setup,
         target: {
@@ -142,6 +144,8 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
       },
     });
     assert.match(sheetsSetup, /class="connector-logo" style="--connector-accent:#0F9D58"/);
+    assert.match(sheetsSetup, /<input[^>]+type="hidden"[^>]+name="access"[^>]+value="write"/);
+    assert.doesNotMatch(sheetsSetup, /read-only|name="access"[^>]+value="read"/);
 
     const waiting = renderManagedConnectionWaitingPage({ ...page, setup: { ...setup, status: 'authorizing' } });
     assert.match(waiting, /Finishing your HubSpot connection/);
@@ -153,7 +157,8 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
 
     const success = renderManagedConnectionSuccessPage({ ...page, setup: { ...setup, status: 'completed' } });
     assert.match(success, /HubSpot is now connected to Sprout/);
-    assert.match(success, /Your personal, read-only connection is ready\./);
+    assert.match(success, /Your personal connection is ready\./);
+    assert.doesNotMatch(success, /read-only connection/);
     assert.match(success, /You can close this tab now\./);
     assert.match(success, /class="connection-pair"/);
     assert.match(success, /class="success-copy"/);
@@ -182,7 +187,7 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
         },
       },
     });
-    assert.match(selectedSuccess, /Your team, read and write connection is ready\./);
+    assert.match(selectedSuccess, /Your team connection is ready\./);
   } finally {
     config.close();
   }
@@ -245,7 +250,7 @@ test('managed connector copy and success scope stay accurate for a team Gmail ha
     };
     const page = { setup: gmailSetup, agent };
     const renderedSetup = renderManagedConnectionSetupPage(page);
-    assert.match(renderedSetup, /Mailroom can use Gmail&#39;s read-only capabilities when you ask./);
+    assert.match(renderedSetup, /Mailroom can use Gmail when you ask./);
     assert.match(renderedSetup, /Can use read-only Gmail capabilities. Cannot change Gmail data./);
     assert.doesNotMatch(renderedSetup, /CRM/);
 
@@ -253,7 +258,7 @@ test('managed connector copy and success scope stay accurate for a team Gmail ha
       ...page,
       setup: { ...gmailSetup, status: 'completed' },
     });
-    assert.match(success, /Your team, read-only connection is ready./);
+    assert.match(success, /Your team connection is ready./);
     assert.doesNotMatch(success, /Your personal/);
   } finally {
     config.close();

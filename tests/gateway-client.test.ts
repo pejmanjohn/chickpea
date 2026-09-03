@@ -28,6 +28,7 @@ import {
 import { gatewayReconnectAt, gatewaySessionHealthy } from '../src/slack/gateway/session.ts';
 import { createGatewaySlackTransport } from '../src/slack/transport/gateway.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
+import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import {
   resolveSlackInstallationExecutionContext,
   verifySlackInstallationTurnAccess,
@@ -42,6 +43,47 @@ import {
 } from '../src/slack/gateway/runtime.ts';
 
 const NOW = Date.UTC(2026, 7, 20, 12);
+
+test('gateway installation authority authenticates the exact binding and rejects stale or expanded responses', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings, config, keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test', fetch: gateway.fetch, now: () => NOW,
+  });
+  try {
+    await assert.rejects(client.installationAuthority(), /gateway_not_connected/);
+    await client.beginClaim();
+    await client.refreshClaim();
+    const authority = await client.installationAuthority();
+    assert.equal(authority.binding.workspaceId, 'TGATEWAY');
+    assert.deepEqual(authority.grantedScopes, ['chat:write']);
+    const request = gateway.requests.at(-1)!.body;
+    assert.equal(request.kind, 'installation.status');
+    assert.equal(await verifyGatewayRequestSignature({
+      publicKey: gateway.publicKey!,
+      request: request as Parameters<typeof verifyGatewayRequestSignature>[0]['request'],
+    }), true);
+    for (const mutate of [
+      (value: Record<string, unknown>) => ({ ...value, requestId: 'other' }),
+      (value: Record<string, unknown>) => ({ ...value, observedAt: NOW - 60_001 }),
+      (value: Record<string, unknown>) => ({ ...value, observedAt: NOW + 60_001 }),
+      (value: Record<string, unknown>) => ({ ...value, botToken: 'must-not-escape' }),
+      (value: Record<string, unknown>) => ({ ...value, grantedScopes: ['bad scope'] }),
+      ...['workspaceId', 'appId', 'botUserId', 'bindingId', 'deploymentId', 'installedAt'].map((field) =>
+        (value: Record<string, unknown>) => ({ ...value, binding: { ...(value.binding as object), [field]: 'other' } })),
+    ]) {
+      gateway.statusProjection = mutate;
+      await assert.rejects(client.installationAuthority(), /authority mismatch/);
+    }
+    gateway.statusProjection = (value) => ({ ...value, health: 'revoked' });
+    assert.equal((await client.installationAuthority()).health, 'revoked');
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
 
 test('gateway signing payloads use locale-independent code-unit key order', () => {
   assert.equal(
@@ -355,6 +397,7 @@ test('shared-app claim binds one workspace without storing Slack credentials', a
   const config = configStore();
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const gateway = new FakeGateway();
+  const productEvents: ProductTelemetryEventInput[] = [];
   const client = new GatewayDeploymentClient({
     settings,
     config,
@@ -363,6 +406,7 @@ test('shared-app claim binds one workspace without storing Slack credentials', a
     gatewayBaseUrl: 'https://gateway.chickpea.test',
     fetch: gateway.fetch,
     now: () => NOW,
+    productTelemetry: { capture: (event) => productEvents.push(event) },
   });
   try {
     const setup = await identity.reserveSlackSetupTransaction({
@@ -401,6 +445,12 @@ test('shared-app claim binds one workspace without storing Slack credentials', a
     const installedSetup = await identity.getSlackSetupTransaction(setup.id);
     assert.equal(installedSetup?.state, 'bot_installed');
     assert.equal(installedSetup?.installerSlackUserId, 'UINSTALLER');
+
+    assert.deepEqual(productEvents, [{
+      event: 'workspace_connected',
+      workspaceId: 'TGATEWAY',
+      transportMode: 'gateway',
+    }]);
 
     const storedIdentity = await settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING);
     assert.ok(storedIdentity);
@@ -1057,6 +1107,7 @@ class FakeGateway {
   readonly operations: Array<{ operation: string; input: Record<string, unknown> }> = [];
   publicKey: GatewayPublicKey | undefined;
   deploymentId = '';
+  statusProjection = (value: Record<string, unknown>): Record<string, unknown> => value;
 
   readonly fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
@@ -1084,6 +1135,17 @@ class FakeGateway {
           installedAt: NOW,
         },
       });
+    }
+    if (url.pathname === '/v1/installations/status') {
+      return json(this.statusProjection({
+        protocolVersion: 1, kind: 'installation.status', requestId: body.requestId,
+        binding: {
+          bindingId: 'binding_test', deploymentId: this.deploymentId,
+          workspaceId: 'TGATEWAY', appId: 'AGATEWAY', botUserId: 'UBOT', installedAt: NOW,
+        },
+        grantedScopes: ['chat:write'], grantedUserScopes: ['usergroups:write'],
+        health: 'healthy', observedAt: NOW,
+      }));
     }
     if (url.pathname === '/v1/workspaces/TGATEWAY/operations') {
       const operation = String(body.operation);

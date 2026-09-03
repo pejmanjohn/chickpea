@@ -1,3 +1,4 @@
+import { isRecord } from '../../security/content-validation.ts';
 import { MANAGED_GOOGLE_WORKSPACE_CONNECTORS } from './google-workspace.ts';
 import { MANAGED_GOOGLE_PRODUCTIVITY_CONNECTORS } from './google-productivity.ts';
 import { MANAGED_GOOGLE_ANALYTICS_CONNECTORS } from './google-analytics.ts';
@@ -181,7 +182,11 @@ function validateConnector(definition: ManagedConnectorDefinition): ManagedConne
   for (const capability of definition.capabilities) {
     if (!ID_PATTERN.test(capability.id) || !TOOL_NAME_PATTERN.test(capability.toolName) ||
         !Number.isInteger(capability.maxResultBytes) || capability.maxResultBytes < 1 ||
-        capability.maxResultBytes > 256 * 1024) {
+        capability.maxResultBytes > 256 * 1024 ||
+        capability.effect !== 'read' && (
+          !capability.sideEffectLabel?.trim() || capability.sideEffectLabel.length > 240 ||
+          capability.sideEffectLabel !== capability.sideEffectLabel.trim()
+        )) {
       throw new Error(`Managed connector ${toolkit} has an invalid capability`);
     }
     if (capability.semantic !== undefined &&
@@ -243,10 +248,6 @@ function parseBindingHandles(value: unknown): string[] | undefined {
   }
   const handles = [...new Set(value)];
   return handles.length === value.length ? handles : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 export type {

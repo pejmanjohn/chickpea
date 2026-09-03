@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto';
-
 import type { Context } from 'hono';
 
 import { requestPrincipal } from '../auth/service.ts';
+import { sha256HexNode } from '../security/digest.ts';
 
 /**
  * Request hygiene shared by the /admin/api sub-apps: JSON body reads, the
@@ -51,7 +50,7 @@ export function safeMutationRequest(c: Context): boolean {
 
 function sessionFingerprint(c: Context): string {
   const credential = c.req.header('authorization') ?? c.req.header('cookie') ?? '';
-  return sha256(`admin-session\0${credential}`);
+  return sha256HexNode(`admin-session\0${credential}`);
 }
 
 export function adminActor(c: Context): string {
@@ -74,8 +73,4 @@ export function adminCredential(c: Context): {
     id: adminActor(c),
     origin: host === 'localhost' || host === '127.0.0.1' ? 'local_admin' : 'admin_session',
   };
-}
-
-export function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
 }

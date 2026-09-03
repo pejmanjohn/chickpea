@@ -21,7 +21,16 @@ Every invocation re-reads the live Chickpea account and Agent binding, pins one 
 
 ## Readiness matrix
 
-Every row requires an active project key plus its deterministic managed-auth configuration. Normal OSS setup prepares those configurations from one key in **Settings → Connectors**; lane-specific environment IDs are compatibility overrides, and the webhook is optional. Every override must belong to the active project and be enabled, Composio-managed, and unrestricted. An invalid or temporarily unverifiable override disables only that lane and emits a safe operator warning naming the environment variable; it does not disable the provider or other connectors.
+Every row requires an active project key plus its deterministic managed-auth configuration. Normal OSS setup prepares those configurations from one key in **Settings → Connectors**; lane-specific environment IDs are compatibility overrides, and the webhook is optional. Every override must belong to the active project and be enabled, Composio-managed, and unrestricted. An invalid override disables only that lane; it does not disable the provider or other connectors.
+
+Compatibility overrides also work with an encrypted project key saved in Admin.
+Run connector preparation after changing an override. Preparation verifies it
+against that key, persists the selected ID, and leaves other access lanes on
+their defaults. A temporary inspection failure reports partial setup and keeps
+only an exact, previously verified ID. Without that matching durable ID the lane
+stays unavailable; it never substitutes a broader default. Explicit Admin retries
+re-inspect immediately, and an incompatible result removes the lane. Runtime
+requests use the persisted IDs without repeating provider setup.
 
 | Connector/toolkit | Lanes | Admin selection | Additional hosted prerequisite |
 |---|---|---|---|

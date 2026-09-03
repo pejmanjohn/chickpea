@@ -1,3 +1,4 @@
+import { isRecord } from '../security/content-validation.ts';
 import type { TurnPullRequestProgress } from '../config/state-rpc.ts';
 
 export function pullRequestProgressFromGithubResponse(input: {
@@ -58,8 +59,4 @@ function githubPullRequestCreateMatch(
     new URL(requestUrl).pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/?$/) ??
     undefined
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

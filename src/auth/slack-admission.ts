@@ -1,5 +1,7 @@
-import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
+import { randomBytes as nodeRandomBytes } from 'node:crypto';
 
+import { sha256HexNode } from '../security/digest.ts';
+import { randomSecret } from '../security/random-secret.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import type {
   AuthOperation,
@@ -198,7 +200,7 @@ export class SlackAdmissionService {
     if (input.locator.length < 32 || input.locator.length > 512 || /\s/.test(input.locator)) {
       throw new SlackOidcError('invalid_state');
     }
-    const locatorHash = hashSecret(input.locator);
+    const locatorHash = sha256HexNode(input.locator);
     const [invitation, organization, control, credentials] = await Promise.all([
       this.dependencies.identity.findInvitation(locatorHash),
       this.dependencies.identity.getOrganization(),
@@ -281,7 +283,7 @@ export class SlackAdmissionService {
       operation = await this.dependencies.identity.admitSlackOidcAttempt({
         attemptId: attempt.id,
         expectedLeaseGeneration: attempt.leaseGeneration,
-        capabilityHash: hashSecret(input.state),
+        capabilityHash: sha256HexNode(input.state),
         slackTeamId: proof.slackTeamId,
         slackUserId: proof.slackUserId,
         expiresAt: attempt.expiresAt,
@@ -324,7 +326,7 @@ export class SlackAdmissionService {
       });
       await this.dependencies.identity.advanceAuthOperation({
         operationId: operation.id,
-        capabilityHash: hashSecret(input.state),
+        capabilityHash: sha256HexNode(input.state),
         step: Math.max(1, operation.step + 1),
         betterAuthUserId: reconciled.userId,
         betterAuthOrganizationId: reconciled.organizationId,
@@ -336,7 +338,7 @@ export class SlackAdmissionService {
           invitationId: attempt.invitationId,
           oidcAttemptId: attempt.id,
           expectedOidcLeaseGeneration: attempt.leaseGeneration,
-          capabilityHash: hashSecret(input.state),
+          capabilityHash: sha256HexNode(input.state),
           slackTeamId: proof.slackTeamId,
           slackUserId: proof.slackUserId,
           displayName: proof.displayName,
@@ -369,7 +371,7 @@ export class SlackAdmissionService {
     });
     await this.dependencies.identity.advanceAuthOperation({
       operationId: operation.id,
-      capabilityHash: hashSecret(input.state),
+      capabilityHash: sha256HexNode(input.state),
       step: Math.max(1, operation.step + 1),
       betterAuthUserId: reconciled.userId,
       betterAuthOrganizationId: reconciled.organizationId,
@@ -420,9 +422,9 @@ export class SlackAdmissionService {
       ...(input.invitationLocatorHash ? { invitationLocatorHash: input.invitationLocatorHash } : {}),
       ...(input.setupId ? { setupId: input.setupId } : {}),
       ...(input.setupRevision ? { setupRevision: input.setupRevision } : {}),
-      stateHash: hashSecret(state),
-      nonceHash: hashSecret(nonce),
-      browserHash: hashSecret(input.browserBinding),
+      stateHash: sha256HexNode(state),
+      nonceHash: sha256HexNode(nonce),
+      browserHash: sha256HexNode(input.browserBinding),
       appId: input.appId,
       clientId: input.clientId,
       credentialRevision: input.credentialRevision,
@@ -455,8 +457,8 @@ export class SlackAdmissionService {
   }): Promise<SlackOidcAttempt> {
     try {
       return await this.dependencies.identity.acquireSlackOidcAttempt({
-        stateHash: hashSecret(input.state),
-        browserHash: hashSecret(input.browserBinding),
+        stateHash: sha256HexNode(input.state),
+        browserHash: sha256HexNode(input.browserBinding),
         purpose: input.purpose,
         redirectUri: input.redirectUri,
         leaseExpiresAt: this.now() + SLACK_OIDC_PROCESSING_LEASE_MS,
@@ -516,7 +518,7 @@ export class SlackAdmissionService {
         });
         operation = await this.dependencies.identity.advanceAuthOperation({
           operationId: operation.id,
-          capabilityHash: hashSecret(capabilitySecret),
+          capabilityHash: sha256HexNode(capabilitySecret),
           step: Math.max(1, operation.step + 1),
           betterAuthUserId: reconciled.userId,
           betterAuthOrganizationId: reconciled.organizationId,
@@ -529,7 +531,7 @@ export class SlackAdmissionService {
           invitationId: attempt.invitationId,
           oidcAttemptId: attempt.id,
           expectedOidcLeaseGeneration: attempt.leaseGeneration,
-          capabilityHash: hashSecret(capabilitySecret),
+          capabilityHash: sha256HexNode(capabilitySecret),
           slackTeamId: attempt.admittedTeamId,
           slackUserId: attempt.admittedSlackUserId,
           displayName: 'Slack member',
@@ -569,7 +571,7 @@ export class SlackAdmissionService {
       });
       operation = await this.dependencies.identity.advanceAuthOperation({
         operationId: operation.id,
-        capabilityHash: hashSecret(capabilitySecret),
+        capabilityHash: sha256HexNode(capabilitySecret),
         step: Math.max(1, operation.step + 1),
         betterAuthUserId: reconciled.userId,
         betterAuthOrganizationId: reconciled.organizationId,
@@ -643,7 +645,7 @@ export class SlackAdmissionService {
         attemptId: input.attempt.id,
         expectedOidcLeaseGeneration: input.attempt.leaseGeneration,
         operationId: operation.id,
-        capabilityHash: hashSecret(input.capabilitySecret),
+        capabilityHash: sha256HexNode(input.capabilitySecret),
         slackTeamId: input.attempt.admittedTeamId,
         slackUserId: input.attempt.admittedSlackUserId,
         betterAuthUserId: reconciled.userId,
@@ -771,12 +773,4 @@ function requireBrowserBinding(value: string): void {
   if (value.length < 32 || value.length > 512 || /\s/.test(value)) {
     throw new SlackOidcError('wrong_browser');
   }
-}
-
-function randomSecret(randomBytes: (length: number) => Uint8Array, length: number): string {
-  return Buffer.from(randomBytes(length)).toString('base64url');
-}
-
-function hashSecret(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
 }

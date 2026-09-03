@@ -1,3 +1,5 @@
+import { decodeBase64Url, encodeBase64Url } from '../security/base64url.ts';
+
 const IDENTITY_KEY_BYTES = 32;
 const FINGERPRINT_BYTES = 16;
 
@@ -32,21 +34,21 @@ export async function accountFingerprint(
     key,
     new TextEncoder().encode(`chickpea-openai-subscription-account-v1\0${accountId}`),
   );
-  return `oas_${base64Url(new Uint8Array(signature).slice(0, FINGERPRINT_BYTES))}`;
+  return `oas_${encodeBase64Url(new Uint8Array(signature).slice(0, FINGERPRINT_BYTES))}`;
 }
 
 export function encodeOpenAiSubscriptionIdentityKey(key: Uint8Array): string {
   if (key.byteLength !== IDENTITY_KEY_BYTES) {
     throw new Error('OpenAI subscription identity key is invalid');
   }
-  return base64Url(key);
+  return encodeBase64Url(key);
 }
 
 export function decodeOpenAiSubscriptionIdentityKey(value: string): Uint8Array {
   if (!/^[A-Za-z0-9_-]{43}$/.test(value)) {
     throw new Error('OpenAI subscription identity key is invalid');
   }
-  const decoded = base64UrlDecode(value);
+  const decoded = decodeBase64Url(value);
   if (decoded.byteLength !== IDENTITY_KEY_BYTES) {
     throw new Error('OpenAI subscription identity key is invalid');
   }
@@ -60,39 +62,15 @@ export function randomOpenAiSubscriptionCapability(
   if (value.byteLength !== IDENTITY_KEY_BYTES) {
     throw new Error('OpenAI subscription capability generation failed');
   }
-  return base64Url(value);
+  return encodeBase64Url(value);
 }
 
 export async function hashOpenAiSubscriptionCapability(value: string): Promise<string> {
   if (!value || value.length > 512) throw new Error('OpenAI subscription capability is invalid');
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
-  return base64Url(new Uint8Array(digest));
-}
-
-export function constantTimeTextEqual(left: string, right: string): boolean {
-  const leftBytes = new TextEncoder().encode(left);
-  const rightBytes = new TextEncoder().encode(right);
-  const length = Math.max(leftBytes.byteLength, rightBytes.byteLength);
-  let difference = leftBytes.byteLength ^ rightBytes.byteLength;
-  for (let index = 0; index < length; index += 1) {
-    difference |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
-  }
-  return difference === 0;
+  return encodeBase64Url(new Uint8Array(digest));
 }
 
 function secureRandomBytes(length: number): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(length));
-}
-
-function base64Url(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function base64UrlDecode(value: string): Uint8Array {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
-  const binary = atob(padded);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }

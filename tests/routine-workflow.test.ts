@@ -27,6 +27,7 @@ import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { UsageStore } from '../src/usage/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import type { RunExecutionId, WorkStore } from '../src/work/types.ts';
+import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 
 const NOW = Date.UTC(2026, 6, 27, 12);
 
@@ -223,16 +224,28 @@ function telemetrySink() {
 test('live access and a frozen app checkpoint precede Flue dispatch', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   const events: string[] = [];
+  const productEvents: unknown[] = [];
   const dispatches: unknown[] = [];
   try {
     const fixture = await admittedFixture(store, 'order');
     await executeRoutineOccurrence({
       env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
-    }, { ...dependencies(events), handle: fakeHandle({ events, dispatches }) });
+    }, {
+      ...dependencies(events),
+      handle: fakeHandle({ events, dispatches }),
+      productTelemetry: { capture: (event: ProductTelemetryEventInput) => productEvents.push(event) },
+    });
 
     assert.deepEqual(events, ['live-access', 'model', 'dispatch', 'read']);
     const completed = await store.getRun(fixture.run.id);
     assert.equal(completed?.status, 'no_op');
+    assert.deepEqual(productEvents, [{
+      event: 'run_completed',
+      workspaceId: 'T_TEST',
+      agentId: 'agent_default',
+      triggerKind: 'scheduled',
+      outcome: 'no_op',
+    }]);
     assert.equal(completed?.flueRunId, null);
     assert.equal(completed?.flueAgentEnvelope?.idempotencyKey, fixture.attempt.attemptId);
     const dispatched = dispatches[0] as {
@@ -441,6 +454,7 @@ test('a definitive private-thread rejection pauses recurring work and posts one 
     ownerMembershipId: 'membership_direct',
   };
   const slackRequests: Array<Record<string, unknown>> = [];
+  const productEvents: unknown[] = [];
   try {
     await configStore.createAgent({
       id: 'agent_direct', name: 'Direct Agent', instructions: 'Run private work.', enabled: true,
@@ -520,6 +534,7 @@ test('a definitive private-thread rejection pauses recurring work and posts one 
         client: client as never,
       }),
       handle: fakeHandle({ reply: successfulReply() }),
+      productTelemetry: { capture: (event: ProductTelemetryEventInput) => productEvents.push(event) },
     });
 
     assert.equal(outcome, 'completed');
@@ -534,6 +549,13 @@ test('a definitive private-thread rejection pauses recurring work and posts one 
     assert.deepEqual(slackRequests[1], { method: 'open', users: 'U_DIRECT' });
     assert.equal(slackRequests[2]?.thread_ts, undefined);
     assert.equal(slackRequests[2]?.username, 'Chickpea');
+    assert.deepEqual(productEvents, [{
+      event: 'run_completed',
+      workspaceId: 'T_TEST',
+      agentId: 'agent_direct',
+      triggerKind: 'scheduled',
+      outcome: 'failed',
+    }]);
   } finally {
     configStore.close();
     store.close();
@@ -906,13 +928,19 @@ test('routine Usage repairs failed admission and terminal persistence before com
   }
 });
 
-test('routine deadline bounds a stalled durable Usage owner before dispatch', async () => {
+test('routine deadline bounds a stalled durable Usage owner before dispatch', { timeout: 5_000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
   const routines = new SqliteRoutineStore(':memory:', () => NOW);
   const telemetry = telemetrySink();
   const events: string[] = [];
   const deadlineAt = Date.now() + 50;
+  let enteredUsage!: () => void;
+  const usageEntered = new Promise<void>((resolve) => { enteredUsage = resolve; });
   const stalledUsage = {
-    admitOperation: async () => new Promise<never>(() => undefined),
+    admitOperation: async () => {
+      enteredUsage();
+      return new Promise<never>(() => undefined);
+    },
   } as unknown as UsageStore;
   try {
     const fixture = await admittedFixture(
@@ -923,7 +951,7 @@ test('routine deadline bounds a stalled durable Usage owner before dispatch', as
       deadlineAt,
     );
     const startedAt = Date.now();
-    assert.equal(await executeRoutineOccurrence({
+    const execution = executeRoutineOccurrence({
       env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, {
       ...dependencies(),
@@ -932,9 +960,12 @@ test('routine deadline bounds a stalled durable Usage owner before dispatch', as
       usageStore: stalledUsage,
       persistenceTelemetrySink: telemetry.sink,
       handle: fakeHandle({ events }),
-    }), 'completed');
+    });
+    await usageEntered;
+    t.mock.timers.tick(50);
+    assert.equal(await execution, 'completed');
 
-    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(Date.now() - startedAt, 50);
     assert.equal(events.filter((event) => event === 'dispatch').length, 0);
     assert.equal(telemetry.errors.length, 1);
     assert.match(telemetry.errors[0]!, /"usage":"unrepaired"/);
@@ -1031,7 +1062,8 @@ test('permanent Work initialization failure is one gap and never redispatches', 
   }
 });
 
-test('routine deadline bounds a stalled durable Work owner before dispatch', async () => {
+test('routine deadline bounds a stalled durable Work owner before dispatch', { timeout: 5_000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-work-deadline-'));
   const path = join(directory, 'state.sqlite');
   const routines = new SqliteRoutineStore(path, () => NOW);
@@ -1047,11 +1079,16 @@ test('routine deadline bounds a stalled durable Work owner before dispatch', asy
       'public',
       deadlineAt,
     );
+    let enteredWork!: () => void;
+    const workEntered = new Promise<void>((resolve) => { enteredWork = resolve; });
     const stalledWork = {
-      getRun: async () => new Promise<never>(() => undefined),
+      getRun: async () => {
+        enteredWork();
+        return new Promise<never>(() => undefined);
+      },
     } as unknown as WorkStore;
     const startedAt = Date.now();
-    assert.equal(await executeRoutineOccurrence({
+    const execution = executeRoutineOccurrence({
       env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, {
       ...dependencies(),
@@ -1060,9 +1097,12 @@ test('routine deadline bounds a stalled durable Work owner before dispatch', asy
       workStore: stalledWork,
       persistenceTelemetrySink: telemetry.sink,
       handle: fakeHandle({ events }),
-    }), 'completed');
+    });
+    await workEntered;
+    t.mock.timers.tick(50);
+    assert.equal(await execution, 'completed');
 
-    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(Date.now() - startedAt, 50);
     assert.equal(events.filter((event) => event === 'dispatch').length, 0);
     assert.equal(telemetry.errors.length, 1);
     assert.match(telemetry.errors[0]!, /"phase":"work","outcome":"unrepaired"/);
@@ -1081,6 +1121,7 @@ test('Work terminal failure after Slack delivery cannot post or replay twice', a
   const configuration = new SqliteConfigStore(path);
   const durableWork = new SqliteWorkStore(path, { now: () => NOW });
   const telemetry = telemetrySink();
+  const productEvents: unknown[] = [];
   let posts = 0;
   const client = {
     chat: {
@@ -1120,6 +1161,7 @@ test('Work terminal failure after Slack delivery cannot post or replay twice', a
         client: client as never,
       }),
       handle: fakeHandle({ reply: successfulReply() }),
+      productTelemetry: { capture: (event: ProductTelemetryEventInput) => productEvents.push(event) },
     };
     assert.equal(await executeRoutineOccurrence(executionInput, executionDependencies), 'completed');
     assert.equal(await executeRoutineOccurrence(executionInput, executionDependencies), 'superseded');
@@ -1127,6 +1169,13 @@ test('Work terminal failure after Slack delivery cannot post or replay twice', a
     assert.equal(posts, 1);
     assert.equal((await routines.getRun(fixture.run.id))?.status, 'succeeded');
     assert.equal((await routines.getRun(fixture.run.id))?.deliveryStatus, 'delivered');
+    assert.deepEqual(productEvents, [{
+      event: 'run_completed',
+      workspaceId: 'T_TEST',
+      agentId: 'agent_default',
+      triggerKind: 'scheduled',
+      outcome: 'succeeded',
+    }]);
     assert.equal(telemetry.errors.length, 1);
     assert.match(telemetry.errors[0]!, /"work":"unrepaired"/);
   } finally {

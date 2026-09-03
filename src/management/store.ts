@@ -1,8 +1,9 @@
 import { AuditStoreLogic } from '../audit/store.ts';
-import { constantTimeEquals } from '../admin/constant-time.ts';
+import { constantTimeEquals } from '../security/constant-time.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
+import { addColumnIfMissing } from '../state/schema-links.ts';
 import {
   ManagementError,
   type ClaimManagementProposalInput,
@@ -1038,7 +1039,7 @@ export class ManagementStoreLogic {
       const setup = this.requireSetup(input.setupOperationId, input.at);
       if (setup.status === 'expired') throw setupError('setup_expired');
       if (setup.status !== 'pending' || !setup.tokenDigest ||
-          !constantDigestEquals(setup.tokenDigest, input.tokenDigest)) {
+          !constantTimeEquals(setup.tokenDigest, input.tokenDigest)) {
         throw setupError('setup_unavailable');
       }
       const updated = this.db.run(
@@ -1119,7 +1120,7 @@ export class ManagementStoreLogic {
       let updated: { changes: number };
       if (managed) {
         if (existing.status !== 'pending' || !existing.tokenDigest ||
-            !constantDigestEquals(existing.tokenDigest, input.browserSessionDigest) ||
+            !constantTimeEquals(existing.tokenDigest, input.browserSessionDigest) ||
             !input.completedByUserId || !input.completedByMembershipId) {
           throw setupError('setup_unavailable');
         }
@@ -1622,9 +1623,6 @@ export class ManagementStoreLogic {
   }
 
   private ensureSetupColumns(): void {
-    const columns = new Set((this.db.all('PRAGMA table_info(management_setup_operations)') as Array<{ name: string }>).map(
-      ({ name }) => name,
-    ));
     const additions: Array<[string, string]> = [
       ['actor_membership_id', "TEXT NOT NULL DEFAULT ''"],
       ['origin_json', "TEXT NOT NULL DEFAULT '{\"kind\":\"mcp\",\"clientId\":\"legacy\"}'"],
@@ -1639,25 +1637,15 @@ export class ManagementStoreLogic {
       ['completed_at', 'INTEGER'],
     ];
     for (const [name, definition] of additions) {
-      if (!columns.has(name)) {
-        this.db.exec(`ALTER TABLE management_setup_operations ADD COLUMN ${name} ${definition}`);
-      }
+      addColumnIfMissing(this.db, 'management_setup_operations', name, definition);
     }
   }
 
   private ensureProposalColumns(): void {
-    const columns = new Set((this.db.all('PRAGMA table_info(management_proposals)') as Array<{ name: string }>).map(
-      ({ name }) => name,
-    ));
-    if (!columns.has('request_operation_id')) {
-      this.db.exec('ALTER TABLE management_proposals ADD COLUMN request_operation_id TEXT');
-    }
+    addColumnIfMissing(this.db, 'management_proposals', 'request_operation_id', 'TEXT');
   }
 
   private ensureChangeSetProposalColumns(): void {
-    const columns = new Set((this.db.all(
-      'PRAGMA table_info(management_change_set_proposals)',
-    ) as Array<{ name: string }>).map(({ name }) => name));
     const additions: Array<[string, string]> = [
       ['idempotency_key', 'TEXT'],
       ['guide_version', 'TEXT'],
@@ -1665,11 +1653,7 @@ export class ManagementStoreLogic {
       ['approval_scope_key', "TEXT NOT NULL DEFAULT ''"],
     ];
     for (const [name, definition] of additions) {
-      if (!columns.has(name)) {
-        this.db.exec(
-          `ALTER TABLE management_change_set_proposals ADD COLUMN ${name} ${definition}`,
-        );
-      }
+      addColumnIfMissing(this.db, 'management_change_set_proposals', name, definition);
     }
     const legacyRows = this.db.all(
       `SELECT proposal_id, origin_key FROM management_change_set_proposals
@@ -1685,15 +1669,8 @@ export class ManagementStoreLogic {
   }
 
   private ensureOutboxColumns(): void {
-    const columns = new Set((this.db.all('PRAGMA table_info(management_receipt_outbox)') as Array<{ name: string }>).map(
-      ({ name }) => name,
-    ));
-    if (!columns.has('delivery_ref')) {
-      this.db.exec('ALTER TABLE management_receipt_outbox ADD COLUMN delivery_ref TEXT');
-    }
-    if (!columns.has('failure_code')) {
-      this.db.exec('ALTER TABLE management_receipt_outbox ADD COLUMN failure_code TEXT');
-    }
+    addColumnIfMissing(this.db, 'management_receipt_outbox', 'delivery_ref', 'TEXT');
+    addColumnIfMissing(this.db, 'management_receipt_outbox', 'failure_code', 'TEXT');
   }
 
   private reactivateExpiredProposals(): void {
@@ -1748,7 +1725,7 @@ export class ManagementStoreLogic {
     const setup = this.requireSetup(setupOperationId, at);
     if (setup.status === 'expired') throw setupError('setup_expired');
     if (!setup.browserSessionDigest ||
-        !constantDigestEquals(setup.browserSessionDigest, browserSessionDigest)) {
+        !constantTimeEquals(setup.browserSessionDigest, browserSessionDigest)) {
       throw setupError('setup_session_mismatch');
     }
     return setup;
@@ -1956,10 +1933,6 @@ function introductionClaimFromRow(row: ManagementIntroductionClaimRow): Manageme
     outboxId: row.outbox_id,
     createdAt: Number(row.created_at),
   };
-}
-
-function constantDigestEquals(left: string, right: string): boolean {
-  return constantTimeEquals(left, right);
 }
 
 function boundedFailureCode(value: string): string {

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Self-hosted, model-agnostic AI agent for Slack.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pejmanjohn/chickpea.git"
@@ -15,14 +15,26 @@
     ".nvmrc",
     "AGENTS.md",
     "LICENSE",
+    "NOTICE",
     "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "AGENTS.md",
     "SETUP_AGENT.md",
+    "TELEMETRY.md",
     "assets",
     "catalog",
+    "config/environments/qa/desired-state.json",
+    "config/environments/qa/workspace-recipe.json",
     "docs/authentication.md",
+    "docs/shared-gateway-data-handling.md",
     "docs/runbooks/auth-db-deployment.md",
+    "docs/runbooks/operations.md",
+    "docs/runbooks/releasing.md",
     "docs/runbooks/coding-sandbox-deployment.md",
     "docs/runbooks/composio-managed-connectors.md",
+    "docs/runbooks/product-telemetry.md",
+    "docs/runbooks/parallel-live-test-environments.md",
     "docs/runbooks/live-contract-acceptance-v1.md",
     "docs/runbooks/live-contract-verification.md",
     "docs/runbooks/agent-authoring-evaluation.md",
@@ -45,6 +57,12 @@
     "wrangler.jsonc"
   ],
   "type": "module",
+  "imports": {
+    "#chickpea-assets": {
+      "workerd": "./src/assets/read.cloudflare.ts",
+      "default": "./src/assets/read.node.ts"
+    }
+  },
   "engines": {
     "node": ">=22.19.0"
   },
@@ -54,7 +72,7 @@
     }
   },
   "scripts": {
-    "test": "npm run typecheck && node --test --import tsx tests/*.test.ts tests/usage/*.test.ts",
+    "test": "npm run typecheck && DO_NOT_TRACK=1 node --test --import tsx tests/*.test.ts tests/usage/*.test.ts",
     "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
     "dev": "vite dev --config vite.node.config.ts",
@@ -98,6 +116,7 @@
     "verify:slack-streaming-policy:live": "node --import tsx scripts/verify-slack-streaming-policy-live.mjs",
     "verify:oss-export": "node scripts/verify-oss-export.mjs",
     "verify:lockfile-integrity": "node scripts/verify-lockfile-integrity.mjs",
+    "env": "node --import tsx scripts/chickpea-environment.mjs",
     "auth:recover": "node --import tsx scripts/recover-auth.mjs",
     "slack:bridge": "node scripts/slack-socket-bridge.mjs",
     "reset:test-env": "node scripts/reset-test-env.mjs"

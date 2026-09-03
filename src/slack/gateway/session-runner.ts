@@ -77,6 +77,12 @@ export interface GatewaySessionRunnerControl {
   healthSnapshot(): GatewaySessionRunnerHealthSnapshot;
 }
 
+interface GatewaySessionEndpoint {
+  socket: GatewaySocket;
+  session: GatewayLogicalSession;
+  messageChain: Promise<void>;
+}
+
 export function classifyGatewaySessionRunnerHealth(
   input: GatewaySessionRunnerHealthInput,
 ): GatewaySessionRunnerHealthSnapshot {
@@ -221,16 +227,22 @@ export class GatewaySessionRunnerSupervisor {
 
 /** Keeps exactly one renewable, credential-free delivery socket per process. */
 export class GatewaySessionRunner implements GatewaySessionRunnerControl {
-  private socket: GatewaySocket | undefined;
-  private session: GatewayLogicalSession | undefined;
+  private active: GatewaySessionEndpoint | undefined;
+  private candidate: GatewaySessionEndpoint | undefined;
+  private handoffPredecessor: GatewaySessionEndpoint | undefined;
   private lastCheckpoint: GatewaySessionCheckpoint | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+  private candidateTimer: ReturnType<typeof setTimeout> | undefined;
   private scheduledAction: GatewaySessionScheduledAction | undefined;
   private scheduledAt: number | undefined;
+  private candidateOpeningGeneration: number | undefined;
+  private candidateOpeningDeadline: number | undefined;
+  private renewalPending = false;
   private starting = false;
   private stopped = true;
   private generation = 0;
+  private checkpointWrites = Promise.resolve();
   private readonly now: () => number;
   private readonly setTimer: NonNullable<GatewaySessionRunnerOptions['setTimer']>;
   private readonly clearTimer: NonNullable<GatewaySessionRunnerOptions['clearTimer']>;
@@ -247,6 +259,10 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     this.starting = true;
     this.clearScheduled();
     this.clearHeartbeat();
+    this.clearCandidateTimer();
+    this.candidateOpeningGeneration = undefined;
+    this.candidateOpeningDeadline = undefined;
+    this.retireCandidate('restart');
     this.retireCurrentSocket('restart');
     try {
       const [binding, prior] = await Promise.all([
@@ -259,66 +275,23 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
         return false;
       }
       const connecting = { health: 'connecting' as const, attempt: prior?.attempt ?? 0 };
-      await this.options.client.recordSessionCheckpoint(connecting);
+      await this.recordCheckpoint(connecting, () => this.current(generation));
       this.lastCheckpoint = connecting;
       if (!this.current(generation)) return false;
-      let socket: GatewaySocket | undefined;
-      const session = await this.options.client.createSession(
-        (frame) => {
-          if (this.current(generation) && this.socket === socket && socket?.readyState === 1) {
-            socket.send(JSON.stringify(frame));
-          }
-        },
-        this.options.onEvent,
-        connecting,
-        this.options.capabilities,
-      );
-      if (!this.current(generation)) return false;
-      const connectedSocket = (this.options.createSocket ?? defaultSocket)(binding.sessionUrl);
+      const endpoint = await this.createEndpoint(binding.sessionUrl, connecting, generation);
+      if (!endpoint) return false;
       if (!this.current(generation)) {
-        this.closeSocket(connectedSocket, 1000, 'superseded');
+        this.closeSocket(endpoint.socket, 1000, 'superseded');
         return false;
       }
-      socket = connectedSocket;
-      this.socket = connectedSocket;
-      this.session = session;
-      let messageChain = Promise.resolve();
-      connectedSocket.addEventListener('open', () => {
-        if (!this.current(generation) || this.socket !== connectedSocket) return;
-        void session.hello().catch(() => this.reconnect(connectedSocket, 'hello_failed'));
-      });
-      connectedSocket.addEventListener('message', (event) => {
-        if (!this.current(generation) || this.socket !== connectedSocket) return;
-        const raw = typeof event.data === 'string' ? event.data : '';
-        // WebSocket message callbacks are synchronous, while handling an event
-        // is async. Preserve gateway delivery order so two same-thread events
-        // cannot execute and acknowledge out of order on one logical session.
-        messageChain = messageChain.then(async () => {
-          if (!this.current(generation) || this.socket !== connectedSocket) return;
-          await session.handle(raw);
-          if (!this.current(generation) || this.socket !== connectedSocket) return;
-          this.lastCheckpoint = session.state();
-          await this.options.client.recordSessionCheckpoint(this.lastCheckpoint);
-          const rotateAt = this.lastCheckpoint.rotateAt;
-          if (rotateAt) {
-            this.schedule(
-              () => connectedSocket.close(1000, 'rotate'),
-              rotateAt - this.now(),
-              'rotate',
-            );
-          }
-          this.scheduleHeartbeat(connectedSocket, session);
-        }).catch(() => this.reconnect(connectedSocket, 'invalid_frame'));
-        this.options.waitUntil?.(messageChain);
-      });
-      connectedSocket.addEventListener('close', () => this.reconnect(connectedSocket, 'closed'));
-      connectedSocket.addEventListener('error', () => this.reconnect(connectedSocket, 'network'));
+      this.active = endpoint;
+      this.attachEndpoint(endpoint, generation);
       // A completed WebSocket upgrade is not a usable session until the gateway
       // authenticates it with session.ready. Cover the half-open-before-first-
       // frame case instead of waiting forever for heartbeat state that does not
       // exist yet.
       this.schedule(
-        () => this.reconnect(connectedSocket, 'ready_timeout'),
+        () => this.failEndpoint(endpoint, 'ready_timeout'),
         GATEWAY_HEARTBEAT_TIMEOUT_MS,
         'ready_timeout',
       );
@@ -333,42 +306,258 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     this.stopped = true;
     this.clearScheduled();
     this.clearHeartbeat();
+    this.clearCandidateTimer();
+    this.candidateOpeningGeneration = undefined;
+    this.candidateOpeningDeadline = undefined;
+    this.retireCandidate('shutdown');
     this.retireCurrentSocket('shutdown');
   }
 
   state(): ReturnType<GatewayLogicalSession['state']> | undefined {
-    return this.session?.state() ?? (this.lastCheckpoint ? { ...this.lastCheckpoint } : undefined);
+    return this.active?.session.state() ?? (this.lastCheckpoint ? { ...this.lastCheckpoint } : undefined);
   }
 
   healthSnapshot(): GatewaySessionRunnerHealthSnapshot {
     const checkpoint = this.state();
+    if (this.renewalPending && !this.stopped) {
+      const active = this.active;
+      const candidateOpening = this.candidateOpeningGeneration === this.generation;
+      // Creating a successor can stall before there is a socket to time out.
+      // Let the normal heartbeat supervisor retire this entire generation;
+      // late async completion is fenced by current(generation).
+      if (candidateOpening && this.candidateOpeningDeadline !== undefined
+        && this.now() >= this.candidateOpeningDeadline) {
+        return {
+          generation: this.generation,
+          phase: 'stale', healthy: false, shouldReplace: true,
+          reason: 'candidate_open_timeout',
+          ...(checkpoint ? { checkpoint } : {}),
+        };
+      }
+      if (!active && !this.candidate && !candidateOpening) {
+        return {
+          generation: this.generation,
+          phase: 'stale',
+          healthy: false,
+          shouldReplace: true,
+          reason: 'session_unavailable',
+          ...(checkpoint ? { checkpoint } : {}),
+        };
+      }
+      if (active?.socket.readyState === 1 && checkpoint?.health === 'healthy' &&
+          checkpoint.lastHeartbeatAt !== undefined &&
+          checkpoint.lastHeartbeatAt > this.now() - GATEWAY_HEARTBEAT_TIMEOUT_MS) {
+        return {
+          generation: this.generation,
+          phase: 'healthy',
+          healthy: true,
+          shouldReplace: false,
+          socketState: active.socket.readyState,
+          checkpoint,
+          ...(this.scheduledAction ? { scheduledAction: this.scheduledAction } : {}),
+          ...(this.scheduledAt !== undefined ? { scheduledAt: this.scheduledAt } : {}),
+        };
+      }
+      return {
+        generation: this.generation,
+        phase: 'connecting',
+        healthy: false,
+        shouldReplace: false,
+        ...(this.candidate ? { socketState: this.candidate.socket.readyState } : {}),
+        ...(checkpoint ? { checkpoint } : {}),
+      };
+    }
     return classifyGatewaySessionRunnerHealth({
       generation: this.generation,
       stopped: this.stopped,
       starting: this.starting,
       now: this.now(),
-      ...(this.socket ? { socketState: this.socket.readyState } : {}),
+      ...(this.active ? { socketState: this.active.socket.readyState } : {}),
       ...(checkpoint ? { checkpoint } : {}),
       ...(this.scheduledAction ? { scheduledAction: this.scheduledAction } : {}),
       ...(this.scheduledAt !== undefined ? { scheduledAt: this.scheduledAt } : {}),
     });
   }
 
-  private reconnect(socket: GatewaySocket, reason: string): void {
-    if (this.stopped || this.socket !== socket) return;
-    this.socket = undefined;
-    this.clearHeartbeat();
-    try {
-      socket.close(1012, 'reconnect');
-    } catch {
-      // Already closed.
+  private async createEndpoint(
+    sessionUrl: string,
+    checkpoint: GatewaySessionCheckpoint,
+    generation: number,
+  ): Promise<GatewaySessionEndpoint | undefined> {
+    let endpoint: GatewaySessionEndpoint | undefined;
+    const session = await this.options.client.createSession(
+      (frame) => {
+        if (this.current(generation) && endpoint && this.endpointCurrent(endpoint) &&
+            endpoint.socket.readyState === 1) {
+          endpoint.socket.send(JSON.stringify(frame));
+        }
+      },
+      this.options.onEvent,
+      checkpoint,
+      this.options.capabilities,
+    );
+    if (!this.current(generation)) return undefined;
+    const socket = (this.options.createSocket ?? defaultSocket)(sessionUrl);
+    endpoint = { socket, session, messageChain: Promise.resolve() };
+    return endpoint;
+  }
+
+  private attachEndpoint(endpoint: GatewaySessionEndpoint, generation: number): void {
+    endpoint.socket.addEventListener('open', () => {
+      if (!this.current(generation) || !this.endpointCurrent(endpoint)) return;
+      void endpoint.session.hello().catch(() => this.failEndpoint(endpoint, 'hello_failed'));
+    });
+    endpoint.socket.addEventListener('message', (event) => {
+      if (!this.current(generation) || !this.endpointCurrent(endpoint)) return;
+      const raw = typeof event.data === 'string' ? event.data : '';
+      // WebSocket callbacks are synchronous, while event admission is async.
+      // Keep one chain per socket so delivery and receipt order is preserved.
+      endpoint.messageChain = endpoint.messageChain.then(async () => {
+        if (!this.current(generation) || !this.endpointCurrent(endpoint)) return;
+        await endpoint.session.handle(raw);
+        if (!this.current(generation) || !this.endpointCurrent(endpoint)) return;
+        if (this.candidate === endpoint) {
+          if (endpoint.session.state().health === 'healthy') await this.promoteCandidate(endpoint);
+          return;
+        }
+        const checkpoint = endpoint.session.state();
+        this.lastCheckpoint = checkpoint;
+        await this.recordCheckpoint(checkpoint, () => this.active === endpoint);
+        if (!this.current(generation) || this.active !== endpoint) return;
+        const rotateAt = checkpoint.rotateAt;
+        if (rotateAt && !this.renewalPending) {
+          this.schedule(() => this.beginRotation(endpoint), rotateAt - this.now(), 'rotate');
+        }
+        this.scheduleHeartbeat(endpoint);
+      }).catch(() => this.failEndpoint(endpoint, 'invalid_frame'));
+      this.options.waitUntil?.(endpoint.messageChain);
+    });
+    endpoint.socket.addEventListener('close', () => this.failEndpoint(endpoint, 'closed'));
+    endpoint.socket.addEventListener('error', () => this.failEndpoint(endpoint, 'network'));
+  }
+
+  private beginRotation(predecessor: GatewaySessionEndpoint): void {
+    if (this.stopped || this.active !== predecessor || this.candidate ||
+        this.candidateOpeningGeneration !== undefined) return;
+    this.renewalPending = true;
+    this.handoffPredecessor = predecessor;
+    const generation = this.generation;
+    this.candidateOpeningGeneration = generation;
+    this.candidateOpeningDeadline = this.now() + GATEWAY_HEARTBEAT_TIMEOUT_MS;
+    void this.openCandidate(generation)
+      .catch(() => {
+        if (this.current(generation)) this.failCandidate(undefined, 'candidate_start_failed');
+      })
+      .finally(() => {
+        if (this.candidateOpeningGeneration !== generation) return;
+        this.candidateOpeningGeneration = undefined;
+        this.candidateOpeningDeadline = undefined;
+        if (this.current(generation) && this.renewalPending && !this.candidate) {
+          this.failCandidate(undefined, 'candidate_start_failed');
+        }
+      });
+  }
+
+  private async openCandidate(generation: number): Promise<void> {
+    const binding = await this.options.client.loadBinding();
+    if (!binding || !this.current(generation) || !this.renewalPending || this.candidate) return;
+    const connecting = {
+      health: 'connecting' as const,
+      attempt: this.handoffPredecessor?.session.state().attempt ?? 0,
+    };
+    const candidate = await this.createEndpoint(binding.sessionUrl, connecting, generation);
+    if (!candidate) return;
+    if (!this.current(generation) || !this.renewalPending || this.candidate) {
+      this.closeSocket(candidate.socket, 1000, 'superseded');
+      return;
     }
-    const checkpoint = this.session?.close(reason);
+    this.candidate = candidate;
+    this.attachEndpoint(candidate, generation);
+    this.clearCandidateTimer();
+    this.candidateTimer = this.setTimer(
+      () => this.failCandidate(candidate, 'ready_timeout'),
+      GATEWAY_HEARTBEAT_TIMEOUT_MS,
+    );
+  }
+
+  private async promoteCandidate(candidate: GatewaySessionEndpoint): Promise<void> {
+    if (this.stopped || this.candidate !== candidate) return;
+    const predecessor = this.handoffPredecessor;
+    this.clearCandidateTimer();
+    this.candidate = undefined;
+    this.active = candidate;
+    this.handoffPredecessor = undefined;
+    this.renewalPending = false;
+    const checkpoint = candidate.session.state();
+    this.lastCheckpoint = checkpoint;
+    try {
+      await this.recordCheckpoint(checkpoint, () => this.active === candidate);
+    } finally {
+      if (predecessor && predecessor !== candidate) {
+        this.closeSocket(predecessor.socket, 1000, 'rotation_complete');
+      }
+    }
+    if (this.stopped || this.active !== candidate) return;
+    const rotateAt = checkpoint.rotateAt;
+    if (rotateAt) this.schedule(() => this.beginRotation(candidate), rotateAt - this.now(), 'rotate');
+    this.scheduleHeartbeat(candidate);
+  }
+
+  private failEndpoint(endpoint: GatewaySessionEndpoint, reason: string): void {
+    if (this.stopped) return;
+    if (this.candidate === endpoint) {
+      this.failCandidate(endpoint, reason);
+      return;
+    }
+    if (this.active !== endpoint) return;
+    if (this.renewalPending && this.handoffPredecessor === endpoint &&
+        (this.candidate || this.candidateOpeningGeneration === this.generation)) {
+      this.active = undefined;
+      this.clearHeartbeat();
+      this.closeSocket(endpoint.socket, 1012, 'handoff');
+      return;
+    }
+    this.reconnect(endpoint, reason);
+  }
+
+  private failCandidate(candidate: GatewaySessionEndpoint | undefined, reason: string): void {
+    if (this.stopped || (candidate && this.candidate !== candidate)) return;
+    const failed = candidate ?? this.candidate;
+    if (failed) this.closeSocket(failed.socket, 1012, 'candidate_failed');
+    this.candidate = undefined;
+    this.clearCandidateTimer();
+    const active = this.active;
+    if (active?.socket.readyState === 1 && active.session.state().health === 'healthy') {
+      this.handoffPredecessor = active;
+      this.renewalPending = true;
+      this.schedule(() => this.beginRotation(active), 5_000, 'rotate');
+      return;
+    }
+    const predecessor = this.handoffPredecessor;
+    this.handoffPredecessor = undefined;
+    this.renewalPending = false;
+    const checkpoint = (predecessor ?? failed)?.session.close(reason);
     if (checkpoint) {
       this.lastCheckpoint = checkpoint;
-      void this.options.client.recordSessionCheckpoint(checkpoint);
+      void this.recordCheckpoint(checkpoint);
     }
-    this.session = undefined;
+    const delay = Math.max(0, (checkpoint?.retryAt ?? this.now() + 1_000) - this.now());
+    this.schedule(() => void this.start().catch(() => this.scheduleRetry()), delay, 'retry');
+  }
+
+  private reconnect(endpoint: GatewaySessionEndpoint, reason: string): void {
+    if (this.stopped || this.active !== endpoint) return;
+    this.active = undefined;
+    this.handoffPredecessor = undefined;
+    this.renewalPending = false;
+    this.clearScheduled();
+    this.clearHeartbeat();
+    this.closeSocket(endpoint.socket, 1012, 'reconnect');
+    const checkpoint = endpoint.session.close(reason);
+    if (checkpoint) {
+      this.lastCheckpoint = checkpoint;
+      void this.recordCheckpoint(checkpoint);
+    }
     if (checkpoint?.health === 'needs_attention') return;
     const delay = Math.max(0, (checkpoint?.retryAt ?? this.now() + 1_000) - this.now());
     this.schedule(() => void this.start().catch(() => this.scheduleRetry()), delay, 'retry');
@@ -379,11 +568,20 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
   }
 
   private retireCurrentSocket(reason: string): void {
-    const socket = this.socket;
-    if (this.session) this.lastCheckpoint = this.session.state();
-    this.socket = undefined;
-    this.session = undefined;
-    if (socket) this.closeSocket(socket, 1000, reason);
+    const active = this.active;
+    if (active) this.lastCheckpoint = active.session.state();
+    this.active = undefined;
+    this.renewalPending = false;
+    const predecessor = this.handoffPredecessor;
+    this.handoffPredecessor = undefined;
+    if (active) this.closeSocket(active.socket, 1000, reason);
+    if (predecessor && predecessor !== active) this.closeSocket(predecessor.socket, 1000, reason);
+  }
+
+  private retireCandidate(reason: string): void {
+    const candidate = this.candidate;
+    this.candidate = undefined;
+    if (candidate) this.closeSocket(candidate.socket, 1000, reason);
   }
 
   private closeSocket(socket: GatewaySocket, code: number, reason: string): void {
@@ -424,24 +622,44 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     this.scheduledAt = undefined;
   }
 
-  private scheduleHeartbeat(socket: GatewaySocket, session: GatewayLogicalSession): void {
+  private scheduleHeartbeat(endpoint: GatewaySessionEndpoint): void {
     this.clearHeartbeat();
-    const lastHeartbeatAt = session.state().lastHeartbeatAt;
+    const lastHeartbeatAt = endpoint.session.state().lastHeartbeatAt;
     if (lastHeartbeatAt === undefined) return;
     const delay = Math.max(0, lastHeartbeatAt + GATEWAY_HEARTBEAT_TIMEOUT_MS - this.now());
     this.heartbeatTimer = this.setTimer(() => {
-      if (this.stopped || this.socket !== socket) return;
-      if (!gatewaySessionHealthy(session.state(), this.now())) {
-        this.reconnect(socket, 'heartbeat_timeout');
+      if (this.stopped || this.active !== endpoint) return;
+      if (!gatewaySessionHealthy(endpoint.session.state(), this.now())) {
+        this.failEndpoint(endpoint, 'heartbeat_timeout');
         return;
       }
-      this.scheduleHeartbeat(socket, session);
+      this.scheduleHeartbeat(endpoint);
     }, delay);
   }
 
   private clearHeartbeat(): void {
     if (this.heartbeatTimer !== undefined) this.clearTimer(this.heartbeatTimer);
     this.heartbeatTimer = undefined;
+  }
+
+  private clearCandidateTimer(): void {
+    if (this.candidateTimer !== undefined) this.clearTimer(this.candidateTimer);
+    this.candidateTimer = undefined;
+  }
+
+  private endpointCurrent(endpoint: GatewaySessionEndpoint): boolean {
+    return this.active === endpoint || this.candidate === endpoint;
+  }
+
+  private recordCheckpoint(
+    checkpoint: GatewaySessionCheckpoint,
+    allowed: () => boolean = () => true,
+  ): Promise<void> {
+    const write = this.checkpointWrites.then(async () => {
+      if (allowed()) await this.options.client.recordSessionCheckpoint(checkpoint);
+    });
+    this.checkpointWrites = write.catch(() => undefined);
+    return write;
   }
 }
 

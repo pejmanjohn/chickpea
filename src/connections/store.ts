@@ -1,3 +1,4 @@
+import { sha256Hex } from '../security/digest.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { canEditAgent, requirePermission, AuthorizationError } from '../auth/permissions.ts';
 import {
@@ -24,6 +25,7 @@ import type {
 } from '../config/types.ts';
 import { MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY } from '../config/types.ts';
 import type { ConnectionAccountView } from './types.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import type {
   ManagedConnectionProviderRegistry,
   ManagedConnectionValidationResult,
@@ -45,6 +47,8 @@ export interface ConnectionAccountServiceDependencies {
   managedProviders?: ManagedConnectionProviderRegistry;
   managedCatalog?: ManagedConnectorCatalog;
   randomId?: () => string;
+  productTelemetry?: ProductTelemetryCapture;
+  telemetrySurface?: 'admin' | 'slack' | 'mcp' | 'other';
 }
 
 export class ManagedConnectionConflictError extends Error {
@@ -177,7 +181,7 @@ export class ConnectionAccountService {
         );
         secretSaved = true;
       }
-      return await this.dependencies.config.createAgentOwnedConnection({
+      const created = await this.dependencies.config.createAgentOwnedConnection({
         account: accountInput,
         binding: {
           agentId: input.agentId,
@@ -188,6 +192,8 @@ export class ConnectionAccountService {
           enabled: true,
         },
       });
+      this.captureConnectionReady(undefined, created.account, created.binding);
+      return created;
     } catch (error) {
       const setupError = error instanceof ManagedRemoteAccountAlreadyUsedError
         ? new ManagedConnectionConflictError(error.message)
@@ -377,6 +383,7 @@ export class ConnectionAccountService {
       ...binding,
       resourceConstraints: input.resourceConstraints,
     });
+    this.captureConnectionReady(account.lifecycle, updatedAccount, updatedBinding);
     if (updatedAccount.lifecycle === 'ready') {
       try {
         await resumeDependentSchedules(this.dependencies.config, updatedAccount.id);
@@ -409,6 +416,10 @@ export class ConnectionAccountService {
     adapterId: string;
     toolkit: string;
   }): Promise<void> {
+    requirePermission(
+      input.principal,
+      input.ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal',
+    );
     const agent = await this.dependencies.config.getAgent(input.agentId);
     if (!canEditAgent(input.principal, agent)) throw new AuthorizationError();
     const normalizedAdapterId = input.adapterId.trim().toLowerCase();
@@ -538,13 +549,25 @@ export class ConnectionAccountService {
       );
     }
     const bindings = await this.dependencies.config.listAgentConnectionBindings(input.agentId);
-    const revoked: ConnectionAccount[] = [];
+    const ownedAccounts: ConnectionAccount[] = [];
     for (const binding of bindings) {
       const currentBinding = await this.dependencies.config.getAgentConnectionBindingForAccount(
         binding.connectionAccountId,
       );
       if (currentBinding?.agentId !== input.agentId) throw new AuthorizationError();
-      revoked.push(await this.revokeOwnedAccount(await this.findAccount(binding.connectionAccountId)));
+      const account = await this.findAccount(binding.connectionAccountId);
+      // Agent deletion must not turn edit access into authority over a Team
+      // connection after its creator has been demoted. Preflight every Team
+      // account before revoking anything so a denial cannot leave partial
+      // cleanup behind.
+      if (account.ownerKind === 'team') {
+        requirePermission(input.principal, 'connection.create_team');
+      }
+      ownedAccounts.push(account);
+    }
+    const revoked: ConnectionAccount[] = [];
+    for (const account of ownedAccounts) {
+      revoked.push(await this.revokeOwnedAccount(account));
     }
     return revoked;
   }
@@ -597,7 +620,7 @@ export class ConnectionAccountService {
     providerGeneration?: number;
     providerLineage?: string;
   }): Promise<ConnectionAccount> {
-    const { account } = await this.requireAgentOwnedAccount(input);
+    const { account, binding } = await this.requireAgentOwnedAccount(input);
     if (account.revision !== input.expectedRevision || account.lifecycle === 'revoked' ||
         account.policy.kind !== 'managed' ||
         account.policy.adapterId.trim().toLowerCase() !== input.adapterId.trim().toLowerCase() ||
@@ -635,6 +658,7 @@ export class ConnectionAccountService {
       { ...account, policy, lifecycle },
       account.revision,
     );
+    this.captureConnectionReady(account.lifecycle, replaced, binding);
     if (account.policy.accountRef !== policy.accountRef) {
       try {
         await provider.revoke({ policy: account.policy });
@@ -674,6 +698,26 @@ export class ConnectionAccountService {
       if (account) return account;
     }
     throw new Error(`Unknown connection account ${id}`);
+  }
+
+  private captureConnectionReady(
+    previousLifecycle: ConnectionAccount['lifecycle'] | undefined,
+    account: ConnectionAccount,
+    binding: AgentConnectionBinding,
+  ): void {
+    if (previousLifecycle === 'ready' || account.lifecycle !== 'ready' || !binding.enabled) return;
+    try {
+      this.dependencies.productTelemetry?.capture({
+        event: 'connection_ready',
+        workspaceId: account.workspaceId,
+        agentId: binding.agentId,
+        connectionKind: account.policy.kind,
+        ownerKind: account.ownerKind,
+        surface: this.dependencies.telemetrySurface ?? 'other',
+      });
+    } catch {
+      // Advisory telemetry never changes a committed connection transition.
+    }
   }
 
   private async requireAgentOwnedAccount(input: {
@@ -859,7 +903,6 @@ export class ConnectionAccountService {
   private requireManage(principal: AuthPrincipal, account: ConnectionAccount): void {
     if (principal.role === 'owner' || principal.role === 'admin') return;
     if (account.ownerKind === 'member' && account.ownerMembershipId === principal.membershipId) return;
-    if (account.ownerKind === 'team' && account.createdByMembershipId === principal.membershipId) return;
     throw new AuthorizationError();
   }
 
@@ -911,9 +954,7 @@ function applyManagedValidation(
 }
 
 async function managedResourceHandle(resourceKey: string, providerRef: string): Promise<string> {
-  const bytes = new TextEncoder().encode(`${resourceKey}\u0000${providerRef}`);
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  const hex = [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  const hex = await sha256Hex(`${resourceKey}\u0000${providerRef}`);
   return `resource_${hex.slice(0, 32)}`;
 }
 

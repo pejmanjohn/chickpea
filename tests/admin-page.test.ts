@@ -94,6 +94,7 @@ type SlackConnectionFixture = {
   health?: 'pending' | 'healthy' | 'needs_attention' | 'revoked' | 'degraded';
   healthDetail?: string | null;
   transportMode?: 'direct' | 'gateway';
+  gateway?: { healthy: boolean; phase: string; detail: string | null; generation: number | null; versionId: string | null };
   teamId?: string | null;
   teamName?: string | null;
   requestUrl: string;
@@ -119,6 +120,7 @@ type OnboardingFixture = {
   agentId?: string;
   redirectTo?: string;
 };
+type EnvironmentStatusFixture = Record<string, unknown>;
 type GithubStatusFixture = {
   mode: 'none' | 'app';
   appSlug?: string;
@@ -156,8 +158,9 @@ const opsAgent = {
   model: 'local-stub/ops',
 };
 
-function inlineScript(usageAdminUi = false): string {
-  const script = renderAdminPage({ usageAdminUi }).match(/<script>([\s\S]*?)<\/script>/)?.[1];
+function inlineScript(usageAdminUi = false, workspaceAdminUi = true): string {
+  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi })
+    .match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script, 'admin page should include one inline script');
   return script;
 }
@@ -461,6 +464,8 @@ function runAdminPageHarness(
     deferAgentPatch?: boolean;
     initialSearch?: string;
     usageAdminUi?: boolean;
+    workspaceAdminUi?: boolean;
+    environmentStatus?: EnvironmentStatusFixture;
     usageApiError?: boolean;
     usageCoverage?: { pricedOperationCount: number; meteredOperationCount: number };
     usageAgentLabel?: string | null;
@@ -498,6 +503,7 @@ function runAdminPageHarness(
   historyReplaces: string[];
   usageApiCalls: string[];
   scheduledApiCalls: string[];
+  fetchCalls: Array<{ path: string; method: string }>;
   channelListCalls: string[];
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
@@ -1264,8 +1270,10 @@ function runAdminPageHarness(
       priceVersionId: 'openai_2026-07-28', priceUnknownReason: null, recordedAt: usageNow - 55_000,
     }],
   };
+  const fetchCalls: Array<{ path: string; method: string }> = [];
   const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string>; cache?: string }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
+    fetchCalls.push({ path, method });
     if (
       method === 'GET' &&
       ['/admin/api/github/status', '/admin/api/egress', '/admin/api/sandbox/status'].includes(path)
@@ -2616,6 +2624,11 @@ function runAdminPageHarness(
         ? Promise.resolve(jsonResponse(slackConnection))
         : Promise.resolve(jsonResponse({ error: 'not_found' }, 404));
     }
+    if (path === '/admin/api/environment/status' && method === 'GET') {
+      return harnessOptions.environmentStatus
+        ? Promise.resolve(jsonResponse(harnessOptions.environmentStatus))
+        : Promise.resolve(jsonResponse({ error: 'environment_status_unavailable' }, 404));
+    }
     if (path.startsWith('/admin/api/effective-config?')) {
       if (effectiveError) {
         return Promise.resolve(
@@ -2646,6 +2659,7 @@ function runAdminPageHarness(
     inlineScriptFor(
       options.cloudflare ?? false,
       options.usageAdminUi ?? false,
+      options.workspaceAdminUi ?? true,
     ),
     {
       document,
@@ -2726,6 +2740,7 @@ function runAdminPageHarness(
     historyReplaces,
     usageApiCalls,
     scheduledApiCalls,
+    fetchCalls,
     channelListCalls,
     providerKeyPosts,
     providerKeyDeletes,
@@ -2855,15 +2870,16 @@ async function openReleaseAttachPicker(
 function inlineScriptFor(
   cloudflare: boolean,
   usageAdminUi = false,
+  workspaceAdminUi = true,
 ): string {
-  if (!cloudflare) return inlineScript(usageAdminUi);
+  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     value: { userAgent: 'Cloudflare-Workers' },
     configurable: true,
   });
   try {
-    return inlineScript(usageAdminUi);
+    return inlineScript(usageAdminUi, workspaceAdminUi);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else delete (globalThis as { navigator?: unknown }).navigator;
@@ -2893,6 +2909,140 @@ function connectedSlackFixture(): SlackConnectionFixture {
     manifestUrl: 'https://api.slack.com/apps?new_app=1&manifest_json=%7B%22a%22%3A1%7D',
   };
 }
+
+function liveEnvironmentFixture(
+  amberHealth: 'ready' | 'unreachable' | 'stale_claim' | 'identity_mismatch' | 'expired_claim',
+): EnvironmentStatusFixture {
+  const target = (name: 'amber' | 'cobalt', health = 'ready') => ({
+    target: name,
+    health,
+    sourceSha: '1234567890abcdef1234567890abcdef12345678',
+    dirty: name === 'amber',
+    servingVersion: `version-${name}`,
+    transport: 'events',
+    workspaceAlias: `env-${name}-workspace`,
+    workspaceLabel: `${name} workspace`,
+    appAlias: `env-${name}-slack-app`,
+    appLabel: `${name} app`,
+    claim: name === 'amber' ? {
+      holderId: 'holder-0123456789abcdef',
+      leaseAgeMs: 120_000,
+      expiresAt: '2026-09-01T20:00:00.000Z',
+    } : null,
+    verifierLock: { status: name === 'amber' ? 'live' : 'clear', ...(name === 'amber' ? { ownerRunId: 'run-amber' } : {}) },
+    schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
+    lastAttestedRevision: '1234567890abcdef1234567890abcdef12345678-dirty',
+    recoveryAction: name === 'amber' ? 'Untrusted recovery text with xoxb-never-render-this' : 'No recovery needed.',
+    credentialToken: 'xoxb-never-render-this',
+  });
+  return {
+    schemaVersion: 'chickpea-environment-status/v1',
+    generatedAt: '2026-09-01T12:00:00.000Z',
+    registryRevision: 9,
+    selectedTarget: 'amber',
+    targets: [target('amber', amberHealth), target('cobalt')],
+    sandbox: {
+      archiveDate: '2027-01-15T00:00:00.000Z',
+      daysUntilArchive: 136,
+      warning: 'none',
+      warningDays: [45, 30, 14],
+      unusedWorkspaceSlots: 2,
+      integrationHeadroom: 37,
+      browserProfilePath: '/private/browser-profile',
+    },
+  };
+}
+
+test('Admin renders the CLI environment identity and all five health states without credential fields', async () => {
+  for (const health of [
+    'ready', 'unreachable', 'stale_claim', 'identity_mismatch', 'expired_claim',
+  ] as const) {
+    const harness = runAdminPageHarness({ environmentStatus: liveEnvironmentFixture(health) });
+    await flushAsync();
+    assert.ok(harness.fetchCalls.some(({ path }) => path === '/admin/api/environment/status'));
+    assert.match(harness.app.innerHTML, new RegExp(`data-environment-target="amber" data-environment-health="${health}"`));
+    assert.match(harness.app.innerHTML, /1234567890abcdef1234567890abcdef12345678 \(dirty\)/);
+    assert.match(harness.app.innerHTML, /version-amber/);
+    assert.match(harness.app.innerHTML, /env-amber-workspace/);
+    assert.match(harness.app.innerHTML, /env-amber-slack-app/);
+    assert.match(harness.app.innerHTML, /holder-0123456789abcdef/);
+    assert.doesNotMatch(harness.app.innerHTML, /worktrees\/amber-owner|codex\/amber-owner/);
+    assert.match(harness.app.innerHTML, /run-amber/);
+    assert.match(harness.app.innerHTML, /d1:0002_mcp_oauth;do:v9/);
+    assert.match(harness.app.innerHTML, /Recorded unused workspace slots: 2/);
+    assert.match(harness.app.innerHTML, /Capacity is a registry snapshot/);
+    assert.doesNotMatch(harness.app.innerHTML, /xoxb-never-render-this|private\/browser-profile|credentialToken/);
+  }
+});
+
+test('Admin shows two standalone lanes without invented sandbox expiry or capacity', async () => {
+  const harness = runAdminPageHarness({ environmentStatus: {
+    ...liveEnvironmentFixture('ready'), sandbox: null,
+  } });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Two-lane fleet/);
+  assert.match(harness.app.innerHTML, /Standalone Slack workspaces/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-environment-target="fern"|Archive:|Recorded unused workspace slots:/);
+});
+
+test('Admin always labels a deployed lane without presenting frozen metadata as a current claim', async () => {
+  const harness = runAdminPageHarness({ environmentStatus: {
+    schemaVersion: 'chickpea-environment-identity/v1', target: 'cobalt',
+    sourceSha: '1234567890abcdef1234567890abcdef12345678', dirty: true,
+    servingVersion: '11111111-2222-3333-4444-555555555555',
+  } });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /cobalt · 1234567 \(dirty\)/);
+  assert.match(harness.app.innerHTML, /Deployed build/);
+  assert.match(harness.app.innerHTML, /npm run env -- status --all/);
+  assert.doesNotMatch(harness.app.innerHTML, /Two-lane fleet|No recovery needed|Unclaimed|cobalt · Ready/);
+});
+
+test('Admin renders recorded workspace capacity and does not invent unknown headroom', async () => {
+  for (const unusedWorkspaceSlots of [0, 1, 2, null]) {
+    const status = liveEnvironmentFixture('ready');
+    const harness = runAdminPageHarness({ environmentStatus: {
+      ...status,
+      sandbox: { ...(status.sandbox as Record<string, unknown>), unusedWorkspaceSlots },
+    } });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, new RegExp(
+      `Recorded unused workspace slots: ${unusedWorkspaceSlots === null ? 'unavailable' : unusedWorkspaceSlots}`,
+    ));
+  }
+});
+
+test('Member Admin shell exposes only Agent navigation and skips workspace bootstrap requests', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin',
+    workspaceAdminUi: false,
+    usageAdminUi: true,
+    slackConnection: connectedSlackFixture(),
+  });
+  await flushAsync();
+
+  const sectionSwitcher = harness.app.innerHTML.match(
+    /<nav class="section-switcher"[^>]*>[\s\S]*?<\/nav>/,
+  )?.[0];
+  assert.ok(sectionSwitcher);
+  assert.match(sectionSwitcher, />Agents<\/button>/);
+  assert.doesNotMatch(sectionSwitcher, />Destinations<\/button>|>Team<\/button>|>Usage<\/button>|>Settings<\/button>/);
+
+  const fetchedPaths = harness.fetchCalls
+    .filter(({ method }) => method === 'GET')
+    .map(({ path }) => path);
+  assert.ok(fetchedPaths.includes('/admin/api/agents'));
+  assert.ok(fetchedPaths.includes('/admin/api/models'));
+  for (const path of [
+    '/admin/api/slack-connection',
+    '/admin/api/onboarding',
+    '/admin/api/channels',
+    '/admin/api/workspace-model-default',
+    '/admin/api/environment/status',
+  ]) {
+    assert.equal(fetchedPaths.includes(path), false, `${path} must not be fetched`);
+  }
+});
 
 function channelsFixture(
   channels: SlackChannelFixture[] = [
@@ -3119,6 +3269,35 @@ test('an offline inbound Slack session renders a specific retryable status', asy
 
   assert.match(harness.app.innerHTML, /inbound event session is offline/i);
   assert.match(harness.app.innerHTML, /badge badge-off[^>]*>[\s\S]*?Needs attention/);
+});
+
+test('Slack connection shows bounded live session diagnostics separately from saved health', async () => {
+  for (const phase of ['healthy', 'retrying', 'starting', 'stale']) {
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/settings/slack/identities',
+      slackConnection: {
+        ...connectedSlackFixture(), transportMode: 'gateway',
+        health: 'needs_attention', healthDetail: 'gateway_session_offline',
+        gateway: { healthy: phase === 'healthy', phase, detail: null, generation: 3,
+          versionId: '11111111-2222-3333-4444-555555555555' },
+      },
+    });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, /Inbound session/);
+    assert.match(harness.app.innerHTML, new RegExp('Session phase: ' + phase));
+    assert.match(harness.app.innerHTML, /Generation: 3/);
+    assert.match(harness.app.innerHTML, /11111111-2222-3333-4444-555555555555/);
+    assert.match(harness.app.innerHTML, /Needs attention/);
+  }
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/slack/identities',
+    slackConnection: { ...connectedSlackFixture(), transportMode: 'gateway',
+      gateway: { healthy: false, phase: 'private remote error', detail: 'private remote error',
+        generation: -1, versionId: 'private remote error' } },
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Session phase: unavailable/);
+  assert.doesNotMatch(harness.app.innerHTML, /private remote error|Generation: -1/);
 });
 
 test('a successful Slack re-test clears an earlier inbound-session warning', async () => {
@@ -4874,6 +5053,26 @@ test('Agent placements prefer the projected Slack Channel name over a raw Channe
 
   assert.match(harness.app.innerHTML, /data-action="open-channel-from-profile"[^>]*>[\s\S]*?class="where-channel-name">eng-releases/);
   assert.doesNotMatch(harness.app.innerHTML, /class="where-channel-name">C0EXR3L9T/);
+});
+
+test('Agent placements refresh stale labels using an exact workspace and channel match', async () => {
+  for (const [workspaceId, channelName, expected] of [
+    ['T_DESIGN', 'current-name', 'current-name'],
+    ['T_OTHER', 'current-name', 'saved-name'],
+    ['T_DESIGN', 'C_RENAMED', 'saved-name'],
+  ]) {
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/agents/agent_release',
+      agents: [{ ...releaseAgent, whereItWorks: { channels: [{
+        workspaceId: 'T_DESIGN', channelId: 'C_RENAMED', channelName: 'saved-name', status: 'active',
+      }] } }],
+      assignments: [],
+      channelIndex: [{ workspaceId, channelId: 'C_RENAMED', channelName, grants: [] }],
+    });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, new RegExp('class="where-channel-name">' + expected));
+    assert.doesNotMatch(harness.app.innerHTML, /class="where-channel-name">C_RENAMED/);
+  }
 });
 
 test('Channel detail prefers the projected Slack Channel name over a raw Channel ID', async () => {
@@ -7314,7 +7513,8 @@ test('unconfigured managed connectors stay discoverable and continue after owner
   assert.doesNotMatch(harness.app.innerHTML, new RegExp(secret));
   assert.match(harness.app.innerHTML, /<strong>YouTube<\/strong>/);
   assert.match(harness.app.innerHTML, /value="member" data-action="connection-account-owner" checked/);
-  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.match(harness.app.innerHTML, /Review the permissions requested on the provider/);
 });
 
 test('members can discover managed connectors without seeing the project-key field', async () => {
@@ -7475,7 +7675,8 @@ test('connector handoff waits for Composio before opening managed Google setup',
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.match(harness.app.innerHTML, /Review the permissions requested on the provider/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-google-access"/);
   assert.ok(harness.historyReplaces.includes('/admin/agents/agent_conn'));
 });
@@ -7495,7 +7696,8 @@ test('connector handoff opens a managed-only preset after the catalog loads', as
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /<strong>Notion<\/strong>/);
-  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.match(harness.app.innerHTML, /Review the permissions requested on the provider/);
   assert.ok(harness.historyReplaces.includes('/admin/agents/agent_conn'));
 });
 
@@ -7817,6 +8019,8 @@ test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link
     /<div class="skill-form">[\s\S]*?Continue to Google Drive[\s\S]*?<\/div>/,
   )?.[0] ?? '';
   assert.match(managedForm, /Sign-in opens in a secure Google Drive tab/);
+  assert.match(managedForm, /Review the permissions requested on the provider/);
+  assert.doesNotMatch(managedForm, /connection-account-managed-access|Read-only/);
   assert.match(managedForm, /class="connection-account-owner-options"/);
   assert.match(managedForm, /connection-account-owner-icon-personal/);
   assert.match(managedForm, /connection-account-owner-icon-team/);
@@ -7829,7 +8033,7 @@ test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link
   assert.deepEqual(harness.managedAuthorizationPosts, [{
     agentId: 'agent_conn',
     body: {
-      workspaceId: 'T_DESIGN', ownerKind: 'team', toolkit: 'googledrive', access: 'read',
+      workspaceId: 'T_DESIGN', ownerKind: 'team', toolkit: 'googledrive', access: 'write',
     },
   }]);
   assert.deepEqual(harness.connectionAccountPosts, []);
@@ -7839,7 +8043,7 @@ test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link
   assert.match(harness.app.innerHTML, /Finish sign-in in the new tab/);
 });
 
-test('Agent-owned Google Drive accounts can request a read-write Composio capability ceiling', async () => {
+test('managed connections use standard permissions without an access picker', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [] },
@@ -7852,7 +8056,7 @@ test('Agent-owned Google Drive accounts can request a read-write Composio capabi
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'google-drive' }) });
-  click({ target: actionTarget({ 'data-action': 'connection-account-managed-access', 'data-access': 'write' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /connection-account-managed-access/);
   chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
@@ -7860,7 +8064,7 @@ test('Agent-owned Google Drive accounts can request a read-write Composio capabi
   assert.equal(harness.managedAuthorizationPosts[0]?.body.access, 'write');
 });
 
-test('managed productivity cards expose only configured read lanes and disable missing writes', async () => {
+test('managed productivity cards preserve configured tool limits without promising a narrower provider grant', async () => {
   const unavailable = {
     status: 'missing_configuration', missingConfiguration: ['auth_config_missing'],
   };
@@ -7898,11 +8102,9 @@ test('managed productivity cards expose only configured read lanes and disable m
       'data-action': 'connection-account-preset', 'data-preset': 'google-sheets',
     }),
   });
-  assert.match(
-    harness.app.innerHTML,
-    /data-action="connection-account-managed-access" data-access="write" disabled aria-disabled="true"/,
-  );
-  assert.match(harness.app.innerHTML, /Write access is not configured for this connector/);
+  assert.doesNotMatch(harness.app.innerHTML, /connection-account-managed-access|>Read-only</);
+  assert.match(harness.app.innerHTML, /Review the permissions requested on the provider/);
+  assert.match(harness.app.innerHTML, /This Agent is limited to reading data/);
   chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
@@ -8833,11 +9035,6 @@ test('managed Notion is the only catalog option and explains the provider page b
   assert.match(harness.app.innerHTML, /Choose only the pages and databases Chickpea may use/);
   assert.match(harness.app.innerHTML, /grant includes descendants made available by Notion/);
   assert.doesNotMatch(harness.app.innerHTML, /Native Notion/);
-  click({
-    target: actionTarget({
-      'data-action': 'connection-account-managed-access', 'data-access': 'write',
-    }),
-  });
   chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
@@ -9012,10 +9209,10 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(ahrefsRow, /Research keywords, backlinks, competitors, and search performance\./);
 
   const incidentIoRow = gallery.match(
-    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="incident-io">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="\/connectors\/incident-io\.png" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="incident-io">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(incidentIoRow);
-  assert.match(incidentIoRow, /conn-logo-raster"><img src="data:image\/png;base64,/);
+  assert.match(incidentIoRow, /conn-logo-raster"><img src="\/connectors\/incident-io\.png"/);
 
   const linearRow = gallery.match(
     /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img"><svg[\s\S]*?data-preset="linear">Connect<\/button><\/div>/,
@@ -9072,7 +9269,7 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(driveRow, /fill="url\(#google-drive-yellow\)"/);
 
   const granolaRow = gallery.match(
-    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="granola">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="\/connectors\/granola\.png" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="granola">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(granolaRow);
   assert.match(granolaRow, /<span class="gallery-row-name">Granola<\/span>/);
@@ -9100,10 +9297,10 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(mondayRow, /fill="#ff3d57"/);
 
   const exaRow = gallery.match(
-    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>[\s\S]*?data-preset="exa">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="\/connectors\/exa\.png" alt=""><\/span>[\s\S]*?data-preset="exa">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(exaRow);
-  assert.match(exaRow, /<img src="data:image\/png;base64,[^"]+" alt="">/);
+  assert.match(exaRow, /<img src="\/connectors\/exa\.png" alt="">/);
   assert.doesNotMatch(exaRow, /conn-logo-mono/);
   assert.match(
     gallery,
@@ -12022,6 +12219,40 @@ test('Settings Connectors configures managed integrations and manages connected 
   assert.equal(refreshed.managedPollCalls(), 1);
   assert.match(refreshed.app.innerHTML, /YouTube · Personal is connected again\./);
   assert.equal(refreshed.sessionStorageValue(storageKey), null);
+});
+
+test('ready connector setup can be refreshed without replacing the project key', async () => {
+  for (const source of ['stored', 'deployment'] as const) {
+    const catalog = managedSettingsCatalogFixture();
+    const settings = {
+      provider: {
+        source, configured: true, readOnly: source === 'deployment',
+        desiredState: 'enabled', generation: 1, reconciliationPending: false,
+        connectors: catalog.map((entry) => ({ toolkit: entry.toolkit, status: 'ready' as const })),
+      },
+      canConfigure: true,
+      catalog,
+    };
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/settings/connectors', composioSettings: settings,
+    });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, /data-action="connector-settings-retry"[^>]*>Refresh connector setup<\/button>/);
+    assert.doesNotMatch(harness.app.innerHTML, /id="connector-settings-key"/);
+    const click = harness.listeners.click;
+    assert.ok(click);
+    click({ target: actionTarget({ 'data-action': 'connector-settings-retry' }) });
+    await flushAsync();
+    assert.equal(harness.composioRetryCalls(), 1);
+    assert.deepEqual(harness.composioSetupPosts, []);
+
+    const member = runAdminPageHarness({
+      initialPath: '/admin/settings/connectors',
+      composioSettings: { ...settings, canConfigure: false },
+    });
+    await flushAsync();
+    assert.doesNotMatch(member.app.innerHTML, /data-action="connector-settings-retry"/);
+  }
 });
 
 test('Settings Connectors keeps provider implementation details out of member-visible copy', async () => {

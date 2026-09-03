@@ -1,3 +1,6 @@
+import { readBoundedText as readBoundedResponseText } from '../http/bounded-body.ts';
+import { isRecord } from '../security/content-validation.ts';
+import { decodeBase64Url } from '../security/base64url.ts';
 import type {
   OpenAiDeviceAuthorizationPending,
   OpenAiDeviceAuthorizationPoll,
@@ -292,34 +295,11 @@ export async function boundedOpenAiSubscriptionFetch(
 }
 
 async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
-  const contentLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-    throw new OpenAiSubscriptionProtocolError('invalid_response', { status: response.status });
-  }
-  if (!response.body) return '';
-  const reader = response.body.getReader();
-  let total = 0;
-  const chunks: Uint8Array[] = [];
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        throw new OpenAiSubscriptionProtocolError('invalid_response', { status: response.status });
-      }
-      chunks.push(value);
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
+  return readBoundedResponseText(response, {
+    maxBytes,
+    onOversize: () =>
+      new OpenAiSubscriptionProtocolError('invalid_response', { status: response.status }),
+  });
 }
 
 function requireSuccessfulJson(result: OpenAiSubscriptionBoundedFetchResult): Record<string, unknown> {
@@ -397,7 +377,7 @@ function parseJwtClaims(
   }
   let claims: unknown;
   try {
-    claims = JSON.parse(decodeBase64Url(encodedPayload));
+    claims = JSON.parse(decodeBase64UrlText(encodedPayload));
   } catch (cause) {
     throw new OpenAiSubscriptionProtocolError('protocol_drift', { cause });
   }
@@ -423,12 +403,8 @@ function parseJwtClaims(
   return claims;
 }
 
-function decodeBase64Url(value: string): string {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-  const binary = atob(padded);
-  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
+function decodeBase64UrlText(value: string): string {
+  return new TextDecoder().decode(decodeBase64Url(value));
 }
 
 function accountIdFromClaims(claims: Record<string, unknown>): string | undefined {
@@ -469,8 +445,4 @@ function requiredString(value: unknown): string | undefined {
 function numberLike(value: unknown): number | undefined {
   const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
   return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

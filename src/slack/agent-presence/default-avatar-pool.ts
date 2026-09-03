@@ -1,7 +1,6 @@
-import {
-  DEFAULT_AGENT_AVATAR_FILES,
-  DEFAULT_AGENT_AVATAR_PNG_BASE64,
-} from './default-avatar-pool.generated.ts';
+import { readPublicAsset } from '#chickpea-assets';
+import { DEFAULT_AGENT_AVATAR_FILES } from './default-avatar-pool.generated.ts';
+import { fnv1aHash } from './hash.ts';
 
 export { DEFAULT_AGENT_AVATAR_FILES };
 
@@ -36,17 +35,13 @@ export function nextDefaultAgentAvatarSeed(
   return `${SEED_PREFIX}:${String(selected + 1).padStart(2, '0')}:${nonce}`;
 }
 
-export function defaultAgentAvatarPng(seed: string): Uint8Array {
-  return base64ToBytes(DEFAULT_AGENT_AVATAR_PNG_BASE64[defaultAgentAvatarIndex(seed)]!);
+export function defaultAgentAvatarPng(seed: string): Promise<Uint8Array<ArrayBuffer>> {
+  const file = DEFAULT_AGENT_AVATAR_FILES[defaultAgentAvatarIndex(seed)]!;
+  return readPublicAsset(`chickpea-avatars/agent-defaults/${file}`);
 }
 
 function stableHash(seed: string): number {
-  let hash = 2166136261;
-  for (const character of seed) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
+  return fnv1aHash(seed) >>> 0;
 }
 
 function encodedAvatarIndex(seed: string): number | undefined {
@@ -54,9 +49,4 @@ function encodedAvatarIndex(seed: string): number | undefined {
   if (!selected) return undefined;
   const index = Number(selected) - 1;
   return index >= 0 && index < DEFAULT_AGENT_AVATAR_FILES.length ? index : undefined;
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }

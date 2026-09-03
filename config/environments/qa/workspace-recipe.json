@@ -1,0 +1,122 @@
+{
+  "schemaVersion": "chickpea-environment-workspace-recipe/v2",
+  "resources": [
+    {
+      "key": "primary-actor",
+      "resourceKind": "actor",
+      "fixtureKind": "actor",
+      "fixtureClass": "immutable_baseline",
+      "scope": "shared",
+      "ownership": "product",
+      "requiredBy": [
+        "LC01-V1-create-welcome",
+        "LC01-V2-update-approve",
+        "LC04-V1-personal-read",
+        "LC08-V1-create-due"
+      ],
+      "roles": ["owner", "member"],
+      "privateRequirements": ["actor-identity", "computer-use-profile"],
+      "healthChecks": ["actor-visible-in-workspace", "computer-use-profile-available"]
+    },
+    {
+      "key": "qa-channel",
+      "resourceKind": "slack_channel",
+      "fixtureKind": "slack_channel",
+      "fixtureClass": "immutable_baseline",
+      "scope": "target",
+      "ownership": "product",
+      "privateRequirements": ["channel-identity"],
+      "healthChecks": ["channel-visible"],
+      "requiredBy": [
+        "LC01-V1-create-welcome",
+        "LC08-V1-create-due"
+      ]
+    },
+    {
+      "key": "smoke-agent",
+      "resourceKind": "agent",
+      "fixtureKind": "agent",
+      "fixtureClass": "resettable_fixture",
+      "scope": "target",
+      "ownership": "product",
+      "privateRequirements": ["agent-identity", "model-provider"],
+      "healthChecks": ["agent-resettable", "model-provider-ready"],
+      "requiredBy": [
+        "LC01-V2-update-approve",
+        "LC04-V1-personal-read",
+        "LC08-V1-create-due"
+      ]
+    },
+    {
+      "key": "smoke-agent-channel-grant",
+      "resourceKind": "agent_channel_grant",
+      "fixtureClass": "resettable_fixture",
+      "scope": "target",
+      "ownership": "product",
+      "requiredBy": [
+        "LC01-V2-update-approve",
+        "LC04-V1-personal-read",
+        "LC08-V1-create-due"
+      ],
+      "dependsOn": ["smoke-agent", "qa-channel"],
+      "privateRequirements": ["agent-channel-grant-identity"],
+      "healthChecks": ["agent-channel-grant-exact"]
+    },
+    {
+      "key": "synthetic-google-account",
+      "resourceKind": "provider_account",
+      "fixtureKind": "provider_account",
+      "fixtureClass": "immutable_baseline",
+      "scope": "shared",
+      "ownership": "product",
+      "requiredBy": ["LC04-V1-personal-read"],
+      "provider": "google",
+      "privateRequirements": ["synthetic-account-identity"],
+      "healthChecks": ["provider-account-readable"]
+    },
+    {
+      "key": "google-sheets-personal-standard",
+      "resourceKind": "connection_binding",
+      "fixtureClass": "resettable_fixture",
+      "scope": "target",
+      "ownership": "product",
+      "requiredBy": ["LC04-V1-personal-read"],
+      "dependsOn": ["smoke-agent", "synthetic-google-account"],
+      "provider": "google",
+      "toolkit": "googlesheets",
+      "ownerKind": "personal",
+      "access": "write",
+      "exerciseAccess": "read",
+      "privateRequirements": ["sheets-binding-identity"],
+      "healthChecks": ["google-sheets-binding-personal-standard"],
+      "capabilities": [
+        "sheets.spreadsheets.search",
+        "sheets.spreadsheets.metadata",
+        "sheets.values.get",
+        "sheets.tables.query",
+        "sheets.spreadsheets.create",
+        "sheets.values.update",
+        "sheets.values.append",
+        "sheets.rows.upsert",
+        "sheets.sheets.add"
+      ]
+    }
+  ],
+  "slotBindings": {
+    "owner": "primary-actor",
+    "member": "primary-actor",
+    "channel": "qa-channel",
+    "agent": "smoke-agent",
+    "provider": "synthetic-google-account"
+  },
+  "healthChecks": [
+    "actor-visible-in-workspace",
+    "computer-use-profile-available",
+    "channel-visible",
+    "agent-resettable",
+    "model-provider-ready",
+    "agent-channel-grant-exact",
+    "provider-account-readable",
+    "google-sheets-binding-personal-standard"
+  ]
+}

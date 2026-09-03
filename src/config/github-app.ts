@@ -1,3 +1,5 @@
+import { encodeBase64Url } from '../security/base64url.ts';
+import { trimmedNonEmpty } from '../security/content-validation.ts';
 import type { SettingsStore } from './settings-store.ts';
 
 export const GITHUB_API_BASE = 'https://api.github.com';
@@ -77,7 +79,7 @@ interface GithubManifestConversion {
 interface GithubSetupState {
   state: string;
   mintedAt: number;
-  membershipId: string | null;
+  membershipId: string;
 }
 
 const GITHUB_SETUP_STATE_TTL_MS = 15 * 60 * 1_000;
@@ -86,12 +88,10 @@ export async function saveGithubSetupState(
   settings: SettingsStore,
   input: GithubSetupState,
 ): Promise<void> {
-  const membershipIdValid = input.membershipId === null || (
-    input.membershipId === input.membershipId.trim() &&
+  const membershipIdValid = input.membershipId === input.membershipId.trim() &&
     input.membershipId.length > 0 &&
     input.membershipId.length <= 256 &&
-    !/[\u0000-\u001f\u007f]/.test(input.membershipId)
-  );
+    !/[\u0000-\u001f\u007f]/.test(input.membershipId);
   if (!/^[a-f0-9]{32}$/.test(input.state) || !Number.isSafeInteger(input.mintedAt) ||
       !membershipIdValid) {
     throw new Error('GitHub setup state is invalid.');
@@ -127,7 +127,7 @@ function parseGithubSetupState(raw: string): GithubSetupState | undefined {
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed) || parsed.version !== 2 || typeof parsed.state !== 'string' ||
         typeof parsed.mintedAt !== 'number' ||
-        !(typeof parsed.membershipId === 'string' || parsed.membershipId === null)) {
+        typeof parsed.membershipId !== 'string') {
       return undefined;
     }
     return {
@@ -136,12 +136,9 @@ function parseGithubSetupState(raw: string): GithubSetupState | undefined {
       membershipId: parsed.membershipId,
     };
   } catch {
-    // Migration compatibility for setup states minted by the legacy callback.
-    const separator = raw.lastIndexOf(':');
-    if (separator <= 0) return undefined;
-    const state = raw.slice(0, separator);
-    const mintedAt = Number(raw.slice(separator + 1));
-    return Number.isSafeInteger(mintedAt) ? { state, mintedAt, membershipId: null } : undefined;
+    // Pre-membership setup states carried durable global authority without a
+    // live actor to recheck. Invalidate them across the upgrade boundary.
+    return undefined;
   }
 }
 
@@ -210,7 +207,7 @@ export async function mintAppJwt(input: {
     key,
     new TextEncoder().encode(signingInput),
   );
-  return `${signingInput}.${base64UrlBytes(new Uint8Array(signature))}`;
+  return `${signingInput}.${encodeBase64Url(new Uint8Array(signature))}`;
 }
 
 export async function getGithubConnection(settings: SettingsStore): Promise<GithubConnection> {
@@ -219,11 +216,11 @@ export async function getGithubConnection(settings: SettingsStore): Promise<Gith
     GITHUB_SETTING_KEYS.appSlug,
     GITHUB_SETTING_KEYS.privateKey,
   ]);
-  const appId = nonEmpty(process.env.GITHUB_APP_ID) ?? nonEmpty(storedAppId);
+  const appId = trimmedNonEmpty(process.env.GITHUB_APP_ID) ?? trimmedNonEmpty(storedAppId);
   const privateKey =
-    nonEmpty(process.env.GITHUB_APP_PRIVATE_KEY) ?? nonEmpty(storedPrivateKey);
+    trimmedNonEmpty(process.env.GITHUB_APP_PRIVATE_KEY) ?? trimmedNonEmpty(storedPrivateKey);
   if (appId && privateKey) {
-    const appSlug = nonEmpty(storedAppSlug);
+    const appSlug = trimmedNonEmpty(storedAppSlug);
     return {
       mode: 'app',
       appId,
@@ -639,11 +636,7 @@ function armorPem(label: string, bytes: Uint8Array): string {
 }
 
 function base64UrlJson(value: object): string {
-  return base64UrlBytes(new TextEncoder().encode(JSON.stringify(value)));
-}
-
-function base64UrlBytes(bytes: Uint8Array): string {
-  return base64Bytes(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return encodeBase64Url(new TextEncoder().encode(JSON.stringify(value)));
 }
 
 function base64Bytes(bytes: Uint8Array): string {
@@ -661,10 +654,6 @@ function copiedArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return copy.buffer;
 }
 
-function nonEmpty(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed || undefined;
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';

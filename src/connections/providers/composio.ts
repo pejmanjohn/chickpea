@@ -1,5 +1,7 @@
-import type { ConnectionAccountManagedPolicy } from '../../config/types.ts';
 import { md5 } from '@noble/hashes/legacy.js';
+
+import { isRecord } from '../../security/content-validation.ts';
+import type { ConnectionAccountManagedPolicy } from '../../config/types.ts';
 import {
   MANAGED_ARTIFACT_ARGUMENT,
   type ManagedConnectionArtifact,
@@ -5225,10 +5227,6 @@ function copyStringArray(
   if (Array.isArray(value) && value.every((entry) => typeof entry === 'string')) {
     target[key] = value;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function recordExecution(

@@ -12,6 +12,7 @@ import { THREAD_TTL_MS } from '../slack/claim-store.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { promisify } from '../state/async-facade.ts';
 import type { StateDb } from '../state/state-db.ts';
+import { addColumnIfMissing } from '../state/schema-links.ts';
 
 interface SnapshotRow {
   snapshot_json: string;
@@ -189,17 +190,12 @@ export class SnapshotStoreLogic {
   }
 
   private ensureV2Schema(): void {
-    const columns = new Set(
-      this.db.all('PRAGMA table_info(agent_snapshots)').map((column) => String(column.name)),
-    );
-    if (!columns.has('schema_version')) {
-      this.db.exec('ALTER TABLE agent_snapshots ADD COLUMN schema_version INTEGER');
-    }
-    if (!columns.has('agent_id')) {
-      this.db.exec('ALTER TABLE agent_snapshots ADD COLUMN agent_id TEXT');
-    }
-    if (!columns.has('last_activity_at')) {
-      this.db.exec('ALTER TABLE agent_snapshots ADD COLUMN last_activity_at INTEGER');
+    for (const [name, definition] of [
+      ['schema_version', 'INTEGER'],
+      ['agent_id', 'TEXT'],
+      ['last_activity_at', 'INTEGER'],
+    ] as const) {
+      addColumnIfMissing(this.db, 'agent_snapshots', name, definition);
     }
     this.db.exec(
       'CREATE INDEX IF NOT EXISTS agent_snapshots_agent_live_idx ON agent_snapshots(agent_id, last_activity_at)',

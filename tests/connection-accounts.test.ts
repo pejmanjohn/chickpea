@@ -282,10 +282,13 @@ test('a connection account cannot be bound to a second Agent', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
+  const productEvents: unknown[] = [];
   const service = new ConnectionAccountService({
     config,
     settings,
     randomId: () => `id${++nextId}`,
+    productTelemetry: { capture: (event) => productEvents.push(event) },
+    telemetrySurface: 'admin',
   });
   try {
     await config.createAgent(agent('agent_support', 'membership_creator'));
@@ -296,7 +299,7 @@ test('a connection account cannot be bound to a second Agent', async () => {
       defaultAgentId: 'agent_support',
     });
     const { account, binding } = await service.createForAgent({
-      principal: principal('membership_creator'),
+      principal: principal('membership_creator', 'admin'),
       agentId: 'agent_support',
       workspaceId: 'T_CONNECTIONS',
       ownerKind: 'team',
@@ -338,6 +341,14 @@ test('a connection account cannot be bound to a second Agent', async () => {
     assert.equal((await config.listAgentConnectionBindings('agent_support'))[0]?.enabled, true);
     assert.deepEqual(await config.listAgentConnectionBindings('agent_success'), []);
     assert.doesNotMatch(JSON.stringify(await service.listViews('T_CONNECTIONS')), /shared-token|secret_id/i);
+    assert.deepEqual(productEvents, [{
+      event: 'connection_ready',
+      workspaceId: 'T_CONNECTIONS',
+      agentId: 'agent_support',
+      connectionKind: 'api',
+      ownerKind: 'team',
+      surface: 'admin',
+    }]);
   } finally {
     config.close();
     settings.close();
@@ -362,7 +373,7 @@ test('Agent-scoped creation rolls back its account, binding, and staged secret t
     });
     await assert.rejects(
       service.createForAgent({
-        principal: principal('membership_creator'),
+        principal: principal('membership_creator', 'admin'),
         agentId: 'agent_support',
         workspaceId: 'T_OTHER',
         ownerKind: 'team',
@@ -1222,7 +1233,7 @@ test('a retry finishes terminal schedule cleanup after revocation already tombst
       workspaceId: 'T_CONNECTIONS', transportMode: 'direct', defaultAgentId: 'agent_support',
     });
     const { account } = await service.createForAgent({
-      principal: principal('membership_creator'), agentId: 'agent_support',
+      principal: principal('membership_creator', 'admin'), agentId: 'agent_support',
       workspaceId: 'T_CONNECTIONS', ownerKind: 'team',
       providerId: 'zendesk', label: 'Zendesk', policy: {
         kind: 'api', allowedHosts: ['acme.zendesk.com'], pathPrefixes: ['/api/'],
@@ -1245,7 +1256,7 @@ test('a retry finishes terminal schedule cleanup after revocation already tombst
     };
     await assert.rejects(
       service.revoke({
-        principal: principal('membership_creator'), connectionAccountId: account.id,
+        principal: principal('membership_creator', 'admin'), connectionAccountId: account.id,
       }),
       ConnectionScheduleConflictError,
     );
@@ -1261,7 +1272,7 @@ test('a retry finishes terminal schedule cleanup after revocation already tombst
     assert.deepEqual(pendingCleanup?.connectionPauseAccountIds, [account.id]);
     config.putAgentScheduleReference = putSchedule;
     const revoked = await service.revoke({
-      principal: principal('membership_creator'), connectionAccountId: account.id,
+      principal: principal('membership_creator', 'admin'), connectionAccountId: account.id,
     });
     assert.equal(revoked.lifecycle, 'revoked');
     const schedule = (await config.listAgentScheduleReferences('agent_support'))[0];

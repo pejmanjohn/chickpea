@@ -89,6 +89,11 @@ export interface RunJournalHeader extends RunJournalHeaderInput {
 
 export type RunJournalEventData =
   | { type: 'doctor'; ready: boolean; diagnosticCodes: string[] }
+  | { type: 'computer_use_window'; caseId: string; stepId: string; targetAlias: string;
+    captureDigest: string; windowDigest: string; observedAt: string }
+  | { type: 'postflight_required'; caseId: string }
+  | { type: 'postflight_receipt'; caseId: string; result: 'pass' | 'failed';
+    targetIdentityMatches: boolean; missingCount: number; unexpectedCount: number; unresolvedCount: number }
   | {
     type: 'intent';
     intentId: string;
@@ -320,7 +325,7 @@ export function appendRunJournal(
   event: RunJournalEventData,
   expected: { runId: string; manifestDigest: string; at?: string },
 ): RunJournalEvent {
-  validateEventData(event);
+  validateRunJournalEventData(event);
   const journal = readRunJournal(path, {
     runId: expected.runId,
     manifestDigest: expected.manifestDigest,
@@ -342,6 +347,12 @@ export function appendRunJournal(
     closeSync(descriptor);
   }
   return record;
+}
+
+/** Read-only validation for callers that must validate before completing a challenge. */
+export function validateRunJournalEventData(event: RunJournalEventData): void {
+  validateEventData(event);
+  assertContentFree(event);
 }
 
 export function readRunJournal(path: string, options: ReadJournalOptions): ReadJournalResult {
@@ -451,6 +462,25 @@ function validateEvent(input: unknown): RunJournalEvent {
 function validateEventData(event: RunJournalEventData): void {
   if (!isRecord(event) || !nonEmpty(event.type)) throw new JournalValidationError('INVALID_EVENT');
   switch (event.type) {
+    case 'postflight_required':
+      exactKeys(event, ['type', 'caseId'], 'INVALID_EVENT');
+      if (!nonEmpty(event.caseId)) invalidEvent();
+      return;
+    case 'postflight_receipt':
+      exactKeys(event, ['type', 'caseId', 'result', 'targetIdentityMatches', 'missingCount', 'unexpectedCount', 'unresolvedCount'], 'INVALID_EVENT');
+      if (!nonEmpty(event.caseId) || !['pass', 'failed'].includes(String(event.result))
+        || typeof event.targetIdentityMatches !== 'boolean'
+        || !nonNegativeInteger(event.missingCount) || !nonNegativeInteger(event.unexpectedCount)
+        || !nonNegativeInteger(event.unresolvedCount)
+        || (event.result === 'pass') !== (event.targetIdentityMatches
+          && event.missingCount === 0 && event.unexpectedCount === 0 && event.unresolvedCount === 0)) invalidEvent();
+      return;
+    case 'computer_use_window':
+      exactKeys(event, ['type', 'caseId', 'stepId', 'targetAlias', 'captureDigest', 'windowDigest', 'observedAt'], 'INVALID_EVENT');
+      if (!nonEmpty(event.caseId) || !nonEmpty(event.stepId) || !nonEmpty(event.targetAlias)
+        || !digest(event.captureDigest) || !digest(event.windowDigest)
+        || typeof event.observedAt !== 'string' || !Number.isFinite(Date.parse(event.observedAt))) invalidEvent();
+      return;
     case 'doctor':
       exactKeys(event, ['type', 'ready', 'diagnosticCodes'], 'INVALID_EVENT');
       if (typeof event.ready !== 'boolean' || !stringArray(event.diagnosticCodes)) invalidEvent();

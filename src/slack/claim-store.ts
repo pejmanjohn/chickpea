@@ -7,11 +7,7 @@ import type {
   SlackRuntimeDrainCounts,
   SlackTurnRecoveryItem,
 } from '../config/state-rpc.ts';
-import {
-  MAX_TURN_DRAIN_BATCH,
-  TurnJobStoreLogic,
-  type PendingTurnJob,
-} from './turn-jobs.ts';
+import { TurnJobStoreLogic, type PendingTurnJob } from './turn-jobs.ts';
 import type { TurnJob } from './turn-job-types.ts';
 import type {
   FlueDispatchReceiptV1,
@@ -36,6 +32,7 @@ import {
   type SlackPresentationRoot,
   type SlackRunPresentation,
 } from './run-presentations.ts';
+import { localSlackStateStore } from './local-state-store.ts';
 import { ACTIVE_WORK_TTL_MS, CLAIM_TTL_MS, THREAD_TTL_MS } from './state-limits.ts';
 import { slackTimestampUnits } from './thread-context.ts';
 
@@ -405,193 +402,21 @@ export class SlackStateLogic {
  * yields a per-process store with the exact pre-durability semantics — the
  * parity suite and offline harnesses rely on that isolation.
  */
-export class SqliteSlackStateStore implements SlackStateStore {
+export interface SqliteSlackStateStore extends SlackStateStore {
+  close(): void;
+}
+
+export class SqliteSlackStateStore {
   private readonly db: NodeStateDb;
-  private readonly logic: SlackStateLogic;
-  private readonly work: WorkStoreLogic;
-  private readonly turnJobs: TurnJobStoreLogic;
-  private readonly presentations: SlackRunPresentationStoreLogic;
 
   constructor(path: string, now: () => number = Date.now) {
     this.db = openStateDb(path);
-    this.logic = new SlackStateLogic(this.db, now);
-    this.turnJobs = new TurnJobStoreLogic(this.db, now);
-    this.presentations = new SlackRunPresentationStoreLogic(this.db, now);
-    this.work = new WorkStoreLogic(this.db, { now });
-  }
-
-  async claim(key: string): Promise<boolean> {
-    return this.logic.claim(key);
-  }
-
-  async release(key: string): Promise<void> {
-    this.logic.release(key);
-  }
-
-  async start(key: string): Promise<void> {
-    this.logic.start(key);
-  }
-
-  async has(key: string): Promise<boolean> {
-    return this.logic.has(key);
-  }
-
-  async isActiveWork(key: string) {
-    return this.logic.isActiveWork(key);
-  }
-
-  async setActiveWork(key: string, generation: string, active: boolean) {
-    this.logic.setActiveWork(key, generation, active);
-  }
-
-  async admitCanonical(input: SlackCanonicalAdmissionInput) {
-    return this.logic.admitCanonical(input, this.work, this.turnJobs, this.presentations);
-  }
-
-  async enqueueTurn(job: TurnJob) {
-    return this.turnJobs.enqueue(job);
-  }
-
-  async resumeTurnAfterOAuth(originalTaskId: string, continuationId: string) {
-    return this.turnJobs.resumeAfterOAuth(originalTaskId, continuationId);
-  }
-
-  async pinAgentBinding(input: SlackAgentBinding, expected?: SlackAgentBindingExpectation) {
-    return this.turnJobs.pinAgentBinding(input, expected);
-  }
-
-  async getAgentBinding(continuityKey: string) {
-    return this.turnJobs.getAgentBinding(continuityKey);
-  }
-
-  async runtimeDrainCounts() {
-    return this.turnJobs.runtimeDrainCounts();
-  }
-
-  async countPendingDeliveriesForWorkspace(workspaceId: string) {
-    return this.turnJobs.countPendingDeliveriesForWorkspace(workspaceId);
-  }
-
-  async listPendingTurns() {
-    return this.turnJobs.listPending(MAX_TURN_DRAIN_BATCH);
-  }
-
-  async getPendingTurnByRunId(runId: string) {
-    return this.turnJobs.getPendingByRunId(runId);
-  }
-
-  async freezeRuntimePlan(id: string, candidate: RuntimePlanV2) {
-    return this.turnJobs.freezeRuntimePlan(id, candidate);
-  }
-
-  async prepareFlueDispatch(id: string, message: string, observation: FlueTurnObservationV1) {
-    return this.turnJobs.prepareFlueDispatch(id, message, observation);
-  }
-
-  async reconcileFlueExistingInstance(id: string, uid: string) {
-    return this.turnJobs.reconcileFlueExistingInstance(id, uid);
-  }
-
-  async recordFlueReceipt(id: string, receipt: FlueDispatchReceiptV1) {
-    return this.turnJobs.recordFlueReceipt(id, receipt);
-  }
-
-  async recordFlueSettlement(id: string, settlement: FlueSettlementCheckpointV1) {
-    return this.turnJobs.recordFlueSettlement(id, settlement);
-  }
-
-  async matchFlueObservation(instanceId: string, submissionId?: string) {
-    return this.turnJobs.matchFlueObservation(instanceId, submissionId);
-  }
-
-  async recordTurnAttempt(id: string, attempts: number) {
-    this.turnJobs.recordAttempt(id, attempts);
-  }
-
-  async recordInteractionIntent(id: string, intent: SlackInteractionIntent) {
-    this.turnJobs.recordInteractionIntent(id, intent);
-  }
-
-  async recordSlackInteractionProgress(id: string, patch: SlackInteractionProgressPatch) {
-    this.turnJobs.recordSlackInteractionProgress(id, patch);
-  }
-
-  async listPendingSlackInteractionCleanups() {
-    return this.turnJobs.listPendingSlackInteractionCleanups(MAX_TURN_DRAIN_BATCH);
-  }
-
-  async hasPendingSlackInteractionCleanup() {
-    return this.turnJobs.hasPendingSlackInteractionCleanup();
-  }
-
-  async markTurnDelivered(id: string) {
-    this.turnJobs.markDelivered(id);
-  }
-
-  async markTurnError(id: string) {
-    this.turnJobs.markError(id);
-  }
-
-  async markTurnRecoveryRequired(id: string, reason: string) {
-    this.turnJobs.markRecoveryRequired(id, reason);
-  }
-
-  async listTurnRecoveryRequired(limit = 50) {
-    return this.turnJobs.listRecoveryRequired(limit);
-  }
-
-  async retrySlackInstallationRecovery(workspaceId: string) {
-    return this.turnJobs.retrySlackInstallationRecovery(workspaceId);
-  }
-
-  async resolveTurnRecoveryRequired(id: string) {
-    return this.turnJobs.resolveRecoveryRequired(id);
-  }
-
-  async getRunPresentation(runId: string) {
-    return this.presentations.get(runId);
-  }
-
-  async getLatestThreadSessionGeneration(
-    root: Pick<SlackPresentationRoot, 'workspaceId' | 'channelId' | 'threadTs'>,
-  ) {
-    return this.presentations.getLatestThreadSessionGeneration(root);
-  }
-
-  async transitionRunPresentation(input: SlackPresentationTransitionInput) {
-    return this.presentations.transition(input);
-  }
-
-  async reserveSlackAppend(workspaceId: string) {
-    return this.presentations.reserveAppend(workspaceId);
-  }
-
-  async applySlackAppendCooldown(workspaceId: string, retryAfterMs: number) {
-    return this.presentations.applyAppendCooldown(workspaceId, retryAfterMs);
-  }
-
-  async reserveSlackActivityStatus(workspaceId: string) {
-    return this.presentations.reserveActivityStatus(workspaceId);
-  }
-
-  async applySlackActivityStatusCooldown(workspaceId: string, retryAfterMs: number) {
-    return this.presentations.applyActivityStatusCooldown(workspaceId, retryAfterMs);
-  }
-
-  async listRunPresentationsForRepair(limit = 50) {
-    return this.presentations.listAutoRepairableV3(limit);
-  }
-
-  async maintainRunPresentations(limit = 100) {
-    return this.presentations.maintain(limit);
-  }
-
-  async summarizeRunPresentations(workspaceId: string) {
-    return this.presentations.summarize(workspaceId);
-  }
-
-  async discardTurn(id: string) {
-    return this.turnJobs.discard(id);
+    const slack = new SlackStateLogic(this.db, now);
+    const turnJobs = new TurnJobStoreLogic(this.db, now);
+    const presentations = new SlackRunPresentationStoreLogic(this.db, now);
+    const work = new WorkStoreLogic(this.db, { now });
+    const facade: SlackStateStore = localSlackStateStore({ slack, work, turnJobs, presentations });
+    Object.assign(this, facade);
   }
 
   close(): void {

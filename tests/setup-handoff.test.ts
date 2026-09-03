@@ -49,6 +49,7 @@ test('manual setup navigation is same-tab, local, and never persists secrets', (
   const script = slackManualSetupClientScript();
   assert.match(script, /data-manual-step-target/);
   assert.match(script, /data-manual-step-panel/);
+  assert.doesNotMatch(script, /events: true/);
   assert.match(script, /hidden/);
   assert.match(script, /history\.replaceState/);
   assert.doesNotMatch(script, /localStorage|indexedDB|clientSecret|signingSecret|observedManifest/);

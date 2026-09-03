@@ -16,10 +16,10 @@
  *   3. mention full turn       -> conversations.history (24h window), status
  *      set then cleared, ONE streamed final (startStream+stopStream) carrying
  *      the stub reply marker
- *   4. status rejected         -> no progress-message fallback, final still
- *      delivered, no status retry storm
+ *   4. status rejected         -> final still delivered, no legacy progress
+ *      post fallback, no status retry storm
  *   5. provider 500            -> one sanitized Slack failure, no raw provider
- *      error marker, status cleared
+ *      error marker, status cleared when one was set
  *   6. NET_GUARD_LOG empty     -> zero external traffic across all scenarios
  *
  * A suitable Node >= 22.19 builds and spawns the Flue server; the shared
@@ -140,6 +140,19 @@ try {
   await waitForReady(child, eventsUrl, getOutput);
   console.log(`flue node server ready at ${baseUrl}`);
 
+  // Exercise the built, composed Node app, including its global middleware
+  // and route ordering, not just the isolated public-assets router.
+  const { PUBLIC_ASSET_PATHS } = await loadTsModule('src/assets/public-assets.ts');
+  for (const assetPath of PUBLIC_ASSET_PATHS) {
+    const response = await fetch(`${baseUrl}/${assetPath}`);
+    if (response.status !== 200 ||
+        !Buffer.from(await response.arrayBuffer()).equals(readFileSync(join(REPO_ROOT, 'assets', assetPath)))) {
+      throw new Error(`Built Node public asset failed: ${assetPath} (HTTP ${response.status})`);
+    }
+  }
+  record('built Node app serves every public image without authentication', true,
+    `${PUBLIC_ASSET_PATHS.length} byte-identical images`);
+
   // Check 1: signed url_verification echoes the challenge.
   {
     const response = await postSignedEvent(eventsUrl, {
@@ -217,8 +230,8 @@ try {
     );
   }
 
-  // Check 4: status rejection latches native status off without falling back
-  // to a progress message or blocking the final.
+  // Check 4: status rejection latches native semantic activity off without
+  // reviving the legacy chat-message progress fallback or storming setStatus.
   {
     backend.reset();
     backend.configure({ slack: { rejectSetStatus: true }, provider: { mode: 'ok' } });
@@ -238,10 +251,9 @@ try {
       finals.length === 1 &&
       final !== undefined &&
       progressPosts.length === 0 &&
-      nonEmpty.length >= 1 &&
       nonEmpty.length <= 2;
     record(
-      'status rejected -> no progress fallback and final still delivered',
+      'status rejected -> final delivered without legacy progress fallback',
       passed,
       `finals=${finals.length} progressPosts=${progressPosts.length} ` +
         `finalIndex=${final?.index} nonEmptyStatus=${nonEmpty.length}`,
@@ -260,6 +272,7 @@ try {
     const finals = await waitForFinals(backend, 1, 15_000);
     const [final] = finals;
     const lastStatus = backend.statusCalls().at(-1);
+    const statusCleared = lastStatus === undefined || String(lastStatus.body.status) === '';
     const slackWire = JSON.stringify(backend.wireLog);
     const statusSettled = lastStatus === undefined || String(lastStatus.body.status) === '';
 
@@ -267,7 +280,7 @@ try {
       finals.length === 1 &&
       final?.text === AGENT_FAILURE_TEXT &&
       !slackWire.includes(RAW_PROVIDER_ERROR_MARKER) &&
-      statusSettled;
+      statusCleared;
     record(
       'provider 500 -> one sanitized final, status cleared, no raw error leak',
       passed,

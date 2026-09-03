@@ -8,11 +8,16 @@ import { fileURLToPath } from 'node:url';
 
 import { renderAdminPage } from '../src/admin/page.ts';
 import {
+  createAdminRoutes,
+  projectAdminEnvironmentStatus,
+} from '../src/admin/routes.ts';
+import {
   ONBOARDING_JOURNEY_KEY,
   readOnboardingJourney,
 } from '../src/config/onboarding-state.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
+import { testAdminAuthority } from './helpers/admin-auth.ts';
 
 interface VisualFixture {
   address: string;
@@ -125,6 +130,152 @@ async function waitForFixtureStatePath(child: ReturnType<typeof spawn>): Promise
   });
 }
 
+function runtimeEnvironmentStatus() {
+  const target = (name: 'amber' | 'cobalt', health = 'ready') => ({
+    target: name,
+    health,
+    sourceSha: '1234567890abcdef1234567890abcdef12345678',
+    dirty: false,
+    servingVersion: `version-${name}`,
+    transport: 'events',
+    workspaceAlias: `env-${name}-workspace`,
+    workspaceLabel: `${name} workspace`,
+    appAlias: `env-${name}-slack-app`,
+    appLabel: `${name} app`,
+    claim: name === 'amber' ? {
+      holderId: 'holder-0123456789abcdef',
+      leaseAgeMs: 120_000,
+      expiresAt: '2026-09-01T20:00:00.000Z',
+    } : null,
+    verifierLock: { status: 'clear' },
+    schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
+    lastAttestedRevision: null,
+    recoveryAction: 'xoxb-untrusted-recovery',
+  });
+  return {
+    schemaVersion: 'chickpea-environment-status/v1',
+    generatedAt: '2026-09-01T12:00:00.000Z',
+    registryRevision: 12,
+    selectedTarget: 'amber',
+    targets: [target('amber', 'unreachable'), target('cobalt')],
+    sandbox: {
+      archiveDate: '2027-01-15T00:00:00.000Z',
+      daysUntilArchive: 136,
+      warning: 'none',
+      warningDays: [45, 30, 14],
+      unusedWorkspaceSlots: 2,
+      integrationHeadroom: 37,
+    },
+  };
+}
+
+test('real Admin routes project the optional runtime environment snapshot without trusting recovery text', async () => {
+  const app = createAdminRoutes(testAdminAuthority('environment-status-token'));
+  const input = runtimeEnvironmentStatus();
+  const response = await app.request(
+    'http://localhost/admin/api/environment/status',
+    { headers: { authorization: 'Bearer environment-status-token' } },
+    { CHICKPEA_ENVIRONMENT_STATUS: JSON.stringify(input) },
+  );
+  assert.equal(response.status, 200);
+  const projected = await response.json() as ReturnType<typeof runtimeEnvironmentStatus>;
+  assert.equal(projected.targets[0]?.recoveryAction, 'Check amber Worker and Slack transport reachability.');
+  assert.equal(projected.targets[0]?.claim?.holderId, 'holder-0123456789abcdef');
+  assert.doesNotMatch(JSON.stringify(projected), /xoxb-|worktrees\//iu);
+
+  const oversized = await app.request(
+    'http://localhost/admin/api/environment/status',
+    { headers: { authorization: 'Bearer environment-status-token' } },
+    { CHICKPEA_ENVIRONMENT_STATUS: ' '.repeat(65_537) },
+  );
+  assert.equal(oversized.status, 503);
+});
+
+test('Admin accepts standalone topology and rejects inactive or missing lanes', () => {
+  const input = { ...runtimeEnvironmentStatus(), sandbox: null };
+  assert.equal(projectAdminEnvironmentStatus(input).sandbox, null);
+  assert.throws(() => projectAdminEnvironmentStatus({
+    ...input, targets: input.targets.slice(0, 1),
+  }), /INVALID_ENVIRONMENT_STATUS/u);
+  assert.throws(() => projectAdminEnvironmentStatus({
+    ...input, targets: [...input.targets, { ...input.targets[0], target: 'fern' }],
+  }), /INVALID_ENVIRONMENT_STATUS/u);
+});
+
+test('Admin derives lane identity from deployed metadata without inventing fleet claim health', async () => {
+  const app = createAdminRoutes(testAdminAuthority('lane-identity-token'));
+  const version = '11111111-2222-3333-4444-555555555555';
+  const env = {
+    CHICKPEA_ENV_TARGET: 'cobalt', CHICKPEA_ENV_SOURCE_REVISION: 'a'.repeat(40),
+    CHICKPEA_ENV_SOURCE_DIRTY: 'false', CF_VERSION_METADATA: { id: version },
+    CHICKPEA_ENV_CLAIM_NONCE: 'private-claim', UNRELATED_PRIVATE_VALUE: 'private-secret',
+  };
+  const get = (bindings: Record<string, unknown>, authorized = true) => app.request(
+    'http://localhost/admin/api/environment/status',
+    { headers: authorized ? { authorization: 'Bearer lane-identity-token' } : {} }, bindings,
+  );
+  assert.notEqual((await get(env, false)).status, 200);
+  const response = await get(env);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await response.json(), {
+    schemaVersion: 'chickpea-environment-identity/v1', target: 'cobalt',
+    sourceSha: 'a'.repeat(40), dirty: false, servingVersion: version,
+  });
+  assert.equal((await get({})).status, 404);
+  assert.equal((await get({ ...env, CHICKPEA_ENV_TARGET: 'fern' })).status, 404);
+  for (const invalid of [
+    { CHICKPEA_ENV_SOURCE_REVISION: 'private-source' },
+    { CHICKPEA_ENV_SOURCE_DIRTY: 'maybe' },
+    { CF_VERSION_METADATA: { id: 'private-version' } },
+  ]) {
+    assert.equal((await get({ ...env, ...invalid })).status, 503);
+  }
+  const full = runtimeEnvironmentStatus();
+  full.targets[0]!.servingVersion = version;
+  assert.equal((projectAdminEnvironmentStatus(full).targets as Array<Record<string, unknown>>)[0]!.servingVersion, version);
+});
+
+test('Admin environment projection rejects secret-shaped values in every displayed string', () => {
+  for (const mutate of [
+    (input: any) => { input.generatedAt = '2026-09-01T12:00:00Z'; },
+    (input: any) => { input.targets[0].workspaceLabel = 'xoxb-not-a-label'; },
+    (input: any) => { input.targets[0].workspaceLabel = 'T0123456789'; },
+    (input: any) => { input.targets[0].appLabel = 'owner@example.test'; },
+    (input: any) => { input.targets[0].schemaGeneration = '/private/browser-profile'; },
+    (input: any) => { input.targets[0].verifierLock.ownerRunId = 'credential-token'; },
+    (input: any) => { input.targets[0].verifierLock.ownerRunId = 'U0123456789'; },
+    (input: any) => { input.targets[0].claim.holderId = '/absolute/worktree'; },
+  ]) {
+    const input = runtimeEnvironmentStatus();
+    mutate(input);
+    assert.throws(() => projectAdminEnvironmentStatus(input), /INVALID_ENVIRONMENT_STATUS/u);
+  }
+});
+
+test('real Admin routes preserve actual or unknown workspace headroom', async () => {
+  const app = createAdminRoutes(testAdminAuthority('environment-capacity-token'));
+  for (const unusedWorkspaceSlots of [0, 1, 2, 3, null]) {
+    const input = runtimeEnvironmentStatus();
+    const response = await app.request(
+      'http://localhost/admin/api/environment/status',
+      { headers: { authorization: 'Bearer environment-capacity-token' } },
+      { CHICKPEA_ENVIRONMENT_STATUS: JSON.stringify({
+        ...input, sandbox: { ...input.sandbox, unusedWorkspaceSlots },
+      }) },
+    );
+    assert.equal(response.status, 200);
+    const projected = await response.json() as { sandbox: { unusedWorkspaceSlots: number | null } };
+    assert.equal(projected.sandbox.unusedWorkspaceSlots, unusedWorkspaceSlots);
+  }
+  for (const unusedWorkspaceSlots of [-1, 4, 0.5, '1', undefined, Number.NaN, Infinity]) {
+    const input = runtimeEnvironmentStatus();
+    assert.throws(() => projectAdminEnvironmentStatus({
+      ...input, sandbox: { ...input.sandbox, unusedWorkspaceSlots },
+    }), /INVALID_ENVIRONMENT_STATUS/u);
+  }
+});
+
 test('visual fixture seeds the real Agent, Channel, readiness, capability, and memory projections', async () => {
   const { startAdminVisualFixture } = await loadFixtureModule();
   const fixture = await startAdminVisualFixture();
@@ -139,6 +290,31 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
     assert.equal(research.capabilityPreviews.skills[0]?.name, 'research-brief');
     assert.equal(research.capabilityPreviews.connectors[0]?.name, 'Linear');
     assert.equal(research.capabilityPreviews.repositories[0]?.name, 'acme/research');
+
+    const environment = await fixtureJson<{
+      selectedTarget: string;
+      targets: Array<{
+        target: string;
+        health: string;
+        sourceSha: string;
+        servingVersion: string;
+        workspaceAlias: string;
+        appAlias: string;
+        recoveryAction: string;
+      }>;
+      sandbox: { unusedWorkspaceSlots: number; integrationHeadroom: number };
+    }>(fixture, '/admin/api/environment/status');
+    assert.equal(environment.selectedTarget, 'amber');
+    assert.deepEqual(environment.targets.map(({ target }) => target), ['amber', 'cobalt']);
+    assert.deepEqual(environment.targets.map(({ health }) => health), ['ready', 'unreachable']);
+    assert.equal(environment.targets[0]?.sourceSha, '1234567890abcdef1234567890abcdef12345678');
+    assert.equal(environment.targets[0]?.servingVersion, 'version-amber');
+    assert.equal(environment.targets[0]?.workspaceAlias, 'env-amber-workspace');
+    assert.equal(environment.targets[0]?.appAlias, 'env-amber-slack-app');
+    assert.equal(environment.targets[0]?.recoveryAction, 'No recovery needed.');
+    assert.equal(environment.sandbox.unusedWorkspaceSlots, 2);
+    assert.equal(environment.sandbox.integrationHeadroom, 37);
+    assert.doesNotMatch(JSON.stringify(environment), /xoxb-|browser-profile|credentialToken/i);
 
     const releaseConnections = await fixtureJson<{
       attached: Array<{ account: { label: string; lifecycle: string; ownerKind: string } }>;
@@ -598,7 +774,21 @@ test('visual fixture rejects non-loopback binding and removes its temporary stat
 
 test('visual fixture executable removes temporary state when the process exits', async (context) => {
   const scriptPath = fileURLToPath(new URL('../scripts/serve-admin-visual-fixture.mjs', import.meta.url));
-  const child = spawn(process.execPath, [scriptPath, '--host', '127.0.0.1', '--port', '0']);
+  // Model the child being descheduled immediately after it announces readiness.
+  // Its shutdown handlers must already exist when the parent sends SIGTERM.
+  const pauseAfterReady = `data:text/javascript,${encodeURIComponent(`
+    const write = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk, ...args) => {
+      const result = write(chunk, ...args);
+      if (String(chunk).startsWith('Temporary state: ')) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+      }
+      return result;
+    };
+  `)}`;
+  const child = spawn(process.execPath, [
+    '--import', pauseAfterReady, scriptPath, '--host', '127.0.0.1', '--port', '0',
+  ]);
   context.after(() => {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   });

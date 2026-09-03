@@ -1,12 +1,15 @@
 import {
   closeSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
+  readFileSync,
   realpathSync,
   writeSync,
+  type Stats,
 } from 'node:fs';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import {
   ASSERTION_TOKENS,
@@ -86,6 +89,51 @@ export interface SafeRunSummary {
     unexpectedCount: number;
     unresolvedCount: number;
   };
+}
+
+/** Guard journal/lock paths even when an attestation claims the root is safe. */
+export function assertPrivateEvidencePath(path: string, root: string): void {
+  if (!isAbsolute(path) || resolve(path) !== path || !isAbsolute(root)
+    || resolve(root) !== root || !isWithin(path, root)) fail('UNSAFE_EVIDENCE_ROOT');
+  for (let candidate = path; ; candidate = dirname(candidate)) {
+    const stat = optionalStat(candidate);
+    if (stat) {
+      if (stat.isSymbolicLink() || (!stat.isDirectory() && (candidate !== path || !stat.isFile()))) {
+        fail('UNSAFE_EVIDENCE_ROOT');
+      }
+      if (isWithin(candidate, root) && (stat.uid !== process.getuid?.() || (stat.mode & 0o077))) {
+        fail('UNSAFE_EVIDENCE_ROOT');
+      }
+      if (stat.isDirectory() && (optionalStat(join(candidate, '.git')) || hasPackageManifest(candidate))) {
+        fail('UNSAFE_EVIDENCE_ROOT');
+      }
+    }
+    if (candidate === dirname(candidate)) break;
+  }
+}
+
+function hasPackageManifest(directory: string): boolean {
+  const path = join(directory, 'package.json');
+  const stat = optionalStat(path);
+  if (!stat) return false;
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65_536) return true;
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) return true;
+    // Tool installation can leave a dependency-only manifest in an operator's
+    // home. It cannot be packed and must not turn the entire home into a package
+    // root. Keep every other manifest shape, including malformed ones, fenced.
+    const keys = Object.keys(manifest);
+    return !keys.some((key) => key === 'dependencies' || key === 'devDependencies')
+      || keys.some((key) => !['dependencies', 'devDependencies', 'packageManager'].includes(key));
+  } catch { return true; }
+}
+
+function optionalStat(path: string): Stats | undefined {
+  try { return lstatSync(path); } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') return undefined;
+    fail('UNSAFE_EVIDENCE_ROOT');
+  }
 }
 
 export function createEvidenceRun(input: {

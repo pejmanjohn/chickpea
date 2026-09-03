@@ -8,6 +8,7 @@ import type { UsageStore } from '../usage/types.ts';
 import {
   hasCredentialLikeContent,
   hasDisallowedControlCharacter,
+  trimmedNonEmpty,
 } from '../security/content-validation.ts';
 
 const ENV_KEY_NAMES: Record<ProviderKeyId, string> = {
@@ -63,7 +64,7 @@ export async function resolveModelCredentialAttribution(
 
   if (BUILTIN_PROVIDERS.has(providerId as ProviderKeyId)) {
     const id = providerId as ProviderKeyId;
-    if (nonEmpty(processEnv[ENV_KEY_NAMES[id]])) {
+    if (trimmedNonEmpty(processEnv[ENV_KEY_NAMES[id]])) {
       const prefix = ENV_PREFIXES[id];
       return registerCredential(usage, {
         credentialRefId: `cred_${id}_environment`,
@@ -80,7 +81,7 @@ export async function resolveModelCredentialAttribution(
       });
     }
     const apiKey = await settings.getSetting(providerApiKeySetting(id));
-    if (!nonEmpty(apiKey)) return null;
+    if (!trimmedNonEmpty(apiKey)) return null;
     const metadata = await ensureStoredCredentialMetadata(id, settings, now);
     if (!metadata.active) return null;
     return registerCredential(usage, {
@@ -96,7 +97,7 @@ export async function resolveModelCredentialAttribution(
   }
 
   if (providerId === 'cloudflare-workers-ai') {
-    if (!nonEmpty(processEnv.CLOUDFLARE_API_TOKEN) || !nonEmpty(processEnv.CLOUDFLARE_ACCOUNT_ID)) {
+    if (!trimmedNonEmpty(processEnv.CLOUDFLARE_API_TOKEN) || !trimmedNonEmpty(processEnv.CLOUDFLARE_ACCOUNT_ID)) {
       return null;
     }
     const epoch = positiveEpoch(processEnv.CLOUDFLARE_WORKERS_AI_CREDENTIAL_EPOCH);
@@ -337,8 +338,8 @@ function credentialActiveFromSetting(id: ProviderKeyId): string {
 }
 
 function environmentScope(id: ProviderKeyId, env: NodeJS.ProcessEnv): string | null {
-  if (id === 'openai') return nonEmpty(env.OPENAI_PROJECT_ID) ?? null;
-  if (id === 'anthropic') return nonEmpty(env.ANTHROPIC_WORKSPACE_ID) ?? null;
+  if (id === 'openai') return trimmedNonEmpty(env.OPENAI_PROJECT_ID) ?? null;
+  if (id === 'anthropic') return trimmedNonEmpty(env.ANTHROPIC_WORKSPACE_ID) ?? null;
   return null;
 }
 
@@ -368,13 +369,9 @@ function nonNegativeInteger(value: string | undefined): number | null {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
-function nonEmpty(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed || undefined;
-}
 
 function safeLabel(value: string | undefined, fallback: string): string {
-  const candidate = nonEmpty(value);
+  const candidate = trimmedNonEmpty(value);
   if (
     !candidate ||
     new TextEncoder().encode(candidate).byteLength > 160 ||

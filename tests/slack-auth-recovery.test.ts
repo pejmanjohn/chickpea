@@ -269,11 +269,15 @@ async function recoveryFixture(options: {
     fetch: async (url, init) => {
       if (options.manifestFlow && String(url).endsWith('/apps.manifest.export')) {
         manifestCalls.push({ method: 'export', authorization: new Headers(init?.headers).get('authorization') });
+        const exported = manifestUpdated
+          ? buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN })
+          : manifest;
         return Response.json({
           ok: true,
-          manifest: manifestUpdated
-            ? buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN })
-            : manifest,
+          manifest: {
+            ...exported,
+            oauth_config: { ...exported.oauth_config, pkce_enabled: false },
+          },
         });
       }
       if (options.manifestFlow && String(url).endsWith('/apps.manifest.update')) {

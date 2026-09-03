@@ -1,3 +1,4 @@
+import { escapeHtml } from '../security/html-escape.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
 import { MODEL_PROVIDER_LOGOS } from './model-provider-logos.ts';
@@ -26,7 +27,7 @@ const SLACK_LOGO_DATA_URL =
   'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTQiIGhlaWdodD0iNTQiIHZpZXdCb3g9IjAgMCA1NCA1NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGcgY2xpcC1wYXRoPSJ1cmwoI2NsaXAwXzQxMjdfNzAxMDUpIj4KPHBhdGggZD0iTTExLjM3OSAzMy45OTkzQzExLjM3OSAzNy4xMzU4IDguODQ1MTIgMzkuNjUwNyA1LjcyNzYgMzkuNjUwN0MyLjYxMDA4IDM5LjY1MDcgMC4wNTcyMjA1IDM3LjExNjggMC4wNTcyMjA1IDMzLjk5OTNDMC4wNTcyMjA1IDMwLjg4MTcgMi41OTExIDI4LjM0NzkgNS43MDg2MiAyOC4zNDc5SDExLjM2VjMzLjk5OTNIMTEuMzc5WiIgZmlsbD0iI0UwMUU1QSIvPgo8cGF0aCBkPSJNMTQuMTk2MiAzMy45OTk3QzE0LjE5NjIgMzAuODYzMiAxNi43MzAxIDI4LjM0ODMgMTkuODQ3NiAyOC4zNDgzQzIyLjk2NTEgMjguMzQ4MyAyNS40OTkgMzAuODgyMiAyNS40OTkgMzMuOTk5N1Y0OC4xMzUzQzI1LjQ5OSA1MS4yNzE4IDIyLjk2NTEgNTMuNzg2NyAxOS44NDc2IDUzLjc4NjdDMTYuNzMwMSA1My43ODY3IDE0LjE5NjIgNTEuMjcxOCAxNC4xOTYyIDQ4LjEzNTNWMzMuOTk5N1oiIGZpbGw9IiNFMDFFNUEiLz4KPHBhdGggZD0iTTE5Ljg2NjIgMTEuMjY3M0MxNi43Mjk2IDExLjI2NzMgMTQuMjE0OCA4LjczMzQ3IDE0LjIxNDggNS42MTU5NEMxNC4yMTQ4IDIuNDk4NDIgMTYuNzQ4NiAtMC4wMzU0NTM4IDE5Ljg2NjIgLTAuMDM1NDUzOEMyMi45ODM3IC0wLjAzNTQ1MzggMjUuNTE3NSAyLjQ5ODQyIDI1LjUxNzUgNS42MTU5NFYxMS4yNjczSDE5Ljg2NjJaIiBmaWxsPSIjMzZDNUYwIi8+CjxwYXRoIGQ9Ik0xOS44NjgyIDE0LjEzMzRDMjMuMDA0NyAxNC4xMzM0IDI1LjUxOTYgMTYuNjY3MyAyNS41MTk2IDE5Ljc4NDhDMjUuNTE5NiAyMi45MDIzIDIyLjk4NTcgMjUuNDM2MiAxOS44NjgyIDI1LjQzNjJINS42NzU2NkMyLjUzOTE2IDI1LjQzNjIgMC4wMjQyNjE1IDIyLjkwMjMgMC4wMjQyNjE1IDE5Ljc4NDhDMC4wMjQyNjE1IDE2LjY2NzMgMi41NTgxNCAxNC4xMzM0IDUuNjc1NjYgMTQuMTMzNEgxOS44NjgyWiIgZmlsbD0iIzM2QzVGMCIvPgo8cGF0aCBkPSJNNDIuNTMyMyAxOS43ODUzQzQyLjUzMjMgMTYuNjQ4OCA0NS4wNjYyIDE0LjEzMzkgNDguMTgzNyAxNC4xMzM5QzUxLjMwMTIgMTQuMTMzOSA1My44MzUxIDE2LjY2NzggNTMuODM1MSAxOS43ODUzQzUzLjgzNTEgMjIuOTAyOCA1MS4zMDEyIDI1LjQzNjcgNDguMTgzNyAyNS40MzY3SDQyLjUzMjNWMTkuNzg1M1oiIGZpbGw9IiMyRUI2N0QiLz4KPHBhdGggZD0iTTM5LjcxMjYgMTkuNzkzNEMzOS43MTI2IDIyLjkyOTkgMzcuMTc4NyAyNS40NDQ4IDM0LjA2MTIgMjUuNDQ0OEMzMC45NDM2IDI1LjQ0NDggMjguNDA5OCAyMi45MTEgMjguNDA5OCAxOS43OTM0VjUuNjE5ODZDMjguNDA5OCAyLjQ4MzM2IDMwLjk0MzYgLTAuMDMxNTM5OSAzNC4wNjEyIC0wLjAzMTUzOTlDMzcuMTc4NyAtMC4wMzE1Mzk5IDM5LjcxMjYgMi40ODMzNiAzOS43MTI2IDUuNjE5ODZWMTkuNzkzNFoiIGZpbGw9IiMyRUI2N0QiLz4KPHBhdGggZD0iTTM0LjAzNzYgNDIuNDgyQzM3LjE3NDEgNDIuNDgyIDM5LjY4OSA0NS4wMTU4IDM5LjY4OSA0OC4xMzM0QzM5LjY4OSA1MS4yNTA5IDM3LjE1NTIgNTMuNzg0OCAzNC4wMzc2IDUzLjc4NDhDMzAuOTIwMSA1My43ODQ4IDI4LjM4NjIgNTEuMjUwOSAyOC4zODYyIDQ4LjEzMzRWNDIuNDgySDM0LjAzNzZaIiBmaWxsPSIjRUNCMjJFIi8+CjxwYXRoIGQ9Ik0zNC4wMzgxIDM5LjY1MDdDMzAuOTAxNiAzOS42NTA3IDI4LjM4NjcgMzcuMTE2OCAyOC4zODY3IDMzLjk5OTNDMjguMzg2NyAzMC44ODE4IDMwLjkyMDYgMjguMzQ3OSAzNC4wMzgxIDI4LjM0NzlINDguMjMwNkM1MS4zNjcxIDI4LjM0NzkgNTMuODgyIDMwLjg4MTggNTMuODgyIDMzLjk5OTNDNTMuODgyIDM3LjExNjggNTEuMzQ4MiAzOS42NTA3IDQ4LjIzMDYgMzkuNjUwN0gzNC4wMzgxWiIgZmlsbD0iI0VDQjIyRSIvPgo8L2c+CjxkZWZzPgo8Y2xpcFBhdGggaWQ9ImNsaXAwXzQxMjdfNzAxMDUiPgo8cmVjdCB3aWR0aD0iNTQiIGhlaWdodD0iNTQiIGZpbGw9IndoaXRlIi8+CjwvY2xpcFBhdGg+CjwvZGVmcz4KPC9zdmc+Cg==';
 
 export function renderAdminPage(
-  options: { usageAdminUi?: boolean } = {},
+  options: { usageAdminUi?: boolean; workspaceAdminUi?: boolean } = {},
 ): string {
   // Target-aware setup and provider copy differs between the Node and
   // Cloudflare runtimes. The primary Admin chrome intentionally stays
@@ -34,6 +35,9 @@ export function renderAdminPage(
   const isCloudflare = isCloudflareTarget();
   const targetChip = isCloudflare ? 'cloudflare · workers' : 'local · node';
   const usageAdminUi = options.usageAdminUi === true;
+  // Omission preserves the full Admin shell for callers and tests that do not
+  // have a request principal. The authenticated route passes this explicitly.
+  const workspaceAdminUi = options.workspaceAdminUi !== false;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -334,6 +338,58 @@ button, input, textarea, select { font: inherit; }
 .badge .dot { background: currentColor; border-radius: 999px; height: 5px; width: 5px; }
 .badge-on { background: var(--ok-solid); box-shadow: 0 1.5px 0 rgba(78, 122, 62, 0.6); color: #fffdf6; }
 .badge-off { background: rgba(59, 50, 32, 0.1); color: #8a7a5c; }
+.environment-status { min-width: 0; position: relative; }
+.environment-status > summary { cursor: pointer; list-style: none; }
+.environment-status > summary::-webkit-details-marker { display: none; }
+.environment-health {
+  align-items: center;
+  background: rgba(59, 50, 32, .08);
+  border-radius: 999px;
+  color: var(--text-2);
+  display: inline-flex;
+  font-size: .6875rem;
+  font-weight: 750;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+.environment-health .dot { background: currentColor; border-radius: 50%; height: 6px; width: 6px; }
+.environment-health-ready { background: var(--ok-tint); color: var(--ok); }
+.environment-health-unreachable,
+.environment-health-stale_claim,
+.environment-health-expired_claim { background: #faedca; color: #8a6410; }
+.environment-health-identity_mismatch { background: var(--danger-tint); color: var(--danger); }
+.environment-status-panel {
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  box-shadow: var(--pop-shadow);
+  color: var(--text);
+  display: grid;
+  gap: 10px;
+  max-height: min(720px, calc(100dvh - 84px));
+  overflow: auto;
+  padding: 14px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(430px, calc(100vw - 32px));
+  z-index: 60;
+}
+.environment-status-head,
+.environment-target-head { align-items: center; display: flex; gap: 10px; justify-content: space-between; }
+.environment-status-head > div { display: grid; gap: 2px; }
+.environment-target { border: 1px solid var(--line); border-radius: 12px; display: grid; gap: 9px; padding: 11px; }
+.environment-target-head strong { text-transform: capitalize; }
+.environment-grid { display: grid; gap: 6px; margin: 0; }
+.environment-grid > div { display: grid; gap: 8px; grid-template-columns: 92px minmax(0, 1fr); }
+.environment-grid dt { color: var(--text-3); font-size: .6875rem; font-weight: 700; }
+.environment-grid dd { font-size: .6875rem; margin: 0; overflow-wrap: anywhere; }
+.environment-claim { display: grid; gap: 2px; }
+.environment-empty { color: var(--text-3); }
+.environment-recovery { background: var(--well); border-radius: 8px; font-size: .6875rem; line-height: 1.45; margin: 0; padding: 8px; }
+.environment-sandbox { display: grid; font-size: .6875rem; gap: 3px; padding: 3px 2px; }
 .chip {
   background: rgba(59, 50, 32, 0.08);
   border-radius: 8px;
@@ -1595,9 +1651,18 @@ details[open].advanced summary::before {
   display: flex;
   gap: 11px;
   padding: 0 3px 25px;
+  flex-wrap: wrap;
 }
 .primary-admin-shell .primary-shell-brand .brand-home { flex: 1; }
 .primary-admin-shell .primary-shell-brand .brand-wordmark { height: 28px; }
+.primary-admin-shell .primary-shell-brand .environment-status { flex: 0 0 100%; width: 100%; }
+.primary-admin-shell .primary-shell-brand .environment-status > summary { display: flex; }
+.primary-admin-shell .primary-shell-brand .environment-status-panel {
+  left: 0;
+  max-height: calc(100dvh - 130px);
+  right: auto;
+  width: 100%;
+}
 .primary-admin-shell .primary-shell-sidebar .rail-context { padding-bottom: 14px; }
 .primary-admin-shell .primary-shell-sidebar .rail-head { padding-left: 3px; padding-right: 3px; }
 .primary-admin-shell .primary-shell-sidebar .section-switcher { border-color: var(--admin-visual-line); }
@@ -1720,6 +1785,7 @@ details[open].advanced summary::before {
   .primary-admin-shell .topbar .topbar-menu,
   .primary-admin-shell .topbar .topbar-menu > summary { display: inline-flex; }
   .primary-admin-shell .topbar .actions-list { display: none; }
+  .primary-admin-shell .topbar .environment-status-panel { left: 0; right: auto; }
   .primary-admin-shell .topbar-menu[open] ~ .actions-list {
     align-items: stretch;
     background: var(--bg);
@@ -3134,6 +3200,7 @@ button.capability-pill { cursor: pointer; }
   // of its own — this is interpolated as a literal boolean at render time).
   var IS_CLOUDFLARE = ${isCloudflare};
   var USAGE_ADMIN_UI = ${usageAdminUi};
+  var WORKSPACE_ADMIN_UI = ${workspaceAdminUi};
   var CONNECTOR_PRESETS = ${JSON.stringify(CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = ${JSON.stringify(GOOGLE_WORKSPACE_SERVICE_PRESETS).replace(/</g, '\\u003c')};
   var MANAGED_CONNECTOR_PRESETS = ${JSON.stringify(MANAGED_CONNECTOR_PRESETS).replace(/</g, '\\u003c')};
@@ -3160,6 +3227,7 @@ button.capability-pill { cursor: pointer; }
   var state = {
     agents: [],
     grants: [],
+    environmentStatus: null,
     models: { providers: [] },
     active: null,
     effective: null,
@@ -3957,6 +4025,12 @@ button.capability-pill { cursor: pointer; }
       try { return decodeURIComponent(part); } catch (err) { return part; }
     });
     state.leavePrompt = null;
+    if (!WORKSPACE_ADMIN_UI && parts[1] && parts[1] !== "agents") {
+      var memberAgent = state.agents[0] || null;
+      if (memberAgent) return openProfileEditor(memberAgent);
+      enterProfiles(null);
+      return;
+    }
     if (parts[1] === "onboarding") {
       state.view = "onboarding";
       state.channelScreen = "overview";
@@ -4290,6 +4364,82 @@ button.capability-pill { cursor: pointer; }
       '<button type="button" class="btn btn-primary" data-action="managed-auth-open"' + (cancelling ? ' disabled' : '') + '>Open sign-in &nearr;</button></div></div></div>';
   }
 
+  function environmentHealthLabel(health) {
+    return ({
+      ready: "Ready",
+      unreachable: "Unreachable",
+      stale_claim: "Stale claim",
+      identity_mismatch: "Identity mismatch",
+      expired_claim: "Expired claim"
+    })[health] || "Unavailable";
+  }
+
+  function environmentStatusValue(value, fallback) {
+    return value === null || value === undefined || value === "" ? fallback : String(value);
+  }
+
+  function environmentRecoveryAction(health, target) {
+    if (health === "ready") return "No recovery needed.";
+    if (health === "unreachable") return "Check " + target + " Worker and Slack transport reachability.";
+    if (health === "stale_claim") return "Run npm run env -- reclaim " + target + " from the intended worktree.";
+    if (health === "expired_claim") return "Run npm run env -- reclaim " + target + ".";
+    return "Run npm run env -- reconciliation " + target + ".";
+  }
+
+  function environmentClaimHtml(claim) {
+    if (!claim) return '<span class="environment-empty">Unclaimed</span>';
+    var leaseMinutes = Math.floor(Number(claim.leaseAgeMs || 0) / 60000);
+    return '<span class="environment-claim"><span class="mono">' + esc(claim.holderId) + '</span>' +
+      '<span>' + leaseMinutes + 'm old &middot; expires ' + esc(claim.expiresAt) + '</span></span>';
+  }
+
+  function environmentTargetStatusHtml(target) {
+    var source = environmentStatusValue(target.sourceSha, "unknown") + (target.dirty ? " (dirty)" : "");
+    var workspace = environmentStatusValue(target.workspaceLabel, target.workspaceAlias) + " · " + target.workspaceAlias;
+    var slackApp = environmentStatusValue(target.appLabel, target.appAlias) + " · " + target.appAlias;
+    var lock = environmentStatusValue(target.verifierLock && target.verifierLock.status, "unknown");
+    if (target.verifierLock && target.verifierLock.ownerRunId) lock += " · " + target.verifierLock.ownerRunId;
+    return '<section class="environment-target" data-environment-target="' + esc(target.target) + '" data-environment-health="' + esc(target.health) + '">' +
+      '<div class="environment-target-head"><strong>' + esc(target.target) + '</strong><span class="environment-health environment-health-' + esc(target.health) + '"><span class="dot"></span>' + esc(environmentHealthLabel(target.health)) + '</span></div>' +
+      '<dl class="environment-grid">' +
+        '<div><dt>Source</dt><dd class="mono">' + esc(source) + '</dd></div>' +
+        '<div><dt>Serving</dt><dd class="mono">' + esc(environmentStatusValue(target.servingVersion, "unknown")) + '</dd></div>' +
+        '<div><dt>Transport</dt><dd>' + esc(environmentStatusValue(target.transport, "unknown")) + '</dd></div>' +
+        '<div><dt>Workspace</dt><dd>' + esc(workspace) + '</dd></div>' +
+        '<div><dt>Slack app</dt><dd>' + esc(slackApp) + '</dd></div>' +
+        '<div><dt>Claim</dt><dd>' + environmentClaimHtml(target.claim) + '</dd></div>' +
+        '<div><dt>Verifier lock</dt><dd class="mono">' + esc(lock) + '</dd></div>' +
+        '<div><dt>Schema</dt><dd class="mono">' + esc(environmentStatusValue(target.schemaGeneration, "unknown")) + '</dd></div>' +
+        '<div><dt>Attested source</dt><dd class="mono">' + esc(environmentStatusValue(target.lastAttestedRevision, "not attested")) + '</dd></div>' +
+      '</dl><p class="environment-recovery"><strong>Recovery:</strong> ' + esc(environmentRecoveryAction(target.health, target.target)) + '</p></section>';
+  }
+
+  function environmentStatusHtml(placement) {
+    var status = state.environmentStatus;
+    if (status && status.schemaVersion === "chickpea-environment-identity/v1") {
+      var source = status.sourceSha + (status.dirty ? " (dirty)" : "");
+      return '<details class="environment-status environment-status-' + placement + '"><summary aria-label="Live environment status"><span class="environment-health">' + esc(status.target) + ' · ' + esc(status.sourceSha.slice(0, 7)) + (status.dirty ? ' (dirty)' : '') + '</span></summary>' +
+        '<div class="environment-status-panel"><div class="environment-status-head"><strong>' + esc(status.target) + ' · Deployed build</strong></div><dl class="environment-grid">' +
+        '<div><dt>Source</dt><dd class="mono">' + esc(source) + '</dd></div><div><dt>Serving</dt><dd class="mono">' + esc(status.servingVersion) + '</dd></div></dl>' +
+        '<p class="environment-recovery">For current worktree claims and verifier locks, run <code>npm run env -- status --all</code>. This badge identifies the deployed build, not a live worktree lease.</p></div></details>';
+    }
+    if (!status || !Array.isArray(status.targets) || !status.targets.length) return "";
+    var selected = status.targets[0];
+    status.targets.forEach(function (target) {
+      if (target.target === status.selectedTarget) selected = target;
+    });
+    var sandbox = status.sandbox || {};
+    var archive = sandbox.archiveDate
+      ? environmentStatusValue(sandbox.daysUntilArchive, "?") + " days · " + sandbox.archiveDate
+      : "Unavailable";
+    return '<details class="environment-status environment-status-' + placement + '"><summary aria-label="Live environment status"><span class="environment-health environment-health-' + esc(selected.health) + '"><span class="dot"></span>' + esc(selected.target) + ' · ' + esc(environmentHealthLabel(selected.health)) + '</span></summary>' +
+      '<div class="environment-status-panel"><div class="environment-status-head"><div><span class="section-eyebrow">Live environments</span><strong>Two-lane fleet</strong></div><span class="mono">registry r' + esc(environmentStatusValue(status.registryRevision, "—")) + '</span></div>' +
+      status.targets.map(environmentTargetStatusHtml).join("") +
+      (status.sandbox === null
+        ? '<section class="environment-sandbox"><strong>Standalone Slack workspaces</strong><span>Amber and Cobalt have independent installations. Fern is inactive.</span></section>'
+        : '<section class="environment-sandbox"><strong>Slack sandbox</strong><span>Archive: ' + esc(archive) + '</span><span>Recorded unused workspace slots: ' + esc(environmentStatusValue(sandbox.unusedWorkspaceSlots, "unavailable")) + '</span><span>Recorded integration headroom: ' + esc(environmentStatusValue(sandbox.integrationHeadroom, "unavailable")) + '</span><span>Capacity is a registry snapshot. Check Slack before creating a workspace.</span></section>') + '</div></details>';
+  }
+
   function topbarHtml() {
     // Desktop section navigation lives persistently at the bottom of the rail.
     // This duplicate action row is mobile-only and is revealed by the hamburger.
@@ -4299,17 +4449,19 @@ button.capability-pill { cursor: pointer; }
       : "";
     var scoped = isAgentChannelSurface();
     var mobileRoster = scoped && state.mobileAgentRosterOpen;
-    var actions = mobileRoster
-      ? mobileAgentRosterHtml()
-      : connectedBadge +
-        '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="' + (scoped ? "mobile-agents-open" : "open-profiles") + '" data-section-switcher="true">Agents</button>' +
-        '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-destinations" data-section-switcher="true">Destinations</button>' +
+    var agentsAction = '<button type="button" class="btn btn-soft' + (primarySection() === "profiles" ? " nav-active" : "") + '" data-action="' + (scoped ? "mobile-agents-open" : "open-profiles") + '" data-section-switcher="true">Agents</button>';
+    var workspaceActions = WORKSPACE_ADMIN_UI
+      ? '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-destinations" data-section-switcher="true">Destinations</button>' +
         '<button type="button" class="btn btn-soft' + (primarySection() === "team" ? " nav-active" : "") + '" data-action="open-team" data-section-switcher="true">Team</button>' +
         (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
-        '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>';
+        '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>'
+      : "";
+    var actions = mobileRoster
+      ? mobileAgentRosterHtml()
+      : (WORKSPACE_ADMIN_UI ? connectedBadge : "") + agentsAction + workspaceActions;
     // The brand doubles as a home affordance to the canonical Agent.
     return '<header class="topbar' + (scoped ? ' admin-mobile-topbar' : '') + '">' +
-      '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button></div>' +
+      '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button>' + environmentStatusHtml('topbar') + '</div>' +
       '<details class="topbar-menu"' + (mobileRoster ? ' open' : '') + '><summary aria-label="Menu" data-role="mobile-menu-trigger">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + actions + '</div>' +
       "</header>";
@@ -4386,12 +4538,16 @@ button.capability-pill { cursor: pointer; }
   function sectionSwitcherHtml() {
     var active = primarySection();
     var sections = [
-      { id: "profiles", label: "Agents", action: "open-profiles" },
-      { id: "channels", label: "Destinations", action: "open-destinations" },
-      { id: "team", label: "Team", action: "open-team" }
+      { id: "profiles", label: "Agents", action: "open-profiles" }
     ];
-    if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
-    sections.push({ id: "settings", label: "Settings", action: "open-settings" });
+    if (WORKSPACE_ADMIN_UI) {
+      sections.push(
+        { id: "channels", label: "Destinations", action: "open-destinations" },
+        { id: "team", label: "Team", action: "open-team" }
+      );
+      if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
+      sections.push({ id: "settings", label: "Settings", action: "open-settings" });
+    }
     return '<nav class="section-switcher" aria-label="Admin navigation">' +
       sections.map(function (section) {
         var selected = active === section.id;
@@ -4420,7 +4576,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function primaryShellBrandHtml() {
-    return '<div class="primary-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button></div>';
+    return '<div class="primary-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button>' + environmentStatusHtml('rail') + '</div>';
   }
 
   function onboardingRailHtml() {
@@ -5512,6 +5668,21 @@ button.capability-pill { cursor: pointer; }
       slackDestinationTabsHtml() + panels + '</div>';
   }
 
+  function slackSessionDiagnosticsHtml() {
+    var gateway = state.slack && state.slack.gateway;
+    if (!gateway) return "";
+    var phases = ["stopped", "starting", "connecting", "retrying", "healthy", "needs_attention", "stale", "offline"];
+    var phase = phases.indexOf(gateway.phase) >= 0 ? gateway.phase : "unavailable";
+    var version = typeof gateway.versionId === "string" &&
+      /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|version-[A-Za-z0-9._-]{1,96})$/i.test(gateway.versionId)
+      ? gateway.versionId : "unavailable";
+    var generation = Number.isSafeInteger(gateway.generation) && gateway.generation >= 0
+      ? gateway.generation : "unavailable";
+    return '<details class="hint" style="margin-top:12px;overflow-wrap:anywhere;"><summary>Inbound session · ' + esc(phase) + '</summary>' +
+      '<p>Session phase: ' + esc(phase) + '<br>Generation: ' + esc(generation) + '<br>Worker version: <span class="mono">' + esc(version) + '</span></p>' +
+      '<p>Live session at last refresh. The workspace warning may also reflect a saved authorization or connection issue.</p></details>';
+  }
+
   function slackWorkspaceSettingsHtml() {
     if (!state.slack) {
       return '<section class="section"><div class="empty"><p class="field-label">Slack settings are unavailable</p><p class="hint">Reload the page to try the connection again.</p></div></section>';
@@ -5535,7 +5706,7 @@ button.capability-pill { cursor: pointer; }
     var connection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connection</h2>' +
       '<p class="hint">Manage this Slack workspace connection.</p></div></div>' +
       '<div class="action-well">' + testButton +
-      slackConnectionStatusHtml() + '</div>' +
+      slackConnectionStatusHtml() + '</div>' + slackSessionDiagnosticsHtml() +
       (!mutable ? '<div class="action-well"><div class="danger-copy"><span class="danger-title">Reconnect the shared Slack app</span>' +
       '<span class="hint">Refresh Slack authorization without changing Agents, Channel grants, or saved settings.</span></div>' +
       '<button type="button" class="btn btn-soft i-lead" data-action="slack-gateway-refresh"' +
@@ -5969,7 +6140,7 @@ button.capability-pill { cursor: pointer; }
         presetId: managedCandidate.id,
         preset: managedCandidate,
         managedToolkit: managedDescriptor.toolkit,
-        managedAccess: "read",
+        managedAccess: managedConnectorLaneReady(managedDescriptor, "write") ? "write" : "read",
         providerId: managedDescriptor.providerId,
         label: managedCandidate.name,
         busy: false,
@@ -6838,6 +7009,14 @@ button.capability-pill { cursor: pointer; }
     var agent = agentById(agentId);
     var hasProjection = !!(agent && agent.whereItWorks && Array.isArray(agent.whereItWorks.channels));
     var projected = hasProjection ? agent.whereItWorks.channels : [];
+    function currentLabel(grant) {
+      var channel = (state.channelIndex || []).find(function (candidate) {
+        return candidate.workspaceId === grant.workspaceId && candidate.channelId === grant.channelId;
+      });
+      return channel && channel.channelName !== channel.channelId
+        ? normalizeChannelLabel(channel.channelName)
+        : null;
+    }
     // An authoritative empty projection means the Agent has no Channel reach.
     // Falling back to the pre-mutation grant cache here briefly resurrected
     // archived placements until the next full page reload.
@@ -6846,7 +7025,7 @@ button.capability-pill { cursor: pointer; }
         return {
           workspaceId: grant.workspaceId,
           channelId: grant.channelId,
-          channelLabel: grant.channelName || grant.channelId,
+          channelLabel: currentLabel(grant) || grant.channelName || grant.channelId,
           status: grant.status
         };
       });
@@ -6854,14 +7033,9 @@ button.capability-pill { cursor: pointer; }
     return state.grants.filter(function (grant) {
       return grant.agentId === agentId;
     }).map(function (grant) {
-      if (normalizeChannelLabel(grant.channelLabel)) return grant;
-      var channel = (state.channelIndex || []).find(function (candidate) {
-        return candidate.workspaceId === grant.workspaceId && candidate.channelId === grant.channelId;
-      }) || projected.find(function (candidate) {
-        return candidate.workspaceId === grant.workspaceId && candidate.channelId === grant.channelId;
-      });
-      return channel && channel.channelName
-        ? Object.assign({}, grant, { channelLabel: channel.channelName })
+      var label = currentLabel(grant);
+      return label
+        ? Object.assign({}, grant, { channelLabel: label })
         : grant;
     });
   }
@@ -8473,13 +8647,9 @@ button.capability-pill { cursor: pointer; }
   function connectionAccountAccessHtml(form) {
     var googleService = googleServicePresetById(form.presetId);
     if (form.kind === "managed") {
-      var managedAccess = form.managedAccess === "write" ? "write" : "read";
-      var managedDescriptor = managedConnectorDescriptorByToolkit(form.managedToolkit);
-      var writeDisabled = !managedConnectorLaneReady(managedDescriptor, "write");
-      return '<div class="field"><label class="field-label">Access</label><div class="seg" role="group" aria-label="' + esc(form.preset && form.preset.name || "Managed connector") + ' access">' +
-        '<button type="button" class="' + (managedAccess === "read" ? "on" : "") + '" data-action="connection-account-managed-access" data-access="read">Read-only</button>' +
-        '<button type="button" class="' + (managedAccess === "write" ? "on" : "") + '" data-action="connection-account-managed-access" data-access="write"' + (writeDisabled ? ' disabled aria-disabled="true"' : '') + '>Read and write</button></div>' +
-        (writeDisabled ? '<p class="hint">Write access is not configured for this connector.</p>' : '') + '</div>';
+      return '<div class="field"><span class="field-label">Permissions</span>' +
+        '<p class="hint">Review the permissions requested on the provider&#39;s sign-in screen. They may include permission to change data.</p>' +
+        (form.managedAccess === "read" ? '<p class="hint">This Agent is limited to reading data. That does not limit permissions granted during sign-in.</p>' : '') + '</div>';
     }
     if (googleService && form.apiEditor) {
       var googleAccess = form.apiEditor.googleAccess[googleService.service] || "read";
@@ -10797,6 +10967,9 @@ button.capability-pill { cursor: pointer; }
         (settings.canConfigure ? '<button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry</button>' : '') + '</div>';
     } else if (provider.lastSetupResult && provider.lastSetupResult.status !== "ready" && configured) {
       controls += '<div class="callout" role="alert"><span>Some connectors still need setup. Ready connectors remain available.</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry setup</button></div>';
+    } else if (settings.canConfigure && configured && !settings.editing && !deploymentPreparationRequired && !googleAdsPolicyBlocked) {
+      controls += '<div class="managed-provider-actions"><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry"' + (settings.busy ? ' disabled' : '') + '>' +
+        (settings.busy === "retry" ? 'Preparing&hellip;' : 'Refresh connector setup') + '</button><span class="hint">Apply current deployment settings without replacing the project key.</span></div>';
     }
     if (googleAdsPolicyBlocked) {
       controls += '<div class="callout" role="status"><span>Google Ads is blocked by deployment policy. A deployment operator must allow Composio managed OAuth or configure Explorer, Basic, or Standard API access. Preparing connector defaults will not change this setting.</span></div>';
@@ -12910,28 +13083,44 @@ button.capability-pill { cursor: pointer; }
   }
 
   function refreshData(renderAfterRefresh) {
+    var slackRequest = WORKSPACE_ADMIN_UI
+      ? api("/admin/api/slack-connection").catch(function () { return null; })
+      : Promise.resolve(null);
+    var onboardingRequest = WORKSPACE_ADMIN_UI
+      ? api("/admin/api/onboarding").then(function (body) {
+          return { body: body, error: "" };
+        }).catch(function (error) {
+          return {
+            body: null,
+            error: error && error.message === "onboarding_not_found"
+              ? "This install does not have an active setup journey."
+              : ((error && (error.serverMessage || error.message)) || "Could not load setup.")
+          };
+        })
+      : Promise.resolve({ body: null, error: "" });
+    var channelsRequest = WORKSPACE_ADMIN_UI
+      ? api("/admin/api/channels").then(function (body) {
+          return { channels: body.channels || [], error: "" };
+        }).catch(function (error) {
+          return { channels: [], error: (error && (error.serverMessage || error.message)) || "Could not load Channels." };
+        })
+      : Promise.resolve({ channels: [], error: "" });
+    var workspaceDefaultRequest = WORKSPACE_ADMIN_UI
+      ? api("/admin/api/workspace-model-default", { cache: "no-store" }).catch(function () { return null; })
+      : Promise.resolve(null);
+    var environmentStatusRequest = WORKSPACE_ADMIN_UI
+      ? api("/admin/api/environment/status", { cache: "no-store" }).catch(function () { return null; })
+      : Promise.resolve(null);
     return Promise.all([
       api("/admin/api/agents"),
       api("/admin/api/models"),
       // Resilient on purpose: the connection card is auxiliary — if this
       // endpoint fails, the rest of the admin page must still render.
-      api("/admin/api/slack-connection").catch(function () { return null; }),
-      api("/admin/api/onboarding").then(function (body) {
-        return { body: body, error: "" };
-      }).catch(function (error) {
-        return {
-          body: null,
-          error: error && error.message === "onboarding_not_found"
-            ? "This install does not have an active setup journey."
-            : ((error && (error.serverMessage || error.message)) || "Could not load setup.")
-        };
-      }),
-      api("/admin/api/channels").then(function (body) {
-        return { channels: body.channels || [], error: "" };
-      }).catch(function (error) {
-        return { channels: [], error: (error && (error.serverMessage || error.message)) || "Could not load Channels." };
-      }),
-      api("/admin/api/workspace-model-default", { cache: "no-store" }).catch(function () { return null; })
+      slackRequest,
+      onboardingRequest,
+      channelsRequest,
+      workspaceDefaultRequest,
+      environmentStatusRequest
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
       state.grants = [];
@@ -12951,6 +13140,7 @@ button.capability-pill { cursor: pointer; }
       });
       state.channelIndexError = parts[4].error;
       if (parts[5] && parts[5].workspaceDefault) applyWorkspaceDefault(parts[5].workspaceDefault, false);
+      state.environmentStatus = parts[6];
       syncChannelFormWorkspacePrefill();
       if (renderAfterRefresh) renderAfterRefresh();
       else render();
@@ -13335,12 +13525,6 @@ button.capability-pill { cursor: pointer; }
       );
     }
     if (action === "connection-account-cancel") { state.connectionAccountForm = null; render(); }
-    if (action === "connection-account-managed-access" && state.connectionAccountForm &&
-        state.connectionAccountForm.kind === "managed") {
-      state.connectionAccountForm.managedAccess = target.getAttribute("data-access") === "write" ? "write" : "read";
-      state.connectionAccountForm.error = "";
-      render();
-    }
     if (action === "connection-account-google-access" && state.connectionAccountForm) {
       var accountGoogleService = googleServicePresetById(state.connectionAccountForm.presetId);
       if (accountGoogleService && state.connectionAccountForm.apiEditor) {
@@ -14877,7 +15061,7 @@ button.capability-pill { cursor: pointer; }
         loads.push(loadVisibleAgentDetail(state.profileDraft.id));
         loads.push(revalidateProfileTab(state.profileTab));
       }
-      loads.push(loadVisibleSlackStatus());
+      if (WORKSPACE_ADMIN_UI) loads.push(loadVisibleSlackStatus());
     } else if (state.view === "channels") {
       loads.push(loadVisibleSlackStatus());
     } else if (state.view === "settings" && state.settingsSection === "slack") {
@@ -16912,44 +17096,51 @@ function renderSlackJourneyPage(input: {
   rootAttributes?: string;
 }): string {
   const alert = input.alert
-    ? `<div class="auth-alert" id="auth-error" role="alert" tabindex="-1">${escapeHtmlAttribute(input.alert)}</div>`
+    ? `<div class="auth-alert" id="auth-error" role="alert" tabindex="-1">${escapeHtml(input.alert)}</div>`
     : '';
   const status = input.status
-    ? `<p class="auth-status"${input.statusId ? ` id="${escapeHtmlAttribute(input.statusId)}"` : ''} role="status" aria-live="polite">${escapeHtmlAttribute(input.status)}</p>`
+    ? `<p class="auth-status"${input.statusId ? ` id="${escapeHtml(input.statusId)}"` : ''} role="status" aria-live="polite">${escapeHtml(input.status)}</p>`
     : '';
   const title = input.titleSuccess
-    ? `<div class="auth-title-line"><span class="auth-title-success" aria-hidden="true">&#10003;</span><h1 class="auth-title" id="auth-title">${escapeHtmlAttribute(input.title)}</h1></div>`
-    : `<h1 class="auth-title" id="auth-title">${escapeHtmlAttribute(input.title)}</h1>`;
+    ? `<div class="auth-title-line"><span class="auth-title-success" aria-hidden="true">&#10003;</span><h1 class="auth-title" id="auth-title">${escapeHtml(input.title)}</h1></div>`
+    : `<h1 class="auth-title" id="auth-title">${escapeHtml(input.title)}</h1>`;
   const intro = input.intro
-    ? `<p class="auth-intro">${escapeHtmlAttribute(input.intro)}</p>`
+    ? `<p class="auth-intro">${escapeHtml(input.intro)}</p>`
     : '';
-  return `<!doctype html><html lang="en" data-slack-auth-surface="${escapeHtmlAttribute(input.surface)}"${input.rootAttributes ? ` ${input.rootAttributes}` : ''}><head>
+  return `<!doctype html><html lang="en" data-slack-auth-surface="${escapeHtml(input.surface)}"${input.rootAttributes ? ` ${input.rootAttributes}` : ''}><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
-<title>Chickpea · ${escapeHtmlAttribute(input.title)}</title>${CHICKPEA_FAVICON_HTML}
+<title>Chickpea · ${escapeHtml(input.title)}</title>${CHICKPEA_FAVICON_HTML}
 <style>
 :root{${CHICKPEA_WORDMARK_CSS}}
 :root{--canvas:#f4ebd8;--card:#fffdf6;--well:#f8f1df;--ink:#3b3220;--muted:#6b5c42;--gold:#dda033;--gold-press:#b27e1f;--line:rgba(59,50,32,.16);--danger:#a83f34;--focus:#b05415;--success:#4f8a3f}*{box-sizing:border-box}html{color-scheme:light}body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--canvas);color:var(--ink);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:clamp(12px,4vw,32px);overflow-wrap:anywhere}.auth-card{width:min(600px,100%);background:var(--card);border:1px solid var(--line);border-radius:22px;padding:clamp(22px,6vw,46px);box-shadow:0 14px 38px rgba(59,50,32,.1)}.auth-brand{display:flex;align-items:center;gap:10px;margin-bottom:30px}.auth-brand-mark{width:42px;height:42px;display:block}.auth-brand-name{font-weight:850;font-size:1.15rem}.auth-eyebrow{margin:0;color:var(--muted);font-size:.76rem;font-weight:850;letter-spacing:.09em;text-transform:uppercase}.auth-title-line{align-items:center;display:flex;gap:13px;margin:8px 0 10px}.auth-title{margin:8px 0 10px;font-size:clamp(1.75rem,7vw,2.7rem);line-height:1.05;letter-spacing:-.035em}.auth-title-line .auth-title{margin:0}.auth-title-success{align-items:center;background:var(--success);border-radius:50%;color:#fff;display:inline-flex;flex:0 0 auto;font-size:1.15rem;font-weight:850;height:36px;justify-content:center;width:36px}.auth-intro,.auth-status,.auth-help{color:var(--muted);line-height:1.55}.auth-status{min-height:1.5em;margin:14px 0}.auth-alert{margin:18px 0;border-left:4px solid var(--danger);border-radius:8px;background:#fff3ee;color:var(--danger);padding:12px 14px;font-weight:750;line-height:1.45}.auth-section{margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:15px;background:var(--well)}.auth-section h2{margin:0 0 8px;font-size:1.08rem}label{display:block;margin:17px 0 6px;font-weight:750}label span{display:block;margin-top:2px;color:var(--muted);font-size:.78rem;font-weight:500}input,textarea{width:100%;min-height:46px;border:1px solid var(--line);border-radius:11px;background:#fff;color:var(--ink);padding:11px 12px;font:inherit}textarea{min-height:220px;resize:vertical}details{margin-top:20px;border-top:1px solid var(--line);padding-top:17px}summary{cursor:pointer;font-weight:800}.auth-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}.auth-button,.auth-link{display:inline-flex;align-items:center;justify-content:center;min-height:48px;border:0;border-radius:12px;padding:11px 17px;background:var(--gold);box-shadow:0 3px 0 var(--gold-press);color:var(--ink);font:inherit;font-weight:850;text-decoration:none;cursor:pointer}.auth-button{width:100%}.slack-provider-button{gap:12px;background:#fff;border:1px solid var(--line);box-shadow:0 1px 2px rgba(45,44,47,.04);color:#2d2c2f;font-weight:750}.slack-provider-button:hover{background:#fbfbfb;border-color:rgba(59,50,32,.32);box-shadow:0 2px 7px rgba(45,44,47,.09)}.slack-provider-logo{width:24px;height:24px}.auth-button.secondary,.auth-link.secondary{background:transparent;border:1px solid var(--line);box-shadow:none}.auth-button:active,.auth-link:active{transform:translateY(2px);box-shadow:none}.auth-button:focus-visible,.auth-link:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible,.auth-alert:focus-visible{outline:3px solid color-mix(in srgb,var(--focus) 48%,transparent);outline-offset:3px}.slack-provider-button:focus-visible{outline:2px solid #656468;outline-offset:2px}.auth-warning{margin-top:22px;border:1px solid rgba(168,63,52,.25);border-radius:13px;background:#fff3ee;padding:15px}.auth-warning strong{display:block;margin-bottom:5px}.auth-meta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.83rem}.auth-manifest{max-height:280px;overflow:auto;white-space:pre-wrap;font-size:.75rem}.slack-logo-image{background:url("${SLACK_LOGO_DATA_URL}") center/contain no-repeat;display:inline-block}.setup-token-callout{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center;margin:22px 0;padding:15px 17px;border-left:3px solid var(--gold-press);border-radius:12px;background:var(--well)}.setup-token-callout strong{display:block;margin-bottom:3px}.setup-token-callout p{margin:0;color:var(--muted);font-size:.86rem;line-height:1.45}.setup-slack-link{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:9px 13px;border:1px solid var(--line);border-radius:11px;background:var(--card);color:var(--ink);font-weight:800;text-decoration:none;white-space:nowrap}.setup-slack-logo{width:22px;height:22px}.setup-token-note{display:flex;gap:8px;align-items:flex-start;margin:13px 0 0;color:var(--muted);font-size:.8rem;line-height:1.45}.setup-manual-choice p{margin-bottom:14px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-card,html[data-slack-auth-surface="owner-complete"] .auth-card{padding-block:56px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-brand,html[data-slack-auth-surface="owner-complete"] .auth-brand{margin-bottom:38px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title,html[data-slack-auth-surface="owner-complete"] .auth-title{margin:14px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title-line{margin:14px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-title-line .auth-title{margin:0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-intro{margin:18px 0 0}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-intro+form{margin-top:28px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] form+details{margin-top:30px}html[data-slack-auth-surface="owner-complete"] .auth-actions{margin-top:32px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:440px){body{padding:8px}.auth-card{border-radius:14px;padding:21px 16px}html[data-slack-auth-surface="setup"][data-slack-setup-state="awaiting_app_creation"] .auth-card,html[data-slack-auth-surface="owner-complete"] .auth-card{padding-block:32px}.auth-actions{display:grid}.auth-link,.auth-button{width:100%}.auth-section{padding:16px 13px}.setup-token-callout{grid-template-columns:1fr}.setup-slack-link{width:100%;justify-content:center}}
 .brand-wordmark{aspect-ratio:2106/518;background-color:currentColor;display:block;flex:0 0 auto;height:36px;-webkit-print-color-adjust:exact;print-color-adjust:exact;-webkit-mask:var(--chickpea-wordmark-image) center/contain no-repeat;mask:var(--chickpea-wordmark-image) center/contain no-repeat}@media(forced-colors:active){.brand-wordmark{background-color:CanvasText;forced-color-adjust:none}}
-</style></head><body><main class="auth-card" aria-labelledby="auth-title">${AUTH_BRAND_HTML}<p class="auth-eyebrow">${escapeHtmlAttribute(input.eyebrow)}</p>${title}${intro}${alert}${status}${input.body}</main></body></html>`;
+</style></head><body><main class="auth-card" aria-labelledby="auth-title">${AUTH_BRAND_HTML}<p class="auth-eyebrow">${escapeHtml(input.eyebrow)}</p>${title}${intro}${alert}${status}${input.body}</main></body></html>`;
 }
 
 /** Complete a same-origin POST before navigating across the strict form-action CSP boundary. */
-export function renderSlackAuthorizationHandoffPage(authorizationUrl: string): string {
+export function renderSlackAuthorizationHandoffPage(
+  authorizationUrl: string,
+  gatewayOrigin?: string,
+): string {
   const target = new URL(authorizationUrl);
-  const allowedPath = target.pathname === '/oauth/v2/authorize' ||
-    target.pathname === '/openid/connect/authorize';
-  if (target.origin !== 'https://slack.com' || !allowedPath ||
+  const slackAuthorization = target.origin === 'https://slack.com' &&
+    (target.pathname === '/oauth/v2/authorize' || target.pathname === '/openid/connect/authorize');
+  // Only deployment configuration may opt into the shared-app claim handoff.
+  const gatewayAuthorization = target.origin === gatewayOrigin &&
+    /^\/install\/[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(target.pathname) && !target.search;
+  if (target.protocol !== 'https:' || (!slackAuthorization && !gatewayAuthorization) ||
       target.username || target.password || target.hash) {
     throw new TypeError('Slack authorization URL is invalid.');
   }
-  const safeTarget = escapeHtmlAttribute(target.toString());
+  const safeTarget = escapeHtml(target.toString());
+  const script = gatewayAuthorization ? '/admin/setup/gateway-continue.js' : '/auth/slack/continue.js';
   return renderSlackJourneyPage({
     surface: 'authorization-handoff',
     eyebrow: 'Secure Slack handoff',
     title: 'Opening Slack…',
     intro: 'Chickpea prepared a fresh, short-lived Slack authorization request.',
     status: 'If Slack does not open automatically, use the button below.',
-    body: `<div class="auth-actions"><a class="auth-link" data-slack-authorization-link href="${safeTarget}" rel="noreferrer" autofocus>Continue to Slack</a></div><script src="/auth/slack/continue.js" defer></script>`,
+    body: `<div class="auth-actions"><a class="auth-link" data-slack-authorization-link href="${safeTarget}" rel="noreferrer" autofocus>Continue to Slack</a></div><script src="${script}" defer></script>`,
   });
 }
 
@@ -16960,7 +17151,7 @@ export function renderSlackSignInPage(destination: string): string {
     eyebrow: 'Chickpea control plane',
     title: 'Welcome back',
     intro: 'Sign in with the Slack account you use with Chickpea in this workspace.',
-    body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="login"><input type="hidden" name="destination" value="${escapeHtmlAttribute(safeDestination)}"><button class="auth-button slack-provider-button" type="submit" autofocus><span class="slack-provider-logo slack-logo-image" aria-hidden="true"></span>Continue with Slack</button></form>`,
+    body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="login"><input type="hidden" name="destination" value="${escapeHtml(safeDestination)}"><button class="auth-button slack-provider-button" type="submit" autofocus><span class="slack-provider-logo slack-logo-image" aria-hidden="true"></span>Continue with Slack</button></form>`,
   });
 }
 
@@ -16994,7 +17185,7 @@ export function renderSlackAccessDeniedPage(input: {
       ? 'No Chickpea account or role was created.'
       : 'No Chickpea account or role was created. If access was suspended or removed, ask an Owner to restore it.',
     alert: cancelled || expired ? undefined : 'This Slack identity does not match the required Chickpea access.',
-    body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="${input.purpose}">${capability}<input type="hidden" name="destination" value="${escapeHtmlAttribute(safeDestination)}"><button class="auth-button" type="submit" autofocus>Try another Slack account</button></form>${setupScript}`,
+    body: `<form method="post" action="/auth/slack/oidc/start"><input type="hidden" name="purpose" value="${input.purpose}">${capability}<input type="hidden" name="destination" value="${escapeHtml(safeDestination)}"><button class="auth-button" type="submit" autofocus>Try another Slack account</button></form>${setupScript}`,
   });
 }
 
@@ -17004,7 +17195,7 @@ export function renderSlackOwnerCompletePage(destination: string): string {
     surface: 'owner-complete',
     eyebrow: 'Setup complete',
     title: '🎉 Installation successful',
-    body: `<div class="auth-actions"><a class="auth-link" href="${escapeHtmlAttribute(safeDestination)}" autofocus>Open Chickpea</a></div>`,
+    body: `<div class="auth-actions"><a class="auth-link" href="${escapeHtml(safeDestination)}" autofocus>Open Chickpea</a></div>`,
   });
 }
 
@@ -17037,8 +17228,8 @@ export function renderSlackInvitationCompletePage(destination: string): string {
     surface: 'invitation-complete', eyebrow: 'Invitation accepted', title: 'You’re in',
     intro: 'Your exact Slack identity is now linked to this Chickpea workspace.',
     status: 'Opening the Team page…',
-    rootAttributes: `data-invitation-state="complete" data-destination="${escapeHtmlAttribute(safeDestination)}"`,
-    body: `<noscript><a class="auth-link" href="${escapeHtmlAttribute(safeDestination)}">Open Chickpea</a></noscript><script src="/auth/slack/invite/client.js" defer></script>`,
+    rootAttributes: `data-invitation-state="complete" data-destination="${escapeHtml(safeDestination)}"`,
+    body: `<noscript><a class="auth-link" href="${escapeHtml(safeDestination)}">Open Chickpea</a></noscript><script src="/auth/slack/invite/client.js" defer></script>`,
   });
 }
 
@@ -17052,7 +17243,7 @@ export function renderSlackInvitationUnavailablePage(): string {
   });
 }
 
-/** Restored pre-U10 guided Slack setup, isolated from the automated token path. */
+/** Guided app adoption; the shared install flow verifies Events after credentials exist. */
 export function renderSlackManualSetupPage(input: {
   setup?: SlackSetupTransaction;
   destination: string;
@@ -17063,24 +17254,24 @@ export function renderSlackManualSetupPage(input: {
 }): string {
   const state = input.setup?.state ?? 'capability_required';
   const destination = safeSlackPageDestination(input.destination);
-  const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtmlAttribute(destination)}">`;
-  const manifestJson = escapeHtmlAttribute(JSON.stringify(input.manifest, null, 2));
+  const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtml(destination)}">`;
+  const manifestJson = escapeHtml(JSON.stringify(input.manifest, null, 2));
   const initialStep = input.error ? 'credentials' : 'create';
   const alert = input.error
-    ? `<div class="onboarding-error" role="alert" tabindex="-1"><p class="field-error">${escapeHtmlAttribute(slackSetupPageMessage(input.error))}</p><p class="hint">For your safety, every secret field has been cleared.</p></div>`
+    ? `<div class="onboarding-error" role="alert" tabindex="-1"><p class="field-error">${escapeHtml(slackSetupPageMessage(input.error))}</p><p class="hint">For your safety, every secret field has been cleared.</p></div>`
     : '';
   const capabilityPanel = `<section class="onboarding-panel" data-manual-step-panel="create"><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Resume manual setup</h1><p class="onboarding-lede" id="slack-setup-status">Reading the private setup capability from this browser tab.</p><form id="slack-setup-open-form" method="post" action="/admin/setup/manual"><input type="hidden" name="action" value="open">${hidden}<button class="btn btn-primary" type="submit">Continue manual setup</button></form></section>`;
   const createPanelHidden = initialStep === 'create' ? '' : ' hidden';
-  const createPanel = `<section class="onboarding-panel" data-manual-step-panel="create"${createPanelHidden}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Create Chickpea</h1><p class="onboarding-lede">Slack opens in a new tab. Come back here after Chickpea is created.</p><div class="onboarding-instructions">${manualSlackInstruction(1, 'Choose your workspace, then click Next.', '', 'create-workspace', 'onboarding-shot-viewport', 'Slack Create from manifest screen with the workspace picker and Next button')}${manualSlackInstruction(2, 'Review Chickpea, then click Create and Install.', '', 'create-review', 'onboarding-shot-viewport', 'Slack app review screen showing Chickpea permissions and Create and Install')}</div><div class="onboarding-guide-actions"><span></span><a class="btn btn-primary" href="${escapeHtmlAttribute(input.manifestPrefillUrl)}" target="_blank" rel="noreferrer" data-manual-step-target="finish"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Create Chickpea in Slack <span aria-hidden="true">↗</span></a></div></section>`;
-  const finishPanel = `<section class="onboarding-panel" data-manual-step-panel="finish" hidden><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Finish creating Chickpea</h1><p class="onboarding-lede">Two quick actions in the Slack tab you just opened.</p><div class="onboarding-instructions">${manualSlackInstruction(1, 'Review the permissions, then click Allow.', '', 'allow', 'onboarding-shot-focused', 'Slack permission approval screen with the Allow button')}${manualSlackInstruction(2, 'When Slack says Chickpea is ready, click Go to App Settings.', '', 'ready', 'onboarding-shot-ready', 'Slack Chickpea is ready dialog with the Go to App Settings button')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="create">Back</button><button class="btn btn-primary" type="button" data-manual-step-target="events">Next: Verify Event URL</button></div></section>`;
-  const eventsPanel = `<section class="onboarding-panel" data-manual-step-panel="events" hidden><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Verify the Event URL</h1><p class="onboarding-lede">Slack needs one manual check before it can send messages to Chickpea.</p><a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">↗</span></a><div class="onboarding-instructions"><section class="onboarding-instruction"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In the left sidebar, open Event Subscriptions.</span></h2></section>${manualSlackInstruction(2, 'Beside Request URL, click Retry.', '', 'events-retry', 'onboarding-shot-wide', 'Slack Event Subscriptions showing the Retry button')}${manualSlackInstruction(3, 'When Request URL says Verified, click Save Changes.', 'If it still says your URL did not respond, wait a few seconds and click Retry again.', 'events', 'onboarding-shot-focused onboarding-shot-events', 'Slack Event Subscriptions showing Request URL Verified')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="finish">Back</button><button class="btn btn-primary" type="button" data-manual-step-target="credentials">I saved changes</button></div></section>`;
-  const credentialsPanel = `<section class="onboarding-panel" data-manual-step-panel="credentials"${initialStep === 'credentials' ? '' : ' hidden'}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Add app credentials</h1><p class="onboarding-lede">Paste these values once. Chickpea validates the app, encrypts its credentials, and then uses Slack OAuth for the bot token and installer identity.</p><a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">↗</span></a><form class="onboarding-credential-form" method="post" action="/admin/setup/manual"><input type="hidden" name="action" value="adopt">${hidden}<section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In Basic Information, copy the app credentials.</span></h2><div class="onboarding-credential-grid"><div class="onboarding-shot onboarding-shot-secret"><img src="/admin/assets/onboarding/signing-secret.webp" alt="Slack Basic Information showing the Signing Secret" loading="lazy" decoding="async"></div><div class="onboarding-credential-help"><label class="field" for="manual-app-id"><span class="field-label">App ID</span><input class="input mono" id="manual-app-id" name="appId" type="text" autocomplete="off" maxlength="64" required></label><label class="field" for="manual-client-id"><span class="field-label">Client ID</span><input class="input mono" id="manual-client-id" name="clientId" type="text" autocomplete="off" maxlength="256" required></label><label class="field" for="manual-client-secret"><span class="field-label">Client Secret</span><input class="input mono" id="manual-client-secret" name="clientSecret" type="password" autocomplete="off" maxlength="4096" required></label><label class="field" for="manual-signing-secret"><span class="field-label">Signing Secret</span><span class="onboarding-credential-subtext">Use Signing Secret — not Client Secret.</span><input class="input mono" id="manual-signing-secret" name="signingSecret" type="password" autocomplete="off" maxlength="4096" required></label></div></div></section><section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">2</span><span>Export the app manifest as JSON and paste it here.</span></h2><label class="field" for="manual-manifest"><span class="field-label">Exported app manifest (JSON)</span><textarea class="input mono" id="manual-manifest" name="observedManifest" maxlength="7500" required>${manifestJson}</textarea></label></section>${alert}<div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="events">Back</button><button class="btn btn-primary" type="submit">Validate and continue</button></div></form></section>`;
+  const userGroupPrerequisite = `<aside class="onboarding-prerequisite" role="note" aria-label="Agent handle permissions"><h2 class="onboarding-prerequisite-title">Before creating Agent @handles</h2><p>The manifest already requests <code>usergroups:read</code> and <code>usergroups:write</code>. Slack also requires a paid plan and a separate workspace permission that a manifest cannot change.</p><p>In the intended Slack workspace, ask an Owner or Admin to open <strong>Roles &amp; permissions → Account types → Create and edit user groups</strong>, allow <strong>Members</strong>, and save. This permits workspace members, not just Chickpea, to manage user groups. If your organization locks this setting, ask an Org Owner.</p></aside>`;
+  const createPanel = `<section class="onboarding-panel" data-manual-step-panel="create"${createPanelHidden}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Create Chickpea</h1><p class="onboarding-lede">Slack opens in a new tab. Come back here after Chickpea is created.</p>${userGroupPrerequisite}<div class="onboarding-instructions">${manualSlackInstruction(1, 'Choose your workspace, then click Next.', '', 'create-workspace', 'onboarding-shot-viewport', 'Slack Create from manifest screen with the workspace picker and Next button')}${manualSlackInstruction(2, 'Review Chickpea, then click Create and Install.', '', 'create-review', 'onboarding-shot-viewport', 'Slack app review screen showing Chickpea permissions and Create and Install')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="credentials">Already created the app? Add its credentials</button><a class="btn btn-primary" href="${escapeHtml(input.manifestPrefillUrl)}" target="_blank" rel="noreferrer" data-manual-step-target="finish"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Create Chickpea in Slack <span aria-hidden="true">↗</span></a></div></section>`;
+  const finishPanel = `<section class="onboarding-panel" data-manual-step-panel="finish" hidden><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Finish creating Chickpea</h1><p class="onboarding-lede">Two quick actions in the Slack tab you just opened.</p><div class="onboarding-instructions">${manualSlackInstruction(1, 'Review the permissions, then click Allow.', '', 'allow', 'onboarding-shot-focused', 'Slack permission approval screen with the Allow button')}${manualSlackInstruction(2, 'When Slack says Chickpea is ready, click Go to App Settings.', '', 'ready', 'onboarding-shot-ready', 'Slack Chickpea is ready dialog with the Go to App Settings button')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="create">Back</button><button class="btn btn-primary" type="button" data-manual-step-target="credentials">Next: Add app credentials</button></div></section>`;
+  const credentialsPanel = `<section class="onboarding-panel" data-manual-step-panel="credentials"${initialStep === 'credentials' ? '' : ' hidden'}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Add app credentials</h1><p class="onboarding-lede">Paste these values once. Chickpea validates the app, encrypts its credentials, and then uses Slack OAuth for the bot token and installer identity. You’ll verify the Events URL after Slack installation.</p><a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">↗</span></a><form class="onboarding-credential-form" method="post" action="/admin/setup/manual"><input type="hidden" name="action" value="adopt">${hidden}<section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In Basic Information, copy the app credentials.</span></h2><div class="onboarding-credential-grid"><div class="onboarding-shot onboarding-shot-secret"><img src="/onboarding/signing-secret.webp" alt="Slack Basic Information showing the Signing Secret" loading="lazy" decoding="async"></div><div class="onboarding-credential-help"><label class="field" for="manual-app-id"><span class="field-label">App ID</span><input class="input mono" id="manual-app-id" name="appId" type="text" autocomplete="off" maxlength="64" required></label><label class="field" for="manual-client-id"><span class="field-label">Client ID</span><input class="input mono" id="manual-client-id" name="clientId" type="text" autocomplete="off" maxlength="256" required></label><label class="field" for="manual-client-secret"><span class="field-label">Client Secret</span><input class="input mono" id="manual-client-secret" name="clientSecret" type="password" autocomplete="off" maxlength="4096" required></label><label class="field" for="manual-signing-secret"><span class="field-label">Signing Secret</span><span class="onboarding-credential-subtext">Use Signing Secret — not Client Secret.</span><input class="input mono" id="manual-signing-secret" name="signingSecret" type="password" autocomplete="off" maxlength="4096" required></label></div></div></section><section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">2</span><span>Export the app manifest as JSON and paste it here.</span></h2><label class="field" for="manual-manifest"><span class="field-label">Exported app manifest (JSON)</span><textarea class="input mono" id="manual-manifest" name="observedManifest" maxlength="7500" required>${manifestJson}</textarea></label></section>${alert}<div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="finish">Back</button><button class="btn btn-primary" type="submit">Validate and continue</button></div></form></section>`;
   const panels = state === 'capability_required'
     ? capabilityPanel
     : state === 'awaiting_app_creation'
-      ? `${createPanel}${finishPanel}${eventsPanel}${credentialsPanel}`
+      ? `${createPanel}${finishPanel}${credentialsPanel}`
       : `<section class="onboarding-panel" data-manual-step-panel="create"><p class="onboarding-eyebrow">Manual setup</p><h1 class="onboarding-title" tabindex="-1">Continue shared setup</h1><p class="onboarding-lede">The app is ready. Continue with the encrypted Slack installation and Owner verification.</p><div class="onboarding-actions"><a class="btn btn-primary" href="/admin/setup">Continue setup</a></div></section>`;
-  return `<!doctype html><html lang="en" data-slack-manual-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}" data-manual-initial-step="${initialStep}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Chickpea · Manual Slack setup</title>${CHICKPEA_FAVICON_HTML}<style>${SLACK_MANUAL_SETUP_CSS}</style></head><body><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">${AUTH_BRAND_HTML}<span class="onboarding-environment">private setup</span></div><ol class="onboarding-orientation" role="list" aria-label="Onboarding progress"><li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Connect Slack</span></li><li><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li><li><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li><li><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol><div class="onboarding-stage" aria-live="polite">${panels}</div></div></main><script src="/admin/setup/manual/client.js" defer></script></body></html>`;
+  return `<!doctype html><html lang="en" data-slack-manual-setup-state="${escapeHtml(state)}" data-slack-setup-state="${escapeHtml(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}" data-manual-initial-step="${initialStep}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Chickpea · Manual Slack setup</title>${CHICKPEA_FAVICON_HTML}<style>${SLACK_MANUAL_SETUP_CSS}</style></head><body><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">${AUTH_BRAND_HTML}<span class="onboarding-environment">private setup</span></div><ol class="onboarding-orientation" role="list" aria-label="Onboarding progress"><li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Connect Slack</span></li><li><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li><li><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li><li><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol><div class="onboarding-stage" aria-live="polite">${panels}</div></div></main><script src="/admin/setup/manual/client.js" defer></script></body></html>`;
 }
 
 function manualSlackInstruction(
@@ -17091,13 +17282,14 @@ function manualSlackInstruction(
   imageClass: string,
   alt: string,
 ): string {
-  return `<section class="onboarding-instruction"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">${number}</span><span>${escapeHtmlAttribute(title)}</span></h2>${note ? `<p class="onboarding-instruction-note">${escapeHtmlAttribute(note)}</p>` : ''}<div class="onboarding-shot ${escapeHtmlAttribute(imageClass)}"><img src="/admin/assets/onboarding/${escapeHtmlAttribute(imageName)}.webp" alt="${escapeHtmlAttribute(alt)}" loading="lazy" decoding="async"></div></section>`;
+  return `<section class="onboarding-instruction"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">${number}</span><span>${escapeHtml(title)}</span></h2>${note ? `<p class="onboarding-instruction-note">${escapeHtml(note)}</p>` : ''}<div class="onboarding-shot ${escapeHtml(imageClass)}"><img src="/onboarding/${escapeHtml(imageName)}.webp" alt="${escapeHtml(alt)}" loading="lazy" decoding="async"></div></section>`;
 }
 
 const SLACK_MANUAL_SETUP_CSS = `
 @import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 :root{${CHICKPEA_WORDMARK_CSS}}
-:root{--bg:#fffdf6;--canvas:#f4ebd8;--well:#f8f1df;--line:rgba(59,50,32,.1);--line-strong:rgba(59,50,32,.16);--text:#3b3220;--text-2:#6b5c42;--text-3:#9f8f72;--ember:#dda033;--ember-deep:#8a6410;--ember-tint:rgba(221,160,51,.18);--ember-press:#b27e1f;--danger:#b5473a;--font:Quicksand,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--display:"Baloo 2",var(--font);--mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}*{box-sizing:border-box}html{color-scheme:light;background:var(--canvas)}body{margin:0;background:var(--canvas);color:var(--text);font-family:var(--font)}button,input,textarea{font:inherit}.onboarding-shell{isolation:isolate;min-height:100dvh;width:100%}.onboarding-shell-inner{margin:0 auto;max-width:1500px;padding:24px 28px 64px;width:100%}.onboarding-brand-row{align-items:center;display:flex;gap:20px;justify-content:space-between}.auth-brand{align-items:center;display:flex;gap:11px}.auth-brand-mark{height:36px;width:36px}.auth-brand-name{font-family:var(--display);font-size:1.625rem;font-weight:700}.onboarding-environment{color:var(--text-3);font-family:var(--mono);font-size:.8125rem}.onboarding-orientation{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));list-style:none;margin:26px auto 0;max-width:560px;padding:0;width:100%}.onboarding-orientation li{min-width:0;position:relative;text-align:center}.onboarding-orientation li:not(:first-child)::before{background:var(--line-strong);content:"";height:2px;position:absolute;right:50%;top:18px;width:100%;z-index:-1}.onboarding-step-dot{background:var(--canvas);border:2px solid var(--line-strong);border-radius:50%;color:var(--text-3);display:grid;font-family:var(--mono);font-size:.875rem;height:38px;margin:0 auto 9px;place-items:center;width:38px}.active .onboarding-step-dot{background:var(--bg);border-color:var(--ember);box-shadow:0 0 0 5px var(--ember-tint);color:var(--ember-deep)}.onboarding-step-label{color:var(--text-3);display:block;font-size:.875rem;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.active .onboarding-step-label{color:var(--text)}.onboarding-stage{display:grid;min-height:590px;padding-top:32px;place-items:start center}.onboarding-panel{background:var(--bg);border-radius:28px;box-shadow:0 4px 0 rgba(59,50,32,.11);padding:42px 44px;width:min(82%,1280px)}.onboarding-eyebrow{color:var(--ember-deep);font-family:var(--mono);font-size:.75rem;font-weight:700;letter-spacing:.09em;margin:0 0 12px;text-transform:uppercase}.onboarding-title{color:var(--text);font-family:var(--display);font-size:clamp(2.25rem,3.4vw,2.875rem);font-weight:700;letter-spacing:-.025em;line-height:1;margin:0;max-width:24ch;text-wrap:balance}.onboarding-lede{color:var(--text-2);font-size:1.125rem;line-height:1.5;margin:14px 0 0;max-width:58ch}.onboarding-instructions{display:grid;gap:32px;margin-top:32px}.onboarding-instruction{display:grid;gap:13px}.onboarding-instruction-title{align-items:center;color:var(--text);display:grid;font-size:1.125rem;font-weight:700;gap:12px;grid-template-columns:36px minmax(0,1fr);line-height:1.35;margin:0}.onboarding-instruction-number{background:#faedca;border-radius:50%;color:var(--ember-deep);display:grid;font-family:var(--mono);font-size:.875rem;font-weight:700;height:36px;place-items:center;width:36px}.onboarding-instruction-note{color:var(--text-2);font-size:.9375rem;line-height:1.45;margin:-3px 0 0 48px}.onboarding-shot{background:white;border:1px solid var(--line-strong);border-radius:16px;box-shadow:0 2px 0 rgba(59,50,32,.07);overflow:hidden}.onboarding-shot img{display:block;height:auto;width:100%}.onboarding-shot-viewport{height:380px}.onboarding-shot-viewport img{height:100%;object-fit:cover;object-position:center bottom}.onboarding-shot-focused{margin-left:53px;width:min(700px,calc(100% - 53px))}.onboarding-shot-ready{margin-left:53px;width:min(760px,calc(100% - 53px))}.onboarding-shot-wide{margin-left:53px;width:min(920px,calc(100% - 53px))}.onboarding-shot-events{aspect-ratio:1.25;position:relative}.onboarding-shot-events img{height:auto;left:0;position:absolute;top:-7%;width:100%}.onboarding-guide-actions{align-items:center;border-top:1px solid var(--line);display:flex;gap:16px;justify-content:space-between;margin-top:36px;padding-top:22px}.btn{align-items:center;border:0;border-radius:12px;color:var(--text);cursor:pointer;display:inline-flex;font-weight:700;justify-content:center;min-height:46px;padding:10px 17px;text-decoration:none}.btn-primary{background:var(--ember);box-shadow:0 3px 0 var(--ember-press)}.btn-ghost{background:transparent;border:1px solid var(--line-strong)}.slack-logo-image{background:url("${SLACK_LOGO_DATA_URL}") center/contain no-repeat;display:inline-block}.onboarding-slack-logo{height:23px;margin-right:7px;width:23px}.onboarding-inline-recovery{margin-top:10px}.onboarding-credential-form{display:grid;gap:32px;margin-top:32px}.onboarding-credential{display:grid;gap:13px}.onboarding-credential-grid{align-items:start;display:grid;gap:26px;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.onboarding-credential-help{display:grid;gap:9px}.field{display:grid;gap:7px}.field-label{font-weight:700}.input{background:var(--well);border:1px solid var(--line-strong);border-radius:11px;color:var(--text);min-height:48px;padding:11px 12px;width:100%}textarea.input{min-height:230px;resize:vertical}.mono{font-family:var(--mono)}.onboarding-credential-subtext,.hint{color:var(--text-3);font-size:.8125rem}.onboarding-shot-secret{width:min(420px,100%)}.onboarding-error{background:#fff3ee;border-left:4px solid var(--danger);border-radius:8px;padding:12px 14px}.field-error{color:var(--danger);font-weight:700;margin:0 0 4px}.onboarding-actions{display:flex;gap:10px;margin-top:30px}[hidden]{display:none!important}:focus-visible{outline:3px solid rgba(176,84,21,.48);outline-offset:3px}
+:root{--bg:#fffdf6;--canvas:#f4ebd8;--well:#f8f1df;--line:rgba(59,50,32,.1);--line-strong:rgba(59,50,32,.16);--text:#3b3220;--text-2:#6b5c42;--text-3:#9f8f72;--ember:#dda033;--ember-deep:#8a6410;--ember-tint:rgba(221,160,51,.18);--ember-press:#b27e1f;--danger:#b5473a;--font:Quicksand,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--display:"Baloo 2",var(--font);--mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}*{box-sizing:border-box}html{color-scheme:light;background:var(--canvas)}body{margin:0;background:var(--canvas);color:var(--text);font-family:var(--font)}button,input,textarea{font:inherit}.onboarding-shell{isolation:isolate;min-height:100dvh;width:100%}.onboarding-shell-inner{margin:0 auto;max-width:1500px;padding:24px 28px 64px;width:100%}.onboarding-brand-row{align-items:center;display:flex;gap:20px;justify-content:space-between}.auth-brand{align-items:center;display:flex;gap:11px}.auth-brand-mark{height:36px;width:36px}.auth-brand-name{font-family:var(--display);font-size:1.625rem;font-weight:700}.onboarding-environment{color:var(--text-3);font-family:var(--mono);font-size:.8125rem}.onboarding-orientation{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));list-style:none;margin:26px auto 0;max-width:680px;padding:0;width:100%}.onboarding-orientation li{min-width:0;position:relative;text-align:center}.onboarding-orientation li:not(:first-child)::before{background:var(--line-strong);content:"";height:2px;position:absolute;right:50%;top:18px;width:100%;z-index:-1}.onboarding-step-dot{background:var(--canvas);border:2px solid var(--line-strong);border-radius:50%;color:var(--text-3);display:grid;font-family:var(--mono);font-size:.875rem;height:38px;margin:0 auto 9px;place-items:center;width:38px}.active .onboarding-step-dot{background:var(--bg);border-color:var(--ember);box-shadow:0 0 0 5px var(--ember-tint);color:var(--ember-deep)}.onboarding-step-label{color:var(--text-3);display:block;font-size:.875rem;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.active .onboarding-step-label{color:var(--text)}.onboarding-stage{display:grid;min-height:590px;padding-top:32px;place-items:start center}.onboarding-panel{background:var(--bg);border-radius:28px;box-shadow:0 4px 0 rgba(59,50,32,.11);padding:42px 44px;width:min(82%,1280px)}.onboarding-eyebrow{color:var(--ember-deep);font-family:var(--mono);font-size:.75rem;font-weight:700;letter-spacing:.09em;margin:0 0 12px;text-transform:uppercase}.onboarding-title{color:var(--text);font-family:var(--display);font-size:clamp(2.25rem,3.4vw,2.875rem);font-weight:700;letter-spacing:-.025em;line-height:1;margin:0;max-width:24ch;text-wrap:balance}.onboarding-lede{color:var(--text-2);font-size:1.125rem;line-height:1.5;margin:14px 0 0;max-width:58ch}.onboarding-instructions{display:grid;gap:32px;margin-top:32px}.onboarding-instruction{display:grid;gap:13px}.onboarding-instruction-title{align-items:center;color:var(--text);display:grid;font-size:1.125rem;font-weight:700;gap:12px;grid-template-columns:36px minmax(0,1fr);line-height:1.35;margin:0}.onboarding-instruction-number{background:#faedca;border-radius:50%;color:var(--ember-deep);display:grid;font-family:var(--mono);font-size:.875rem;font-weight:700;height:36px;place-items:center;width:36px}.onboarding-instruction-note{color:var(--text-2);font-size:.9375rem;line-height:1.45;margin:-3px 0 0 48px}.onboarding-shot{background:white;border:1px solid var(--line-strong);border-radius:16px;box-shadow:0 2px 0 rgba(59,50,32,.07);overflow:hidden}.onboarding-shot img{display:block;height:auto;width:100%}.onboarding-shot-viewport{height:380px}.onboarding-shot-viewport img{height:100%;object-fit:cover;object-position:center bottom}.onboarding-shot-focused{margin-left:53px;width:min(700px,calc(100% - 53px))}.onboarding-shot-ready{margin-left:53px;width:min(760px,calc(100% - 53px))}.onboarding-shot-wide{margin-left:53px;width:min(920px,calc(100% - 53px))}.onboarding-shot-events{aspect-ratio:1.25;position:relative}.onboarding-shot-events img{height:auto;left:0;position:absolute;top:-7%;width:100%}.onboarding-guide-actions{align-items:center;border-top:1px solid var(--line);display:flex;gap:16px;justify-content:space-between;margin-top:36px;padding-top:22px}.btn{align-items:center;border:0;border-radius:12px;color:var(--text);cursor:pointer;display:inline-flex;font-weight:700;justify-content:center;min-height:46px;padding:10px 17px;text-decoration:none}.btn-primary{background:var(--ember);box-shadow:0 3px 0 var(--ember-press)}.btn-ghost{background:transparent;border:1px solid var(--line-strong)}.slack-logo-image{background:url("${SLACK_LOGO_DATA_URL}") center/contain no-repeat;display:inline-block}.onboarding-slack-logo{height:23px;margin-right:7px;width:23px}.onboarding-inline-recovery{margin-top:10px}.onboarding-credential-form{display:grid;gap:32px;margin-top:32px}.onboarding-credential{display:grid;gap:13px}.onboarding-credential-grid{align-items:start;display:grid;gap:26px;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.onboarding-credential-help{display:grid;gap:9px}.field{display:grid;gap:7px}.field-label{font-weight:700}.input{background:var(--well);border:1px solid var(--line-strong);border-radius:11px;color:var(--text);min-height:48px;padding:11px 12px;width:100%}textarea.input{min-height:230px;resize:vertical}.mono{font-family:var(--mono)}.onboarding-credential-subtext,.hint{color:var(--text-3);font-size:.8125rem}.onboarding-shot-secret{width:min(420px,100%)}.onboarding-error{background:#fff3ee;border-left:4px solid var(--danger);border-radius:8px;padding:12px 14px}.field-error{color:var(--danger);font-weight:700;margin:0 0 4px}.onboarding-actions{display:flex;gap:10px;margin-top:30px}[hidden]{display:none!important}:focus-visible{outline:3px solid rgba(176,84,21,.48);outline-offset:3px}
+.onboarding-prerequisite{background:var(--well);border:1px solid var(--line-strong);border-radius:14px;margin-top:24px;padding:18px 20px}.onboarding-prerequisite-title{font-size:1rem;margin:0 0 10px}.onboarding-prerequisite p{color:var(--text-2);font-size:.9375rem;line-height:1.5;margin:10px 0 0}.onboarding-prerequisite code{font-family:var(--mono);font-size:.875em}
 .brand-wordmark{aspect-ratio:2106/518;background-color:currentColor;display:block;flex:0 0 auto;height:31px;-webkit-print-color-adjust:exact;print-color-adjust:exact;-webkit-mask:var(--chickpea-wordmark-image) center/contain no-repeat;mask:var(--chickpea-wordmark-image) center/contain no-repeat}@media(forced-colors:active){.brand-wordmark{background-color:CanvasText;forced-color-adjust:none}}
 @media(max-width:720px){.onboarding-shell-inner{padding:20px 16px 45px}.onboarding-environment{display:none}.onboarding-orientation{margin-top:34px}.onboarding-step-dot{font-size:.75rem;height:34px;width:34px}.onboarding-orientation li:not(:first-child)::before{top:16px}.onboarding-step-label{font-size:.6875rem}.onboarding-stage{min-height:520px;padding-top:28px}.onboarding-panel{border-radius:22px;padding:30px 22px;width:100%}.onboarding-title{font-size:2.125rem}.onboarding-lede{font-size:1.0625rem}.onboarding-shot-viewport{height:250px}.onboarding-shot-focused,.onboarding-shot-ready,.onboarding-shot-wide{margin-left:0;width:100%}.onboarding-credential-grid{grid-template-columns:1fr}.onboarding-guide-actions{align-items:stretch;flex-direction:column-reverse}.onboarding-guide-actions .btn{width:100%}}
 `;
@@ -17115,13 +17307,13 @@ export function renderSlackSetupPage(input: {
   const destination = safeSlackPageDestination(input.destination);
   const notice = input.notice ? slackSetupPageMessage(input.notice) : undefined;
   const error = input.error ? slackSetupPageMessage(input.error) : undefined;
-  const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtmlAttribute(destination)}">`;
-  const manifestJson = escapeHtmlAttribute(JSON.stringify(input.manifest, null, 2));
+  const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtml(destination)}">`;
+  const manifestJson = escapeHtml(JSON.stringify(input.manifest, null, 2));
   let title = 'Resume private setup';
   let intro = 'Chickpea keeps this seven-day setup checkpoint without turning the setup link into a user session.';
   let body = '';
   if (state === 'capability_required') {
-    body = `<form id="slack-setup-open-form" method="post" action="/admin/setup"><input type="hidden" name="action" value="open">${hidden}${input.notice ? `<input type="hidden" name="notice" value="${escapeHtmlAttribute(input.notice)}">` : ''}<button class="auth-button" data-primary-action="resume-private" type="submit" autofocus>Continue private setup</button></form>`;
+    body = `<form id="slack-setup-open-form" method="post" action="/admin/setup"><input type="hidden" name="action" value="open">${hidden}${input.notice ? `<input type="hidden" name="notice" value="${escapeHtml(input.notice)}">` : ''}<button class="auth-button" data-primary-action="resume-private" type="submit" autofocus>Continue private setup</button></form>`;
   } else if (state === 'awaiting_app_creation') {
     title = input.gatewayState === 'connected' ? 'Slack is connected' : 'Add Chickpea to Slack';
     intro = input.gatewayState === 'connected'
@@ -17156,7 +17348,7 @@ export function renderSlackSetupPage(input: {
     const eventsUrl = input.setup?.appId
       ? `https://api.slack.com/apps/${encodeURIComponent(input.setup.appId)}/event-subscriptions`
       : 'https://api.slack.com/apps';
-    body = `<div class="auth-warning" role="note"><strong>If Slack has not delivered the challenge</strong>Open Event Subscriptions, click Retry beside Request URL, then click Save Changes.</div><div class="auth-actions"><a class="auth-link secondary" href="${escapeHtmlAttribute(eventsUrl)}" target="_blank" rel="noreferrer">Open Event Subscriptions</a></div><form method="post" action="/auth/slack/install/finalize">${hidden}<button class="auth-button" data-primary-action="verify-events" type="submit" autofocus>Check signed Events verification</button></form>`;
+    body = `<div class="auth-warning" role="note"><strong>If Slack has not delivered the challenge</strong>Open Event Subscriptions, click Retry beside Request URL, then click Save Changes.</div><div class="auth-actions"><a class="auth-link secondary" href="${escapeHtml(eventsUrl)}" target="_blank" rel="noreferrer">Open Event Subscriptions</a></div><form method="post" action="/auth/slack/install/finalize">${hidden}<button class="auth-button" data-primary-action="verify-events" type="submit" autofocus>Check signed Events verification</button></form>`;
   } else if (state === 'bot_installed') {
     title = 'Become the first Owner';
     intro = 'Sign in as the same Slack member who installed the app. Installation alone does not grant Chickpea access.';
@@ -17168,7 +17360,7 @@ export function renderSlackSetupPage(input: {
   } else {
     title = 'Slack setup is complete';
     intro = 'The setup capability no longer grants any action.';
-    body = `<div class="auth-actions"><a class="auth-link" href="${escapeHtmlAttribute(destination)}" autofocus>Open Chickpea</a></div>`;
+    body = `<div class="auth-actions"><a class="auth-link" href="${escapeHtml(destination)}" autofocus>Open Chickpea</a></div>`;
   }
   const eyebrow = state === 'awaiting_app_creation'
     ? 'Slack setup'
@@ -17180,7 +17372,7 @@ export function renderSlackSetupPage(input: {
       : {}),
     ...(state === 'awaiting_app_creation' ? {} : { status: slackSetupPageMessage(state) }),
     alert: error ?? notice,
-    rootAttributes: `data-slack-setup-state="${escapeHtmlAttribute(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}"`,
+    rootAttributes: `data-slack-setup-state="${escapeHtml(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}"`,
     body: `${body}<script src="/admin/setup/client.js" defer></script>`,
   });
 }
@@ -17263,8 +17455,8 @@ export function renderSlackRecoveryPage(options: {
       alert: options.error,
       body: `<form method="post" action="/admin/recovery">
         <input type="hidden" name="action" value="stage">
-        <label for="app-id">Slack app ID</label><input id="app-id" name="appId" required maxlength="64" autocomplete="off" value="${escapeHtmlAttribute(options.expectedAppId ?? '')}">
-        <label for="team-id">Slack team ID</label><input id="team-id" name="teamId" required maxlength="64" autocomplete="off" value="${escapeHtmlAttribute(options.expectedTeamId ?? '')}">
+        <label for="app-id">Slack app ID</label><input id="app-id" name="appId" required maxlength="64" autocomplete="off" value="${escapeHtml(options.expectedAppId ?? '')}">
+        <label for="team-id">Slack team ID</label><input id="team-id" name="teamId" required maxlength="64" autocomplete="off" value="${escapeHtml(options.expectedTeamId ?? '')}">
         <label for="client-id">Client ID</label><input id="client-id" name="clientId" required maxlength="256" autocomplete="off">
         <label for="client-secret">Client secret</label><input id="client-secret" name="clientSecret" type="password" required maxlength="4096" autocomplete="off">
         <label for="signing-secret">Signing secret</label><input id="signing-secret" name="signingSecret" type="password" required maxlength="4096" autocomplete="off">
@@ -17285,13 +17477,4 @@ export function renderSlackRecoveryPage(options: {
       <button class="auth-button" type="submit" autofocus>Start 15-minute repair</button>
     </form>`,
   });
-}
-
-function escapeHtmlAttribute(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
 }

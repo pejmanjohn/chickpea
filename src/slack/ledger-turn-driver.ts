@@ -55,6 +55,7 @@ import type {
   SlackPresentationMutation,
   SlackRunPresentation,
 } from './run-presentations.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -114,6 +115,7 @@ interface LedgerSlackRunHandlerOptions {
     delivery: { messageTs: string; text: string },
   ) => MaybePromise<void>;
   now?: () => number;
+  productTelemetry?: ProductTelemetryCapture;
 }
 
 /** Slack adapter handler for a ledger-owned claim. It keeps adapter payloads in
@@ -248,9 +250,18 @@ export function createLedgerSlackRunHandler(
                 options.onPublicMessageDelivered!(job.turn, job.assignment, delivery),
             }
           : {}),
-        onDelivered: async () => {
+        onDelivered: async (outcome) => {
           await options.turns.markDelivered(job.id);
           await clearActiveWork(options, job);
+          if (outcome) {
+            options.productTelemetry?.capture({
+              event: 'run_completed',
+              workspaceId: job.turn.workspaceId,
+              agentId: job.assignment.agentId,
+              triggerKind: 'interactive',
+              outcome,
+            });
+          }
         },
       });
     } catch (error) {

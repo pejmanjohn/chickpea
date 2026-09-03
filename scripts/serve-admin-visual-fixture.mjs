@@ -58,6 +58,52 @@ export const CANONICAL_CONNECTOR_VISUAL_STATES = Object.freeze({
   success: Object.freeze({ path: '/__admin_visual_fixture/connectors/success' }),
 });
 
+export const VISUAL_ENVIRONMENT_STATUS = Object.freeze({
+  schemaVersion: 'chickpea-environment-status/v1',
+  generatedAt: '2026-09-01T12:00:00.000Z',
+  registryRevision: 12,
+  selectedTarget: 'amber',
+  targets: Object.freeze(['amber', 'cobalt'].map((target, index) => Object.freeze({
+    target,
+    health: index === 0 ? 'ready' : index === 1 ? 'unreachable' : 'expired_claim',
+    sourceSha: '1234567890abcdef1234567890abcdef12345678',
+    dirty: index === 0,
+    servingVersion: `version-${target}`,
+    transport: 'events',
+    workspaceAlias: `env-${target}-workspace`,
+    workspaceLabel: `${target} workspace`,
+    appAlias: `env-${target}-slack-app`,
+    appLabel: `${target} app`,
+    claim: index === 0 ? Object.freeze({
+      holderId: 'holder-0123456789abcdef',
+      leaseAgeMs: 180_000,
+      expiresAt: '2026-09-01T20:00:00.000Z',
+    }) : null,
+    verifierLock: Object.freeze(index === 0
+      ? { status: 'live', ownerRunId: 'visual-run-amber' }
+      : { status: 'clear' }),
+    schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
+    lastAttestedRevision: index === 0
+      ? '1234567890abcdef1234567890abcdef12345678-dirty'
+      : null,
+    recoveryAction: index === 0
+      ? 'No recovery needed.'
+      : index === 1
+        ? 'Check cobalt Worker and Slack transport reachability.'
+        : 'Run npm run env -- reclaim fern.',
+    credentialToken: 'xoxb-visual-do-not-expose',
+  }))),
+  sandbox: Object.freeze({
+    archiveDate: '2027-01-15T00:00:00.000Z',
+    daysUntilArchive: 136,
+    warning: 'none',
+    warningDays: Object.freeze([45, 30, 14]),
+    unusedWorkspaceSlots: 2,
+    integrationHeadroom: 37,
+    browserProfilePath: '/private/visual-browser-profile',
+  }),
+});
+
 const VISUAL_CHANNELS = Object.freeze([
   { id: 'C_RELEASES', name: 'release-room', is_private: false, is_member: true, is_archived: false },
   { id: 'C_SUPPORT', name: 'customer-support', is_private: false, is_member: false, is_archived: false },
@@ -917,6 +963,7 @@ export async function startAdminVisualFixture(options = {}) {
           admittingOrRunningRoutineOccurrences: 0,
         },
       }),
+      environmentStatus: async () => VISUAL_ENVIRONMENT_STATUS,
     }));
 
     const platformEnv = onboardingStage
@@ -979,22 +1026,7 @@ function parseCliArgs(args) {
 
 async function runCli() {
   const fixture = await startAdminVisualFixture(parseCliArgs(process.argv.slice(2)));
-  console.log(`Admin visual fixture: ${fixture.baseUrl}`);
-  console.log(`Runtime contract: ${fixture.runtimeContract}`);
-  if (fixture.onboardingStage) console.log(`Onboarding stage: ${fixture.onboardingStage}`);
-  console.log(`Local login token: ${fixture.adminToken}`);
-  console.log('Canonical states (production URLs; perform the listed UI actions after load):');
-  for (const [name, state] of Object.entries(fixture.canonicalStates)) {
-    const actions = state.actions.length ? ` then ${state.actions.join(' → ')}` : '';
-    console.log(`  ${name}: ${fixture.baseUrl}${state.path}${actions}`);
-  }
-  console.log('Connector landing states:');
-  for (const [name, state] of Object.entries(fixture.connectorStates)) {
-    console.log(`  ${name}: ${fixture.baseUrl}${state.path}`);
-  }
-  console.log(`Temporary state: ${fixture.stateDbPath}`);
-  console.log('Press Ctrl+C to stop and remove the temporary state.');
-
+  // Install cleanup before advertising readiness to a parent process or user.
   let stopping = false;
   const cleanupOnExit = () => void fixture.close();
   process.once('exit', cleanupOnExit);
@@ -1010,6 +1042,22 @@ async function runCli() {
   process.once('SIGTERM', () => void stop('SIGTERM'));
   // npm can relay terminal shutdown as SIGHUP after its wrapper exits.
   process.once('SIGHUP', () => void stop('SIGHUP'));
+
+  console.log(`Admin visual fixture: ${fixture.baseUrl}`);
+  console.log(`Runtime contract: ${fixture.runtimeContract}`);
+  if (fixture.onboardingStage) console.log(`Onboarding stage: ${fixture.onboardingStage}`);
+  console.log(`Local login token: ${fixture.adminToken}`);
+  console.log('Canonical states (production URLs; perform the listed UI actions after load):');
+  for (const [name, state] of Object.entries(fixture.canonicalStates)) {
+    const actions = state.actions.length ? ` then ${state.actions.join(' → ')}` : '';
+    console.log(`  ${name}: ${fixture.baseUrl}${state.path}${actions}`);
+  }
+  console.log('Connector landing states:');
+  for (const [name, state] of Object.entries(fixture.connectorStates)) {
+    console.log(`  ${name}: ${fixture.baseUrl}${state.path}`);
+  }
+  console.log(`Temporary state: ${fixture.stateDbPath}`);
+  console.log('Press Ctrl+C to stop and remove the temporary state.');
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : '';

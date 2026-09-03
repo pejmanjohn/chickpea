@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { Hono, type Context, type Next } from 'hono';
-import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
+import { actualBodyLimit } from '../security/request-body-limit.ts';
 
+import { isRecord } from '../security/content-validation.ts';
 import {
   renderAdminPage,
   renderSlackAccessDeniedPage,
@@ -20,6 +21,7 @@ import {
   renderSlackSignInPage,
 } from './page.ts';
 import { onboardingAssetBytes } from './onboarding-assets.ts';
+import { createPublicAssetRoutes } from '../assets/routes.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import {
   RoutineContentAccessResolver,
@@ -29,9 +31,11 @@ import {
   readIdempotencyKey as readAdminIdempotencyKey,
   safeMutationRequest as safeAdminMutationRequest,
 } from './api-support.ts';
+import { requestOrigin } from '../http/request-origin.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
+import { ENVIRONMENT_AUTHORITY_PATH, environmentAuthorityResponse } from './environment-authority.ts';
 import {
   ConnectionScheduleConflictError,
   ConnectionAccountService,
@@ -71,6 +75,7 @@ import {
   recordManagedAuthorizationRequest,
   assertManagedAuthorizationProvider,
 } from '../connections/managed-authorization.ts';
+import { discardManagedAuthorizationAfterAuthorityLoss } from '../connections/managed-authorization-flow.ts';
 import {
   completeComposioReconciliation,
   ComposioConfigurationMutationError,
@@ -149,6 +154,10 @@ import {
   type ApiOAuthRef,
 } from '../config/api-oauth.ts';
 import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
+import type {
+  OAuthAuthorizationAuthority,
+  OAuthAuthorizationOwnerKind,
+} from '../config/oauth-authorization.ts';
 import {
   beginOnboardingJourney,
   completeOnboardingJourney,
@@ -215,6 +224,7 @@ import {
   completeMcpOAuthAuthorization,
   createMcpOAuthClientMetadataDocument,
   deleteMcpOAuthSettings,
+  invalidateMcpOAuthAuthorization,
   isCurrentMcpOAuthConnection,
   McpOAuthError,
   mcpOAuthReturnRefFromState,
@@ -294,6 +304,7 @@ import { validEnabledRepositoryGrants } from '../sandbox/egress-handler.ts';
 import { sandboxBindingInstalled } from '../sandbox/select.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
   getAgentSnapshotStore,
   getConfigStore,
@@ -445,7 +456,7 @@ import {
 } from '../slack/agent-access.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
-import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
+import { createGatewayDeploymentClient, resolveChickpeaGatewayUrl } from '../slack/gateway/runtime.ts';
 import { cloudflareWorkerVersionId } from '../config/cloudflare-version.ts';
 import {
   GATEWAY_BINDING_SETTING,
@@ -460,7 +471,11 @@ import {
   type GatewaySessionStatusSnapshot,
 } from '../slack/gateway/session-runner.ts';
 import { GatewaySlackOidcProvider } from '../auth/gateway-slack-oidc.ts';
-import { SlackTransportError, type SlackTransport } from '../slack/transport/types.ts';
+import {
+  SlackTransportError,
+  type SlackChannel,
+  type SlackTransport,
+} from '../slack/transport/types.ts';
 import { SLACK_PENDING_ENVELOPE_SETTING } from '../slack/installation-handshake.ts';
 import {
   SlackInstallOAuthError,
@@ -518,6 +533,191 @@ interface BetterAuthContext {
   organizationId: string;
 }
 
+const ADMIN_ENVIRONMENT_TARGETS = ['amber', 'cobalt'] as const;
+const ADMIN_ENVIRONMENT_HEALTH = [
+  'ready', 'unreachable', 'stale_claim', 'identity_mismatch', 'expired_claim',
+] as const;
+
+function deployedEnvironmentIdentity(env: unknown): Record<string, unknown> | null {
+  if (!isRecord(env) || !ADMIN_ENVIRONMENT_TARGETS.includes(env.CHICKPEA_ENV_TARGET as 'amber' | 'cobalt')) return null;
+  const sourceSha = env.CHICKPEA_ENV_SOURCE_REVISION;
+  const dirty = env.CHICKPEA_ENV_SOURCE_DIRTY;
+  const servingVersion = cloudflareWorkerVersionId(env);
+  if (typeof sourceSha !== 'string' || !/^[0-9a-f]{40,64}$/u.test(sourceSha)
+    || (dirty !== 'true' && dirty !== 'false')
+    || !servingVersion || !WORKER_VERSION_ID_PATTERN.test(servingVersion)) {
+    throw new Error('INVALID_ENVIRONMENT_IDENTITY');
+  }
+  // Deployment metadata can identify this build. It cannot claim that a
+  // machine-local worktree lease, verifier lock, or fleet health is still live.
+  return { schemaVersion: 'chickpea-environment-identity/v1',
+    target: env.CHICKPEA_ENV_TARGET, sourceSha, dirty: dirty === 'true', servingVersion };
+}
+
+/**
+ * Copy the machine-local fleet status into an intentionally small Admin
+ * projection. Unknown fields are discarded so a malformed provider cannot
+ * accidentally expose immutable IDs, credentials, or registry internals.
+ */
+export function projectAdminEnvironmentStatus(input: unknown): Record<string, unknown> {
+  if (!isRecord(input)
+    || input.schemaVersion !== 'chickpea-environment-status/v1'
+    || !adminEnvironmentTimestamp(input.generatedAt)
+    || !(input.registryRevision === null
+      || (Number.isSafeInteger(input.registryRevision) && Number(input.registryRevision) >= 0))
+    || !(input.selectedTarget === null
+      || ADMIN_ENVIRONMENT_TARGETS.includes(input.selectedTarget as typeof ADMIN_ENVIRONMENT_TARGETS[number]))
+    || !Array.isArray(input.targets)
+    || !(input.sandbox === null || isRecord(input.sandbox))) {
+    throw new Error('INVALID_ENVIRONMENT_STATUS');
+  }
+  const targets = input.targets.map(projectAdminEnvironmentTarget);
+  const targetNames = targets.map((target) => target.target).sort();
+  if (targetNames.join(',') !== [...ADMIN_ENVIRONMENT_TARGETS].sort().join(',')) {
+    throw new Error('INVALID_ENVIRONMENT_STATUS');
+  }
+  if (input.sandbox !== null && (
+    !(input.sandbox.archiveDate === null || adminEnvironmentTimestamp(input.sandbox.archiveDate))
+    || !(input.sandbox.daysUntilArchive === null || Number.isSafeInteger(input.sandbox.daysUntilArchive))
+    || typeof input.sandbox.warning !== 'string'
+    || !['none', '45_days', '30_days', '14_days', 'unavailable'].includes(input.sandbox.warning)
+    || !Array.isArray(input.sandbox.warningDays)
+    || input.sandbox.warningDays.join(',') !== '45,30,14'
+    || !(input.sandbox.unusedWorkspaceSlots === null
+      || (Number.isSafeInteger(input.sandbox.unusedWorkspaceSlots)
+        && Number(input.sandbox.unusedWorkspaceSlots) >= 0
+        && Number(input.sandbox.unusedWorkspaceSlots) <= 3))
+    || !(input.sandbox.integrationHeadroom === null
+      || (Number.isSafeInteger(input.sandbox.integrationHeadroom)
+        && Number(input.sandbox.integrationHeadroom) >= 0)))) {
+    throw new Error('INVALID_ENVIRONMENT_STATUS');
+  }
+  return {
+    schemaVersion: 'chickpea-environment-status/v1',
+    generatedAt: input.generatedAt,
+    registryRevision: input.registryRevision,
+    selectedTarget: input.selectedTarget,
+    targets,
+    sandbox: input.sandbox === null ? null : {
+      archiveDate: input.sandbox.archiveDate,
+      daysUntilArchive: input.sandbox.daysUntilArchive,
+      warning: input.sandbox.warning,
+      warningDays: [45, 30, 14],
+      unusedWorkspaceSlots: input.sandbox.unusedWorkspaceSlots,
+      integrationHeadroom: input.sandbox.integrationHeadroom,
+    },
+  };
+}
+
+function projectAdminEnvironmentTarget(input: unknown): Record<string, unknown> {
+  if (!isRecord(input)
+    || !ADMIN_ENVIRONMENT_TARGETS.includes(input.target as typeof ADMIN_ENVIRONMENT_TARGETS[number])
+    || !ADMIN_ENVIRONMENT_HEALTH.includes(input.health as typeof ADMIN_ENVIRONMENT_HEALTH[number])
+    || !(input.sourceSha === null
+      || (typeof input.sourceSha === 'string' && /^[0-9a-f]{7,64}$/u.test(input.sourceSha)))
+    || typeof input.dirty !== 'boolean'
+    || !(input.servingVersion === null
+      || (typeof input.servingVersion === 'string'
+        && (/^version-[A-Za-z0-9._-]{1,96}$/u.test(input.servingVersion)
+          || WORKER_VERSION_ID_PATTERN.test(input.servingVersion))))
+    || !(input.transport === null || input.transport === 'gateway' || input.transport === 'events')
+    || input.workspaceAlias !== `env-${String(input.target)}-workspace`
+    || input.appAlias !== `env-${String(input.target)}-slack-app`
+    || !adminEnvironmentLabel(input.workspaceLabel)
+    || !adminEnvironmentLabel(input.appLabel)
+    || !(input.schemaGeneration === null
+      || adminEnvironmentDisplay(
+        input.schemaGeneration,
+        /^d1:[A-Za-z0-9._-]{1,64};do:[A-Za-z0-9._-]{1,64}$/u,
+      ))
+    || !(input.lastAttestedRevision === null
+      || (typeof input.lastAttestedRevision === 'string'
+        && /^[0-9a-f]{7,64}(?:-dirty)?$/u.test(input.lastAttestedRevision)))
+    || !isRecord(input.verifierLock)
+    || typeof input.verifierLock.status !== 'string'
+    || !['clear', 'live', 'stale', 'foreign'].includes(input.verifierLock.status)
+    || !(input.verifierLock.ownerRunId === undefined
+      || adminEnvironmentRunId(input.verifierLock.ownerRunId))) {
+    throw new Error('INVALID_ENVIRONMENT_STATUS');
+  }
+  let claim: Record<string, unknown> | null = null;
+  if (input.claim !== null) {
+    if (!isRecord(input.claim)
+      || !adminEnvironmentDisplay(input.claim.holderId, /^holder-[a-f0-9]{16,64}$/u)
+      || !Number.isSafeInteger(input.claim.leaseAgeMs) || Number(input.claim.leaseAgeMs) < 0
+      || !adminEnvironmentTimestamp(input.claim.expiresAt)) {
+      throw new Error('INVALID_ENVIRONMENT_STATUS');
+    }
+    claim = {
+      holderId: input.claim.holderId,
+      leaseAgeMs: input.claim.leaseAgeMs,
+      expiresAt: input.claim.expiresAt,
+    };
+  }
+  return {
+    target: input.target,
+    health: input.health,
+    sourceSha: input.sourceSha,
+    dirty: input.dirty,
+    servingVersion: input.servingVersion,
+    transport: input.transport,
+    workspaceAlias: input.workspaceAlias,
+    workspaceLabel: input.workspaceLabel,
+    appAlias: input.appAlias,
+    appLabel: input.appLabel,
+    claim,
+    verifierLock: {
+      status: input.verifierLock.status,
+      ...(input.verifierLock.ownerRunId === undefined
+        ? {}
+        : { ownerRunId: input.verifierLock.ownerRunId }),
+    },
+    schemaGeneration: input.schemaGeneration,
+    lastAttestedRevision: input.lastAttestedRevision,
+    recoveryAction: adminEnvironmentRecoveryAction(String(input.health), String(input.target)),
+  };
+}
+
+const ADMIN_ENVIRONMENT_SECRET_LIKE = /(?:xox[abprs]-|xoxe[.-]|sk-[A-Za-z0-9]|-----BEGIN|\b(?:secret|token|password|credential|cookie|private[ _-]?key|browser[ _-]?profile)\b|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:^|[ (])\/(?:Users|home|private|var|tmp)\/)/iu;
+
+function adminEnvironmentDisplay(input: unknown, grammar: RegExp): input is string {
+  return typeof input === 'string'
+    && grammar.test(input)
+    && !ADMIN_ENVIRONMENT_SECRET_LIKE.test(input);
+}
+
+function adminEnvironmentLabel(input: unknown): input is string {
+  return adminEnvironmentDisplay(input, /^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,95}$/u)
+    && !/^[ATUWCB][A-Z0-9]{7,}$/u.test(input);
+}
+
+function adminEnvironmentRunId(input: unknown): input is string {
+  return adminEnvironmentDisplay(input, /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u)
+    && !/^[ATUWCB][A-Z0-9]{7,}$/u.test(input);
+}
+
+function adminEnvironmentRecoveryAction(health: string, target: string): string {
+  if (health === 'ready') return 'No recovery needed.';
+  if (health === 'unreachable') return `Check ${target} Worker and Slack transport reachability.`;
+  if (health === 'stale_claim') return `Run npm run env -- reclaim ${target} from the intended worktree.`;
+  if (health === 'expired_claim') return `Run npm run env -- reclaim ${target}.`;
+  return `Run npm run env -- reconciliation ${target}.`;
+}
+
+function adminEnvironmentString(input: unknown, maximum: number): input is string {
+  return typeof input === 'string' && input.length > 0 && input.length <= maximum
+    && !/[\u0000-\u001f\u007f]/u.test(input);
+}
+
+function adminEnvironmentTimestamp(input: unknown): input is string {
+  if (!adminEnvironmentString(input, 64) || !Number.isFinite(Date.parse(input))) return false;
+  try {
+    return new Date(input).toISOString() === input;
+  } catch {
+    return false;
+  }
+}
+
 interface AdminRoutesOptions {
   // Injection seam for tests/harnesses: any async ConfigStore serves the
   // routes; absent, the platform backend is resolved per request (c.env is the
@@ -526,6 +726,7 @@ interface AdminRoutesOptions {
   snapshots?: AgentSnapshotStore | undefined;
   // Same seam for the Slack-connection wizard's settings persistence.
   settings?: SettingsStore | undefined;
+  productTelemetry?: ((c: Context) => ProductTelemetryCapture) | undefined;
   memory?: MemoryStateStore | undefined;
   routines?: RoutineStore | undefined;
   usage?: UsageStore | undefined;
@@ -533,6 +734,7 @@ interface AdminRoutesOptions {
   routineCapability?: ((c: Context) => RoutineCapability) | undefined;
   slackState?: SlackStateStore | undefined;
   runtimeDrain?: ((env?: PlatformEnv) => Promise<RuntimeDrainStatus>) | undefined;
+  environmentStatus?: (() => unknown | Promise<unknown>) | undefined;
   usageAdminUi?: boolean | undefined;
   authService?: AdminAuthenticationService | undefined;
   betterAuthEnvironment?: BetterAuthEnvironment | undefined;
@@ -593,13 +795,7 @@ interface AdminRoutesOptions {
   identifyMcp?: ((input: McpIdentityInput) => Promise<McpConnectionIdentity | undefined>) | undefined;
   oauthFetch?: typeof fetch | undefined;
   startApiOAuth?: ((
-    input: {
-      ref: ApiOAuthRef;
-      provider: ApiOAuthProvider;
-      callbackUrl: string;
-      scopes: readonly string[];
-      returnAgentId?: string;
-    },
+    input: Parameters<typeof startApiOAuthAuthorization>[0],
     dependencies: ApiOAuthDependencies,
   ) => ReturnType<typeof startApiOAuthAuthorization>) | undefined;
   completeApiOAuth?: ((
@@ -1300,6 +1496,7 @@ const turnRecoveryResolveSchema = v.strictObject({
 });
 export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const app = new Hono();
+  app.route('/', createPublicAssetRoutes());
   const principalByContext = new WeakMap<object, AuthPrincipal>();
   const betterAuthByContext = new WeakMap<object, Promise<BetterAuthContext | undefined>>();
   const managedProvidersByContext = new WeakMap<object, ManagedConnectionProviderRegistry>();
@@ -1328,6 +1525,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.identity ?? getIdentityStore(c.env as PlatformEnv | undefined);
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
+  const productTelemetry = (c: Context) => options.productTelemetry?.(c);
   const composioConfiguration = (c: Context): ComposioConfigurationOptions => ({
     ...options.composioConfiguration,
     settings: settings(c),
@@ -1422,6 +1620,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const env = c.env as PlatformEnv | undefined;
     const identityStore = identity(c);
     const settingsStore = settings(c);
+    const telemetry = productTelemetry(c);
     return createLiveWorkspaceManagementService(env, {
       identity: identityStore,
       settings: settingsStore,
@@ -1433,6 +1632,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         routines: routines(c),
         work: work(c),
         setupBaseUrl: requestOrigin(c),
+        ...(telemetry ? { productTelemetry: telemetry } : {}),
       },
     });
   };
@@ -1442,7 +1642,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.use('*', async (c, next) => {
     // Deployment activation has its own short-lived bearer capability and
     // must remain callable while an older release left Admin in recovery.
-    if (c.req.path === '/internal/deployment/ready') return next();
+    if (c.req.path === '/internal/deployment/ready' || c.req.path === ENVIRONMENT_AUTHORITY_PATH) return next();
     const control = await identity(c).getAuthControl();
     if (control?.healthGate === 'recovery_only' &&
         c.req.path !== '/admin/recovery' &&
@@ -1488,6 +1688,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return digest && Number.isSafeInteger(issuedAt) ? { digest, issuedAt } : undefined;
   };
 
+  // Operator-only lane attestation has its own token, separate from Admin auth.
+  app.get(ENVIRONMENT_AUTHORITY_PATH, (c) => environmentAuthorityResponse({
+    authorization: c.req.header('authorization'),
+    env: (c.env ?? {}) as PlatformEnv,
+    gateway: () => createGatewayDeploymentClient(c.env as PlatformEnv | undefined),
+    session: () => readGatewaySessionStatus(c.env),
+  }));
   // A deploy is not ready merely because one edge serves the new module. For
   // an installed shared Slack gateway, its long-lived Durable Object must also
   // report the same Worker version before the deploy wrapper announces success.
@@ -1538,11 +1745,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const credentials = slackCredentialDependencies(c);
     if (!credentials) return undefined;
     const apiBaseUrl = slackApiBaseUrl(c);
+    const telemetry = productTelemetry(c);
     return new SlackInstallOAuthService({
       identity: identity(c),
       credentials,
       config: store(c),
       settings: settings(c),
+      ...(telemetry ? { productTelemetry: telemetry } : {}),
       ...(apiBaseUrl ? { apiBaseUrl } : {}),
       ...(options.slackInstallFetch ? { fetch: options.slackInstallFetch } : {}),
       ...(options.slackInstallNow ? { now: options.slackInstallNow } : {}),
@@ -1857,6 +2066,38 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!membership || membership.status !== 'active' || !user) throw new AuthorizationError();
     return { principal, slackUserId: user.slackUserId, slackTeamId: user.slackTeamId };
   };
+  const memberVisibleAgentChannels = async (
+    c: Context,
+    grants: readonly AgentChannelGrant[],
+  ): Promise<ReadonlyMap<string, SlackChannel>> => {
+    try {
+      const actor = await agentActor(c);
+      const transport = await agentSlackTransport(c, actor.slackTeamId);
+      const [directory, memberChannels] = await Promise.all([
+        transport.listChannels(),
+        transport.listMemberChannels(actor.slackUserId).catch(() => {
+          // Public Channels remain workspace-visible. Private Channels fail closed
+          // when Slack cannot prove the current actor still belongs to them.
+          console.warn('[chickpea] Member private-Channel projection unavailable');
+          return undefined;
+        }),
+      ]);
+      const grantedKeys = new Set(grants
+        .filter(({ workspaceId }) => workspaceId === actor.slackTeamId)
+        .map(({ workspaceId, channelId }) => agentChannelProjectionKey(workspaceId, channelId)));
+      return new Map(directory.channels.flatMap((channel) => {
+        const key = agentChannelProjectionKey(actor.slackTeamId, channel.id);
+        if (!grantedKeys.has(key) || channel.archived) return [];
+        if (channel.private && (!channel.member || !memberChannels?.has(channel.id))) return [];
+        return [[key, channel] as const];
+      }));
+    } catch {
+      // Agent configuration stays usable without exposing cached destination
+      // labels or ids when current Slack visibility cannot be established.
+      console.warn('[chickpea] Member Agent Channel projection unavailable');
+      return new Map();
+    }
+  };
   const privateAgentAudience = async (
     c: Context,
     agent: CustomAgentConfig,
@@ -1880,6 +2121,25 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return 'unavailable';
     }
   };
+  const agentAdminProjectionForRequest = async (
+    c: Context,
+    agent: CustomAgentConfig,
+    extraAccess: { privateUseAudience?: PrivateAgentAudience } = {},
+  ): Promise<object> => {
+    const principal = principalByContext.get(c);
+    const agentGrants = (await store(c).listAgentChannelGrants())
+      .filter(({ agentId }) => agentId === agent.id);
+    const visibleMemberChannels = principal?.role === 'member'
+      ? agentGrants.length > 0
+        ? await memberVisibleAgentChannels(c, agentGrants)
+        : new Map<string, SlackChannel>()
+      : undefined;
+    return agentAdminProjection(agent, store(c), snapshots(c), undefined, {
+      canEdit: principal ? canEditAgent(principal, agent) : true,
+      ...extraAccess,
+      ...(visibleMemberChannels ? { visibleMemberChannels } : {}),
+    });
+  };
   const routineAccessByContext = new WeakMap<object, RoutineContentAccessResolver>();
   const routineContentAccess = (c: Context): RoutineContentAccessResolver => {
     const current = routineAccessByContext.get(c);
@@ -1898,13 +2158,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const connectionAccounts = (
     c: Context,
     providers: ManagedConnectionProviderRegistry = managedProviders(c),
-  ): ConnectionAccountService =>
-    new ConnectionAccountService({
+  ): ConnectionAccountService => {
+    const telemetry = productTelemetry(c);
+    return new ConnectionAccountService({
       config: store(c),
       settings: settings(c),
       managedProviders: providers,
       managedCatalog,
+      ...(telemetry ? { productTelemetry: telemetry } : {}),
+      telemetrySurface: 'admin',
     });
+  };
   const resumeComposioReconciliation = async (
     c: Context,
     requestSignal?: AbortSignal,
@@ -1980,6 +2244,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const agent = await store(c).getAgent(agentId);
     requireAgentEdit(principal, agent);
     const account = await connectionAccounts(c).getForManagement(principal, connectionAccountId);
+    requirePermission(
+      principal,
+      account.ownerKind === 'team'
+        ? 'connection.create_team'
+        : 'connection.create_personal',
+    );
     const binding = (await store(c).listAgentConnectionBindings(agentId)).find(
       (candidate) => candidate.connectionAccountId === account.id && candidate.enabled,
     );
@@ -1987,6 +2257,111 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const organization = await identity(c).getOrganization();
     if (organization?.slackTeamId !== account.workspaceId) throw new AuthorizationError();
     return { principal, account, ...(binding ? { binding } : {}) };
+  };
+  const oauthAuthorizationAuthority = async (
+    c: Context,
+    principal: AuthPrincipal,
+    agentId: string,
+    ownerKind: OAuthAuthorizationOwnerKind,
+    workspaceId?: string,
+  ): Promise<OAuthAuthorizationAuthority> => {
+    const organization = await identity(c).getOrganization();
+    const boundWorkspaceId = workspaceId ?? organization?.slackTeamId ?? undefined;
+    if (
+      !organization ||
+      organization.id !== principal.organizationId ||
+      !boundWorkspaceId ||
+      organization.slackTeamId !== boundWorkspaceId
+    ) {
+      throw new AuthorizationError();
+    }
+    return {
+      organizationId: organization.id,
+      workspaceId: boundWorkspaceId,
+      membershipId: principal.membershipId,
+      agentId,
+      ownerKind,
+    };
+  };
+  const requireCurrentOAuthAuthorization = async (
+    c: Context,
+    authority: OAuthAuthorizationAuthority,
+    ref: ApiOAuthRef,
+  ): Promise<void> => {
+    const [organization, membership, accessOverlay] = await Promise.all([
+      identity(c).getOrganization(),
+      identity(c).getMembership(authority.membershipId),
+      identity(c).getMembershipAccessOverlay(authority.membershipId),
+    ]);
+    if (
+      !organization ||
+      organization.id !== authority.organizationId ||
+      organization.slackTeamId !== authority.workspaceId ||
+      !membership ||
+      membership.status !== 'active' ||
+      membership.organizationId !== authority.organizationId ||
+      (accessOverlay &&
+        (accessOverlay.organizationId !== authority.organizationId ||
+          accessOverlay.accessStatus !== 'active'))
+    ) {
+      throw new AuthorizationError();
+    }
+    const principal: AuthPrincipal = {
+      userId: membership.userId,
+      membershipId: membership.id,
+      organizationId: membership.organizationId,
+      role: membership.role,
+      authenticatorKind: 'oauth_callback_authority',
+      credentialId: 'oauth_callback_authority',
+      correlationId: 'oauth_callback_authority',
+      machine: false,
+    };
+    const agent = await store(c).getAgent(authority.agentId);
+    requireAgentEdit(principal, agent);
+
+    const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+    if (!connectionAccountId) {
+      if (authority.ownerKind !== 'legacy_agent' || ref.agentId !== authority.agentId) {
+        throw new AuthorizationError();
+      }
+      return;
+    }
+    if (authority.ownerKind === 'legacy_agent') throw new AuthorizationError();
+    const account = await findConnectionAccount(store(c), connectionAccountId);
+    if (
+      !account ||
+      account.lifecycle === 'revoked' ||
+      account.workspaceId !== authority.workspaceId ||
+      account.ownerKind !== authority.ownerKind
+    ) {
+      throw new AuthorizationError();
+    }
+    const binding = (await store(c).listAgentConnectionBindings(agent.id)).find(
+      (candidate) => candidate.connectionAccountId === account.id && candidate.enabled,
+    );
+    if (!binding) throw new AuthorizationError();
+    requirePermission(
+      principal,
+      account.ownerKind === 'team'
+        ? 'connection.create_team'
+        : 'connection.create_personal',
+    );
+    if (account.ownerKind === 'member' && account.ownerMembershipId !== membership.id) {
+      throw new AuthorizationError();
+    }
+  };
+  const currentOAuthAuthorization = async (
+    c: Context,
+    authority: OAuthAuthorizationAuthority | undefined,
+    ref: ApiOAuthRef,
+  ): Promise<boolean> => {
+    if (!authority) return false;
+    try {
+      await requireCurrentOAuthAuthorization(c, authority, ref);
+      return true;
+    } catch {
+      return false;
+    }
   };
   const agentPresenceFailureResponse = async (
     c: Context,
@@ -2007,7 +2382,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       retryable: classified.retryable,
       suggestions: classified.suggestions,
       recovery: agentPresenceRecovery(classified, handle),
-      agent: await agentAdminProjection(agent, store(c), snapshots(c)),
+      agent: await agentAdminProjectionForRequest(c, agent),
     }, status);
   };
   const authRateLimiter = (c: Context, token: string): AuthRateLimiter =>
@@ -2113,6 +2488,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const oauthDependencies = (c: Context): McpOAuthDependencies => ({
     settings: settings(c),
     ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
+    validateAuthorization: (authority, ref) =>
+      currentOAuthAuthorization(c, authority, ref),
     validateConnection: async (ref, serverUrl, accountRevision, oauthAttemptId) => {
       const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
       if (connectionAccountId) {
@@ -2152,6 +2529,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const apiOAuthDependencies = (c: Context): ApiOAuthDependencies => ({
     settings: settings(c),
     ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
+    validateAuthorization: (authority, ref) =>
+      currentOAuthAuthorization(c, authority, ref),
     validateConnection: async (ref, provider, accountRevision, oauthAttemptId) => {
       const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
       if (connectionAccountId) {
@@ -2224,15 +2603,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       };
     }
   };
-  const slackInstallationAdminBodyLimit = bodyLimit({
+  const slackInstallationAdminBodyLimit = actualBodyLimit({
     maxSize: MAX_SLACK_INSTALLATION_ADMIN_BODY_BYTES,
     onError: (c) => c.json({ error: 'payload_too_large' }, 413),
   });
-  const authSetupBodyLimit = bodyLimit({
+  const authSetupBodyLimit = actualBodyLimit({
     maxSize: MAX_AUTH_SETUP_BODY_BYTES,
     onError: (c) => c.json({ error: 'invalid_request' }, 413),
   });
-  const adminMutationBodyLimit = bodyLimit({
+  const adminMutationBodyLimit = actualBodyLimit({
     maxSize: MAX_ADMIN_MUTATION_BODY_BYTES,
     onError: (c) => c.json({ error: 'request_too_large' }, 413),
   });
@@ -2244,6 +2623,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (agent.kind !== 'user') throw new UnknownAgentError(agentId);
     return agent;
   };
+  const requireCurrentAgentEdit = async (
+    c: Context,
+    agentId: string,
+    principal: AuthPrincipal | undefined = principalByContext.get(c),
+  ): Promise<CustomAgentConfig> => {
+    const agent = await requireAdminUserAgent(c, agentId);
+    requireAgentEdit(principal, agent);
+    return agent;
+  };
+  const agentEditFailureResponse = (c: Context, error: unknown): Response => {
+    if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+    if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+    return internalError(c, error);
+  };
   const enforceAgentRouteAuthority = async (
     c: Context,
     principal: AuthPrincipal,
@@ -2251,9 +2644,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const match = c.req.path.match(/^\/admin\/api\/agents\/([^/]+)/);
     if (!match) return;
     const agentId = decodeURIComponent(match[1]!);
-    const agent = await requireAdminUserAgent(c, agentId);
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
-      requireAgentEdit(principal, agent);
+      await requireCurrentAgentEdit(c, agentId, principal);
+    } else {
+      await requireAdminUserAgent(c, agentId);
     }
   };
   const enforceAgentMemoryAuthority = async (
@@ -2381,14 +2775,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const state = c.req.query('state')?.trim() ?? '';
       const setupState = await consumeGithubSetupState(settings(c), state);
       if (!setupState) return c.json({ error: 'invalid_setup_state' }, 403);
-      if (setupState.membershipId) {
-        const membership = (await (await humanDirectory(c)).listMemberships()).find(
-          (candidate) => candidate.id === setupState.membershipId,
-        );
-        if (!membership || membership.status !== 'active' ||
-            !['owner', 'admin'].includes(membership.role)) {
-          return c.json({ error: 'invalid_setup_state' }, 403);
-        }
+      const membership = (await (await humanDirectory(c)).listMemberships()).find(
+        (candidate) => candidate.id === setupState.membershipId,
+      );
+      const accessOverlay = await identity(c).getMembershipAccessOverlay(setupState.membershipId);
+      if (!membership || membership.status !== 'active' ||
+          !['owner', 'admin'].includes(membership.role) ||
+          (accessOverlay &&
+            (accessOverlay.organizationId !== membership.organizationId ||
+              accessOverlay.accessStatus !== 'active'))) {
+        return c.json({ error: 'invalid_setup_state' }, 403);
       }
       const conversion = await exchangeGithubAppManifest(parsed.output.code);
       await settings(c).applySettingsPatch({
@@ -2788,6 +3184,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.body(slackSetupClientScript());
   });
 
+  app.get('/admin/setup/gateway-continue.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    return c.body(slackAuthorizationHandoffScript(
+      new URL(resolveChickpeaGatewayUrl(c.env as PlatformEnv | undefined)).origin,
+    ));
+  });
+
   app.get('/admin/setup/manual/client.js', (c) => {
     authResponseHeaders(c);
     c.header('Content-Type', 'application/javascript; charset=UTF-8');
@@ -2796,8 +3200,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // The pre-owner manual setup journey embeds these immutable historical
   // screenshots, so they must remain available before the Admin auth gate.
-  app.get('/admin/assets/onboarding/:name', (c) => {
-    const bytes = onboardingAssetBytes(c.req.param('name'));
+  app.get('/admin/assets/onboarding/:name', async (c) => {
+    const bytes = await onboardingAssetBytes(c.req.param('name'));
     if (!bytes) return c.notFound();
     c.header('Cache-Control', 'public, max-age=31536000, immutable');
     c.header('Content-Type', 'image/webp');
@@ -2862,7 +3266,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           clientSecret: boundedSetupField(rawForm.clientSecret, 4_096),
           signingSecret: boundedSetupField(rawForm.signingSecret, 4_096),
           expectedManifest: manifest,
-          observedManifest: JSON.parse(boundedSetupField(rawForm.observedManifest, 7_500)),
+          observedManifest: parseSetupManifest(rawForm.observedManifest),
         });
       } else if (action !== 'open') {
         throw new AuthDeniedError();
@@ -2920,6 +3324,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (c.req.query('gateway_return') === '1') {
           const result = await createGatewayDeploymentClient(
             c.env as PlatformEnv | undefined,
+            { productTelemetry: productTelemetry(c) },
           ).refreshClaim();
           gatewayState = result.state === 'bound' ? 'connected' : 'pending';
           if (gatewayState === 'connected') {
@@ -2992,10 +3397,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           limiter.recordSuccess(`slack_setup_operation_${action}`, setup.id),
           limiter.recordSuccess('slack_setup_deployment', 'deployment'),
         ]);
-        return c.redirect(claim.authorizationUrl, 303);
+        return c.html(renderSlackAuthorizationHandoffPage(
+          claim.authorizationUrl,
+          new URL(resolveChickpeaGatewayUrl(c.env as PlatformEnv | undefined)).origin,
+        ));
       } else if (action === 'gateway_refresh') {
         const result = await createGatewayDeploymentClient(
           c.env as PlatformEnv | undefined,
+          { productTelemetry: productTelemetry(c) },
         ).refreshClaim();
         if (result.state === 'bound') startNodeGatewaySession(c.env as PlatformEnv | undefined);
         return c.redirect('/admin/setup', 303);
@@ -3012,7 +3421,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           clientSecret: boundedSetupField(rawForm.clientSecret, 4_096),
           signingSecret: boundedSetupField(rawForm.signingSecret, 4_096),
           expectedManifest: manifest,
-          observedManifest: JSON.parse(boundedSetupField(rawForm.observedManifest, 7_500)),
+          observedManifest: parseSetupManifest(rawForm.observedManifest),
         });
       } else if (action === 'restart') {
         setup = await service.restart({ setupId: setup.id, expectedRevision: setup.revision });
@@ -3269,9 +3678,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   // The provider redirects here without an admin Authorization header. State is
-  // the authorization boundary: the OAuth module validates and atomically
-  // consumes it before exchange or cancellation. Neither codes nor error text
-  // are reflected into the redirect.
+  // one-time state and its stored initiating authority are the authorization
+  // boundary. The OAuth module consumes state and rechecks live authority
+  // before exchange. Neither codes nor error text enter the redirect.
   app.get('/oauth/callback', async (c) => {
     c.header('Referrer-Policy', 'no-referrer');
     c.header('Cache-Control', 'no-store');
@@ -3292,13 +3701,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     let returnAgentId: string | undefined;
     let accountRevision: number | undefined;
     let oauthAttemptId: string | undefined;
+    let authorizationAuthority: OAuthAuthorizationAuthority | undefined;
     try {
       if (providerError) {
         const cancelled = await cancelMcpOAuth(state, oauthDependencies(c));
         const status = providerError === 'access_denied' ? 'cancelled' : 'failed';
         return c.redirect(mcpOAuthAdminRedirect(status, cancelled.ref, cancelled.returnAgentId), 303);
       }
-      ({ ref, returnAgentId, accountRevision, oauthAttemptId } = await completeMcpOAuth(
+      ({ ref, returnAgentId, accountRevision, oauthAttemptId, authorizationAuthority } = await completeMcpOAuth(
         { code: code!, state },
         oauthDependencies(c),
       ));
@@ -3334,6 +3744,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.redirect('/admin?oauth=failed', 303);
     }
     try {
+      if (!authorizationAuthority) {
+        throw new McpOAuthError(
+          'authorization_expired', 'OAuth initiating authority is missing',
+        );
+      }
+      await requireCurrentOAuthAuthorization(c, authorizationAuthority, ref);
       await verifyAndStoreMcpOAuthConnection({
         ref,
         configStore: store(c),
@@ -3346,10 +3762,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         oauthDependencies: oauthDependencies(c),
         ...(accountRevision !== undefined ? { accountRevision } : {}),
         ...(oauthAttemptId ? { oauthAttemptId } : {}),
+        validateAuthorization: () =>
+          requireCurrentOAuthAuthorization(c, authorizationAuthority, ref),
       });
       return c.redirect(mcpOAuthAdminRedirect('connected', ref, returnAgentId), 303);
     } catch (error) {
-      if (error instanceof McpOAuthError && error.code === 'connection_missing') {
+      if (error instanceof AuthorizationError ||
+          (error instanceof McpOAuthError && error.code === 'authorization_expired')) {
+        await invalidateMcpOAuthAuthorization(ref, settings(c)).catch(() => undefined);
+      } else if (error instanceof McpOAuthError && error.code === 'connection_missing') {
         await deleteMcpOAuthSettings(ref, settings(c)).catch(() => undefined);
       }
       console.warn(
@@ -3420,6 +3841,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
       }
       try {
+        if (!completed.authorizationAuthority) {
+          throw new ApiOAuthError(
+            'authorization_expired', 'OAuth initiating authority is missing',
+          );
+        }
+        await requireCurrentOAuthAuthorization(
+          c, completed.authorizationAuthority, completed.ref,
+        );
         await replaceReadyApiOAuthConnection(
           store(c),
           completed.ref,
@@ -3462,6 +3891,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         '[chickpea] API OAuth callback failed:',
         error instanceof ApiOAuthError ? error.code : 'internal_error',
       );
+      if (
+        ref &&
+        (error instanceof AuthorizationError ||
+          (error instanceof ApiOAuthError && error.code === 'authorization_expired'))
+      ) {
+        await invalidateApiOAuthAuthorization(ref, settings(c)).catch(() => undefined);
+      }
       if (error instanceof ApiOAuthError && error.callbackContext) {
         return c.redirect(
           apiOAuthAdminRedirect(
@@ -3515,7 +3951,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.post(
     '/webhooks/composio',
-    bodyLimit({
+    actualBodyLimit({
       maxSize: 256 * 1024,
       onError: (c) => c.json({ error: 'payload_too_large' }, 413),
     }),
@@ -3585,11 +4021,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     app.all(path, (c) => c.notFound());
   }
   app.use('/admin/*', adminGate);
-  app.use('/admin/api/*', (c, next) =>
-    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)
-      ? adminMutationBodyLimit(c, next)
-      : next(),
-  );
+  app.use('/admin/api/*', (c, next) => {
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) return next();
+    const slackInstallationMutation =
+      c.req.path === '/admin/api/slack-connection' ||
+      c.req.path.startsWith('/admin/api/slack-connection/');
+    return slackInstallationMutation
+      ? slackInstallationAdminBodyLimit(c, next)
+      : adminMutationBodyLimit(c, next);
+  });
   app.use('/admin/api/*', async (c, next) => {
     // Body-limit middleware may replace the Request object while retaining the
     // Hono Context. Reattach the trusted principal to that exact Request so
@@ -3602,7 +4042,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // admin middleware reconcile provider keys or pin request-origin state.
     if (c.req.method === 'GET' &&
         (c.req.path === '/admin/api/runtime/drain' ||
-          c.req.path === '/admin/api/runtime/recovery-turns')) {
+          c.req.path === '/admin/api/runtime/recovery-turns' ||
+          c.req.path === '/admin/api/environment/status')) {
       return next();
     }
     const settingsStore = settings(c);
@@ -3625,12 +4066,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     return next();
   });
-  const limitSlackInstallationMutation = (c: Context, next: Next) =>
-    c.req.method === 'GET' || c.req.method === 'HEAD'
-      ? next()
-      : slackInstallationAdminBodyLimit(c, next);
-  app.use('/admin/api/slack-connection', limitSlackInstallationMutation);
-
   app.get('/admin/api/settings/connectors/composio', async (c) => {
     c.header('Cache-Control', 'no-store');
     try {
@@ -4010,6 +4445,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         const existingRemoteRef = existingAttempt
           ? managedAuthorizationRemoteRef(existingAttempt)
           : undefined;
+        if (existingAttempt) {
+          requirePermission(
+            principal,
+            existingAttempt.ownerKind === 'team'
+              ? 'connection.create_team'
+              : 'connection.create_personal',
+          );
+        }
         if (existingAttempt && existingRemoteRef) {
           const alreadyImported = await connectionAccounts(c).hasManagedRemoteRef({
             adapterId: existingAttempt.adapterId,
@@ -4057,6 +4500,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const staleRemoteRef = staleAttempt
         ? managedAuthorizationRemoteRef(staleAttempt)
         : undefined;
+      if (staleAttempt) {
+        requirePermission(
+          principal,
+          staleAttempt.ownerKind === 'team'
+            ? 'connection.create_team'
+            : 'connection.create_personal',
+        );
+      }
       if (staleAttempt && staleRemoteRef) {
         const alreadyImported = await connectionAccounts(c).hasManagedRemoteRef({
           adapterId: staleAttempt.adapterId,
@@ -4242,6 +4693,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               );
               if (binding?.agentId !== agent.id) throw new AuthorizationError();
             }
+          try {
+            requirePermission(
+              principal,
+              attempt.ownerKind === 'team'
+                ? 'connection.create_team'
+                : 'connection.create_personal',
+            );
+          } catch (error) {
+            if (!(error instanceof AuthorizationError)) throw error;
+            const providerContext = await resolvedManagedProviderContext(c);
+            await discardManagedAuthorizationAfterAuthorityLoss({
+              config: store(c),
+              settings: settings(c),
+              catalog: managedCatalog,
+              providerContext,
+            }, {
+              principal,
+              browserSecret,
+              attempt,
+            });
+            throw error;
+          }
           const providerContext = await resolvedManagedProviderContext(c);
           assertManagedAuthorizationProvider(attempt, {
             generation: providerContext.generation,
@@ -4505,6 +4978,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const organization = await identity(c).getOrganization();
       if (organization?.slackTeamId !== attempt.workspaceId) throw new AuthorizationError();
       if (attempt.agentId !== agent.id) throw new ManagedAuthorizationError('invalid');
+      try {
+        requirePermission(
+          principal,
+          attempt.ownerKind === 'team'
+            ? 'connection.create_team'
+            : 'connection.create_personal',
+        );
+      } catch (error) {
+        if (!(error instanceof AuthorizationError)) throw error;
+        const providerContext = await resolvedManagedProviderContext(c);
+        await discardManagedAuthorizationAfterAuthorityLoss({
+          config: store(c),
+          settings: settings(c),
+          catalog: managedCatalog,
+          providerContext,
+        }, {
+          principal,
+          browserSecret,
+          attempt,
+        });
+        throw error;
+      }
       const remoteRef = managedAuthorizationRemoteRef(attempt);
       if (remoteRef) {
         const service = await resolvedConnectionAccounts(c);
@@ -4649,14 +5144,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     let connection: McpConnectionConfig | undefined;
     try {
-      connection = (await store(c).getAgent(agentId)).mcpServers.find(
+      connection = (await requireCurrentAgentEdit(c, agentId)).mcpServers.find(
         (server) => server.id === connectionId,
       );
     } catch (error) {
-      if (error instanceof UnknownAgentError) {
-        return c.json({ error: 'not_found' }, 404);
-      }
-      return internalError(c, error);
+      return agentEditFailureResponse(c, error);
     }
     if (!connection) {
       return c.json({ error: 'not_found' }, 404);
@@ -4665,6 +5157,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ error: 'oauth_not_enabled' }, 409);
     }
     try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
       const oauthScope = connection.oauthScope ?? parsed.output.scope;
       const result = await startMcpOAuth(
         {
@@ -4672,11 +5166,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           serverUrl: connection.url,
           callbackUrl: `${requestOrigin(c)}/oauth/callback`,
           ...(oauthScope ? { scope: oauthScope } : {}),
+          authorizationAuthority: await oauthAuthorizationAuthority(
+            c, principal, agentId, 'legacy_agent',
+          ),
         },
         oauthDependencies(c),
       );
       return c.json({ authorizationUrl: result.authorizationUrl.href });
     } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof McpOAuthError && error.code === 'connection_missing') {
         return c.json({ error: 'not_found' }, 404);
       }
@@ -4698,7 +5196,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const parsed = v.safeParse(connectionAccountOAuthStartSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
-      const { account } = await managedConnectionAccount(c, agentId, connectionAccountId);
+      const { principal, account } = await managedConnectionAccount(c, agentId, connectionAccountId);
       if (account.policy.kind !== 'mcp' || account.policy.authMode !== 'oauth') {
         return c.json({ error: 'oauth_not_enabled' }, 409);
       }
@@ -4715,6 +5213,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           returnAgentId: agentId,
           accountRevision: pendingAccount.revision,
           oauthAttemptId: pendingAccount.policy.oauthAttemptId!,
+          authorizationAuthority: await oauthAuthorizationAuthority(
+            c, principal, agentId, account.ownerKind, account.workspaceId,
+          ),
         },
         oauthDependencies(c),
       );
@@ -4745,12 +5246,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const ref = { agentId, connectionId };
     let connection: CustomAgentConfig['apiConnections'][number] | undefined;
     try {
-      connection = (await store(c).getAgent(agentId)).apiConnections.find(
+      connection = (await requireCurrentAgentEdit(c, agentId)).apiConnections.find(
         (candidate) => candidate.id === connectionId,
       );
     } catch (error) {
-      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
-      return internalError(c, error);
+      return agentEditFailureResponse(c, error);
     }
     if (
       !connection ||
@@ -4792,12 +5292,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const ref = { agentId, connectionId };
     let connection: CustomAgentConfig['apiConnections'][number] | undefined;
     try {
-      connection = (await store(c).getAgent(agentId)).apiConnections.find(
+      connection = (await requireCurrentAgentEdit(c, agentId)).apiConnections.find(
         (candidate) => candidate.id === connectionId,
       );
     } catch (error) {
-      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
-      return internalError(c, error);
+      return agentEditFailureResponse(c, error);
     }
     if (
       !connection ||
@@ -4809,17 +5308,23 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ error: 'oauth_not_enabled' }, 409);
     }
     try {
+      const principal = principalByContext.get(c);
+      if (!principal) throw new AuthorizationError('principal_required');
       const result = await startApiOAuth(
         {
           ref,
           provider: connection.oauthProvider,
           callbackUrl: `${requestOrigin(c)}/oauth/api/callback`,
           scopes: connection.oauthScopes,
+          authorizationAuthority: await oauthAuthorizationAuthority(
+            c, principal, agentId, 'legacy_agent',
+          ),
         },
         apiOAuthDependencies(c),
       );
       return c.json({ authorizationUrl: result.authorizationUrl.href });
     } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof ApiOAuthError && error.code === 'connection_missing') {
         return c.json({ error: 'not_found' }, 404);
       }
@@ -4896,6 +5401,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           returnAgentId: agentId,
           accountRevision: pendingAccount.revision,
           oauthAttemptId: pendingAccount.policy.oauthAttemptId!,
+          authorizationAuthority: await oauthAuthorizationAuthority(
+            c, principal, agentId, account.ownerKind, account.workspaceId,
+          ),
         },
         apiOAuthDependencies(c),
       );
@@ -4940,7 +5448,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // The shell contains the full inline application. Never let a browser keep
     // an older deployment's JavaScript after the Worker has been updated.
     c.header('Cache-Control', 'no-store');
-    return c.html(renderAdminPage({ usageAdminUi: usageAdminUi(c) }));
+    const principal = principalByContext.get(c);
+    return c.html(renderAdminPage({
+      usageAdminUi: usageAdminUi(c),
+      workspaceAdminUi: Boolean(
+        principal && permissionForRole(principal.role).has('admin.configure'),
+      ),
+    }));
   };
 
   app.get('/admin', adminPage);
@@ -5008,6 +5522,33 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch {
       console.error('[chickpea] runtime drain state unavailable');
       return c.json({ error: 'runtime_drain_unavailable' }, 503);
+    }
+  });
+
+  app.get('/admin/api/environment/status', async (c) => {
+    const runtimeBinding = (c.env as { CHICKPEA_ENVIRONMENT_STATUS?: unknown } | undefined)
+      ?.CHICKPEA_ENVIRONMENT_STATUS;
+    try {
+      if (!options.environmentStatus && runtimeBinding === undefined) {
+        const identity = deployedEnvironmentIdentity(c.env);
+        c.header('Cache-Control', 'no-store');
+        return identity ? c.json(identity) : c.json({ error: 'environment_status_unavailable' }, 404);
+      }
+      if (typeof runtimeBinding === 'string' && runtimeBinding.length > 65_536) {
+        throw new Error('INVALID_ENVIRONMENT_STATUS');
+      }
+      const raw = options.environmentStatus
+        ? await options.environmentStatus()
+        : typeof runtimeBinding === 'string'
+          ? JSON.parse(runtimeBinding)
+          : runtimeBinding;
+      const status = projectAdminEnvironmentStatus(raw);
+      c.header('Cache-Control', 'no-store');
+      return c.json(status);
+    } catch {
+      console.error('[chickpea] environment status unavailable');
+      c.header('Cache-Control', 'no-store');
+      return c.json({ error: 'environment_status_unavailable' }, 503);
     }
   });
 
@@ -5095,6 +5636,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const rawAgents = principal
       ? allAgents.filter((agent) => canEditAgent(principal, agent))
       : allAgents;
+    const visibleAgentIds = new Set(rawAgents.map(({ id }) => id));
+    const visibleMemberChannels = principal?.role === 'member'
+      ? await memberVisibleAgentChannels(
+          c,
+          grants.filter(({ agentId }) => visibleAgentIds.has(agentId)),
+        )
+      : undefined;
     const agents = await Promise.all(
       rawAgents.map((agent) =>
         withApiConnectionSources(agent, platformEnv, settingsStore),
@@ -5123,6 +5671,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           snapshotRoots: roots[index]!,
         }, {
           canEdit: principal ? canEditAgent(principal, agent) : true,
+          ...(visibleMemberChannels ? { visibleMemberChannels } : {}),
         })
       )),
     });
@@ -5932,10 +6481,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // logged-in admin a callback URL carrying a code for an attacker-owned
     // App and silently overwrite this deployment's GitHub credentials.
     const setupState = randomUUID().replaceAll('-', '');
+    const setupPrincipal = principalByContext.get(c);
+    if (!setupPrincipal) throw new AuthorizationError();
     await saveGithubSetupState(settings(c), {
       state: setupState,
       mintedAt: Date.now(),
-      membershipId: principalByContext.get(c)?.membershipId ?? null,
+      membershipId: setupPrincipal.membershipId,
     });
     const base = org
       ? `https://github.com/organizations/${org}/settings/apps/new`
@@ -6100,8 +6651,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ),
       };
       const created = await configStore.createAgent(agent);
+      try {
+        const actor = await agentActor(c);
+        productTelemetry(c)?.capture({
+          event: 'agent_created',
+          workspaceId: actor.slackTeamId,
+          agentId: created.id,
+          surface: 'admin',
+        });
+      } catch {
+        // A completed Agent creation never depends on advisory telemetry.
+      }
       return c.json({
-        agent: await agentAdminProjection(created, configStore, snapshots(c)),
+        agent: await agentAdminProjectionForRequest(c, created),
         ...providerWarnings(agent.model, providerIds()),
       }, 201);
     } catch (err) {
@@ -6227,6 +6789,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     const input = parsed.output;
+    let agent: CustomAgentConfig;
+    try {
+      agent = await requireCurrentAgentEdit(c, agentId);
+    } catch (error) {
+      return agentEditFailureResponse(c, error);
+    }
     const validated = validateMcpUrl(input.url);
     if (!validated.ok) {
       // Never even attempt a connect to a blocked target: classify the SSRF
@@ -6244,7 +6812,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // operator could otherwise post their own host here and read them off the
     // wire. Resolve stored secrets only when the tested origin is the one they
     // were saved against; a new or redirected target must be typed in full.
-    const storedOrigin = await savedMcpConnectionOrigin(store(c), agentId, input.id);
+    const savedConnection = agent.mcpServers.find(({ id }) => id === input.id);
+    const storedOrigin = savedConnection ? safeUrlOrigin(savedConnection.url) : undefined;
     const testsSavedOrigin =
       storedOrigin !== undefined && storedOrigin === safeUrlOrigin(validated.url);
     const resolved = testsSavedOrigin
@@ -6333,14 +6902,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const ref = { agentId, connectionId };
     let connection: CustomAgentConfig['mcpServers'][number] | undefined;
     try {
-      connection = (await configStore.getAgent(agentId)).mcpServers.find(
+      connection = (await requireCurrentAgentEdit(c, agentId)).mcpServers.find(
         (server) => server.id === connectionId,
       );
     } catch (err) {
-      if (err instanceof UnknownAgentError) {
-        return c.json({ error: 'not_found' }, 404);
-      }
-      return internalError(c, err);
+      return agentEditFailureResponse(c, err);
     }
     if (!connection) {
       return c.json({ error: 'not_found' }, 404);
@@ -6442,14 +7008,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const settingsStore = settings(c);
     let connection: CustomAgentConfig['apiConnections'][number] | undefined;
     try {
-      connection = (await configStore.getAgent(agentId)).apiConnections.find(
+      connection = (await requireCurrentAgentEdit(c, agentId)).apiConnections.find(
         (candidate) => candidate.id === connectionId,
       );
     } catch (err) {
-      if (err instanceof UnknownAgentError) {
-        return c.json({ error: 'not_found' }, 404);
-      }
-      return internalError(c, err);
+      return agentEditFailureResponse(c, err);
     }
     if (!connection || connection.authMode === 'oauth') {
       return c.json({ error: 'not_found' }, 404);
@@ -6542,6 +7105,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!AGENT_ID_PATTERN.test(agentId) || !MCP_CONNECTION_ID_PATTERN.test(connectionId)) {
       return invalidRequest(c);
     }
+    try {
+      await requireCurrentAgentEdit(c, agentId);
+    } catch (error) {
+      return agentEditFailureResponse(c, error);
+    }
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
     await clearConnectorCredential(agentId, connectionId, platformEnv, settingsStore);
@@ -6566,6 +7134,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const parsed = v.safeParse(mcpSecretsDeleteSchema, body);
     if (!parsed.success) {
       return invalidRequest(c);
+    }
+    try {
+      await requireCurrentAgentEdit(c, agentId);
+    } catch (error) {
+      return agentEditFailureResponse(c, error);
     }
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
@@ -6785,7 +7358,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const principal = principalByContext.get(c);
       if (!principal) throw new AuthorizationError('principal_required');
-      const account = await (await resolvedConnectionAccounts(c)).disconnectForAgent({
+      const service = await resolvedConnectionAccounts(c);
+      const managedAccount = await service.getForManagement(
+        principal,
+        c.req.param('connectionAccountId'),
+      );
+      requirePermission(
+        principal,
+        managedAccount.ownerKind === 'team'
+          ? 'connection.create_team'
+          : 'connection.create_personal',
+      );
+      const account = await service.disconnectForAgent({
         principal,
         agentId: c.req.param('id'),
         connectionAccountId: c.req.param('connectionAccountId'),
@@ -6808,7 +7392,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const principal = principalByContext.get(c);
       if (!principal) throw new AuthorizationError('principal_required');
-      const account = await (await resolvedConnectionAccounts(c)).revoke({
+      const service = await resolvedConnectionAccounts(c);
+      const managedAccount = await service.getForManagement(
+        principal,
+        c.req.param('connectionAccountId'),
+      );
+      requirePermission(
+        principal,
+        managedAccount.ownerKind === 'team'
+          ? 'connection.create_team'
+          : 'connection.create_personal',
+      );
+      const account = await service.revoke({
         principal,
         connectionAccountId: c.req.param('connectionAccountId'),
       });
@@ -7093,16 +7688,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         settings(c),
       );
       return c.json({
-        agent: await agentAdminProjection(
-          enriched,
-          store(c),
-          snapshots(c),
-          undefined,
-          {
-            canEdit,
-            privateUseAudience: await privateAgentAudience(c, agent),
-          },
-        ),
+        agent: await agentAdminProjectionForRequest(c, enriched, {
+          privateUseAudience: await privateAgentAudience(c, agent),
+        }),
       });
     } catch (err) {
       if (err instanceof UnknownAgentError) {
@@ -7259,7 +7847,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
       }
       return c.json({
-        agent: await agentAdminProjection(updated, configStore, snapshots(c)),
+        agent: await agentAdminProjectionForRequest(c, updated),
         presenceRecovery,
         ...providerWarnings(next.model, providerIds()),
       });
@@ -7320,7 +7908,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           : {}),
       });
       return c.json({
-        agent: await agentAdminProjection(updated, store(c), snapshots(c)),
+        agent: await agentAdminProjectionForRequest(c, updated),
       });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
@@ -7359,7 +7947,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       });
       return c.json({
         grant: result.grant,
-        agent: await agentAdminProjection(result.agent, store(c), snapshots(c)),
+        agent: await agentAdminProjectionForRequest(c, result.agent),
       }, 201);
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
@@ -7422,7 +8010,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         updated = await reconciler.retry(agentId);
       }
       return c.json({
-        agent: await agentAdminProjection(updated, store(c), snapshots(c)),
+        agent: await agentAdminProjectionForRequest(c, updated),
       });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
@@ -7464,7 +8052,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             expectedRevision: current.revision,
             ...archiveOptions,
           });
-      return c.json({ agent: await agentAdminProjection(updated, store(c), snapshots(c)) });
+      return c.json({ agent: await agentAdminProjectionForRequest(c, updated) });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
@@ -7501,7 +8089,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             transport: await agentSlackTransport(c, workspaceId),
           }).restore(agentId)
         : await store(c).restoreAgent(agentId, current.revision);
-      return c.json({ agent: await agentAdminProjection(updated, store(c), snapshots(c)) });
+      return c.json({ agent: await agentAdminProjectionForRequest(c, updated) });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
@@ -8062,7 +8650,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         `${channel.workspaceId}\u0000${channel.channelId}`,
         {
           channel,
-          discovered: discoveredChannelsById.get(channel.channelId),
+          discovered: channel.workspaceId === teamInfo.teamId
+            ? discoveredChannelsById.get(channel.channelId)
+            : undefined,
         },
       ]),
     );
@@ -8092,7 +8682,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             ...(grant.channelLabel ? { label: grant.channelLabel } : {}),
             lifecycle: 'active',
           },
-          discovered: discoveredChannelsById.get(grant.channelId),
+          discovered: grant.workspaceId === teamInfo.teamId
+            ? discoveredChannelsById.get(grant.channelId)
+            : undefined,
         });
       }
     }
@@ -8136,7 +8728,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return {
           workspaceId: channel.workspaceId,
           channelId: channel.channelId,
-          channelName: channel.label ?? channel.channelId,
+          channelName: discovered?.name ?? channel.label ?? channel.channelId,
           source: discovered
             ? (channelGrants.length > 0
               ? 'granted_and_discovered'
@@ -8240,9 +8832,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         installation?.transportMode === 'gateway' &&
         Boolean(installation.gatewayBindingId) &&
         installation.health !== 'revoked';
-      const gateway = installation?.transportMode === 'gateway'
+      const gateway = gatewayConnected
         ? await readGatewaySessionStatus(c.env)
         : null;
+      let effectiveHealth = installation?.health ?? 'pending';
+      let effectiveHealthDetail = installation?.healthDetail ?? null;
+      if (gatewayConnected && gateway) {
+        // This GET is an observation, not a configuration mutation. Preserve
+        // persisted attention states, but never report a stale persisted
+        // healthy value when the inbound session is currently unavailable.
+        if (effectiveHealth === 'healthy' && !gateway.healthy) {
+          effectiveHealth = 'needs_attention';
+          effectiveHealthDetail = gateway.detail ?? 'gateway_session_offline';
+        }
+      }
       if (gatewayConnected && !teamInfo.teamName) {
         const descriptor = await slackWorkspaceDescriptor(c);
         if (descriptor && (!teamInfo.teamId || descriptor.teamId === teamInfo.teamId)) {
@@ -8259,8 +8862,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         teamId: installation?.workspaceId ?? connectedTeamId ?? null,
         teamName: teamInfo.teamName ?? null,
         transportMode: installation?.transportMode ?? 'direct',
-        health: installation?.health ?? 'pending',
-        healthDetail: installation?.healthDetail ?? null,
+        health: effectiveHealth,
+        healthDetail: effectiveHealthDetail,
         gateway: gateway === null ? null : {
           healthy: gateway.healthy,
           phase: gateway.phase,
@@ -8325,22 +8928,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         if (!inboundStatus.healthy) {
           const healthDetail = inboundStatus.detail ?? 'gateway_session_offline';
-          try {
-            const current = await store(c).getWorkspaceInstallation(installation.workspaceId);
-            if (
-              current &&
-              (current.health !== 'needs_attention' ||
-                current.healthDetail !== healthDetail)
-            ) {
-              await store(c).updateWorkspaceInstallation(installation.workspaceId, {
-                health: 'needs_attention',
-                healthDetail,
-              }, current.revision);
-            }
-          } catch {
-            // This response still reports current live health; reload reconciles
-            // a concurrent installation write.
-          }
+          // A reconnect can still be opening immediately after restart. Report
+          // live transport health, but do not persist it as an installation
+          // failure: that stale warning would survive recovery and downgrade
+          // selected-Agent presentation. GET already projects current outages.
           return c.json({
             error: 'slack_gateway_unreachable',
             detail: healthDetail,
@@ -8465,6 +9056,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const result = await createGatewayDeploymentClient(
         c.env as PlatformEnv | undefined,
+        { productTelemetry: productTelemetry(c) },
       ).refreshClaim();
       if (result.state !== 'bound') {
         return c.redirect('/admin/settings/slack?slack_reconnect=pending', 303);
@@ -8898,11 +9490,13 @@ interface VerifyMcpOAuthConnectionInput {
   oauthDependencies: McpOAuthDependencies;
   accountRevision?: number;
   oauthAttemptId?: string;
+  validateAuthorization?: () => Promise<void>;
 }
 
 async function verifyAndStoreMcpOAuthConnection(
   input: VerifyMcpOAuthConnectionInput,
 ): Promise<void> {
+  await input.validateAuthorization?.();
   const connectionAccountId = connectionAccountIdFromOAuthRef(input.ref);
   let connection: McpConnectionConfig | undefined;
   if (connectionAccountId) {
@@ -8970,6 +9564,7 @@ async function verifyAndStoreMcpOAuthConnection(
           mcpDebugText(error),
       );
     }
+    await input.validateAuthorization?.();
     await replaceVerifiedMcpConnection(input.configStore, input.ref, connection, {
       lifecycleStatus: 'ready',
       statusText:
@@ -8980,11 +9575,13 @@ async function verifyAndStoreMcpOAuthConnection(
       ...(identity ? { identity } : {}),
     }, input.accountRevision, input.oauthAttemptId);
   } catch (error) {
-    await replaceVerifiedMcpConnection(input.configStore, input.ref, connection, {
-      lifecycleStatus: 'failed',
-      statusText: safeMcpFailureText(error),
-      lastCheckedAt: Date.now(),
-    }, input.accountRevision, input.oauthAttemptId).catch(() => undefined);
+    if (!(error instanceof AuthorizationError)) {
+      await replaceVerifiedMcpConnection(input.configStore, input.ref, connection, {
+        lifecycleStatus: 'failed',
+        statusText: safeMcpFailureText(error),
+        lastCheckedAt: Date.now(),
+      }, input.accountRevision, input.oauthAttemptId).catch(() => undefined);
+    }
     throw error;
   }
 }
@@ -9080,32 +9677,6 @@ async function replaceVerifiedMcpConnection(
   const mcpServers = latest.mcpServers.slice();
   mcpServers[index] = { ...policy, ...result, discoveredTools, allowedTools };
   await configStore.updateAgent(ref.agentId, { mcpServers });
-}
-
-// The origin Slack must call back into, resolved fail-closed against header
-// spoofing (the events URL this origin builds becomes a stored Slack config):
-//   1. SLACK_TAG_PUBLIC_URL, when set, is the operator's explicit pin and wins
-//      outright — no request header can override it.
-//   2. On the Cloudflare target the edge terminates TLS and rewrites Host, so
-//      the request URL / Host ARE the public origin; x-forwarded-* here is
-//      caller-supplied and untrusted, so it is ignored entirely.
-//   3. On Node behind a reverse proxy, honor x-forwarded-proto/host but take
-//      the LAST comma-separated hop — the value the proxy nearest this app set
-//      — not the first, which a client can forge by pre-seeding the header.
-function requestOrigin(c: Context): string {
-  const pinned = process.env.SLACK_TAG_PUBLIC_URL?.trim();
-  if (pinned) {
-    return pinned.replace(/\/+$/, '');
-  }
-  const url = new URL(c.req.url);
-  if (isCloudflareTarget()) {
-    return `${url.protocol.replace(/:$/, '')}://${c.req.header('host') || url.host}`;
-  }
-  const forwardedProto = lastForwardedHop(c.req.header('x-forwarded-proto'));
-  const forwardedHost = lastForwardedHop(c.req.header('x-forwarded-host'));
-  const proto = forwardedProto || url.protocol.replace(/:$/, '');
-  const host = forwardedHost || c.req.header('host') || url.host;
-  return `${proto}://${host}`;
 }
 
 async function restartCloudflareGatewaySession(rawEnv: unknown): Promise<void> {
@@ -9230,6 +9801,16 @@ function boundedSetupField(value: string | undefined, maximum: number): string {
     throw new SlackAppCreationError('setup_invalid', 'Slack setup input is invalid.');
   }
   return normalized;
+}
+
+function parseSetupManifest(value: string | undefined): unknown {
+  const normalized = value?.trim() ?? '';
+  if (!normalized || normalized.length > 7_500) {
+    throw new SlackAppCreationError('setup_invalid', 'Slack setup input is invalid.');
+  }
+  // Exported manifests and our own form use multiline JSON. Let the JSON parser
+  // validate its whitespace; credentials still use the strict single-line guard.
+  return JSON.parse(normalized);
 }
 
 function slackInstallResultRedirect(result: SlackInstallOAuthResult): string {
@@ -9459,18 +10040,6 @@ async function persistRequestOrigin(c: Context, store: SettingsStore): Promise<v
   }
 }
 
-// The trusted hop of an X-Forwarded-* header is the LAST value: each proxy
-// appends, so the rightmost entry is the one set by the proxy closest to this
-// app. Taking the first would trust a value a client can pre-populate.
-function lastForwardedHop(header: string | undefined): string | undefined {
-  if (!header) return undefined;
-  const hops = header
-    .split(',')
-    .map((hop) => hop.trim())
-    .filter(Boolean);
-  return hops.length ? hops[hops.length - 1] : undefined;
-}
-
 /**
  * Slack's "create an app from a manifest" deep link. The committed manifest
  * carries the `https://<YOUR_PUBLIC_HOST>` placeholder in its URL fields;
@@ -9510,23 +10079,36 @@ function isAdminPageGet(c: Context): boolean {
 }
 
 function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permission {
-  if (isAdminPageGet(c)) return 'agent.create';
+  if (
+    c.req.method === 'GET' &&
+    ['/admin/slack-gateway/reconnect', '/admin/slack-gateway/refresh'].includes(c.req.path)
+  ) return 'account.view';
+  if (isAdminPageGet(c)) {
+    if (
+      c.req.path === '/admin' ||
+      c.req.path === '/admin/agents' ||
+      c.req.path.startsWith('/admin/agents/')
+    ) return 'agent.create';
+    if (c.req.path === '/admin/team') return 'team.view';
+    return 'admin.configure';
+  }
   if (c.req.path === '/admin/logout') return 'account.view';
   if (c.req.method === 'GET' && c.req.path === '/admin/api/settings/connectors/composio') {
     return 'agent.create';
   }
-  if (c.req.path === '/admin/team' ||
-      (c.req.method === 'GET' && c.req.path === '/admin/api/team')) return 'team.view';
+  if (c.req.method === 'GET' && c.req.path === '/admin/api/team') return 'team.view';
   if (c.req.path.startsWith('/admin/api/team/memberships')) return 'team.manage_members';
+  if (c.req.path === '/admin/api/connections/managed/recover') return 'auth.recover';
+  if (
+    c.req.method === 'POST' &&
+    /^\/admin\/api\/connections\/[^/]+\/revoke$/.test(c.req.path)
+  ) return 'connection.create_personal';
   if (c.req.path.startsWith('/admin/api/connections/')) return 'connection.create_team';
   if (
     c.req.path === '/admin/api/agents' ||
     c.req.path.startsWith('/admin/api/agents/') ||
     (c.req.method === 'GET' && [
       '/admin/api/models',
-      '/admin/api/channels',
-      '/admin/api/slack-connection',
-      '/admin/api/slack-channels',
     ].includes(c.req.path))
   ) return 'agent.create';
   return 'admin.configure';
@@ -9635,10 +10217,6 @@ function safeAdminReturnPath(candidate: string | null | undefined): string {
   } catch {
     return '/admin';
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function toAgentConfig(input: v.InferOutput<typeof agentSchema>): AgentCreateInput {
@@ -10280,27 +10858,6 @@ function agentStillReferenced(c: Context, error: AgentStillReferencedError): Res
 }
 
 /**
- * The origin an MCP connection's stored secrets were saved against. Returns
- * undefined when the agent or connection does not exist, so callers fail closed
- * and send no stored credential.
- */
-async function savedMcpConnectionOrigin(
-  configStore: Pick<ConfigStore, 'getAgent'>,
-  agentId: string,
-  connectionId: string,
-): Promise<string | undefined> {
-  try {
-    const connection = (await configStore.getAgent(agentId)).mcpServers.find(
-      (server) => server.id === connectionId,
-    );
-    return connection ? safeUrlOrigin(connection.url) : undefined;
-  } catch (error) {
-    if (error instanceof UnknownAgentError) return undefined;
-    throw error;
-  }
-}
-
-/**
  * Stored MCP secrets are keyed by connection id, not by URL, so repointing a
  * connection at a new origin would otherwise carry the old origin's credential
  * to the new one on the next turn. Drop the secrets whenever an existing
@@ -10311,6 +10868,10 @@ function agentDeleteIdempotencyKey(c: Context, agentId: string): string {
   return supplied && /^[A-Za-z0-9_.:-]{1,512}$/.test(supplied)
     ? supplied
     : `admin:agent-delete:${agentId}:${randomUUID()}`;
+}
+
+function agentChannelProjectionKey(workspaceId: string, channelId: string): string {
+  return `${workspaceId}\u0000${channelId}`;
 }
 
 async function agentAdminProjection(
@@ -10326,6 +10887,7 @@ async function agentAdminProjection(
   access: {
     canEdit: boolean;
     privateUseAudience?: PrivateAgentAudience;
+    visibleMemberChannels?: ReadonlyMap<string, SlackChannel>;
   } = { canEdit: true },
 ): Promise<object> {
   const projectionData = preloaded ?? await (async () => {
@@ -10343,6 +10905,26 @@ async function agentAdminProjection(
     };
   })();
   const { references, grants, installations, snapshotRoots } = projectionData;
+  const visibleMemberChannels = access.visibleMemberChannels;
+  const projectedGrants = visibleMemberChannels
+    ? grants.filter(({ workspaceId, channelId }) =>
+        visibleMemberChannels.has(agentChannelProjectionKey(workspaceId, channelId)))
+    : grants;
+  const projectedReferences = visibleMemberChannels
+    ? {
+        ...references,
+        channelGrants: references.channelGrants.filter(({ workspaceId, channelId }) =>
+          visibleMemberChannels.has(agentChannelProjectionKey(workspaceId, channelId))),
+      }
+    : references;
+  const projectedSnapshotRoots = visibleMemberChannels
+    ? snapshotRoots.filter((root) => {
+        const { workspaceId: rootWorkspaceId, channelId } = parseSlackThreadKey(root.threadKey);
+        return visibleMemberChannels.has(
+          agentChannelProjectionKey(rootWorkspaceId, channelId),
+        );
+      })
+    : snapshotRoots;
   const workspaceId = grants[0]?.workspaceId ?? installations[0]?.workspaceId;
   const installation = workspaceId
     ? installations.find((candidate) => candidate.workspaceId === workspaceId)
@@ -10407,22 +10989,27 @@ async function agentAdminProjection(
       ...(access.privateUseAudience
         ? { privateUseAudience: access.privateUseAudience }
         : {}),
-      channels: grants.map((grant) => ({
-        workspaceId: grant.workspaceId,
-        channelId: grant.channelId,
-        channelName: grant.channelLabel ?? grant.channelId,
-        status: grant.status,
-        channelIsPrivate: grant.channelIsPrivate ?? null,
-        href: `/admin/channels/${encodeURIComponent(grant.workspaceId)}/${encodeURIComponent(grant.channelId)}`,
-      })),
+      channels: projectedGrants.map((grant) => {
+        const liveChannel = visibleMemberChannels?.get(
+          agentChannelProjectionKey(grant.workspaceId, grant.channelId),
+        );
+        return {
+          workspaceId: grant.workspaceId,
+          channelId: grant.channelId,
+          channelName: liveChannel?.name ?? grant.channelLabel ?? grant.channelId,
+          status: grant.status,
+          channelIsPrivate: liveChannel?.private ?? grant.channelIsPrivate ?? null,
+          href: `/admin/channels/${encodeURIComponent(grant.workspaceId)}/${encodeURIComponent(grant.channelId)}`,
+        };
+      }),
     },
     memoryOwner: workspaceId
       ? { ownerKind: 'agent', workspaceId, ownerId: agent.id }
       : null,
     deletion: {
       blocked: agentReferenceCount(references) > 0 || snapshotRoots.length > 0,
-      references,
-      liveSnapshotRoots: projectLiveSnapshotRoots(snapshotRoots),
+      references: projectedReferences,
+      liveSnapshotRoots: projectLiveSnapshotRoots(projectedSnapshotRoots),
     },
   };
 }

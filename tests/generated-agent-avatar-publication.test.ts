@@ -30,7 +30,7 @@ test('generated Agent publication uploads the exact selected gallery PNG', async
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.contentType, 'image/png');
-  assert.deepEqual(calls[0]?.bytes, defaultAgentAvatarPng(seed));
+  assert.deepEqual(calls[0]?.bytes, await defaultAgentAvatarPng(seed));
 });
 
 test('generated Agent publication advances past an incompatible immutable revision', async () => {

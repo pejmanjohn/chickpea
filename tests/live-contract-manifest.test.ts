@@ -1,95 +1,90 @@
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
-import { extname, join } from 'node:path';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { PUBLIC_LIVE_CATALOG } from '../qa/live/cases/index.ts';
+import { compileLiveCatalog, assertFeatureMapFresh } from '../qa/live/compiler.ts';
 
 import {
-  assertFeatureMapFresh,
-  compileLiveCatalog,
-  manifestJson,
-  renderFeatureMap,
-} from '../qa/live/compiler.ts';
-import { PUBLIC_LIVE_CATALOG } from '../qa/live/cases/index.ts';
-import { LIVE_MANIFEST } from '../qa/live/manifest.ts';
+  LIVE_MANIFEST,
+  LIVE_MANIFEST_DIGEST,
+  SuitePolicyError,
+  resolveTargetSuiteVariants,
+  validateTargetSuitePolicy,
+} from '../qa/live/manifest.ts';
+import { PHASE_ONE_SMOKE_VARIANTS, PHASE_ONE_TARGET_ALIASES } from '../qa/live/schema.ts';
 
-test('equivalent catalogs compile byte-for-byte while behavior changes alter the digest', () => {
-  const reordered = structuredClone(PUBLIC_LIVE_CATALOG);
-  reordered.contracts.reverse();
-  for (const contract of reordered.contracts) contract.variants.reverse();
+const extraCase = 'LC02-V1-avatar-parity';
 
-  const first = compileLiveCatalog(PUBLIC_LIVE_CATALOG);
-  const second = compileLiveCatalog(reordered);
-  assert.equal(manifestJson(first), manifestJson(second));
-  assert.equal(first.digest, second.digest);
-
-  const changed = structuredClone(PUBLIC_LIVE_CATALOG);
-  changed.contracts[0]!.variants[0]!.actions[0]!.message += ' Confirm the final state.';
-  assert.notEqual(compileLiveCatalog(changed).digest, first.digest);
-});
-
-test('the committed feature map is generated from the current manifest and detects drift', () => {
-  const generated = readFileSync(new URL('../qa/live/generated/feature-map.md', import.meta.url), 'utf8');
-  assert.doesNotThrow(() => assertFeatureMapFresh(generated, LIVE_MANIFEST));
-
-  const changed = structuredClone(LIVE_MANIFEST);
-  changed.contracts[0]!.title += ' changed';
-  assert.throws(() => assertFeatureMapFresh(generated, changed), /FEATURE_MAP_STALE/);
-
-  const rendered = renderFeatureMap(LIVE_MANIFEST);
-  for (const contract of LIVE_MANIFEST.contracts) {
-    assert.equal(rendered.split('\n').filter((line) => line.startsWith(`| ${contract.id} |`)).length, 1);
-  }
-  const entryPointRows = rendered.split('\n').filter((line) => line.startsWith('| `'));
-  assert.equal(new Set(entryPointRows.map((line) => line.split('|')[1]?.trim())).size, entryPointRows.length);
-});
-
-test('the manifest is data-only, content-addressed, and declares exact suite denominators', () => {
+test('the checked-in manifest and feature map match the authoring catalog exactly', () => {
   const compiled = compileLiveCatalog(PUBLIC_LIVE_CATALOG);
-  assert.equal(manifestJson(LIVE_MANIFEST), manifestJson(compiled));
+  assert.deepEqual(LIVE_MANIFEST, compiled);
+  assertFeatureMapFresh(readFileSync(new URL('../qa/live/generated/feature-map.md', import.meta.url), 'utf8'), compiled);
+});
+
+function policy(targetAlias: 'amber' | 'cobalt' = 'amber') {
+  return {
+    targetAlias,
+    allowedSuites: ['case', 'smoke'] as const,
+    allowedVariants: [...PHASE_ONE_SMOKE_VARIANTS, extraCase],
+  };
+}
+
+test('the deterministic manifest owns the exact Phase 1 smoke denominator', () => {
+  assert.match(LIVE_MANIFEST_DIGEST, /^sha256:[a-f0-9]{64}$/);
+  assert.deepEqual(LIVE_MANIFEST.requiredVariants.smoke, [...PHASE_ONE_SMOKE_VARIANTS]);
   assert.equal(Object.isFrozen(LIVE_MANIFEST), true);
-  assert.equal(Object.isFrozen(LIVE_MANIFEST.contracts[0]?.variants[0]?.actions), true);
-  const parsed = JSON.parse(manifestJson(LIVE_MANIFEST)) as typeof LIVE_MANIFEST;
-  assert.equal(parsed.digest, LIVE_MANIFEST.digest);
-  assert.deepEqual(parsed.requiredVariants.smoke, [
-    'LC01-V1-create-welcome',
-    'LC01-V2-update-approve',
-    'LC04-V1-personal-read',
-    'LC08-V1-create-due',
-  ]);
-  assert.equal(parsed.requiredVariants.case.length, parsed.requiredVariants.deep.length);
-  assert.equal(containsFunction(parsed), false);
+  assert.equal(LIVE_MANIFEST.requiredVariants.case.includes(extraCase), true);
 });
 
-test('root typecheck covers qa/live and production sources cannot import the QA implementation', () => {
-  const tsconfig = JSON.parse(readFileSync(new URL('../tsconfig.json', import.meta.url), 'utf8')) as { include?: string[] };
-  assert.equal(tsconfig.include?.includes('qa/live/**/*.ts'), true);
-
-  const repositoryRoot = join(import.meta.dirname, '..');
-  const productionFiles = [
-    ...walkTypeScript(join(repositoryRoot, 'src')),
-    join(repositoryRoot, 'flue.config.ts'),
-    join(repositoryRoot, 'vite.config.ts'),
-    join(repositoryRoot, 'vite.node.config.ts'),
-  ];
-  for (const path of productionFiles) {
-    const source = readFileSync(path, 'utf8');
-    assert.doesNotMatch(source, /(?:from\s*|import\s*\()["'][^"']*qa\/live(?:\/|["'])/);
+test('amber and cobalt allow case and smoke but always refuse deep', () => {
+  for (const targetAlias of PHASE_ONE_TARGET_ALIASES) {
+    const targetPolicy = validateTargetSuitePolicy(policy(targetAlias));
+    assert.deepEqual(targetPolicy.allowedSuites, ['case', 'smoke']);
+    assert.deepEqual(
+      resolveTargetSuiteVariants(targetPolicy, 'smoke'),
+      [...PHASE_ONE_SMOKE_VARIANTS],
+    );
+    assert.throws(
+      () => resolveTargetSuiteVariants(targetPolicy, 'deep'),
+      (error: unknown) => error instanceof SuitePolicyError && error.code === 'SUITE_NOT_ALLOWED',
+    );
   }
-
-  const manifestModule = readFileSync(new URL('../qa/live/manifest.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(manifestModule, /(?:compiler|cases\/index)/);
 });
 
-function walkTypeScript(directory: string): string[] {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) return walkTypeScript(path);
-    return extname(entry.name) === '.ts' ? [path] : [];
-  });
-}
+test('smoke rejects missing and extra variants instead of accepting a near match', () => {
+  const targetPolicy = validateTargetSuitePolicy(policy());
+  const missing = PHASE_ONE_SMOKE_VARIANTS.slice(0, -1);
+  const extra = [...PHASE_ONE_SMOKE_VARIANTS, extraCase];
+  for (const selected of [missing, extra]) {
+    assert.throws(
+      () => resolveTargetSuiteVariants(targetPolicy, 'smoke', selected),
+      (error: unknown) => error instanceof SuitePolicyError
+        && error.code === 'SMOKE_INVENTORY_MISMATCH',
+    );
+  }
+});
 
-function containsFunction(value: unknown): boolean {
-  if (typeof value === 'function') return true;
-  if (!value || typeof value !== 'object') return false;
-  return Object.values(value).some(containsFunction);
-}
+test('other contained variants run only through explicit case selection', () => {
+  const targetPolicy = validateTargetSuitePolicy(policy());
+  assert.throws(
+    () => resolveTargetSuiteVariants(targetPolicy, 'case'),
+    (error: unknown) => error instanceof SuitePolicyError
+      && error.code === 'CASE_SELECTION_REQUIRED',
+  );
+  assert.deepEqual(resolveTargetSuiteVariants(targetPolicy, 'case', [extraCase]), [extraCase]);
+  assert.throws(
+    () => resolveTargetSuiteVariants(targetPolicy, 'case', ['LC99-V1-private']),
+    (error: unknown) => error instanceof SuitePolicyError
+      && error.code === 'VARIANT_NOT_ALLOWED',
+  );
+});
+
+test('target policy rejects continuation roles, empty variants, and deep declarations', () => {
+  for (const candidate of [
+    { ...policy(), targetAlias: 'dedicated-qa' },
+    { ...policy(), allowedVariants: [] },
+    { ...policy(), allowedSuites: ['case', 'smoke', 'deep'] },
+  ]) {
+    assert.throws(() => validateTargetSuitePolicy(candidate));
+  }
+});

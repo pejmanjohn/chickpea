@@ -29,9 +29,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { hasScheduledComposition } from './worker-artifact.mjs';
 
 import {
   classifyCloudflareDeploymentProfile,
+  formatCloudflareDeploymentTargetTuple,
+  readCloudflareDeploymentTargetTuple,
   resolveCloudflareDeploymentProfile,
 } from './cloudflare-deployment-profile.mjs';
 import {
@@ -149,6 +152,38 @@ try {
   process.exit(1);
 }
 
+// A selected Phase 1 lane is a permanent, claimed environment. Resolve that
+// authority before even building so an expired/rotated claim or stale HEAD
+// cannot cause a build hook (or anything after it) to run. The ordinary
+// production deploy deliberately does not load this module when no lane was
+// selected, preserving the established single-target deploy flow.
+const requestedDeploymentTarget = process.env.CHICKPEA_DEPLOY_TARGET?.trim();
+const selectedEnvironmentTarget = !deployArgs.includes('--dry-run')
+  && requestedDeploymentTarget
+  ? requestedDeploymentTarget
+  : undefined;
+let environmentPreflightApi;
+let initialEnvironmentPreflight;
+let resumedEnvironmentDeployment;
+let environmentMutationLease;
+if (selectedEnvironmentTarget) {
+  try {
+    environmentPreflightApi = await import('./lib/environment-preflight.mjs');
+    resumedEnvironmentDeployment = await environmentPreflightApi.resumeEnvironmentDeployment(
+      selectedEnvironmentTarget,
+      { projectRoot, providerContext: deploymentResourceArgs() },
+    );
+    initialEnvironmentPreflight = resumedEnvironmentDeployment?.preflight
+      ?? await environmentPreflightApi.preflightEnvironmentMutation(
+        selectedEnvironmentTarget,
+        { projectRoot, providerContext: deploymentResourceArgs() },
+      );
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
 function buildCloudflareArtifact() {
   process.stdout.write('Building the Cloudflare artifact from current source...\n');
   const npmExecPath = process.env.npm_execpath;
@@ -217,10 +252,11 @@ function requireBuiltArtifact() {
       .map((entry) => readFileSync(path.join(artifactRoot, entry), 'utf8'))
       .join('\n')
     : '';
-  return { configPath, config, bundle };
+  return { configPath, config, bundle, entry: existsSync(bundlePath) ? readFileSync(bundlePath, 'utf8') : '' };
 }
 
-function expectedWorkerName() {
+function expectedWorkerName(targetTuple) {
+  if (targetTuple) return targetTuple.workerName;
   const override = process.env.WRANGLER_CI_OVERRIDE_NAME?.trim();
   if (override) return override;
   try {
@@ -236,7 +272,8 @@ function expectedWorkerName() {
 function validateArtifactIdentity(artifact, { requireDatabaseId = false } = {}) {
   const { config, configPath } = artifact;
   const failures = [];
-  const expectedName = expectedWorkerName();
+  const targetTuple = readCloudflareDeploymentTargetTuple(config);
+  const expectedName = expectedWorkerName(targetTuple);
   if (typeof config.name !== 'string' || !config.name.trim()) {
     failures.push('a generated Worker name');
   } else if (expectedName && config.name !== expectedName) {
@@ -406,10 +443,7 @@ function validateRoutineArtifact(artifact) {
       failures.push(`${name}/${className} binding`);
     }
   }
-  if (
-    !bundle.includes('heartbeat: runRoutineHeartbeat') ||
-    !bundle.includes('maintenance: runWorkMaintenance')
-  ) {
+  if (!hasScheduledComposition(artifact.entry)) {
     failures.push('composed heartbeat and maintenance handlers');
   }
   if (
@@ -475,11 +509,30 @@ function validateDeploymentArtifact(artifact, options = {}) {
 }
 
 let builtArtifact;
+let deploymentTargetTuple;
 try {
   const artifact = requireBuiltArtifact();
   builtArtifact = validateDeploymentArtifact(artifact);
+  deploymentTargetTuple = readCloudflareDeploymentTargetTuple(builtArtifact.config);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
+if (deploymentTargetTuple) {
+  process.stdout.write(`${formatCloudflareDeploymentTargetTuple(deploymentTargetTuple)}\n`);
+}
+
+if (selectedEnvironmentTarget && deploymentTargetTuple?.target !== selectedEnvironmentTarget) {
+  console.error(
+    `Selected environment ${selectedEnvironmentTarget} does not match the generated target tuple.`,
+  );
+  process.exit(1);
+}
+if (selectedEnvironmentTarget && deploymentTargetTuple?.stateMode !== 'permanent') {
+  console.error(
+    `Claimed environment ${selectedEnvironmentTarget} requires its registered immutable AUTH_DB and schema generation; disposable target mutation is refused.`,
+  );
   process.exit(1);
 }
 
@@ -607,6 +660,7 @@ function deployedAuthDatabase(artifact) {
   const versions = activeDeployment(artifact);
 
   const databaseIds = [];
+  const setupAuthorities = [];
   let versionsWithoutAuthDatabase = 0;
   for (const version of versions) {
     const view = spawnSync(
@@ -645,9 +699,29 @@ function deployedAuthDatabase(artifact) {
     } catch {
       throw new Error(`Active Worker version ${version.version_id} returned unreadable binding details.`);
     }
-    const bindings = (details?.resources?.bindings ?? []).filter(
+    const allBindings = details?.resources?.bindings ?? [];
+    const bindings = allBindings.filter(
       (binding) => binding?.name === 'AUTH_DB' && binding?.type === 'd1',
     );
+    const setupDigestBindings = allBindings.filter((binding) =>
+      binding?.name === SETUP_CAPABILITY_DIGEST_BINDING
+      && typeof (binding.text ?? binding.value) === 'string'
+    );
+    const setupIssuedBindings = allBindings.filter((binding) =>
+      binding?.name === SETUP_CAPABILITY_ISSUED_AT_BINDING
+      && typeof (binding.text ?? binding.value) === 'string'
+    );
+    if (selectedEnvironmentTarget) {
+      if (setupDigestBindings.length !== 1 || setupIssuedBindings.length !== 1) {
+        throw new Error('Claimed environment active versions must expose one preserved setup authority.');
+      }
+      const digest = setupDigestBindings[0].text ?? setupDigestBindings[0].value;
+      const issuedAt = setupIssuedBindings[0].text ?? setupIssuedBindings[0].value;
+      if (!/^[A-Za-z0-9_-]{43}$/u.test(digest) || !/^\d{13}$/u.test(issuedAt)) {
+        throw new Error('Claimed environment setup authority is unreadable; refusing rotation.');
+      }
+      setupAuthorities.push(`${digest}:${issuedAt}`);
+    }
     if (bindings.length > 1) {
       throw new Error(`Active Worker version ${version.version_id} has duplicate AUTH_DB bindings.`);
     }
@@ -668,15 +742,26 @@ function deployedAuthDatabase(artifact) {
   if (uniqueIds.length > 1) {
     throw new Error('Active Worker versions use different AUTH_DB databases; refusing to update either one.');
   }
+  const uniqueSetupAuthorities = [...new Set(setupAuthorities)];
+  if (selectedEnvironmentTarget && uniqueSetupAuthorities.length !== 1) {
+    throw new Error('Active Worker versions disagree about setup authority; refusing rotation.');
+  }
+  const [setupDigest, setupIssuedAt] = uniqueSetupAuthorities[0]?.split(':') ?? [];
   return {
     databaseId: uniqueIds[0],
     fingerprint: deploymentFingerprint(versions),
+    ...(selectedEnvironmentTarget ? {
+      setupAuthority: { digest: setupDigest, issuedAt: Number(setupIssuedAt) },
+    } : {}),
   };
 }
 
-async function prepareDeploymentAuthority(artifact, secretNames) {
+async function prepareDeploymentAuthority(artifact, secretNames, preservedSetupAuthority) {
   const generatedSecrets = {};
   if (!secretNames.has(AUTH_SECRET)) {
+    if (selectedEnvironmentTarget) {
+      throw new Error('Claimed environment is missing its permanent auth authority; refusing rotation.');
+    }
     generatedSecrets[AUTH_SECRET] = (await mintSetupCapability()).capability;
   }
   const hasCredentialCurrent = secretNames.has(CREDENTIAL_CURRENT_KEY);
@@ -684,6 +769,11 @@ async function prepareDeploymentAuthority(artifact, secretNames) {
     name.startsWith(CREDENTIAL_KEY_PREFIX) && name !== CREDENTIAL_CURRENT_KEY
   );
   if (!hasCredentialCurrent && credentialSlots.length === 0) {
+    if (selectedEnvironmentTarget) {
+      throw new Error(
+        'Claimed environment credential encryption authority is missing; refusing to rotate encrypted connections.',
+      );
+    }
     generatedSecrets[CREDENTIAL_CURRENT_KEY] = INITIAL_CREDENTIAL_KEY_ID;
     generatedSecrets[INITIAL_CREDENTIAL_KEY_SLOT] = randomBytes(32).toString('base64url');
   } else if (!hasCredentialCurrent || credentialSlots.length === 0) {
@@ -693,7 +783,7 @@ async function prepareDeploymentAuthority(artifact, secretNames) {
       'CHICKPEA_CREDENTIAL_KEY_<ID> slot before deploying.',
     );
   }
-  const setup = await mintSetupCapability();
+  const setup = preservedSetupAuthority ?? await mintSetupCapability();
   artifact.config.vars = {
     ...(artifact.config.vars ?? {}),
     [SETUP_CAPABILITY_DIGEST_BINDING]: setup.digest,
@@ -732,23 +822,37 @@ function removeSecretsFile(prepared) {
 }
 
 function deploymentResourceArgs() {
-  const args = [];
+  const resolved = new Map();
   for (let index = 0; index < deployArgs.length; index += 1) {
     const argument = deployArgs[index];
     if (['--env', '-e', '--profile'].includes(argument)) {
-      args.push(argument, deployArgs[index + 1]);
+      const flag = argument === '-e' ? '--env' : argument;
+      const value = deployArgs[index + 1];
+      if (!value || value.startsWith('--') || resolved.has(flag)) {
+        throw new Error(`Claimed deployment has ambiguous ${flag} provider context.`);
+      }
+      resolved.set(flag, value);
       index += 1;
     } else if (argument.startsWith('--env=') || argument.startsWith('--profile=')) {
-      args.push(argument);
+      const separator = argument.indexOf('=');
+      const flag = argument.slice(0, separator);
+      const value = argument.slice(separator + 1);
+      if (!value || resolved.has(flag)) {
+        throw new Error(`Claimed deployment has ambiguous ${flag} provider context.`);
+      }
+      resolved.set(flag, value);
     }
   }
-  return args;
+  return ['--profile', '--env'].flatMap((flag) =>
+    resolved.has(flag) ? [flag, resolved.get(flag)] : []
+  );
 }
 
 function ensureAuthDatabase(artifact, deployedDatabaseId) {
   const authDb = (artifact.config.d1_databases ?? []).find(
     (binding) => binding.binding === 'AUTH_DB',
   );
+  const targetTuple = readCloudflareDeploymentTargetTuple(artifact.config);
   if (deployedDatabaseId) {
     const generatedId = typeof authDb?.database_id === 'string'
       ? authDb.database_id.trim()
@@ -767,12 +871,19 @@ function ensureAuthDatabase(artifact, deployedDatabaseId) {
   if (typeof authDb?.database_id === 'string' && authDb.database_id.trim()) return artifact;
   const existingId = existingAuthDatabaseId(authDb?.database_name || 'chickpea-auth-db');
   if (existingId) {
+    if (targetTuple?.stateMode === 'disposable') {
+      throw new Error(
+        `Cloudflare disposable target ${targetTuple.target} already has an existing AUTH_DB. ` +
+        'Remove that disposable state or register its immutable ID and schema generation before deploying.',
+      );
+    }
     process.stdout.write('Reusing the customer-owned AUTH_DB database...\n');
     authDb.database_id = existingId;
     writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
     return validateDeploymentArtifact(requireBuiltArtifact(), { requireDatabaseId: true });
   }
   const rootConfig = path.join(projectRoot, 'wrangler.jsonc');
+  const provisionConfig = targetTuple ? artifact.configPath : rootConfig;
   process.stdout.write('Provisioning the customer-owned AUTH_DB database...\n');
   const provision = spawnSync(
     process.execPath,
@@ -785,7 +896,7 @@ function ensureAuthDatabase(artifact, deployedDatabaseId) {
       'AUTH_DB',
       '--update-config',
       '--config',
-      rootConfig,
+      provisionConfig,
       ...deploymentResourceArgs(),
     ],
     { cwd: projectRoot, stdio: 'inherit' },
@@ -800,6 +911,9 @@ function ensureAuthDatabase(artifact, deployedDatabaseId) {
       'wrangler.jsonc and rerun npm run deploy.',
     );
     process.exit(provision.status ?? 1);
+  }
+  if (targetTuple) {
+    return validateDeploymentArtifact(requireBuiltArtifact(), { requireDatabaseId: true });
   }
   buildCloudflareArtifact();
   const rebuilt = requireBuiltArtifact();
@@ -948,9 +1062,22 @@ function verifyRemoteAuthSchema(artifact) {
 let deploymentAuthority;
 let remoteWorker;
 let expectedActiveDeploymentFingerprint;
+let finalEnvironmentPreflight;
 if (!deployArgs.includes('--dry-run')) {
   try {
     remoteWorker = inspectRemoteWorker(builtArtifact);
+    if (selectedEnvironmentTarget && !remoteWorker.exists) {
+      throw new Error(
+        `Claimed environment ${selectedEnvironmentTarget} has no existing Worker; refusing to provision permanent lane infrastructure.`,
+      );
+    }
+    if (deploymentTargetTuple?.stateMode === 'disposable' && remoteWorker.exists) {
+      throw new Error(
+        `Cloudflare disposable target ${deploymentTargetTuple.target} already has an existing Worker ` +
+        'and Durable Object state. Remove that disposable state or register its immutable AUTH_DB ID ' +
+        'and schema generation before deploying.',
+      );
+    }
     const deployed = remoteWorker.exists
       ? deployedAuthDatabase(builtArtifact)
       : undefined;
@@ -960,7 +1087,69 @@ if (!deployArgs.includes('--dry-run')) {
     // existing customer resource. It intentionally reruns after both D1 reuse
     // injection and D1 provisioning/rebuild.
     builtArtifact = validateDeploymentArtifact(builtArtifact, { requireDatabaseId: true });
-    deploymentAuthority = await prepareDeploymentAuthority(builtArtifact, remoteWorker.names);
+    deploymentAuthority = await prepareDeploymentAuthority(
+      builtArtifact,
+      remoteWorker.names,
+      deployed?.setupAuthority,
+    );
+    if (selectedEnvironmentTarget) {
+      const environmentOptions = {
+        projectRoot,
+        config: builtArtifact.config,
+        configPath: builtArtifact.configPath,
+        targetTuple: deploymentTargetTuple,
+        providerContext: deploymentResourceArgs(),
+      };
+      if (resumedEnvironmentDeployment) {
+        const finalResume = await environmentPreflightApi.recheckResumedEnvironmentDeployment(
+          resumedEnvironmentDeployment,
+          environmentOptions,
+        );
+        finalEnvironmentPreflight = finalResume.preflight;
+        environmentMutationLease = finalResume.mutationLease;
+      } else {
+        finalEnvironmentPreflight = await environmentPreflightApi.preflightEnvironmentMutation(
+          selectedEnvironmentTarget,
+          environmentOptions,
+        );
+      }
+      environmentPreflightApi.assertSameEnvironmentMutationAuthority(
+        initialEnvironmentPreflight,
+        finalEnvironmentPreflight,
+      );
+      builtArtifact.config.vars = {
+        ...(builtArtifact.config.vars ?? {}),
+        // The registry owns this non-secret, project-scoped baseline setting.
+        // Keep the reviewed standard grant across branch deployments. The
+        // smoke contract exercises reads; it does not narrow OAuth consent.
+        COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID:
+          finalEnvironmentPreflight.registration.providerAuthConfigId,
+        COMPOSIO_SHEETS_WRITE_AUTH_CONFIG_ID:
+          finalEnvironmentPreflight.registration.providerAuthConfigId,
+        ...environmentPreflightApi.environmentDeploymentMetadataBindings(
+          finalEnvironmentPreflight.deploymentMetadata,
+        ),
+      };
+      writeFileSync(
+        builtArtifact.configPath,
+        `${JSON.stringify(builtArtifact.config, null, 2)}\n`,
+      );
+      builtArtifact = validateDeploymentArtifact(requireBuiltArtifact(), {
+        requireDatabaseId: true,
+      });
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+if (selectedEnvironmentTarget) {
+  try {
+    environmentMutationLease ??= environmentPreflightApi.beginEnvironmentDeployment(
+      finalEnvironmentPreflight,
+      { projectRoot, providerContext: deploymentResourceArgs() },
+    );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
@@ -1023,6 +1212,26 @@ try {
 if (expectedActiveDeploymentFingerprint) {
   try {
     assertActiveDeploymentUnchanged(builtArtifact, expectedActiveDeploymentFingerprint);
+  } catch (error) {
+    removeSecretsFile(preparedSecrets);
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+if (selectedEnvironmentTarget) {
+  try {
+    environmentPreflightApi.recheckEnvironmentMutationAuthority(
+      finalEnvironmentPreflight,
+      {
+        projectRoot,
+        config: builtArtifact.config,
+        configPath: builtArtifact.configPath,
+        targetTuple: deploymentTargetTuple,
+        providerContext: deploymentResourceArgs(),
+        mutationLease: environmentMutationLease,
+      },
+    );
   } catch (error) {
     removeSecretsFile(preparedSecrets);
     console.error(error instanceof Error ? error.message : String(error));
@@ -1203,12 +1412,25 @@ child.on('close', async (code) => {
       deployedVersionId,
       deploymentAuthority.activation,
     );
+    if (selectedEnvironmentTarget) {
+      await environmentPreflightApi.completeEnvironmentDeployment(
+        finalEnvironmentPreflight,
+        {
+          deployedVersion: deployedVersionId,
+          projectRoot,
+          providerContext: deploymentResourceArgs(),
+          mutationLease: environmentMutationLease,
+        },
+      );
+    }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
     return;
   }
-  if (deployedUrl && deploymentAuthority) {
+  if (selectedEnvironmentTarget) {
+    process.stdout.write('\n✔ Claimed environment deployment reconciled.\n');
+  } else if (deployedUrl && deploymentAuthority) {
     printPrivateSetupLink(deployedUrl, deploymentAuthority.setup);
   } else if (deploymentAuthority) {
     printPrivateSetupPath(deploymentAuthority.setup);

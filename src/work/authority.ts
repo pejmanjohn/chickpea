@@ -1,3 +1,4 @@
+import { envValue } from '../config/env-value.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { EgressPolicy } from '../config/egress.ts';
 import type { RunCoordinatorKind, RunExecutionAuthority } from './types.ts';
@@ -41,7 +42,7 @@ export function selectSlackExecutionAuthority(
   if (input.legacyOnlyTurn) return legacy;
   if (!input.egressPolicy ||
       !ledgerCanarySupportsAssignment(input.assignment, input.egressPolicy)) return legacy;
-  const configured = environmentValue(input.env, LEDGER_CANARY_CHANNELS_KEY);
+  const configured = envValue(input.env, LEDGER_CANARY_CHANNELS_KEY);
   if (!configured) return legacy;
   const selected = configured
     .split(',')
@@ -80,14 +81,4 @@ function ledgerCanarySupportsAssignment(
   ) &&
     !agent.apiConnections.some((connection) => connection.enabled) &&
     !agent.repositories.some((repository) => repository.enabled);
-}
-
-function environmentValue(
-  env: Record<string, unknown> | undefined,
-  key: string,
-): string | undefined {
-  const bound = env?.[key];
-  if (typeof bound === 'string') return bound;
-  const local = typeof process === 'undefined' ? undefined : process.env[key];
-  return typeof local === 'string' ? local : undefined;
 }

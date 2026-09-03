@@ -1,6 +1,11 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
-
-import { digestSetupCapability } from '../auth/setup-capability.mjs';
+import { readBoundedText } from '../http/bounded-body.ts';
+import { constantTimeEquals } from '../security/constant-time.ts';
+import { sha256HexNode } from '../security/digest.ts';
+import {
+  digestSetupCapability,
+  SETUP_CAPABILITY_CLOCK_SKEW_MS,
+  SETUP_CAPABILITY_TTL_MS,
+} from '../auth/setup-capability.mjs';
 import { safeSetupDestination } from '../auth/setup-handoff.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
@@ -15,7 +20,7 @@ import {
   type SlackAppManifest,
 } from './app-manifest.ts';
 
-export const SLACK_SETUP_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
+export const SLACK_SETUP_TTL_MS = SETUP_CAPABILITY_TTL_MS;
 const SLACK_APP_CREATION_INTERRUPT_GRACE_MS = 60_000;
 const SLACK_MANIFEST_CREATE_URL = 'https://slack.com/api/apps.manifest.create';
 const MAX_SLACK_RESPONSE_BYTES = 64 * 1_024;
@@ -53,7 +58,7 @@ export async function openSlackSetupTransaction(
 ): Promise<SlackSetupTransaction> {
   const now = input.now?.() ?? Date.now();
   if (!Number.isSafeInteger(input.authority.issuedAt) ||
-      input.authority.issuedAt > now + 5 * 60_000 ||
+      input.authority.issuedAt > now + SETUP_CAPABILITY_CLOCK_SKEW_MS ||
       now >= input.authority.issuedAt + SLACK_SETUP_TTL_MS) {
     throw new SlackAppCreationError('setup_expired', 'This private setup link expired. Create a new deployment setup link.');
   }
@@ -61,12 +66,12 @@ export async function openSlackSetupTransaction(
   try { actualDigest = await digestSetupCapability(input.capability); } catch {
     throw new SlackAppCreationError('setup_invalid', 'This private setup link is invalid.');
   }
-  if (!safeEqual(actualDigest, input.authority.digest)) {
+  if (!constantTimeEquals(actualDigest, input.authority.digest)) {
     throw new SlackAppCreationError('setup_invalid', 'This private setup link is invalid.');
   }
   try {
     const transaction = await store.reserveSlackSetupTransaction({
-      locatorHash: sha256Hex(input.capability),
+      locatorHash: sha256HexNode(input.capability),
       issuedAt: input.authority.issuedAt,
       expiresAt: input.authority.issuedAt + SLACK_SETUP_TTL_MS,
       destination: safeSetupDestination(input.destination),
@@ -300,35 +305,13 @@ function createdSlackApp(payload: Record<string, unknown>): CreatedSlackApp {
 }
 
 async function boundedJson(response: Response): Promise<Record<string, unknown>> {
-  const declaredHeader = response.headers.get('content-length');
-  if (declaredHeader && (!/^\d+$/.test(declaredHeader) || Number(declaredHeader) > MAX_SLACK_RESPONSE_BYTES)) {
-    throw new Error('oversize');
-  }
-  if (!response.body) throw new Error('empty');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_SLACK_RESPONSE_BYTES) {
-        await reader.cancel('oversize');
-        throw new Error('oversize');
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return record(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)));
+  const text = await readBoundedText(response, {
+    maxBytes: MAX_SLACK_RESPONSE_BYTES,
+    onOversize: () => new Error('oversize'),
+    onMissingBody: () => new Error('empty'),
+    fatalDecoder: true,
+  });
+  return record(JSON.parse(text));
 }
 
 function configurationToken(value: string): string {
@@ -351,12 +334,6 @@ function safeSlackError(value: unknown): string {
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
-}
-function sha256Hex(value: string): string { return createHash('sha256').update(value).digest('hex'); }
-function safeEqual(left: string, right: string): boolean {
-  const leftBytes = Buffer.from(left);
-  const rightBytes = Buffer.from(right);
-  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 function ambiguousError(): SlackAppCreationError {
   return new SlackAppCreationError(

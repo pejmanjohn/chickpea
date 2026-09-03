@@ -24,6 +24,7 @@ import {
   SlackInstallOAuthService,
 } from '../src/slack/install-oauth.ts';
 import { REQUIRED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
+import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import { withEnv } from './helpers/env.ts';
 
 const NOW = 1_786_000_000_000;
@@ -74,7 +75,8 @@ test('bot OAuth start stores only hashed short state bound to the browser and ex
 });
 
 test('confidential callback validates the issued bot capabilities and waits for exact signed Events proof', async () => {
-  const fixture = await installFixture();
+  const productEvents: ProductTelemetryEventInput[] = [];
+  const fixture = await installFixture({ productEvents });
   try {
     const started = await fixture.start();
     const completed = await fixture.service.callback({
@@ -134,6 +136,11 @@ test('confidential callback validates the issued bot capabilities and waits for 
 
     const replay = await fixture.service.finalizeWaitingInstallation(fixture.setup.id);
     assert.equal(replay.status, 'bot_installed');
+    assert.deepEqual(productEvents, [{
+      event: 'workspace_connected',
+      workspaceId: 'TACME',
+      transportMode: 'direct',
+    }]);
   } finally {
     fixture.close();
   }
@@ -721,6 +728,7 @@ type FixtureOptions = {
   rawTokenResponse?: Uint8Array;
   tokenHttpStatus?: number;
   transportError?: boolean;
+  productEvents?: ProductTelemetryEventInput[];
 };
 
 async function installFixture(options: FixtureOptions = {}) {
@@ -770,6 +778,11 @@ async function installFixture(options: FixtureOptions = {}) {
     config,
     settings,
     now,
+    ...(options.productEvents
+      ? { productTelemetry: { capture: (event: ProductTelemetryEventInput) => {
+          options.productEvents!.push(event);
+        } } }
+      : {}),
     randomBytes: (length) => new Uint8Array(length).fill(++randomCounter),
     fetch: (async (input, init) => {
       exchangeCalls += 1;

@@ -16,6 +16,7 @@ import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 import { setProvider } from '@flue/runtime';
 
 import { decorateAttachmentProviderStreams } from '../slack/attachment-model-context.ts';
+import { decorateWorkersAiPayloadStreams } from './workers-ai-payload.ts';
 import {
   CURRENT_WORKERS_AI_MODEL_ID,
   withCurrentWorkersAiModels,
@@ -75,13 +76,20 @@ function mergeProviderModels(
   return [...models.values()];
 }
 
-export function setWorkersAiRestPiProvider(options: {
+interface WorkersAiRestOptions {
   apiKey?: string;
   accountId?: string;
   baseUrl: string;
   contextWindowFloor: number;
   maxTokens: number;
-}): void {
+}
+
+export function setWorkersAiRestPiProvider(options: WorkersAiRestOptions): void {
+  setProvider(createWorkersAiRestPiProvider(options));
+}
+
+/** Pure construction seam for REST payload and credential policy tests. */
+export function createWorkersAiRestPiProvider(options: WorkersAiRestOptions): Provider {
   const catalog = cloudflareWorkersAIProvider();
   const models = withCurrentWorkersAiModels(catalog.getModels()).map((model) => ({
     ...model,
@@ -94,27 +102,27 @@ export function setWorkersAiRestPiProvider(options: {
         }
       : {}),
   }));
-  setProvider(
-    createProvider({
-      id: 'cloudflare-workers-ai',
-      name: catalog.name,
-      auth: {
-        apiKey: {
-          name: 'Cloudflare Workers AI API token',
-          resolve: async () =>
-            options.apiKey && options.accountId
-              ? {
-                  auth: { apiKey: options.apiKey },
-                  env: { CLOUDFLARE_ACCOUNT_ID: options.accountId },
-                  source: 'Chickpea provider policy',
-                }
-              : undefined,
-        },
+  return createProvider({
+    id: 'cloudflare-workers-ai',
+    name: catalog.name,
+    auth: {
+      apiKey: {
+        name: 'Cloudflare Workers AI API token',
+        resolve: async () =>
+          options.apiKey && options.accountId
+            ? {
+                auth: { apiKey: options.apiKey },
+                env: { CLOUDFLARE_ACCOUNT_ID: options.accountId },
+                source: 'Chickpea provider policy',
+              }
+            : undefined,
       },
-      models,
-      api: decorateAttachmentProviderStreams(cloudflareStreams(openAICompletionsApi())),
-    }),
-  );
+    },
+    models,
+    api: decorateAttachmentProviderStreams(
+      cloudflareStreams(decorateWorkersAiPayloadStreams(openAICompletionsApi())),
+    ),
+  });
 }
 
 export function setLocalStubPiProvider(options: {

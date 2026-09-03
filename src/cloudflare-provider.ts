@@ -1,10 +1,12 @@
 import { setProvider } from '@flue/runtime';
+import { isRecord } from './security/content-validation.ts';
 import {
   cloudflareBindingProvider,
   type CloudflareAIBinding,
 } from '@flue/runtime/cloudflare/workers-ai';
 
 import { SEED_CLOUDFLARE_MODEL_ID } from './config/seed.ts';
+import { withWorkersAiPayloadPolicy } from './config/workers-ai-payload.ts';
 import {
   CURRENT_WORKERS_AI_MODEL_ID,
   withCurrentWorkersAiModels,
@@ -47,11 +49,12 @@ export function cloudflareBindingProviderOptions(
 function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAIBinding {
   return {
     run(modelId, inputs, options) {
+      const wireInputs = withWorkersAiPayloadPolicy(modelId, inputs);
       if (
         modelId !== SEED_CLOUDFLARE_MODEL_ID &&
         modelId !== CURRENT_WORKERS_AI_MODEL_ID
       ) {
-        return binding.run(modelId, inputs, options);
+        return binding.run(modelId, wireInputs, options);
       }
 
       // Workers AI enables GLM thinking by default. The Pi provider represents
@@ -68,7 +71,7 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
         chat_template_kwargs,
         max_completion_tokens: requestedMaxTokens,
         ...rest
-      } = inputs;
+      } = wireInputs;
       const existingTemplateOptions = isRecord(chat_template_kwargs)
         ? chat_template_kwargs
         : {};
@@ -98,8 +101,4 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
       );
     },
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

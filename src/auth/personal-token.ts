@@ -5,6 +5,7 @@ import type {
   IdentityStore,
   PersonalTokenRecord,
 } from '../identity/types.ts';
+import { sha256HexNode } from '../security/digest.ts';
 import { AuthDeniedError } from './service.ts';
 import type { AuthPrincipal } from './types.ts';
 
@@ -55,12 +56,12 @@ export class PersonalTokenService {
     const secret = Buffer.from(this.randomBytes(32)).toString('base64url');
     const prefix = secret.slice(0, 12);
     const token = `chp_pat_${prefix}_${secret}`;
-    return { token, record: { tokenHash: digest(token), prefix } };
+    return { token, record: { tokenHash: sha256HexNode(token), prefix } };
   }
 
   async authenticate(token: string, machine: boolean): Promise<AuthPrincipal> {
     const parsed = parseCredential(token, 'chp_pat');
-    const candidateHash = digest(token);
+    const candidateHash = sha256HexNode(token);
     const records = parsed ? await this.identity.findPersonalTokens(parsed.prefix) : [];
     let matched: PersonalTokenRecord | undefined;
     for (const record of records) {
@@ -105,10 +106,6 @@ export function parseCredential(
 ): { prefix: string } | undefined {
   const match = new RegExp(`^${kind}_([A-Za-z0-9_-]{12})_([A-Za-z0-9_-]{40,128})$`).exec(value);
   return match ? { prefix: match[1]! } : undefined;
-}
-
-export function digest(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
 }
 
 export function constantHashEquals(left: string, right: string): boolean {

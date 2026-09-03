@@ -4,6 +4,7 @@ import type {
   SettingsPatch,
 } from './settings-store.ts';
 import type {
+  AdoptionInventorySummary,
   ConfigAgentPatch,
   OAuthReauthorizationTarget,
 } from './store.ts';
@@ -377,6 +378,7 @@ export interface TagStateRpc {
   configListAgentScheduleReferences(
     agentId: string,
   ): Promise<StateRpcResult<AgentScheduleReference[]>>;
+  configSummarizeAdoptionInventory(): Promise<StateRpcResult<AdoptionInventorySummary>>;
   configGetAgentScheduleReference(
     scheduleId: string,
   ): Promise<StateRpcResult<AgentScheduleReference | null>>;

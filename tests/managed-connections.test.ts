@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { AuthPrincipal } from '../src/auth/types.ts';
+import { AuthorizationError } from '../src/auth/permissions.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
@@ -298,6 +299,144 @@ function principal(membershipId = 'membership_alice'): AuthPrincipal {
     machine: false,
   };
 }
+
+test('a demoted Team connection creator cannot manage the account through any Agent lane', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let discoverCalls = 0;
+  let validateCalls = 0;
+  let revokeCalls = 0;
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async discoverResources() {
+      discoverCalls += 1;
+      return { resources: [{ providerRef: 'properties/123', label: 'Primary property' }] };
+    },
+    async validate() { validateCalls += 1; },
+    async execute() { return { data: {} }; },
+    async revoke() { revokeCalls += 1; },
+  };
+  const service = new ConnectionAccountService({
+    config,
+    settings,
+    managedProviders: createManagedConnectionProviderRegistry([provider]),
+    randomId: () => 'demoted_team_account',
+  });
+  const creatorAdmin = { ...principal('membership_creator'), role: 'admin' as const };
+  const creatorMember = { ...creatorAdmin, role: 'member' as const };
+  try {
+    const managedAgent = await config.createAgent({
+      id: 'agent_demoted_team',
+      name: 'Demoted Team connection',
+      instructions: 'Read selected Analytics properties.',
+      enabled: true,
+      creatorMembershipId: creatorAdmin.membershipId,
+      editPolicy: 'creator_and_admins',
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_MANAGED',
+      transportMode: 'direct',
+      defaultAgentId: managedAgent.id,
+    });
+    const { account } = await service.createForAgent({
+      principal: creatorAdmin,
+      agentId: managedAgent.id,
+      workspaceId: 'T_MANAGED',
+      ownerKind: 'team',
+      providerId: 'google',
+      label: 'Team Analytics',
+      policy: {
+        kind: 'managed',
+        adapterId: 'composio',
+        toolkit: 'google_analytics',
+        principalRef: 'chickpea:organization:organization_test',
+        accountRef: 'ca_demoted_team',
+        allowedCapabilities: ['analytics.reports.run'],
+      },
+      allowedCapabilities: ['analytics.reports.run'],
+    });
+    const initialValidateCalls = validateCalls;
+    const forbidden = (error: unknown) => error instanceof AuthorizationError;
+
+    await assert.rejects(
+      service.getForManagement(creatorMember, account.id),
+      forbidden,
+    );
+    await assert.rejects(
+      service.listManagedResources({
+        principal: creatorMember,
+        agentId: managedAgent.id,
+        connectionAccountId: account.id,
+        resourceKey: 'propertyIds',
+      }),
+      forbidden,
+    );
+    await assert.rejects(
+      service.selectManagedResources({
+        principal: creatorMember,
+        agentId: managedAgent.id,
+        connectionAccountId: account.id,
+        expectedRevision: account.revision,
+        resourceConstraints: { propertyIds: ['unauthorized-handle'] },
+      }),
+      forbidden,
+    );
+    await assert.rejects(
+      service.replaceManagedAuthorization({
+        principal: creatorMember,
+        agentId: managedAgent.id,
+        connectionAccountId: account.id,
+        expectedRevision: account.revision,
+        adapterId: 'composio',
+        toolkit: 'google_analytics',
+        principalRef: 'chickpea:organization:organization_test',
+        allowedCapabilities: ['analytics.reports.run'],
+        accountRef: 'ca_unauthorized_replacement',
+      }),
+      forbidden,
+    );
+    await assert.rejects(
+      service.revoke({ principal: creatorMember, connectionAccountId: account.id }),
+      forbidden,
+    );
+    await assert.rejects(
+      service.prepareAgentDeletion({
+        principal: creatorMember,
+        agentId: managedAgent.id,
+        expectedRevision: managedAgent.revision,
+      }),
+      forbidden,
+    );
+
+    assert.equal(discoverCalls, 0);
+    assert.equal(validateCalls, initialValidateCalls);
+    assert.equal(revokeCalls, 0);
+    const unchanged = (await config.listConnectionAccounts('T_MANAGED'))
+      .find(({ id }) => id === account.id);
+    assert.equal(unchanged?.revision, account.revision);
+    assert.equal(unchanged?.lifecycle, account.lifecycle);
+    assert.equal(
+      (await config.getAgentConnectionBindingForAccount(account.id))?.agentId,
+      managedAgent.id,
+    );
+
+    const adminResources = await service.listManagedResources({
+      principal: creatorAdmin,
+      agentId: managedAgent.id,
+      connectionAccountId: account.id,
+      resourceKey: 'propertyIds',
+    });
+    assert.equal(adminResources.resources.length, 1);
+    assert.equal(discoverCalls, 1);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
 
 function activeIdentity() {
   const user = {

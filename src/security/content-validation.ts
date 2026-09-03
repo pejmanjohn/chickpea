@@ -14,6 +14,7 @@ const CREDENTIAL_SIGNATURES: readonly {
   markers: readonly string[];
 }[] = [
   { source: String.raw`\bxox[a-z]-[a-z0-9-]{20,}\b`, flags: 'i', markers: ['xox'] },
+  { source: String.raw`\bxapp-[a-z0-9-]{20,}\b`, flags: 'i', markers: ['xapp-'] },
   { source: String.raw`\bsk-ant-[a-z0-9_-]{20,}\b`, flags: 'i', markers: ['sk-ant-'] },
   {
     source: String.raw`\bsk-proj-[a-z0-9_-]{20,}(?![a-z0-9_-])`,
@@ -21,15 +22,25 @@ const CREDENTIAL_SIGNATURES: readonly {
     markers: ['sk-proj-'],
   },
   {
-    source: String.raw`\b(?:ghp|github_pat)_[a-z0-9_]{20,}\b`,
+    source: String.raw`\b(?:gh[pousr]|github_pat)_[a-z0-9_]{20,}\b`,
     flags: 'i',
-    markers: ['ghp_', 'github_pat_'],
+    markers: ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_'],
   },
   { source: String.raw`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`, flags: '', markers: ['AKIA', 'ASIA'] },
   {
-    source: String.raw`-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----`,
+    // Consume complete armor, including traditional encrypted-PEM metadata
+    // and blank lines. The hard character ceiling bounds malformed input.
+    source: String.raw`-----BEGIN ((?:[A-Z0-9][A-Z0-9 -]{0,62} )?PRIVATE KEY)-----[\s\S]{0,262144}?-----END \1-----`,
     flags: 'i',
     markers: ['-----BEGIN '],
+  },
+  {
+    // A truncated PEM has no trustworthy content boundary. Fail closed by
+    // removing the bounded remainder instead of exposing key material after
+    // merely replacing the BEGIN line.
+    source: String.raw`-----BEGIN (?:[A-Z0-9][A-Z0-9 -]{0,62} )?PRIVATE KEY-----[\s\S]{0,262144}$`,
+    flags: 'i',
+    markers: [],
   },
   {
     source: String.raw`\b(?:CHICKPEA_(?:AUTH_SECRET|RECOVERY_TOKEN|CREDENTIAL_KEY_[A-Z0-9_]+)|TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|COMPOSIO_(?:API_KEY|WEBHOOK_SECRET)|GITHUB_TOKEN)\s*=\s*[^\s]{8,}`,
@@ -84,4 +95,18 @@ export function redactCredentialLikeContent(text: string): string {
 /** Literal prefixes of the signatures above, for streaming tail suppression. */
 export function credentialMarkers(): readonly string[] {
   return CREDENTIAL_MARKERS;
+}
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** An empty string is never a usable credential, id, or label. */
+export function nonEmpty(value: string | undefined): string | undefined {
+  return value ? value : undefined;
+}
+
+/** As `nonEmpty`, for values whose surrounding whitespace is not significant. */
+export function trimmedNonEmpty(value: string | undefined): string | undefined {
+  return value?.trim() || undefined;
 }

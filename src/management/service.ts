@@ -62,8 +62,10 @@ import type { WorkStore } from '../work/types.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
+import { stripLeadingUserMentions } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
   AGENT_AUTHORING_GUIDE_DIGEST,
   AGENT_AUTHORING_GUIDE_URI,
@@ -183,6 +185,7 @@ export interface WorkspaceManagementServiceInput {
     | 'deleteAgentChannelGrant'
     | 'getAgentReferences'
     | 'getAgentScheduleReference'
+    | 'listAgentScheduleReferences'
     | 'putAgentScheduleReference'
     | 'listConnectionAccounts'
     | 'listAgentConnectionBindings'
@@ -269,6 +272,7 @@ export interface WorkspaceManagementServiceInput {
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
+  productTelemetry?: ProductTelemetryCapture;
 }
 
 interface ImmediateMutation {
@@ -301,6 +305,24 @@ export class WorkspaceManagementService {
     this.now = stores.now ?? Date.now;
     this.randomId = stores.randomId ?? randomUUID;
     this.randomCapability = stores.randomCapability ?? (() => randomBytes(32).toString('base64url'));
+  }
+
+  private async captureAgentCreated(actor: LiveManagementActor, agentId: string): Promise<void> {
+    if (!this.stores.productTelemetry) return;
+    try {
+      const workspaceId = actor.origin.kind === 'slack'
+        ? actor.origin.workspaceId
+        : (await this.stores.identity.getUser(actor.userId))?.slackTeamId;
+      if (!workspaceId) return;
+      this.stores.productTelemetry.capture({
+        event: 'agent_created',
+        workspaceId,
+        agentId,
+        surface: actor.origin.kind,
+      });
+    } catch {
+      // Advisory telemetry never changes a committed management mutation.
+    }
   }
 
   async inspectWorkspace(
@@ -886,8 +908,8 @@ export class WorkspaceManagementService {
     if (actor.origin.kind === 'slack' && 'managedToolkit' in connector) {
       const scopes = MANAGED_CONNECTOR_CATALOG.capabilities(
         connector.managedToolkit,
-        // Freeze the complete connector ceiling. The claimed browser flow
-        // selects a read-only subset or this full read/write set.
+        // Freeze the complete connector ceiling. The browser uses the full set
+        // when configured, otherwise only the available read tools.
         'write',
       ).map(({ id }) => id);
       if (scopes.length === 0) {
@@ -3549,6 +3571,15 @@ export class WorkspaceManagementService {
         schedulingAvailable: () => this.isRoutineSchedulingAvailable(),
         now: this.now,
       });
+      if (operation.kind === 'save_routine' && result.effect === 'saved' && result.created) {
+        this.stores.productTelemetry?.capture({
+          event: 'schedule_created',
+          workspaceId: result.routine.workspaceId,
+          agentId: operation.agentId,
+          cadenceKind: result.routine.triggerKind === 'schedule' ? 'recurring' : 'one_time',
+          destinationKind: result.routine.destination.kind,
+        });
+      }
       return routineMutation(result.routine);
     } catch (error) {
       if (error instanceof ManagementError) throw error;
@@ -3874,6 +3905,7 @@ export class WorkspaceManagementService {
         const intended = prepared.intendedAfter as CustomAgentConfig;
         const { revision: _revision, ...createInput } = intended;
         const created = await this.stores.config.createAgent(createInput);
+        await this.captureAgentCreated(actor, created.id);
         const published = await this.publishCreatedAgent(actor, created, {
           inferredHandle: operation.agent.requestedHandle === undefined,
           requestId: mutationId,
@@ -5736,8 +5768,7 @@ function explicitSkillReplacementRequest(
 }
 
 function normalizedRequesterText(value: string): string {
-  return value
-    .replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '')
+  return stripLeadingUserMentions(value)
     .replace(/<((?:https?:\/\/)[^>|]+)(?:\|[^>]*)?>/gi, '$1')
     .replace(/&amp;/gi, '&')
     .trim()

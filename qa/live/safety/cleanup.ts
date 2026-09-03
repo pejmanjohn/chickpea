@@ -12,6 +12,7 @@ import {
   PRODUCT_RESOURCE_KINDS,
   appendRunJournal,
   readRunJournal,
+  validateRunJournalEventData,
   type CleanupOperation,
   type CleanupReceiptOutcome,
   type ProductResourceKind,
@@ -194,6 +195,28 @@ export function recordMutationReceipt(
   input: MutationReceiptInput,
   identity: JournalIdentity,
 ): MutationReceipt {
+  const event = validateMutationReceipt(path, input, identity, 'completed');
+  const duplicate = eventValues(read(path, identity), 'mutation_receipt')
+    .find((candidate) => candidate.receiptId === input.receiptId);
+  if (duplicate === undefined) appendRunJournal(path, event, identity);
+  return event;
+}
+
+/** Validates the full resource and baseline binding before consuming/completing its challenge. */
+export function validatePendingMutationReceipt(
+  path: string,
+  input: MutationReceiptInput,
+  identity: JournalIdentity,
+): void {
+  validateMutationReceipt(path, input, identity, 'issued');
+}
+
+function validateMutationReceipt(
+  path: string,
+  input: MutationReceiptInput,
+  identity: JournalIdentity,
+  phase: 'issued' | 'completed',
+): MutationReceipt {
   requireExactId(input.receiptId);
   requireExactId(input.immutableId);
   validateMutationContract(input);
@@ -201,6 +224,7 @@ export function recordMutationReceipt(
   const duplicate = eventValues(journal, 'mutation_receipt')
     .find((candidate) => candidate.receiptId === input.receiptId);
   const event: MutationReceipt = optionalEvent({ type: 'mutation_receipt', ...input });
+  validateRunJournalEventData(event);
   if (duplicate !== undefined) {
     if (!same(duplicate, event)) fail('DUPLICATE_RECEIPT');
     return duplicate;
@@ -232,8 +256,7 @@ export function recordMutationReceipt(
     mutation: input.mutation,
     targetAlias: input.targetAlias,
     resourceBindingDigest: exactResourceBindingDigest(input),
-  }, 'completed');
-  appendRunJournal(path, event, identity);
+  }, phase);
   return event;
 }
 
@@ -679,8 +702,8 @@ function cleanupTarget(
   if (mutation.fixtureClass === 'attributed_residue' && mutation.expectedResidueStateDigest !== undefined) {
     return {
       ...common,
-      operation: 'verify_retained',
-      mutation: 'none',
+      operation: mutation.reversalActionId ?? 'verify_retained',
+      mutation: mutation.reversalActionId === 'agent.archive' ? 'archive' : 'none',
       expectedResidueStateDigest: mutation.expectedResidueStateDigest,
     };
   }
@@ -701,7 +724,9 @@ function validateMutationContract(input: MutationReceiptInput): void {
     return;
   }
   if (input.fixtureClass === 'attributed_residue') {
-    if (input.cleanupStrategy !== 'attributed_residue' || input.reversalActionId !== undefined
+    if (input.cleanupStrategy !== 'attributed_residue'
+      || (input.reversalActionId !== undefined
+        && (input.resourceKind !== 'agent' || input.reversalActionId !== 'agent.archive'))
       || input.expectedResidueStateDigest === undefined) fail('INVALID_CLEANUP_CONTRACT');
     return;
   }

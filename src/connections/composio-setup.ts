@@ -1,7 +1,9 @@
 import {
+  inspectComposioAuthConfigOverrides,
   recordComposioPreparationResult,
   resolveComposioConfiguration,
   type ComposioAuthConfigIds,
+  type ComposioAuthConfigOverrides,
   type ComposioConfigurationOptions,
 } from '../config/composio-settings.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
@@ -103,18 +105,22 @@ export async function prepareResolvedComposioManagedAuthConfigs(
   signal.throwIfAborted();
   const resolved = await resolveComposioConfiguration({
     ...options,
-    verifyLegacyAuthConfigIds: true,
+    // Read durable IDs first; explicit Admin preparation inspects overrides
+    // freshly below instead of accepting the legacy runtime cache.
+    verifyLegacyAuthConfigIds: false,
   });
   if (!resolved.apiKey || resolved.desiredState !== 'enabled' ||
       resolved.reconciliationPending) {
     throw new ComposioProjectKeyValidationError();
   }
+  const verifiedOverrides = await inspectComposioAuthConfigOverrides(resolved.apiKey, options);
   return prepareWithLease({
     apiKey: resolved.apiKey,
     generation: resolved.generation,
     settings,
     existingAuthConfigIds: resolved.authConfigIds,
     preserveExisting: resolved.source === 'env',
+    verifiedOverrides,
     source: resolved.source,
     configurationOptions: options,
     ...(options.createClient ? { createClient: options.createClient } : {}),
@@ -133,6 +139,7 @@ async function prepareWithLease(input: {
   settings: SettingsStore;
   existingAuthConfigIds: ComposioAuthConfigIds;
   preserveExisting: boolean;
+  verifiedOverrides: ComposioAuthConfigOverrides;
   source: 'env' | 'stored' | 'missing';
   configurationOptions: ComposioConfigurationOptions;
   createClient?: (input: { apiKey: string }) => Promise<ComposioClientLike>;
@@ -159,6 +166,7 @@ async function prepareWithLease(input: {
       client,
       existingAuthConfigIds: input.existingAuthConfigIds,
       preserveExisting: input.preserveExisting,
+      verifiedOverrides: input.verifiedOverrides,
       beforeCreate: async () => {
         lease = await renewSetupLease({
           settings: input.settings,
@@ -195,6 +203,7 @@ async function prepareAllToolkits(input: {
   client: ComposioClientLike;
   existingAuthConfigIds: ComposioAuthConfigIds;
   preserveExisting: boolean;
+  verifiedOverrides: ComposioAuthConfigOverrides;
   beforeCreate: () => Promise<void>;
   signal?: AbortSignal;
 }): Promise<ComposioPreparationResult> {
@@ -209,16 +218,33 @@ async function prepareAllToolkits(input: {
     const lanes = requiredLanes(connector.toolkit);
     // Always seed from the last verified durable IDs so a transient failure for
     // one toolkit cannot erase that toolkit while the other toolkits refresh.
+    const overrides = input.verifiedOverrides[connector.toolkit] ?? {};
     const preserved = normalizeExistingLanes(input.existingAuthConfigIds[connector.toolkit], lanes);
+    const unavailableLanes = lanes.filter((lane) =>
+      overrides[lane] && overrides[lane]!.outcome !== 'valid'
+    );
+    for (const lane of lanes) {
+      const override = overrides[lane];
+      if (!override) continue;
+      if (override.outcome === 'valid') preserved[lane] = override.id;
+      else if (override.outcome === 'incompatible' || preserved[lane] !== override.id) {
+        delete preserved[lane];
+      }
+    }
+    const overrideIssue = unavailableLanes.length > 0
+      ? `auth_config_override_unavailable.${connector.toolkit}` : undefined;
+    if (overrideIssue) issueCodes.push(overrideIssue);
     prepared[connector.toolkit] = preserved;
-    const missingLanes = input.preserveExisting
-      ? lanes.filter((lane) => !preserved[lane])
-      : lanes;
+    const missingLanes = lanes.filter((lane) =>
+      overrides[lane] === undefined && (!input.preserveExisting || !preserved[lane])
+    );
     if (missingLanes.length === 0) {
       connectors.push({
         toolkit: connector.toolkit,
-        status: 'ready',
-        authConfigId: (preserved.write ?? preserved.read)!,
+        status: overrideIssue ? 'failed' : 'ready',
+        ...(overrideIssue ? { issueCode: overrideIssue } : {
+          authConfigId: (preserved.write ?? preserved.read)!,
+        }),
       });
       continue;
     }
@@ -274,8 +300,9 @@ async function prepareAllToolkits(input: {
       for (const lane of missingLanes) prepared[connector.toolkit]![lane] = selectedId;
       connectors.push({
         toolkit: connector.toolkit,
-        status: 'ready',
+        status: overrideIssue ? 'failed' : 'ready',
         authConfigId: selectedId,
+        ...(overrideIssue ? { issueCode: overrideIssue } : {}),
       });
     } catch (error) {
       if (error instanceof ComposioSetupInProgressError) throw error;

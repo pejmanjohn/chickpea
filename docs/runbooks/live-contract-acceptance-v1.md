@@ -2,7 +2,16 @@
 
 This record separates deterministic verifier checks from live Chickpea acceptance. A green local suite does not prove Slack, Admin, provider, gateway, or cleanup behavior on a serving target.
 
-## Current result
+## Integration status
+
+The two-lane environment integration now emits selected-target v2 private
+config, fixture-complete overlays, and the verifier doctor schema. Active lanes
+are Amber and Cobalt, each in its own paid Slack workspace. Fern is parked.
+Google Sheets uses its normal managed grant; the acceptance exercise reads only
+the declared fixture. The attended coordinator and formal four-case acceptance
+remain outstanding. This is not a live acceptance pass.
+
+## Historical V0 result
 
 | Field | Result |
 | --- | --- |
@@ -20,9 +29,9 @@ This record separates deterministic verifier checks from live Chickpea acceptanc
 
 This is not a v1 live acceptance pass.
 
-The September 2 scope amendment starts with Amber and Cobalt only. The environment task is updating shared target and provider-auth schemas; integrate its final handoff before scoring. The original foundation snapshot below does not establish the current readiness of either lane. Skill discovery is now observed in the active Codex skill catalog; that is not live product proof.
+The September 2 scope amendment starts with Amber and Cobalt only. The historical foundation snapshot does not establish the current readiness of either lane. Skill discovery is now observed in the active Codex skill catalog; that is not live product proof.
 
-## Why live execution is blocked
+## Historical V0 blockers
 
 The candidate environment does not yet provide `env target <alias>` and `env attest <alias>` outputs in the verifier schemas. The verifier-owned attended coordinator is not implemented to acquire the target lock and UI mutex, issue one-use challenges, persist receipts, drive real Slack/Admin journeys through Computer Use, execute exact product-state cleanup, and provide postflight proof.
 

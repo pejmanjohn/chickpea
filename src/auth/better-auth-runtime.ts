@@ -1,11 +1,11 @@
 import { Hono, type Context } from 'hono';
-import { bodyLimit } from 'hono/body-limit';
 
 import {
   getIdentityStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { IdentityStore } from '../identity/types.ts';
+import { actualBodyLimit } from '../security/request-body-limit.ts';
 import { createBetterAuthPublicHandler } from './better-auth-routes.ts';
 import { AuthRateLimitError, AuthRateLimiter } from './rate-limit.ts';
 import { requestAuthSourceKey } from './source-key.ts';
@@ -26,15 +26,15 @@ interface BetterAuthRuntimeOptions {
  * `/admin/reset`, `/admin/migrate` — see src/admin/routes.ts:1324-1343). This
  * one did not, so an anonymous client could stream an unbounded body into
  * sign-in. A sign-in payload is an email plus a password; 32 KiB is generous.
- * hono's bodyLimit reads chunk-by-chunk and bails on the running total, so a
- * chunked request with no content-length cannot walk past it.
+ * The actual-byte middleware reads chunk-by-chunk and rejects on the running
+ * total even when Content-Length is absent or false.
  */
 const AUTH_ROUTE_BODY_LIMIT_BYTES = 32 * 1024;
 
 export function createBetterAuthRuntimeRoutes(options: BetterAuthRuntimeOptions = {}): Hono {
   const app = new Hono();
 
-  app.use('/api/auth/*', bodyLimit({
+  app.use('/api/auth/*', actualBodyLimit({
     maxSize: AUTH_ROUTE_BODY_LIMIT_BYTES,
     onError: (c) => c.json({ error: 'request_too_large' }, 413),
   }));

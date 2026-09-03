@@ -1,6 +1,8 @@
 import type { ConfigStore } from '../../config/store.ts';
 import type { SettingsStore } from '../../config/settings-store.ts';
 import type { IdentityStore } from '../../identity/types.ts';
+import type { ProductTelemetryCapture } from '../../telemetry/client.ts';
+import { readBoundedBytes } from '../../http/bounded-body.ts';
 import { primeStoredSlackPublicUrl, SLACK_SETTING_KEYS } from '../credentials.ts';
 import type { CredentialKeyring } from '../secret-envelope.ts';
 import { SlackTransportError } from '../transport/types.ts';
@@ -41,6 +43,7 @@ import {
   gatewaySessionRotationAt,
   type GatewaySessionCheckpoint,
 } from './session.ts';
+import { parseGatewayInstallationAuthority, type GatewayInstallationAuthority } from './installation-authority.ts';
 
 export const GATEWAY_CLAIM_SETTING = 'slack.gateway.claim.v1';
 export const GATEWAY_BINDING_SETTING = 'slack.gateway.binding.v1';
@@ -69,6 +72,7 @@ export interface GatewayClientDependencies {
   gatewayBaseUrl: string;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
+  productTelemetry?: ProductTelemetryCapture;
 }
 
 export interface GatewayOperationClient {
@@ -242,6 +246,24 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       await this.dependencies.settings.deleteSetting(GATEWAY_CLAIM_SETTING);
     }
     return response;
+  }
+
+  async installationAuthority(): Promise<GatewayInstallationAuthority> {
+    const binding = await this.loadBinding();
+    if (!binding) throw new SlackTransportError('installation.status', 'gateway_not_connected');
+    const identity = await this.identity();
+    const request = await signGatewayRequest(identity, {
+      protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+      kind: 'installation.status', deploymentId: identity.deploymentId,
+      requestId: requestId(), issuedAt: this.now(), nonce: requestId('nonce'),
+      bindingId: binding.bindingId, workspaceId: binding.workspaceId,
+    });
+    const response = await this.requestJson('/v1/installations/status', {
+      method: 'POST', body: JSON.stringify(request),
+    });
+    return parseGatewayInstallationAuthority(response, {
+      binding, deploymentId: identity.deploymentId, requestId: request.requestId, now: this.now(),
+    });
   }
 
   async call(
@@ -537,6 +559,13 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       delete: [GATEWAY_CLAIM_SETTING],
     });
     this.binding = binding;
+    if (current?.health !== 'healthy') {
+      this.dependencies.productTelemetry?.capture({
+        event: 'workspace_connected',
+        workspaceId: binding.workspaceId,
+        transportMode: 'gateway',
+      });
+    }
   }
 
   private async signedJson(
@@ -1067,39 +1096,16 @@ async function boundedResponseBytes(
   operation: string,
   expectedBytes?: number,
 ): Promise<Uint8Array> {
-  const reader = response.body?.getReader();
-  if (!reader) return new Uint8Array();
-  const preallocated = expectedBytes === undefined
-    ? undefined
-    : new Uint8Array(expectedBytes);
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maximumBytes) {
-      await reader.cancel();
-      throw new SlackTransportError(operation, 'gateway_response_too_large');
-    }
-    if (preallocated) {
-      if (total > preallocated.byteLength) {
-        await reader.cancel();
-        throw new SlackTransportError(operation, 'attachment_content_length_mismatch');
-      }
-      preallocated.set(value, total - value.byteLength);
-    } else {
-      chunks.push(value);
-    }
-  }
-  if (preallocated) return preallocated.subarray(0, total);
-  const joined = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    joined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return joined;
+  // `content-length` is hop-sensitive here (see the attachment reader above), so
+  // the declared length is deliberately not consulted.
+  return readBoundedBytes(response, {
+    maxBytes: maximumBytes,
+    onOversize: () => new SlackTransportError(operation, 'gateway_response_too_large'),
+    onExpectedBytesExceeded: () =>
+      new SlackTransportError(operation, 'attachment_content_length_mismatch'),
+    checkContentLength: false,
+    expectedBytes,
+  });
 }
 
 function requestId(prefix = 'request'): string {

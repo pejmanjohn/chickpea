@@ -24,7 +24,7 @@ export const CONNECTOR_SETUP_CONTRACT = defineLiveCase({
   variants: [
     connectorVariant({
       id: 'LC04-V1-personal-read',
-      title: 'Authorize a Personal read-only connection',
+      title: 'Authorize a Personal connection and read the fixture',
       actorSlot: 'member',
       ownership: 'Personal',
       expectedToken: 'connection.owner_personal',
@@ -33,7 +33,7 @@ export const CONNECTOR_SETUP_CONTRACT = defineLiveCase({
     }),
     connectorVariant({
       id: 'LC04-V2-team-read',
-      title: 'Authorize a Team read-only connection',
+      title: 'Authorize a Team connection and read the fixture',
       actorSlot: 'admin',
       ownership: 'Team',
       expectedToken: 'connection.owner_team',
@@ -95,7 +95,7 @@ function connectorVariant(input: {
     ],
     actions: [{
       id: 'connection.authorize' as const,
-      message: `Authorize the run-marked ${input.ownership} read-only connection {{runMarker}} for this Agent.`,
+      message: `Authorize the run-marked ${input.ownership} connection {{runMarker}} for this Agent using the standard managed provider grant, then read only the declared synthetic fixture.`,
       mutation: 'authorize' as const,
       humanGate: 'oauth_consent' as const,
       fixtureSlots: [input.actorSlot, 'provider', 'agent'],

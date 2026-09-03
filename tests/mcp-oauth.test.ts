@@ -308,6 +308,123 @@ test('DCR is registered once, pending state is single-use, and callback stores t
   }
 });
 
+test('MCP callback rejects stale initiating authority before provider exchange', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  let authorityActive = true;
+  const authority = {
+    organizationId: 'org_test',
+    workspaceId: 'T_TEST',
+    membershipId: 'membership_editor',
+    agentId: REF.agentId,
+    ownerKind: 'legacy_agent',
+  } as const;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    randomId: () => 'nonce',
+    validateConnection: () => true,
+    validateAuthorization: () => authorityActive,
+  };
+  try {
+    const started = await startMcpOAuthAuthorization(
+      {
+        ref: REF,
+        serverUrl: SERVER_URL,
+        callbackUrl: CALLBACK_URL,
+        authorizationAuthority: authority,
+      } as Parameters<typeof startMcpOAuthAuthorization>[0],
+      dependencies,
+    );
+    assert.deepEqual(
+      (JSON.parse((await settings.getSetting(mcpOAuthSettingKeys(REF)[1]))!) as {
+        authorizationAuthority?: unknown;
+      }).authorizationAuthority,
+      authority,
+    );
+    authorityActive = false;
+
+    await assert.rejects(
+      completeMcpOAuthAuthorization(
+        { code: 'provider-code', state: started.state },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'authorization_expired',
+    );
+    assert.equal(oauth.counts.exchanges, 0);
+    assert.equal(await settings.getSetting(mcpOAuthSettingKeys(REF)[2]), undefined);
+  } finally {
+    settings.close();
+  }
+});
+
+test('MCP callback fails closed for pending state minted before authority binding', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  try {
+    const started = await startMcpOAuthAuthorization({
+      ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL,
+    }, {
+      settings, fetchFn: oauth.fetchFn, randomId: () => 'legacy-nonce',
+      validateConnection: () => true,
+    });
+
+    await assert.rejects(
+      completeMcpOAuthAuthorization(
+        { code: 'provider-code', state: started.state },
+        {
+          settings, fetchFn: oauth.fetchFn, validateConnection: () => true,
+          validateAuthorization: () => true,
+        },
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'authorization_expired',
+    );
+    assert.equal(oauth.counts.exchanges, 0);
+  } finally {
+    settings.close();
+  }
+});
+
+test('MCP callback rechecks authority after exchange before storing minted tokens', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  let authorityActive = true;
+  const authority = {
+    organizationId: 'org_test', workspaceId: 'T_TEST', membershipId: 'membership_editor',
+    agentId: REF.agentId, ownerKind: 'legacy_agent',
+  } as const;
+  const fetchFn: typeof fetch = async (input, init) => {
+    const url = input instanceof Request ? input.url : input.toString();
+    const response = await oauth.fetchFn(input, init);
+    if (url === 'https://auth.example.test/token') authorityActive = false;
+    return response;
+  };
+  const dependencies = {
+    settings, fetchFn, randomId: () => 'nonce', validateConnection: () => true,
+    validateAuthorization: () => authorityActive,
+  };
+  try {
+    const started = await startMcpOAuthAuthorization({
+      ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL,
+      authorizationAuthority: authority,
+    }, dependencies);
+
+    await assert.rejects(
+      completeMcpOAuthAuthorization(
+        { code: 'provider-code', state: started.state }, dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'authorization_expired',
+    );
+    assert.equal(oauth.counts.exchanges, 1);
+    assert.equal(await settings.getSetting(mcpOAuthSettingKeys(REF)[2]), undefined);
+  } finally {
+    settings.close();
+  }
+});
+
 test('Sentry organization/project OAuth keeps the exact scoped resource URL', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const serverUrl = 'https://mcp.sentry.dev/mcp/acme/web-app';

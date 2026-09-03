@@ -12,7 +12,7 @@ import { appendRunJournal, createRunJournal, readRunJournal } from '../qa/live/s
 const overlay = JSON.parse(readFileSync(new URL('../qa/live/target.example.json', import.meta.url), 'utf8')) as unknown;
 const validatedOverlay = validateTargetOverlay(LIVE_MANIFEST, overlay);
 const identity = {
-  targetFingerprint: 'sha256:target',
+  targetFingerprint: `sha256:${'a'.repeat(64)}`,
   repositoryRevision: '0123456789abcdef',
   servingVersion: 'version-1',
 };
@@ -23,7 +23,7 @@ const doctorSnapshot = {
   transport: validatedOverlay.transport,
   targetOverlayDigest: digestTargetOverlay(validatedOverlay),
   ...identity,
-  computerUseSurfaces: { bridgeAvailable: true, slackVisible: true, adminVisible: true },
+  computerUseSurfaces: { bridgeAvailable: true, windowCaptureAvailable: true, slackVisible: true, adminVisible: true },
   missingActorAliases: [],
   workspaceMatches: true,
   unavailableObserverIds: [],

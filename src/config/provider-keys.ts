@@ -9,6 +9,7 @@ import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, getUsageStore, type PlatformEnv } from './state-backend.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { bindModelCompatibilityProvider } from '../model-compat/provider.ts';
+import { nonEmpty } from '../security/content-validation.ts';
 
 export const PROVIDER_KEY_SETTING_KEYS = {
   anthropic: 'provider.anthropic.apiKey',
@@ -235,9 +236,6 @@ function providerRegistrationOptions(
   return options;
 }
 
-function nonEmpty(value: string | undefined): string | undefined {
-  return value ? value : undefined;
-}
 
 function keyFingerprint(apiKey: string): string {
   return createHash('sha256').update(apiKey).digest('hex').slice(0, 16);

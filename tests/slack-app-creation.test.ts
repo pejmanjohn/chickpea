@@ -18,7 +18,7 @@ const NOW = 1_786_000_000_000;
 const ORIGIN = 'https://chickpea.example';
 const CONFIG_TOKEN = 'xoxe.xoxp-configuration-token-secret';
 
-test('a valid seven-day capability opens one durable resumable setup transaction', async () => {
+test('a valid 24-hour capability opens one durable resumable setup transaction', async () => {
   const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
   try {
     const minted = await mintSetupCapability({ now: () => NOW });
@@ -301,7 +301,11 @@ test('manual adoption validates exact configuration and converges at app_created
       expectedRevision: setup.revision,
       appId: 'A12345678', clientId: '123.456',
       clientSecret: 'client-secret-value', signingSecret: 'signing-secret-value',
-      expectedManifest: manifest, observedManifest: manifest,
+      expectedManifest: manifest,
+      observedManifest: structuredClone({
+        ...manifest,
+        oauth_config: { ...manifest.oauth_config, pkce_enabled: false },
+      }),
     });
     assert.equal(adopted.state, 'app_created');
     assert.doesNotMatch(JSON.stringify(adopted), /client-secret|signing-secret/);

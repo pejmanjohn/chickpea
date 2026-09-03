@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import type { WebClient } from '@slack/web-api';
+
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { createWorkAdminApi } from '../src/admin/work-api.ts';
 import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
+import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
 import type {
   BindingId,
   RunId,
@@ -94,6 +97,56 @@ test('public Sessions detail returns retained bodies and safe lifecycle evidence
     assert.equal(body.usage.state, 'not_reported');
     assert.equal(body.actionIntegrity.state, 'complete');
     assert.equal(JSON.stringify(await work.getRun(seeded.runId)), before);
+  } finally {
+    work.close();
+  }
+});
+
+test('Slack delivery persists only credential-safe approved output in public Sessions', async () => {
+  const work = new SqliteWorkStore(':memory:', { now: () => NOW + 100 });
+  try {
+    const seeded = await seedRun(work, 'redacted_delivery', NOW, 'public');
+    let tick = 0;
+    const lifecycle = lifecycleFor(work, seeded.runId, () => NOW + 10 + (++tick));
+    await lifecycle.prepareExecution('prepared safe input');
+    await lifecycle.markInvoked();
+    await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    const presenter = new WebClientPresenter(
+      {
+        chat: {
+          async startStream() {
+            return { ok: true, ts: '1900000000.000100' };
+          },
+          async stopStream() { return { ok: true }; },
+        },
+      } as unknown as WebClient,
+      {
+        channelId: 'C_PUBLIC', threadTs: '1900000000.000001',
+        userId: 'U_REQUESTER', workspaceId: 'T_SESSIONS',
+        agentName: 'Sessions Agent', agentId: 'profile_sessions',
+      },
+      {
+        beforeDelivery: (input) => lifecycle.beforeDelivery(input),
+        afterDelivery: (input) => lifecycle.afterDelivery(input),
+      },
+      { deliverySafety: 'ledger' },
+    );
+    const canary = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789';
+
+    await presenter.deliverFinal(`Credential: ${canary}`, 'markdown');
+
+    const api = createWorkAdminApi({ store: () => work, now: () => NOW + 100 });
+    const response = await api.request(
+      `/sessions/${seeded.runId}?workId=${seeded.workId}&bindingId=${seeded.bindingId}`,
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as Record<string, any>;
+    const persisted = JSON.stringify({
+      approvedOutput: body.content.approvedOutput,
+      renderedPayload: body.content.renderedPayload,
+    });
+    assert.doesNotMatch(persisted, new RegExp(canary));
+    assert.match(persisted, /\[credential redacted\]/);
   } finally {
     work.close();
   }

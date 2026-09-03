@@ -19,6 +19,7 @@ tmp/
 docs/
 !docs/
 docs/*
+!docs/shared-gateway-data-handling.md
 !docs/design/
 docs/design/*
 !docs/design/agent-first-admin-prototype/
@@ -28,8 +29,19 @@ docs/runbooks/*
 !docs/runbooks/coding-sandbox-deployment.md
 !docs/runbooks/agent-first-acceptance-2026-08-21.md
 !docs/runbooks/composio-managed-connectors.md
+!docs/runbooks/product-telemetry.md
 !docs/runbooks/semantic-activity-status.md
+!docs/runbooks/parallel-live-test-environments.md
+!docs/plans/
+docs/plans/*
+!docs/plans/evidence/
+docs/plans/evidence/*
+!docs/runbooks/operations.md
+!docs/runbooks/releasing.md
 !docs/runbooks/live-contract-verification.md
 !docs/runbooks/live-contract-acceptance-v1.md
 design-qa.md
 !docs/design/agent-first-admin-prototype/design-qa.md
+
+# A worktree claim is machine-local authority, never repository state.
+.chickpea-environment

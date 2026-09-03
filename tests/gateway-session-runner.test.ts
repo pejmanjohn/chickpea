@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import vm from 'node:vm';
+import ts from 'typescript';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -20,6 +23,50 @@ import {
 } from '../src/slack/gateway/session-runner.ts';
 
 const NOW = Date.UTC(2026, 7, 20, 12);
+
+test('concurrent Durable Object wakes share one supervisor and leave no orphan session on restart', async () => {
+  // Execute the real DO class with a delayed cross-object settings read. The
+  // runner supervisor is real; socket transport itself is covered below.
+  const source = ts.createSourceFile('cloudflare-session.ts',
+    readFileSync(new URL('../src/slack/gateway/cloudflare-session.ts', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node) =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackGatewaySession');
+  assert.ok(declaration);
+  const compiled = ts.transpileModule(
+    declaration.getText(source).replace(/^export /u, '') + '\nSlackGatewaySession',
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const pending: Array<(value: string | null) => void> = [];
+  const runners: FakeRunnerControl[] = [];
+  const Probe = vm.runInNewContext(compiled, {
+    DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    getSettingsStore: () => ({ getSetting: () => new Promise<string | null>((resolve) => pending.push(resolve)) }),
+    GATEWAY_BINDING_SETTING: 'binding',
+    GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
+    createGatewayDeploymentClient: () => ({ loadSessionCheckpoint: async () => undefined }),
+    cloudflareWorkerVersionId: () => 'test-version',
+    reconcileGatewaySessionStatus,
+    GatewaySessionRunnerSupervisor,
+    GatewaySessionRunner: class extends FakeRunnerControl {
+      constructor() { super('healthy'); runners.push(this); }
+    },
+  }) as new (context: object, env: object) => {
+    wake(): Promise<void>; restart(): Promise<void>; status(): Promise<{ healthy: boolean }>;
+  };
+  const object = new Probe({ waitUntil() {} }, {});
+  const calls = [object.wake(), object.wake(), object.status()];
+  assert.equal(pending.length, 3, 'external settings RPC allows startup calls to interleave');
+  pending.splice(0).forEach((resolve) => resolve('configured'));
+  await Promise.all(calls);
+  assert.equal(runners.length, 1, 'all callers must own the same session supervisor');
+  assert.equal(runners[0]!.starts, 1);
+  assert.equal((await object.status()).healthy, true);
+  await object.restart();
+  assert.equal(runners.length, 2);
+  assert.equal(runners[0]!.stops, 1, 'restart retires the only prior session');
+  assert.equal(runners[1]!.starts, 1);
+});
 
 test('session runner reconnects and rotates a renewable logical session', async () => {
   const settings = new SqliteSettingsStore(':memory:', () => NOW);
@@ -85,6 +132,367 @@ test('session runner reconnects and rotates a renewable logical session', async 
       const value = await settings.getSetting(GATEWAY_SESSION_SETTING);
       return value ? JSON.parse(value).attempt === 2 : false;
     });
+    runner.stop();
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('session rotation keeps the predecessor live until its successor is ready', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  const sockets: FakeSocket[] = [];
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const runner = new GatewaySessionRunner({
+      client,
+      onEvent: async () => 'accepted',
+      createSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      now: () => NOW,
+      setTimer: ((callback: () => void, delay: number) => {
+        timers.push({ callback, delay });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      }),
+      clearTimer: () => {},
+    });
+    assert.equal(await runner.start(), true);
+    sockets[0]!.open();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    ready(sockets[0]!, 'session_predecessor');
+    await waitFor(() => runner.healthSnapshot().healthy);
+
+    timers.find(({ delay }) => delay === 12 * 60_000)!.callback();
+    await waitFor(() => sockets.length === 2);
+    assert.equal(sockets[0]!.readyState, 1);
+    sockets[1]!.open();
+    await waitFor(() => sockets[1]!.sent.length === 1);
+
+    // The gateway closes the predecessor as soon as it authenticates the
+    // successor. That close must not start a competing third connection.
+    sockets[0]!.disconnect();
+    await spin();
+    assert.equal(sockets.length, 2);
+    ready(sockets[1]!, 'session_successor');
+    await waitFor(() => runner.healthSnapshot().healthy && sockets[1]!.readyState === 1);
+    assert.equal(sockets.length, 2);
+    runner.stop();
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('a stalled rotation becomes replaceable and late completion cannot reopen the old generation', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  let clock = NOW;
+  const client = new GatewayDeploymentClient({
+    settings, config, keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test', fetch: gateway.fetch, now: () => clock,
+  });
+  const sockets: FakeSocket[] = [];
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  const runners: GatewaySessionRunner[] = [];
+  let finishOpening!: () => void;
+  const stalled = new Promise<void>((resolve) => { finishOpening = resolve; });
+  const supervisor = new GatewaySessionRunnerSupervisor(() => {
+    const runner = new GatewaySessionRunner({
+      client, onEvent: async () => 'accepted', now: () => clock,
+      createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
+      setTimer: ((callback: () => void, delay: number) => {
+        timers.push({ callback, delay });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      }),
+      clearTimer: () => {},
+    });
+    runners.push(runner);
+    return runner;
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    await supervisor.ensureHealthy();
+    sockets[0]!.open();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    ready(sockets[0]!, 'session_predecessor');
+    await waitFor(() => runners[0]!.healthSnapshot().healthy);
+    const loadBinding = client.loadBinding.bind(client);
+    let opening = false;
+    client.loadBinding = async () => {
+      if (!opening) { opening = true; await stalled; }
+      return loadBinding();
+    };
+    timers.find(({ delay }) => delay === 12 * 60_000)!.callback();
+    await waitFor(() => opening);
+    sockets[0]!.disconnect();
+    clock += 89_999;
+    assert.equal(runners[0]!.healthSnapshot().shouldReplace, false);
+    clock += 1;
+    assert.equal(runners[0]!.healthSnapshot().shouldReplace, true);
+    assert.equal(runners[0]!.healthSnapshot().reason, 'candidate_open_timeout');
+    await Promise.all([supervisor.ensureHealthy(), supervisor.ensureHealthy()]);
+    assert.equal(runners.length, 2);
+    assert.equal(sockets.length, 2);
+    finishOpening();
+    await spin();
+    assert.equal(sockets.length, 2);
+    sockets[1]!.open();
+    await waitFor(() => sockets[1]!.sent.length === 1);
+    ready(sockets[1]!, 'session_recovered');
+    await waitFor(() => supervisor.snapshot()?.healthy === true);
+  } finally {
+    runners.forEach((runner) => runner.stop());
+    finishOpening();
+    await spin();
+    settings.close();
+    config.close();
+  }
+});
+
+test('failed rotation leaves a healthy predecessor active and retries the handoff', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  const sockets: FakeSocket[] = [];
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const runner = new GatewaySessionRunner({
+      client,
+      onEvent: async () => 'accepted',
+      createSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      now: () => NOW,
+      setTimer: ((callback: () => void, delay: number) => {
+        timers.push({ callback, delay });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      }),
+      clearTimer: () => {},
+    });
+    assert.equal(await runner.start(), true);
+    sockets[0]!.open();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    ready(sockets[0]!, 'session_predecessor');
+    await waitFor(() => runner.healthSnapshot().healthy);
+
+    timers.find(({ delay }) => delay === 12 * 60_000)!.callback();
+    await waitFor(() => sockets.length === 2);
+    sockets[1]!.fail();
+    await spin();
+    assert.equal(sockets[0]!.readyState, 1);
+    assert.equal(runner.healthSnapshot().healthy, true);
+    const renewalRetry = timers.findLast(({ delay }) => delay === 5_000);
+    assert.ok(renewalRetry);
+    renewalRetry.callback();
+    await waitFor(() => sockets.length === 3);
+    assert.equal(sockets[0]!.readyState, 1);
+    runner.stop();
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('checkpoint failure during promotion closes both handoff sockets before reconnecting', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  const sockets: FakeSocket[] = [];
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const runner = new GatewaySessionRunner({
+      client,
+      onEvent: async () => 'accepted',
+      createSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      now: () => NOW,
+      setTimer: ((callback: () => void, delay: number) => {
+        timers.push({ callback, delay });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      }),
+      clearTimer: () => {},
+    });
+    assert.equal(await runner.start(), true);
+    sockets[0]!.open();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    ready(sockets[0]!, 'session_predecessor');
+    await waitFor(() => runner.healthSnapshot().healthy);
+
+    let failNextCheckpoint = true;
+    const recordCheckpoint = client.recordSessionCheckpoint.bind(client);
+    client.recordSessionCheckpoint = async (checkpoint) => {
+      if (failNextCheckpoint) {
+        failNextCheckpoint = false;
+        throw new Error('simulated checkpoint failure');
+      }
+      await recordCheckpoint(checkpoint);
+    };
+
+    timers.find(({ delay }) => delay === 12 * 60_000)!.callback();
+    await waitFor(() => sockets.length === 2);
+    sockets[1]!.open();
+    await waitFor(() => sockets[1]!.sent.length === 1);
+    ready(sockets[1]!, 'session_successor');
+
+    await waitFor(() => sockets[0]!.readyState === 3 && sockets[1]!.readyState === 3);
+    assert.equal(runner.healthSnapshot().phase, 'retrying');
+    assert.equal(sockets.length, 2);
+    runner.stop();
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('predecessor loss during a failed-rotation retry resumes ordinary reconnect', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  const sockets: FakeSocket[] = [];
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const runner = new GatewaySessionRunner({
+      client,
+      onEvent: async () => 'accepted',
+      createSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      now: () => NOW,
+      setTimer: ((callback: () => void, delay: number) => {
+        timers.push({ callback, delay });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      }),
+      clearTimer: () => {},
+    });
+    assert.equal(await runner.start(), true);
+    sockets[0]!.open();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    ready(sockets[0]!, 'session_predecessor');
+    await waitFor(() => runner.healthSnapshot().healthy);
+
+    timers.find(({ delay }) => delay === 12 * 60_000)!.callback();
+    await waitFor(() => sockets.length === 2);
+    sockets[1]!.fail();
+    await waitFor(() => timers.at(-1)?.delay === 5_000);
+    await spin();
+
+    sockets[0]!.disconnect();
+    await waitFor(() => runner.healthSnapshot().phase === 'retrying');
+    const reconnect = timers.at(-1);
+    assert.ok(reconnect);
+    assert.notEqual(reconnect.delay, 5_000);
+    reconnect.callback();
+    await waitFor(() => sockets.length === 3);
+    assert.equal(sockets.length, 3);
+    runner.stop();
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('failed successor after predecessor loss resumes one ordinary reconnect', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings,
+    config,
+    keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch,
+    now: () => NOW,
+  });
+  const sockets: FakeSocket[] = [];
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const runner = new GatewaySessionRunner({
+      client,
+      onEvent: async () => 'accepted',
+      createSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      now: () => NOW,
+      setTimer: ((callback: () => void, delay: number) => {
+        timers.push({ callback, delay });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      }),
+      clearTimer: () => {},
+    });
+    assert.equal(await runner.start(), true);
+    sockets[0]!.open();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    ready(sockets[0]!, 'session_predecessor');
+    await waitFor(() => runner.healthSnapshot().healthy);
+
+    timers.find(({ delay }) => delay === 12 * 60_000)!.callback();
+    await waitFor(() => sockets.length === 2);
+    sockets[0]!.disconnect();
+    sockets[1]!.fail();
+    await waitFor(() => runner.healthSnapshot().phase === 'retrying');
+    const reconnect = timers.at(-1);
+    assert.ok(reconnect);
+    reconnect.callback();
+    await waitFor(() => sockets.length === 3);
+    assert.equal(sockets.length, 3);
     runner.stop();
   } finally {
     settings.close();
@@ -556,6 +964,10 @@ class FakeSocket implements GatewaySocket {
   fail(): void {
     for (const listener of this.listeners.get('error') ?? []) listener();
   }
+  disconnect(): void {
+    this.readyState = 3;
+    for (const listener of this.listeners.get('close') ?? []) listener();
+  }
 }
 
 class FakeRunnerControl implements GatewaySessionRunnerControl {
@@ -620,4 +1032,16 @@ function json(value: unknown, status = 200): Response {
     status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+function ready(socket: FakeSocket, sessionId: string): void {
+  socket.message(JSON.stringify({
+    protocolVersion: 1,
+    kind: 'session.ready',
+    bindingId: 'binding_test',
+    workspaceId: 'TGATEWAY',
+    sessionId,
+    heartbeatIntervalMs: 30_000,
+    rotateAt: NOW + 15 * 60_000,
+  }));
 }

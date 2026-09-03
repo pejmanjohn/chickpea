@@ -128,7 +128,7 @@ test('setup leads with Add to Slack and keeps the customer-owned app as a fallba
   assert.doesNotMatch(owner, /configurationToken|Install Chickpea in Slack/);
 });
 
-test('manual setup restores the historical four-screen presentation but uses current adoption fields', () => {
+test('manual setup adopts credentials before the shared signed Events verification stage', () => {
   const html = renderSlackManualSetupPage({
     setup: setup('awaiting_app_creation'), destination: '/admin/onboarding',
     manifest: MANIFEST, manifestPrefillUrl: slackManifestPrefillUrl(MANIFEST),
@@ -137,17 +137,26 @@ test('manual setup restores the historical four-screen presentation but uses cur
   assert.match(html, /class="onboarding-shell"/);
   assert.match(html, /Create Chickpea/);
   assert.match(html, /Finish creating Chickpea/);
-  assert.match(html, /Verify the Event URL/);
+  assert.doesNotMatch(html, /data-manual-step-(?:panel|target)="events"/);
+  assert.match(html, /data-manual-step-target="credentials">Next: Add app credentials/);
+  assert.match(html, /Already created the app\? Add its credentials/);
+  assert.match(html, /verify the Events URL after Slack installation/);
   assert.match(html, /Add app credentials/);
   assert.match(html, /create-workspace\.webp/);
   assert.match(html, /create-review\.webp/);
-  assert.match(html, /events-retry\.webp/);
   assert.match(html, /signing-secret\.webp/);
   assert.match(html, /name="appId"/);
   assert.match(html, /name="clientId"/);
   assert.match(html, /name="clientSecret"/);
   assert.match(html, /name="signingSecret"/);
   assert.match(html, /name="observedManifest"/);
+  assert.match(html, /aria-label="Agent handle permissions"/);
+  assert.match(html, /class="onboarding-prerequisite-title"/);
+  assert.match(html, /grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
+  assert.match(html, /manifest already requests <code>usergroups:read<\/code> and <code>usergroups:write<\/code>/);
+  assert.match(html, /separate workspace permission that a manifest cannot change/);
+  assert.match(html, /Create and edit user groups/);
+  assert.match(html, /permits workspace members, not just Chickpea/);
   assert.doesNotMatch(html, /name="botToken"|xoxb-/);
   assert.match(html, /src="\/admin\/setup\/manual\/client\.js"/);
 });

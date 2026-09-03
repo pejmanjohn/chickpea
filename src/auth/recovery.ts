@@ -1,5 +1,8 @@
-import { createHash, randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto';
 
+import { readBoundedText } from '../http/bounded-body.ts';
+import { sha256HexNode } from '../security/digest.ts';
+import { randomSecret } from '../security/random-secret.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
@@ -119,8 +122,8 @@ export class SlackCredentialRecoveryService {
         id: recoveryId,
         deploymentId: control.deploymentId,
         grantHash: digestSlackRecoveryGrant(control.deploymentId, input.recoveryToken),
-        sessionHash: hashSecret(sessionSecret),
-        browserHash: hashSecret(input.browserBinding),
+        sessionHash: sha256HexNode(sessionSecret),
+        browserHash: sha256HexNode(input.browserBinding),
         allowedActions: ['credential_repair', 'url_repair'],
         expectedAppId: active.appId,
         expectedTeamId: active.teamId,
@@ -175,8 +178,8 @@ export class SlackCredentialRecoveryService {
     });
     const staged = await this.dependencies.identity.stageSlackRecoveryAppCredentials({
       recoveryId: session.id,
-      sessionHash: hashSecret(input.sessionSecret),
-      browserHash: hashSecret(input.browserBinding),
+      sessionHash: sha256HexNode(input.sessionSecret),
+      browserHash: sha256HexNode(input.browserBinding),
       appCredentialRevision: revision,
       appCredentialClientId: requiredText(input.clientId, 256),
       appCredentialEnvelope: envelope,
@@ -225,8 +228,8 @@ export class SlackCredentialRecoveryService {
     }
     await this.dependencies.identity.updateSlackRecoveryManifest({
       recoveryId: session.id,
-      sessionHash: hashSecret(input.sessionSecret),
-      browserHash: hashSecret(input.browserBinding),
+      sessionHash: sha256HexNode(input.sessionSecret),
+      browserHash: sha256HexNode(input.browserBinding),
       manifestFingerprint: slackManifestFingerprint(input.expectedManifest),
     }).catch((error) => { throw mapStateError(error); });
     await this.audit('slack_recovery.urls_repaired', session.id, 'success', 'same_app_urls_only');
@@ -241,9 +244,9 @@ export class SlackCredentialRecoveryService {
     const state = randomSecret(this.randomBytes, 32);
     await this.dependencies.identity.startSlackRecoveryOAuth({
       recoveryId: session.id,
-      sessionHash: hashSecret(input.sessionSecret),
-      browserHash: hashSecret(input.browserBinding),
-      stateHash: hashSecret(state),
+      sessionHash: sha256HexNode(input.sessionSecret),
+      browserHash: sha256HexNode(input.browserBinding),
+      stateHash: sha256HexNode(state),
       redirectUri,
     }).catch((error) => { throw mapStateError(error); });
     const authorization = new URL(SLACK_BOT_AUTHORIZE_URL);
@@ -264,9 +267,9 @@ export class SlackCredentialRecoveryService {
     let session: SlackRecoverySession;
     try {
       session = await this.dependencies.identity.acquireSlackRecoveryOAuth({
-        stateHash: hashSecret(input.state),
-        sessionHash: hashSecret(input.sessionSecret),
-        browserHash: hashSecret(input.browserBinding),
+        stateHash: sha256HexNode(input.state),
+        sessionHash: sha256HexNode(input.sessionSecret),
+        browserHash: sha256HexNode(input.browserBinding),
         redirectUri,
         leaseExpiresAt: this.now() + SLACK_RECOVERY_PROCESSING_LEASE_MS,
       });
@@ -380,8 +383,8 @@ export class SlackCredentialRecoveryService {
     if (!candidate) throw new SlackCredentialRecoveryError('stale_revision');
     await this.dependencies.identity.promoteSlackRecoveryCandidate({
       recoveryId: session.id,
-      sessionHash: hashSecret(input.sessionSecret),
-      browserHash: hashSecret(input.browserBinding),
+      sessionHash: sha256HexNode(input.sessionSecret),
+      browserHash: sha256HexNode(input.browserBinding),
       candidateRevision: session.connectedCandidateRevision,
       expectedActiveRevision: candidate.baseRevision,
       expectedRotationEpoch: control.rotationEpoch,
@@ -440,10 +443,10 @@ export class SlackCredentialRecoveryService {
     session: SlackRecoverySession | undefined,
     input: RecoveryAuthority,
   ): SlackRecoverySession {
-    if (!session || session.sessionHash !== hashSecret(input.sessionSecret)) {
+    if (!session || session.sessionHash !== sha256HexNode(input.sessionSecret)) {
       throw new SlackCredentialRecoveryError('invalid_session');
     }
-    if (session.browserHash !== hashSecret(input.browserBinding)) {
+    if (session.browserHash !== sha256HexNode(input.browserBinding)) {
       throw new SlackCredentialRecoveryError('wrong_browser');
     }
     if (session.expiresAt <= this.now() || session.status === 'expired') {
@@ -511,25 +514,13 @@ function tokenGrant(value: unknown, session: SlackRecoverySession) {
 }
 
 async function boundedJson(response: Response): Promise<unknown> {
-  const declared = Number(response.headers.get('content-length') ?? 0);
-  if (Number.isFinite(declared) && declared > MAX_SLACK_RESPONSE_BYTES) throw new Error('oversize');
-  if (!response.body) throw new Error('empty');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      total += next.value.byteLength;
-      if (total > MAX_SLACK_RESPONSE_BYTES) throw new Error('oversize');
-      chunks.push(next.value);
-    }
-  } finally { reader.releaseLock(); }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
+  const text = await readBoundedText(response, {
+    maxBytes: MAX_SLACK_RESPONSE_BYTES,
+    onOversize: () => new Error('oversize'),
+    onMissingBody: () => new Error('empty'),
+    fatalDecoder: true,
+  });
+  return JSON.parse(text) as unknown;
 }
 
 function mapBootstrapError(error: unknown): SlackCredentialRecoveryError {
@@ -569,10 +560,6 @@ function matchesRecoveryToken(value: string, expected: Uint8Array): boolean {
   } catch { return false; }
 }
 
-function hashSecret(value: string): string { return createHash('sha256').update(value).digest('hex'); }
-function randomSecret(randomBytes: (length: number) => Uint8Array, length: number): string {
-  return Buffer.from(randomBytes(length)).toString('base64url');
-}
 function requireBrowserBinding(value: string): void {
   if (!/^[A-Za-z0-9_-]{32,512}$/.test(value)) throw new SlackCredentialRecoveryError('wrong_browser');
 }

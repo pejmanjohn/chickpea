@@ -68,7 +68,7 @@ export function slackSetupClientScript(): string {
 })();`;
 }
 
-/** Historical manual-onboarding step navigation layered on the setup capability handoff. */
+/** Manual app-adoption navigation layered on the setup capability handoff. */
 export function slackManualSetupClientScript(): string {
   return `${slackSetupClientScript()}
 (function () {
@@ -76,7 +76,7 @@ export function slackManualSetupClientScript(): string {
   var root = document.documentElement;
   var panels = document.querySelectorAll ? document.querySelectorAll("[data-manual-step-panel]") : [];
   if (!root || !panels.length) return;
-  var allowed = { create: true, finish: true, events: true, credentials: true };
+  var allowed = { create: true, finish: true, credentials: true };
   var initial = root.getAttribute("data-manual-initial-step") || "create";
   initial = allowed[initial] ? initial : "create";
   function show(step, focus) {
@@ -105,16 +105,18 @@ export function slackManualSetupClientScript(): string {
 }
 
 /** Same-origin transition script for CSP-safe navigation to Slack OAuth. */
-export function slackAuthorizationHandoffScript(): string {
+export function slackAuthorizationHandoffScript(gatewayOrigin?: string): string {
   return `(function () {
   "use strict";
   var link = document.querySelector ? document.querySelector("a[data-slack-authorization-link]") : null;
   if (!link) return;
   try {
     var target = new URL(link.getAttribute("href") || "", location.origin);
-    var allowedPath = target.pathname === "/oauth/v2/authorize" ||
-      target.pathname === "/openid/connect/authorize";
-    if (target.origin !== "https://slack.com" || !allowedPath ||
+    var slackAuthorization = target.origin === "https://slack.com" &&
+      (target.pathname === "/oauth/v2/authorize" || target.pathname === "/openid/connect/authorize");
+    var gatewayAuthorization = target.origin === ${JSON.stringify(gatewayOrigin ?? '')} &&
+      /^\\/install\\/[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(target.pathname) && !target.search;
+    if (target.protocol !== "https:" || (!slackAuthorization && !gatewayAuthorization) ||
         target.username || target.password || target.hash) return;
     location.replace(target.href);
   } catch (_) {}

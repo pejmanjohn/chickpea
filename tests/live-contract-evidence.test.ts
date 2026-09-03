@@ -1,15 +1,37 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import {
   EvidenceSafetyError,
+  assertPrivateEvidencePath,
   createEvidenceRun,
   writeFailureCapsule,
   writeRunSummary,
 } from '../qa/live/safety/evidence.ts';
+
+test('a home dependency manifest is not a package root, but named packages and malformed manifests remain fenced', (context) => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'chickpea-home-evidence-')));
+  context.after(() => rmSync(home, { recursive: true, force: true }));
+  const evidence = join(home, '.chickpea', 'evidence');
+  mkdirSync(evidence, { recursive: true, mode: 0o700 });
+  const target = join(evidence, 'capture.json');
+  writeFileSync(join(home, 'package.json'), JSON.stringify({ dependencies: {}, packageManager: 'pnpm@10.0.0' }));
+  assert.doesNotThrow(() => assertPrivateEvidencePath(target, evidence));
+  for (const manifest of [
+    JSON.stringify({ name: 'named-package', version: '1.0.0' }),
+    JSON.stringify({ name: 'named-package' }),
+    '{invalid',
+  ]) {
+    writeFileSync(join(home, 'package.json'), manifest);
+    assert.throws(() => assertPrivateEvidencePath(target, evidence), /UNSAFE_EVIDENCE_ROOT/u);
+  }
+  writeFileSync(join(home, 'package.json'), JSON.stringify({ dependencies: {} }));
+  mkdirSync(join(home, '.git'));
+  assert.throws(() => assertPrivateEvidencePath(target, evidence), /UNSAFE_EVIDENCE_ROOT/u);
+});
 
 function roots(context: test.TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'chickpea-live-evidence-'));

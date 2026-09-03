@@ -14,6 +14,7 @@ import {
 } from './installation-credentials.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import { parseSlackGrantedScopes } from './scopes.ts';
+import { nonEmpty } from '../security/content-validation.ts';
 
 /**
  * Slack credential resolution is backed by one complete encrypted TAG_STATE
@@ -83,11 +84,6 @@ interface StoredSlackCredentials {
 }
 
 type SlackConnectionRevision = string | null;
-
-// An empty-string token/secret is never a usable credential.
-function nonEmpty(value: string | undefined): string | undefined {
-  return value ? value : undefined;
-}
 
 export async function resolveSlackCredentials(
   env?: PlatformEnv,
@@ -303,14 +299,12 @@ export async function slackBotIdentityInfo(
   userId: string,
   options: SlackTruthFetchOptions = {},
 ): Promise<SlackBotIdentityResult> {
-  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.info`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${botToken}`,
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams({ user: userId }).toString(),
-  }, options);
+  const result = await slackFormPost(
+    'users.info',
+    botToken,
+    new URLSearchParams({ user: userId }),
+    options,
+  );
   if (!result.ok) {
     return {
       ok: false,
@@ -336,10 +330,7 @@ export async function slackIdentityAuthTest(
   botToken: string,
   options: SlackTruthFetchOptions = {},
 ): Promise<SlackAuthTestResult> {
-  const result = await fetchSlackTruthJson(`${slackApiBase()}/auth.test`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${botToken}` },
-  }, options);
+  const result = await slackFormPost('auth.test', botToken, undefined, options);
   if (!result.ok) {
     return {
       ok: false,
@@ -513,14 +504,7 @@ export async function slackConversationsList(
     limit: String(options.limit ?? 200),
   });
   if (options.cursor) params.set('cursor', options.cursor);
-  const result = await fetchSlackTruthJson(`${slackApiBase()}/conversations.list`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${botToken}`,
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body: params.toString(),
-  }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+  const result = await slackFormPost('conversations.list', botToken, params, options);
   if (!result.ok) {
     return {
       ok: false,
@@ -662,6 +646,32 @@ async function fetchSlackTruthJson(
   }
 }
 
+/**
+ * One bounded bot-token POST to a Slack Web API method. Every raw truth read
+ * below shares this envelope — bearer authorization, form-encoded parameters
+ * when the method takes any — and differs only in the method name and how the
+ * caller maps the result.
+ */
+function slackFormPost(
+  method: string,
+  botToken: string,
+  params: URLSearchParams | undefined,
+  options: { timeoutMs?: number | undefined } = {},
+): Promise<SlackTruthJsonResult> {
+  return fetchSlackTruthJson(
+    `${slackApiBase()}/${method}`,
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${botToken}`,
+        ...(params ? { 'content-type': 'application/x-www-form-urlencoded' } : {}),
+      },
+      ...(params ? { body: params.toString() } : {}),
+    },
+    options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs },
+  );
+}
+
 function settleBeforeDeadline<T>(
   pending: Promise<T>,
   deadline: AbortSignal,
@@ -708,14 +718,12 @@ export async function slackConversationsInfo(
   channelId: string,
   options: SlackTruthFetchOptions = {},
 ): Promise<SlackConversationsInfoResult> {
-  const result = await fetchSlackTruthJson(`${slackApiBase()}/conversations.info`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${botToken}`,
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams({ channel: channelId }).toString(),
-  }, options);
+  const result = await slackFormPost(
+    'conversations.info',
+    botToken,
+    new URLSearchParams({ channel: channelId }),
+    options,
+  );
   if (!result.ok) {
     return {
       ok: false,
@@ -747,14 +755,12 @@ export async function slackUsersInfo(
   userId: string,
   options: SlackTruthFetchOptions = {},
 ): Promise<SlackUsersInfoResult> {
-  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.info`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${botToken}`,
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams({ user: userId }).toString(),
-  }, options);
+  const result = await slackFormPost(
+    'users.info',
+    botToken,
+    new URLSearchParams({ user: userId }),
+    options,
+  );
   if (!result.ok) {
     return {
       ok: false,
@@ -786,14 +792,7 @@ export async function slackUsersList(
 ): Promise<SlackUsersListPage> {
   const params = new URLSearchParams({ limit: String(options.limit ?? 200) });
   if (options.cursor) params.set('cursor', options.cursor);
-  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.list`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${botToken}`,
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body: params.toString(),
-  }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+  const result = await slackFormPost('users.list', botToken, params, options);
   if (!result.ok) {
     return {
       ok: false,
@@ -835,14 +834,7 @@ export async function slackDirectoryUsersList(
 ): Promise<SlackDirectoryUsersPage> {
   const params = new URLSearchParams({ limit: String(Math.min(Math.max(options.limit ?? 200, 1), 200)) });
   if (options.cursor) params.set('cursor', options.cursor);
-  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.list`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${botToken}`,
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body: params.toString(),
-  }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+  const result = await slackFormPost('users.list', botToken, params, options);
   if (!result.ok) {
     return {
       ok: false, error: result.error, members: [], nextCursor: undefined,
@@ -872,14 +864,12 @@ export async function slackDirectoryUserInfo(
   userId: string,
   options: SlackTruthFetchOptions = {},
 ): Promise<SlackDirectoryUserInfoResult> {
-  const result = await fetchSlackTruthJson(`${slackApiBase()}/users.info`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${botToken}`,
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams({ user: userId }).toString(),
-  }, options);
+  const result = await slackFormPost(
+    'users.info',
+    botToken,
+    new URLSearchParams({ user: userId }),
+    options,
+  );
   if (!result.ok) {
     return { ok: false, error: result.error, member: undefined, retryAfterMs: result.retryAfterMs };
   }
@@ -910,14 +900,7 @@ export async function slackConversationsMembers(
     limit: String(options.limit ?? 200),
   });
   if (options.cursor) params.set('cursor', options.cursor);
-  const result = await fetchSlackTruthJson(`${slackApiBase()}/conversations.members`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${botToken}`,
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body: params.toString(),
-  }, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+  const result = await slackFormPost('conversations.members', botToken, params, options);
   if (!result.ok) {
     return {
       ok: false,

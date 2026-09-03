@@ -2,6 +2,7 @@ import {
   hasCredentialLikeContent,
   hasDisallowedControlCharacter,
 } from '../security/content-validation.ts';
+import { stripLeadingUserMentions } from '../slack/command-address.ts';
 import { isOpaqueRoutineId } from './ids.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
 import {
@@ -102,9 +103,8 @@ export function assertRoutineTaskBoundToPrevious(
   }
 }
 
-function normalizeAuthorityText(text: string): string {
-  return text
-    .replace(/^\s*(?:<@[^>\s]+>\s*)+/i, '')
+export function normalizeAuthorityText(text: string): string {
+  return stripLeadingUserMentions(text)
     .trim()
     .replace(/\s+/g, ' ');
 }
@@ -118,7 +118,7 @@ function sourcePrefixNegatesTask(requestText: string, taskOffset: number): boole
     requestText.lastIndexOf('\n', taskOffset - 1),
   ) + 1;
   const prefix = requestText.slice(clauseStart, taskOffset).trim();
-  return /\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|not\s+to)(?:\s+(?:ever|please|currently|under\s+any\s+circumstances|for\s+any\s+reason))*\s*$/i
+  return /\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|not\s+to|avoid|refrain\s+from|without)\b/i
     .test(prefix);
 }
 

@@ -33,6 +33,7 @@ import {
 } from './agent-authoring/index.ts';
 import { WorkspaceManagementService } from './service.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
+import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
   invokeWorkspaceManagementTool,
   workspaceManagementToolDescription,
@@ -58,9 +59,13 @@ export function createWorkspaceManagementMcpHandler(
   principal: McpAuthenticatedPrincipal,
   env?: PlatformEnv,
   setupBaseUrl?: string,
+  productTelemetry?: ProductTelemetryCapture,
 ): McpRequestHandler {
   const service = createLiveWorkspaceManagementService(env, {
-    ...(setupBaseUrl ? { overrides: { setupBaseUrl } } : {}),
+    overrides: {
+      ...(setupBaseUrl ? { setupBaseUrl } : {}),
+      ...(productTelemetry ? { productTelemetry } : {}),
+    },
   });
   const handler = createMcpHandler(
     () => createWorkspaceManagementMcpServer({ principal, service }),
