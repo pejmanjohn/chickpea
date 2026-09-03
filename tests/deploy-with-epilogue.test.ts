@@ -68,7 +68,7 @@ function createHarness() {
       return {
         schemaVersion: 'chickpea-environment-mutation-preflight/v1', target,
         claim: { leaseNonce: 'nonce', claimedRevision: 'revision' },
-        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id', providerReadOnlyAuthConfigId: 'read-only-' + target },
+        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id', providerAuthConfigId: 'standard-' + target },
         deploymentMetadata: { target, sourceDirty: false, baselineDigest: 'sha256:test' },
       };
     }
@@ -78,7 +78,7 @@ function createHarness() {
       const preflight = {
         schemaVersion: 'chickpea-environment-mutation-preflight/v1', target,
         claim: { leaseNonce: 'nonce', claimedRevision: 'revision' },
-        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id', providerReadOnlyAuthConfigId: 'read-only-' + target },
+        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id', providerAuthConfigId: 'standard-' + target },
         deploymentMetadata: { target, sourceDirty: false, baselineDigest: 'sha256:test' },
       };
       return {
@@ -1301,6 +1301,11 @@ test('Phase 1 deploy reconciles live version before receipt and suppresses setup
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
   writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+  const initialRedirect = JSON.parse(readFileSync(path.join(harness.root, '.wrangler/deploy/config.json'), 'utf8'));
+  const initialArtifactPath = path.resolve(harness.root, '.wrangler/deploy', initialRedirect.configPath);
+  const initialArtifact = JSON.parse(readFileSync(initialArtifactPath, 'utf8'));
+  initialArtifact.vars = { ...initialArtifact.vars, COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID: 'legacy-read-only' };
+  writeFileSync(initialArtifactPath, JSON.stringify(initialArtifact));
   const receiptPath = path.join(harness.root, 'receipt.txt');
   const result = runHarness(harness, ['--skip-build'], {
     CHICKPEA_DEPLOY_TARGET: 'amber',
@@ -1320,7 +1325,8 @@ test('Phase 1 deploy reconciles live version before receipt and suppresses setup
   assert.doesNotMatch(result.stdout, /#setup=|PRIVATE SETUP LINK|PRIVATE SETUP PATH/);
   const redirect = JSON.parse(readFileSync(path.join(harness.root, '.wrangler/deploy/config.json'), 'utf8'));
   const artifact = JSON.parse(readFileSync(path.resolve(harness.root, '.wrangler/deploy', redirect.configPath), 'utf8'));
-  assert.equal(artifact.vars.COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID, 'read-only-amber');
+  assert.equal(artifact.vars.COMPOSIO_SHEETS_WRITE_AUTH_CONFIG_ID, 'standard-amber');
+  assert.equal(artifact.vars.COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID, 'standard-amber');
 });
 
 test('Phase 1 post-upload serving drift fails without publishing a receipt', (context) => {

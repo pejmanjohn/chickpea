@@ -20,7 +20,7 @@ export interface PrivateTargetAliases extends TargetSuitePolicy {
   readonly providerProjectAlias: string;
   readonly evidenceRootAlias: string;
   readonly timezoneAlias: string;
-  readonly providerReadOnlyAuthConfigAlias: string;
+  readonly providerAuthConfigAlias: string;
   readonly bindingAliases: Readonly<Record<string, string>>;
 }
 
@@ -36,7 +36,7 @@ export interface DoctorTargetOverlay extends TargetSuitePolicy {
 }
 
 export interface PrivateLiveConfig {
-  schemaVersion: 'chickpea-live-private-config/v1';
+  schemaVersion: 'chickpea-live-private-config/v2';
   qaTargetAllowlist: PhaseOneTargetAlias[];
   targets: Partial<Record<PhaseOneTargetAlias, PrivateTargetAliases>>;
 }
@@ -53,7 +53,7 @@ export interface DoctorTargetResolution extends TargetSuitePolicy {
   workspaceId(): Promise<string>;
   slackAppId(): Promise<string>;
   providerProjectId(): Promise<string>;
-  providerReadOnlyAuthConfigId(): Promise<string>;
+  providerAuthConfigId(): Promise<string>;
   timezone(): Promise<string>;
   evidenceRoot(): Promise<string>;
   targetLockPath(): Promise<string>;
@@ -106,7 +106,7 @@ export function createDoctorTargetResolution(
     workspaceId: () => read(target.workspaceAlias),
     slackAppId: () => read(target.slackAppAlias),
     providerProjectId: () => read(target.providerProjectAlias),
-    providerReadOnlyAuthConfigId: () => read(target.providerReadOnlyAuthConfigAlias),
+    providerAuthConfigId: () => read(target.providerAuthConfigAlias),
     timezone: () => read(target.timezoneAlias),
     evidenceRoot: () => read(target.evidenceRootAlias),
     targetLockPath: async () => join(await read(target.evidenceRootAlias), 'target.lock'),
@@ -125,7 +125,7 @@ export function createDoctorTargetResolution(
 export function validatePrivateConfig(config: PrivateLiveConfig): PrivateTargetAliases {
   if (!isRecord(config)
     || !exactKeys(config, ['schemaVersion', 'qaTargetAllowlist', 'targets'])
-    || config.schemaVersion !== 'chickpea-live-private-config/v1'
+    || config.schemaVersion !== 'chickpea-live-private-config/v2'
     || !Array.isArray(config.qaTargetAllowlist)
     || config.qaTargetAllowlist.length !== 1
     || !(PHASE_ONE_TARGET_ALIASES as readonly unknown[]).includes(config.qaTargetAllowlist[0])
@@ -145,7 +145,7 @@ function validateTarget(input: unknown): PrivateTargetAliases {
     || !exactKeys(input, [
       'targetAlias', 'transport', 'workerAlias', 'workspaceAlias', 'slackAppAlias',
       'providerProjectAlias', 'evidenceRootAlias', 'timezoneAlias',
-      'providerReadOnlyAuthConfigAlias', 'bindingAliases', 'allowedSuites', 'allowedVariants',
+      'providerAuthConfigAlias', 'bindingAliases', 'allowedSuites', 'allowedVariants',
     ])
     || !(PHASE_ONE_TARGET_ALIASES as readonly unknown[]).includes(input.targetAlias)
     || (input.transport !== 'gateway' && input.transport !== 'events')
@@ -155,7 +155,7 @@ function validateTarget(input: unknown): PrivateTargetAliases {
     || !validEnvironmentAlias(input.providerProjectAlias, input.targetAlias)
     || !validEnvironmentAlias(input.evidenceRootAlias, input.targetAlias)
     || !validEnvironmentAlias(input.timezoneAlias, input.targetAlias)
-    || !validEnvironmentAlias(input.providerReadOnlyAuthConfigAlias, input.targetAlias)
+    || !validEnvironmentAlias(input.providerAuthConfigAlias, input.targetAlias)
     || !isRecord(input.bindingAliases)
     || !('AUTH_DB' in input.bindingAliases)
     || !('TAG_STATE' in input.bindingAliases)
@@ -184,7 +184,7 @@ function validateTarget(input: unknown): PrivateTargetAliases {
     providerProjectAlias: input.providerProjectAlias as string,
     evidenceRootAlias: input.evidenceRootAlias as string,
     timezoneAlias: input.timezoneAlias as string,
-    providerReadOnlyAuthConfigAlias: input.providerReadOnlyAuthConfigAlias as string,
+    providerAuthConfigAlias: input.providerAuthConfigAlias as string,
     bindingAliases: Object.freeze({ ...(input.bindingAliases as Record<string, string>) }),
     allowedSuites: policy.allowedSuites,
     allowedVariants: policy.allowedVariants,

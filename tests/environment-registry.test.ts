@@ -14,7 +14,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import test from 'node:test';
 
@@ -36,6 +36,7 @@ const {
   createEnvironmentRegistry,
   currentHostFingerprint,
   environmentMarkerPath,
+  migrateEnvironmentProviderAuthConfigs,
   readEnvironmentRegistry,
   readEnvironmentStatus,
   reconcileEnvironment,
@@ -95,7 +96,7 @@ function targetRecord(target: typeof TARGETS[number], revision: string, evidence
     slackAppLabel: `${target} app`,
     botUserId: `U_${target.toUpperCase()}_BOT`,
     providerProjectId: `provider-${target}`,
-    providerReadOnlyAuthConfigId: `provider-read-${target}`,
+    providerAuthConfigId: `provider-read-${target}`,
     timezone: 'America/Los_Angeles',
     evidenceRoot: join(evidenceParent, target, 'evidence'),
     bindingIdentities: {
@@ -151,6 +152,174 @@ function rejectsCode(code: string) {
   return (error: unknown) => error instanceof EnvironmentRegistryError
     && (error as { code?: unknown }).code === code;
 }
+
+function legacyRegistryFixture(keepClaim = false) {
+  const f = fixture();
+  claimEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
+  if (!keepClaim) releaseEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
+  const current = readEnvironmentRegistry(registryOptions(f.root));
+  const oldSnapshots = new Map<string, string>();
+  for (const name of readdirSync(join(f.root, 'revisions'))) {
+    const snapshotPath = join(f.root, 'revisions', name);
+    const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'));
+    snapshot.schemaVersion = 'chickpea-environment-registry/v1';
+    for (const target of TARGETS) {
+      const registration = snapshot.targets[target];
+      registration.providerReadOnlyAuthConfigId = registration.providerAuthConfigId;
+      delete registration.providerAuthConfigId;
+      if (!keepClaim && snapshot.revision === current.revision) {
+        registration.lastAttestation = {
+          attestedAt: new Date(NOW).toISOString(), registryRevision: current.revision,
+          sourceRevision: registration.sourceRevision, servingVersion: registration.servingVersion,
+          targetFingerprint: `sha256:${'a'.repeat(64)}`, verifierLock: { status: 'clear' },
+        };
+      }
+    }
+    const bytes = `${JSON.stringify(snapshot)}\n`;
+    writeFileSync(snapshotPath, bytes);
+    oldSnapshots.set(snapshotPath, bytes);
+    if (snapshot.revision === current.revision) writeFileSync(join(f.root, 'registry.json'), bytes);
+  }
+  const migration = {
+    expectedRegistryRevision: current.revision,
+    targets: TARGETS.map((target) => ({
+      target, providerProjectId: `provider-${target}`,
+      previousAuthConfigId: `provider-read-${target}`, providerAuthConfigId: `provider-standard-${target}`,
+    })),
+  };
+  return { ...f, current, migration, oldSnapshots };
+}
+
+test('provider auth migration is explicit, append-only, and invalidates both attestations', (context) => {
+  const f = legacyRegistryFixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  assert.throws(() => readEnvironmentRegistry(registryOptions(f.root)), rejectsCode('PROVIDER_AUTH_CONFIG_MIGRATION_REQUIRED'));
+  const status = readEnvironmentStatus(registryOptions(f.root));
+  assert.deepEqual(status.targets.map(({ health }: { health: string }) => health), ['migration_required', 'migration_required']);
+  assert.equal(reconcileEnvironment(undefined, { ...registryOptions(f.root), worktreePath: f.first.path }).ready, false);
+  assert.throws(() => claimEnvironment('cobalt', {
+    ...registryOptions(f.root), worktreePath: f.first.path,
+  }), rejectsCode('PROVIDER_AUTH_CONFIG_MIGRATION_REQUIRED'));
+  const result = migrateEnvironmentProviderAuthConfigs(f.migration, registryOptions(f.root));
+  assert.deepEqual(result, { migrated: true, registryRevision: 3, targets: [...TARGETS] });
+  const migrated = readEnvironmentRegistry(registryOptions(f.root));
+  for (const [snapshotPath, bytes] of f.oldSnapshots) assert.equal(readFileSync(snapshotPath, 'utf8'), bytes);
+  for (const target of TARGETS) {
+    assert.deepEqual(migrated.targets[target], {
+      ...f.current.targets[target], providerAuthConfigId: `provider-standard-${target}`, lastAttestation: null,
+    });
+    assert.equal(migrated.audit.findLast((event: { target: string }) => event.target === target)?.event, 'provider_auth_config_migrated');
+  }
+  assert.deepEqual(migrated.sandbox, f.current.sandbox);
+  assert.equal(migrated.hostFingerprint, f.current.hostFingerprint);
+  const bytes = readFileSync(join(f.root, 'registry.json'), 'utf8');
+  assert.throws(() => migrateEnvironmentProviderAuthConfigs(f.migration, registryOptions(f.root)), rejectsCode('REGISTRY_ALREADY_CURRENT'));
+  assert.equal(readFileSync(join(f.root, 'registry.json'), 'utf8'), bytes);
+  claimEnvironment('cobalt', { ...registryOptions(f.root), worktreePath: f.first.path });
+  assert.equal(readEnvironmentRegistry(registryOptions(f.root)).targets.cobalt.claim.target, 'cobalt');
+});
+
+test('provider auth migration refuses stale authority, wrong identities, and broadened inputs without a write', (context) => {
+  const f = legacyRegistryFixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const cases: Array<[string, (input: any) => void]> = [
+    ['REGISTRY_REVISION_CONFLICT', (input) => { input.expectedRegistryRevision -= 1; }],
+    ['PROVIDER_AUTH_MIGRATION_MISMATCH', (input) => { input.targets[0].providerProjectId = 'another-project'; }],
+    ['PROVIDER_AUTH_MIGRATION_MISMATCH', (input) => { input.targets[0].previousAuthConfigId = 'another-config'; }],
+    ['INVALID_PROVIDER_AUTH_MIGRATION', (input) => { input.targets[0].extra = true; }],
+    ['INVALID_PROVIDER_AUTH_MIGRATION', (input) => { input.targets[0].target = 'cobalt'; }],
+    ['INVALID_PROVIDER_AUTH_MIGRATION', (input) => { input.targets.pop(); }],
+    ['DUPLICATE_TARGET_IDENTITY', (input) => { input.targets[0].providerAuthConfigId = input.targets[1].providerAuthConfigId; }],
+  ];
+  const before = readFileSync(join(f.root, 'registry.json'), 'utf8');
+  for (const [code, mutate] of cases) {
+    const input = structuredClone(f.migration);
+    mutate(input);
+    assert.throws(() => migrateEnvironmentProviderAuthConfigs(input, registryOptions(f.root)), rejectsCode(code));
+    assert.equal(readFileSync(join(f.root, 'registry.json'), 'utf8'), before);
+    assert.equal(readdirSync(join(f.root, 'revisions')).length, f.oldSnapshots.size);
+  }
+  assert.throws(() => migrateEnvironmentProviderAuthConfigs(f.migration, {
+    ...registryOptions(f.root), hostFingerprint: 'another-host',
+  }), rejectsCode('HOST_MISMATCH'));
+});
+
+test('provider auth migration refuses claims, target locks, and deploy intents even with supplied lease authority', (context) => {
+  const claimed = legacyRegistryFixture(true);
+  context.after(() => rmSync(claimed.parent, { recursive: true, force: true }));
+  assert.throws(() => migrateEnvironmentProviderAuthConfigs(claimed.migration, registryOptions(claimed.root)), rejectsCode('TARGET_CLAIMED'));
+  for (const filename of ['target.lock', 'deploy-intent.json']) {
+    const f = legacyRegistryFixture();
+    context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+    const owner = { runId: 'test-run', pid: process.pid, host: hostname(), startedAt: new Date(NOW).toISOString() };
+    // A lock uses a strict shape, while the deploy-intent check reads only authority.
+    const state = filename === 'target.lock' ? owner : { ...owner, target: 'cobalt' };
+    writeFileSync(join(f.current.targets.cobalt.evidenceRoot, filename), JSON.stringify(state), { mode: 0o600 });
+    assert.throws(() => migrateEnvironmentProviderAuthConfigs(f.migration, {
+      ...registryOptions(f.root), expectedTargetLockRunId: owner.runId,
+    }), rejectsCode('TARGET_MUTATION_LOCKED'));
+    assert.equal(readdirSync(join(f.root, 'revisions')).length, f.oldSnapshots.size);
+  }
+});
+
+test('a claimed v1 registry can recover and release through the CLI before migrating', async (context) => {
+  const f = legacyRegistryFixture(true);
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  assert.equal(readEnvironmentStatus(registryOptions(f.root)).registryMigrationRequired, true);
+  const output: string[] = [];
+  const io = { hostFingerprint: 'host-fixture', stdout: (value: string) => output.push(value), stderr: (value: string) => output.push(value) };
+  const flags = ['--root', f.root, '--worktree', f.first.path];
+  assert.equal(await runEnvironmentCli(['claim', 'cobalt', ...flags], io), 2);
+  // CLI reclaim renews the old expired lease without bypassing ownership checks.
+  assert.equal(await runEnvironmentCli(['reclaim', 'amber', ...flags], io), 0, output.join(''));
+  assert.equal(await runEnvironmentCli(['release', 'amber', ...flags], io), 0, output.join(''));
+  const released = JSON.parse(readFileSync(join(f.root, 'registry.json'), 'utf8'));
+  assert.equal(released.schemaVersion, 'chickpea-environment-registry/v1');
+  assert.equal(released.targets.amber.claim, null);
+  assert.equal(existsSync(environmentMarkerPath(f.first.path)), false);
+  for (const [snapshotPath, bytes] of f.oldSnapshots) assert.equal(readFileSync(snapshotPath, 'utf8'), bytes);
+  const result = migrateEnvironmentProviderAuthConfigs({
+    ...f.migration, expectedRegistryRevision: released.revision,
+  }, registryOptions(f.root));
+  assert.equal(result.migrated, true);
+});
+
+test('provider auth migration recovers snapshot-first interruption without rewriting v1 history', (context) => {
+  const f = legacyRegistryFixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  assert.throws(() => migrateEnvironmentProviderAuthConfigs(f.migration, {
+    ...registryOptions(f.root), beforeRegistryCurrentWrite: () => { throw new Error('simulated migration crash'); },
+  }), /simulated migration crash/u);
+  assert.equal(JSON.parse(readFileSync(join(f.root, 'registry.json'), 'utf8')).schemaVersion, 'chickpea-environment-registry/v1');
+  assert.equal(readEnvironmentRegistry(registryOptions(f.root)).revision, 3);
+  for (const [snapshotPath, bytes] of f.oldSnapshots) assert.equal(readFileSync(snapshotPath, 'utf8'), bytes);
+  assert.throws(() => migrateEnvironmentProviderAuthConfigs(f.migration, registryOptions(f.root)), rejectsCode('REGISTRY_ALREADY_CURRENT'));
+});
+
+test('provider auth migration CLI requires a private bindings file and emits no provider IDs', async (context) => {
+  const f = legacyRegistryFixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const bindingsPath = join(f.parent, 'migration.json');
+  writeFileSync(bindingsPath, JSON.stringify(f.migration), { mode: 0o600 });
+  const output: string[] = [];
+  const io = { hostFingerprint: 'host-fixture', stdout: (value: string) => output.push(value), stderr: (value: string) => output.push(value) };
+  assert.equal(await runEnvironmentCli(['migrate-provider-auth', '--root', f.root], io), 2);
+  chmodSync(bindingsPath, 0o644);
+  assert.equal(await runEnvironmentCli(['migrate-provider-auth', '--root', f.root, '--bindings', bindingsPath], io), 2);
+  chmodSync(bindingsPath, 0o600);
+  assert.equal(await runEnvironmentCli(['migrate-provider-auth', '--root', f.root, '--bindings', bindingsPath], io), 0);
+  assert.doesNotMatch(output.join(''), /provider-standard-|provider-read-/u);
+});
+
+test('registry history cannot downgrade from v2 back to v1', (context) => {
+  const f = legacyRegistryFixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  migrateEnvironmentProviderAuthConfigs(f.migration, registryOptions(f.root));
+  const downgraded = JSON.parse([...f.oldSnapshots.values()].at(-1)!);
+  downgraded.revision = 4;
+  writeFileSync(join(f.root, 'revisions', 'revision-0000000000000004.json'), JSON.stringify(downgraded), { mode: 0o600 });
+  assert.throws(() => readEnvironmentRegistry(registryOptions(f.root)), rejectsCode('REGISTRY_SCHEMA_ROLLBACK'));
+});
 
 test('two standalone lanes register without sandbox capacity or a hidden Fern dependency', (context) => {
   const f = fixture();
@@ -482,7 +651,7 @@ test('target and private outputs validate for all colors and refuse deep and ina
       ...registryOptions(f.root), worktreePath: worktrees[index]!.path,
     });
     assert.equal(output.targetOverlay.schemaVersion, 'chickpea-live-target/v1');
-    assert.equal(output.privateConfig.schemaVersion, 'chickpea-live-private-config/v1');
+    assert.equal(output.privateConfig.schemaVersion, 'chickpea-live-private-config/v2');
     const privateTarget = validatePrivateConfig(output.privateConfig);
     const suitePolicy = {
       targetAlias: privateTarget.targetAlias,
@@ -524,7 +693,7 @@ test('attestation requires the matching live claim and composes verifier-owned c
     }],
     bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'tag-state-amber' },
     slack: { teamId: 'T_AMBER', appId: 'A_AMBER' },
-    provider: { projectId: 'provider-amber', readOnlyAuthConfigId: 'provider-read-amber' },
+    provider: { projectId: 'provider-amber', authConfigId: 'provider-read-amber' },
     timezone: 'America/Los_Angeles',
     evidenceRoot: join(f.parent, 'amber', 'evidence'),
     events: {
@@ -595,7 +764,7 @@ test('CLI dispatches claim, status, target, attest, reclaim, release, and reconc
     }],
     bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'tag-state-amber' },
     slack: { teamId: 'T_AMBER', appId: 'A_AMBER' },
-    provider: { projectId: 'provider-amber', readOnlyAuthConfigId: 'provider-read-amber' },
+    provider: { projectId: 'provider-amber', authConfigId: 'provider-read-amber' },
     timezone: 'America/Los_Angeles',
     evidenceRoot: join(f.parent, 'amber', 'evidence'),
     events: {
@@ -680,7 +849,7 @@ test('registry rejects duplicate immutable target identities across every indepe
     }],
     ['provider project', (targets) => { targets[1]!.providerProjectId = targets[0]!.providerProjectId; }],
     ['provider read-only auth', (targets) => {
-      targets[1]!.providerReadOnlyAuthConfigId = targets[0]!.providerReadOnlyAuthConfigId;
+      targets[1]!.providerAuthConfigId = targets[0]!.providerAuthConfigId;
     }],
     ['TAG_STATE', (targets) => {
       targets[1]!.bindingIdentities.TAG_STATE = targets[0]!.bindingIdentities.TAG_STATE;
@@ -1140,6 +1309,35 @@ test('two processes cannot initialize distinct inventories into one registry roo
   assert.match(readEnvironmentRegistry(registryOptions(root)).targets.amber.workspaceLabel, / A$| B$/u);
 });
 
+test('another process never observes an unpublished registry lock owner', (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const second = worktree(f.parent, 'second');
+  const moduleUrl = new URL('../scripts/lib/environment-registry.mjs', import.meta.url).href;
+  let probed = false;
+  claimEnvironment('amber', {
+    ...registryOptions(f.root), worktreePath: f.first.path,
+    beforeRegistryLockPublish: () => {
+      probed = true;
+      const result = spawnSync(process.execPath, ['--input-type=module', '--eval', `
+        import { claimEnvironment } from ${JSON.stringify(moduleUrl)};
+        try {
+          claimEnvironment('cobalt', ${JSON.stringify({ root: f.root, hostFingerprint: 'host-fixture', worktreePath: second.path })});
+          process.stdout.write('claimed');
+        } catch (error) { process.stdout.write(error.code ?? error.message); }
+      `], { encoding: 'utf8', timeout: 10_000 });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, 'claimed');
+    },
+  });
+  assert.equal(probed, true);
+  const registered = readEnvironmentRegistry(registryOptions(f.root));
+  assert.equal(registered.targets.amber.claim.canonicalWorktreePath, f.first.path);
+  assert.equal(registered.targets.cobalt.claim.canonicalWorktreePath, second.path);
+  assert.equal(existsSync(join(f.root, 'registry.lock')), false);
+  assert.equal(readdirSync(f.root).some((name) => name.startsWith('.registry-lock-')), false);
+});
+
 test('attestation binds registration source and serving identity and rechecks expiry before record', async (context) => {
   const f = fixture();
   context.after(() => rmSync(f.parent, { recursive: true, force: true }));
@@ -1148,7 +1346,7 @@ test('attestation binds registration source and serving identity and rechecks ex
     deployments: [{ versionId: 'version-amber', percentage: 100, activatedAt: new Date(NOW - 1_000).toISOString() }],
     bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'tag-state-amber' },
     slack: { teamId: 'T_AMBER', appId: 'A_AMBER' },
-    provider: { projectId: 'provider-amber', readOnlyAuthConfigId: 'provider-read-amber' },
+    provider: { projectId: 'provider-amber', authConfigId: 'provider-read-amber' },
     timezone: 'America/Los_Angeles', evidenceRoot: join(f.parent, 'amber', 'evidence'),
     events: {
       installationHealthy: true, signedEventReceiptFresh: true,

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "chickpea-environment-desired-state/v1",
+  "schemaVersion": "chickpea-environment-desired-state/v2",
   "targets": [
     {
       "targetAlias": "amber",
@@ -15,7 +15,7 @@
         "env-amber-workspace",
         "env-amber-slack-app",
         "env-amber-provider-project",
-        "env-amber-provider-read-only-auth-config",
+        "env-amber-provider-auth-config",
         "env-amber-evidence-root",
         "env-amber-timezone",
         "env-amber-auth-db",
@@ -36,7 +36,7 @@
         "env-cobalt-workspace",
         "env-cobalt-slack-app",
         "env-cobalt-provider-project",
-        "env-cobalt-provider-read-only-auth-config",
+        "env-cobalt-provider-auth-config",
         "env-cobalt-evidence-root",
         "env-cobalt-timezone",
         "env-cobalt-auth-db",

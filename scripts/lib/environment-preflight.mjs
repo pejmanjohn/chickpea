@@ -296,7 +296,7 @@ function protectedEnvironmentResourceIds(registry) {
     for (const value of [
       registration.workerName, registration.authDatabaseName, registration.authDatabaseId,
       registration.workspaceId, registration.slackAppId, registration.botUserId,
-      registration.providerProjectId, registration.providerReadOnlyAuthConfigId,
+      registration.providerProjectId, registration.providerAuthConfigId,
       registration.evidenceRoot, ...Object.values(registration.bindingIdentities),
     ]) ids.add(value);
   }
@@ -441,6 +441,8 @@ export function recoverEnvironmentSchemaAdvancement(target, options = {}) {
 }
 
 export async function preflightEnvironmentMutation(target, options = {}) {
+  // Legacy compatibility is only for finishing/releasing existing authority.
+  options = { ...options, allowLegacyRegistryRecovery: false };
   const context = assertLiveEnvironmentClaim(target, options);
   const baseline = validateBaseline(options.baseline ?? readEnvironmentBaseline(
     context.registration.evidenceRoot,
@@ -726,12 +728,17 @@ export async function recheckResumedEnvironmentDeployment(resumed, options = {})
  * receipt and registry CAS under the original target lease.
  */
 export async function reconcileEnvironmentDeployment(target, options = {}) {
+  options = { ...options, allowLegacyRegistryRecovery: true };
   const registry = readEnvironmentRegistry(options);
   const registration = registry.targets[target];
   if (!registration) throw fail('INVALID_TARGET');
   const evidenceRoot = assertSafeEvidenceRoot(registration.evidenceRoot);
   const intentPath = join(evidenceRoot, DEPLOY_INTENT_FILE);
-  if (!lstatIfPresent(intentPath)) return null;
+  if (!lstatIfPresent(intentPath)) {
+    // A release can commit before its process dies with the safe fence still held.
+    recoverSafeStaleTargetLock(evidenceRoot, options);
+    return null;
+  }
   const intent = readDeployIntent(intentPath);
   const suppliedProviderContext = validateProviderContext(options.providerContext);
   if (suppliedProviderContext.length > 0
@@ -1023,7 +1030,7 @@ export async function observeReceiptBackedEnvironment(target, options = {}) {
     slack: Object.freeze({ teamId: receipt.slackTeamId, appId: receipt.slackAppId }),
     provider: Object.freeze({
       projectId: context.registration.providerProjectId,
-      readOnlyAuthConfigId: context.registration.providerReadOnlyAuthConfigId,
+      authConfigId: context.registration.providerAuthConfigId,
     }),
     timezone: context.registration.timezone,
     evidenceRoot: context.registration.evidenceRoot,
@@ -1394,6 +1401,7 @@ export function assertEnvironmentReleaseAllowed(target, options = {}) {
 }
 
 export function withEnvironmentReleaseFence(target, options = {}, release) {
+  options = { ...options, allowLegacyRegistryRecovery: true };
   if (typeof release !== 'function') throw fail('INVALID_RELEASE_CALLBACK');
   const context = assertLiveEnvironmentClaim(target, options);
   assertEnvironmentReleaseAllowed(target, options);

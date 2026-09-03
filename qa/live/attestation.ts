@@ -31,7 +31,7 @@ export interface LiveTargetObservation {
   deployments: WorkerDeployment[];
   bindingIdentities: Record<string, string>;
   slack: { teamId: string; appId: string };
-  provider: { projectId: string; readOnlyAuthConfigId: string };
+  provider: { projectId: string; authConfigId: string };
   timezone: string;
   evidenceRoot: string;
   gateway?: GatewayAttestationObservation;
@@ -93,7 +93,7 @@ export async function attestLiveTarget(
     workspaceId,
     slackAppId,
     providerProjectId,
-    providerReadOnlyAuthConfigId,
+    providerAuthConfigId,
     timezone,
     evidenceRoot,
     bindingIdentities,
@@ -102,7 +102,7 @@ export async function attestLiveTarget(
     expected.workspaceId(),
     expected.slackAppId(),
     expected.providerProjectId(),
-    expected.providerReadOnlyAuthConfigId(),
+    expected.providerAuthConfigId(),
     expected.timezone(),
     expected.evidenceRoot(),
     expected.bindingIdentities(),
@@ -113,7 +113,7 @@ export async function attestLiveTarget(
   if (observed.slack.teamId !== workspaceId) fail('SLACK_TEAM_MISMATCH');
   if (observed.slack.appId !== slackAppId) fail('SLACK_APP_MISMATCH');
   if (observed.provider.projectId !== providerProjectId) fail('PROVIDER_PROJECT_MISMATCH');
-  if (observed.provider.readOnlyAuthConfigId !== providerReadOnlyAuthConfigId) {
+  if (observed.provider.authConfigId !== providerAuthConfigId) {
     fail('PROVIDER_AUTH_CONFIG_MISMATCH');
   }
   if (observed.timezone !== timezone) fail('TIMEZONE_MISMATCH');
@@ -141,7 +141,7 @@ export async function attestLiveTarget(
     workspaceId,
     slackAppId,
     providerProjectId,
-    providerReadOnlyAuthConfigId,
+    providerAuthConfigId,
     timezone,
     evidenceRoot,
     bindingIdentities,
@@ -188,7 +188,7 @@ function validateObservation(input: LiveTargetObservation): void {
     || !bounded(input.slack.appId)
     || !isRecord(input.provider)
     || !bounded(input.provider.projectId)
-    || !bounded(input.provider.readOnlyAuthConfigId)
+    || !bounded(input.provider.authConfigId)
     || !bounded(input.timezone)
     || !bounded(input.evidenceRoot, 2_048)
     || (input.transport === 'gateway' && !validGateway(input.gateway))

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { MANAGED_GOOGLE_PRODUCTIVITY_CONNECTORS } from '../src/connections/catalog/google-productivity.ts';
 
 import { LIVE_MANIFEST, LIVE_MANIFEST_DIGEST } from '../qa/live/manifest.ts';
 import {
@@ -63,8 +64,8 @@ function inventoryProvider(kind: string) {
 
 test('portable baseline definitions contain no credentials or Slack coordinates', () => {
   const { recipe, desiredState } = loadPhaseOneBaselineDefinitions();
-  assert.equal(recipe.schemaVersion, 'chickpea-environment-workspace-recipe/v1');
-  assert.equal(desiredState.schemaVersion, 'chickpea-environment-desired-state/v1');
+  assert.equal(recipe.schemaVersion, 'chickpea-environment-workspace-recipe/v2');
+  assert.equal(desiredState.schemaVersion, 'chickpea-environment-desired-state/v2');
 
   const serialized = [RECIPE_PATH, DESIRED_STATE_PATH]
     .map((path) => readFileSync(path, 'utf8'))
@@ -73,6 +74,18 @@ test('portable baseline definitions contain no credentials or Slack coordinates'
   assert.doesNotMatch(serialized, /\bT[A-Z0-9]{8,}\b/u);
   assert.doesNotMatch(serialized, /\b(?:U|B|A)[A-Z0-9]{8,}\b/u);
   assert.doesNotMatch(serialized, /(?:password|clientSecret|signingSecret|accessToken|refreshToken|browserAlias|emailAddress)\s*"?\s*:/iu);
+});
+
+test('the Sheets baseline uses the reviewed standard grant but exercises reads only', () => {
+  const { recipe } = loadPhaseOneBaselineDefinitions();
+  const sheets = recipe.resources.find(({ key }: BaselineResource) => key === 'google-sheets-personal-standard');
+  assert.ok(sheets, 'standard Personal Sheets baseline is required');
+  const connector = MANAGED_GOOGLE_PRODUCTIVITY_CONNECTORS.find(({ toolkit }) => toolkit === 'googlesheets');
+  assert.ok(connector);
+  assert.equal(sheets.access, 'write');
+  assert.equal(sheets.exerciseAccess, 'read');
+  assert.equal(sheets.ownerKind, 'personal');
+  assert.deepEqual([...sheets.capabilities].sort(), connector.capabilities.map(({ id }) => id).sort());
 });
 
 test('both active targets derive exactly the Phase 1 smoke inventory and reusable fixtures', () => {
@@ -114,19 +127,38 @@ test('the minimal recipe keeps identities private and target product state local
       { key: 'smoke-agent', scope: 'target', fixtureClass: 'resettable_fixture' },
       { key: 'smoke-agent-channel-grant', scope: 'target', fixtureClass: 'resettable_fixture' },
       { key: 'synthetic-google-account', scope: 'shared', fixtureClass: 'immutable_baseline' },
-      { key: 'google-sheets-personal-read-only', scope: 'target', fixtureClass: 'resettable_fixture' },
+      { key: 'google-sheets-personal-standard', scope: 'target', fixtureClass: 'resettable_fixture' },
     ],
   );
-  const sheets = amber.resources.find(({ key }: BaselineResource) => key === 'google-sheets-personal-read-only');
+  const sheets = amber.resources.find(({ key }: BaselineResource) => key === 'google-sheets-personal-standard');
   assert.deepEqual(sheets?.capabilities, [
     'sheets.spreadsheets.search',
     'sheets.spreadsheets.metadata',
     'sheets.values.get',
     'sheets.tables.query',
+    'sheets.spreadsheets.create',
+    'sheets.values.update',
+    'sheets.values.append',
+    'sheets.rows.upsert',
+    'sheets.sheets.add',
   ]);
   assert.equal(sheets?.ownerKind, 'personal');
   assert.equal(JSON.stringify(amber).includes('browserAlias'), false);
   assert.equal(JSON.stringify(amber).includes('emailAddress'), false);
+});
+
+test('the standard grant never widens the exercise or admits arbitrary capabilities', () => {
+  for (const change of [
+    (sheets: any) => { sheets.access = 'read'; },
+    (sheets: any) => { sheets.exerciseAccess = 'write'; },
+    (sheets: any) => { delete sheets.exerciseAccess; },
+    (sheets: any) => { sheets.ownerKind = 'team'; },
+    (sheets: any) => { sheets.capabilities.push('sheets.files.delete'); },
+  ]) {
+    const recipe = clone(loadPhaseOneBaselineDefinitions().recipe);
+    change(recipe.resources.find(({ key }: BaselineResource) => key === 'google-sheets-personal-standard'));
+    assert.throws(() => validateWorkspaceRecipe(recipe), rejects('INVALID_RESOURCE_CONTRACT'));
+  }
 });
 
 test('fresh-target inspection reports missing aliases and resources without returning values', async () => {
@@ -296,7 +328,7 @@ test('baseline readiness requires target-scoped resource checks and private fixt
 test('mutated plan resources and unsafe inventory IDs cannot bypass recipe validation', async () => {
   const plan = createPhaseOneBaselinePlan('amber');
   const forged = clone(plan);
-  forged.resources.find(({ key }: BaselineResource) => key === 'google-sheets-personal-read-only').access = 'write';
+  forged.resources.find(({ key }: BaselineResource) => key === 'google-sheets-personal-standard').exerciseAccess = 'write';
   await assert.rejects(inspectPhaseOneBaseline(forged, {
     resolveAlias: async () => 'opaque-value',
     observeResource: async () => null,
@@ -362,7 +394,7 @@ test('baseline validation errors do not retain rejected input paths or values', 
 
 test('recipe dependencies must identify the exact Agent, channel, and provider account', () => {
   const { recipe } = loadPhaseOneBaselineDefinitions();
-  for (const key of ['smoke-agent-channel-grant', 'google-sheets-personal-read-only']) {
+  for (const key of ['smoke-agent-channel-grant', 'google-sheets-personal-standard']) {
     for (const dependencies of [undefined, ['primary-actor'], [key]]) {
       const malformed = clone(recipe);
       malformed.resources.find((resource: BaselineResource) => resource.key === key).dependsOn = dependencies;

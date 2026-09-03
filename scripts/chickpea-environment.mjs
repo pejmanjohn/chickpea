@@ -5,6 +5,7 @@ import { attestEnvironment } from './lib/environment-attestation.mjs';
 import {
   EnvironmentRegistryError,
   claimEnvironment,
+  migrateEnvironmentProviderAuthConfigsFromFile,
   readEnvironmentStatus,
   reclaimEnvironment,
   reconcileEnvironment,
@@ -39,7 +40,13 @@ export async function runEnvironmentCli(argv, io = {}) {
       ...(io.allowSuppliedObservation === true ? { allowSuppliedObservation: true } : {}),
     };
     let result;
-    if (parsed.command === 'claim') {
+    if (parsed.command === 'migrate-provider-auth') {
+      if (parsed.target || !parsed.flags.bindings
+        || Object.keys(parsed.flags).some((flag) => !['root', 'bindings'].includes(flag))) {
+        throw new EnvironmentRegistryError('INVALID_ARGUMENT');
+      }
+      result = migrateEnvironmentProviderAuthConfigsFromFile(parsed.flags.bindings, options);
+    } else if (parsed.command === 'claim') {
       result = claimEnvironment(parsed.target, options);
     } else if (parsed.command === 'status') {
       result = readEnvironmentStatus({
@@ -114,6 +121,7 @@ function parseArgs(argv) {
       '--worktree': 'worktree',
       '--lease-ms': 'leaseMs',
       '--observation': 'observation',
+      '--bindings': 'bindings',
       '--profile': 'profile',
       '--env': 'environment',
     }[value];
@@ -129,6 +137,9 @@ function parseArgs(argv) {
   }
   if (positional.length < 1 || positional.length > 2) {
     throw new EnvironmentRegistryError('INVALID_COMMAND');
+  }
+  if (flags.bindings && positional[0] !== 'migrate-provider-auth') {
+    throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   }
   return { command: positional[0], target: positional[1], flags };
 }

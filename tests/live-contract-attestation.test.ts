@@ -23,7 +23,7 @@ const target: PrivateTargetAliases = {
   providerProjectAlias: 'env-cobalt-provider-project',
   evidenceRootAlias: 'env-cobalt-evidence-root',
   timezoneAlias: 'env-cobalt-timezone',
-  providerReadOnlyAuthConfigAlias: 'env-cobalt-provider-read-only-auth-config',
+  providerAuthConfigAlias: 'env-cobalt-provider-auth-config',
   bindingAliases: {
     AUTH_DB: 'env-cobalt-auth-db',
     TAG_STATE: 'env-cobalt-tag-state',
@@ -33,7 +33,7 @@ const target: PrivateTargetAliases = {
 };
 
 const privateConfig: PrivateLiveConfig = {
-  schemaVersion: 'chickpea-live-private-config/v1',
+  schemaVersion: 'chickpea-live-private-config/v2',
   qaTargetAllowlist: ['cobalt'],
   targets: { cobalt: target },
 };
@@ -57,7 +57,7 @@ const aliases: Record<string, string> = {
   'env-cobalt-provider-project': 'provider-cobalt',
   'env-cobalt-evidence-root': '/private/evidence/cobalt',
   'env-cobalt-timezone': 'America/Los_Angeles',
-  'env-cobalt-provider-read-only-auth-config': 'ac_sheets_cobalt',
+  'env-cobalt-provider-auth-config': 'ac_sheets_cobalt',
   'env-cobalt-auth-db': 'd1-auth-cobalt',
   'env-cobalt-tag-state': 'do-tag-state-cobalt',
 };
@@ -71,7 +71,7 @@ const observed: LiveTargetObservation = {
   }],
   bindingIdentities: { AUTH_DB: 'd1-auth-cobalt', TAG_STATE: 'do-tag-state-cobalt' },
   slack: { teamId: 'T_COBALT', appId: 'A_COBALT' },
-  provider: { projectId: 'provider-cobalt', readOnlyAuthConfigId: 'ac_sheets_cobalt' },
+  provider: { projectId: 'provider-cobalt', authConfigId: 'ac_sheets_cobalt' },
   timezone: 'America/Los_Angeles',
   evidenceRoot: '/private/evidence/cobalt',
   events: {

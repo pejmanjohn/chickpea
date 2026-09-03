@@ -162,12 +162,12 @@ defines only these reusable resources:
 
 | Resource | Scope | Fixture class | Purpose |
 |---|---|---|---|
-| primary actor | shared | `immutable_baseline` | fills the `owner` and `member` slots in all three workspaces |
+| primary actor | shared | `immutable_baseline` | fills the `owner` and `member` slots in Amber and Cobalt |
 | QA channel | per target | `immutable_baseline` | receives welcome and due-routine observations |
 | smoke Agent | per target | `resettable_fixture` | supports update, connection, and routine cases |
 | Agent-channel grant | per target | `resettable_fixture` | keeps the smoke Agent authorized for the QA channel |
 | synthetic Google account | shared | `immutable_baseline` | supplies the provider fixture without adding a Slack actor |
-| Personal Google Sheets binding | per target | `resettable_fixture` | grants only search, metadata, value-read, and table-query capabilities |
+| Personal Google Sheets binding | per target | `resettable_fixture` | uses the reviewed standard nine-capability grant; smoke exercises reads only |
 
 The environment baseline library reads the verifier manifest to bind fixture
 slots to this recipe. It rejects undeclared or deep-only variants and any
@@ -188,15 +188,21 @@ Resource observers must return the requested target and logical resource key,
 plus a boolean for every named health check in the request. A generic `ready`
 label is insufficient. Checks include the full-member/Owner actor role, the
 signed-in Computer Use profile, exact Agent-channel grant, model availability,
-and Agent-owned Personal read-only Sheets binding. The request includes the
-expected scopes and capabilities so the observer can compare the actual state.
+and Agent-owned Personal Sheets binding. The v2 recipe declares `access: write`
+for the normal managed OAuth grant and `exerciseAccess: read` for the smoke
+actions. Its exact nine-capability allowlist includes search, metadata, value
+reads, table queries, spreadsheet creation, value updates/appends, row upserts,
+and adding sheets. It does not permit arbitrary API calls, deletion, or sharing.
+The request includes the expected capabilities so the observer can compare
+the actual state. Do not claim that smoke read-only behavior narrows OAuth
+consent; keep all exercises within the approved test fixture.
 
 The infrastructure aliases come from the registry. Resolve the fixture aliases
 through separate private bindings: `actor-identity`, `computer-use-profile`,
 `channel-identity`, `agent-identity`, `model-provider`,
 `agent-channel-grant-identity`, `synthetic-account-identity`, and
 `sheets-binding-identity`, each prefixed with `env-<target>-`. The same actor and
-synthetic account may resolve in all three targets; mutable fixture IDs must
+synthetic account may resolve in both targets; mutable fixture IDs must
 resolve within the target's attested Worker/D1 and Slack workspace. A bare
 local Agent ID may repeat in different databases; compare the full target and
 resource identity, not that string alone. `model-provider` names a
@@ -212,6 +218,52 @@ connection ID and managed-provider account reference must differ from the
 standing baseline binding. Attribute both to the run before reversal, delete
 only the run-owned remote account, and recheck baseline health afterward.
 Do not revoke the shared upstream Google grant.
+
+### Migrating an existing v1 provider registration
+
+New registries use `chickpea-environment-registry/v2` and
+`providerAuthConfigId`. New claims, deploys, and attestations against existing
+v1 registries fail closed with `PROVIDER_AUTH_CONFIG_MIGRATION_REQUIRED` until
+explicitly migrated. Status, reclaim, fenced release, and reconciliation stay
+available to finish existing work, preserving v1 until migration. Verify
+each normal managed auth config in its matching provider project first; this
+operation only changes local metadata, not provider grants or connections.
+
+Release both lane claims and resolve every target lock or deployment intent.
+If a release process died after committing, `env reconciliation <target>`
+can clear its same-host dead-process lock only when the existing run journal
+is safe to clear. Live/foreign locks and unresolved product cleanup remain
+blocked; infrastructure cleanup never substitutes for verifier cleanup.
+Prepare an owner-only JSON file outside the repository with
+`expectedRegistryRevision` and exactly two `targets` entries, each containing
+`target`, `providerProjectId`, `previousAuthConfigId`, and
+`providerAuthConfigId`. Then run:
+
+```sh
+npm run env -- migrate-provider-auth --bindings /absolute/private/migration.json
+```
+
+The migration compares the revision and prior identities, appends one v2
+snapshot, preserves all v1 history, and clears both prior attestations. A
+snapshot-first interruption is recovered by normal registry reads; a repeated
+migration reports `REGISTRY_ALREADY_CURRENT` and cannot duplicate or overwrite
+the transition. Regenerate private verifier inputs (v2) and baseline plans (v2),
+deploy each claimed lane using the guarded wrapper, and attest afresh. The
+wrapper pins both `COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID` and
+`COMPOSIO_SHEETS_WRITE_AUTH_CONFIG_ID` to the same registered normal config,
+including when reusing an artifact with an old READ override. The product's
+read capability lane does not narrow the provider's OAuth grant. It does not
+erase legacy provider configs or unrelated connections.
+
+Afterward, `npm run env -- status --all` must read the registry successfully
+with both claims released and no prior attested revision. Compare the new
+snapshot to its v1 predecessor: only the schema/revision, two auth-config
+fields, cleared attestations, and appended audit events may differ. Do not
+run an old v1 environment controller against this registry. There is no schema
+downgrade command: a correction must append a reviewed v2 revision under the
+same ownership and lock checks, never replace old snapshots. Worker code and
+provider resources are unchanged by the migration itself, so stopping before
+the subsequent deployment preserves the existing live service.
 
 Inspect afresh before each run; do not reuse an older ready report. Always show
 the content-free dry-run report alongside doctor output: a non-actor fixture

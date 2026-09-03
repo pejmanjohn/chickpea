@@ -10,11 +10,11 @@ import {
 } from '../../qa/live/schema.ts';
 
 export const ENVIRONMENT_WORKSPACE_RECIPE_SCHEMA =
-  'chickpea-environment-workspace-recipe/v1';
+  'chickpea-environment-workspace-recipe/v2';
 export const ENVIRONMENT_DESIRED_STATE_SCHEMA =
-  'chickpea-environment-desired-state/v1';
+  'chickpea-environment-desired-state/v2';
 export const ENVIRONMENT_BASELINE_PLAN_SCHEMA =
-  'chickpea-environment-baseline-plan/v1';
+  'chickpea-environment-baseline-plan/v2';
 export { ENVIRONMENT_PROTECTED_INVENTORY_SCHEMA };
 
 const RECIPE_URL = new URL('../../config/environments/qa/workspace-recipe.json', import.meta.url);
@@ -29,7 +29,7 @@ const PHASE_ONE_RESOURCE_KEYS = Object.freeze([
   'smoke-agent',
   'smoke-agent-channel-grant',
   'synthetic-google-account',
-  'google-sheets-personal-read-only',
+  'google-sheets-personal-standard',
 ]);
 const PHASE_ONE_FIXTURE_SLOTS = Object.freeze([
   'owner',
@@ -46,14 +46,14 @@ const PHASE_ONE_HEALTH_CHECKS = Object.freeze([
   'model-provider-ready',
   'agent-channel-grant-exact',
   'provider-account-readable',
-  'google-sheets-binding-personal-read-only',
+  'google-sheets-binding-personal-standard',
 ]);
 const ENVIRONMENT_ALIAS_FIELDS = Object.freeze([
   'worker',
   'workspace',
   'slack-app',
   'provider-project',
-  'provider-read-only-auth-config',
+  'provider-auth-config',
   'evidence-root',
   'timezone',
   'auth-db',
@@ -66,7 +66,7 @@ const RECIPE_KEYS = Object.freeze(['schemaVersion', 'resources', 'slotBindings',
 const RESOURCE_KEYS = Object.freeze([
   'key', 'resourceKind', 'fixtureKind', 'fixtureClass', 'scope', 'ownership',
   'requiredBy', 'roles', 'privateRequirements', 'dependsOn', 'provider', 'toolkit',
-  'ownerKind', 'access', 'capabilities', 'healthChecks',
+  'ownerKind', 'access', 'exerciseAccess', 'capabilities', 'healthChecks',
 ]);
 const RESOURCE_CHECKS = Object.freeze({
   'primary-actor': ['actor-visible-in-workspace', 'computer-use-profile-available'],
@@ -74,7 +74,7 @@ const RESOURCE_CHECKS = Object.freeze({
   'smoke-agent': ['agent-resettable', 'model-provider-ready'],
   'smoke-agent-channel-grant': ['agent-channel-grant-exact'],
   'synthetic-google-account': ['provider-account-readable'],
-  'google-sheets-personal-read-only': ['google-sheets-binding-personal-read-only'],
+  'google-sheets-personal-standard': ['google-sheets-binding-personal-standard'],
 });
 const RESOURCE_ALIASES = Object.freeze({
   'primary-actor': ['actor-identity', 'computer-use-profile'],
@@ -82,11 +82,11 @@ const RESOURCE_ALIASES = Object.freeze({
   'smoke-agent': ['agent-identity', 'model-provider'],
   'smoke-agent-channel-grant': ['agent-channel-grant-identity'],
   'synthetic-google-account': ['synthetic-account-identity'],
-  'google-sheets-personal-read-only': ['sheets-binding-identity'],
+  'google-sheets-personal-standard': ['sheets-binding-identity'],
 });
 const RESOURCE_DEPENDENCIES = Object.freeze({
   'smoke-agent-channel-grant': ['smoke-agent', 'qa-channel'],
-  'google-sheets-personal-read-only': ['smoke-agent', 'synthetic-google-account'],
+  'google-sheets-personal-standard': ['smoke-agent', 'synthetic-google-account'],
 });
 const RESOURCE_CONTRACT = Object.freeze({
   'primary-actor': Object.freeze({ resourceKind: 'actor', fixtureKind: 'actor', fixtureClass: 'immutable_baseline', scope: 'shared' }),
@@ -94,7 +94,7 @@ const RESOURCE_CONTRACT = Object.freeze({
   'smoke-agent': Object.freeze({ resourceKind: 'agent', fixtureKind: 'agent', fixtureClass: 'resettable_fixture', scope: 'target' }),
   'smoke-agent-channel-grant': Object.freeze({ resourceKind: 'agent_channel_grant', fixtureKind: undefined, fixtureClass: 'resettable_fixture', scope: 'target' }),
   'synthetic-google-account': Object.freeze({ resourceKind: 'provider_account', fixtureKind: 'provider_account', fixtureClass: 'immutable_baseline', scope: 'shared' }),
-  'google-sheets-personal-read-only': Object.freeze({ resourceKind: 'connection_binding', fixtureKind: undefined, fixtureClass: 'resettable_fixture', scope: 'target' }),
+  'google-sheets-personal-standard': Object.freeze({ resourceKind: 'connection_binding', fixtureKind: undefined, fixtureClass: 'resettable_fixture', scope: 'target' }),
 });
 
 export class BaselineDefinitionError extends Error {
@@ -160,7 +160,7 @@ export function validateWorkspaceRecipe(input) {
         || new Set(resource.dependsOn).size !== resource.dependsOn.length)) {
       throw fail('INVALID_WORKSPACE_RECIPE');
     }
-    for (const field of ['provider', 'toolkit', 'ownerKind', 'access']) {
+    for (const field of ['provider', 'toolkit', 'ownerKind', 'access', 'exerciseAccess']) {
       if (resource[field] !== undefined && !portableKey(resource[field])) {
         throw fail('INVALID_WORKSPACE_RECIPE');
       }
@@ -197,18 +197,24 @@ export function validateWorkspaceRecipe(input) {
   }
   const actor = input.resources.find(({ key }) => key === 'primary-actor');
   const provider = input.resources.find(({ key }) => key === 'synthetic-google-account');
-  const sheets = input.resources.find(({ key }) => key === 'google-sheets-personal-read-only');
+  const sheets = input.resources.find(({ key }) => key === 'google-sheets-personal-standard');
   if (!sameStrings(actor?.roles, ['owner', 'member'])
     || provider?.provider !== 'google'
     || sheets?.provider !== 'google'
     || sheets?.toolkit !== 'googlesheets'
     || sheets?.ownerKind !== 'personal'
-    || sheets?.access !== 'read'
+    || sheets?.access !== 'write'
+    || sheets?.exerciseAccess !== 'read'
     || !sameStrings(sheets?.capabilities, [
       'sheets.spreadsheets.search',
       'sheets.spreadsheets.metadata',
       'sheets.values.get',
       'sheets.tables.query',
+      'sheets.spreadsheets.create',
+      'sheets.values.update',
+      'sheets.values.append',
+      'sheets.rows.upsert',
+      'sheets.sheets.add',
     ])) {
     throw fail('INVALID_RESOURCE_CONTRACT');
   }

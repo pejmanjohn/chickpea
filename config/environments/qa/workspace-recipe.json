@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "chickpea-environment-workspace-recipe/v1",
+  "schemaVersion": "chickpea-environment-workspace-recipe/v2",
   "resources": [
     {
       "key": "primary-actor",
@@ -75,7 +75,7 @@
       "healthChecks": ["provider-account-readable"]
     },
     {
-      "key": "google-sheets-personal-read-only",
+      "key": "google-sheets-personal-standard",
       "resourceKind": "connection_binding",
       "fixtureClass": "resettable_fixture",
       "scope": "target",
@@ -85,14 +85,20 @@
       "provider": "google",
       "toolkit": "googlesheets",
       "ownerKind": "personal",
-      "access": "read",
+      "access": "write",
+      "exerciseAccess": "read",
       "privateRequirements": ["sheets-binding-identity"],
-      "healthChecks": ["google-sheets-binding-personal-read-only"],
+      "healthChecks": ["google-sheets-binding-personal-standard"],
       "capabilities": [
         "sheets.spreadsheets.search",
         "sheets.spreadsheets.metadata",
         "sheets.values.get",
-        "sheets.tables.query"
+        "sheets.tables.query",
+        "sheets.spreadsheets.create",
+        "sheets.values.update",
+        "sheets.values.append",
+        "sheets.rows.upsert",
+        "sheets.sheets.add"
       ]
     }
   ],
@@ -111,6 +117,6 @@
     "model-provider-ready",
     "agent-channel-grant-exact",
     "provider-account-readable",
-    "google-sheets-binding-personal-read-only"
+    "google-sheets-binding-personal-standard"
   ]
 }

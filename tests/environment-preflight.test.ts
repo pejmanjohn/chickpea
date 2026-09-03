@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 // @ts-expect-error Executable environment modules intentionally have no declarations.
-import { assertLiveEnvironmentClaim, claimEnvironment, createEnvironmentRegistry, environmentMarkerPath, readEnvironmentRegistry, reclaimEnvironment, recordEnvironmentAttestation } from '../scripts/lib/environment-registry.mjs';
+import { assertLiveEnvironmentClaim, claimEnvironment, createEnvironmentRegistry, environmentMarkerPath, migrateEnvironmentProviderAuthConfigs, readEnvironmentRegistry, reclaimEnvironment, recordEnvironmentAttestation, releaseEnvironment } from '../scripts/lib/environment-registry.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { EnvironmentPreflightError, assertEnvironmentReleaseAllowed, beginEnvironmentDeployment, completeEnvironmentDeployment, environmentDeployReceiptPath, observeProductionEnvironmentAuthority, observeReceiptBackedEnvironment, preflightEnvironmentMutation, readEnvironmentDeployReceipt, authorizeEnvironmentCleanupPlan, reconcileEnvironmentDeployment, recheckEnvironmentMutationAuthority, resumeEnvironmentDeployment, writeEnvironmentBaseline, writeEnvironmentResourceCreationIntent, writeEnvironmentResourceCreationReceipt, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
 import { acquireTargetLock, readTargetLock } from '../qa/live/safety/lock.ts';
@@ -54,7 +54,7 @@ function fixture(input: {
       workspaceLabel: `${target} workspace`, slackAppId: `A_${target.toUpperCase()}`,
       slackAppLabel: `${target} app`, botUserId: `U_${target.toUpperCase()}_BOT`,
       providerProjectId: `provider-${target}`,
-      providerReadOnlyAuthConfigId: `provider-read-${target}`,
+      providerAuthConfigId: `provider-read-${target}`,
       timezone: 'America/Los_Angeles', evidenceRoot,
       bindingIdentities: { AUTH_DB: `d1-${target}`, TAG_STATE: `tag-${target}` },
       schemaGeneration: input.schemaGeneration ?? 'd1:0002_mcp_oauth;do:v9',
@@ -706,8 +706,8 @@ test('cross-process stale resume and reconciliation races have one mutation owne
     const results = outputs.map((output) => JSON.parse(output.stdout) as {
       ok: boolean; code?: string; kind?: string;
     });
-    assert.equal(results.filter((result) => result.ok).length, 1);
-    assert.equal(results.filter((result) => result.code === 'TARGET_LOCK_LIVE').length, 1);
+    assert.equal(results.filter((result) => result.ok).length, 1, JSON.stringify({ mode, results }));
+    assert.equal(results.filter((result) => result.code === 'TARGET_LOCK_LIVE').length, 1, JSON.stringify({ mode, results }));
     assert.equal(readFileSync(winnerPath, 'utf8'), `${mode}\n`);
 
     if (mode === 'resume') {
@@ -729,6 +729,96 @@ test('cross-process stale resume and reconciliation races have one mutation owne
 
   await runRace('resume');
   await runRace('reconcile');
+});
+
+test('v1 deployment recovery retains the old schema until a fenced release and explicit migration', async (context) => {
+  for (const completed of [false, true]) {
+    const f = fixture();
+    context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+    claimEnvironment('amber', f.options);
+    const preflight = await preflightEnvironmentMutation('amber', {
+      ...f.options, baseline: baseline(), localContract: localContract(),
+      observeAuthority: async () => authority(),
+    });
+    beginEnvironmentDeployment(preflight, { ...f.options, localContract: localContract() });
+    makeMutationLockStale(f.records[0]!.evidenceRoot);
+    const snapshots = readdirSync(join(f.root, 'revisions')).map((name) => join(f.root, 'revisions', name));
+    const oldSnapshots = new Map<string, string>();
+    for (const file of [...snapshots, join(f.root, 'registry.json')]) {
+      const state = JSON.parse(readFileSync(file, 'utf8'));
+      state.schemaVersion = 'chickpea-environment-registry/v1';
+      for (const target of TARGETS) {
+        state.targets[target].providerReadOnlyAuthConfigId = state.targets[target].providerAuthConfigId;
+        delete state.targets[target].providerAuthConfigId;
+      }
+      const bytes = JSON.stringify(state);
+      writeFileSync(file, bytes);
+      if (file !== join(f.root, 'registry.json')) oldSnapshots.set(file, bytes);
+    }
+    // New deploys still refuse v1 even if a caller supplies the recovery option.
+    await assert.rejects(preflightEnvironmentMutation('amber', {
+      ...f.options, allowLegacyRegistryRecovery: true,
+    }), { code: 'PROVIDER_AUTH_CONFIG_MIGRATION_REQUIRED' });
+    const result = await reconcileEnvironmentDeployment('amber', {
+      ...f.options, localContract: localContract(),
+      observeAuthority: async () => authority('amber', completed ? {
+        activeVersion: 'version-recovered', deploymentMetadata: preflight.deploymentMetadata,
+      } : {}),
+    });
+    assert.equal(completed ? result.activeVersion : result.aborted, completed ? 'version-recovered' : true);
+    assert.equal(existsSync(join(f.records[0]!.evidenceRoot, 'target.lock')), false);
+    assert.equal(existsSync(join(f.records[0]!.evidenceRoot, 'deploy-intent.json')), false);
+    withEnvironmentReleaseFence('amber', f.options, (fence: { runId: string }) => releaseEnvironment('amber', {
+      ...f.options, expectedTargetLockRunId: fence.runId,
+    }));
+    const released = JSON.parse(readFileSync(join(f.root, 'registry.json'), 'utf8'));
+    assert.equal(released.schemaVersion, 'chickpea-environment-registry/v1');
+    assert.equal(released.targets.amber.claim, null);
+    for (const [file, bytes] of oldSnapshots) assert.equal(readFileSync(file, 'utf8'), bytes);
+    migrateEnvironmentProviderAuthConfigs({
+      expectedRegistryRevision: released.revision,
+      targets: TARGETS.map((target) => ({ target, providerProjectId: `provider-${target}`,
+        previousAuthConfigId: `provider-read-${target}`, providerAuthConfigId: `provider-standard-${target}` })),
+    }, f.options);
+    assert.equal(readEnvironmentRegistry(f.options).schemaVersion, 'chickpea-environment-registry/v2');
+  }
+});
+
+test('reconciliation clears a safe post-release v1 lock without recreating a claim', async (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', f.options);
+  let abandonedOwner;
+  const lockPath = join(f.records[0]!.evidenceRoot, 'target.lock');
+  withEnvironmentReleaseFence('amber', f.options, (fence: { runId: string }) => {
+    releaseEnvironment('amber', { ...f.options, expectedTargetLockRunId: fence.runId });
+    abandonedOwner = { ...readTargetLock(lockPath), pid: DEAD_PID };
+  });
+  // Exact durable state after a process dies between claim release and fence unlink.
+  writeFileSync(lockPath, JSON.stringify(abandonedOwner), { mode: 0o600 });
+  for (const file of [
+    ...readdirSync(join(f.root, 'revisions')).map((name) => join(f.root, 'revisions', name)),
+    join(f.root, 'registry.json'),
+  ]) {
+    const state = JSON.parse(readFileSync(file, 'utf8'));
+    state.schemaVersion = 'chickpea-environment-registry/v1';
+    for (const target of TARGETS) {
+      state.targets[target].providerReadOnlyAuthConfigId = state.targets[target].providerAuthConfigId;
+      delete state.targets[target].providerAuthConfigId;
+    }
+    writeFileSync(file, JSON.stringify(state));
+  }
+  assert.equal(await reconcileEnvironmentDeployment('amber', f.options), null);
+  assert.equal(existsSync(lockPath), false);
+  const recovered = JSON.parse(readFileSync(join(f.root, 'registry.json'), 'utf8'));
+  assert.equal(recovered.targets.amber.claim, null);
+  assert.equal(recovered.schemaVersion, 'chickpea-environment-registry/v1');
+  migrateEnvironmentProviderAuthConfigs({
+    expectedRegistryRevision: recovered.revision,
+    targets: TARGETS.map((target) => ({ target, providerProjectId: `provider-${target}`,
+      previousAuthConfigId: `provider-read-${target}`, providerAuthConfigId: `provider-standard-${target}` })),
+  }, f.options);
+  assert.equal(readEnvironmentRegistry(f.options).schemaVersion, 'chickpea-environment-registry/v2');
 });
 
 test('reconciliation reuses the nonce-bound provider context and rejects a conflicting override', async (context) => {

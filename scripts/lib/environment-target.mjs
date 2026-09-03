@@ -52,14 +52,14 @@ export function createVerifierTargetInputs(target, registration, registrations =
   const privateTarget = Object.freeze({
     ...sharedTarget,
     timezoneAlias: aliases.timezone,
-    providerReadOnlyAuthConfigAlias: aliases.providerReadOnlyAuthConfig,
+    providerAuthConfigAlias: aliases.providerAuthConfig,
     bindingAliases: Object.freeze({
       AUTH_DB: aliases.authDb,
       TAG_STATE: aliases.tagState,
     }),
   });
   const privateConfig = Object.freeze({
-    schemaVersion: 'chickpea-live-private-config/v1',
+    schemaVersion: 'chickpea-live-private-config/v2',
     qaTargetAllowlist: Object.freeze([target]),
     targets: Object.freeze({ [target]: privateTarget }),
   });
@@ -75,7 +75,7 @@ function aliasesFor(target) {
     providerProject: `env-${target}-provider-project`,
     evidenceRoot: `env-${target}-evidence-root`,
     timezone: `env-${target}-timezone`,
-    providerReadOnlyAuthConfig: `env-${target}-provider-read-only-auth-config`,
+    providerAuthConfig: `env-${target}-provider-auth-config`,
     authDb: `env-${target}-auth-db`,
     tagState: `env-${target}-tag-state`,
   });
