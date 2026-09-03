@@ -416,6 +416,39 @@ test('visual fixture fake Slack fails closed and returns requested records', asy
   }
 });
 
+test('visual fixture serves full synthetic proposals through isolated authenticated Admin storage', async () => {
+  const { startAdminVisualFixture } = await loadFixtureModule();
+  const fixture = await startAdminVisualFixture();
+  try {
+    const path = '/admin/api/runtime/agents/agent_research/proposal-status';
+    const before = await fixtureJson(fixture, '/admin/api/agents/agent_research');
+    const status = await fixtureJson<{
+      agentId: string;
+      requester: { userId: string; membershipId: string; slackUserId: string };
+      proposals: Array<{ proposalId: string; status: string; actorUserId: string;
+        actorMembershipId: string; updates: Array<{ instructions: string; description: string }> }>;
+    }>(fixture, path);
+    assert.equal(status.agentId, 'agent_research');
+    assert.equal(status.requester.slackUserId, 'UVISUALOWNER');
+    assert.equal(status.proposals.length, 1);
+    const proposal = status.proposals[0]!;
+    assert.equal(proposal.proposalId, 'proposal_visual_research');
+    assert.equal(proposal.status, 'pending');
+    assert.equal(proposal.actorUserId, status.requester.userId);
+    assert.equal(proposal.actorMembershipId, status.requester.membershipId);
+    assert.ok(proposal.updates[0]!.instructions.length > 14_000);
+    assert.ok(proposal.updates[0]!.instructions.endsWith('End of frozen instructions.'));
+    assert.ok(proposal.updates[0]!.instructions.includes('<script>not executable</script>'));
+    assert.equal(proposal.updates[0]!.description, 'Synthetic proposal for local visual review.');
+    assert.deepEqual(await fixtureJson(fixture, '/admin/api/agents/agent_research'), before);
+    const other = await fixtureJson<{ proposals: unknown[] }>(fixture, '/admin/api/runtime/agents/agent_release/proposal-status');
+    assert.deepEqual(other.proposals, []);
+  } finally {
+    await fixture.close();
+  }
+  assert.equal(existsSync(fixture.stateDirectory), false);
+});
+
 test('canonical visual states use authenticated production URLs and UI actions only', async () => {
   const { startAdminVisualFixture } = await loadFixtureModule();
   const fixture = await startAdminVisualFixture();
@@ -433,6 +466,7 @@ test('canonical visual states use authenticated production URLs and UI actions o
     assert.deepEqual(fixture.canonicalStates, {
       settingsProviders: { path: '/admin/settings/providers', actions: [] },
       agentInstructions: { path: '/admin/agents/agent_research', actions: [] },
+      agentProposals: { path: '/admin/agents/agent_research', actions: ['Slack update proposal details', 'Refresh Slack proposals'] },
       agentBlankDescription: { path: '/admin/agents/agent_customer', actions: [] },
       agentMemory: { path: '/admin/agents/agent_research', actions: ['Memory'] },
       agentSchedules: { path: '/admin/agents/agent_release', actions: ['Schedules'] },

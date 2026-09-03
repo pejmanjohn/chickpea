@@ -372,6 +372,7 @@ function runAdminPageHarness(
     agents?: unknown[];
     agentsGetError?: { status: number; error: string };
     creationStatusFetch?: (agentId: string) => Promise<FakeResponse>;
+    proposalStatusFetch?: (agentId: string) => Promise<FakeResponse>;
     agentsListOmitsPrivateUseAudience?: boolean;
     providers?: ProviderSummaryFixture[];
     openrouterFavorites?: string[];
@@ -1691,6 +1692,11 @@ function runAdminPageHarness(
     if (creationStatusMatch && method === 'GET') {
       const id = decodeURIComponent(creationStatusMatch[1] as string);
       return harnessOptions.creationStatusFetch?.(id) ?? Promise.resolve(jsonResponse({ agentId: id, welcomes: [] }));
+    }
+    const proposalStatusMatch = path.match(/^\/admin\/api\/runtime\/agents\/([^/]+)\/proposal-status$/);
+    if (proposalStatusMatch && method === 'GET') {
+      const id = decodeURIComponent(proposalStatusMatch[1] as string);
+      return harnessOptions.proposalStatusFetch?.(id) ?? Promise.resolve(jsonResponse({ agentId: id, proposals: [], requester: {} }));
     }
     const agentGetMatch = path.match(/^\/admin\/api\/agents\/([^/]+)$/);
     if (agentGetMatch && method === 'GET') {
@@ -3543,6 +3549,67 @@ test('creation delivery disclosure is explicit, escaped, and ignores stale navig
   await flushAsync();
   assert.match(harness.app.innerHTML, /Creation delivery status unavailable/);
   assert.doesNotMatch(harness.app.innerHTML, /Welcome records/);
+});
+
+test('proposal disclosure shows the frozen value on demand without rendering secrets or stale Agent data', async () => {
+  let reads = 0;
+  let resolve!: (response: FakeResponse) => void;
+  const agents = ['agent_one', 'agent_two'].map((id) => ({ ...releaseAgent, id, name: id }));
+  const harness = runAdminPageHarness({ agents, proposalStatusFetch: () => {
+    reads++;
+    return new Promise((done) => { resolve = done; });
+  } });
+  await flushAsync();
+  const click = (action: string, id?: string) => harness.listeners.click!({ target: actionTarget({ 'data-action': action, ...(id ? { 'data-agent': id } : {}) }) });
+  click('edit-profile', 'agent_one');
+  await flushAsync();
+  assert.equal(reads, 0);
+  assert.match(harness.app.innerHTML, /<summary>Slack update proposal details<\/summary>/);
+  click('refresh-proposal-status');
+  assert.equal(reads, 1);
+  const instructions = '<script>unsafe</script>\n' + 'Full frozen value. '.repeat(800);
+  const data = { agentId: 'agent_one', requester: { userId: 'internal_owner', membershipId: 'member_owner', slackUserId: 'U_OWNER' }, proposals: [{
+    proposalId: 'proposal_one', actorUserId: 'internal_owner', actorMembershipId: 'member_owner',
+    originKey: 'slack:T_TEST:C_UPDATE:1800000000.000100:agent:agent_one',
+    approvalScopeKey: 'slack:T_TEST:C_UPDATE:1800000000.000100:agent:agent_one', status: 'completed',
+    digest: 'digest', targetRevision: 7, operationCount: 1, createdAt: 1, updatedAt: 3,
+    approval: { workspaceId: 'T_TEST', channelId: 'C_UPDATE', threadTs: '1800000000.000100',
+      requesterUserId: 'U_OWNER', requesterMembershipId: 'member_owner', actingAgentId: 'agent_chickpea',
+      turns: [{ turnJobId: 'turn_one', runId: 'run_one', messageTs: '1800000001.000200', status: 'done', delivered: true,
+        activity: { surface: 'assistant_status', state: 'cleared', cleanup: 'required', lifecycle: 'settled', sessionGeneration: 1800000001000200 },
+        secret: 'NEVER_DISPLAY_TURN' }] },
+    updates: [{ itemId: 'update', kind: 'update_agent', agentId: 'agent_one', expectedRevision: 7, fields: ['description', 'instructions'], instructions, description: 'Frozen description' }],
+    result: { status: 'completed', outcomes: [{ itemId: 'update', disposition: 'applied', changed: [{ kind: 'agent', id: 'agent_one', revision: 8 }], setupUrl: 'NEVER_DISPLAY_SETUP' }] },
+    secret: 'NEVER_DISPLAY_RAW_PROPOSAL',
+  }] };
+  resolve(jsonResponse(data));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Requester Slack user ID[^]*U_OWNER/);
+  assert.match(harness.app.innerHTML, /Operation kind[^]*>update_agent</);
+  assert.match(harness.app.innerHTML, /Target Agent ID[^]*>agent_one</);
+  assert.match(harness.app.innerHTML, /Target revision[^]*>7</);
+  assert.match(harness.app.innerHTML, /Resulting Agent revision[^]*>8</);
+  assert.match(harness.app.innerHTML, /Retained approval turns[^]*>1</);
+  assert.match(harness.app.innerHTML, /Approval message timestamp[^]*>1800000001.000200</);
+  assert.match(harness.app.innerHTML, /Approval activity state[^]*>cleared</);
+  assert.match(harness.app.innerHTML, /Approval run lifecycle[^]*>settled</);
+  assert.ok(harness.app.innerHTML.includes(instructions.replaceAll('<', '&lt;').replaceAll('>', '&gt;')));
+  assert.doesNotMatch(harness.app.innerHTML, /<script>unsafe|NEVER_DISPLAY/);
+  click('edit-profile', 'agent_two');
+  click('edit-profile', 'agent_one');
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /proposal_one|Full frozen value/);
+  assert.match(harness.app.innerHTML, /<details class="scheduled-technical"><summary>Slack update proposal details/);
+  click('refresh-proposal-status');
+  click('edit-profile', 'agent_two');
+  resolve(jsonResponse(data));
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /proposal_one|Full frozen value/);
+  click('refresh-proposal-status');
+  resolve(jsonResponse({ error: 'forbidden' }, 403));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Slack update proposal details unavailable/);
+  assert.doesNotMatch(harness.app.innerHTML, /Requester Slack user ID/);
 });
 
 test('the profile editor presents reversible archive semantics for an assigned Agent', async () => {

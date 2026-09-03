@@ -3285,6 +3285,7 @@ button.capability-pill { cursor: pointer; }
     editingAgentId: null,
     profileDraft: null,
     profileCreationStatus: null,
+    profileProposalStatus: null,
     profileError: "",
     profileConflict: false,
     profilePresenceMutation: null,
@@ -3897,6 +3898,7 @@ button.capability-pill { cursor: pointer; }
 
   function openProfileEditor(selected, initialTab) {
     state.profileCreationStatus = null;
+    state.profileProposalStatus = null;
     state.mobileAgentRosterOpen = false;
     state.view = "profiles";
     state.profileScreen = "edit";
@@ -9623,6 +9625,7 @@ button.capability-pill { cursor: pointer; }
       (readOnly ? '<fieldset class="agent-readonly-fields" disabled>' + agentAdvancedHtml(draft) + '</fieldset>' : agentAdvancedHtml(draft)) +
       agentSavedRecordHtml(draft) +
       agentCreationStatusHtml(draft) +
+      agentProposalStatusHtml(draft) +
       (readOnly ? "" : '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + (saveBarCueActive() ? " cue" : "") + '">' +
       '<div class="save-bar-inner">' +
       '<p class="save-note">&#9679; Unsaved changes &mdash; applies to new threads</p>' +
@@ -9695,6 +9698,98 @@ button.capability-pill { cursor: pointer; }
     }
     current.loading = false;
     if (state.profileCreationStatus === current && state.profileDraft && state.profileDraft.id === current.agentId) render();
+  }
+
+  function agentProposalStatusHtml(draft) {
+    if (!draft.id || draft.canEdit === false) return '';
+    var current = state.profileProposalStatus;
+    if (current && current.agentId !== draft.id) current = null;
+    var body = '<p class="hint">Your two most recent Slack proposals that update this Agent. Read-only. Available to Owners and Admins.</p>' +
+      '<button type="button" class="btn btn-soft btn-sm" data-action="refresh-proposal-status"' + (current && current.loading ? ' disabled' : '') + '>Refresh Slack proposals</button>';
+    if (current && current.error) body += '<p role="alert">Slack update proposal details unavailable.</p>';
+    if (current && current.data) {
+      var requester = current.data.requester;
+      body += '<div class="scheduled-meta">' +
+        scheduledMeta("Requester user ID", requester.userId, true) +
+        scheduledMeta("Requester membership ID", requester.membershipId, true) +
+        scheduledMeta("Requester Slack user ID", requester.slackUserId || "unavailable", true) +
+        scheduledMeta("Recent proposals", current.data.proposals.length, true) + '</div>';
+      current.data.proposals.forEach(function (proposal) {
+        body += '<section aria-label="Proposal ' + esc(proposal.proposalId) + '"><div class="scheduled-meta">' +
+          scheduledMeta("Proposal ID", proposal.proposalId, true) +
+          scheduledMeta("Proposal requester user ID", proposal.actorUserId, true) +
+          scheduledMeta("Proposal requester membership ID", proposal.actorMembershipId, true) +
+          scheduledMeta("Origin", proposal.originKey, true) +
+          scheduledMeta("Approval scope", proposal.approvalScopeKey, true) +
+          scheduledMeta("Proposal status", proposal.status, false) +
+          scheduledMeta("Proposal digest", proposal.digest, true) +
+          scheduledMeta("Target revision", proposal.targetRevision == null ? "unavailable" : proposal.targetRevision, true) +
+          scheduledMeta("Total operations", proposal.operationCount, true) + '</div>';
+        proposal.updates.forEach(function (update) {
+          body += '<div class="scheduled-meta">' + scheduledMeta("Update item ID", update.itemId, true) +
+            scheduledMeta("Operation kind", update.kind, true) +
+            scheduledMeta("Target Agent ID", update.agentId, true) +
+            scheduledMeta("Expected revision", update.expectedRevision, true) +
+            scheduledMeta("Changed fields", update.fields.join(", "), true) + '</div>' +
+            '<p class="field-label">Frozen instructions</p><pre aria-label="Frozen instructions" style="white-space:pre-wrap;overflow-wrap:anywhere">' + esc(update.instructions == null ? "Not changed" : update.instructions) + '</pre>' +
+            '<p class="field-label">Frozen description</p><pre aria-label="Frozen description" style="white-space:pre-wrap;overflow-wrap:anywhere">' + esc(update.description == null ? "Not changed" : update.description) + '</pre>';
+        });
+        body += '<div class="scheduled-meta">' + scheduledMeta("Apply result", proposal.result ? proposal.result.status : "not available", false);
+        if (proposal.result) proposal.result.outcomes.forEach(function (outcome) {
+          body += scheduledMeta("Result item ID", outcome.itemId, true) + scheduledMeta("Result disposition", outcome.disposition, false);
+          outcome.changed.forEach(function (ref) {
+            body += scheduledMeta("Resulting Agent ID", ref.id, true) +
+              scheduledMeta("Resulting Agent revision", ref.revision == null ? "unavailable" : ref.revision, true);
+          });
+        });
+        body += '</div>' + agentProposalApprovalHtml(proposal.approval) + '</section>';
+      });
+    }
+    return '<details class="scheduled-technical"' + (current ? ' open' : '') + '><summary>Slack update proposal details</summary>' + body + '</details>';
+  }
+
+  function agentProposalApprovalHtml(approval) {
+    var body = '<div class="scheduled-meta">' + scheduledMeta("Retained approval turns", approval ? approval.turns.length : "unavailable", true);
+    if (!approval) return body + '</div>';
+    body += scheduledMeta("Approval workspace", approval.workspaceId, true) +
+      scheduledMeta("Approval channel", approval.channelId, true) +
+      scheduledMeta("Approval thread", approval.threadTs, true) +
+      scheduledMeta("Approval requester Slack user ID", approval.requesterUserId, true) +
+      scheduledMeta("Approval requester membership ID", approval.requesterMembershipId, true) +
+      scheduledMeta("Acting Agent ID", approval.actingAgentId, true) + '</div>';
+    approval.turns.forEach(function (turn) {
+      var activity = turn.activity;
+      body += '<section aria-label="Approval turn ' + esc(turn.turnJobId) + '"><div class="scheduled-meta">' +
+        scheduledMeta("Approval turn ID", turn.turnJobId, true) +
+        scheduledMeta("Approval run ID", turn.runId || "unavailable", true) +
+        scheduledMeta("Approval message timestamp", turn.messageTs, true) +
+        scheduledMeta("Approval turn status", turn.status, false) +
+        scheduledMeta("Approval delivered", turn.delivered ? "yes" : "no", false) +
+        scheduledMeta("Approval activity surface", activity ? activity.surface : "unavailable", true) +
+        scheduledMeta("Approval activity state", activity ? activity.state : "unavailable", true) +
+        scheduledMeta("Approval activity cleanup", activity ? activity.cleanup : "unavailable", true) +
+        scheduledMeta("Approval run lifecycle", activity ? activity.lifecycle : "unavailable", true) +
+        scheduledMeta("Approval session generation", activity ? activity.sessionGeneration : "unavailable", true) +
+        '</div></section>';
+    });
+    return body;
+  }
+
+  async function refreshProposalStatus() {
+    var draft = state.profileDraft;
+    if (!draft || !draft.id || draft.canEdit === false) return;
+    var current = { agentId: draft.id, loading: true, error: false, data: null };
+    state.profileProposalStatus = current;
+    render();
+    try {
+      var result = await api("/admin/api/runtime/agents/" + encodeURIComponent(draft.id) + "/proposal-status");
+      if (result.agentId !== draft.id || !result.requester || !Array.isArray(result.proposals) || result.proposals.length > 2) throw new Error("Invalid proposal status");
+      current.data = result;
+    } catch (_) {
+      current.error = true;
+    }
+    current.loading = false;
+    if (state.profileProposalStatus === current && state.profileDraft && state.profileDraft.id === current.agentId) render();
   }
 
   function agentAdvancedHtml(draft) {
@@ -13935,6 +14030,7 @@ button.capability-pill { cursor: pointer; }
     if (action === "agent-presence-retry") { retryAgentPresence(); }
     if (action === "reload-profile") { reloadProfile(); }
     if (action === "refresh-creation-status") { refreshCreationStatus(); }
+    if (action === "refresh-proposal-status") { refreshProposalStatus(); }
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
     if (action === "open-channel-from-profile") { state.view = "channels"; state.channelScreen = "detail"; state.profileScreen = "list"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }

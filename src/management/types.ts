@@ -1157,6 +1157,14 @@ export type ManagementRpcRequest =
   | { kind: 'mark_proposal_stale'; proposalId: string; at: number }
   | { kind: 'put_change_set_proposal'; input: PutManagementChangeSetProposalInput }
   | { kind: 'get_change_set_proposal'; proposalId: string }
+  | {
+      kind: 'list_agent_update_proposals';
+      organizationId: string;
+      actorUserId: string;
+      actorMembershipId: string;
+      workspaceId: string;
+      agentId: string;
+    }
   | { kind: 'get_active_change_set_proposal'; input: GetActiveManagementChangeSetProposalInput }
   | { kind: 'claim_change_set_proposal'; input: ClaimManagementProposalInput }
   | { kind: 'reclaim_change_set_proposal'; input: ReclaimManagementChangeSetProposalInput }
@@ -1213,6 +1221,7 @@ export type ManagementRpcResponse =
   | { kind: 'request'; request: ManagementRequestRecord | null }
   | { kind: 'proposal'; proposal: ManagementProposalRecord | null }
   | { kind: 'change_set_proposal'; proposal: ManagementChangeSetProposalRecord | null }
+  | { kind: 'change_set_proposals'; proposals: ManagementChangeSetProposalRecord[] }
   | { kind: 'undo'; undo: ManagementUndoRecord | null }
   | { kind: 'setup'; setup: ManagementSetupRecord | null }
   | { kind: 'outbox'; outbox: ManagementReceiptOutboxRecord | null }

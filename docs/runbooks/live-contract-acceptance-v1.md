@@ -29,14 +29,20 @@ recipe have closed failed requests through exact readback without replay.
 Successful creation, the other three UI recipes, connector-test fixture
 provisioning, and formal smoke remain pending.
 
-The latest creation failure was traced to GPT-OSS exhausting its implicit
-256-token output budget on reasoning without returning text or tools. The local
-budget fix passes 2,858 repository tests, build, and immutable OSS export.
-That is diagnosis and local verification, not a successful live creation.
-An optional read-only Admin creation-delivery disclosure is being added so
-the creation recipe can inspect publication, delivery, and activity settlement
-alongside the exact saved Agent and visible welcome. Missing evidence cannot
-be replaced by an API assertion or a successful-looking reply.
+One earlier creation failure was traced to GPT-OSS exhausting its implicit
+output budget on reasoning. That fix and the optional read-only Admin creation
+delivery disclosure are implemented. A subsequent request created an Agent and
+one welcome, but its formal result remains ambiguous because the initial reader
+failed. Exact cleanup passed. The next correctly addressed request returned an
+explicit creation refusal; it closed as fail with clean postflight. Its cause
+is unconfirmed. Neither run establishes a formal happy-path or smoke pass.
+
+Local approval-verification work adds optional, read-only Slack proposal details
+for the signed-in requester and selected Agent. These expose frozen instructions,
+requester identity mapping, approval scope, and revisions without disclosing
+unrelated operations or setup links. This addition is not deployed or live
+verified. Missing evidence cannot be replaced by an API assertion or a
+successful-looking reply.
 
 ## Historical V0 result
 

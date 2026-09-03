@@ -75,6 +75,9 @@ test('LC-01 catches welcome publication, presence, duplication, and lingering ac
 test('LC-01 catches reaction-only or misbound approval and full-value persistence regressions', () => {
   const cases: Array<[string, (fixture: any) => void]> = [
     ['proposal_binding_mismatch', (fixture) => { fixture.admin.proposal.actorUserId = 'U_OTHER'; }],
+    ['proposal_binding_mismatch', (fixture) => { fixture.admin.requester.slackUserId = 'U_OTHER'; }],
+    ['proposal_binding_mismatch', (fixture) => { fixture.admin.requester.membershipId = 'other_membership'; }],
+    ['proposal_binding_mismatch', (fixture) => { delete fixture.admin.requester; }],
     ['reaction_only_approval', (fixture) => {
       fixture.slack.messages = [];
       fixture.slack.reactions = [{ user: 'U_OWNER', name: 'white_check_mark' }];
@@ -82,6 +85,10 @@ test('LC-01 catches reaction-only or misbound approval and full-value persistenc
     ['frozen_value_mismatch', (fixture) => { fixture.admin.proposal.operations[0].patch.instructions = 'truncated'; }],
     ['durable_value_truncated', (fixture) => { fixture.admin.agent.instructions = 'truncated'; }],
     ['revision_not_advanced', (fixture) => { fixture.admin.agent.revision = 4; }],
+    ['revision_not_advanced', (fixture) => {
+      fixture.admin.agent.revision = 3;
+      fixture.admin.proposal.result.outcomes[0].changed[0].revision = 3;
+    }],
     ['early_mutation', (fixture) => { fixture.admin.preApprovalRevision = 5; }],
     ['activity_lingering', (fixture) => { fixture.admin.presentation.activityProjection.state = 'visible'; }],
   ];
@@ -244,8 +251,9 @@ function agentUpdateFixture() {
     },
     admin: {
       beforeRevision: 4, preApprovalRevision: 4,
+      requester: { userId: 'user_owner', membershipId: 'membership_owner', slackUserId: 'U_OWNER' },
       proposal: {
-        proposalId: 'proposal_alpha', actorUserId: 'U_OWNER',
+        proposalId: 'proposal_alpha', actorUserId: 'user_owner', actorMembershipId: 'membership_owner',
         approvalScopeKey: 'slack:T_QA:C_QA:1700000000.000300:agent:agent_chickpea', status: 'completed',
         operations: [{ kind: 'update_agent', agentId: 'agent_qa_alpha', expectedRevision: 4, patch: { instructions: fullInstructions } }],
         preview: { summary: 'Update Calendar qa-alpha02', changes: [], missingSetup: [] },

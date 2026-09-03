@@ -341,6 +341,21 @@ export class ManagementStoreLogic {
           kind: 'change_set_proposal',
           proposal: this.getActiveChangeSetProposal(request.input) ?? null,
         };
+      case 'list_agent_update_proposals': {
+        const originPrefix = `slack:${request.workspaceId}:`;
+        const rows = this.db.all(
+          `SELECT p.* FROM management_change_set_proposals p
+           WHERE organization_id = ? AND actor_user_id = ? AND actor_membership_id = ?
+             AND substr(origin_key, 1, ?) = ?
+             AND EXISTS (SELECT 1 FROM json_each(p.operations_json) operation
+               WHERE json_extract(operation.value, '$.kind') = 'update_agent'
+                 AND json_extract(operation.value, '$.agentId') = ?)
+           ORDER BY created_at DESC, p.rowid DESC LIMIT 2`,
+          request.organizationId, request.actorUserId, request.actorMembershipId,
+          originPrefix.length, originPrefix, request.agentId,
+        ) as unknown as ManagementChangeSetProposalRow[];
+        return { kind: 'change_set_proposals', proposals: rows.map(changeSetProposalFromRow) };
+      }
       case 'claim_change_set_proposal':
         return {
           kind: 'change_set_proposal',

@@ -35,6 +35,7 @@ import { requestOrigin } from '../http/request-origin.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
+import { readProposalApprovalStatus } from './proposal-status.ts';
 import { ENVIRONMENT_AUTHORITY_PATH, environmentAuthorityResponse } from './environment-authority.ts';
 import {
   ConnectionScheduleConflictError,
@@ -5612,6 +5613,79 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
       console.error('[chickpea] Agent creation status unavailable');
       return c.json({ error: 'agent_creation_status_unavailable' }, 503);
+    }
+  });
+
+  app.get('/admin/api/runtime/agents/:id/proposal-status', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const principal = principalByContext.get(c);
+    if (!principal || principal.machine || !['owner', 'admin'].includes(principal.role)) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    try {
+      const agent = await store(c).getAgent(c.req.param('id'));
+      if (!canEditAgent(principal, agent)) return c.json({ error: 'not_found' }, 404);
+      const identities = identity(c);
+      const organization = await identities.getOrganization();
+      if (organization?.id !== principal.organizationId || !organization.slackTeamId) {
+        return c.json({ error: 'workspace_not_authorized' }, 403);
+      }
+      const result = await management(c).execute({
+        kind: 'list_agent_update_proposals', agentId: agent.id, workspaceId: organization.slackTeamId,
+        organizationId: principal.organizationId, actorUserId: principal.userId,
+        actorMembershipId: principal.membershipId,
+      });
+      if (result.kind !== 'change_set_proposals' || result.proposals.length > 2) {
+        throw new Error('Unexpected proposal response.');
+      }
+      const user = await identities.getUser(principal.userId);
+      const linked = user?.id === principal.userId && user.slackTeamId === organization.slackTeamId
+        ? await identities.resolveSlackIdentity(organization.slackTeamId, user.slackUserId, organization.id)
+        : undefined;
+      const slackUserId = linked?.user.id === principal.userId &&
+        linked.membership.id === principal.membershipId && linked.membership.organizationId === organization.id &&
+        linked.membership.status === 'active' && linked.binding.slackTeamId === organization.slackTeamId &&
+        linked.binding.slackUserId === user?.slackUserId ? linked.binding.slackUserId : null;
+      const proposals = await Promise.all(result.proposals.map(async (proposal) => {
+        const updates = proposal.operations.filter((operation) => operation.kind === 'update_agent')
+          .filter((operation) => operation.agentId === agent.id);
+        if (proposal.organizationId !== principal.organizationId || proposal.actorUserId !== principal.userId ||
+            proposal.actorMembershipId !== principal.membershipId ||
+            !proposal.originKey.startsWith(`slack:${organization.slackTeamId}:`) || updates.length === 0) {
+          throw new Error('Unexpected proposal scope.');
+        }
+        // Never serialize the raw proposal: other operations may contain secrets.
+        return {
+          proposalId: proposal.proposalId, actorUserId: proposal.actorUserId,
+          actorMembershipId: proposal.actorMembershipId, originKey: proposal.originKey,
+          approvalScopeKey: proposal.approvalScopeKey, status: proposal.status, digest: proposal.digest,
+          targetRevision: proposal.targetRevisions[`agent:${agent.id}`] ?? null,
+          operationCount: proposal.operations.length, createdAt: proposal.createdAt, updatedAt: proposal.updatedAt,
+          approval: await readProposalApprovalStatus(slackState(c), proposal, slackUserId),
+          updates: updates.map((operation) => ({
+            itemId: operation.itemId, kind: operation.kind, agentId: operation.agentId,
+            expectedRevision: operation.expectedRevision,
+            fields: Object.keys(operation.patch).sort(),
+            instructions: operation.patch.instructions ?? null,
+            description: operation.patch.description ?? null,
+          })),
+          result: proposal.result ? {
+            status: proposal.result.status,
+            outcomes: proposal.result.outcomes.filter((outcome) => updates.some((update) => update.itemId === outcome.itemId))
+              .map((outcome) => ({ itemId: outcome.itemId, disposition: outcome.disposition,
+                changed: (outcome.changed ?? []).filter((ref) => ref.kind === 'agent' && ref.id === agent.id)
+                  .map((ref) => ({ kind: ref.kind, id: ref.id, revision: ref.revision ?? null })),
+              })),
+          } : null,
+        };
+      }));
+      return c.json({ agentId: agent.id, requester: {
+        userId: principal.userId, membershipId: principal.membershipId, slackUserId,
+      }, proposals });
+    } catch (error) {
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      console.error('[chickpea] Agent proposal status unavailable');
+      return c.json({ error: 'agent_proposal_status_unavailable' }, 503);
     }
   });
 

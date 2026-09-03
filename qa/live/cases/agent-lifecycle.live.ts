@@ -233,6 +233,7 @@ function evaluateUpdate(input: Record<string, unknown>): FoundationEvaluation<Ag
   const admin = objectAt(input, 'admin');
   const slack = objectAt(input, 'slack');
   const proposal = objectAt(admin, 'proposal');
+  const requester = maybeObject(admin.requester);
   const agent = objectAt(admin, 'agent');
   const agentId = stringAt(request, 'agentId');
   const requesterUserId = stringAt(request, 'requesterUserId');
@@ -245,7 +246,11 @@ function evaluateUpdate(input: Record<string, unknown>): FoundationEvaluation<Ag
   const operation = operations.find((candidate) => candidate.kind === 'update_agent');
   const patch = maybeObject(operation?.patch);
   const expectedScopeKey = stringAt(request, 'approvalScopeKey');
-  if (proposal.actorUserId !== requesterUserId
+  if (typeof requester?.userId !== 'string' || !requester.userId
+    || typeof requester.membershipId !== 'string' || !requester.membershipId
+    || requester.slackUserId !== requesterUserId
+    || proposal.actorUserId !== requester.userId
+    || proposal.actorMembershipId !== requester.membershipId
     || proposal.approvalScopeKey !== expectedScopeKey
     || !expectedScopeKey.includes(requestThreadTs)
     || operation?.agentId !== agentId) {
@@ -263,7 +268,7 @@ function evaluateUpdate(input: Record<string, unknown>): FoundationEvaluation<Ag
   if (approvalMessages.length === 0 && approvalReactions.length > 0) failures.push('reaction_only_approval');
   if (patch?.instructions !== fullInstructions) failures.push('frozen_value_mismatch');
   if (stringAt(agent, 'instructions') !== fullInstructions) failures.push('durable_value_truncated');
-  if (integerAt(agent, 'revision') === integerAt(admin, 'beforeRevision')
+  if (integerAt(agent, 'revision') <= integerAt(admin, 'beforeRevision')
     || !arrayAt(objectAt(proposal, 'result'), 'outcomes').filter(isRecord).some((outcome) =>
       optionalArrayAt(outcome, 'changed').filter(isRecord).some((changed) =>
         changed.kind === 'agent' && changed.id === agentId && changed.revision === integerAt(agent, 'revision')
