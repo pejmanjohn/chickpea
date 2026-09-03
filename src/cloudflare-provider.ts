@@ -15,6 +15,8 @@ import { decorateAttachmentProvider } from './slack/attachment-model-context.ts'
 
 const SEED_CLOUDFLARE_MAX_COMPLETION_TOKENS = 2_048;
 const SEED_CLOUDFLARE_RESPONSE_TIMEOUT_MS = 90_000;
+const GPT_OSS_MODEL_ID = '@cf/openai/gpt-oss-120b';
+const GPT_OSS_DEFAULT_MAX_TOKENS = 8_192;
 
 /**
  * Register the Workers AI binding without routing prompts through AI Gateway.
@@ -50,6 +52,17 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
   return {
     run(modelId, inputs, options) {
       const wireInputs = withWorkersAiPayloadPolicy(modelId, inputs);
+      if (modelId === GPT_OSS_MODEL_ID) {
+        // Flue's binding streamSimple does not supply the model's output limit.
+        // Workers AI otherwise defaults to 256 tokens, which GPT-OSS can spend
+        // entirely on thinking. Use its documented max_tokens field, translating
+        // Flue's explicit limit when present, without changing reasoning settings.
+        const { max_completion_tokens, max_tokens, ...rest } = wireInputs;
+        return binding.run(modelId, {
+          ...rest,
+          max_tokens: max_tokens ?? max_completion_tokens ?? GPT_OSS_DEFAULT_MAX_TOKENS,
+        }, options);
+      }
       if (
         modelId !== SEED_CLOUDFLARE_MODEL_ID &&
         modelId !== CURRENT_WORKERS_AI_MODEL_ID

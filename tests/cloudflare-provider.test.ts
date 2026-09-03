@@ -158,9 +158,65 @@ test('the binding payload policy leaves every other Workers AI model unchanged',
   };
   const registeredBinding = cloudflareBindingProviderOptions(binding).binding;
 
-  await registeredBinding.run('@cf/openai/gpt-oss-120b', payload);
+  await registeredBinding.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', payload);
 
   assert.equal(receivedPayload, payload);
+});
+
+for (const method of ['stream', 'streamSimple'] as const) {
+  test(`GPT-OSS ${method} has enough output budget to finish thinking and request a tool`, async () => {
+    let receivedInputs: Record<string, unknown> | undefined;
+    const provider = createCloudflareBindingProvider({
+      run: async (_modelId, inputs) => {
+        receivedInputs = inputs;
+        // Workers AI defaults to 256 tokens when max_tokens is absent. The
+        // failing live request exhausted that budget on thinking alone.
+        const truncated = Number(inputs.max_tokens ?? 256) <= 256;
+        const chunks = [
+          { choices: [{ index: 0, delta: { reasoning_content: 'Prepare the requested Agent.' }, finish_reason: null }] },
+          { choices: [{ index: 0, delta: truncated ? {} : { tool_calls: [{
+            index: 0, id: 'call_create', type: 'function',
+            function: { name: 'create_agent', arguments: '{"name":"QA helper"}' },
+          }] }, finish_reason: truncated ? 'length' : 'tool_calls' }] },
+        ];
+        return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')
+          + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      },
+    });
+    const model = provider.getModels().find(({ id }) => id === '@cf/openai/gpt-oss-120b');
+    assert.ok(model);
+    const result = await provider[method](model, {
+      messages: [{ role: 'user', content: 'Create QA helper.', timestamp: 1 }],
+      tools: [{ name: 'create_agent', description: 'Create the requested Agent.',
+        parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } }],
+    }).result();
+
+    assert.equal(result.stopReason, 'toolUse', 'thinking must not consume the entire implicit 256-token budget');
+    assert.ok(result.content.some((block) => block.type === 'toolCall' && block.name === 'create_agent'));
+    assert.equal(receivedInputs?.max_tokens, 8_192);
+    assert.equal(Object.hasOwn(receivedInputs!, 'max_completion_tokens'), false);
+  });
+}
+
+test('the GPT-OSS binding maps explicit caller budgets without changing reasoning or options', async () => {
+  let receivedInputs: Record<string, unknown> | undefined;
+  let receivedOptions: Record<string, unknown> | undefined;
+  const binding = cloudflareBindingProviderOptions({ run: async (_modelId, inputs, options) => {
+    receivedInputs = inputs;
+    receivedOptions = options;
+    return { response: 'ok' };
+  } }).binding;
+  const options = { signal: new AbortController().signal, returnRawResponse: true };
+  for (const budget of [512, 16_384]) {
+    for (const key of ['max_tokens', 'max_completion_tokens']) {
+      const payload = { messages: [], reasoning_effort: 'high', [key]: budget };
+      const before = structuredClone(payload);
+      await binding.run('@cf/openai/gpt-oss-120b', payload, options);
+      assert.deepEqual(receivedInputs, { messages: [], reasoning_effort: 'high', max_tokens: budget });
+      assert.deepEqual(payload, before);
+      assert.equal(receivedOptions, options);
+    }
+  }
 });
 
 test('GPT-OSS tool-call replay uses non-null assistant content without changing the conversation', async () => {
@@ -192,6 +248,7 @@ test('GPT-OSS tool-call replay uses non-null assistant content without changing 
 
   assert.deepEqual(receivedPayload, {
     ...payload,
+    max_tokens: 8_192,
     messages: [payload.messages[0], { ...payload.messages[1], content: '' }, payload.messages[2]],
   });
   assert.deepEqual(payload, before, 'the shared conversation must not be mutated');
