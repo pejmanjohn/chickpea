@@ -295,6 +295,11 @@ function continueRecovery(
       attemptFromRef(intent.actionRef) + 1,
     );
   }
+  if (request.signal.outcome === 'failed') {
+    const primary: PrimaryOutcome = { result: 'fail', reason: 'assertion_failed' };
+    appendCaseResult(request, intent.variantId, primary, at);
+    return enterCleanupOrContinue(request, dependencies, target, intent.variantId, primary, 'recovery', at);
+  }
   const primary: PrimaryOutcome = {
     result: 'ambiguous',
     reason: 'ambiguous_mutation',

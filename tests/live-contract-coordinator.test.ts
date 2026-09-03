@@ -213,6 +213,98 @@ test('an ambiguous recovery observation keeps the exact intent and target locked
   assert.equal(existsSync(join(f.root, 'evidence', 'target.lock')), true);
 });
 
+test('a visibly settled failure records only its observed reply, cleans it, and never retries creation', async (context) => {
+  const f = fixture(context);
+  const act = f.deps.driver.act;
+  let reply: NonNullable<Awaited<ReturnType<ComputerUseDriver['act']>>['value']['generatedEffects']>;
+  f.deps.driver.act = async (...args) => {
+    reply = (await act(...args)).value.generatedEffects!;
+    throw new Error('interrupted after visible execution failure');
+  };
+  f.deps.driver.readbackAction = async (_action, ui) => f.capture(ui, {
+    outcome: 'failed', generatedEffects: reply,
+  });
+  const inventory = f.deps.driver.inventory;
+  f.deps.driver.inventory = async (...args) => {
+    const captured = await inventory(...args);
+    return f.capture(args[1], { ...captured.value,
+      declaredResourceKinds: ['attributed_residue'],
+      inventory: captured.value.inventory.filter(({ resourceKind }) => resourceKind !== 'agent') });
+  };
+  const coordinator = new AttendedLiveCoordinator(f.request, f.deps);
+  await assert.rejects(coordinator.run(), /interrupted/);
+  const result = await coordinator.resume();
+  assert.equal(result.report.aggregate, 'fail');
+  assert.equal(f.counts().actions, 1);
+  assert.equal(f.counts().cleanups, 1);
+  assert.equal(readRunJournalStatus(f.request.journalPath, f.request.runId).safeToClear, true);
+  assert.equal(existsSync(join(f.root, 'evidence', 'target.lock')), false);
+  assert.doesNotMatch(readFileSync(f.request.journalPath, 'utf8'), /"immutableId":"agent-run-test"/);
+});
+
+test('a settled failure can clean a partial Agent without inventing the missing welcome', async (context) => {
+  const f = fixture(context);
+  const act = f.deps.driver.act;
+  let resource: Awaited<ReturnType<ComputerUseDriver['act']>>['value']['resource'];
+  f.deps.driver.act = async (...args) => {
+    resource = (await act(...args)).value.resource;
+    throw new Error('interrupted after partial creation');
+  };
+  f.deps.driver.readbackAction = async (_action, ui) => {
+    assert.ok(resource);
+    return f.capture(ui, { outcome: 'failed', resource });
+  };
+  const inventory = f.deps.driver.inventory;
+  f.deps.driver.inventory = async (...args) => {
+    const captured = await inventory(...args);
+    return f.capture(args[1], { ...captured.value,
+      declaredResourceKinds: ['agent'],
+      inventory: captured.value.inventory.filter(({ resourceKind }) => resourceKind === 'agent') });
+  };
+  const coordinator = new AttendedLiveCoordinator(f.request, f.deps);
+  await assert.rejects(coordinator.run(), /interrupted/);
+  assert.equal((await coordinator.resume()).report.aggregate, 'fail');
+  assert.equal(f.counts().actions, 1);
+  assert.equal(f.counts().cleanups, 1);
+});
+
+test('failed readback cannot omit a previously journaled partial effect', async (context) => {
+  const f = fixture(context);
+  const act = f.deps.driver.act;
+  f.deps.driver.act = async (...args) => {
+    const captured = await act(...args);
+    return f.capture(args[2], { ...captured.value, generatedEffects: [] });
+  };
+  f.deps.driver.readbackAction = async (_action, ui) => f.capture(ui, { outcome: 'failed' });
+  const coordinator = new AttendedLiveCoordinator(f.request, f.deps);
+  await assert.rejects(coordinator.run(), /EXACT_READBACK_REQUIRED/);
+  assert.match(readFileSync(f.request.journalPath, 'utf8'), /"type":"mutation_receipt"/);
+  await assert.rejects(coordinator.resume(), /EXACT_READBACK_REQUIRED/);
+  assert.equal(f.counts().actions, 1);
+  assert.equal(f.counts().cleanups, 0);
+  assert.equal(readRunJournalStatus(f.request.journalPath, f.request.runId).safeToClear, false);
+  assert.equal(existsSync(join(f.root, 'evidence', 'target.lock')), true);
+});
+
+test('slow post-window attestation does not invalidate a capture returned fresh', async (context) => {
+  const f = fixture(context);
+  let now = NOW;
+  let captured = false;
+  const prepare = f.deps.driver.prepare;
+  f.deps.now = () => now;
+  f.deps.driver.prepare = async (...args) => {
+    const value = await prepare(...args);
+    captured = true;
+    return value;
+  };
+  f.deps.attest = async () => {
+    if (captured) { now += 61_000; captured = false; }
+    return f.snapshot;
+  };
+  f.deps.driver.act = async () => { throw new Error('reached next action'); };
+  await assert.rejects(new AttendedLiveCoordinator(f.request, f.deps).run(), /reached next action/);
+});
+
 test('resume refuses source or actor-readiness drift before changing the original journal', async (context) => {
   for (const drift of ['source', 'actor']) {
     const f = fixture(context);

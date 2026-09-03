@@ -37,7 +37,7 @@ export const OPERATOR_ACTION_RECEIPT_OUTCOMES = ACTION_RECEIPT_OUTCOMES.filter(
   (outcome): outcome is Exclude<ActionReceiptOutcome, 'not_applied'> => outcome !== 'not_applied',
 );
 
-export const READBACK_OUTCOMES = ['applied', 'absent', 'ambiguous'] as const;
+export const READBACK_OUTCOMES = ['applied', 'absent', 'failed', 'ambiguous'] as const;
 export type ReadbackOutcome = typeof READBACK_OUTCOMES[number];
 
 export interface PrimaryOutcome {

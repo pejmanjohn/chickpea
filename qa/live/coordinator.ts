@@ -55,7 +55,8 @@ export interface ActionReadback {
 }
 
 export interface InterruptedActionReadback {
-  outcome: 'applied' | 'absent' | 'ambiguous';
+  /** failed requires settled visible failure and a complete readback of all effects, never a reply alone. */
+  outcome: 'applied' | 'absent' | 'failed' | 'ambiguous';
   resource?: ResourceEffect;
   generatedEffects?: ResourceEffect[];
 }
@@ -325,7 +326,7 @@ export class AttendedLiveCoordinator {
       (ui) => this.dependencies.driver.readbackAction(actionRecord, ui));
     const mutations = projectProductLedger(journal).mutations.filter((mutation) =>
       mutation.caseId === record.variantId && (mutation.stepId === intent.actionRef || mutation.stepId.startsWith(`${intent.actionRef}:`)));
-    if (!['applied', 'absent', 'ambiguous'].includes(result.outcome) || result.outcome === 'ambiguous'
+    if (!['applied', 'absent', 'failed', 'ambiguous'].includes(result.outcome) || result.outcome === 'ambiguous'
       || (result.outcome === 'absent' && (mutations.length || result.resource || result.generatedEffects?.length))) {
       throw new CoordinatorError('EXACT_READBACK_REQUIRED');
     }
@@ -339,26 +340,32 @@ export class AttendedLiveCoordinator {
           challengeDigest: event.challengeDigest }, this.identity);
       }
     }
-    if (result.outcome === 'applied') {
+    if (result.outcome === 'applied' || result.outcome === 'failed') {
       const expectedKind = ({ 'agent.create': 'agent', 'agent.update': 'agent',
         'connection.authorize': 'connection', 'routine.create': 'routine' } as const)[action.id as
           'agent.create' | 'agent.update' | 'connection.authorize' | 'routine.create'];
-      if (!result.resource || result.resource.resourceKind !== expectedKind
-        || (result.generatedEffects ?? []).length !== variant.generatedEffects.length) {
+      const generated = result.generatedEffects ?? [];
+      if (!expectedKind || (result.resource && result.resource.resourceKind !== expectedKind)
+        || (result.outcome === 'applied' && (!result.resource || generated.length !== variant.generatedEffects.length))
+        || generated.length > variant.generatedEffects.length) {
         throw new CoordinatorError('EXACT_READBACK_REQUIRED');
       }
       const issued = journal.events.map(({ event }) => event).findLast((event) =>
         event.type === 'operator_challenge_issued' && event.stepId === intent.actionRef);
       const expectedRevision = issued?.type === 'operator_challenge_issued' ? issued.expectedRevision
         : action.id === 'agent.update' ? projectProductLedger(journal).baselines.find((baseline) =>
-          baseline.resourceKind === 'agent' && baseline.immutableId === result.resource!.immutableId)?.revision : 'absent';
-      if (!expectedRevision || result.resource.beforeRevision !== expectedRevision
-        || (action.id !== 'agent.update' && expectedRevision !== 'absent')) {
+          baseline.resourceKind === 'agent' && baseline.immutableId === result.resource?.immutableId)?.revision : 'absent';
+      if (result.resource && (!expectedRevision || result.resource.beforeRevision !== expectedRevision
+        || (action.id !== 'agent.update' && expectedRevision !== 'absent'))) {
         throw new CoordinatorError('EXACT_READBACK_REQUIRED');
       }
-      const resources = [{ effect: result.resource, cleanup: action.cleanup, stepId: `${intent.actionRef}:readback`, generated: false },
-        ...(result.generatedEffects ?? []).map((effect, index) => ({ effect, cleanup: variant.generatedEffects[index]!.cleanup,
+      const resources = [...(result.resource ? [{ effect: result.resource, cleanup: action.cleanup,
+        stepId: `${intent.actionRef}:readback`, generated: false }] : []),
+        ...generated.map((effect, index) => ({ effect, cleanup: variant.generatedEffects[index]!.cleanup,
           stepId: `${intent.actionRef}:generated:${index}:readback`, generated: true }))];
+      // A failed readback cannot make a previously recorded effect disappear.
+      if (mutations.some((mutation) => !resources.some(({ effect }) => effect.immutableId === mutation.immutableId
+        && effect.resourceKind === mutation.resourceKind))) throw new CoordinatorError('EXACT_READBACK_REQUIRED');
       for (const { effect, cleanup, stepId, generated } of resources) {
         if (generated && effect.resourceKind !== 'attributed_residue') throw new CoordinatorError('EXACT_READBACK_REQUIRED');
         const existing = mutations.find((mutation) => mutation.immutableId === effect.immutableId
@@ -546,11 +553,14 @@ export class AttendedLiveCoordinator {
       lease.assertOwned();
       const capture = certified.get(returned);
       if (!capture) throw new CoordinatorError('WINDOW_CAPTURE_REQUIRED');
-      await this.snapshot(true);
-      lease.assertOwned();
+      // Grade freshness when the driver returns its observation. Subsequent
+      // infrastructure/UI readiness work must not invalidate an already fresh
+      // capture, but identity is still checked on both sides of the window.
       if (this.now() - Date.parse(capture.observedAt) > 60_000) {
         throw new CoordinatorError('WINDOW_CAPTURE_REQUIRED');
       }
+      await this.snapshot(true);
+      lease.assertOwned();
       appendRunJournal(this.request.journalPath, { type: 'computer_use_window', caseId, stepId,
         targetAlias: this.target.targetAlias, captureDigest: capture.captureDigest,
         windowDigest: `sha256:${createHash('sha256').update(capture.windowId).digest('hex')}`,

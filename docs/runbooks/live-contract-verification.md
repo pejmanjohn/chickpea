@@ -110,6 +110,14 @@ An applied interrupted action remains an ambiguous primary result. A new attempt
 is possible only when visible readback proves absence and the existing runner
 requests it. Recovery observations are labeled separately from click receipts.
 
+A settled failed request may instead return `failed` after complete visible
+readback of its effects. Record only resources that actually exist, including
+partial creations or an attributable error reply; do not invent a successful
+resource or welcome. Previously journaled effects must remain accounted for.
+This ends the primary case as a failure without retrying, then uses the same
+cleanup and postflight checks before releasing the target lock. A failure reply
+alone is not proof that no resources were created.
+
 The incremental core writes a no-overwrite journal header before acquiring
 the target lock, but does not write an intent or perform UI work until it owns
 the lock. This leaves a recoverable header even if the process dies immediately

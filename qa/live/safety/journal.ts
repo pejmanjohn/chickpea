@@ -118,7 +118,7 @@ export type RunJournalEventData =
     intentId: string;
     variantId: string;
     actionRef: string;
-    outcome: 'applied' | 'absent' | 'ambiguous';
+    outcome: 'applied' | 'absent' | 'failed' | 'ambiguous';
   }
   | {
     type: 'transition';
