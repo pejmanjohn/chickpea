@@ -90,7 +90,8 @@ export function validateRoutineDestination(
 ): RoutineDestination {
   const destination = input ?? { kind: 'channel' as const, channelId };
   if (destination.kind === 'channel') {
-    if (!isOpaqueRoutineId(destination.channelId) || destination.channelId !== channelId) {
+    if (!isOpaqueRoutineId(destination.channelId) || destination.channelId !== channelId ||
+        (destination.threadTs !== undefined && !/^\d{1,20}\.\d{1,12}$/.test(destination.threadTs))) {
       throw invalid('routine_invalid_destination', 'Routine destination is invalid.');
     }
     return destination;

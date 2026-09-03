@@ -102,6 +102,7 @@ interface RoutineRow {
   channel_id: string;
   destination_kind?: string;
   direct_thread_ts?: string | null;
+  channel_thread_ts?: string | null;
   direct_owner_membership_id?: string | null;
   creator_user_id: string;
   name: string;
@@ -2043,7 +2044,7 @@ export class RoutineStoreLogic {
           input.envelope.message.attributes.ownerAgentId !== input.resolvedAgentId ||
           input.envelope.message.attributes.ownerMembershipId !== input.resolvedRunsAsMembershipId ||
           input.envelope.message.attributes.threadTs !== (
-            routine.destination.kind === 'direct_thread' ? routine.destination.threadTs : ''
+            routine.destination.threadTs ?? ''
           ) ||
           input.envelope.message.attributes.triggerSource !== run.triggerSource ||
           input.envelope.message.attributes.scheduledFor !== String(run.scheduledFor))) {
@@ -2468,6 +2469,7 @@ export class RoutineStoreLogic {
         workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL,
         destination_kind TEXT NOT NULL DEFAULT 'channel',
         direct_thread_ts TEXT, direct_owner_membership_id TEXT,
+        channel_thread_ts TEXT,
         creator_user_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL,
         task_text TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_input TEXT NOT NULL,
         schedule_json TEXT NOT NULL, timezone TEXT NOT NULL, output_policy TEXT NOT NULL,
@@ -2618,6 +2620,7 @@ export class RoutineStoreLogic {
       ['source_visibility', "TEXT NOT NULL DEFAULT 'unknown'"],
       ['destination_kind', "TEXT NOT NULL DEFAULT 'channel'"],
       ['direct_thread_ts', 'TEXT'],
+      ['channel_thread_ts', 'TEXT'],
       ['direct_owner_membership_id', 'TEXT'],
     ] as const) {
       addColumnIfMissing(this.db, 'routines', name, definition);
@@ -2782,7 +2785,7 @@ export class RoutineStoreLogic {
     this.db.run(
       `INSERT INTO routines (
         id, source_visibility, workspace_id, channel_id, destination_kind,
-        direct_thread_ts, direct_owner_membership_id,
+        direct_thread_ts, direct_owner_membership_id, channel_thread_ts,
         creator_user_id, name, description, task_text,
         trigger_kind, schedule_input, schedule_json, timezone, output_policy,
         authority_mode, state, version, next_run_at, last_scheduled_at,
@@ -2790,7 +2793,7 @@ export class RoutineStoreLogic {
         projected_daily_starts, reservation_windows_json, created_at, created_by,
         updated_at, updated_by, paused_at, paused_by, paused_reason, disabled_at,
         disabled_by, disabled_reason, deleted_at, deleted_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL,
                 NULL, 0, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL,
                 NULL, NULL, NULL)`,
       input.id,
@@ -2800,6 +2803,7 @@ export class RoutineStoreLogic {
       input.destination.kind,
       input.destination.kind === 'direct_thread' ? input.destination.threadTs : null,
       input.destination.kind === 'direct_thread' ? input.destination.ownerMembershipId : null,
+      input.destination.kind === 'channel' ? input.destination.threadTs ?? null : null,
       input.creatorUserId,
       d.name,
       d.description,
@@ -4055,7 +4059,10 @@ function rowToRoutine(row: RoutineRow): RoutineDefinition {
 
 function routineDestinationFromRow(row: RoutineRow): RoutineDestination {
   if ((row.destination_kind ?? 'channel') === 'channel') {
-    return { kind: 'channel', channelId: row.channel_id };
+    return {
+      kind: 'channel', channelId: row.channel_id,
+      ...(row.channel_thread_ts ? { threadTs: row.channel_thread_ts } : {}),
+    };
   }
   if (
     row.destination_kind !== 'direct_thread' ||
@@ -4407,7 +4414,7 @@ function assertDestinationAuthority(
 function sameRoutineDestination(left: RoutineDestination, right: RoutineDestination): boolean {
   if (left.kind !== right.kind) return false;
   if (left.kind === 'channel' && right.kind === 'channel') {
-    return left.channelId === right.channelId;
+    return left.channelId === right.channelId && left.threadTs === right.threadTs;
   }
   return left.kind === 'direct_thread' && right.kind === 'direct_thread' &&
     left.conversationId === right.conversationId &&

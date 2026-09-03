@@ -178,6 +178,10 @@ test('LC-08 catches saved-only, duplicate, wrong-thread, occurrence, and tempora
     ['due_delivery_missing', (fixture) => { fixture.slack.messages.splice(1, 1); }],
     ['due_delivery_duplicate', (fixture) => { fixture.slack.messages.push(structuredClone(fixture.slack.messages[1])); }],
     ['wrong_origin_thread', (fixture) => { fixture.slack.messages[1].thread_ts = '1700000000.999999'; }],
+    ['wrong_origin_thread', (fixture) => { fixture.slack.messages[1].thread_ts = fixture.request.originThreadTs; }],
+    ['wrong_origin_thread', (fixture) => { delete fixture.slack.messages[0].thread_ts; }],
+    ['routine_missing', (fixture) => { fixture.admin.routines[0].destination.threadTs = fixture.request.originThreadTs; }],
+    ['due_delivery_missing', (fixture) => { fixture.slack.messages[1].text = 'Routine completed: ' + fixture.request.expectedResultText; }],
     ['occurrence_missing', (fixture) => { fixture.admin.runs = []; }],
     ['activity_lingering', (fixture) => { fixture.admin.presentation.activityProjection.state = 'visible'; }],
   ];
@@ -315,7 +319,7 @@ function routineDueFixture() {
       runMarker: 'qa-routine01', originChannelId: 'C_QA', originThreadTs: '1700000001.000100',
       expectedRoutineName: 'Daily qa-routine01',
       expectedAcknowledgementText: 'Scheduled Daily qa-routine01.',
-      expectedResultText: 'Routine completed: Daily qa-routine01',
+      expectedResultText: 'DUE qa-routine01',
     },
     admin: {
       routines: [{ id: 'routine_qa_alpha', name: 'Daily qa-routine01', state: 'active', version: 1, destination: { kind: 'channel', channelId: 'C_QA' } }],
@@ -327,7 +331,7 @@ function routineDueFixture() {
     },
     slack: { messages: [
       { type: 'message', ts: '1700000001.000200', channel: 'C_QA', thread_ts: '1700000001.000100', text: 'Scheduled Daily qa-routine01.' },
-      { type: 'message', ts: '1700000002.000100', channel: 'C_QA', thread_ts: '1700000001.000100', text: 'Routine completed: Daily qa-routine01' },
+      { type: 'message', ts: '1700000002.000100', channel: 'C_QA', thread_ts: undefined as string | undefined, text: 'DUE qa-routine01' },
     ] },
   };
 }

@@ -223,7 +223,7 @@ async function deliverRoutineSlackMessage(
   );
   const payload = {
     channel: input.routine.channelId,
-    ...(input.routine.destination.kind === 'direct_thread'
+    ...(input.routine.destination.threadTs
       ? { thread_ts: input.routine.destination.threadTs }
       : {}),
     ...(typeof message === 'string' ? { text: message } : message),
@@ -431,6 +431,9 @@ export function renderRoutineDelivery(
   message: string,
   footer?: SlackReplyFooter,
 ): RenderedSlackMessage {
+  // Successful Channel work is the Agent's result, not a status card. Keep
+  // schedule metadata in Admin while retaining the normal safe Slack renderer.
+  if (routine.destination.kind === 'channel') return renderSlackMessage(message, 'markdown');
   const rendered = renderSlackMessage(
     `✅ **Routine completed**\n**${escapeSlackControlCharacters(routine.name)}**\n\n${message}`,
     'markdown',

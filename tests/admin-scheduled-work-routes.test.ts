@@ -43,12 +43,14 @@ async function seededRoutine(
   store: SqliteRoutineStore,
   now: () => number = () => NOW,
   sourceVisibility: SourceVisibility = 'public',
+  threadTs?: string,
 ) {
   const service = new RoutineService(store, {
     now, routineId: () => 'routine_admin',
   });
   return service.save({
     action: 'create', actorId: 'U_CREATOR', workspaceId: 'T_TEST', channelId: 'C_TEST',
+    ...(threadTs ? { destination: { kind: 'channel' as const, channelId: 'C_TEST', threadTs } } : {}),
     definition: definition(), nextRunAt: NOW + 3_600_000, projectedDailyStarts: 5,
     reservations: [{ windowStart: NOW + 3_600_000, count: 1 }],
     provenance: {
@@ -102,7 +104,7 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
   const settings = new SqliteSettingsStore(path);
   const work = new SqliteWorkStore(path);
   try {
-    const routine = await seededRoutine(routines, Date.now);
+    const routine = await seededRoutine(routines, Date.now, 'public', '1785000000.000100');
     await config.createAgent({
       id: 'agent_routine_admin',
       revision: 1,
@@ -183,6 +185,9 @@ test('Scheduled Work APIs are admin-authenticated, body-safe, filterable, and co
     assert.equal(detail.status, 200);
     const detailBody = await detail.json() as Record<string, any>;
     assert.equal(detailBody.routine.taskText, definition().taskText);
+    assert.deepEqual(detailBody.routine.destination, {
+      kind: 'channel', channelId: 'C_TEST', threadTs: '1785000000.000100',
+    });
     assert.equal(
       detailBody.revisions[0].provenance.requestText,
       `Every weekday, ${definition().taskText}`,

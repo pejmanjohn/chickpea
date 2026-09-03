@@ -112,3 +112,16 @@ test('an applied action in a non-active safe state says it will not run', () => 
     instruction: 'The action is complete, but the scheduled work is paused and will not run. Do not ask for approval or invoke another scheduling tool. In a DM, the requesting message receives a checkmark reaction; in a Channel, explicitly state this non-active result in your reply.',
   });
 });
+
+test('saved Channel acknowledgements identify the actual delivery destination', () => {
+  for (const [deliveryDestination, expected] of [
+    ['channel', /new messages in this channel/],
+    ['channel_thread', /saved request thread/],
+  ] as const) {
+    const result = scheduleActionToolResult({
+      outcome: 'applied', effect: 'saved', routineId: 'routine_destination', deliveryDestination,
+    });
+    assert.equal(result.deliveryDestination, deliveryDestination);
+    assert.match(String(result.instruction), expected);
+  }
+});

@@ -98,6 +98,7 @@ const scheduleActionInputSchema = v.object({
   minutes: v.optional(v.number()),
   timezone: v.optional(v.string()),
   outputPolicy: v.optional(v.picklist(['post', 'post_on_change'])),
+  delivery: v.optional(v.picklist(['channel', 'thread'])),
 });
 
 type SlackScheduleToolArguments = v.InferOutput<typeof scheduleActionInputSchema>;
@@ -499,7 +500,7 @@ export function useWorkspaceManagementSlackTools(
 
   useTool({
     name: 'manage_scheduled_work',
-    description: 'Create, edit, pause, resume, disable, or run scheduled work in the current Slack Channel or one-to-one DM. Use for any clear future or recurring request, including phrasing such as “check again in 5 minutes,” without asking for approval. Do not use this tool to delete scheduled work; deletion uses the existing proposal and explicit-confirmation flow. The host derives the destination and addressed Agent from trusted Slack context.',
+    description: 'Create, edit, pause, resume, disable, or run scheduled work in the current Slack Channel or one-to-one DM. Use for any clear future or recurring request, including phrasing such as “check again in 5 minutes,” without asking for approval. Channel delivery defaults to a new channel message, even when requested in a thread. Set delivery to thread only when the requester explicitly asks for future results in this thread, not merely for the creation acknowledgement here. Existing schedules retain their saved destination. Do not use this tool to delete scheduled work; deletion uses the existing proposal and explicit-confirmation flow. The host derives the destination and addressed Agent from trusted Slack context.',
     input: scheduleActionInputSchema,
     durable: true,
     async run({ data, step }) {
@@ -1114,7 +1115,10 @@ export function scheduleToolOperation(
     workspaceId: signal.workspaceId,
     ...(signal.conversationKind === 'im'
       ? { destination: { kind: 'current_dm_thread' as const } }
-      : { channelId: signal.channelId }),
+      : {
+          channelId: signal.channelId,
+          ...(data.delivery === 'thread' ? { destination: { kind: 'current_channel_thread' as const } } : {}),
+        }),
     ...(data.action === 'edit' ? {
       routineId: data.routineId!,
       expectedVersion: data.expectedVersion!,
@@ -1159,10 +1163,15 @@ export function scheduleActionToolResult(result: SlackScheduleActionOutcome): Re
       effect: result.effect,
       routineId: result.routineId,
       ...(result.routineVersion ? { routineVersion: result.routineVersion } : {}),
+      ...(result.deliveryDestination ? { deliveryDestination: result.deliveryDestination } : {}),
       ...(nonActiveSafeState ? { safeState: nonActiveSafeState } : {}),
       instruction: nonActiveSafeState
         ? `The action is complete, but the scheduled work is ${nonActiveSafeState.replace('_', ' ')} and will not run${nonActiveSafeState === 'pending_authority' ? ' until authority is restored' : ''}. Do not ask for approval or invoke another scheduling tool. In a DM, the requesting message receives a checkmark reaction; in a Channel, explicitly state this non-active result in your reply.`
-        : 'The action is complete. Do not ask for approval or invoke another scheduling tool. In a DM, the requesting message receives a checkmark reaction; in a Channel, acknowledge the result in your reply.',
+        : 'The action is complete. Do not ask for approval or invoke another scheduling tool. In a DM, the requesting message receives a checkmark reaction; in a Channel, acknowledge the result in your reply.' +
+          (result.effect === 'saved' && result.deliveryDestination === 'channel'
+            ? ' State that future results will appear as new messages in this channel.'
+            : result.effect === 'saved' && result.deliveryDestination === 'channel_thread'
+              ? ' State that future results will appear in the saved request thread.' : ''),
     };
   }
   if (result.outcome === 'pending') {

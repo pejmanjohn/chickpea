@@ -649,9 +649,7 @@ function createEnvelope(input: {
         destinationKind: input.routine.destination.kind,
         ownerAgentId: input.access.config.agentId,
         ownerMembershipId: input.access.actorMembershipId ?? 'legacy_membership',
-        threadTs: input.routine.destination.kind === 'direct_thread'
-          ? input.routine.destination.threadTs
-          : '',
+        threadTs: input.routine.destination.threadTs ?? '',
         triggerSource: input.run.triggerSource,
         scheduledFor: String(input.run.scheduledFor),
       },

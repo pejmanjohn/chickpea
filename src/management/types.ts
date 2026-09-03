@@ -154,7 +154,7 @@ export type ManagementOperation =
       workspaceId: string;
       /** Required for Channel work. Direct work resolves only from trusted Slack origin. */
       channelId?: string;
-      destination?: { kind: 'current_dm_thread' };
+      destination?: { kind: 'current_dm_thread' | 'current_channel_thread' };
       routineId?: string;
       expectedVersion?: number;
       name: string;

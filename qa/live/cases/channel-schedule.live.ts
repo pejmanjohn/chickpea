@@ -54,7 +54,7 @@ export const CHANNEL_SCHEDULE_CONTRACT = defineLiveCase({
       }],
       generatedEffects: [{
         id: 'slack.message.generated',
-        message: 'Chickpea delivers the exact run-marked due result {{runMarker}} in the configured Channel.',
+        message: 'Chickpea delivers the exact unwrapped run-marked due result {{runMarker}} as a new message in the configured Channel.',
         fixtureSlots: ['channel'],
         observerId: 'slack.messages.read',
         cleanup: slackResidue,
@@ -206,15 +206,19 @@ function evaluateCreateDue(input: Record<string, unknown>): FoundationEvaluation
       && run.status === 'succeeded'
       && run.deliveryStatus === 'delivered');
   const failures: ChannelScheduleFailure[] = [];
-  if (routines.length !== 1 || routine?.state !== 'active' || routine.destination === undefined) {
+  const destination = isRecord(routine?.destination) ? routine.destination : {};
+  if (routines.length !== 1 || routine?.state !== 'active' ||
+      destination.kind !== 'channel' || destination.channelId !== originChannelId || destination.threadTs != null) {
     failures.push('routine_missing');
   }
   if (acks.length === 0) failures.push('ack_missing');
   if (acks.length > 1) failures.push('ack_duplicate');
   if (due.length === 0) failures.push('due_delivery_missing');
   if (due.length > 1) failures.push('due_delivery_duplicate');
-  if ([...acks, ...due].some((message) =>
+  if (acks.some((message) =>
     message.channel !== originChannelId || message.thread_ts !== originThreadTs
+  ) || due.some((message) =>
+    message.channel !== originChannelId || message.thread_ts != null
   )) failures.push('wrong_origin_thread');
   if (occurrences.length !== 1
     || occurrences[0]?.deliveryChannelId !== originChannelId

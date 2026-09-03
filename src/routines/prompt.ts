@@ -40,6 +40,7 @@ interface NormalizedRoutineResult {
 
 export function routineExecutionInstructions(
   destinationKind: RoutineDefinition['destination']['kind'] = 'channel',
+  channelThread = false,
 ): string[] {
   const direct = destinationKind === 'direct_thread';
   return [
@@ -51,7 +52,7 @@ export function routineExecutionInstructions(
     'Carry out the saved task using current tools and current system truth. Do not claim an external action succeeded unless its current receipt or state proves it.',
     direct
       ? 'Chickpea itself delivers your returned message to the private originating Slack thread. When the task says to post, send, or reply here, return that thread-visible content in message; do not use tools, sandbox commands, network calls, credentials, tokens, or Chickpea internals to deliver it to Slack, and do not duplicate host delivery.'
-      : 'Chickpea itself delivers your returned message to the owning Slack channel. When the task says to post, send, or reply here, return that channel-visible content in message; do not use tools, sandbox commands, network calls, credentials, tokens, or Chickpea internals to deliver it to Slack, and do not duplicate host delivery.',
+      : `Chickpea itself delivers your returned message ${channelThread ? 'to the saved thread in the owning Slack channel' : 'as a new message in the owning Slack channel'}. When the task says to post, send, or reply here, return that channel-visible content in message; do not use tools, sandbox commands, network calls, credentials, tokens, or Chickpea internals to deliver it to Slack, and do not duplicate host delivery.`,
     'Use a Slack tool only when the saved task explicitly requests an additional Slack side effect distinct from posting this routine result.',
     direct
       ? 'Return outcome="no_op" when nothing should be posted. Otherwise return outcome="succeeded", a concise thread-visible message, and a stable non-secret changeKey when the routine posts only on change.'
@@ -89,10 +90,10 @@ export async function prepareRoutinePrompt(
     userId: access.actorSlackUserId ?? routine.creatorUserId,
     ...(access.actorMembershipId ? { actorMembershipId: access.actorMembershipId } : {}),
     messageTs: slackTimestamp(run.scheduledFor),
-    threadTs: directDestination?.threadTs ?? slackTimestamp(run.scheduledFor),
+    threadTs: routine.destination.threadTs ?? slackTimestamp(run.scheduledFor),
     source: direct ? 'dm_message' : 'app_mention',
     ...(direct ? { channelType: 'im' } : {}),
-    contextMode: direct ? 'thread' : 'channel_history',
+    contextMode: routine.destination.threadTs ? 'thread' : 'channel_history',
   };
   const hydrateContext = dependencies.hydrateContext ?? hydrateSlackContextViaWebClient;
   const prepareMemory = dependencies.prepareMemory ?? prepareMemoryTurn;
@@ -113,7 +114,7 @@ export async function prepareRoutinePrompt(
   });
   return {
     prompt: [
-      ...routineExecutionInstructions(routine.destination.kind),
+      ...routineExecutionInstructions(routine.destination.kind, Boolean(routine.destination.threadTs)),
       '',
       ordinaryPrompt,
     ].join('\n'),

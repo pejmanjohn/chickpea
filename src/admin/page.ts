@@ -10260,6 +10260,7 @@ button.capability-pill { cursor: pointer; }
       '<div class="scheduled-summary-section"><span class="field-label">Schedule</span><p class="scheduled-summary-prompt">' + esc(formatScheduledSchedule(routine)) + '</p></div>' +
       '<div class="scheduled-summary-grid">' +
       scheduledMeta("Status", String(routine.state || "unknown").replace(/_/g, " "), false) +
+      scheduledMeta("Delivery destination", scheduledDestinationLabel(routine), false) +
       scheduledMeta("Last run", routine.lastFinishedAt ? formatScheduledDate(routine.lastFinishedAt, routine.timezone) : "Never", false) +
       scheduledMeta("Next run", routine.nextRunAt ? formatScheduledDate(routine.nextRunAt, routine.timezone) : "—", false) +
       scheduledMeta("Created", formatScheduledDay(routine.createdAt, routine.timezone), false) + '</div>' +
@@ -10290,6 +10291,7 @@ button.capability-pill { cursor: pointer; }
       scheduledMeta(routine.triggerKind === "once" ? "Scheduled for" : "Schedule", formatScheduledSchedule(routine), false) + scheduledMeta("Timezone", routine.timezone, false) +
       scheduledMeta("Next run", formatScheduledDate(routine.nextRunAt, routine.timezone), false) + scheduledMeta("Last finished", formatScheduledDate(routine.lastFinishedAt, routine.timezone), false) +
       scheduledMeta("Output", routine.outputPolicy, false) + scheduledMeta("Daily starts", Number(routine.projectedDailyStarts || 0), false) + '</div>' +
+      '<div class="scheduled-meta">' + scheduledMeta("Delivery destination", scheduledDestinationLabel(routine), false) + '</div>' +
       '<div class="scheduled-definition-grid"><div class="scheduled-definition-panel"><span class="field-label">Saved task</span>' +
       (routine.taskText == null ? '<p class="hint">The task body was removed with this routine.</p>' : '<div class="scheduled-task">' + esc(routine.taskText) + '</div>') + '</div>' +
       '<div class="scheduled-definition-panel"><span class="field-label">Source Slack request</span>' +
@@ -10307,6 +10309,14 @@ button.capability-pill { cursor: pointer; }
   function scheduledActivityHtml(detail) {
     return '<div class="scheduled-activity-intro"><h3 class="section-title">History for this routine</h3><p class="hint">Definition revisions and audit events below belong only to ' + esc(scheduledRoutineName(detail.routine)) + '.</p></div>' +
       scheduledRevisionsHtml(detail.revisions || []) + scheduledEventsHtml(detail.events || []);
+  }
+
+  function scheduledDestinationLabel(routine) {
+    var destination = routine.destination;
+    if (!destination) return "Unavailable";
+    return destination.threadTs
+      ? "Saved thread in " + scheduledChannelLabel(routine.workspaceId, routine.channelId) + " (" + destination.threadTs + ")"
+      : "New messages in " + scheduledChannelLabel(routine.workspaceId, routine.channelId);
   }
 
   function scheduledMeta(label, value, mono) {

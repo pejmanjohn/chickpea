@@ -294,6 +294,7 @@ function readableRoutineSummary(
     ...routineSafeIdentity(routine),
     name: routine.name,
     description: routine.description,
+    destination: routine.destination,
     contentAccess: access,
   };
 }
