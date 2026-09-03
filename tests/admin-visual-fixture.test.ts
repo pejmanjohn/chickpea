@@ -598,7 +598,21 @@ test('visual fixture rejects non-loopback binding and removes its temporary stat
 
 test('visual fixture executable removes temporary state when the process exits', async (context) => {
   const scriptPath = fileURLToPath(new URL('../scripts/serve-admin-visual-fixture.mjs', import.meta.url));
-  const child = spawn(process.execPath, [scriptPath, '--host', '127.0.0.1', '--port', '0']);
+  // Model the child being descheduled immediately after it announces readiness.
+  // Its shutdown handlers must already exist when the parent sends SIGTERM.
+  const pauseAfterReady = `data:text/javascript,${encodeURIComponent(`
+    const write = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk, ...args) => {
+      const result = write(chunk, ...args);
+      if (String(chunk).startsWith('Temporary state: ')) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+      }
+      return result;
+    };
+  `)}`;
+  const child = spawn(process.execPath, [
+    '--import', pauseAfterReady, scriptPath, '--host', '127.0.0.1', '--port', '0',
+  ]);
   context.after(() => {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   });
