@@ -168,12 +168,19 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
     assert.match(success, /\.success-shell \.success-summary \{ font-weight: 400; \}/);
     assert.doesNotMatch(success, /<button/);
     assert.doesNotMatch(success, /Return to Slack/);
+    assert.doesNotMatch(success, /Saved connection setup/);
 
     const selectedSuccess = renderManagedConnectionSuccessPage({
       ...page,
       setup: {
         ...setup,
         status: 'completed',
+        connectionAccountId: 'connection_saved',
+        completedByUserId: 'user_completer',
+        completedByMembershipId: 'membership_completer',
+        completedAt: setup.updatedAt,
+        tokenDigest: 'private-token-digest',
+        browserSessionDigest: 'private-browser-digest',
         receipt: {
           kind: 'connector_connected',
           setupOperationId: setup.setupOperationId,
@@ -188,6 +195,15 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
       },
     });
     assert.match(selectedSuccess, /Your team connection is ready\./);
+    assert.match(selectedSuccess, /<details><summary>Saved connection setup<\/summary>/);
+    for (const [label, value] of [
+      ['Setup ID', setup.setupOperationId], ['Status', 'completed'],
+      ['Agent ID', agent.id], ['Connection ID', 'connection_saved'],
+      ['Ownership', 'Team'], ['Access', 'write'],
+      ['Completed by user', 'user_completer'], ['Completed by membership', 'membership_completer'],
+      ['Completed at', new Date(setup.updatedAt).toISOString()],
+    ]) assert.ok(selectedSuccess.includes(`<dt>${label}</dt><dd>${value}</dd>`));
+    assert.doesNotMatch(selectedSuccess, /private-token-digest|private-browser-digest/);
   } finally {
     config.close();
   }

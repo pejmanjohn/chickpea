@@ -216,10 +216,31 @@ export function renderManagedConnectionSuccessPage(input: ConnectorLandingPageIn
             <div class="success-line"><span class="success-check" aria-hidden="true">&#10003;</span><h1 id="flow-title">${escapeHtml(connector)} is now connected to ${escapeHtml(input.agent.name)}</h1></div>
             <p class="lead success-summary">Your ${scope} connection is ready.</p>
             <p class="small-copy">You can close this tab now.</p>
+            ${completedSetupDetails(input.setup)}
           </div>
         </section>
       </main>`,
   });
+}
+
+function completedSetupDetails(setup: ManagementSetupRecord): string {
+  const receipt = setup.receipt;
+  if (setup.status !== 'completed' || !receipt || !('kind' in receipt) || receipt.kind !== 'connector_connected') return '';
+  // This page is already restricted to current editors of the exact Agent.
+  // Project only saved completion fields, never setup capabilities or secrets.
+  const fields: Array<[string, string | undefined]> = [
+    ['Setup ID', setup.setupOperationId],
+    ['Status', setup.status],
+    ['Agent ID', receipt.agentId],
+    ['Connection ID', setup.connectionAccountId],
+    ['Ownership', receipt.ownerKind === 'member' ? 'Personal' : 'Team'],
+    ['Access', receipt.accessLane],
+    ['Completed by user', setup.completedByUserId],
+    ['Completed by membership', setup.completedByMembershipId],
+    ['Completed at', setup.completedAt === undefined ? undefined : new Date(setup.completedAt).toISOString()],
+  ];
+  return '<details><summary>Saved connection setup</summary><dl>' + fields.map(([label, value]) =>
+    `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value ?? 'Not recorded')}</dd>`).join('') + '</dl></details>';
 }
 
 export function renderManagedConnectionUnavailablePage(): string {
