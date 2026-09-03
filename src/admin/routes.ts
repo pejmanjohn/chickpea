@@ -8632,7 +8632,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         `${channel.workspaceId}\u0000${channel.channelId}`,
         {
           channel,
-          discovered: discoveredChannelsById.get(channel.channelId),
+          discovered: channel.workspaceId === teamInfo.teamId
+            ? discoveredChannelsById.get(channel.channelId)
+            : undefined,
         },
       ]),
     );
@@ -8662,7 +8664,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             ...(grant.channelLabel ? { label: grant.channelLabel } : {}),
             lifecycle: 'active',
           },
-          discovered: discoveredChannelsById.get(grant.channelId),
+          discovered: grant.workspaceId === teamInfo.teamId
+            ? discoveredChannelsById.get(grant.channelId)
+            : undefined,
         });
       }
     }
@@ -8706,7 +8710,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return {
           workspaceId: channel.workspaceId,
           channelId: channel.channelId,
-          channelName: channel.label ?? channel.channelId,
+          channelName: discovered?.name ?? channel.label ?? channel.channelId,
           source: discovered
             ? (channelGrants.length > 0
               ? 'granted_and_discovered'

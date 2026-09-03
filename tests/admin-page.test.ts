@@ -5012,6 +5012,26 @@ test('Agent placements prefer the projected Slack Channel name over a raw Channe
   assert.doesNotMatch(harness.app.innerHTML, /class="where-channel-name">C0EXR3L9T/);
 });
 
+test('Agent placements refresh stale labels using an exact workspace and channel match', async () => {
+  for (const [workspaceId, channelName, expected] of [
+    ['T_DESIGN', 'current-name', 'current-name'],
+    ['T_OTHER', 'current-name', 'saved-name'],
+    ['T_DESIGN', 'C_RENAMED', 'saved-name'],
+  ]) {
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/agents/agent_release',
+      agents: [{ ...releaseAgent, whereItWorks: { channels: [{
+        workspaceId: 'T_DESIGN', channelId: 'C_RENAMED', channelName: 'saved-name', status: 'active',
+      }] } }],
+      assignments: [],
+      channelIndex: [{ workspaceId, channelId: 'C_RENAMED', channelName, grants: [] }],
+    });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, new RegExp('class="where-channel-name">' + expected));
+    assert.doesNotMatch(harness.app.innerHTML, /class="where-channel-name">C_RENAMED/);
+  }
+});
+
 test('Channel detail prefers the projected Slack Channel name over a raw Channel ID', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/channels/T_DESIGN/C0EXR3L9T',

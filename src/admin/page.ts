@@ -6987,6 +6987,14 @@ button.capability-pill { cursor: pointer; }
     var agent = agentById(agentId);
     var hasProjection = !!(agent && agent.whereItWorks && Array.isArray(agent.whereItWorks.channels));
     var projected = hasProjection ? agent.whereItWorks.channels : [];
+    function currentLabel(grant) {
+      var channel = (state.channelIndex || []).find(function (candidate) {
+        return candidate.workspaceId === grant.workspaceId && candidate.channelId === grant.channelId;
+      });
+      return channel && channel.channelName !== channel.channelId
+        ? normalizeChannelLabel(channel.channelName)
+        : null;
+    }
     // An authoritative empty projection means the Agent has no Channel reach.
     // Falling back to the pre-mutation grant cache here briefly resurrected
     // archived placements until the next full page reload.
@@ -6995,7 +7003,7 @@ button.capability-pill { cursor: pointer; }
         return {
           workspaceId: grant.workspaceId,
           channelId: grant.channelId,
-          channelLabel: grant.channelName || grant.channelId,
+          channelLabel: currentLabel(grant) || grant.channelName || grant.channelId,
           status: grant.status
         };
       });
@@ -7003,14 +7011,9 @@ button.capability-pill { cursor: pointer; }
     return state.grants.filter(function (grant) {
       return grant.agentId === agentId;
     }).map(function (grant) {
-      if (normalizeChannelLabel(grant.channelLabel)) return grant;
-      var channel = (state.channelIndex || []).find(function (candidate) {
-        return candidate.workspaceId === grant.workspaceId && candidate.channelId === grant.channelId;
-      }) || projected.find(function (candidate) {
-        return candidate.workspaceId === grant.workspaceId && candidate.channelId === grant.channelId;
-      });
-      return channel && channel.channelName
-        ? Object.assign({}, grant, { channelLabel: channel.channelName })
+      var label = currentLabel(grant);
+      return label
+        ? Object.assign({}, grant, { channelLabel: label })
         : grant;
     });
   }
