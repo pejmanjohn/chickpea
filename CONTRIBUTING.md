@@ -7,7 +7,8 @@ see [SECURITY.md](SECURITY.md).
 
 ## Local development
 
-Use Node 22.19.0 or later. CI exercises the minimum version and Node 24.
+Use Node 22.19.0 or later. Verify releases locally on the minimum version and
+Node 24.
 
 ```sh
 npm ci
@@ -28,8 +29,8 @@ Production Node hosting is described in [the operations guide](docs/runbooks/ope
 3. Push the topic branch and open a GitHub pull request against `main`. Explain
    the problem, the change, and what you actually verified. Link the issue if
    there is one.
-4. Resolve feedback and let the required **Release checks** pass. Maintainers
-   squash-merge on GitHub, then update their local `main` from origin.
+4. Record local verification results in the PR and resolve review feedback.
+   Maintainers squash-merge on GitHub, then update their local `main` from origin.
 
 Do not merge a worktree into local `main` and push it directly. Do not force-push
 `main`. A PR merge does not deploy Chickpea or publish a release.
@@ -38,10 +39,12 @@ Do not merge a worktree into local `main` and push it directly. Do not force-pus
 
 Run builds and tests **serially**: tests inspect generated artifacts, so a
 concurrent build can make them read a partially written artifact.
+All verification runs locally. This repository does not use GitHub Actions
+workflows or GitHub-hosted test runs.
 
 ```sh
 npm run build
-TAG_DB_PATH=:memory: SLACK_STATE_DB_PATH=:memory: CHICKPEA_AUTH_DB_PATH=:memory: npm run test:ci
+TAG_DB_PATH=:memory: SLACK_STATE_DB_PATH=:memory: CHICKPEA_AUTH_DB_PATH=:memory: TAG_REQUIRE_LOOPBACK=1 npm test
 npm run verify:admin-ui
 DO_NOT_TRACK=1 node scripts/verify-flue-offline-turn.mjs
 DO_NOT_TRACK=1 npm run verify:durability
@@ -62,9 +65,9 @@ runs tests, offline runtime checks, and a deployment dry run in a temporary
 directory. Private working documents must stay outside the public export;
 adding a public document requires updating the explicit export allowlist.
 
-CI cannot establish real Slack/provider acceptance. Changes to setup, authority,
-delivery, or persistence also need the relevant attended checks from the
-[release checklist](docs/runbooks/releasing.md). Do not describe a build or
+Local automated checks cannot establish real Slack/provider acceptance.
+Changes to setup, authority, delivery, or persistence also need the relevant
+attended checks from the [release checklist](docs/runbooks/releasing.md). Do not describe a build or
 fake-backend result as live acceptance.
 
 ## Where things live

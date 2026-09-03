@@ -1,7 +1,9 @@
 # Working on Chickpea
 
 - Use a topic branch and a GitHub pull request. Do not merge into local `main`
-  or push directly to `main`; merge on GitHub after the required checks pass.
+  or push directly to `main`; merge on GitHub after local verification and review.
+- Run tests and release verification locally. Do not add GitHub Actions workflows
+  or require GitHub-hosted test results for merging.
 - Do not squash existing repository history, create release tags, or publish a
   release without an explicit request. A request to implement a change does not
   authorize a production deployment.

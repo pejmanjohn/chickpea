@@ -8,9 +8,10 @@ the package and lockfile versions. No first release is implied by these docs.
 
 - Land release preparation through a GitHub PR. Keep source changes, repository
   settings, live deployment, and release publication as separate actions.
-- Confirm `main` requires the **Release checks** status, pull requests, resolved
-  conversations, and no force pushes/deletions. A sole maintainer can use zero
-  required approvals while still requiring PRs and checks.
+- Confirm `main` requires pull requests and resolved conversations, and blocks
+  force pushes/deletions. A sole maintainer can use zero required approvals
+  while still requiring PRs. Keep GitHub Actions disabled and do not require
+  workflow status checks for merging; record local verification in the PR.
 - Enable Dependabot alerts/security updates and private vulnerability reporting.
   Verify the public links in CONTRIBUTING and SECURITY work.
 - Decide whether to retain history. Rewriting it is optional, not a security
@@ -29,7 +30,7 @@ npm ci
 npm run verify:lockfile-integrity
 npm audit --omit=dev
 npm run build
-TAG_DB_PATH=:memory: SLACK_STATE_DB_PATH=:memory: CHICKPEA_AUTH_DB_PATH=:memory: npm run test:ci
+TAG_DB_PATH=:memory: SLACK_STATE_DB_PATH=:memory: CHICKPEA_AUTH_DB_PATH=:memory: TAG_REQUIRE_LOOPBACK=1 npm test
 npm run verify:admin-ui
 DO_NOT_TRACK=1 node scripts/verify-flue-offline-turn.mjs
 DO_NOT_TRACK=1 npm run verify:durability
@@ -38,9 +39,10 @@ DO_NOT_TRACK=1 npm run verify:cf-smoke
 npm run verify:oss-export
 ```
 
-CI runs minimum-Node and Node 24 checks, the immutable source-export gate, and
-local workerd smoke. The source-export gate tests committed HEAD only. A green
-run for an earlier commit does not validate new uncommitted changes.
+Run these checks locally on Node 22.19.0 and Node 24, including the immutable
+source-export check and local workerd smoke. The source-export check tests
+committed HEAD only. Passing results for an earlier commit do not validate new
+uncommitted changes. No GitHub workflow runs or deploys this release.
 
 Record the compressed upload size from the deployment dry run, not the size of
 the repository or `node_modules`. Keep headroom below the advertised plan's
@@ -82,7 +84,7 @@ installation links, changes, known limitations, supported upgrade origins,
 migrations, and recovery limits. For a 0.x release, state its experimental
 status and whether GitHub's prerelease flag is appropriate.
 
-Merge on GitHub, rerun/confirm checks on the final `main` commit, and obtain
+Merge on GitHub, rerun/confirm local checks on the final `main` commit, and obtain
 explicit authorization to tag/publish that exact commit. Create the version tag
 and GitHub release together. Verify that downloading its source archive follows
 the documented install path. Publish no secrets or private acceptance evidence.
