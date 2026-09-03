@@ -202,6 +202,40 @@ test('Admin accepts standalone topology and rejects inactive or missing lanes', 
   }), /INVALID_ENVIRONMENT_STATUS/u);
 });
 
+test('Admin derives lane identity from deployed metadata without inventing fleet claim health', async () => {
+  const app = createAdminRoutes(testAdminAuthority('lane-identity-token'));
+  const version = '11111111-2222-3333-4444-555555555555';
+  const env = {
+    CHICKPEA_ENV_TARGET: 'cobalt', CHICKPEA_ENV_SOURCE_REVISION: 'a'.repeat(40),
+    CHICKPEA_ENV_SOURCE_DIRTY: 'false', CF_VERSION_METADATA: { id: version },
+    CHICKPEA_ENV_CLAIM_NONCE: 'private-claim', UNRELATED_PRIVATE_VALUE: 'private-secret',
+  };
+  const get = (bindings: Record<string, unknown>, authorized = true) => app.request(
+    'http://localhost/admin/api/environment/status',
+    { headers: authorized ? { authorization: 'Bearer lane-identity-token' } : {} }, bindings,
+  );
+  assert.notEqual((await get(env, false)).status, 200);
+  const response = await get(env);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await response.json(), {
+    schemaVersion: 'chickpea-environment-identity/v1', target: 'cobalt',
+    sourceSha: 'a'.repeat(40), dirty: false, servingVersion: version,
+  });
+  assert.equal((await get({})).status, 404);
+  assert.equal((await get({ ...env, CHICKPEA_ENV_TARGET: 'fern' })).status, 404);
+  for (const invalid of [
+    { CHICKPEA_ENV_SOURCE_REVISION: 'private-source' },
+    { CHICKPEA_ENV_SOURCE_DIRTY: 'maybe' },
+    { CF_VERSION_METADATA: { id: 'private-version' } },
+  ]) {
+    assert.equal((await get({ ...env, ...invalid })).status, 503);
+  }
+  const full = runtimeEnvironmentStatus();
+  full.targets[0]!.servingVersion = version;
+  assert.equal((projectAdminEnvironmentStatus(full).targets as Array<Record<string, unknown>>)[0]!.servingVersion, version);
+});
+
 test('Admin environment projection rejects secret-shaped values in every displayed string', () => {
   for (const mutate of [
     (input: any) => { input.generatedAt = '2026-09-01T12:00:00Z'; },

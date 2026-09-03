@@ -8,6 +8,14 @@ Phase 1 has exactly two active targets—`amber` and `cobalt`—in standalone pa
 
 The environment layer provisions the two color targets and owns their Workers, D1, workspace-local installation bindings, worktree claims, deployment fences and receipts, target lifecycle, and infrastructure cleanup. Demo promotion, deep qualification, first-install automation, and a second sandbox are continuation modules. The Live Contract Verifier owns contracts, suites, its run journal, the per-target run lock, semantic actions, human gates, observers, product-state cleanup or residue, evidence, reports, and this operator skill.
 
+The Admin badge identifies the deployed color and build from the guarded
+deployment metadata. It does not treat a deployment-time claim or health value
+as current. Use `npm run env -- status` inside a worktree to find its selected
+lane, or `npm run env -- status --all` for the fleet. `npm run env -- claim`
+can select an available lane; keep that color for the worktree until release.
+The matching Slack workspace and `qa-<color>` channel carry the same color.
+Current worktree claims and verifier locks remain machine-local authority.
+
 The public V0 CLI is intentionally narrower than the internal runner protocol. `doctor` validates a private overlay and exact snapshot. The `case`, `smoke`, and `deep` commands return `COORDINATOR_REQUIRED` before reading private inputs or accepting caller-authored outcomes. V0 cannot authenticate to Slack, Cloudflare, Composio, or a browser and is not live-complete V1. The next-phase coordinator must supply all of these controls:
 
 - one-use challenges bound to the run, variant, step, attempt, target, actor, expected revision, and mutation class;

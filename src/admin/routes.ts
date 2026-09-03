@@ -538,6 +538,22 @@ const ADMIN_ENVIRONMENT_HEALTH = [
   'ready', 'unreachable', 'stale_claim', 'identity_mismatch', 'expired_claim',
 ] as const;
 
+function deployedEnvironmentIdentity(env: unknown): Record<string, unknown> | null {
+  if (!isRecord(env) || !ADMIN_ENVIRONMENT_TARGETS.includes(env.CHICKPEA_ENV_TARGET as 'amber' | 'cobalt')) return null;
+  const sourceSha = env.CHICKPEA_ENV_SOURCE_REVISION;
+  const dirty = env.CHICKPEA_ENV_SOURCE_DIRTY;
+  const servingVersion = cloudflareWorkerVersionId(env);
+  if (typeof sourceSha !== 'string' || !/^[0-9a-f]{40,64}$/u.test(sourceSha)
+    || (dirty !== 'true' && dirty !== 'false')
+    || !servingVersion || !WORKER_VERSION_ID_PATTERN.test(servingVersion)) {
+    throw new Error('INVALID_ENVIRONMENT_IDENTITY');
+  }
+  // Deployment metadata can identify this build. It cannot claim that a
+  // machine-local worktree lease, verifier lock, or fleet health is still live.
+  return { schemaVersion: 'chickpea-environment-identity/v1',
+    target: env.CHICKPEA_ENV_TARGET, sourceSha, dirty: dirty === 'true', servingVersion };
+}
+
 /**
  * Copy the machine-local fleet status into an intentionally small Admin
  * projection. Unknown fields are discarded so a malformed provider cannot
@@ -602,7 +618,8 @@ function projectAdminEnvironmentTarget(input: unknown): Record<string, unknown> 
     || typeof input.dirty !== 'boolean'
     || !(input.servingVersion === null
       || (typeof input.servingVersion === 'string'
-        && /^version-[A-Za-z0-9._-]{1,96}$/u.test(input.servingVersion)))
+        && (/^version-[A-Za-z0-9._-]{1,96}$/u.test(input.servingVersion)
+          || WORKER_VERSION_ID_PATTERN.test(input.servingVersion))))
     || !(input.transport === null || input.transport === 'gateway' || input.transport === 'events')
     || input.workspaceAlias !== `env-${String(input.target)}-workspace`
     || input.appAlias !== `env-${String(input.target)}-slack-app`
@@ -5511,11 +5528,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/environment/status', async (c) => {
     const runtimeBinding = (c.env as { CHICKPEA_ENVIRONMENT_STATUS?: unknown } | undefined)
       ?.CHICKPEA_ENVIRONMENT_STATUS;
-    if (!options.environmentStatus && runtimeBinding === undefined) {
-      c.header('Cache-Control', 'no-store');
-      return c.json({ error: 'environment_status_unavailable' }, 404);
-    }
     try {
+      if (!options.environmentStatus && runtimeBinding === undefined) {
+        const identity = deployedEnvironmentIdentity(c.env);
+        c.header('Cache-Control', 'no-store');
+        return identity ? c.json(identity) : c.json({ error: 'environment_status_unavailable' }, 404);
+      }
       if (typeof runtimeBinding === 'string' && runtimeBinding.length > 65_536) {
         throw new Error('INVALID_ENVIRONMENT_STATUS');
       }

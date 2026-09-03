@@ -2985,6 +2985,19 @@ test('Admin shows two standalone lanes without invented sandbox expiry or capaci
   assert.doesNotMatch(harness.app.innerHTML, /data-environment-target="fern"|Archive:|Recorded unused workspace slots:/);
 });
 
+test('Admin always labels a deployed lane without presenting frozen metadata as a current claim', async () => {
+  const harness = runAdminPageHarness({ environmentStatus: {
+    schemaVersion: 'chickpea-environment-identity/v1', target: 'cobalt',
+    sourceSha: '1234567890abcdef1234567890abcdef12345678', dirty: true,
+    servingVersion: '11111111-2222-3333-4444-555555555555',
+  } });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /cobalt · 1234567 \(dirty\)/);
+  assert.match(harness.app.innerHTML, /Deployed build/);
+  assert.match(harness.app.innerHTML, /npm run env -- status --all/);
+  assert.doesNotMatch(harness.app.innerHTML, /Two-lane fleet|No recovery needed|Unclaimed|cobalt · Ready/);
+});
+
 test('Admin renders recorded workspace capacity and does not invent unknown headroom', async () => {
   for (const unusedWorkspaceSlots of [0, 1, 2, null]) {
     const status = liveEnvironmentFixture('ready');

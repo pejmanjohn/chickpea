@@ -4416,6 +4416,13 @@ button.capability-pill { cursor: pointer; }
 
   function environmentStatusHtml(placement) {
     var status = state.environmentStatus;
+    if (status && status.schemaVersion === "chickpea-environment-identity/v1") {
+      var source = status.sourceSha + (status.dirty ? " (dirty)" : "");
+      return '<details class="environment-status environment-status-' + placement + '"><summary aria-label="Live environment status"><span class="environment-health">' + esc(status.target) + ' · ' + esc(status.sourceSha.slice(0, 7)) + (status.dirty ? ' (dirty)' : '') + '</span></summary>' +
+        '<div class="environment-status-panel"><div class="environment-status-head"><strong>' + esc(status.target) + ' · Deployed build</strong></div><dl class="environment-grid">' +
+        '<div><dt>Source</dt><dd class="mono">' + esc(source) + '</dd></div><div><dt>Serving</dt><dd class="mono">' + esc(status.servingVersion) + '</dd></div></dl>' +
+        '<p class="environment-recovery">For current worktree claims and verifier locks, run <code>npm run env -- status --all</code>. This badge identifies the deployed build, not a live worktree lease.</p></div></details>';
+    }
     if (!status || !Array.isArray(status.targets) || !status.targets.length) return "";
     var selected = status.targets[0];
     status.targets.forEach(function (target) {
