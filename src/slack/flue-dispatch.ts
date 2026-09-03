@@ -267,8 +267,6 @@ export async function promptSlackThreadAgent(
       progressiveRelay ? { onEvent: progressiveRelay.onEvent } : undefined,
     );
   } catch (error) {
-    // LANE_DIAGNOSTIC_TEMP: content-free, test-lane-only investigation.
-    traceLaneFailure(input.env, 'read', error);
     if (!(error instanceof AgentRunError)) {
       await progressiveRelay?.invalidateAndDrain('read_interrupted');
       if (error instanceof AgentInstanceNotFoundError) {
@@ -301,9 +299,7 @@ export async function promptSlackThreadAgent(
   let completed: AgentDispatchResult;
   try {
     completed = resultFromAgentReply(reply, input.requestedModel);
-  } catch (error) {
-    // LANE_DIAGNOSTIC_TEMP: distinguish invalid replies from runtime failures.
-    traceLaneFailure(input.env, reply.text ? 'invalid_result' : 'empty_result', error);
+  } catch {
     let checkpoint: FlueSettlementCheckpointV1;
     try {
       checkpoint = await input.state.recordSettlement({
@@ -460,41 +456,6 @@ function classifyFlueRunFailure(error: unknown): AgentPromptFailureKind {
     current = record.cause;
   }
   return classifyFailureText(type, message);
-}
-
-// LANE_DIAGNOSTIC_TEMP: remove once the live failure is identified. No error
-// messages, identifiers, prompts, tool payloads, or arbitrary metadata leave RAM.
-function traceLaneFailure(env: PlatformEnv | undefined, stage: string, error: unknown): void {
-  if (env?.CHICKPEA_ENV_TARGET !== 'amber' && env?.CHICKPEA_ENV_TARGET !== 'cobalt') return;
-  const types = new Set([
-    'invalid_request', 'operation_failed', 'internal_error', 'tool_input_validation',
-    'tool_output_validation', 'tool_output_serialization', 'tool_name_conflict',
-    'submission_aborted', 'submission_interrupted', 'submission_retry_exhausted',
-    'submission_timeout', 'sandbox_died', 'sandbox_operation_unsupported',
-    'skill_definition_validation', 'skill_not_registered', 'session_not_found',
-    'cloudflare_ai_binding_error', 'invalid_provider_registration',
-  ]);
-  const names = new Set(['Error', 'TypeError', 'RangeError', 'AgentRunError', 'FlueError', 'ZodError']);
-  const signals = [
-    'json', 'schema', 'tool', 'parse', 'context', 'input', 'token', 'rate', 'quota',
-    'limit', 'auth', 'unauthorized', 'permission', 'forbidden', 'empty', 'timeout',
-    'network', 'fetch', 'request', 'body', 'serialization', 'abort', 'invalid',
-    'unsupported', 'required', 'model', 'provider', 'durable', 'storage',
-  ];
-  const chain: Array<{ type: string; name: string; signals: string[]; status: number | null }> = [];
-  let current = asRecord(error);
-  for (let depth = 0; current && depth < 5; depth += 1) {
-    const message = typeof current.message === 'string' ? current.message.toLowerCase() : '';
-    chain.push({
-      type: typeof current.type === 'string' && types.has(current.type) ? current.type : 'other',
-      name: typeof current.name === 'string' && names.has(current.name) ? current.name : 'other',
-      signals: signals.filter((signal) => new RegExp(`\\b${signal}\\b`, 'u').test(message)),
-      status: [400, 401, 403, 404, 408, 413, 422, 429, 500, 502, 503, 504]
-        .find((status) => new RegExp(`\\b${status}\\b`, 'u').test(message)) ?? null,
-    });
-    current = asRecord(current.cause);
-  }
-  console.error('[chickpea:lane-diagnostic]', JSON.stringify({ stage, chain }));
 }
 
 function classifyFailureText(typeValue: string, messageValue: string): AgentPromptFailureKind {
