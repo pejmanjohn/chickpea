@@ -10946,6 +10946,9 @@ button.capability-pill { cursor: pointer; }
         (settings.canConfigure ? '<button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry</button>' : '') + '</div>';
     } else if (provider.lastSetupResult && provider.lastSetupResult.status !== "ready" && configured) {
       controls += '<div class="callout" role="alert"><span>Some connectors still need setup. Ready connectors remain available.</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry setup</button></div>';
+    } else if (settings.canConfigure && configured && !settings.editing && !deploymentPreparationRequired && !googleAdsPolicyBlocked) {
+      controls += '<div class="managed-provider-actions"><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry"' + (settings.busy ? ' disabled' : '') + '>' +
+        (settings.busy === "retry" ? 'Preparing&hellip;' : 'Refresh connector setup') + '</button><span class="hint">Apply current deployment settings without replacing the project key.</span></div>';
     }
     if (googleAdsPolicyBlocked) {
       controls += '<div class="callout" role="status"><span>Google Ads is blocked by deployment policy. A deployment operator must allow Composio managed OAuth or configure Explorer, Basic, or Standard API access. Preparing connector defaults will not change this setting.</span></div>';

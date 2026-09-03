@@ -12160,6 +12160,40 @@ test('Settings Connectors configures managed integrations and manages connected 
   assert.equal(refreshed.sessionStorageValue(storageKey), null);
 });
 
+test('ready connector setup can be refreshed without replacing the project key', async () => {
+  for (const source of ['stored', 'deployment'] as const) {
+    const catalog = managedSettingsCatalogFixture();
+    const settings = {
+      provider: {
+        source, configured: true, readOnly: source === 'deployment',
+        desiredState: 'enabled', generation: 1, reconciliationPending: false,
+        connectors: catalog.map((entry) => ({ toolkit: entry.toolkit, status: 'ready' as const })),
+      },
+      canConfigure: true,
+      catalog,
+    };
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/settings/connectors', composioSettings: settings,
+    });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, /data-action="connector-settings-retry"[^>]*>Refresh connector setup<\/button>/);
+    assert.doesNotMatch(harness.app.innerHTML, /id="connector-settings-key"/);
+    const click = harness.listeners.click;
+    assert.ok(click);
+    click({ target: actionTarget({ 'data-action': 'connector-settings-retry' }) });
+    await flushAsync();
+    assert.equal(harness.composioRetryCalls(), 1);
+    assert.deepEqual(harness.composioSetupPosts, []);
+
+    const member = runAdminPageHarness({
+      initialPath: '/admin/settings/connectors',
+      composioSettings: { ...settings, canConfigure: false },
+    });
+    await flushAsync();
+    assert.doesNotMatch(member.app.innerHTML, /data-action="connector-settings-retry"/);
+  }
+});
+
 test('Settings Connectors keeps provider implementation details out of member-visible copy', async () => {
   const catalog = managedSettingsCatalogFixture();
   const harness = runAdminPageHarness({
