@@ -143,7 +143,7 @@ export function parseDoctorSnapshot(input: unknown): DoctorSnapshot {
     || typeof input.repositoryRevision !== 'string'
     || !/^[0-9a-f]{7,64}(?:-dirty)?$/u.test(input.repositoryRevision)
     || typeof input.servingVersion !== 'string'
-    || !/^version-[A-Za-z0-9._-]{1,96}$/u.test(input.servingVersion)
+    || !/^(?:version-[A-Za-z0-9._-]{1,96}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu.test(input.servingVersion)
     || !validComputerUse(input.computerUseSurfaces)
     || !stringArray(input.missingActorAliases)
     || (input.unavailableObserverIds !== undefined && !stringArray(input.unavailableObserverIds))

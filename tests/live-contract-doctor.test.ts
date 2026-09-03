@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   diagnoseLiveTarget,
+  parseDoctorSnapshot,
   type DoctorSnapshot,
 } from '../qa/live/doctor.ts';
 import { LIVE_MANIFEST_DIGEST } from '../qa/live/manifest.ts';
@@ -46,6 +47,25 @@ test('doctor maps a ready one-target smoke without mutating product state', () =
   assert.equal(result.ready, true);
   assert.deepEqual(result.diagnostics, []);
   assert.deepEqual(result.variantIds, [...PHASE_ONE_SMOKE_VARIANTS]);
+});
+
+test('doctor accepts Cloudflare version UUIDs but rejects malformed deployment identifiers', () => {
+  const servingVersion = '12345678-1234-1234-abcd-123456789abc';
+  const result = diagnoseLiveTarget({
+    policy,
+    suite: 'smoke',
+    source: { read: () => ({ ...ready, servingVersion }) },
+  });
+  assert.equal(result.ready, true);
+  assert.equal(result.servingVersion, servingVersion);
+  for (const invalid of [
+    '', '12345678-1234-1234-abcd-123456789ab',
+    '12345678-1234-1234-abcd-123456789abg', ` ${servingVersion}`,
+    `${servingVersion}\n`, 'deployment-current', 'version-',
+  ]) {
+    assert.throws(() => parseDoctorSnapshot({ ...ready, servingVersion: invalid }),
+      /INVALID_DOCTOR_SNAPSHOT/u);
+  }
 });
 
 test('Computer Use bridge, windows, and window-scoped capture are required', () => {
