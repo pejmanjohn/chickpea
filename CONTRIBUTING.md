@@ -32,8 +32,11 @@ Production Node hosting is described in [the operations guide](docs/runbooks/ope
 4. Record local verification results in the PR and resolve review feedback.
    Maintainers squash-merge on GitHub, then update their local `main` from origin.
 
-Do not merge a worktree into local `main` and push it directly. Do not force-push
-`main`. A PR merge does not deploy Chickpea or publish a release.
+Maintainers may instead merge a worktree into root `main`, verify the merged
+result locally, and push directly. GitHub does not require a PR or hosted test
+results; contributors without push access still use PRs. Agents need explicit
+maintainer authorization for direct-main landing. Do not force-push `main`.
+Merging or pushing does not deploy Chickpea or publish a release.
 
 ## Verification
 

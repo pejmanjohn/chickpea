@@ -6,12 +6,13 @@ the package and lockfile versions. No first release is implied by these docs.
 
 ## Before the first release
 
-- Land release preparation through a GitHub PR. Keep source changes, repository
-  settings, live deployment, and release publication as separate actions.
-- Confirm `main` requires pull requests and resolved conversations, and blocks
-  force pushes/deletions. A sole maintainer can use zero required approvals
-  while still requiring PRs. Keep GitHub Actions disabled and do not require
-  workflow status checks for merging; record local verification in the PR.
+- Land release preparation through a GitHub PR or a maintainer-authorized local
+  worktree merge, verified in root `main` before pushing. Keep source changes,
+  repository settings, live deployment, and release publication separate.
+- Keep force pushes/deletions blocked on `main` and resolve conversations when
+  using a PR. PRs are not a GitHub requirement; maintainers may push verified
+  changes directly. Keep GitHub Actions disabled and do not require workflow
+  status checks. Record local verification with the change or release evidence.
 - Enable Dependabot alerts/security updates and private vulnerability reporting.
   Verify the public links in CONTRIBUTING and SECURITY work.
 - Decide whether to retain history. Rewriting it is optional, not a security
@@ -78,13 +79,14 @@ not replace this real Slack/Admin acceptance.
 
 ## Publish
 
-After the source gates and attended acceptance pass, prepare a PR with matching
+After the source gates and attended acceptance pass, prepare matching
 package/lockfile versions and release notes. Notes must cover prerequisites,
 installation links, changes, known limitations, supported upgrade origins,
 migrations, and recovery limits. For a 0.x release, state its experimental
 status and whether GitHub's prerelease flag is appropriate.
 
-Merge on GitHub, rerun/confirm local checks on the final `main` commit, and obtain
+Land through a PR or a maintainer-authorized local merge, rerun/confirm local
+checks on the final `main` commit, and obtain
 explicit authorization to tag/publish that exact commit. Create the version tag
 and GitHub release together. Verify that downloading its source archive follows
 the documented install path. Publish no secrets or private acceptance evidence.
