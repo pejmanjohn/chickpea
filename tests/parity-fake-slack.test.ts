@@ -4,8 +4,55 @@ import { test } from 'node:test';
 import { createMemoryScopeSlack } from '../src/memory/scope.ts';
 import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { FakeSlackBackend, STUB_REPLY_MARKER } from './parity/fake-slack.ts';
+import { normalizeSlackTurn } from '../src/slack/turn-normalization.ts';
 
 const loopbackSkipReason = await loopbackListenSkipReason();
+
+test('fake Slack opens configured DMs with a channel and rejects unknown destinations', async () => {
+  const backend = new FakeSlackBackend({ slack: { directMessages: { UOWNER01: 'DOWNER01' } } });
+  const open = async (users: string) => {
+    const response = await backend.asFetch()('https://slack.com/api/conversations.open', {
+      method: 'POST', body: JSON.stringify({ users }),
+    });
+    return response.json();
+  };
+  assert.deepEqual(await open('UOWNER01'), {
+    ok: true, channel: { id: 'DOWNER01', is_im: true, user: 'UOWNER01' },
+  });
+  assert.deepEqual(await open('UMISSING'), { ok: false, error: 'channel_not_found' });
+  backend.configure({ slack: { directMessages: { UOWNER01: 'DUPDATED01' } } });
+  assert.deepEqual(await open('UOWNER01'), {
+    ok: true, channel: { id: 'DUPDATED01', is_im: true, user: 'UOWNER01' },
+  });
+  backend.configure({ slack: { conversationsOpenError: 'internal_error' } });
+  assert.deepEqual(await open('UOWNER01'), { ok: false, error: 'internal_error' });
+  backend.configure({ slack: { conversationsOpenError: null } });
+  assert.deepEqual(await open('UOWNER01'), {
+    ok: true, channel: { id: 'DUPDATED01', is_im: true, user: 'UOWNER01' },
+  });
+});
+
+test('fake published Agent handles produce real Slack-shaped mention events', async () => {
+  const backend = new FakeSlackBackend();
+  const response = await backend.asFetch()('https://slack.com/api/usergroups.create', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Research', handle: 'research' }),
+  });
+  const body = await response.json() as { usergroup: { id: string } };
+  assert.match(body.usergroup.id, /^S[A-Z0-9]+$/);
+  const normalized = normalizeSlackTurn({
+    token: 'fake-verification-token',
+    type: 'event_callback', team_id: 'TDEMO123', api_app_id: 'ADEMO123',
+    event_id: 'Ev_FAKE_AGENT_MENTION', event_time: 1782770400,
+    event: {
+      type: 'message', channel_type: 'channel', channel: 'C_EXEC', user: 'UALICE01',
+      text: `<!subteam^${body.usergroup.id}> help`, ts: '1782770400.000100',
+      event_ts: '1782770400.000100',
+    },
+  }, { botUserId: 'UBOT1234' });
+  assert.equal(normalized.status, 'runnable');
+  if (normalized.status === 'runnable') assert.equal(normalized.turn.source, 'agent_mention');
+});
 
 test('asFetch records Slack and provider calls and returns wire-shaped bodies', async () => {
   const backend = new FakeSlackBackend();

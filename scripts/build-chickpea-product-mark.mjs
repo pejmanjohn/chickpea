@@ -1,4 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
@@ -17,9 +18,9 @@ const DERIVATIVES = [
   { source: WORDMARK_MASTER, file: 'chickpea-wordmark-512-dark.png', width: 512, height: 126, tint: '#ffffff' },
 ];
 const ASSETS = [
-  { exportName: 'CHICKPEA_MARK_DATA_URL', file: 'chickpea-mark-128.png', width: 128, height: 128 },
-  { exportName: 'CHICKPEA_FAVICON_DATA_URL', file: 'chickpea-favicon-32.png', width: 32, height: 32 },
-  { exportName: 'CHICKPEA_WORDMARK_DATA_URL', file: 'chickpea-wordmark-512.png', width: 512, height: 126 },
+  { exportName: 'CHICKPEA_MARK_URL', file: 'chickpea-mark-128.png', width: 128, height: 128 },
+  { exportName: 'CHICKPEA_FAVICON_URL', file: 'chickpea-favicon-32.png', width: 32, height: 32 },
+  { exportName: 'CHICKPEA_WORDMARK_URL', file: 'chickpea-wordmark-512.png', width: 512, height: 126 },
 ];
 
 async function validateMaster(file, width, height, label) {
@@ -73,27 +74,13 @@ for (const derivative of DERIVATIVES) {
     .toFile(output);
 }
 
-function percentBreakBase64(value) {
-  // The Admin page is a server-rendered HTML string and several safety tests
-  // scan its source for forbidden visible copy. Percent-encoding every third
-  // base64 character keeps the data URL valid while preventing opaque image
-  // bytes from accidentally forming human-readable words in that source.
-  return [...value]
-    .map((character, index) =>
-      index % 3 === 2
-        ? `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`
-        : character,
-    )
-    .join('');
-}
-
 const exports = [];
 for (const asset of ASSETS) {
   const bytes = await readFile(join(ROOT, 'assets', asset.file));
   await validateMaster(join(ROOT, 'assets', asset.file), asset.width, asset.height, asset.file);
-  const payload = percentBreakBase64(bytes.toString('base64'));
+  const version = createHash('sha256').update(bytes).digest('hex').slice(0, 12);
   exports.push(
-    `export const ${asset.exportName} = ${JSON.stringify(`data:image/png;base64,${payload}`)};`,
+    `export const ${asset.exportName} = ${JSON.stringify(`/${asset.file}?v=${version}`)};`,
   );
 }
 

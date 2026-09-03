@@ -1239,8 +1239,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const result = this.call((stores) =>
       stores.turnJobs.retrySlackInstallationRecovery(workspaceId),
     );
-    if (result.ok && result.value > 0 && (await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
+    if (result.ok && result.value > 0) {
+      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
     }
     return result;
   }
@@ -1419,6 +1419,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       return stores.turnJobs.hasPending('legacy') || stores.turnJobs.hasPending('ledger');
     });
     if (!result.ok) return result;
+    // Maintenance repairs a missing wake; it does not admit new work. Keep an
+    // existing rate-limit or delivery backoff instead of restarting it early.
     if (result.value && (await this.ctx.storage.getAlarm()) === null) {
       await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
     }
@@ -1436,12 +1438,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // armed alarm must both be durable before this RPC resolves, because the
     // events handler acks Slack the instant it does. A small, non-sliding batch
     // window lets near-simultaneous independent threads reach the existing
-    // bounded fan-out. Never move an already-armed alarm later.
+    // bounded fan-out. Bring a later receipt/retry alarm forward for new work,
+    // but never move an already-armed alarm later.
     if (result.ok) {
-      const alarm = await this.ctx.storage.getAlarm();
-      if (alarm === null) {
-        await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
-      }
+      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
     }
     return result;
   }
@@ -1463,8 +1463,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     const result = this.call((stores) =>
       stores.turnJobs.resumeAfterOAuth(originalTaskId, continuationId)
     );
-    if (result.ok && result.value && (await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(Date.now() + RELAY_BATCH_WINDOW_MS);
+    if (result.ok && result.value) {
+      await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
     }
     return result;
   }
@@ -1560,7 +1560,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         scheduleActions.nextDueAt,
         outboxRetry,
       );
-      if (nextWake !== undefined) await this.ctx.storage.setAlarm(nextWake);
+      if (nextWake !== undefined) await this.armAlarmNoLaterThan(nextWake);
       return;
     }
     // Resolve current credentials once per identity referenced by this bounded
@@ -1896,8 +1896,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     if (nextWake !== undefined) {
       // Re-arm (do NOT throw) so this invocation returns normally and its
       // attempt-count writes commit; the next firing re-drives the leftover
-      // pending jobs.
-      await this.ctx.storage.setAlarm(nextWake);
+      // pending jobs. Preserve an earlier wake armed by an RPC while this
+      // drain was awaiting external I/O.
+      await this.armAlarmNoLaterThan(nextWake);
     }
   }
 

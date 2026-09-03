@@ -8,6 +8,7 @@ import { validatePublicMcpClientRegistration } from './mcp-oauth.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
 import { requestAuthSourceKey } from './source-key.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
+import { readBoundedRequestBody, requestWithBufferedBody } from '../security/request-body-limit.ts';
 
 const MAX_AUTH_BODY_BYTES = 32 * 1024;
 type PublicRoute = 'read' | 'browser-mutation' | 'protocol-mutation' | 'registration';
@@ -162,14 +163,18 @@ class McpRegistrationGate {
 }
 
 async function validateRegistrationRequest(request: Request): Promise<Request | Response> {
-  const declaredLength = Number(request.headers.get('content-length') ?? 0);
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_AUTH_BODY_BYTES) {
-    return Response.json({ error: 'request_too_large' }, { status: 413 });
-  }
-  const clone = request.clone();
   let body: unknown;
+  let bytes: Uint8Array;
   try {
-    body = await clone.json();
+    const bounded = await readBoundedRequestBody(request, MAX_AUTH_BODY_BYTES);
+    if (!bounded.ok) {
+      return Response.json(
+        { error: bounded.reason === 'body_too_large' ? 'request_too_large' : 'invalid_client_metadata' },
+        { status: bounded.reason === 'body_too_large' ? 413 : 400 },
+      );
+    }
+    bytes = bounded.body ?? new Uint8Array();
+    body = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     return Response.json({ error: 'invalid_client_metadata' }, { status: 400 });
   }
@@ -178,7 +183,9 @@ async function validateRegistrationRequest(request: Request): Promise<Request | 
     const status = validation.code === 'client_metadata_too_large' ? 413 : 400;
     return Response.json({ error: validation.code }, { status });
   }
-  return request;
+  // Do not tee a validation clone: Node 22.19 can cancel the original unread
+  // stream when the clone is collected. Hand Better Auth its own bounded body.
+  return requestWithBufferedBody(request, bytes);
 }
 
 function validatePublicMutation(request: Request, canonicalOrigin: string): Response | null {

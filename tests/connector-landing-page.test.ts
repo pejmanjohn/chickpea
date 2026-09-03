@@ -109,7 +109,7 @@ test('managed connector pages use the real Chickpea wordmark and approved setup 
     };
     const renderedSetup = renderManagedConnectionSetupPage(page);
     assert.match(renderedSetup, /role="img" aria-label="Chickpea"/);
-    assert.match(renderedSetup, /--chickpea-wordmark-image:url\("data:image\/png;base64,/);
+    assert.match(renderedSetup, /--chickpea-wordmark-image:url\("\/chickpea-wordmark-512\.png\?v=[a-f0-9]{12}"\)/);
     assert.match(renderedSetup, /Connect HubSpot to Sprout/);
     assert.match(renderedSetup, /Who uses this connection\?/);
     assert.match(renderedSetup, /Pick one to continue\./);

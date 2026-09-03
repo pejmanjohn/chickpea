@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import sharp from 'sharp';
+import { createPublicAssetRoutes } from '../src/assets/routes.ts';
 
 import {
   renderAdminPage,
@@ -9,14 +10,16 @@ import {
   renderSlackSignInPage,
 } from '../src/admin/page.ts';
 import {
-  CHICKPEA_FAVICON_DATA_URL,
-  CHICKPEA_MARK_DATA_URL,
-  CHICKPEA_WORDMARK_DATA_URL,
+  CHICKPEA_FAVICON_URL,
+  CHICKPEA_MARK_URL,
+  CHICKPEA_WORDMARK_URL,
 } from '../src/brand/chickpea-mark.ts';
 import { buildSlackAppManifest, slackManifestPrefillUrl } from '../src/slack/app-manifest.ts';
 
-async function dataUrlBytes(dataUrl: string): Promise<Buffer> {
-  return Buffer.from(await (await fetch(dataUrl)).arrayBuffer());
+async function assetBytes(url: string): Promise<Buffer> {
+  const response = await createPublicAssetRoutes().request(url);
+  assert.equal(response.status, 200);
+  return Buffer.from(await response.arrayBuffer());
 }
 
 const PNG_OPTIONS = { compressionLevel: 9, adaptiveFiltering: true, palette: false };
@@ -28,7 +31,7 @@ async function derivative(source: Buffer, width: number, height: number): Promis
     .toBuffer();
 }
 
-test('the same Chickpea mark and colorable wordmark are embedded across product surfaces', async () => {
+test('product surfaces reference the same byte-identical static brand assets', async () => {
   const manifest = buildSlackAppManifest({
     kind: 'workspace_app',
     origin: 'https://chickpea.example',
@@ -42,20 +45,23 @@ test('the same Chickpea mark and colorable wordmark are embedded across product 
     }),
     renderAdminPage(),
   ];
+  assert.match(CHICKPEA_MARK_URL, /^\/chickpea-mark-128\.png\?v=/);
+  assert.match(CHICKPEA_FAVICON_URL, /^\/chickpea-favicon-32\.png\?v=/);
+  assert.match(CHICKPEA_WORDMARK_URL, /^\/chickpea-wordmark-512\.png\?v=/);
 
   assert.equal(
-    surfaces[2]?.split(CHICKPEA_MARK_DATA_URL).length,
+    surfaces[2]?.split(CHICKPEA_MARK_URL).length,
     4,
-    'Admin embeds the mark only for the large favicon and two progressive-render lockups',
+    'Admin references the mark for the large favicon and two progressive-render lockups',
   );
   assert.match(surfaces[2] ?? '', /\.brand-home\s*\{[^}]*color:\s*inherit/s);
   assert.match(surfaces[2] ?? '', /\.primary-shell-brand\s*\{[^}]*color:\s*var\(--text\)/s);
 
   for (const html of surfaces) {
-    assert.ok(html.includes(`href="${CHICKPEA_FAVICON_DATA_URL}"`));
-    assert.ok(html.includes(`sizes="128x128" href="${CHICKPEA_MARK_DATA_URL}"`));
-    assert.ok(html.includes(`src="${CHICKPEA_MARK_DATA_URL}"`));
-    assert.ok(html.includes(CHICKPEA_WORDMARK_DATA_URL));
+    assert.ok(html.includes(`href="${CHICKPEA_FAVICON_URL}"`));
+    assert.ok(html.includes(`sizes="128x128" href="${CHICKPEA_MARK_URL}"`));
+    assert.ok(html.includes(`src="${CHICKPEA_MARK_URL}"`));
+    assert.ok(html.includes(CHICKPEA_WORDMARK_URL));
     assert.match(html, /class="brand-wordmark"/);
     assert.match(html, /\.brand-wordmark\s*\{[^}]*background-color:\s*currentColor/s);
     assert.match(html, /-webkit-mask:\s*var\(--chickpea-wordmark-image\)/);
@@ -80,10 +86,10 @@ test('the same Chickpea mark and colorable wordmark are embedded across product 
   assert.deepEqual(mark128, await derivative(markMaster, 128, 128));
   assert.deepEqual(favicon32, await derivative(markMaster, 32, 32));
   assert.deepEqual(wordmark512, await derivative(wordmarkMaster, 512, 126));
-  assert.deepEqual(await dataUrlBytes(CHICKPEA_MARK_DATA_URL), mark128);
-  assert.deepEqual(await dataUrlBytes(CHICKPEA_FAVICON_DATA_URL), favicon32);
-  assert.deepEqual(await dataUrlBytes(CHICKPEA_WORDMARK_DATA_URL), wordmark512);
-  assert.ok(CHICKPEA_WORDMARK_DATA_URL.length < 40_000, 'runtime wordmark stays compact');
+  assert.deepEqual(await assetBytes(CHICKPEA_MARK_URL), mark128);
+  assert.deepEqual(await assetBytes(CHICKPEA_FAVICON_URL), favicon32);
+  assert.deepEqual(await assetBytes(CHICKPEA_WORDMARK_URL), wordmark512);
+  assert.ok(CHICKPEA_WORDMARK_URL.length < 100, 'runtime references a URL, not image bytes');
 
   const metadata = await sharp(wordmarkMaster).metadata();
   assert.equal(metadata.hasAlpha, true, 'wordmark master must preserve alpha transparency');

@@ -242,7 +242,8 @@ test('a real recovery invocation adds usage while one execution persistence retr
   }
 });
 
-test('slow telemetry cannot hold delivery beyond the budget and one repair records the same execution', async () => {
+test('slow telemetry cannot hold delivery beyond the budget and one repair records the same execution', { timeout: 5000 }, async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
   const durable = new SqliteUsageStore(':memory:');
   const never = new Promise<never>(() => undefined);
   let admissionCalls = 0;
@@ -280,11 +281,16 @@ test('slow telemetry cannot hold delivery beyond the budget and one repair recor
       now: () => 6_000_000,
       onPersistence: (event) => events.push(event),
     });
-    const started = performance.now();
-    await recorder.admit();
-    await recorder.recordSuccess(success());
-    const readyToDeliverMs = performance.now() - started;
-    assert.ok(readyToDeliverMs < 40, `telemetry delayed delivery ${readyToDeliverMs}ms`);
+    for (const write of [() => recorder.admit(), () => recorder.recordSuccess(success())]) {
+      let settled = false;
+      const pending = write().then(() => { settled = true; });
+      context.mock.timers.tick(4);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, false, 'telemetry must wait for its full write budget');
+      context.mock.timers.tick(1);
+      await pending;
+      assert.equal(settled, true, 'a stuck write must stop blocking after 5 ms');
+    }
     await recorder.repairAfterDelivery();
     assert.deepEqual(events.map(({ phase, outcome }) => [phase, outcome]), [
       ['admission', 'timed_out'],

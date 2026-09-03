@@ -979,22 +979,7 @@ function parseCliArgs(args) {
 
 async function runCli() {
   const fixture = await startAdminVisualFixture(parseCliArgs(process.argv.slice(2)));
-  console.log(`Admin visual fixture: ${fixture.baseUrl}`);
-  console.log(`Runtime contract: ${fixture.runtimeContract}`);
-  if (fixture.onboardingStage) console.log(`Onboarding stage: ${fixture.onboardingStage}`);
-  console.log(`Local login token: ${fixture.adminToken}`);
-  console.log('Canonical states (production URLs; perform the listed UI actions after load):');
-  for (const [name, state] of Object.entries(fixture.canonicalStates)) {
-    const actions = state.actions.length ? ` then ${state.actions.join(' → ')}` : '';
-    console.log(`  ${name}: ${fixture.baseUrl}${state.path}${actions}`);
-  }
-  console.log('Connector landing states:');
-  for (const [name, state] of Object.entries(fixture.connectorStates)) {
-    console.log(`  ${name}: ${fixture.baseUrl}${state.path}`);
-  }
-  console.log(`Temporary state: ${fixture.stateDbPath}`);
-  console.log('Press Ctrl+C to stop and remove the temporary state.');
-
+  // Install cleanup before advertising readiness to a parent process or user.
   let stopping = false;
   const cleanupOnExit = () => void fixture.close();
   process.once('exit', cleanupOnExit);
@@ -1010,6 +995,22 @@ async function runCli() {
   process.once('SIGTERM', () => void stop('SIGTERM'));
   // npm can relay terminal shutdown as SIGHUP after its wrapper exits.
   process.once('SIGHUP', () => void stop('SIGHUP'));
+
+  console.log(`Admin visual fixture: ${fixture.baseUrl}`);
+  console.log(`Runtime contract: ${fixture.runtimeContract}`);
+  if (fixture.onboardingStage) console.log(`Onboarding stage: ${fixture.onboardingStage}`);
+  console.log(`Local login token: ${fixture.adminToken}`);
+  console.log('Canonical states (production URLs; perform the listed UI actions after load):');
+  for (const [name, state] of Object.entries(fixture.canonicalStates)) {
+    const actions = state.actions.length ? ` then ${state.actions.join(' → ')}` : '';
+    console.log(`  ${name}: ${fixture.baseUrl}${state.path}${actions}`);
+  }
+  console.log('Connector landing states:');
+  for (const [name, state] of Object.entries(fixture.connectorStates)) {
+    console.log(`  ${name}: ${fixture.baseUrl}${state.path}`);
+  }
+  console.log(`Temporary state: ${fixture.stateDbPath}`);
+  console.log('Press Ctrl+C to stop and remove the temporary state.');
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : '';

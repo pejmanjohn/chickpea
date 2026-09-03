@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { keepEventLoopAlive } from './helpers/keep-event-loop-alive.ts';
 
 import { WebClient } from '@slack/web-api';
 import type { ChatPostMessageArguments } from '@slack/web-api';
@@ -46,7 +47,8 @@ test('the installed Slack client returns a delivery receipt but has no request i
   assert.equal(CHAT_POST_MESSAGE_HAS_CLIENT_MESSAGE_ID, false);
 });
 
-test('a Slack transport timeout after request acceptance is delivery-unknown and is not retried', async () => {
+test('a Slack transport timeout after request acceptance is delivery-unknown and is not retried', { timeout: 5_000 }, async (t) => {
+  keepEventLoopAlive(t);
   let requests = 0;
   let requestAccepted = false;
   let transportSignal: AbortSignal | undefined;

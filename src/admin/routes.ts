@@ -21,6 +21,7 @@ import {
   renderSlackSignInPage,
 } from './page.ts';
 import { onboardingAssetBytes } from './onboarding-assets.ts';
+import { createPublicAssetRoutes } from '../assets/routes.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import {
   RoutineContentAccessResolver,
@@ -454,7 +455,7 @@ import {
 } from '../slack/agent-access.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
-import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
+import { createGatewayDeploymentClient, resolveChickpeaGatewayUrl } from '../slack/gateway/runtime.ts';
 import { cloudflareWorkerVersionId } from '../config/cloudflare-version.ts';
 import {
   GATEWAY_BINDING_SETTING,
@@ -1308,6 +1309,7 @@ const turnRecoveryResolveSchema = v.strictObject({
 });
 export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const app = new Hono();
+  app.route('/', createPublicAssetRoutes());
   const principalByContext = new WeakMap<object, AuthPrincipal>();
   const betterAuthByContext = new WeakMap<object, Promise<BetterAuthContext | undefined>>();
   const managedProvidersByContext = new WeakMap<object, ManagedConnectionProviderRegistry>();
@@ -2988,6 +2990,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.body(slackSetupClientScript());
   });
 
+  app.get('/admin/setup/gateway-continue.js', (c) => {
+    authResponseHeaders(c);
+    c.header('Content-Type', 'application/javascript; charset=UTF-8');
+    return c.body(slackAuthorizationHandoffScript(
+      new URL(resolveChickpeaGatewayUrl(c.env as PlatformEnv | undefined)).origin,
+    ));
+  });
+
   app.get('/admin/setup/manual/client.js', (c) => {
     authResponseHeaders(c);
     c.header('Content-Type', 'application/javascript; charset=UTF-8');
@@ -2996,8 +3006,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // The pre-owner manual setup journey embeds these immutable historical
   // screenshots, so they must remain available before the Admin auth gate.
-  app.get('/admin/assets/onboarding/:name', (c) => {
-    const bytes = onboardingAssetBytes(c.req.param('name'));
+  app.get('/admin/assets/onboarding/:name', async (c) => {
+    const bytes = await onboardingAssetBytes(c.req.param('name'));
     if (!bytes) return c.notFound();
     c.header('Cache-Control', 'public, max-age=31536000, immutable');
     c.header('Content-Type', 'image/webp');
@@ -3193,7 +3203,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           limiter.recordSuccess(`slack_setup_operation_${action}`, setup.id),
           limiter.recordSuccess('slack_setup_deployment', 'deployment'),
         ]);
-        return c.redirect(claim.authorizationUrl, 303);
+        return c.html(renderSlackAuthorizationHandoffPage(
+          claim.authorizationUrl,
+          new URL(resolveChickpeaGatewayUrl(c.env as PlatformEnv | undefined)).origin,
+        ));
       } else if (action === 'gateway_refresh') {
         const result = await createGatewayDeploymentClient(
           c.env as PlatformEnv | undefined,

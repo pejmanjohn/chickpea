@@ -9,6 +9,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -38,6 +39,7 @@ function createHarness() {
   const secretCapturePath = path.join(root, 'secret-capture.json');
   const npmStub = path.join(root, 'fake-npm.mjs');
   const wranglerStub = path.join(wranglerDir, 'wrangler.js');
+  const timeoutStub = path.join(root, 'fake-inspection-timeout.mjs');
 
   mkdirSync(scriptsDir, { recursive: true });
   mkdirSync(authDir, { recursive: true });
@@ -45,6 +47,8 @@ function createHarness() {
   mkdirSync(wranglerDir, { recursive: true });
   copyFileSync(DEPLOY_SCRIPT, path.join(scriptsDir, 'deploy-with-epilogue.mjs'));
   copyFileSync(PROFILE_SCRIPT, path.join(scriptsDir, 'cloudflare-deployment-profile.mjs'));
+  copyFileSync(path.join(PROJECT_ROOT, 'scripts', 'worker-artifact.mjs'), path.join(scriptsDir, 'worker-artifact.mjs'));
+  symlinkSync(path.join(PROJECT_ROOT, 'node_modules', 'typescript'), path.join(root, 'node_modules', 'typescript'), 'dir');
   copyFileSync(CAPABILITY_SCRIPT, path.join(authDir, 'setup-capability.mjs'));
   copyFileSync(ACTIVATION_SCRIPT, path.join(authDir, 'deployment-activation.mjs'));
   for (const migrationPath of AUTH_MIGRATIONS) {
@@ -58,6 +62,30 @@ function createHarness() {
       ${JSON.stringify(label)} + ':' + JSON.stringify(process.argv.slice(2)) + '\\n',
     );
   `;
+  writeFileSync(timeoutStub, `
+    import assert from 'node:assert/strict';
+    import childProcess from 'node:child_process';
+    import { appendFileSync } from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const originalSpawnSync = childProcess.spawnSync;
+    childProcess.spawnSync = (command, args, options) => {
+      const phase = process.env.DEPLOY_TEST_TIMEOUT_INSPECTION;
+      const isTarget = phase === 'status'
+        ? args?.[1] === 'deployments' && args?.[2] === 'status'
+        : args?.[1] === 'versions' && args?.[2] === 'view';
+      if (!isTarget) return originalSpawnSync(command, args, options);
+      // Prove the wrapper supplies a bounded timeout without racing Node's
+      // process startup against a 100ms wall clock in the parallel suite.
+      assert.equal(options.timeout, 30_000);
+      appendFileSync(process.env.DEPLOY_TEST_LOG,
+        'wrangler:' + JSON.stringify(args.slice(1)) + '\\n');
+      return {
+        error: Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+        status: null, signal: 'SIGTERM', stdout: '', stderr: '',
+      };
+    };
+    syncBuiltinESMExports();
+  `);
   writeFileSync(
     npmStub,
     commandLogger('npm') + `
@@ -99,9 +127,6 @@ function createHarness() {
         process.exit(0);
       }
       if (args[0] === 'deployments' && args[1] === 'status' && args.includes('--json')) {
-        if (process.env.DEPLOY_TEST_STALLED_INSPECTION === 'status') {
-          await new Promise(() => setInterval(() => {}, 1_000));
-        }
         let statusPayload = process.env.DEPLOY_TEST_DEPLOYMENT_STATUS;
         if (process.env.DEPLOY_TEST_DEPLOYMENT_STATUS_SEQUENCE) {
           const sequence = JSON.parse(process.env.DEPLOY_TEST_DEPLOYMENT_STATUS_SEQUENCE);
@@ -118,9 +143,6 @@ function createHarness() {
         process.exit(0);
       }
       if (args[0] === 'versions' && args[1] === 'view' && args.includes('--json')) {
-        if (process.env.DEPLOY_TEST_STALLED_INSPECTION === 'version') {
-          await new Promise(() => setInterval(() => {}, 1_000));
-        }
         const views = process.env.DEPLOY_TEST_VERSION_VIEWS
           ? JSON.parse(process.env.DEPLOY_TEST_VERSION_VIEWS)
           : {};
@@ -194,6 +216,7 @@ function createHarness() {
     logPath,
     secretCapturePath,
     npmStub,
+    timeoutStub,
     script: path.join(scriptsDir, 'deploy-with-epilogue.mjs'),
   };
   writeCutoverArtifact(harness);
@@ -208,7 +231,10 @@ function runHarness(
 ) {
   const env = { ...process.env };
   Object.assign(env, envOverrides);
-  return spawnSync(process.execPath, [harness.script, ...args], {
+  const nodeArgs = env.DEPLOY_TEST_TIMEOUT_INSPECTION
+    ? ['--import', harness.timeoutStub, harness.script, ...args]
+    : [harness.script, ...args];
+  return spawnSync(process.execPath, nodeArgs, {
     cwd: harness.root,
     encoding: 'utf8',
     timeout,
@@ -791,16 +817,16 @@ test('an existing Worker refuses serving versions that disagree about whether AU
 });
 
 for (const stalledInspection of ['status', 'version']) {
-  test(`a stalled ${stalledInspection} inspection aborts before AUTH_DB migration or Worker deploy`, (context) => {
+  test(`a timed-out ${stalledInspection} inspection aborts before AUTH_DB migration or Worker deploy`, (context) => {
     const harness = createHarness();
     context.after(() => rmSync(harness.root, { recursive: true, force: true }));
     writeCutoverArtifact(harness, { databaseId: '' });
 
     const result = runHarness(harness, ['--skip-build'], {
       DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_AUTH_SECRET' }]),
-      DEPLOY_TEST_STALLED_INSPECTION: stalledInspection,
-      CHICKPEA_DEPLOY_INSPECTION_TIMEOUT_MS: '100',
-    }, 2_000);
+      DEPLOY_TEST_TIMEOUT_INSPECTION: stalledInspection,
+      CHICKPEA_DEPLOY_INSPECTION_TIMEOUT_MS: '30000',
+    }, 20_000);
 
     assert.equal(result.status, 1, result.stderr);
     if (stalledInspection === 'status') {
@@ -809,6 +835,9 @@ for (const stalledInspection of ['status', 'version']) {
       assert.match(result.stderr, /Unable to inspect active Worker version deployed-version.*Refusing an update/s);
     }
     const invoked = commands(harness.logPath);
+    assert.ok(invoked.some((command) => command.startsWith(stalledInspection === 'status'
+      ? 'wrangler:["deployments","status"'
+      : 'wrangler:["versions","view","deployed-version"')));
     assert.equal(invoked.some((command) => command.includes('"migrations","apply"')), false);
     assert.equal(invoked.some((command) => command.startsWith('wrangler:["deploy"')), false);
   });
@@ -961,8 +990,8 @@ function writeCutoverArtifact(
     : 'SLACK_TAG_LEDGER_CANARY_CHANNELS delivery_receipt_persist_unknown slack_agent_bindings';
   writeFileSync(
     path.join(builtDir, 'index.js'),
-    `heartbeat: runRoutineHeartbeat maintenance: runWorkMaintenance ` +
-      `chickpea.response-metadata chickpea-slack-v2 ` +
+    `compose({heartbeat:a,maintenance:b}); async function a(){await scheduler.heartbeat();} async function b(){await state.maintainWork();}\n` +
+      `// chickpea.response-metadata chickpea-slack-v2 ` +
       `${options.cloudflareTracer === false ? '' : '@flue/runtime/cloudflare-tracing '} ` +
       `${options.sandboxCommandRedaction === false ? '' : 'FLUE_PRIVATE_SANDBOX_COMMAND_V1 '} ` +
       `${options.routineAgents === false ? '' : 'chickpea-routine-intent-v2 chickpea-routine-execution-v2 '} ` +

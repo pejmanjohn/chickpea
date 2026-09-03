@@ -18,14 +18,16 @@ export const NET_GUARD = join(REPO_ROOT, 'scripts', 'net-guard.mjs');
 export const SIGNING_SECRET = 'test-signing-secret';
 export const EVENTS_PATH = '/channels/slack/events';
 const MIN_NODE = [22, 19, 0];
+let tsLoaderReady;
 
 /** Load an arbitrary repo-relative TypeScript module through tsx's runtime loader. */
 export async function loadTsModule(relativePath) {
-  const { register } = await import('tsx/esm/api');
-  const unregister = register();
-  const mod = await import(join(REPO_ROOT, relativePath));
-  unregister();
-  return mod;
+  // These standalone verifiers own their process. Keep one loader for its
+  // lifetime: unregistering between overlapping import graphs can leave the
+  // Node 22 ESM loader spinning. Sharing the promise also serializes first use.
+  tsLoaderReady ??= import('tsx/esm/api').then(({ register }) => { register(); });
+  await tsLoaderReady;
+  return import(join(REPO_ROOT, relativePath));
 }
 
 /** Load the TypeScript fake backend through tsx's runtime loader. */
@@ -77,7 +79,6 @@ export async function seedOfflineSlackAuthority({
   botToken = 'test-bot-token',
   signingSecret = SIGNING_SECRET,
 }) {
-  // tsx's process-wide registration seam is intentionally serialized.
   const { SqliteIdentityStore } = await loadTsModule('src/identity/store.ts');
   const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
   const { PersonalTokenService } = await loadTsModule('src/auth/personal-token.ts');

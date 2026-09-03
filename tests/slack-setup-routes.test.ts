@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
+import vm from 'node:vm';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { renderSlackAuthorizationHandoffPage } from '../src/admin/page.ts';
@@ -8,8 +12,10 @@ import { SlackAdmissionService } from '../src/auth/slack-admission.ts';
 import { AuthRateLimiter } from '../src/auth/rate-limit.ts';
 import { SlackOidcError } from '../src/auth/slack-oidc.ts';
 import { mintSetupCapability } from '../src/auth/setup-capability.mjs';
+import { slackAuthorizationHandoffScript } from '../src/auth/setup-handoff.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { closeNodeStateStores } from '../src/config/state-backend.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { recordPendingSlackChallenge } from '../src/slack/installation-handshake.ts';
@@ -21,6 +27,96 @@ import { REQUIRED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 const NOW = 1_786_000_000_000;
 const ORIGIN = 'https://chickpea.example';
 const CONFIG_TOKEN = 'xoxe.xoxp-route-configuration-token';
+
+test('Add to Slack completes its same-origin POST before navigating to the gateway', async (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'chickpea-gateway-handoff-'));
+  const priorDbPath = process.env.TAG_DB_PATH;
+  const priorKeyringPath = process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH;
+  process.env.TAG_DB_PATH = path.join(directory, 'state.sqlite');
+  process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH = path.join(directory, 'keyring.json');
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const authority = await mintSetupCapability({ now: () => NOW });
+  const gatewayOrigin = 'https://gateway.chickpea.test';
+  const authorizationUrl = `${gatewayOrigin}/install/claim_test`;
+  let claims = 0;
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(String(input), `${gatewayOrigin}/v1/claims`);
+    assert.equal(init?.method, 'POST');
+    claims += 1;
+    return Response.json({ protocolVersion: 1, claimId: 'claim_test', authorizationUrl, expiresAt: NOW + 60_000 });
+  });
+  try {
+    const app = createAdminRoutes({
+      identity,
+      slackCredentials: { state: identity, keyring: generateCredentialKeyring('key_v1') },
+      slackAppCreationNow: () => NOW,
+    });
+    const env = { ...setupEnv(authority), CHICKPEA_GATEWAY_URL: gatewayOrigin };
+    const denied = await postSetup(app, env, { action: 'gateway_begin', capability: 'invalid' });
+    assert.equal(denied.status, 400);
+    assert.equal(claims, 0, 'a missing setup capability must not contact the gateway');
+    const response = await postSetup(app, env, { action: 'gateway_begin', capability: authority.capability });
+    assert.equal(claims, 1);
+    assert.equal(response.status, 200, 'a cross-origin 303 is blocked by Chrome form-action CSP');
+    assert.equal(response.headers.get('location'), null);
+    assert.match(response.headers.get('content-security-policy') ?? '', /form-action 'self'/);
+    const html = await response.text();
+    assert.equal(slackAuthorizationUrlFromHandoff(html).href, authorizationUrl);
+    assert.match(html, /src="\/admin\/setup\/gateway-continue\.js"/);
+    assert.doesNotMatch(html, new RegExp(authority.capability));
+    const script = await (await app.request(`${ORIGIN}/admin/setup/gateway-continue.js`, {}, env)).text();
+    let navigated = '';
+    vm.runInNewContext(script, {
+      URL,
+      document: { querySelector: () => ({ getAttribute: () => authorizationUrl }) },
+      location: { origin: ORIGIN, replace: (url: string) => { navigated = url; } },
+    });
+    assert.equal(navigated, authorizationUrl);
+  } finally {
+    identity.close();
+    closeNodeStateStores();
+    if (priorDbPath === undefined) delete process.env.TAG_DB_PATH;
+    else process.env.TAG_DB_PATH = priorDbPath;
+    if (priorKeyringPath === undefined) delete process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH;
+    else process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH = priorKeyringPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('gateway handoff renderer and browser script reject destinations outside the configured install path', () => {
+  const gatewayOrigin = 'https://gateway.chickpea.test';
+  const valid = `${gatewayOrigin}/install/claim_test`;
+  const runScript = (destination: string, configuredOrigin?: string) => {
+    let navigated = '';
+    vm.runInNewContext(slackAuthorizationHandoffScript(configuredOrigin), {
+      URL,
+      document: { querySelector: () => ({ getAttribute: () => destination }) },
+      location: { origin: ORIGIN, replace: (url: string) => { navigated = url; } },
+    });
+    return navigated;
+  };
+  assert.throws(() => renderSlackAuthorizationHandoffPage(valid), /invalid/i);
+  assert.equal(runScript(valid), '', 'direct Slack OAuth must not opt into gateway navigation');
+  assert.equal(runScript(valid, gatewayOrigin), valid);
+  assert.match(renderSlackAuthorizationHandoffPage(valid, gatewayOrigin), /Continue to Slack/);
+  for (const destination of [
+    'https://attacker.example/install/claim_test',
+    'https://gateway.chickpea.test.attacker.example/install/claim_test',
+    'http://gateway.chickpea.test/install/claim_test',
+    'https://user:password@gateway.chickpea.test/install/claim_test',
+    `${gatewayOrigin}/install/claim_test#fragment`,
+    `${gatewayOrigin}/install/claim_test?next=https://attacker.example`,
+    `${gatewayOrigin}/install/claim_test/extra`,
+    `${gatewayOrigin}/install/../redirect`,
+    `${gatewayOrigin}/install/%2Fredirect`,
+    `${gatewayOrigin}/other/claim_test`,
+    `${gatewayOrigin}/install/`,
+    'javascript:alert(1)',
+  ]) {
+    assert.throws(() => renderSlackAuthorizationHandoffPage(destination, gatewayOrigin), /invalid/i);
+    assert.equal(runScript(destination, gatewayOrigin), '', destination);
+  }
+});
 
 test('capability-gated Admin setup creates an app without reflecting or retaining submitted secrets', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
@@ -104,7 +200,10 @@ test('manual setup is a separate capability-gated journey that adopts into share
       action: 'open', capability: authority.capability,
     });
     assert.equal(opened.status, 200);
-    assert.match(await opened.text(), /Create Chickpea/);
+    const openedHtml = await opened.text();
+    assert.match(openedHtml, /Create Chickpea/);
+    assert.match(openedHtml, /src="\/onboarding\/create-workspace\.webp"/);
+    assert.doesNotMatch(openedHtml, /\/admin\/assets\/onboarding\//);
 
     const expectedManifest = buildExpectedManifest();
     const invalid = await postManualSetup(app, env, {

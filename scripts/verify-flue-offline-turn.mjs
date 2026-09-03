@@ -140,6 +140,19 @@ try {
   await waitForReady(child, eventsUrl, getOutput);
   console.log(`flue node server ready at ${baseUrl}`);
 
+  // Exercise the built, composed Node app, including its global middleware
+  // and route ordering, not just the isolated public-assets router.
+  const { PUBLIC_ASSET_PATHS } = await loadTsModule('src/assets/public-assets.ts');
+  for (const assetPath of PUBLIC_ASSET_PATHS) {
+    const response = await fetch(`${baseUrl}/${assetPath}`);
+    if (response.status !== 200 ||
+        !Buffer.from(await response.arrayBuffer()).equals(readFileSync(join(REPO_ROOT, 'assets', assetPath)))) {
+      throw new Error(`Built Node public asset failed: ${assetPath} (HTTP ${response.status})`);
+    }
+  }
+  record('built Node app serves every public image without authentication', true,
+    `${PUBLIC_ASSET_PATHS.length} byte-identical images`);
+
   // Check 1: signed url_verification echoes the challenge.
   {
     const response = await postSignedEvent(eventsUrl, {
