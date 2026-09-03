@@ -48,6 +48,16 @@ test('npm package includes every public live verifier file and discovery entrypo
   assert.ok(packageJson.files?.includes('docs/runbooks/live-contract-verification.md'));
 });
 
+test('the explicit OSS verifier allowlist stays complete without admitting private artifacts', () => {
+  const policy = read('scripts/verify-oss-export.mjs').split('const liveVerifierExportPolicy =')[1]
+    ?.split('const forbiddenLiveVerifierArtifactPaths =')[0];
+  assert.ok(policy);
+  const paths = [...policy.matchAll(/exportPath\(([^)]+)\)/gu)]
+    .map((match) => [...match[1]!.matchAll(/'([^']+)'/gu)].map((part) => part[1]).join('/'))
+    .filter((path) => path.startsWith('qa/live/'));
+  assert.deepEqual(paths.sort(), filesBelow('qa/live'));
+});
+
 test('public verifier files are not ignored and private artifact shapes are not packaged', () => {
   for (const path of [
     'AGENTS.md',
