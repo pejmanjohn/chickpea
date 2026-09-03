@@ -10,6 +10,7 @@ import {
 } from '../src/slack/web-client-presenter.ts';
 import { activityStatus } from '../src/activity/status.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
+import { syntheticPem } from './helpers/credential-fixtures.ts';
 
 function presenterWith(client: unknown): WebClientPresenter {
   return new WebClientPresenter(client as WebClient, {
@@ -623,12 +624,10 @@ test('deliverFinal removes an algorithm-labeled PEM key before streaming or dura
       async afterDelivery() {},
     },
   );
-  const pem = [
-    '-----BEGIN DSA PRIVATE KEY-----',
+  const pem = syntheticPem('DSA PRIVATE KEY', [
     'MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEA',
     'c2VjcmV0LWJ5dGVzLXRoYXQtbXVzdC1ub3Qtc3Vydml2ZQ==',
-    '-----END DSA PRIVATE KEY-----',
-  ].join('\n');
+  ]);
 
   await presenter.deliverFinal(`Credential:\n${pem}\nDone.`, 'markdown');
 

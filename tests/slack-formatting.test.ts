@@ -24,6 +24,7 @@ import {
   toolStatus,
 } from '../src/slack/replies.ts';
 import { activityStatus } from '../src/activity/status.ts';
+import { syntheticPem } from './helpers/credential-fixtures.ts';
 
 test('standard Markdown final replies render as Slack markdown blocks', () => {
   const markdown = [
@@ -122,12 +123,10 @@ test('plain Slack replies redact credential-shaped content', () => {
 });
 
 test('Markdown and plain Slack replies remove complete PEM armor', () => {
-  const pem = [
-    '-----BEGIN OPENSSH PRIVATE KEY-----',
+  const pem = syntheticPem('OPENSSH PRIVATE KEY', [
     'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ==',
     'c2VjcmV0LWJ5dGVzLXRoYXQtbXVzdC1ub3Qtc3Vydml2ZQ==',
-    '-----END OPENSSH PRIVATE KEY-----',
-  ].join('\n');
+  ]);
   for (const format of ['markdown', 'plain_text'] as const) {
     const rendered = JSON.stringify(renderSlackMessage(`Credential:\n${pem}\nDone.`, format));
     assert.match(rendered, /\[credential redacted\]/);
