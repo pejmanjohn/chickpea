@@ -7450,7 +7450,8 @@ test('unconfigured managed connectors stay discoverable and continue after owner
   assert.doesNotMatch(harness.app.innerHTML, new RegExp(secret));
   assert.match(harness.app.innerHTML, /<strong>YouTube<\/strong>/);
   assert.match(harness.app.innerHTML, /value="member" data-action="connection-account-owner" checked/);
-  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.match(harness.app.innerHTML, /Review the permissions requested on the provider/);
 });
 
 test('members can discover managed connectors without seeing the project-key field', async () => {
@@ -7611,7 +7612,8 @@ test('connector handoff waits for Composio before opening managed Google setup',
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.match(harness.app.innerHTML, /Review the permissions requested on the provider/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-google-access"/);
   assert.ok(harness.historyReplaces.includes('/admin/agents/agent_conn'));
 });
@@ -7631,7 +7633,8 @@ test('connector handoff opens a managed-only preset after the catalog loads', as
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /<strong>Notion<\/strong>/);
-  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.match(harness.app.innerHTML, /Review the permissions requested on the provider/);
   assert.ok(harness.historyReplaces.includes('/admin/agents/agent_conn'));
 });
 
@@ -7953,6 +7956,8 @@ test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link
     /<div class="skill-form">[\s\S]*?Continue to Google Drive[\s\S]*?<\/div>/,
   )?.[0] ?? '';
   assert.match(managedForm, /Sign-in opens in a secure Google Drive tab/);
+  assert.match(managedForm, /Review the permissions requested on the provider/);
+  assert.doesNotMatch(managedForm, /connection-account-managed-access|Read-only/);
   assert.match(managedForm, /class="connection-account-owner-options"/);
   assert.match(managedForm, /connection-account-owner-icon-personal/);
   assert.match(managedForm, /connection-account-owner-icon-team/);
@@ -7965,7 +7970,7 @@ test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link
   assert.deepEqual(harness.managedAuthorizationPosts, [{
     agentId: 'agent_conn',
     body: {
-      workspaceId: 'T_DESIGN', ownerKind: 'team', toolkit: 'googledrive', access: 'read',
+      workspaceId: 'T_DESIGN', ownerKind: 'team', toolkit: 'googledrive', access: 'write',
     },
   }]);
   assert.deepEqual(harness.connectionAccountPosts, []);
@@ -7975,7 +7980,7 @@ test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link
   assert.match(harness.app.innerHTML, /Finish sign-in in the new tab/);
 });
 
-test('Agent-owned Google Drive accounts can request a read-write Composio capability ceiling', async () => {
+test('managed connections use standard permissions without an access picker', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [] },
@@ -7988,7 +7993,7 @@ test('Agent-owned Google Drive accounts can request a read-write Composio capabi
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'google-drive' }) });
-  click({ target: actionTarget({ 'data-action': 'connection-account-managed-access', 'data-access': 'write' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /connection-account-managed-access/);
   chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
@@ -7996,7 +8001,7 @@ test('Agent-owned Google Drive accounts can request a read-write Composio capabi
   assert.equal(harness.managedAuthorizationPosts[0]?.body.access, 'write');
 });
 
-test('managed productivity cards expose only configured read lanes and disable missing writes', async () => {
+test('managed productivity cards preserve configured tool limits without promising a narrower provider grant', async () => {
   const unavailable = {
     status: 'missing_configuration', missingConfiguration: ['auth_config_missing'],
   };
@@ -8034,11 +8039,9 @@ test('managed productivity cards expose only configured read lanes and disable m
       'data-action': 'connection-account-preset', 'data-preset': 'google-sheets',
     }),
   });
-  assert.match(
-    harness.app.innerHTML,
-    /data-action="connection-account-managed-access" data-access="write" disabled aria-disabled="true"/,
-  );
-  assert.match(harness.app.innerHTML, /Write access is not configured for this connector/);
+  assert.doesNotMatch(harness.app.innerHTML, /connection-account-managed-access|>Read-only</);
+  assert.match(harness.app.innerHTML, /Review the permissions requested on the provider/);
+  assert.match(harness.app.innerHTML, /This Agent is limited to reading data/);
   chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
@@ -8969,11 +8972,6 @@ test('managed Notion is the only catalog option and explains the provider page b
   assert.match(harness.app.innerHTML, /Choose only the pages and databases Chickpea may use/);
   assert.match(harness.app.innerHTML, /grant includes descendants made available by Notion/);
   assert.doesNotMatch(harness.app.innerHTML, /Native Notion/);
-  click({
-    target: actionTarget({
-      'data-action': 'connection-account-managed-access', 'data-access': 'write',
-    }),
-  });
   chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();

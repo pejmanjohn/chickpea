@@ -908,8 +908,8 @@ export class WorkspaceManagementService {
     if (actor.origin.kind === 'slack' && 'managedToolkit' in connector) {
       const scopes = MANAGED_CONNECTOR_CATALOG.capabilities(
         connector.managedToolkit,
-        // Freeze the complete connector ceiling. The claimed browser flow
-        // selects a read-only subset or this full read/write set.
+        // Freeze the complete connector ceiling. The browser uses the full set
+        // when configured, otherwise only the available read tools.
         'write',
       ).map(({ id }) => id);
       if (scopes.length === 0) {

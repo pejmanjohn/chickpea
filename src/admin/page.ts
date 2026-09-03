@@ -6118,7 +6118,7 @@ button.capability-pill { cursor: pointer; }
         presetId: managedCandidate.id,
         preset: managedCandidate,
         managedToolkit: managedDescriptor.toolkit,
-        managedAccess: "read",
+        managedAccess: managedConnectorLaneReady(managedDescriptor, "write") ? "write" : "read",
         providerId: managedDescriptor.providerId,
         label: managedCandidate.name,
         busy: false,
@@ -8622,13 +8622,9 @@ button.capability-pill { cursor: pointer; }
   function connectionAccountAccessHtml(form) {
     var googleService = googleServicePresetById(form.presetId);
     if (form.kind === "managed") {
-      var managedAccess = form.managedAccess === "write" ? "write" : "read";
-      var managedDescriptor = managedConnectorDescriptorByToolkit(form.managedToolkit);
-      var writeDisabled = !managedConnectorLaneReady(managedDescriptor, "write");
-      return '<div class="field"><label class="field-label">Access</label><div class="seg" role="group" aria-label="' + esc(form.preset && form.preset.name || "Managed connector") + ' access">' +
-        '<button type="button" class="' + (managedAccess === "read" ? "on" : "") + '" data-action="connection-account-managed-access" data-access="read">Read-only</button>' +
-        '<button type="button" class="' + (managedAccess === "write" ? "on" : "") + '" data-action="connection-account-managed-access" data-access="write"' + (writeDisabled ? ' disabled aria-disabled="true"' : '') + '>Read and write</button></div>' +
-        (writeDisabled ? '<p class="hint">Write access is not configured for this connector.</p>' : '') + '</div>';
+      return '<div class="field"><span class="field-label">Permissions</span>' +
+        '<p class="hint">Review the permissions requested on the provider&#39;s sign-in screen. They may include permission to change data.</p>' +
+        (form.managedAccess === "read" ? '<p class="hint">This Agent is limited to reading data. That does not limit permissions granted during sign-in.</p>' : '') + '</div>';
     }
     if (googleService && form.apiEditor) {
       var googleAccess = form.apiEditor.googleAccess[googleService.service] || "read";
@@ -13504,12 +13500,6 @@ button.capability-pill { cursor: pointer; }
       );
     }
     if (action === "connection-account-cancel") { state.connectionAccountForm = null; render(); }
-    if (action === "connection-account-managed-access" && state.connectionAccountForm &&
-        state.connectionAccountForm.kind === "managed") {
-      state.connectionAccountForm.managedAccess = target.getAttribute("data-access") === "write" ? "write" : "read";
-      state.connectionAccountForm.error = "";
-      render();
-    }
     if (action === "connection-account-google-access" && state.connectionAccountForm) {
       var accountGoogleService = googleServicePresetById(state.connectionAccountForm.presetId);
       if (accountGoogleService && state.connectionAccountForm.apiEditor) {

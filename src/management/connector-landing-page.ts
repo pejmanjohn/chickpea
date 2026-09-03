@@ -21,12 +21,12 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
   const { setup, agent } = input;
   const connector = setup.target.targetLabel;
   const connectorCopy = managedConnectorReadCopy(setup.target.provider, connector);
-  const accessLane = setup.target.accessLane ?? 'read';
+  // The server checks both provider readiness and the setup link's frozen ceiling.
+  const accessLane = input.writeAvailable === true ? 'write' : 'read';
   const accessSummary = accessLane === 'write'
     ? managedConnectorWriteSummary(setup.target.provider, connector)
     : connectorCopy.accessSummary;
   const failureMessage = input.failureMessage ?? '';
-  const writeAvailable = input.writeAvailable ?? true;
   return pageShell({
     title: `Connect ${connector} to ${agent.name}`,
     surface: 'connector-setup',
@@ -36,7 +36,7 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
         <section class="flow-content">
           ${agentIdentity(agent, input.avatarUrl)}
           <h1 id="flow-title">Connect ${escapeHtml(connector)} to ${escapeHtml(agent.name)}</h1>
-          <p class="setup-lead">${escapeHtml(agent.name)} can ${escapeHtml(connectorCopy.setupAction)}.<br>Updates still require your confirmation.</p>
+          <p class="setup-lead">${escapeHtml(agent.name)} can use ${escapeHtml(connector)} when you ask.<br>Updates still require your confirmation.</p>
           <section class="setup-card">
             <div class="connector-row">
               ${connectorLogo(setup)}
@@ -62,12 +62,10 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
                 </div>
               </section>
               <section class="choice-block" aria-labelledby="access-title">
-                <h2 id="access-title">Access</h2>
-                <div class="access-control" role="radiogroup" aria-label="Connector access" aria-describedby="access-help">
-                  <label><input type="radio" name="access" value="read"${accessLane === 'read' ? ' checked' : ''}><span>Read-only</span></label>
-                  <label><input type="radio" name="access" value="write"${accessLane === 'write' ? ' checked' : ''}${writeAvailable ? '' : ' disabled'}><span>Read and write</span></label>
-                </div>
-                <p id="access-help">${escapeHtml(accessSummary)}</p>
+                <h2 id="access-title">Permissions</h2>
+                <input type="hidden" name="access" value="${accessLane}">
+                <p>Review the permissions requested on the provider&#39;s sign-in screen. They may include permission to change data.</p>
+                <p id="access-help">Agent tools: ${escapeHtml(accessSummary)}${accessLane === 'read' ? ' This does not limit permissions granted during sign-in.' : ''}</p>
               </section>
               <p class="security-copy">Sign-in opens in a secure ${escapeHtml(connector)} tab. Chickpea keeps a reference to the connected account and this Agent&rsquo;s access level &mdash; never your password or refresh tokens.</p>
               <p class="flow-alert" id="flow-alert" role="alert"${failureMessage ? '' : ' hidden'}>${escapeHtml(failureMessage)}</p>
@@ -79,7 +77,7 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
           </section>
         </section>
       </main>
-      <script nonce="setup">${setupScript({ agentName: agent.name, connector, toolkit: setup.target.provider })}</script>`,
+      <script nonce="setup">${setupScript()}</script>`,
   });
 }
 
@@ -205,9 +203,7 @@ export function renderManagedConnectionSuccessPage(input: ConnectorLandingPageIn
     ? input.setup.receipt
     : undefined;
   const ownerKind = receipt?.ownerKind ?? input.setup.target.ownerKind;
-  const accessLane = receipt?.accessLane ?? input.setup.target.accessLane;
   const scope = ownerKind === 'team' ? 'team' : 'personal';
-  const access = accessLane === 'write' ? 'read and write' : 'read-only';
   return pageShell({
     title: `${connector} connected`,
     surface: 'connector-success',
@@ -218,7 +214,7 @@ export function renderManagedConnectionSuccessPage(input: ConnectorLandingPageIn
           ${connectionPair(input)}
           <div class="success-copy">
             <div class="success-line"><span class="success-check" aria-hidden="true">&#10003;</span><h1 id="flow-title">${escapeHtml(connector)} is now connected to ${escapeHtml(input.agent.name)}</h1></div>
-            <p class="lead success-summary">Your ${scope}, ${access} connection is ready.</p>
+            <p class="lead success-summary">Your ${scope} connection is ready.</p>
             <p class="small-copy">You can close this tab now.</p>
           </div>
         </section>
@@ -286,10 +282,8 @@ function ownerChoiceIcon(ownerKind: 'member' | 'team'): string {
   return `<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="${path}"/></svg>`;
 }
 
-function setupScript(input: { agentName: string; connector: string; toolkit: string }): string {
-  const readSummary = managedConnectorReadCopy(input.toolkit, input.connector).accessSummary;
-  const writeSummary = managedConnectorWriteSummary(input.toolkit, input.connector);
-  return `(function(){var form=document.getElementById("connector-form"),owners=form&&form.querySelectorAll('input[name="ownerKind"]'),accessHelp=document.getElementById("access-help"),alert=document.getElementById("flow-alert"),button=document.querySelector('button[form="connector-form"][value="authorize"]');if(!form||!owners||!accessHelp||!alert||!button)return;var readSummary=${jsonForScript(readSummary)},writeSummary=${jsonForScript(writeSummary)};function selectedOwner(){return form.querySelector('input[name="ownerKind"]:checked')}function update(){button.disabled=!selectedOwner();var access=form.querySelector('input[name="access"]:checked');accessHelp.textContent=access&&access.value==="write"?writeSummary:readSummary}owners.forEach(function(control){control.addEventListener("change",update)});form.querySelectorAll('input[name="access"]').forEach(function(control){control.addEventListener("change",update)});form.addEventListener("submit",async function(event){event.preventDefault();if(!selectedOwner()){alert.textContent="Choose Personal or Team to continue.";alert.hidden=false;update();return}var label=button.textContent;button.disabled=true;button.textContent="Opening secure sign-in…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(String(body.message||"Chickpea could not start the secure sign-in. Try again."));var target=new URL(String(body.authorizationUrl||""));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not start the secure sign-in. Try again.";alert.hidden=false;button.textContent=label;update()}});update()})();`;
+function setupScript(): string {
+  return `(function(){var form=document.getElementById("connector-form"),owners=form&&form.querySelectorAll('input[name="ownerKind"]'),alert=document.getElementById("flow-alert"),button=document.querySelector('button[form="connector-form"][value="authorize"]');if(!form||!owners||!alert||!button)return;function selectedOwner(){return form.querySelector('input[name="ownerKind"]:checked')}function update(){button.disabled=!selectedOwner()}owners.forEach(function(control){control.addEventListener("change",update)});form.addEventListener("submit",async function(event){event.preventDefault();if(!selectedOwner()){alert.textContent="Choose Personal or Team to continue.";alert.hidden=false;update();return}var label=button.textContent;button.disabled=true;button.textContent="Opening secure sign-in…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(String(body.message||"Chickpea could not start the secure sign-in. Try again."));var target=new URL(String(body.authorizationUrl||""));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not start the secure sign-in. Try again.";alert.hidden=false;button.textContent=label;update()}});update()})();`;
 }
 
 function catalogSetupScript(input: { connector: string; agentName: string }): string {
@@ -534,31 +528,6 @@ body {
   line-height: 1.4;
   text-wrap: pretty;
 }
-.access-control {
-  align-items: stretch;
-  background: var(--card);
-  border: 1px solid rgba(59, 50, 32, .2);
-  border-radius: 15px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  min-height: 56px;
-  overflow: hidden;
-  width: min(615px, 100%);
-}
-.access-control label { cursor: pointer; min-width: 0; position: relative; }
-.access-control input { opacity: 0; pointer-events: none; position: absolute; }
-.access-control span {
-  align-items: center;
-  color: var(--muted);
-  display: flex;
-  font-weight: 800;
-  height: 100%;
-  justify-content: center;
-  padding: 0 18px;
-}
-.access-control input:checked + span { background: var(--gold); color: var(--ink); }
-.access-control input:focus-visible + span { outline: 3px solid rgba(176, 84, 21, .42); outline-offset: -4px; }
-.access-control input:disabled + span { cursor: not-allowed; opacity: .48; }
 .security-copy { margin: 0; padding: 22px 24px 0; }
 .flow-alert {
   background: #fff0ea;
