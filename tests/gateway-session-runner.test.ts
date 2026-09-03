@@ -151,6 +151,74 @@ test('session rotation keeps the predecessor live until its successor is ready',
   }
 });
 
+test('a stalled rotation becomes replaceable and late completion cannot reopen the old generation', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  let clock = NOW;
+  const client = new GatewayDeploymentClient({
+    settings, config, keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test', fetch: gateway.fetch, now: () => clock,
+  });
+  const sockets: FakeSocket[] = [];
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  const runners: GatewaySessionRunner[] = [];
+  let finishOpening!: () => void;
+  const stalled = new Promise<void>((resolve) => { finishOpening = resolve; });
+  const supervisor = new GatewaySessionRunnerSupervisor(() => {
+    const runner = new GatewaySessionRunner({
+      client, onEvent: async () => 'accepted', now: () => clock,
+      createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
+      setTimer: ((callback: () => void, delay: number) => {
+        timers.push({ callback, delay });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      }),
+      clearTimer: () => {},
+    });
+    runners.push(runner);
+    return runner;
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    await supervisor.ensureHealthy();
+    sockets[0]!.open();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    ready(sockets[0]!, 'session_predecessor');
+    await waitFor(() => runners[0]!.healthSnapshot().healthy);
+    const loadBinding = client.loadBinding.bind(client);
+    let opening = false;
+    client.loadBinding = async () => {
+      if (!opening) { opening = true; await stalled; }
+      return loadBinding();
+    };
+    timers.find(({ delay }) => delay === 12 * 60_000)!.callback();
+    await waitFor(() => opening);
+    sockets[0]!.disconnect();
+    clock += 89_999;
+    assert.equal(runners[0]!.healthSnapshot().shouldReplace, false);
+    clock += 1;
+    assert.equal(runners[0]!.healthSnapshot().shouldReplace, true);
+    assert.equal(runners[0]!.healthSnapshot().reason, 'candidate_open_timeout');
+    await Promise.all([supervisor.ensureHealthy(), supervisor.ensureHealthy()]);
+    assert.equal(runners.length, 2);
+    assert.equal(sockets.length, 2);
+    finishOpening();
+    await spin();
+    assert.equal(sockets.length, 2);
+    sockets[1]!.open();
+    await waitFor(() => sockets[1]!.sent.length === 1);
+    ready(sockets[1]!, 'session_recovered');
+    await waitFor(() => supervisor.snapshot()?.healthy === true);
+  } finally {
+    runners.forEach((runner) => runner.stop());
+    finishOpening();
+    await spin();
+    settings.close();
+    config.close();
+  }
+});
+
 test('failed rotation leaves a healthy predecessor active and retries the handoff', async () => {
   const settings = new SqliteSettingsStore(':memory:', () => NOW);
   const config = configStore();

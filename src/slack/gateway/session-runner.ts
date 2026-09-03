@@ -237,6 +237,7 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
   private scheduledAction: GatewaySessionScheduledAction | undefined;
   private scheduledAt: number | undefined;
   private candidateOpeningGeneration: number | undefined;
+  private candidateOpeningDeadline: number | undefined;
   private renewalPending = false;
   private starting = false;
   private stopped = true;
@@ -260,6 +261,7 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     this.clearHeartbeat();
     this.clearCandidateTimer();
     this.candidateOpeningGeneration = undefined;
+    this.candidateOpeningDeadline = undefined;
     this.retireCandidate('restart');
     this.retireCurrentSocket('restart');
     try {
@@ -306,6 +308,7 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     this.clearHeartbeat();
     this.clearCandidateTimer();
     this.candidateOpeningGeneration = undefined;
+    this.candidateOpeningDeadline = undefined;
     this.retireCandidate('shutdown');
     this.retireCurrentSocket('shutdown');
   }
@@ -319,6 +322,18 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     if (this.renewalPending && !this.stopped) {
       const active = this.active;
       const candidateOpening = this.candidateOpeningGeneration === this.generation;
+      // Creating a successor can stall before there is a socket to time out.
+      // Let the normal heartbeat supervisor retire this entire generation;
+      // late async completion is fenced by current(generation).
+      if (candidateOpening && this.candidateOpeningDeadline !== undefined
+        && this.now() >= this.candidateOpeningDeadline) {
+        return {
+          generation: this.generation,
+          phase: 'stale', healthy: false, shouldReplace: true,
+          reason: 'candidate_open_timeout',
+          ...(checkpoint ? { checkpoint } : {}),
+        };
+      }
       if (!active && !this.candidate && !candidateOpening) {
         return {
           generation: this.generation,
@@ -428,6 +443,7 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
     this.handoffPredecessor = predecessor;
     const generation = this.generation;
     this.candidateOpeningGeneration = generation;
+    this.candidateOpeningDeadline = this.now() + GATEWAY_HEARTBEAT_TIMEOUT_MS;
     void this.openCandidate(generation)
       .catch(() => {
         if (this.current(generation)) this.failCandidate(undefined, 'candidate_start_failed');
@@ -435,6 +451,7 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
       .finally(() => {
         if (this.candidateOpeningGeneration !== generation) return;
         this.candidateOpeningGeneration = undefined;
+        this.candidateOpeningDeadline = undefined;
         if (this.current(generation) && this.renewalPending && !this.candidate) {
           this.failCandidate(undefined, 'candidate_start_failed');
         }
