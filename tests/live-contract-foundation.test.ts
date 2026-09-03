@@ -124,6 +124,8 @@ test('LC-04 normalizes actual setup, account, Agent binding, and Sheets result s
 test('LC-04 catches hidden ownership, attribution, binding, provider, tool, replay, and activity failures', () => {
   const cases: Array<[string, (fixture: any) => void, boolean?]> = [
     ['ownership_not_selected', (fixture) => { fixture.setupForm.ownerKind = ''; }],
+    ['ownership_not_selected', (fixture) => { fixture.setupForm.access = 'read'; }],
+    ['ownership_mismatch', (fixture) => { fixture.admin.setups[0].target.accessLane = 'read'; }],
     ['editor_not_authorized', (fixture) => { fixture.admin.setups[0].completedByUserId = 'U_OTHER'; }],
     ['completion_attribution_mismatch', (fixture) => { fixture.admin.accounts[0].createdByMembershipId = 'membership_other'; }],
     ['agent_binding_missing', (fixture) => { fixture.admin.bindings = []; }],
@@ -269,11 +271,11 @@ function connectorFixture(ownerKind: 'member' | 'team', race = false) {
       authorizedEditorIds: ['U_MEMBER', 'U_ADMIN', 'U_FIRST', 'U_SECOND'],
       authorizedMembershipIds: ['membership_member', 'membership_admin', 'membership_first', 'membership_second'],
     },
-    setupForm: { ownerKind, access: 'read' },
+    setupForm: { ownerKind, access: 'write' },
     admin: {
       setups: [{
         setupOperationId: 'setup_sheets_alpha', status: 'completed',
-        target: { kind: 'managed_connection', provider: 'googlesheets', agentId: 'agent_qa_alpha', ownerKind, accessLane: 'read' },
+        target: { kind: 'managed_connection', provider: 'googlesheets', agentId: 'agent_qa_alpha', ownerKind, accessLane: 'write' },
         completedByUserId, completedByMembershipId, connectionAccountId: 'connection_sheets_alpha',
       }],
       accounts: [{

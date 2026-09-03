@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { diagnoseLiveTarget, parseDoctorSnapshot, type DoctorSnapshot } from './doctor.ts';
 import { JournalOperatorChallengeLedger, OperatorDriver, operatorChallengeDigest,
   operatorReceiptDigest, type OperatorActionView } from './drivers/operator.ts';
@@ -14,7 +15,7 @@ import { beginCleanup, deriveCleanupPlan, exactResourceBindingDigest, recordAsse
   validatePendingMutationReceipt,
   type BaselineFactInput, type CleanupTarget, type MutationReceiptInput, type PostflightInput,
   type PostflightProof } from './safety/cleanup.ts';
-import { appendRunJournal, createRunJournal } from './safety/journal.ts';
+import { appendRunJournal, createRunJournal, readRunJournal } from './safety/journal.ts';
 import { assertPrivateEvidencePath } from './safety/evidence.ts';
 import { acquireTargetLock, readTargetLock, releaseOwnedTargetLock, targetLockPath,
   type TargetLockOwner } from './safety/lock.ts';
@@ -63,6 +64,8 @@ export interface CleanupReadback {
 export interface VisibleAssertion {
   observerId: ObserverId;
   observedTokens: AssertionToken[];
+  /** True only when visible UI still shows an unfinished observation. */
+  pending?: boolean;
 }
 
 /** Implementation stays private. No CLI accepts action, assertion, or cleanup verdicts. */
@@ -104,9 +107,15 @@ export class AttendedLiveCoordinator {
       uiMutexRoot: string;
       attest(): Promise<DoctorSnapshot>;
       now?: () => number;
+      observationTimeoutMs?: number;
+      observationPollMs?: number;
+      wait?: (milliseconds: number) => Promise<void>;
       onProgress?: (record: RunnerRecord) => void;
     }) {
     if (dependencies.driver.transport !== 'computer_use') throw new CoordinatorError('COMPUTER_USE_REQUIRED');
+    for (const value of [dependencies.observationTimeoutMs ?? 60_000, dependencies.observationPollMs ?? 1_000]) {
+      if (!Number.isSafeInteger(value) || value < 1 || value > 45 * 60_000) throw new CoordinatorError('OBSERVATION_WAIT');
+    }
     this.target = validateTargetOverlay(LIVE_MANIFEST, request.overlay);
     const selected = request.variantIds ?? LIVE_MANIFEST.requiredVariants[request.suite];
     if (request.suite === 'deep' || !(PHASE_ONE_TARGET_ALIASES as readonly string[]).includes(this.target.targetAlias)
@@ -210,36 +219,17 @@ export class AttendedLiveCoordinator {
         }
         record = await this.advance({ type: 'action_receipt', actionRef: record.actionRef, outcome: readback.outcome });
       } else if (record.kind === 'assertion') {
-        const assertion = record;
-        const observations = await this.window(assertion.variantId, 'assertions',
-          (ui) => this.dependencies.driver.observe(assertion, ui));
-        const expectedObservers = [...new Set(assertion.tokens.map(({ observerId }) => observerId))];
-        if (observations.length !== expectedObservers.length
-          || new Set(observations.map(({ observerId }) => observerId)).size !== observations.length
-          || observations.some(({ observerId }) => !expectedObservers.includes(observerId))) {
-          throw new CoordinatorError('WINDOW_CAPTURE_REQUIRED');
-        }
-        let pass = true;
-        for (const observation of observations) {
-          const expectedTokens = assertion.tokens.filter(({ observerId }) => observerId === observation.observerId)
-            .map(({ token }) => token);
-          if (observation.observedTokens.some((token) => !expectedTokens.includes(token))) {
-            throw new CoordinatorError('WINDOW_CAPTURE_REQUIRED');
-          }
-          pass &&= expectedTokens.every((token) => observation.observedTokens.includes(token));
-          recordAssertionTokens(this.request.journalPath, { caseId: assertion.variantId, stepId: 'assertions',
-            observerId: observation.observerId, expectedTokens, observedTokens: observation.observedTokens,
-            pollAttempt: 1, pollElapsedMs: 0 }, this.identity);
-        }
-        record = await this.advance({ type: 'assertion_result', variantId: assertion.variantId,
-          result: pass ? 'pass' : 'fail' });
+        record = await this.observe(record);
       } else if (record.waitingFor === 'cleanup') {
         await this.cleanup(record.variantId);
         record = await this.advance();
+      } else if (record.waitingFor === 'observation_window') {
+        const notBefore = Date.parse(record.notBefore ?? '');
+        if (!Number.isFinite(notBefore)) throw new CoordinatorError('OBSERVATION_WAIT');
+        await this.wait(Math.max(1, Math.min(notBefore - this.now(), 1_000)));
+        record = await this.advance();
       } else {
-        // Never replay an interrupted mutation or keep the host UI lock while waiting.
-        throw new CoordinatorError(record.waitingFor === 'authoritative_readback'
-          ? 'EXACT_READBACK_REQUIRED' : 'OBSERVATION_WAIT');
+        throw new CoordinatorError('EXACT_READBACK_REQUIRED');
       }
     }
     this.dependencies.onProgress?.(record);
@@ -247,6 +237,58 @@ export class AttendedLiveCoordinator {
       releaseOwnedTargetLock(this.lockPath, this.owner, this.request.journalPath);
     }
     return record;
+  }
+
+  private async observe(assertion: AssertionRecord): Promise<RunnerRecord> {
+    const events = readRunJournal(this.request.journalPath, this.identity).events;
+    const started = events.findLast(({ event }) => event.type === 'transition'
+      && event.variantId === assertion.variantId && event.to === 'assertion')?.at;
+    const startTime = started === undefined ? this.now() : Date.parse(started);
+    const previous = events.filter(({ event }) => event.type === 'assertion_tokens'
+      && event.caseId === assertion.variantId);
+    if (previous.some(({ event }) => event.type === 'assertion_tokens' && event.pending !== true
+      && event.expectedTokens.some((token) => !event.observedTokens.includes(token)))) {
+      return this.advance({ type: 'assertion_result', variantId: assertion.variantId, result: 'fail' });
+    }
+    let attempt = Math.max(0, ...previous.map(({ event }) => event.type === 'assertion_tokens' ? event.pollAttempt : 0));
+    const expectedObservers = [...new Set(assertion.tokens.map(({ observerId }) => observerId))];
+    for (;;) {
+      attempt += 1;
+      const observations = await this.window(assertion.variantId, 'assertions',
+        (ui) => this.dependencies.driver.observe(assertion, ui));
+      if (observations.length !== expectedObservers.length
+        || new Set(observations.map(({ observerId }) => observerId)).size !== observations.length
+        || observations.some(({ observerId }) => !expectedObservers.includes(observerId))) {
+        throw new CoordinatorError('WINDOW_CAPTURE_REQUIRED');
+      }
+      let pass = true;
+      let settledFailure = false;
+      for (const observation of observations) {
+        const expectedTokens = assertion.tokens.filter(({ observerId }) => observerId === observation.observerId)
+          .map(({ token }) => token);
+        if (observation.observedTokens.some((token) => !expectedTokens.includes(token))
+          || (observation.pending !== undefined && typeof observation.pending !== 'boolean')) {
+          throw new CoordinatorError('WINDOW_CAPTURE_REQUIRED');
+        }
+        const matches = expectedTokens.every((token) => observation.observedTokens.includes(token));
+        pass &&= matches && observation.pending !== true;
+        settledFailure ||= !matches && observation.pending !== true;
+        recordAssertionTokens(this.request.journalPath, { caseId: assertion.variantId, stepId: 'assertions',
+          observerId: observation.observerId, expectedTokens, observedTokens: observation.observedTokens,
+          pollAttempt: attempt, pollElapsedMs: Math.max(0, this.now() - startTime),
+          pending: observation.pending === true }, this.identity);
+      }
+      const remaining = (this.dependencies.observationTimeoutMs ?? 60_000) - (this.now() - startTime);
+      if (pass || settledFailure || remaining <= 0) return this.advance({ type: 'assertion_result', variantId: assertion.variantId,
+        result: pass ? 'pass' : 'fail' });
+      await this.wait(Math.min(remaining, this.dependencies.observationPollMs ?? 1_000));
+    }
+  }
+
+  private async wait(milliseconds: number): Promise<void> {
+    // A visible window has ended. Keep only the per-target claim while waiting.
+    await (this.dependencies.wait ?? delay)(milliseconds);
+    await this.snapshot(true);
   }
 
   private async cleanup(variantId: string): Promise<void> {

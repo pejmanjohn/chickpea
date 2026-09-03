@@ -28,9 +28,10 @@ That coordinator does not ship in V0. Without it, doctor and deterministic check
 
 The incremental `qa/live/coordinator.ts` core now binds the existing runner to
 one-use challenges, certified window captures, exact cleanup, postflight, and
-the host UI mutex. Its deterministic tests are not live qualification. The
-private Computer Use driver, complete interrupted-run readback/resumption,
-observation waits, and evidence packaging must be wired and verified before
+the host UI mutex. Observation polling releases that mutex between visible
+checks, retains the target lock, and has a bounded deadline. Its deterministic
+tests are not live qualification. The private Computer Use driver, complete
+interrupted-run readback/resumption, and evidence packaging must be wired and verified before
 the first live smoke. The public CLI continues to return `COORDINATOR_REQUIRED`.
 Do not feed hand-authored assertion tokens to the core and call that a live run.
 
@@ -42,6 +43,16 @@ The Google Sheets baseline uses the standard managed read/write grant. Do not
 offer an unsupported read-only OAuth choice. The LC04 exercise remains limited
 to reads of the declared synthetic fixture, and creates and cleans its own
 Personal Agent-owned connection. A pre-existing connection is not a case pass.
+
+LC04 uses a separate empty `connector-test-agent` in each environment. The
+`smoke-agent` keeps its reusable Sheets binding for the other journeys. Before
+authorization, capture both Agents and their connection inventories. Stop if
+the connector-test Agent already has a connection or its private alias is
+missing. Remove only the exact connection created by this run, prove the test
+Agent is empty again, and verify the smoke Agent's original binding is unchanged.
+Never revoke the global Google grant. Provision this small fixture through the
+existing setup workflow and retain its exact identity privately; do not edit
+registry JSON or change deployment guards to make it appear ready.
 
 The repository ships the catalog, runner, observers, safety modules, alias-only target example, generated feature map, and operator skill. Keep the resolved target overlay, candidate provenance map, source register, privacy approvals, credentials, browser profiles, journals, evidence, screenshots, and transcripts outside Git and npm package roots.
 
@@ -90,6 +101,10 @@ the target lock, but does not write an intent or perform UI work until it owns
 the lock. This leaves a recoverable header even if the process dies immediately
 after acquisition. Exact cleanup alone is insufficient to release the lock:
 failed or interrupted postflight remains unresolved in the durable journal.
+
+A cleanup intent without a receipt also requires readback, never another
+cleanup click. Exact visible readback may resolve it without inventing a
+receipt for the interrupted action. An ambiguous readback remains unresolved.
 
 There is no host-wide run lock. Different targets may run concurrently on one host. The coordinator uses one host-local Computer Use mutex only while it executes a semantic UI action or input window. A waiting human gate releases that mutex and reserves only its actor/browser. Reacquire the mutex for the short confirmation interaction, then release it after the visible page advances. Another run needing the same browser bounded-waits and becomes operationally `blocked`, never a product failure. Captures are window-scoped; never capture during secret entry or before the page advances. Environment commands and lock/journal bookkeeping on other targets do not take the UI mutex.
 

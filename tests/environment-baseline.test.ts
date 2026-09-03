@@ -107,6 +107,12 @@ test('both active targets derive exactly the Phase 1 smoke inventory and reusabl
       plan.variantFixtureBindings['LC04-V1-personal-read'].map(({ slot }: BaselineBinding) => slot),
       ['agent', 'member', 'provider'],
     );
+    assert.equal(plan.variantFixtureBindings['LC04-V1-personal-read']
+      .find(({ slot }: BaselineBinding) => slot === 'agent').resourceKey, 'connector-test-agent');
+    for (const variantId of ['LC01-V2-update-approve', 'LC08-V1-create-due']) {
+      assert.equal(plan.variantFixtureBindings[variantId]
+        .find(({ slot }: BaselineBinding) => slot === 'agent').resourceKey, 'smoke-agent');
+    }
     for (const variantId of plan.smokeVariants) {
       assert.deepEqual(
         plan.variantFixtureBindings[variantId].map(({ fixtureClass, kind, slot }: BaselineBinding) =>
@@ -125,6 +131,7 @@ test('the minimal recipe keeps identities private and target product state local
       { key: 'primary-actor', scope: 'shared', fixtureClass: 'immutable_baseline' },
       { key: 'qa-channel', scope: 'target', fixtureClass: 'immutable_baseline' },
       { key: 'smoke-agent', scope: 'target', fixtureClass: 'resettable_fixture' },
+      { key: 'connector-test-agent', scope: 'target', fixtureClass: 'resettable_fixture' },
       { key: 'smoke-agent-channel-grant', scope: 'target', fixtureClass: 'resettable_fixture' },
       { key: 'synthetic-google-account', scope: 'shared', fixtureClass: 'immutable_baseline' },
       { key: 'google-sheets-personal-standard', scope: 'target', fixtureClass: 'resettable_fixture' },
@@ -159,6 +166,26 @@ test('the standard grant never widens the exercise or admits arbitrary capabilit
     change(recipe.resources.find(({ key }: BaselineResource) => key === 'google-sheets-personal-standard'));
     assert.throws(() => validateWorkspaceRecipe(recipe), rejects('INVALID_RESOURCE_CONTRACT'));
   }
+});
+
+test('the connector fixture cannot fall back to the smoke Agent or start with a connection', async () => {
+  const recipe = clone(loadPhaseOneBaselineDefinitions().recipe);
+  recipe.variantSlotBindings['LC04-V1-personal-read'].agent = 'smoke-agent';
+  assert.throws(() => validateWorkspaceRecipe(recipe), rejects('INVALID_SLOT_BINDING'));
+  const plan = createPhaseOneBaselinePlan('amber');
+  const report = await inspectPhaseOneBaseline(plan, {
+    resolveAlias: () => 'opaque-value',
+    observeResource: (request: Parameters<typeof healthyResource>[0]) => ({
+      ...healthyResource(request),
+      ...(request.key === 'connector-test-agent' ? { checks: {
+        'agent-resettable': true, 'connector-agent-empty': false, 'model-provider-ready': true,
+      } } : {}),
+    }),
+  });
+  assert.equal(report.ready, false);
+  assert.deepEqual(report.drift, [{ key: 'connector-test-agent', state: 'unavailable' }]);
+  assert.ok(plan.requiredEnvironmentAliases.includes('env-amber-connector-test-agent-identity'));
+  assert.equal(new Set(plan.requiredEnvironmentAliases).size, plan.requiredEnvironmentAliases.length);
 });
 
 test('fresh-target inspection reports missing aliases and resources without returning values', async () => {

@@ -76,6 +76,7 @@ export interface AssertionTokensInput {
   observedTokens: AssertionToken[];
   pollAttempt: number;
   pollElapsedMs: number;
+  pending?: boolean;
 }
 
 export interface UnresolvedOutcomeInput {
@@ -118,7 +119,8 @@ export interface CleanupReceiptInput {
 
 export interface CleanupReadbackInput {
   cleanupIntentId: string;
-  cleanupReceiptId: string;
+  /** Absent only when the process died before any cleanup receipt was durable. */
+  cleanupReceiptId?: string;
   readbackId: string;
   observerId: ObserverId;
   immutableId: string;
@@ -229,10 +231,13 @@ function validateMutationReceipt(
     if (!same(duplicate, event)) fail('DUPLICATE_RECEIPT');
     return duplicate;
   }
+  const existingBaseline = eventValues(journal, 'baseline_fact').find((candidate) =>
+    candidate.resourceKind === input.resourceKind && candidate.immutableId === input.immutableId
+  );
+  if (existingBaseline?.fixtureClass === 'immutable_baseline') fail('IMMUTABLE_MUTATION');
+  if (existingBaseline !== undefined && input.fixtureClass !== 'resettable_fixture') fail('BASELINE_MISMATCH');
   if (input.fixtureClass === 'resettable_fixture') {
-    const baseline = eventValues(journal, 'baseline_fact').find((candidate) =>
-      candidate.resourceKind === input.resourceKind && candidate.immutableId === input.immutableId
-    );
+    const baseline = existingBaseline;
     if (baseline === undefined) fail('MISSING_BASELINE');
     const previous = eventValues(journal, 'mutation_receipt').filter((candidate) =>
       candidate.resourceKind === input.resourceKind
@@ -316,7 +321,7 @@ export function projectResourceLedger(journal: ReadJournalResult): ResourceLedge
     const receipt = intent === undefined ? undefined : product.cleanupReceipts
       .find(({ cleanupIntentId }) => cleanupIntentId === intent.cleanupIntentId);
     const readback = intent === undefined ? undefined : product.cleanupReadbacks
-      .find(({ cleanupIntentId }) => cleanupIntentId === intent.cleanupIntentId);
+      .findLast(({ cleanupIntentId }) => cleanupIntentId === intent.cleanupIntentId);
     const state = cleanupState(intent, receipt, readback);
     return {
       source: 'mutation',
@@ -338,6 +343,7 @@ function cleanupState(
   readback: CleanupReadback | undefined,
 ): ResourceLedgerEntry['state'] {
   if (intent === undefined) return 'mutation_recorded';
+  if (readback !== undefined && readback.outcome !== 'ambiguous') return 'cleanup_verified';
   if (receipt === undefined) return 'cleanup_pending';
   if (receipt.outcome === 'ambiguous'
     && (readback === undefined || readback.outcome === 'ambiguous')) return 'cleanup_ambiguous';
@@ -358,13 +364,16 @@ function deriveCleanupPlanFromJournal(journal: ReadJournalResult): CleanupTarget
       outcome !== 'ambiguous' || resolvedReadbackIntentIds.has(cleanupIntentId)
     )
     .map(({ cleanupIntentId }) => cleanupIntentId));
+  resolvedReadbackIntentIds.forEach((id) => completedIntentIds.add(id));
   const ambiguousIntentIds = new Set(ledger.cleanupReceipts
     .filter(({ cleanupIntentId, outcome }) =>
       outcome === 'ambiguous' && !resolvedReadbackIntentIds.has(cleanupIntentId)
     )
     .map(({ cleanupIntentId }) => cleanupIntentId));
   const ambiguousMutationIds = new Set(ledger.cleanupIntents
-    .filter(({ cleanupIntentId }) => ambiguousIntentIds.has(cleanupIntentId))
+    .filter(({ cleanupIntentId }) => ambiguousIntentIds.has(cleanupIntentId)
+      || (!completedIntentIds.has(cleanupIntentId)
+        && !ledger.cleanupReceipts.some((receipt) => receipt.cleanupIntentId === cleanupIntentId)))
     .map(({ mutationReceiptId }) => mutationReceiptId));
   const finalizedMutationIds = new Set(ledger.cleanupIntents
     .filter(({ cleanupIntentId }) => completedIntentIds.has(cleanupIntentId))
@@ -491,23 +500,24 @@ export function recordCleanupReadback(
   identity: JournalIdentity,
 ): CleanupReadback {
   requireExactId(input.cleanupIntentId);
-  requireExactId(input.cleanupReceiptId);
+  if (input.cleanupReceiptId !== undefined) requireExactId(input.cleanupReceiptId);
   requireExactId(input.readbackId);
   requireExactId(input.immutableId);
   const journal = read(path, identity);
   const event: CleanupReadback = { type: 'cleanup_readback', ...input };
   const existing = eventValues(journal, 'cleanup_readback')
-    .find(({ cleanupIntentId }) => cleanupIntentId === input.cleanupIntentId);
+    .findLast(({ cleanupIntentId }) => cleanupIntentId === input.cleanupIntentId);
   if (existing !== undefined) {
-    if (!same(existing, event)) fail('DUPLICATE_RECEIPT');
-    return existing;
+    if (same(existing, event)) return existing;
+    if (existing.outcome !== 'ambiguous' || existing.readbackId === input.readbackId) fail('DUPLICATE_RECEIPT');
   }
   const intent = eventValues(journal, 'cleanup_intent')
     .find(({ cleanupIntentId }) => cleanupIntentId === input.cleanupIntentId);
   const receipt = eventValues(journal, 'cleanup_receipt')
     .find(({ cleanupIntentId }) => cleanupIntentId === input.cleanupIntentId);
-  if (intent === undefined || receipt === undefined || receipt.outcome !== 'ambiguous'
-    || receipt.receiptId !== input.cleanupReceiptId || intent.immutableId !== input.immutableId) {
+  if (intent === undefined || intent.immutableId !== input.immutableId
+    || (receipt === undefined ? input.cleanupReceiptId !== undefined
+      : receipt.outcome !== 'ambiguous' || receipt.receiptId !== input.cleanupReceiptId)) {
     fail('CLEANUP_RECEIPT_MISMATCH');
   }
   validateCleanupState(

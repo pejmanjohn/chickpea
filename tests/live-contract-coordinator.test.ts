@@ -96,6 +96,35 @@ test('API drivers, inactive targets and wrong actor aliases stop before creating
   assert.equal(existsSync(f.request.journalPath), false);
 });
 
+test('observation polling releases the host UI mutex while retaining the target lock', async (context) => {
+  const f = fixture(context);
+  let now = NOW;
+  let polls = 0;
+  let waits = 0;
+  f.deps.now = () => now;
+  const observe = f.deps.driver.observe;
+  f.deps.driver.observe = async (record, ui) => {
+    polls += 1;
+    if (polls === 1) return f.capture(ui, [...new Set(record.tokens.map(({ observerId }) => observerId))]
+      .map((observerId) => ({ observerId, observedTokens: [], pending: true })));
+    return observe(record, ui);
+  };
+  const result = await new AttendedLiveCoordinator(f.request, { ...f.deps,
+    observationTimeoutMs: 3_000, observationPollMs: 1_000,
+    wait: async (milliseconds: number) => {
+      waits += 1;
+      assert.equal(existsSync(join(f.root, 'ui', 'interaction.lock')), false);
+      assert.equal(existsSync(join(f.root, 'evidence', 'target.lock')), true);
+      now += milliseconds;
+    },
+  }).run();
+  assert.equal(result.report.aggregate, 'pass');
+  assert.equal(polls, 2);
+  assert.equal(waits, 1);
+  assert.equal(f.counts().actions, 1);
+  assert.match(readFileSync(f.request.journalPath, 'utf8'), /"pollAttempt":2,"pollElapsedMs":1000/u);
+});
+
 test('coordinator refuses Git/package roots and symlinked evidence despite a ready snapshot', (context) => {
   const f = fixture(context);
   const repositoryRoot = new URL('../', import.meta.url).pathname;
@@ -105,6 +134,27 @@ test('coordinator refuses Git/package roots and symlinked evidence despite a rea
   symlinkSync(join(f.root, 'actual-evidence'), join(f.root, 'evidence'));
   assert.throws(() => new AttendedLiveCoordinator(f.request, f.deps), /UNSAFE_EVIDENCE_ROOT/u);
   assert.equal(existsSync(f.request.journalPath), false);
+});
+
+test('an exhausted observation window fails the case and still cleans without repeating its action', async (context) => {
+  const f = fixture(context);
+  let now = NOW;
+  let polls = 0;
+  f.deps.now = () => now;
+  f.deps.driver.observe = async (record, ui) => {
+    polls += 1;
+    return f.capture(ui, [...new Set(record.tokens.map(({ observerId }) => observerId))]
+      .map((observerId) => ({ observerId, observedTokens: [], pending: true })));
+  };
+  const result = await new AttendedLiveCoordinator(f.request, { ...f.deps,
+    observationTimeoutMs: 2_000, observationPollMs: 1_000,
+    wait: async (milliseconds) => { now += milliseconds; },
+  }).run();
+  assert.equal(result.report.aggregate, 'fail');
+  assert.equal(polls, 3);
+  assert.equal(f.counts().actions, 1);
+  assert.equal(f.counts().cleanups, 2);
+  assert.equal(existsSync(join(f.root, 'evidence', 'target.lock')), false);
 });
 
 test('a thrown action preserves its ambiguous intent and never retries the product mutation', async (context) => {
@@ -118,6 +168,26 @@ test('a thrown action preserves its ambiguous intent and never retries the produ
   assert.equal(existsSync(join(f.root, 'ui', 'interaction.lock')), false);
   await assert.rejects(new AttendedLiveCoordinator(f.request, f.deps).run(), /LOCK_ACTIVE/u);
   assert.equal(calls, 1);
+});
+
+test('settled contradictory evidence fails immediately instead of polling until it disappears', async (context) => {
+  const f = fixture(context);
+  let now = NOW;
+  let waits = 0;
+  f.deps.now = () => now;
+  const observe = f.deps.driver.observe;
+  f.deps.driver.observe = async (record, ui) => {
+    const capture = await observe(record, ui);
+    return f.capture(ui, capture.value.map((observation) => ({ ...observation,
+      observedTokens: observation.observedTokens.filter((token) => token !== 'forbidden.no_duplicate'),
+    })));
+  };
+  const result = await new AttendedLiveCoordinator(f.request, { ...f.deps,
+    observationTimeoutMs: 2_000, observationPollMs: 1_000,
+    wait: async (milliseconds) => { waits += 1; now += milliseconds; },
+  }).run();
+  assert.equal(result.report.aggregate, 'fail');
+  assert.equal(waits, 0);
 });
 
 test('uncertified, stale, and full-screen captures cannot produce action receipts', async (context) => {

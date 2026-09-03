@@ -11,6 +11,14 @@ Google Sheets uses its normal managed grant; the acceptance exercise reads only
 the declared fixture. The attended coordinator and formal four-case acceptance
 remain outstanding. This is not a live acceptance pass.
 
+The local continuation integrates environment checkpoint `60c3cc7` and the
+discoverable operator skill. Deterministic checks cover observation waits with
+the UI mutex released, incomplete-cleanup readback, baseline connection
+protection, and current-worktree selection in `env status`. LC04 now declares
+a separate empty connector-test Agent per lane; its actual provisioning and
+private binding are still pending. Existing lane canaries and doctor reports
+do not establish readiness for this new fixture or count as formal smoke.
+
 ## Historical V0 result
 
 | Field | Result |

@@ -43,9 +43,19 @@
       "healthChecks": ["agent-resettable", "model-provider-ready"],
       "requiredBy": [
         "LC01-V2-update-approve",
-        "LC04-V1-personal-read",
         "LC08-V1-create-due"
       ]
+    },
+    {
+      "key": "connector-test-agent",
+      "resourceKind": "agent",
+      "fixtureKind": "agent",
+      "fixtureClass": "resettable_fixture",
+      "scope": "target",
+      "ownership": "product",
+      "privateRequirements": ["connector-test-agent-identity", "model-provider"],
+      "healthChecks": ["agent-resettable", "connector-agent-empty", "model-provider-ready"],
+      "requiredBy": ["LC04-V1-personal-read"]
     },
     {
       "key": "smoke-agent-channel-grant",
@@ -109,11 +119,15 @@
     "agent": "smoke-agent",
     "provider": "synthetic-google-account"
   },
+  "variantSlotBindings": {
+    "LC04-V1-personal-read": { "agent": "connector-test-agent" }
+  },
   "healthChecks": [
     "actor-visible-in-workspace",
     "computer-use-profile-available",
     "channel-visible",
     "agent-resettable",
+    "connector-agent-empty",
     "model-provider-ready",
     "agent-channel-grant-exact",
     "provider-account-readable",

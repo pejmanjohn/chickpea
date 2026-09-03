@@ -197,7 +197,7 @@ export type RunJournalEventData =
   | {
     type: 'cleanup_readback';
     cleanupIntentId: string;
-    cleanupReceiptId: string;
+    cleanupReceiptId?: string;
     readbackId: string;
     observerId: ObserverId;
     immutableId: string;
@@ -214,6 +214,7 @@ export type RunJournalEventData =
     observedTokens: AssertionToken[];
     pollAttempt: number;
     pollElapsedMs: number;
+    pending?: boolean;
   }
   | {
     type: 'unresolved_outcome';
@@ -594,7 +595,7 @@ function validateEventData(event: RunJournalEventData): void {
         'type', 'cleanupIntentId', 'cleanupReceiptId', 'readbackId', 'observerId',
         'immutableId', 'observedRevision', 'observedStateDigest', 'outcome',
       ], 'INVALID_EVENT');
-      if (!exactId(event.cleanupIntentId) || !exactId(event.cleanupReceiptId)
+      if (!exactId(event.cleanupIntentId) || (event.cleanupReceiptId !== undefined && !exactId(event.cleanupReceiptId))
         || !exactId(event.readbackId) || !(OBSERVER_IDS as readonly unknown[]).includes(event.observerId)
         || !exactId(event.immutableId) || !nonEmpty(event.observedRevision)
         || !digest(event.observedStateDigest)
@@ -603,13 +604,14 @@ function validateEventData(event: RunJournalEventData): void {
     case 'assertion_tokens':
       exactKeys(event, [
         'type', 'caseId', 'stepId', 'observerId', 'expectedTokens', 'observedTokens',
-        'pollAttempt', 'pollElapsedMs',
+        'pollAttempt', 'pollElapsedMs', 'pending',
       ], 'INVALID_EVENT');
       if (!nonEmpty(event.caseId) || !nonEmpty(event.stepId)
         || !(OBSERVER_IDS as readonly unknown[]).includes(event.observerId)
         || !enumArray(event.expectedTokens, ASSERTION_TOKENS)
         || !enumArray(event.observedTokens, ASSERTION_TOKENS)
-        || !positiveInteger(event.pollAttempt) || !nonNegativeInteger(event.pollElapsedMs)) invalidEvent();
+        || !positiveInteger(event.pollAttempt) || !nonNegativeInteger(event.pollElapsedMs)
+        || (event.pending !== undefined && typeof event.pending !== 'boolean')) invalidEvent();
       return;
     case 'unresolved_outcome':
       exactKeys(event, ['type', 'caseId', 'stepId', 'attempt', 'referenceId', 'category'], 'INVALID_EVENT');

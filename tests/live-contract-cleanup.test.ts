@@ -194,11 +194,11 @@ test('cleanup accepts only an exact declared run-owned target and is idempotent 
     currentRevision: 'revision-1',
     actionChallengeDigest: 'sha256:cleanup-challenge-001',
   }, HEADER);
-  const resumedIntent = beginCleanup(path, target!, {
+  assert.equal(deriveCleanupPlan(path, HEADER)[0]?.resolution, 'authoritative_readback');
+  assert.throws(() => beginCleanup(path, target!, {
     currentRevision: 'revision-1',
     actionChallengeDigest: 'sha256:cleanup-challenge-001',
-  }, HEADER);
-  assert.deepEqual(resumedIntent, intent);
+  }, HEADER), /UNDECLARED_CLEANUP/u);
 
   completeChallenge(path, 'sha256:cleanup-challenge-001', 'sha256:cleanup-operator-receipt-001',
     exactResourceBindingDigest({ ...target!, beforeRevision: target!.expectedRevision }));
@@ -235,6 +235,22 @@ test('cleanup accepts only an exact declared run-owned target and is idempotent 
   assert.throws(() => beginCleanup(path, { ...target!, immutableId: 'agent_foreign' }, {
     currentRevision: 'revision-1', actionChallengeDigest: 'sha256:cleanup-challenge-002',
   }, HEADER), (error: unknown) => error instanceof CleanupSafetyError && error.code === 'UNDECLARED_CLEANUP');
+});
+
+test('a crash after cleanup intent can be resolved by exact visible readback without fabricating a receipt', (context) => {
+  const path = setup(context);
+  recordBoundMutation(path, receipt());
+  const target = deriveCleanupPlan(path, HEADER)[0]!;
+  issueCleanupChallenge(path, target, 'sha256:cleanup-challenge-001');
+  const intent = beginCleanup(path, target, { currentRevision: target.expectedRevision,
+    actionChallengeDigest: 'sha256:cleanup-challenge-001' }, HEADER);
+  recordCleanupReadback(path, { cleanupIntentId: intent.cleanupIntentId,
+    readbackId: 'readback-after-crash', observerId: 'agent.read',
+    immutableId: target.immutableId, observedRevision: 'absent', observedStateDigest: 'sha256:absent',
+    outcome: 'absent' }, HEADER);
+  assert.deepEqual(deriveCleanupPlan(path, HEADER), []);
+  assert.equal(verifyPostflight(path, { identity: HEADER, declaredResourceKinds: ['agent'], inventory: [] }, HEADER).status, 'pass');
+  assert.equal(projectProductLedger(readRunJournal(path, HEADER)).cleanupReceipts.length, 0);
 });
 
 test('ambiguous cleanup keeps its exact ID in readback recovery and cannot be replayed or overwritten', (context) => {
@@ -299,6 +315,17 @@ test('ambiguous cleanup keeps its exact ID in readback recovery and cannot be re
     observedStateDigest: 'sha256:absent',
     outcome: 'absent',
   }, HEADER);
+  assert.deepEqual(deriveCleanupPlan(path, HEADER), []);
+});
+
+test('a fresh connection cannot relabel an existing baseline as run-owned', (context) => {
+  const path = setup(context);
+  const mutation = receipt({ resourceKind: 'connection', mutation: 'authorize',
+    immutableId: 'connection_baseline', reversalActionId: 'connection.revoke' });
+  recordBaselineFact(path, { caseId: VARIANT_ID, stepId: 'baseline', targetAlias: 'dedicated-qa',
+    immutableId: 'connection_baseline', resourceKind: 'connection', revision: 'baseline-1',
+    stateDigest: 'sha256:baseline', fixtureClass: 'immutable_baseline' }, HEADER);
+  assert.throws(() => recordBoundMutation(path, mutation), /IMMUTABLE_MUTATION/u);
   assert.deepEqual(deriveCleanupPlan(path, HEADER), []);
 });
 

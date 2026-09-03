@@ -27,6 +27,7 @@ const PHASE_ONE_RESOURCE_KEYS = Object.freeze([
   'primary-actor',
   'qa-channel',
   'smoke-agent',
+  'connector-test-agent',
   'smoke-agent-channel-grant',
   'synthetic-google-account',
   'google-sheets-personal-standard',
@@ -43,6 +44,7 @@ const PHASE_ONE_HEALTH_CHECKS = Object.freeze([
   'computer-use-profile-available',
   'channel-visible',
   'agent-resettable',
+  'connector-agent-empty',
   'model-provider-ready',
   'agent-channel-grant-exact',
   'provider-account-readable',
@@ -62,7 +64,10 @@ const ENVIRONMENT_ALIAS_FIELDS = Object.freeze([
 const PORTABILITY_FORBIDDEN_KEY = /(?:password|client[_-]?secret|signing[_-]?secret|access[_-]?token|refresh[_-]?token|credential|cookie|browser[_-]?(?:alias|profile)|email[_-]?address)/iu;
 const SLACK_COORDINATE_VALUE = /\b[ETUWCBAX][A-Z0-9]{8,}\b/u;
 const CREDENTIAL_OR_EMAIL_VALUE = /(?:\bxox[abprs]-[A-Za-z0-9_-]+|\bsk-[A-Za-z0-9_-]+|\bAKIA[A-Z0-9]{8,}|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/iu;
-const RECIPE_KEYS = Object.freeze(['schemaVersion', 'resources', 'slotBindings', 'healthChecks']);
+const RECIPE_KEYS = Object.freeze(['schemaVersion', 'resources', 'slotBindings', 'variantSlotBindings', 'healthChecks']);
+const VARIANT_SLOT_BINDINGS = Object.freeze({
+  'LC04-V1-personal-read': Object.freeze({ agent: 'connector-test-agent' }),
+});
 const RESOURCE_KEYS = Object.freeze([
   'key', 'resourceKind', 'fixtureKind', 'fixtureClass', 'scope', 'ownership',
   'requiredBy', 'roles', 'privateRequirements', 'dependsOn', 'provider', 'toolkit',
@@ -72,6 +77,7 @@ const RESOURCE_CHECKS = Object.freeze({
   'primary-actor': ['actor-visible-in-workspace', 'computer-use-profile-available'],
   'qa-channel': ['channel-visible'],
   'smoke-agent': ['agent-resettable', 'model-provider-ready'],
+  'connector-test-agent': ['agent-resettable', 'connector-agent-empty', 'model-provider-ready'],
   'smoke-agent-channel-grant': ['agent-channel-grant-exact'],
   'synthetic-google-account': ['provider-account-readable'],
   'google-sheets-personal-standard': ['google-sheets-binding-personal-standard'],
@@ -80,6 +86,7 @@ const RESOURCE_ALIASES = Object.freeze({
   'primary-actor': ['actor-identity', 'computer-use-profile'],
   'qa-channel': ['channel-identity'],
   'smoke-agent': ['agent-identity', 'model-provider'],
+  'connector-test-agent': ['connector-test-agent-identity', 'model-provider'],
   'smoke-agent-channel-grant': ['agent-channel-grant-identity'],
   'synthetic-google-account': ['synthetic-account-identity'],
   'google-sheets-personal-standard': ['sheets-binding-identity'],
@@ -92,6 +99,7 @@ const RESOURCE_CONTRACT = Object.freeze({
   'primary-actor': Object.freeze({ resourceKind: 'actor', fixtureKind: 'actor', fixtureClass: 'immutable_baseline', scope: 'shared' }),
   'qa-channel': Object.freeze({ resourceKind: 'slack_channel', fixtureKind: 'slack_channel', fixtureClass: 'immutable_baseline', scope: 'target' }),
   'smoke-agent': Object.freeze({ resourceKind: 'agent', fixtureKind: 'agent', fixtureClass: 'resettable_fixture', scope: 'target' }),
+  'connector-test-agent': Object.freeze({ resourceKind: 'agent', fixtureKind: 'agent', fixtureClass: 'resettable_fixture', scope: 'target' }),
   'smoke-agent-channel-grant': Object.freeze({ resourceKind: 'agent_channel_grant', fixtureKind: undefined, fixtureClass: 'resettable_fixture', scope: 'target' }),
   'synthetic-google-account': Object.freeze({ resourceKind: 'provider_account', fixtureKind: 'provider_account', fixtureClass: 'immutable_baseline', scope: 'shared' }),
   'google-sheets-personal-standard': Object.freeze({ resourceKind: 'connection_binding', fixtureKind: undefined, fixtureClass: 'resettable_fixture', scope: 'target' }),
@@ -195,6 +203,9 @@ export function validateWorkspaceRecipe(input) {
   if (!sameSet(Object.keys(input.slotBindings), PHASE_ONE_FIXTURE_SLOTS)) {
     throw fail('INVALID_SLOT_BINDING');
   }
+  if (!isDeepStrictEqual(input.variantSlotBindings, VARIANT_SLOT_BINDINGS)) {
+    throw fail('INVALID_SLOT_BINDING');
+  }
   const actor = input.resources.find(({ key }) => key === 'primary-actor');
   const provider = input.resources.find(({ key }) => key === 'synthetic-google-account');
   const sheets = input.resources.find(({ key }) => key === 'google-sheets-personal-standard');
@@ -290,9 +301,10 @@ export function createPhaseOneBaselinePlan(target, options = {}) {
       if (!PROVISIONABLE_FIXTURE_CLASSES.includes(fixture.fixtureClass)) {
         throw fail('UNSUPPORTED_FIXTURE_CLASS');
       }
-      const resourceKey = recipe.slotBindings[fixture.slot];
+      const resourceKey = recipe.variantSlotBindings[variantId]?.[fixture.slot] ?? recipe.slotBindings[fixture.slot];
       const resource = resourcesByKey.get(resourceKey);
       if (!resource
+        || !resource.requiredBy.includes(variantId)
         || resource.fixtureKind !== fixture.kind
         || resource.fixtureClass !== fixture.fixtureClass) {
         throw fail('FIXTURE_BINDING_MISMATCH');
@@ -316,11 +328,11 @@ export function createPhaseOneBaselinePlan(target, options = {}) {
     target,
     allowedSuites: [...targetState.allowedSuites],
     smokeVariants: selectedVariantIds,
-    requiredEnvironmentAliases: [
+    requiredEnvironmentAliases: [...new Set([
       ...targetState.requiredEnvironmentAliases,
       ...resources.flatMap(({ privateRequirements }) => privateRequirements.map((field) =>
         `env-${target}-${field}`)),
-    ],
+    ])],
     resources,
     variantFixtureBindings,
     healthChecks: [...recipe.healthChecks],

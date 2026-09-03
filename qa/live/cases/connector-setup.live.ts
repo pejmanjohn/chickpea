@@ -166,10 +166,12 @@ export function evaluateConnectorSetup(
   const completed = setups.filter((setup) => setup.status === 'completed');
   const completion = completed[0];
   const target = maybeObject(completion?.target);
-  if (setupForm.ownerKind !== expectedOwnerKind || setupForm.access !== 'read') {
+  // Sheets' standard managed grant includes writes. This exercise reads only
+  // its declared fixture; that does not make the grant itself read-only.
+  if (setupForm.ownerKind !== expectedOwnerKind || setupForm.access !== 'write') {
     failures.push('ownership_not_selected');
   }
-  if (target?.ownerKind !== expectedOwnerKind || target.accessLane !== 'read') failures.push('ownership_mismatch');
+  if (target?.ownerKind !== expectedOwnerKind || target.accessLane !== 'write') failures.push('ownership_mismatch');
   const completedBy = completion?.completedByUserId;
   const completedByMembershipId = completion?.completedByMembershipId;
   if (typeof completedBy !== 'string' || !authorizedEditorIds.includes(completedBy)) failures.push('editor_not_authorized');
