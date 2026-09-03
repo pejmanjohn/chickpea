@@ -29,7 +29,10 @@ import {
   observeMemoryToolPolicy,
 } from './memory/tool-policy.ts';
 import { publishActivityStatus } from './slack/activity-publisher.ts';
-import { agentFailureDiagnosticsInterceptor } from './slack/agent-failure-diagnostics.ts';
+import {
+  agentFailureDiagnosticsInterceptor,
+  observeAgentResultDiagnostics,
+} from './slack/agent-failure-diagnostics.ts';
 import {
   observePresentationToolPolicy,
   presentationToolPolicyInterceptor,
@@ -58,7 +61,7 @@ bootstrapRuntimeProviders();
 instrument({
   key: Symbol.for('chickpea.agent-failure-diagnostics'),
   interceptor: agentFailureDiagnosticsInterceptor,
-  observe() {},
+  observe: observeAgentResultDiagnostics,
   dispose() {},
 });
 

@@ -1,12 +1,80 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { agentFailureDiagnosticsInterceptor } from '../src/slack/agent-failure-diagnostics.ts';
+import type { FlueObservation } from '@flue/runtime';
+import { agentFailureDiagnosticsInterceptor, observeAgentResultDiagnostics } from '../src/slack/agent-failure-diagnostics.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
 import { opaqueId } from '../src/work/admission.ts';
 
 const operation = { type: 'agent', operationId: 'private-submission', operationKind: 'prompt' } as const;
 const context = { agentName: CHICKPEA_SLACK_AGENT_NAME, submissionId: 'private-submission' };
+
+type ModelTurn = Extract<FlueObservation, { type: 'turn' }>;
+function terminalEvent(overrides: Partial<ModelTurn> = {}): ModelTurn {
+  return {
+    type: 'turn', purpose: 'agent', isError: false,
+    submissionId: 'private-submission', turnId: 'private-turn', durationMs: 1,
+    v: 3, eventIndex: 1, timestamp: '2026-09-03T18:00:00Z',
+    request: { providerId: 'cloudflare', providerName: 'private-provider',
+      requestedModel: 'private-model', api: 'private-api' },
+    response: {
+      finishReason: 'length', providerFinishReason: 'length',
+      output: { role: 'assistant', content: [{ type: 'thinking', thinking: 'private reasoning' }] },
+      usage: { input: 200, output: 256, totalTokens: 456, cacheRead: 0, cacheWrite: 0,
+        cost: { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0 } },
+    },
+    ...overrides,
+  };
+}
+
+test('empty model completion diagnostics retain finish and token facts but no content', (t) => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  observeAgentResultDiagnostics(terminalEvent(), context);
+  assert.deepEqual(logs, [[
+    '[chickpea] agent model returned no text:', {
+      submissionRef: opaqueId('fluesubmission', 'private-submission'),
+      finishReason: 'length', providerFinishReason: 'length',
+      requestedMaxTokens: null, outputTokens: 256,
+      hasThinking: true, hasToolCalls: false,
+    },
+  ]]);
+  assert.doesNotMatch(JSON.stringify(logs), /private|reasoning/);
+});
+
+test('model diagnostics ignore valid text, normal tool calls, compaction and other agents', (t) => {
+  const logger = t.mock.method(console, 'error', () => {});
+  for (const event of [
+    terminalEvent({ response: { finishReason: 'stop', output: {
+      role: 'assistant', content: [{ type: 'text', text: 'done' }],
+    } } }),
+    terminalEvent({ response: { finishReason: 'toolUse', output: {
+      role: 'assistant', content: [{ type: 'toolCall', id: 'private', name: 'private', arguments: {} }],
+    } } }),
+    terminalEvent({ purpose: 'compaction' }),
+    terminalEvent({ isError: true }),
+  ]) observeAgentResultDiagnostics(event, context);
+  observeAgentResultDiagnostics(terminalEvent(), { ...context, agentName: 'other-agent' });
+  assert.equal(logger.mock.callCount(), 0);
+});
+
+test('model diagnostics bound arbitrary provider facts and cannot interrupt execution', (t) => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  const event = terminalEvent({
+    request: { ...terminalEvent().request, maxTokens: Infinity },
+    response: { finishReason: 'private', providerFinishReason: 'private',
+      usage: { ...terminalEvent().response.usage!, output: -1 } },
+  });
+  observeAgentResultDiagnostics(event, context);
+  assert.deepEqual(logs[0]?.[1], {
+    submissionRef: opaqueId('fluesubmission', 'private-submission'),
+    finishReason: 'other', providerFinishReason: 'other', requestedMaxTokens: null,
+    outputTokens: null, hasThinking: false, hasToolCalls: false,
+  });
+  t.mock.method(console, 'error', () => { throw new Error('unavailable'); });
+  assert.doesNotThrow(() => observeAgentResultDiagnostics(event, context));
+});
 
 test('Agent failure diagnostics retain throw-site metadata before Flue replaces unexpected errors', async (t) => {
   const logs: unknown[][] = [];

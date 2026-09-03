@@ -301,7 +301,7 @@ export async function promptSlackThreadAgent(
   try {
     completed = resultFromAgentReply(reply, input.requestedModel);
   } catch {
-    logDispatchFailure('invalid_result', receipt.submissionId);
+    logDispatchFailure('invalid_result', receipt.submissionId, Boolean(reply.text));
     let checkpoint: FlueSettlementCheckpointV1;
     try {
       checkpoint = await input.state.recordSettlement({
@@ -340,11 +340,13 @@ export async function promptSlackThreadAgent(
 function logDispatchFailure(
   stage: 'settlement_failed' | 'invalid_result',
   submissionId: string,
+  hasText?: boolean,
 ): void {
   try {
     console.error('[chickpea] agent dispatch failed:', {
       stage,
       submissionRef: opaqueId('fluesubmission', submissionId),
+      ...(hasText === undefined ? {} : { hasText }),
     });
   } catch {
     // Diagnostics must not interrupt settlement or change retry behavior.

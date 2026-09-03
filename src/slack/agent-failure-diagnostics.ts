@@ -1,4 +1,4 @@
-import type { FlueExecutionInterceptor } from '@flue/runtime';
+import type { FlueEventContext, FlueExecutionInterceptor, FlueObservation } from '@flue/runtime';
 
 import { CHICKPEA_SLACK_AGENT_NAME } from '../agents/names.ts';
 import { opaqueId } from '../work/admission.ts';
@@ -7,6 +7,39 @@ const ERROR_KINDS = new Set([
   'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError',
   'AggregateError', 'AbortError', 'TimeoutError', 'FlueError',
 ]);
+
+const FINISH_REASONS = new Set([
+  'stop', 'length', 'toolUse', 'error', 'aborted', 'tool_calls', 'function_call', 'eos',
+]);
+
+/** A successful model turn can still end without a usable final response. */
+export function observeAgentResultDiagnostics(
+  event: FlueObservation,
+  context: Pick<FlueEventContext, 'agentName'>,
+): void {
+  if (context.agentName !== CHICKPEA_SLACK_AGENT_NAME || event.type !== 'turn' ||
+      event.purpose !== 'agent' || event.isError) return;
+  try {
+    const content = event.response.output?.content ?? [];
+    if (content.some((block) => block.type === 'text' && block.text.length > 0) ||
+        event.response.finishReason === 'toolUse') return;
+    const finishReason = (value: string | undefined) =>
+      value === undefined ? null : FINISH_REASONS.has(value) ? value : 'other';
+    const tokenCount = (value: number | undefined) =>
+      value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : null;
+    console.error('[chickpea] agent model returned no text:', {
+      submissionRef: event.submissionId ? opaqueId('fluesubmission', event.submissionId) : null,
+      finishReason: finishReason(event.response.finishReason),
+      providerFinishReason: finishReason(event.response.providerFinishReason),
+      requestedMaxTokens: tokenCount(event.request.maxTokens),
+      outputTokens: tokenCount(event.response.usage?.output),
+      hasThinking: content.some((block) => block.type === 'thinking'),
+      hasToolCalls: content.some((block) => block.type === 'toolCall'),
+    });
+  } catch {
+    // Never interrupt execution, even when diagnostics are unavailable.
+  }
+}
 
 interface FailureDiagnostic {
   kind: string;
