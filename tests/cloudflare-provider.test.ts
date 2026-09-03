@@ -161,6 +161,83 @@ test('the binding payload policy leaves every other Workers AI model unchanged',
   assert.equal(receivedPayload, payload);
 });
 
+test('GPT-OSS tool-call replay uses non-null assistant content without changing the conversation', async () => {
+  const toolCalls = [{ id: 'call_read', type: 'function', function: {
+    name: 'read_fixture', arguments: '{"range":"A1:C4"}',
+  } }];
+  const payload = {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'Read the fixture.' }] },
+      { role: 'assistant', content: null, tool_calls: toolCalls, reasoning_content: 'Read it.' },
+      { role: 'tool', content: 'synthetic result', tool_call_id: 'call_read' },
+    ],
+    tools: [{ type: 'function', function: { name: 'read_fixture' } }],
+    stream: true,
+  };
+  const before = structuredClone(payload);
+  const options = { returnRawResponse: true, signal: new AbortController().signal };
+  let receivedPayload: Record<string, unknown> | undefined;
+  let receivedOptions: Record<string, unknown> | undefined;
+  const binding = cloudflareBindingProviderOptions({
+    run: async (_modelId, inputs, runOptions) => {
+      receivedPayload = inputs;
+      receivedOptions = runOptions;
+      return { response: 'ok' };
+    },
+  }).binding;
+
+  await binding.run('@cf/openai/gpt-oss-120b', payload, options);
+
+  assert.deepEqual(receivedPayload, {
+    ...payload,
+    messages: [payload.messages[0], { ...payload.messages[1], content: '' }, payload.messages[2]],
+  });
+  assert.deepEqual(payload, before, 'the shared conversation must not be mutated');
+  assert.equal(receivedOptions, options, 'preserve abort and streaming options');
+
+  await binding.run('openai/gpt-5.4', payload, options);
+  assert.equal(receivedPayload, payload, 'do not rewrite other model protocols');
+});
+
+test('the real Flue binding adapter can replay a GPT-OSS tool result without a schema rejection', async () => {
+  const binding: CloudflareAIBinding = {
+    run: async (_modelId, inputs) => {
+      const messages = inputs.messages as Array<Record<string, unknown>>;
+      const assistant = messages.find((message) => message.role === 'assistant');
+      if (assistant?.content === null) {
+        return new Response('Bad input: assistant content must not be null', { status: 400 });
+      }
+      assert.equal(assistant?.content, '');
+      assert.deepEqual(messages.at(-1), {
+        role: 'tool', content: 'synthetic result', tool_call_id: 'call_read',
+      });
+      return new Response(`data: ${JSON.stringify({ choices: [{
+        index: 0, delta: { content: 'Fixture read.' }, finish_reason: 'stop',
+      }] })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+    },
+  };
+  registerCloudflareBindingProvider(binding);
+  const provider = createCloudflareBindingProvider(binding);
+  const model = resolveModel('cloudflare/@cf/openai/gpt-oss-120b');
+  const result = await provider.streamSimple(model, {
+    messages: [
+      { role: 'user', content: 'Read the fixture.', timestamp: 1 },
+      {
+        role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+        content: [{ type: 'toolCall', id: 'call_read', name: 'read_fixture', arguments: {} }],
+        stopReason: 'toolUse', timestamp: 2,
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      },
+      { role: 'toolResult', toolCallId: 'call_read', toolName: 'read_fixture',
+        content: [{ type: 'text', text: 'synthetic result' }], isError: false, timestamp: 3 },
+    ],
+  }).result();
+
+  assert.equal(result.stopReason, 'stop', result.errorMessage ?? 'tool replay should complete');
+  assert.deepEqual(result.content, [{ type: 'text', text: 'Fixture read.' }]);
+});
+
 test('the Cloudflare binding registration does not alter the REST Workers AI provider', () => {
   setWorkersAiRestPiProvider({
     baseUrl: 'https://workers-ai.example.invalid/v1',
