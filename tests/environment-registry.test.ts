@@ -776,6 +776,23 @@ test('attestation requires the matching live claim and composes verifier-owned c
   assert.deepEqual(readEnvironmentRegistry(registryOptions(f.root)).targets.amber.missingActorAliases, []);
 });
 
+test('CLI status defaults to its calling worktree without changing global registry status', (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
+  assert.equal(readEnvironmentStatus(registryOptions(f.root)).selectedTarget, null);
+  const script = new URL('../scripts/chickpea-environment.mjs', import.meta.url).href;
+  const runner = `import { runEnvironmentCli } from ${JSON.stringify(script)};
+process.exit(await runEnvironmentCli(process.argv.slice(1), { hostFingerprint: 'host-fixture' }));`;
+  for (const flags of [[], ['--all']]) {
+    const result = spawnSync(process.execPath, ['--import', import.meta.resolve('tsx'), '--input-type=module', '-e', runner,
+      'status', '--root', f.root, ...flags], { cwd: f.first.path, encoding: 'utf8',
+      env: { ...process.env, NODE_PATH: undefined } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).selectedTarget, 'amber');
+  }
+});
+
 test('CLI dispatches claim, status, target, attest, reclaim, release, and reconciliation', async (context) => {
   const f = fixture();
   context.after(() => rmSync(f.parent, { recursive: true, force: true }));

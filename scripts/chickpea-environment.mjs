@@ -51,6 +51,7 @@ export async function runEnvironmentCli(argv, io = {}) {
     } else if (parsed.command === 'status') {
       result = readEnvironmentStatus({
         ...options,
+        worktreePath: options.worktreePath ?? process.cwd(),
         ...(!parsed.flags.all && parsed.target ? { target: parsed.target } : {}),
       });
     } else if (parsed.command === 'target') {
