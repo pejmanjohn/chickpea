@@ -18,7 +18,9 @@ const targetExample = JSON.parse(readFileSync(new URL('../qa/live/target.example
 
 test('the alias-only Phase 1 target binds the exact smoke inventory without credentials', () => {
   const target = validateTargetOverlay(manifest, targetExample);
-  assert.equal(target.targetAlias, 'fern');
+  assert.equal(target.targetAlias, 'amber');
+  assert.notEqual(target.bindings['LC04-V1-personal-read']?.fixtures.agent,
+    target.bindings['LC01-V2-update-approve']?.fixtures.agent);
   assert.deepEqual(Object.keys(target.bindings).sort(), [...manifest.requiredVariants.smoke].sort());
   assert.deepEqual(target.allowedSuites, ['case', 'smoke']);
   assert.equal(target.fixtures['qa-routine'], undefined);

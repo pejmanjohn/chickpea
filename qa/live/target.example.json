@@ -1,6 +1,6 @@
 {
   "schemaVersion": "chickpea-live-target/v1",
-  "targetAlias": "fern",
+  "targetAlias": "amber",
   "transport": "gateway",
   "workspaceAlias": "qa-workspace",
   "slackAppAlias": "qa-slack-app",
@@ -34,9 +34,13 @@
       "kind": "agent",
       "resourceAlias": "foundation-agent"
     },
+    "qa-connector-agent": {
+      "kind": "agent",
+      "resourceAlias": "empty-connector-test-agent"
+    },
     "synthetic-provider": {
       "kind": "provider_account",
-      "resourceAlias": "synthetic-read-only-account"
+      "resourceAlias": "synthetic-provider-account"
     }
   },
   "bindings": {
@@ -56,7 +60,7 @@
       "fixtures": {
         "member": "qa-member-one",
         "provider": "synthetic-provider",
-        "agent": "qa-agent"
+        "agent": "qa-connector-agent"
       }
     },
     "LC08-V1-create-due": {

@@ -11,6 +11,7 @@ import { LIVE_MANIFEST, LIVE_MANIFEST_DIGEST } from '../qa/live/manifest.ts';
 import { digestTargetOverlay, validateTargetOverlay } from '../qa/live/privacy.ts';
 import { advanceLiveRun, type AdvanceLiveRunRequest } from '../qa/live/runner.ts';
 import { clearTargetLock, readRunJournalStatus } from '../qa/live/safety/lock.ts';
+import type { PostflightInventoryItem } from '../qa/live/safety/cleanup.ts';
 
 const NOW = Date.parse('2026-09-03T01:00:00.000Z');
 const digest = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
@@ -94,6 +95,85 @@ test('API drivers, inactive targets and wrong actor aliases stop before creating
   assert.throws(() => new AttendedLiveCoordinator(f.request, { ...f.deps,
     driver: { ...f.deps.driver, actorAlias: 'another-actor' } }), /DOCTOR_BLOCKED/u);
   assert.equal(existsSync(f.request.journalPath), false);
+});
+
+test('the same coordinator traverses all four smoke variants and preserves shared baselines', async (context) => {
+  const f = fixture(context);
+  const overlay = structuredClone(f.request.overlay) as any;
+  overlay.fixtures['qa-member-one'].resourceAlias = f.deps.driver.actorAlias;
+  f.snapshot.targetOverlayDigest = digestTargetOverlay(validateTargetOverlay(LIVE_MANIFEST, overlay));
+  const request = { ...f.request, overlay, suite: 'smoke' as const };
+  delete request.variantIds;
+  const inventory = new Map<string, PostflightInventoryItem>([
+    ['baseline-agent', { immutableId: 'baseline-agent', resourceKind: 'agent', revision: '1',
+      stateDigest: digest('baseline-agent'), fixtureClass: 'resettable_fixture' }],
+    ['baseline-connection', { immutableId: 'baseline-connection', resourceKind: 'connection', revision: '1',
+      stateDigest: digest('baseline-connection'), fixtureClass: 'immutable_baseline' }],
+  ]);
+  const kinds = new Set<PostflightInventoryItem['resourceKind']>(['agent', 'connection']);
+  const actions: string[] = [];
+  let prepared = false;
+  f.deps.driver.prepare = async (action, ui) => {
+    const baselines = prepared ? [] : [...inventory.values()].map((item) => ({
+      ...item, caseId: action.variantId, stepId: action.actionRef, targetAlias: 'amber',
+      fixtureClass: item.fixtureClass as 'immutable_baseline' | 'resettable_fixture',
+    }));
+    prepared = true;
+    return f.capture(ui, { baselines,
+      expectedRevision: action.actionId === 'agent.update' ? inventory.get('baseline-agent')!.revision : 'absent' });
+  };
+  f.deps.driver.act = async (action, _challenge, ui) => {
+    actions.push(action.variantId);
+    const variant = LIVE_MANIFEST.contracts.flatMap(({ variants }) => variants)
+      .find(({ id }) => id === action.variantId)!;
+    const resourceKind = action.actionId.startsWith('agent.') ? 'agent'
+      : action.actionId === 'connection.authorize' ? 'connection' : 'routine';
+    const immutableId = action.actionId === 'agent.update' ? 'baseline-agent' : `created-${action.variantId}`;
+    const before = inventory.get(immutableId);
+    const resource = { immutableId, resourceKind, beforeRevision: before?.revision ?? 'absent',
+      beforeStateDigest: before?.stateDigest ?? digest('absent'), revision: before ? '2' : '1',
+      stateDigest: digest(immutableId + '-active'),
+      ...(action.actionId === 'agent.create' ? { expectedResidueStateDigest: digest('archived') } : {}),
+    } as const;
+    inventory.set(immutableId, { ...resource, fixtureClass: variant.actions[0]!.cleanup.fixtureClass });
+    kinds.add(resourceKind);
+    const generatedEffects = variant.generatedEffects.map((_, index) => ({
+      immutableId: `generated-${action.variantId}-${index}`, resourceKind: 'attributed_residue' as const,
+      beforeRevision: 'absent', beforeStateDigest: digest('absent'), revision: '1',
+      stateDigest: digest(action.variantId), expectedResidueStateDigest: digest(action.variantId),
+    }));
+    for (const effect of generatedEffects) {
+      inventory.set(effect.immutableId, { ...effect, fixtureClass: 'attributed_residue' });
+      kinds.add(effect.resourceKind);
+    }
+    return f.capture(ui, { outcome: 'completed', resource, generatedEffects });
+  };
+  f.deps.driver.cleanup = async (target, _challenge, ui) => {
+    let outcome: 'absent' | 'restored' | 'retained';
+    let resultingRevision: string;
+    let resultingStateDigest: string;
+    if (target.fixtureClass === 'run_owned') {
+      inventory.delete(target.immutableId);
+      outcome = 'absent'; resultingRevision = 'absent'; resultingStateDigest = digest('absent');
+    } else {
+      outcome = target.fixtureClass === 'resettable_fixture' ? 'restored' : 'retained';
+      resultingRevision = String(Number(target.expectedRevision) + 1);
+      resultingStateDigest = target.restoreStateDigest ?? target.expectedResidueStateDigest!;
+      inventory.set(target.immutableId, { ...inventory.get(target.immutableId)!,
+        revision: resultingRevision, stateDigest: resultingStateDigest });
+    }
+    return f.capture(ui, { immutableId: target.immutableId, priorRevision: target.expectedRevision,
+      outcome, resultingRevision, resultingStateDigest });
+  };
+  f.deps.driver.inventory = async (_variantId, ui) => f.capture(ui, { identity: request.identity,
+    declaredResourceKinds: [...kinds], inventory: [...inventory.values()] });
+  const result = await new AttendedLiveCoordinator(request, f.deps).run();
+  assert.equal(result.report.aggregate, 'pass');
+  assert.deepEqual(actions, LIVE_MANIFEST.requiredVariants.smoke);
+  assert.equal(result.report.inventory.executed.count, 4);
+  assert.equal(inventory.get('baseline-agent')?.stateDigest, digest('baseline-agent'));
+  assert.equal(inventory.get('baseline-connection')?.revision, '1');
+  assert.equal(readRunJournalStatus(request.journalPath, request.runId).safeToClear, true);
 });
 
 test('observation polling releases the host UI mutex while retaining the target lock', async (context) => {
