@@ -120,7 +120,7 @@
     "@modelcontextprotocol/core": "2.0.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@modelcontextprotocol/server": "2.0.0",
-    "@noble/hashes": "2.2.0",
+    "@noble/hashes": "2.4.0",
     "@slack/web-api": "^8.0.0",
     "agents": "^0.20.1",
     "better-auth": "1.7.1",
