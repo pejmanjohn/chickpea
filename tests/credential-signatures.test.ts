@@ -7,6 +7,7 @@ import {
   redactCredentialLikeContent,
 } from '../src/security/content-validation.ts';
 import { streamableSlackMarkdownPrefix } from '../src/slack/message-format.ts';
+import { awsExampleAccessKeyId, pemBegin, syntheticPem } from './helpers/credential-fixtures.ts';
 
 // Assemble the token-shaped fixture at runtime so repository push protection
 // never has to distinguish synthetic test data from a real Slack credential.
@@ -39,8 +40,8 @@ const SAMPLES: readonly { input: string; redacted: string }[] = [
     input: `token ${SYNTHETIC_GITHUB_INSTALLATION_TOKEN} here`,
     redacted: 'token [credential redacted] here',
   },
-  { input: 'id AKIAIOSFODNN7EXAMPLE here', redacted: 'id [credential redacted] here' },
-  { input: '-----BEGIN RSA PRIVATE KEY-----', redacted: '[credential redacted]' },
+  { input: `id ${awsExampleAccessKeyId('AKIA')} here`, redacted: 'id [credential redacted] here' },
+  { input: pemBegin('RSA PRIVATE KEY'), redacted: '[credential redacted]' },
   {
     input: 'CHICKPEA_AUTH_SECRET=supersecretvalue',
     redacted: '[credential redacted]',
@@ -114,7 +115,7 @@ test('redaction leaves credential-free text untouched and handles several hits a
     'a plain sentence with no secrets',
   );
   assert.equal(
-    redactCredentialLikeContent('CHICKPEA_AUTH_SECRET=aaaaaaaa and AKIAIOSFODNN7EXAMPLE'),
+    redactCredentialLikeContent(`CHICKPEA_AUTH_SECRET=aaaaaaaa and ${awsExampleAccessKeyId('AKIA')}`),
     '[credential redacted] and [credential redacted]',
   );
 });
@@ -129,12 +130,10 @@ test('PEM redaction removes each supported private-key body and closing armor', 
     'OPENSSH PRIVATE KEY',
     'ENCRYPTED PRIVATE KEY',
   ]) {
-    const pem = [
-      `-----BEGIN ${label}-----`,
+    const pem = syntheticPem(label, [
       'MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEA',
       'c2VjcmV0LWJ5dGVzLXRoYXQtbXVzdC1ub3Qtc3Vydml2ZQ==',
-      `-----END ${label}-----`,
-    ].join('\n');
+    ]);
     const redacted = redactCredentialLikeContent(`before\n${pem}\nafter`);
     assert.equal(redacted, 'before\n[credential redacted]\nafter', label);
     assert.doesNotMatch(redacted, /MIIE|c2VjcmV0|END PRIVATE KEY|END RSA|END EC|END OPENSSH|END ENCRYPTED/);
@@ -144,7 +143,7 @@ test('PEM redaction removes each supported private-key body and closing armor', 
 test('truncated algorithm-labeled private keys fail closed through end of input', () => {
   const truncated = [
     'before',
-    '-----BEGIN DSA PRIVATE KEY-----',
+    pemBegin('DSA PRIVATE KEY'),
     'MIIBuwIBAAKBgQDsensitivebodywithoutclosingarmor',
   ].join('\n');
   const redacted = redactCredentialLikeContent(truncated);
@@ -154,14 +153,12 @@ test('truncated algorithm-labeled private keys fail closed through end of input'
 });
 
 test('traditional encrypted PEM metadata is redacted with its key body', () => {
-  const pem = [
-    '-----BEGIN RSA PRIVATE KEY-----',
+  const pem = syntheticPem('RSA PRIVATE KEY', [
     'Proc-Type: 4,ENCRYPTED',
     'DEK-Info: AES-256-CBC,0123456789ABCDEF0123456789ABCDEF',
     '',
     'MIIEowIBAAKCAQEAsecretkeybodythatmustnotremain',
-    '-----END RSA PRIVATE KEY-----',
-  ].join('\n');
+  ]);
   const redacted = redactCredentialLikeContent(`before\n${pem}\nafter`);
 
   assert.equal(redacted, 'before\n[credential redacted]\nafter');
@@ -174,7 +171,7 @@ test('the AWS access-key-id signature stays case-sensitive', () => {
     redactCredentialLikeContent('id akiaiosfodnn7example here'),
     'id akiaiosfodnn7example here',
   );
-  assert.equal(hasCredentialLikeContent('id ASIAIOSFODNN7EXAMPLE here'), true);
+  assert.equal(hasCredentialLikeContent(`id ${awsExampleAccessKeyId('ASIA')} here`), true);
 });
 
 test('streaming withholds a partial credential marker tail until it resolves', () => {

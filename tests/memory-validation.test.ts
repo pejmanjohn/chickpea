@@ -3,6 +3,11 @@ import { test } from 'node:test';
 
 import { slugifyMemoryName } from '../src/memory/slug.ts';
 import { validateMemoryContent } from '../src/memory/validation.ts';
+import {
+  AWS_EXAMPLE_SECRET_ACCESS_KEY,
+  awsExampleAccessKeyId,
+  pemBegin,
+} from './helpers/credential-fixtures.ts';
 
 test('slug normalization is portable, bounded, and has a stable empty fallback', () => {
   assert.equal(slugifyMemoryName('  Café Release — Checklist!  ', '01ABCDEF'), 'cafe-release-checklist');
@@ -27,16 +32,16 @@ test('memory rejects known credentials while allowing ordinary near-miss prose',
     'sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890',
     'sk-proj-abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ',
     'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
-    'AKIAIOSFODNN7EXAMPLE',
-    'ASIAIOSFODNN7EXAMPLE',
-    '-----BEGIN PRIVATE KEY-----',
+    awsExampleAccessKeyId('AKIA'),
+    awsExampleAccessKeyId('ASIA'),
+    pemBegin('PRIVATE KEY'),
     'TAG_ADMIN_TOKEN=super-secret-value',
     'CHICKPEA_AUTH_SECRET=consumer-install-secret-value',
     'COMPOSIO_API_KEY=managed-connector-project-key',
     'COMPOSIO_WEBHOOK_SECRET=managed-connector-webhook-secret',
-    'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
-    'aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
-    '"AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"',
+    `AWS_SECRET_ACCESS_KEY=${AWS_EXAMPLE_SECRET_ACCESS_KEY}`,
+    `aws_secret_access_key = ${AWS_EXAMPLE_SECRET_ACCESS_KEY}`,
+    `"AWS_SECRET_ACCESS_KEY": "${AWS_EXAMPLE_SECRET_ACCESS_KEY}"`,
   ]) {
     assert.throws(
       () => validateMemoryContent({ description: 'credential', body: secret, type: 'fact' }),
