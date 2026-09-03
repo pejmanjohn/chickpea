@@ -39,6 +39,13 @@ The repository ships the catalog, runner, observers, safety modules, alias-only 
 
 Private config v2 contains exactly one selected target. Fern remains inactive. `env target <alias>` produces its overlay and private-config aliases. `env attest <alias>` produces the verifier doctor snapshot from authoritative environment readback. Consume those schemas directly instead of copying immutable IDs into a lane-specific file.
 
+A private coordinator can supply `readComputerUseReadiness` to refresh browser
+prerequisites during attestation. It must read the actual Admin and Slack windows
+and bind both fresh captures to the current target, workspace, source revision,
+and claim. The validator rejects stale, missing, reused, or mismatched captures.
+This does not update cached actor flags in the registry, grade product behavior,
+or make a caller-authored readiness object acceptable live evidence.
+
 Each color target declares `allowedSuites` as exactly `case` and `smoke` and binds the same manifest-owned variants: `LC01-V1-create-welcome`, `LC01-V2-update-approve`, `LC04-V1-personal-read`, and `LC08-V1-create-due`. A selected `case` must come from that inventory; a target cannot omit, add, or redefine a Phase 1 smoke contract. The complete deep catalog remains public continuation material, not a Phase 1 fixture requirement.
 
 The selected target allowlist binds the exact workspace, Slack app, Worker, provider project, standard managed provider auth config, timezone, evidence root, and required deployment bindings. The private resolver uses aliases for:
@@ -52,6 +59,11 @@ The public fixture kinds are exact: `actor`, `slack_channel`, `slack_dm`, `slack
 ## Evidence root and target lock
 
 Use one canonical absolute evidence root outside the repository and every npm package root. The private coordinator creates run directories with mode `0700` and files with mode `0600`. A run directory contains its journal, content-free observations, receipts, and failure capsules. Raw Slack or provider content never belongs in a public report.
+
+A dependency-installation-only `package.json` in an ancestor does not make that
+ancestor a package root. This exception accepts only dependency declarations
+and an optional package-manager field. Named packages, other manifest shapes,
+malformed JSON, symlinks, and Git directories remain fenced.
 
 The two workspaces may reuse one paid account; each target binds its own workspace-local actor identity and unambiguous browser surface. The same Owner may fulfill Member actions that do not test role denial. Doctor resolves only the distinct Computer Use-addressable aliases required by the selected variants; the exact Phase 1 smoke needs Owner and Member. Admin and second-member remain available for later cases rather than becoming a smoke prerequisite. Do not substitute an unverified tab or ambiguous browser session or use an API actor for a scored journey.
 

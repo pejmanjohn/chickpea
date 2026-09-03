@@ -4,6 +4,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readFileSync,
   realpathSync,
   writeSync,
   type Stats,
@@ -103,12 +104,29 @@ export function assertPrivateEvidencePath(path: string, root: string): void {
       if (isWithin(candidate, root) && (stat.uid !== process.getuid?.() || (stat.mode & 0o077))) {
         fail('UNSAFE_EVIDENCE_ROOT');
       }
-      if (stat.isDirectory() && (optionalStat(join(candidate, '.git')) || optionalStat(join(candidate, 'package.json')))) {
+      if (stat.isDirectory() && (optionalStat(join(candidate, '.git')) || hasPackageManifest(candidate))) {
         fail('UNSAFE_EVIDENCE_ROOT');
       }
     }
     if (candidate === dirname(candidate)) break;
   }
+}
+
+function hasPackageManifest(directory: string): boolean {
+  const path = join(directory, 'package.json');
+  const stat = optionalStat(path);
+  if (!stat) return false;
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65_536) return true;
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) return true;
+    // Tool installation can leave a dependency-only manifest in an operator's
+    // home. It cannot be packed and must not turn the entire home into a package
+    // root. Keep every other manifest shape, including malformed ones, fenced.
+    const keys = Object.keys(manifest);
+    return !keys.some((key) => key === 'dependencies' || key === 'devDependencies')
+      || keys.some((key) => !['dependencies', 'devDependencies', 'packageManager'].includes(key));
+  } catch { return true; }
 }
 
 function optionalStat(path: string): Stats | undefined {

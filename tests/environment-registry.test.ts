@@ -725,6 +725,55 @@ test('attestation requires the matching live claim and composes verifier-owned c
   assert.equal(result.doctorSnapshot.computerUseSurfaces.adminVisible, true);
   assert.equal(result.doctor.ready, true);
   assert.deepEqual(result.doctor.variantIds, [...PHASE_ONE_SMOKE_VARIANTS]);
+
+  const readiness = (binding: Record<string, unknown>) => ({
+    ...binding,
+    transport: 'computer_use', observationScope: 'window',
+    verifiedActorAliases: ['env-amber-primary-actor'],
+    computerUseSurfaces: {
+      bridgeAvailable: true, windowCaptureAvailable: true, slackVisible: true, adminVisible: true,
+    },
+    captures: ['admin', 'slack'].map((surface, index) => ({
+      surface, digest: `sha256:${String(index + 1).repeat(64)}`,
+      observedAt: new Date(NOW).toISOString(),
+    })),
+  });
+  const readOptions = {
+    ...registryOptions(f.root), worktreePath: f.first.path, allowSuppliedObservation: true,
+  };
+  // A cached registration must not overrule the current browser's missing actor.
+  const unavailable = await attestEnvironment('amber', observed, {
+    ...readOptions,
+    readComputerUseReadiness: async (binding: Record<string, unknown>) => ({
+      ...readiness(binding), verifiedActorAliases: [],
+    }),
+  });
+  assert.equal(unavailable.doctor.ready, false);
+  assert.deepEqual(unavailable.doctorSnapshot.missingActorAliases, ['env-amber-primary-actor']);
+  for (const mutate of [
+    (proof: any) => { proof.captures[0].observedAt = new Date(NOW - 60_001).toISOString(); },
+    (proof: any) => { proof.captures[0].observedAt = new Date(NOW + 1_001).toISOString(); },
+    (proof: any) => { proof.workspaceId = 'T_OTHER'; },
+    (proof: any) => { proof.claimNonce = 'another-claim'; },
+    (proof: any) => { proof.repositoryRevision = 'abcdef0123'; },
+    (proof: any) => { proof.observationScope = 'screen'; },
+    (proof: any) => { proof.transport = 'api'; },
+    (proof: any) => { proof.captures.pop(); },
+    (proof: any) => { proof.captures[1].digest = proof.captures[0].digest; },
+    (proof: any) => { proof.verifiedActorAliases.push('other-actor'); },
+  ]) {
+    await assert.rejects(attestEnvironment('amber', observed, {
+      ...readOptions,
+      readComputerUseReadiness: async (binding: Record<string, unknown>) => {
+        const proof = readiness(binding); mutate(proof); return proof;
+      },
+    }), /INVALID_COMPUTER_USE_READINESS/u);
+  }
+  const refreshed = await attestEnvironment('amber', observed, {
+    ...readOptions, readComputerUseReadiness: async (binding: Record<string, unknown>) => readiness(binding),
+  });
+  assert.equal(refreshed.doctor.ready, true);
+  assert.deepEqual(readEnvironmentRegistry(registryOptions(f.root)).targets.amber.missingActorAliases, []);
 });
 
 test('CLI dispatches claim, status, target, attest, reclaim, release, and reconciliation', async (context) => {

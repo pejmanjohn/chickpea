@@ -5,6 +5,7 @@ import path from 'node:path';
 import { attestLiveTarget } from '../../qa/live/attestation.ts';
 import { diagnoseLiveTarget, parseDoctorSnapshot } from '../../qa/live/doctor.ts';
 import { LIVE_MANIFEST_DIGEST } from '../../qa/live/manifest.ts';
+import { validateComputerUseReadiness } from '../../qa/live/computer-use.ts';
 import { createDoctorTargetResolution } from '../../qa/live/private-config.ts';
 import {
   assertLiveEnvironmentClaim,
@@ -31,6 +32,9 @@ export async function attestEnvironment(target, observation, options = {}) {
     throw environmentFailure('SOURCE_IDENTITY_MISMATCH');
   }
   const inputs = createVerifierTargetInputs(target, registration, Object.values(registry.targets));
+  if (options.readComputerUseReadiness !== undefined && typeof options.readComputerUseReadiness !== 'function') {
+    throw environmentFailure('INVALID_COMPUTER_USE_READINESS');
+  }
   const resolution = createDoctorTargetResolution(
     inputs.targetOverlay,
     inputs.privateConfig,
@@ -70,6 +74,23 @@ export async function attestEnvironment(target, observation, options = {}) {
     ...(options.isPidActive ? { isPidActive: options.isPidActive } : {}),
   });
   const sourceRevision = claimedSourceIdentity;
+  // Browser sessions are host-local and short-lived. A coordinator can refresh
+  // these prerequisites from actual UI captures without rewriting the registry
+  // or turning environment attestation into a scored product observer.
+  let computerUse = {
+    computerUseSurfaces: registration.computerUseSurfaces,
+    missingActorAliases: registration.missingActorAliases,
+  };
+  if (options.readComputerUseReadiness) {
+    const binding = Object.freeze({
+      targetAlias: target, workspaceId: registration.workspaceId,
+      repositoryRevision: sourceRevision, claimNonce: claim.leaseNonce,
+      requiredActorAliases: Object.freeze([...new Set(Object.values(inputs.targetOverlay.fixtures)
+        .filter(({ kind }) => kind === 'actor').map(({ resourceAlias }) => resourceAlias))].sort()),
+    });
+    computerUse = validateComputerUseReadiness(await options.readComputerUseReadiness(binding), binding,
+      options.now?.() ?? Date.now());
+  }
   const doctorSnapshot = parseDoctorSnapshot({
     schemaVersion: 'chickpea-live-doctor-snapshot/v1',
     manifestDigest: LIVE_MANIFEST_DIGEST,
@@ -79,8 +100,7 @@ export async function attestEnvironment(target, observation, options = {}) {
     targetFingerprint: attestation.targetFingerprint,
     repositoryRevision: sourceRevision,
     servingVersion: attestation.servingVersion,
-    computerUseSurfaces: registration.computerUseSurfaces,
-    missingActorAliases: registration.missingActorAliases,
+    ...computerUse,
     workspaceMatches: true,
     evidenceRootSafe,
     targetMatches: true,
