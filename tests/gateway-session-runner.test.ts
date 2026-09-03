@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import vm from 'node:vm';
+import ts from 'typescript';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -20,6 +23,50 @@ import {
 } from '../src/slack/gateway/session-runner.ts';
 
 const NOW = Date.UTC(2026, 7, 20, 12);
+
+test('concurrent Durable Object wakes share one supervisor and leave no orphan session on restart', async () => {
+  // Execute the real DO class with a delayed cross-object settings read. The
+  // runner supervisor is real; socket transport itself is covered below.
+  const source = ts.createSourceFile('cloudflare-session.ts',
+    readFileSync(new URL('../src/slack/gateway/cloudflare-session.ts', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node) =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackGatewaySession');
+  assert.ok(declaration);
+  const compiled = ts.transpileModule(
+    declaration.getText(source).replace(/^export /u, '') + '\nSlackGatewaySession',
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const pending: Array<(value: string | null) => void> = [];
+  const runners: FakeRunnerControl[] = [];
+  const Probe = vm.runInNewContext(compiled, {
+    DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    getSettingsStore: () => ({ getSetting: () => new Promise<string | null>((resolve) => pending.push(resolve)) }),
+    GATEWAY_BINDING_SETTING: 'binding',
+    GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
+    createGatewayDeploymentClient: () => ({ loadSessionCheckpoint: async () => undefined }),
+    cloudflareWorkerVersionId: () => 'test-version',
+    reconcileGatewaySessionStatus,
+    GatewaySessionRunnerSupervisor,
+    GatewaySessionRunner: class extends FakeRunnerControl {
+      constructor() { super('healthy'); runners.push(this); }
+    },
+  }) as new (context: object, env: object) => {
+    wake(): Promise<void>; restart(): Promise<void>; status(): Promise<{ healthy: boolean }>;
+  };
+  const object = new Probe({ waitUntil() {} }, {});
+  const calls = [object.wake(), object.wake(), object.status()];
+  assert.equal(pending.length, 3, 'external settings RPC allows startup calls to interleave');
+  pending.splice(0).forEach((resolve) => resolve('configured'));
+  await Promise.all(calls);
+  assert.equal(runners.length, 1, 'all callers must own the same session supervisor');
+  assert.equal(runners[0]!.starts, 1);
+  assert.equal((await object.status()).healthy, true);
+  await object.restart();
+  assert.equal(runners.length, 2);
+  assert.equal(runners[0]!.stops, 1, 'restart retires the only prior session');
+  assert.equal(runners[1]!.starts, 1);
+});
 
 test('session runner reconnects and rotates a renewable logical session', async () => {
   const settings = new SqliteSettingsStore(':memory:', () => NOW);

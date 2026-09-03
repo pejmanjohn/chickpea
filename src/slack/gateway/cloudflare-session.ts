@@ -43,7 +43,9 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
     if (!this.supervisor) {
       const binding = await getSettingsStore(platformEnv).getSetting(GATEWAY_BINDING_SETTING);
       if (!binding) return;
-      this.supervisor = new GatewaySessionRunnerSupervisor(() => new GatewaySessionRunner({
+      // The cross-object settings read can admit another wake. Keep its
+      // supervisor so concurrent callers cannot leave orphan delivery sockets.
+      this.supervisor ??= new GatewaySessionRunnerSupervisor(() => new GatewaySessionRunner({
         client: createGatewayDeploymentClient(platformEnv),
         capabilities: [GATEWAY_DURABLE_ADMISSION_CAPABILITY],
         waitUntil: (promise) => this.state.waitUntil(promise),
