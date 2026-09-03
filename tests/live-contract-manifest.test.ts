@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { PUBLIC_LIVE_CATALOG } from '../qa/live/cases/index.ts';
+import { compileLiveCatalog, assertFeatureMapFresh } from '../qa/live/compiler.ts';
 
 import {
   LIVE_MANIFEST,
@@ -11,6 +14,12 @@ import {
 import { PHASE_ONE_SMOKE_VARIANTS, PHASE_ONE_TARGET_ALIASES } from '../qa/live/schema.ts';
 
 const extraCase = 'LC02-V1-avatar-parity';
+
+test('the checked-in manifest and feature map match the authoring catalog exactly', () => {
+  const compiled = compileLiveCatalog(PUBLIC_LIVE_CATALOG);
+  assert.deepEqual(LIVE_MANIFEST, compiled);
+  assertFeatureMapFresh(readFileSync(new URL('../qa/live/generated/feature-map.md', import.meta.url), 'utf8'), compiled);
+});
 
 function policy(targetAlias: 'amber' | 'cobalt' = 'amber') {
   return {

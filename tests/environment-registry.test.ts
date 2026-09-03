@@ -27,6 +27,8 @@ import * as environmentAttestationModule from '../scripts/lib/environment-attest
 import { validatePrivateConfig } from '../qa/live/private-config.ts';
 import { resolveTargetSuiteVariants } from '../qa/live/manifest.ts';
 import { PHASE_ONE_SMOKE_VARIANTS } from '../qa/live/schema.ts';
+import { validateTargetOverlay } from '../qa/live/privacy.ts';
+import { LIVE_MANIFEST } from '../qa/live/manifest.ts';
 // @ts-expect-error The executable CLI module intentionally has no declaration file.
 import * as environmentCliModule from '../scripts/chickpea-environment.mjs';
 
@@ -651,6 +653,8 @@ test('target and private outputs validate for all colors and refuse deep and ina
       ...registryOptions(f.root), worktreePath: worktrees[index]!.path,
     });
     assert.equal(output.targetOverlay.schemaVersion, 'chickpea-live-target/v1');
+    assert.doesNotThrow(() => validateTargetOverlay(LIVE_MANIFEST, output.targetOverlay));
+    assert.deepEqual(output.targetOverlay.allowedVariants, [...PHASE_ONE_SMOKE_VARIANTS]);
     assert.equal(output.privateConfig.schemaVersion, 'chickpea-live-private-config/v2');
     const privateTarget = validatePrivateConfig(output.privateConfig);
     const suitePolicy = {

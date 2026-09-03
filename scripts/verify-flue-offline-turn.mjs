@@ -274,6 +274,7 @@ try {
     const lastStatus = backend.statusCalls().at(-1);
     const statusCleared = lastStatus === undefined || String(lastStatus.body.status) === '';
     const slackWire = JSON.stringify(backend.wireLog);
+    const statusSettled = lastStatus === undefined || String(lastStatus.body.status) === '';
 
     const passed =
       finals.length === 1 &&

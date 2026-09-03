@@ -49,6 +49,12 @@ const denyPatterns = [
   ['local user path', localUserPathPattern],
 ];
 
+const liveVerifierDenyPatterns = [
+  ['Slack token', /xox(?:b|p|a|r|s)-[A-Za-z0-9-]{12,}/i],
+  ['provider API key', /\bsk-[A-Za-z0-9_-]{16,}\b/],
+  ['Slack coordinate', /"(?:workspaceId|teamId|appId|channelId|userId)"\s*:\s*"[A-Z][A-Z0-9]{8,}"/],
+];
+
 // `canary` is public rollout vocabulary used by the ledger authority contract,
 // so it cannot also serve as a generic private rehearsal marker.
 
@@ -80,7 +86,72 @@ const forbiddenSourcePathRoots = [
   exportPath('.codex'),
   exportPath('.gstack'),
   exportPath('.superpowers'),
+  exportPath('evidence'),
+  exportPath('screenshots'),
+  exportPath('transcripts'),
   exportPath('tmp'),
+];
+
+const liveVerifierExportPolicy = Object.freeze({
+  requiredPaths: new Set([
+    exportPath('AGENTS.md'),
+    exportPath('docs', 'runbooks', 'live-contract-verification.md'),
+    exportPath('docs', 'runbooks', 'live-contract-acceptance-v1.md'),
+    exportPath('qa', 'live', 'README.md'),
+    exportPath('qa', 'live', 'attestation.ts'),
+    exportPath('qa', 'live', 'cases', '_shared.ts'),
+    exportPath('qa', 'live', 'cases', 'agent-lifecycle.live.ts'),
+    exportPath('qa', 'live', 'cases', 'agent-memory.live.ts'),
+    exportPath('qa', 'live', 'cases', 'avatar-parity.live.ts'),
+    exportPath('qa', 'live', 'cases', 'channel-schedule.live.ts'),
+    exportPath('qa', 'live', 'cases', 'connector-ownership-revocation.live.ts'),
+    exportPath('qa', 'live', 'cases', 'connector-setup.live.ts'),
+    exportPath('qa', 'live', 'cases', 'dm-schedule-privacy.live.ts'),
+    exportPath('qa', 'live', 'cases', 'index.ts'),
+    exportPath('qa', 'live', 'cases', 'installation-app-home-auth.live.ts'),
+    exportPath('qa', 'live', 'cases', 'skill-management.live.ts'),
+    exportPath('qa', 'live', 'cases', 'slack-routing.live.ts'),
+    exportPath('qa', 'live', 'cli.ts'),
+    exportPath('qa', 'live', 'compiler.ts'),
+    exportPath('qa', 'live', 'computer-use.ts'),
+    exportPath('qa', 'live', 'doctor.ts'),
+    exportPath('qa', 'live', 'drivers', 'operator.ts'),
+    exportPath('qa', 'live', 'fixtures', 'skills', 'qa-style-guard', 'SKILL.md'),
+    exportPath('qa', 'live', 'generated', 'feature-map.md'),
+    exportPath('qa', 'live', 'lessons', 'agent-and-routing.md'),
+    exportPath('qa', 'live', 'lessons', 'connectors.md'),
+    exportPath('qa', 'live', 'lessons', 'installation-and-auth.md'),
+    exportPath('qa', 'live', 'lessons', 'scenario-index.md'),
+    exportPath('qa', 'live', 'lessons', 'schedules.md'),
+    exportPath('qa', 'live', 'lessons', 'skills-and-memory.md'),
+    exportPath('qa', 'live', 'manifest.ts'),
+    exportPath('qa', 'live', 'observers', 'capabilities.ts'),
+    exportPath('qa', 'live', 'observers', 'chickpea.ts'),
+    exportPath('qa', 'live', 'observers', 'cloudflare.ts'),
+    exportPath('qa', 'live', 'observers', 'provider.ts'),
+    exportPath('qa', 'live', 'observers', 'slack.ts'),
+    exportPath('qa', 'live', 'operator', 'SKILL.md'),
+    exportPath('qa', 'live', 'privacy.ts'),
+    exportPath('qa', 'live', 'private-config.ts'),
+    exportPath('qa', 'live', 'public-sources.ts'),
+    exportPath('qa', 'live', 'report.ts'),
+    exportPath('qa', 'live', 'runner.ts'),
+    exportPath('qa', 'live', 'safety', 'cleanup.ts'),
+    exportPath('qa', 'live', 'safety', 'errors.ts'),
+    exportPath('qa', 'live', 'safety', 'evidence.ts'),
+    exportPath('qa', 'live', 'safety', 'journal.ts'),
+    exportPath('qa', 'live', 'safety', 'lock.ts'),
+    exportPath('qa', 'live', 'schema.ts'),
+    exportPath('qa', 'live', 'state.ts'),
+    exportPath('qa', 'live', 'suites.ts'),
+    exportPath('qa', 'live', 'target.example.json'),
+  ]),
+});
+
+const forbiddenLiveVerifierArtifactPaths = [
+  /^qa\/live\/(?:artifacts|evidence|private|resolved|runs|screenshots|transcripts)(?:\/|$)/i,
+  /^qa\/live\/.*(?:\.journal\.jsonl|\.snapshot\.json|\.target\.json|\.transcript\.txt)$/i,
+  /(?:^|\/)(?:doctor-snapshot|private-target|resolved-target|run-journal|target-overlay)(?:[./-]|$)/i,
 ];
 
 const allowedPublicDocs = new Set([
@@ -94,16 +165,19 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'plans', '2026-07-28-001-feat-openai-subscription-auth-plan.md'),
   exportPath('docs', 'plans', '2026-08-19-2302-feat-agent-first-slack-platform-plan.md'),
   exportPath('docs', 'reference', 'scheduled-routines.md'),
-  exportPath('docs', 'runbooks', 'agent-private-use-acceptance-2026-08-27.md'),
   exportPath('docs', 'runbooks', 'agent-authoring-evaluation.md'),
   exportPath('docs', 'runbooks', 'auth-db-deployment.md'),
   exportPath('docs', 'runbooks', 'operations.md'),
   exportPath('docs', 'runbooks', 'releasing.md'),
   exportPath('docs', 'runbooks', 'agent-first-acceptance-2026-08-21.md'),
+  exportPath('docs', 'runbooks', 'agent-private-use-acceptance-2026-08-27.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
   exportPath('docs', 'runbooks', 'composio-managed-connectors.md'),
   exportPath('docs', 'runbooks', 'product-telemetry.md'),
   exportPath('docs', 'runbooks', 'parallel-live-test-environments.md'),
+  exportPath('docs', 'runbooks', 'live-contract-acceptance-v1.md'),
+  exportPath('docs', 'runbooks', 'live-contract-verification.md'),
+  exportPath('docs', 'runbooks', 'memory-schedules-acceptance.md'),
   exportPath('docs', 'runbooks', 'slack-auth-recovery.md'),
   exportPath('docs', 'runbooks', 'agent-runtime-rollout.md'),
   exportPath('docs', 'runbooks', 'chickpea-system-agent-cutover.md'),
@@ -111,6 +185,7 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'runbooks', 'openai-subscription.md'),
   exportPath('docs', 'runbooks', 'semantic-activity-status.md'),
   exportPath('docs', 'runbooks', 'slack-interaction-operations.md'),
+  exportPath('docs', 'runbooks', 'semantic-activity-status.md'),
   exportPath('docs', 'runbooks', 'workspace-management-mcp.md'),
 ]);
 
@@ -467,6 +542,33 @@ function assertPublicSourceManifest(entries) {
       ].join('\n'),
     );
   }
+  assertLiveVerifierSourcePolicy(entries);
+}
+
+function isLiveVerifierPublicPath(path) {
+  return liveVerifierExportPolicy.requiredPaths.has(path);
+}
+
+function isForbiddenLiveVerifierArtifact(path) {
+  return forbiddenLiveVerifierArtifactPaths.some((pattern) => pattern.test(path));
+}
+
+function assertLiveVerifierSourcePolicy(entries) {
+  const paths = new Set(entries.map(({ path }) => path));
+  const missing = [...liveVerifierExportPolicy.requiredPaths].filter((path) => !paths.has(path));
+  const forbidden = entries
+    .map(({ path }) => path)
+    .filter(isForbiddenLiveVerifierArtifact);
+  const unexpected = entries.map(({ path }) => path)
+    .filter((path) => path.startsWith('qa/live/') && !liveVerifierExportPolicy.requiredPaths.has(path));
+  if (missing.length > 0 || forbidden.length > 0 || unexpected.length > 0) {
+    fail([
+      'OSS live verifier source policy failed:',
+      ...missing.map((path) => `missing public verifier file: ${path}`),
+      ...forbidden.map((path) => `forbidden private verifier artifact: ${path}`),
+      ...unexpected.map((path) => `unreviewed verifier file: ${path}`),
+    ].join('\n'));
+  }
 }
 
 function extractHeadArchive(sourceCommit) {
@@ -549,6 +651,11 @@ function scanExportTree(entries) {
         findings.push(`${rel}: matched denied term ${label}`);
       }
     }
+    if (isLiveVerifierPublicPath(rel)) {
+      for (const [label, pattern] of liveVerifierDenyPatterns) {
+        if (pattern.test(text)) findings.push(`${rel}: matched denied verifier value ${label}`);
+      }
+    }
   }
 
   if (findings.length > 0) {
@@ -556,7 +663,7 @@ function scanExportTree(entries) {
   }
 }
 
-function verifyNpmPackManifest() {
+function verifyNpmPackManifest(entries, packageJson) {
   const result = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
     cwd: scratch,
     encoding: 'utf8',
@@ -572,9 +679,21 @@ function verifyNpmPackManifest() {
     fail(`npm pack returned invalid JSON:\n${result.stdout}`);
   }
   const files = new Set((manifest[0]?.files ?? []).map((entry) => entry.path));
+  const declaredFiles = new Set(packageJson.files ?? []);
+  const requiredPackageEntries = [
+    'AGENTS.md',
+    'qa/live',
+    'docs/runbooks/live-contract-acceptance-v1.md',
+    'docs/runbooks/live-contract-verification.md',
+  ];
+  const missingPackageEntries = requiredPackageEntries.filter((path) => !declaredFiles.has(path));
+  const publicVerifierFiles = entries
+    .map(({ path }) => path)
+    .filter(isLiveVerifierPublicPath);
   const required = [
     '.dev.vars.example',
     '.env.example',
+    'AGENTS.md',
     'LICENSE',
     'NOTICE',
     'README.md',
@@ -616,6 +735,14 @@ function verifyNpmPackManifest() {
     'qa/live/private-config.ts',
     'qa/live/safety/lock.ts',
     'scripts/lib/environment-baseline.mjs',
+    'docs/runbooks/live-contract-acceptance-v1.md',
+    'docs/runbooks/live-contract-verification.md',
+    'docs/runbooks/slack-auth-recovery.md',
+    'docs/runbooks/workspace-management-mcp.md',
+    'migrations/better-auth/0001_better_auth.sql',
+    'qa/live/generated/feature-map.md',
+    'qa/live/operator/SKILL.md',
+    'qa/live/target.example.json',
     'scripts/flue-build-cf.mjs',
     'slack-app-manifest.json',
     'src/app.ts',
@@ -624,7 +751,8 @@ function verifyNpmPackManifest() {
     'vite.node.config.ts',
     'wrangler.jsonc',
   ];
-  const missing = required.filter((path) => !files.has(path));
+  const missing = [...new Set([...required, ...publicVerifierFiles])]
+    .filter((path) => !files.has(path));
   const forbidden = [...files].filter(
     (path) =>
       path === '.worktreeinclude' ||
@@ -636,12 +764,14 @@ function verifyNpmPackManifest() {
         'config/environments/qa/workspace-recipe.json',
       ].includes(path)) ||
       (path.startsWith('docs/') && !allowedPublicDocs.has(path)) ||
+      isForbiddenLiveVerifierArtifact(path) ||
       path.startsWith('tmp/'),
   );
-  if (missing.length > 0 || forbidden.length > 0) {
+  if (missingPackageEntries.length > 0 || missing.length > 0 || forbidden.length > 0) {
     fail(
       [
         'npm package manifest is not release-clean:',
+        ...missingPackageEntries.map((path) => `missing package.json files entry: ${path}`),
         ...missing.map((path) => `missing required file: ${path}`),
         ...forbidden.map((path) => `forbidden packaged file: ${path}`),
       ].join('\n'),
@@ -745,7 +875,7 @@ try {
 
   verifyAuthenticationExportContract(packageJson);
 
-  verifyNpmPackManifest();
+  verifyNpmPackManifest(entries, packageJson);
 
   run('npm', ['ci'], { cwd: scratch });
   // Artifact contracts must inspect a build of this archive, not skip because

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import type { SlackStateStore } from '../src/slack/claim-store.ts';
 import { writeSlackInstallationCredentials } from '../src/slack/installation-credentials.ts';
@@ -11,6 +12,78 @@ import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const TOKEN = 'slack-runtime-summary-token';
 const WORKSPACE_ID = 'T_RUNTIME_SUMMARY';
+
+test('Slack connection GET exposes bounded gateway status without restart or installation mutation', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const store = new SqliteConfigStore(':memory:');
+  let statusCalls = 0;
+  let restartCalls = 0;
+  try {
+    await store.ensureWorkspaceInstallation({
+      workspaceId: WORKSPACE_ID,
+      teamId: WORKSPACE_ID,
+      appId: 'A_RUNTIME',
+      botUserId: 'U_RUNTIME',
+      transportMode: 'gateway',
+      gatewayBindingId: 'binding-runtime',
+    });
+    const before = await store.getWorkspaceInstallation(WORKSPACE_ID);
+    const app = createAdminRoutes({
+      settings,
+      store,
+      ...testAdminAuthority(TOKEN),
+    });
+    const env = {
+      CF_VERSION_METADATA: { id: 'version-runtime' },
+      SLACK_GATEWAY_SESSION: {
+        idFromName: (name: string) => name,
+        get: () => ({
+          status: async () => {
+            statusCalls += 1;
+            return {
+              healthy: false,
+              phase: 'retrying',
+              detail: 'gateway_session_offline',
+              generation: 9,
+              versionId: 'version-runtime',
+            };
+          },
+          restart: async () => {
+            restartCalls += 1;
+          },
+        }),
+      },
+    };
+
+    const denied = await app.request('http://localhost/admin/api/slack-connection', {}, env);
+    assert.notEqual(denied.status, 200);
+    assert.equal(statusCalls, 0);
+
+    const response = await app.request(
+      'http://localhost/admin/api/slack-connection',
+      { headers: testAdminHeaders(TOKEN) },
+      env,
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json() as Record<string, unknown>;
+    assert.deepEqual(body.gateway, {
+      healthy: false,
+      phase: 'retrying',
+      detail: 'gateway_session_offline',
+      generation: 9,
+      versionId: 'version-runtime',
+    });
+    assert.equal(statusCalls, 1);
+    assert.equal(restartCalls, 0);
+    assert.deepEqual(await store.getWorkspaceInstallation(WORKSPACE_ID), before);
+    assert.deepEqual(Object.keys(body.gateway as object).sort(), [
+      'detail', 'generation', 'healthy', 'phase', 'versionId',
+    ]);
+  } finally {
+    store.close();
+    settings.close();
+  }
+});
 
 test('Slack presentation summary authorizes the connected workspace and exposes no content', async () => {
   const settings = new SqliteSettingsStore(':memory:');

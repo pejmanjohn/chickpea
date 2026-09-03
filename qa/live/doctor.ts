@@ -5,14 +5,13 @@ import {
   validateTargetSuitePolicy,
   type TargetSuitePolicy,
 } from './manifest.ts';
-import { OBSERVER_REGISTRY, type ObserverId, type Suite } from './schema.ts';
+import { type Suite } from './schema.ts';
+import { unavailableComputerUseObservers, validComputerUseSurfaceSnapshot,
+  type ComputerUseSurfaceSnapshot } from './computer-use.ts';
+import { inventoryManifestCapabilities } from './observers/capabilities.ts';
+import { digestTargetOverlay, validateTargetOverlay, type LiveTargetOverlay } from './privacy.ts';
 
-export interface ComputerUseAvailability {
-  bridgeAvailable: boolean;
-  windowCaptureAvailable: boolean;
-  slackVisible: boolean;
-  adminVisible: boolean;
-}
+export type ComputerUseAvailability = ComputerUseSurfaceSnapshot;
 
 export interface DoctorSnapshot {
   schemaVersion: 'chickpea-live-doctor-snapshot/v1';
@@ -37,6 +36,7 @@ export interface DoctorSnapshotSource {
 }
 
 export type DoctorDiagnosticCode =
+  | 'invalid_target_overlay'
   | 'manifest_drift'
   | 'missing_actor'
   | 'wrong_workspace'
@@ -70,11 +70,29 @@ export function diagnoseLiveTarget(input: {
   suite: Suite;
   selectedVariantIds?: readonly string[];
   source: DoctorSnapshotSource;
+} | {
+  overlay: unknown;
+  variantIds?: readonly string[];
+  source: DoctorSnapshotSource;
 }): DoctorResult {
-  const policy = validateTargetSuitePolicy(input.policy);
-  const variantIds = resolveTargetSuiteVariants(policy, input.suite, input.selectedVariantIds);
   const snapshot = parseDoctorSnapshot(input.source.read());
   const diagnostics: DoctorDiagnostic[] = [];
+  let target: LiveTargetOverlay | undefined;
+  let targetAlias: string | undefined;
+  let variantIds: string[];
+  if ('policy' in input) {
+    const policy = validateTargetSuitePolicy(input.policy);
+    targetAlias = policy.targetAlias;
+    variantIds = resolveTargetSuiteVariants(policy, input.suite, input.selectedVariantIds);
+  } else {
+    try {
+      target = validateTargetOverlay(LIVE_MANIFEST, input.overlay);
+      targetAlias = target.targetAlias;
+    } catch {
+      diagnostics.push({ code: 'invalid_target_overlay', severity: 'blocked' });
+    }
+    variantIds = [...(input.variantIds ?? target?.allowedVariants ?? [])];
+  }
   if (snapshot.manifestDigest !== LIVE_MANIFEST_DIGEST) {
     diagnostics.push({ code: 'manifest_drift', severity: 'blocked' });
   }
@@ -86,16 +104,20 @@ export function diagnoseLiveTarget(input: {
   if (!snapshot.workspaceMatches) {
     diagnostics.push({ code: 'wrong_workspace', severity: 'blocked' });
   }
-  const unavailableComputerUse = unavailableComputerUseObservers(
-    variantIds,
-    snapshot.computerUseSurfaces,
-  );
+  const unavailableComputerUse = unavailableComputerUseObservers({
+    manifest: LIVE_MANIFEST, variantIds, surfaces: snapshot.computerUseSurfaces,
+  });
   if (unavailableComputerUse.length > 0) {
     diagnostics.push({
       code: 'computer_use_unavailable', severity: 'blocked', items: unavailableComputerUse,
     });
   }
-  const explicitlyUnavailable = [...new Set(snapshot.unavailableObserverIds ?? [])].sort();
+  const selected = new Set(variantIds);
+  const explicitlyUnavailable = [...new Set([
+    ...(snapshot.unavailableObserverIds ?? []),
+    ...inventoryManifestCapabilities(LIVE_MANIFEST).blocked
+      .filter(({ variantId }) => selected.has(variantId)).map(({ observerId }) => observerId),
+  ])].sort();
   if (explicitlyUnavailable.length > 0) {
     diagnostics.push({
       code: 'unavailable_observer', severity: 'blocked', items: explicitlyUnavailable,
@@ -104,7 +126,9 @@ export function diagnoseLiveTarget(input: {
   if (!snapshot.evidenceRootSafe) {
     diagnostics.push({ code: 'unsafe_evidence_root', severity: 'blocked' });
   }
-  if (!snapshot.targetMatches || snapshot.targetAlias !== policy.targetAlias) {
+  if (!snapshot.targetMatches || (targetAlias !== undefined && snapshot.targetAlias !== targetAlias)
+    || (target !== undefined && (snapshot.transport !== target.transport
+      || snapshot.targetOverlayDigest !== digestTargetOverlay(target)))) {
     diagnostics.push({ code: 'target_drift', severity: 'blocked' });
   }
   if (snapshot.lock.status === 'live') {
@@ -144,7 +168,7 @@ export function parseDoctorSnapshot(input: unknown): DoctorSnapshot {
     || !/^[0-9a-f]{7,64}(?:-dirty)?$/u.test(input.repositoryRevision)
     || typeof input.servingVersion !== 'string'
     || !/^(?:version-[A-Za-z0-9._-]{1,96}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu.test(input.servingVersion)
-    || !validComputerUse(input.computerUseSurfaces)
+    || !validComputerUseSurfaceSnapshot(input.computerUseSurfaces)
     || !stringArray(input.missingActorAliases)
     || (input.unavailableObserverIds !== undefined && !stringArray(input.unavailableObserverIds))
     || typeof input.workspaceMatches !== 'boolean'
@@ -156,40 +180,6 @@ export function parseDoctorSnapshot(input: unknown): DoctorSnapshot {
   return input as unknown as DoctorSnapshot;
 }
 
-function unavailableComputerUseObservers(
-  variantIds: readonly string[],
-  availability: ComputerUseAvailability,
-): string[] {
-  const selected = new Set(variantIds);
-  const productObservers = new Set<ObserverId>();
-  for (const contract of LIVE_MANIFEST.contracts) {
-    for (const variant of contract.variants) {
-      if (!selected.has(variant.id)) continue;
-      for (const assertion of [...variant.expected, ...variant.forbidden]) {
-        if (OBSERVER_REGISTRY[assertion.observerId].authority === 'product') {
-          productObservers.add(assertion.observerId);
-        }
-      }
-    }
-  }
-  const slackObservers = new Set<ObserverId>([
-    'slack.messages.read', 'slack.persona.read', 'app_home.read', 'app_home.publication.read',
-  ]);
-  return [...productObservers].filter((observerId) => {
-    if (!availability.bridgeAvailable || !availability.windowCaptureAvailable) return true;
-    return slackObservers.has(observerId)
-      ? !availability.slackVisible
-      : !availability.adminVisible;
-  }).sort();
-}
-
-function validComputerUse(input: unknown): input is ComputerUseAvailability {
-  return isRecord(input)
-    && exactKeys(input, [
-      'bridgeAvailable', 'windowCaptureAvailable', 'slackVisible', 'adminVisible',
-    ])
-    && Object.values(input).every((value) => typeof value === 'boolean');
-}
 
 function validLock(input: unknown): boolean {
   return isRecord(input)
@@ -215,11 +205,4 @@ function isRecord(input: unknown): input is Record<string, unknown> {
 function onlyKeys(input: object, allowed: readonly string[]): boolean {
   const accepted = new Set(allowed);
   return Object.keys(input).every((key) => accepted.has(key));
-}
-
-function exactKeys(input: object, expected: readonly string[]): boolean {
-  const actual = Object.keys(input).sort();
-  const wanted = [...expected].sort();
-  return actual.length === wanted.length
-    && actual.every((key, index) => key === wanted[index]);
 }

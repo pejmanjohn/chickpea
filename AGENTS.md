@@ -16,3 +16,7 @@
   `wrangler deploy`. Confirm the intended target before any live mutation.
 - Report local checks and live acceptance separately. A source SHA, build, or
   deployment upload is not evidence of a real Slack reply.
+- For Chickpea live Slack verification, read `qa/live/operator/SKILL.md` before
+  acting. It points to the public catalog and runbook. Keep target coordinates,
+  resolved aliases, journals, transcripts, screenshots, and evidence outside
+  this repository.

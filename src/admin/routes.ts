@@ -8814,16 +8814,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         installation?.transportMode === 'gateway' &&
         Boolean(installation.gatewayBindingId) &&
         installation.health !== 'revoked';
+      const gateway = gatewayConnected
+        ? await readGatewaySessionStatus(c.env)
+        : null;
       let effectiveHealth = installation?.health ?? 'pending';
       let effectiveHealthDetail = installation?.healthDetail ?? null;
-      if (gatewayConnected && installation) {
-        const live = await readGatewaySessionStatus(c.env);
+      if (gatewayConnected && gateway) {
         // This GET is an observation, not a configuration mutation. Preserve
         // persisted attention states, but never report a stale persisted
         // healthy value when the inbound session is currently unavailable.
-        if (effectiveHealth === 'healthy' && !live.healthy) {
+        if (effectiveHealth === 'healthy' && !gateway.healthy) {
           effectiveHealth = 'needs_attention';
-          effectiveHealthDetail = live.detail ?? 'gateway_session_offline';
+          effectiveHealthDetail = gateway.detail ?? 'gateway_session_offline';
         }
       }
       if (gatewayConnected && !teamInfo.teamName) {
@@ -8844,6 +8846,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         transportMode: installation?.transportMode ?? 'direct',
         health: effectiveHealth,
         healthDetail: effectiveHealthDetail,
+        gateway: gateway === null ? null : {
+          healthy: gateway.healthy,
+          phase: gateway.phase,
+          detail: gateway.detail,
+          generation: gateway.generation,
+          versionId: gateway.versionId ?? null,
+        },
         requestUrl,
         manifestUrl: slackManifestUrl(requestUrl),
       });

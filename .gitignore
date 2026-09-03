@@ -38,6 +38,8 @@ docs/plans/*
 docs/plans/evidence/*
 !docs/runbooks/operations.md
 !docs/runbooks/releasing.md
+!docs/runbooks/live-contract-verification.md
+!docs/runbooks/live-contract-acceptance-v1.md
 design-qa.md
 !docs/design/agent-first-admin-prototype/design-qa.md
 

@@ -2,6 +2,8 @@ import {
   validateCloudflareDeploymentTargetIdentity,
 } from '../cloudflare-deployment-profile.mjs';
 import { LIVE_MANIFEST, validateTargetSuitePolicy } from '../../qa/live/manifest.ts';
+import { validateTargetOverlay } from '../../qa/live/privacy.ts';
+import { createPhaseOneBaselinePlan } from './environment-baseline.mjs';
 import { validatePrivateConfig } from '../../qa/live/private-config.ts';
 import {
   EnvironmentRegistryError,
@@ -27,7 +29,8 @@ export function createVerifierTargetInputs(target, registration, registrations =
     deploymentIdentity(registration),
     registrations.map(deploymentIdentity),
   );
-  const allowedVariants = [...LIVE_MANIFEST.requiredVariants.case];
+  const baseline = createPhaseOneBaselinePlan(target);
+  const allowedVariants = [...baseline.smokeVariants];
   const policy = validateTargetSuitePolicy({
     targetAlias: target,
     allowedSuites: ['case', 'smoke'],
@@ -45,10 +48,23 @@ export function createVerifierTargetInputs(target, registration, registrations =
     allowedSuites: policy.allowedSuites,
     allowedVariants: policy.allowedVariants,
   });
-  const targetOverlay = Object.freeze({
+  const fixtureResourceKeys = new Set(Object.values(baseline.variantFixtureBindings)
+    .flatMap((requirements) => requirements.map(({ resourceKey }) => resourceKey)));
+  const fixtures = Object.fromEntries(baseline.resources
+    .filter(({ key }) => fixtureResourceKeys.has(key)).map((resource) => [
+    `env-${target}-${resource.key}`,
+    { kind: resource.fixtureKind, resourceAlias: `env-${target}-${resource.key}` },
+    ]));
+  const bindings = Object.fromEntries(Object.entries(baseline.variantFixtureBindings)
+    .map(([variantId, requirements]) => [variantId, { fixtures: Object.fromEntries(
+      requirements.map(({ slot, resourceKey }) => [slot, `env-${target}-${resourceKey}`]),
+    ) }]));
+  const targetOverlay = Object.freeze(validateTargetOverlay(LIVE_MANIFEST, {
     schemaVersion: LIVE_TARGET_SCHEMA,
     ...sharedTarget,
-  });
+    fixtures,
+    bindings,
+  }));
   const privateTarget = Object.freeze({
     ...sharedTarget,
     timezoneAlias: aliases.timezone,
