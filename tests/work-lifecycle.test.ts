@@ -18,7 +18,9 @@ import {
 
 const NOW = 1_900_000_000_000;
 
-test('legacy shadow writes stop blocking after their bounded observer budget', async () => {
+test('legacy shadow writes stop blocking after their bounded observer budget', { timeout: 5000 }, async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
+  context.mock.method(console, 'warn', () => undefined);
   const never = new Promise<never>(() => undefined);
   const gaps: string[] = [];
   const lifecycle = new ShadowWorkLifecycle({
@@ -33,17 +35,20 @@ test('legacy shadow writes stop blocking after their bounded observer budget', a
     observeWriteBudgetMs: 5,
     onGap: (stage) => gaps.push(stage),
   });
-  const originalWarn = console.warn;
-  console.warn = () => undefined;
-  try {
-    const started = performance.now();
-    assert.equal(await lifecycle.prepareExecution('prompt'), undefined);
-    assert.ok(performance.now() - started < 40);
-    assert.equal(lifecycle.hasExecution, false);
-    assert.deepEqual(gaps, ['prepare_input']);
-  } finally {
-    console.warn = originalWarn;
-  }
+  let settled = false;
+  const preparation = lifecycle.prepareExecution('prompt').then((value) => {
+    settled = true;
+    return value;
+  });
+  context.mock.timers.tick(4);
+  // Flush the promise chain without advancing the controlled timeout clock.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'the observer must wait for its full budget');
+  context.mock.timers.tick(1);
+  assert.equal(await preparation, undefined);
+  assert.equal(Date.now(), NOW + 5);
+  assert.equal(lifecycle.hasExecution, false);
+  assert.deepEqual(gaps, ['prepare_input']);
 });
 
 test('durable observational Work waits past 100ms without turning a slow owner into a gap', async () => {

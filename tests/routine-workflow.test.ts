@@ -928,13 +928,19 @@ test('routine Usage repairs failed admission and terminal persistence before com
   }
 });
 
-test('routine deadline bounds a stalled durable Usage owner before dispatch', async () => {
+test('routine deadline bounds a stalled durable Usage owner before dispatch', { timeout: 5_000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
   const routines = new SqliteRoutineStore(':memory:', () => NOW);
   const telemetry = telemetrySink();
   const events: string[] = [];
   const deadlineAt = Date.now() + 50;
+  let enteredUsage!: () => void;
+  const usageEntered = new Promise<void>((resolve) => { enteredUsage = resolve; });
   const stalledUsage = {
-    admitOperation: async () => new Promise<never>(() => undefined),
+    admitOperation: async () => {
+      enteredUsage();
+      return new Promise<never>(() => undefined);
+    },
   } as unknown as UsageStore;
   try {
     const fixture = await admittedFixture(
@@ -945,7 +951,7 @@ test('routine deadline bounds a stalled durable Usage owner before dispatch', as
       deadlineAt,
     );
     const startedAt = Date.now();
-    assert.equal(await executeRoutineOccurrence({
+    const execution = executeRoutineOccurrence({
       env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, {
       ...dependencies(),
@@ -954,9 +960,12 @@ test('routine deadline bounds a stalled durable Usage owner before dispatch', as
       usageStore: stalledUsage,
       persistenceTelemetrySink: telemetry.sink,
       handle: fakeHandle({ events }),
-    }), 'completed');
+    });
+    await usageEntered;
+    t.mock.timers.tick(50);
+    assert.equal(await execution, 'completed');
 
-    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(Date.now() - startedAt, 50);
     assert.equal(events.filter((event) => event === 'dispatch').length, 0);
     assert.equal(telemetry.errors.length, 1);
     assert.match(telemetry.errors[0]!, /"usage":"unrepaired"/);
@@ -1053,7 +1062,8 @@ test('permanent Work initialization failure is one gap and never redispatches', 
   }
 });
 
-test('routine deadline bounds a stalled durable Work owner before dispatch', async () => {
+test('routine deadline bounds a stalled durable Work owner before dispatch', { timeout: 5_000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-work-deadline-'));
   const path = join(directory, 'state.sqlite');
   const routines = new SqliteRoutineStore(path, () => NOW);
@@ -1069,11 +1079,16 @@ test('routine deadline bounds a stalled durable Work owner before dispatch', asy
       'public',
       deadlineAt,
     );
+    let enteredWork!: () => void;
+    const workEntered = new Promise<void>((resolve) => { enteredWork = resolve; });
     const stalledWork = {
-      getRun: async () => new Promise<never>(() => undefined),
+      getRun: async () => {
+        enteredWork();
+        return new Promise<never>(() => undefined);
+      },
     } as unknown as WorkStore;
     const startedAt = Date.now();
-    assert.equal(await executeRoutineOccurrence({
+    const execution = executeRoutineOccurrence({
       env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, {
       ...dependencies(),
@@ -1082,9 +1097,12 @@ test('routine deadline bounds a stalled durable Work owner before dispatch', asy
       workStore: stalledWork,
       persistenceTelemetrySink: telemetry.sink,
       handle: fakeHandle({ events }),
-    }), 'completed');
+    });
+    await workEntered;
+    t.mock.timers.tick(50);
+    assert.equal(await execution, 'completed');
 
-    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(Date.now() - startedAt, 50);
     assert.equal(events.filter((event) => event === 'dispatch').length, 0);
     assert.equal(telemetry.errors.length, 1);
     assert.match(telemetry.errors[0]!, /"phase":"work","outcome":"unrepaired"/);

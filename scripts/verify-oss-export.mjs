@@ -85,6 +85,7 @@ const forbiddenSourcePathRoots = [
 
 const allowedPublicDocs = new Set([
   exportPath('docs', 'authentication.md'),
+  exportPath('docs', 'shared-gateway-data-handling.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'design-qa.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'production-fidelity-qa.md'),
   exportPath('docs', 'design', 'agent-first-admin-prototype', 'src', 'app.jsx'),
@@ -96,6 +97,8 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'runbooks', 'agent-private-use-acceptance-2026-08-27.md'),
   exportPath('docs', 'runbooks', 'agent-authoring-evaluation.md'),
   exportPath('docs', 'runbooks', 'auth-db-deployment.md'),
+  exportPath('docs', 'runbooks', 'operations.md'),
+  exportPath('docs', 'runbooks', 'releasing.md'),
   exportPath('docs', 'runbooks', 'agent-first-acceptance-2026-08-21.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
   exportPath('docs', 'runbooks', 'composio-managed-connectors.md'),
@@ -130,6 +133,24 @@ const forbiddenBinaryExtensions = new Set([
 ]);
 
 const allowedBinaryFiles = new Map([
+  [exportPath('assets', 'onboarding', 'ready.webp'), '8e3f24211d5a790cdcd13226fe93689e0a15a286e49d0130d5e4ab4e9aa25601'],
+  [exportPath('assets', 'onboarding', 'allow.webp'), '0af3c02803cf862412ac528e0d5ec8d2316b2b48b8ef05014d5474e6b6efa031'],
+  [exportPath('assets', 'onboarding', 'bot-token.webp'), 'f17555dcb503bfe75ef50657c106f498950e47a0c374bdaa02d3e6ec099e3e83'],
+  [exportPath('assets', 'onboarding', 'create-review.webp'), '2a1f04a89c10933a30555787926cdb7e0407dd77ecc5a630d3f3e6e828f32f78'],
+  [exportPath('assets', 'onboarding', 'create-workspace.webp'), '5e02d8aaf0e3727b07e88f4be409ef04b0139ba8796394ce1d075d05349776bd'],
+  [exportPath('assets', 'onboarding', 'events.webp'), '3d277865452406913f4ce77cd0dbf40d5218c2d93cfe194d0cb69458a1722986'],
+  [exportPath('assets', 'onboarding', 'reinstall.webp'), '25e05848d4c6c284435d225dc9a6424d460bf3c4c210cb292dcda3a5b6d04ad2'],
+  [exportPath('assets', 'onboarding', 'signing-secret.webp'), 'f1b05edc9b64c2b598f6ac6b5da26c6d831c77c7434eebacf3589ca777103346'],
+  [exportPath('assets', 'onboarding', 'events-retry.webp'), '9a2549d158fba8f6edc9bbee0199585370eeeee8d9a8bfd1b18415ac1a489f8f'],
+  [exportPath('assets', 'connectors', 'exa.png'), '277c9f6801afffd060b6891522b7a75062e7da677e439ea1bb7c2e697b35d770'],
+  [exportPath('assets', 'connectors', 'fireflies.png'), 'de55a51173478c6412190b6af4867a7e2134a961aa423b569421f33674b714ac'],
+  [exportPath('assets', 'connectors', 'gamma.png'), '535376ea3fb0ad62fdb1b6b1c8e0bb3eb51768e988972f8cd8c4455f98af437c'],
+  [exportPath('assets', 'connectors', 'granola.png'), 'b33d9874ca62fb40a5070213b6dbd69333a74a8f1b78ffd86093770b468b2b6c'],
+  [exportPath('assets', 'connectors', 'incident-io.png'), '900cf222c3221911a4d11397835fd1b262aa37fe62d50a692b2e4f2709621785'],
+  [exportPath('assets', 'connectors', 'lunarcrush.png'), '5f68f28ef02527d4918b87efe4076e2725f7363292060a45d225768561e2d482'],
+  [exportPath('assets', 'connectors', 'google-search-console.png'), '97db2ff60097307843a6f9bfc5b936735873d3cde4262cb0283f327d3040fa46'],
+  [exportPath('assets', 'connectors', 'google-analytics.png'), '424f3b1b23f36f435f3382363bf6482bfb63d3ce36a4e7ac0536b8698453502f'],
+  [exportPath('assets', 'connectors', 'google-ads.png'), '5b26cc372386e3fd3cde4fd27e7edbb8d1ef53631456f27f6607880c41110e35'],
   [
     exportPath('assets', 'chickpea-mark.png'),
     '84864d6d3323f7d9d5491a139c0e9e0b0d92b1e076c742d5f4d50e75148b65fb',
@@ -312,12 +333,7 @@ const allowedBinaryFiles = new Map([
   ],
 ]);
 
-const allowedLargeTextFiles = new Map([
-  [
-    exportPath('src', 'slack', 'agent-presence', 'default-avatar-pool.generated.ts'),
-    '0fbfcf58b59f0d08b24ce71c1be688e289c8e85df7979825a619a880f9e137d7',
-  ],
-]);
+const allowedLargeTextFiles = new Map();
 
 function fail(message) {
   console.error(message);
@@ -560,7 +576,11 @@ function verifyNpmPackManifest() {
     '.dev.vars.example',
     '.env.example',
     'LICENSE',
+    'NOTICE',
     'README.md',
+    'CONTRIBUTING.md',
+    'SECURITY.md',
+    'AGENTS.md',
     'SETUP_AGENT.md',
     'TELEMETRY.md',
     'assets/admin-agent.png',
@@ -576,8 +596,11 @@ function verifyNpmPackManifest() {
     'scripts/deploy-with-epilogue.mjs',
     'scripts/recover-auth.mjs',
     'docs/authentication.md',
+    'docs/shared-gateway-data-handling.md',
     'docs/runbooks/agent-authoring-evaluation.md',
     'docs/runbooks/auth-db-deployment.md',
+    'docs/runbooks/operations.md',
+    'docs/runbooks/releasing.md',
     'docs/runbooks/agent-first-acceptance-2026-08-21.md',
     'docs/runbooks/coding-sandbox-deployment.md',
     'docs/runbooks/composio-managed-connectors.md',
@@ -711,9 +734,12 @@ try {
   if (!existsSync(join(scratch, 'LICENSE'))) {
     fail('Export is missing LICENSE');
   }
+  if (!existsSync(join(scratch, 'NOTICE'))) {
+    fail('Export is missing NOTICE');
+  }
 
   const packageJson = JSON.parse(readFileSync(join(scratch, 'package.json'), 'utf8'));
-  if (packageJson.private !== true || !packageJson.description || packageJson.license !== 'MIT' || !packageJson.repository) {
+  if (packageJson.private !== true || !packageJson.description || packageJson.license !== 'Apache-2.0' || !packageJson.repository) {
     fail('Export package.json must remain private and include its source metadata');
   }
 
@@ -722,7 +748,18 @@ try {
   verifyNpmPackManifest();
 
   run('npm', ['ci'], { cwd: scratch });
-  run('npm', ['run', 'test:ci'], { cwd: scratch });
+  // Artifact contracts must inspect a build of this archive, not skip because
+  // dist-cf is absent in a fresh source checkout.
+  run('npm', ['run', 'build'], { cwd: scratch });
+  run('npm', ['run', 'test:ci'], {
+    cwd: scratch,
+    env: {
+      ...offlineVerificationEnv,
+      TAG_DB_PATH: ':memory:',
+      SLACK_STATE_DB_PATH: ':memory:',
+      CHICKPEA_AUTH_DB_PATH: ':memory:',
+    },
+  });
   run('node', ['scripts/verify-flue-offline-turn.mjs'], {
     cwd: scratch,
     env: offlineVerificationEnv,

@@ -12,7 +12,7 @@
 
 <div align="center">
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-555555.svg?labelColor=333333&color=2EA44F)](./LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-555555.svg?labelColor=333333&color=2EA44F)](./LICENSE)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.19-555555?labelColor=333333&color=339933)](https://nodejs.org)
 [![Runs on](https://img.shields.io/badge/Runs_on-Cloudflare_Workers_or_Node-555555?labelColor=333333&color=F38020)](#install)
 [![Built on Flue](https://img.shields.io/badge/Built_on-Flue-555555?labelColor=333333&color=DDA126)](https://flueframework.com)
@@ -37,7 +37,7 @@
 
 Chickpea gives your team AI teammates in Slack. You address them by name. `@support` answers the billing question in the channel where someone asked it. `@revops` posts Monday's pipeline numbers from HubSpot on a schedule. `@oncall` reads the repo before it answers. Each one has its own instructions, memory, connected accounts, and list of channels it's allowed to work in. You set all of that up by asking, in Slack.
 
-The difference is where they work. Chickpea is MIT-licensed and you deploy it yourself, to your own Cloudflare account or your own server, pointed at whichever model provider you want. Under the hood every Agent runs on [Flue](https://flueframework.com), the open agent framework from the Astro team, now part of Cloudflare. More in [How It Works](#how-it-works).
+The difference is where they work. Chickpea is licensed under Apache 2.0 and you deploy it yourself, to your own Cloudflare account or your own server, pointed at whichever model provider you want. Under the hood every Agent runs on [Flue](https://flueframework.com), the open agent framework from the Astro team, now part of Cloudflare. More in [How It Works](#how-it-works).
 
 ---
 
@@ -318,13 +318,15 @@ What the design guarantees:
 - **Self-hosted state.** Runtime, model traffic, configuration, memory, and connector credentials stay in infrastructure you operate. The exception is opting into Composio-managed connectors, which delegates OAuth storage, refresh, and API execution for those accounts to Composio. Native API and MCP connections keep their credentials with you.
 - **Minimal product telemetry.** Chickpea sends six content-free, anonymous product events to measure adoption. It sends no messages, prompts, tool data, customer identity, or error text; it creates no person profile and can be disabled completely. The exhaustive field list and opt-out instructions are in [Product telemetry](TELEMETRY.md).
 
-The other exception is the optional shared Slack-app gateway, which exists so you can skip Slack app configuration entirely. It stores encrypted installation credentials and sanitized health metadata, and **no Slack event payloads**. It is online-only: when your deployment is offline, events are acknowledged and dropped rather than stored for replay. If you'd rather not have it in the path at all, pick the customer-owned Slack app lane, which talks directly to your deployment and never loads the gateway client.
+The other exception is the optional shared Slack-app gateway, which exists so you can skip Slack app configuration entirely. It stores encrypted installation credentials and sanitized health metadata, but does **not durably store Slack message or event bodies**. If it cannot hand an event to your deployment, it returns a failure so Slack can retry; with Slack's Delayed Events setting enabled, those retries can continue hourly for 24 hours. On Cloudflare, your deployment durably admits the event before acknowledging it, then scrubs the body as soon as processing reaches a terminal state and keeps only a content-free deduplication record for 48 hours. The Node target does not yet provide that durable-admission contract; use your own Slack app for reliable Node ingress. Read the exact retention and recovery boundaries in [Shared Slack gateway data handling](docs/shared-gateway-data-handling.md). If you'd rather not have the gateway in the path at all, pick the customer-owned Slack app lane, which talks directly to your deployment and never loads the gateway client.
 
 ---
 
 ## Install
 
 ### Cloudflare
+
+The current bundle requires Workers Paid. See [Good to Know](#good-to-know).
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea)
 
@@ -345,7 +347,7 @@ Requires Node **>=22.19.0**.
 
 ```bash
 git clone https://github.com/pejmanjohn/chickpea && cd chickpea
-npm install
+npm ci
 
 # 32 random bytes, stable across restarts
 export CHICKPEA_AUTH_SECRET=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
@@ -362,7 +364,9 @@ export CHICKPEA_SETUP_CAPABILITY_ISSUED_AT=...
 npm run dev
 ```
 
-Then open the private link and follow the same Slack flow as above.
+Then open the private link and follow the same Slack flow as above. `npm run dev`
+is for development. For a supervised production server, persistent state paths,
+HTTPS, backups, and upgrades, follow [Operating Chickpea](docs/runbooks/operations.md).
 
 State defaults to SQLite. Set `TAG_DB_PATH=:memory:` and `SLACK_STATE_DB_PATH=:memory:` only for disposable development.
 
@@ -391,13 +395,17 @@ The full list, including per-connector Composio auth config IDs and the Google A
 ## Good to Know
 
 - One deployment currently serves one Slack workspace.
-- The shared gateway is private infrastructure. Its implementation and Slack credentials are not in this public repository, and it does not queue Slack event bodies while your deployment is offline.
+- The shared gateway is private infrastructure. Its implementation and Slack credentials are not in this public repository, and it does not durably queue Slack event bodies. Delivery recovery relies on Slack retries plus deployment-owned admission; [the data-handling contract](docs/shared-gateway-data-handling.md) spells out what is stored, where, and for how long.
 - Updates are manual. The Cloudflare Deploy button clones this repository rather than forking it.
 - Node durability is single-host SQLite. Multi-instance Node needs a shared state service.
-- Cloudflare free-tier model and Durable Object limits are hard platform limits under load.
+- The current Cloudflare bundle requires Workers Paid: its compressed upload exceeds the Free plan's 3 MiB Worker limit. Public images use Static Assets in the same deployment.
 - Anonymous, content-free [product telemetry](TELEMETRY.md) is enabled by default and has a complete operator opt-out.
 - The coding sandbox and scheduled execution are Cloudflare-only. Node uses the in-memory execution path and no scheduler.
-- This is a clean-slate pre-release schema. There is no migration or compatibility promise for earlier databases.
+- Earlier experimental schemas may be incompatible. Never reset production state to upgrade; follow the [compatibility and recovery policy](docs/runbooks/operations.md#upgrade-and-compatibility-policy).
+
+Contributions go through GitHub pull requests; see [CONTRIBUTING.md](CONTRIBUTING.md).
+Report vulnerabilities privately using [SECURITY.md](SECURITY.md). Maintainers
+use the [release checklist](docs/runbooks/releasing.md).
 
 <details>
 <summary><strong>Attachment limits</strong></summary>
@@ -414,7 +422,7 @@ Per turn: 4 files, 8 MiB each, 12 MiB total, 100 PDF pages, 32,000 characters pe
 Because then every channel that bot is in has every credential that bot holds, and everything it learns anywhere it can say anywhere. Agents exist so you can put a wall between support's Zendesk and finance's spreadsheets without running a second deployment.
 
 **"What does this cost to run?"**
-Chickpea itself is MIT-licensed with no per-seat pricing and no metering. You pay your model provider directly for API usage. Workers, Durable Objects, D1, and Workers AI usage runs in your own Cloudflare account under whatever plan you're on, and the optional coding sandbox requires Workers Paid. Running on your own Node host, the infrastructure bill is whatever that host costs you.
+Chickpea itself is licensed under Apache 2.0 with no per-seat pricing and no metering. You pay your model provider directly for API usage. The current Cloudflare bundle requires Workers Paid. Workers, Durable Objects, D1, Workers AI, and optional coding sandbox usage run in your own Cloudflare account and may incur costs. Running on your own Node host, the infrastructure bill is whatever that host costs you.
 
 **"How do I see what an Agent actually did?"**
 Most of it is already visible: work happens in Slack threads, in the open, under the Agent's own name. In Admin, the Memory tab shows exactly what an Agent retained (and lets you edit or delete it), and the Schedules tab shows status, last run, next run, and a run-history and activity inspector for scheduled work. One deliberate gap: activity telemetry is fixed-schema and content-free, and Admin has no searchable conversation archive. The conversation itself lives in Slack and in your deployment's transcript store.
@@ -449,4 +457,6 @@ Node **>=22.19.0** is pinned in `.nvmrc`. Several `verify:*:live` variants exist
 
 ## License
 
-[MIT](LICENSE). Use it, fork it, run it for your company, sell what you build on it.
+[Apache License 2.0](LICENSE). Use it, fork it, run it for your company, sell what you build on it, subject to the license terms.
+
+Copyright (c) 2026 Pejman Pour-Moezzi. See [NOTICE](NOTICE).

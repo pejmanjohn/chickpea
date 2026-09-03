@@ -29,6 +29,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { hasScheduledComposition } from './worker-artifact.mjs';
 
 import {
   classifyCloudflareDeploymentProfile,
@@ -251,7 +252,7 @@ function requireBuiltArtifact() {
       .map((entry) => readFileSync(path.join(artifactRoot, entry), 'utf8'))
       .join('\n')
     : '';
-  return { configPath, config, bundle };
+  return { configPath, config, bundle, entry: existsSync(bundlePath) ? readFileSync(bundlePath, 'utf8') : '' };
 }
 
 function expectedWorkerName(targetTuple) {
@@ -442,10 +443,7 @@ function validateRoutineArtifact(artifact) {
       failures.push(`${name}/${className} binding`);
     }
   }
-  if (
-    !bundle.includes('heartbeat: runRoutineHeartbeat') ||
-    !bundle.includes('maintenance: runWorkMaintenance')
-  ) {
+  if (!hasScheduledComposition(artifact.entry)) {
     failures.push('composed heartbeat and maintenance handlers');
   }
   if (

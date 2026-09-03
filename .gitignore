@@ -19,6 +19,7 @@ tmp/
 docs/
 !docs/
 docs/*
+!docs/shared-gateway-data-handling.md
 !docs/design/
 docs/design/*
 !docs/design/agent-first-admin-prototype/
@@ -35,6 +36,8 @@ docs/runbooks/*
 docs/plans/*
 !docs/plans/evidence/
 docs/plans/evidence/*
+!docs/runbooks/operations.md
+!docs/runbooks/releasing.md
 design-qa.md
 !docs/design/agent-first-admin-prototype/design-qa.md
 

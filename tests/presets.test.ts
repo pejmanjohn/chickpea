@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 
+import { readPublicAsset } from '../src/assets/read.node.ts';
 import { validateMcpUrl } from '../src/config/mcp-url.ts';
 import { CONNECTOR_LOGOS } from '../src/config/connector-logos.ts';
 import {
@@ -81,7 +82,7 @@ test('connector preset catalog entries are valid', () => {
   }
 });
 
-test('managed Google analytics presets embed the official product-icon binaries', () => {
+test('managed Google analytics presets reference the official product-icon binaries', async () => {
   const expectedHashes: Record<string, string> = {
     'google-search-console': '97db2ff60097307843a6f9bfc5b936735873d3cde4262cb0283f327d3040fa46',
     'google-analytics': '424f3b1b23f36f435f3382363bf6482bfb63d3ce36a4e7ac0536b8698453502f',
@@ -90,12 +91,10 @@ test('managed Google analytics presets embed the official product-icon binaries'
   for (const [logoId, expectedHash] of Object.entries(expectedHashes)) {
     const logo = CONNECTOR_LOGOS[logoId];
     assert.equal(logo?.raster, true);
-    const encoded = logo?.svg.match(
-      /^<img src="data:image\/png;base64,([A-Za-z0-9+/=]+)" alt="">$/,
-    )?.[1];
-    assert.ok(encoded, `${logoId} must embed its official PNG`);
+    assert.equal(logo?.svg, `<img src="/connectors/${logoId}.png" alt="">`);
+    const bytes = await readPublicAsset(`connectors/${logoId}.png`);
     assert.equal(
-      createHash('sha256').update(Buffer.from(encoded, 'base64')).digest('hex'),
+      createHash('sha256').update(bytes).digest('hex'),
       expectedHash,
     );
   }

@@ -9138,10 +9138,10 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(ahrefsRow, /Research keywords, backlinks, competitors, and search performance\./);
 
   const incidentIoRow = gallery.match(
-    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="incident-io">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="\/connectors\/incident-io\.png" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="incident-io">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(incidentIoRow);
-  assert.match(incidentIoRow, /conn-logo-raster"><img src="data:image\/png;base64,/);
+  assert.match(incidentIoRow, /conn-logo-raster"><img src="\/connectors\/incident-io\.png"/);
 
   const linearRow = gallery.match(
     /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-img"><svg[\s\S]*?data-preset="linear">Connect<\/button><\/div>/,
@@ -9198,7 +9198,7 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(driveRow, /fill="url\(#google-drive-yellow\)"/);
 
   const granolaRow = gallery.match(
-    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="granola">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="\/connectors\/granola\.png" alt=""><\/span>(?:(?!<\/div>)[\s\S])*?data-preset="granola">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(granolaRow);
   assert.match(granolaRow, /<span class="gallery-row-name">Granola<\/span>/);
@@ -9226,10 +9226,10 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(mondayRow, /fill="#ff3d57"/);
 
   const exaRow = gallery.match(
-    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="data:image\/png;base64,[^"]+" alt=""><\/span>[\s\S]*?data-preset="exa">Connect<\/button><\/div>/,
+    /<div class="gallery-row gallery-row-described"><span class="conn-logo conn-logo-raster"><img src="\/connectors\/exa\.png" alt=""><\/span>[\s\S]*?data-preset="exa">Connect<\/button><\/div>/,
   )?.[0];
   assert.ok(exaRow);
-  assert.match(exaRow, /<img src="data:image\/png;base64,[^"]+" alt="">/);
+  assert.match(exaRow, /<img src="\/connectors\/exa\.png" alt="">/);
   assert.doesNotMatch(exaRow, /conn-logo-mono/);
   assert.match(
     gallery,

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Self-hosted, model-agnostic AI agent for Slack.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pejmanjohn/chickpea.git"
@@ -13,7 +13,11 @@
     ".env.example",
     ".nvmrc",
     "LICENSE",
+    "NOTICE",
     "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "AGENTS.md",
     "SETUP_AGENT.md",
     "TELEMETRY.md",
     "assets",
@@ -21,7 +25,10 @@
     "config/environments/qa/desired-state.json",
     "config/environments/qa/workspace-recipe.json",
     "docs/authentication.md",
+    "docs/shared-gateway-data-handling.md",
     "docs/runbooks/auth-db-deployment.md",
+    "docs/runbooks/operations.md",
+    "docs/runbooks/releasing.md",
     "docs/runbooks/coding-sandbox-deployment.md",
     "docs/runbooks/composio-managed-connectors.md",
     "docs/runbooks/product-telemetry.md",
@@ -51,6 +58,12 @@
     "wrangler.jsonc"
   ],
   "type": "module",
+  "imports": {
+    "#chickpea-assets": {
+      "workerd": "./src/assets/read.cloudflare.ts",
+      "default": "./src/assets/read.node.ts"
+    }
+  },
   "engines": {
     "node": ">=22.19.0"
   },

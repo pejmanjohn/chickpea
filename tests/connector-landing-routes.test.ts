@@ -1049,7 +1049,7 @@ test('the managed connector link is reusable and completes from the dedicated pa
     assert.match(setupHtml, /<input[^>]+name="ownerKind"[^>]+value="team"/);
     assert.doesNotMatch(setupHtml, /<input[^>]+name="ownerKind"[^>]+checked/);
     assert.match(setupHtml, /<input[^>]+name="access"[^>]+value="write"/);
-    assert.match(setupHtml, /--chickpea-wordmark-image:url\("data:image\/png;base64,/);
+    assert.match(setupHtml, /--chickpea-wordmark-image:url\("\/chickpea-wordmark-512\.png\?v=[a-f0-9]{12}"\)/);
     assert.match(setupHtml, new RegExp(`src="http://localhost/assets/agents/${agent.id}/avatar/1"`));
 
     writeReady = false;

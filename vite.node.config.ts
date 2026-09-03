@@ -2,6 +2,7 @@ import { flue } from '@flue/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  publicDir: 'assets',
   plugins: [
     flue({
       // The v2 Cloudflare target rejects custom persistence. Giving only the

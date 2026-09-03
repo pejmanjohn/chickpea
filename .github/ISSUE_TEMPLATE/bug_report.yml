@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible Chickpea problem without private data.
+body:
+  - type: markdown
+    attributes:
+      value: "For vulnerabilities, use the private reporting link in SECURITY.md. Do not include tokens, setup links, Slack content, or databases."
+  - type: input
+    id: version
+    attributes:
+      label: Release or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: target
+    attributes:
+      label: Deployment target
+      options:
+        - Cloudflare core
+        - Cloudflare with coding sandbox
+        - Node
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Use synthetic inputs and include relevant non-secret configuration.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Include Node version or a sanitized error code if useful. Review all output before posting.
