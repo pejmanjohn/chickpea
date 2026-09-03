@@ -371,6 +371,7 @@ function runAdminPageHarness(
     cloudflare?: boolean;
     agents?: unknown[];
     agentsGetError?: { status: number; error: string };
+    creationStatusFetch?: (agentId: string) => Promise<FakeResponse>;
     agentsListOmitsPrivateUseAudience?: boolean;
     providers?: ProviderSummaryFixture[];
     openrouterFavorites?: string[];
@@ -1685,6 +1686,11 @@ function runAdminPageHarness(
         ));
       }
       return Promise.resolve(jsonResponse({ agents: agentsList }));
+    }
+    const creationStatusMatch = path.match(/^\/admin\/api\/runtime\/agents\/([^/]+)\/creation-status$/);
+    if (creationStatusMatch && method === 'GET') {
+      const id = decodeURIComponent(creationStatusMatch[1] as string);
+      return harnessOptions.creationStatusFetch?.(id) ?? Promise.resolve(jsonResponse({ agentId: id, welcomes: [] }));
     }
     const agentGetMatch = path.match(/^\/admin\/api\/agents\/([^/]+)$/);
     if (agentGetMatch && method === 'GET') {
@@ -3500,6 +3506,43 @@ test('saved Agent details expose exact persisted identity without inventing a re
   missing.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': agent.id }) });
   await flushAsync();
   assert.match(missing.app.innerHTML, /Saved revision[^]*>unavailable</);
+});
+
+test('creation delivery disclosure is explicit, escaped, and ignores stale navigation responses', async () => {
+  let reads = 0;
+  let resolve!: (response: FakeResponse) => void;
+  const agents = ['agent_one', 'agent_two'].map((id) => ({ ...releaseAgent, id, name: id }));
+  const harness = runAdminPageHarness({ agents, creationStatusFetch: () => {
+    reads++;
+    return new Promise((done) => { resolve = done; });
+  } });
+  await flushAsync();
+  const click = (action: string, id?: string) => harness.listeners.click!({ target: actionTarget({ 'data-action': action, ...(id ? { 'data-agent': id } : {}) }) });
+  click('edit-profile', 'agent_one');
+  await flushAsync();
+  assert.equal(reads, 0);
+  click('refresh-creation-status');
+  assert.equal(reads, 1);
+  resolve(jsonResponse({ agentId: 'agent_one', welcomes: [{
+    outboxId: '<script>private</script>', status: 'delivered', channelId: 'C_CREATE', threadTs: '1800000000.000100',
+    publication: { status: 'complete', incomplete: [] }, deliveryRef: 'C_CREATE:1800000001.000100',
+    activity: null, secret: 'never-render-receipt-prose',
+  }] }));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Welcome records[^]*>1</);
+  assert.match(harness.app.innerHTML, /&lt;script&gt;private&lt;\/script&gt;/);
+  assert.match(harness.app.innerHTML, /Activity state[^]*>unavailable</);
+  assert.doesNotMatch(harness.app.innerHTML, /never-render-receipt-prose/);
+  click('refresh-creation-status');
+  click('edit-profile', 'agent_two');
+  resolve(jsonResponse({ agentId: 'agent_one', welcomes: [{ outboxId: 'STALE_WELCOME' }] }));
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /STALE_WELCOME|Welcome records/);
+  click('refresh-creation-status');
+  resolve(jsonResponse({ error: 'forbidden' }, 403));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Creation delivery status unavailable/);
+  assert.doesNotMatch(harness.app.innerHTML, /Welcome records/);
 });
 
 test('the profile editor presents reversible archive semantics for an assigned Agent', async () => {

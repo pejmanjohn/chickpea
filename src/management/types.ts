@@ -1195,6 +1195,7 @@ export type ManagementRpcRequest =
   | { kind: 'put_outbox'; record: ManagementReceiptOutboxRecord }
   | { kind: 'claim_introduction'; input: ClaimManagementIntroductionInput }
   | { kind: 'get_outbox_for_operation'; operationId: string }
+  | { kind: 'list_agent_creation_welcomes'; workspaceId: string; agentId: string; requesterMembershipId: string }
   | { kind: 'claim_due_outbox'; at: number; limit: number; leaseUntil: number }
   | {
       kind: 'settle_outbox';

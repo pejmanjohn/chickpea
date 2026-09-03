@@ -8,8 +8,8 @@ The two-lane environment integration now emits selected-target v2 private
 config, fixture-complete overlays, and the verifier doctor schema. Active lanes
 are Amber and Cobalt, each in its own paid Slack workspace. Fern is parked.
 Google Sheets uses its normal managed grant; the acceptance exercise reads only
-the declared fixture. The attended coordinator and formal four-case acceptance
-remain outstanding. This is not a live acceptance pass.
+the declared fixture. The attended coordinator is implemented; formal four-case
+acceptance remains outstanding. This is not a live acceptance pass.
 
 The local continuation integrates environment checkpoint `60c3cc7` and the
 discoverable operator skill. Deterministic checks cover observation waits with
@@ -23,8 +23,20 @@ The environment task has now issued its explicit U0 live handoff. The coordinato
 has a tested explicit same-run recovery path, including real-process contention
 and recovery-process crash checks. Existing Agent and connection screens now have
 closed-field saved-record disclosures for visible exact identity/revision reads.
-These local changes are not yet deployed or live-accepted. The private attended
-driver, operator entrypoint, fixture provisioning, and formal smoke remain pending.
+The saved-record disclosures are deployed and have been exercised in real
+failed-case cleanup and postflight. A private attended entrypoint and creation
+recipe have closed failed requests through exact readback without replay.
+Successful creation, the other three UI recipes, connector-test fixture
+provisioning, and formal smoke remain pending.
+
+The latest creation failure was traced to GPT-OSS exhausting its implicit
+256-token output budget on reasoning without returning text or tools. The local
+budget fix passes 2,858 repository tests, build, and immutable OSS export.
+That is diagnosis and local verification, not a successful live creation.
+An optional read-only Admin creation-delivery disclosure is being added so
+the creation recipe can inspect publication, delivery, and activity settlement
+alongside the exact saved Agent and visible welcome. Missing evidence cannot
+be replaced by an API assertion or a successful-looking reply.
 
 ## Historical V0 result
 

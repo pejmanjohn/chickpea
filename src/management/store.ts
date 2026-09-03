@@ -421,6 +421,21 @@ export class ManagementStoreLogic {
           kind: 'outbox',
           outbox: this.getOutboxForOperation(request.operationId) ?? null,
         };
+      case 'list_agent_creation_welcomes': {
+        // Two records suffice to distinguish one welcome from duplicate delivery.
+        // Scope in SQL before applying the bound; never scan another actor's receipts.
+        const rows = this.db.all(
+          `SELECT * FROM management_receipt_outbox
+           WHERE json_extract(receipt_json, '$.kind') = 'agent_created_welcome'
+             AND json_extract(receipt_json, '$.agentId') = ?
+             AND json_extract(receipt_json, '$.requesterMembershipId') = ?
+             AND json_extract(destination_json, '$.kind') = 'thread'
+             AND json_extract(destination_json, '$.workspaceId') = ?
+           ORDER BY created_at DESC, outbox_id DESC LIMIT 2`,
+          request.agentId, request.requesterMembershipId, request.workspaceId,
+        ) as unknown as ManagementOutboxRow[];
+        return { kind: 'outbox_batch', outbox: rows.map(outboxFromRow) };
+      }
       case 'claim_due_outbox':
         return {
           kind: 'outbox_batch',

@@ -3284,6 +3284,7 @@ button.capability-pill { cursor: pointer; }
     profileReplacementDefaultAgentId: "",
     editingAgentId: null,
     profileDraft: null,
+    profileCreationStatus: null,
     profileError: "",
     profileConflict: false,
     profilePresenceMutation: null,
@@ -3895,6 +3896,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function openProfileEditor(selected, initialTab) {
+    state.profileCreationStatus = null;
     state.mobileAgentRosterOpen = false;
     state.view = "profiles";
     state.profileScreen = "edit";
@@ -9620,6 +9622,7 @@ button.capability-pill { cursor: pointer; }
       profileTabsHtml(draft) +
       (readOnly ? '<fieldset class="agent-readonly-fields" disabled>' + agentAdvancedHtml(draft) + '</fieldset>' : agentAdvancedHtml(draft)) +
       agentSavedRecordHtml(draft) +
+      agentCreationStatusHtml(draft) +
       (readOnly ? "" : '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + (saveBarCueActive() ? " cue" : "") + '">' +
       '<div class="save-bar-inner">' +
       '<p class="save-note">&#9679; Unsaved changes &mdash; applies to new threads</p>' +
@@ -9645,6 +9648,53 @@ button.capability-pill { cursor: pointer; }
       scheduledMeta("Desired presence", presence.desiredState || "unavailable", false) +
       scheduledMeta("Channel grant IDs", grants.length ? grants.map(function (grant) { return grant.channelId; }).sort().join(", ") : "none", true) +
       '</div></details>';
+  }
+
+  function agentCreationStatusHtml(draft) {
+    if (!draft.id || draft.canEdit === false) return '';
+    var current = state.profileCreationStatus;
+    if (current && current.agentId !== draft.id) current = null;
+    var body = '<p class="hint">Recent Slack creation receipts requested by you. Available to Owners and Admins.</p>' +
+      '<button type="button" class="btn btn-soft btn-sm" data-action="refresh-creation-status"' + (current && current.loading ? ' disabled' : '') + '>Refresh creation delivery</button>';
+    if (current && current.error) body += '<p role="alert">Creation delivery status unavailable.</p>';
+    if (current && current.data) {
+      var welcomes = current.data.welcomes;
+      body += '<div class="scheduled-meta">' + scheduledMeta("Welcome records", welcomes.length === 2 ? "2 or more" : welcomes.length, true) + '</div>';
+      welcomes.forEach(function (welcome) {
+        var activity = welcome.activity || {};
+        var publication = welcome.publication || {};
+        body += '<div class="scheduled-meta">' +
+          scheduledMeta("Welcome ID", welcome.outboxId, true) +
+          scheduledMeta("Delivery status", welcome.status, false) +
+          scheduledMeta("Destination channel", welcome.channelId, true) +
+          scheduledMeta("Destination thread", welcome.threadTs, true) +
+          scheduledMeta("Publication status", publication.status || "unavailable", false) +
+          scheduledMeta("Incomplete publication", Array.isArray(publication.incomplete) ? (publication.incomplete.join(", ") || "none") : "unavailable", false) +
+          scheduledMeta("Delivery reference", welcome.deliveryRef || "unavailable", true) +
+          scheduledMeta("Activity surface", activity.surface || "unavailable", false) +
+          scheduledMeta("Activity state", activity.state || "unavailable", false) +
+          scheduledMeta("Activity cleanup", activity.cleanup || "unavailable", false) +
+          scheduledMeta("Run lifecycle", activity.lifecycle || "unavailable", false) + '</div>';
+      });
+    }
+    return '<details class="scheduled-technical"' + (current ? ' open' : '') + '><summary>Creation delivery details</summary>' + body + '</details>';
+  }
+
+  async function refreshCreationStatus() {
+    var draft = state.profileDraft;
+    if (!draft || !draft.id || draft.canEdit === false) return;
+    var current = { agentId: draft.id, loading: true, error: false, data: null };
+    state.profileCreationStatus = current;
+    render();
+    try {
+      var result = await api("/admin/api/runtime/agents/" + encodeURIComponent(draft.id) + "/creation-status");
+      if (result.agentId !== draft.id || !Array.isArray(result.welcomes) || result.welcomes.length > 2) throw new Error("Invalid creation status");
+      current.data = result;
+    } catch (_) {
+      current.error = true;
+    }
+    current.loading = false;
+    if (state.profileCreationStatus === current && state.profileDraft && state.profileDraft.id === current.agentId) render();
   }
 
   function agentAdvancedHtml(draft) {
@@ -13884,6 +13934,7 @@ button.capability-pill { cursor: pointer; }
     if (action === "save-profile") { saveProfile(); }
     if (action === "agent-presence-retry") { retryAgentPresence(); }
     if (action === "reload-profile") { reloadProfile(); }
+    if (action === "refresh-creation-status") { refreshCreationStatus(); }
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
     if (action === "open-channel-from-profile") { state.view = "channels"; state.channelScreen = "detail"; state.profileScreen = "list"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }

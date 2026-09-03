@@ -5552,6 +5552,69 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  app.get('/admin/api/runtime/agents/:id/creation-status', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const principal = principalByContext.get(c);
+    if (!principal || principal.machine || !['owner', 'admin'].includes(principal.role)) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    try {
+      const agent = await store(c).getAgent(c.req.param('id'));
+      if (!canEditAgent(principal, agent)) return c.json({ error: 'not_found' }, 404);
+      const organization = await identity(c).getOrganization();
+      if (organization?.id !== principal.organizationId || !organization.slackTeamId) {
+        return c.json({ error: 'workspace_not_authorized' }, 403);
+      }
+      const result = await management(c).execute({
+        kind: 'list_agent_creation_welcomes',
+        agentId: agent.id,
+        workspaceId: organization.slackTeamId,
+        requesterMembershipId: principal.membershipId,
+      });
+      if (result.kind !== 'outbox_batch') throw new Error('Unexpected creation receipt response.');
+      const presentations = slackState(c);
+      const welcomes = await Promise.all(result.outbox.map(async (outbox) => {
+        const receipt = outbox.receipt;
+        const destination = outbox.destination;
+        if (!('kind' in receipt) || receipt.kind !== 'agent_created_welcome' || receipt.agentId !== agent.id ||
+            receipt.requesterMembershipId !== principal.membershipId || destination.kind !== 'thread' ||
+            destination.workspaceId !== organization.slackTeamId) {
+          throw new Error('Unexpected creation receipt scope.');
+        }
+        const presentation = receipt.presentationRunId
+          ? await presentations.getRunPresentation?.(receipt.presentationRunId)
+          : undefined;
+        const correlated = presentation?.schemaVersion === 3 &&
+          presentation.root.workspaceId === destination.workspaceId &&
+          presentation.root.channelId === destination.channelId &&
+          presentation.root.threadTs === destination.threadTs;
+        // Closed projection: receipts can also contain setup links and private prose.
+        return {
+          outboxId: outbox.outboxId,
+          status: outbox.status,
+          channelId: destination.channelId,
+          threadTs: destination.threadTs,
+          publication: receipt.publication ? {
+            status: receipt.publication.status,
+            incomplete: receipt.publication.incomplete,
+          } : null,
+          deliveryRef: outbox.deliveryRef ?? null,
+          activity: correlated ? {
+            surface: presentation.activityProjection.surface,
+            state: presentation.activityProjection.state,
+            cleanup: presentation.cleanup.state,
+            lifecycle: presentation.lifecyclePhase,
+          } : null,
+        };
+      }));
+      return c.json({ agentId: agent.id, welcomes });
+    } catch (error) {
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      console.error('[chickpea] Agent creation status unavailable');
+      return c.json({ error: 'agent_creation_status_unavailable' }, 503);
+    }
+  });
+
   app.get('/admin/api/runtime/slack-presentations', async (c) => {
     const workspaceId = c.req.query('workspaceId')?.trim();
     if (!workspaceId || !/^[A-Za-z0-9_-]{1,200}$/.test(workspaceId)) {
