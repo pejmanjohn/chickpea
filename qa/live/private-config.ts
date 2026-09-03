@@ -9,7 +9,7 @@ import {
   type PhaseOneTargetAlias,
 } from './schema.ts';
 
-const ENV_ALIAS = /^env-(amber|cobalt|fern)-[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const ENV_ALIAS = /^env-(amber|cobalt)-[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 
 export interface PrivateTargetAliases extends TargetSuitePolicy {
   readonly targetAlias: PhaseOneTargetAlias;

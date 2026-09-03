@@ -2912,7 +2912,7 @@ function connectedSlackFixture(): SlackConnectionFixture {
 function liveEnvironmentFixture(
   amberHealth: 'ready' | 'unreachable' | 'stale_claim' | 'identity_mismatch' | 'expired_claim',
 ): EnvironmentStatusFixture {
-  const target = (name: 'amber' | 'cobalt' | 'fern', health = 'ready') => ({
+  const target = (name: 'amber' | 'cobalt', health = 'ready') => ({
     target: name,
     health,
     sourceSha: '1234567890abcdef1234567890abcdef12345678',
@@ -2939,7 +2939,7 @@ function liveEnvironmentFixture(
     generatedAt: '2026-09-01T12:00:00.000Z',
     registryRevision: 9,
     selectedTarget: 'amber',
-    targets: [target('amber', amberHealth), target('cobalt'), target('fern')],
+    targets: [target('amber', amberHealth), target('cobalt')],
     sandbox: {
       archiveDate: '2027-01-15T00:00:00.000Z',
       daysUntilArchive: 136,
@@ -2972,6 +2972,16 @@ test('Admin renders the CLI environment identity and all five health states with
     assert.match(harness.app.innerHTML, /Capacity is a registry snapshot/);
     assert.doesNotMatch(harness.app.innerHTML, /xoxb-never-render-this|private\/browser-profile|credentialToken/);
   }
+});
+
+test('Admin shows two standalone lanes without invented sandbox expiry or capacity', async () => {
+  const harness = runAdminPageHarness({ environmentStatus: {
+    ...liveEnvironmentFixture('ready'), sandbox: null,
+  } });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Two-lane fleet/);
+  assert.match(harness.app.innerHTML, /Standalone Slack workspaces/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-environment-target="fern"|Archive:|Recorded unused workspace slots:/);
 });
 
 test('Admin renders recorded workspace capacity and does not invent unknown headroom', async () => {

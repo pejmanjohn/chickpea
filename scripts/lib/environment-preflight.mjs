@@ -1515,7 +1515,8 @@ export async function observeProductionEnvironmentAuthority(context, options = {
     ? view.migrations
     : Array.isArray(view?.metadata?.migrations) ? view.metadata.migrations : [];
   const actualDoGeneration = deployedMigrations.map((migration) => migration?.tag)
-    .filter((tag) => typeof tag === 'string').at(-1);
+    .filter((tag) => typeof tag === 'string').at(-1)
+    ?? await readCloudflareDoGeneration({ view, workerName, runWrangler, providerContext, options });
   if (!bounded(actualDoGeneration)) throw fail('DURABLE_OBJECT_AUTHORITY_MISMATCH');
   const authDatabaseCoordinate = context.registration.authDatabaseName ?? authDatabaseId;
   if (!bounded(authDatabaseCoordinate)) throw fail('D1_SCHEMA_AUTHORITY_UNAVAILABLE');
@@ -1541,14 +1542,12 @@ export async function observeProductionEnvironmentAuthority(context, options = {
       ? [[binding.name, value]]
       : [];
   }));
-  const schemaGeneration = textBindings.CHICKPEA_ENV_SCHEMA_GENERATION;
-  const tagStateId = textBindings.CHICKPEA_ENV_TAG_STATE_ID;
-  if (!validSchemaGeneration(schemaGeneration) || !bounded(tagStateId)) {
-    throw fail('WORKER_METADATA_MISMATCH');
+  const stampedMetadata = deploymentMetadataFromBindings(textBindings);
+  if (!stampedMetadata) {
+    assertUnstampedRegisteredPredecessor(context, activeVersion, textBindings, options);
   }
-  if (tagStateId !== actualTagStateId) {
-    throw fail('WORKER_METADATA_MISMATCH');
-  }
+  const schemaGeneration = stampedMetadata?.schemaGeneration ?? actualSchemaGeneration;
+  const tagStateId = stampedMetadata?.tagStateId ?? actualTagStateId;
   const expectedSchemaGenerations = Array.isArray(context.expectedSchemaGenerations)
     ? context.expectedSchemaGenerations
     : [context.expectedSchemaGeneration ?? context.registration.schemaGeneration];
@@ -1556,12 +1555,10 @@ export async function observeProductionEnvironmentAuthority(context, options = {
     || !expectedSchemaGenerations.includes(actualSchemaGeneration)) {
     throw fail('INCOMPATIBLE_SCHEMA_GENERATION');
   }
-  const stampedMetadata = deploymentMetadataFromBindings(textBindings);
-  if (!stampedMetadata
-    || stampedMetadata.target !== target
+  if (stampedMetadata && (stampedMetadata.target !== target
     || stampedMetadata.workerName !== workerName
     || stampedMetadata.authDatabaseId !== authDatabaseId
-    || stampedMetadata.tagStateId !== tagStateId) {
+    || stampedMetadata.tagStateId !== actualTagStateId)) {
     throw fail('WORKER_METADATA_MISMATCH');
   }
   const env = options.env ?? process.env;
@@ -1595,9 +1592,9 @@ export async function observeProductionEnvironmentAuthority(context, options = {
       throw fail('RUNTIME_AUTHORITY_INVALID', { target });
     }
     slackAuthority = runtimeAuthority.slack;
-    if (slackAuthority.teamId !== stampedMetadata.slackTeamId
-      || slackAuthority.appId !== stampedMetadata.slackAppId
-      || slackAuthority.botUserId !== stampedMetadata.slackBotUserId) {
+    if (slackAuthority.teamId !== (stampedMetadata?.slackTeamId ?? context.registration.workspaceId)
+      || slackAuthority.appId !== (stampedMetadata?.slackAppId ?? context.registration.slackAppId)
+      || slackAuthority.botUserId !== (stampedMetadata?.slackBotUserId ?? context.registration.botUserId)) {
       throw fail('SLACK_AUTHORITY_MISMATCH');
     }
   } else {
@@ -1621,6 +1618,82 @@ export async function observeProductionEnvironmentAuthority(context, options = {
     fleetCredentialFingerprints: Object.freeze(fleetCredentialFingerprints),
     deploymentMetadata: stampedMetadata,
   });
+}
+
+/** Registration precedes the first nonce-stamped deployment. Cloudflare
+ * versions are immutable: only the exact registered predecessor can lack a
+ * stamp, and only before deployment or while recovering that same intent.
+ * The after/attest paths always require the complete stamp and deploy receipt.
+ */
+function assertUnstampedRegisteredPredecessor(context, activeVersion, bindings, options) {
+  const code = 'WORKER_METADATA_MISMATCH';
+  if (!['before', 'resume', 'reconcile'].includes(context.phase)
+    || bindings.CHICKPEA_ENV_TARGET !== context.target
+    || Object.keys(bindings).some((name) => name.startsWith('CHICKPEA_ENV_')
+      && name !== 'CHICKPEA_ENV_TARGET')
+    || activeVersion !== context.registration.servingVersion
+    || context.registration.lastAttestation !== null) throw fail(code);
+  const root = assertSafeEvidenceRoot(context.registration.evidenceRoot);
+  const intentPath = join(root, DEPLOY_INTENT_FILE);
+  const intent = context.phase === 'before' ? null : readDeployIntent(intentPath);
+  // Recovery retains the original nonce-bound mutation authority even after
+  // the ordinary claim expires. A new deployment must still hold a live claim.
+  const current = intent
+    ? assertEnvironmentMutationClaim(context.target, {
+      runId: intent.runId, intentDigest: intent.intentDigest, claimNonce: intent.claimNonce,
+    }, options)
+    : assertLiveEnvironmentClaim(context.target, options);
+  if (current.claim.leaseNonce !== context.claim?.leaseNonce
+    || stableEnvironmentJson(current.registration) !== stableEnvironmentJson(context.registration)) {
+    throw fail(code);
+  }
+  if ([DEPLOY_RECEIPT_FILE, DEPLOY_RECEIPT_PENDING_FILE].some((name) =>
+    lstatIfPresent(join(root, name)))) throw fail(code);
+  if (context.phase === 'before') {
+    if (lstatIfPresent(intentPath)
+      || readEnvironmentTargetLockStatus(root).status !== 'clear') throw fail(code);
+    return;
+  }
+  if (intent.priorServingVersion !== activeVersion) throw fail(code);
+}
+
+async function readCloudflareDoGeneration({ view, workerName, runWrangler, providerContext, options }) {
+  const code = 'DURABLE_OBJECT_AUTHORITY_MISMATCH';
+  const etag = view?.resources?.script?.etag;
+  if (!bounded(etag) || !/^[A-Za-z0-9_-]{1,128}$/u.test(workerName)) throw fail(code);
+  const env = options.env ?? process.env;
+  let accountId = env.CLOUDFLARE_ACCOUNT_ID;
+  if (!accountId) {
+    const identity = parseCommandJson(runWrangler(['whoami', '--json', ...providerContext]), code);
+    if (!Array.isArray(identity.accounts) || identity.accounts.length !== 1) throw fail(code);
+    accountId = identity.accounts[0]?.id;
+  }
+  if (!/^[a-f0-9]{32}$/iu.test(accountId ?? '')) throw fail(code);
+  // Keep credentials in memory. Never forward them to a configurable URL or
+  // include provider bodies/CLI output in a failure message.
+  const auth = parseCommandJson(runWrangler(['auth', 'token', '--json', ...providerContext]), code);
+  let headers;
+  if (['oauth', 'api_token'].includes(auth?.type) && bounded(auth.token)) {
+    headers = { Authorization: `Bearer ${auth.token}` };
+  } else if (auth?.type === 'api_key' && bounded(auth.key) && bounded(auth.email)) {
+    headers = { 'X-Auth-Key': auth.key, 'X-Auth-Email': auth.email };
+  } else {
+    throw fail(code);
+  }
+  try {
+    const response = await (options.fetchImpl ?? fetch)(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/services/${workerName}`,
+      { headers, redirect: 'error', signal: AbortSignal.timeout(20_000) },
+    );
+    if (!response.ok) throw fail(code);
+    const body = await readBoundedAuthorityJson(response);
+    const script = body?.result?.default_environment?.script;
+    if (body?.success !== true || body?.result?.id !== workerName
+      || script?.etag !== etag || !bounded(script?.migration_tag)) throw fail(code);
+    return script.migration_tag;
+  } catch {
+    throw fail(code);
+  }
 }
 
 async function readDirectSlackAuthority(target, env, fetchImpl) {

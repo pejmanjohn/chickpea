@@ -49,6 +49,7 @@ test('environment authority is disabled outside the fixed fleet and requires its
     { authorization: undefined }, { authorization: 'Bearer wrong' },
     { authorization: `Bearer ${'x'.repeat(43)}` },
     { env: {} }, { env: { ...fixture().env, CHICKPEA_ENV_TARGET: 'production' } },
+    { env: { ...fixture().env, CHICKPEA_ENV_TARGET: 'fern' } },
   ]) {
     const f = fixture();
     const response = await environmentAuthorityResponse({ ...f.input, ...change });

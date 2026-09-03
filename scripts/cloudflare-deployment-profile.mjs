@@ -16,14 +16,13 @@ export const SANDBOX_DEPLOYMENT_PROFILE = 'sandbox';
 export const ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS = Object.freeze([
   'amber',
   'cobalt',
-  'fern',
 ]);
 const TARGET_DEFINITIONS = Object.freeze(Object.fromEntries(
   ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS.map((target) => [target, Object.freeze({
     target,
-    workerName: `chickpea-${target}`,
+    workerName: `chickpea-${target}-live`,
     authDatabaseBinding: 'AUTH_DB',
-    authDatabaseName: `chickpea-auth-db-${target}`,
+    authDatabaseName: `chickpea-auth-db-${target}-live`,
   })]),
 ));
 const TARGET_VAR = 'CHICKPEA_DEPLOY_TARGET';

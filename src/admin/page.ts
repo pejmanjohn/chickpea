@@ -4426,9 +4426,11 @@ button.capability-pill { cursor: pointer; }
       ? environmentStatusValue(sandbox.daysUntilArchive, "?") + " days · " + sandbox.archiveDate
       : "Unavailable";
     return '<details class="environment-status environment-status-' + placement + '"><summary aria-label="Live environment status"><span class="environment-health environment-health-' + esc(selected.health) + '"><span class="dot"></span>' + esc(selected.target) + ' · ' + esc(environmentHealthLabel(selected.health)) + '</span></summary>' +
-      '<div class="environment-status-panel"><div class="environment-status-head"><div><span class="section-eyebrow">Live environments</span><strong>Three-lane fleet</strong></div><span class="mono">registry r' + esc(environmentStatusValue(status.registryRevision, "—")) + '</span></div>' +
+      '<div class="environment-status-panel"><div class="environment-status-head"><div><span class="section-eyebrow">Live environments</span><strong>Two-lane fleet</strong></div><span class="mono">registry r' + esc(environmentStatusValue(status.registryRevision, "—")) + '</span></div>' +
       status.targets.map(environmentTargetStatusHtml).join("") +
-      '<section class="environment-sandbox"><strong>Slack sandbox</strong><span>Archive: ' + esc(archive) + '</span><span>Recorded unused workspace slots: ' + esc(environmentStatusValue(sandbox.unusedWorkspaceSlots, "unavailable")) + '</span><span>Recorded integration headroom: ' + esc(environmentStatusValue(sandbox.integrationHeadroom, "unavailable")) + '</span><span>Capacity is a registry snapshot. Check Slack before creating a workspace.</span></section></div></details>';
+      (status.sandbox === null
+        ? '<section class="environment-sandbox"><strong>Standalone Slack workspaces</strong><span>Amber and Cobalt have independent installations. Fern is inactive.</span></section>'
+        : '<section class="environment-sandbox"><strong>Slack sandbox</strong><span>Archive: ' + esc(archive) + '</span><span>Recorded unused workspace slots: ' + esc(environmentStatusValue(sandbox.unusedWorkspaceSlots, "unavailable")) + '</span><span>Recorded integration headroom: ' + esc(environmentStatusValue(sandbox.integrationHeadroom, "unavailable")) + '</span><span>Capacity is a registry snapshot. Check Slack before creating a workspace.</span></section>') + '</div></details>';
   }
 
   function topbarHtml() {

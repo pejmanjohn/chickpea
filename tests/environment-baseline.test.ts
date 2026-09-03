@@ -75,7 +75,7 @@ test('portable baseline definitions contain no credentials or Slack coordinates'
   assert.doesNotMatch(serialized, /(?:password|clientSecret|signingSecret|accessToken|refreshToken|browserAlias|emailAddress)\s*"?\s*:/iu);
 });
 
-test('all three targets derive exactly the Phase 1 smoke inventory and reusable fixtures', () => {
+test('both active targets derive exactly the Phase 1 smoke inventory and reusable fixtures', () => {
   const manifestVariants = new Map(LIVE_MANIFEST.contracts.flatMap((contract) =>
     contract.variants.map((variant) => [variant.id, variant] as const)));
 
@@ -168,12 +168,12 @@ test('inspection is drift-only and never invokes a supplied mutation seam', asyn
 });
 
 test('product resources are protected and absent from infrastructure cleanup projections', () => {
-  const plan = createPhaseOneBaselinePlan('fern');
+  const plan = createPhaseOneBaselinePlan('cobalt');
   const resolvedIds = Object.fromEntries(plan.resources.map(({ key }: BaselineResource) => [key, `id-${key}`]));
   assert.deepEqual(projectInfrastructureCleanup(plan), []);
   assert.deepEqual(projectProtectedProductInventory(plan, resolvedIds), {
     schemaVersion: 'chickpea-environment-protected-resource-inventory/v1',
-    target: 'fern',
+    target: 'cobalt',
     baseline: plan.resources
       .filter(({ fixtureClass }: BaselineResource) => fixtureClass === 'immutable_baseline')
       .map(({ key, resourceKind }: BaselineResource) => ({

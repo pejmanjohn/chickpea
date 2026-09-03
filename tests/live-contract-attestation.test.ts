@@ -15,18 +15,18 @@ import {
 import { PHASE_ONE_SMOKE_VARIANTS } from '../qa/live/schema.ts';
 
 const target: PrivateTargetAliases = {
-  targetAlias: 'fern',
+  targetAlias: 'cobalt',
   transport: 'events',
-  workerAlias: 'env-fern-worker',
-  workspaceAlias: 'env-fern-workspace',
-  slackAppAlias: 'env-fern-slack-app',
-  providerProjectAlias: 'env-fern-provider-project',
-  evidenceRootAlias: 'env-fern-evidence-root',
-  timezoneAlias: 'env-fern-timezone',
-  providerReadOnlyAuthConfigAlias: 'env-fern-provider-read-only-auth-config',
+  workerAlias: 'env-cobalt-worker',
+  workspaceAlias: 'env-cobalt-workspace',
+  slackAppAlias: 'env-cobalt-slack-app',
+  providerProjectAlias: 'env-cobalt-provider-project',
+  evidenceRootAlias: 'env-cobalt-evidence-root',
+  timezoneAlias: 'env-cobalt-timezone',
+  providerReadOnlyAuthConfigAlias: 'env-cobalt-provider-read-only-auth-config',
   bindingAliases: {
-    AUTH_DB: 'env-fern-auth-db',
-    TAG_STATE: 'env-fern-tag-state',
+    AUTH_DB: 'env-cobalt-auth-db',
+    TAG_STATE: 'env-cobalt-tag-state',
   },
   allowedSuites: ['case', 'smoke'],
   allowedVariants: [...PHASE_ONE_SMOKE_VARIANTS, 'LC02-V1-avatar-parity'],
@@ -34,8 +34,8 @@ const target: PrivateTargetAliases = {
 
 const privateConfig: PrivateLiveConfig = {
   schemaVersion: 'chickpea-live-private-config/v1',
-  qaTargetAllowlist: ['fern'],
-  targets: { fern: target },
+  qaTargetAllowlist: ['cobalt'],
+  targets: { cobalt: target },
 };
 
 const overlay = {
@@ -51,29 +51,29 @@ const overlay = {
 };
 
 const aliases: Record<string, string> = {
-  'env-fern-worker': 'worker-fern',
-  'env-fern-workspace': 'T_FERN',
-  'env-fern-slack-app': 'A_FERN',
-  'env-fern-provider-project': 'provider-fern',
-  'env-fern-evidence-root': '/private/evidence/fern',
-  'env-fern-timezone': 'America/Los_Angeles',
-  'env-fern-provider-read-only-auth-config': 'ac_sheets_fern',
-  'env-fern-auth-db': 'd1-auth-fern',
-  'env-fern-tag-state': 'do-tag-state-fern',
+  'env-cobalt-worker': 'worker-cobalt',
+  'env-cobalt-workspace': 'T_COBALT',
+  'env-cobalt-slack-app': 'A_COBALT',
+  'env-cobalt-provider-project': 'provider-cobalt',
+  'env-cobalt-evidence-root': '/private/evidence/cobalt',
+  'env-cobalt-timezone': 'America/Los_Angeles',
+  'env-cobalt-provider-read-only-auth-config': 'ac_sheets_cobalt',
+  'env-cobalt-auth-db': 'd1-auth-cobalt',
+  'env-cobalt-tag-state': 'do-tag-state-cobalt',
 };
 
 const observed: LiveTargetObservation = {
-  targetAlias: 'fern',
+  targetAlias: 'cobalt',
   transport: 'events',
-  workerName: 'worker-fern',
+  workerName: 'worker-cobalt',
   deployments: [{
     versionId: 'version-1', percentage: 100, activatedAt: '2026-09-01T11:59:00.000Z',
   }],
-  bindingIdentities: { AUTH_DB: 'd1-auth-fern', TAG_STATE: 'do-tag-state-fern' },
-  slack: { teamId: 'T_FERN', appId: 'A_FERN' },
-  provider: { projectId: 'provider-fern', readOnlyAuthConfigId: 'ac_sheets_fern' },
+  bindingIdentities: { AUTH_DB: 'd1-auth-cobalt', TAG_STATE: 'do-tag-state-cobalt' },
+  slack: { teamId: 'T_COBALT', appId: 'A_COBALT' },
+  provider: { projectId: 'provider-cobalt', readOnlyAuthConfigId: 'ac_sheets_cobalt' },
   timezone: 'America/Los_Angeles',
-  evidenceRoot: '/private/evidence/fern',
+  evidenceRoot: '/private/evidence/cobalt',
   events: {
     installationHealthy: true,
     signedEventReceiptFresh: true,
@@ -104,14 +104,14 @@ test('one-target config and env-<target>-<field> aliases attest lazily', async (
       transport: attestation.transport,
       servingVersion: attestation.servingVersion,
     },
-    { targetAlias: 'fern', transport: 'events', servingVersion: 'version-1' },
+    { targetAlias: 'cobalt', transport: 'events', servingVersion: 'version-1' },
   );
   assert.match(attestation.targetFingerprint, /^sha256:[a-f0-9]{64}$/);
   assert.equal(harness.mutationCalls(), 0);
-  assert.equal(await harness.value.targetLockPath(), '/private/evidence/fern/target.lock');
+  assert.equal(await harness.value.targetLockPath(), '/private/evidence/cobalt/target.lock');
   assert.equal(
     await harness.value.runJournalPath('run_20260901'),
-    '/private/evidence/fern/runs/run_20260901.jsonl',
+    '/private/evidence/cobalt/runs/run_20260901.jsonl',
   );
 });
 
@@ -126,10 +126,10 @@ test('multi-target config and non-environment aliases fail before resolution', (
   );
 
   const wrongAlias = structuredClone(privateConfig);
-  wrongAlias.targets.fern = { ...wrongAlias.targets.fern!, workerAlias: 'qa-worker' };
+  wrongAlias.targets.cobalt = { ...wrongAlias.targets.cobalt!, workerAlias: 'qa-worker' };
   const wrongTargetAlias = structuredClone(privateConfig);
-  wrongTargetAlias.targets.fern = {
-    ...wrongTargetAlias.targets.fern!, workerAlias: 'env-amber-worker',
+  wrongTargetAlias.targets.cobalt = {
+    ...wrongTargetAlias.targets.cobalt!, workerAlias: 'env-amber-worker',
   };
   for (const invalid of [wrongAlias, wrongTargetAlias]) {
     assert.throws(
@@ -155,7 +155,7 @@ test('attestation is transport-aware and does not require a gateway for events',
   const gatewayOverlay = { ...overlay, transport: 'gateway' as const };
   const gatewayConfig: PrivateLiveConfig = {
     ...privateConfig,
-    targets: { fern: gatewayTarget },
+    targets: { cobalt: gatewayTarget },
   };
   const { events: _events, ...base } = observed;
   await assert.doesNotReject(() => attestLiveTarget(

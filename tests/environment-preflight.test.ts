@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 // @ts-expect-error Executable environment modules intentionally have no declarations.
-import { claimEnvironment, createEnvironmentRegistry, environmentMarkerPath, readEnvironmentRegistry, reclaimEnvironment, recordEnvironmentAttestation } from '../scripts/lib/environment-registry.mjs';
+import { assertLiveEnvironmentClaim, claimEnvironment, createEnvironmentRegistry, environmentMarkerPath, readEnvironmentRegistry, reclaimEnvironment, recordEnvironmentAttestation } from '../scripts/lib/environment-registry.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { EnvironmentPreflightError, assertEnvironmentReleaseAllowed, beginEnvironmentDeployment, completeEnvironmentDeployment, environmentDeployReceiptPath, observeProductionEnvironmentAuthority, observeReceiptBackedEnvironment, preflightEnvironmentMutation, readEnvironmentDeployReceipt, authorizeEnvironmentCleanupPlan, reconcileEnvironmentDeployment, recheckEnvironmentMutationAuthority, resumeEnvironmentDeployment, writeEnvironmentBaseline, writeEnvironmentResourceCreationIntent, writeEnvironmentResourceCreationReceipt, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
 import { acquireTargetLock, readTargetLock } from '../qa/live/safety/lock.ts';
@@ -18,7 +18,7 @@ import { createPhaseOneBaselinePlan, projectProtectedProductInventory } from '..
 
 const NOW = Date.parse('2026-09-01T12:00:00.000Z');
 const DEAD_PID = 2_147_483_647;
-const TARGETS = ['amber', 'cobalt', 'fern'] as const;
+const TARGETS = ['amber', 'cobalt'] as const;
 
 function git(cwd: string, ...args: string[]) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -30,6 +30,7 @@ function fixture(input: {
   schemaGeneration?: string;
   reachable?: boolean;
   identityMatches?: boolean;
+  transport?: 'events' | 'gateway';
 } = {}) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'chickpea-preflight-')));
   const worktree = join(parent, 'worktree');
@@ -47,8 +48,8 @@ function fixture(input: {
     const evidenceRoot = join(parent, target, 'evidence');
     mkdirSync(evidenceRoot, { recursive: true, mode: 0o700 });
     return {
-      target, role: 'branch', transport: 'events', workerName: `chickpea-${target}`,
-      authDatabaseBinding: 'AUTH_DB', authDatabaseName: `chickpea-auth-db-${target}`,
+      target, role: 'branch', transport: input.transport ?? 'events', workerName: `chickpea-${target}-live`,
+      authDatabaseBinding: 'AUTH_DB', authDatabaseName: `chickpea-auth-db-${target}-live`,
       authDatabaseId: `d1-${target}`, workspaceId: `T_${target.toUpperCase()}`,
       workspaceLabel: `${target} workspace`, slackAppId: `A_${target.toUpperCase()}`,
       slackAppLabel: `${target} app`, botUserId: `U_${target.toUpperCase()}_BOT`,
@@ -114,7 +115,7 @@ function authority(target = 'amber', overrides: Record<string, unknown> = {}) {
     ? overrides.activeVersion
     : `version-${target}`;
   return {
-    target, observedAt: new Date(NOW).toISOString(), workerName: `chickpea-${target}`,
+    target, observedAt: new Date(NOW).toISOString(), workerName: `chickpea-${target}-live`,
     activeVersion, activePercentage: 100,
     bindingIdentities: { AUTH_DB: `d1-${target}`, TAG_STATE: `tag-${target}` },
     slack: {
@@ -227,7 +228,7 @@ test('preflight requires the registry, marker, matching nonce, and every live id
     ['SLACK_APP_MISMATCH', { slack: { ...authority().slack, appId: 'A_WRONG' } }],
     ['SLACK_BOT_MISMATCH', { slack: { ...authority().slack, botUserId: 'U_WRONG' } }],
     ['SLACK_SCOPE_MISMATCH', { slack: { ...authority().slack, scopes: [] } }],
-    ['WORKER_MISMATCH', { workerName: 'chickpea-cobalt' }],
+    ['WORKER_MISMATCH', { workerName: 'chickpea-cobalt-live' }],
     ['D1_MISMATCH', { bindingIdentities: { AUTH_DB: 'd1-cobalt', TAG_STATE: 'tag-amber' } }],
   ] as const;
   for (const [code, override] of mismatches) {
@@ -837,10 +838,10 @@ for (const transport of ['events', 'gateway']) test(`production ${transport} aut
   const context = {
     target: 'amber',
     registration: {
-      workerName: 'chickpea-amber', transport,
-      authDatabaseName: 'chickpea-auth-db-amber', authDatabaseId: 'd1-amber',
+      workerName: 'chickpea-amber-live', transport,
+      authDatabaseName: 'chickpea-auth-db-amber-live', authDatabaseId: 'd1-amber',
       schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
-      bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'chickpea-amber:TagStateStore' },
+      bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'chickpea-amber-live:TagStateStore' },
     },
     phase: 'before',
   };
@@ -887,14 +888,14 @@ for (const transport of ['events', 'gateway']) test(`production ${transport} aut
         status: 0, stdout: JSON.stringify({ migrations: [{ tag: 'v9' }], resources: { bindings: [
           { name: 'AUTH_DB', type: 'd1', id: 'd1-amber' },
           { name: 'TAG_STATE', type: 'durable_object_namespace', class_name: 'TagStateStore' },
-          { name: 'CHICKPEA_ENV_TAG_STATE_ID', type: 'plain_text', text: 'chickpea-amber:TagStateStore' },
+          { name: 'CHICKPEA_ENV_TAG_STATE_ID', type: 'plain_text', text: 'chickpea-amber-live:TagStateStore' },
           { name: 'CHICKPEA_ENV_SCHEMA_GENERATION', type: 'plain_text', text: 'd1:0002_mcp_oauth;do:v9' },
           { name: 'CHICKPEA_ENV_TARGET', type: 'plain_text', text: 'amber' },
           { name: 'CHICKPEA_ENV_SOURCE_REVISION', type: 'plain_text', text: '1234567' },
           { name: 'CHICKPEA_ENV_SOURCE_DIRTY', type: 'plain_text', text: 'false' },
           { name: 'CHICKPEA_ENV_CLAIM_NONCE', type: 'plain_text', text: '00000000-0000-4000-8000-000000000000' },
           { name: 'CHICKPEA_ENV_REGISTRY_REVISION', type: 'plain_text', text: '1' },
-          { name: 'CHICKPEA_ENV_WORKER', type: 'plain_text', text: 'chickpea-amber' },
+          { name: 'CHICKPEA_ENV_WORKER', type: 'plain_text', text: 'chickpea-amber-live' },
           { name: 'CHICKPEA_ENV_AUTH_DB_ID', type: 'plain_text', text: 'd1-amber' },
           { name: 'CHICKPEA_ENV_SLACK_TEAM', type: 'plain_text', text: 'T_AMBER' },
           { name: 'CHICKPEA_ENV_SLACK_APP', type: 'plain_text', text: 'A_AMBER' },
@@ -916,11 +917,118 @@ for (const transport of ['events', 'gateway']) test(`production ${transport} aut
   assert.equal(result.bindingIdentities.AUTH_DB, 'd1-amber');
   assert.equal(result.activeVersion, 'version-amber');
   assert.deepEqual(calls, [
-    'deployments status --json --name chickpea-amber',
-    'versions view version-amber --json --name chickpea-amber',
-    'd1 execute chickpea-auth-db-amber --remote --json --command SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1',
+    'deployments status --json --name chickpea-amber-live',
+    'versions view version-amber --json --name chickpea-amber-live',
+    'd1 execute chickpea-auth-db-amber-live --remote --json --command SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1',
     ...(transport === 'events' ? ['https://slack.com/api/auth.test'] : []),
   ]);
+  // Real Workers version responses expose no migrations array. Read the
+  // service metadata with Wrangler's selected credential and bind it to the
+  // exact version's script etag before trusting its migration tag.
+  let serviceEtag = 'serving-script-etag';
+  let serviceTag: string | undefined = 'v9';
+  const providerOptions = {
+    ...options,
+    env: { ...options.env, CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32) },
+    providerContext: ['--profile', 'lane-owner'],
+    runWrangler: (args: string[]) => {
+      if (args[0] === 'auth') {
+        assert.deepEqual(args, ['auth', 'token', '--json', '--profile', 'lane-owner']);
+        return { status: 0, stdout: JSON.stringify({ type: 'oauth', token: 'test-provider-read-token' }) };
+      }
+      const result = options.runWrangler(args);
+      if (args[0] !== 'versions') return result;
+      const view = JSON.parse(result.stdout);
+      delete view.migrations;
+      view.resources.script = { etag: 'serving-script-etag' };
+      return { ...result, stdout: JSON.stringify(view) };
+    },
+    fetchImpl: async (url: string, init?: RequestInit) => {
+      if (!String(url).startsWith('https://api.cloudflare.com/')) return options.fetchImpl(String(url));
+      assert.equal(String(url), `https://api.cloudflare.com/client/v4/accounts/${'a'.repeat(32)}/workers/services/chickpea-amber-live`);
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer test-provider-read-token');
+      assert.equal(init?.redirect, 'error');
+      assert.ok(init?.signal);
+      return Response.json({ success: true, result: { id: 'chickpea-amber-live',
+        default_environment: { script: { etag: serviceEtag, migration_tag: serviceTag } } } });
+    },
+  };
+  assert.equal((await observeProductionEnvironmentAuthority(context, providerOptions)).schemaGeneration, 'd1:0002_mcp_oauth;do:v9');
+  serviceEtag = 'different-script';
+  await assert.rejects(observeProductionEnvironmentAuthority(context, providerOptions), rejects('DURABLE_OBJECT_AUTHORITY_MISMATCH'));
+  serviceEtag = 'serving-script-etag';
+  serviceTag = undefined;
+  await assert.rejects(observeProductionEnvironmentAuthority(context, providerOptions), rejects('DURABLE_OBJECT_AUTHORITY_MISMATCH'));
+
+  // A registered installation predates its first claim stamp. It can enter
+  // the ordinary deployment protocol, but never attest or excuse partial
+  // metadata, a changed version, or a previously published deploy receipt.
+  const fresh = fixture({ transport: transport as 'events' | 'gateway' });
+  try {
+    claimEnvironment('amber', fresh.options);
+    serviceTag = 'v9';
+    let bootstrapNow = NOW;
+    let extraStamp: { name: string; type: string; text: string } | undefined;
+    let servingVersion = 'version-amber';
+    const bootstrapOptions = {
+      ...providerOptions, ...fresh.options, localContract: localContract(),
+      now: () => bootstrapNow,
+      readFleetRuntimeAuthorities: async () => Object.fromEntries(Object.entries(
+        transport === 'gateway' ? gatewayRuntime : runtime,
+      ).map(([target, value]) => [target, {
+        ...value, observedAt: new Date(bootstrapNow).toISOString(),
+      }])),
+      allowTestAuthorityObserver: false,
+      runWrangler: (args: string[]) => {
+        const result = providerOptions.runWrangler(args);
+        if (args[0] === 'deployments') return { status: 0,
+          stdout: JSON.stringify({ versions: [{ version_id: servingVersion, percentage: 100 }] }) };
+        if (args[0] !== 'versions') return result;
+        const view = JSON.parse(result.stdout);
+        view.resources.bindings = view.resources.bindings.filter((binding: { name: string }) =>
+          !binding.name.startsWith('CHICKPEA_ENV_') || binding.name === 'CHICKPEA_ENV_TARGET');
+        view.resources.bindings.find((binding: { name: string }) => binding.name === 'TAG_STATE').namespace_id = 'tag-amber';
+        if (extraStamp) view.resources.bindings.push(extraStamp);
+        return { status: 0, stdout: JSON.stringify(view) };
+      },
+    };
+    const claimContext = assertLiveEnvironmentClaim('amber', fresh.options);
+    const freshContext = { target: 'amber', claim: claimContext.claim,
+      registration: claimContext.registration, phase: 'before' };
+    const initial = await preflightEnvironmentMutation('amber', bootstrapOptions);
+    assert.equal(initial.registration.servingVersion, 'version-amber');
+    assert.equal((await observeProductionEnvironmentAuthority(freshContext, bootstrapOptions)).deploymentMetadata, null);
+    for (const phase of ['after', 'attest']) {
+      await assert.rejects(observeProductionEnvironmentAuthority({ ...freshContext, phase }, bootstrapOptions), rejects('WORKER_METADATA_MISMATCH'));
+    }
+    extraStamp = { name: 'CHICKPEA_ENV_CLAIM_NONCE', type: 'plain_text', text: claimContext.claim.leaseNonce };
+    await assert.rejects(preflightEnvironmentMutation('amber', bootstrapOptions), rejects('WORKER_METADATA_MISMATCH'));
+    extraStamp = undefined;
+    servingVersion = 'version-other';
+    await assert.rejects(preflightEnvironmentMutation('amber', bootstrapOptions), rejects('WORKER_METADATA_MISMATCH'));
+    servingVersion = 'version-amber';
+    const receiptPath = environmentDeployReceiptPath(fresh.records[0]!.evidenceRoot);
+    writeFileSync(receiptPath, '{}', { mode: 0o600 });
+    await assert.rejects(preflightEnvironmentMutation('amber', bootstrapOptions), rejects('WORKER_METADATA_MISMATCH'));
+    rmSync(receiptPath);
+
+    // A crash before provider deployment must still reconcile the unchanged,
+    // unstamped predecessor and release only the original mutation lease.
+    const lease = beginEnvironmentDeployment(initial, bootstrapOptions);
+    await assert.rejects(preflightEnvironmentMutation('amber', bootstrapOptions));
+    bootstrapNow = Date.parse(claimContext.claim.expiresAt) + 1;
+    const recovered = await reconcileEnvironmentDeployment('amber', {
+      ...bootstrapOptions, isPidActive: () => false,
+    });
+    assert.equal(recovered.aborted, true);
+    assert.equal(existsSync(lease.lockPath), false);
+    assert.equal(existsSync(receiptPath), false);
+    await assert.rejects(preflightEnvironmentMutation('amber', bootstrapOptions), { code: 'CLAIM_EXPIRED_RECLAIM_REQUIRED' });
+    reclaimEnvironment('amber', bootstrapOptions);
+    assert.equal((await preflightEnvironmentMutation('amber', bootstrapOptions)).registration.servingVersion, 'version-amber');
+  } finally {
+    rmSync(fresh.parent, { recursive: true, force: true });
+  }
   if (transport === 'gateway') {
     const valid = structuredClone(gatewayRuntime);
     for (const [mutate, code] of [
@@ -966,10 +1074,10 @@ test('Cloudflare authority forwards the exact resolved profile and environment t
   const calls: string[][] = [];
   await assert.rejects(observeProductionEnvironmentAuthority({
     target: 'amber', registration: {
-      workerName: 'chickpea-amber', transport: 'events',
-      authDatabaseName: 'chickpea-auth-db-amber', authDatabaseId: 'd1-amber',
+      workerName: 'chickpea-amber-live', transport: 'events',
+      authDatabaseName: 'chickpea-auth-db-amber-live', authDatabaseId: 'd1-amber',
       schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
-      bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'chickpea-amber:TagStateStore' },
+      bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'chickpea-amber-live:TagStateStore' },
     }, phase: 'before',
   }, {
     providerContext: ['--profile', 'lane-account', '--env', 'amber'],
@@ -984,10 +1092,10 @@ test('Cloudflare authority forwards the exact resolved profile and environment t
 test('production authority refuses unmarked test observer seams', async () => {
   await assert.rejects(observeProductionEnvironmentAuthority({
     target: 'amber', registration: {
-      workerName: 'chickpea-amber', transport: 'events',
-      authDatabaseName: 'chickpea-auth-db-amber', authDatabaseId: 'd1-amber',
+      workerName: 'chickpea-amber-live', transport: 'events',
+      authDatabaseName: 'chickpea-auth-db-amber-live', authDatabaseId: 'd1-amber',
       schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
-      bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'chickpea-amber:TagStateStore' },
+      bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'chickpea-amber-live:TagStateStore' },
     }, phase: 'before',
   }, {
     readFleetRuntimeAuthorities: async () => runtimeAuthorities(),
@@ -1007,10 +1115,10 @@ test('production authority refuses unmarked test observer seams', async () => {
 
 test('production authority rejects split traffic, wrong D1, and reused runtime secrets', async () => {
   const registration = {
-    workerName: 'chickpea-amber', transport: 'events',
-    authDatabaseName: 'chickpea-auth-db-amber', authDatabaseId: 'd1-amber',
+    workerName: 'chickpea-amber-live', transport: 'events',
+    authDatabaseName: 'chickpea-auth-db-amber-live', authDatabaseId: 'd1-amber',
     schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
-    bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'chickpea-amber:TagStateStore' },
+    bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'chickpea-amber-live:TagStateStore' },
   };
   await assert.rejects(observeProductionEnvironmentAuthority({
     target: 'amber', registration, phase: 'before',
@@ -1032,10 +1140,10 @@ test('production authority rejects split traffic, wrong D1, and reused runtime s
   }), rejects('D1_MISMATCH'));
 
   const metadata = {
-    CHICKPEA_ENV_TAG_STATE_ID: 'chickpea-amber:TagStateStore', CHICKPEA_ENV_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    CHICKPEA_ENV_TAG_STATE_ID: 'chickpea-amber-live:TagStateStore', CHICKPEA_ENV_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
     CHICKPEA_ENV_TARGET: 'amber', CHICKPEA_ENV_SOURCE_REVISION: '1234567',
     CHICKPEA_ENV_SOURCE_DIRTY: 'false', CHICKPEA_ENV_CLAIM_NONCE: '00000000-0000-4000-8000-000000000000',
-    CHICKPEA_ENV_REGISTRY_REVISION: '1', CHICKPEA_ENV_WORKER: 'chickpea-amber',
+    CHICKPEA_ENV_REGISTRY_REVISION: '1', CHICKPEA_ENV_WORKER: 'chickpea-amber-live',
     CHICKPEA_ENV_AUTH_DB_ID: 'd1-amber', CHICKPEA_ENV_SLACK_TEAM: 'T_AMBER',
     CHICKPEA_ENV_SLACK_APP: 'A_AMBER', CHICKPEA_ENV_SLACK_BOT: 'U_AMBER_BOT',
     CHICKPEA_ENV_MANIFEST_DIGEST: `sha256:${'1'.repeat(64)}`,
@@ -1067,17 +1175,17 @@ test('production authority rejects split traffic, wrong D1, and reused runtime s
 
 test('matching metadata stamps cannot hide wrong Durable Object or D1 schema authority', async () => {
   const registration = {
-    workerName: 'chickpea-amber', transport: 'events',
-    authDatabaseName: 'chickpea-auth-db-amber', authDatabaseId: 'd1-amber',
+    workerName: 'chickpea-amber-live', transport: 'events',
+    authDatabaseName: 'chickpea-auth-db-amber-live', authDatabaseId: 'd1-amber',
     schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
-    bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'chickpea-amber:TagStateStore' },
+    bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'chickpea-amber-live:TagStateStore' },
   };
   const metadata = {
     CHICKPEA_ENV_TAG_STATE_ID: registration.bindingIdentities.TAG_STATE,
     CHICKPEA_ENV_SCHEMA_GENERATION: registration.schemaGeneration,
     CHICKPEA_ENV_TARGET: 'amber', CHICKPEA_ENV_SOURCE_REVISION: '1234567',
     CHICKPEA_ENV_SOURCE_DIRTY: 'false', CHICKPEA_ENV_CLAIM_NONCE: '00000000-0000-4000-8000-000000000000',
-    CHICKPEA_ENV_REGISTRY_REVISION: '1', CHICKPEA_ENV_WORKER: 'chickpea-amber',
+    CHICKPEA_ENV_REGISTRY_REVISION: '1', CHICKPEA_ENV_WORKER: 'chickpea-amber-live',
     CHICKPEA_ENV_AUTH_DB_ID: 'd1-amber', CHICKPEA_ENV_SLACK_TEAM: 'T_AMBER',
     CHICKPEA_ENV_SLACK_APP: 'A_AMBER', CHICKPEA_ENV_SLACK_BOT: 'U_AMBER_BOT',
     CHICKPEA_ENV_MANIFEST_DIGEST: `sha256:${'1'.repeat(64)}`,
@@ -1229,10 +1337,10 @@ test('cleanup authorization validates every receipt and independently denies per
     allowSuppliedProtectedInventories: true, protectedInventories: protectedInventories(),
     readProviderResource: () => disposable.readback,
   }).length, 1);
-  const protectedResource = writeChain('protected', 'chickpea-amber');
+  const protectedResource = writeChain('protected', 'chickpea-amber-live');
   let readbackCalls = 0;
   assert.throws(() => authorizeEnvironmentCleanupPlan([
-    { provider: 'cloudflare', kind: 'worker', id: 'chickpea-amber' },
+    { provider: 'cloudflare', kind: 'worker', id: 'chickpea-amber-live' },
   ], {
     ...f.options, target: 'amber', receiptPaths: [protectedResource.receiptPath],
     allowSuppliedProtectedInventories: true, protectedInventories: protectedInventories(),
@@ -1247,7 +1355,7 @@ test('cleanup authorization validates every receipt and independently denies per
     ...f.options, target: 'amber', receiptPaths: [protectedByProductInventory.receiptPath],
     allowSuppliedProtectedInventories: true,
     protectedInventories: protectedInventories({
-      fern: { productOwned: [{ provider: 'cloudflare', kind: 'worker', id: 'product-owned-worker' }] },
+      cobalt: { productOwned: [{ provider: 'cloudflare', kind: 'worker', id: 'product-owned-worker' }] },
     }),
     readProviderResource: () => { readbackCalls += 1; return protectedByProductInventory.readback; },
   }), rejects('PROTECTED_PERMANENT_RESOURCE'));

@@ -1119,6 +1119,10 @@ if (!deployArgs.includes('--dry-run')) {
       );
       builtArtifact.config.vars = {
         ...(builtArtifact.config.vars ?? {}),
+        // The registry owns this non-secret, project-scoped baseline setting.
+        // Each lane keeps its read-only grant across branch deployments.
+        COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID:
+          finalEnvironmentPreflight.registration.providerReadOnlyAuthConfigId,
         ...environmentPreflightApi.environmentDeploymentMetadataBindings(
           finalEnvironmentPreflight.deploymentMetadata,
         ),

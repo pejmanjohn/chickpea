@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { experimental_readRawConfig } from 'wrangler';
 
 // @ts-expect-error The cross-platform executable .mjs intentionally has no declaration file.
-import { ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS, applyCloudflareDeploymentProfile, classifyCloudflareDeploymentProfile, resolveCloudflareDeploymentProfile } from '../scripts/cloudflare-deployment-profile.mjs';
+import { ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS, applyCloudflareDeploymentProfile, classifyCloudflareDeploymentProfile, resolveCloudflareDeploymentProfile, resolveCloudflareDeploymentTarget } from '../scripts/cloudflare-deployment-profile.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -116,8 +116,8 @@ test('deploy-button name override keeps Worker and generated container identitie
   );
 });
 
-test('amber, cobalt, and fern resolve distinct Worker, D1, and stamped schema identities', async () => {
-  assert.deepEqual(ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS, ['amber', 'cobalt', 'fern']);
+test('amber and cobalt resolve distinct Worker, D1, and stamped schema identities', async () => {
+  assert.deepEqual(ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS, ['amber', 'cobalt']);
   const tuples = [];
 
   for (const target of ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS) {
@@ -129,9 +129,9 @@ test('amber, cobalt, and fern resolve distinct Worker, D1, and stamped schema id
 
     assert.deepEqual(tuple, {
       target,
-      workerName: `chickpea-${target}`,
+      workerName: `chickpea-${target}-live`,
       authDatabaseBinding: 'AUTH_DB',
-      authDatabaseName: `chickpea-auth-db-${target}`,
+      authDatabaseName: `chickpea-auth-db-${target}-live`,
       authDatabaseId: undefined,
       d1SchemaGeneration: '0002_mcp_oauth',
       durableObjectSchemaGeneration: 'v9',
@@ -155,17 +155,34 @@ test('amber, cobalt, and fern resolve distinct Worker, D1, and stamped schema id
     });
   }
 
-  assert.equal(new Set(tuples.map((tuple) => tuple.workerName)).size, 3);
-  assert.equal(new Set(tuples.map((tuple) => tuple.authDatabaseName)).size, 3);
+  assert.equal(new Set(tuples.map((tuple) => tuple.workerName)).size, 2);
+  assert.equal(new Set(tuples.map((tuple) => tuple.authDatabaseName)).size, 2);
+  assert.throws(() => resolveCloudflareDeploymentTarget('fern'), /Invalid CHICKPEA_DEPLOY_TARGET/);
 
   const unregistered = await authoredConfig();
   assert.throws(
     () => applyCloudflareDeploymentProfile(unregistered, {
       CHICKPEA_DEPLOY_TARGET: 'dedicated-qa',
     }),
-    /Invalid CHICKPEA_DEPLOY_TARGET.*amber, cobalt, fern/,
+    /Invalid CHICKPEA_DEPLOY_TARGET.*amber, cobalt/,
   );
   assert.equal(unregistered.name, 'chickpea');
+});
+
+test('standalone profiles refuse the parked Enterprise deployment names', async () => {
+  const config = await authoredConfig();
+  assert.throws(() => applyCloudflareDeploymentProfile(config, {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'legacy-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+  }, {
+    registeredTargetIdentities: [{
+      target: 'amber', workerName: 'chickpea-amber',
+      authDatabaseBinding: 'AUTH_DB', authDatabaseName: 'chickpea-auth-db-amber',
+      authDatabaseId: 'legacy-database-id',
+    }],
+  }), /immutable AUTH_DB identity/i);
+  assert.equal(config.name, 'chickpea');
 });
 
 test('an immutable D1 ID is accepted only for the selected target name and AUTH_DB binding', async () => {
@@ -178,9 +195,9 @@ test('an immutable D1 ID is accepted only for the selected target name and AUTH_
   }, {
     registeredTargetIdentities: [{
       target: 'amber',
-      workerName: 'chickpea-amber',
+      workerName: 'chickpea-amber-live',
       authDatabaseBinding: 'AUTH_DB',
-      authDatabaseName: 'chickpea-auth-db-amber',
+      authDatabaseName: 'chickpea-auth-db-amber-live',
       authDatabaseId: 'amber-database-id',
     }],
   });
@@ -191,7 +208,7 @@ test('an immutable D1 ID is accepted only for the selected target name and AUTH_
   assert.equal(config.vars.CHICKPEA_DEPLOY_STATE_MODE, 'permanent');
 
   for (const registration of [
-    { authDatabaseBinding: 'OTHER_DB', authDatabaseName: 'chickpea-auth-db-amber' },
+    { authDatabaseBinding: 'OTHER_DB', authDatabaseName: 'chickpea-auth-db-amber-live' },
     { authDatabaseBinding: 'AUTH_DB', authDatabaseName: 'other-database' },
   ]) {
     const invalid = await authoredConfig();
@@ -203,7 +220,7 @@ test('an immutable D1 ID is accepted only for the selected target name and AUTH_
       }, {
         registeredTargetIdentities: [{
           target: 'amber',
-          workerName: 'chickpea-amber',
+          workerName: 'chickpea-amber-live',
           authDatabaseId: 'amber-database-id',
           ...registration,
         }],
@@ -224,9 +241,9 @@ test('a D1 ID registered to another active target fails before the config is mut
     }, {
       registeredTargetIdentities: [{
         target: 'cobalt',
-        workerName: 'chickpea-cobalt',
+        workerName: 'chickpea-cobalt-live',
         authDatabaseBinding: 'AUTH_DB',
-        authDatabaseName: 'chickpea-auth-db-cobalt',
+        authDatabaseName: 'chickpea-auth-db-cobalt-live',
         authDatabaseId: 'shared-database-id',
       }],
     }),
@@ -241,7 +258,7 @@ test('target resolution rejects ambiguous AUTH_DB bindings before changing Worke
   config.d1_databases.push(structuredClone(config.d1_databases[0]));
 
   assert.throws(
-    () => applyCloudflareDeploymentProfile(config, { CHICKPEA_DEPLOY_TARGET: 'fern' }),
+    () => applyCloudflareDeploymentProfile(config, { CHICKPEA_DEPLOY_TARGET: 'cobalt' }),
     /exactly one AUTH_DB binding/i,
   );
   assert.equal(config.name, 'chickpea');

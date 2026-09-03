@@ -1,5 +1,38 @@
 # Parallel live test environments
 
+## Current execution scope: two standalone lanes
+
+The latest user-approved amendment in
+`docs/plans/2026-08-27-parallel-lanes.md` starts with **Amber and Cobalt only**,
+each in a standalone Slack Pro workspace with the Chickpea-owned shared app.
+The earlier three-workspace Enterprise sandbox instructions below are historical
+capability-pilot instructions, not the active provisioning recipe.
+
+Keep Fern and the old sandbox resources intact but outside active registration,
+claims, browser aliases, connector provisioning, deployments, and acceptance.
+Do not buy a third workspace or invent a third registry entry. All active fleet
+operations must depend only on Amber and Cobalt. Reject Fern as inactive.
+
+Confirm one paid human seat per workspace and monthly billing at checkout.
+Disable automatic email-domain membership and avoid invitations to unrelated
+people. Record each workspace-local actor, bot, DM, and installation identity.
+Never use labels or the shared app ID as routing proof. Preserve existing
+deployment state until an exact-target migration and rollback path are recorded.
+
+The active standalone resources are `chickpea-amber-live` with
+`chickpea-auth-db-amber-live`, and `chickpea-cobalt-live` with
+`chickpea-auth-db-cobalt-live`. The profile enforces these names. Keep the old
+unsuffixed resources and installations unchanged for rollback, outside active
+registration. Never attach a fresh workspace to an already-installed deployment.
+
+Run the first protected-source smoke on clean, unclaimed Cobalt, then prove
+different worktree revisions on both lanes with the four existing smoke cases.
+Require real Computer Use DM/channel proof, connector behavior, cleanup, and
+postflight before either lane is declared ready. Add Fern only after the user
+decides to continue with a third verified lane.
+
+## Historical three-lane capability pilot
+
 This runbook covers the Slack and Cloudflare capability pilot and the
 three Phase 1 targets. Product acceptance runs belong to the Live Contract
 Verifier. This runbook does not authorize any continuation environment.
@@ -43,7 +76,7 @@ permanent registry.
 Before the registry exists, bootstrap each **fresh, unregistered** target with
 the normal deployment wrapper after proving its exact Worker and D1 names do
 not exist. This one-time bootstrap must not claim guarded-deployment readiness:
-the guard requires all three authority endpoints and complete registrations.
+the guard requires both authority endpoints and complete registrations.
 Keep creation receipts, provision independent secrets, install through Add to
 Slack, and verify real UI behavior before recording baselines. Once registered,
 use the claimed target and guarded wrapper for every deployment.
@@ -54,6 +87,10 @@ Worker's `CHICKPEA_ENV_AUTHORITY_READ_TOKEN` and the host's corresponding
 `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_URL`. Keep these values owner-only outside
 the repository. They are not Slack credentials. Invalid token shapes fail
 locally before any authority request.
+
+The bootstrap Worker must also set the non-secret `CHICKPEA_ENV_TARGET` plain
+variable to its color. Keep claim metadata absent until the first claimed deploy;
+the initial preflight admits only that exact registered, unstamped version.
 
 The gateway projection reports its installed binding and recorded OAuth
 grants, not a fresh Slack scope-header observation. Runtime attestation also

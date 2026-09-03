@@ -48,7 +48,7 @@ const { createVerifierTargetInputs, targetEnvironment } = environmentTargetModul
 const { attestEnvironment } = environmentAttestationModule;
 const { runEnvironmentCli } = environmentCliModule;
 
-const TARGETS = ['amber', 'cobalt', 'fern'] as const;
+const TARGETS = ['amber', 'cobalt'] as const;
 const NOW = Date.parse('2026-09-01T12:00:00.000Z');
 
 interface GitFixture {
@@ -85,9 +85,9 @@ function targetRecord(target: typeof TARGETS[number], revision: string, evidence
     target,
     role: 'branch',
     transport: 'events',
-    workerName: `chickpea-${target}`,
+    workerName: `chickpea-${target}-live`,
     authDatabaseBinding: 'AUTH_DB',
-    authDatabaseName: `chickpea-auth-db-${target}`,
+    authDatabaseName: `chickpea-auth-db-${target}-live`,
     authDatabaseId: `d1-${target}`,
     workspaceId: `T_${target.toUpperCase()}`,
     workspaceLabel: `${target} workspace`,
@@ -151,6 +151,24 @@ function rejectsCode(code: string) {
   return (error: unknown) => error instanceof EnvironmentRegistryError
     && (error as { code?: unknown }).code === code;
 }
+
+test('two standalone lanes register without sandbox capacity or a hidden Fern dependency', (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const root = join(f.parent, 'standalone');
+  createEnvironmentRegistry({
+    root,
+    hostFingerprint: 'host-fixture',
+    targets: f.targets,
+    sandbox: null,
+  });
+  const status = readEnvironmentStatus(registryOptions(root));
+  assert.deepEqual(status.targets.map(({ target }: { target: string }) => target), ['amber', 'cobalt']);
+  assert.equal(status.sandbox, null);
+  assert.throws(() => claimEnvironment('fern', {
+    ...registryOptions(root), worktreePath: f.first.path,
+  }), rejectsCode('INACTIVE_TARGET'));
+});
 
 test('a free claim writes matching owner-only central and local records', (context) => {
   const f = fixture();
@@ -344,16 +362,16 @@ test('secret-like fields, symlinks, broad modes, noncanonical paths, wrong hosts
   assert.throws(() => readEnvironmentRegistry(registryOptions(f.root)), rejectsCode('REGISTRY_ROLLBACK'));
 });
 
-test('three fixture worktrees hold the colors, a fourth auto-claim refuses, and release preserves targets', (context) => {
+test('two fixture worktrees hold the colors, a third auto-claim refuses, and release preserves targets', (context) => {
   const f = fixture();
-  const holders = [f.first, worktree(f.parent, 'second'), worktree(f.parent, 'third')];
-  const fourth = worktree(f.parent, 'fourth');
+  const holders = [f.first, worktree(f.parent, 'second')];
+  const third = worktree(f.parent, 'third');
   context.after(() => rmSync(f.parent, { recursive: true, force: true }));
   TARGETS.forEach((target, index) => claimEnvironment(target, {
     ...registryOptions(f.root), worktreePath: holders[index]!.path,
   }));
   assert.throws(
-    () => claimEnvironment(undefined, { ...registryOptions(f.root), worktreePath: fourth.path }),
+    () => claimEnvironment(undefined, { ...registryOptions(f.root), worktreePath: third.path }),
     rejectsCode('NO_TARGET_AVAILABLE'),
   );
   const beforeRelease = readEnvironmentRegistry(registryOptions(f.root)).targets.amber;
@@ -364,17 +382,16 @@ test('three fixture worktrees hold the colors, a fourth auto-claim refuses, and 
   assert.equal(afterRelease.workspaceId, beforeRelease.workspaceId);
 });
 
-test('fleet status is read-only and projects all five health states with one recovery action', (context) => {
+test('fleet status is read-only and projects stale and unreachable states with recovery actions', (context) => {
   const emptyRoot = join(realpathSync(mkdtempSync(join(tmpdir(), 'chickpea-status-empty-'))), 'registry');
   context.after(() => rmSync(join(emptyRoot, '..'), { recursive: true, force: true }));
   const emptyStatus = readEnvironmentStatus({ root: emptyRoot, hostFingerprint: 'host-fixture' });
-  assert.equal(emptyStatus.targets.length, 3);
-  assert.equal(emptyStatus.sandbox.unusedWorkspaceSlots, null);
+  assert.equal(emptyStatus.targets.length, 2);
+  assert.equal(emptyStatus.sandbox, null);
   assert.equal(existsSync(emptyRoot), false);
 
   const f = fixture((targets) => {
     targets[1]!.reachable = false;
-    targets[2]!.identityMatches = false;
   });
   context.after(() => rmSync(f.parent, { recursive: true, force: true }));
   claimEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
@@ -386,7 +403,7 @@ test('fleet status is read-only and projects all five health states with one rec
   const before = readFileSync(registryPath, 'utf8');
   const status = readEnvironmentStatus(registryOptions(f.root));
   assert.deepEqual(status.targets.map(({ health }: { health: string }) => health), [
-    'stale_claim', 'unreachable', 'identity_mismatch',
+    'stale_claim', 'unreachable',
   ]);
   assert.ok(status.targets.every(({ recoveryAction }: { recoveryAction: unknown }) =>
     typeof recoveryAction === 'string' && recoveryAction.length > 0));
@@ -394,6 +411,14 @@ test('fleet status is read-only and projects all five health states with one rec
   assert.doesNotMatch(JSON.stringify(status), /T_AMBER|A_AMBER|U_AMBER_BOT|provider-read|d1-amber/);
   assert.deepEqual(status.sandbox.warningDays, [45, 30, 14]);
   assert.equal(status.sandbox.unusedWorkspaceSlots, 2);
+});
+
+test('identity mismatch remains visible with only two active targets', (context) => {
+  const f = fixture((targets) => { targets[1]!.identityMatches = false; });
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const status = readEnvironmentStatus(registryOptions(f.root));
+  assert.deepEqual(status.targets.map(({ health }: { health: string }) => health), ['ready', 'identity_mismatch']);
+  assert.match(status.targets[1].recoveryAction, /reconciliation cobalt/);
 });
 
 test('unmanaged workspaces consume capacity without becoming claimable lanes', (context) => {
@@ -429,7 +454,7 @@ test('unmanaged workspaces consume capacity without becoming claimable lanes', (
 test('workspace capacity rejects malformed, undercounted, and over-limit inventories before writes', (context) => {
   const f = fixture();
   context.after(() => rmSync(f.parent, { recursive: true, force: true }));
-  const invalidUsed = [null, undefined, '4', 2, -1, 3.5, 6, Number.NaN, Infinity];
+  const invalidUsed = [null, undefined, '4', 1, -1, 3.5, 6, Number.NaN, Infinity];
   invalidUsed.forEach((used, index) => {
     const root = join(f.parent, `invalid-capacity-${index}`);
     assert.throws(() => createEnvironmentRegistry({
@@ -449,7 +474,7 @@ test('workspace capacity rejects malformed, undercounted, and over-limit invento
 
 test('target and private outputs validate for all colors and refuse deep and inactive roles', (context) => {
   const f = fixture();
-  const worktrees = [f.first, worktree(f.parent, 'second'), worktree(f.parent, 'third')];
+  const worktrees = [f.first, worktree(f.parent, 'second')];
   context.after(() => rmSync(f.parent, { recursive: true, force: true }));
   TARGETS.forEach((target, index) => {
     claimEnvironment(target, { ...registryOptions(f.root), worktreePath: worktrees[index]!.path });
@@ -472,7 +497,7 @@ test('target and private outputs validate for all colors and refuse deep and ina
   });
 
   const absent = join(f.parent, 'inactive');
-  for (const role of ['dedicated-qa', 'install', 'demo', 'spare', 'qualification', 'deep']) {
+  for (const role of ['fern', 'dedicated-qa', 'install', 'demo', 'spare', 'qualification', 'deep']) {
     assert.throws(
       () => createVerifierTargetInputs(role, f.targets[0]),
       rejectsCode('INACTIVE_TARGET'),
@@ -491,7 +516,7 @@ test('attestation requires the matching live claim and composes verifier-owned c
   const observed = {
     targetAlias: 'amber',
     transport: 'events',
-    workerName: 'chickpea-amber',
+    workerName: 'chickpea-amber-live',
     deployments: [{
       versionId: 'version-amber',
       percentage: 100,
@@ -562,7 +587,7 @@ test('CLI dispatches claim, status, target, attest, reclaim, release, and reconc
   writeFileSync(observationPath, JSON.stringify({
     targetAlias: 'amber',
     transport: 'events',
-    workerName: 'chickpea-amber',
+    workerName: 'chickpea-amber-live',
     deployments: [{
       versionId: 'version-amber',
       percentage: 100,
@@ -690,7 +715,7 @@ test('gateway lanes may share the app while retaining separate workspace and dep
   context.after(() => rmSync(f.parent, { recursive: true, force: true }));
   const registry = readEnvironmentRegistry(registryOptions(f.root));
   assert.equal(new Set(Object.values(registry.targets).map((target: any) => target.slackAppId)).size, 1);
-  assert.equal(new Set(Object.values(registry.targets).map((target: any) => target.workspaceId)).size, 3);
+  assert.equal(new Set(Object.values(registry.targets).map((target: any) => target.workspaceId)).size, 2);
   const claimed = claimEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
   assert.equal(claimed.target, 'amber');
 });
@@ -1119,7 +1144,7 @@ test('attestation binds registration source and serving identity and rechecks ex
   const f = fixture();
   context.after(() => rmSync(f.parent, { recursive: true, force: true }));
   const observation = {
-    targetAlias: 'amber', transport: 'events', workerName: 'chickpea-amber',
+    targetAlias: 'amber', transport: 'events', workerName: 'chickpea-amber-live',
     deployments: [{ versionId: 'version-amber', percentage: 100, activatedAt: new Date(NOW - 1_000).toISOString() }],
     bindingIdentities: { AUTH_DB: 'd1-amber', TAG_STATE: 'tag-state-amber' },
     slack: { teamId: 'T_AMBER', appId: 'A_AMBER' },

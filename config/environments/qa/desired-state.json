@@ -42,27 +42,6 @@
         "env-cobalt-auth-db",
         "env-cobalt-tag-state"
       ]
-    },
-    {
-      "targetAlias": "fern",
-      "allowedSuites": ["case", "smoke"],
-      "smokeVariants": [
-        "LC01-V1-create-welcome",
-        "LC01-V2-update-approve",
-        "LC04-V1-personal-read",
-        "LC08-V1-create-due"
-      ],
-      "requiredEnvironmentAliases": [
-        "env-fern-worker",
-        "env-fern-workspace",
-        "env-fern-slack-app",
-        "env-fern-provider-project",
-        "env-fern-provider-read-only-auth-config",
-        "env-fern-evidence-root",
-        "env-fern-timezone",
-        "env-fern-auth-db",
-        "env-fern-tag-state"
-      ]
     }
   ]
 }

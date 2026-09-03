@@ -246,7 +246,7 @@ async function cli() {
   const apply = args.includes('--apply');
   const target = argument(args, '--target');
   const receiptPaths = argumentsFor(args, '--receipt');
-  if (apply && !target) throw new Error('Pass --target <amber|cobalt|fern> for receipt-backed cleanup.');
+  if (apply && !target) throw new Error('Pass --target <amber|cobalt> for receipt-backed cleanup.');
   const root = argument(args, '--root');
   const worktreePath = argument(args, '--worktree');
   const profile = argument(args, '--profile');

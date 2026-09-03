@@ -131,7 +131,7 @@ async function waitForFixtureStatePath(child: ReturnType<typeof spawn>): Promise
 }
 
 function runtimeEnvironmentStatus() {
-  const target = (name: 'amber' | 'cobalt' | 'fern', health = 'ready') => ({
+  const target = (name: 'amber' | 'cobalt', health = 'ready') => ({
     target: name,
     health,
     sourceSha: '1234567890abcdef1234567890abcdef12345678',
@@ -157,7 +157,7 @@ function runtimeEnvironmentStatus() {
     generatedAt: '2026-09-01T12:00:00.000Z',
     registryRevision: 12,
     selectedTarget: 'amber',
-    targets: [target('amber', 'unreachable'), target('cobalt'), target('fern')],
+    targets: [target('amber', 'unreachable'), target('cobalt')],
     sandbox: {
       archiveDate: '2027-01-15T00:00:00.000Z',
       daysUntilArchive: 136,
@@ -191,6 +191,17 @@ test('real Admin routes project the optional runtime environment snapshot withou
   assert.equal(oversized.status, 503);
 });
 
+test('Admin accepts standalone topology and rejects inactive or missing lanes', () => {
+  const input = { ...runtimeEnvironmentStatus(), sandbox: null };
+  assert.equal(projectAdminEnvironmentStatus(input).sandbox, null);
+  assert.throws(() => projectAdminEnvironmentStatus({
+    ...input, targets: input.targets.slice(0, 1),
+  }), /INVALID_ENVIRONMENT_STATUS/u);
+  assert.throws(() => projectAdminEnvironmentStatus({
+    ...input, targets: [...input.targets, { ...input.targets[0], target: 'fern' }],
+  }), /INVALID_ENVIRONMENT_STATUS/u);
+});
+
 test('Admin environment projection rejects secret-shaped values in every displayed string', () => {
   for (const mutate of [
     (input: any) => { input.generatedAt = '2026-09-01T12:00:00Z'; },
@@ -210,7 +221,7 @@ test('Admin environment projection rejects secret-shaped values in every display
 
 test('real Admin routes preserve actual or unknown workspace headroom', async () => {
   const app = createAdminRoutes(testAdminAuthority('environment-capacity-token'));
-  for (const unusedWorkspaceSlots of [0, 1, 2, null]) {
+  for (const unusedWorkspaceSlots of [0, 1, 2, 3, null]) {
     const input = runtimeEnvironmentStatus();
     const response = await app.request(
       'http://localhost/admin/api/environment/status',
@@ -223,7 +234,7 @@ test('real Admin routes preserve actual or unknown workspace headroom', async ()
     const projected = await response.json() as { sandbox: { unusedWorkspaceSlots: number | null } };
     assert.equal(projected.sandbox.unusedWorkspaceSlots, unusedWorkspaceSlots);
   }
-  for (const unusedWorkspaceSlots of [-1, 3, 0.5, '1', undefined, Number.NaN, Infinity]) {
+  for (const unusedWorkspaceSlots of [-1, 4, 0.5, '1', undefined, Number.NaN, Infinity]) {
     const input = runtimeEnvironmentStatus();
     assert.throws(() => projectAdminEnvironmentStatus({
       ...input, sandbox: { ...input.sandbox, unusedWorkspaceSlots },
@@ -260,8 +271,8 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
       sandbox: { unusedWorkspaceSlots: number; integrationHeadroom: number };
     }>(fixture, '/admin/api/environment/status');
     assert.equal(environment.selectedTarget, 'amber');
-    assert.deepEqual(environment.targets.map(({ target }) => target), ['amber', 'cobalt', 'fern']);
-    assert.deepEqual(environment.targets.map(({ health }) => health), ['ready', 'unreachable', 'expired_claim']);
+    assert.deepEqual(environment.targets.map(({ target }) => target), ['amber', 'cobalt']);
+    assert.deepEqual(environment.targets.map(({ health }) => health), ['ready', 'unreachable']);
     assert.equal(environment.targets[0]?.sourceSha, '1234567890abcdef1234567890abcdef12345678');
     assert.equal(environment.targets[0]?.servingVersion, 'version-amber');
     assert.equal(environment.targets[0]?.workspaceAlias, 'env-amber-workspace');

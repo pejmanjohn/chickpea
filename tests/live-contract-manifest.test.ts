@@ -12,7 +12,7 @@ import { PHASE_ONE_SMOKE_VARIANTS, PHASE_ONE_TARGET_ALIASES } from '../qa/live/s
 
 const extraCase = 'LC02-V1-avatar-parity';
 
-function policy(targetAlias: 'amber' | 'cobalt' | 'fern' = 'amber') {
+function policy(targetAlias: 'amber' | 'cobalt' = 'amber') {
   return {
     targetAlias,
     allowedSuites: ['case', 'smoke'] as const,
@@ -27,7 +27,7 @@ test('the deterministic manifest owns the exact Phase 1 smoke denominator', () =
   assert.equal(LIVE_MANIFEST.requiredVariants.case.includes(extraCase), true);
 });
 
-test('amber, cobalt, and fern allow case and smoke but always refuse deep', () => {
+test('amber and cobalt allow case and smoke but always refuse deep', () => {
   for (const targetAlias of PHASE_ONE_TARGET_ALIASES) {
     const targetPolicy = validateTargetSuitePolicy(policy(targetAlias));
     assert.deepEqual(targetPolicy.allowedSuites, ['case', 'smoke']);

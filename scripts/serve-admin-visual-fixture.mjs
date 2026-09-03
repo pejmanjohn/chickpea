@@ -63,7 +63,7 @@ export const VISUAL_ENVIRONMENT_STATUS = Object.freeze({
   generatedAt: '2026-09-01T12:00:00.000Z',
   registryRevision: 12,
   selectedTarget: 'amber',
-  targets: Object.freeze(['amber', 'cobalt', 'fern'].map((target, index) => Object.freeze({
+  targets: Object.freeze(['amber', 'cobalt'].map((target, index) => Object.freeze({
     target,
     health: index === 0 ? 'ready' : index === 1 ? 'unreachable' : 'expired_claim',
     sourceSha: '1234567890abcdef1234567890abcdef12345678',

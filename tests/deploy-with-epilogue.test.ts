@@ -68,7 +68,7 @@ function createHarness() {
       return {
         schemaVersion: 'chickpea-environment-mutation-preflight/v1', target,
         claim: { leaseNonce: 'nonce', claimedRevision: 'revision' },
-        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id' },
+        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id', providerReadOnlyAuthConfigId: 'read-only-' + target },
         deploymentMetadata: { target, sourceDirty: false, baselineDigest: 'sha256:test' },
       };
     }
@@ -78,7 +78,7 @@ function createHarness() {
       const preflight = {
         schemaVersion: 'chickpea-environment-mutation-preflight/v1', target,
         claim: { leaseNonce: 'nonce', claimedRevision: 'revision' },
-        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id' },
+        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id', providerReadOnlyAuthConfigId: 'read-only-' + target },
         deploymentMetadata: { target, sourceDirty: false, baselineDigest: 'sha256:test' },
       };
       return {
@@ -595,17 +595,17 @@ test('fresh deploy provisions AUTH_DB before migrations and rebuilds the binding
 test('a claimed target never provisions a disposable AUTH_DB', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
-  writeCutoverArtifact(harness, { target: 'fern', databaseId: '' });
+  writeCutoverArtifact(harness, { target: 'cobalt', databaseId: '' });
 
   const result = runHarness(harness, ['--skip-build'], {
-    CHICKPEA_DEPLOY_TARGET: 'fern',
-    DEPLOY_TEST_URL: 'https://chickpea-fern.example.workers.dev',
+    CHICKPEA_DEPLOY_TARGET: 'cobalt',
+    DEPLOY_TEST_URL: 'https://chickpea-cobalt-live.example.workers.dev',
   });
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /requires its registered immutable AUTH_DB.*disposable target mutation is refused/i);
   const invoked = commands(harness.logPath);
-  assert.deepEqual(invoked, ['environment-preflight:1:fern']);
+  assert.deepEqual(invoked, ['environment-preflight:1:cobalt']);
   assert.equal(invoked.some((command) => command.includes('"d1","create"')), false);
 });
 
@@ -632,7 +632,7 @@ test('a claimed target refuses disposable coordinates before D1 inventory or upl
   const result = runHarness(harness, ['--skip-build'], {
     CHICKPEA_DEPLOY_TARGET: 'amber',
     DEPLOY_TEST_D1_LIST: JSON.stringify([{
-      name: 'chickpea-auth-db-amber',
+      name: 'chickpea-auth-db-amber-live',
       uuid: 'stale-amber-database-id',
     }]),
   });
@@ -1012,8 +1012,8 @@ test('target dry-run prints one exact target tuple without Cloudflare mutation',
 
   assert.equal(result.status, 0, result.stderr);
   const tuple =
-    'Deployment target: target=amber worker=chickpea-amber ' +
-    'auth_db=AUTH_DB/chickpea-auth-db-amber auth_db_id=disposable ' +
+    'Deployment target: target=amber worker=chickpea-amber-live ' +
+    'auth_db=AUTH_DB/chickpea-auth-db-amber-live auth_db_id=disposable ' +
     'd1_schema=0002_mcp_oauth do_schema=v9 state=disposable';
   assert.equal(result.stdout.match(new RegExp(tuple, 'g'))?.length, 1);
   assert.doesNotMatch(result.stdout, /Provisioning|Applying reviewed Better Auth migrations/);
@@ -1034,7 +1034,7 @@ test('target dry-run prints the selected immutable D1 and permanent generation',
   assert.equal(result.status, 0, result.stderr);
   assert.match(
     result.stdout,
-    /target=cobalt worker=chickpea-cobalt .*auth_db_id=cobalt-database-id .*state=permanent/,
+    /target=cobalt worker=chickpea-cobalt-live .*auth_db_id=cobalt-database-id .*state=permanent/,
   );
   assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
 });
@@ -1062,7 +1062,7 @@ function writeCutoverArtifact(
     databaseId?: string;
     profile?: 'core' | 'sandbox';
     workerName?: string;
-    target?: 'amber' | 'cobalt' | 'fern';
+    target?: 'amber' | 'cobalt';
     sandboxBinding?: { name: string; class_name: string };
     sandboxContainer?: {
       class_name: string;
@@ -1089,7 +1089,7 @@ function writeCutoverArtifact(
   };
   const target = options.target;
   const config = {
-    name: options.workerName ?? (target ? `chickpea-${target}` : 'chickpea'),
+    name: options.workerName ?? (target ? `chickpea-${target}-live` : 'chickpea'),
     main: 'index.js',
     compatibility_date: options.compatibilityDate ?? '2026-06-01',
     compatibility_flags: options.publicGlobalFetch === false
@@ -1127,7 +1127,7 @@ function writeCutoverArtifact(
     ].filter((binding) => binding.name !== options.missingBinding) },
     d1_databases: [{
       binding: 'AUTH_DB',
-      database_name: target ? `chickpea-auth-db-${target}` : 'chickpea-auth-db',
+      database_name: target ? `chickpea-auth-db-${target}-live` : 'chickpea-auth-db',
       database_id: options.databaseId ?? 'test-database-id',
       migrations_dir: '../../migrations/better-auth',
     }],
@@ -1318,6 +1318,9 @@ test('Phase 1 deploy reconciles live version before receipt and suppresses setup
   assert.equal(existsSync(receiptPath), true);
   assert.match(commands(harness.logPath).at(-1) ?? '', /^environment-complete:deployed-version$/);
   assert.doesNotMatch(result.stdout, /#setup=|PRIVATE SETUP LINK|PRIVATE SETUP PATH/);
+  const redirect = JSON.parse(readFileSync(path.join(harness.root, '.wrangler/deploy/config.json'), 'utf8'));
+  const artifact = JSON.parse(readFileSync(path.resolve(harness.root, '.wrangler/deploy', redirect.configPath), 'utf8'));
+  assert.equal(artifact.vars.COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID, 'read-only-amber');
 });
 
 test('Phase 1 post-upload serving drift fails without publishing a receipt', (context) => {

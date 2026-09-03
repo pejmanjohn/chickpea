@@ -533,7 +533,7 @@ interface BetterAuthContext {
   organizationId: string;
 }
 
-const ADMIN_ENVIRONMENT_TARGETS = ['amber', 'cobalt', 'fern'] as const;
+const ADMIN_ENVIRONMENT_TARGETS = ['amber', 'cobalt'] as const;
 const ADMIN_ENVIRONMENT_HEALTH = [
   'ready', 'unreachable', 'stale_claim', 'identity_mismatch', 'expired_claim',
 ] as const;
@@ -552,7 +552,7 @@ export function projectAdminEnvironmentStatus(input: unknown): Record<string, un
     || !(input.selectedTarget === null
       || ADMIN_ENVIRONMENT_TARGETS.includes(input.selectedTarget as typeof ADMIN_ENVIRONMENT_TARGETS[number]))
     || !Array.isArray(input.targets)
-    || !isRecord(input.sandbox)) {
+    || !(input.sandbox === null || isRecord(input.sandbox))) {
     throw new Error('INVALID_ENVIRONMENT_STATUS');
   }
   const targets = input.targets.map(projectAdminEnvironmentTarget);
@@ -560,20 +560,20 @@ export function projectAdminEnvironmentStatus(input: unknown): Record<string, un
   if (targetNames.join(',') !== [...ADMIN_ENVIRONMENT_TARGETS].sort().join(',')) {
     throw new Error('INVALID_ENVIRONMENT_STATUS');
   }
-  const warningDays = input.sandbox.warningDays;
-  if (!(input.sandbox.archiveDate === null || adminEnvironmentTimestamp(input.sandbox.archiveDate))
+  if (input.sandbox !== null && (
+    !(input.sandbox.archiveDate === null || adminEnvironmentTimestamp(input.sandbox.archiveDate))
     || !(input.sandbox.daysUntilArchive === null || Number.isSafeInteger(input.sandbox.daysUntilArchive))
     || typeof input.sandbox.warning !== 'string'
     || !['none', '45_days', '30_days', '14_days', 'unavailable'].includes(input.sandbox.warning)
-    || !Array.isArray(warningDays)
-    || warningDays.join(',') !== '45,30,14'
+    || !Array.isArray(input.sandbox.warningDays)
+    || input.sandbox.warningDays.join(',') !== '45,30,14'
     || !(input.sandbox.unusedWorkspaceSlots === null
       || (Number.isSafeInteger(input.sandbox.unusedWorkspaceSlots)
         && Number(input.sandbox.unusedWorkspaceSlots) >= 0
-        && Number(input.sandbox.unusedWorkspaceSlots) <= 2))
+        && Number(input.sandbox.unusedWorkspaceSlots) <= 3))
     || !(input.sandbox.integrationHeadroom === null
       || (Number.isSafeInteger(input.sandbox.integrationHeadroom)
-        && Number(input.sandbox.integrationHeadroom) >= 0))) {
+        && Number(input.sandbox.integrationHeadroom) >= 0)))) {
     throw new Error('INVALID_ENVIRONMENT_STATUS');
   }
   return {
@@ -582,7 +582,7 @@ export function projectAdminEnvironmentStatus(input: unknown): Record<string, un
     registryRevision: input.registryRevision,
     selectedTarget: input.selectedTarget,
     targets,
-    sandbox: {
+    sandbox: input.sandbox === null ? null : {
       archiveDate: input.sandbox.archiveDate,
       daysUntilArchive: input.sandbox.daysUntilArchive,
       warning: input.sandbox.warning,

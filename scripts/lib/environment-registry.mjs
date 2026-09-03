@@ -27,9 +27,9 @@ import {
   targetLockPath,
 } from '../../qa/live/safety/lock.ts';
 
-export const activeEnvironmentTargets = Object.freeze(['amber', 'cobalt', 'fern']);
+export const activeEnvironmentTargets = Object.freeze(['amber', 'cobalt']);
 export const inactiveEnvironmentTargets = Object.freeze([
-  'dedicated-qa', 'install', 'demo', 'spare', 'qualification', 'deep',
+  'fern', 'dedicated-qa', 'install', 'demo', 'spare', 'qualification', 'deep',
 ]);
 export const ENVIRONMENT_REGISTRY_SCHEMA = 'chickpea-environment-registry/v1';
 export const ENVIRONMENT_MARKER_SCHEMA = 'chickpea-environment-claim/v1';
@@ -874,7 +874,7 @@ export function resolveEnvironmentRegistrationAlias(alias, registration) {
 }
 
 function parseEnvironmentAlias(alias) {
-  const match = /^env-(amber|cobalt|fern)-([a-z0-9]+(?:-[a-z0-9]+)*)$/u.exec(alias);
+  const match = /^env-(amber|cobalt)-([a-z0-9]+(?:-[a-z0-9]+)*)$/u.exec(alias);
   if (!match) throw fail('INVALID_ALIAS');
   return { target: match[1], field: match[2] };
 }
@@ -1020,9 +1020,9 @@ function validateTarget(input, target) {
   if (!isRecord(input) || !exactKeys(input, TARGET_KEYS) || input.target !== target
     || input.role !== 'branch'
     || (input.transport !== 'gateway' && input.transport !== 'events')
-    || input.workerName !== `chickpea-${target}`
+    || input.workerName !== `chickpea-${target}-live`
     || input.authDatabaseBinding !== 'AUTH_DB'
-    || input.authDatabaseName !== `chickpea-auth-db-${target}`
+    || input.authDatabaseName !== `chickpea-auth-db-${target}-live`
     || !safeBounded(input.authDatabaseId)
     || !safeBounded(input.workspaceId) || !safeLabel(input.workspaceLabel)
     || !safeBounded(input.slackAppId) || !safeLabel(input.slackAppLabel)
@@ -1086,6 +1086,8 @@ function validateLastAttestation(input) {
 }
 
 function validateSandbox(input) {
+  // Standalone workspaces do not have a shared sandbox expiry or quota.
+  if (input === null) return null;
   if (!isRecord(input)
     || !exactKeys(input, [
       'archiveDate', 'workspaceSlotsTotal', 'workspaceSlotsUsed', 'integrationHeadroom',
@@ -1803,18 +1805,12 @@ function unregisteredStatus(target, now) {
       lastAttestedRevision: null,
       recoveryAction: `Run npm run env -- reconciliation ${name}.`,
     }))),
-    sandbox: Object.freeze({
-      archiveDate: null,
-      daysUntilArchive: null,
-      warning: 'unavailable',
-      warningDays: Object.freeze([45, 30, 14]),
-      unusedWorkspaceSlots: null,
-      integrationHeadroom: null,
-    }),
+    sandbox: null,
   });
 }
 
 function publicSandbox(sandbox, now) {
+  if (sandbox === null) return null;
   const daysUntilArchive = Math.ceil((Date.parse(sandbox.archiveDate) - now) / 86_400_000);
   const warning = daysUntilArchive <= 14 ? '14_days'
     : daysUntilArchive <= 30 ? '30_days'
