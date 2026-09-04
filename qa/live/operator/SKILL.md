@@ -92,6 +92,15 @@ blocked rather than passing them or repeatedly asking the same question.
    did not claim means that other lane's credential is missing. Never print
    the token. Never use a bare/default deploy to reach a QA lane. Preserve
    source/claim fences. Verification does not imply landing on main.
+   A claim is stamped with the worktree's HEAD. Do not commit, amend, or
+   rebase in that worktree while a claimed deploy is running, and re-claim
+   after committing before the next deploy: a HEAD that differs from the
+   claimed revision fails the deploy's final fence with
+   `MUTATION_LEASE_AUTHORITY_CHANGED`, and then `release`, `reclaim`, and
+   `reconciliation` all refuse with `CLAIM_REVISION_MISMATCH`. Recovery is to
+   check out the claimed revision, run `npm run env -- reconciliation <alias>`
+   (it adopts the uploaded version and clears the intent lock), release, and
+   only then move HEAD again.
 6. `npm run env -- attest <alias>` returns one JSON object whose `targetOverlay`
    and `doctorSnapshot` members are the two doctor inputs; write each to its
    own private file before `npm run verify:live:doctor -- --target <overlay>
