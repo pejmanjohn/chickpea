@@ -526,7 +526,7 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
     manualOpened.status === 200 &&
       manualHtml.includes('Create Chickpea') &&
       manualHtml.includes('Finish creating Chickpea') &&
-      manualHtml.includes('Verify Event URL') &&
+      manualHtml.includes('verify the Events URL') &&
       manualHtml.includes('Add app credentials') &&
       !manualHtml.includes(setup.capability) &&
       manualAsset.status === 200 &&
