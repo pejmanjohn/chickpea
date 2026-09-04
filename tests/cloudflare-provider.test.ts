@@ -15,11 +15,22 @@ import {
   registerCloudflareBindingProvider,
 } from '../src/cloudflare-provider.ts';
 import { createWorkersAiRestPiProvider, setWorkersAiRestPiProvider } from '../src/config/pi-provider.ts';
+import { WORKERS_AI_DEFAULT_FAVORITES } from '../src/config/provider-models.ts';
+import { SEED_CLOUDFLARE_MODEL_ID } from '../src/config/seed.ts';
 import { withWorkersAiPayloadPolicy } from '../src/config/workers-ai-payload.ts';
 import { runWithAttachmentModelContext } from '../src/slack/attachment-model-context.ts';
 
 beforeEach(() => resetModelsForTests());
 afterEach(() => resetModelsForTests());
+
+test('the keyless seed pins a model Workers AI serves on the Free plan', () => {
+  // Cloudflare's 2026-07-28 changelog moved glm-5.2 (and kimi-k2.x) behind
+  // Workers Paid and lists glm-4.7-flash among the models that stay Free.
+  assert.equal(SEED_CLOUDFLARE_MODEL_ID, '@cf/zai-org/glm-4.7-flash');
+  assert.equal(WORKERS_AI_DEFAULT_FAVORITES[0], SEED_CLOUDFLARE_MODEL_ID);
+  const provider = createCloudflareBindingProvider({ run: async () => ({ response: 'ok' }) });
+  assert.ok(provider.getModels().some((candidate) => candidate.id === SEED_CLOUDFLARE_MODEL_ID));
+});
 
 test('the Cloudflare-only helper has no registration side effect when merely imported', () => {
   assert.equal(hasProvider('cloudflare'), false);
@@ -65,6 +76,7 @@ test('the reviewed keyless GLM bindings explicitly disable server-side thinking'
   const options = { returnRawResponse: true };
 
   for (const modelId of [
+    '@cf/zai-org/glm-4.7-flash',
     '@cf/zai-org/glm-5.2',
     '@cf/zai-org/glm-5.3-flash',
   ]) {
@@ -80,9 +92,10 @@ test('the reviewed keyless GLM bindings explicitly disable server-side thinking'
     );
   }
 
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0]?.modelId, '@cf/zai-org/glm-5.2');
-  assert.deepEqual(calls[1]?.modelId, '@cf/zai-org/glm-5.3-flash');
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[0]?.modelId, '@cf/zai-org/glm-4.7-flash');
+  assert.deepEqual(calls[1]?.modelId, '@cf/zai-org/glm-5.2');
+  assert.deepEqual(calls[2]?.modelId, '@cf/zai-org/glm-5.3-flash');
   for (const call of calls) {
     assert.deepEqual(call.inputs, {
       messages: [{ role: 'user', content: 'hello' }],

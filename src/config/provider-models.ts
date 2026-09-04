@@ -51,9 +51,11 @@ export class ProviderModelsUnavailableError extends Error {
   }
 }
 
+// Leads with the Free-plan default; glm-5.3-flash stays listed for Workers
+// Paid accounts. kimi-k2.7-code was dropped when Cloudflare made it Paid-only.
 export const WORKERS_AI_DEFAULT_FAVORITES = [
+  '@cf/zai-org/glm-4.7-flash',
   '@cf/zai-org/glm-5.3-flash',
-  '@cf/moonshotai/kimi-k2.7-code',
   '@cf/openai/gpt-oss-120b',
   '@cf/meta/llama-4-scout-17b-16e-instruct',
 ] as const;

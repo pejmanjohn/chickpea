@@ -1074,7 +1074,7 @@ async function main() {
     );
     const defaultAgent = agents.find((agent) => agent.id === 'agent_default');
     check(
-      defaultAgent?.model === 'cloudflare/@cf/zai-org/glm-5.2',
+      defaultAgent?.model === 'cloudflare/@cf/zai-org/glm-4.7-flash',
       'Cloudflare seed pins Default to the keyless Workers AI model',
       String(defaultAgent?.model),
     );
@@ -1177,8 +1177,8 @@ async function main() {
 
     const seededWorkersFavorites = await adminFetch(baseUrl, '/admin/api/providers/workers-ai/favorites');
     const expectedWorkersSeed = [
+      '@cf/zai-org/glm-4.7-flash',
       '@cf/zai-org/glm-5.3-flash',
-      '@cf/moonshotai/kimi-k2.7-code',
       '@cf/openai/gpt-oss-120b',
       '@cf/meta/llama-4-scout-17b-16e-instruct',
     ];
@@ -1410,7 +1410,7 @@ async function main() {
       method: 'POST',
       body: JSON.stringify({
         expectedRevision: onboardingBeforeTry.body?.revision,
-        modelId: 'cloudflare/@cf/zai-org/glm-5.2',
+        modelId: 'cloudflare/@cf/zai-org/glm-4.7-flash',
         expectedDefaultRevision: onboardingWorkspaceDefault.body?.workspaceDefault?.revision,
       }),
     });

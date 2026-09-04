@@ -1,6 +1,22 @@
 import type { Api, Model } from '@earendil-works/pi-ai';
 
+// Reviewed successor model. Note it requires Workers Paid; the Free-plan
+// default lives in src/config/seed.ts.
 export const CURRENT_WORKERS_AI_MODEL_ID = '@cf/zai-org/glm-5.3-flash';
+
+/**
+ * Workers AI GLM models share one chat template whose thinking mode is on by
+ * default. Chickpea applies the same binding-boundary policy to each of them.
+ */
+export const WORKERS_AI_GLM_MODEL_IDS = [
+  '@cf/zai-org/glm-4.7-flash',
+  '@cf/zai-org/glm-5.2',
+  CURRENT_WORKERS_AI_MODEL_ID,
+] as const;
+
+export function isWorkersAiGlmModel(modelId: string): boolean {
+  return (WORKERS_AI_GLM_MODEL_IDS as readonly string[]).includes(modelId);
+}
 export const WORKERS_AI_CONTEXT_WINDOW_FLOOR = 32_768;
 
 /**

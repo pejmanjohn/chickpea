@@ -11,6 +11,8 @@ const CACHE_PRICING_REVIEWED_AT = Date.UTC(2026, 7, 17);
 const CACHE_PRICING_STALE_AFTER = CACHE_PRICING_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 const GLM_5_3_REVIEWED_AT = Date.UTC(2026, 7, 27);
 const GLM_5_3_STALE_AFTER = GLM_5_3_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const GLM_4_7_REVIEWED_AT = Date.UTC(2026, 8, 4);
+const GLM_4_7_STALE_AFTER = GLM_4_7_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 
 function version(
   input: Omit<UsagePriceVersion, 'contentHash' | 'rates'> & {
@@ -203,6 +205,45 @@ export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
       inputMicrosPerUnit: 150_000,
       outputMicrosPerUnit: 500_000,
       cacheReadMicrosPerUnit: 30_000,
+      basis: 'standard_input_output',
+    }],
+  }),
+  // Free-plan keyless default. The model page lists no cached-input rate.
+  version({
+    id: 'cloudflare-binding-glm-4.7_2026-09-04',
+    providerId: 'cloudflare',
+    sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-4.7-flash/',
+    effectiveFrom: GLM_4_7_REVIEWED_AT,
+    reviewedAt: GLM_4_7_REVIEWED_AT,
+    staleAfter: GLM_4_7_STALE_AFTER,
+    currency: 'USD',
+    rates: [{
+      providerId: 'cloudflare',
+      modelId: '@cf/zai-org/glm-4.7-flash',
+      modelAliases: ['@cf/zai-org/glm-4.7-flash'],
+      currency: 'USD',
+      unitScale: 1_000_000,
+      inputMicrosPerUnit: 60_000,
+      outputMicrosPerUnit: 400_000,
+      basis: 'standard_input_output',
+    }],
+  }),
+  version({
+    id: 'cloudflare-workers-ai-glm-4.7_2026-09-04',
+    providerId: 'cloudflare-workers-ai',
+    sourceUrl: 'https://developers.cloudflare.com/workers-ai/models/glm-4.7-flash/',
+    effectiveFrom: GLM_4_7_REVIEWED_AT,
+    reviewedAt: GLM_4_7_REVIEWED_AT,
+    staleAfter: GLM_4_7_STALE_AFTER,
+    currency: 'USD',
+    rates: [{
+      providerId: 'cloudflare-workers-ai',
+      modelId: '@cf/zai-org/glm-4.7-flash',
+      modelAliases: ['@cf/zai-org/glm-4.7-flash'],
+      currency: 'USD',
+      unitScale: 1_000_000,
+      inputMicrosPerUnit: 60_000,
+      outputMicrosPerUnit: 400_000,
       basis: 'standard_input_output',
     }],
   }),

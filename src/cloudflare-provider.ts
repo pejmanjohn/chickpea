@@ -5,10 +5,9 @@ import {
   type CloudflareAIBinding,
 } from '@flue/runtime/cloudflare/workers-ai';
 
-import { SEED_CLOUDFLARE_MODEL_ID } from './config/seed.ts';
 import { withWorkersAiPayloadPolicy } from './config/workers-ai-payload.ts';
 import {
-  CURRENT_WORKERS_AI_MODEL_ID,
+  isWorkersAiGlmModel,
   withCurrentWorkersAiModels,
 } from './config/workers-ai-models.ts';
 import { decorateAttachmentProvider } from './slack/attachment-model-context.ts';
@@ -63,10 +62,7 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
           max_tokens: max_tokens ?? max_completion_tokens ?? GPT_OSS_DEFAULT_MAX_TOKENS,
         }, options);
       }
-      if (
-        modelId !== SEED_CLOUDFLARE_MODEL_ID &&
-        modelId !== CURRENT_WORKERS_AI_MODEL_ID
-      ) {
+      if (!isWorkersAiGlmModel(modelId)) {
         return binding.run(modelId, wireInputs, options);
       }
 
@@ -76,9 +72,9 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
       // chat-template switch at the binding boundary, remove any conflicting
       // effort value, cap each generation to the same 2,048-token ceiling as
       // the app's REST Workers AI path, and abort a provider stream that still
-      // fails to settle. This policy is deliberately limited to the seeded
-      // GLM model and its reviewed successor. The former has otherwise held
-      // the shared Slack relay alarm until its 15-minute platform deadline.
+      // fails to settle. This policy is deliberately limited to the GLM
+      // family Chickpea seeds and curates. glm-5.2 has otherwise held the
+      // shared Slack relay alarm until its 15-minute platform deadline.
       const {
         reasoning_effort: _reasoningEffort,
         chat_template_kwargs,

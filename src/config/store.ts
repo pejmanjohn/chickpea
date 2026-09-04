@@ -15,6 +15,7 @@ import {
   seededAgents,
   seededAgentChannelGrants,
   SEED_CLOUDFLARE_MODEL_PIN,
+  isSeedCloudflareModelPin,
 } from './seed.ts';
 import {
   type AgentChannelReference,
@@ -670,13 +671,13 @@ export class ConfigStoreLogic {
       : undefined;
     const starterGeneration = Number(cutover.starter_agent_generation ?? 0);
     const starterPinClearCount = starter &&
-      starter.model === SEED_CLOUDFLARE_MODEL_PIN &&
+      isSeedCloudflareModelPin(starter.model) &&
       Number(starter.configurationGeneration ?? 1) === starterGeneration
       ? 1
       : 0;
     const uncertainStarterPinCount = userAgents.some((agent) =>
       agent.id === 'agent_default' &&
-      agent.model === SEED_CLOUDFLARE_MODEL_PIN &&
+      isSeedCloudflareModelPin(agent.model) &&
       !this.isUntouchedCloudflareStarter(agent)
     ) ? 1 : 0;
     const blockers: ChickpeaCutoverPreflight['blockers'] = [];
@@ -2203,16 +2204,18 @@ export class ConfigStoreLogic {
       agent.kind === 'user' &&
       agent.id === 'agent_default' &&
       Number(agent.configurationGeneration ?? 1) === 1 &&
-      agent.model === SEED_CLOUDFLARE_MODEL_PIN;
+      isSeedCloudflareModelPin(agent.model);
   }
 
   private clearProvenStarterPin(workspaceId: string): boolean {
     const cutover = this.requireCutoverRow(workspaceId);
     if (!cutover.starter_agent_id || cutover.starter_agent_generation == null) return false;
     const agent = this.getAgent(cutover.starter_agent_id);
+    const pinnedModel = agent.model;
     if (
       agent.kind !== 'user' ||
-      agent.model !== SEED_CLOUDFLARE_MODEL_PIN ||
+      pinnedModel === undefined ||
+      !isSeedCloudflareModelPin(pinnedModel) ||
       Number(agent.configurationGeneration ?? 1) !== Number(cutover.starter_agent_generation)
     ) return false;
     const updated = this.db.run(
@@ -2221,7 +2224,7 @@ export class ConfigStoreLogic {
            configuration_generation = configuration_generation + 1
        WHERE id = ? AND model = ? AND configuration_generation = ?`,
       agent.id,
-      SEED_CLOUDFLARE_MODEL_PIN,
+      pinnedModel,
       Number(cutover.starter_agent_generation),
     );
     if (updated.changes !== 1) return false;
