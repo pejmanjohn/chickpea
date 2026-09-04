@@ -3,6 +3,7 @@ dist/
 dist-cf/
 dist-node/
 .wrangler-state/
+.chickpea-local-worker/
 .env
 .env.*
 !.env.example
@@ -53,6 +54,7 @@ docs/runbooks/*
 !docs/runbooks/composio-managed-connectors.md
 !docs/runbooks/product-telemetry.md
 !docs/runbooks/runtime-observability.md
+!docs/runbooks/local-worker-development.md
 !docs/runbooks/semantic-activity-status.md
 !docs/runbooks/parallel-live-test-environments.md
 !docs/plans/

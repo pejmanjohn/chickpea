@@ -61,7 +61,7 @@ const CF_OUTPUT_DIR = join(REPO_ROOT, 'dist-cf');
 const CF_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.json');
 const CF_SMOKE_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.smoke.json');
 const CF_AI_SMOKE_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.ai-smoke.json');
-const PERSIST_DIR = join(REPO_ROOT, '.wrangler-state');
+const PERSIST_DIR = join(REPO_ROOT, '.wrangler-state', 'cf-smoke');
 const AUTH_SECRET = '9d'.repeat(32);
 const PUBLIC_ORIGIN = 'https://chickpea-smoke.invalid';
 const WORKSPACE = 'T0SMOKE';
@@ -526,7 +526,7 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
     manualOpened.status === 200 &&
       manualHtml.includes('Create Chickpea') &&
       manualHtml.includes('Finish creating Chickpea') &&
-      manualHtml.includes('Verify Event URL') &&
+      manualHtml.includes('verify the Events URL') &&
       manualHtml.includes('Add app credentials') &&
       !manualHtml.includes(setup.capability) &&
       manualAsset.status === 200 &&
