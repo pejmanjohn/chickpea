@@ -24,6 +24,10 @@
   model, persistent state, public endpoint, and owning worktree. Local passes do
   not satisfy shared-gateway or deployed Amber/Cobalt acceptance.
 - For Chickpea live Slack verification, invoke `$chickpea-live-verification`.
+  A request to run it authorizes its declared QA actions and exact cleanup,
+  including test messages, product approvals, and OAuth with registered test
+  accounts. Do not request the same permission at every step. Use its mode and
+  authorization boundaries; production/shared infrastructure are outside scope.
   If skill discovery is unavailable, read `qa/live/operator/SKILL.md` before
   acting. It points to the public catalog and runbook. Keep target coordinates,
   resolved aliases, journals, transcripts, screenshots, and evidence outside

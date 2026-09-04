@@ -19,6 +19,7 @@ import { randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import {
   existsSync,
+  lstatSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -57,6 +58,40 @@ const cliArgs = process.argv.slice(2);
 const deployArgs = cliArgs.filter((arg) => !['--skip-build', '--preflight-only'].includes(arg));
 const skipBuild = cliArgs.includes('--skip-build');
 const preflightOnly = cliArgs.includes('--preflight-only');
+// A QA checkout must never fall through to the ordinary production target.
+// This is a selection check, not claim authority; the environment preflight
+// below still validates the actual lease, source, and immutable identities.
+const requestedDeploymentTarget = process.env.CHICKPEA_DEPLOY_TARGET?.trim();
+try {
+  const markerPath = path.join(projectRoot, '.chickpea-environment');
+  let markerStat;
+  try { markerStat = lstatSync(markerPath); } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (markerStat) {
+    if (!markerStat.isFile() || markerStat.isSymbolicLink()) {
+      throw new Error('QA claim marker is not a regular file. Refusing deployment.');
+    }
+    let marker;
+    try { marker = JSON.parse(readFileSync(markerPath, 'utf8')); } catch {
+      throw new Error('QA claim marker is unreadable. Refusing deployment.');
+    }
+    if (marker?.schemaVersion !== 'chickpea-environment-claim/v1'
+      || !['amber', 'cobalt'].includes(marker.target)) {
+      throw new Error('QA claim marker is invalid. Refusing deployment.');
+    }
+    if (requestedDeploymentTarget !== marker.target) {
+      throw new Error(`This worktree claims ${marker.target}. Set CHICKPEA_DEPLOY_TARGET=${marker.target}; refusing an unspecified or different target.`);
+    }
+  }
+  if (!requestedDeploymentTarget && (process.env.CHICKPEA_LOCAL_LANE
+    || existsSync(path.join(projectRoot, '.chickpea-local-worker')))) {
+    throw new Error('This checkout owns a local Worker lane. Select an explicitly claimed QA deployment target; the default production deployment is refused.');
+  }
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
 // Workers Builds runs its configured build command immediately before its
 // configured deploy command in the same build workspace. Reuse that exact
 // artifact, but only when both Workers-specific markers are present; local
@@ -155,9 +190,8 @@ try {
 // A selected Phase 1 lane is a permanent, claimed environment. Resolve that
 // authority before even building so an expired/rotated claim or stale HEAD
 // cannot cause a build hook (or anything after it) to run. The ordinary
-// production deploy deliberately does not load this module when no lane was
-// selected, preserving the established single-target deploy flow.
-const requestedDeploymentTarget = process.env.CHICKPEA_DEPLOY_TARGET?.trim();
+// production deploy does not load this module when no lane was selected and
+// the checkout has no QA ownership marker, as checked above.
 const selectedEnvironmentTarget = !deployArgs.includes('--dry-run')
   && requestedDeploymentTarget
   ? requestedDeploymentTarget

@@ -1633,6 +1633,9 @@ export class WorkspaceManagementService {
           operationKind: operation.kind,
           disposition: 'failed',
           code: mutationErrorCode(error),
+          ...(error instanceof ManagementError && error.code === 'model_provider_unavailable'
+            ? { warning: error.message }
+            : {}),
           ...(error instanceof ManagementError && error.changed
             ? { changed: error.changed }
             : {}),
@@ -3705,6 +3708,22 @@ export class WorkspaceManagementService {
     return reconciled ?? await this.executeImmediate(actor, requestId, operation, prepared);
   }
 
+  private async assertCreationModelProvider(model: string | undefined): Promise<void> {
+    // Production adapters supply the same credential-source reader used by
+    // provider settings. Alternate runtimes may own their provider bindings.
+    const source = this.stores.providerCredentialSource;
+    if (!source || !model) return;
+    const provider = model.split('/')[0];
+    if (provider !== 'anthropic' && provider !== 'openai' && provider !== 'openrouter') return;
+    if (await source(provider) !== 'missing') return;
+    throw new ManagementError(
+      'model_provider_unavailable',
+      `Cannot create an Agent pinned to ${model}: provider ${provider} is not configured. ` +
+        'If the requester did not select a model, omit the model field to inherit the workspace default. ' +
+        'If they explicitly selected this model, explain the required provider setup; do not substitute another model.',
+    );
+  }
+
   private async prepareItem(
     actor: LiveManagementActor,
     operation: ManagementOperation,
@@ -3712,6 +3731,7 @@ export class WorkspaceManagementService {
   ): Promise<ManagementPreparedItem> {
     switch (operation.kind) {
       case 'create_agent': {
+        await this.assertCreationModelProvider(operation.agent.model);
         const existingGeneratedSeeds = (await this.stores.config.listUserAgents()).flatMap((agent) => {
           const avatar = agent.slackPresence?.avatar;
           return avatar?.kind === 'generated' ? [avatar.seed ?? agent.id] : [];

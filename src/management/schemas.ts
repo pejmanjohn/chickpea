@@ -34,6 +34,7 @@ const zAgentId = z.string().regex(AGENT_ID_PATTERN);
 const zSkillName = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64);
 const zRevision = z.number().int().nonnegative();
 const zModelSpecifier = z.string().min(1).max(500).regex(/^[^/]+\/.+$/);
+const creationModelDescription = 'Omit to inherit the workspace default. Set only when the requester explicitly selected this model; never invent a model pin.';
 
 const zSkill = z.strictObject({
   name: zText(64),
@@ -100,7 +101,7 @@ const zAgentFields = {
   editPolicy: z.enum(['creator_and_admins', 'all_workspace_members']).optional(),
   instructions: zOptionalText(100_000),
   enabled: z.boolean(),
-  model: zModelSpecifier.optional(),
+  model: zModelSpecifier.optional().describe(creationModelDescription),
   skills: z.array(zSkill).max(100),
   mcpServers: z.array(zMcpConnection).max(50),
   apiConnections: z.array(zApiConnection).max(50),
@@ -438,7 +439,7 @@ const vAgentFields = {
   editPolicy: v.optional(v.picklist(['creator_and_admins', 'all_workspace_members'])),
   instructions: vot(100_000),
   enabled: v.boolean(),
-  model: v.optional(vModelSpecifier),
+  model: v.pipe(v.optional(vModelSpecifier), v.description(creationModelDescription)),
   skills: va(vSkill, 100),
   mcpServers: va(vMcpConnection, 50),
   apiConnections: va(vApiConnection, 50),

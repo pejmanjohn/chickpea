@@ -268,6 +268,7 @@ depend on the shared gateway, deployed bindings or credentials, serving
 version, traffic, Cloudflare-only telemetry, network policy, or real cron
 delivery.
 
-Finish release verification with the unchanged attended Amber-then-Cobalt smoke
-in the [live verification skill](../../qa/live/operator/SKILL.md). Report local
-and deployed results separately.
+Finish with the requested regression or release inventory from the
+[live verification skill](../../qa/live/operator/SKILL.md). Use one deployed
+candidate lane by default; run both colors when requested or when isolation is
+under test. Report local and deployed results separately.

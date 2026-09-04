@@ -208,6 +208,6 @@ test('local timing observer separates startup and reload metrics', () => {
 
 test('Cloudflare smoke cleanup cannot erase persistent local lane state', () => {
   const smoke = readFileSync(path.resolve(process.cwd(), 'scripts/verify-cf-smoke.mjs'), 'utf8');
-  assert.match(smoke, /const PERSIST_DIR = join\(REPO_ROOT, '\.wrangler-state', 'cf-smoke'\);/);
-  assert.doesNotMatch(smoke, /const PERSIST_DIR = join\(REPO_ROOT, '\.wrangler-state'\);/);
+  assert.match(smoke, /const PERSIST_DIR = mkdtempSync\(join\(tmpdir\(\), 'chickpea-cf-smoke-'\)\);/);
+  assert.doesNotMatch(smoke, /const PERSIST_DIR = join\(REPO_ROOT,/);
 });
