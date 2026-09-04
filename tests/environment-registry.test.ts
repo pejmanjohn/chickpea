@@ -464,6 +464,44 @@ test('explicit reclaim rotates the nonce and appends a content-free audit event'
   assert.doesNotMatch(JSON.stringify(registry.audit), /first|feature\/|leaseNonce|@/);
 });
 
+test('an unexpired claim whose worktree is gone can be adopted only with an explicit opt-in', (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const second = worktree(f.parent, 'second');
+  claimEnvironment('amber', {
+    ...registryOptions(f.root), worktreePath: f.first.path, leaseDurationMs: 60_000,
+  });
+  const gone = new Set<string>();
+  const worktreeExists = (candidate: string) => !gone.has(candidate);
+  const attempt = (extra: Record<string, unknown> = {}) => reclaimEnvironment('amber', {
+    ...registryOptions(f.root), now: () => NOW + 2_000, worktreePath: second.path,
+    leaseDurationMs: 60_000, worktreeExists, ...extra,
+  });
+
+  // A live holder is never displaced, with or without the flag.
+  assert.throws(() => attempt(), (error: unknown) =>
+    (error as { code: string; details: { orphaned: boolean } }).code === 'TARGET_CLAIMED'
+    && (error as { details: { orphaned: boolean } }).details.orphaned === false);
+  assert.throws(() => attempt({ adoptOrphan: true }), (error: unknown) =>
+    (error as { code: string }).code === 'TARGET_CLAIMED');
+
+  // An orphaned holder is reported as such, but still needs the explicit opt-in.
+  gone.add(f.first.path);
+  assert.throws(() => attempt(), (error: unknown) =>
+    (error as { code: string; details: { orphaned: boolean } }).code === 'TARGET_CLAIMED'
+    && (error as { details: { orphaned: boolean } }).details.orphaned === true);
+  const adopted = attempt({ adoptOrphan: true });
+  assert.equal(adopted.canonicalWorktreePath, second.path);
+  const registry = readEnvironmentRegistry({ ...registryOptions(f.root), now: () => NOW + 2_000 });
+  assert.equal(registry.targets.amber.claim?.canonicalWorktreePath, second.path);
+  assert.deepEqual(registry.audit.at(-1), {
+    event: 'claim_adopted_orphan',
+    target: 'amber',
+    at: new Date(NOW + 2_000).toISOString(),
+    registryRevision: registry.revision,
+  });
+});
+
 test('secret-like fields, symlinks, broad modes, noncanonical paths, wrong hosts, and rollback fail closed', (context) => {
   const f = fixture();
   context.after(() => rmSync(f.parent, { recursive: true, force: true }));

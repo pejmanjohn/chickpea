@@ -81,7 +81,10 @@ export async function runEnvironmentCli(argv, io = {}) {
       );
     } else if (parsed.command === 'reclaim') {
       requireTarget(parsed.target);
-      result = reclaimEnvironment(parsed.target, options);
+      result = reclaimEnvironment(parsed.target, {
+        ...options,
+        ...(parsed.flags.adoptOrphan ? { adoptOrphan: true } : {}),
+      });
     } else if (parsed.command === 'reconciliation') {
       const recoveredDeployment = parsed.target
         ? await reconcileEnvironmentDeployment(parsed.target, options)
@@ -131,6 +134,10 @@ function parseArgs(argv) {
     const value = argv[index];
     if (value === '--all') {
       flags.all = true;
+      continue;
+    }
+    if (value === '--adopt-orphan') {
+      flags.adoptOrphan = true;
       continue;
     }
     const field = {

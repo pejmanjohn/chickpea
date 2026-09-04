@@ -63,7 +63,11 @@ blocked rather than passing them or repeatedly asking the same question.
    a starting point. Include indirectly affected behavior identified in review.
 2. Reuse a matching claim. Otherwise inspect `npm run env -- status --worktree
    <absolute-worktree>`, then claim one free deployed lane when needed. Never
-   borrow another task's claim. Both busy means report availability and continue
+   borrow another task's claim. A claim drops only at its `expiresAt` or by
+   its holder's own `release`. When `env status` shows a holder whose worktree
+   no longer exists, `npm run env -- reclaim <alias> --adopt-orphan` can adopt
+   it, but freeing another task's hold is the operator's decision: report the
+   holder and ask before adopting. Both busy means report availability and continue
    offline checks, not ask the operator to manufacture another environment.
 3. Prefer an initialized local workerd/HTTP lane for repeated application edits.
    Run `npm run dev:cf -- status --lane <lane>` and verify its owning worktree,

@@ -298,15 +298,24 @@ export function reclaimEnvironment(target, options = {}) {
     const previous = registry.targets[target].claim;
     if (!previous) throw fail('CLAIM_REQUIRED');
     const sameWorktree = previous.canonicalWorktreePath === worktree.path;
+    let adoptedOrphan = false;
     if (Date.parse(previous.expiresAt) > now && !sameWorktree) {
-      throw fail('TARGET_CLAIMED', publicClaim(previous, now));
+      // A live lease normally belongs to its holder until it expires or is
+      // released. The one exception is a holder whose worktree no longer
+      // exists on this host: nothing can release that claim any more, so an
+      // operator may adopt it explicitly. This is never automatic.
+      const orphaned = !(options.worktreeExists ?? existsSync)(previous.canonicalWorktreePath);
+      if (!orphaned || options.adoptOrphan !== true) {
+        throw fail('TARGET_CLAIMED', { ...publicClaim(previous, now), orphaned });
+      }
+      adoptedOrphan = true;
     }
     const nextRevision = registry.revision + 1;
     const claim = makeClaim(target, worktree, nextRevision, now, options);
     const next = structuredClone(registry);
     next.revision = nextRevision;
     next.targets[target].claim = claim;
-    next.audit.push(auditEvent('claim_reclaimed', target, now, nextRevision));
+    next.audit.push(auditEvent(adoptedOrphan ? 'claim_adopted_orphan' : 'claim_reclaimed', target, now, nextRevision));
     trimAudit(next.audit);
     validateRegistry(next, options.allowLegacyRegistryRecovery === true);
     const markerPath = environmentMarkerPath(worktree.path);
@@ -1977,7 +1986,7 @@ function validDeploymentMetadata(input, intent, registration) {
 function validateAudit(input) {
   if (!isRecord(input)
     || !exactKeys(input, ['event', 'target', 'at', 'registryRevision'])
-    || !['claim_created', 'claim_reclaimed', 'claim_released', 'target_attested', 'target_deploy_intent', 'target_deploy_aborted', 'target_deploy_pending', 'target_deployed', 'provider_auth_config_migrated'].includes(input.event)
+    || !['claim_created', 'claim_reclaimed', 'claim_adopted_orphan', 'claim_released', 'target_attested', 'target_deploy_intent', 'target_deploy_aborted', 'target_deploy_pending', 'target_deployed', 'provider_auth_config_migrated'].includes(input.event)
     || !activeEnvironmentTargets.includes(input.target)
     || !timestamp(input.at)
     || !Number.isSafeInteger(input.registryRevision) || input.registryRevision < 1) {
