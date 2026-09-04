@@ -15,6 +15,7 @@ import {
   agentAvatarUrlForPresentation,
   generatedAgentAvatarPng,
   readAgentAvatarAsset,
+  refreshLegacyAgentAvatar,
 } from '../src/slack/agent-presence/avatar-assets.ts';
 import { ConfigStoreLogic } from '../src/config/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -87,7 +88,7 @@ test('upgrade replaces legacy defaults once while preserving historical URLs and
     const before = original.getAgent('agent_default');
     const legacyPresence = {
       ...before.slackPresence!,
-      avatar: { kind: 'generated', revision: 1, seed: 'agent_default', url: 'https://gateway.test/avatars/agent_default/rev_1.png' },
+      avatar: { kind: 'generated' as const, revision: 1, seed: 'agent_default', url: 'https://gateway.test/avatars/agent_default/rev_1.png' },
     };
     // Simulate a persisted pre-upgrade row, without using the fixed create path.
     db.run('UPDATE config_agents SET slack_presence_json = ? WHERE id = ?', JSON.stringify(legacyPresence), before.id);
@@ -104,6 +105,15 @@ test('upgrade replaces legacy defaults once while preserving historical URLs and
     assert.equal(avatar.revision, 2);
     assert.ok(isDefaultAgentAvatarSeed(avatar.seed!));
     assert.equal(avatar.url, undefined);
+    const frozen = { ...before, slackPresence: legacyPresence };
+    const refreshed = refreshLegacyAgentAvatar(frozen, {
+      ...migrated, instructions: 'A later behavior edit.', model: 'openai/gpt-4o-mini',
+    });
+    assert.deepEqual(refreshed, {
+      ...frozen, slackPresence: { ...legacyPresence, avatar },
+    });
+    assert.equal(frozen.slackPresence.avatar.revision, 1);
+    assert.equal(refreshLegacyAgentAvatar(migrated, approved), migrated);
     assert.equal(agentAvatarUrlForPresentation(migrated, 'https://worker.test'), 'https://worker.test/assets/agents/agent_default/avatar/2');
     assert.deepEqual(migratedStore.getAgent(uploaded.id), uploaded);
     assert.deepEqual(migratedStore.getAgent(approved.id), approved);
@@ -118,6 +128,9 @@ test('upgrade replaces legacy defaults once while preserving historical URLs and
     const customReplacement = migratedStore.updateAgent(before.id, {
       slackPresence: { ...migrated.slackPresence!, avatar: { kind: 'uploaded', revision: 3, url: 'https://images.test/replacement.png' } },
     });
+    assert.deepEqual(refreshLegacyAgentAvatar(frozen, customReplacement).slackPresence?.avatar,
+      customReplacement.slackPresence?.avatar);
+    assert.equal(refreshLegacyAgentAvatar(customReplacement, migrated), customReplacement);
     for (const revision of [1, 2]) {
       const bytes = await readAgentAvatarAsset({ settings, agentId: before.id, revision, avatar: customReplacement.slackPresence!.avatar });
       assert.deepEqual(bytes?.bytes, revision === 1 ? historical?.bytes : current?.bytes);

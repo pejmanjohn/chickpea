@@ -50,6 +50,19 @@ export function agentAvatarUrlForPresentation(
   return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision);
 }
 
+/** Upgrade a frozen legacy default for a new turn without changing its behavior. */
+export function refreshLegacyAgentAvatar(
+  frozen: CustomAgentConfig,
+  current: CustomAgentConfig,
+): CustomAgentConfig {
+  const presence = frozen.slackPresence;
+  const avatar = current.slackPresence?.avatar;
+  if (frozen.id !== current.id || presence?.avatar.kind !== 'generated' ||
+      isDefaultAgentAvatarSeed(presence.avatar.seed ?? '') || !avatar ||
+      (avatar.kind === 'generated' && !isDefaultAgentAvatarSeed(avatar.seed ?? ''))) return frozen;
+  return { ...frozen, slackPresence: { ...presence, avatar: { ...avatar } } };
+}
+
 export async function uploadAgentAvatar(input: {
   config: ConfigStore;
   settings: SettingsStore;

@@ -145,7 +145,10 @@ import {
 import type { AuthPrincipal } from '../auth/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
 import { resolveHostSlackManagementApproval } from '../management/slack-approval.ts';
-import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
+import {
+  agentAvatarUrlForPresentation,
+  refreshLegacyAgentAvatar,
+} from '../slack/agent-presence/avatar-assets.ts';
 import { initialActivityStatus } from '../activity/status.ts';
 
 export const MAX_SLACK_INGRESS_BYTES = 1_048_576;
@@ -1213,12 +1216,6 @@ async function processSlackEvent(
     // hydrate unrelated Agent roots from the shared base-app DM history.
     turn.contextMode = 'thread';
   }
-  const assignmentAvatarUrl = await resolvedAgentAvatarUrl(
-    assignment.agent,
-    stores,
-    platformEnv,
-  );
-
   let claimsHeldByCanonicalAdmission = false;
   let canonicalRunId: string | undefined;
   let canonicalTurnJob: TurnJob | undefined;
@@ -1401,6 +1398,20 @@ async function processSlackEvent(
       releaseClassifier();
     }
   }
+
+  // Keep thread behavior frozen while adopting a migrated legacy avatar for
+  // this new turn. The admitted Run still freezes that selection for retries.
+  if (routedBaseAssignment) {
+    assignment = {
+      ...assignment,
+      agent: refreshLegacyAgentAvatar(assignment.agent, routedBaseAssignment.agent),
+    };
+  }
+  const assignmentAvatarUrl = await resolvedAgentAvatarUrl(
+    assignment.agent,
+    stores,
+    platformEnv,
+  );
 
   // Canonical Work admission stores a concrete configured model. A missing
   // model is an operator configuration error, but it must still follow the
