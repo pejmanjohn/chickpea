@@ -17,8 +17,8 @@ Use the private setup link printed by the deployment. Chickpea creates the custo
 4. Continue to Slack and choose the intended workspace. Review the requested bot permissions and select **Allow**. If the workspace requires app approval, request it and resume from the same setup page after approval.
 5. Return to setup and use **Verify and continue** after Slack accepts and saves the Events URL. Chickpea promotes the encrypted credential revision only after the exact app/team OAuth result and a revision-bound signed Slack challenge agree.
 6. Select **Become the first Owner with Slack**. The OIDC result must carry the same `team_id` as the installed app; the signed-in Slack `user_id` is bound atomically as the first Chickpea Owner.
-7. Choose the first Channel for the Default Agent. Chickpea can join a public Channel automatically. Invite it to a private Channel first, then refresh the picker.
-8. Mention `@Chickpea` in that Channel. Setup is complete only after a real threaded Slack response succeeds.
+7. Finish the in-app setup: choose a model provider and a model. A fresh deployment has no user Agent yet; `@Chickpea`, the built-in workspace assistant, answers direct messages and base mentions until you create one.
+8. Open a direct message with `@Chickpea` and ask for a first teammate, as the setup page suggests. Chickpea offers a few starters that work without any connected account; replying with a number creates that Agent. Setup is complete only after a real Slack reply from Chickpea succeeds.
 
 ## Manual adoption
 
