@@ -496,11 +496,12 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
   const setupHtml = await setupPage.text();
   check(
     setupPage.status === 200 &&
-      setupHtml.includes('Resume private setup') &&
+      setupHtml.includes('Add Chickpea to Slack') &&
+      !setupHtml.includes('Resume private setup') &&
       setupHtml.includes('/admin/setup/client.js') &&
       !/password|ownerEmail|sign up/i.test(setupHtml) &&
       !setupHtml.includes(setup.capability),
-    'fresh setup renders only the private Slack journey without password or capability echo',
+    'fresh setup GET renders the real Slack stage without password or capability echo',
     `HTTP ${setupPage.status}`,
   );
   const opened = await postForm(baseUrl, '/admin/setup', {

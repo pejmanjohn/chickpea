@@ -48,21 +48,28 @@ export function slackSetupClientScript(): string {
   var fields = document.querySelectorAll ? document.querySelectorAll("input[data-slack-setup-capability]") : [];
   for (var i = 0; i < fields.length; i += 1) fields[i].value = capability;
   var status = document.getElementById("slack-setup-status");
-  if (!capability && status) status.textContent = "This private setup link is missing or expired. Retry your deployment to create a new link.";
   var setupState = document.documentElement && document.documentElement.getAttribute
     ? document.documentElement.getAttribute("data-slack-setup-state") : "";
-  var autoResume = document.documentElement && document.documentElement.getAttribute
-    ? document.documentElement.getAttribute("data-slack-setup-auto-resume") === "true" : false;
-  if (setupState === "ambiguous_external_effect" && status) {
-    status.textContent = "Inspect your Slack apps, then adopt the matching app or explicitly restart.";
+  function announce(message) {
+    if (!status) return;
+    status.textContent = message;
+    status.hidden = false;
   }
-  var openForm = document.getElementById("slack-setup-open-form");
-  if (capability && setupState === "capability_required" && autoResume && openForm) {
-    if (status) status.textContent = "Resuming your saved Slack setup…";
-    capability = "";
-    if (openForm.requestSubmit) openForm.requestSubmit();
-    else if (openForm.submit) openForm.submit();
-    return;
+  if (!capability) {
+    announce("This private setup link is missing or expired. Retry your deployment to create a new link.");
+    var guarded = [];
+    for (var f = 0; f < fields.length; f += 1) {
+      var form = fields[f].form;
+      if (!form || guarded.indexOf(form) !== -1) continue;
+      guarded.push(form);
+      if (form.addEventListener) form.addEventListener("submit", function (event) {
+        if (event && event.preventDefault) event.preventDefault();
+      });
+      var controls = form.querySelectorAll ? form.querySelectorAll("button,input[type=submit]") : [];
+      for (var b = 0; b < controls.length; b += 1) controls[b].disabled = true;
+    }
+  } else if (setupState === "ambiguous_external_effect") {
+    announce("Inspect your Slack apps, then adopt the matching app or explicitly restart.");
   }
   capability = "";
 })();`;

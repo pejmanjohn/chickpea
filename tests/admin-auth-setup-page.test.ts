@@ -161,24 +161,50 @@ test('manual setup adopts credentials before the shared signed Events verificati
   assert.match(html, /src="\/admin\/setup\/manual\/client\.js"/);
 });
 
-test('setup refresh auto-resumes privately while rejected submissions stay user-controlled', () => {
+test('the resume bridge survives only as the user-controlled rejection fallback', () => {
   const resumable = renderSlackSetupPage({
     destination: DESTINATION, manifest: MANIFEST,
-    autoResume: true,
     notice: 'cancelled',
   });
-  assert.match(resumable, /data-slack-setup-auto-resume="true"/);
+  assert.doesNotMatch(resumable, /data-slack-setup-auto-resume/);
   assert.match(resumable, /name="notice" value="cancelled"/);
   assert.match(resumable, /Slack installation was cancelled/);
   assert.match(resumable, /id="slack-setup-open-form"/);
 
   const rejected = renderSlackSetupPage({
     destination: '/admin', manifest: MANIFEST,
-    autoResume: false,
     error: 'setup_invalid',
   });
-  assert.match(rejected, /data-slack-setup-auto-resume="false"/);
+  assert.match(rejected, /data-slack-setup-state="capability_required"/);
   assert.match(rejected, /role="alert"[^>]*tabindex="-1"/);
+});
+
+test('a known state renders the real setup stage without any transaction record', () => {
+  const fresh = renderSlackSetupPage({
+    state: 'awaiting_app_creation', destination: DESTINATION, manifest: MANIFEST,
+  });
+  assert.match(fresh, /data-slack-setup-state="awaiting_app_creation"/);
+  assert.match(fresh, /Add Chickpea to Slack/);
+  assert.doesNotMatch(fresh, /Resume private setup|id="slack-setup-open-form"/);
+  // The empty live region carries the client script's missing-capability status.
+  assert.match(fresh, /<p class="auth-status" id="slack-setup-status" role="status" aria-live="polite" hidden><\/p>/);
+
+  const installed = renderSlackSetupPage({
+    state: 'bot_install_pending', destination: DESTINATION, manifest: MANIFEST,
+  });
+  assert.match(installed, /Verify Slack Events/);
+  // Without the transaction record no app identifier reaches an unauthenticated page.
+  assert.match(installed, /href="https:\/\/api\.slack\.com\/apps"/);
+  assert.doesNotMatch(installed, /A12345678/);
+
+  const manual = renderSlackManualSetupPage({
+    state: 'awaiting_app_creation', destination: DESTINATION, manifest: MANIFEST,
+    manifestPrefillUrl: slackManifestPrefillUrl(MANIFEST),
+  });
+  assert.match(manual, /data-slack-manual-setup-state="awaiting_app_creation"/);
+  assert.match(manual, /Create Chickpea/);
+  assert.match(manual, /id="slack-setup-status"[^>]*hidden/);
+  assert.doesNotMatch(manual, /Resume manual setup/);
 });
 
 test('shared gateway failures explain safety, retry, and the customer-owned fallback', () => {

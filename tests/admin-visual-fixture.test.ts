@@ -558,8 +558,14 @@ test('Slack auth visual states render the production Slack-only journey without 
       } else if (name === 'setupCreate' || name === 'setupConnected' || name === 'setupOwner') {
         assert.match(html, /slack-provider-button/, name);
         assert.match(html, /slack-provider-logo slack-logo-image/, name);
-        if (name === 'setupOwner') assert.match(html, /role="status" aria-live="polite"/, name);
-        else assert.doesNotMatch(html, /role="status" aria-live="polite"/, name);
+        if (name === 'setupOwner') {
+          assert.match(html, /role="status" aria-live="polite">[^<]/, name);
+        } else {
+          // The hero screens carry only the empty hidden live region the setup
+          // client script uses to report a missing capability.
+          assert.match(html, /role="status" aria-live="polite" hidden><\/p>/, name);
+          assert.doesNotMatch(html, /role="status" aria-live="polite">[^<]/, name);
+        }
       } else if (name === 'ownerComplete') {
         assert.doesNotMatch(html, /role="status" aria-live="polite"/, name);
       } else {

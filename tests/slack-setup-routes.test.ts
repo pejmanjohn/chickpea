@@ -145,7 +145,10 @@ test('capability-gated Admin setup creates an app without reflecting or retainin
     const env = setupEnv(authority);
     const page = await app.request(`${ORIGIN}/admin/setup?destination=/admin/channels`, {}, env);
     assert.equal(page.status, 200);
-    assert.doesNotMatch(await page.text(), new RegExp(authority.capability));
+    const pageHtml = await page.text();
+    assert.doesNotMatch(pageHtml, new RegExp(authority.capability));
+    assert.match(pageHtml, /Add Chickpea to Slack/);
+    assert.doesNotMatch(pageHtml, /Resume private setup/);
     const client = await app.request(`${ORIGIN}/admin/setup/client.js`, {}, env);
     assert.equal(client.headers.get('content-type'), 'application/javascript; charset=UTF-8');
 
@@ -189,7 +192,9 @@ test('manual setup adopts the multiline manifest supplied by its own form', asyn
     const page = await app.request(`${ORIGIN}/admin/setup/manual`, {}, env);
     assert.equal(page.status, 200);
     const initialHtml = await page.text();
-    assert.match(initialHtml, /data-slack-manual-setup-state="capability_required"/);
+    assert.match(initialHtml, /data-slack-manual-setup-state="awaiting_app_creation"/);
+    assert.match(initialHtml, /Create Chickpea/);
+    assert.doesNotMatch(initialHtml, /Resume manual setup/);
     assert.doesNotMatch(initialHtml, new RegExp(authority.capability));
 
     const client = await app.request(`${ORIGIN}/admin/setup/manual/client.js`, {}, env);
@@ -924,6 +929,108 @@ test('revoked or expired invitation is terminal before Slack OIDC starts', async
     assert.match(await response.text(), /data-invitation-state="unavailable"/);
     assert.equal(response.headers.get('set-cookie'), null);
     assert.equal(callbackCalls, 0);
+  } finally {
+    identity.close();
+  }
+});
+
+test('setup GET renders the durable stage directly and never writes it', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const authority = await mintSetupCapability({ now: () => NOW });
+  try {
+    const app = createAdminRoutes({
+      identity,
+      slackCredentials: { state: identity, keyring: generateCredentialKeyring('key_v1') },
+      slackAppCreationNow: () => NOW,
+    });
+    const env = setupEnv(authority);
+
+    const fresh = await app.request(`${ORIGIN}/admin/setup`, {}, env);
+    const freshHtml = await fresh.text();
+    assert.equal(fresh.status, 200);
+    assert.match(freshHtml, /data-slack-setup-state="awaiting_app_creation"/);
+    assert.match(freshHtml, /Add Chickpea to Slack/);
+    assert.match(freshHtml, /data-primary-action="gateway-install"/);
+    assert.doesNotMatch(freshHtml, /Resume private setup|Continue private setup/);
+    assert.match(freshHtml, /src="\/admin\/setup\/client\.js"/);
+    assert.equal(
+      await identity.getSlackSetupTransaction('setup_default'),
+      undefined,
+      'a GET must never create the durable setup transaction',
+    );
+
+    // The first capability-bearing POST still opens the transaction.
+    const opened = await postSetup(app, env, {
+      action: 'open', capability: authority.capability, destination: '/admin/channels',
+    });
+    assert.equal(opened.status, 200);
+    const created = await identity.getSlackSetupTransaction('setup_default');
+    assert.equal(created?.state, 'awaiting_app_creation');
+
+    const returned = await app.request(
+      `${ORIGIN}/admin/setup?slack_install=waiting_events`, {}, env,
+    );
+    const returnedHtml = await returned.text();
+    assert.equal(returned.status, 200);
+    assert.match(returnedHtml, /data-slack-setup-state="awaiting_app_creation"/);
+    assert.match(returnedHtml, /waiting for Slack to deliver its signed Events challenge/);
+    assert.doesNotMatch(returnedHtml, /Resume private setup/);
+
+    const manual = await app.request(`${ORIGIN}/admin/setup/manual`, {}, env);
+    assert.match(await manual.text(), /data-slack-manual-setup-state="awaiting_app_creation"/);
+
+    const unchanged = await identity.getSlackSetupTransaction('setup_default');
+    assert.deepEqual(unchanged, created, 'no GET may advance the durable setup');
+  } finally {
+    identity.close();
+  }
+});
+
+test('setup GET reflects a later durable stage without exposing app identifiers', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const authority = await mintSetupCapability({ now: () => NOW });
+  try {
+    const app = createAdminRoutes({
+      identity,
+      slackCredentials: { state: identity, keyring: generateCredentialKeyring('key_v1') },
+      slackAppCreationNow: () => NOW,
+    });
+    const env = setupEnv(authority);
+    const adopted = await postManualSetup(app, env, {
+      action: 'adopt', capability: authority.capability,
+      appId: 'A12345678', clientId: '123.456',
+      clientSecret: 'route-client-secret-value', signingSecret: 'route-signing-secret-value',
+      observedManifest: JSON.stringify(buildExpectedManifest(), null, 2),
+    });
+    assert.equal(adopted.status, 303);
+    const before = await identity.getSlackSetupTransaction('setup_default');
+    assert.equal(before?.state, 'app_created');
+
+    const page = await app.request(`${ORIGIN}/admin/setup`, {}, env);
+    const html = await page.text();
+    assert.equal(page.status, 200);
+    assert.match(html, /data-slack-setup-state="app_created"/);
+    assert.match(html, /Install Chickpea in Slack/);
+    assert.doesNotMatch(html, /A12345678|route-client-secret-value|route-signing-secret-value/);
+    assert.doesNotMatch(html, new RegExp(authority.capability));
+    assert.deepEqual(await identity.getSlackSetupTransaction('setup_default'), before);
+  } finally {
+    identity.close();
+  }
+});
+
+test('setup GET stays absent without this deployment capability authority', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const authority = await mintSetupCapability({ now: () => NOW });
+  try {
+    const app = createAdminRoutes({ identity, slackAppCreationNow: () => NOW });
+    assert.equal((await app.request(`${ORIGIN}/admin/setup`)).status, 404);
+    assert.equal((await app.request(`${ORIGIN}/admin/setup`, {}, {
+      CHICKPEA_SETUP_CAPABILITY_DIGEST: authority.digest,
+    })).status, 404);
+    assert.equal((await app.request(`${ORIGIN}/admin/setup`, {}, {
+      CHICKPEA_SETUP_CAPABILITY_ISSUED_AT: String(NOW),
+    })).status, 404);
   } finally {
     identity.close();
   }

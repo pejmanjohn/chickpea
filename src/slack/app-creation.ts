@@ -46,6 +46,33 @@ interface SlackSetupAuthority {
   issuedAt: number;
 }
 
+/** One deployment owns exactly one durable Slack setup transaction. */
+export const SLACK_SETUP_TRANSACTION_ID = 'setup_default';
+
+/**
+ * Read-only public view of this deployment's setup, gated by the deployment
+ * setup digest alone. It never creates, advances, or consumes the transaction
+ * and returns nothing derived from the setup secret: only the state name and
+ * the already-validated Admin destination.
+ */
+export async function readSlackSetupPublicState(
+  store: IdentityStore,
+  input: { authority: SlackSetupAuthority; now?: () => number },
+): Promise<{ state: SlackSetupTransaction['state']; destination: string } | undefined> {
+  const now = input.now?.() ?? Date.now();
+  if (!Number.isSafeInteger(input.authority.issuedAt) ||
+      input.authority.issuedAt > now + SETUP_CAPABILITY_CLOCK_SKEW_MS ||
+      now >= input.authority.issuedAt + SLACK_SETUP_TTL_MS) return undefined;
+  const transaction = await store.getSlackSetupTransaction(SLACK_SETUP_TRANSACTION_ID);
+  if (!transaction) return undefined;
+  // A lapsed transaction is renewed by the next capability-verified POST, so
+  // preview the stage that reservation restores instead of the interim state.
+  const state = transaction.state === 'expired'
+    ? transaction.appId ? 'app_created' : 'awaiting_app_creation'
+    : transaction.state;
+  return { state, destination: transaction.destination };
+}
+
 export async function openSlackSetupTransaction(
   store: IdentityStore,
   input: {

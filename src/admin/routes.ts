@@ -422,6 +422,7 @@ import {
 } from '../slack/app-manifest.ts';
 import {
   openSlackSetupTransaction,
+  readSlackSetupPublicState,
   SlackAppCreationError,
   SlackAppCreationService,
 } from '../slack/app-creation.ts';
@@ -3180,6 +3181,23 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.use('/admin/setup/*', authSetupBodyLimit);
   app.use('/admin/recovery', authSetupBodyLimit);
 
+  // The deployment digest alone identifies this deployment's single durable
+  // setup transaction. Its public state name carries no secret, so the setup
+  // pages can render the real stage before any capability-bearing POST.
+  const publicSetupState = async (
+    c: Context,
+    authority: { digest: string; issuedAt: number },
+  ): Promise<{ state: SlackSetupTransaction['state']; destination: string } | undefined> => {
+    try {
+      return await readSlackSetupPublicState(identity(c), {
+        authority,
+        ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
+      });
+    } catch {
+      return undefined;
+    }
+  };
+
   app.get('/admin/setup/client.js', (c) => {
     authResponseHeaders(c);
     c.header('Content-Type', 'application/javascript; charset=UTF-8');
@@ -3217,11 +3235,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
     const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
+    // Read-only: the durable setup is never created or advanced by a GET.
+    const current = await publicSetupState(c, capability);
     return c.html(renderSlackManualSetupPage({
-      destination: safeSetupDestination(c.req.query('destination') ?? '/admin/onboarding'),
+      state: current?.state ?? 'awaiting_app_creation',
+      destination: current?.destination ??
+        safeSetupDestination(c.req.query('destination') ?? '/admin/onboarding'),
       manifest,
       manifestPrefillUrl: slackManifestPrefillUrl(manifest),
-      autoResume: true,
     }));
   });
 
@@ -3340,10 +3361,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       gatewayState = 'error';
     }
     const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
+    // Read-only: the durable setup is never created or advanced by a GET. The
+    // capability itself stays in the fragment and is bound to each POST only.
+    const current = await publicSetupState(c, capability);
     return c.html(renderSlackSetupPage({
-      destination: safeSetupDestination(c.req.query('destination') ?? '/admin/onboarding'),
+      state: current?.state ?? 'awaiting_app_creation',
+      destination: current?.destination ??
+        safeSetupDestination(c.req.query('destination') ?? '/admin/onboarding'),
       manifest,
-      autoResume: true,
       gatewayState,
       ...(installStatus ? { notice: installStatus } : {}),
     }));

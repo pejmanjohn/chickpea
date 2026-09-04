@@ -140,8 +140,10 @@ function renderSlackJourneyPage(input: {
   const alert = input.alert
     ? `<div class="auth-alert" id="auth-error" role="alert" tabindex="-1">${escapeHtml(input.alert)}</div>`
     : '';
-  const status = input.status
-    ? `<p class="auth-status"${input.statusId ? ` id="${escapeHtml(input.statusId)}"` : ''} role="status" aria-live="polite">${escapeHtml(input.status)}</p>`
+  // An empty status still renders its hidden live region so the setup client
+  // script can surface a missing-capability message without reserving layout.
+  const status = input.status !== undefined
+    ? `<p class="auth-status"${input.statusId ? ` id="${escapeHtml(input.statusId)}"` : ''} role="status" aria-live="polite"${input.status ? '' : ' hidden'}>${escapeHtml(input.status)}</p>`
     : '';
   const title = input.titleSuccess
     ? `<div class="auth-title-line"><span class="auth-title-success" aria-hidden="true">&#10003;</span><h1 class="auth-title" id="auth-title">${escapeHtml(input.title)}</h1></div>`
@@ -288,13 +290,13 @@ export function renderSlackInvitationUnavailablePage(): string {
 /** Guided app adoption; the shared install flow verifies Events after credentials exist. */
 export function renderSlackManualSetupPage(input: {
   setup?: SlackSetupTransaction;
+  state?: SlackSetupTransaction['state'];
   destination: string;
   manifest: SlackAppManifest;
   manifestPrefillUrl: string;
   error?: string;
-  autoResume?: boolean;
 }): string {
-  const state = input.setup?.state ?? 'capability_required';
+  const state = input.setup?.state ?? input.state ?? 'capability_required';
   const destination = safeSlackPageDestination(input.destination);
   const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtml(destination)}">`;
   const manifestJson = escapeHtml(JSON.stringify(input.manifest, null, 2));
@@ -305,7 +307,7 @@ export function renderSlackManualSetupPage(input: {
   const capabilityPanel = `<section class="onboarding-panel" data-manual-step-panel="create"><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Resume manual setup</h1><p class="onboarding-lede" id="slack-setup-status">Reading the private setup capability from this browser tab.</p><form id="slack-setup-open-form" method="post" action="/admin/setup/manual"><input type="hidden" name="action" value="open">${hidden}<button class="btn btn-primary" type="submit">Continue manual setup</button></form></section>`;
   const createPanelHidden = initialStep === 'create' ? '' : ' hidden';
   const userGroupPrerequisite = `<aside class="onboarding-prerequisite" role="note" aria-label="Agent handle permissions"><h2 class="onboarding-prerequisite-title">Before creating Agent @handles</h2><p>The manifest already requests <code>usergroups:read</code> and <code>usergroups:write</code>. Slack also requires a paid plan and a separate workspace permission that a manifest cannot change.</p><p>In the intended Slack workspace, ask an Owner or Admin to open <strong>Roles &amp; permissions → Account types → Create and edit user groups</strong>, allow <strong>Members</strong>, and save. This permits workspace members, not just Chickpea, to manage user groups. If your organization locks this setting, ask an Org Owner.</p></aside>`;
-  const createPanel = `<section class="onboarding-panel" data-manual-step-panel="create"${createPanelHidden}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Create Chickpea</h1><p class="onboarding-lede">Slack opens in a new tab. Come back here after Chickpea is created.</p>${userGroupPrerequisite}<div class="onboarding-instructions">${manualSlackInstruction(1, 'Choose your workspace, then click Next.', '', 'create-workspace', 'onboarding-shot-viewport', 'Slack Create from manifest screen with the workspace picker and Next button')}${manualSlackInstruction(2, 'Review Chickpea, then click Create and Install.', '', 'create-review', 'onboarding-shot-viewport', 'Slack app review screen showing Chickpea permissions and Create and Install')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="credentials">Already created the app? Add its credentials</button><a class="btn btn-primary" href="${escapeHtml(input.manifestPrefillUrl)}" target="_blank" rel="noreferrer" data-manual-step-target="finish"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Create Chickpea in Slack <span aria-hidden="true">↗</span></a></div></section>`;
+  const createPanel = `<section class="onboarding-panel" data-manual-step-panel="create"${createPanelHidden}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Create Chickpea</h1><p class="onboarding-lede">Slack opens in a new tab. Come back here after Chickpea is created.</p><p class="onboarding-lede" id="slack-setup-status" role="status" aria-live="polite" hidden></p>${userGroupPrerequisite}<div class="onboarding-instructions">${manualSlackInstruction(1, 'Choose your workspace, then click Next.', '', 'create-workspace', 'onboarding-shot-viewport', 'Slack Create from manifest screen with the workspace picker and Next button')}${manualSlackInstruction(2, 'Review Chickpea, then click Create and Install.', '', 'create-review', 'onboarding-shot-viewport', 'Slack app review screen showing Chickpea permissions and Create and Install')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="credentials">Already created the app? Add its credentials</button><a class="btn btn-primary" href="${escapeHtml(input.manifestPrefillUrl)}" target="_blank" rel="noreferrer" data-manual-step-target="finish"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Create Chickpea in Slack <span aria-hidden="true">↗</span></a></div></section>`;
   const finishPanel = `<section class="onboarding-panel" data-manual-step-panel="finish" hidden><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Finish creating Chickpea</h1><p class="onboarding-lede">Two quick actions in the Slack tab you just opened.</p><div class="onboarding-instructions">${manualSlackInstruction(1, 'Review the permissions, then click Allow.', '', 'allow', 'onboarding-shot-focused', 'Slack permission approval screen with the Allow button')}${manualSlackInstruction(2, 'When Slack says Chickpea is ready, click Go to App Settings.', '', 'ready', 'onboarding-shot-ready', 'Slack Chickpea is ready dialog with the Go to App Settings button')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="create">Back</button><button class="btn btn-primary" type="button" data-manual-step-target="credentials">Next: Add app credentials</button></div></section>`;
   const credentialsPanel = `<section class="onboarding-panel" data-manual-step-panel="credentials"${initialStep === 'credentials' ? '' : ' hidden'}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Add app credentials</h1><p class="onboarding-lede">Paste these values once. Chickpea validates the app, encrypts its credentials, and then uses Slack OAuth for the bot token and installer identity. You’ll verify the Events URL after Slack installation.</p><a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">↗</span></a><form class="onboarding-credential-form" method="post" action="/admin/setup/manual"><input type="hidden" name="action" value="adopt">${hidden}<section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In Basic Information, copy the app credentials.</span></h2><div class="onboarding-credential-grid"><div class="onboarding-shot onboarding-shot-secret"><img src="/onboarding/signing-secret.webp" alt="Slack Basic Information showing the Signing Secret" loading="lazy" decoding="async"></div><div class="onboarding-credential-help"><label class="field" for="manual-app-id"><span class="field-label">App ID</span><input class="input mono" id="manual-app-id" name="appId" type="text" autocomplete="off" maxlength="64" required></label><label class="field" for="manual-client-id"><span class="field-label">Client ID</span><input class="input mono" id="manual-client-id" name="clientId" type="text" autocomplete="off" maxlength="256" required></label><label class="field" for="manual-client-secret"><span class="field-label">Client Secret</span><input class="input mono" id="manual-client-secret" name="clientSecret" type="password" autocomplete="off" maxlength="4096" required></label><label class="field" for="manual-signing-secret"><span class="field-label">Signing Secret</span><span class="onboarding-credential-subtext">Use Signing Secret — not Client Secret.</span><input class="input mono" id="manual-signing-secret" name="signingSecret" type="password" autocomplete="off" maxlength="4096" required></label></div></div></section><section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">2</span><span>Export the app manifest as JSON and paste it here.</span></h2><label class="field" for="manual-manifest"><span class="field-label">Exported app manifest (JSON)</span><textarea class="input mono" id="manual-manifest" name="observedManifest" maxlength="7500" required>${manifestJson}</textarea></label></section>${alert}<div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="finish">Back</button><button class="btn btn-primary" type="submit">Validate and continue</button></div></form></section>`;
   const panels = state === 'capability_required'
@@ -313,7 +315,7 @@ export function renderSlackManualSetupPage(input: {
     : state === 'awaiting_app_creation'
       ? `${createPanel}${finishPanel}${credentialsPanel}`
       : `<section class="onboarding-panel" data-manual-step-panel="create"><p class="onboarding-eyebrow">Manual setup</p><h1 class="onboarding-title" tabindex="-1">Continue shared setup</h1><p class="onboarding-lede">The app is ready. Continue with the encrypted Slack installation and Owner verification.</p><div class="onboarding-actions"><a class="btn btn-primary" href="/admin/setup">Continue setup</a></div></section>`;
-  return `<!doctype html><html lang="en" data-slack-manual-setup-state="${escapeHtml(state)}" data-slack-setup-state="${escapeHtml(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}" data-manual-initial-step="${initialStep}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Chickpea · Manual Slack setup</title>${CHICKPEA_FAVICON_HTML}<style>${SLACK_MANUAL_SETUP_CSS}</style></head><body><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">${AUTH_BRAND_HTML}<span class="onboarding-environment">private setup</span></div><ol class="onboarding-orientation" role="list" aria-label="Onboarding progress"><li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Connect Slack</span></li><li><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li><li><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li><li><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol><div class="onboarding-stage" aria-live="polite">${panels}</div></div></main><script src="/admin/setup/manual/client.js" defer></script></body></html>`;
+  return `<!doctype html><html lang="en" data-slack-manual-setup-state="${escapeHtml(state)}" data-slack-setup-state="${escapeHtml(state)}" data-manual-initial-step="${initialStep}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Chickpea · Manual Slack setup</title>${CHICKPEA_FAVICON_HTML}<style>${SLACK_MANUAL_SETUP_CSS}</style></head><body><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">${AUTH_BRAND_HTML}<span class="onboarding-environment">private setup</span></div><ol class="onboarding-orientation" role="list" aria-label="Onboarding progress"><li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Connect Slack</span></li><li><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li><li><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li><li><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol><div class="onboarding-stage" aria-live="polite">${panels}</div></div></main><script src="/admin/setup/manual/client.js" defer></script></body></html>`;
 }
 
 function manualSlackInstruction(
@@ -338,14 +340,14 @@ const SLACK_MANUAL_SETUP_CSS = `
 
 export function renderSlackSetupPage(input: {
   setup?: SlackSetupTransaction;
+  state?: SlackSetupTransaction['state'];
   destination: string;
   manifest: SlackAppManifest;
   notice?: string;
   error?: string;
-  autoResume?: boolean;
   gatewayState?: 'disconnected' | 'pending' | 'connected' | 'error';
 }): string {
-  const state = input.setup?.state ?? 'capability_required';
+  const state = input.setup?.state ?? input.state ?? 'capability_required';
   const destination = safeSlackPageDestination(input.destination);
   const notice = input.notice ? slackSetupPageMessage(input.notice) : undefined;
   const error = input.error ? slackSetupPageMessage(input.error) : undefined;
@@ -412,9 +414,10 @@ export function renderSlackSetupPage(input: {
     ...(state === 'awaiting_app_creation' && input.gatewayState === 'connected'
       ? { titleSuccess: true }
       : {}),
-    ...(state === 'awaiting_app_creation' ? {} : { status: slackSetupPageMessage(state) }),
+    status: state === 'awaiting_app_creation' ? '' : slackSetupPageMessage(state),
+    statusId: 'slack-setup-status',
     alert: error ?? notice,
-    rootAttributes: `data-slack-setup-state="${escapeHtml(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}"`,
+    rootAttributes: `data-slack-setup-state="${escapeHtml(state)}"`,
     body: `${body}<script src="/admin/setup/client.js" defer></script>`,
   });
 }
