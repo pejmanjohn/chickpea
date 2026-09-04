@@ -1,6 +1,6 @@
 import type { SettingsStore } from '../../config/settings-store.ts';
 import type { ConfigStore } from '../../config/store.ts';
-import type { CustomAgentConfig } from '../../config/types.ts';
+import type { AgentAvatarRevision, CustomAgentConfig } from '../../config/types.ts';
 import {
   defaultAgentAvatarPng,
   isDefaultAgentAvatarSeed,
@@ -106,7 +106,9 @@ export async function readAgentAvatarAsset(input: {
   agentId: string;
   revision: number;
   seed?: string;
+  avatar?: AgentAvatarRevision;
 }): Promise<{ contentType: string; bytes: Uint8Array } | undefined> {
+  if (input.avatar && input.revision > input.avatar.revision) return undefined;
   const stored = await input.settings.getSetting(avatarAssetKey(input.agentId, input.revision));
   if (stored) {
     try {
@@ -124,20 +126,21 @@ export async function readAgentAvatarAsset(input: {
   }
   // Generated revisions are public, immutable PNGs so Slack can fetch the
   // selected default through the same path as an uploaded replacement.
+  const historical = input.avatar?.generatedSeedHistory?.find(
+    ({ throughRevision }) => input.revision <= throughRevision,
+  );
+  const seed = historical?.seed ?? input.avatar?.seed ?? input.seed ?? input.agentId;
+  if (input.avatar?.kind === 'uploaded' && !historical) return undefined;
   return {
     contentType: 'image/png',
-    bytes: await generatedAgentAvatarPng(
-      input.seed && isDefaultAgentAvatarSeed(input.seed)
-        ? input.seed
-        : `${input.agentId}:${input.revision}`,
-    ),
+    bytes: historical && !isDefaultAgentAvatarSeed(seed)
+      ? await legacyGeneratedAgentAvatarPng(`${input.agentId}:${input.revision}`)
+      : await generatedAgentAvatarPng(seed),
   };
 }
 
 export async function generatedAgentAvatarPng(seed: string): Promise<Uint8Array> {
-  return isDefaultAgentAvatarSeed(seed)
-    ? defaultAgentAvatarPng(seed)
-    : legacyGeneratedAgentAvatarPng(seed);
+  return defaultAgentAvatarPng(seed);
 }
 
 /** Preserve bytes already published at immutable legacy revision URLs. */

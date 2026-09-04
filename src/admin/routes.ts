@@ -3961,9 +3961,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         settings: settings(c),
         agentId,
         revision,
-        ...(agent.slackPresence?.avatar.seed
-          ? { seed: agent.slackPresence.avatar.seed }
-          : {}),
+        ...(agent.slackPresence ? { avatar: agent.slackPresence.avatar } : {}),
       });
       if (!asset) return c.notFound();
       c.header('Content-Type', asset.contentType);

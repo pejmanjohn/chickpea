@@ -39,7 +39,7 @@ function agent(apiConnections: ApiConnectionConfig[]): CustomAgentConfig {
       normalizedHandle: 'api-connections',
       desiredState: 'unpublished',
       health: 'unpublished',
-      avatar: { kind: 'generated', revision: 1, seed: 'agent_api_connections' },
+      avatar: { kind: 'generated', revision: 1, seed: 'chickpea-avatar-v1:12:agent_api_connections' },
     },
     model: 'local-stub/api-connections',
     skills: [],
