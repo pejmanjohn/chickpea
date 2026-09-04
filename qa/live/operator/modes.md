@@ -124,6 +124,29 @@ dependent check. Complete the rest and report the gap.
   **Open message** link to Slack. Inspect immutable channel IDs when display
   labels disagree; record the discrepancy rather than assuming wrong delivery.
 
+### Slack desktop through Computer Use
+
+When the Chrome extension is unavailable, the Slack desktop app under background
+Computer Use control works for every journey above. Facts that cost time to learn:
+
+- Grant "Slack" once; the invocation covers it. The window title is withheld, so
+  target it by `window_id` from the window list. Switch workspaces through the
+  accessibility tab named for the lane ("Chickpea Cobalt").
+- The sidebar row for Chickpea under Agents & apps does not open the DM on an
+  accessibility press; the toolbar button "Open Chickpea" does. Thread "N
+  replies" links open through their accessibility index, not by coordinate.
+- Click the composer, then type in one operation. The raw-keystroke fallback can
+  duplicate the whole message; take a screenshot before sending and replace the
+  field (click on the text itself, then type with overwrite) if it doubled.
+  Send with the composer's send button rather than Return, which is refused
+  while a native dialog is attached to Slack.
+- Typing `@handle` as plain text still becomes a real mention on send. That
+  hands the thread to that Agent, which is often the point, but it means an
+  explicit `@Chickpea` is required to get Chickpea back in a thread another
+  Agent owns.
+- Replies take 15 to 40 seconds. Wait with a background `until` timer and a
+  fresh screenshot, then read the thread pane at full scale for exact text.
+
 These steps reduce navigation and setup; they do not replace the case assertions
 or turn an initial failure into a first-attempt pass. Keep the initial outcome
 and the changed procedure or product fix next to each targeted retest result.

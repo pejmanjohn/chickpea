@@ -213,3 +213,19 @@ Keep raw logs, account coordinates, activation/access details, incident records,
 and screenshots outside the public repository and package. Redact before sharing.
 Runtime observability is separate from [PostHog product analytics](../../TELEMETRY.md),
 whose closed, anonymous event contract must not receive operational logs or IDs.
+
+## Reading a bounded `wrangler tail`
+
+`npx wrangler tail <worker> --format json` prints pretty-printed JSON objects
+back to back, not one object per line. Split the capture on top-level braces
+before filtering. Each object carries `entrypoint` (`TagStateStore` for the
+state Durable Object), `logs[].message[]`, `exceptions[]`, and `outcome`.
+Ignore `[chickpea:activity]` refresh, queue, and rate events when hunting a
+stall; they fire on every poll.
+
+A run that keeps logging `memory_metric {"event":"delivery_lease","outcome":"rejected"}`
+every few seconds has not failed: it is waiting for the thread's delivery lease
+held by another run or incarnation and will look like "Thinking…" in Slack.
+Record the thread, its route owner, and the triggering message, then diagnose
+from `src/slack/claim-store.ts` rather than resending the request.
+

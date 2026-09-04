@@ -87,12 +87,19 @@ not exist. This one-time bootstrap must not claim guarded-deployment readiness:
 the guard requires both authority endpoints and complete registrations.
 Keep creation receipts, provision independent secrets, install through Add to
 Slack, and verify real UI behavior before recording baselines. Once registered,
-use the claimed target and guarded wrapper for every deployment.
+use the claimed target and guarded wrapper for every deployment. With a claim
+marker present, the wrapper resolves the registered AUTH_DB ID and schema
+generation itself; `CHICKPEA_DEPLOY_AUTH_DB_ID` and
+`CHICKPEA_DEPLOY_SCHEMA_GENERATION` only need setting to override them.
 
 Provision a separate 32-byte random base64url read token (43 characters) in the
 Worker's `CHICKPEA_ENV_AUTHORITY_READ_TOKEN` and the host's corresponding
 `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_READ_TOKEN`; the host URL is
-`CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_URL`. Keep these values owner-only outside
+`CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_URL` (the Worker origin plus
+`/internal/environment/authority`). When those variables are absent, the
+preflight reads the owner-only file `~/.chickpea/lane-credentials/<color>-live.json`
+with `origin` and `authorityReadToken`. The preflight needs every active lane's
+credential, not only the claimed lane's. Keep these values owner-only outside
 the repository. They are not Slack credentials. Invalid token shapes fail
 locally before any authority request.
 

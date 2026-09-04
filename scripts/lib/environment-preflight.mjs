@@ -15,7 +15,7 @@ import {
   unlinkSync,
   writeSync,
 } from 'node:fs';
-import { hostname } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import path, { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -1580,6 +1580,7 @@ export async function observeProductionEnvironmentAuthority(context, options = {
     ?? ((request) => readProductionFleetRuntimeAuthorities(request, {
       env,
       fetchImpl: options.fetchImpl ?? fetch,
+      ...(options.credentialsRoot ? { credentialsRoot: options.credentialsRoot } : {}),
     }));
   const runtimeAuthorities = await readFleetRuntimeAuthorities({
     target,
@@ -1774,11 +1775,43 @@ function validateProviderContext(input) {
   return Object.freeze(normalized);
 }
 
-async function readProductionFleetRuntimeAuthorities(_request, { env, fetchImpl }) {
+/**
+ * Resolve one lane's live-authority read credential. Host environment
+ * variables win; otherwise the owner-only lane credential file
+ * `<credentialsRoot>/<target>-live.json` (`~/.chickpea/lane-credentials` by
+ * default) supplies `authorityReadToken` and `origin`, with the authority path
+ * appended. The token never leaves this process and is never logged.
+ */
+export function resolveLaneAuthorityCredentials(target, options = {}) {
+  const env = options.env ?? process.env;
+  const prefix = `CHICKPEA_ENV_${target.toUpperCase()}_LIVE_AUTHORITY`;
+  let url = env[`${prefix}_URL`];
+  let token = env[`${prefix}_READ_TOKEN`];
+  if (typeof token === 'string' && token.trim() && typeof url === 'string' && url.trim()) {
+    return { url, token, source: 'environment' };
+  }
+  const root = options.credentialsRoot ?? join(homedir(), '.chickpea', 'lane-credentials');
+  let file;
+  try {
+    file = JSON.parse(readFileSync(join(root, `${target}-live.json`), 'utf8'));
+  } catch {
+    return { url, token, source: 'environment' };
+  }
+  const fileToken = typeof file?.authorityReadToken === 'string' ? file.authorityReadToken : undefined;
+  const fileOrigin = typeof file?.origin === 'string' ? file.origin.replace(/\/+$/u, '') : undefined;
+  if (typeof token !== 'string' || !token.trim()) token = fileToken;
+  if (typeof url !== 'string' || !url.trim()) {
+    url = fileOrigin ? `${fileOrigin}/internal/environment/authority` : undefined;
+  }
+  return { url, token, source: 'lane-credentials' };
+}
+
+async function readProductionFleetRuntimeAuthorities(_request, { env, fetchImpl, credentialsRoot }) {
   const endpoints = activeEnvironmentTargets.map((target) => {
-    const prefix = `CHICKPEA_ENV_${target.toUpperCase()}_LIVE_AUTHORITY`;
-    const url = env[`${prefix}_URL`];
-    const token = env[`${prefix}_READ_TOKEN`];
+    const { url, token } = resolveLaneAuthorityCredentials(target, {
+      env,
+      ...(credentialsRoot ? { credentialsRoot } : {}),
+    });
     if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(token)) {
       throw fail('LIVE_AUTHORITY_READ_TOKEN_INVALID', { target });
     }
