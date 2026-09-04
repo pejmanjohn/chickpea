@@ -11,6 +11,7 @@ import {
   getConfigStore,
   getMemoryStateStore,
 } from '../src/config/state-backend.ts';
+import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { prepareMemoryTurn } from '../src/memory/runtime.ts';
@@ -328,6 +329,103 @@ test('an ordinary stale Slack group mapping repairs into the Agent memory path',
     assert.deepEqual(prepared.footerItems, []);
     assert.equal(prepared.selection.entries[0]?.entry.agentId, agent.id);
     assert.equal((await config.getAgent(agent.id)).slackPresence?.userGroupId, 'SREPAIRED');
+    assert.equal(await prepared.validateLease(), true);
+  } finally {
+    closeNodeStateStores();
+    if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;
+    else process.env.SLACK_STATE_DB_PATH = previousStatePath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('an explicit Chickpea mention inside a DM keeps a valid delivery lease', async () => {
+  // Cobalt 2026-09-04: "@Chickpea archive the Brief agent" typed in a DM
+  // thread normalized to `app_mention`, was recovered as a workspace-management
+  // turn, and that lease validator rejects every im conversation. The rejected
+  // lease left the relay job pending, so the alarm re-armed every couple of
+  // seconds behind a permanent "Thinking…" status.
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-dm-management-memory-'));
+  const statePath = join(directory, 'state.sqlite');
+  const previousStatePath = process.env.SLACK_STATE_DB_PATH;
+  process.env.SLACK_STATE_DB_PATH = statePath;
+  closeNodeStateStores();
+  try {
+    const config = getConfigStore();
+    const userAgent = await config.createAgent(createDemoStarterAgent());
+    const installed = await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_DM_MANAGEMENT',
+      teamId: 'T_DM_MANAGEMENT',
+      transportMode: 'direct',
+      runtimeContract: 'legacy',
+      defaultAgentId: userAgent.id,
+      botUserId: 'U_CHICKPEA',
+    });
+    const healthy = await config.updateWorkspaceInstallation('T_DM_MANAGEMENT', {
+      health: 'healthy',
+    }, installed.revision);
+    const workspaceDefault = await config.putWorkspaceModelDefault({
+      workspaceId: 'T_DM_MANAGEMENT',
+      modelId: 'local-stub/dm-management',
+      provenance: 'admin_selected',
+    }, 1);
+    await config.activateChickpeaCutover({
+      workspaceId: 'T_DM_MANAGEMENT',
+      expectedInstallationRevision: healthy.revision,
+      expectedDefaultRevision: workspaceDefault.revision,
+      defaultReady: true,
+    });
+
+    const turn: NormalizedSlackTurn = {
+      workspaceId: 'T_DM_MANAGEMENT',
+      channelId: 'D_MANAGEMENT',
+      eventId: 'Ev-dm-management',
+      // The live message duplicated its own sentence; the leading mention is
+      // what steers the recovery branch either way.
+      text: '<@U_CHICKPEA> archive the Brief agent. <@U_CHICKPEA> archive the Brief agent.',
+      userId: 'U_MEMBER',
+      messageTs: '300.5',
+      threadTs: '300.1',
+      source: 'app_mention',
+      channelType: 'im',
+      contextMode: 'thread',
+    };
+    const routed = await resolveAgentRoute({
+      turn,
+      surface: 'direct',
+      actor: { channelMember: true, fullMember: true },
+      config,
+    });
+    assert.equal(routed.kind, 'routed');
+    if (routed.kind !== 'routed') return;
+    assert.equal(routed.assignment.agentId, CHICKPEA_AGENT_ID);
+    // A DM never carries the workspace-management interaction marker.
+    assert.equal(routed.assignment.interactionMode, undefined);
+
+    const client = {
+      auth: { test: async () => ({ user_id: 'U_CHICKPEA' }) },
+      conversations: {
+        info: async () => ({
+          channel: {
+            id: turn.channelId,
+            context_team_id: turn.workspaceId,
+            is_im: true,
+            is_member: true,
+          },
+        }),
+        members: async () => ({ members: [turn.userId, 'U_CHICKPEA'] }),
+      },
+      users: {
+        info: async () => ({ user: { id: turn.userId, team_id: turn.workspaceId } }),
+      },
+    } as unknown as WebClient;
+    const prepared = await prepareMemoryTurn({
+      turn,
+      assignment: routed.assignment,
+      client,
+      botUserId: 'U_CHICKPEA',
+      platformEnv: undefined,
+    });
+    assert.doesNotMatch(prepared.conversationKey, /:workspace-management$/);
     assert.equal(await prepared.validateLease(), true);
   } finally {
     closeNodeStateStores();

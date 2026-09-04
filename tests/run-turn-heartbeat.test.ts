@@ -23,7 +23,10 @@ import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
-import { SANDBOX_UNAVAILABLE_FALLBACK_NOTICE } from '../src/slack/web-client-presenter.ts';
+import {
+  AGENT_FAILURE_TEXT,
+  SANDBOX_UNAVAILABLE_FALLBACK_NOTICE,
+} from '../src/slack/web-client-presenter.ts';
 import { SLACK_SELF_MENTION_PLACEHOLDER } from '../src/slack/web-client-context.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
@@ -1886,4 +1889,63 @@ test('a frozen Cloudflare plan narrows unsettled dispatches when its live bindin
   }
   assert.match(JSON.stringify(finalPayloads), new RegExp(SANDBOX_UNAVAILABLE_FALLBACK_NOTICE));
   assert.doesNotMatch(JSON.stringify(finalPayloads), /control-plane|binding|credential|token/i);
+});
+
+test('runTurn fails a lease-rejected turn closed instead of returning silently', async () => {
+  // The Cobalt stall: the pre-run owner-lease fence returned without any
+  // delivery, so the durable relay never tombstoned the job and kept re-arming
+  // its alarm behind a live "Thinking…" status.
+  const fencedAssignment: ResolvedAssignment = {
+    ...assignment,
+    channelId: 'C_FENCE',
+  };
+  const fencedTurn: NormalizedSlackTurn = {
+    workspaceId: fencedAssignment.workspaceId,
+    channelId: fencedAssignment.channelId,
+    eventId: 'Ev_LEASE_FENCE',
+    text: '<@U_CHICKPEA> archive the Brief agent.',
+    userId: 'U_HEARTBEAT',
+    messageTs: '1785509100.000100',
+    threadTs: '1785509100.000100',
+    source: 'app_mention',
+    channelType: 'channel',
+    contextMode: 'thread',
+  };
+  const posted: string[] = [];
+  const deliveries: (string | undefined)[] = [];
+  const client = {
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      postMessage: async (input: { text?: string }) => {
+        if (input.text) posted.push(input.text);
+        return { ok: true, channel: fencedTurn.channelId, ts: 'fence-ts' };
+      },
+      update: async () => ({ ok: true }),
+      startStream: async (input: Record<string, unknown>) => {
+        const streamed = input.markdown_text ?? input.text;
+        if (typeof streamed === 'string') posted.push(streamed);
+        return { ok: true, ts: 'fence-final-ts' };
+      },
+      appendStream: async () => ({ ok: true }),
+      stopStream: async () => ({ ok: true }),
+    },
+  } as unknown as WebClient;
+
+  await runTurn(fencedTurn, fencedAssignment, undefined, {
+    client,
+    usageRecordingEnabled: false,
+    onDelivered: (outcome) => {
+      deliveries.push(outcome);
+    },
+  });
+
+  // Bounded and visible: exactly one terminal delivery outcome the relay can
+  // tombstone, plus a sanitized final in Slack.
+  assert.deepEqual(deliveries, ['failed']);
+  assert.ok(
+    posted.some((text) => text.includes(AGENT_FAILURE_TEXT)),
+    `expected a sanitized final, saw ${JSON.stringify(posted)}`,
+  );
 });

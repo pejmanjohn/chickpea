@@ -791,7 +791,18 @@ export async function runTurn(
     // Owner-native memory is authorized live, independently of the frozen
     // config snapshot. Fence every visible Slack effect as well as model/tool
     // execution when the selected owner lease has already gone stale.
-    if (preparedMemory?.ownerBound && !(await preparedMemory.validateLease())) return;
+    if (preparedMemory?.ownerBound && !(await preparedMemory.validateLease())) {
+      // Fail closed, never silently: the durable relay only retires a turn job
+      // once delivery is tombstoned, so an early `return` here left the job
+      // pending and the alarm re-armed forever behind a live "Thinking…"
+      // status. Mirror the post-run lease fence: one sanitized final, the
+      // status cleared, and a terminal delivery outcome.
+      await statusTurn.prepareFinal();
+      await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
+      await finishStatus('failure');
+      await finishDelivery('failed');
+      return;
+    }
     await agentViewPresentation?.setTitle(turn.text).catch(() => {
       console.warn('[chickpea] Slack Agent View title could not be recorded');
     });

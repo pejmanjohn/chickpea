@@ -20,6 +20,7 @@ import {
   memoryEpochThreadKey,
   memoryQuarantineThreadKey,
   slackAgentThreadKey,
+  slackConversationKind,
   workspaceManagementThreadKey,
 } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
@@ -214,6 +215,12 @@ async function isWorkspaceManagementTurn(input: {
 }): Promise<boolean> {
   if (input.assignment.interactionMode === 'workspace_management') return true;
   if (input.turn.source !== 'app_mention') return false;
+  // The workspace-management route only exists on the Channel surface (see
+  // isWorkspaceManagementRoute in src/slack/agent-routing.ts). A base-bot
+  // mention typed inside a DM normalizes to `app_mention` too, and recovering
+  // it here would hand the turn to a lease validator that rejects every
+  // im/mpim conversation.
+  if (slackConversationKind(input.turn) !== 'channel') return false;
 
   // Turns admitted before the workspace-management marker existed can still be
   // waiting in a durable queue during a deployment. Recover only an explicit
@@ -379,7 +386,10 @@ async function resolveAgentMemoryRuntime(
   if (!liveAgent.enabled || liveAgent.lifecycle === 'archived') {
     throw new MemoryStateError('memory_owner_unavailable', 'The admitted Agent is disabled.');
   }
-  if (turn.source === 'dm_message') {
+  // A `<@bot>` mention typed inside a DM normalizes to `app_mention`, not
+  // `dm_message`, so the trusted conversation shape decides the surface. A DM
+  // has no Channel grant to look up; only mpim keeps the Channel contract.
+  if (slackConversationKind(turn) === 'im') {
     return {
       state,
       config,
@@ -437,7 +447,10 @@ async function validateAgentMemoryLease(
         (runtime.botUserId !== null && installation.botUserId !== undefined &&
           installation.botUserId !== runtime.botUserId) ||
         current.revision !== selected.revision || current.body !== selected.body) return false;
-    if (turn.source === 'dm_message') return true;
+    // An explicit base-bot mention inside a DM still normalizes to
+    // `app_mention`, so trust the conversation shape rather than the source
+    // alone: a DM has no Channel grant and no non-im conversation facts.
+    if (slackConversationKind(turn) === 'im') return true;
     const grants = await config.listAgentChannelGrants(turn.workspaceId, turn.channelId);
     if (!grants.some((grant) =>
       grant.agentId === runtime.assignment.agentId && grant.status === 'active'
