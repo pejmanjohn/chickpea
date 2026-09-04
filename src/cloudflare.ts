@@ -8,6 +8,7 @@ import { getSandbox, Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
 import { instrument } from '@flue/runtime';
 import { createCloudflareTracing } from '@flue/runtime/cloudflare';
 import { emitManagementToolFailure } from './management/telemetry.ts';
+import { emitRuntimeCorrelation } from './work/trace-correlation.ts';
 
 import {
   AgentRevisionConflictError,
@@ -264,6 +265,7 @@ const cloudflareTracing = createCloudflareTracing({ content: false });
 instrument({
   ...cloudflareTracing,
   async observe(observation, context) {
+    emitRuntimeCorrelation(observation);
     await cloudflareTracing.observe(observation, context);
     emitManagementToolFailure(observation);
   },

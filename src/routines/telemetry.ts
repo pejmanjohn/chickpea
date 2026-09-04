@@ -1,11 +1,11 @@
 import type { RoutineHeartbeatResult } from './scheduler.ts';
 
 export interface RoutineTelemetrySink {
-  info(message: string): void;
+  info(record: Record<string, unknown>): void;
 }
 
 export interface RoutinePersistenceTelemetrySink extends RoutineTelemetrySink {
-  error(message: string): void;
+  error(record: Record<string, unknown>): void;
 }
 
 export interface RoutinePersistenceSummary {
@@ -27,6 +27,7 @@ export function emitRoutineHeartbeatTelemetry(
   sink: RoutineTelemetrySink = console,
 ): void {
   const record = {
+    component: 'routines',
     event: 'routine.heartbeat',
     scanned: result.claims.scannedCount,
     claimed: result.claims.runs.length,
@@ -46,7 +47,7 @@ export function emitRoutineHeartbeatTelemetry(
     durationMs: Math.max(0, Math.round(durationMs)),
   };
   try {
-    sink.info(`[chickpea:routines] ${JSON.stringify(record)}`);
+    sink.info(record);
   } catch {
     // Observability is best effort and must never change scheduling behavior.
   }
@@ -58,6 +59,7 @@ export function emitRoutinePersistenceTelemetry(
   sink: RoutinePersistenceTelemetrySink = console,
 ): void {
   const record = {
+    component: 'routines',
     event: 'routine.persistence',
     phase: summary.phase,
     outcome: summary.outcome,
@@ -66,9 +68,8 @@ export function emitRoutinePersistenceTelemetry(
     durationMs: Math.max(0, Math.round(summary.durationMs)),
   };
   try {
-    const message = `[chickpea:routines] ${JSON.stringify(record)}`;
-    if (summary.outcome === 'unrepaired') sink.error(message);
-    else sink.info(message);
+    if (summary.outcome === 'unrepaired') sink.error(record);
+    else sink.info(record);
   } catch {
     // Observability is best effort and must never change scheduling behavior.
   }

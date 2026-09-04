@@ -26,11 +26,12 @@ const result = {
 
 test('routine heartbeat telemetry contains only approved counts and duration', () => {
   const messages: string[] = [];
-  emitRoutineHeartbeatTelemetry(result, 12.6, { info: (message) => messages.push(message) });
+  emitRoutineHeartbeatTelemetry(result, 12.6, { info: (message) => messages.push(JSON.stringify(message)) });
   assert.equal(messages.length, 1);
-  assert.match(messages[0]!, /^\[chickpea:routines\] /);
-  const body = JSON.parse(messages[0]!.replace(/^\[chickpea:routines\] /, '')) as Record<string, unknown>;
+  assert.equal(JSON.parse(messages[0]!).component, 'routines');
+  const body = JSON.parse(messages[0]!) as Record<string, unknown>;
   assert.deepEqual(body, {
+    component: 'routines',
     event: 'routine.heartbeat',
     scanned: 4,
     claimed: 0,
@@ -62,8 +63,8 @@ test('routine persistence emits one sanitized summary and only unrepaired gaps u
   const info: string[] = [];
   const errors: string[] = [];
   const sink = {
-    info: (message: string) => info.push(message),
-    error: (message: string) => errors.push(message),
+    info: (message: Record<string, unknown>) => info.push(JSON.stringify(message)),
+    error: (message: Record<string, unknown>) => errors.push(JSON.stringify(message)),
   };
   emitRoutinePersistenceTelemetry({
     phase: 'repair', outcome: 'repaired', usage: 'repaired', work: 'recorded', durationMs: 128,
@@ -75,10 +76,11 @@ test('routine persistence emits one sanitized summary and only unrepaired gaps u
   assert.equal(info.length, 1);
   assert.equal(errors.length, 1);
   for (const message of [...info, ...errors]) {
-    assert.match(message, /^\[chickpea:routines\] /);
+    assert.equal(JSON.parse(message).component, 'routines');
     assert.doesNotMatch(message, /routine_|rrun_|channel|prompt|task|credential|actor|message/i);
   }
-  assert.deepEqual(JSON.parse(info[0]!.replace(/^\[chickpea:routines\] /, '')), {
+  assert.deepEqual(JSON.parse(info[0]!), {
+    component: 'routines',
     event: 'routine.persistence',
     phase: 'repair',
     outcome: 'repaired',
@@ -112,7 +114,7 @@ test('scheduler runs maintenance before claims and emits one heartbeat record', 
   const scheduler = new RoutineScheduler(
     store,
     admissions,
-    { info: (message) => messages.push(message) },
+    { info: (message) => messages.push(JSON.stringify(message)) },
     () => (clock += 5),
   );
 
@@ -135,7 +137,7 @@ test('a claim failure still processes queued admissions and emits heartbeat tele
   const scheduler = new RoutineScheduler(
     store,
     admissions,
-    { info: (message) => messages.push(message) },
+    { info: (message) => messages.push(JSON.stringify(message)) },
     () => 100,
   );
 

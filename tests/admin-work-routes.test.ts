@@ -6,6 +6,7 @@ import type { WebClient } from '@slack/web-api';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { createWorkAdminApi } from '../src/admin/work-api.ts';
 import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
+import { opaqueId } from '../src/work/admission.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
 import type {
@@ -19,6 +20,46 @@ import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const NOW = 1_900_000_000_000;
 const DAY_MS = 24 * 60 * 60 * 1_000;
+
+test('diagnostic Sessions readback is authenticated, content-free, and respects private-work exclusions', async () => {
+  const work = new SqliteWorkStore(':memory:', { now: () => NOW + 100 });
+  try {
+    const seeded = await seedRun(work, 'diagnostic', NOW);
+    const lifecycle = lifecycleFor(work, seeded.runId, () => NOW + 10);
+    await lifecycle.prepareExecution('PRIVATE_DIAGNOSTIC_CONTENT');
+    const submissionRef = opaqueId('fluesubmission', 'test-submission');
+    await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded', flueSubmissionRef: submissionRef });
+    const before = JSON.stringify(await work.getRun(seeded.runId));
+    const guarded = new Proxy(work, {
+      get(target, property) {
+        if (['getContent', 'getConfigRevision'].includes(String(property))) {
+          return () => { throw new Error(`diagnostics must not call ${String(property)}`); };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const app = createAdminRoutes({ work: guarded, ...testAdminAuthority('diagnostic-token') });
+    const url = `/admin/api/sessions/${seeded.runId}?diagnostics=1`;
+    assert.equal((await app.request(url)).status, 401);
+    const response = await app.request(url, { headers: testAdminHeaders('diagnostic-token') });
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    const body = await response.json() as Record<string, any>;
+    assert.equal(body.schemaVersion, 'chickpea-request-diagnostics/v1');
+    assert.equal(body.executions[0].flueSubmissionRef, submissionRef);
+    assert.ok(body.timeline.length > 0);
+    assert.ok(body.timeline.every((event: any) => !Object.hasOwn(event, 'metadata')));
+    assert.doesNotMatch(JSON.stringify(body), /PRIVATE_DIAGNOSTIC_CONTENT|cred_openai_alpha|test-submission|trigger diagnostic/);
+    assert.equal(JSON.stringify(await work.getRun(seeded.runId)), before);
+    const hidden = createWorkAdminApi({ store: () => guarded, privateWork: async () => true });
+    const hiddenResponse = await hidden.request(`/sessions/${seeded.runId}?diagnostics=1`);
+    assert.equal(hiddenResponse.status, 404);
+    assert.deepEqual(await hiddenResponse.json(), { error: 'session_not_found' });
+    const mismatch = await app.request(`${url}&workId=work_wrong`, { headers: testAdminHeaders('diagnostic-token') });
+    assert.equal(mismatch.status, 409);
+  } finally { work.close(); }
+});
 
 test('Sessions routes are authenticated and cursor pagination is stable across new admissions', async () => {
   const work = new SqliteWorkStore(':memory:', { now: () => NOW + 100 });

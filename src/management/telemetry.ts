@@ -133,7 +133,7 @@ const REASON_TOKENS = new Set([
 ]);
 
 interface ManagementTelemetrySink {
-  info(message: string): void;
+  info(record: Record<string, unknown>): void;
 }
 
 /**
@@ -148,6 +148,7 @@ export function emitManagementMetric(
 ): void {
   const eventToken = safeToken(event);
   const payload: Record<string, ManagementMetricValue> = {
+    component: 'management',
     event: MANAGEMENT_METRIC_EVENTS.has(eventToken) ? eventToken : 'other',
   };
   for (const [key, value] of Object.entries(fields)) {
@@ -157,7 +158,7 @@ export function emitManagementMetric(
     else if (typeof value === 'boolean') payload[key] = value;
   }
   try {
-    sink.info(`[chickpea:management] ${JSON.stringify(payload)}`);
+    sink.info(payload);
   } catch {
     // Observability is best effort and never changes control-plane behavior.
   }
@@ -288,7 +289,8 @@ export function emitManagementToolFailure(
         ]) if (line.toLowerCase().includes(phrase!.toLowerCase())) validationCodes.add(code!);
       }
     }
-    sink.info(`[chickpea:management] ${JSON.stringify({
+    sink.info({
+      component: 'management',
       event: 'tool.validation_failure', tool: observation.toolName,
       ...diagnosticCorrelation(observation),
       errorType: validation ? 'schema_validation' : ['ManagementError', 'ToolInputValidationError', 'ToolOutputValidationError']
@@ -297,7 +299,7 @@ export function emitManagementToolFailure(
       fields: [...fields].sort(), validationCodes: [...validationCodes].sort(),
       messageDigest: typeof (validation ?? error?.message) === 'string'
         ? createHash('sha256').update((validation ?? error!.message)!).digest('hex') : undefined,
-    })}`);
+    });
   } catch {
     // A diagnostic cannot change the tool's outcome.
   }

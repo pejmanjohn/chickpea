@@ -34,6 +34,8 @@
   this repository.
 - For runtime failures, unexplained behavior, or timing issues, consult existing
   evidence and [runtime observability](docs/runbooks/runtime-observability.md).
+  Use `npm run diagnose -- --help` for a bounded request-to-trace lookup and
+  preserve the first failure's private evidence before changing state or retrying.
   Use the owning terminal and Local Explorer for a local Worker. Diagnose on the
   deployed Worker when the question depends on its serving version, bindings,
   gateway route, credentials, Cloudflare telemetry, or due-time scheduling.
