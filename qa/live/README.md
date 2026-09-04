@@ -1,8 +1,23 @@
 # Live contract catalog
 
-This directory is the public, credential-free behavior contract and resumable protocol for Chickpea's live QA. The first landing is not a working live coordinator and does not resolve credentials, browser profiles, workspace IDs, or provider accounts.
+Use the [operator skill](operator/SKILL.md) for current verification. It selects
+`changed`, `regression`, or `release` mode and treats invocation as authorization
+for the declared QA actions and exact cleanup. It uses normal browser tools and
+a lightweight private run record without the legacy coordinator.
 
-In V0, `verify:live:doctor` is the only executable live entrypoint. `case`, `smoke`, and `deep` fail closed with `COORDINATOR_REQUIRED`; product API adapters are diagnostic-only and cannot emit scored proof. V1 will add the verifier-owned attended Computer Use coordinator after the environment can provision and attest a real target.
+Run `npm run verify:regression -- --plan` to inspect the checks beneath browser
+automation. `npm run verify:regression` executes them serially with isolated
+databases and fake services. Use `--mode regression` for the fixed core inventory
+or `--mode release` for full local checks of clean committed source. These
+results do not claim real-model quality or live Slack/provider acceptance.
+
+This directory also contains the public, credential-free behavior catalog and
+the older resumable coordinator protocol. Their schemas remain unchanged.
+
+The legacy `verify:live:doctor` command reads a private readiness snapshot.
+Its `case`, `smoke`, and `deep` CLI siblings return `COORDINATOR_REQUIRED` and
+are not the skill's mode commands. The coordinator's product API adapters remain
+diagnostic-only; the skill does not need this coordinator to perform UI journeys.
 
 - `cases/index.ts` is the reviewed TypeScript authoring catalog.
 - `compiler.ts` validates the closed action, observer, assertion, fixture, cleanup, and inventory vocabulary and emits a deterministic content-addressed manifest.

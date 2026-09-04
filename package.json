@@ -91,6 +91,7 @@
     "verify:gateway-live": "node --import tsx scripts/verify-shared-gateway-live.mjs",
     "verify:run-foundation": "node scripts/verify-run-foundation.mjs",
     "verify:admin-ui": "node scripts/verify-admin-ui.mjs",
+    "verify:regression": "node scripts/verify-regression.mjs",
     "admin:visual-fixture": "node scripts/serve-admin-visual-fixture.mjs",
     "verify:durability": "node scripts/verify-durability.mjs",
     "verify:conversation-scale": "node --import tsx scripts/verify-flue-conversation-scale.mjs",

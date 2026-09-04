@@ -29,7 +29,8 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import { hasScheduledComposition } from './worker-artifact.mjs';
@@ -61,7 +62,7 @@ const CF_OUTPUT_DIR = join(REPO_ROOT, 'dist-cf');
 const CF_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.json');
 const CF_SMOKE_WRANGLER_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.smoke.json');
 const CF_AI_SMOKE_CONFIG = join(CF_OUTPUT_DIR, 'chickpea', 'wrangler.ai-smoke.json');
-const PERSIST_DIR = join(REPO_ROOT, '.wrangler-state', 'cf-smoke');
+const PERSIST_DIR = mkdtempSync(join(tmpdir(), 'chickpea-cf-smoke-'));
 const AUTH_SECRET = '9d'.repeat(32);
 const PUBLIC_ORIGIN = 'https://chickpea-smoke.invalid';
 const WORKSPACE = 'T0SMOKE';
@@ -78,7 +79,7 @@ const AI_CHANNEL = 'C0SMOKEAI';
 const MENTION_TS = '1782770400.000100';
 const MEMORY_TS = '1782770450.000100';
 const AI_MENTION_TS = '1782770100.000100';
-const PORT = Number(process.env.SMOKE_WRANGLER_PORT ?? 8788);
+const PORT = process.env.SMOKE_WRANGLER_PORT ? Number(process.env.SMOKE_WRANGLER_PORT) : await getFreePort();
 const AI_SMOKE_SERVICE = 'chickpea-ai-smoke-stub';
 const AI_SMOKE_REPLY = 'workers-ai-binding-smoke::gateway-disabled';
 const AI_SMOKE_RPC_FLAG = 'enable_abortsignal_rpc';
@@ -985,7 +986,6 @@ async function main() {
 
   // Fresh local DO state every run: the seeding + dedupe assertions assume a
   // first-boot Durable Object.
-  rmSync(PERSIST_DIR, { recursive: true, force: true });
   applyLocalAuthMigrations();
 
   const { FakeSlackBackend, FAKE_PROVIDER_KEYS, STUB_REPLY_MARKER } = await loadFake();
@@ -1783,5 +1783,7 @@ async function main() {
 
 main().catch((err) => {
   console.error(err);
-  process.exit(1);
+  process.exitCode = 1;
+}).finally(() => {
+  rmSync(PERSIST_DIR, { recursive: true, force: true });
 });
