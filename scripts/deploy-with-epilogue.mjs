@@ -26,7 +26,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -61,6 +61,17 @@ const preflightOnly = cliArgs.includes('--preflight-only');
 // A QA checkout must never fall through to the ordinary production target.
 // This is a selection check, not claim authority; the environment preflight
 // below still validates the actual lease, source, and immutable identities.
+//
+// `CHICKPEA_DEPLOY_TARGET=production` names the ordinary wrangler.jsonc Worker
+// on purpose. It is consumed here so the build profile, which knows only the
+// claimed lanes, still sees an unset target for that deploy.
+const PRODUCTION_DEPLOY_TARGET = 'production';
+// Mirrors defaultEnvironmentRoot() in scripts/lib/environment-registry.mjs;
+// inlined so the ordinary production deploy still loads no lane module.
+const claimedLaneRegistryRoot = process.env.CHICKPEA_ENVIRONMENT_ROOT?.trim()
+  || path.join(homedir(), '.chickpea', 'environments');
+const explicitProductionTarget = process.env.CHICKPEA_DEPLOY_TARGET?.trim() === PRODUCTION_DEPLOY_TARGET;
+if (explicitProductionTarget) delete process.env.CHICKPEA_DEPLOY_TARGET;
 const requestedDeploymentTarget = process.env.CHICKPEA_DEPLOY_TARGET?.trim();
 try {
   const markerPath = path.join(projectRoot, '.chickpea-environment');
@@ -87,6 +98,20 @@ try {
   if (!requestedDeploymentTarget && (process.env.CHICKPEA_LOCAL_LANE
     || existsSync(path.join(projectRoot, '.chickpea-local-worker')))) {
     throw new Error('This checkout owns a local Worker lane. Select an explicitly claimed QA deployment target; the default production deployment is refused.');
+  }
+  // A machine that operates claimed QA lanes keeps a registry under
+  // ~/.chickpea/environments. On such a machine an unnamed deploy is far more
+  // often a checkout that forgot its lane than a deliberate production push,
+  // so the ordinary Worker must be named explicitly. Self-hosters, Workers
+  // Builds, and non-mutating dry runs have no registry and are unaffected.
+  const mutatingDeploy = !deployArgs.includes('--dry-run') && !preflightOnly;
+  if (!requestedDeploymentTarget && !explicitProductionTarget && mutatingDeploy
+    && process.env.WORKERS_CI !== '1' && existsSync(claimedLaneRegistryRoot)) {
+    throw new Error(
+      'This machine operates claimed QA lanes, so an unnamed deploy is refused. ' +
+      'Set CHICKPEA_DEPLOY_TARGET=amber or cobalt for a claimed lane, or ' +
+      `CHICKPEA_DEPLOY_TARGET=${PRODUCTION_DEPLOY_TARGET} to deploy the ordinary wrangler.jsonc Worker on purpose.`,
+    );
   }
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

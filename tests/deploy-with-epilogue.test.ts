@@ -318,6 +318,10 @@ function runHarness(
       DEPLOY_TEST_READINESS_BASE_URL:
         env.DEPLOY_TEST_READINESS_BASE_URL ?? 'https://chickpea.test',
       DEPLOY_TEST_READINESS_STATUSES: env.DEPLOY_TEST_READINESS_STATUSES ?? '204',
+      // The harness is a self-hoster machine unless a test says otherwise:
+      // no claimed-lane registry, so an unnamed deploy is the ordinary one.
+      CHICKPEA_ENVIRONMENT_ROOT:
+        env.CHICKPEA_ENVIRONMENT_ROOT ?? path.join(harness.root, 'no-lane-registry'),
       npm_execpath: harness.npmStub,
     },
   });
@@ -1270,6 +1274,45 @@ test('unreadable QA ownership and local lane state refuse a default deployment',
     assert.equal(result.status, 1);
     assert.equal(existsSync(harness.logPath), false, kind);
   }
+});
+
+test('a machine that operates claimed lanes refuses an unnamed deploy until production is named', (context) => {
+  const refused = createHarness();
+  const named = createHarness();
+  const dryRun = createHarness();
+  const claimed = createHarness();
+  context.after(() => {
+    for (const harness of [refused, named, dryRun, claimed]) rmSync(harness.root, { recursive: true, force: true });
+  });
+  const registry = path.join(refused.root, 'lane-registry');
+  mkdirSync(registry, { recursive: true });
+
+  const unnamed = runHarness(refused, [], { CHICKPEA_DEPLOY_TARGET: '', CHICKPEA_ENVIRONMENT_ROOT: registry });
+  assert.equal(unnamed.status, 1);
+  assert.match(unnamed.stderr, /operates claimed QA lanes, so an unnamed deploy is refused/);
+  assert.match(unnamed.stderr, /CHICKPEA_DEPLOY_TARGET=production/);
+  assert.equal(existsSync(refused.logPath), false, 'no build, inspection, migration, or upload');
+
+  const production = runHarness(named, [], {
+    CHICKPEA_DEPLOY_TARGET: 'production', CHICKPEA_ENVIRONMENT_ROOT: registry,
+  });
+  assert.equal(production.status, 0, production.stderr);
+  assert.match(production.stdout, /Current Version ID: deployed-version/);
+  assert.ok(commands(named.logPath).some((entry) => entry.startsWith('wrangler:["deploy"')));
+  assert.ok(!commands(named.logPath).some((entry) => entry.startsWith('environment-preflight')), 'no lane preflight for the ordinary Worker');
+  const config = JSON.parse(readFileSync(path.join(named.root, 'dist-cf', 'chickpea', 'wrangler.json'), 'utf8'));
+  assert.equal(config.vars?.CHICKPEA_DEPLOY_TARGET, undefined);
+
+  const dry = runHarness(dryRun, ['--dry-run'], { CHICKPEA_DEPLOY_TARGET: '', CHICKPEA_ENVIRONMENT_ROOT: registry });
+  assert.equal(dry.status, 0, dry.stderr);
+
+  writeFileSync(path.join(claimed.root, '.chickpea-environment'), JSON.stringify({
+    schemaVersion: 'chickpea-environment-claim/v1', target: 'amber',
+  }));
+  const wrongLane = runHarness(claimed, [], { CHICKPEA_DEPLOY_TARGET: 'production', CHICKPEA_ENVIRONMENT_ROOT: registry });
+  assert.equal(wrongLane.status, 1);
+  assert.match(wrongLane.stderr, /This worktree claims amber/);
+  assert.equal(existsSync(claimed.logPath), false);
 });
 
 test('a matching QA target still reaches the existing claim fence before building', (context) => {

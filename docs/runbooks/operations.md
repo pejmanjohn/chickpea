@@ -136,6 +136,12 @@ sandbox. These wrappers check the generated artifact, preserve the deployed
 `AUTH_DB` identity and credential roots, apply reviewed migrations, and check
 readiness. Do not bypass them with bare `wrangler deploy`.
 
+On a machine that operates claimed QA lanes (one with a registry under
+`~/.chickpea/environments`), the wrapper refuses a deploy that names no target.
+Set `CHICKPEA_DEPLOY_TARGET=amber` or `cobalt` for a claimed lane, or
+`CHICKPEA_DEPLOY_TARGET=production` to deploy the ordinary `wrangler.jsonc`
+Worker on purpose. Self-hosters, Workers Builds, and `--dry-run` are unaffected.
+
 The same deployment includes the public images in `assets/` using Cloudflare
 Static Assets. No separate Worker or bucket is needed. Keep the generated
 `ASSETS` binding and asset directory in the deployment configuration. These
