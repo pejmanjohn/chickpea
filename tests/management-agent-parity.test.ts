@@ -1255,6 +1255,66 @@ test('change-set proposal preflights the whole set and stales before the first w
   }
 });
 
+test('base Agent creation inherits the default and rejects an unconfigured model pin before writing', async () => {
+  const checkedProviders: string[] = [];
+  const f = await createManagementAdapterFixture('creation-model-readiness', {
+    providerCredentialSource: async (provider) => {
+      checkedProviders.push(provider);
+      return provider === 'anthropic' ? 'stored' : 'missing';
+    },
+  });
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: {
+      kind: 'slack', workspaceId: f.admin.user.slackTeamId,
+      channelId: 'D123', threadTs: '1800000000.000001', conversationKind: 'im',
+      requestText: 'Create a concise QA helper. No other changes.',
+    },
+  };
+  try {
+    const rejected = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'unavailable-pin',
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: {
+        ...agentInput, model: 'openai/gpt-4o-mini',
+      } }],
+    });
+    assert.equal(rejected.status, 'partial');
+    assert.equal(rejected.outcomes[0]?.disposition, 'failed');
+    assert.equal(rejected.outcomes[0]?.code, 'model_provider_unavailable');
+    assert.match(rejected.outcomes[0]?.warning ?? '', /omit.*model.*inherit/i);
+    await assert.rejects(() => f.config.getAgent(agentInput.id), UnknownAgentError);
+    assert.deepEqual(checkedProviders, ['openai']);
+
+    const { model: _model, ...inheritingAgent } = agentInput;
+    const inherited = await f.service.applyWorkspaceChanges({
+      context, idempotencyKey: 'inherit-default',
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: inheritingAgent }],
+    });
+    assert.equal(inherited.status, 'completed');
+    assert.equal((await f.config.getAgent(agentInput.id)).model, undefined);
+    assert.deepEqual(checkedProviders, ['openai']);
+
+    const pinned = await f.service.applyWorkspaceChanges({
+      context: { ...context, origin: { ...context.origin, kind: 'slack',
+        workspaceId: f.admin.user.slackTeamId, channelId: 'D123', threadTs: '1800000001.000001',
+        requestText: 'Create another helper using anthropic/claude-haiku-4-5.',
+      } },
+      idempotencyKey: 'configured-pin',
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: {
+        ...agentInput, id: 'agent_pinned', name: 'Pinned Helper', requestedHandle: 'pinned-helper',
+      } }],
+    });
+    assert.equal(pinned.status, 'completed');
+    assert.equal((await f.config.getAgent('agent_pinned')).model, agentInput.model);
+    assert.deepEqual(checkedProviders, ['openai', 'anthropic']);
+  } finally {
+    f.close();
+  }
+});
+
 test('direct apply creates a standalone base Agent immediately but still reviews consequential edits', async () => {
   const f = await createManagementAdapterFixture('legacy-review-floor');
   const context: ManagementActorContext = {

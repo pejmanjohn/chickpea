@@ -2,7 +2,7 @@
 // deliberately separate so this command never needs a browser or consent.
 export const REGRESSION_AREAS = Object.freeze({
   delivery: ['slack-admission', 'slack-thread-context', 'gateway-inbox', 'gateway-session-runner', 'flue-v2-runtime-regressions'],
-  agents: ['management-policy', 'management-security-regression', 'management-agent-creation-welcome', 'slack-proposal-approval-readback', 'agent-authoring-guide'],
+  agents: ['management-policy', 'management-security-regression', 'management-agent-creation-welcome', 'management-agent-parity', 'slack-proposal-approval-readback', 'agent-authoring-guide'],
   routines: ['routine-schedule', 'routine-scheduler', 'routine-delivery', 'routine-workflow', 'routine-channel-destination'],
   connections: ['connection-accounts', 'managed-authorization-flow', 'api-connection-runtime', 'managed-connections'],
   memory: ['agent-memory', 'memory-runtime', 'memory-validation'],

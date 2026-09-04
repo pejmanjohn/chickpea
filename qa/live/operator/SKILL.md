@@ -97,6 +97,15 @@ uses isolated state and fake services, needs no OAuth, and does not send Slack
 messages. Real-model evaluations are a separate layer. Real browser journeys
 remain necessary for UI, installation, and actual delivery acceptance.
 
+Reuse a completed local check from this task when its source tree (including
+dirty/untracked inputs), lockfile, Node version, relevant configuration, and
+check inventory are unchanged. Record the original result and log reference;
+do not call it a fresh run. A commit SHA alone does not establish those inputs.
+After a relevant edit, rerun the affected checks. Workflow-only edits do not
+invalidate earlier product evidence, but exercise the revised workflow and
+validate its public skill/export contracts. A different serving build, model,
+actor, connection, or lane state requires fresh dependent live evidence.
+
 Use normal browser tools and the existing short local UI mutex for competing
 browser actions. Hold the environment claim through readback and cleanup. Release
 the UI mutex while waiting for human input; retain the affected tab and browser

@@ -68,8 +68,12 @@ observation window to claim a faster pass.
 
 1. Send a run-marked DM and channel request, then follow up in the channel thread.
    Verify correct Agent, destination, context, and no duplicate terminal reply.
-2. Create a run-marked Agent and observe exactly one welcome. Preview a complete
-   instruction update, prove no early save, approve it, and read the full result.
+2. Ask `@Chickpea` in the QA channel to create one run-marked Agent and assign it
+   to that channel. Observe exactly one welcome in the creation thread. Reuse
+   this Agent for the instruction test: mention its own resolved Slack handle in
+   a fresh thread, request a complete frozen update, prove no early save, approve
+   it, and read the full result. An unrelated user Agent cannot edit it. Admin
+   creation and later channel attachment do not exercise the Slack welcome path.
 3. Read the declared synthetic provider fixture through an existing connection
    in its allowed context. Personal accounts stay in the owning user's DM;
    channel execution requires a Team connection. Check actual provider execution.
@@ -81,6 +85,46 @@ Use the assertions in the corresponding [cases](../cases/) and exact cleanup.
 The simple routing journey is behavioral coverage; it does not certify every
 internal route-state assertion in dormant LC-03. Missing fixtures block only the
 dependent check. Complete the rest and report the gap.
+
+### Repeatable browser steps
+
+- Fill or paste the complete message into the composer in one operation. Resolve
+  its intended mention through Slack's current suggestion list, then send once.
+  Character-by-character entry of long prompts is slow and can time out with a
+  partial unsent draft. Reinspect that draft before replacing or sending it.
+- Read the specific run-marked message or thread instead of dumping channel
+  history. Record its canonical permalink after Slack replaces any provisional
+  timestamp. After navigation, wait for the relevant heading or control; a
+  loading shell or a short observation timeout is not a failed product action.
+- For instruction updates, use explicit replacement delimiters and a multiline
+  final sentinel. In the Agent's Admin page, expand **Slack update proposal
+  details** and **Refresh Slack proposals**. Compare the full frozen value,
+  target, requester, conversation, and revision before sending bare `approve`
+  in that same thread. Refresh again and compare the saved textarea's actual
+  value, including newlines; snapshot prose can collapse whitespace. Also check
+  one retained approval turn and its completed apply result.
+- For creation, use **Saved Agent details** and **Creation delivery details →
+  Refresh creation delivery** to match the welcome's Agent, channel, thread,
+  delivery reference, publication, and settled activity to the actual Slack
+  message. Record the returned Agent ID; do not derive it from its display name.
+  If creation did not request a model, verify workspace-model inheritance in
+  **Model** and exercise a real request to the new Agent. A welcome can succeed
+  even when a bad model pin makes the Agent's first actual request fail.
+- Inspect the declared synthetic provider range before requesting it. Prefer
+  stable baseline rows for regression; a previous run's temporary rows may have
+  been cleaned. Request a JSON array in a code block preserving every cell
+  character as strings, with no typography substitutions. Compare parsed values exactly
+  and inspect the matching provider execution's account, range, and result.
+  A successful call alone does not pass a response with altered fixture data.
+- The saved schedule and occurrence history are available at the selected
+  Admin origin's `/admin/audit-logs/scheduled-work`. Open the run-marked routine,
+  then **View run history and activity**. Match its real scheduled occurrence's
+  **Open message** link to Slack. Inspect immutable channel IDs when display
+  labels disagree; record the discrepancy rather than assuming wrong delivery.
+
+These steps reduce navigation and setup; they do not replace the case assertions
+or turn an initial failure into a first-attempt pass. Keep the initial outcome
+and the changed procedure or product fix next to each targeted retest result.
 
 ## Release acceptance
 

@@ -992,6 +992,7 @@ export class ManagementError extends Error {
       | 'proposal_binding_mismatch'
       | 'proposal_stale'
       | 'base_agent_capabilities_require_setup'
+      | 'model_provider_unavailable'
       | 'undo_unavailable'
       | 'operation_in_progress'
       | 'revision_conflict'
