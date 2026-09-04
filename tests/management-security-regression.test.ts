@@ -42,21 +42,22 @@ test('tool failure logs retain correlation and safe validation fields, not conte
         message: SECRET_CORPUS.join(' ') }], secret: SECRET_CORPUS },
     },
   };
-  emitManagementToolFailure(event, { info: (line) => lines.push(line) });
+  emitManagementToolFailure(event, { info: (line) => lines.push(JSON.stringify(line)) });
   assert.equal(lines.length, 1);
   for (const value of SECRET_CORPUS) assert.ok(!lines[0]!.includes(value));
-  const payload = JSON.parse(lines[0]!.slice('[chickpea:management] '.length));
+  const payload = JSON.parse(lines[0]!);
   assert.deepEqual(payload.fields, ['instructions', 'operations', 'patch']);
+  assert.equal(payload.component, 'management');
   assert.equal(payload.code, 'other');
   assert.equal(payload.toolCallId, 'call_123');
   assert.equal(payload.messageDigest, createHash('sha256').update(SECRET_CORPUS.join(' ')).digest('hex'));
-  emitManagementToolFailure({ ...event, isError: false }, { info: (line) => lines.push(line) });
+  emitManagementToolFailure({ ...event, isError: false }, { info: (line) => lines.push(JSON.stringify(line)) });
   assert.equal(lines.length, 1);
   assert.doesNotThrow(() => emitManagementToolFailure(event, { info: () => { throw new Error('sink'); } }));
   emitManagementToolFailure({ ...event, errorInfo: { type: 'other' }, result: {
     content: [{ type: 'text', text: `Validation failed for tool "propose_workspace_changes":\n  - operations.0.patch: must not have additional properties\n  - guideVersion: must be equal to constant\n\nReceived arguments:\n${JSON.stringify(SECRET_CORPUS)}` }],
-  } }, { info: (line) => lines.push(line) });
-  const early = JSON.parse(lines[1]!.slice('[chickpea:management] '.length));
+  } }, { info: (line) => lines.push(JSON.stringify(line)) });
+  const early = JSON.parse(lines[1]!);
   assert.equal(early.errorType, 'schema_validation');
   assert.equal(early.code, 'validation_failed');
   assert.deepEqual(early.fields, ['guideVersion', 'operations', 'patch']);
@@ -78,7 +79,7 @@ test('management telemetry accepts only content-free dimensions', () => {
     handoffClass: 'C_PRIVATE_CHANNEL',
     operationCount: 2,
     ignored: 'sk-proj-abcdefghijklmnopqrstuvwxyz123456',
-  }, { info: (line) => lines.push(line) });
+  }, { info: (line) => lines.push(JSON.stringify(line)) });
 
   assert.equal(lines.length, 1);
   for (const value of SECRET_CORPUS) assert.doesNotMatch(lines[0]!, new RegExp(value));
@@ -98,9 +99,10 @@ test('Agent-authoring telemetry keeps only versioned outcome classes', () => {
     staleReason: 'target_revision',
     handoffClass: 'cross_agent',
     operationCount: 1,
-  }, { info: (line) => lines.push(line) });
+  }, { info: (line) => lines.push(JSON.stringify(line)) });
 
-  assert.deepEqual(JSON.parse(lines[0]!.replace('[chickpea:management] ', '')), {
+  assert.deepEqual(JSON.parse(lines[0]!), {
+    component: 'management',
     event: 'agent_authoring.outcome',
     surface: 'slack',
     guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
@@ -138,9 +140,10 @@ test('Agent creation telemetry keeps only bounded delivery classes and counts', 
     deliveryPersona: 'agent',
     requestText: 'PRIVATE_MEMORY_SENTINEL',
     setupUrl: 'https://example.invalid/#oauth-code-private-123456',
-  }, { info: (line) => lines.push(line) });
+  }, { info: (line) => lines.push(JSON.stringify(line)) });
 
-  assert.deepEqual(JSON.parse(lines[0]!.replace('[chickpea:management] ', '')), {
+  assert.deepEqual(JSON.parse(lines[0]!), {
+    component: 'management',
     event: 'agent_creation.welcome_claim',
     surface: 'slack',
     outcome: 'created',

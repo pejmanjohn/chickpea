@@ -216,8 +216,8 @@ function telemetrySink() {
     info,
     errors,
     sink: {
-      info: (message: string) => info.push(message),
-      error: (message: string) => errors.push(message),
+      info: (message: Record<string, unknown>) => info.push(JSON.stringify(message)),
+      error: (message: Record<string, unknown>) => errors.push(JSON.stringify(message)),
     },
   };
 }

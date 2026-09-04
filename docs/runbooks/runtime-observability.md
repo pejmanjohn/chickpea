@@ -5,6 +5,74 @@ including live verification. Start with retained evidence, not new diagnostics.
 Logs explain causes; actual Slack/Admin/provider readback proves acceptance.
 Successful actions do not require routine log inspection.
 
+## Diagnose one request
+
+Use `npm run diagnose -- --help` to prepare a repeatable investigation from a
+Slack **request** permalink or a Sessions Run ID. A reply permalink identifies a
+different message. Scheduled Runs need their Run ID. Resolve the target first
+as described below; the command does not claim, start, deploy, or mutate it.
+
+```sh
+npm run diagnose -- prepare --target amber \
+  --account-id <resolved-account-id> --admin-origin https://<resolved-admin-host> \
+  --slack-url https://<workspace>.slack.com/archives/<channel>/p<message-timestamp>
+```
+
+The registered target supplies the Worker and workspace. For another installation,
+pass `--worker <exact-worker> --workspace <workspace-id>` instead of `--target`.
+For the **owning local lane**, use those explicit coordinates with `--local
+--admin-origin http://127.0.0.1:<port>` after checking `dev:cf status`. Local mode
+queries Local Explorer; it does not use Cloudflare history. The loopback origin
+must be the same Worker whose Admin session you read.
+
+The command prints a private record directory and a content-free Sessions URL.
+Read that URL through the existing authenticated Admin browser and save its JSON
+outside Git. This endpoint has the same authorization and private-work exclusions
+as Sessions. It does not read retained message bodies or configuration contents.
+If the deployment predates the endpoint, the command can project an ordinary
+Sessions response, but that older response lacks the Flue correlation references.
+
+```sh
+npm run diagnose -- query --record <private-record-directory> \
+  --session <private-session-response.json>
+```
+
+`query` checks the Run and workspace, saves only the operational projection, and
+creates a new private attempt directory every time. For hosted diagnosis, discover
+the current API schema with Cloudflare MCP `search`, then pass the generated
+`cloudflare-query.js` as `execute` code with the printed account ID. Save the
+returned projected object at the printed report path. For local diagnosis, POST
+the generated `local-query.json` to the printed loopback Local Explorer URL and
+save its response there. Local rows are paired with the saved Sessions timeline;
+zero rows or the 300-row cap means incomplete evidence, not a failed action.
+Keep the original response private if it contains older Sessions content.
+
+The helper joins opaque Flue submission references from the ledger to
+`run.correlation` log events, then queries exact platform trace IDs. Management
+and routine metrics are single structured console objects, so Cloudflare can
+index their fields. The bridge contains only hashed instance/submission refs;
+platform logs supply request/trace IDs. No prompt, tool arguments/results, or
+new product analytics events are added. Historical reports also understand the
+older prefixed JSON log format.
+
+Without a retained bridge (older builds, missing ledger, or missing logs), keep
+the correlation gap. An independently established trace can be passed to
+`prepare --trace-id <trace-id>`; reports label it **operator supplied**, not
+ledger verified. Use `query --no-session` only when Sessions is unavailable.
+Use `--run-id <id> --from <UTC-Z> --to <UTC-Z>` when there is no permalink.
+The default permalink window is one minute before through sixteen minutes after
+the request; explicit windows may span at most thirty minutes. Query pagination
+and trace counts are bounded; the report records coverage gaps and distinguishes
+the current traffic version from versions observed on incident events. An early
+failure before Run admission requires the ingress investigation below.
+
+At the first failure, retain the existing verification record, these evidence
+paths, expected versus observed behavior, actual model/build, and UTC window
+before changing state or retrying. Record the hypothesis and changed variable
+with the next attempt. Save Slack/Admin/provider readback and cleanup separately;
+the diagnostic report does not grade acceptance. This preserves the first failure
+without repeating broad log discovery during every retest.
+
 ## Choose the tool and target
 
 | Need | Tool |
