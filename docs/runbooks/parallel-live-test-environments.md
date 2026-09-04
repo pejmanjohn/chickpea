@@ -107,6 +107,33 @@ The bootstrap Worker must also set the non-secret `CHICKPEA_ENV_TARGET` plain
 variable to its color. Keep claim metadata absent until the first claimed deploy;
 the initial preflight admits only that exact registered, unstamped version.
 
+### Setup contract: install gate versus setup flow
+
+The lane baseline records the Slack manifest digest, the required bot scopes, an
+`installContractDigest` over `src/auth/setup-capability.mjs`, and a
+`setupFlowDigest` over `src/auth/setup-handoff.ts`,
+`src/management/setup-routes.ts`, `src/config/onboarding-state.ts`, and
+`src/admin/onboarding-proof.ts`. The combined `setupContractDigest` over all five
+is still recorded so older baselines and receipts stay comparable.
+
+Only the manifest digest, the scopes, and the install contract are hard-gated. A
+mismatch there refuses the deploy with `INSTALL_CONTINUATION_REQUIRED`; recover by
+proving a fresh install on a disposable target and re-recording the lane baseline,
+not by editing the guard. A setup-flow-only change is first-run UX and cannot
+invalidate an installation that already happened: the deploy proceeds and the
+receipt plus the registry record the lane as setup-flow unproven since that source
+revision. `npm run env -- status` shows it as `setupFlowUnprovenSince`; the lane
+stays `ready`. It clears on the next deploy whose setup flow matches the baseline,
+or when the baseline is re-recorded after a proven fresh install
+(`writeEnvironmentBaseline(..., { clearSetupFlowUnproven: true })`).
+
+Baselines recorded before the split carry only the combined digest. A combined
+mismatch there is treated as setup-flow drift unless the working tree's
+`src/auth/setup-capability.mjs` differs from the same file at the lane's recorded
+source revision (`git show <rev>:<path>`), which is a hard refusal. An
+unresolvable revision fails closed. Such a baseline gains the split digests the
+next time one is written.
+
 The gateway projection reports its installed binding and recorded OAuth
 grants, not a fresh Slack scope-header observation. Runtime attestation also
 requires a successful fresh `auth.test` for the same workspace/bot and a

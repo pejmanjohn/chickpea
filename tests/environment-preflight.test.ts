@@ -9,7 +9,7 @@ import test from 'node:test';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { assertLiveEnvironmentClaim, claimEnvironment, createEnvironmentRegistry, environmentMarkerPath, migrateEnvironmentProviderAuthConfigs, readEnvironmentRegistry, reclaimEnvironment, recordEnvironmentAttestation, releaseEnvironment } from '../scripts/lib/environment-registry.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
-import { EnvironmentPreflightError, assertEnvironmentReleaseAllowed, beginEnvironmentDeployment, completeEnvironmentDeployment, environmentDeployReceiptPath, observeProductionEnvironmentAuthority, observeReceiptBackedEnvironment, preflightEnvironmentMutation, readEnvironmentDeployReceipt, authorizeEnvironmentCleanupPlan, reconcileEnvironmentDeployment, recheckEnvironmentMutationAuthority, resumeEnvironmentDeployment, writeEnvironmentBaseline, writeEnvironmentResourceCreationIntent, writeEnvironmentResourceCreationReceipt, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
+import { EnvironmentPreflightError, assertEnvironmentReleaseAllowed, beginEnvironmentDeployment, classifySetupContractDrift, completeEnvironmentDeployment, environmentBaselinePath, environmentDeployReceiptPath, readLocalEnvironmentContract, observeProductionEnvironmentAuthority, observeReceiptBackedEnvironment, preflightEnvironmentMutation, readEnvironmentDeployReceipt, authorizeEnvironmentCleanupPlan, reconcileEnvironmentDeployment, recheckEnvironmentMutationAuthority, resumeEnvironmentDeployment, writeEnvironmentBaseline, writeEnvironmentResourceCreationIntent, writeEnvironmentResourceCreationReceipt, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
 import { acquireTargetLock, readTargetLock } from '../qa/live/safety/lock.ts';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { attestEnvironment } from '../scripts/lib/environment-attestation.mjs';
@@ -31,6 +31,7 @@ function fixture(input: {
   reachable?: boolean;
   identityMatches?: boolean;
   transport?: 'events' | 'gateway';
+  baseline?: Record<string, unknown>;
 } = {}) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'chickpea-preflight-')));
   const worktree = join(parent, 'worktree');
@@ -75,7 +76,7 @@ function fixture(input: {
       workspaceSlotsUsed: 3, integrationHeadroom: 37,
     },
   });
-  writeEnvironmentBaseline(records[0]!.evidenceRoot, baseline());
+  writeEnvironmentBaseline(records[0]!.evidenceRoot, input.baseline ?? baseline());
   const options = {
     root, hostFingerprint: 'host-fixture', worktreePath: worktree, now: () => NOW,
     allowTestAuthorityObserver: true,
@@ -107,6 +108,30 @@ function localContract() {
       d1: ['0001_old', '0002_mcp_oauth', '0003_reviewed'],
       durableObject: ['v8', 'v9', 'v10'],
     },
+  };
+}
+
+const INSTALL_DIGEST = `sha256:${'a'.repeat(64)}`;
+const OTHER_INSTALL_DIGEST = `sha256:${'b'.repeat(64)}`;
+const FLOW_DIGEST = `sha256:${'c'.repeat(64)}`;
+const OTHER_FLOW_DIGEST = `sha256:${'d'.repeat(64)}`;
+const OTHER_COMBINED_DIGEST = `sha256:${'4'.repeat(64)}`;
+
+function splitBaseline(overrides: Record<string, unknown> = {}) {
+  return {
+    ...baseline(),
+    installContractDigest: INSTALL_DIGEST,
+    setupFlowDigest: FLOW_DIGEST,
+    ...overrides,
+  };
+}
+
+function splitLocalContract(overrides: Record<string, unknown> = {}) {
+  return {
+    ...localContract(),
+    installContractDigest: INSTALL_DIGEST,
+    setupFlowDigest: FLOW_DIGEST,
+    ...overrides,
   };
 }
 
@@ -1824,4 +1849,142 @@ test('resource cleanup requires a prior intent and provider readback stamp', (co
     allowSuppliedProtectedInventories: true, protectedInventories: protectedInventories(),
     readProviderResource: () => ({ ...providerReadback, creationIntentDigest: `sha256:${'f'.repeat(64)}` }),
   }));
+});
+
+test('an install-contract change is refused while a setup-flow change deploys with an unproven marker', async (context) => {
+  const f = fixture({ baseline: splitBaseline() });
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', f.options);
+
+  // The setup capability is what an already-installed lane relies on.
+  await assert.rejects(preflightEnvironmentMutation('amber', {
+    ...f.options,
+    baseline: splitBaseline(),
+    localContract: splitLocalContract({
+      installContractDigest: OTHER_INSTALL_DIGEST,
+      setupContractDigest: OTHER_COMBINED_DIGEST,
+    }),
+    observeAuthority: async () => authority(),
+  }), (error: unknown) => rejects('INSTALL_CONTINUATION_REQUIRED')(error)
+    && /re-record the lane\s+baseline/i.test(
+      String((error as { details?: { recoveryAction?: string } }).details?.recoveryAction ?? ''),
+    )
+    && !/install continuation module/i.test(
+      String((error as { details?: { recoveryAction?: string } }).details?.recoveryAction ?? ''),
+    ));
+
+  // First-run UX cannot invalidate an installation that already happened.
+  const preflight = await preflightEnvironmentMutation('amber', {
+    ...f.options,
+    baseline: splitBaseline(),
+    localContract: splitLocalContract({
+      setupFlowDigest: OTHER_FLOW_DIGEST,
+      setupContractDigest: OTHER_COMBINED_DIGEST,
+    }),
+    observeAuthority: async () => authority(),
+  });
+  assert.deepEqual(preflight.setupFlow, {
+    proven: false, baselineDigest: FLOW_DIGEST, localDigest: OTHER_FLOW_DIGEST,
+  });
+
+  const mutationLease = beginEnvironmentDeployment(preflight, {
+    ...f.options, localContract: preflight.localContract,
+  });
+  const receipt = await completeEnvironmentDeployment(preflight, {
+    ...f.options, deployedVersion: 'version-next', mutationLease,
+    observeAuthority: async () => authority('amber', {
+      activeVersion: 'version-next', deploymentMetadata: preflight.deploymentMetadata,
+    }),
+  });
+  assert.equal(receipt.setupFlowUnprovenSince, f.revision);
+  assert.equal(receipt.installContractDigest, INSTALL_DIGEST);
+  assert.equal(receipt.setupFlowDigest, OTHER_FLOW_DIGEST);
+  assert.deepEqual(readEnvironmentDeployReceipt(f.records[0]!.evidenceRoot), receipt);
+  assert.equal(
+    readEnvironmentRegistry(f.options).targets.amber.setupFlowUnprovenSince,
+    f.revision,
+  );
+
+  // Re-recording the baseline after a proven fresh install clears the marker.
+  rmSync(environmentBaselinePath(f.records[0]!.evidenceRoot));
+  writeEnvironmentBaseline(
+    f.records[0]!.evidenceRoot,
+    splitBaseline({ setupFlowDigest: OTHER_FLOW_DIGEST }),
+    { ...f.options, clearSetupFlowUnproven: true },
+  );
+  assert.equal(readEnvironmentRegistry(f.options).targets.amber.setupFlowUnprovenSince, null);
+});
+
+test('a legacy baseline treats combined drift as setup-flow drift unless the install source itself changed', async (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', f.options);
+  const installSource = 'export const setupCapability = 1;\n';
+  writeFileSync(join(f.worktree, 'setup-capability.mjs'), installSource);
+  const legacyLocal = {
+    ...localContract(),
+    setupContractDigest: OTHER_COMBINED_DIGEST,
+    installContractFiles: ['setup-capability.mjs'],
+  };
+
+  // Same install source at the lane's recorded revision: soft.
+  const preflight = await preflightEnvironmentMutation('amber', {
+    ...f.options,
+    projectRoot: f.worktree,
+    showFileAtRevision: (revision: string) => {
+      assert.equal(revision, f.revision);
+      return installSource;
+    },
+    baseline: baseline(),
+    localContract: legacyLocal,
+    observeAuthority: async () => authority(),
+  });
+  assert.deepEqual(preflight.setupFlow, {
+    proven: false,
+    baselineDigest: `sha256:${'2'.repeat(64)}`,
+    localDigest: OTHER_COMBINED_DIGEST,
+  });
+
+  // Changed install source at that revision: hard.
+  await assert.rejects(preflightEnvironmentMutation('amber', {
+    ...f.options,
+    projectRoot: f.worktree,
+    showFileAtRevision: () => 'export const setupCapability = 2;\n',
+    baseline: baseline(),
+    localContract: legacyLocal,
+    observeAuthority: async () => authority(),
+  }), rejects('INSTALL_CONTINUATION_REQUIRED'));
+
+  // Unresolvable recorded source: fail closed.
+  await assert.rejects(preflightEnvironmentMutation('amber', {
+    ...f.options,
+    projectRoot: f.worktree,
+    showFileAtRevision: () => null,
+    baseline: baseline(),
+    localContract: legacyLocal,
+    observeAuthority: async () => authority(),
+  }), rejects('INSTALL_CONTINUATION_REQUIRED'));
+});
+
+test('the local contract splits the setup sources into an install contract and a setup flow', () => {
+  const contract = readLocalEnvironmentContract({ projectRoot: process.cwd() });
+  assert.match(contract.installContractDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.match(contract.setupFlowDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.notEqual(contract.installContractDigest, contract.setupFlowDigest);
+  assert.deepEqual(contract.installContractFiles, ['src/auth/setup-capability.mjs']);
+  assert.deepEqual(
+    classifySetupContractDrift(contract, {
+      ...baseline(),
+      installContractDigest: contract.installContractDigest,
+      setupFlowDigest: OTHER_FLOW_DIGEST,
+      setupContractDigest: contract.setupContractDigest,
+    }),
+    {
+      legacyBaseline: false,
+      installChanged: false,
+      setupFlowChanged: true,
+      baselineDigest: OTHER_FLOW_DIGEST,
+      localDigest: contract.setupFlowDigest,
+    },
+  );
 });

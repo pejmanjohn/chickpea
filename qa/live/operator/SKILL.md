@@ -105,6 +105,16 @@ blocked rather than passing them or repeatedly asking the same question.
    check out the claimed revision, run `npm run env -- reconciliation <alias>`
    (it adopts the uploaded version and clears the intent lock), release, and
    only then move HEAD again.
+   Only the Slack manifest digest, the required scopes, and
+   `src/auth/setup-capability.mjs` are hard-gated against the lane baseline; a
+   mismatch refuses with `INSTALL_CONTINUATION_REQUIRED`, and the recovery is to
+   prove a fresh install on a disposable target and re-record the baseline.
+   Changes to the setup flow (`src/auth/setup-handoff.ts`,
+   `src/management/setup-routes.ts`, `src/config/onboarding-state.ts`,
+   `src/admin/onboarding-proof.ts`) deploy normally and mark the lane
+   `setupFlowUnprovenSince <sha>` in `env status`. Report that marker; in
+   `release` mode clear it with a fresh-install journey on a disposable target
+   followed by a baseline re-record.
 6. `npm run env -- attest <alias>` returns one JSON object whose `targetOverlay`
    and `doctorSnapshot` members are the two doctor inputs; write each to its
    own private file before `npm run verify:live:doctor -- --target <overlay>

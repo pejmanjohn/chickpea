@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -31,10 +32,12 @@ import { validateTargetOverlay } from '../qa/live/privacy.ts';
 import { LIVE_MANIFEST } from '../qa/live/manifest.ts';
 // @ts-expect-error The executable CLI module intentionally has no declaration file.
 import * as environmentCliModule from '../scripts/chickpea-environment.mjs';
+import { acquireTargetLock } from '../qa/live/safety/lock.ts';
 
 const {
   EnvironmentRegistryError,
   claimEnvironment,
+  clearEnvironmentSetupFlowUnproven,
   createEnvironmentRegistry,
   currentHostFingerprint,
   environmentMarkerPath,
@@ -43,7 +46,9 @@ const {
   readEnvironmentStatus,
   reconcileEnvironment,
   recordEnvironmentAttestation,
+  recordEnvironmentDeployment,
   reclaimEnvironment,
+  stableEnvironmentJson,
   releaseEnvironment,
   resolveEnvironmentAlias,
 } = environmentRegistryModule;
@@ -1523,4 +1528,187 @@ test('attestation binds registration source and serving identity and rechecks ex
   assert.throws(() => recordEnvironmentAttestation('amber', directResult, {
     ...registryOptions(f.root), now: () => NOW + 2_500, worktreePath: f.first.path,
   }), rejectsCode('SOURCE_IDENTITY_MISMATCH'));
+});
+
+const SETUP_INSTALL_DIGEST = `sha256:${'a'.repeat(64)}`;
+const SETUP_OTHER_INSTALL_DIGEST = `sha256:${'b'.repeat(64)}`;
+const SETUP_FLOW_DIGEST = `sha256:${'c'.repeat(64)}`;
+const SETUP_OTHER_FLOW_DIGEST = `sha256:${'d'.repeat(64)}`;
+const SETUP_COMBINED_DIGEST = `sha256:${'e'.repeat(64)}`;
+const SETUP_MANIFEST_DIGEST = `sha256:${'f'.repeat(64)}`;
+
+function sha256Of(value: unknown) {
+  return `sha256:${createHash('sha256').update(stableEnvironmentJson(value)).digest('hex')}`;
+}
+
+/**
+ * Stand up the exact deploy authority `recordEnvironmentDeployment` demands: a
+ * claim, a lane baseline, a signed deploy intent, and an owned target lock.
+ */
+function deploymentAuthorityFixture(input: { legacy?: boolean } = {}) {
+  const f = fixture();
+  const options = { ...registryOptions(f.root), worktreePath: f.first.path };
+  claimEnvironment('amber', options);
+  const registration = readEnvironmentRegistry(options).targets.amber;
+  const claim = registration.claim;
+  const evidenceRoot = registration.evidenceRoot;
+  const laneBaseline = {
+    schemaVersion: 'chickpea-environment-baseline/v1',
+    target: 'amber',
+    manifestDigest: SETUP_MANIFEST_DIGEST,
+    requiredScopes: ['chat:write'],
+    setupContractDigest: SETUP_COMBINED_DIGEST,
+    ...(input.legacy ? {} : {
+      installContractDigest: SETUP_INSTALL_DIGEST,
+      setupFlowDigest: SETUP_FLOW_DIGEST,
+    }),
+    schemaGeneration: registration.schemaGeneration,
+    credentialFingerprintsByTarget: Object.fromEntries(TARGETS.map((target) => [
+      target,
+      Object.fromEntries(['auth', 'cookie', 'signing', 'recovery', 'setup', 'encryption']
+        .map((name, index) => [name, `sha256:${target.charCodeAt(0).toString(16)}${index}`.padEnd(71, '0')])),
+    ])),
+  };
+  writeFileSync(
+    join(evidenceRoot, 'environment-baseline.json'),
+    `${JSON.stringify(laneBaseline)}\n`,
+    { mode: 0o600 },
+  );
+  const runId = 'environment-deploy-amber-fixture';
+  const unsignedIntent = {
+    schemaVersion: 'chickpea-environment-deploy-intent/v1',
+    target: 'amber',
+    runId,
+    intentId: 'deploy-fixture',
+    claimNonce: claim.leaseNonce,
+    claimedRevision: claim.claimedRevision,
+    sourceDirty: false,
+    registryRevision: claim.registryRevision,
+    schemaGeneration: registration.schemaGeneration,
+    workerName: registration.workerName,
+    authDatabaseId: registration.authDatabaseId,
+    tagStateId: registration.bindingIdentities.TAG_STATE,
+    priorServingVersion: registration.servingVersion,
+    priorSchemaGeneration: registration.schemaGeneration,
+    providerContext: [],
+    deploymentMetadata: {
+      target: 'amber',
+      sourceRevision: claim.claimedRevision,
+      sourceDirty: false,
+      claimNonce: claim.leaseNonce,
+      registryRevision: claim.registryRevision,
+      schemaGeneration: registration.schemaGeneration,
+      workerName: registration.workerName,
+      authDatabaseId: registration.authDatabaseId,
+      tagStateId: registration.bindingIdentities.TAG_STATE,
+      slackTeamId: registration.workspaceId,
+      slackAppId: registration.slackAppId,
+      slackBotUserId: registration.botUserId,
+      manifestDigest: laneBaseline.manifestDigest,
+      setupContractDigest: laneBaseline.setupContractDigest,
+      baselineDigest: sha256Of(laneBaseline),
+    },
+    createdAt: new Date(NOW).toISOString(),
+  };
+  const intent = { ...unsignedIntent, intentDigest: sha256Of(unsignedIntent) };
+  writeFileSync(
+    join(evidenceRoot, 'deploy-intent.json'),
+    `${JSON.stringify(intent)}\n`,
+    { mode: 0o600 },
+  );
+  acquireTargetLock(join(evidenceRoot, 'target.lock'), {
+    runId, pid: process.pid, host: hostname(), startedAt: new Date(NOW).toISOString(),
+  });
+  const recordOptions = {
+    ...options,
+    expectedTargetLockRunId: runId,
+    mutationLeaseAuthority: {
+      runId, intentDigest: intent.intentDigest, claimNonce: claim.leaseNonce,
+    },
+    publishPendingReceipt: () => {},
+    finalizeReceipt: () => {},
+  };
+  const receipt = (overrides: Record<string, unknown> = {}) => {
+    const unsigned = {
+      schemaVersion: 'chickpea-environment-deploy-receipt/v1',
+      target: 'amber',
+      sourceRevision: claim.claimedRevision,
+      sourceDirty: false,
+      claimNonce: claim.leaseNonce,
+      registryRevision: claim.registryRevision,
+      schemaGeneration: registration.schemaGeneration,
+      workerName: registration.workerName,
+      authDatabaseBinding: registration.authDatabaseBinding,
+      authDatabaseId: registration.authDatabaseId,
+      tagStateId: registration.bindingIdentities.TAG_STATE,
+      slackTeamId: registration.workspaceId,
+      slackAppId: registration.slackAppId,
+      slackBotUserId: registration.botUserId,
+      transport: registration.transport,
+      activeVersion: 'version-next',
+      manifestDigest: laneBaseline.manifestDigest,
+      setupContractDigest: laneBaseline.setupContractDigest,
+      installContractDigest: SETUP_INSTALL_DIGEST,
+      setupFlowDigest: SETUP_FLOW_DIGEST,
+      setupFlowUnprovenSince: null,
+      baselineDigest: sha256Of(laneBaseline),
+      issuedAt: new Date(NOW).toISOString(),
+      ...overrides,
+    };
+    return { ...unsigned, receiptDigest: sha256Of(unsigned) };
+  };
+  return { ...f, options, recordOptions, receipt, claim, laneBaseline };
+}
+
+test('a deploy receipt is refused for install-contract drift and accepted with a setup-flow marker', (context) => {
+  const f = deploymentAuthorityFixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+
+  assert.throws(() => recordEnvironmentDeployment('amber', f.receipt({
+    installContractDigest: SETUP_OTHER_INSTALL_DIGEST,
+    setupFlowUnprovenSince: f.claim.claimedRevision,
+  }), f.recordOptions), rejectsCode('INVALID_DEPLOY_RECEIPT'));
+
+  recordEnvironmentDeployment('amber', f.receipt({
+    setupFlowDigest: SETUP_OTHER_FLOW_DIGEST,
+    setupFlowUnprovenSince: f.claim.claimedRevision,
+  }), f.recordOptions);
+  const registry = readEnvironmentRegistry(f.options);
+  assert.equal(registry.targets.amber.setupFlowUnprovenSince, f.claim.claimedRevision);
+  const status = readEnvironmentStatus({ ...f.options, target: 'amber' });
+  assert.equal(status.targets[0].setupFlowUnprovenSince, f.claim.claimedRevision);
+  assert.equal(status.targets[0].health, 'ready');
+
+  clearEnvironmentSetupFlowUnproven('amber', f.options);
+  assert.equal(
+    readEnvironmentStatus({ ...f.options, target: 'amber' }).targets[0].setupFlowUnprovenSince,
+    null,
+  );
+});
+
+test('a legacy receipt without split digests is accepted only when it declares setup-flow drift', (context) => {
+  const f = deploymentAuthorityFixture({ legacy: true });
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const legacy = (overrides: Record<string, unknown>) => {
+    const receipt = f.receipt(overrides) as Record<string, unknown>;
+    delete receipt.installContractDigest;
+    delete receipt.setupFlowDigest;
+    const { receiptDigest, ...unsigned } = receipt;
+    void receiptDigest;
+    return { ...unsigned, receiptDigest: sha256Of(unsigned) };
+  };
+
+  // A combined digest that differs with no declared setup-flow drift is refused.
+  assert.throws(() => recordEnvironmentDeployment('amber', legacy({
+    setupContractDigest: `sha256:${'9'.repeat(64)}`,
+  }), f.recordOptions), rejectsCode('INVALID_DEPLOY_RECEIPT'));
+
+  recordEnvironmentDeployment('amber', legacy({
+    setupContractDigest: `sha256:${'9'.repeat(64)}`,
+    setupFlowUnprovenSince: f.claim.claimedRevision,
+  }), f.recordOptions);
+  assert.equal(
+    readEnvironmentRegistry(f.options).targets.amber.setupFlowUnprovenSince,
+    f.claim.claimedRevision,
+  );
 });

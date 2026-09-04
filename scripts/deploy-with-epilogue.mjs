@@ -1484,6 +1484,13 @@ child.on('close', async (code) => {
   }
   if (selectedEnvironmentTarget) {
     process.stdout.write('\n✔ Claimed environment deployment reconciled.\n');
+    if (finalEnvironmentPreflight?.setupFlow?.proven === false) {
+      process.stdout.write(
+        '! Setup flow unproven for this revision: the first-run install sources '
+        + 'differ from the lane baseline. Prove a fresh install on a disposable '
+        + 'target and re-record the baseline to clear it.\n',
+      );
+    }
   } else if (deployedUrl && deploymentAuthority) {
     printPrivateSetupLink(deployedUrl, deploymentAuthority.setup);
   } else if (deploymentAuthority) {

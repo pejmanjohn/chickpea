@@ -815,7 +815,14 @@ export function recordEnvironmentDeployment(target, receipt, options = {}) {
       ? Object.fromEntries(Object.entries(receipt).filter(([key]) => key !== 'receiptDigest'))
       : undefined;
     if (!isRecord(receipt)
-      || !exactKeys(receipt, DEPLOY_RECEIPT_KEYS)
+      || !exactKeys(receipt, DEPLOY_RECEIPT_KEYS, [
+        'installContractDigest', 'setupFlowDigest', 'setupFlowUnprovenSince',
+      ])
+      || !(receipt.installContractDigest === undefined
+        || /^sha256:[a-f0-9]{64}$/u.test(receipt.installContractDigest))
+      || !(receipt.setupFlowDigest === undefined
+        || /^sha256:[a-f0-9]{64}$/u.test(receipt.setupFlowDigest))
+      || !validSetupFlowUnprovenSince(receipt.setupFlowUnprovenSince)
       || receipt.schemaVersion !== 'chickpea-environment-deploy-receipt/v1'
       || receipt.receiptDigest !== `sha256:${createHash('sha256')
         .update(stableEnvironmentJson(unsignedReceipt)).digest('hex')}`
@@ -849,10 +856,19 @@ export function recordEnvironmentDeployment(target, receipt, options = {}) {
       join(registration.evidenceRoot, 'environment-baseline.json'),
       'INVALID_DEPLOY_RECEIPT',
     );
+    // Only the install contract is hard-gated. A receipt whose setup-flow
+    // digest (or, for a legacy baseline, whose combined digest) differs is
+    // accepted and recorded as an unproven setup flow.
+    const installContractMatches = !isRecord(baseline) ? false
+      : receipt.installContractDigest !== undefined
+        && baseline.installContractDigest !== undefined
+        ? receipt.installContractDigest === baseline.installContractDigest
+        : receipt.setupContractDigest === baseline.setupContractDigest
+          || typeof receipt.setupFlowUnprovenSince === 'string';
     if (!isRecord(baseline)
       || baseline.target !== target
       || baseline.manifestDigest !== receipt.manifestDigest
-      || baseline.setupContractDigest !== receipt.setupContractDigest
+      || !installContractMatches
       || receipt.baselineDigest !== `sha256:${createHash('sha256')
         .update(stableEnvironmentJson(baseline)).digest('hex')}`) {
       throw fail('INVALID_DEPLOY_RECEIPT');
@@ -897,6 +913,7 @@ export function recordEnvironmentDeployment(target, receipt, options = {}) {
     pending.targets[target].sourceDirty = receipt.sourceDirty;
     pending.targets[target].servingVersion = receipt.activeVersion;
     pending.targets[target].schemaGeneration = receipt.schemaGeneration;
+    pending.targets[target].setupFlowUnprovenSince = receipt.setupFlowUnprovenSince ?? null;
     pending.targets[target].reachable = false;
     pending.targets[target].identityMatches = false;
     pending.targets[target].lastAttestation = null;
@@ -915,6 +932,36 @@ export function recordEnvironmentDeployment(target, receipt, options = {}) {
     validateRegistry(final, options.allowLegacyRegistryRecovery === true);
     writeRegistryRevision(root, final, options);
     return Object.freeze({ target, registryRevision: finalRevision, servingVersion: receipt.activeVersion });
+  }, options);
+}
+
+/**
+ * Clear a lane's "setup flow unproven" marker after a fresh-install journey has
+ * been proven for the deployed revision, or alongside an explicit baseline
+ * re-record. Requires the lane's own claim, like every other lane mutation.
+ */
+export function clearEnvironmentSetupFlowUnproven(target, options = {}) {
+  assertActiveTarget(target);
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  return withRegistryLock(root, () => {
+    const worktree = resolveWorktree(options.worktreePath ?? process.cwd(), options);
+    const registry = readRegistryAt(root, false, options.allowLegacyRegistryRecovery === true);
+    assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
+    assertMatchingClaim(registry, target, worktree, options);
+    const now = nowMs(options);
+    const cleared = registry.targets[target].setupFlowUnprovenSince ?? null;
+    if (cleared === null) {
+      return Object.freeze({ target, registryRevision: registry.revision, cleared: false });
+    }
+    const revision = registry.revision + 1;
+    const next = structuredClone(registry);
+    next.revision = revision;
+    next.targets[target].setupFlowUnprovenSince = null;
+    next.audit.push(auditEvent('target_setup_flow_proven', target, now, revision));
+    trimAudit(next.audit);
+    validateRegistry(next, options.allowLegacyRegistryRecovery === true);
+    writeRegistryRevision(root, next, options);
+    return Object.freeze({ target, registryRevision: revision, cleared: true });
   }, options);
 }
 
@@ -1015,7 +1062,9 @@ function normalizeInitialTargets(input) {
 function normalizeTarget(input) {
   rejectSecretLikeFields(input);
   if (!isRecord(input)) throw fail('INVALID_TARGET_RECORD');
-  if (Object.keys(input).some((key) => !TARGET_KEYS.includes(key))) throw fail('INVALID_TARGET_RECORD');
+  if (Object.keys(input).some((key) => ![...TARGET_KEYS, 'setupFlowUnprovenSince'].includes(key))) {
+    throw fail('INVALID_TARGET_RECORD');
+  }
   assertActiveTarget(input.target);
   if (input.role !== 'branch') throw fail('INVALID_TARGET_ROLE');
   const target = input.target;
@@ -1099,7 +1148,10 @@ function assertUniqueTargetIdentities(targets, legacy = false) {
 function validateTarget(input, target, legacy = false) {
   const authConfigField = legacy ? 'providerReadOnlyAuthConfigId' : 'providerAuthConfigId';
   const keys = legacy ? TARGET_KEYS.map((key) => key === 'providerAuthConfigId' ? authConfigField : key) : TARGET_KEYS;
-  if (!isRecord(input) || !exactKeys(input, keys) || input.target !== target
+  // Optional so registries written before the setup-contract split stay valid.
+  if (!isRecord(input) || !exactKeys(input, keys, ['setupFlowUnprovenSince'])
+    || !validSetupFlowUnprovenSince(input.setupFlowUnprovenSince)
+    || input.target !== target
     || input.role !== 'branch'
     || (input.transport !== 'gateway' && input.transport !== 'events')
     || input.workerName !== `chickpea-${target}-live`
@@ -1129,6 +1181,11 @@ function validateTarget(input, target, legacy = false) {
     throw fail('INVALID_TARGET_RECORD');
   }
   return input;
+}
+
+function validSetupFlowUnprovenSince(value) {
+  return value === undefined || value === null
+    || (typeof value === 'string' && /^[0-9a-f]{7,64}$/u.test(value));
 }
 
 function validateClaim(input, target) {
@@ -1727,6 +1784,9 @@ function statusForTarget(registration, now, options) {
       ...(verifierLock.ownerRunId ? { ownerRunId: verifierLock.ownerRunId } : {}),
     }),
     schemaGeneration: registration.schemaGeneration,
+    // Non-null means the lane serves a revision whose first-run setup flow was
+    // never proven. It is a warning, not a health failure.
+    setupFlowUnprovenSince: registration.setupFlowUnprovenSince ?? null,
     lastAttestedRevision: registration.lastAttestation?.sourceRevision ?? null,
     recoveryAction: recoveryAction(health, registration.target),
   });
@@ -1986,7 +2046,7 @@ function validDeploymentMetadata(input, intent, registration) {
 function validateAudit(input) {
   if (!isRecord(input)
     || !exactKeys(input, ['event', 'target', 'at', 'registryRevision'])
-    || !['claim_created', 'claim_reclaimed', 'claim_adopted_orphan', 'claim_released', 'target_attested', 'target_deploy_intent', 'target_deploy_aborted', 'target_deploy_pending', 'target_deployed', 'provider_auth_config_migrated'].includes(input.event)
+    || !['claim_created', 'claim_reclaimed', 'claim_adopted_orphan', 'claim_released', 'target_attested', 'target_deploy_intent', 'target_deploy_aborted', 'target_deploy_pending', 'target_deployed', 'provider_auth_config_migrated', 'target_setup_flow_proven'].includes(input.event)
     || !activeEnvironmentTargets.includes(input.target)
     || !timestamp(input.at)
     || !Number.isSafeInteger(input.registryRevision) || input.registryRevision < 1) {
@@ -2160,8 +2220,12 @@ function isRecord(input) {
   return input !== null && typeof input === 'object' && !Array.isArray(input);
 }
 
-function exactKeys(input, expected) {
-  return sameArray(Object.keys(input).sort(), [...expected].sort());
+function exactKeys(input, expected, optional = []) {
+  const actual = Object.keys(input).sort();
+  return sameArray(
+    actual,
+    [...expected, ...optional.filter((key) => actual.includes(key))].sort(),
+  );
 }
 
 function sameArray(left, right) {

@@ -35,6 +35,7 @@ import {
   assertEnvironmentMutationClaim,
   assertLiveEnvironmentClaim,
   assertSafeEvidenceRoot,
+  clearEnvironmentSetupFlowUnproven,
   isEnvironmentDeploymentAbortState,
   recordEnvironmentDeploymentIntent,
   recordEnvironmentDeployment,
@@ -44,6 +45,29 @@ import {
 } from './environment-registry.mjs';
 
 export const ENVIRONMENT_BASELINE_SCHEMA = 'chickpea-environment-baseline/v1';
+/**
+ * Sources that change what an already-installed lane relies on. A difference
+ * here can invalidate an installation that already happened, so it stays a
+ * hard refusal.
+ */
+export const INSTALL_CONTRACT_FILES = Object.freeze([
+  'src/auth/setup-capability.mjs',
+]);
+/**
+ * First-run setup UX. A difference here cannot invalidate an installation that
+ * already happened; it only means the lane's install journey is unproven for
+ * the deployed revision.
+ */
+export const SETUP_FLOW_FILES = Object.freeze([
+  'src/auth/setup-handoff.ts',
+  'src/management/setup-routes.ts',
+  'src/config/onboarding-state.ts',
+  'src/admin/onboarding-proof.ts',
+]);
+const SETUP_CONTRACT_RECOVERY_ACTION =
+  'Re-prove a fresh install on a disposable target, then re-record the lane '
+  + 'baseline (writeEnvironmentBaseline) before deploying this change to the '
+  + 'permanent lane app.';
 export const ENVIRONMENT_DEPLOY_RECEIPT_SCHEMA = 'chickpea-environment-deploy-receipt/v1';
 export const ENVIRONMENT_RESOURCE_INTENT_SCHEMA = 'chickpea-environment-resource-creation-intent/v1';
 export const ENVIRONMENT_RESOURCE_RECEIPT_SCHEMA = 'chickpea-environment-resource-creation-receipt/v1';
@@ -95,9 +119,20 @@ export function readEnvironmentBaseline(evidenceRoot) {
   return validateBaseline(readOwnerOnlyJson(environmentBaselinePath(evidenceRoot), 'BASELINE_MISSING'));
 }
 
-export function writeEnvironmentBaseline(evidenceRoot, input) {
+/**
+ * Record a lane baseline. Pass `clearSetupFlowUnproven: true` when the
+ * re-record follows a proven fresh install, so the lane's unproven marker is
+ * cleared in the same operator step. New baselines should carry
+ * `installContractDigest` and `setupFlowDigest`; a baseline that still carries
+ * only the combined `setupContractDigest` is upgraded the next time one is
+ * written.
+ */
+export function writeEnvironmentBaseline(evidenceRoot, input, options = {}) {
   const baseline = validateBaseline(input);
   exclusiveOwnerOnlyJson(environmentBaselinePath(evidenceRoot), baseline);
+  if (options.clearSetupFlowUnproven === true) {
+    clearEnvironmentSetupFlowUnproven(baseline.target, options);
+  }
   return baseline;
 }
 
@@ -451,10 +486,11 @@ export async function preflightEnvironmentMutation(target, options = {}) {
   const localContract = validateLocalContract(
     options.localContract ?? readLocalEnvironmentContract(options),
   );
-  const schemaAdvancement = assertLocalContractMatchesBaseline(
+  const contractVerdict = assertLocalContractMatchesBaseline(
     localContract,
     baseline,
     context,
+    options,
   );
   assertUniqueCredentialFingerprints(baseline.credentialFingerprintsByTarget);
   const observe = selectAuthorityObserver(options);
@@ -495,7 +531,8 @@ export async function preflightEnvironmentMutation(target, options = {}) {
     baseline,
     localContract,
     deploymentMetadata,
-    schemaAdvancement,
+    schemaAdvancement: contractVerdict.schemaAdvancement,
+    setupFlow: contractVerdict.setupFlow,
   });
 }
 
@@ -629,12 +666,16 @@ export async function resumeEnvironmentDeployment(target, options = {}) {
   const localContract = validateLocalContract(
     options.localContract ?? readLocalEnvironmentContract(options),
   );
+  // The install contract is re-gated here; setup-flow drift is carried forward
+  // as an unproven marker instead of failing the resume.
+  const contractVerdict = assertLocalContractMatchesBaseline(
+    localContract, baseline, context, recoveryOptions,
+  );
   if (localContract.schemaGeneration !== intent.schemaGeneration
     || localContract.manifestDigest !== intent.deploymentMetadata.manifestDigest
-    || localContract.setupContractDigest !== intent.deploymentMetadata.setupContractDigest
     || stableEnvironmentJson(localContract.requiredScopes)
       !== stableEnvironmentJson(baseline.requiredScopes)
-    || assertLocalContractMatchesBaseline(localContract, baseline, context) !== true) {
+    || contractVerdict.schemaAdvancement !== true) {
     throw fail('MUTATION_AUTHORITY_CHANGED');
   }
   const journalPath = join(evidenceRoot, 'runs', `${intent.runId}.jsonl`);
@@ -656,6 +697,7 @@ export async function resumeEnvironmentDeployment(target, options = {}) {
     localContract,
     deploymentMetadata: Object.freeze({ ...intent.deploymentMetadata }),
     schemaAdvancement: true,
+    setupFlow: contractVerdict.setupFlow,
   });
   assertEnvironmentMutationLease(preflight, lease, recoveryOptions);
   const observe = selectAuthorityObserver(recoveryOptions);
@@ -775,9 +817,14 @@ export async function reconcileEnvironmentDeployment(target, options = {}) {
   const localContract = validateLocalContract(
     options.localContract ?? readLocalEnvironmentContract(options),
   );
+  const contractVerdict = classifySetupContractDrift(localContract, baseline, {
+    ...recoveryOptions,
+    sourceRevision: recoveryOptions.setupDriftSourceRevision
+      ?? context.registration.sourceRevision,
+  });
   if (localContract.schemaGeneration !== intent.schemaGeneration
     || localContract.manifestDigest !== intent.deploymentMetadata.manifestDigest
-    || localContract.setupContractDigest !== intent.deploymentMetadata.setupContractDigest
+    || contractVerdict.installChanged
     || stableEnvironmentJson(localContract.requiredScopes)
       !== stableEnvironmentJson(baseline.requiredScopes)) {
     throw fail('MUTATION_AUTHORITY_CHANGED');
@@ -800,6 +847,11 @@ export async function reconcileEnvironmentDeployment(target, options = {}) {
     localContract,
     deploymentMetadata: Object.freeze({ ...intent.deploymentMetadata }),
     schemaAdvancement: intent.schemaGeneration !== intent.priorSchemaGeneration,
+    setupFlow: Object.freeze({
+      proven: !contractVerdict.setupFlowChanged,
+      baselineDigest: contractVerdict.baselineDigest,
+      localDigest: contractVerdict.localDigest,
+    }),
   });
   const allowAbortedRegistryRecovery = isEnvironmentDeploymentAbortState(
     target, intent, recoveryOptions,
@@ -950,6 +1002,16 @@ export async function completeEnvironmentDeployment(preflight, options = {}) {
     activeVersion: options.deployedVersion,
     manifestDigest: preflight.baseline.manifestDigest,
     setupContractDigest: preflight.baseline.setupContractDigest,
+    ...(preflight.localContract?.installContractDigest !== undefined ? {
+      installContractDigest: preflight.localContract.installContractDigest,
+      setupFlowDigest: preflight.localContract.setupFlowDigest,
+    } : {}),
+    // The lane's first-run install journey has not been proven for this
+    // revision. It clears on the next deploy whose setup flow matches the
+    // baseline, or when the baseline is re-recorded.
+    setupFlowUnprovenSince: preflight.setupFlow?.proven === false
+      ? preflight.deploymentMetadata.sourceRevision
+      : null,
     baselineDigest: preflight.deploymentMetadata.baselineDigest,
     issuedAt,
   };
@@ -1330,19 +1392,20 @@ export function readLocalEnvironmentContract(options = {}) {
   try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')); } catch { throw fail('INVALID_LOCAL_CONTRACT'); }
   const requiredScopes = [...new Set(manifest?.oauth_config?.scopes?.bot ?? [])].sort();
   if (!validScopes(requiredScopes)) throw fail('INVALID_LOCAL_CONTRACT');
-  const setupFiles = options.setupContractFiles ?? [
-    'src/auth/setup-capability.mjs',
-    'src/auth/setup-handoff.ts',
-    'src/management/setup-routes.ts',
-    'src/config/onboarding-state.ts',
-    'src/admin/onboarding-proof.ts',
-  ];
+  const installFiles = options.installContractFiles ?? [...INSTALL_CONTRACT_FILES];
+  const setupFlowFiles = options.setupFlowFiles ?? [...SETUP_FLOW_FILES];
+  const setupFiles = options.setupContractFiles ?? [...installFiles, ...setupFlowFiles];
+  const readSources = (files) => files.map((relativePath) => ({
+    path: relativePath,
+    source: readFileSync(join(projectRoot, relativePath), 'utf8'),
+  }));
   let setupSources;
+  let installSources;
+  let setupFlowSources;
   try {
-    setupSources = setupFiles.map((relativePath) => ({
-      path: relativePath,
-      source: readFileSync(join(projectRoot, relativePath), 'utf8'),
-    }));
+    setupSources = readSources(setupFiles);
+    installSources = readSources(installFiles);
+    setupFlowSources = readSources(setupFlowFiles);
   } catch {
     throw fail('INVALID_LOCAL_CONTRACT');
   }
@@ -1374,6 +1437,9 @@ export function readLocalEnvironmentContract(options = {}) {
     manifestDigest: digest(manifest),
     requiredScopes,
     setupContractDigest: digest(setupSources),
+    installContractDigest: digest(installSources),
+    setupFlowDigest: digest(setupFlowSources),
+    installContractFiles: [...installFiles],
     schemaGeneration: `d1:${d1History.at(-1)};do:${durableObjectHistory.at(-1)}`,
     schemaHistory: { d1: d1History, durableObject: durableObjectHistory },
   });
@@ -1922,11 +1988,16 @@ function deploymentMetadataFromBindings(bindings) {
 }
 
 function validateBaseline(input) {
+  // The split digests are optional so baselines recorded before the split stay
+  // readable. They are recorded whenever a baseline is written from now on.
   if (!isRecord(input)
     || !exactKeys(input, [
       'schemaVersion', 'target', 'manifestDigest', 'requiredScopes',
       'setupContractDigest', 'schemaGeneration', 'credentialFingerprintsByTarget',
-    ])
+    ], ['installContractDigest', 'setupFlowDigest'])
+    || !optionalDigest(input.installContractDigest)
+    || !optionalDigest(input.setupFlowDigest)
+    || (input.installContractDigest === undefined) !== (input.setupFlowDigest === undefined)
     || input.schemaVersion !== ENVIRONMENT_BASELINE_SCHEMA
     || !activeEnvironmentTargets.includes(input.target)
     || !DIGEST.test(input.manifestDigest)
@@ -1946,10 +2017,17 @@ function validateLocalContract(input) {
     || !exactKeys(input, [
       'manifestDigest', 'requiredScopes', 'setupContractDigest', 'schemaGeneration',
       'schemaHistory',
-    ])
+    ], ['installContractDigest', 'setupFlowDigest', 'installContractFiles'])
     || !DIGEST.test(input.manifestDigest)
     || !validScopes(input.requiredScopes)
     || !DIGEST.test(input.setupContractDigest)
+    || !optionalDigest(input.installContractDigest)
+    || !optionalDigest(input.setupFlowDigest)
+    || (input.installContractDigest === undefined) !== (input.setupFlowDigest === undefined)
+    || !(input.installContractFiles === undefined
+      || (Array.isArray(input.installContractFiles)
+        && input.installContractFiles.length > 0
+        && input.installContractFiles.every((value) => bounded(value, 512))))
     || !validSchemaGeneration(input.schemaGeneration)
     || !validSchemaHistory(input.schemaHistory)) {
     throw fail('INVALID_LOCAL_CONTRACT');
@@ -1957,21 +2035,89 @@ function validateLocalContract(input) {
   return input;
 }
 
-function assertLocalContractMatchesBaseline(local, baseline, context) {
-  if (local.manifestDigest !== baseline.manifestDigest
-    || stableEnvironmentJson(local.requiredScopes) !== stableEnvironmentJson(baseline.requiredScopes)
-    || local.setupContractDigest !== baseline.setupContractDigest) {
-    throw fail('INSTALL_CONTINUATION_REQUIRED', {
-      recoveryAction: 'Activate the install continuation module before changing the permanent lane app.',
+/**
+ * Split the recorded setup contract into the part that gates an existing
+ * installation and the part that is only first-run UX.
+ *
+ * Legacy baselines carry a single combined digest. A combined mismatch there is
+ * treated as setup-flow drift unless the install-contract source itself differs
+ * from the revision the lane was last deployed from, which is checked with
+ * `git show`. When that cannot be determined the drift is treated as an
+ * install-contract change and refused.
+ */
+export function classifySetupContractDrift(local, baseline, options = {}) {
+  const baselineDigest = baseline.setupFlowDigest ?? baseline.setupContractDigest;
+  const localDigest = local.setupFlowDigest ?? local.setupContractDigest;
+  if (baseline.installContractDigest !== undefined && local.installContractDigest !== undefined) {
+    return Object.freeze({
+      legacyBaseline: false,
+      installChanged: local.installContractDigest !== baseline.installContractDigest,
+      setupFlowChanged: local.setupFlowDigest !== baseline.setupFlowDigest,
+      baselineDigest,
+      localDigest,
     });
   }
+  if (local.setupContractDigest === baseline.setupContractDigest) {
+    return Object.freeze({
+      legacyBaseline: true, installChanged: false, setupFlowChanged: false,
+      baselineDigest, localDigest,
+    });
+  }
+  return Object.freeze({
+    legacyBaseline: true,
+    installChanged: legacyInstallContractChanged(local, options),
+    setupFlowChanged: true,
+    baselineDigest,
+    localDigest,
+  });
+}
+
+function legacyInstallContractChanged(local, options = {}) {
+  const revision = options.sourceRevision;
+  if (typeof revision !== 'string' || !/^[0-9a-f]{7,64}$/u.test(revision)) return true;
+  const projectRoot = resolve(options.projectRoot ?? fileURLToPath(new URL('../..', import.meta.url)));
+  const files = local.installContractFiles ?? [...INSTALL_CONTRACT_FILES];
+  const showFile = options.showFileAtRevision ?? ((rev, relativePath) => {
+    const result = spawnSync('git', ['show', `${rev}:${relativePath}`], {
+      cwd: projectRoot, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+    });
+    return result.status === 0 && typeof result.stdout === 'string' ? result.stdout : null;
+  });
+  for (const relativePath of files) {
+    let current;
+    try { current = readFileSync(join(projectRoot, relativePath), 'utf8'); } catch { return true; }
+    let recorded;
+    try { recorded = showFile(revision, relativePath); } catch { return true; }
+    if (typeof recorded !== 'string' || recorded !== current) return true;
+  }
+  return false;
+}
+
+function assertLocalContractMatchesBaseline(local, baseline, context, options = {}) {
+  const drift = classifySetupContractDrift(local, baseline, {
+    ...options,
+    sourceRevision: options.setupDriftSourceRevision
+      ?? context?.registration?.sourceRevision,
+  });
+  if (local.manifestDigest !== baseline.manifestDigest
+    || stableEnvironmentJson(local.requiredScopes) !== stableEnvironmentJson(baseline.requiredScopes)
+    || drift.installChanged) {
+    throw fail('INSTALL_CONTINUATION_REQUIRED', {
+      recoveryAction: SETUP_CONTRACT_RECOVERY_ACTION,
+    });
+  }
+  const setupFlow = Object.freeze({
+    proven: !drift.setupFlowChanged,
+    baselineDigest: drift.baselineDigest,
+    localDigest: drift.localDigest,
+  });
   const relation = schemaRelation(
     context.registration.schemaGeneration,
     local.schemaGeneration,
     local.schemaHistory,
   );
   if (relation < 0) throw fail('SCHEMA_ROLLBACK_REFUSED');
-  if (relation === 0) return false;
+  if (relation === 0) return Object.freeze({ schemaAdvancement: false, setupFlow });
   const intent = readSchemaIntent(join(context.registration.evidenceRoot, SCHEMA_INTENT_FILE));
   if (intent.target !== context.registration.target
     || intent.claimNonce !== context.claim.leaseNonce
@@ -1987,7 +2133,7 @@ function assertLocalContractMatchesBaseline(local, baseline, context) {
     || intent.registryRevision > context.registry.revision) {
     throw fail('INCOMPATIBLE_SCHEMA_GENERATION');
   }
-  return true;
+  return Object.freeze({ schemaAdvancement: true, setupFlow });
 }
 
 function assertUniqueCredentialFingerprints(byTarget) {
@@ -2132,7 +2278,15 @@ function validateDeployReceipt(input) {
     'activeVersion', 'manifestDigest', 'setupContractDigest', 'baselineDigest', 'tagStateId',
     'issuedAt', 'receiptDigest',
   ];
-  if (!isRecord(input) || !exactKeys(input, fields)
+  if (!isRecord(input)
+    || !exactKeys(input, fields, [
+      'installContractDigest', 'setupFlowDigest', 'setupFlowUnprovenSince',
+    ])
+    || !optionalDigest(input.installContractDigest)
+    || !optionalDigest(input.setupFlowDigest)
+    || !(input.setupFlowUnprovenSince === undefined
+      || input.setupFlowUnprovenSince === null
+      || /^[0-9a-f]{7,64}$/u.test(input.setupFlowUnprovenSince))
     || input.schemaVersion !== ENVIRONMENT_DEPLOY_RECEIPT_SCHEMA
     || !activeEnvironmentTargets.includes(input.target)
     || !/^[0-9a-f]{7,64}$/u.test(input.sourceRevision)
@@ -2364,10 +2518,14 @@ function bounded(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= 512;
 }
 
-function exactKeys(input, expected) {
+function exactKeys(input, expected, optional = []) {
   const actual = Object.keys(input).sort();
-  const wanted = [...expected].sort();
+  const wanted = [...expected, ...optional.filter((key) => actual.includes(key))].sort();
   return actual.length === wanted.length && actual.every((value, index) => value === wanted[index]);
+}
+
+function optionalDigest(value) {
+  return value === undefined || DIGEST.test(value);
 }
 
 function isRecord(value) {
