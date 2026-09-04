@@ -2309,7 +2309,7 @@
           ? agent.whereItWorks.channels
           : [];
         channels.forEach(function (channel) {
-          var key = channel.workspaceId + " " + channel.channelId;
+          var key = channel.workspaceId + "\u0000" + channel.channelId;
           var current = fallbackByChannel.get(key) || {
             workspaceId: channel.workspaceId,
             channelId: channel.channelId,
@@ -2330,11 +2330,11 @@
       });
       projected = Array.from(fallbackByChannel.values());
     }
-    var seen = new Set(projected.map(function (channel) { return channel.workspaceId + " " + channel.channelId; }));
+    var seen = new Set(projected.map(function (channel) { return channel.workspaceId + "\u0000" + channel.channelId; }));
     var catalog = (state.slackChannels && state.slackChannels.channels) || [];
     catalog.forEach(function (channel) {
       var workspaceId = (state.slackChannels && state.slackChannels.teamId) || connectedTeamId();
-      var key = workspaceId + " " + channel.id;
+      var key = workspaceId + "\u0000" + channel.id;
       if (seen.has(key)) return;
       projected.push({
         workspaceId: workspaceId,
