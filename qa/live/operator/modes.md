@@ -100,9 +100,11 @@ dependent check. Complete the rest and report the gap.
   final sentinel. In the Agent's Admin page, expand **Slack update proposal
   details** and **Refresh Slack proposals**. Compare the full frozen value,
   target, requester, conversation, and revision before sending bare `approve`
-  in that same thread. Refresh again and compare the saved textarea's actual
-  value, including newlines; snapshot prose can collapse whitespace. Also check
-  one retained approval turn and its completed apply result.
+  in that same thread. Refresh the proposal result, then reload the Agent page
+  before comparing the saved textarea's actual value, including newlines.
+  Refreshing proposals alone does not reload the instruction editor; snapshot
+  prose can also collapse whitespace. Check one retained approval turn and its
+  completed apply result.
 - For creation, use **Saved Agent details** and **Creation delivery details →
   Refresh creation delivery** to match the welcome's Agent, channel, thread,
   delivery reference, publication, and settled activity to the actual Slack
