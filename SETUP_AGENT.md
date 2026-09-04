@@ -19,6 +19,7 @@ Use the private setup link printed by the deployment. Chickpea creates the custo
 6. Select **Become the first Owner with Slack**. The OIDC result must carry the same `team_id` as the installed app; the signed-in Slack `user_id` is bound atomically as the first Chickpea Owner.
 7. Finish the in-app setup: choose a model provider and a model. A fresh deployment has no user Agent yet; `@Chickpea`, the built-in workspace assistant, answers direct messages and base mentions until you create one.
 8. Open a direct message with `@Chickpea` and ask for a first teammate, as the setup page suggests. Chickpea offers a few starters that work without any connected account; replying with a number creates that Agent. Setup is complete only after a real Slack reply from Chickpea succeeds.
+9. Optional: connect a coding agent or a script. Every deployment serves an OAuth-protected management MCP server at `https://<deployment>/mcp`; add that URL to Claude Code, Codex, or Cursor and the client signs in through Slack by itself. From a shell, `npx chickpea-cli doctor https://<deployment>` confirms the public surface is up (it reports a 404 as unfinished setup until step 6 completes), `npx chickpea-cli mcp config https://<deployment>` prints the client snippets, and `npx chickpea-cli login https://<deployment>` gives scripts the same access. See [the workspace management runbook](docs/runbooks/workspace-management-mcp.md).
 
 ## Manual adoption
 

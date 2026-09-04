@@ -4,7 +4,9 @@
   explicitly authorize a verified local worktree merge into root `main` and a
   direct push. Do not force-push `main`.
 - Run tests and release verification locally. Do not add GitHub Actions workflows
-  or require GitHub-hosted test results for merging.
+  or require GitHub-hosted test results for merging. The one exception is
+  `.github/workflows/publish-cli.yml`, which runs only on a `cli-v*` tag to
+  publish `packages/cli` to npm; it is not a merge gate and never runs on push.
 - Do not squash existing repository history, create release tags, or publish a
   release without an explicit request. A request to implement a change does not
   authorize a production deployment.

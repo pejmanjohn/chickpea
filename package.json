@@ -47,6 +47,7 @@
     "fixtures",
     "migrations",
     "qa/live",
+    "packages/cli",
     "scripts",
     "src",
     "tests",
@@ -59,6 +60,9 @@
     "wrangler.jsonc"
   ],
   "type": "module",
+  "workspaces": [
+    "packages/cli"
+  ],
   "imports": {
     "#chickpea-assets": {
       "workerd": "./src/assets/read.cloudflare.ts",
@@ -74,7 +78,7 @@
     }
   },
   "scripts": {
-    "test": "npm run typecheck && DO_NOT_TRACK=1 node --test --import tsx tests/*.test.ts tests/usage/*.test.ts",
+    "test": "npm run typecheck && DO_NOT_TRACK=1 node --test --import tsx tests/*.test.ts tests/usage/*.test.ts && npm test --workspace packages/cli",
     "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
     "dev": "vite dev --config vite.node.config.ts",
@@ -125,7 +129,9 @@
     "env": "node --import tsx scripts/chickpea-environment.mjs",
     "auth:recover": "node --import tsx scripts/recover-auth.mjs",
     "slack:bridge": "node scripts/slack-socket-bridge.mjs",
-    "reset:test-env": "node scripts/reset-test-env.mjs"
+    "reset:test-env": "node scripts/reset-test-env.mjs",
+    "test:cli": "npm test --workspace packages/cli",
+    "build:cli": "npm run build --workspace packages/cli"
   },
   "dependencies": {
     "@better-auth/mcp": "1.7.1",

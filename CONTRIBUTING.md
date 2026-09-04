@@ -50,7 +50,8 @@ Use `$chickpea-live-verification` for the corresponding real QA journeys.
 Run builds and tests **serially**: tests inspect generated artifacts, so a
 concurrent build can make them read a partially written artifact.
 All verification runs locally. This repository does not use GitHub Actions
-workflows or GitHub-hosted test runs.
+workflows or GitHub-hosted test runs, except the tag-triggered npm publish of
+`packages/cli` (`.github/workflows/publish-cli.yml`), which is not a merge gate.
 
 ```sh
 npm run build

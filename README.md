@@ -31,7 +31,7 @@
 
 <br />
 
-[Why it exists](#why-chickpea-exists) · [Features](#what-your-workspace-gets) · [How it works](#how-it-works) · [Managing](#managing-chickpea) · [Security](#security-model) · [Install](#install) · [Good to know](#good-to-know) · [FAQ](#faq)
+[Why it exists](#why-chickpea-exists) · [Features](#what-your-workspace-gets) · [How it works](#how-it-works) · [Managing](#managing-chickpea) · [CLI](#cli) · [Security](#security-model) · [Install](#install) · [Good to know](#good-to-know) · [FAQ](#faq)
 
 </div>
 
@@ -267,6 +267,21 @@ What keeps a chat window from being a loophole:
 - **Proposals before consequences.** Two kinds of change arrive as a frozen read-only proposal: anything the Agent inferred rather than you stated, and anything that changes what an Agent can do, reach, or delete. Nothing applies until you approve it.
 - **No ceremony for small edits.** Simple reversible single-field changes apply directly, and you can undo them.
 - **MCP gets the same treatment.** Requests are scoped to that requester's permissions and held to the same approvals. The authoring guide is published at `chickpea://guide/agent-authoring/v1`, and the [workspace management MCP runbook](docs/runbooks/workspace-management-mcp.md) covers authority and proposal semantics.
+
+### CLI
+
+For scripts, there is a fourth door: the official [`chickpea-cli`](packages/cli/README.md) package on npm. It signs in with the same OAuth flow an MCP client uses and calls the same management tools, so a deployment can be checked and configured from a shell without building an MCP integration.
+
+```bash
+npx chickpea-cli doctor https://chickpea.example.com        # public checks, no sign-in
+npx chickpea-cli mcp config https://chickpea.example.com    # client config for Claude Code, Codex, Cursor
+npx chickpea-cli login https://chickpea.example.com         # browser sign-in, tokens stored 0600
+npx chickpea-cli workspace inspect https://chickpea.example.com
+npx chickpea-cli call https://chickpea.example.com <tool> --args '{...}'
+npx chickpea-cli recipe export https://chickpea.example.com > recipe.json
+```
+
+The CLI never takes a token or key as an argument, never confirms a proposal on its own, and sends no telemetry. Node 22.19 or newer.
 
 ---
 

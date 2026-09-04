@@ -33,6 +33,12 @@ Authorization should show one permission: manage this Chickpea workspace. Slack 
 
 Dynamic Client Registration is an intentionally bounded compatibility window for current clients. It accepts public clients only, validates exact loopback or HTTPS redirects, rate-limits registrations, caps stored clients, and prunes unused clients. Do not enable confidential client metadata or widen redirect rules. Replacing DCR with client-ID metadata is a follow-up gate: the Worker implementation must safely resolve DNS, reject special addresses, pin the resolved address through TLS, and refuse redirects before remote metadata is trusted.
 
+## CLI
+
+`chickpea-cli` (npm, source at `packages/cli`) is a scripted client for this surface. `npx chickpea-cli doctor <origin>` runs the unauthenticated half of `scripts/verify-management-mcp.mjs` against a public origin: protected-resource metadata, authorization-server metadata, JWKS, and the 401 challenge, and explains a 404 as unfinished setup. `chickpea-cli mcp config <origin>` prints the client snippets for Claude Code, Codex, and Cursor. `chickpea-cli login <origin>` performs the public PKCE flow described above through the `@modelcontextprotocol/client` SDK and stores the tokens under `~/.config/chickpea` (mode 0600), keyed by origin; `logout` revokes at `/api/auth/oauth2/revoke`. `workspace inspect`, `tools list`, `call <tool>`, and `recipe export|preview` wrap the tools directly and print the `{ ok, result | error }` envelope.
+
+The CLI follows this runbook's confirmation model: a result carrying a proposal is printed with the exact `confirm_workspace_change` command and is never confirmed automatically, and a setup link is printed with the 24-hour, anyone-who-holds-it warning. It never accepts a token, provider key, or Slack credential as an argument or environment variable. Package README: `packages/cli/README.md`.
+
 ## Roles and confirmation
 
 | Actor | Inspect workspace | Operational changes | Members | Normal Channel work |

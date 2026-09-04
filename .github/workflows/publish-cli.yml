@@ -1,0 +1,48 @@
+# Publishes packages/cli to npm when a `cli-v*` tag is pushed.
+# The tag must match the version in packages/cli/package.json.
+# Requires the NPM_TOKEN repository secret (an npm automation token).
+name: Publish CLI
+
+on:
+  push:
+    tags:
+      - 'cli-v*'
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install
+        run: npm ci --ignore-scripts
+
+      - name: Check the tag matches packages/cli/package.json
+        working-directory: packages/cli
+        run: |
+          expected="cli-v$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF_NAME}" != "${expected}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package version (${expected})." >&2
+            exit 1
+          fi
+
+      - name: Build and test the CLI
+        working-directory: packages/cli
+        run: |
+          npm run build
+          npm test
+
+      - name: Publish
+        working-directory: packages/cli
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,49 @@
+{
+  "name": "chickpea-cli",
+  "version": "0.1.0",
+  "description": "Official command-line client for a self-hosted Chickpea deployment: health checks, MCP client configuration, OAuth sign-in, and scripted workspace management.",
+  "license": "Apache-2.0",
+  "homepage": "https://chickpea.co",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pejmanjohn/chickpea.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/pejmanjohn/chickpea/issues"
+  },
+  "keywords": [
+    "chickpea",
+    "slack",
+    "mcp",
+    "cli",
+    "oauth"
+  ],
+  "type": "module",
+  "bin": {
+    "chickpea": "./dist/bin.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run typecheck && DO_NOT_TRACK=1 node --test --import tsx tests/*.test.ts",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.0.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "@types/node": "26.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "6.0.3",
+    "zod": "4.4.3"
+  }
+}
