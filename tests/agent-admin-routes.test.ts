@@ -4142,7 +4142,7 @@ test('workspace Members cannot enumerate global destination metadata', async () 
     assert.deepEqual(allowedStatuses, Object.fromEntries(allowedPaths.map((path) => [path, 200])));
 
     const adminShell = await fixture.app.request('http://localhost/admin', { headers: auth() });
-    assert.match(await adminShell.text(), /var WORKSPACE_ADMIN_UI = false;/);
+    assert.match(await adminShell.text(), /"workspaceAdminUi":false/);
 
     const protectedPaths = [
       '/admin/channels',

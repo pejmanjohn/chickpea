@@ -22,6 +22,7 @@ import {
 } from './page.ts';
 import { onboardingAssetBytes } from './onboarding-assets.ts';
 import { createPublicAssetRoutes } from '../assets/routes.ts';
+import { adminUiAssetVersion } from './ui-assets.ts';
 import { createRoutineAdminApi } from './routines-api.ts';
 import {
   RoutineContentAccessResolver,
@@ -5445,9 +5446,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  const adminPage = (c: Context): Response => {
-    // The shell contains the full inline application. Never let a browser keep
-    // an older deployment's JavaScript after the Worker has been updated.
+  const adminPage = async (c: Context): Promise<Response> => {
+    // The shell pins the application script by content hash. Never let a
+    // browser keep an older deployment's shell after the Worker has been updated.
     c.header('Cache-Control', 'no-store');
     const principal = principalByContext.get(c);
     return c.html(renderAdminPage({
@@ -5455,6 +5456,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       workspaceAdminUi: Boolean(
         principal && permissionForRole(principal.role).has('admin.configure'),
       ),
+      assetVersion: await adminUiAssetVersion(),
     }));
   };
 

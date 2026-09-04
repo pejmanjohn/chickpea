@@ -28,12 +28,12 @@ test('committed deployment internalizes Usage defaults and keeps independent kil
     });
     const headers = testAdminHeaders('usage-default-test-token');
     const enabled = await app.request('/admin', { headers }, deploymentEnv);
-    assert.match(await enabled.text(), /var USAGE_ADMIN_UI = true/);
+    assert.match(await enabled.text(), /"usageAdminUi":true/);
     const disabled = await app.request('/admin', { headers }, {
       ...deploymentEnv,
       USAGE_ADMIN_UI: '0',
     });
-    assert.match(await disabled.text(), /var USAGE_ADMIN_UI = false/);
+    assert.match(await disabled.text(), /"usageAdminUi":false/);
   } finally {
     usage.close();
   }
@@ -165,13 +165,13 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
 
     const headers = testAdminHeaders('usage-test-token');
     const enabledPage = await app.request('/admin', { headers });
-    assert.match(await enabledPage.text(), /var USAGE_ADMIN_UI = true/);
+    assert.match(await enabledPage.text(), /"usageAdminUi":true/);
     const disabledPage = await createAdminRoutes({
       usage,
       usageAdminUi: false,
       ...testAdminAuthority('usage-test-token'),
     }).request('/admin/usage', { headers });
-    assert.match(await disabledPage.text(), /var USAGE_ADMIN_UI = false/);
+    assert.match(await disabledPage.text(), /"usageAdminUi":false/);
     const summary = await app.request(
       '/admin/api/usage/summary?from=1&to=3000&groupBy=provider',
       { headers },

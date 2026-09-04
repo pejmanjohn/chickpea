@@ -359,7 +359,7 @@ try {
   );
   record(
     'Usage exposes estimated spend, channel attribution, work detail, and provider-owned limits',
-    pageHtml.includes('var USAGE_ADMIN_UI = true') &&
+    pageHtml.includes('"usageAdminUi":true') &&
       usageOverview.status === 200 &&
       usageOverview.body?.current?.totals?.operationCount === 1 &&
       usageOverview.body?.current?.totals?.estimateAmountMicros === 800 &&

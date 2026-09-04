@@ -5,10 +5,10 @@ import sharp from 'sharp';
 import { createPublicAssetRoutes } from '../src/assets/routes.ts';
 
 import {
-  renderAdminPage,
   renderSlackManualSetupPage,
   renderSlackSignInPage,
 } from '../src/admin/page.ts';
+import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
 import {
   CHICKPEA_FAVICON_URL,
   CHICKPEA_MARK_URL,
