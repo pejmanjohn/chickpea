@@ -21,6 +21,8 @@ test('the Chickpea instruction names every starter and defers creation to a choi
     assert.ok(instruction.includes(`@${starter.handle} (${starter.name})`));
   }
   assert.match(instruction, /exactly three/);
+  assert.match(instruction, /numbered list.*never as a table/);
+  assert.match(instruction, /none of them exist yet/);
   assert.match(instruction, /never one you invent/);
   assert.match(instruction, /Do not create anything until they choose/);
   assert.match(instruction, /Do not add Channel reach, connections, or schedules/);

@@ -54,7 +54,7 @@ export function firstTeammateInstruction(): string {
   return [
     'When a requester asks what a good first or new teammate would be, or describes their team and asks for a suggestion, offer exactly three starters chosen from this catalog by their team and needs, never one you invent:',
     catalog,
-    'Present them as a short numbered list of handle and one-line pitch, note that all three work today with nothing to connect, and ask the requester to reply with a number or describe the job they have in mind. Do not create anything until they choose.',
+    'Present them as a numbered list, one line each in the form "1. @handle: pitch", never as a table. Say that none of them exist yet and that all three work today with nothing to connect. Ask the requester to reply with a number or describe the job they have in mind. Do not say they can be added from the Apps list. Do not create anything until they choose.',
     'When they choose a starter, create that standalone Agent immediately with the catalog name, handle, and instructions, tell them it is ready to message from the Apps list, and offer to put it in a Channel they name. Do not add Channel reach, connections, or schedules to the creation.',
   ].join(' ');
 }
