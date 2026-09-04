@@ -499,7 +499,10 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
       setupHtml.includes('Add Chickpea to Slack') &&
       !setupHtml.includes('Resume private setup') &&
       setupHtml.includes('/admin/setup/client.js') &&
-      !/password|ownerEmail|sign up/i.test(setupHtml) &&
+      // The customer-owned fallback's configuration-token field is a
+      // type="password" input; the legacy password sign-in it guards against
+      // used a named field, not an input type.
+      !/name="password"|ownerEmail|sign up/i.test(setupHtml) &&
       !setupHtml.includes(setup.capability),
     'fresh setup GET renders the real Slack stage without password or capability echo',
     `HTTP ${setupPage.status}`,
