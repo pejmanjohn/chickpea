@@ -607,14 +607,16 @@ button, input, textarea, select { font: inherit; }
 .onboarding-panel > details.advanced { margin-top: 18px; padding-top: 12px; }
 .onboarding-error { align-items: flex-start; display: grid; gap: 10px; grid-column: 1 / -1; width: 100%; }
 .onboarding-error-scopes { color: var(--text-2); font-family: var(--mono); font-size: .75rem; overflow-wrap: anywhere; }
-.onboarding-provider-tabs { border: 1px solid var(--line-strong); border-radius: 13px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 28px; overflow: hidden; }
-.onboarding-provider-tab { align-items: center; background: var(--bg); border: 0; border-radius: 0; color: var(--text-2); cursor: pointer; display: flex; font: inherit; font-size: .875rem; font-weight: 700; gap: 10px; justify-content: center; min-height: 78px; padding: 12px 10px; }
+.onboarding-provider-tabs { border: 1px solid var(--line-strong); border-radius: 13px; display: grid; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; margin-top: 28px; overflow: hidden; }
+.onboarding-provider-tab { align-items: center; background: var(--bg); border: 0; border-radius: 0; color: var(--text-2); cursor: pointer; display: flex; font: inherit; font-size: .875rem; font-weight: 700; gap: 10px; justify-content: flex-start; min-height: 78px; padding: 12px 14px; }
 .onboarding-provider-tab + .onboarding-provider-tab { border-left: 1px solid var(--line); }
 .onboarding-provider-tab:hover { background: #fff9e9; border-color: rgba(138, 100, 16, .35); }
 .onboarding-provider-tab.selected { background: #fffaf0; box-shadow: inset 0 0 0 2px var(--ember); color: var(--text); }
 .onboarding-provider-logo { display: block; height: 30px; object-fit: contain; width: 30px; }
 .onboarding-provider-tab-copy { display: grid; gap: 2px; text-align: left; }
 .onboarding-provider-tab-status { align-items: center; color: var(--ok); display: inline-flex; font-size: .75rem; font-weight: 700; gap: 5px; }
+.onboarding-provider-tab-sub { color: var(--text-3); font-size: .75rem; font-weight: 600; }
+.onboarding-provider-config-empty { min-height: 0; }
 .onboarding-provider-tab-status::before, .onboarding-model-provider-status::before { background: var(--ok-solid); border-radius: 50%; content: ""; height: 7px; width: 7px; }
 .onboarding-provider-config { border-top: 1px solid var(--line); display: grid; gap: 8px; margin-top: 32px; padding-top: 28px; }
 .onboarding-provider-config h2 { font-family: var(--display); font-size: 1.625rem; line-height: 1.1; margin: 0 0 2px; }
@@ -650,6 +652,11 @@ button, input, textarea, select { font: inherit; }
   width: 18px;
 }
 .onboarding-model-form .field-label { font-size: .875rem; }
+.onboarding-model-note { align-items: baseline; color: var(--text-2); display: flex; flex-wrap: wrap; font-size: .875rem; gap: 10px; line-height: 1.5; margin: 12px 0 0; text-wrap: pretty; }
+.onboarding-model-note strong { color: var(--text); font-weight: 700; }
+.onboarding-model-note-badge { background: var(--ok-solid); border-radius: 999px; color: #fffdf6; flex: none; font-size: .6875rem; font-weight: 700; letter-spacing: .04em; padding: 3px 9px; text-transform: uppercase; }
+.onboarding-model-note.is-caveat .onboarding-model-note-badge { background: var(--ember-tint); color: var(--ember-press); }
+.onboarding-model-note .link-btn { font-size: inherit; font-weight: 700; }
 .onboarding-model-actions .btn-primary { min-width: 260px; }
 .onboarding-success { align-items: flex-start; display: flex; gap: 14px; }
 .onboarding-success-icon { background: var(--ok-solid); border-radius: 50%; color: white; display: grid; flex: 0 0 auto; font-size: 1.3125rem; font-weight: 700; height: 42px; place-items: center; width: 42px; }

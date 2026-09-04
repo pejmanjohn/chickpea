@@ -11841,10 +11841,18 @@ test('onboarding skips channel publication, validates a provider, requires a mod
   assert.equal(harness.agentChannelPosts.length, 0);
   assert.equal(harness.onboardingTryPosts.length, 0);
   assert.match(harness.app.innerHTML, /Choose your model provider/);
-  assert.match(harness.app.innerHTML, /Cloudflare Workers AI/);
-  assert.match(harness.app.innerHTML, /Anthropic/);
-  assert.match(harness.app.innerHTML, /OpenAI/);
-  assert.match(harness.app.innerHTML, /OpenRouter/);
+  // Key-based providers come first; Workers AI is listed last and only where
+  // the binding exists. Nothing is preselected, so the keyless option is a
+  // deliberate choice rather than the default.
+  assert.match(
+    harness.app.innerHTML,
+    /data-provider="openai"[\s\S]*data-provider="anthropic"[\s\S]*data-provider="openrouter"[\s\S]*data-provider="cloudflare"/,
+  );
+  assert.match(harness.app.innerHTML, /<span>Workers AI<\/span><span class="onboarding-provider-tab-status">Ready, no key<\/span>/);
+  assert.match(harness.app.innerHTML, /<span>OpenAI<\/span><span class="onboarding-provider-tab-sub">Needs API key<\/span>/);
+  assert.doesNotMatch(harness.app.innerHTML, /aria-pressed="true"|Use Cloudflare Workers AI instead/);
+  assert.match(harness.app.innerHTML, /Most teams pick OpenAI or Anthropic\. Workers AI needs no key but gives simpler replies\./);
+  assert.match(harness.app.innerHTML, /data-action="onboarding-provider-continue" disabled>Validate and Continue<\/button>/);
   assert.equal((harness.app.innerHTML.match(/class="onboarding-provider-logo"/g) ?? []).length, 4);
 
   harness.listeners.click?.({
@@ -11864,8 +11872,11 @@ test('onboarding skips channel publication, validates a provider, requires a mod
   assert.match(harness.app.innerHTML, /Choose a model/);
   assert.match(harness.app.innerHTML, /class="onboarding-model-select-wrap"/);
   assert.match(harness.app.innerHTML, /class="ic onboarding-model-select-icon"/);
-  assert.doesNotMatch(harness.app.innerHTML, /Recommended|default for Anthropic/);
-  assert.match(harness.app.innerHTML, /data-action="onboarding-model-continue" disabled>Select Model<\/button>/);
+  // The step opens on the suggested model with a one-line reason, so the
+  // common case is a single click; every other model stays in the select.
+  assert.match(harness.app.innerHTML, /<option value="anthropic\/claude-sonnet-5" selected>claude-sonnet-5 · recommended<\/option>/);
+  assert.match(harness.app.innerHTML, /onboarding-model-note-badge">Recommended<\/span><span><strong>Claude Sonnet 5<\/strong>/);
+  assert.match(harness.app.innerHTML, /data-action="onboarding-model-continue">Select Model<\/button>/);
 
   harness.listeners.change?.({
     target: inputTarget({ 'data-action': 'onboarding-model-select' }, 'anthropic/claude-sonnet-5'),

@@ -2027,15 +2027,32 @@
       '<p class="hint">Chickpea never asks you to paste a bot token into the Admin control plane.</p></section>';
   }
 
+  // Key-based providers first; Workers AI last. Nothing is preselected so the
+  // keyless option is chosen deliberately rather than by default.
   var ONBOARDING_PROVIDERS = [
-    { id: "cloudflare", name: "Cloudflare Workers AI", keyLabel: "", description: "Use Cloudflare-hosted models included with this deployment. No API key needed." },
-    { id: "anthropic", name: "Anthropic", keyLabel: "Anthropic API key", description: "Use Claude models with an Anthropic API key." },
-    { id: "openai", name: "OpenAI", keyLabel: "OpenAI API key", description: "Use OpenAI models with a Platform API key." },
-    { id: "openrouter", name: "OpenRouter", keyLabel: "OpenRouter API key", description: "Use models available through OpenRouter." }
+    { id: "openai", name: "OpenAI", keyLabel: "OpenAI API key", sublabel: "Needs API key", description: "Use OpenAI models with a Platform API key." },
+    { id: "anthropic", name: "Anthropic", keyLabel: "Anthropic API key", sublabel: "Needs API key", description: "Use Claude models with an Anthropic API key." },
+    { id: "openrouter", name: "OpenRouter", keyLabel: "OpenRouter API key", sublabel: "Needs API key", description: "Use models available through OpenRouter." },
+    { id: "cloudflare", name: "Cloudflare Workers AI", tabName: "Workers AI", keyLabel: "", sublabel: "No key needed", description: "Included with this deployment, no API key. Good for a first try; replies are simpler than the key-based providers." }
   ];
 
   function onboardingProviderDefinition(id) {
     return ONBOARDING_PROVIDERS.find(function (provider) { return provider.id === id; }) || ONBOARDING_PROVIDERS[0];
+  }
+
+  // One suggestion per provider on the Choose-model step. The Workers AI entry
+  // is a caveat rather than a recommendation: it is the keyless default that
+  // works on a free Cloudflare account, not the model we would pick for daily use.
+  var ONBOARDING_MODEL_RECOMMENDATIONS = {
+    openai: { model: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", note: "Our pick: fast, inexpensive, and dependable in Slack." },
+    openrouter: { model: "openrouter/openai/gpt-5.6-terra", label: "GPT-5.6 Terra", note: "Our pick: fast, inexpensive, and dependable in Slack." },
+    anthropic: { model: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5", note: "A strong default. Opus 5 costs more; Haiku 4.5 costs less." },
+    cloudflare: { model: "cloudflare/@cf/zai-org/glm-4.7-flash", label: "GLM 4.7 Flash", caveat: true, note: "Free with no API key and fine for a first try. For everyday use, connect OpenAI and pick GPT-5.6 Terra." }
+  };
+
+  function onboardingModelRecommendation(options) {
+    var entry = state.onboarding && ONBOARDING_MODEL_RECOMMENDATIONS[state.onboarding.providerId];
+    return entry && options.indexOf(entry.model) >= 0 ? entry : null;
   }
 
   function onboardingRuntimeProvider(id) {
@@ -2050,11 +2067,8 @@
   }
 
   function initialOnboardingProviderId() {
-    if (onboardingProviderConfigured("cloudflare")) return "cloudflare";
-    var configured = ONBOARDING_PROVIDERS.find(function (provider) {
-      return onboardingProviderConfigured(provider.id);
-    });
-    return configured ? configured.id : "anthropic";
+    // No default: the person picks. Returning to the step keeps their choice.
+    return "";
   }
 
   function onboardingProviderLogoHtml(provider) {
@@ -2063,29 +2077,39 @@
 
   function onboardingProviderHtml() {
     var selectedId = state.onboardingProviderSelected || initialOnboardingProviderId();
-    var selected = onboardingProviderDefinition(selectedId);
-    var configured = onboardingProviderConfigured(selected.id);
-    var tabs = ONBOARDING_PROVIDERS.map(function (provider) {
-      var active = provider.id === selected.id;
+    var selected = selectedId ? onboardingProviderDefinition(selectedId) : null;
+    var configured = selected ? onboardingProviderConfigured(selected.id) : false;
+    // Workers AI exists only where the deployment has the binding; Node
+    // installs never see it.
+    var tabs = ONBOARDING_PROVIDERS.filter(function (provider) {
+      return provider.id !== "cloudflare" || onboardingProviderConfigured("cloudflare");
+    }).map(function (provider) {
+      var active = !!selected && provider.id === selected.id;
       var ready = onboardingProviderConfigured(provider.id);
+      var status = ready
+        ? '<span class="onboarding-provider-tab-status">' + (provider.id === "cloudflare" ? 'Ready, no key' : 'Ready') + '</span>'
+        : '<span class="onboarding-provider-tab-sub">' + esc(provider.sublabel) + '</span>';
       return '<button type="button" class="onboarding-provider-tab' + (active ? ' selected' : '') + '" data-action="onboarding-provider-select" data-provider="' + esc(provider.id) + '" aria-pressed="' + String(active) + '">' +
-        onboardingProviderLogoHtml(provider) + '<span class="onboarding-provider-tab-copy"><span>' + esc(provider.name) + '</span>' +
-        (ready ? '<span class="onboarding-provider-tab-status">Ready</span>' : '') + '</span></button>';
+        onboardingProviderLogoHtml(provider) + '<span class="onboarding-provider-tab-copy"><span>' + esc(provider.tabName || provider.name) + '</span>' + status + '</span></button>';
     }).join("");
-    var configuration = configured
+    var canContinue = !!selected && (configured || (selected.id !== "cloudflare" && !!String(state.onboardingProviderKey || "").trim()));
+    var panel = selected
+      ? '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(selected.description) + '</p>' + onboardingProviderConfigurationHtml(selected, configured) + '</div>'
+      : '<div class="onboarding-provider-config onboarding-provider-config-empty"><p class="hint">Most teams pick OpenAI or Anthropic. Workers AI needs no key but gives simpler replies.</p></div>';
+    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of 4</p>' +
+      '<h1 class="onboarding-title">Choose your model provider</h1>' +
+      '<p class="onboarding-lede">Choose a provider, then finish the setup it needs.</p>' +
+      '<div class="onboarding-provider-tabs" role="group" aria-label="Model provider">' + tabs + '</div>' + panel +
+      (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
+      '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-provider-continue"' + (!canContinue || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Validating&hellip;' : 'Validate and Continue') + '</button></div></section>';
+  }
+
+  function onboardingProviderConfigurationHtml(selected, configured) {
+    return configured
       ? '<p class="onboarding-provider-ready">' + esc(selected.name) + ' is ready to use.</p>'
       : selected.id === "cloudflare"
         ? '<p class="field-error" role="alert">Cloudflare Workers AI is not available for this deployment.</p>'
         : '<label class="field" for="onboarding-provider-key"><span class="field-label">' + esc(selected.keyLabel) + '</span><input class="input" id="onboarding-provider-key" type="password" autocomplete="off" spellcheck="false" data-action="onboarding-provider-key" data-provider="' + esc(selected.id) + '" value="' + esc(state.onboardingProviderKey) + '" placeholder="Paste your key"></label><p class="onboarding-provider-secret-note">Stored encrypted and never shown again.</p>';
-    var canContinue = configured || (selected.id !== "cloudflare" && !!String(state.onboardingProviderKey || "").trim());
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of 4</p>' +
-      '<h1 class="onboarding-title">Choose your model provider</h1>' +
-      '<p class="onboarding-lede">Choose a provider, then finish the setup it needs.</p>' +
-      '<div class="onboarding-provider-tabs" role="group" aria-label="Model provider">' + tabs + '</div>' +
-      '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(selected.description) + '</p>' + configuration + '</div>' +
-      (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
-      '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-provider-continue"' + (!canContinue || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Validating&hellip;' : 'Validate and Continue') + '</button>' +
-      (selected.id !== "cloudflare" && onboardingProviderConfigured("cloudflare") ? '<button type="button" class="btn btn-ghost" data-action="onboarding-use-cloudflare">Use Cloudflare Workers AI instead</button>' : '') + '</div></section>';
   }
 
   function onboardingModelOptions() {
@@ -2096,12 +2120,26 @@
     return values.filter(function (value, index) { return value && values.indexOf(value) === index; });
   }
 
+  function onboardingModelNoteHtml(recommendation) {
+    if (!recommendation) return "";
+    if (recommendation.caveat) {
+      return '<p class="onboarding-model-note is-caveat"><span class="onboarding-model-note-badge">Free default</span><span>' +
+        esc(recommendation.note).replace('connect OpenAI', '<button type="button" class="link-btn" data-action="onboarding-change-provider">connect OpenAI</button>') + '</span></p>';
+    }
+    return '<p class="onboarding-model-note"><span class="onboarding-model-note-badge">Recommended</span><span><strong>' + esc(recommendation.label) + '</strong> &middot; ' + esc(recommendation.note) + '</span></p>';
+  }
+
   function onboardingModelHtml() {
     var provider = onboardingProviderDefinition(state.onboarding.providerId);
     var options = onboardingModelOptions();
+    var recommendation = onboardingModelRecommendation(options);
+    // Start on the suggested model so the common case is one click; the
+    // select still lists every option.
+    if (!state.onboardingModelSelected && recommendation) state.onboardingModelSelected = recommendation.model;
     var selectOptions = '<option value="">Choose a model</option>' + options.map(function (model) {
       var slash = model.indexOf("/");
       var label = slash >= 0 ? model.slice(slash + 1) : model;
+      if (recommendation && model === recommendation.model) label += recommendation.caveat ? " \u00b7 free default" : " \u00b7 recommended";
       return '<option value="' + esc(model) + '"' + (model === state.onboardingModelSelected ? ' selected' : '') + '>' + esc(label) + '</option>';
     }).join("");
     return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 3 of 4</p>' +
@@ -2109,6 +2147,7 @@
       '<p class="onboarding-lede">Pick the ' + esc(provider.name) + ' model Chickpea should use for replies. You can change this later.</p>' +
       '<div class="onboarding-model-provider"><span class="onboarding-model-provider-identity">' + onboardingProviderLogoHtml(provider) + '<span class="onboarding-model-provider-copy"><span>' + esc(provider.name) + '</span><span class="onboarding-model-provider-status">Connected</span></span></span><button type="button" class="btn btn-soft" data-action="onboarding-change-provider">Change provider</button></div>' +
       '<label class="onboarding-model-form" for="onboarding-model"><span class="field-label">Model</span><span class="onboarding-model-select-wrap"><select class="input" id="onboarding-model" data-action="onboarding-model-select">' + selectOptions + '</select>' + icon("chevron-down", "onboarding-model-select-icon") + '</span></label>' +
+      onboardingModelNoteHtml(recommendation) +
       (!options.length ? '<p class="field-error" role="alert">No models are available from this provider yet.</p>' : '') +
       (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
       '<div class="onboarding-actions onboarding-model-actions"><button type="button" class="btn btn-primary" data-action="onboarding-model-continue"' + (!state.onboardingModelSelected || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Selecting&hellip;' : 'Select Model') + '</button></div></section>';
@@ -9948,6 +9987,7 @@
   function continueOnboardingProvider() {
     if (state.onboardingBusy || !state.onboarding || state.onboarding.stage !== "choose_provider") return;
     var providerId = state.onboardingProviderSelected || initialOnboardingProviderId();
+    if (!providerId) return;
     var configured = onboardingProviderConfigured(providerId);
     var key = String(state.onboardingProviderKey || "").trim();
     if (!configured && (providerId === "cloudflare" || !key)) {
@@ -10434,12 +10474,6 @@
       render();
     }
     if (action === "onboarding-provider-continue") { continueOnboardingProvider(); }
-    if (action === "onboarding-use-cloudflare" && !state.onboardingBusy) {
-      state.onboardingProviderSelected = "cloudflare";
-      state.onboardingProviderKey = "";
-      state.onboardingError = "";
-      render();
-    }
     if (action === "onboarding-change-provider" && state.onboarding && state.onboarding.stage === "choose_model") {
       state.onboardingProviderSelected = state.onboarding.providerId || "cloudflare";
       state.onboardingProviderKey = "";
