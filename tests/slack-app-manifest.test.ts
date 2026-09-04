@@ -85,3 +85,32 @@ test('manifest validation rejects callback and scope drift without reflecting va
   wrongScopes.oauth_config.scopes.bot = wrongScopes.oauth_config.scopes.bot.slice(1);
   assert.throws(() => validateSlackAppManifest(wrongScopes, expected), /does not match/i);
 });
+
+test('manifest validation accepts Slack exported PKCE defaults without accepting enabled or malformed values', () => {
+  const expected = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
+  const exported = structuredClone({
+    ...expected,
+    oauth_config: { ...expected.oauth_config, pkce_enabled: false },
+  });
+  assert.deepEqual(validateSlackAppManifest(exported, expected), {
+    fingerprint: slackManifestFingerprint(expected),
+  });
+  assert.equal('pkce_enabled' in expected.oauth_config, false);
+
+  for (const value of [null, undefined]) {
+    const absent = { ...exported, oauth_config: { ...exported.oauth_config, pkce_enabled: value } };
+    assert.deepEqual(validateSlackAppManifest(absent, expected), {
+      fingerprint: slackManifestFingerprint(expected),
+    });
+  }
+
+  for (const value of [true, 'false', 0, {}, []]) {
+    const drifted = {
+      ...exported,
+      oauth_config: { ...exported.oauth_config, pkce_enabled: value },
+    };
+    assert.throws(() => validateSlackAppManifest(drifted, expected), /does not match/i);
+  }
+  exported.oauth_config.scopes.bot = exported.oauth_config.scopes.bot.slice(1);
+  assert.throws(() => validateSlackAppManifest(exported, expected), /does not match/i);
+});

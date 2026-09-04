@@ -24,6 +24,33 @@ Use the private setup link printed by the deployment. Chickpea creates the custo
 
 Manual app adoption is a secondary recovery path on the setup page. Use the same reviewed manifest and unchanged deployment callback URLs. Client secret and signing secret inputs are write-only and encrypted before persistence. Do not use an app-level `xapp-` token; Chickpea uses Slack's HTTP Events API and a bot OAuth token issued by the install flow.
 
+Create the app, then add its credentials and exported JSON manifest in
+Chickpea. If the app already exists, use **Already created the app? Add its
+credentials** instead of creating another one. Continue through Slack OAuth;
+the following setup screen directs you to verify and save the Events URL in
+Slack. Do not attempt Events verification before credential adoption: Chickpea cannot authenticate
+Slack's signed challenge without the signing secret.
+
+### Agent handle prerequisite for a customer-owned app
+
+The manual manifest already includes `usergroups:read` and `usergroups:write`.
+Slack's workspace-level **Create and edit user groups** policy is separate;
+there is no app-manifest field that can grant it. Agent handles also require a
+paid Slack plan. See [Slack's user-group requirements](https://docs.slack.dev/reference/methods/usergroups.create/).
+
+Before creating an Agent, have an Owner or Admin open the **intended workspace**
+and go to **Roles & permissions → Account types → Create and edit user groups**.
+Allow **Members** and save. This enables human members as well as the app to
+manage user groups; disclose that consequence before changing the policy.
+Ask an Org Owner if an organization policy locks the setting. A generic
+`slack.com/admin` link can open a different signed-in workspace, so confirm the
+workspace name before editing anything.
+
+If an Agent was already saved with a permission error, return to it and select
+**Retry**. Do not reinstall the app or create a duplicate Agent. Verify recovery
+by selecting its real `@handle` in Slack's mention picker and observing a
+threaded reply in a channel attached to that Agent.
+
 ## Recovery
 
 If credential key material or the installed Slack app credentials are lost, use the hidden scoped recovery flow in [docs/runbooks/slack-auth-recovery.md](docs/runbooks/slack-auth-recovery.md). It can repair only the unchanged app and workspace. It cannot create an Owner, grant a role, or sign anyone in.

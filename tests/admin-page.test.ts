@@ -94,6 +94,7 @@ type SlackConnectionFixture = {
   health?: 'pending' | 'healthy' | 'needs_attention' | 'revoked' | 'degraded';
   healthDetail?: string | null;
   transportMode?: 'direct' | 'gateway';
+  gateway?: { healthy: boolean; phase: string; detail: string | null; generation: number | null; versionId: string | null };
   teamId?: string | null;
   teamName?: string | null;
   requestUrl: string;
@@ -119,6 +120,7 @@ type OnboardingFixture = {
   agentId?: string;
   redirectTo?: string;
 };
+type EnvironmentStatusFixture = Record<string, unknown>;
 type GithubStatusFixture = {
   mode: 'none' | 'app';
   appSlug?: string;
@@ -369,6 +371,8 @@ function runAdminPageHarness(
     cloudflare?: boolean;
     agents?: unknown[];
     agentsGetError?: { status: number; error: string };
+    creationStatusFetch?: (agentId: string) => Promise<FakeResponse>;
+    proposalStatusFetch?: (agentId: string) => Promise<FakeResponse>;
     agentsListOmitsPrivateUseAudience?: boolean;
     providers?: ProviderSummaryFixture[];
     openrouterFavorites?: string[];
@@ -463,6 +467,7 @@ function runAdminPageHarness(
     initialSearch?: string;
     usageAdminUi?: boolean;
     workspaceAdminUi?: boolean;
+    environmentStatus?: EnvironmentStatusFixture;
     usageApiError?: boolean;
     usageCoverage?: { pricedOperationCount: number; meteredOperationCount: number };
     usageAgentLabel?: string | null;
@@ -1683,6 +1688,16 @@ function runAdminPageHarness(
       }
       return Promise.resolve(jsonResponse({ agents: agentsList }));
     }
+    const creationStatusMatch = path.match(/^\/admin\/api\/runtime\/agents\/([^/]+)\/creation-status$/);
+    if (creationStatusMatch && method === 'GET') {
+      const id = decodeURIComponent(creationStatusMatch[1] as string);
+      return harnessOptions.creationStatusFetch?.(id) ?? Promise.resolve(jsonResponse({ agentId: id, welcomes: [] }));
+    }
+    const proposalStatusMatch = path.match(/^\/admin\/api\/runtime\/agents\/([^/]+)\/proposal-status$/);
+    if (proposalStatusMatch && method === 'GET') {
+      const id = decodeURIComponent(proposalStatusMatch[1] as string);
+      return harnessOptions.proposalStatusFetch?.(id) ?? Promise.resolve(jsonResponse({ agentId: id, proposals: [], requester: {} }));
+    }
     const agentGetMatch = path.match(/^\/admin\/api\/agents\/([^/]+)$/);
     if (agentGetMatch && method === 'GET') {
       const id = decodeURIComponent(agentGetMatch[1] as string);
@@ -2621,6 +2636,11 @@ function runAdminPageHarness(
         ? Promise.resolve(jsonResponse(slackConnection))
         : Promise.resolve(jsonResponse({ error: 'not_found' }, 404));
     }
+    if (path === '/admin/api/environment/status' && method === 'GET') {
+      return harnessOptions.environmentStatus
+        ? Promise.resolve(jsonResponse(harnessOptions.environmentStatus))
+        : Promise.resolve(jsonResponse({ error: 'environment_status_unavailable' }, 404));
+    }
     if (path.startsWith('/admin/api/effective-config?')) {
       if (effectiveError) {
         return Promise.resolve(
@@ -2902,6 +2922,108 @@ function connectedSlackFixture(): SlackConnectionFixture {
   };
 }
 
+function liveEnvironmentFixture(
+  amberHealth: 'ready' | 'unreachable' | 'stale_claim' | 'identity_mismatch' | 'expired_claim',
+): EnvironmentStatusFixture {
+  const target = (name: 'amber' | 'cobalt', health = 'ready') => ({
+    target: name,
+    health,
+    sourceSha: '1234567890abcdef1234567890abcdef12345678',
+    dirty: name === 'amber',
+    servingVersion: `version-${name}`,
+    transport: 'events',
+    workspaceAlias: `env-${name}-workspace`,
+    workspaceLabel: `${name} workspace`,
+    appAlias: `env-${name}-slack-app`,
+    appLabel: `${name} app`,
+    claim: name === 'amber' ? {
+      holderId: 'holder-0123456789abcdef',
+      leaseAgeMs: 120_000,
+      expiresAt: '2026-09-01T20:00:00.000Z',
+    } : null,
+    verifierLock: { status: name === 'amber' ? 'live' : 'clear', ...(name === 'amber' ? { ownerRunId: 'run-amber' } : {}) },
+    schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
+    lastAttestedRevision: '1234567890abcdef1234567890abcdef12345678-dirty',
+    recoveryAction: name === 'amber' ? 'Untrusted recovery text with xoxb-never-render-this' : 'No recovery needed.',
+    credentialToken: 'xoxb-never-render-this',
+  });
+  return {
+    schemaVersion: 'chickpea-environment-status/v1',
+    generatedAt: '2026-09-01T12:00:00.000Z',
+    registryRevision: 9,
+    selectedTarget: 'amber',
+    targets: [target('amber', amberHealth), target('cobalt')],
+    sandbox: {
+      archiveDate: '2027-01-15T00:00:00.000Z',
+      daysUntilArchive: 136,
+      warning: 'none',
+      warningDays: [45, 30, 14],
+      unusedWorkspaceSlots: 2,
+      integrationHeadroom: 37,
+      browserProfilePath: '/private/browser-profile',
+    },
+  };
+}
+
+test('Admin renders the CLI environment identity and all five health states without credential fields', async () => {
+  for (const health of [
+    'ready', 'unreachable', 'stale_claim', 'identity_mismatch', 'expired_claim',
+  ] as const) {
+    const harness = runAdminPageHarness({ environmentStatus: liveEnvironmentFixture(health) });
+    await flushAsync();
+    assert.ok(harness.fetchCalls.some(({ path }) => path === '/admin/api/environment/status'));
+    assert.match(harness.app.innerHTML, new RegExp(`data-environment-target="amber" data-environment-health="${health}"`));
+    assert.match(harness.app.innerHTML, /1234567890abcdef1234567890abcdef12345678 \(dirty\)/);
+    assert.match(harness.app.innerHTML, /version-amber/);
+    assert.match(harness.app.innerHTML, /env-amber-workspace/);
+    assert.match(harness.app.innerHTML, /env-amber-slack-app/);
+    assert.match(harness.app.innerHTML, /holder-0123456789abcdef/);
+    assert.doesNotMatch(harness.app.innerHTML, /worktrees\/amber-owner|codex\/amber-owner/);
+    assert.match(harness.app.innerHTML, /run-amber/);
+    assert.match(harness.app.innerHTML, /d1:0002_mcp_oauth;do:v9/);
+    assert.match(harness.app.innerHTML, /Recorded unused workspace slots: 2/);
+    assert.match(harness.app.innerHTML, /Capacity is a registry snapshot/);
+    assert.doesNotMatch(harness.app.innerHTML, /xoxb-never-render-this|private\/browser-profile|credentialToken/);
+  }
+});
+
+test('Admin shows two standalone lanes without invented sandbox expiry or capacity', async () => {
+  const harness = runAdminPageHarness({ environmentStatus: {
+    ...liveEnvironmentFixture('ready'), sandbox: null,
+  } });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Two-lane fleet/);
+  assert.match(harness.app.innerHTML, /Standalone Slack workspaces/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-environment-target="fern"|Archive:|Recorded unused workspace slots:/);
+});
+
+test('Admin always labels a deployed lane without presenting frozen metadata as a current claim', async () => {
+  const harness = runAdminPageHarness({ environmentStatus: {
+    schemaVersion: 'chickpea-environment-identity/v1', target: 'cobalt',
+    sourceSha: '1234567890abcdef1234567890abcdef12345678', dirty: true,
+    servingVersion: '11111111-2222-3333-4444-555555555555',
+  } });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /cobalt · 1234567 \(dirty\)/);
+  assert.match(harness.app.innerHTML, /Deployed build/);
+  assert.match(harness.app.innerHTML, /npm run env -- status --all/);
+  assert.doesNotMatch(harness.app.innerHTML, /Two-lane fleet|No recovery needed|Unclaimed|cobalt · Ready/);
+});
+
+test('Admin renders recorded workspace capacity and does not invent unknown headroom', async () => {
+  for (const unusedWorkspaceSlots of [0, 1, 2, null]) {
+    const status = liveEnvironmentFixture('ready');
+    const harness = runAdminPageHarness({ environmentStatus: {
+      ...status,
+      sandbox: { ...(status.sandbox as Record<string, unknown>), unusedWorkspaceSlots },
+    } });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, new RegExp(
+      `Recorded unused workspace slots: ${unusedWorkspaceSlots === null ? 'unavailable' : unusedWorkspaceSlots}`,
+    ));
+  }
+});
+
 test('Member Admin shell exposes only Agent navigation and skips workspace bootstrap requests', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin',
@@ -2928,6 +3050,7 @@ test('Member Admin shell exposes only Agent navigation and skips workspace boots
     '/admin/api/onboarding',
     '/admin/api/channels',
     '/admin/api/workspace-model-default',
+    '/admin/api/environment/status',
   ]) {
     assert.equal(fetchedPaths.includes(path), false, `${path} must not be fetched`);
   }
@@ -3160,6 +3283,35 @@ test('an offline inbound Slack session renders a specific retryable status', asy
   assert.match(harness.app.innerHTML, /badge badge-off[^>]*>[\s\S]*?Needs attention/);
 });
 
+test('Slack connection shows bounded live session diagnostics separately from saved health', async () => {
+  for (const phase of ['healthy', 'retrying', 'starting', 'stale']) {
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/settings/slack/identities',
+      slackConnection: {
+        ...connectedSlackFixture(), transportMode: 'gateway',
+        health: 'needs_attention', healthDetail: 'gateway_session_offline',
+        gateway: { healthy: phase === 'healthy', phase, detail: null, generation: 3,
+          versionId: '11111111-2222-3333-4444-555555555555' },
+      },
+    });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, /Inbound session/);
+    assert.match(harness.app.innerHTML, new RegExp('Session phase: ' + phase));
+    assert.match(harness.app.innerHTML, /Generation: 3/);
+    assert.match(harness.app.innerHTML, /11111111-2222-3333-4444-555555555555/);
+    assert.match(harness.app.innerHTML, /Needs attention/);
+  }
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/slack/identities',
+    slackConnection: { ...connectedSlackFixture(), transportMode: 'gateway',
+      gateway: { healthy: false, phase: 'private remote error', detail: 'private remote error',
+        generation: -1, versionId: 'private remote error' } },
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Session phase: unavailable/);
+  assert.doesNotMatch(harness.app.innerHTML, /private remote error|Generation: -1/);
+});
+
 test('a successful Slack re-test clears an earlier inbound-session warning', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/settings/slack/identities',
@@ -3338,6 +3490,126 @@ test('Where it works can remove an Agent Channel grant', async () => {
   assert.match(harness.app.innerHTML, /Agent removed from #eng-releases/);
   assert.match(harness.app.innerHTML, /Make Release Profile mentionable/);
   assert.match(harness.app.innerHTML, /Only the creator can DM this Agent/);
+});
+
+test('saved Agent details expose exact persisted identity without inventing a revision or serializing private fields', async () => {
+  const agent = { id: 'agent_details', revision: 7, name: 'Details Agent', lifecycle: 'active', enabled: true,
+    instructions: 'Saved instructions', secret: 'never-display-this-secret',
+    slackPresence: { normalizedHandle: 'details', health: 'healthy', desiredState: 'active', userGroupId: 'S_DETAILS' } };
+  const harness = runAdminPageHarness({ agents: [agent] });
+  await flushAsync();
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': agent.id }) });
+  await flushAsync();
+  const details = harness.app.innerHTML.split('<summary>Saved Agent details</summary>')[1]?.split('</details>')[0];
+  assert.ok(details);
+  assert.match(details, /Agent ID[^]*agent_details/);
+  assert.match(details, /Saved revision[^]*>7</);
+  assert.match(details, /Presence health[^]*healthy/);
+  assert.match(details, /Slack user group ID[^]*S_DETAILS/);
+  assert.doesNotMatch(details, /never-display-this-secret|Saved instructions/);
+  const missing = runAdminPageHarness({ agents: [{ ...agent, revision: undefined }] });
+  await flushAsync();
+  missing.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': agent.id }) });
+  await flushAsync();
+  assert.match(missing.app.innerHTML, /Saved revision[^]*>unavailable</);
+});
+
+test('creation delivery disclosure is explicit, escaped, and ignores stale navigation responses', async () => {
+  let reads = 0;
+  let resolve!: (response: FakeResponse) => void;
+  const agents = ['agent_one', 'agent_two'].map((id) => ({ ...releaseAgent, id, name: id }));
+  const harness = runAdminPageHarness({ agents, creationStatusFetch: () => {
+    reads++;
+    return new Promise((done) => { resolve = done; });
+  } });
+  await flushAsync();
+  const click = (action: string, id?: string) => harness.listeners.click!({ target: actionTarget({ 'data-action': action, ...(id ? { 'data-agent': id } : {}) }) });
+  click('edit-profile', 'agent_one');
+  await flushAsync();
+  assert.equal(reads, 0);
+  click('refresh-creation-status');
+  assert.equal(reads, 1);
+  resolve(jsonResponse({ agentId: 'agent_one', welcomes: [{
+    outboxId: '<script>private</script>', status: 'delivered', channelId: 'C_CREATE', threadTs: '1800000000.000100',
+    publication: { status: 'complete', incomplete: [] }, deliveryRef: 'C_CREATE:1800000001.000100',
+    activity: null, secret: 'never-render-receipt-prose',
+  }] }));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Welcome records[^]*>1</);
+  assert.match(harness.app.innerHTML, /&lt;script&gt;private&lt;\/script&gt;/);
+  assert.match(harness.app.innerHTML, /Activity state[^]*>unavailable</);
+  assert.doesNotMatch(harness.app.innerHTML, /never-render-receipt-prose/);
+  click('refresh-creation-status');
+  click('edit-profile', 'agent_two');
+  resolve(jsonResponse({ agentId: 'agent_one', welcomes: [{ outboxId: 'STALE_WELCOME' }] }));
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /STALE_WELCOME|Welcome records/);
+  click('refresh-creation-status');
+  resolve(jsonResponse({ error: 'forbidden' }, 403));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Creation delivery status unavailable/);
+  assert.doesNotMatch(harness.app.innerHTML, /Welcome records/);
+});
+
+test('proposal disclosure shows the frozen value on demand without rendering secrets or stale Agent data', async () => {
+  let reads = 0;
+  let resolve!: (response: FakeResponse) => void;
+  const agents = ['agent_one', 'agent_two'].map((id) => ({ ...releaseAgent, id, name: id }));
+  const harness = runAdminPageHarness({ agents, proposalStatusFetch: () => {
+    reads++;
+    return new Promise((done) => { resolve = done; });
+  } });
+  await flushAsync();
+  const click = (action: string, id?: string) => harness.listeners.click!({ target: actionTarget({ 'data-action': action, ...(id ? { 'data-agent': id } : {}) }) });
+  click('edit-profile', 'agent_one');
+  await flushAsync();
+  assert.equal(reads, 0);
+  assert.match(harness.app.innerHTML, /<summary>Slack update proposal details<\/summary>/);
+  click('refresh-proposal-status');
+  assert.equal(reads, 1);
+  const instructions = '<script>unsafe</script>\n' + 'Full frozen value. '.repeat(800);
+  const data = { agentId: 'agent_one', requester: { userId: 'internal_owner', membershipId: 'member_owner', slackUserId: 'U_OWNER' }, proposals: [{
+    proposalId: 'proposal_one', actorUserId: 'internal_owner', actorMembershipId: 'member_owner',
+    originKey: 'slack:T_TEST:C_UPDATE:1800000000.000100:agent:agent_one',
+    approvalScopeKey: 'slack:T_TEST:C_UPDATE:1800000000.000100:agent:agent_one', status: 'completed',
+    digest: 'digest', targetRevision: 7, operationCount: 1, createdAt: 1, updatedAt: 3,
+    approval: { workspaceId: 'T_TEST', channelId: 'C_UPDATE', threadTs: '1800000000.000100',
+      requesterUserId: 'U_OWNER', requesterMembershipId: 'member_owner', actingAgentId: 'agent_chickpea',
+      turns: [{ turnJobId: 'turn_one', runId: 'run_one', messageTs: '1800000001.000200', status: 'done', delivered: true,
+        activity: { surface: 'assistant_status', state: 'cleared', cleanup: 'required', lifecycle: 'settled', sessionGeneration: 1800000001000200 },
+        secret: 'NEVER_DISPLAY_TURN' }] },
+    updates: [{ itemId: 'update', kind: 'update_agent', agentId: 'agent_one', expectedRevision: 7, fields: ['description', 'instructions'], instructions, description: 'Frozen description' }],
+    result: { status: 'completed', outcomes: [{ itemId: 'update', disposition: 'applied', changed: [{ kind: 'agent', id: 'agent_one', revision: 8 }], setupUrl: 'NEVER_DISPLAY_SETUP' }] },
+    secret: 'NEVER_DISPLAY_RAW_PROPOSAL',
+  }] };
+  resolve(jsonResponse(data));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Requester Slack user ID[^]*U_OWNER/);
+  assert.match(harness.app.innerHTML, /Operation kind[^]*>update_agent</);
+  assert.match(harness.app.innerHTML, /Target Agent ID[^]*>agent_one</);
+  assert.match(harness.app.innerHTML, /Target revision[^]*>7</);
+  assert.match(harness.app.innerHTML, /Resulting Agent revision[^]*>8</);
+  assert.match(harness.app.innerHTML, /Retained approval turns[^]*>1</);
+  assert.match(harness.app.innerHTML, /Approval message timestamp[^]*>1800000001.000200</);
+  assert.match(harness.app.innerHTML, /Approval activity state[^]*>cleared</);
+  assert.match(harness.app.innerHTML, /Approval run lifecycle[^]*>settled</);
+  assert.ok(harness.app.innerHTML.includes(instructions.replaceAll('<', '&lt;').replaceAll('>', '&gt;')));
+  assert.doesNotMatch(harness.app.innerHTML, /<script>unsafe|NEVER_DISPLAY/);
+  click('edit-profile', 'agent_two');
+  click('edit-profile', 'agent_one');
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /proposal_one|Full frozen value/);
+  assert.match(harness.app.innerHTML, /<details class="scheduled-technical"><summary>Slack update proposal details/);
+  click('refresh-proposal-status');
+  click('edit-profile', 'agent_two');
+  resolve(jsonResponse(data));
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /proposal_one|Full frozen value/);
+  click('refresh-proposal-status');
+  resolve(jsonResponse({ error: 'forbidden' }, 403));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Slack update proposal details unavailable/);
+  assert.doesNotMatch(harness.app.innerHTML, /Requester Slack user ID/);
 });
 
 test('the profile editor presents reversible archive semantics for an assigned Agent', async () => {
@@ -4915,6 +5187,26 @@ test('Agent placements prefer the projected Slack Channel name over a raw Channe
   assert.doesNotMatch(harness.app.innerHTML, /class="where-channel-name">C0EXR3L9T/);
 });
 
+test('Agent placements refresh stale labels using an exact workspace and channel match', async () => {
+  for (const [workspaceId, channelName, expected] of [
+    ['T_DESIGN', 'current-name', 'current-name'],
+    ['T_OTHER', 'current-name', 'saved-name'],
+    ['T_DESIGN', 'C_RENAMED', 'saved-name'],
+  ]) {
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/agents/agent_release',
+      agents: [{ ...releaseAgent, whereItWorks: { channels: [{
+        workspaceId: 'T_DESIGN', channelId: 'C_RENAMED', channelName: 'saved-name', status: 'active',
+      }] } }],
+      assignments: [],
+      channelIndex: [{ workspaceId, channelId: 'C_RENAMED', channelName, grants: [] }],
+    });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, new RegExp('class="where-channel-name">' + expected));
+    assert.doesNotMatch(harness.app.innerHTML, /class="where-channel-name">C_RENAMED/);
+  }
+});
+
 test('Channel detail prefers the projected Slack Channel name over a raw Channel ID', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/channels/T_DESIGN/C0EXR3L9T',
@@ -6482,6 +6774,28 @@ test('Agent connections expose Agent-owned Team and personal accounts with manag
   assert.match(page, /\/oauth\/api\/start/);
 });
 
+test('saved connection details use a closed identity and revision allowlist', async () => {
+  const account = { id: 'connection_exact', revision: 4, workspaceId: 'T_DESIGN', ownerKind: 'member',
+    ownerMembershipId: 'membership_exact', createdByMembershipId: 'membership_creator', providerId: 'google',
+    label: 'Google Sheets', lifecycle: 'ready', credential: 'never-show-credential',
+    policy: { kind: 'managed', adapterId: 'composio', toolkit: 'googlesheets', accountRef: 'ca_exact',
+      allowedCapabilities: ['sheets.spreadsheets.get'], accessToken: 'never-show-access' } };
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()],
+    connectionAccounts: { attached: [ownedConnection(account)], managedConnectors: { composio: true } } });
+  await flushAsync();
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  const details = harness.app.innerHTML.split('<summary>Saved connection details</summary>')[1]?.split('</details>')[0];
+  assert.ok(details);
+  assert.match(details, /Connection ID[^]*connection_exact/);
+  assert.match(details, /Saved revision[^]*>4</);
+  assert.match(details, /Ownership[^]*Personal/);
+  assert.match(details, /Bound Agent ID[^]*agent_conn/);
+  assert.doesNotMatch(details, /ca_exact|never-show-credential|never-show-access|accessToken/);
+});
+
 test('connection accounts use the compact prototype states without provider implementation details', async () => {
   const gmailAccount = {
     id: 'connection_managed_gmail',
@@ -7353,7 +7667,8 @@ test('unconfigured managed connectors stay discoverable and continue after owner
   assert.doesNotMatch(harness.app.innerHTML, new RegExp(secret));
   assert.match(harness.app.innerHTML, /<strong>YouTube<\/strong>/);
   assert.match(harness.app.innerHTML, /value="member" data-action="connection-account-owner" checked/);
-  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.match(harness.app.innerHTML, /Review the permissions requested on the provider/);
 });
 
 test('members can discover managed connectors without seeing the project-key field', async () => {
@@ -7514,7 +7829,8 @@ test('connector handoff waits for Composio before opening managed Google setup',
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.match(harness.app.innerHTML, /Review the permissions requested on the provider/);
   assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-google-access"/);
   assert.ok(harness.historyReplaces.includes('/admin/agents/agent_conn'));
 });
@@ -7534,7 +7850,8 @@ test('connector handoff opens a managed-only preset after the catalog loads', as
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /<strong>Notion<\/strong>/);
-  assert.match(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-managed-access"/);
+  assert.match(harness.app.innerHTML, /Review the permissions requested on the provider/);
   assert.ok(harness.historyReplaces.includes('/admin/agents/agent_conn'));
 });
 
@@ -7856,6 +8173,8 @@ test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link
     /<div class="skill-form">[\s\S]*?Continue to Google Drive[\s\S]*?<\/div>/,
   )?.[0] ?? '';
   assert.match(managedForm, /Sign-in opens in a secure Google Drive tab/);
+  assert.match(managedForm, /Review the permissions requested on the provider/);
+  assert.doesNotMatch(managedForm, /connection-account-managed-access|Read-only/);
   assert.match(managedForm, /class="connection-account-owner-options"/);
   assert.match(managedForm, /connection-account-owner-icon-personal/);
   assert.match(managedForm, /connection-account-owner-icon-team/);
@@ -7868,7 +8187,7 @@ test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link
   assert.deepEqual(harness.managedAuthorizationPosts, [{
     agentId: 'agent_conn',
     body: {
-      workspaceId: 'T_DESIGN', ownerKind: 'team', toolkit: 'googledrive', access: 'read',
+      workspaceId: 'T_DESIGN', ownerKind: 'team', toolkit: 'googledrive', access: 'write',
     },
   }]);
   assert.deepEqual(harness.connectionAccountPosts, []);
@@ -7878,7 +8197,7 @@ test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link
   assert.match(harness.app.innerHTML, /Finish sign-in in the new tab/);
 });
 
-test('Agent-owned Google Drive accounts can request a read-write Composio capability ceiling', async () => {
+test('managed connections use standard permissions without an access picker', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [] },
@@ -7891,7 +8210,7 @@ test('Agent-owned Google Drive accounts can request a read-write Composio capabi
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'google-drive' }) });
-  click({ target: actionTarget({ 'data-action': 'connection-account-managed-access', 'data-access': 'write' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /connection-account-managed-access/);
   chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
@@ -7899,7 +8218,7 @@ test('Agent-owned Google Drive accounts can request a read-write Composio capabi
   assert.equal(harness.managedAuthorizationPosts[0]?.body.access, 'write');
 });
 
-test('managed productivity cards expose only configured read lanes and disable missing writes', async () => {
+test('managed productivity cards preserve configured tool limits without promising a narrower provider grant', async () => {
   const unavailable = {
     status: 'missing_configuration', missingConfiguration: ['auth_config_missing'],
   };
@@ -7937,11 +8256,9 @@ test('managed productivity cards expose only configured read lanes and disable m
       'data-action': 'connection-account-preset', 'data-preset': 'google-sheets',
     }),
   });
-  assert.match(
-    harness.app.innerHTML,
-    /data-action="connection-account-managed-access" data-access="write" disabled aria-disabled="true"/,
-  );
-  assert.match(harness.app.innerHTML, /Write access is not configured for this connector/);
+  assert.doesNotMatch(harness.app.innerHTML, /connection-account-managed-access|>Read-only</);
+  assert.match(harness.app.innerHTML, /Review the permissions requested on the provider/);
+  assert.match(harness.app.innerHTML, /This Agent is limited to reading data/);
   chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
@@ -8872,11 +9189,6 @@ test('managed Notion is the only catalog option and explains the provider page b
   assert.match(harness.app.innerHTML, /Choose only the pages and databases Chickpea may use/);
   assert.match(harness.app.innerHTML, /grant includes descendants made available by Notion/);
   assert.doesNotMatch(harness.app.innerHTML, /Native Notion/);
-  click({
-    target: actionTarget({
-      'data-action': 'connection-account-managed-access', 'data-access': 'write',
-    }),
-  });
   chooseConnectionOwner(harness);
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
@@ -12061,6 +12373,40 @@ test('Settings Connectors configures managed integrations and manages connected 
   assert.equal(refreshed.managedPollCalls(), 1);
   assert.match(refreshed.app.innerHTML, /YouTube · Personal is connected again\./);
   assert.equal(refreshed.sessionStorageValue(storageKey), null);
+});
+
+test('ready connector setup can be refreshed without replacing the project key', async () => {
+  for (const source of ['stored', 'deployment'] as const) {
+    const catalog = managedSettingsCatalogFixture();
+    const settings = {
+      provider: {
+        source, configured: true, readOnly: source === 'deployment',
+        desiredState: 'enabled', generation: 1, reconciliationPending: false,
+        connectors: catalog.map((entry) => ({ toolkit: entry.toolkit, status: 'ready' as const })),
+      },
+      canConfigure: true,
+      catalog,
+    };
+    const harness = runAdminPageHarness({
+      initialPath: '/admin/settings/connectors', composioSettings: settings,
+    });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, /data-action="connector-settings-retry"[^>]*>Refresh connector setup<\/button>/);
+    assert.doesNotMatch(harness.app.innerHTML, /id="connector-settings-key"/);
+    const click = harness.listeners.click;
+    assert.ok(click);
+    click({ target: actionTarget({ 'data-action': 'connector-settings-retry' }) });
+    await flushAsync();
+    assert.equal(harness.composioRetryCalls(), 1);
+    assert.deepEqual(harness.composioSetupPosts, []);
+
+    const member = runAdminPageHarness({
+      initialPath: '/admin/settings/connectors',
+      composioSettings: { ...settings, canConfigure: false },
+    });
+    await flushAsync();
+    assert.doesNotMatch(member.app.innerHTML, /data-action="connector-settings-retry"/);
+  }
 });
 
 test('Settings Connectors keeps provider implementation details out of member-visible copy', async () => {

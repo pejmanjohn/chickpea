@@ -88,6 +88,25 @@ export interface PendingTurnJob {
   recoveryReason?: string;
 }
 
+export interface SlackProposalApprovalQuery {
+  proposalId: string;
+  workspaceId: string;
+  channelId: string;
+  threadTs: string;
+  requesterUserId: string;
+  requesterMembershipId: string;
+  actingAgentId: string;
+}
+
+/** Content-free retained approval coordinates, including completed turns. */
+export interface SlackProposalApprovalTurn extends SlackProposalApprovalQuery {
+  turnJobId: string;
+  runId: string | null;
+  messageTs: string;
+  status: string;
+  delivered: boolean;
+}
+
 interface TurnJobRow {
   id: string;
   evt_key: string;
@@ -298,6 +317,47 @@ export class TurnJobStoreLogic {
       runId,
     ) as unknown as TurnJobRow | undefined;
     return row ? this.decodeRow(row) : undefined;
+  }
+
+  listProposalApprovalTurns(input: SlackProposalApprovalQuery): SlackProposalApprovalTurn[] {
+    for (const key of ['proposalId', 'workspaceId', 'channelId', 'threadTs', 'requesterUserId',
+      'requesterMembershipId', 'actingAgentId'] as const) validateBoundedString(input[key], key, 256);
+    const rows = this.db.all(
+      `SELECT id, run_id, status, delivered,
+         json_extract(turn_json, '$.managementApprovalProposalId') AS proposalId,
+         json_extract(turn_json, '$.workspaceId') AS workspaceId,
+         json_extract(turn_json, '$.channelId') AS channelId,
+         json_extract(turn_json, '$.threadTs') AS threadTs,
+         json_extract(turn_json, '$.userId') AS requesterUserId,
+         json_extract(turn_json, '$.actorMembershipId') AS requesterMembershipId,
+         json_extract(assignment_json, '$.agent.id') AS actingAgentId,
+         json_extract(turn_json, '$.messageTs') AS messageTs
+       FROM turn_jobs
+       WHERE json_extract(turn_json, '$.managementApprovalProposalId') = ?
+         AND json_extract(turn_json, '$.workspaceId') = ?
+         AND json_extract(turn_json, '$.channelId') = ?
+         AND json_extract(turn_json, '$.threadTs') = ?
+         AND json_extract(turn_json, '$.userId') = ?
+         AND json_extract(turn_json, '$.actorMembershipId') = ?
+         AND json_extract(assignment_json, '$.agent.id') = ?
+       ORDER BY enqueued_at DESC, rowid DESC LIMIT 2`,
+      input.proposalId, input.workspaceId, input.channelId, input.threadTs,
+      input.requesterUserId, input.requesterMembershipId, input.actingAgentId,
+    );
+    return rows.map((row) => ({
+      proposalId: validateBoundedString(row.proposalId, 'Proposal id', 256),
+      workspaceId: validateBoundedString(row.workspaceId, 'Workspace id', 256),
+      channelId: validateBoundedString(row.channelId, 'Channel id', 256),
+      threadTs: validateBoundedString(row.threadTs, 'Thread timestamp', 256),
+      requesterUserId: validateBoundedString(row.requesterUserId, 'Requester id', 256),
+      requesterMembershipId: validateBoundedString(row.requesterMembershipId, 'Membership id', 256),
+      actingAgentId: validateBoundedString(row.actingAgentId, 'Acting Agent id', 256),
+      turnJobId: validateBoundedString(row.id, 'Turn id', 256),
+      runId: row.run_id == null ? null : validateBoundedString(row.run_id, 'Run id', 256),
+      messageTs: validateBoundedString(row.messageTs, 'Message timestamp', 256),
+      status: validateBoundedString(row.status, 'Turn status', 256),
+      delivered: row.delivered === 1,
+    }));
   }
 
   /** First successful write owns the plan and target for every later retry. */

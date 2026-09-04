@@ -35,6 +35,7 @@ export type SlackScheduleCommand =
       workspaceId: string;
       channelId: string;
       agentId: string;
+      channelThreadTs?: string;
       directDestination?: {
         conversationId: string;
         threadTs: string;
@@ -213,7 +214,9 @@ export async function executeSlackScheduleCommand(
       channelId: command.channelId,
       ...(!existing && command.directDestination
         ? { destination: { kind: 'direct_thread' as const, ...command.directDestination } }
-        : {}),
+        : command.channelThreadTs
+          ? { destination: { kind: 'channel' as const, channelId: command.channelId, threadTs: command.channelThreadTs } }
+          : {}),
       nextRunAt: projection.nextRunAt,
       projectedDailyStarts: projection.projectedDailyStarts,
       reservations: projection.reservations,

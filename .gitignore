@@ -31,7 +31,17 @@ docs/runbooks/*
 !docs/runbooks/composio-managed-connectors.md
 !docs/runbooks/product-telemetry.md
 !docs/runbooks/semantic-activity-status.md
+!docs/runbooks/parallel-live-test-environments.md
+!docs/plans/
+docs/plans/*
+!docs/plans/evidence/
+docs/plans/evidence/*
 !docs/runbooks/operations.md
 !docs/runbooks/releasing.md
+!docs/runbooks/live-contract-verification.md
+!docs/runbooks/live-contract-acceptance-v1.md
 design-qa.md
 !docs/design/agent-first-admin-prototype/design-qa.md
+
+# A worktree claim is machine-local authority, never repository state.
+.chickpea-environment

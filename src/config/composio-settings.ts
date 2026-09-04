@@ -33,6 +33,14 @@ export type ComposioAuthConfigIds = Readonly<Record<
   string,
   Readonly<Partial<Record<ManagedAccessLane, string>>> | undefined
 >>;
+type AuthConfigInspectionOutcome = 'valid' | 'incompatible' | 'inspection_unavailable';
+/** Distinguish a rejected override from a transient inspection outage. */
+export type ComposioAuthConfigOverrides = Readonly<Record<
+  string, Readonly<Partial<Record<ManagedAccessLane, {
+    id: string;
+    outcome: AuthConfigInspectionOutcome;
+  }>>> | undefined
+>>;
 
 interface ComposioConfigurationMetadata {
   version: typeof METADATA_VERSION;
@@ -667,23 +675,9 @@ async function validateLegacyAuthConfigIds(
     );
   }
 
-  const inspected = await Promise.all(entries.map(async (entry) => {
-    const { toolkit, id } = entry;
-    if (!isComposioAuthConfigId(id)) {
-      return { entry, outcome: 'incompatible' as const };
-    }
-    try {
-      let result: ComposioInspectedAuthConfig;
-      result = await inspectAuthConfig({ apiKey, authConfigId: id });
-      if (result.id !== id || result.toolkit.toLowerCase() !== toolkit || !result.enabled ||
-          !result.managed || !result.unrestricted) {
-        return { entry, outcome: 'incompatible' as const };
-      }
-      return { entry, outcome: 'valid' as const };
-    } catch {
-      return { entry, outcome: 'inspection_unavailable' as const };
-    }
-  }));
+  const inspected = await Promise.all(entries.map(async (entry) => ({
+    entry, outcome: await inspectLegacyAuthConfig(apiKey, entry, inspectAuthConfig),
+  })));
 
   const result: Record<string, Partial<Record<ManagedAccessLane, string>>> = {};
   let inspectionUnavailable = false;
@@ -704,6 +698,43 @@ async function validateLegacyAuthConfigIds(
       ? LEGACY_AUTH_CONFIG_FAILURE_CACHE_TTL_MS
       : LEGACY_AUTH_CONFIG_CACHE_TTL_MS),
   );
+}
+
+/** Admin retries always re-inspect; the legacy runtime cache must not pin failures. */
+export async function inspectComposioAuthConfigOverrides(
+  apiKey: string,
+  options: ComposioConfigurationOptions,
+): Promise<ComposioAuthConfigOverrides> {
+  const entries = legacyAuthConfigEntries(options.env);
+  if (entries.length === 0) return {};
+  let inspect: ComposioConfigurationOptions['inspectAuthConfig'];
+  try { inspect = options.inspectAuthConfig ?? await createDefaultAuthConfigInspector(apiKey); }
+  catch { /* Report an unavailable inspection without exposing provider errors. */ }
+  const overrides: Record<string, Partial<Record<ManagedAccessLane, {
+    id: string; outcome: AuthConfigInspectionOutcome;
+  }>>> = {};
+  await Promise.all(entries.map(async (entry) => {
+    const outcome = inspect
+      ? await inspectLegacyAuthConfig(apiKey, entry, inspect)
+      : 'inspection_unavailable';
+    (overrides[entry.toolkit] ??= {})[entry.lane] = { id: entry.id, outcome };
+  }));
+  return overrides;
+}
+
+async function inspectLegacyAuthConfig(
+  apiKey: string,
+  { id, toolkit }: LegacyAuthConfigEntry,
+  inspect: NonNullable<ComposioConfigurationOptions['inspectAuthConfig']>,
+): Promise<AuthConfigInspectionOutcome> {
+  if (!isComposioAuthConfigId(id)) return 'incompatible';
+  try {
+    const result = await inspect({ apiKey, authConfigId: id });
+    return result.id === id && result.toolkit.toLowerCase() === toolkit && result.enabled &&
+      result.managed && result.unrestricted ? 'valid' : 'incompatible';
+  } catch {
+    return 'inspection_unavailable';
+  }
 }
 
 function cacheLegacyAuthConfigResult(
@@ -918,4 +949,3 @@ function requireProjectKey(value: string): string {
 function fingerprint(apiKey: string): string {
   return createHash('sha256').update(apiKey).digest('hex').slice(0, 24);
 }
-

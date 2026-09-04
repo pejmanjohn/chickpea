@@ -3,6 +3,7 @@ import { scheduleActionId } from '../routines/ids.ts';
 import {
   assertRoutineTaskBoundToSource,
   normalizeAuthorityText,
+  requestsChannelThreadDelivery,
 } from '../routines/provenance.ts';
 import { SlackScheduleCommandError } from '../routines/slack-command.ts';
 import {
@@ -176,6 +177,9 @@ async function bindScheduleOperationToRequester(
   let bound = taskMatchesPrevious && previous
     ? { ...operation, taskText: previous.taskText }
     : operation;
+  if (!previous && signal.conversationKind === 'channel' && requestsChannelThreadDelivery(requestText)) {
+    bound = { ...bound, destination: { kind: 'current_channel_thread' } };
+  }
   let cadenceChanged = false;
   let outputPolicyChanged = false;
 
@@ -734,6 +738,11 @@ async function applyClaimedScheduleAction(input: {
               ? 'run_queued'
               : 'controlled',
           routineId: routineRef.id,
+          ...(routine ? {
+            deliveryDestination: routine.destination.kind === 'direct_thread'
+              ? 'direct_thread' as const
+              : routine.destination.threadTs ? 'channel_thread' as const : 'channel' as const,
+          } : {}),
           ...((routine?.version ?? routineRef.revision) !== undefined
             ? { routineVersion: routine?.version ?? routineRef.revision }
             : {}),
@@ -829,7 +838,8 @@ function validateStandaloneScheduleOperation(
       if (operation.channelId !== undefined || operation.destination?.kind !== 'current_dm_thread') {
         throw new ManagementError('invalid_request', 'A DM schedule must use the current DM thread.');
       }
-    } else if (operation.channelId !== signal.channelId || operation.destination !== undefined) {
+    } else if (operation.channelId !== signal.channelId ||
+        (operation.destination !== undefined && operation.destination.kind !== 'current_channel_thread')) {
       throw new ManagementError('invalid_request', 'A Channel schedule must use the current Channel.');
     }
     return operation;

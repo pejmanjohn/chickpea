@@ -51,6 +51,7 @@ import type {
   MemoryStateStore,
 } from '../memory/types.ts';
 import { RoutineService } from '../routines/service.ts';
+import { requestsChannelThreadDelivery } from '../routines/provenance.ts';
 import { reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
 import {
   executeSlackScheduleCommand,
@@ -908,8 +909,8 @@ export class WorkspaceManagementService {
     if (actor.origin.kind === 'slack' && 'managedToolkit' in connector) {
       const scopes = MANAGED_CONNECTOR_CATALOG.capabilities(
         connector.managedToolkit,
-        // Freeze the complete connector ceiling. The claimed browser flow
-        // selects a read-only subset or this full read/write set.
+        // Freeze the complete connector ceiling. The browser uses the full set
+        // when configured, otherwise only the available read tools.
         'write',
       ).map(({ id }) => id);
       if (scopes.length === 0) {
@@ -3292,7 +3293,16 @@ export class WorkspaceManagementService {
     }>,
   ): string {
     const directOrigin = slackDirectOrigin(actor);
-    if (operation.kind === 'save_routine' && operation.destination) {
+    if (operation.kind === 'save_routine' && operation.destination?.kind === 'current_channel_thread') {
+      const origin = actor.origin;
+      if (origin.kind !== 'slack' || origin.conversationKind !== 'channel' ||
+          operation.workspaceId !== origin.workspaceId || operation.channelId !== origin.channelId ||
+          !requestsChannelThreadDelivery(origin.requestText ?? '')) {
+        throw new ManagementError('invalid_request', 'Thread delivery must be explicitly requested in the current Channel.');
+      }
+      return origin.channelId;
+    }
+    if (operation.kind === 'save_routine' && operation.destination?.kind === 'current_dm_thread') {
       if (!directOrigin || operation.workspaceId !== directOrigin.workspaceId ||
           operation.channelId !== undefined) {
         throw new ManagementError('invalid_request', 'The private DM destination is unavailable.');
@@ -3650,6 +3660,9 @@ export class WorkspaceManagementService {
       workspaceId: operation.workspaceId,
       channelId,
       agentId: operation.agentId,
+      ...(operation.destination?.kind === 'current_channel_thread' && actor.origin.kind === 'slack'
+        ? { channelThreadTs: actor.origin.threadTs }
+        : {}),
       ...(operation.destination?.kind === 'current_dm_thread' && directOrigin
         ? {
             directDestination: {
@@ -5410,7 +5423,7 @@ function routinePreview(
     timezone: routine.timezone,
     destination: routine.destination.kind === 'direct_thread'
       ? 'Current DM thread'
-      : `Slack Channel ${routine.destination.channelId}`,
+      : `${routine.destination.threadTs ? 'Saved thread in' : 'New messages in'} Slack Channel ${routine.destination.channelId}`,
     delivery: routine.outputPolicy === 'post_on_change' ? 'Only when results change' : 'Always post',
   };
 }
@@ -5435,7 +5448,7 @@ function routineOperationPreview(
     timezone: operation.timezone,
     destination: direct
       ? 'Current DM thread'
-      : `Slack Channel ${operation.channelId ?? existing?.channelId ?? 'unavailable'}`,
+      : `${operation.destination?.kind === 'current_channel_thread' || existing?.destination.threadTs ? 'Saved thread in' : 'New messages in'} Slack Channel ${operation.channelId ?? existing?.channelId ?? 'unavailable'}`,
     delivery: operation.outputPolicy === 'post_on_change' ? 'Only when results change' : 'Always post',
   };
 }

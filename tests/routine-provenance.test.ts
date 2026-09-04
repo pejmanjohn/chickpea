@@ -1,8 +1,24 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { assertRoutineTaskBoundToSource } from '../src/routines/provenance.ts';
+import { assertRoutineTaskBoundToSource, requestsChannelThreadDelivery } from '../src/routines/provenance.ts';
 import { RoutineStateError } from '../src/routines/types.ts';
+
+test('Channel thread delivery requires positive unquoted delivery intent, not acknowledgement location', () => {
+  for (const request of [
+    'Every morning post the digest in this thread.',
+    "Deliver the result to this request's thread.",
+  ]) assert.equal(requestsChannelThreadDelivery(request), true, request);
+  for (const request of [
+    'Post the digest in this channel.',
+    'Do not post the digest in this thread.',
+    'Post exactly "in this thread" every morning.',
+    'Explain how to post in this thread.',
+    'Post in this thread?',
+    '> Post the digest in this thread.',
+    'Post the digest in the channel. Acknowledge creation in this thread.',
+  ]) assert.equal(requestsChannelThreadDelivery(request), false, request);
+});
 
 test('routine source authority rejects avoid, refrain-from, and without directives', () => {
   const task = 'Check the inbox and report anything new.';

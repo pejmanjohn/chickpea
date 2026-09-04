@@ -109,6 +109,25 @@ export function normalizeAuthorityText(text: string): string {
     .replace(/\s+/g, ' ');
 }
 
+/** Only explicit future-delivery wording can bind a Channel routine to a thread. */
+export function requestsChannelThreadDelivery(requestText: string): boolean {
+  const text = requestText
+    .replace(/```[\s\S]*?```|`[^`]*`|"[^"]*"|“[^”]*”/g, ' ')
+    .replace(/^\s*>.*$/gm, ' ');
+  for (const match of text.matchAll(/\b(?:in|to)\s+(?:this|the current|this request's)\s+thread\b/gi)) {
+    const offset = match.index!;
+    const start = Math.max(...['.', '!', '?', ';', '\n'].map((delimiter) =>
+      text.lastIndexOf(delimiter, offset - 1))) + 1;
+    const end = text.slice(offset).search(/[.!?;\n]/);
+    const clause = text.slice(start, end < 0 ? undefined : offset + end);
+    if (sourcePrefixNegatesTask(text, offset) ||
+        /\b(?:acknowledge|acknowledgement|acknowledgment|confirmation|hypothetically|example|explain|what if)\b/i.test(clause) ||
+        (end >= 0 && text[offset + end] === '?')) continue;
+    return true;
+  }
+  return false;
+}
+
 function sourcePrefixNegatesTask(requestText: string, taskOffset: number): boolean {
   const clauseStart = Math.max(
     requestText.lastIndexOf('.', taskOffset - 1),

@@ -338,6 +338,58 @@ button, input, textarea, select { font: inherit; }
 .badge .dot { background: currentColor; border-radius: 999px; height: 5px; width: 5px; }
 .badge-on { background: var(--ok-solid); box-shadow: 0 1.5px 0 rgba(78, 122, 62, 0.6); color: #fffdf6; }
 .badge-off { background: rgba(59, 50, 32, 0.1); color: #8a7a5c; }
+.environment-status { min-width: 0; position: relative; }
+.environment-status > summary { cursor: pointer; list-style: none; }
+.environment-status > summary::-webkit-details-marker { display: none; }
+.environment-health {
+  align-items: center;
+  background: rgba(59, 50, 32, .08);
+  border-radius: 999px;
+  color: var(--text-2);
+  display: inline-flex;
+  font-size: .6875rem;
+  font-weight: 750;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+.environment-health .dot { background: currentColor; border-radius: 50%; height: 6px; width: 6px; }
+.environment-health-ready { background: var(--ok-tint); color: var(--ok); }
+.environment-health-unreachable,
+.environment-health-stale_claim,
+.environment-health-expired_claim { background: #faedca; color: #8a6410; }
+.environment-health-identity_mismatch { background: var(--danger-tint); color: var(--danger); }
+.environment-status-panel {
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  box-shadow: var(--pop-shadow);
+  color: var(--text);
+  display: grid;
+  gap: 10px;
+  max-height: min(720px, calc(100dvh - 84px));
+  overflow: auto;
+  padding: 14px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(430px, calc(100vw - 32px));
+  z-index: 60;
+}
+.environment-status-head,
+.environment-target-head { align-items: center; display: flex; gap: 10px; justify-content: space-between; }
+.environment-status-head > div { display: grid; gap: 2px; }
+.environment-target { border: 1px solid var(--line); border-radius: 12px; display: grid; gap: 9px; padding: 11px; }
+.environment-target-head strong { text-transform: capitalize; }
+.environment-grid { display: grid; gap: 6px; margin: 0; }
+.environment-grid > div { display: grid; gap: 8px; grid-template-columns: 92px minmax(0, 1fr); }
+.environment-grid dt { color: var(--text-3); font-size: .6875rem; font-weight: 700; }
+.environment-grid dd { font-size: .6875rem; margin: 0; overflow-wrap: anywhere; }
+.environment-claim { display: grid; gap: 2px; }
+.environment-empty { color: var(--text-3); }
+.environment-recovery { background: var(--well); border-radius: 8px; font-size: .6875rem; line-height: 1.45; margin: 0; padding: 8px; }
+.environment-sandbox { display: grid; font-size: .6875rem; gap: 3px; padding: 3px 2px; }
 .chip {
   background: rgba(59, 50, 32, 0.08);
   border-radius: 8px;
@@ -1599,9 +1651,18 @@ details[open].advanced summary::before {
   display: flex;
   gap: 11px;
   padding: 0 3px 25px;
+  flex-wrap: wrap;
 }
 .primary-admin-shell .primary-shell-brand .brand-home { flex: 1; }
 .primary-admin-shell .primary-shell-brand .brand-wordmark { height: 28px; }
+.primary-admin-shell .primary-shell-brand .environment-status { flex: 0 0 100%; width: 100%; }
+.primary-admin-shell .primary-shell-brand .environment-status > summary { display: flex; }
+.primary-admin-shell .primary-shell-brand .environment-status-panel {
+  left: 0;
+  max-height: calc(100dvh - 130px);
+  right: auto;
+  width: 100%;
+}
 .primary-admin-shell .primary-shell-sidebar .rail-context { padding-bottom: 14px; }
 .primary-admin-shell .primary-shell-sidebar .rail-head { padding-left: 3px; padding-right: 3px; }
 .primary-admin-shell .primary-shell-sidebar .section-switcher { border-color: var(--admin-visual-line); }
@@ -1724,6 +1785,7 @@ details[open].advanced summary::before {
   .primary-admin-shell .topbar .topbar-menu,
   .primary-admin-shell .topbar .topbar-menu > summary { display: inline-flex; }
   .primary-admin-shell .topbar .actions-list { display: none; }
+  .primary-admin-shell .topbar .environment-status-panel { left: 0; right: auto; }
   .primary-admin-shell .topbar-menu[open] ~ .actions-list {
     align-items: stretch;
     background: var(--bg);
@@ -3165,6 +3227,7 @@ button.capability-pill { cursor: pointer; }
   var state = {
     agents: [],
     grants: [],
+    environmentStatus: null,
     models: { providers: [] },
     active: null,
     effective: null,
@@ -3221,6 +3284,8 @@ button.capability-pill { cursor: pointer; }
     profileReplacementDefaultAgentId: "",
     editingAgentId: null,
     profileDraft: null,
+    profileCreationStatus: null,
+    profileProposalStatus: null,
     profileError: "",
     profileConflict: false,
     profilePresenceMutation: null,
@@ -3832,6 +3897,8 @@ button.capability-pill { cursor: pointer; }
   }
 
   function openProfileEditor(selected, initialTab) {
+    state.profileCreationStatus = null;
+    state.profileProposalStatus = null;
     state.mobileAgentRosterOpen = false;
     state.view = "profiles";
     state.profileScreen = "edit";
@@ -4301,6 +4368,82 @@ button.capability-pill { cursor: pointer; }
       '<button type="button" class="btn btn-primary" data-action="managed-auth-open"' + (cancelling ? ' disabled' : '') + '>Open sign-in &nearr;</button></div></div></div>';
   }
 
+  function environmentHealthLabel(health) {
+    return ({
+      ready: "Ready",
+      unreachable: "Unreachable",
+      stale_claim: "Stale claim",
+      identity_mismatch: "Identity mismatch",
+      expired_claim: "Expired claim"
+    })[health] || "Unavailable";
+  }
+
+  function environmentStatusValue(value, fallback) {
+    return value === null || value === undefined || value === "" ? fallback : String(value);
+  }
+
+  function environmentRecoveryAction(health, target) {
+    if (health === "ready") return "No recovery needed.";
+    if (health === "unreachable") return "Check " + target + " Worker and Slack transport reachability.";
+    if (health === "stale_claim") return "Run npm run env -- reclaim " + target + " from the intended worktree.";
+    if (health === "expired_claim") return "Run npm run env -- reclaim " + target + ".";
+    return "Run npm run env -- reconciliation " + target + ".";
+  }
+
+  function environmentClaimHtml(claim) {
+    if (!claim) return '<span class="environment-empty">Unclaimed</span>';
+    var leaseMinutes = Math.floor(Number(claim.leaseAgeMs || 0) / 60000);
+    return '<span class="environment-claim"><span class="mono">' + esc(claim.holderId) + '</span>' +
+      '<span>' + leaseMinutes + 'm old &middot; expires ' + esc(claim.expiresAt) + '</span></span>';
+  }
+
+  function environmentTargetStatusHtml(target) {
+    var source = environmentStatusValue(target.sourceSha, "unknown") + (target.dirty ? " (dirty)" : "");
+    var workspace = environmentStatusValue(target.workspaceLabel, target.workspaceAlias) + " · " + target.workspaceAlias;
+    var slackApp = environmentStatusValue(target.appLabel, target.appAlias) + " · " + target.appAlias;
+    var lock = environmentStatusValue(target.verifierLock && target.verifierLock.status, "unknown");
+    if (target.verifierLock && target.verifierLock.ownerRunId) lock += " · " + target.verifierLock.ownerRunId;
+    return '<section class="environment-target" data-environment-target="' + esc(target.target) + '" data-environment-health="' + esc(target.health) + '">' +
+      '<div class="environment-target-head"><strong>' + esc(target.target) + '</strong><span class="environment-health environment-health-' + esc(target.health) + '"><span class="dot"></span>' + esc(environmentHealthLabel(target.health)) + '</span></div>' +
+      '<dl class="environment-grid">' +
+        '<div><dt>Source</dt><dd class="mono">' + esc(source) + '</dd></div>' +
+        '<div><dt>Serving</dt><dd class="mono">' + esc(environmentStatusValue(target.servingVersion, "unknown")) + '</dd></div>' +
+        '<div><dt>Transport</dt><dd>' + esc(environmentStatusValue(target.transport, "unknown")) + '</dd></div>' +
+        '<div><dt>Workspace</dt><dd>' + esc(workspace) + '</dd></div>' +
+        '<div><dt>Slack app</dt><dd>' + esc(slackApp) + '</dd></div>' +
+        '<div><dt>Claim</dt><dd>' + environmentClaimHtml(target.claim) + '</dd></div>' +
+        '<div><dt>Verifier lock</dt><dd class="mono">' + esc(lock) + '</dd></div>' +
+        '<div><dt>Schema</dt><dd class="mono">' + esc(environmentStatusValue(target.schemaGeneration, "unknown")) + '</dd></div>' +
+        '<div><dt>Attested source</dt><dd class="mono">' + esc(environmentStatusValue(target.lastAttestedRevision, "not attested")) + '</dd></div>' +
+      '</dl><p class="environment-recovery"><strong>Recovery:</strong> ' + esc(environmentRecoveryAction(target.health, target.target)) + '</p></section>';
+  }
+
+  function environmentStatusHtml(placement) {
+    var status = state.environmentStatus;
+    if (status && status.schemaVersion === "chickpea-environment-identity/v1") {
+      var source = status.sourceSha + (status.dirty ? " (dirty)" : "");
+      return '<details class="environment-status environment-status-' + placement + '"><summary aria-label="Live environment status"><span class="environment-health">' + esc(status.target) + ' · ' + esc(status.sourceSha.slice(0, 7)) + (status.dirty ? ' (dirty)' : '') + '</span></summary>' +
+        '<div class="environment-status-panel"><div class="environment-status-head"><strong>' + esc(status.target) + ' · Deployed build</strong></div><dl class="environment-grid">' +
+        '<div><dt>Source</dt><dd class="mono">' + esc(source) + '</dd></div><div><dt>Serving</dt><dd class="mono">' + esc(status.servingVersion) + '</dd></div></dl>' +
+        '<p class="environment-recovery">For current worktree claims and verifier locks, run <code>npm run env -- status --all</code>. This badge identifies the deployed build, not a live worktree lease.</p></div></details>';
+    }
+    if (!status || !Array.isArray(status.targets) || !status.targets.length) return "";
+    var selected = status.targets[0];
+    status.targets.forEach(function (target) {
+      if (target.target === status.selectedTarget) selected = target;
+    });
+    var sandbox = status.sandbox || {};
+    var archive = sandbox.archiveDate
+      ? environmentStatusValue(sandbox.daysUntilArchive, "?") + " days · " + sandbox.archiveDate
+      : "Unavailable";
+    return '<details class="environment-status environment-status-' + placement + '"><summary aria-label="Live environment status"><span class="environment-health environment-health-' + esc(selected.health) + '"><span class="dot"></span>' + esc(selected.target) + ' · ' + esc(environmentHealthLabel(selected.health)) + '</span></summary>' +
+      '<div class="environment-status-panel"><div class="environment-status-head"><div><span class="section-eyebrow">Live environments</span><strong>Two-lane fleet</strong></div><span class="mono">registry r' + esc(environmentStatusValue(status.registryRevision, "—")) + '</span></div>' +
+      status.targets.map(environmentTargetStatusHtml).join("") +
+      (status.sandbox === null
+        ? '<section class="environment-sandbox"><strong>Standalone Slack workspaces</strong><span>Amber and Cobalt have independent installations. Fern is inactive.</span></section>'
+        : '<section class="environment-sandbox"><strong>Slack sandbox</strong><span>Archive: ' + esc(archive) + '</span><span>Recorded unused workspace slots: ' + esc(environmentStatusValue(sandbox.unusedWorkspaceSlots, "unavailable")) + '</span><span>Recorded integration headroom: ' + esc(environmentStatusValue(sandbox.integrationHeadroom, "unavailable")) + '</span><span>Capacity is a registry snapshot. Check Slack before creating a workspace.</span></section>') + '</div></details>';
+  }
+
   function topbarHtml() {
     // Desktop section navigation lives persistently at the bottom of the rail.
     // This duplicate action row is mobile-only and is revealed by the hamburger.
@@ -4322,7 +4465,7 @@ button.capability-pill { cursor: pointer; }
       : (WORKSPACE_ADMIN_UI ? connectedBadge : "") + agentsAction + workspaceActions;
     // The brand doubles as a home affordance to the canonical Agent.
     return '<header class="topbar' + (scoped ? ' admin-mobile-topbar' : '') + '">' +
-      '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button></div>' +
+      '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button>' + environmentStatusHtml('topbar') + '</div>' +
       '<details class="topbar-menu"' + (mobileRoster ? ' open' : '') + '><summary aria-label="Menu" data-role="mobile-menu-trigger">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + actions + '</div>' +
       "</header>";
@@ -4437,7 +4580,7 @@ button.capability-pill { cursor: pointer; }
   }
 
   function primaryShellBrandHtml() {
-    return '<div class="primary-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button></div>';
+    return '<div class="primary-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button>' + environmentStatusHtml('rail') + '</div>';
   }
 
   function onboardingRailHtml() {
@@ -5529,6 +5672,21 @@ button.capability-pill { cursor: pointer; }
       slackDestinationTabsHtml() + panels + '</div>';
   }
 
+  function slackSessionDiagnosticsHtml() {
+    var gateway = state.slack && state.slack.gateway;
+    if (!gateway) return "";
+    var phases = ["stopped", "starting", "connecting", "retrying", "healthy", "needs_attention", "stale", "offline"];
+    var phase = phases.indexOf(gateway.phase) >= 0 ? gateway.phase : "unavailable";
+    var version = typeof gateway.versionId === "string" &&
+      /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|version-[A-Za-z0-9._-]{1,96})$/i.test(gateway.versionId)
+      ? gateway.versionId : "unavailable";
+    var generation = Number.isSafeInteger(gateway.generation) && gateway.generation >= 0
+      ? gateway.generation : "unavailable";
+    return '<details class="hint" style="margin-top:12px;overflow-wrap:anywhere;"><summary>Inbound session · ' + esc(phase) + '</summary>' +
+      '<p>Session phase: ' + esc(phase) + '<br>Generation: ' + esc(generation) + '<br>Worker version: <span class="mono">' + esc(version) + '</span></p>' +
+      '<p>Live session at last refresh. The workspace warning may also reflect a saved authorization or connection issue.</p></details>';
+  }
+
   function slackWorkspaceSettingsHtml() {
     if (!state.slack) {
       return '<section class="section"><div class="empty"><p class="field-label">Slack settings are unavailable</p><p class="hint">Reload the page to try the connection again.</p></div></section>';
@@ -5552,7 +5710,7 @@ button.capability-pill { cursor: pointer; }
     var connection = '<section class="section"><div class="section-head"><div><h2 class="section-title">Connection</h2>' +
       '<p class="hint">Manage this Slack workspace connection.</p></div></div>' +
       '<div class="action-well">' + testButton +
-      slackConnectionStatusHtml() + '</div>' +
+      slackConnectionStatusHtml() + '</div>' + slackSessionDiagnosticsHtml() +
       (!mutable ? '<div class="action-well"><div class="danger-copy"><span class="danger-title">Reconnect the shared Slack app</span>' +
       '<span class="hint">Refresh Slack authorization without changing Agents, Channel grants, or saved settings.</span></div>' +
       '<button type="button" class="btn btn-soft i-lead" data-action="slack-gateway-refresh"' +
@@ -5986,7 +6144,7 @@ button.capability-pill { cursor: pointer; }
         presetId: managedCandidate.id,
         preset: managedCandidate,
         managedToolkit: managedDescriptor.toolkit,
-        managedAccess: "read",
+        managedAccess: managedConnectorLaneReady(managedDescriptor, "write") ? "write" : "read",
         providerId: managedDescriptor.providerId,
         label: managedCandidate.name,
         busy: false,
@@ -6855,6 +7013,14 @@ button.capability-pill { cursor: pointer; }
     var agent = agentById(agentId);
     var hasProjection = !!(agent && agent.whereItWorks && Array.isArray(agent.whereItWorks.channels));
     var projected = hasProjection ? agent.whereItWorks.channels : [];
+    function currentLabel(grant) {
+      var channel = (state.channelIndex || []).find(function (candidate) {
+        return candidate.workspaceId === grant.workspaceId && candidate.channelId === grant.channelId;
+      });
+      return channel && channel.channelName !== channel.channelId
+        ? normalizeChannelLabel(channel.channelName)
+        : null;
+    }
     // An authoritative empty projection means the Agent has no Channel reach.
     // Falling back to the pre-mutation grant cache here briefly resurrected
     // archived placements until the next full page reload.
@@ -6863,7 +7029,7 @@ button.capability-pill { cursor: pointer; }
         return {
           workspaceId: grant.workspaceId,
           channelId: grant.channelId,
-          channelLabel: grant.channelName || grant.channelId,
+          channelLabel: currentLabel(grant) || grant.channelName || grant.channelId,
           status: grant.status
         };
       });
@@ -6871,14 +7037,9 @@ button.capability-pill { cursor: pointer; }
     return state.grants.filter(function (grant) {
       return grant.agentId === agentId;
     }).map(function (grant) {
-      if (normalizeChannelLabel(grant.channelLabel)) return grant;
-      var channel = (state.channelIndex || []).find(function (candidate) {
-        return candidate.workspaceId === grant.workspaceId && candidate.channelId === grant.channelId;
-      }) || projected.find(function (candidate) {
-        return candidate.workspaceId === grant.workspaceId && candidate.channelId === grant.channelId;
-      });
-      return channel && channel.channelName
-        ? Object.assign({}, grant, { channelLabel: channel.channelName })
+      var label = currentLabel(grant);
+      return label
+        ? Object.assign({}, grant, { channelLabel: label })
         : grant;
     });
   }
@@ -8433,7 +8594,24 @@ button.capability-pill { cursor: pointer; }
       '<span class="connection-account-copy"><span class="connection-account-name">' + esc(displayName) + '</span>' +
       '<span class="connection-account-identity">' + (identity ? esc(identity) + ' &middot; ' : '') + owner + '</span></span>' +
       status + connectionAccountCapabilitiesHtml(account, entry.binding ? entry.binding.allowedCapabilities : null) + action + menu +
+      '<div class="connection-row-editor">' + connectionSavedRecordHtml(entry) + '</div>' +
       (resourceEditor ? '<div class="connection-row-editor">' + resourceEditor + '</div>' : '') + '</div>';
+  }
+
+  function connectionSavedRecordHtml(entry) {
+    var account = entry.account;
+    var binding = entry.binding || {};
+    // An explicit allowlist: never serialize the account or its credential policy.
+    return '<details class="scheduled-technical"><summary>Saved connection details</summary><div class="scheduled-meta">' +
+      scheduledMeta("Connection ID", account.id, true) +
+      scheduledMeta("Saved revision", Number.isInteger(account.revision) ? account.revision : "unavailable", true) +
+      scheduledMeta("Lifecycle", account.lifecycle, false) +
+      scheduledMeta("Ownership", account.ownerKind === "member" ? "Personal" : account.ownerKind === "team" ? "Team" : "unavailable", false) +
+      scheduledMeta("Owner membership", account.ownerMembershipId || "none", true) +
+      scheduledMeta("Created by membership", account.createdByMembershipId, true) +
+      scheduledMeta("Bound Agent ID", binding.agentId, true) +
+      scheduledMeta("Binding enabled", binding.enabled === true ? "yes" : binding.enabled === false ? "no" : "unavailable", false) +
+      '</div></details>';
   }
 
   function connectionAccountEndpointHtml(form, preset, oauth) {
@@ -8490,13 +8668,9 @@ button.capability-pill { cursor: pointer; }
   function connectionAccountAccessHtml(form) {
     var googleService = googleServicePresetById(form.presetId);
     if (form.kind === "managed") {
-      var managedAccess = form.managedAccess === "write" ? "write" : "read";
-      var managedDescriptor = managedConnectorDescriptorByToolkit(form.managedToolkit);
-      var writeDisabled = !managedConnectorLaneReady(managedDescriptor, "write");
-      return '<div class="field"><label class="field-label">Access</label><div class="seg" role="group" aria-label="' + esc(form.preset && form.preset.name || "Managed connector") + ' access">' +
-        '<button type="button" class="' + (managedAccess === "read" ? "on" : "") + '" data-action="connection-account-managed-access" data-access="read">Read-only</button>' +
-        '<button type="button" class="' + (managedAccess === "write" ? "on" : "") + '" data-action="connection-account-managed-access" data-access="write"' + (writeDisabled ? ' disabled aria-disabled="true"' : '') + '>Read and write</button></div>' +
-        (writeDisabled ? '<p class="hint">Write access is not configured for this connector.</p>' : '') + '</div>';
+      return '<div class="field"><span class="field-label">Permissions</span>' +
+        '<p class="hint">Review the permissions requested on the provider&#39;s sign-in screen. They may include permission to change data.</p>' +
+        (form.managedAccess === "read" ? '<p class="hint">This Agent is limited to reading data. That does not limit permissions granted during sign-in.</p>' : '') + '</div>';
     }
     if (googleService && form.apiEditor) {
       var googleAccess = form.apiEditor.googleAccess[googleService.service] || "read";
@@ -9449,6 +9623,9 @@ button.capability-pill { cursor: pointer; }
       agentDestinationsHtml(draft, readOnly, replyIdentityLabel) +
       profileTabsHtml(draft) +
       (readOnly ? '<fieldset class="agent-readonly-fields" disabled>' + agentAdvancedHtml(draft) + '</fieldset>' : agentAdvancedHtml(draft)) +
+      agentSavedRecordHtml(draft) +
+      agentCreationStatusHtml(draft) +
+      agentProposalStatusHtml(draft) +
       (readOnly ? "" : '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + (saveBarCueActive() ? " cue" : "") + '">' +
       '<div class="save-bar-inner">' +
       '<p class="save-note">&#9679; Unsaved changes &mdash; applies to new threads</p>' +
@@ -9456,6 +9633,163 @@ button.capability-pill { cursor: pointer; }
       '<button type="button" class="btn btn-primary" data-action="save-profile">Save changes</button>' +
       '</div></div>') +
       '<div aria-hidden="true" style="height:56px"></div></div>';
+  }
+
+  function agentSavedRecordHtml(draft) {
+    // Use the saved response, never unsaved edits or cloneAgent's fallback revision.
+    var saved = state.agents.find(function (agent) { return agent.id === draft.id; });
+    if (!saved) return '';
+    var presence = saved.slackPresence || {};
+    var grants = channelGrantsForAgent(saved.id);
+    return '<details class="scheduled-technical"><summary>Saved Agent details</summary><div class="scheduled-meta">' +
+      scheduledMeta("Agent ID", saved.id, true) +
+      scheduledMeta("Saved revision", Number.isInteger(saved.revision) ? saved.revision : "unavailable", true) +
+      scheduledMeta("Lifecycle", saved.lifecycle, false) +
+      scheduledMeta("Slack user group ID", presence.userGroupId || "unavailable", true) +
+      scheduledMeta("Slack handle", presence.normalizedHandle || "unavailable", true) +
+      scheduledMeta("Presence health", presence.health || "unavailable", false) +
+      scheduledMeta("Desired presence", presence.desiredState || "unavailable", false) +
+      scheduledMeta("Channel grant IDs", grants.length ? grants.map(function (grant) { return grant.channelId; }).sort().join(", ") : "none", true) +
+      '</div></details>';
+  }
+
+  function agentCreationStatusHtml(draft) {
+    if (!draft.id || draft.canEdit === false) return '';
+    var current = state.profileCreationStatus;
+    if (current && current.agentId !== draft.id) current = null;
+    var body = '<p class="hint">Recent Slack creation receipts requested by you. Available to Owners and Admins.</p>' +
+      '<button type="button" class="btn btn-soft btn-sm" data-action="refresh-creation-status"' + (current && current.loading ? ' disabled' : '') + '>Refresh creation delivery</button>';
+    if (current && current.error) body += '<p role="alert">Creation delivery status unavailable.</p>';
+    if (current && current.data) {
+      var welcomes = current.data.welcomes;
+      body += '<div class="scheduled-meta">' + scheduledMeta("Welcome records", welcomes.length === 2 ? "2 or more" : welcomes.length, true) + '</div>';
+      welcomes.forEach(function (welcome) {
+        var activity = welcome.activity || {};
+        var publication = welcome.publication || {};
+        body += '<div class="scheduled-meta">' +
+          scheduledMeta("Welcome ID", welcome.outboxId, true) +
+          scheduledMeta("Delivery status", welcome.status, false) +
+          scheduledMeta("Destination channel", welcome.channelId, true) +
+          scheduledMeta("Destination thread", welcome.threadTs, true) +
+          scheduledMeta("Publication status", publication.status || "unavailable", false) +
+          scheduledMeta("Incomplete publication", Array.isArray(publication.incomplete) ? (publication.incomplete.join(", ") || "none") : "unavailable", false) +
+          scheduledMeta("Delivery reference", welcome.deliveryRef || "unavailable", true) +
+          scheduledMeta("Activity surface", activity.surface || "unavailable", false) +
+          scheduledMeta("Activity state", activity.state || "unavailable", false) +
+          scheduledMeta("Activity cleanup", activity.cleanup || "unavailable", false) +
+          scheduledMeta("Run lifecycle", activity.lifecycle || "unavailable", false) + '</div>';
+      });
+    }
+    return '<details class="scheduled-technical"' + (current ? ' open' : '') + '><summary>Creation delivery details</summary>' + body + '</details>';
+  }
+
+  async function refreshCreationStatus() {
+    var draft = state.profileDraft;
+    if (!draft || !draft.id || draft.canEdit === false) return;
+    var current = { agentId: draft.id, loading: true, error: false, data: null };
+    state.profileCreationStatus = current;
+    render();
+    try {
+      var result = await api("/admin/api/runtime/agents/" + encodeURIComponent(draft.id) + "/creation-status");
+      if (result.agentId !== draft.id || !Array.isArray(result.welcomes) || result.welcomes.length > 2) throw new Error("Invalid creation status");
+      current.data = result;
+    } catch (_) {
+      current.error = true;
+    }
+    current.loading = false;
+    if (state.profileCreationStatus === current && state.profileDraft && state.profileDraft.id === current.agentId) render();
+  }
+
+  function agentProposalStatusHtml(draft) {
+    if (!draft.id || draft.canEdit === false) return '';
+    var current = state.profileProposalStatus;
+    if (current && current.agentId !== draft.id) current = null;
+    var body = '<p class="hint">Your two most recent Slack proposals that update this Agent. Read-only. Available to Owners and Admins.</p>' +
+      '<button type="button" class="btn btn-soft btn-sm" data-action="refresh-proposal-status"' + (current && current.loading ? ' disabled' : '') + '>Refresh Slack proposals</button>';
+    if (current && current.error) body += '<p role="alert">Slack update proposal details unavailable.</p>';
+    if (current && current.data) {
+      var requester = current.data.requester;
+      body += '<div class="scheduled-meta">' +
+        scheduledMeta("Requester user ID", requester.userId, true) +
+        scheduledMeta("Requester membership ID", requester.membershipId, true) +
+        scheduledMeta("Requester Slack user ID", requester.slackUserId || "unavailable", true) +
+        scheduledMeta("Recent proposals", current.data.proposals.length, true) + '</div>';
+      current.data.proposals.forEach(function (proposal) {
+        body += '<section aria-label="Proposal ' + esc(proposal.proposalId) + '"><div class="scheduled-meta">' +
+          scheduledMeta("Proposal ID", proposal.proposalId, true) +
+          scheduledMeta("Proposal requester user ID", proposal.actorUserId, true) +
+          scheduledMeta("Proposal requester membership ID", proposal.actorMembershipId, true) +
+          scheduledMeta("Origin", proposal.originKey, true) +
+          scheduledMeta("Approval scope", proposal.approvalScopeKey, true) +
+          scheduledMeta("Proposal status", proposal.status, false) +
+          scheduledMeta("Proposal digest", proposal.digest, true) +
+          scheduledMeta("Target revision", proposal.targetRevision == null ? "unavailable" : proposal.targetRevision, true) +
+          scheduledMeta("Total operations", proposal.operationCount, true) + '</div>';
+        proposal.updates.forEach(function (update) {
+          body += '<div class="scheduled-meta">' + scheduledMeta("Update item ID", update.itemId, true) +
+            scheduledMeta("Operation kind", update.kind, true) +
+            scheduledMeta("Target Agent ID", update.agentId, true) +
+            scheduledMeta("Expected revision", update.expectedRevision, true) +
+            scheduledMeta("Changed fields", update.fields.join(", "), true) + '</div>' +
+            '<p class="field-label">Frozen instructions</p><pre aria-label="Frozen instructions" style="white-space:pre-wrap;overflow-wrap:anywhere">' + esc(update.instructions == null ? "Not changed" : update.instructions) + '</pre>' +
+            '<p class="field-label">Frozen description</p><pre aria-label="Frozen description" style="white-space:pre-wrap;overflow-wrap:anywhere">' + esc(update.description == null ? "Not changed" : update.description) + '</pre>';
+        });
+        body += '<div class="scheduled-meta">' + scheduledMeta("Apply result", proposal.result ? proposal.result.status : "not available", false);
+        if (proposal.result) proposal.result.outcomes.forEach(function (outcome) {
+          body += scheduledMeta("Result item ID", outcome.itemId, true) + scheduledMeta("Result disposition", outcome.disposition, false);
+          outcome.changed.forEach(function (ref) {
+            body += scheduledMeta("Resulting Agent ID", ref.id, true) +
+              scheduledMeta("Resulting Agent revision", ref.revision == null ? "unavailable" : ref.revision, true);
+          });
+        });
+        body += '</div>' + agentProposalApprovalHtml(proposal.approval) + '</section>';
+      });
+    }
+    return '<details class="scheduled-technical"' + (current ? ' open' : '') + '><summary>Slack update proposal details</summary>' + body + '</details>';
+  }
+
+  function agentProposalApprovalHtml(approval) {
+    var body = '<div class="scheduled-meta">' + scheduledMeta("Retained approval turns", approval ? approval.turns.length : "unavailable", true);
+    if (!approval) return body + '</div>';
+    body += scheduledMeta("Approval workspace", approval.workspaceId, true) +
+      scheduledMeta("Approval channel", approval.channelId, true) +
+      scheduledMeta("Approval thread", approval.threadTs, true) +
+      scheduledMeta("Approval requester Slack user ID", approval.requesterUserId, true) +
+      scheduledMeta("Approval requester membership ID", approval.requesterMembershipId, true) +
+      scheduledMeta("Acting Agent ID", approval.actingAgentId, true) + '</div>';
+    approval.turns.forEach(function (turn) {
+      var activity = turn.activity;
+      body += '<section aria-label="Approval turn ' + esc(turn.turnJobId) + '"><div class="scheduled-meta">' +
+        scheduledMeta("Approval turn ID", turn.turnJobId, true) +
+        scheduledMeta("Approval run ID", turn.runId || "unavailable", true) +
+        scheduledMeta("Approval message timestamp", turn.messageTs, true) +
+        scheduledMeta("Approval turn status", turn.status, false) +
+        scheduledMeta("Approval delivered", turn.delivered ? "yes" : "no", false) +
+        scheduledMeta("Approval activity surface", activity ? activity.surface : "unavailable", true) +
+        scheduledMeta("Approval activity state", activity ? activity.state : "unavailable", true) +
+        scheduledMeta("Approval activity cleanup", activity ? activity.cleanup : "unavailable", true) +
+        scheduledMeta("Approval run lifecycle", activity ? activity.lifecycle : "unavailable", true) +
+        scheduledMeta("Approval session generation", activity ? activity.sessionGeneration : "unavailable", true) +
+        '</div></section>';
+    });
+    return body;
+  }
+
+  async function refreshProposalStatus() {
+    var draft = state.profileDraft;
+    if (!draft || !draft.id || draft.canEdit === false) return;
+    var current = { agentId: draft.id, loading: true, error: false, data: null };
+    state.profileProposalStatus = current;
+    render();
+    try {
+      var result = await api("/admin/api/runtime/agents/" + encodeURIComponent(draft.id) + "/proposal-status");
+      if (result.agentId !== draft.id || !result.requester || !Array.isArray(result.proposals) || result.proposals.length > 2) throw new Error("Invalid proposal status");
+      current.data = result;
+    } catch (_) {
+      current.error = true;
+    }
+    current.loading = false;
+    if (state.profileProposalStatus === current && state.profileDraft && state.profileDraft.id === current.agentId) render();
   }
 
   function agentAdvancedHtml(draft) {
@@ -9926,6 +10260,7 @@ button.capability-pill { cursor: pointer; }
       '<div class="scheduled-summary-section"><span class="field-label">Schedule</span><p class="scheduled-summary-prompt">' + esc(formatScheduledSchedule(routine)) + '</p></div>' +
       '<div class="scheduled-summary-grid">' +
       scheduledMeta("Status", String(routine.state || "unknown").replace(/_/g, " "), false) +
+      scheduledMeta("Delivery destination", scheduledDestinationLabel(routine), false) +
       scheduledMeta("Last run", routine.lastFinishedAt ? formatScheduledDate(routine.lastFinishedAt, routine.timezone) : "Never", false) +
       scheduledMeta("Next run", routine.nextRunAt ? formatScheduledDate(routine.nextRunAt, routine.timezone) : "—", false) +
       scheduledMeta("Created", formatScheduledDay(routine.createdAt, routine.timezone), false) + '</div>' +
@@ -9956,6 +10291,7 @@ button.capability-pill { cursor: pointer; }
       scheduledMeta(routine.triggerKind === "once" ? "Scheduled for" : "Schedule", formatScheduledSchedule(routine), false) + scheduledMeta("Timezone", routine.timezone, false) +
       scheduledMeta("Next run", formatScheduledDate(routine.nextRunAt, routine.timezone), false) + scheduledMeta("Last finished", formatScheduledDate(routine.lastFinishedAt, routine.timezone), false) +
       scheduledMeta("Output", routine.outputPolicy, false) + scheduledMeta("Daily starts", Number(routine.projectedDailyStarts || 0), false) + '</div>' +
+      '<div class="scheduled-meta">' + scheduledMeta("Delivery destination", scheduledDestinationLabel(routine), false) + '</div>' +
       '<div class="scheduled-definition-grid"><div class="scheduled-definition-panel"><span class="field-label">Saved task</span>' +
       (routine.taskText == null ? '<p class="hint">The task body was removed with this routine.</p>' : '<div class="scheduled-task">' + esc(routine.taskText) + '</div>') + '</div>' +
       '<div class="scheduled-definition-panel"><span class="field-label">Source Slack request</span>' +
@@ -9973,6 +10309,14 @@ button.capability-pill { cursor: pointer; }
   function scheduledActivityHtml(detail) {
     return '<div class="scheduled-activity-intro"><h3 class="section-title">History for this routine</h3><p class="hint">Definition revisions and audit events below belong only to ' + esc(scheduledRoutineName(detail.routine)) + '.</p></div>' +
       scheduledRevisionsHtml(detail.revisions || []) + scheduledEventsHtml(detail.events || []);
+  }
+
+  function scheduledDestinationLabel(routine) {
+    var destination = routine.destination;
+    if (!destination) return "Unavailable";
+    return destination.threadTs
+      ? "Saved thread in " + scheduledChannelLabel(routine.workspaceId, routine.channelId) + " (" + destination.threadTs + ")"
+      : "New messages in " + scheduledChannelLabel(routine.workspaceId, routine.channelId);
   }
 
   function scheduledMeta(label, value, mono) {
@@ -10814,6 +11158,9 @@ button.capability-pill { cursor: pointer; }
         (settings.canConfigure ? '<button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry</button>' : '') + '</div>';
     } else if (provider.lastSetupResult && provider.lastSetupResult.status !== "ready" && configured) {
       controls += '<div class="callout" role="alert"><span>Some connectors still need setup. Ready connectors remain available.</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry setup</button></div>';
+    } else if (settings.canConfigure && configured && !settings.editing && !deploymentPreparationRequired && !googleAdsPolicyBlocked) {
+      controls += '<div class="managed-provider-actions"><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry"' + (settings.busy ? ' disabled' : '') + '>' +
+        (settings.busy === "retry" ? 'Preparing&hellip;' : 'Refresh connector setup') + '</button><span class="hint">Apply current deployment settings without replacing the project key.</span></div>';
     }
     if (googleAdsPolicyBlocked) {
       controls += '<div class="callout" role="status"><span>Google Ads is blocked by deployment policy. A deployment operator must allow Composio managed OAuth or configure Explorer, Basic, or Standard API access. Preparing connector defaults will not change this setting.</span></div>';
@@ -12952,6 +13299,9 @@ button.capability-pill { cursor: pointer; }
     var workspaceDefaultRequest = WORKSPACE_ADMIN_UI
       ? api("/admin/api/workspace-model-default", { cache: "no-store" }).catch(function () { return null; })
       : Promise.resolve(null);
+    var environmentStatusRequest = WORKSPACE_ADMIN_UI
+      ? api("/admin/api/environment/status", { cache: "no-store" }).catch(function () { return null; })
+      : Promise.resolve(null);
     return Promise.all([
       api("/admin/api/agents"),
       api("/admin/api/models"),
@@ -12960,7 +13310,8 @@ button.capability-pill { cursor: pointer; }
       slackRequest,
       onboardingRequest,
       channelsRequest,
-      workspaceDefaultRequest
+      workspaceDefaultRequest,
+      environmentStatusRequest
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
       state.grants = [];
@@ -12980,6 +13331,7 @@ button.capability-pill { cursor: pointer; }
       });
       state.channelIndexError = parts[4].error;
       if (parts[5] && parts[5].workspaceDefault) applyWorkspaceDefault(parts[5].workspaceDefault, false);
+      state.environmentStatus = parts[6];
       syncChannelFormWorkspacePrefill();
       if (renderAfterRefresh) renderAfterRefresh();
       else render();
@@ -13364,12 +13716,6 @@ button.capability-pill { cursor: pointer; }
       );
     }
     if (action === "connection-account-cancel") { state.connectionAccountForm = null; render(); }
-    if (action === "connection-account-managed-access" && state.connectionAccountForm &&
-        state.connectionAccountForm.kind === "managed") {
-      state.connectionAccountForm.managedAccess = target.getAttribute("data-access") === "write" ? "write" : "read";
-      state.connectionAccountForm.error = "";
-      render();
-    }
     if (action === "connection-account-google-access" && state.connectionAccountForm) {
       var accountGoogleService = googleServicePresetById(state.connectionAccountForm.presetId);
       if (accountGoogleService && state.connectionAccountForm.apiEditor) {
@@ -13693,6 +14039,8 @@ button.capability-pill { cursor: pointer; }
     if (action === "save-profile") { saveProfile(); }
     if (action === "agent-presence-retry") { retryAgentPresence(); }
     if (action === "reload-profile") { reloadProfile(); }
+    if (action === "refresh-creation-status") { refreshCreationStatus(); }
+    if (action === "refresh-proposal-status") { refreshProposalStatus(); }
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
     if (action === "open-channel-from-profile") { state.view = "channels"; state.channelScreen = "detail"; state.profileScreen = "list"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
@@ -17088,7 +17436,7 @@ export function renderSlackInvitationUnavailablePage(): string {
   });
 }
 
-/** Restored pre-U10 guided Slack setup, isolated from the automated token path. */
+/** Guided app adoption; the shared install flow verifies Events after credentials exist. */
 export function renderSlackManualSetupPage(input: {
   setup?: SlackSetupTransaction;
   destination: string;
@@ -17107,14 +17455,14 @@ export function renderSlackManualSetupPage(input: {
     : '';
   const capabilityPanel = `<section class="onboarding-panel" data-manual-step-panel="create"><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Resume manual setup</h1><p class="onboarding-lede" id="slack-setup-status">Reading the private setup capability from this browser tab.</p><form id="slack-setup-open-form" method="post" action="/admin/setup/manual"><input type="hidden" name="action" value="open">${hidden}<button class="btn btn-primary" type="submit">Continue manual setup</button></form></section>`;
   const createPanelHidden = initialStep === 'create' ? '' : ' hidden';
-  const createPanel = `<section class="onboarding-panel" data-manual-step-panel="create"${createPanelHidden}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Create Chickpea</h1><p class="onboarding-lede">Slack opens in a new tab. Come back here after Chickpea is created.</p><div class="onboarding-instructions">${manualSlackInstruction(1, 'Choose your workspace, then click Next.', '', 'create-workspace', 'onboarding-shot-viewport', 'Slack Create from manifest screen with the workspace picker and Next button')}${manualSlackInstruction(2, 'Review Chickpea, then click Create and Install.', '', 'create-review', 'onboarding-shot-viewport', 'Slack app review screen showing Chickpea permissions and Create and Install')}</div><div class="onboarding-guide-actions"><span></span><a class="btn btn-primary" href="${escapeHtml(input.manifestPrefillUrl)}" target="_blank" rel="noreferrer" data-manual-step-target="finish"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Create Chickpea in Slack <span aria-hidden="true">↗</span></a></div></section>`;
-  const finishPanel = `<section class="onboarding-panel" data-manual-step-panel="finish" hidden><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Finish creating Chickpea</h1><p class="onboarding-lede">Two quick actions in the Slack tab you just opened.</p><div class="onboarding-instructions">${manualSlackInstruction(1, 'Review the permissions, then click Allow.', '', 'allow', 'onboarding-shot-focused', 'Slack permission approval screen with the Allow button')}${manualSlackInstruction(2, 'When Slack says Chickpea is ready, click Go to App Settings.', '', 'ready', 'onboarding-shot-ready', 'Slack Chickpea is ready dialog with the Go to App Settings button')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="create">Back</button><button class="btn btn-primary" type="button" data-manual-step-target="events">Next: Verify Event URL</button></div></section>`;
-  const eventsPanel = `<section class="onboarding-panel" data-manual-step-panel="events" hidden><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Verify the Event URL</h1><p class="onboarding-lede">Slack needs one manual check before it can send messages to Chickpea.</p><a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">↗</span></a><div class="onboarding-instructions"><section class="onboarding-instruction"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In the left sidebar, open Event Subscriptions.</span></h2></section>${manualSlackInstruction(2, 'Beside Request URL, click Retry.', '', 'events-retry', 'onboarding-shot-wide', 'Slack Event Subscriptions showing the Retry button')}${manualSlackInstruction(3, 'When Request URL says Verified, click Save Changes.', 'If it still says your URL did not respond, wait a few seconds and click Retry again.', 'events', 'onboarding-shot-focused onboarding-shot-events', 'Slack Event Subscriptions showing Request URL Verified')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="finish">Back</button><button class="btn btn-primary" type="button" data-manual-step-target="credentials">I saved changes</button></div></section>`;
-  const credentialsPanel = `<section class="onboarding-panel" data-manual-step-panel="credentials"${initialStep === 'credentials' ? '' : ' hidden'}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Add app credentials</h1><p class="onboarding-lede">Paste these values once. Chickpea validates the app, encrypts its credentials, and then uses Slack OAuth for the bot token and installer identity.</p><a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">↗</span></a><form class="onboarding-credential-form" method="post" action="/admin/setup/manual"><input type="hidden" name="action" value="adopt">${hidden}<section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In Basic Information, copy the app credentials.</span></h2><div class="onboarding-credential-grid"><div class="onboarding-shot onboarding-shot-secret"><img src="/onboarding/signing-secret.webp" alt="Slack Basic Information showing the Signing Secret" loading="lazy" decoding="async"></div><div class="onboarding-credential-help"><label class="field" for="manual-app-id"><span class="field-label">App ID</span><input class="input mono" id="manual-app-id" name="appId" type="text" autocomplete="off" maxlength="64" required></label><label class="field" for="manual-client-id"><span class="field-label">Client ID</span><input class="input mono" id="manual-client-id" name="clientId" type="text" autocomplete="off" maxlength="256" required></label><label class="field" for="manual-client-secret"><span class="field-label">Client Secret</span><input class="input mono" id="manual-client-secret" name="clientSecret" type="password" autocomplete="off" maxlength="4096" required></label><label class="field" for="manual-signing-secret"><span class="field-label">Signing Secret</span><span class="onboarding-credential-subtext">Use Signing Secret — not Client Secret.</span><input class="input mono" id="manual-signing-secret" name="signingSecret" type="password" autocomplete="off" maxlength="4096" required></label></div></div></section><section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">2</span><span>Export the app manifest as JSON and paste it here.</span></h2><label class="field" for="manual-manifest"><span class="field-label">Exported app manifest (JSON)</span><textarea class="input mono" id="manual-manifest" name="observedManifest" maxlength="7500" required>${manifestJson}</textarea></label></section>${alert}<div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="events">Back</button><button class="btn btn-primary" type="submit">Validate and continue</button></div></form></section>`;
+  const userGroupPrerequisite = `<aside class="onboarding-prerequisite" role="note" aria-label="Agent handle permissions"><h2 class="onboarding-prerequisite-title">Before creating Agent @handles</h2><p>The manifest already requests <code>usergroups:read</code> and <code>usergroups:write</code>. Slack also requires a paid plan and a separate workspace permission that a manifest cannot change.</p><p>In the intended Slack workspace, ask an Owner or Admin to open <strong>Roles &amp; permissions → Account types → Create and edit user groups</strong>, allow <strong>Members</strong>, and save. This permits workspace members, not just Chickpea, to manage user groups. If your organization locks this setting, ask an Org Owner.</p></aside>`;
+  const createPanel = `<section class="onboarding-panel" data-manual-step-panel="create"${createPanelHidden}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Create Chickpea</h1><p class="onboarding-lede">Slack opens in a new tab. Come back here after Chickpea is created.</p>${userGroupPrerequisite}<div class="onboarding-instructions">${manualSlackInstruction(1, 'Choose your workspace, then click Next.', '', 'create-workspace', 'onboarding-shot-viewport', 'Slack Create from manifest screen with the workspace picker and Next button')}${manualSlackInstruction(2, 'Review Chickpea, then click Create and Install.', '', 'create-review', 'onboarding-shot-viewport', 'Slack app review screen showing Chickpea permissions and Create and Install')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="credentials">Already created the app? Add its credentials</button><a class="btn btn-primary" href="${escapeHtml(input.manifestPrefillUrl)}" target="_blank" rel="noreferrer" data-manual-step-target="finish"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Create Chickpea in Slack <span aria-hidden="true">↗</span></a></div></section>`;
+  const finishPanel = `<section class="onboarding-panel" data-manual-step-panel="finish" hidden><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Finish creating Chickpea</h1><p class="onboarding-lede">Two quick actions in the Slack tab you just opened.</p><div class="onboarding-instructions">${manualSlackInstruction(1, 'Review the permissions, then click Allow.', '', 'allow', 'onboarding-shot-focused', 'Slack permission approval screen with the Allow button')}${manualSlackInstruction(2, 'When Slack says Chickpea is ready, click Go to App Settings.', '', 'ready', 'onboarding-shot-ready', 'Slack Chickpea is ready dialog with the Go to App Settings button')}</div><div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="create">Back</button><button class="btn btn-primary" type="button" data-manual-step-target="credentials">Next: Add app credentials</button></div></section>`;
+  const credentialsPanel = `<section class="onboarding-panel" data-manual-step-panel="credentials"${initialStep === 'credentials' ? '' : ' hidden'}><p class="onboarding-eyebrow">Connect Slack</p><h1 class="onboarding-title" tabindex="-1">Add app credentials</h1><p class="onboarding-lede">Paste these values once. Chickpea validates the app, encrypts its credentials, and then uses Slack OAuth for the bot token and installer identity. You’ll verify the Events URL after Slack installation.</p><a class="btn btn-ghost onboarding-inline-recovery" href="https://api.slack.com/apps" target="_blank" rel="noreferrer">Lost the Slack tab? Open your apps <span aria-hidden="true">↗</span></a><form class="onboarding-credential-form" method="post" action="/admin/setup/manual"><input type="hidden" name="action" value="adopt">${hidden}<section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">1</span><span>In Basic Information, copy the app credentials.</span></h2><div class="onboarding-credential-grid"><div class="onboarding-shot onboarding-shot-secret"><img src="/onboarding/signing-secret.webp" alt="Slack Basic Information showing the Signing Secret" loading="lazy" decoding="async"></div><div class="onboarding-credential-help"><label class="field" for="manual-app-id"><span class="field-label">App ID</span><input class="input mono" id="manual-app-id" name="appId" type="text" autocomplete="off" maxlength="64" required></label><label class="field" for="manual-client-id"><span class="field-label">Client ID</span><input class="input mono" id="manual-client-id" name="clientId" type="text" autocomplete="off" maxlength="256" required></label><label class="field" for="manual-client-secret"><span class="field-label">Client Secret</span><input class="input mono" id="manual-client-secret" name="clientSecret" type="password" autocomplete="off" maxlength="4096" required></label><label class="field" for="manual-signing-secret"><span class="field-label">Signing Secret</span><span class="onboarding-credential-subtext">Use Signing Secret — not Client Secret.</span><input class="input mono" id="manual-signing-secret" name="signingSecret" type="password" autocomplete="off" maxlength="4096" required></label></div></div></section><section class="onboarding-credential"><h2 class="onboarding-instruction-title"><span class="onboarding-instruction-number">2</span><span>Export the app manifest as JSON and paste it here.</span></h2><label class="field" for="manual-manifest"><span class="field-label">Exported app manifest (JSON)</span><textarea class="input mono" id="manual-manifest" name="observedManifest" maxlength="7500" required>${manifestJson}</textarea></label></section>${alert}<div class="onboarding-guide-actions"><button class="btn btn-ghost" type="button" data-manual-step-target="finish">Back</button><button class="btn btn-primary" type="submit">Validate and continue</button></div></form></section>`;
   const panels = state === 'capability_required'
     ? capabilityPanel
     : state === 'awaiting_app_creation'
-      ? `${createPanel}${finishPanel}${eventsPanel}${credentialsPanel}`
+      ? `${createPanel}${finishPanel}${credentialsPanel}`
       : `<section class="onboarding-panel" data-manual-step-panel="create"><p class="onboarding-eyebrow">Manual setup</p><h1 class="onboarding-title" tabindex="-1">Continue shared setup</h1><p class="onboarding-lede">The app is ready. Continue with the encrypted Slack installation and Owner verification.</p><div class="onboarding-actions"><a class="btn btn-primary" href="/admin/setup">Continue setup</a></div></section>`;
   return `<!doctype html><html lang="en" data-slack-manual-setup-state="${escapeHtml(state)}" data-slack-setup-state="${escapeHtml(state)}" data-slack-setup-auto-resume="${String(input.autoResume === true)}" data-manual-initial-step="${initialStep}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Chickpea · Manual Slack setup</title>${CHICKPEA_FAVICON_HTML}<style>${SLACK_MANUAL_SETUP_CSS}</style></head><body><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">${AUTH_BRAND_HTML}<span class="onboarding-environment">private setup</span></div><ol class="onboarding-orientation" role="list" aria-label="Onboarding progress"><li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Connect Slack</span></li><li><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li><li><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li><li><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol><div class="onboarding-stage" aria-live="polite">${panels}</div></div></main><script src="/admin/setup/manual/client.js" defer></script></body></html>`;
 }
@@ -17133,7 +17481,8 @@ function manualSlackInstruction(
 const SLACK_MANUAL_SETUP_CSS = `
 @import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 :root{${CHICKPEA_WORDMARK_CSS}}
-:root{--bg:#fffdf6;--canvas:#f4ebd8;--well:#f8f1df;--line:rgba(59,50,32,.1);--line-strong:rgba(59,50,32,.16);--text:#3b3220;--text-2:#6b5c42;--text-3:#9f8f72;--ember:#dda033;--ember-deep:#8a6410;--ember-tint:rgba(221,160,51,.18);--ember-press:#b27e1f;--danger:#b5473a;--font:Quicksand,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--display:"Baloo 2",var(--font);--mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}*{box-sizing:border-box}html{color-scheme:light;background:var(--canvas)}body{margin:0;background:var(--canvas);color:var(--text);font-family:var(--font)}button,input,textarea{font:inherit}.onboarding-shell{isolation:isolate;min-height:100dvh;width:100%}.onboarding-shell-inner{margin:0 auto;max-width:1500px;padding:24px 28px 64px;width:100%}.onboarding-brand-row{align-items:center;display:flex;gap:20px;justify-content:space-between}.auth-brand{align-items:center;display:flex;gap:11px}.auth-brand-mark{height:36px;width:36px}.auth-brand-name{font-family:var(--display);font-size:1.625rem;font-weight:700}.onboarding-environment{color:var(--text-3);font-family:var(--mono);font-size:.8125rem}.onboarding-orientation{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));list-style:none;margin:26px auto 0;max-width:560px;padding:0;width:100%}.onboarding-orientation li{min-width:0;position:relative;text-align:center}.onboarding-orientation li:not(:first-child)::before{background:var(--line-strong);content:"";height:2px;position:absolute;right:50%;top:18px;width:100%;z-index:-1}.onboarding-step-dot{background:var(--canvas);border:2px solid var(--line-strong);border-radius:50%;color:var(--text-3);display:grid;font-family:var(--mono);font-size:.875rem;height:38px;margin:0 auto 9px;place-items:center;width:38px}.active .onboarding-step-dot{background:var(--bg);border-color:var(--ember);box-shadow:0 0 0 5px var(--ember-tint);color:var(--ember-deep)}.onboarding-step-label{color:var(--text-3);display:block;font-size:.875rem;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.active .onboarding-step-label{color:var(--text)}.onboarding-stage{display:grid;min-height:590px;padding-top:32px;place-items:start center}.onboarding-panel{background:var(--bg);border-radius:28px;box-shadow:0 4px 0 rgba(59,50,32,.11);padding:42px 44px;width:min(82%,1280px)}.onboarding-eyebrow{color:var(--ember-deep);font-family:var(--mono);font-size:.75rem;font-weight:700;letter-spacing:.09em;margin:0 0 12px;text-transform:uppercase}.onboarding-title{color:var(--text);font-family:var(--display);font-size:clamp(2.25rem,3.4vw,2.875rem);font-weight:700;letter-spacing:-.025em;line-height:1;margin:0;max-width:24ch;text-wrap:balance}.onboarding-lede{color:var(--text-2);font-size:1.125rem;line-height:1.5;margin:14px 0 0;max-width:58ch}.onboarding-instructions{display:grid;gap:32px;margin-top:32px}.onboarding-instruction{display:grid;gap:13px}.onboarding-instruction-title{align-items:center;color:var(--text);display:grid;font-size:1.125rem;font-weight:700;gap:12px;grid-template-columns:36px minmax(0,1fr);line-height:1.35;margin:0}.onboarding-instruction-number{background:#faedca;border-radius:50%;color:var(--ember-deep);display:grid;font-family:var(--mono);font-size:.875rem;font-weight:700;height:36px;place-items:center;width:36px}.onboarding-instruction-note{color:var(--text-2);font-size:.9375rem;line-height:1.45;margin:-3px 0 0 48px}.onboarding-shot{background:white;border:1px solid var(--line-strong);border-radius:16px;box-shadow:0 2px 0 rgba(59,50,32,.07);overflow:hidden}.onboarding-shot img{display:block;height:auto;width:100%}.onboarding-shot-viewport{height:380px}.onboarding-shot-viewport img{height:100%;object-fit:cover;object-position:center bottom}.onboarding-shot-focused{margin-left:53px;width:min(700px,calc(100% - 53px))}.onboarding-shot-ready{margin-left:53px;width:min(760px,calc(100% - 53px))}.onboarding-shot-wide{margin-left:53px;width:min(920px,calc(100% - 53px))}.onboarding-shot-events{aspect-ratio:1.25;position:relative}.onboarding-shot-events img{height:auto;left:0;position:absolute;top:-7%;width:100%}.onboarding-guide-actions{align-items:center;border-top:1px solid var(--line);display:flex;gap:16px;justify-content:space-between;margin-top:36px;padding-top:22px}.btn{align-items:center;border:0;border-radius:12px;color:var(--text);cursor:pointer;display:inline-flex;font-weight:700;justify-content:center;min-height:46px;padding:10px 17px;text-decoration:none}.btn-primary{background:var(--ember);box-shadow:0 3px 0 var(--ember-press)}.btn-ghost{background:transparent;border:1px solid var(--line-strong)}.slack-logo-image{background:url("${SLACK_LOGO_DATA_URL}") center/contain no-repeat;display:inline-block}.onboarding-slack-logo{height:23px;margin-right:7px;width:23px}.onboarding-inline-recovery{margin-top:10px}.onboarding-credential-form{display:grid;gap:32px;margin-top:32px}.onboarding-credential{display:grid;gap:13px}.onboarding-credential-grid{align-items:start;display:grid;gap:26px;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.onboarding-credential-help{display:grid;gap:9px}.field{display:grid;gap:7px}.field-label{font-weight:700}.input{background:var(--well);border:1px solid var(--line-strong);border-radius:11px;color:var(--text);min-height:48px;padding:11px 12px;width:100%}textarea.input{min-height:230px;resize:vertical}.mono{font-family:var(--mono)}.onboarding-credential-subtext,.hint{color:var(--text-3);font-size:.8125rem}.onboarding-shot-secret{width:min(420px,100%)}.onboarding-error{background:#fff3ee;border-left:4px solid var(--danger);border-radius:8px;padding:12px 14px}.field-error{color:var(--danger);font-weight:700;margin:0 0 4px}.onboarding-actions{display:flex;gap:10px;margin-top:30px}[hidden]{display:none!important}:focus-visible{outline:3px solid rgba(176,84,21,.48);outline-offset:3px}
+:root{--bg:#fffdf6;--canvas:#f4ebd8;--well:#f8f1df;--line:rgba(59,50,32,.1);--line-strong:rgba(59,50,32,.16);--text:#3b3220;--text-2:#6b5c42;--text-3:#9f8f72;--ember:#dda033;--ember-deep:#8a6410;--ember-tint:rgba(221,160,51,.18);--ember-press:#b27e1f;--danger:#b5473a;--font:Quicksand,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--display:"Baloo 2",var(--font);--mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}*{box-sizing:border-box}html{color-scheme:light;background:var(--canvas)}body{margin:0;background:var(--canvas);color:var(--text);font-family:var(--font)}button,input,textarea{font:inherit}.onboarding-shell{isolation:isolate;min-height:100dvh;width:100%}.onboarding-shell-inner{margin:0 auto;max-width:1500px;padding:24px 28px 64px;width:100%}.onboarding-brand-row{align-items:center;display:flex;gap:20px;justify-content:space-between}.auth-brand{align-items:center;display:flex;gap:11px}.auth-brand-mark{height:36px;width:36px}.auth-brand-name{font-family:var(--display);font-size:1.625rem;font-weight:700}.onboarding-environment{color:var(--text-3);font-family:var(--mono);font-size:.8125rem}.onboarding-orientation{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));list-style:none;margin:26px auto 0;max-width:680px;padding:0;width:100%}.onboarding-orientation li{min-width:0;position:relative;text-align:center}.onboarding-orientation li:not(:first-child)::before{background:var(--line-strong);content:"";height:2px;position:absolute;right:50%;top:18px;width:100%;z-index:-1}.onboarding-step-dot{background:var(--canvas);border:2px solid var(--line-strong);border-radius:50%;color:var(--text-3);display:grid;font-family:var(--mono);font-size:.875rem;height:38px;margin:0 auto 9px;place-items:center;width:38px}.active .onboarding-step-dot{background:var(--bg);border-color:var(--ember);box-shadow:0 0 0 5px var(--ember-tint);color:var(--ember-deep)}.onboarding-step-label{color:var(--text-3);display:block;font-size:.875rem;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.active .onboarding-step-label{color:var(--text)}.onboarding-stage{display:grid;min-height:590px;padding-top:32px;place-items:start center}.onboarding-panel{background:var(--bg);border-radius:28px;box-shadow:0 4px 0 rgba(59,50,32,.11);padding:42px 44px;width:min(82%,1280px)}.onboarding-eyebrow{color:var(--ember-deep);font-family:var(--mono);font-size:.75rem;font-weight:700;letter-spacing:.09em;margin:0 0 12px;text-transform:uppercase}.onboarding-title{color:var(--text);font-family:var(--display);font-size:clamp(2.25rem,3.4vw,2.875rem);font-weight:700;letter-spacing:-.025em;line-height:1;margin:0;max-width:24ch;text-wrap:balance}.onboarding-lede{color:var(--text-2);font-size:1.125rem;line-height:1.5;margin:14px 0 0;max-width:58ch}.onboarding-instructions{display:grid;gap:32px;margin-top:32px}.onboarding-instruction{display:grid;gap:13px}.onboarding-instruction-title{align-items:center;color:var(--text);display:grid;font-size:1.125rem;font-weight:700;gap:12px;grid-template-columns:36px minmax(0,1fr);line-height:1.35;margin:0}.onboarding-instruction-number{background:#faedca;border-radius:50%;color:var(--ember-deep);display:grid;font-family:var(--mono);font-size:.875rem;font-weight:700;height:36px;place-items:center;width:36px}.onboarding-instruction-note{color:var(--text-2);font-size:.9375rem;line-height:1.45;margin:-3px 0 0 48px}.onboarding-shot{background:white;border:1px solid var(--line-strong);border-radius:16px;box-shadow:0 2px 0 rgba(59,50,32,.07);overflow:hidden}.onboarding-shot img{display:block;height:auto;width:100%}.onboarding-shot-viewport{height:380px}.onboarding-shot-viewport img{height:100%;object-fit:cover;object-position:center bottom}.onboarding-shot-focused{margin-left:53px;width:min(700px,calc(100% - 53px))}.onboarding-shot-ready{margin-left:53px;width:min(760px,calc(100% - 53px))}.onboarding-shot-wide{margin-left:53px;width:min(920px,calc(100% - 53px))}.onboarding-shot-events{aspect-ratio:1.25;position:relative}.onboarding-shot-events img{height:auto;left:0;position:absolute;top:-7%;width:100%}.onboarding-guide-actions{align-items:center;border-top:1px solid var(--line);display:flex;gap:16px;justify-content:space-between;margin-top:36px;padding-top:22px}.btn{align-items:center;border:0;border-radius:12px;color:var(--text);cursor:pointer;display:inline-flex;font-weight:700;justify-content:center;min-height:46px;padding:10px 17px;text-decoration:none}.btn-primary{background:var(--ember);box-shadow:0 3px 0 var(--ember-press)}.btn-ghost{background:transparent;border:1px solid var(--line-strong)}.slack-logo-image{background:url("${SLACK_LOGO_DATA_URL}") center/contain no-repeat;display:inline-block}.onboarding-slack-logo{height:23px;margin-right:7px;width:23px}.onboarding-inline-recovery{margin-top:10px}.onboarding-credential-form{display:grid;gap:32px;margin-top:32px}.onboarding-credential{display:grid;gap:13px}.onboarding-credential-grid{align-items:start;display:grid;gap:26px;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.onboarding-credential-help{display:grid;gap:9px}.field{display:grid;gap:7px}.field-label{font-weight:700}.input{background:var(--well);border:1px solid var(--line-strong);border-radius:11px;color:var(--text);min-height:48px;padding:11px 12px;width:100%}textarea.input{min-height:230px;resize:vertical}.mono{font-family:var(--mono)}.onboarding-credential-subtext,.hint{color:var(--text-3);font-size:.8125rem}.onboarding-shot-secret{width:min(420px,100%)}.onboarding-error{background:#fff3ee;border-left:4px solid var(--danger);border-radius:8px;padding:12px 14px}.field-error{color:var(--danger);font-weight:700;margin:0 0 4px}.onboarding-actions{display:flex;gap:10px;margin-top:30px}[hidden]{display:none!important}:focus-visible{outline:3px solid rgba(176,84,21,.48);outline-offset:3px}
+.onboarding-prerequisite{background:var(--well);border:1px solid var(--line-strong);border-radius:14px;margin-top:24px;padding:18px 20px}.onboarding-prerequisite-title{font-size:1rem;margin:0 0 10px}.onboarding-prerequisite p{color:var(--text-2);font-size:.9375rem;line-height:1.5;margin:10px 0 0}.onboarding-prerequisite code{font-family:var(--mono);font-size:.875em}
 .brand-wordmark{aspect-ratio:2106/518;background-color:currentColor;display:block;flex:0 0 auto;height:31px;-webkit-print-color-adjust:exact;print-color-adjust:exact;-webkit-mask:var(--chickpea-wordmark-image) center/contain no-repeat;mask:var(--chickpea-wordmark-image) center/contain no-repeat}@media(forced-colors:active){.brand-wordmark{background-color:CanvasText;forced-color-adjust:none}}
 @media(max-width:720px){.onboarding-shell-inner{padding:20px 16px 45px}.onboarding-environment{display:none}.onboarding-orientation{margin-top:34px}.onboarding-step-dot{font-size:.75rem;height:34px;width:34px}.onboarding-orientation li:not(:first-child)::before{top:16px}.onboarding-step-label{font-size:.6875rem}.onboarding-stage{min-height:520px;padding-top:28px}.onboarding-panel{border-radius:22px;padding:30px 22px;width:100%}.onboarding-title{font-size:2.125rem}.onboarding-lede{font-size:1.0625rem}.onboarding-shot-viewport{height:250px}.onboarding-shot-focused,.onboarding-shot-ready,.onboarding-shot-wide{margin-left:0;width:100%}.onboarding-credential-grid{grid-template-columns:1fr}.onboarding-guide-actions{align-items:stretch;flex-direction:column-reverse}.onboarding-guide-actions .btn{width:100%}}
 `;

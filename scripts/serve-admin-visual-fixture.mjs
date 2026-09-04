@@ -5,7 +5,7 @@
  * literal loopback address, uses generated local credentials, keeps every
  * store in one temporary SQLite file, and removes that directory on shutdown.
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -29,6 +29,7 @@ const ENV_KEYS = [
 export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
   settingsProviders: Object.freeze({ path: '/admin/settings/providers', actions: Object.freeze([]) }),
   agentInstructions: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze([]) }),
+  agentProposals: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Slack update proposal details', 'Refresh Slack proposals']) }),
   agentBlankDescription: Object.freeze({ path: '/admin/agents/agent_customer', actions: Object.freeze([]) }),
   agentMemory: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Memory']) }),
   agentSchedules: Object.freeze({ path: '/admin/agents/agent_release', actions: Object.freeze(['Schedules']) }),
@@ -56,6 +57,52 @@ export const CANONICAL_CONNECTOR_VISUAL_STATES = Object.freeze({
   setup: Object.freeze({ path: '/__admin_visual_fixture/connectors/setup' }),
   waiting: Object.freeze({ path: '/__admin_visual_fixture/connectors/waiting' }),
   success: Object.freeze({ path: '/__admin_visual_fixture/connectors/success' }),
+});
+
+export const VISUAL_ENVIRONMENT_STATUS = Object.freeze({
+  schemaVersion: 'chickpea-environment-status/v1',
+  generatedAt: '2026-09-01T12:00:00.000Z',
+  registryRevision: 12,
+  selectedTarget: 'amber',
+  targets: Object.freeze(['amber', 'cobalt'].map((target, index) => Object.freeze({
+    target,
+    health: index === 0 ? 'ready' : index === 1 ? 'unreachable' : 'expired_claim',
+    sourceSha: '1234567890abcdef1234567890abcdef12345678',
+    dirty: index === 0,
+    servingVersion: `version-${target}`,
+    transport: 'events',
+    workspaceAlias: `env-${target}-workspace`,
+    workspaceLabel: `${target} workspace`,
+    appAlias: `env-${target}-slack-app`,
+    appLabel: `${target} app`,
+    claim: index === 0 ? Object.freeze({
+      holderId: 'holder-0123456789abcdef',
+      leaseAgeMs: 180_000,
+      expiresAt: '2026-09-01T20:00:00.000Z',
+    }) : null,
+    verifierLock: Object.freeze(index === 0
+      ? { status: 'live', ownerRunId: 'visual-run-amber' }
+      : { status: 'clear' }),
+    schemaGeneration: 'd1:0002_mcp_oauth;do:v9',
+    lastAttestedRevision: index === 0
+      ? '1234567890abcdef1234567890abcdef12345678-dirty'
+      : null,
+    recoveryAction: index === 0
+      ? 'No recovery needed.'
+      : index === 1
+        ? 'Check cobalt Worker and Slack transport reachability.'
+        : 'Run npm run env -- reclaim fern.',
+    credentialToken: 'xoxb-visual-do-not-expose',
+  }))),
+  sandbox: Object.freeze({
+    archiveDate: '2027-01-15T00:00:00.000Z',
+    daysUntilArchive: 136,
+    warning: 'none',
+    warningDays: Object.freeze([45, 30, 14]),
+    unusedWorkspaceSlots: 2,
+    integrationHeadroom: 37,
+    browserProfilePath: '/private/visual-browser-profile',
+  }),
 });
 
 const VISUAL_CHANNELS = Object.freeze([
@@ -99,6 +146,26 @@ async function seedVisualSlackOwner(identity) {
     displayName: 'Visual Owner',
     betterAuthUserId: 'ba_user_visual',
     betterAuthMembershipId: 'ba_member_visual',
+  });
+}
+
+async function seedVisualProposal(management, store, owner) {
+  const agent = await store.getAgent('agent_research');
+  const instructions = 'Synthetic frozen instructions. <script>not executable</script>\n' +
+    'Check the complete value. '.repeat(600) + '\n' + 'long-token-'.repeat(30) +
+    '\nEnd of frozen instructions.';
+  const scope = `slack:${WORKSPACE_ID}:C_RELEASES:1800000000.000100:agent:agent_chickpea`;
+  await management.putChangeSetProposal({
+    proposalId: 'proposal_visual_research', organizationId: owner.membership.organizationId,
+    actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+    originKey: scope, approvalScopeKey: scope, idempotencyKey: 'visual-proposal',
+    guideVersion: 'visual-fixture', authoringReason: 'agent_edit',
+    digest: createHash('sha256').update(instructions).digest('hex'),
+    operations: [{ itemId: 'instructions', kind: 'update_agent', agentId: agent.id,
+      expectedRevision: agent.revision, patch: { instructions,
+        description: 'Synthetic proposal for local visual review.' } }],
+    preview: { summary: 'Synthetic update preview', changes: [], missingSetup: [] },
+    targetRevisions: { [`agent:${agent.id}`]: agent.revision }, at: 1,
   });
 }
 
@@ -659,6 +726,7 @@ export async function startAdminVisualFixture(options = {}) {
     const { SqliteSlackStateStore } = await loadTsModule('src/slack/claim-store.ts');
     const { SqliteAgentSnapshotStore } = await loadTsModule('src/config/snapshot-store.ts');
     const { SqliteIdentityStore } = await loadTsModule('src/identity/store.ts');
+    const { SqliteManagementStore } = await loadTsModule('src/management/store.ts');
     const { provisionSlackInteractionMember } = await loadTsModule('src/auth/slack-admission.ts');
     const {
       beginOnboardingJourney,
@@ -690,7 +758,8 @@ export async function startAdminVisualFixture(options = {}) {
     const slackState = new SqliteSlackStateStore(stateDbPath);
     const snapshots = new SqliteAgentSnapshotStore(stateDbPath);
     const identity = new SqliteIdentityStore(stateDbPath);
-    stores.push(store, settings, memory, routines, usage, work, slackState, snapshots, identity);
+    const management = new SqliteManagementStore(stateDbPath);
+    stores.push(store, settings, memory, routines, usage, work, slackState, snapshots, identity, management);
 
     await seedConfig(store, runtimeContract);
     await seedSettings(settings);
@@ -737,6 +806,7 @@ export async function startAdminVisualFixture(options = {}) {
     );
     await seedMemory(memory);
     const owner = await seedVisualSlackOwner(identity);
+    await seedVisualProposal(management, store, owner);
     await seedConnections(store, owner.membership.id);
     await seedSchedules(store, routines, owner.membership.id, RoutineService);
     await seedVisualTeam(identity, provisionSlackInteractionMember, owner);
@@ -886,6 +956,7 @@ export async function startAdminVisualFixture(options = {}) {
       snapshots,
       identity,
       slackCredentials,
+      management,
       usageAdminUi: true,
       authService: {
         async authenticateRequest(request) {
@@ -917,6 +988,7 @@ export async function startAdminVisualFixture(options = {}) {
           admittingOrRunningRoutineOccurrences: 0,
         },
       }),
+      environmentStatus: async () => VISUAL_ENVIRONMENT_STATUS,
     }));
 
     const platformEnv = onboardingStage

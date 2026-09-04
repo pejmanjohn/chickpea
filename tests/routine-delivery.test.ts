@@ -98,24 +98,47 @@ test('routine delivery claims once, posts at top level, and records the Slack re
     requests[0]?.icon_url,
     'https://chickpea.example/assets/agents/agent_default/avatar/2',
   );
-  assert.match(requests[0]?.text ?? '', /Completed the write/);
-  assert.doesNotMatch(requests[0]?.blocks ?? '', /rrun_test|!routines show/);
-  assert.match(requests[0]?.blocks ?? '', /View schedule/);
-  assert.doesNotMatch(requests[0]?.blocks ?? '', /audit-logs/);
-  assert.match(requests[0]?.blocks ?? '', /anthropic\/claude-sonnet-4/);
+  assert.equal(requests[0]?.text, 'Completed the write.');
+  assert.doesNotMatch(requests[0]?.blocks ?? '', /Routine completed|Scheduled|View schedule|Configure|anthropic\/claude-sonnet-4/);
   const rendered = renderRoutineDelivery(routine, run, 'Done.', {
     agentName: 'Default', modelLabel: 'anthropic/claude-sonnet-4',
     agentId: 'agent_default', publicUrl: 'https://chickpea.example',
   });
-  assert.equal(rendered.text, 'Routine completed: &lt;Daily &amp; write&gt;\n\nDone.');
-  assert.deepEqual(rendered.blocks?.at(-2), {
-    type: 'context',
-    elements: [{
-      type: 'mrkdwn',
-      text: 'Scheduled Jul 27 at 4:00 PM UTC · <https://chickpea.example/admin/agents/agent_default?tab=schedules|View schedule>',
-    }],
+  assert.equal(rendered.text, 'Done.');
+  assert.doesNotMatch(JSON.stringify(rendered.blocks), /Routine completed|Daily|Scheduled|Default|View schedule|Configure/);
+});
+
+test('Channel scheduled results preserve the requested body without a routine wrapper or Agent footer', () => {
+  const rendered = renderRoutineDelivery(routine, run, 'DUE qa-unit-schedule', {
+    agentName: 'Default', modelLabel: 'anthropic/claude-sonnet-4',
+    agentId: 'agent_default', publicUrl: 'https://chickpea.example',
   });
-  assert.match(JSON.stringify(rendered.blocks?.at(-1)), /Default.*anthropic\/claude-sonnet-4.*Configure/);
+  assert.equal(rendered.text, 'DUE qa-unit-schedule');
+  assert.deepEqual(rendered.blocks, [{ type: 'markdown', text: 'DUE qa-unit-schedule' }]);
+});
+
+test('an explicitly thread-bound Channel result uses the saved thread and remains unwrapped', async () => {
+  const requests: Array<Record<string, string>> = [];
+  const events: string[] = [];
+  const client = new WebClient('xoxb-test', {
+    slackApiUrl: 'https://slack.invalid/api/', retryConfig: { retries: 0 },
+    fetch: async (_url, init) => {
+      requests.push(Object.fromEntries(new URLSearchParams(String(init?.body ?? ''))));
+      return new Response(JSON.stringify({ ok: true, channel: 'C_TEST', ts: '1785000001.000100' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  await deliverRoutineResult({
+    store: store(events), run,
+    routine: { ...routine, destination: { kind: 'channel', channelId: 'C_TEST', threadTs: '1784000000.000100' } },
+    access, message: 'DUE qa-thread', changeKeyHash: null, now: () => 1_000,
+  }, client);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.channel, 'C_TEST');
+  assert.equal(requests[0]?.thread_ts, '1784000000.000100');
+  assert.equal(requests[0]?.text, 'DUE qa-thread');
+  assert.deepEqual(events, ['claim', 'record:delivered:1785000001.000100:']);
 });
 
 test('routine delivery redacts credential-shaped content from blocks and fallback text', () => {

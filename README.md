@@ -453,6 +453,20 @@ npm run verify:oss-export
 
 Node **>=22.19.0** is pinned in `.nvmrc`. Several `verify:*:live` variants exist for provider- and Slack-touching evaluations; they are opt-in because they spend real quota. Live Slack acceptance should run against a disposable paid workspace so user-group policy, handle collisions, public auto-join, private invitation, App Home, avatar updates, archive, and restore all get exercised for real.
 
+Live Slack verification is available through the repo-scoped [`$chickpea-live-verification`](.agents/skills/chickpea-live-verification/SKILL.md) skill. Codex discovers it automatically in this repository. The thin entry point routes to the [canonical operator workflow](qa/live/operator/SKILL.md) and [runbook](docs/runbooks/live-contract-verification.md), so the operating instructions remain in one place.
+
+`verify:slack-streaming-policy` validates the content-free model-decision fixture corpus. A
+provider evaluation is deliberately separate and opt-in: run
+`npm run verify:slack-streaming-policy:live -- --live --lane <lane> --model <id>` only when
+quota use has been approved. It exercises the shipped `stream_answer` name, description,
+instruction, and acknowledgement against clear positive, clear negative, and ambiguous Slack
+requests under a reduced prompt and tool surface. Its paired timings are provider-boundary
+proxies: they show whether the declaration round trip can beat terminal model completion, but
+they do not include durable persistence or Slack transport. The command never calls Slack or
+prints model output. Actual first-visible Slack latency remains a separate, approved disposable-
+workspace launch gate. Re-run both checks for each supported model when the model, system
+instruction, or tool protocol changes.
+
 ---
 
 ## License

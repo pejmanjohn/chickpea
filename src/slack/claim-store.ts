@@ -7,7 +7,7 @@ import type {
   SlackRuntimeDrainCounts,
   SlackTurnRecoveryItem,
 } from '../config/state-rpc.ts';
-import { TurnJobStoreLogic, type PendingTurnJob } from './turn-jobs.ts';
+import { TurnJobStoreLogic, type PendingTurnJob, type SlackProposalApprovalQuery, type SlackProposalApprovalTurn } from './turn-jobs.ts';
 import type { TurnJob } from './turn-job-types.ts';
 import type {
   FlueDispatchReceiptV1,
@@ -190,6 +190,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   retrySlackInstallationRecovery?(workspaceId: string): Promise<number>;
   resolveTurnRecoveryRequired?(id: string): Promise<boolean>;
   getRunPresentation?(runId: string): Promise<SlackRunPresentation | undefined>;
+  listProposalApprovalTurns?(input: SlackProposalApprovalQuery): Promise<SlackProposalApprovalTurn[]>;
   getLatestThreadSessionGeneration?(
     root: Pick<SlackPresentationRoot, 'workspaceId' | 'channelId' | 'threadTs'>,
   ): Promise<number | undefined>;

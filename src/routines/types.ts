@@ -7,7 +7,7 @@ type RoutineTriggerKind = 'schedule' | 'once';
 export type RoutineOutputPolicy = 'post' | 'post_on_change';
 type RoutineAuthorityMode = 'live_channel_v1' | 'live_direct_member_v1';
 export type RoutineDestination =
-  | { kind: 'channel'; channelId: string }
+  | { kind: 'channel'; channelId: string; threadTs?: string }
   | {
       kind: 'direct_thread';
       conversationId: string;
@@ -589,6 +589,7 @@ export type RoutineScheduleActionResult =
       effect: 'saved' | 'controlled' | 'run_queued';
       routineId: string;
       routineVersion?: number;
+      deliveryDestination?: 'channel' | 'channel_thread' | 'direct_thread';
       safeState?: 'active' | 'paused' | 'disabled' | 'pending_authority';
     }
   | {

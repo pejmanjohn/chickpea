@@ -1625,6 +1625,10 @@ export class CfSlackStateStore implements SlackStateStore {
     return orUndefined(unwrap(await this.stub.slackPresentationGet(runId)));
   }
 
+  async listProposalApprovalTurns(input: Parameters<TagStateRpc['slackProposalApprovalTurns']>[0]) {
+    return unwrap(await this.stub.slackProposalApprovalTurns(input));
+  }
+
   async getLatestThreadSessionGeneration(
     root: Parameters<TagStateRpc['slackPresentationLatestThreadGeneration']>[0],
   ) {

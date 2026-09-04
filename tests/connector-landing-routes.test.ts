@@ -345,7 +345,7 @@ test('a native connector welcome link stays on the dedicated setup surface until
     assert.equal(success.status, 200);
     const successHtml = await success.text();
     assert.match(successHtml, /Linear is now connected to Project Guide/);
-    assert.match(successHtml, /read and write connection is ready/);
+    assert.match(successHtml, /personal connection is ready/);
 
     principal = issuerPrincipal;
     const issuerSuccess = await app.request(`http://localhost/setup/${setupId}`);
@@ -1048,7 +1048,8 @@ test('the managed connector link is reusable and completes from the dedicated pa
     assert.match(setupHtml, /<input[^>]+name="ownerKind"[^>]+value="member"/);
     assert.match(setupHtml, /<input[^>]+name="ownerKind"[^>]+value="team"/);
     assert.doesNotMatch(setupHtml, /<input[^>]+name="ownerKind"[^>]+checked/);
-    assert.match(setupHtml, /<input[^>]+name="access"[^>]+value="write"/);
+    assert.match(setupHtml, /<input[^>]+type="hidden"[^>]+name="access"[^>]+value="write"/);
+    assert.doesNotMatch(setupHtml, /<input[^>]+type="radio"[^>]+name="access"/);
     assert.match(setupHtml, /--chickpea-wordmark-image:url\("\/chickpea-wordmark-512\.png\?v=[a-f0-9]{12}"\)/);
     assert.match(setupHtml, new RegExp(`src="http://localhost/assets/agents/${agent.id}/avatar/1"`));
 
@@ -1059,7 +1060,7 @@ test('the managed connector link is reusable and completes from the dedicated pa
     assert.equal(readOnlySetupPage.status, 200);
     assert.match(
       await readOnlySetupPage.text(),
-      /<input[^>]+name="access"[^>]+value="write"[^>]+disabled/,
+      /<input[^>]+type="hidden"[^>]+name="access"[^>]+value="read"/,
     );
     writeReady = true;
 
@@ -1167,7 +1168,7 @@ test('the managed connector link is reusable and completes from the dedicated pa
     assert.equal(success.status, 200);
     const successHtml = await success.text();
     assert.match(successHtml, /HubSpot is now connected to Sprout/);
-    assert.match(successHtml, /Your team, read and write connection is ready/);
+    assert.match(successHtml, /Your team connection is ready/);
     assert.match(successHtml, /You can close this tab now/);
   } finally {
     identity.close();

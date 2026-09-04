@@ -9,7 +9,8 @@ import {
   type SlackFlueDispatchState,
 } from '../src/slack/flue-dispatch.ts';
 import type { AgentInstanceHandle } from '@flue/runtime';
-import { AgentInstanceExistsError, AgentInstanceNotFoundError } from '@flue/runtime';
+import { AgentInstanceExistsError, AgentInstanceNotFoundError, AgentRunError } from '@flue/runtime';
+import { opaqueId } from '../src/work/admission.ts';
 import type {
   FlueDispatchEnvelopeV1,
   FlueDispatchReceiptV1,
@@ -181,6 +182,40 @@ function promptInput(dispatchState: SlackFlueDispatchState, agent: AgentInstance
     now: () => 1_800_000_000_000,
   };
 }
+
+test('dispatch diagnostics distinguish failed settlement from an empty completed reply without logging content', async (t) => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  for (const stage of ['settlement_failed', 'invalid_result'] as const) {
+    const dispatchState = state();
+    await assert.rejects(() => promptSlackThreadAgent(promptInput(dispatchState, handle({
+      async read() {
+        if (stage === 'settlement_failed') throw new AgentRunError({
+          outcome: 'failed', submissionId: RECEIPT.submissionId,
+          cause: { type: 'internal_error', message: 'private prompt Bearer secret' },
+        });
+        return { text: '', data: { private: ['Bearer secret'] }, metadata: {},
+          submissionId: RECEIPT.submissionId };
+      },
+    }))), (error: unknown) => error instanceof AgentPromptFailure && !error.retryable);
+    assert.equal(dispatchState.flueSettlement?.outcome, 'failed');
+  }
+  assert.deepEqual(logs, ['settlement_failed', 'invalid_result'].map((stage) => [
+    '[chickpea] agent dispatch failed:',
+    { stage, submissionRef: opaqueId('fluesubmission', RECEIPT.submissionId),
+      ...(stage === 'invalid_result' ? { hasText: false } : {}) },
+  ]));
+  assert.doesNotMatch(JSON.stringify(logs), /private|Bearer|secret|submission_dispatch_test/);
+});
+
+test('an unavailable diagnostic logger cannot prevent failed-result settlement', async (t) => {
+  t.mock.method(console, 'error', () => { throw new Error('logger unavailable'); });
+  const dispatchState = state();
+  await assert.rejects(() => promptSlackThreadAgent(promptInput(dispatchState, handle({
+    async read() { return { text: '', data: {}, metadata: {}, submissionId: RECEIPT.submissionId }; },
+  }))), (error: unknown) => error instanceof AgentPromptFailure && error.kind === 'agent');
+  assert.equal(dispatchState.flueSettlement?.outcome, 'failed');
+});
 
 test('lost dispatch acknowledgment repeats the identical key and adopts the receipt', async () => {
   const sent: unknown[] = [];

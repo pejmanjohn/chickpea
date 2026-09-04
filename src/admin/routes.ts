@@ -35,6 +35,8 @@ import { requestOrigin } from '../http/request-origin.ts';
 import { createUsageAdminApi } from './usage-api.ts';
 import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
+import { readProposalApprovalStatus } from './proposal-status.ts';
+import { ENVIRONMENT_AUTHORITY_PATH, environmentAuthorityResponse } from './environment-authority.ts';
 import {
   ConnectionScheduleConflictError,
   ConnectionAccountService,
@@ -532,6 +534,191 @@ interface BetterAuthContext {
   organizationId: string;
 }
 
+const ADMIN_ENVIRONMENT_TARGETS = ['amber', 'cobalt'] as const;
+const ADMIN_ENVIRONMENT_HEALTH = [
+  'ready', 'unreachable', 'stale_claim', 'identity_mismatch', 'expired_claim',
+] as const;
+
+function deployedEnvironmentIdentity(env: unknown): Record<string, unknown> | null {
+  if (!isRecord(env) || !ADMIN_ENVIRONMENT_TARGETS.includes(env.CHICKPEA_ENV_TARGET as 'amber' | 'cobalt')) return null;
+  const sourceSha = env.CHICKPEA_ENV_SOURCE_REVISION;
+  const dirty = env.CHICKPEA_ENV_SOURCE_DIRTY;
+  const servingVersion = cloudflareWorkerVersionId(env);
+  if (typeof sourceSha !== 'string' || !/^[0-9a-f]{40,64}$/u.test(sourceSha)
+    || (dirty !== 'true' && dirty !== 'false')
+    || !servingVersion || !WORKER_VERSION_ID_PATTERN.test(servingVersion)) {
+    throw new Error('INVALID_ENVIRONMENT_IDENTITY');
+  }
+  // Deployment metadata can identify this build. It cannot claim that a
+  // machine-local worktree lease, verifier lock, or fleet health is still live.
+  return { schemaVersion: 'chickpea-environment-identity/v1',
+    target: env.CHICKPEA_ENV_TARGET, sourceSha, dirty: dirty === 'true', servingVersion };
+}
+
+/**
+ * Copy the machine-local fleet status into an intentionally small Admin
+ * projection. Unknown fields are discarded so a malformed provider cannot
+ * accidentally expose immutable IDs, credentials, or registry internals.
+ */
+export function projectAdminEnvironmentStatus(input: unknown): Record<string, unknown> {
+  if (!isRecord(input)
+    || input.schemaVersion !== 'chickpea-environment-status/v1'
+    || !adminEnvironmentTimestamp(input.generatedAt)
+    || !(input.registryRevision === null
+      || (Number.isSafeInteger(input.registryRevision) && Number(input.registryRevision) >= 0))
+    || !(input.selectedTarget === null
+      || ADMIN_ENVIRONMENT_TARGETS.includes(input.selectedTarget as typeof ADMIN_ENVIRONMENT_TARGETS[number]))
+    || !Array.isArray(input.targets)
+    || !(input.sandbox === null || isRecord(input.sandbox))) {
+    throw new Error('INVALID_ENVIRONMENT_STATUS');
+  }
+  const targets = input.targets.map(projectAdminEnvironmentTarget);
+  const targetNames = targets.map((target) => target.target).sort();
+  if (targetNames.join(',') !== [...ADMIN_ENVIRONMENT_TARGETS].sort().join(',')) {
+    throw new Error('INVALID_ENVIRONMENT_STATUS');
+  }
+  if (input.sandbox !== null && (
+    !(input.sandbox.archiveDate === null || adminEnvironmentTimestamp(input.sandbox.archiveDate))
+    || !(input.sandbox.daysUntilArchive === null || Number.isSafeInteger(input.sandbox.daysUntilArchive))
+    || typeof input.sandbox.warning !== 'string'
+    || !['none', '45_days', '30_days', '14_days', 'unavailable'].includes(input.sandbox.warning)
+    || !Array.isArray(input.sandbox.warningDays)
+    || input.sandbox.warningDays.join(',') !== '45,30,14'
+    || !(input.sandbox.unusedWorkspaceSlots === null
+      || (Number.isSafeInteger(input.sandbox.unusedWorkspaceSlots)
+        && Number(input.sandbox.unusedWorkspaceSlots) >= 0
+        && Number(input.sandbox.unusedWorkspaceSlots) <= 3))
+    || !(input.sandbox.integrationHeadroom === null
+      || (Number.isSafeInteger(input.sandbox.integrationHeadroom)
+        && Number(input.sandbox.integrationHeadroom) >= 0)))) {
+    throw new Error('INVALID_ENVIRONMENT_STATUS');
+  }
+  return {
+    schemaVersion: 'chickpea-environment-status/v1',
+    generatedAt: input.generatedAt,
+    registryRevision: input.registryRevision,
+    selectedTarget: input.selectedTarget,
+    targets,
+    sandbox: input.sandbox === null ? null : {
+      archiveDate: input.sandbox.archiveDate,
+      daysUntilArchive: input.sandbox.daysUntilArchive,
+      warning: input.sandbox.warning,
+      warningDays: [45, 30, 14],
+      unusedWorkspaceSlots: input.sandbox.unusedWorkspaceSlots,
+      integrationHeadroom: input.sandbox.integrationHeadroom,
+    },
+  };
+}
+
+function projectAdminEnvironmentTarget(input: unknown): Record<string, unknown> {
+  if (!isRecord(input)
+    || !ADMIN_ENVIRONMENT_TARGETS.includes(input.target as typeof ADMIN_ENVIRONMENT_TARGETS[number])
+    || !ADMIN_ENVIRONMENT_HEALTH.includes(input.health as typeof ADMIN_ENVIRONMENT_HEALTH[number])
+    || !(input.sourceSha === null
+      || (typeof input.sourceSha === 'string' && /^[0-9a-f]{7,64}$/u.test(input.sourceSha)))
+    || typeof input.dirty !== 'boolean'
+    || !(input.servingVersion === null
+      || (typeof input.servingVersion === 'string'
+        && (/^version-[A-Za-z0-9._-]{1,96}$/u.test(input.servingVersion)
+          || WORKER_VERSION_ID_PATTERN.test(input.servingVersion))))
+    || !(input.transport === null || input.transport === 'gateway' || input.transport === 'events')
+    || input.workspaceAlias !== `env-${String(input.target)}-workspace`
+    || input.appAlias !== `env-${String(input.target)}-slack-app`
+    || !adminEnvironmentLabel(input.workspaceLabel)
+    || !adminEnvironmentLabel(input.appLabel)
+    || !(input.schemaGeneration === null
+      || adminEnvironmentDisplay(
+        input.schemaGeneration,
+        /^d1:[A-Za-z0-9._-]{1,64};do:[A-Za-z0-9._-]{1,64}$/u,
+      ))
+    || !(input.lastAttestedRevision === null
+      || (typeof input.lastAttestedRevision === 'string'
+        && /^[0-9a-f]{7,64}(?:-dirty)?$/u.test(input.lastAttestedRevision)))
+    || !isRecord(input.verifierLock)
+    || typeof input.verifierLock.status !== 'string'
+    || !['clear', 'live', 'stale', 'foreign'].includes(input.verifierLock.status)
+    || !(input.verifierLock.ownerRunId === undefined
+      || adminEnvironmentRunId(input.verifierLock.ownerRunId))) {
+    throw new Error('INVALID_ENVIRONMENT_STATUS');
+  }
+  let claim: Record<string, unknown> | null = null;
+  if (input.claim !== null) {
+    if (!isRecord(input.claim)
+      || !adminEnvironmentDisplay(input.claim.holderId, /^holder-[a-f0-9]{16,64}$/u)
+      || !Number.isSafeInteger(input.claim.leaseAgeMs) || Number(input.claim.leaseAgeMs) < 0
+      || !adminEnvironmentTimestamp(input.claim.expiresAt)) {
+      throw new Error('INVALID_ENVIRONMENT_STATUS');
+    }
+    claim = {
+      holderId: input.claim.holderId,
+      leaseAgeMs: input.claim.leaseAgeMs,
+      expiresAt: input.claim.expiresAt,
+    };
+  }
+  return {
+    target: input.target,
+    health: input.health,
+    sourceSha: input.sourceSha,
+    dirty: input.dirty,
+    servingVersion: input.servingVersion,
+    transport: input.transport,
+    workspaceAlias: input.workspaceAlias,
+    workspaceLabel: input.workspaceLabel,
+    appAlias: input.appAlias,
+    appLabel: input.appLabel,
+    claim,
+    verifierLock: {
+      status: input.verifierLock.status,
+      ...(input.verifierLock.ownerRunId === undefined
+        ? {}
+        : { ownerRunId: input.verifierLock.ownerRunId }),
+    },
+    schemaGeneration: input.schemaGeneration,
+    lastAttestedRevision: input.lastAttestedRevision,
+    recoveryAction: adminEnvironmentRecoveryAction(String(input.health), String(input.target)),
+  };
+}
+
+const ADMIN_ENVIRONMENT_SECRET_LIKE = /(?:xox[abprs]-|xoxe[.-]|sk-[A-Za-z0-9]|-----BEGIN|\b(?:secret|token|password|credential|cookie|private[ _-]?key|browser[ _-]?profile)\b|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:^|[ (])\/(?:Users|home|private|var|tmp)\/)/iu;
+
+function adminEnvironmentDisplay(input: unknown, grammar: RegExp): input is string {
+  return typeof input === 'string'
+    && grammar.test(input)
+    && !ADMIN_ENVIRONMENT_SECRET_LIKE.test(input);
+}
+
+function adminEnvironmentLabel(input: unknown): input is string {
+  return adminEnvironmentDisplay(input, /^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,95}$/u)
+    && !/^[ATUWCB][A-Z0-9]{7,}$/u.test(input);
+}
+
+function adminEnvironmentRunId(input: unknown): input is string {
+  return adminEnvironmentDisplay(input, /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u)
+    && !/^[ATUWCB][A-Z0-9]{7,}$/u.test(input);
+}
+
+function adminEnvironmentRecoveryAction(health: string, target: string): string {
+  if (health === 'ready') return 'No recovery needed.';
+  if (health === 'unreachable') return `Check ${target} Worker and Slack transport reachability.`;
+  if (health === 'stale_claim') return `Run npm run env -- reclaim ${target} from the intended worktree.`;
+  if (health === 'expired_claim') return `Run npm run env -- reclaim ${target}.`;
+  return `Run npm run env -- reconciliation ${target}.`;
+}
+
+function adminEnvironmentString(input: unknown, maximum: number): input is string {
+  return typeof input === 'string' && input.length > 0 && input.length <= maximum
+    && !/[\u0000-\u001f\u007f]/u.test(input);
+}
+
+function adminEnvironmentTimestamp(input: unknown): input is string {
+  if (!adminEnvironmentString(input, 64) || !Number.isFinite(Date.parse(input))) return false;
+  try {
+    return new Date(input).toISOString() === input;
+  } catch {
+    return false;
+  }
+}
+
 interface AdminRoutesOptions {
   // Injection seam for tests/harnesses: any async ConfigStore serves the
   // routes; absent, the platform backend is resolved per request (c.env is the
@@ -548,6 +735,7 @@ interface AdminRoutesOptions {
   routineCapability?: ((c: Context) => RoutineCapability) | undefined;
   slackState?: SlackStateStore | undefined;
   runtimeDrain?: ((env?: PlatformEnv) => Promise<RuntimeDrainStatus>) | undefined;
+  environmentStatus?: (() => unknown | Promise<unknown>) | undefined;
   usageAdminUi?: boolean | undefined;
   authService?: AdminAuthenticationService | undefined;
   betterAuthEnvironment?: BetterAuthEnvironment | undefined;
@@ -1455,7 +1643,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.use('*', async (c, next) => {
     // Deployment activation has its own short-lived bearer capability and
     // must remain callable while an older release left Admin in recovery.
-    if (c.req.path === '/internal/deployment/ready') return next();
+    if (c.req.path === '/internal/deployment/ready' || c.req.path === ENVIRONMENT_AUTHORITY_PATH) return next();
     const control = await identity(c).getAuthControl();
     if (control?.healthGate === 'recovery_only' &&
         c.req.path !== '/admin/recovery' &&
@@ -1501,6 +1689,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return digest && Number.isSafeInteger(issuedAt) ? { digest, issuedAt } : undefined;
   };
 
+  // Operator-only lane attestation has its own token, separate from Admin auth.
+  app.get(ENVIRONMENT_AUTHORITY_PATH, (c) => environmentAuthorityResponse({
+    authorization: c.req.header('authorization'),
+    env: (c.env ?? {}) as PlatformEnv,
+    gateway: () => createGatewayDeploymentClient(c.env as PlatformEnv | undefined),
+    session: () => readGatewaySessionStatus(c.env),
+  }));
   // A deploy is not ready merely because one edge serves the new module. For
   // an installed shared Slack gateway, its long-lived Durable Object must also
   // report the same Worker version before the deploy wrapper announces success.
@@ -3072,7 +3267,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           clientSecret: boundedSetupField(rawForm.clientSecret, 4_096),
           signingSecret: boundedSetupField(rawForm.signingSecret, 4_096),
           expectedManifest: manifest,
-          observedManifest: JSON.parse(boundedSetupField(rawForm.observedManifest, 7_500)),
+          observedManifest: parseSetupManifest(rawForm.observedManifest),
         });
       } else if (action !== 'open') {
         throw new AuthDeniedError();
@@ -3227,7 +3422,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           clientSecret: boundedSetupField(rawForm.clientSecret, 4_096),
           signingSecret: boundedSetupField(rawForm.signingSecret, 4_096),
           expectedManifest: manifest,
-          observedManifest: JSON.parse(boundedSetupField(rawForm.observedManifest, 7_500)),
+          observedManifest: parseSetupManifest(rawForm.observedManifest),
         });
       } else if (action === 'restart') {
         setup = await service.restart({ setupId: setup.id, expectedRevision: setup.revision });
@@ -3848,7 +4043,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // admin middleware reconcile provider keys or pin request-origin state.
     if (c.req.method === 'GET' &&
         (c.req.path === '/admin/api/runtime/drain' ||
-          c.req.path === '/admin/api/runtime/recovery-turns')) {
+          c.req.path === '/admin/api/runtime/recovery-turns' ||
+          c.req.path === '/admin/api/environment/status')) {
       return next();
     }
     const settingsStore = settings(c);
@@ -5327,6 +5523,169 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch {
       console.error('[chickpea] runtime drain state unavailable');
       return c.json({ error: 'runtime_drain_unavailable' }, 503);
+    }
+  });
+
+  app.get('/admin/api/environment/status', async (c) => {
+    const runtimeBinding = (c.env as { CHICKPEA_ENVIRONMENT_STATUS?: unknown } | undefined)
+      ?.CHICKPEA_ENVIRONMENT_STATUS;
+    try {
+      if (!options.environmentStatus && runtimeBinding === undefined) {
+        const identity = deployedEnvironmentIdentity(c.env);
+        c.header('Cache-Control', 'no-store');
+        return identity ? c.json(identity) : c.json({ error: 'environment_status_unavailable' }, 404);
+      }
+      if (typeof runtimeBinding === 'string' && runtimeBinding.length > 65_536) {
+        throw new Error('INVALID_ENVIRONMENT_STATUS');
+      }
+      const raw = options.environmentStatus
+        ? await options.environmentStatus()
+        : typeof runtimeBinding === 'string'
+          ? JSON.parse(runtimeBinding)
+          : runtimeBinding;
+      const status = projectAdminEnvironmentStatus(raw);
+      c.header('Cache-Control', 'no-store');
+      return c.json(status);
+    } catch {
+      console.error('[chickpea] environment status unavailable');
+      c.header('Cache-Control', 'no-store');
+      return c.json({ error: 'environment_status_unavailable' }, 503);
+    }
+  });
+
+  app.get('/admin/api/runtime/agents/:id/creation-status', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const principal = principalByContext.get(c);
+    if (!principal || principal.machine || !['owner', 'admin'].includes(principal.role)) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    try {
+      const agent = await store(c).getAgent(c.req.param('id'));
+      if (!canEditAgent(principal, agent)) return c.json({ error: 'not_found' }, 404);
+      const organization = await identity(c).getOrganization();
+      if (organization?.id !== principal.organizationId || !organization.slackTeamId) {
+        return c.json({ error: 'workspace_not_authorized' }, 403);
+      }
+      const result = await management(c).execute({
+        kind: 'list_agent_creation_welcomes',
+        agentId: agent.id,
+        workspaceId: organization.slackTeamId,
+        requesterMembershipId: principal.membershipId,
+      });
+      if (result.kind !== 'outbox_batch') throw new Error('Unexpected creation receipt response.');
+      const presentations = slackState(c);
+      const welcomes = await Promise.all(result.outbox.map(async (outbox) => {
+        const receipt = outbox.receipt;
+        const destination = outbox.destination;
+        if (!('kind' in receipt) || receipt.kind !== 'agent_created_welcome' || receipt.agentId !== agent.id ||
+            receipt.requesterMembershipId !== principal.membershipId || destination.kind !== 'thread' ||
+            destination.workspaceId !== organization.slackTeamId) {
+          throw new Error('Unexpected creation receipt scope.');
+        }
+        const presentation = receipt.presentationRunId
+          ? await presentations.getRunPresentation?.(receipt.presentationRunId)
+          : undefined;
+        const correlated = presentation?.schemaVersion === 3 &&
+          presentation.root.workspaceId === destination.workspaceId &&
+          presentation.root.channelId === destination.channelId &&
+          presentation.root.threadTs === destination.threadTs;
+        // Closed projection: receipts can also contain setup links and private prose.
+        return {
+          outboxId: outbox.outboxId,
+          status: outbox.status,
+          channelId: destination.channelId,
+          threadTs: destination.threadTs,
+          publication: receipt.publication ? {
+            status: receipt.publication.status,
+            incomplete: receipt.publication.incomplete,
+          } : null,
+          deliveryRef: outbox.deliveryRef ?? null,
+          activity: correlated ? {
+            surface: presentation.activityProjection.surface,
+            state: presentation.activityProjection.state,
+            cleanup: presentation.cleanup.state,
+            lifecycle: presentation.lifecyclePhase,
+          } : null,
+        };
+      }));
+      return c.json({ agentId: agent.id, welcomes });
+    } catch (error) {
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      console.error('[chickpea] Agent creation status unavailable');
+      return c.json({ error: 'agent_creation_status_unavailable' }, 503);
+    }
+  });
+
+  app.get('/admin/api/runtime/agents/:id/proposal-status', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const principal = principalByContext.get(c);
+    if (!principal || principal.machine || !['owner', 'admin'].includes(principal.role)) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    try {
+      const agent = await store(c).getAgent(c.req.param('id'));
+      if (!canEditAgent(principal, agent)) return c.json({ error: 'not_found' }, 404);
+      const identities = identity(c);
+      const organization = await identities.getOrganization();
+      if (organization?.id !== principal.organizationId || !organization.slackTeamId) {
+        return c.json({ error: 'workspace_not_authorized' }, 403);
+      }
+      const result = await management(c).execute({
+        kind: 'list_agent_update_proposals', agentId: agent.id, workspaceId: organization.slackTeamId,
+        organizationId: principal.organizationId, actorUserId: principal.userId,
+        actorMembershipId: principal.membershipId,
+      });
+      if (result.kind !== 'change_set_proposals' || result.proposals.length > 2) {
+        throw new Error('Unexpected proposal response.');
+      }
+      const user = await identities.getUser(principal.userId);
+      const linked = user?.id === principal.userId && user.slackTeamId === organization.slackTeamId
+        ? await identities.resolveSlackIdentity(organization.slackTeamId, user.slackUserId, organization.id)
+        : undefined;
+      const slackUserId = linked?.user.id === principal.userId &&
+        linked.membership.id === principal.membershipId && linked.membership.organizationId === organization.id &&
+        linked.membership.status === 'active' && linked.binding.slackTeamId === organization.slackTeamId &&
+        linked.binding.slackUserId === user?.slackUserId ? linked.binding.slackUserId : null;
+      const proposals = await Promise.all(result.proposals.map(async (proposal) => {
+        const updates = proposal.operations.filter((operation) => operation.kind === 'update_agent')
+          .filter((operation) => operation.agentId === agent.id);
+        if (proposal.organizationId !== principal.organizationId || proposal.actorUserId !== principal.userId ||
+            proposal.actorMembershipId !== principal.membershipId ||
+            !proposal.originKey.startsWith(`slack:${organization.slackTeamId}:`) || updates.length === 0) {
+          throw new Error('Unexpected proposal scope.');
+        }
+        // Never serialize the raw proposal: other operations may contain secrets.
+        return {
+          proposalId: proposal.proposalId, actorUserId: proposal.actorUserId,
+          actorMembershipId: proposal.actorMembershipId, originKey: proposal.originKey,
+          approvalScopeKey: proposal.approvalScopeKey, status: proposal.status, digest: proposal.digest,
+          targetRevision: proposal.targetRevisions[`agent:${agent.id}`] ?? null,
+          operationCount: proposal.operations.length, createdAt: proposal.createdAt, updatedAt: proposal.updatedAt,
+          approval: await readProposalApprovalStatus(slackState(c), proposal, slackUserId),
+          updates: updates.map((operation) => ({
+            itemId: operation.itemId, kind: operation.kind, agentId: operation.agentId,
+            expectedRevision: operation.expectedRevision,
+            fields: Object.keys(operation.patch).sort(),
+            instructions: operation.patch.instructions ?? null,
+            description: operation.patch.description ?? null,
+          })),
+          result: proposal.result ? {
+            status: proposal.result.status,
+            outcomes: proposal.result.outcomes.filter((outcome) => updates.some((update) => update.itemId === outcome.itemId))
+              .map((outcome) => ({ itemId: outcome.itemId, disposition: outcome.disposition,
+                changed: (outcome.changed ?? []).filter((ref) => ref.kind === 'agent' && ref.id === agent.id)
+                  .map((ref) => ({ kind: ref.kind, id: ref.id, revision: ref.revision ?? null })),
+              })),
+          } : null,
+        };
+      }));
+      return c.json({ agentId: agent.id, requester: {
+        userId: principal.userId, membershipId: principal.membershipId, slackUserId,
+      }, proposals });
+    } catch (error) {
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      console.error('[chickpea] Agent proposal status unavailable');
+      return c.json({ error: 'agent_proposal_status_unavailable' }, 503);
     }
   });
 
@@ -8428,7 +8787,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         `${channel.workspaceId}\u0000${channel.channelId}`,
         {
           channel,
-          discovered: discoveredChannelsById.get(channel.channelId),
+          discovered: channel.workspaceId === teamInfo.teamId
+            ? discoveredChannelsById.get(channel.channelId)
+            : undefined,
         },
       ]),
     );
@@ -8458,7 +8819,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             ...(grant.channelLabel ? { label: grant.channelLabel } : {}),
             lifecycle: 'active',
           },
-          discovered: discoveredChannelsById.get(grant.channelId),
+          discovered: grant.workspaceId === teamInfo.teamId
+            ? discoveredChannelsById.get(grant.channelId)
+            : undefined,
         });
       }
     }
@@ -8502,7 +8865,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return {
           workspaceId: channel.workspaceId,
           channelId: channel.channelId,
-          channelName: channel.label ?? channel.channelId,
+          channelName: discovered?.name ?? channel.label ?? channel.channelId,
           source: discovered
             ? (channelGrants.length > 0
               ? 'granted_and_discovered'
@@ -8606,16 +8969,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         installation?.transportMode === 'gateway' &&
         Boolean(installation.gatewayBindingId) &&
         installation.health !== 'revoked';
+      const gateway = gatewayConnected
+        ? await readGatewaySessionStatus(c.env)
+        : null;
       let effectiveHealth = installation?.health ?? 'pending';
       let effectiveHealthDetail = installation?.healthDetail ?? null;
-      if (gatewayConnected && installation) {
-        const live = await readGatewaySessionStatus(c.env);
+      if (gatewayConnected && gateway) {
         // This GET is an observation, not a configuration mutation. Preserve
         // persisted attention states, but never report a stale persisted
         // healthy value when the inbound session is currently unavailable.
-        if (effectiveHealth === 'healthy' && !live.healthy) {
+        if (effectiveHealth === 'healthy' && !gateway.healthy) {
           effectiveHealth = 'needs_attention';
-          effectiveHealthDetail = live.detail ?? 'gateway_session_offline';
+          effectiveHealthDetail = gateway.detail ?? 'gateway_session_offline';
         }
       }
       if (gatewayConnected && !teamInfo.teamName) {
@@ -8636,6 +9001,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         transportMode: installation?.transportMode ?? 'direct',
         health: effectiveHealth,
         healthDetail: effectiveHealthDetail,
+        gateway: gateway === null ? null : {
+          healthy: gateway.healthy,
+          phase: gateway.phase,
+          detail: gateway.detail,
+          generation: gateway.generation,
+          versionId: gateway.versionId ?? null,
+        },
         requestUrl,
         manifestUrl: slackManifestUrl(requestUrl),
       });
@@ -8693,22 +9065,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         if (!inboundStatus.healthy) {
           const healthDetail = inboundStatus.detail ?? 'gateway_session_offline';
-          try {
-            const current = await store(c).getWorkspaceInstallation(installation.workspaceId);
-            if (
-              current &&
-              (current.health !== 'needs_attention' ||
-                current.healthDetail !== healthDetail)
-            ) {
-              await store(c).updateWorkspaceInstallation(installation.workspaceId, {
-                health: 'needs_attention',
-                healthDetail,
-              }, current.revision);
-            }
-          } catch {
-            // This response still reports current live health; reload reconciles
-            // a concurrent installation write.
-          }
+          // A reconnect can still be opening immediately after restart. Report
+          // live transport health, but do not persist it as an installation
+          // failure: that stale warning would survive recovery and downgrade
+          // selected-Agent presentation. GET already projects current outages.
           return c.json({
             error: 'slack_gateway_unreachable',
             detail: healthDetail,
@@ -9578,6 +9938,16 @@ function boundedSetupField(value: string | undefined, maximum: number): string {
     throw new SlackAppCreationError('setup_invalid', 'Slack setup input is invalid.');
   }
   return normalized;
+}
+
+function parseSetupManifest(value: string | undefined): unknown {
+  const normalized = value?.trim() ?? '';
+  if (!normalized || normalized.length > 7_500) {
+    throw new SlackAppCreationError('setup_invalid', 'Slack setup input is invalid.');
+  }
+  // Exported manifests and our own form use multiline JSON. Let the JSON parser
+  // validate its whitespace; credentials still use the strict single-line guard.
+  return JSON.parse(normalized);
 }
 
 function slackInstallResultRedirect(result: SlackInstallOAuthResult): string {

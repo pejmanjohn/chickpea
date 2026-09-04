@@ -256,7 +256,7 @@ interface WorkerHandle {
 }
 
 function startWorker(configPath: string, port: number): WorkerHandle {
-  const child = spawn(WRANGLER, ['dev', '--config', configPath, '--port', String(port)], {
+  const child = spawn(WRANGLER, ['dev', '--config', configPath, '--port', String(port), '--inspector-port', '0'], {
     cwd: ROOT,
     env: { ...process.env, CI: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],

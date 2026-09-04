@@ -47,6 +47,7 @@ import type { WorkRpcRequest, WorkRpcResponse } from '../work/types.ts';
 import type { IdentityRpcRequest, IdentityRpcResponse } from '../identity/types.ts';
 import type { ManagementRpcRequest, ManagementRpcResponse } from '../management/types.ts';
 import type { SlackManagementSignal } from '../management/slack-tools.ts';
+import type { SlackProposalApprovalQuery, SlackProposalApprovalTurn } from '../slack/turn-jobs.ts';
 import type {
   SlackScheduleActionOutcome,
   SlackScheduleActionRpcRequest,
@@ -466,6 +467,9 @@ export interface TagStateRpc {
   slackPresentationGet(
     runId: string,
   ): Promise<StateRpcResult<SlackRunPresentation | null>>;
+  slackProposalApprovalTurns(
+    input: SlackProposalApprovalQuery,
+  ): Promise<StateRpcResult<SlackProposalApprovalTurn[]>>;
   slackPresentationLatestThreadGeneration(
     root: Pick<SlackPresentationRoot, 'workspaceId' | 'channelId' | 'threadTs'>,
   ): Promise<StateRpcResult<number | null>>;

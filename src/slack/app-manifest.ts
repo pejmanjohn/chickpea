@@ -210,7 +210,8 @@ function manifestContract(value: unknown): unknown {
     appHomeEnabled: appHome.home_tab_enabled === true,
     interactivityEnabled: interactivity.is_enabled === true,
     interactivityUrl: stringValue(interactivity.request_url),
-    pkceEnabled: oauth.pkce_enabled ?? null,
+    // Slack materializes the omitted, opt-in setting as false when exporting.
+    pkceEnabled: oauth.pkce_enabled ?? false,
   };
 }
 

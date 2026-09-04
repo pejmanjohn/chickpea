@@ -32,6 +32,7 @@ const AUTH_MIGRATIONS = [
 function createHarness() {
   const root = mkdtempSync(path.join(tmpdir(), 'chickpea-deploy-wrapper-'));
   const scriptsDir = path.join(root, 'scripts');
+  const scriptsLibDir = path.join(scriptsDir, 'lib');
   const authDir = path.join(root, 'src', 'auth');
   const authMigrationsDir = path.join(root, 'migrations', 'better-auth');
   const wranglerDir = path.join(root, 'node_modules', 'wrangler', 'bin');
@@ -42,6 +43,7 @@ function createHarness() {
   const timeoutStub = path.join(root, 'fake-inspection-timeout.mjs');
 
   mkdirSync(scriptsDir, { recursive: true });
+  mkdirSync(scriptsLibDir, { recursive: true });
   mkdirSync(authDir, { recursive: true });
   mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
@@ -51,6 +53,69 @@ function createHarness() {
   symlinkSync(path.join(PROJECT_ROOT, 'node_modules', 'typescript'), path.join(root, 'node_modules', 'typescript'), 'dir');
   copyFileSync(CAPABILITY_SCRIPT, path.join(authDir, 'setup-capability.mjs'));
   copyFileSync(ACTIVATION_SCRIPT, path.join(authDir, 'deployment-activation.mjs'));
+  writeFileSync(path.join(scriptsLibDir, 'environment-preflight.mjs'), `
+    import { appendFileSync, writeFileSync } from 'node:fs';
+    let calls = 0;
+    export async function preflightEnvironmentMutation(target, options = {}) {
+      calls += 1;
+      appendFileSync(process.env.DEPLOY_TEST_LOG, 'environment-preflight:' + calls + ':' + target + '\\n');
+      if (process.env.DEPLOY_TEST_LOG_PROVIDER_CONTEXT === '1') {
+        appendFileSync(process.env.DEPLOY_TEST_LOG, 'environment-provider:' + JSON.stringify(options.providerContext || []) + '\\n');
+      }
+      if (Number(process.env.DEPLOY_TEST_ENV_PREFLIGHT_FAIL_AT) === calls) {
+        throw new Error('environment preflight changed');
+      }
+      return {
+        schemaVersion: 'chickpea-environment-mutation-preflight/v1', target,
+        claim: { leaseNonce: 'nonce', claimedRevision: 'revision' },
+        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id', providerAuthConfigId: 'standard-' + target },
+        deploymentMetadata: { target, sourceDirty: false, baselineDigest: 'sha256:test' },
+      };
+    }
+    export async function resumeEnvironmentDeployment(target, options = {}) {
+      if (process.env.DEPLOY_TEST_ENV_RESUME !== '1') return null;
+      appendFileSync(process.env.DEPLOY_TEST_LOG, 'environment-resume:' + target + ':' + JSON.stringify(options.providerContext || []) + '\\n');
+      const preflight = {
+        schemaVersion: 'chickpea-environment-mutation-preflight/v1', target,
+        claim: { leaseNonce: 'nonce', claimedRevision: 'revision' },
+        registration: { workerName: 'chickpea-' + target, authDatabaseId: 'test-database-id', providerAuthConfigId: 'standard-' + target },
+        deploymentMetadata: { target, sourceDirty: false, baselineDigest: 'sha256:test' },
+      };
+      return {
+        schemaVersion: 'chickpea-environment-deployment-resume/v1',
+        preflight,
+        mutationLease: { schemaVersion: 'chickpea-environment-mutation-lease/v1', target },
+      };
+    }
+    export async function recheckResumedEnvironmentDeployment(resumed, options = {}) {
+      appendFileSync(process.env.DEPLOY_TEST_LOG, 'environment-resume-recheck:' + resumed.preflight.target + ':' + JSON.stringify(options.providerContext || []) + '\\n');
+      return resumed;
+    }
+    export function assertSameEnvironmentMutationAuthority(_before, after) { return after; }
+    export function recheckEnvironmentMutationAuthority(preflight) {
+      calls += 1;
+      appendFileSync(process.env.DEPLOY_TEST_LOG, 'environment-preflight:' + calls + ':' + preflight.target + '\\n');
+      if (Number(process.env.DEPLOY_TEST_ENV_PREFLIGHT_FAIL_AT) === calls) {
+        throw new Error('environment preflight changed');
+      }
+      return preflight;
+    }
+    export function environmentDeploymentMetadataBindings(metadata) {
+      return { CHICKPEA_ENV_TARGET: metadata.target, CHICKPEA_ENV_SOURCE_DIRTY: 'false' };
+    }
+    export function beginEnvironmentDeployment(preflight) {
+      appendFileSync(process.env.DEPLOY_TEST_LOG, 'environment-begin:' + preflight.target + '\\n');
+      return { schemaVersion: 'chickpea-environment-mutation-lease/v1', target: preflight.target };
+    }
+    export async function completeEnvironmentDeployment(_preflight, options) {
+      appendFileSync(process.env.DEPLOY_TEST_LOG, 'environment-complete:' + options.deployedVersion + '\\n');
+      if (process.env.DEPLOY_TEST_LOG_MUTATION_LEASE === '1') {
+        appendFileSync(process.env.DEPLOY_TEST_LOG, 'environment-complete-lease:' + Boolean(options.mutationLease) + '\\n');
+      }
+      if (process.env.DEPLOY_TEST_ENV_POST_DRIFT === '1') throw new Error('POST_DEPLOY_VERSION_DRIFT');
+      if (process.env.DEPLOY_TEST_ENV_RECEIPT) writeFileSync(process.env.DEPLOY_TEST_ENV_RECEIPT, 'receipt\\n');
+    }
+  `);
   for (const migrationPath of AUTH_MIGRATIONS) {
     copyFileSync(migrationPath, path.join(authMigrationsDir, path.basename(migrationPath)));
   }
@@ -147,12 +212,18 @@ function createHarness() {
           ? JSON.parse(process.env.DEPLOY_TEST_VERSION_VIEWS)
           : {};
         process.stdout.write(JSON.stringify(views[args[2]] || {
-          resources: { bindings: [{
-            name: 'AUTH_DB',
-            type: 'd1',
-            id: process.env.DEPLOY_TEST_DEPLOYED_AUTH_DB_ID || 'test-database-id',
-            database_id: process.env.DEPLOY_TEST_DEPLOYED_AUTH_DB_ID || 'test-database-id',
-          }] },
+          resources: { bindings: [
+            {
+              name: 'AUTH_DB',
+              type: 'd1',
+              id: process.env.DEPLOY_TEST_DEPLOYED_AUTH_DB_ID || 'test-database-id',
+              database_id: process.env.DEPLOY_TEST_DEPLOYED_AUTH_DB_ID || 'test-database-id',
+            },
+            ...(process.env.CHICKPEA_DEPLOY_TARGET ? [
+              { name: 'CHICKPEA_SETUP_CAPABILITY_DIGEST', type: 'plain_text', text: 'P'.repeat(43) },
+              { name: 'CHICKPEA_SETUP_CAPABILITY_ISSUED_AT', type: 'plain_text', text: '1788289200000' },
+            ] : []),
+          ] },
         }));
         process.exit(0);
       }
@@ -521,6 +592,59 @@ test('fresh deploy provisions AUTH_DB before migrations and rebuilds the binding
   assert.match(invoked.at(-1) ?? '', /^wrangler:\["deploy","--secrets-file",/);
 });
 
+test('a claimed target never provisions a disposable AUTH_DB', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'cobalt', databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'cobalt',
+    DEPLOY_TEST_URL: 'https://chickpea-cobalt-live.example.workers.dev',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /requires its registered immutable AUTH_DB.*disposable target mutation is refused/i);
+  const invoked = commands(harness.logPath);
+  assert.deepEqual(invoked, ['environment-preflight:1:cobalt']);
+  assert.equal(invoked.some((command) => command.includes('"d1","create"')), false);
+});
+
+test('a claimed target refuses disposable coordinates before inspecting existing Worker state', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'cobalt', databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'cobalt',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /requires its registered immutable AUTH_DB.*disposable target mutation is refused/i);
+  assert.deepEqual(commands(harness.logPath), ['environment-preflight:1:cobalt']);
+});
+
+test('a claimed target refuses disposable coordinates before D1 inventory or upload', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    DEPLOY_TEST_D1_LIST: JSON.stringify([{
+      name: 'chickpea-auth-db-amber-live',
+      uuid: 'stale-amber-database-id',
+    }]),
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /requires its registered immutable AUTH_DB.*disposable target mutation is refused/i);
+  const invoked = commands(harness.logPath);
+  assert.deepEqual(invoked, ['environment-preflight:1:amber']);
+  assert.equal(invoked.some((command) => command.includes('"migrations","apply"')), false);
+  assert.equal(invoked.some((command) => command.startsWith('wrangler:["deploy"')), false);
+});
+
 test('fresh source reuses an existing named AUTH_DB without creating another', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
@@ -877,6 +1001,44 @@ test('dry-run never provisions a missing AUTH_DB', (context) => {
   assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
 });
 
+test('target dry-run prints one exact target tuple without Cloudflare mutation', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: '' });
+
+  const result = runHarness(harness, ['--skip-build', '--dry-run'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const tuple =
+    'Deployment target: target=amber worker=chickpea-amber-live ' +
+    'auth_db=AUTH_DB/chickpea-auth-db-amber-live auth_db_id=disposable ' +
+    'd1_schema=0002_mcp_oauth do_schema=v9 state=disposable';
+  assert.equal(result.stdout.match(new RegExp(tuple, 'g'))?.length, 1);
+  assert.doesNotMatch(result.stdout, /Provisioning|Applying reviewed Better Auth migrations/);
+  assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
+});
+
+test('target dry-run prints the selected immutable D1 and permanent generation', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'cobalt', databaseId: 'cobalt-database-id' });
+
+  const result = runHarness(harness, ['--skip-build', '--dry-run'], {
+    CHICKPEA_DEPLOY_TARGET: 'cobalt',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'cobalt-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /target=cobalt worker=chickpea-cobalt-live .*auth_db_id=cobalt-database-id .*state=permanent/,
+  );
+  assert.deepEqual(commands(harness.logPath), ['wrangler:["deploy","--dry-run"]']);
+});
+
 function commands(logPath: string): string[] {
   return readFileSync(logPath, 'utf8').trim().split('\n');
 }
@@ -900,6 +1062,7 @@ function writeCutoverArtifact(
     databaseId?: string;
     profile?: 'core' | 'sandbox';
     workerName?: string;
+    target?: 'amber' | 'cobalt';
     sandboxBinding?: { name: string; class_name: string };
     sandboxContainer?: {
       class_name: string;
@@ -924,8 +1087,9 @@ function writeCutoverArtifact(
     instance_type: 'standard-1',
     max_instances: 25,
   };
+  const target = options.target;
   const config = {
-    name: options.workerName ?? 'chickpea',
+    name: options.workerName ?? (target ? `chickpea-${target}-live` : 'chickpea'),
     main: 'index.js',
     compatibility_date: options.compatibilityDate ?? '2026-06-01',
     compatibility_flags: options.publicGlobalFetch === false
@@ -937,6 +1101,13 @@ function writeCutoverArtifact(
       : { version_metadata: { binding: 'CF_VERSION_METADATA' } }),
     vars: {
       SLACK_TAG_LEDGER_CANARY_CHANNELS: options.selector ?? '',
+      ...(target ? {
+        CHICKPEA_DEPLOY_TARGET: target,
+        CHICKPEA_AUTH_DB_SCHEMA_GENERATION: '0002_mcp_oauth',
+        CHICKPEA_DURABLE_OBJECT_SCHEMA_GENERATION: 'v9',
+        CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+        CHICKPEA_DEPLOY_STATE_MODE: options.databaseId ? 'permanent' : 'disposable',
+      } : {}),
     },
     triggers: { crons: options.cron === false ? [] : ['* * * * *'] },
     durable_objects: { bindings: [
@@ -956,7 +1127,7 @@ function writeCutoverArtifact(
     ].filter((binding) => binding.name !== options.missingBinding) },
     d1_databases: [{
       binding: 'AUTH_DB',
-      database_name: 'chickpea-auth-db',
+      database_name: target ? `chickpea-auth-db-${target}-live` : 'chickpea-auth-db',
       database_id: options.databaseId ?? 'test-database-id',
       migrations_dir: '../../migrations/better-auth',
     }],
@@ -984,7 +1155,18 @@ function writeCutoverArtifact(
     ],
   };
   writeFileSync(path.join(builtDir, 'wrangler.json'), JSON.stringify(config));
-  writeFileSync(path.join(harness.root, 'wrangler.jsonc'), JSON.stringify(config));
+  const rootConfig = structuredClone(config);
+  if (target) {
+    rootConfig.name = 'chickpea';
+    rootConfig.d1_databases[0]!.database_name = 'chickpea-auth-db';
+    rootConfig.d1_databases[0]!.database_id = '';
+    delete rootConfig.vars.CHICKPEA_DEPLOY_TARGET;
+    delete rootConfig.vars.CHICKPEA_AUTH_DB_SCHEMA_GENERATION;
+    delete rootConfig.vars.CHICKPEA_DURABLE_OBJECT_SCHEMA_GENERATION;
+    delete rootConfig.vars.CHICKPEA_DEPLOY_SCHEMA_GENERATION;
+    delete rootConfig.vars.CHICKPEA_DEPLOY_STATE_MODE;
+  }
+  writeFileSync(path.join(harness.root, 'wrangler.jsonc'), JSON.stringify(rootConfig));
   const canarySeams = options.completeCanary === false
     ? 'SLACK_TAG_LEDGER_CANARY_CHANNELS'
     : 'SLACK_TAG_LEDGER_CANARY_CHANNELS delivery_receipt_persist_unknown slack_agent_bindings';
@@ -1060,6 +1242,226 @@ test('sandbox deploy rebuilds by default and keeps the selector internal', (cont
     'npm:["run","build"]',
     'wrangler:["deploy","--dry-run","--containers-rollout=none"]',
   ]);
+});
+
+test('Phase 1 deploy fences claim authority before build and again before D1 or upload', (context) => {
+  const beforeBuild = createHarness();
+  const beforeMutation = createHarness();
+  context.after(() => {
+    rmSync(beforeBuild.root, { recursive: true, force: true });
+    rmSync(beforeMutation.root, { recursive: true, force: true });
+  });
+  writeCutoverArtifact(beforeBuild, { target: 'amber', databaseId: 'test-database-id' });
+  writeCutoverArtifact(beforeMutation, { target: 'amber', databaseId: 'test-database-id' });
+  const environment = {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+  };
+  const first = runHarness(beforeBuild, [], {
+    ...environment, DEPLOY_TEST_ENV_PREFLIGHT_FAIL_AT: '1',
+  });
+  const second = runHarness(beforeMutation, ['--skip-build'], {
+    ...environment, DEPLOY_TEST_ENV_PREFLIGHT_FAIL_AT: '2',
+  });
+  assert.equal(first.status, 1);
+  assert.deepEqual(commands(beforeBuild.logPath), ['environment-preflight:1:amber']);
+  assert.equal(second.status, 1);
+  const invoked = commands(beforeMutation.logPath);
+  assert.equal(invoked.filter((entry) => entry.startsWith('environment-preflight')).length, 2);
+  assert.equal(invoked.some((entry) => /"migrations","apply"|wrangler:\["deploy"/.test(entry)), false);
+});
+
+test('claimed lanes refuse a missing credential-encryption root before lease or provider mutation', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_AUTH_SECRET' }]),
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /credential encryption.*missing|missing.*credential encryption/i);
+  const invoked = commands(harness.logPath);
+  assert.equal(invoked.some((entry) => entry.startsWith('environment-begin:')), false);
+  assert.equal(invoked.some((entry) => entry.includes('"migrations","apply"')), false);
+  assert.equal(invoked.some((entry) => entry.startsWith('wrangler:["deploy"')), false);
+});
+
+test('Phase 1 deploy reconciles live version before receipt and suppresses setup capability output', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+  const initialRedirect = JSON.parse(readFileSync(path.join(harness.root, '.wrangler/deploy/config.json'), 'utf8'));
+  const initialArtifactPath = path.resolve(harness.root, '.wrangler/deploy', initialRedirect.configPath);
+  const initialArtifact = JSON.parse(readFileSync(initialArtifactPath, 'utf8'));
+  initialArtifact.vars = { ...initialArtifact.vars, COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID: 'legacy-read-only' };
+  writeFileSync(initialArtifactPath, JSON.stringify(initialArtifact));
+  const receiptPath = path.join(harness.root, 'receipt.txt');
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+    DEPLOY_TEST_ENV_RECEIPT: receiptPath,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(receiptPath), true);
+  assert.match(commands(harness.logPath).at(-1) ?? '', /^environment-complete:deployed-version$/);
+  assert.doesNotMatch(result.stdout, /#setup=|PRIVATE SETUP LINK|PRIVATE SETUP PATH/);
+  const redirect = JSON.parse(readFileSync(path.join(harness.root, '.wrangler/deploy/config.json'), 'utf8'));
+  const artifact = JSON.parse(readFileSync(path.resolve(harness.root, '.wrangler/deploy', redirect.configPath), 'utf8'));
+  assert.equal(artifact.vars.COMPOSIO_SHEETS_WRITE_AUTH_CONFIG_ID, 'standard-amber');
+  assert.equal(artifact.vars.COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID, 'standard-amber');
+});
+
+test('Phase 1 post-upload serving drift fails without publishing a receipt', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+  const receiptPath = path.join(harness.root, 'receipt.txt');
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+    DEPLOY_TEST_ENV_RECEIPT: receiptPath,
+    DEPLOY_TEST_ENV_POST_DRIFT: '1',
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /POST_DEPLOY_VERSION_DRIFT/);
+  assert.equal(existsSync(receiptPath), false);
+});
+
+test('Phase 1 rechecks claim authority after migration and before Worker upload', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+    DEPLOY_TEST_ENV_PREFLIGHT_FAIL_AT: '3',
+  });
+  assert.equal(result.status, 1);
+  const invoked = commands(harness.logPath);
+  assert.equal(invoked.some((entry) => entry.includes('"migrations","apply"')), true);
+  assert.equal(invoked.filter((entry) => entry.startsWith('environment-preflight')).length, 3);
+  assert.equal(invoked.some((entry) => entry.startsWith('wrangler:["deploy"')), false);
+});
+
+test('Phase 1 holds one mutation lease from before D1 through receipt completion', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+  const result = runHarness(harness, ['--skip-build'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+    DEPLOY_TEST_LOG_MUTATION_LEASE: '1',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const invoked = commands(harness.logPath);
+  const begin = invoked.indexOf('environment-begin:amber');
+  const d1 = invoked.findIndex((entry) => entry.includes('"migrations","apply"'));
+  const upload = invoked.findIndex((entry) => entry.startsWith('wrangler:["deploy"'));
+  const complete = invoked.indexOf('environment-complete-lease:true');
+  assert.ok(begin >= 0 && begin < d1 && d1 < upload && upload < complete, invoked.join('\n'));
+});
+
+test('Phase 1 retry adopts the existing partial-schema lease instead of creating another intent', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+  const result = runHarness(harness, ['--skip-build', '--profile', 'lane-owner', '--env', 'amber'], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    DEPLOY_TEST_WORKER_EXISTS: '1',
+    DEPLOY_TEST_ENV_RESUME: '1',
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+    DEPLOY_TEST_LOG_MUTATION_LEASE: '1',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const invoked = commands(harness.logPath);
+  assert.equal(invoked.filter((entry) => entry.startsWith('environment-resume:amber')).length, 1);
+  assert.equal(invoked.filter((entry) => entry.startsWith('environment-resume-recheck:amber')).length, 1);
+  assert.equal(invoked.some((entry) => entry.startsWith('environment-begin:')), false);
+  assert.equal(invoked.some((entry) => entry.includes('environment-complete-lease:true')), true);
+  assert.equal(invoked.some((entry) => entry.includes('"migrations","apply"')), true);
+  assert.equal(invoked.some((entry) => entry.startsWith('wrangler:["deploy"')), true);
+});
+
+test('claimed deploy preserves setup authority and forwards exact provider context', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+  const setupDigest = 'A'.repeat(43);
+  const setupIssuedAt = '1788289200000';
+  const versionViews = {
+    'deployed-version': { resources: { bindings: [
+      { name: 'AUTH_DB', type: 'd1', id: 'test-database-id', database_id: 'test-database-id' },
+      { name: 'CHICKPEA_SETUP_CAPABILITY_DIGEST', type: 'plain_text', text: setupDigest },
+      { name: 'CHICKPEA_SETUP_CAPABILITY_ISSUED_AT', type: 'plain_text', text: setupIssuedAt },
+    ] } },
+  };
+  const result = runHarness(harness, [
+    '--skip-build', '--profile', 'lane-account', '--env', 'amber',
+  ], {
+    CHICKPEA_DEPLOY_TARGET: 'amber',
+    CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+    CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9',
+    DEPLOY_TEST_WORKER_EXISTS: '1', DEPLOY_TEST_VERSION_VIEWS: JSON.stringify(versionViews),
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify([
+      { name: 'CHICKPEA_AUTH_SECRET' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' },
+      { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' },
+    ]),
+    DEPLOY_TEST_LOG_PROVIDER_CONTEXT: '1',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const config = JSON.parse(readFileSync(path.join(harness.root, 'dist-cf', 'chickpea', 'wrangler.json'), 'utf8'));
+  assert.equal(config.vars.CHICKPEA_SETUP_CAPABILITY_DIGEST, setupDigest);
+  assert.equal(config.vars.CHICKPEA_SETUP_CAPABILITY_ISSUED_AT, setupIssuedAt);
+  const providerLogs = commands(harness.logPath).filter((entry) => entry.startsWith('environment-provider:'));
+  assert.ok(providerLogs.length >= 2);
+  assert.ok(providerLogs.every((entry) => entry ===
+    'environment-provider:["--profile","lane-account","--env","amber"]'));
 });
 
 test('Worker identity mismatch fails before D1 or deploy mutation', (context) => {

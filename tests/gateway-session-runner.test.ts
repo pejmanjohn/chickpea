@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import vm from 'node:vm';
+import ts from 'typescript';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -20,6 +23,50 @@ import {
 } from '../src/slack/gateway/session-runner.ts';
 
 const NOW = Date.UTC(2026, 7, 20, 12);
+
+test('concurrent Durable Object wakes share one supervisor and leave no orphan session on restart', async () => {
+  // Execute the real DO class with a delayed cross-object settings read. The
+  // runner supervisor is real; socket transport itself is covered below.
+  const source = ts.createSourceFile('cloudflare-session.ts',
+    readFileSync(new URL('../src/slack/gateway/cloudflare-session.ts', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node) =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackGatewaySession');
+  assert.ok(declaration);
+  const compiled = ts.transpileModule(
+    declaration.getText(source).replace(/^export /u, '') + '\nSlackGatewaySession',
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const pending: Array<(value: string | null) => void> = [];
+  const runners: FakeRunnerControl[] = [];
+  const Probe = vm.runInNewContext(compiled, {
+    DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    getSettingsStore: () => ({ getSetting: () => new Promise<string | null>((resolve) => pending.push(resolve)) }),
+    GATEWAY_BINDING_SETTING: 'binding',
+    GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
+    createGatewayDeploymentClient: () => ({ loadSessionCheckpoint: async () => undefined }),
+    cloudflareWorkerVersionId: () => 'test-version',
+    reconcileGatewaySessionStatus,
+    GatewaySessionRunnerSupervisor,
+    GatewaySessionRunner: class extends FakeRunnerControl {
+      constructor() { super('healthy'); runners.push(this); }
+    },
+  }) as new (context: object, env: object) => {
+    wake(): Promise<void>; restart(): Promise<void>; status(): Promise<{ healthy: boolean }>;
+  };
+  const object = new Probe({ waitUntil() {} }, {});
+  const calls = [object.wake(), object.wake(), object.status()];
+  assert.equal(pending.length, 3, 'external settings RPC allows startup calls to interleave');
+  pending.splice(0).forEach((resolve) => resolve('configured'));
+  await Promise.all(calls);
+  assert.equal(runners.length, 1, 'all callers must own the same session supervisor');
+  assert.equal(runners[0]!.starts, 1);
+  assert.equal((await object.status()).healthy, true);
+  await object.restart();
+  assert.equal(runners.length, 2);
+  assert.equal(runners[0]!.stops, 1, 'restart retires the only prior session');
+  assert.equal(runners[1]!.starts, 1);
+});
 
 test('session runner reconnects and rotates a renewable logical session', async () => {
   const settings = new SqliteSettingsStore(':memory:', () => NOW);
@@ -92,6 +139,93 @@ test('session runner reconnects and rotates a renewable logical session', async 
   }
 });
 
+test('Durable Object reconnect recreates a client whose state RPC stub has failed', async () => {
+  let clock = NOW;
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const keyring = generateCredentialKeyring('key_gateway');
+  const makeClient = () => new GatewayDeploymentClient({
+    settings, config, keyring, gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: gateway.fetch, now: () => clock,
+  });
+  const clients: GatewayDeploymentClient[] = [];
+  const runners: GatewaySessionRunner[] = [];
+  const sockets: FakeSocket[] = [];
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  const source = ts.createSourceFile('cloudflare-session.ts',
+    readFileSync(new URL('../src/slack/gateway/cloudflare-session.ts', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node) =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackGatewaySession');
+  assert.ok(declaration);
+  const compiled = ts.transpileModule(
+    declaration.getText(source).replace(/^export /u, '') + '\nSlackGatewaySession',
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const Probe = vm.runInNewContext(compiled, {
+    DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    getSettingsStore: () => ({ getSetting: async () => 'configured' }),
+    GATEWAY_BINDING_SETTING: 'binding',
+    GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
+    createGatewayDeploymentClient: () => {
+      const client = makeClient(); clients.push(client); return client;
+    },
+    cloudflareWorkerVersionId: () => 'test-version',
+    reconcileGatewaySessionStatus,
+    GatewaySessionRunnerSupervisor,
+    GatewaySessionRunner: class extends GatewaySessionRunner {
+      constructor(options: ConstructorParameters<typeof GatewaySessionRunner>[0]) {
+        super({ ...options, now: () => clock,
+          createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
+          setTimer: ((callback: () => void, delay: number) => {
+            timers.push({ callback, delay });
+            return timers.length as unknown as ReturnType<typeof setTimeout>;
+          }), clearTimer: () => {},
+        });
+        runners.push(this);
+      }
+    },
+  }) as new (context: object, env: object) => { wake(): Promise<void> };
+  try {
+    const bootstrap = makeClient();
+    await bootstrap.beginClaim();
+    await bootstrap.refreshClaim();
+    const object = new Probe({ waitUntil() {} }, {});
+    await object.wake();
+    sockets[0]!.open();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    ready(sockets[0]!, 'session_before_rpc_failure');
+    await waitFor(() => timers.some(({ delay }) => delay === 90_000)
+      && runners[0]!.healthSnapshot().healthy);
+    // A Cloudflare RPC stub remains broken after a transport exception. Merely
+    // retrying the same client's checkpoint read cannot recover that stub.
+    clients[0]!.loadSessionCheckpoint = async () => { throw new Error('RPC stub is broken'); };
+    clients[0]!.recordSessionCheckpoint = async () => { throw new Error('RPC stub is broken'); };
+    sockets[0]!.disconnect();
+    await spin();
+    clock += 2_000;
+    timers.at(-1)!.callback();
+    await spin();
+    await spin();
+    assert.equal(clients.length, 2, 'reconnect must refresh the captured state RPC clients');
+    await waitFor(() => sockets.length === 2);
+    sockets[1]!.open();
+    await waitFor(() => sockets[1]!.sent.length === 1);
+    ready(sockets[1]!, 'session_after_rpc_failure');
+    await waitFor(() => runners[0]!.healthSnapshot().healthy);
+    await waitFor(async () => {
+      const checkpoint = JSON.parse((await settings.getSetting(GATEWAY_SESSION_SETTING)) ?? '{}');
+      return checkpoint.health === 'healthy' && checkpoint.connectedAt === clock;
+    });
+    assert.equal(runners.length, 1, 'reconnect recovers without a manual supervisor restart');
+  } finally {
+    for (const runner of runners) runner.stop();
+    settings.close();
+    config.close();
+  }
+});
+
 test('session rotation keeps the predecessor live until its successor is ready', async () => {
   const settings = new SqliteSettingsStore(':memory:', () => NOW);
   const config = configStore();
@@ -146,6 +280,74 @@ test('session rotation keeps the predecessor live until its successor is ready',
     assert.equal(sockets.length, 2);
     runner.stop();
   } finally {
+    settings.close();
+    config.close();
+  }
+});
+
+test('a stalled rotation becomes replaceable and late completion cannot reopen the old generation', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  let clock = NOW;
+  const client = new GatewayDeploymentClient({
+    settings, config, keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test', fetch: gateway.fetch, now: () => clock,
+  });
+  const sockets: FakeSocket[] = [];
+  const timers: Array<{ callback: () => void; delay: number }> = [];
+  const runners: GatewaySessionRunner[] = [];
+  let finishOpening!: () => void;
+  const stalled = new Promise<void>((resolve) => { finishOpening = resolve; });
+  const supervisor = new GatewaySessionRunnerSupervisor(() => {
+    const runner = new GatewaySessionRunner({
+      client, onEvent: async () => 'accepted', now: () => clock,
+      createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
+      setTimer: ((callback: () => void, delay: number) => {
+        timers.push({ callback, delay });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      }),
+      clearTimer: () => {},
+    });
+    runners.push(runner);
+    return runner;
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    await supervisor.ensureHealthy();
+    sockets[0]!.open();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    ready(sockets[0]!, 'session_predecessor');
+    await waitFor(() => runners[0]!.healthSnapshot().healthy);
+    const loadBinding = client.loadBinding.bind(client);
+    let opening = false;
+    client.loadBinding = async () => {
+      if (!opening) { opening = true; await stalled; }
+      return loadBinding();
+    };
+    timers.find(({ delay }) => delay === 12 * 60_000)!.callback();
+    await waitFor(() => opening);
+    sockets[0]!.disconnect();
+    clock += 89_999;
+    assert.equal(runners[0]!.healthSnapshot().shouldReplace, false);
+    clock += 1;
+    assert.equal(runners[0]!.healthSnapshot().shouldReplace, true);
+    assert.equal(runners[0]!.healthSnapshot().reason, 'candidate_open_timeout');
+    await Promise.all([supervisor.ensureHealthy(), supervisor.ensureHealthy()]);
+    assert.equal(runners.length, 2);
+    assert.equal(sockets.length, 2);
+    finishOpening();
+    await spin();
+    assert.equal(sockets.length, 2);
+    sockets[1]!.open();
+    await waitFor(() => sockets[1]!.sent.length === 1);
+    ready(sockets[1]!, 'session_recovered');
+    await waitFor(() => supervisor.snapshot()?.healthy === true);
+  } finally {
+    runners.forEach((runner) => runner.stop());
+    finishOpening();
+    await spin();
     settings.close();
     config.close();
   }

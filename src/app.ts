@@ -30,6 +30,10 @@ import {
 } from './memory/tool-policy.ts';
 import { publishActivityStatus } from './slack/activity-publisher.ts';
 import {
+  agentFailureDiagnosticsInterceptor,
+  observeAgentResultDiagnostics,
+} from './slack/agent-failure-diagnostics.ts';
+import {
   observePresentationToolPolicy,
   presentationToolPolicyInterceptor,
 } from './slack/presentation-tool-policy.ts';
@@ -53,6 +57,13 @@ export { WORKERS_AI_CONTEXT_WINDOW_FLOOR };
 // Install the same app-owned Pi providers used by direct agent execution.
 // Cloudflare adds its keyless Workers AI binding in the Worker entry.
 bootstrapRuntimeProviders();
+
+instrument({
+  key: Symbol.for('chickpea.agent-failure-diagnostics'),
+  interceptor: agentFailureDiagnosticsInterceptor,
+  observe: observeAgentResultDiagnostics,
+  dispose() {},
+});
 
 // Bridge only safe activity summaries. The work interceptor below restores
 // app-owned TurnJob correlation from Flue's instance/submission coordinates;
