@@ -183,6 +183,13 @@ failed full run; rerun the requested inventory on the final build when needed.
 
 For diagnosis read the existing evidence first and follow
 [runtime observability](../../../docs/runbooks/runtime-observability.md).
+At the first unexplained failure, preserve the request permalink or Run ID,
+UTC window, actual model/build, and expected versus observed result in the
+existing private record before changing state. Use `npm run diagnose -- --help`
+for the bounded Sessions-to-trace lookup; link each attempt's evidence there.
+Record the hypothesis and changed variable before a retest. A missing ledger or
+trace is a coverage gap, not proof that a tool did not run. Successful actions do
+not need an additional log sweep.
 Use the owning terminal locally and bounded historical logs or tail on the
 deployed target. Attach tail before an authorized reproduction and stop afterward.
 Missing sampled logs do not establish that an action never happened.

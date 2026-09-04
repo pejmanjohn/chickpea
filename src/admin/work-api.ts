@@ -84,13 +84,11 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
       if (await privateWork(c, run.workId, options)) {
         return c.json({ error: 'session_not_found' }, 404);
       }
-      const [work, binding, executions, events, config, usage] = await Promise.all([
+      const [work, binding, executions, events] = await Promise.all([
         store.getWork(run.workId),
         store.getBinding(run.bindingId),
         store.listRunExecutions(run.id, 100),
         store.listAuditEvents(run.id, 500),
-        store.getConfigRevision(run.configRevisionId),
-        options.usage?.(c).getOperationByRunId(run.id),
       ]);
       if (!work || !binding || binding.workId !== work.id || run.workId !== work.id) {
         return c.json({ error: 'session_integrity_failed' }, 409);
@@ -98,6 +96,33 @@ export function createWorkAdminApi(options: WorkAdminApiOptions): Hono {
       if (!matchesDeepLink(c, work, binding)) {
         return c.json({ error: 'session_deep_link_mismatch' }, 409);
       }
+      if (c.req.query('diagnostics') === '1') {
+        // Same authorization as Sessions, without reading any retained bodies,
+        // credentials, configuration contents, or arbitrary audit metadata.
+        return c.json({
+          schemaVersion: 'chickpea-request-diagnostics/v1',
+          session: sessionSummary({ work, binding, run }),
+          accountRef: binding.externalAccountId,
+          delivery: {
+            status: run.deliveryStatus,
+            method: run.deliveryMethod,
+            finalizedAt: run.deliveryFinalizedAt,
+          },
+          executions: executions.map((execution) => ({
+            ...safeExecution(execution),
+            flueInstanceRef: execution.flueInstanceRef,
+            flueSubmissionRef: execution.flueSubmissionRef,
+          })),
+          timeline: events.map(({ eventId, eventType, outcome, createdAt, reasonCode }) =>
+            ({ eventId, eventType, outcome, createdAt, reasonCode }))
+            .sort((a, b) => a.createdAt - b.createdAt || a.eventId.localeCompare(b.eventId)),
+          limits: { executions: executions.length === 100, timeline: events.length === 500 },
+        });
+      }
+      const [config, usage] = await Promise.all([
+        store.getConfigRevision(run.configRevisionId),
+        options.usage?.(c).getOperationByRunId(run.id),
+      ]);
       const context = { work, binding, run, executions, events, config, usage };
       if (binding.sourceVisibility !== 'public' || work.maximumSensitivity !== 'public') {
         return c.json(redactedSessionDetail(context));

@@ -1524,6 +1524,19 @@ async function main() {
       'exact-channel workerd canary executes and settles through ledger authority',
       `list=${canarySessions.status} detail=${canaryDetail.status} authority=${String(canaryDetail.body?.session?.executionAuthority)}`,
     );
+    const diagnosticDetail = canaryRunId
+      ? await adminFetch(baseUrl, `/admin/api/sessions/${encodeURIComponent(canaryRunId)}?diagnostics=1`)
+      : { status: 0, body: undefined };
+    const submissionRef = diagnosticDetail.body?.executions?.[0]?.flueSubmissionRef;
+    check(
+      diagnosticDetail.status === 200 &&
+        diagnosticDetail.body?.schemaVersion === 'chickpea-request-diagnostics/v1' &&
+        !Object.hasOwn(diagnosticDetail.body, 'content') &&
+        /^fluesubmission_[a-f0-9]{40}$/.test(submissionRef ?? '') &&
+        new RegExp(`run\\.correlation[\\s\\S]{0,500}${submissionRef}`).test(wrangler.getOutput()),
+      'built workerd emits the same opaque submission reference exposed by Sessions diagnostics',
+      `diagnostics=${diagnosticDetail.status}`,
+    );
     if (!aiBindingProofPassed) {
       throw new Error('Workers AI binding privacy proof failed');
     }
