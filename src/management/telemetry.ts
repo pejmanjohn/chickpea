@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import type { FlueObservation } from '@flue/runtime';
 import type { ManagementOperation } from './types.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
 
@@ -239,4 +241,73 @@ function safeFieldToken(key: string, value: string): string {
   }
   const allowed = METRIC_TOKENS[key];
   return allowed?.has(token) ? token : 'other';
+}
+
+/** Tool failures, including schema rejection before the tool handler runs.
+ * Keep correlation IDs and known field names, never arguments or error text.
+ * The digest identifies repeated failures/static throw sites without publishing
+ * messages that can contain requester-authored values.
+ */
+export function emitManagementToolFailure(
+  observation: FlueObservation,
+  sink: ManagementTelemetrySink = console,
+): void {
+  if (observation.type !== 'tool' || !observation.isError || ![
+    'manage_scheduled_work', 'propose_workspace_changes', 'confirm_workspace_change',
+  ].includes(observation.toolName)) return;
+  try {
+    const error = observation.errorInfo;
+    const knownFields = new Set([
+      'action', 'name', 'description', 'taskText', 'scheduleKind', 'cronExpression',
+      'timezone', 'localDateTime', 'minutes', 'outputPolicy', 'delivery', 'routineId',
+      'expectedVersion', 'ownerAgentId', 'idempotencyKey', 'guideVersion',
+      'authoringReason', 'operations', 'itemId', 'kind', 'agentId',
+      'expectedRevision', 'patch', 'instructions', 'proposalId',
+    ]);
+    const issues = error?.meta?.issues;
+    const fields = new Set<string>(Array.isArray(issues) ? issues.flatMap((issue) =>
+      issue && Array.isArray(issue.path)
+        ? issue.path.filter((field: unknown) => typeof field === 'string' && knownFields.has(field))
+        : [],
+    ) : []);
+    // Pi's JSON-schema precheck happens before Flue's handler wrapper. It
+    // returns text rather than throwing through errorInfo. Discard the entire
+    // Received arguments section, and project only recognized validation data.
+    const result = observation.result as { content?: { type?: string; text?: string }[] } | undefined;
+    const validation = result?.content?.find((part) => part.type === 'text' &&
+      part.text?.startsWith(`Validation failed for tool "${observation.toolName}":\n`))
+      ?.text?.split('\n\nReceived arguments:')[0];
+    const validationCodes = new Set<string>();
+    if (validation) {
+      for (const line of validation.split('\n').slice(1)) {
+        const path = line.match(/^  - ([^:]+):/)?.[1];
+        for (const field of path?.split('.') ?? []) if (knownFields.has(field)) fields.add(field);
+        for (const [phrase, code] of [
+          ['additional properties', 'additional_properties'], ['required', 'required'],
+          ['constant', 'const'], ['type', 'type'], ['anyOf', 'any_of'], ['pattern', 'pattern'],
+        ]) if (line.toLowerCase().includes(phrase!.toLowerCase())) validationCodes.add(code!);
+      }
+    }
+    sink.info(`[chickpea:management] ${JSON.stringify({
+      event: 'tool.validation_failure', tool: observation.toolName,
+      ...diagnosticCorrelation(observation),
+      errorType: validation ? 'schema_validation' : ['ManagementError', 'ToolInputValidationError', 'ToolOutputValidationError']
+        .includes(error?.name ?? '') ? error!.name : 'other',
+      code: validation ? 'validation_failed' : safeFieldToken('reason', error?.code ?? 'other'),
+      fields: [...fields].sort(), validationCodes: [...validationCodes].sort(),
+      messageDigest: typeof (validation ?? error?.message) === 'string'
+        ? createHash('sha256').update((validation ?? error!.message)!).digest('hex') : undefined,
+    })}`);
+  } catch {
+    // A diagnostic cannot change the tool's outcome.
+  }
+}
+
+function diagnosticCorrelation(source: object): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const key of ['instanceId', 'submissionId', 'conversationId', 'toolCallId', 'turnJobId', 'messageTs']) {
+    const value = (source as Record<string, unknown>)[key];
+    if (typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(value)) result[key] = value;
+  }
+  return result;
 }

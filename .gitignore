@@ -30,6 +30,7 @@ docs/runbooks/*
 !docs/runbooks/agent-first-acceptance-2026-08-21.md
 !docs/runbooks/composio-managed-connectors.md
 !docs/runbooks/product-telemetry.md
+!docs/runbooks/runtime-observability.md
 !docs/runbooks/semantic-activity-status.md
 !docs/runbooks/parallel-live-test-environments.md
 !docs/plans/

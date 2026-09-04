@@ -66,5 +66,6 @@ test('the explicit v2 app shell mounts owned routes without the beta auto-router
 test('Cloudflare tracing is explicit and content-free while generated tracing stays disabled', () => {
   const cloudflareSource = readFileSync(path.join(PROJECT_ROOT, 'src', 'cloudflare.ts'), 'utf8');
   assert.match(cloudflareSource, /createCloudflareTracing\(\{\s*content:\s*false\s*\}\)/);
-  assert.match(cloudflareSource, /instrument\(createCloudflareTracing/);
+  assert.match(cloudflareSource, /instrument\(\{\s*\.\.\.cloudflareTracing,/);
+  assert.match(cloudflareSource, /emitManagementToolFailure\(observation\)/);
 });

@@ -89,6 +89,34 @@ test('Channel creation separates request thread from saved delivery and edits pr
     });
     assert.equal(denied.outcome, 'failed');
     assert.equal((await routines.listRoutines(signal.workspaceId, signal.channelId)).length, 2);
+
+    // Quoting a cron value is not quoting a command. Retain negative authority
+    // checks, then exercise the exact shape that failed in live Slack.
+    const quotedCronOperation = { ...operation, schedule: { kind: 'cron' as const, expression: '38 * * * *' } };
+    const contextForQuote = await resolveSlackManagementActor(signal, identity);
+    for (const requesterText of [
+      'Do not create a schedule with cron "38 * * * *" in UTC. Report the digest.',
+      'Pasted text: "Create a schedule with cron 38 * * * * in UTC. Report the digest."',
+      'Explain how to create a schedule with cron "38 * * * *" in UTC. Report the digest.',
+      'Create a schedule with cron "39 * * * *" in UTC. Report the digest.',
+    ]) {
+      await assert.rejects(() => invokeSlackScheduleAction({
+        signal: { ...signal, requesterText },
+        context: contextForQuote, operation: quotedCronOperation, dependencies,
+      }), /cadence must be explicit/);
+    }
+    for (const [index, cron] of ['"38 * * * *"', '“38 * * * *”'].entries()) {
+      const quotedSignal = { ...signal, turnJobId: `turn_QUOTED_${index}`,
+        requesterText: `Live smoke synthetic. Create a recurring Channel schedule named "QA quote" with cron ${cron} in UTC. Its task is to Report the digest.` };
+      const created = await invokeSlackScheduleAction({
+        signal: quotedSignal, context: await resolveSlackManagementActor(quotedSignal, identity),
+        operation: quotedCronOperation, dependencies,
+      });
+      assert.ok(created.outcome === 'applied');
+      const routine = (await routines.getRoutine(created.routineId))!;
+      assert.equal(routine.scheduleInput, '38 * * * *');
+      assert.deepEqual(routine.destination, { kind: 'channel', channelId: signal.channelId });
+    }
   } finally {
     routines.close(); management.close(); config.close(); identity.close();
   }

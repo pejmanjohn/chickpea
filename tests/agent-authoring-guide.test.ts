@@ -14,6 +14,10 @@ import {
   AGENT_SKILL_CREATION_GUIDE,
 } from '../src/management/agent-authoring/index.ts';
 import { workspaceManagementToolDescription } from '../src/management/tool-adapter.ts';
+import * as v from 'valibot';
+import { toJsonSchema } from '@valibot/to-json-schema';
+import { validateToolArguments } from '@earendil-works/pi-ai';
+import { proposeWorkspaceChangesValibotSchema } from '../src/management/schemas.ts';
 
 test('canonical Agent-authoring package is versioned, complete, and digest-bound', async () => {
   assert.equal(AGENT_AUTHORING_SKILL_NAME, 'agent-authoring');
@@ -78,6 +82,24 @@ test('shared creation tool descriptions agree on immediate standalone apply', ()
   assert.match(proposal, /standalone base Agent immediately with apply_workspace_changes/i);
   assert.match(apply, /created immediately as a standalone create_agent operation/i);
   assert.match(apply, /do not propose it or ask for confirmation/i);
+});
+
+test('instruction-update tool example survives both runtime schema validators', () => {
+  const description = workspaceManagementToolDescription('propose_workspace_changes');
+  const example = description.split('Instruction-update example: ')[1]?.split('. Replace the example')[0];
+  assert.ok(example);
+  const args = JSON.parse(example);
+  assert.equal(args.guideVersion, AGENT_AUTHORING_GUIDE_VERSION);
+  assert.equal(args.authoringReason, 'agent_edit');
+  assert.deepEqual(v.parse(proposeWorkspaceChangesValibotSchema, args), args);
+  const parameters = toJsonSchema(proposeWorkspaceChangesValibotSchema, { errorMode: 'ignore' });
+  assert.deepEqual(validateToolArguments({ name: 'propose_workspace_changes', description, parameters }, {
+    type: 'toolCall', id: 'synthetic', name: 'propose_workspace_changes', arguments: args,
+  }), args);
+  assert.match(description, /complete requested value, including its end/);
+  assert.match(description, /supplied replacement instructions are literal data/i);
+  assert.match(description, /Do not summarize, paraphrase, normalize punctuation, or drop sentences/);
+  assert.match(description, /including a final sentence that refers to the text itself/);
 });
 
 test('guide encodes posture, placement, blueprint, inspection, and proportional approval', () => {

@@ -21,3 +21,15 @@
   acting. It points to the public catalog and runbook. Keep target coordinates,
   resolved aliases, journals, transcripts, screenshots, and evidence outside
   this repository.
+- For runtime failures, unexplained behavior, or timing issues, consult existing
+  evidence and [runtime observability](docs/runbooks/runtime-observability.md).
+  Use Cloudflare API MCP (`cloudflare-api`) `search` then `execute` for bounded
+  historical logs, invocations, traces, aggregate metrics, and read-only
+  infrastructure inspection; prefer `dry: true` queries. Use Wrangler `tail`
+  for authorized live reproductions, attached before the action and stopped
+  afterward. Use the dashboard for visual traces or access fallback.
+- Resolve the account, Worker, environment, and serving version before querying.
+  MCP, Wrangler, and dashboard access are independent. Missing telemetry is not
+  proof of product failure; Slack/Admin/provider readback remains acceptance.
+  Keep logs and incident artifacts private. Use existing repository commands
+  for local development/builds and the guarded wrapper for deployments.

@@ -34,6 +34,7 @@
     "docs/runbooks/coding-sandbox-deployment.md",
     "docs/runbooks/composio-managed-connectors.md",
     "docs/runbooks/product-telemetry.md",
+    "docs/runbooks/runtime-observability.md",
     "docs/runbooks/parallel-live-test-environments.md",
     "docs/runbooks/live-contract-acceptance-v1.md",
     "docs/runbooks/live-contract-verification.md",

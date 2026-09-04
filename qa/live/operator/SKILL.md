@@ -43,17 +43,29 @@ Use the corresponding assertions and cleanup in `../cases/agent-lifecycle.live.t
 `../cases/connector-setup.live.ts`, and the schedule contract in `../cases/`.
 Keep baseline Agents/connections/credentials unchanged. Clean only run-owned IDs,
 restore exact before-values, and retain attributed Slack or archived-Agent residue.
-Classify failures as product, verifier, environment, or unknown. Historical
-failures stay historical; simplification never awards a pass.
+Classify failures as product, verifier, environment, or unknown. Keep historical failures.
+While debugging, rerun only the failed journey and its necessary setup. After a
+targeted live pass, run all four together for acceptance of the final build.
 
-Refresh readiness when the environment, build, actor, claim, or browser state
-actually changes, not before every observation. Capture-script equality, one-use
-action challenges, certified evidence, and a coordinator dispatch command are
-not prerequisites for this checklist. Leave that machinery dormant. Add no
-diagnostic unless a required product assertion cannot be observed in existing UI.
+Refresh readiness only when the environment, build, actor, claim, or browser state changes.
+Capture-script equality, one-use challenges, certified evidence, and coordinator
+dispatch are not prerequisites. Leave them dormant. Add no diagnostic unless a
+required product assertion cannot be observed in existing UI.
 
 Manual invocation: `$chickpea-live-verification smoke on Amber, then Cobalt`.
 For a feature: `$chickpea-live-verification verify this instruction-update flow`.
+
+### Diagnose a live failure with existing telemetry
+
+Follow [runtime observability](../../../docs/runbooks/runtime-observability.md) for
+historical lookup, correlation, missing evidence, and bounded live capture.
+Read the private run record first; successful actions need no routine log check.
+Before deliberate reproduction, check prior effects and cleanup, name the missing
+evidence, then attach Wrangler tail and confirm readiness. Hold the claim/UI lock,
+perform one run-marked action, and stop capture after its bounded window. If tail
+fails, use historical MCP/dashboard evidence or record the specific blocker;
+never replay an uncertain mutation or change permissions. Logs explain causes;
+Slack/Admin/provider readback proves assertions and cleanup. Keep logs/IDs private.
 
 ## Legacy coordinator reference, not the default workflow
 

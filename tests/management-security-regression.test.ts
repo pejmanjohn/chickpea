@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
+import type { FlueObservation } from '@flue/runtime';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
@@ -7,6 +9,7 @@ import { exportWorkspaceRecipe } from '../src/management/recipes.ts';
 import {
   agentAuthoringArtifactClass,
   emitManagementMetric,
+  emitManagementToolFailure,
 } from '../src/management/telemetry.ts';
 import {
   WORKSPACE_MANAGEMENT_TOOL_NAMES,
@@ -22,6 +25,44 @@ const SECRET_CORPUS = [
   'T_PRIVATE_WORKSPACE',
   'C_PRIVATE_CHANNEL',
 ];
+
+test('tool failure logs retain correlation and safe validation fields, not content', () => {
+  const lines: string[] = [];
+  const event: Extract<FlueObservation, { type: 'tool' }> = {
+    v: 3, eventIndex: 1, timestamp: '2026-09-04T00:00:00Z',
+    type: 'tool', toolName: 'propose_workspace_changes', toolCallId: 'call_123',
+    instanceId: 'agent_123', submissionId: 'sub_123', conversationId: 'conv_123',
+    isError: true, durationMs: 0, args: { secret: SECRET_CORPUS },
+    result: SECRET_CORPUS,
+    errorInfo: {
+      name: 'ToolInputValidationError', type: 'tool_input_validation',
+      code: SECRET_CORPUS[0]!, message: SECRET_CORPUS.join(' '),
+      stack: SECRET_CORPUS.join(' '),
+      meta: { issues: [{ path: ['operations', 0, 'patch', 'instructions', SECRET_CORPUS[1]],
+        message: SECRET_CORPUS.join(' ') }], secret: SECRET_CORPUS },
+    },
+  };
+  emitManagementToolFailure(event, { info: (line) => lines.push(line) });
+  assert.equal(lines.length, 1);
+  for (const value of SECRET_CORPUS) assert.ok(!lines[0]!.includes(value));
+  const payload = JSON.parse(lines[0]!.slice('[chickpea:management] '.length));
+  assert.deepEqual(payload.fields, ['instructions', 'operations', 'patch']);
+  assert.equal(payload.code, 'other');
+  assert.equal(payload.toolCallId, 'call_123');
+  assert.equal(payload.messageDigest, createHash('sha256').update(SECRET_CORPUS.join(' ')).digest('hex'));
+  emitManagementToolFailure({ ...event, isError: false }, { info: (line) => lines.push(line) });
+  assert.equal(lines.length, 1);
+  assert.doesNotThrow(() => emitManagementToolFailure(event, { info: () => { throw new Error('sink'); } }));
+  emitManagementToolFailure({ ...event, errorInfo: { type: 'other' }, result: {
+    content: [{ type: 'text', text: `Validation failed for tool "propose_workspace_changes":\n  - operations.0.patch: must not have additional properties\n  - guideVersion: must be equal to constant\n\nReceived arguments:\n${JSON.stringify(SECRET_CORPUS)}` }],
+  } }, { info: (line) => lines.push(line) });
+  const early = JSON.parse(lines[1]!.slice('[chickpea:management] '.length));
+  assert.equal(early.errorType, 'schema_validation');
+  assert.equal(early.code, 'validation_failed');
+  assert.deepEqual(early.fields, ['guideVersion', 'operations', 'patch']);
+  assert.deepEqual(early.validationCodes, ['additional_properties', 'const']);
+  for (const value of SECRET_CORPUS) assert.ok(!lines[1]!.includes(value));
+});
 
 test('management telemetry accepts only content-free dimensions', () => {
   const lines: string[] = [];

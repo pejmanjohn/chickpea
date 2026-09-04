@@ -7,6 +7,7 @@ import {
 import { getSandbox, Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
 import { instrument } from '@flue/runtime';
 import { createCloudflareTracing } from '@flue/runtime/cloudflare';
+import { emitManagementToolFailure } from './management/telemetry.ts';
 
 import {
   AgentRevisionConflictError,
@@ -259,7 +260,14 @@ import { drainRoutinePauseNotices } from './routines/delivery.ts';
 // Cloudflare adapter explicitly for this Cloudflare-only entry so Workers
 // Traces retain operational Flue spans without prompts, instructions, tool
 // definitions, arguments, results, error messages, or stacks.
-instrument(createCloudflareTracing({ content: false }));
+const cloudflareTracing = createCloudflareTracing({ content: false });
+instrument({
+  ...cloudflareTracing,
+  async observe(observation, context) {
+    await cloudflareTracing.observe(observation, context);
+    emitManagementToolFailure(observation);
+  },
+});
 
 // This module is imported only by Flue's Cloudflare entry. Register before
 // the generated entry's guarded default so `cloudflare/*` remains keyless but

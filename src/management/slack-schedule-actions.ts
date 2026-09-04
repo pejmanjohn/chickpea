@@ -396,7 +396,13 @@ function scheduleAuthorityPatterns(
   }
 
   const expression = normalizeAuthorityText(schedule.expression);
-  const patterns = [new RegExp(escapeRegExp(expression), 'gi')];
+  const patterns = [
+    new RegExp(escapeRegExp(expression), 'gi'),
+    // The label is outside the quotes: a direct create/edit command may quote
+    // its exact cron value. The ordinary intent/negation/quoted-command checks
+    // still apply to the whole clause.
+    new RegExp(`\\bcron(?:\\s+expression)?\\s+(?:"${escapeRegExp(expression)}"|“${escapeRegExp(expression)}”)`, 'gi'),
+  ];
   const fields = expression.split(' ');
   if (fields.length !== 5) return patterns;
   const [minute, hour, dayOfMonth, month, dayOfWeek] = fields;
