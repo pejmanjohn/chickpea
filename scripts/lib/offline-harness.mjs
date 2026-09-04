@@ -53,9 +53,14 @@ export async function seedOfflineDemoChannelConfig(stateDbPath, options = {}) {
     grants: demoGrants,
   });
   for (const grant of demoGrants) {
+    // The offline verifiers exercise the granted default Agent through base-app
+    // mentions (history read, status, streamed final). That is the legacy
+    // routing contract; on chickpea-v1 a base mention routes to the Chickpea
+    // system principal instead. Pin the contract the scenarios assert.
     await store.ensureWorkspaceInstallation({
       workspaceId: grant.workspaceId,
       transportMode: 'direct',
+      runtimeContract: 'legacy',
       defaultAgentId: grant.agentId,
       teamId: grant.workspaceId,
     });
