@@ -43,7 +43,8 @@ function outsideGit(path) {
   }
   let inGit = false;
   try {
-    inGit = execFileSync('git', ['-C', realpathSync(existing), 'rev-parse', '--is-inside-work-tree'],
+    const directory = statSync(existing).isDirectory() ? realpathSync(existing) : dirname(realpathSync(existing));
+    inGit = execFileSync('git', ['-C', directory, 'rev-parse', '--is-inside-work-tree'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() === 'true';
   } catch { /* A non-repository private directory is expected. */ }
   if (inGit) throw new Error('Diagnostic evidence must be outside Git, including through symlinks.');

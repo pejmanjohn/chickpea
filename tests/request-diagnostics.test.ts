@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -204,5 +205,11 @@ test('CLI preserves each attempt in private files outside Git and rejects target
     writeFileSync(input, secret);
     assert.equal(await runDiagnosticCli(query, io), 1);
     assert.doesNotMatch(errors.at(-1)!, new RegExp(secret));
+    const otherRepo = join(root, 'other-repo');
+    execFileSync('git', ['init', '--quiet', otherRepo]);
+    const trackedLocation = join(otherRepo, 'session.json');
+    writeFileSync(trackedLocation, JSON.stringify(sessionBody()));
+    assert.equal(await runDiagnosticCli(['query', '--record', record, '--session', trackedLocation], io), 1);
+    assert.match(errors.at(-1)!, /outside Git/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
