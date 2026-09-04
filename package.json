@@ -126,7 +126,7 @@
   "dependencies": {
     "@better-auth/mcp": "1.7.1",
     "@cfworker/json-schema": "4.1.1",
-    "@cloudflare/sandbox": "0.12.4",
+    "@cloudflare/sandbox": "0.12.9",
     "@composio/core": "0.17.0",
     "@earendil-works/pi-ai": "0.83.0",
     "@flue/runtime": "2.0.0",
