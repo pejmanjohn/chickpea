@@ -7,4 +7,4 @@ description: Run or maintain Chickpea's live Slack behavior verification when a 
 
 Read `../../../qa/live/operator/SKILL.md` completely and follow it as the canonical workflow for this repository.
 
-Use its attended single-laptop checklist by default. Read the detailed runbook only for relevant environment or legacy-coordinator procedures. Keep target coordinates, resolved aliases, journals, transcripts, screenshots, and evidence outside this repository.
+Use its attended single-laptop checklist by default. Read `../../../docs/runbooks/live-contract-verification.md` only for relevant environment or legacy-coordinator procedures. Keep target coordinates, resolved aliases, journals, transcripts, screenshots, and evidence outside this repository.

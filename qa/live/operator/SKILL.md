@@ -57,7 +57,7 @@ For a feature: `$chickpea-live-verification verify this instruction-update flow`
 
 ## Legacy coordinator reference, not the default workflow
 
-The instructions below and the detailed runbook describe the older coordinator.
+The instructions below and `../../../docs/runbooks/live-contract-verification.md` describe the older coordinator.
 Use them only when explicitly operating it; they do not override the checklist.
 Use the public catalog to grade behavior on one claimed target.
 
