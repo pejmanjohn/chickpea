@@ -21,7 +21,7 @@
   ],
   "type": "module",
   "bin": {
-    "chickpea": "./dist/bin.js"
+    "chickpea": "dist/bin.js"
   },
   "files": [
     "dist",
