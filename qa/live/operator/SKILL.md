@@ -5,6 +5,8 @@ description: Run or maintain Chickpea's live Slack behavior verification when a 
 
 # Chickpea live verification
 
+For repeated real-Slack implementation/retests, start with the exclusive workerd/HTTP lane in [local Worker development](../../../docs/runbooks/local-worker-development.md), verify its complete identity with `npm run dev:cf -- status --lane <lane>`, and use its dedicated sandbox/app. Diagnose directly on the claimed deployed Worker when behavior depends on its bindings, credentials, shared gateway, traffic, telemetry, or real due time. Local evidence and simulated triggers never satisfy the deployed Amber-then-Cobalt acceptance below.
+
 ## Default: attended single-laptop checklist
 
 Use the existing Amber and Cobalt environments, one exclusive environment claim
@@ -52,8 +54,7 @@ Capture-script equality, one-use challenges, certified evidence, and coordinator
 dispatch are not prerequisites. Leave them dormant. Add no diagnostic unless a
 required product assertion cannot be observed in existing UI.
 
-Manual invocation: `$chickpea-live-verification smoke on Amber, then Cobalt`.
-For a feature: `$chickpea-live-verification verify this instruction-update flow`.
+Manual invocation: `$chickpea-live-verification smoke on Amber, then Cobalt`; for a feature: `$chickpea-live-verification verify this instruction-update flow`.
 
 ### Diagnose a live failure with existing telemetry
 
@@ -69,9 +70,8 @@ Slack/Admin/provider readback proves assertions and cleanup. Keep logs/IDs priva
 
 ## Legacy coordinator reference, not the default workflow
 
-The instructions below and `../../../docs/runbooks/live-contract-verification.md` describe the older coordinator.
-Use them only when explicitly operating it; they do not override the checklist.
-Use the public catalog to grade behavior on one claimed target.
+The instructions below and `../../../docs/runbooks/live-contract-verification.md` describe the older coordinator. Use them only when explicitly operating it;
+they do not override the checklist. Use the public catalog to grade behavior on one claimed target.
 
 ## Select and attest one target
 

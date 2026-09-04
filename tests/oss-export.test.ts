@@ -36,8 +36,11 @@ test('npm package includes every public live verifier file and discovery entrypo
   const required = [
     '.agents/skills/chickpea-live-verification/SKILL.md',
     'AGENTS.md',
+    'docs/runbooks/local-worker-development.md',
     'docs/runbooks/live-contract-acceptance-v1.md',
     'docs/runbooks/live-contract-verification.md',
+    'scripts/chickpea-local-worker.mjs',
+    'scripts/lib/local-worker-lane.mjs',
     ...filesBelow('qa/live'),
   ];
   assert.deepEqual(required.filter((path) => !packaged.has(path)), []);
@@ -46,6 +49,7 @@ test('npm package includes every public live verifier file and discovery entrypo
   assert.ok(packageJson.files?.includes('.agents/skills/chickpea-live-verification'));
   assert.ok(packageJson.files?.includes('AGENTS.md'));
   assert.ok(packageJson.files?.includes('qa/live'));
+  assert.ok(packageJson.files?.includes('docs/runbooks/local-worker-development.md'));
   assert.ok(packageJson.files?.includes('docs/runbooks/live-contract-acceptance-v1.md'));
   assert.ok(packageJson.files?.includes('docs/runbooks/live-contract-verification.md'));
 });
