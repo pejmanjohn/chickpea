@@ -3,6 +3,7 @@ dist/
 dist-cf/
 dist-node/
 .wrangler-state/
+.chickpea-local-worker/
 .env
 .env.*
 !.env.example

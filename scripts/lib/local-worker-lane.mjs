@@ -7,6 +7,7 @@ import {
   readFileSync,
   readlinkSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -74,7 +75,9 @@ export function validateLocalPort(value) {
 
 export function resolveLocalLanePaths(projectRoot, laneValue) {
   const lane = validateLocalLaneName(laneValue);
-  const root = path.resolve(projectRoot, '.wrangler-state', 'local', lane);
+  // This state must outlive build and smoke-test cleanup of Wrangler's
+  // conventional .wrangler-state scratch directory.
+  const root = path.resolve(projectRoot, '.chickpea-local-worker', lane);
   return {
     lane,
     root,
@@ -283,8 +286,15 @@ export async function relocateUnboundLocalLane(projectRoot, lane, input) {
 
 export function ensureWorktreeDevVarsLink(paths) {
   const expected = path.relative(path.dirname(paths.worktreeDevVars), paths.devVars);
-  if (existsSync(paths.worktreeDevVars)) {
-    const stat = lstatSync(paths.worktreeDevVars);
+  const stat = lstatIfPresent(paths.worktreeDevVars);
+  if (stat) {
+    const legacyExpected = path.join('.wrangler-state', 'local', paths.lane, 'dev.vars');
+    if (stat.isSymbolicLink() && readlinkSync(paths.worktreeDevVars) === legacyExpected &&
+      !existsSync(path.resolve(path.dirname(paths.worktreeDevVars), legacyExpected))) {
+      unlinkSync(paths.worktreeDevVars);
+      symlinkSync(expected, paths.worktreeDevVars);
+      return;
+    }
     if (!stat.isSymbolicLink() || readlinkSync(paths.worktreeDevVars) !== expected) {
       throw new Error(`Refusing to replace existing ${paths.worktreeDevVars}; preserve or relocate it first.`);
     }
@@ -295,8 +305,8 @@ export function ensureWorktreeDevVarsLink(paths) {
 
 export function worktreeDevVarsLinkStatus(paths) {
   const expected = path.relative(path.dirname(paths.worktreeDevVars), paths.devVars);
-  if (!existsSync(paths.worktreeDevVars)) return 'missing';
-  const stat = lstatSync(paths.worktreeDevVars);
+  const stat = lstatIfPresent(paths.worktreeDevVars);
+  if (!stat) return 'missing';
   if (!stat.isSymbolicLink()) return 'conflict';
   return readlinkSync(paths.worktreeDevVars) === expected ? 'ready' : 'conflict';
 }
@@ -364,6 +374,15 @@ export function createLocalTimingObserver(file, lane, sourceSha, startedAt) {
 function writePrivateFile(file, contents) {
   writeFileSync(file, contents, { mode: 0o600 });
   chmodSync(file, 0o600);
+}
+
+function lstatIfPresent(file) {
+  try {
+    return lstatSync(file);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return undefined;
+    throw error;
+  }
 }
 
 function replaceDevVars(current, replacements) {

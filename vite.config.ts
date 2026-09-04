@@ -108,14 +108,12 @@ export default defineConfig(({ command }) => {
     },
     ...(local ? {
       optimizeDeps: {
-        // The Worker has no index.html for Vite's normal cold-start scan.
-        // Crawl its real entry before workerd evaluates it so newly discovered
-        // dependencies do not cause a chain of full runtime reloads.
-        entries: ['src/cloudflare.ts'],
-        holdUntilCrawlEnd: true,
-        // pi-ai's generated provider barrel changes while Vite discovers its
-        // transitive subpaths, which can invalidate the Worker runner mid-boot.
-        exclude: ['@earendil-works/pi-ai/providers/all'],
+        // This Worker graph is ESM. Discovery repeatedly invalidates pi-ai's
+        // generated provider chunks during workerd boot, so run the source
+        // graph directly instead of maintaining a disposable prebundle cache.
+        noDiscovery: true,
+        include: [],
+        exclude: ['@earendil-works/pi-ai'],
       },
       server: {
         host: '127.0.0.1',

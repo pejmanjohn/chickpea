@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readlinkSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -36,7 +36,7 @@ test('local Worker lane records an explicit workerd, HTTP Events, state, and mod
   assert.equal(manifest.runtime, LOCAL_WORKER_RUNTIME);
   assert.equal(manifest.transport, LOCAL_WORKER_TRANSPORT);
   assert.equal(manifest.publicUrl, 'https://local-a.chickpea.co');
-  assert.equal(manifest.statePath, path.join(root, '.wrangler-state', 'local', 'local-a', 'state'));
+  assert.equal(manifest.statePath, path.join(root, '.chickpea-local-worker', 'local-a', 'state'));
   assert.match(manifest.d1DatabaseId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/);
   assert.equal(manifest.model, DEFAULT_LOCAL_WORKER_MODEL);
   assert.equal(manifest.slack, null);
@@ -71,6 +71,22 @@ test('local Worker init creates private reusable state without exposing setup ma
   await renewLocalLaneSetup(root, 'local-a');
   assert.notEqual(readFileSync(paths.setupLink, 'utf8'), oldSetupLink);
   assert.equal(readFileSync(paths.devVars, 'utf8').match(/^CHICKPEA_AUTH_SECRET=(.+)$/m)?.[1], oldAuthSecret);
+});
+
+test('local Worker init repairs only a dangling legacy lane link', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'chickpea-local-link-'));
+  symlinkSync(path.join('.wrangler-state', 'local', 'local-a', 'dev.vars'), path.join(root, '.dev.vars'));
+  await initializeLocalLane({
+    projectRoot: root,
+    lane: 'local-a',
+    publicUrl: 'https://local-a.example.com',
+    tunnelName: 'local-a-tunnel',
+    port: 8787,
+  });
+  assert.equal(
+    readlinkSync(path.join(root, '.dev.vars')),
+    path.join('.chickpea-local-worker', 'local-a', 'dev.vars'),
+  );
 });
 
 test('Slack binding requires immutable workspace and app IDs and remains lane-local', async () => {
@@ -188,4 +204,10 @@ test('local timing observer separates startup and reload metrics', () => {
   assert.equal(events[2].kind, 'reload');
   assert.equal(events[2].mode, 'hot-update');
   assert.ok(events[2].elapsedMs >= 20);
+});
+
+test('Cloudflare smoke cleanup cannot erase persistent local lane state', () => {
+  const smoke = readFileSync(path.resolve(process.cwd(), 'scripts/verify-cf-smoke.mjs'), 'utf8');
+  assert.match(smoke, /const PERSIST_DIR = join\(REPO_ROOT, '\.wrangler-state', 'cf-smoke'\);/);
+  assert.doesNotMatch(smoke, /const PERSIST_DIR = join\(REPO_ROOT, '\.wrangler-state'\);/);
 });

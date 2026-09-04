@@ -48,10 +48,11 @@ npm run dev:cf -- init \
 ```
 
 `init` creates ignored, mode-0600 material below
-`.wrangler-state/local/<lane>/`, including durable local state, credentials, a
-24-hour setup capability, and a lane manifest. It links the worktree's ignored
-`.dev.vars` to that lane. It refuses to replace an existing `.dev.vars` or to
-change initialized coordinates.
+`.chickpea-local-worker/<lane>/`, including durable local state, credentials, a
+24-hour setup capability, and a lane manifest. This root is deliberately
+outside Wrangler's disposable `.wrangler-state` tree. It links the worktree's
+ignored `.dev.vars` to that lane. It refuses to replace an existing `.dev.vars`
+or to change initialized coordinates.
 
 Start the Worker:
 
@@ -205,7 +206,10 @@ It passed run-marked DM and channel isolation, Agent handle creation, full
 instruction preview/approval/saved-value readback, a real Personal Google Sheets
 read through Composio, persistence across two full restarts and code reloads,
 and simulated scheduled dispatch. Static and dynamic Agent assets both returned
-success after the local asset router was made explicit.
+success after the local asset router was made explicit. A final regression round
+ran the repository's full Cloudflare smoke, confirmed all 39 lane-state files
+remained, restarted the same installation, and received an exact run-marked DM
+reply with the retained model.
 
 Measured on the pilot machine:
 
@@ -213,11 +217,14 @@ Measured on the pilot machine:
 | --- | --- |
 | Cold start, three successful runs | 10.10-11.78 s; median 11.40 s |
 | Vite/workerd ready portion | 9.28-9.68 s; median 9.35 s |
+| Warm restart after the full Cloudflare smoke | 9.47 s total; Vite ready in 8.73 s |
+| First boot after rebasing a changed dependency graph | 36.30 s total; Vite ready in 35.45 s |
 | Production Cloudflare build | 2.25 s |
 | Ordinary source hot reload, three edits | 50-176 ms; median 101 ms |
 | Configuration/server restart, three edits | 4.70-4.89 s; median 4.82 s |
 | Browser/Admin retest reload, three observations | 1.1-3.9 s; median 2.6 s |
 | Representative DM model turn | 6.56 s |
+| Post-smoke retained-state DM turn | 11.40 s |
 | Representative connector Slack turn | 12.72 s total; 1.52 s provider execution |
 | Simulated scheduler dispatch | 32 ms total; 9 ms schedule scan |
 
@@ -227,7 +234,15 @@ from each implementation loop; measured hot-edit preparation is about 0.10 s,
 then model and Slack time still dominate. Prior deployed connector observations
 were slower, but were not controlled enough to attribute the difference to the
 runtime, so they are not used as the savings claim. OAuth/browser setup remains
-a material one-time cost.
+a material one-time cost. The 35.45-second first boot after the dependency graph
+changed is also a cold-cache cost; the following restart returned to 8.73 seconds.
+
+The first evaluation uncovered a destructive test-harness collision: the
+Cloudflare smoke cleaned the whole `.wrangler-state` directory, where the pilot
+had initially kept its credentials and databases. The lane now stores durable
+material under `.chickpea-local-worker`, while the smoke owns only
+`.wrangler-state/cf-smoke`. Regression coverage and the post-smoke Slack proof
+verify that separation.
 
 The pilot also exposed limits: initial Agent model inheritance needed manual
 correction; Slack warned that the app does not subscribe to
