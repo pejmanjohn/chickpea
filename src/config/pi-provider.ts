@@ -18,7 +18,7 @@ import { registerPiProvider, registeredPiProvider } from './pi-provider-registry
 import { decorateAttachmentProviderStreams } from '../slack/attachment-model-context.ts';
 import { decorateWorkersAiPayloadStreams } from './workers-ai-payload.ts';
 import {
-  CURRENT_WORKERS_AI_MODEL_ID,
+  isWorkersAiGlmModel,
   withCurrentWorkersAiModels,
 } from './workers-ai-models.ts';
 
@@ -95,7 +95,7 @@ export function createWorkersAiRestPiProvider(options: WorkersAiRestOptions): Pr
     ...model,
     baseUrl: options.baseUrl,
     ...(
-      model.id === '@cf/zai-org/glm-5.2' || model.id === CURRENT_WORKERS_AI_MODEL_ID
+      isWorkersAiGlmModel(model.id)
       ? {
           contextWindow: Math.min(model.contextWindow, options.contextWindowFloor),
           maxTokens: Math.min(model.maxTokens, options.maxTokens),

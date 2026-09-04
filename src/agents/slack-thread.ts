@@ -76,7 +76,7 @@ import {
   type ResolvedRuntimeModel,
 } from '../config/runtime-model.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
-import { SEED_CLOUDFLARE_MODEL_PIN } from '../config/seed.ts';
+import { isWorkersAiGlmModel } from '../config/workers-ai-models.ts';
 import { surfaceForChannelId } from '../config/resolver.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
@@ -1024,9 +1024,9 @@ export async function createSlackAgentRuntime(
   return {
     model: runtimeModel.model,
     // Flue defaults reasoning-capable models to medium effort. The keyless
-    // GLM-5.2 binding can reach Workers AI's response deadline before its first
-    // tool call even at low effort, so disable extra reasoning only for this
-    // exact binding-backed model specifier. Other models keep Flue's policy.
+    // GLM bindings can reach Workers AI's response deadline before their first
+    // tool call even at low effort, so disable extra reasoning only for the
+    // Workers AI GLM family. Other models keep Flue's policy.
     ...(thinkingLevel ? { thinkingLevel } : {}),
     instructions: managedTools.length > 0
       ? `${config.instructions}\n\n${MANAGED_CONNECTION_RESULT_INSTRUCTION}`
@@ -1483,7 +1483,13 @@ function createRuntimePlanArtifactTool(plan: RuntimePlanV2) {
 }
 
 export function thinkingLevelForModel(model: string): 'off' | undefined {
-  return model === SEED_CLOUDFLARE_MODEL_PIN ? 'off' : undefined;
+  const slash = model.indexOf('/');
+  const provider = model.slice(0, slash);
+  return slash > 0 &&
+    (provider === 'cloudflare' || provider === 'cloudflare-workers-ai') &&
+    isWorkersAiGlmModel(model.slice(slash + 1))
+    ? 'off'
+    : undefined;
 }
 
 interface AgentSandboxOptions {

@@ -9,7 +9,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
  */
 export default class CloudflareAiBindingSmoke extends WorkerEntrypoint {
   async run(modelId, _inputs, options = {}) {
-    if (modelId !== '@cf/zai-org/glm-5.2') {
+    if (modelId !== '@cf/zai-org/glm-4.7-flash') {
       throw new Error(`unexpected Workers AI smoke model: ${modelId}`);
     }
     if (options.gateway !== undefined) {

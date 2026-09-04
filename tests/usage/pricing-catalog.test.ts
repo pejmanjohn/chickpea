@@ -21,6 +21,8 @@ test('release catalog contains only fixture-proven priced routes with immutable 
       'cloudflare-workers-ai',
       'cloudflare',
       'cloudflare-workers-ai',
+      'cloudflare',
+      'cloudflare-workers-ai',
     ],
   );
   for (const version of RELEASE_PRICE_CATALOGS) {
@@ -34,7 +36,7 @@ test('release catalog contains only fixture-proven priced routes with immutable 
   const workersPrices = RELEASE_PRICE_CATALOGS
     .filter((version) => ['cloudflare-workers-ai', 'cloudflare'].includes(version.providerId))
     .map((version) => version.rates[0]);
-  assert.equal(workersPrices.length, 6);
+  assert.equal(workersPrices.length, 8);
   assert.deepEqual(
     workersPrices.map((rate) => [
       rate?.modelId,
@@ -49,6 +51,8 @@ test('release catalog contains only fixture-proven priced routes with immutable 
       ['@cf/zai-org/glm-5.2', 1_400_000, 4_400_000, 260_000],
       ['@cf/zai-org/glm-5.3-flash', 150_000, 500_000, 30_000],
       ['@cf/zai-org/glm-5.3-flash', 150_000, 500_000, 30_000],
+      ['@cf/zai-org/glm-4.7-flash', 60_000, 400_000, null],
+      ['@cf/zai-org/glm-4.7-flash', 60_000, 400_000, null],
     ],
   );
 });

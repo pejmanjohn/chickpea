@@ -2,8 +2,22 @@ import type { AgentChannelGrantInput, CustomAgentConfig } from './types.ts';
 import { CHICKPEA_AGENT_ID, CHICKPEA_AGENT_NAME } from './agent-id.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 
-export const SEED_CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-5.2';
+// The keyless first-run model must be one Workers AI serves on the Workers
+// Free plan. Cloudflare moved glm-5.2 behind Workers Paid on 2026-07-28 and
+// launched glm-5.3-flash Paid-only, so a Free install seeded with either would
+// 403 (error 5035) on its first turn.
+export const SEED_CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-4.7-flash';
 export const SEED_CLOUDFLARE_MODEL_PIN = `cloudflare/${SEED_CLOUDFLARE_MODEL_ID}`;
+// Installs seeded before the Free-plan change still carry the old pin; the
+// cutover starter-pin logic must keep recognizing it as untouched seed state.
+const LEGACY_SEED_CLOUDFLARE_MODEL_PINS: ReadonlySet<string> = new Set([
+  'cloudflare/@cf/zai-org/glm-5.2',
+]);
+
+export function isSeedCloudflareModelPin(model: string | undefined): boolean {
+  return model === SEED_CLOUDFLARE_MODEL_PIN ||
+    (model !== undefined && LEGACY_SEED_CLOUDFLARE_MODEL_PINS.has(model));
+}
 
 export type SeedTarget = 'cloudflare' | 'node';
 export type SeedChannelGrant = AgentChannelGrantInput;

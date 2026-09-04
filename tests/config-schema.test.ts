@@ -418,7 +418,7 @@ test('cutover activation is atomic, preserves route owners, and supports compati
     assert.equal(rolledBack.state, 'rolled_back');
     assert.equal(rolledBack.systemPrincipalCount, 1);
     assert.equal(rolledBack.starterPinClearCount, 1);
-    assert.equal(store.getAgent('agent_default').model, 'cloudflare/@cf/zai-org/glm-5.2');
+    assert.equal(store.getAgent('agent_default').model, 'cloudflare/@cf/zai-org/glm-4.7-flash');
 
     const reactivated = store.activateChickpeaCutover({
       workspaceId: 'TACME',
@@ -552,7 +552,7 @@ test('a post-gate installation creates Chickpea and its default atomically', () 
     });
 
     assert.equal(installation.runtimeContract, 'chickpea-v1');
-    assert.equal(store.getWorkspaceModelDefault('TNEW')?.modelId, 'cloudflare/@cf/zai-org/glm-5.2');
+    assert.equal(store.getWorkspaceModelDefault('TNEW')?.modelId, 'cloudflare/@cf/zai-org/glm-4.7-flash');
     assert.equal(store.getAgent('agent_chickpea').kind, 'system');
     assert.equal(store.getAgent('agent_default').model, undefined);
     assert.equal(store.preflightChickpeaCutover('TNEW').state, 'activated');
