@@ -91,13 +91,13 @@ test('safe clear refuses a live PID, a foreign run, and unresolved cleanup', (co
   } as const;
   assert.equal(
     readTargetLockStatus(lockPath, { host: 'other-host', isPidActive: () => false }).status,
-    'foreign',
+    'stale',
   );
   assert.throws(
     () => clearTargetLock(lockPath, {
-      runId: 'run-one', host: 'other-host', journal: clearJournal, isPidActive: () => false,
+      runId: 'run-one', host: 'other-host', journal: clearJournal, isPidActive: () => true,
     }),
-    (error: unknown) => error instanceof TargetLockError && error.code === 'LOCK_FOREIGN_HOST',
+    (error: unknown) => error instanceof TargetLockError && error.code === 'LOCK_ACTIVE',
   );
   assert.throws(
     () => clearTargetLock(lockPath, {
@@ -123,4 +123,8 @@ test('safe clear refuses a live PID, a foreign run, and unresolved cleanup', (co
     (error: unknown) => error instanceof TargetLockError && error.code === 'UNRESOLVED_CLEANUP',
   );
   assert.equal(existsSync(lockPath), true);
+  clearTargetLock(lockPath, {
+    runId: 'run-one', host: 'other-host', journal: clearJournal, isPidActive: () => false,
+  });
+  assert.equal(existsSync(lockPath), false);
 });

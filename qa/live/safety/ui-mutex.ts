@@ -9,6 +9,7 @@ interface UiOwner {
   browserAlias: string;
   nonce: string;
   pid: number;
+  /** Display metadata, never a local ownership boundary. */
   host: string;
 }
 
@@ -138,11 +139,10 @@ function removeOwned(path: string, owner: UiOwner): void {
 
 function sameActor(left: UiOwner, right: UiOwner): boolean {
   return left.runId === right.runId && left.browserAlias === right.browserAlias
-    && left.pid === right.pid && left.host === right.host;
+    && left.pid === right.pid;
 }
 
 function assertStoppedLocalOwner(owner: UiOwner): void {
-  if (owner.host !== hostname()) throw new UiMutexError('UI_OWNER_CHANGED');
   try { process.kill(owner.pid, 0); } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ESRCH') return;
   }

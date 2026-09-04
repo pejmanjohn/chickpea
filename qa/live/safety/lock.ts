@@ -11,7 +11,6 @@ import {
   writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { hostname } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendRunJournal, readRunJournal, type RunJournalHeaderInput } from './journal.ts';
 import { assertPrivateEvidencePath } from './evidence.ts';
@@ -19,6 +18,7 @@ import { assertPrivateEvidencePath } from './evidence.ts';
 export interface TargetLockOwner {
   runId: string;
   pid: number;
+  /** Historical display metadata only. Locks are local to this laptop. */
   host: string;
   startedAt: string;
 }
@@ -82,7 +82,6 @@ export function acquireTargetLock(
     if (isNodeError(error, 'EEXIST')) {
       const current = readTargetLock(path);
       if (current === undefined) throw new TargetLockError('LOCK_MISSING');
-      if (current.host !== owner.host) throw new TargetLockError('LOCK_FOREIGN_HOST');
       if (current.runId !== owner.runId) throw new TargetLockError('LOCK_DIFFERENT_RUN');
       throw new TargetLockError('LOCK_ACTIVE');
     }
@@ -131,7 +130,7 @@ export function recoverTargetLock(path: string, next: TargetLockOwner, input: {
   afterOwnerPublished?: () => void;
 } = {}): void {
   validateOwner(next);
-  if (next.pid !== process.pid || next.host !== hostname()) throw new TargetLockError('LOCK_FOREIGN_HOST');
+  if (next.pid !== process.pid) throw new TargetLockError('LOCK_CHANGED');
   const root = dirname(path);
   assertPrivateEvidencePath(path, root);
   assertPrivateEvidencePath(input.journalPath, root);
@@ -142,7 +141,6 @@ export function recoverTargetLock(path: string, next: TargetLockOwner, input: {
   }
   const original = readTargetLock(path);
   if (!original) throw new TargetLockError('LOCK_MISSING');
-  if (original.host !== next.host) throw new TargetLockError('LOCK_FOREIGN_HOST');
   if (original.runId !== next.runId || input.expected.runId !== next.runId) {
     throw new TargetLockError('LOCK_DIFFERENT_RUN');
   }
@@ -166,7 +164,7 @@ export function recoverTargetLock(path: string, next: TargetLockOwner, input: {
     if (!isRecord(guard) || !exactKeys(guard, ['previous', 'next'])
       || !sameOwner(validateOwner(guard.previous), previous)) throw new TargetLockError('INVALID_LOCK');
     const successor = validateOwner(guard.next);
-    if (successor.host !== next.host || successor.runId !== next.runId || sameOwner(successor, previous)) {
+    if (successor.runId !== next.runId || sameOwner(successor, previous)) {
       throw new TargetLockError('INVALID_LOCK');
     }
     previous = successor;
@@ -229,9 +227,6 @@ export function readTargetLockStatus(
 ): TargetLockStatus {
   const owner = readTargetLock(path);
   if (owner === undefined) return { status: 'clear' };
-  if (owner.host !== input.host) {
-    return { status: 'foreign', ownerRunId: owner.runId, owner };
-  }
   const active = (input.isPidActive ?? defaultPidActive)(owner.pid);
   return {
     status: active ? 'live' : 'stale',
@@ -301,7 +296,6 @@ export function clearTargetLock(
 ): void {
   const owner = readTargetLock(path);
   if (owner === undefined) throw new TargetLockError('LOCK_MISSING');
-  if (owner.host !== input.host) throw new TargetLockError('LOCK_FOREIGN_HOST');
   if (owner.runId !== input.runId || input.journal.runId !== input.runId) {
     throw new TargetLockError('LOCK_DIFFERENT_RUN');
   }
@@ -331,7 +325,7 @@ export function clearTargetLock(
 
 /** The running coordinator can release only its own cleanup-safe journal. */
 export function releaseOwnedTargetLock(path: string, owner: TargetLockOwner, journalPath: string): void {
-  if (owner.pid !== process.pid || owner.host !== hostname()) throw new TargetLockError('LOCK_FOREIGN_HOST');
+  if (owner.pid !== process.pid) throw new TargetLockError('LOCK_CHANGED');
   const current = readTargetLock(path);
   if (!current || !sameOwner(current, owner)) throw new TargetLockError('LOCK_CHANGED');
   const journal = readRunJournalStatus(journalPath, owner.runId);
@@ -425,7 +419,7 @@ function defaultPidActive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return isNodeError(error, 'EPERM');
+    return !isNodeError(error, 'ESRCH');
   }
 }
 

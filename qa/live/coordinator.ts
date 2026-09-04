@@ -177,7 +177,7 @@ export class AttendedLiveCoordinator {
       }
       const snapshot = await this.snapshot(false);
       const current = readTargetLock(this.lockPath);
-      if (!current || current.runId !== this.request.runId || current.host !== hostname()
+      if (!current || current.runId !== this.request.runId
         || (snapshot.lock.status !== 'clear' && snapshot.lock.ownerRunId !== current.runId)) {
         throw new CoordinatorError('TARGET_DRIFT');
       }

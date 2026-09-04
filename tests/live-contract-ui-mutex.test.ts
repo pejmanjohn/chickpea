@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -24,8 +24,12 @@ test('two targets serialize only their interaction windows', (context) => {
 });
 
 test('a paused human gate reserves its browser without blocking another browser', (context) => {
-  const { mutex } = fixture(context);
+  const { root, mutex } = fixture(context);
   mutex.acquire('amber-run', 'chrome-lanes').pause();
+  const reservation = join(root, readdirSync(root).find(name => name.startsWith('browser-'))!);
+  const owner = JSON.parse(readFileSync(reservation, 'utf8'));
+  writeFileSync(reservation, JSON.stringify({ ...owner, host: 'previous-network-hostname' }));
+  assert.throws(() => mutex.clearStoppedOwner('amber-run', 'chrome-lanes'), /UI_BUSY/u);
   assert.throws(() => mutex.acquire('cobalt-run', 'chrome-lanes'), /BROWSER_RESERVED/u);
   mutex.acquire('cobalt-run', 'another-browser').release();
   const resumed = mutex.acquire('amber-run', 'chrome-lanes');
@@ -61,6 +65,9 @@ test('explicit recovery releases a dead browser reservation without touching a l
     `import { HostUiMutex } from ${JSON.stringify(moduleUrl)}; new HostUiMutex(${JSON.stringify(root)}).acquire('stopped-run', 'paused-browser').pause();`],
   { encoding: 'utf8' });
   assert.equal(child.status, 0, child.stderr);
+  const reservation = join(root, readdirSync(root).find(name => name.startsWith('browser-'))!);
+  const owner = JSON.parse(readFileSync(reservation, 'utf8'));
+  writeFileSync(reservation, JSON.stringify({ ...owner, host: 'previous-network-hostname' }));
   const live = mutex.acquire('active-run', 'another-browser');
   assert.throws(() => mutex.clearStoppedOwner('wrong-run', 'paused-browser'), /UI_OWNER_CHANGED/u);
   mutex.clearStoppedOwner('stopped-run', 'paused-browser');

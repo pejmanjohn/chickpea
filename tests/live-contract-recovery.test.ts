@@ -23,7 +23,8 @@ function fixture(context: test.TestContext) {
     actionRef: 'LC01-V1-create-welcome:1:1', actionId: 'agent.create', mutation: 'create', direction: 'forward' }, expected);
   const stopped = spawnSync(process.execPath, ['-e', '']);
   assert.equal(stopped.status, 0);
-  const owner = { ...currentOwner(), pid: stopped.pid };
+  // A network change may alter macOS hostname without changing the laptop.
+  const owner = { ...currentOwner(), pid: stopped.pid, host: 'previous-network-hostname' };
   const path = join(root, 'target.lock');
   acquireTargetLock(path, owner);
   return { root, path, owner, input: { journalPath, expected } };
@@ -55,17 +56,17 @@ test('live, permission-denied, and unknown PID probes never authorize recovery',
   }
 });
 
-test('recovery refuses identity drift, foreign ownership, incomplete/corrupt history, and owner changes', (context) => {
+test('recovery refuses identity drift, another run, incomplete/corrupt history, and owner changes', (context) => {
   for (const key of ['targetFingerprint', 'repositoryRevision', 'servingVersion', 'manifestDigest'] as const) {
     const f = fixture(context);
     assert.throws(() => recoverTargetLock(f.path, currentOwner(), { ...f.input,
       expected: { ...expected, [key]: key.endsWith('Digest') || key === 'targetFingerprint' ? 'sha256:other' : 'other' } }));
     assert.deepEqual(readTargetLock(f.path), f.owner);
   }
-  for (const change of [{ host: 'foreign-host' }, { runId: 'other-run' }]) {
+  for (const change of [{ runId: 'other-run' }]) {
     const f = fixture(context);
     writeFileSync(f.path, JSON.stringify({ ...f.owner, ...change }));
-    assert.throws(() => recoverTargetLock(f.path, currentOwner(), f.input), /LOCK_FOREIGN_HOST|LOCK_DIFFERENT_RUN/);
+    assert.throws(() => recoverTargetLock(f.path, currentOwner(), f.input), /LOCK_DIFFERENT_RUN/);
   }
   for (const suffix of ['{"record":', '{bad-json}\n']) {
     const f = fixture(context);

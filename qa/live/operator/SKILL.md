@@ -5,7 +5,61 @@ description: Run or maintain Chickpea's live Slack behavior verification when a 
 
 # Chickpea live verification
 
-Use the public catalog to grade behavior on one claimed target. Read `../../../docs/runbooks/live-contract-verification.md` before any live action.
+## Default: attended single-laptop checklist
+
+Use the existing Amber and Cobalt environments, one exclusive environment claim
+per worktree. Two worktrees may own the two environments; additional worktrees
+wait. Keep environment claims and guarded deployment fences. No production
+deployment is implied. Protected Cobalt requires the existing clean origin/main
+authority; ask before landing if it has not been granted.
+
+Use normal browser tools and a lightweight private run record. For each journey
+record the target/build, actor, relevant before-state, actual messages, exact
+resource IDs, UI evidence references, result and exact cleanup. Preserve existing
+journals and ownership. Do not restart or replay an uncertain action. After a
+timeout, inspect the actual UI with bounded readback, including native dialogs
+when necessary. Only retry after proving the prior action did not apply.
+
+Hold the existing local UI mutex for competing browser actions. Release it at
+human gates and reserve the affected browser. A network/hostname change does not
+change local ownership; live PIDs block, and stopped-owner recovery requires an
+actual ESRCH. Retain OAuth tabs across turns and never capture secret entry.
+
+For `smoke`, run these four journeys together, Amber then Cobalt:
+
+1. Create a run-marked Agent and verify its saved identity and exactly one real
+   welcome in its assigned Slack destination.
+2. Preview the complete instruction update. Verify no early mutation, approve
+   the frozen proposal, then read the entire saved value, including its end.
+3. Create a new Personal connection on the empty connector-test Agent, complete
+   user OAuth, and perform the declared synthetic read through that Agent.
+   Verify actual provider/UI results. An existing connection is not a pass.
+4. Create a schedule, verify acknowledgement names its future destination, and
+   observe actual due delivery. Successful results are unwrapped, channel-level
+   by default; an explicit thread request delivers to that thread. Preserve
+   duplicate and wrong-destination checks. Do not use Run now as due proof.
+
+Use the corresponding assertions and cleanup in `../cases/agent-lifecycle.live.ts`,
+`../cases/connector-setup.live.ts`, and the schedule contract in `../cases/`.
+Keep baseline Agents/connections/credentials unchanged. Clean only run-owned IDs,
+restore exact before-values, and retain attributed Slack or archived-Agent residue.
+Classify failures as product, verifier, environment, or unknown. Historical
+failures stay historical; simplification never awards a pass.
+
+Refresh readiness when the environment, build, actor, claim, or browser state
+actually changes, not before every observation. Capture-script equality, one-use
+action challenges, certified evidence, and a coordinator dispatch command are
+not prerequisites for this checklist. Leave that machinery dormant. Add no
+diagnostic unless a required product assertion cannot be observed in existing UI.
+
+Manual invocation: `$chickpea-live-verification smoke on Amber, then Cobalt`.
+For a feature: `$chickpea-live-verification verify this instruction-update flow`.
+
+## Legacy coordinator reference, not the default workflow
+
+The instructions below and the detailed runbook describe the older coordinator.
+Use them only when explicitly operating it; they do not override the checklist.
+Use the public catalog to grade behavior on one claimed target.
 
 ## Select and attest one target
 

@@ -1170,7 +1170,6 @@ function assertEnvironmentMutationLease(preflight, lease, options = {}) {
   const journal = readRunJournalStatus(lease.journalPath, lease.runId);
   const current = readEnvironmentRegistry(options).targets[preflight.target];
   if (!owner || !lockStat || owner.runId !== lease.runId
-    || owner.host !== (options.lockHost ?? hostname())
     || owner.pid !== lease.lockPid || lease.lockPid !== process.pid
     || lockStat.dev !== lease.lockDev || lockStat.ino !== lease.lockIno
     || intent.runId !== lease.runId || intent.intentId !== lease.intentId
@@ -1441,7 +1440,6 @@ export function withEnvironmentReleaseFence(target, options = {}, release) {
     if (currentOwner
       && currentStat
       && currentOwner.runId === owner.runId
-      && currentOwner.host === owner.host
       && currentOwner.pid === owner.pid
       && currentStat.dev === ownedStat.dev
       && currentStat.ino === ownedStat.ino) {
