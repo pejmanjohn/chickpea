@@ -13,7 +13,7 @@ import { cloudflareWorkersAIProvider } from '@earendil-works/pi-ai/providers/clo
 import { cloudflareStreams } from '@earendil-works/pi-ai/providers/cloudflare-stream';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
-import { setProvider } from '@flue/runtime';
+import { registerPiProvider, registeredPiProvider } from './pi-provider-registry.ts';
 
 import { decorateAttachmentProviderStreams } from '../slack/attachment-model-context.ts';
 import { decorateWorkersAiPayloadStreams } from './workers-ai-payload.ts';
@@ -56,7 +56,7 @@ export function setBuiltinPiProvider(
     mergeProviderModels(catalog.getModels(), modelOverlays),
     credential.baseUrl,
   );
-  setProvider(
+  registerPiProvider(
     createProvider({
       id,
       name: catalog.name,
@@ -85,7 +85,7 @@ interface WorkersAiRestOptions {
 }
 
 export function setWorkersAiRestPiProvider(options: WorkersAiRestOptions): void {
-  setProvider(createWorkersAiRestPiProvider(options));
+  registerPiProvider(createWorkersAiRestPiProvider(options));
 }
 
 /** Pure construction seam for REST payload and credential policy tests. */
@@ -144,7 +144,7 @@ export function setLocalStubPiProvider(options: {
       maxTokens: 2_048,
     }),
   );
-  setProvider(
+  registerPiProvider(
     createProvider({
       id: 'local-stub',
       name: 'Local stub',
@@ -216,4 +216,26 @@ function withProviderBaseUrl<TApi extends Api>(
   baseUrl: string | undefined,
 ): Model<TApi>[] {
   return models.map((model) => (baseUrl ? { ...model, baseUrl } : model));
+}
+
+const BUILTIN_API_STREAMS: Partial<Record<Api, () => ProviderStreams>> = {
+  'anthropic-messages': anthropicMessagesApi,
+  'openai-responses': openAIResponsesApi,
+  'openai-completions': openAICompletionsApi,
+};
+
+/**
+ * Streams for a resolved model without pi-ai's compat dispatcher. The
+ * registered app provider wins (it carries Chickpea's auth and attachment
+ * policy); a built-in catalog provider Flue registered at boot falls back to
+ * the matching API implementation, which reads `options.apiKey` directly.
+ */
+export function providerStreamsForModel(model: Model<Api>): ProviderStreams {
+  const registered = registeredPiProvider(model.provider);
+  if (registered) return registered;
+  const api = BUILTIN_API_STREAMS[model.api];
+  if (!api) {
+    throw new Error(`No API implementation is bundled for "${model.api}" (${model.provider}/${model.id}).`);
+  }
+  return api();
 }

@@ -1,4 +1,4 @@
-import { setProvider } from '@flue/runtime';
+import { registerPiProvider } from './config/pi-provider-registry.ts';
 import { isRecord } from './security/content-validation.ts';
 import {
   cloudflareBindingProvider,
@@ -26,7 +26,7 @@ const GPT_OSS_DEFAULT_MAX_TOKENS = 8_192;
  * imports it or registers a keyless `cloudflare/*` provider.
  */
 export function registerCloudflareBindingProvider(binding: CloudflareAIBinding): void {
-  setProvider(createCloudflareBindingProvider(binding));
+  registerPiProvider(createCloudflareBindingProvider(binding));
 }
 
 /** Pure provider seam used to apply the same attachment policy as Pi APIs. */
