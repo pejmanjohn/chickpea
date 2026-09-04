@@ -136,6 +136,8 @@ export interface AgentAvatarRevision {
   seed?: string;
   /** Immutable public asset used for future Slack messages. */
   url?: string;
+  /** Prior generated selections, in revision order, for immutable asset URLs. */
+  generatedSeedHistory?: Array<{ throughRevision: number; seed: string }>;
 }
 
 /** Desired and observed Slack address state owned directly by an Agent. */

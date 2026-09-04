@@ -59,6 +59,10 @@ import { addColumnIfMissing, tableExists } from '../state/schema-links.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import {
+  isDefaultAgentAvatarSeed,
+  nextDefaultAgentAvatarSeed,
+} from '../slack/agent-presence/default-avatar-pool.ts';
+import {
   CHICKPEA_AGENT_ID,
   reservedAgentIdentityField,
 } from './agent-id.ts';
@@ -417,6 +421,7 @@ export class ConfigStoreLogic {
     this.legacyChannelBehaviorColumns = channelSql.includes('participation_mode') &&
       channelSql.includes('additional_instructions');
     this.seedOnce(seed);
+    this.migrateLegacyAgentAvatars();
   }
 
   ensureWorkspaceInstallation(input: EnsureWorkspaceInstallationInput): WorkspaceInstallation {
@@ -1688,7 +1693,7 @@ export class ConfigStoreLogic {
     validateUserAgent(agent);
     let inserted;
     try {
-      inserted = this.insertAgent(agent);
+      inserted = this.db.transaction(() => this.insertAgent(agent));
     } catch (err) {
       if (isConstraintViolation(err)) {
         throw new AgentExistsError(agent.id);
@@ -1711,6 +1716,33 @@ export class ConfigStoreLogic {
     }
     const model = patch.model === undefined ? (current.model ?? null) : patch.model;
     const next = { ...current, ...patch, id: agentId };
+    const previousAvatar = current.slackPresence?.avatar;
+    const presence = next.slackPresence;
+    if (presence) {
+      let avatar = { ...presence.avatar };
+      if (avatar.kind === 'generated' && !isDefaultAgentAvatarSeed(avatar.seed ?? '')) {
+        avatar = {
+          kind: 'generated',
+          revision: Math.max(avatar.revision, (previousAvatar?.revision ?? 0) + 1),
+          seed: this.nextAgentAvatarSeed(agentId),
+        };
+      }
+      const history = [...(previousAvatar?.generatedSeedHistory ?? [])];
+      if (previousAvatar?.kind === 'generated' &&
+          (avatar.kind !== 'generated' || avatar.seed !== previousAvatar.seed)) {
+        if (avatar.revision <= previousAvatar.revision) {
+          throw new Error('A changed avatar requires a new immutable revision');
+        }
+        history.push({
+          throughRevision: previousAvatar.revision,
+          seed: previousAvatar.seed ?? agentId,
+        });
+      }
+      next.slackPresence = {
+        ...presence,
+        avatar: { ...avatar, ...(history.length ? { generatedSeedHistory: history } : {}) },
+      };
+    }
     validateUserAgent(next);
     if (current.enabled && !next.enabled) {
       this.requireAgentHasNoBlockingReferences(agentId);
@@ -2345,6 +2377,18 @@ export class ConfigStoreLogic {
     if (kind === 'system' && !options.allowSystem) {
       throw new Error('System Agents can only be materialized through the Stage 2 gate');
     }
+    let presence = agent.slackPresence ?? defaultAgentSlackPresence(agent.id, agent.name);
+    if (kind === 'user' && presence.avatar.kind === 'generated' &&
+        !isDefaultAgentAvatarSeed(presence.avatar.seed ?? '')) {
+      presence = {
+        ...presence,
+        avatar: {
+          kind: 'generated',
+          revision: 1,
+          seed: this.nextAgentAvatarSeed(agent.id),
+        },
+      };
+    }
     return this.db.run(
       `INSERT INTO config_agents (
         id, agent_kind, revision, name, description, instructions, enabled, lifecycle,
@@ -2365,7 +2409,7 @@ export class ConfigStoreLogic {
       agent.configurationGeneration ?? 1,
       kind === 'system'
         ? 'null'
-        : JSON.stringify(agent.slackPresence ?? defaultAgentSlackPresence(agent.id, agent.name)),
+        : JSON.stringify(presence),
       agent.archivedAt ?? null,
       agent.model ?? null,
       JSON.stringify(agent.skills ?? []),
@@ -2373,6 +2417,48 @@ export class ConfigStoreLogic {
       JSON.stringify(agent.apiConnections ?? []),
       JSON.stringify(agent.repositories ?? []),
     );
+  }
+
+  private nextAgentAvatarSeed(nonce: string): string {
+    return nextDefaultAgentAvatarSeed(this.listUserAgents().flatMap((agent) => {
+      const avatar = agent.slackPresence?.avatar;
+      return avatar?.kind === 'generated' && isDefaultAgentAvatarSeed(avatar.seed ?? '')
+        ? [avatar.seed!] : [];
+    }), nonce);
+  }
+
+  private migrateLegacyAgentAvatars(): void {
+    if (!tableExists(this.db, 'config_agents')) return;
+    this.db.transaction(() => {
+      for (const agent of this.listUserAgents()) {
+        const avatar = agent.slackPresence?.avatar;
+        if (avatar?.kind === 'generated' && !isDefaultAgentAvatarSeed(avatar.seed ?? '')) {
+          // Persist a new selection and revision together. Dropping the old URL
+          // makes presentation use this installation's public asset endpoint;
+          // gateway publication can subsequently mirror those exact bytes.
+          const revision = avatar.revision + 1;
+          if (!Number.isSafeInteger(revision)) throw new Error('Avatar revision is exhausted');
+          const presence: AgentSlackPresence = {
+            ...agent.slackPresence!,
+            avatar: {
+              kind: 'generated',
+              revision,
+              seed: this.nextAgentAvatarSeed(agent.id),
+              generatedSeedHistory: [
+                ...(avatar.generatedSeedHistory ?? []),
+                { throughRevision: avatar.revision, seed: avatar.seed ?? agent.id },
+              ],
+            },
+          };
+          // A cosmetic upgrade must not invalidate behavior generations or
+          // change the proven provenance of an untouched starter model pin.
+          this.db.run(
+            'UPDATE config_agents SET slack_presence_json = ?, revision = revision + 1 WHERE id = ?',
+            JSON.stringify(presence), agent.id,
+          );
+        }
+      }
+    });
   }
 
   private installConfigSchema(): void {
