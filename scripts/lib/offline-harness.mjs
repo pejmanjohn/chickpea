@@ -37,7 +37,7 @@ export function loadFake() {
 
 export async function seedOfflineDemoChannelConfig(stateDbPath, options = {}) {
   const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
-  const { seededAgents, demoAgentChannelGrants } =
+  const { createDemoStarterAgent, demoAgentChannelGrants } =
     await loadTsModule('src/config/seed.ts');
 
   const demoGrants = options.workspaceId && options.channelId
@@ -49,7 +49,7 @@ export async function seedOfflineDemoChannelConfig(stateDbPath, options = {}) {
     : demoAgentChannelGrants;
 
   const store = new SqliteConfigStore(stateDbPath, {
-    agents: seededAgents,
+    agents: [createDemoStarterAgent()],
     grants: demoGrants,
   });
   for (const grant of demoGrants) {

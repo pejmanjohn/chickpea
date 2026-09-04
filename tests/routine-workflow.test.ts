@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import type { AgentInstanceHandle, AgentReply, DispatchReceipt } from '@flue/runtime';
 
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
+import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
   executeRoutineOccurrence,
@@ -978,8 +979,8 @@ test('routine deadline bounds a stalled durable Usage owner before dispatch', { 
 test('routine Usage and Work settle with the same canonical execution correlation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-correlation-'));
   const path = join(directory, 'state.sqlite');
+  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
   const routines = new SqliteRoutineStore(path, () => NOW);
-  const configuration = new SqliteConfigStore(path);
   const usage = new SqliteUsageStore(':memory:');
   const work = new SqliteWorkStore(path, { now: () => NOW });
   const telemetry = telemetrySink();
@@ -1024,8 +1025,8 @@ test('routine Usage and Work settle with the same canonical execution correlatio
 test('permanent Work initialization failure is one gap and never redispatches', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-work-gap-'));
   const path = join(directory, 'state.sqlite');
+  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
   const routines = new SqliteRoutineStore(path, () => NOW);
-  const configuration = new SqliteConfigStore(path);
   const telemetry = telemetrySink();
   const events: string[] = [];
   try {
@@ -1066,8 +1067,8 @@ test('routine deadline bounds a stalled durable Work owner before dispatch', { t
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-work-deadline-'));
   const path = join(directory, 'state.sqlite');
+  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
   const routines = new SqliteRoutineStore(path, () => NOW);
-  const configuration = new SqliteConfigStore(path);
   const telemetry = telemetrySink();
   const events: string[] = [];
   const deadlineAt = Date.now() + 50;
@@ -1117,8 +1118,8 @@ test('routine deadline bounds a stalled durable Work owner before dispatch', { t
 test('Work terminal failure after Slack delivery cannot post or replay twice', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-terminal-gap-'));
   const path = join(directory, 'state.sqlite');
+  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
   const routines = new SqliteRoutineStore(path, () => NOW);
-  const configuration = new SqliteConfigStore(path);
   const durableWork = new SqliteWorkStore(path, { now: () => NOW });
   const telemetry = telemetrySink();
   const productEvents: unknown[] = [];

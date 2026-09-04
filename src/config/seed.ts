@@ -22,18 +22,42 @@ export function isSeedCloudflareModelPin(model: string | undefined): boolean {
 export type SeedTarget = 'cloudflare' | 'node';
 export type SeedChannelGrant = AgentChannelGrantInput;
 
-export function createSeededAgents(
+/**
+ * A fresh install seeds no user Agent. The workspace installation records the
+ * Chickpea system principal as its default and the first real teammate is
+ * created by the person during onboarding, so nothing generic sits in the
+ * Agents list on day one.
+ */
+export function createSeededAgents(): CustomAgentConfig[] {
+  return [];
+}
+
+/**
+ * The keyless first-run Workspace default. On Cloudflare the Workers AI
+ * binding answers before anyone adds a provider key; on Node there is no
+ * keyless model, so the default stays pending until onboarding chooses one.
+ */
+export function seededWorkspaceModelDefault(
   options: { target?: SeedTarget } = {},
-): CustomAgentConfig[] {
+): string | undefined {
   const target = options.target ?? (isCloudflareTarget() ? 'cloudflare' : 'node');
-  const defaultAgent: CustomAgentConfig = {
+  return target === 'cloudflare' ? SEED_CLOUDFLARE_MODEL_PIN : undefined;
+}
+
+/**
+ * Harness-only starter Agent for offline scenarios, parity runs, and verify
+ * scripts that need one generic user Agent to exist before a test creates its
+ * own. Never part of the production seed.
+ */
+export function createDemoStarterAgent(
+  options: { target?: SeedTarget } = {},
+): CustomAgentConfig {
+  const target = options.target ?? (isCloudflareTarget() ? 'cloudflare' : 'node');
+  return {
     id: 'agent_default',
     kind: 'user',
     revision: 1,
     name: 'Sprout',
-    // PROFILE layer only — the runtime composes the RUNTIME and GUARDRAIL layers
-    // separately. A neutral, general-purpose voice with zero product-specific
-    // opinion, so first-run onboarding involves no profile decisions.
     instructions:
       [
         'You are a general-purpose Slack assistant.',
@@ -49,7 +73,6 @@ export function createSeededAgents(
     apiConnections: [],
     repositories: [],
   };
-  return [defaultAgent];
 }
 
 /** Product-owned system principal, materialized only after the Stage 2 fleet gate. */

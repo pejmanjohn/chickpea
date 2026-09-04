@@ -10,6 +10,7 @@ import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
@@ -2092,10 +2093,11 @@ test('Agent create owns its handle, generated avatar, edit policy, and creator',
 test('activated Agents inherit the Workspace default and a pinned Agent can reset to it', async () => {
   const fixture = harness();
   try {
-    const base = (await fixture.store.listAgents())[0]!;
+    const base = await fixture.store.createAgent(createDemoStarterAgent());
     const installation = await fixture.store.ensureWorkspaceInstallation({
       workspaceId: 'T_TEST',
       transportMode: 'direct',
+      runtimeContract: 'legacy',
       defaultAgentId: base.id,
     });
     await fixture.store.putWorkspaceModelDefault({
@@ -2176,10 +2178,11 @@ test('activated Agents inherit the Workspace default and a pinned Agent can rese
 test('the Chickpea system Agent stays hidden across direct and nested Admin routes', async () => {
   const fixture = harness();
   try {
-    const base = (await fixture.store.listAgents())[0]!;
+    const base = await fixture.store.createAgent(createDemoStarterAgent());
     const installation = await fixture.store.ensureWorkspaceInstallation({
       workspaceId: 'T_TEST',
       transportMode: 'direct',
+      runtimeContract: 'legacy',
       defaultAgentId: base.id,
     });
     const workspaceDefault = await fixture.store.putWorkspaceModelDefault({

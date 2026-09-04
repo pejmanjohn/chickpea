@@ -42,7 +42,7 @@ test('Slack sign-in is the only visible login path and preserves a safe Admin de
   assert.doesNotMatch(html, /invitation-only|invited to manage/i);
   assert.match(html, /<main[^>]*aria-labelledby="auth-title"/);
   assert.doesNotMatch(html, /role="status"/);
-  assert.match(html, /autofocus/);
+  assert.doesNotMatch(html, /autofocus/);
   assert.match(html, /@media\(max-width:/);
   assert.doesNotMatch(html, /password|forgot|sign up|cloudflare access|admin token|migrate/i);
 });

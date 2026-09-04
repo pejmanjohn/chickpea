@@ -6,7 +6,7 @@ Do not deploy or activate from a development session unless the operator has exp
 
 ## Contract
 
-Stage 1 is an activation-capable compatibility build. It continues to run the legacy routing contract until the durable installation is activated. Stage 2 makes `chickpea-v1` the creation contract for new installations by calling `ensureWorkspaceInstallation` with `runtimeContract: 'chickpea-v1'`.
+Stage 1 is an activation-capable compatibility build. It continues to run the legacy routing contract until the durable installation is activated. Stage 2 is in place: `ensureWorkspaceInstallation` defaults to `chickpea-v1`, so every new installation is created with the Chickpea system principal as its default Agent and no seeded user Agent. The `legacy` contract is only reachable by passing it explicitly, which product code never does.
 
 Activation does all of the following in one storage transaction:
 
@@ -93,7 +93,7 @@ Rollback retains the Chickpea system row so durable identity is not destroyed. I
 
 ## Stage 2 and new installations
 
-After activated workspaces pass acceptance, deploy the post-gate build that supplies `runtimeContract: 'chickpea-v1'` when it calls `ensureWorkspaceInstallation`. This creates the installation, Workspace default, Chickpea principal, and starter-pin disposition atomically for new workspaces. Do not implement this gate with an environment-variable branch.
+New installations are created on `chickpea-v1` by default. One storage transaction materializes the Chickpea principal, records it as the installation default, bootstraps the Workspace default (the keyless Workers AI pin on Cloudflare, pending on Node), and marks the cutover activated. A fresh install seeds no user Agent; the first teammate is created by the person during onboarding. The starter-pin disposition only applies to compatibility installs that still carry the generated starter Agent. This gate is not an environment-variable branch.
 
 Thread continuity follows the durable route owner and incarnation. A deliberate owner transfer may rebuild bounded public Slack context for the new Agent; it does not copy private Agent state.
 

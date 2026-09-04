@@ -12,6 +12,7 @@ import {
 } from '../src/config/errors.ts';
 import type { StateRpcResult, TagStateRpc } from '../src/config/state-rpc.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { createDemoStarterAgent } from '../src/config/seed.ts';
 import type {
   AgentChannelGrant,
   AgentScheduleReference,
@@ -37,19 +38,47 @@ function agent(id: string, name: string) {
   };
 }
 
-test('fresh Agent platform state designates one normal default Agent', async () => {
+test('a fresh install seeds no user Agent and makes Chickpea the installation default', async () => {
   const store = new SqliteConfigStore(':memory:');
   try {
+    assert.deepEqual(await store.listUserAgents(), []);
     const installation = await store.ensureWorkspaceInstallation({
       workspaceId: 'T_PLATFORM',
       transportMode: 'direct',
     });
     const agents = await store.listAgents();
 
-    assert.equal(agents.length, 1);
-    assert.equal(installation.defaultAgentId, agents[0]?.id);
-    assert.equal(agents[0]?.lifecycle, 'active');
-    assert.equal(agents[0]?.slackPresence?.desiredState, 'unpublished');
+    assert.equal(installation.runtimeContract, 'chickpea-v1');
+    assert.equal(installation.defaultAgentId, 'agent_chickpea');
+    assert.deepEqual(agents.map(({ id, kind }) => ({ id, kind })), [
+      { id: 'agent_chickpea', kind: 'system' },
+    ]);
+    assert.deepEqual(await store.listUserAgents(), []);
+    assert.equal((await store.preflightChickpeaCutover('T_PLATFORM')).state, 'activated');
+  } finally {
+    store.close();
+  }
+});
+
+test('a compatibility install still requires and designates one user default Agent', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  try {
+    await assert.rejects(
+      store.ensureWorkspaceInstallation({
+        workspaceId: 'T_PLATFORM',
+        transportMode: 'direct',
+        runtimeContract: 'legacy',
+      }),
+      /requires an active Agent/,
+    );
+    await store.createAgent(createDemoStarterAgent());
+    const installation = await store.ensureWorkspaceInstallation({
+      workspaceId: 'T_PLATFORM',
+      transportMode: 'direct',
+      runtimeContract: 'legacy',
+    });
+    assert.equal(installation.runtimeContract, 'legacy');
+    assert.equal(installation.defaultAgentId, 'agent_default');
   } finally {
     store.close();
   }
@@ -132,11 +161,12 @@ test('Agent grants are many-to-many and thread routes retain their coordinate', 
 });
 
 test('the designated default Agent cannot be archived without a replacement', async () => {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', { agents: [createDemoStarterAgent()] });
   try {
     await store.ensureWorkspaceInstallation({
       workspaceId: 'T_PLATFORM',
       transportMode: 'direct',
+      runtimeContract: 'legacy',
     });
 
     await assert.rejects(

@@ -148,6 +148,7 @@ test('Workspace default reads expose live inheritance health and exclude drafts 
     const installation = await config.ensureWorkspaceInstallation({
       workspaceId: 'T_TEST',
       transportMode: 'direct',
+      runtimeContract: 'legacy',
       defaultAgentId: base.id,
     });
     await config.putWorkspaceModelDefault({
@@ -213,7 +214,7 @@ test('Workspace default updates are optimistic and return the current value on c
       apiConnections: [], repositories: [],
     });
     await config.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: base.id,
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: base.id, runtimeContract: 'legacy',
     });
     const saved = await app.request('/admin/api/workspace-model-default', {
       method: 'PUT',
@@ -307,7 +308,7 @@ test('cutover operator APIs require explicit confirmation and preserve rollback 
       apiConnections: [], repositories: [],
     });
     await config.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: base.id,
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: base.id, runtimeContract: 'legacy',
     });
     await config.putAgentThreadRoute({
       workspaceId: 'T_TEST', channelId: 'D_EXISTING', threadTs: '100.1',
@@ -439,7 +440,7 @@ test('cutover activation fails closed when the selected provider is unavailable'
       apiConnections: [], repositories: [],
     });
     await config.ensureWorkspaceInstallation({
-      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: base.id,
+      workspaceId: 'T_TEST', transportMode: 'direct', defaultAgentId: base.id, runtimeContract: 'legacy',
     });
     await config.putWorkspaceModelDefault({
       workspaceId: 'T_TEST',

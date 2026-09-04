@@ -12,6 +12,7 @@ import {
   getMemoryStateStore,
 } from '../src/config/state-backend.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
+import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { prepareMemoryTurn } from '../src/memory/runtime.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import { AgentUserGroupLookupLimiter } from '../src/slack/agent-presence/reconciler.ts';
@@ -25,11 +26,12 @@ test('an explicit base-app management mention stays memoryless without a default
   closeNodeStateStores();
   try {
     const config = getConfigStore();
-    const agent = await config.getAgent('agent_default');
+    const agent = await config.createAgent(createDemoStarterAgent());
     const installation = await config.ensureWorkspaceInstallation({
       workspaceId: 'T_MANAGEMENT',
       teamId: 'T_MANAGEMENT',
       transportMode: 'direct',
+      runtimeContract: 'legacy',
       defaultAgentId: agent.id,
       botUserId: 'U_CHICKPEA',
     });
@@ -128,11 +130,12 @@ test('an activated Chickpea management mention stays memoryless with a valid del
   closeNodeStateStores();
   try {
     const config = getConfigStore();
-    const userAgent = await config.getAgent('agent_default');
+    const userAgent = await config.createAgent(createDemoStarterAgent());
     const installed = await config.ensureWorkspaceInstallation({
       workspaceId: 'T_ACTIVATED',
       teamId: 'T_ACTIVATED',
       transportMode: 'direct',
+      runtimeContract: 'legacy',
       defaultAgentId: userAgent.id,
       botUserId: 'U_CHICKPEA',
     });
@@ -262,8 +265,9 @@ test('an ordinary stale Slack group mapping repairs into the Agent memory path',
         avatar: { kind: 'generated', revision: 1, seed: 'support' },
       },
     });
+    await config.createAgent(createDemoStarterAgent());
     const installation = await config.ensureWorkspaceInstallation({
-      workspaceId: 'T_REPAIR', teamId: 'T_REPAIR', transportMode: 'direct',
+      workspaceId: 'T_REPAIR', teamId: 'T_REPAIR', transportMode: 'direct', runtimeContract: 'legacy',
       defaultAgentId: 'agent_default', botUserId: 'U_CHICKPEA',
     });
     await config.updateWorkspaceInstallation(

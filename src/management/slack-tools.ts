@@ -17,6 +17,7 @@ import {
 import { tagStateStub, type TagStateRpc } from '../config/state-rpc.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
+import { firstTeammateInstruction } from './first-teammate.ts';
 import {
   slackApplyWorkspaceChangesValibotSchema,
   importSkillValibotSchema,
@@ -497,6 +498,7 @@ export function useWorkspaceManagementSlackTools(
     'For Agent-design brainstorming or capability questions about Agent configuration involving services, connections, repositories, models, sandboxes, or schedules, call inspect_workspace before naming or recommending specific capabilities. Ground the answer in that result instead of answering from general knowledge or offering to inspect later. For an explicit request to connect a named service to this Agent, call prepare_connector_setup directly; that tool validates catalog availability and requester authority, so do not call inspect_workspace first. Give the requester its returned actionLinks, describe it only as a secure Chickpea link, and never ask for credentials in Slack.',
     'Standalone requests for future or repeated work belong to manage_scheduled_work, even when the requester does not use the word “schedule” (for example, “check this again in 5 minutes”). “Again” means create a fresh follow-up unless the requester explicitly identifies an existing routine to edit. Keep “in N minutes” relative by using scheduleKind in plus minutes; do not compute a wall-clock time. “Tell me anything new” implies outputPolicy post_on_change. Clear create, edit, pause, resume, disable, and run-now actions apply immediately without approval. Before acting on an existing routine, call inspect_routines and use an exact routine ID and current version where required; ask the requester to disambiguate if more than one routine matches. Deletion is deliberately excluded from manage_scheduled_work because it is irreversible: for a clear delete request, first call inspect_routines, then send the exact delete_routine operation to propose_workspace_changes, show presentation.slack, and wait for explicit requester approval before calling confirm_workspace_change. Never use apply_workspace_changes for deletion. Apart from deletion, do not route standalone scheduled work through propose_workspace_changes or apply_workspace_changes. Compound Agent-configuration changes still use the normal proposal flow.',
   ].join(' '));
+  if (signal.agentId === CHICKPEA_AGENT_ID) useInstruction(firstTeammateInstruction());
 
   useTool({
     name: 'manage_scheduled_work',

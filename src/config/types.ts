@@ -311,7 +311,7 @@ export interface EnsureWorkspaceInstallationInput {
   appId?: string;
   botUserId?: string;
   gatewayBindingId?: string;
-  /** Internal fleet gate. Omitted by the Stage 1 compatibility build. */
+  /** Defaults to chickpea-v1. 'legacy' exists only for compatibility installs. */
   runtimeContract?: WorkspaceRuntimeContract;
 }
 
