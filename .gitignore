@@ -14,6 +14,28 @@ coverage/
 tmp/
 .worktrees/
 
+# Live-verification output is private operator state, never public source.
+/evidence/
+/logs/
+/outputs/
+/screenshots/
+/transcripts/
+/qa/live/artifacts/
+/qa/live/evidence/
+/qa/live/logs/
+/qa/live/output/
+/qa/live/outputs/
+/qa/live/private/
+/qa/live/resolved/
+/qa/live/runs/
+/qa/live/screenshots/
+/qa/live/transcripts/
+/qa/live/**/*.journal.jsonl
+/qa/live/**/*.log
+/qa/live/**/*.snapshot.json
+/qa/live/**/*.target.json
+/qa/live/**/*.transcript.txt
+
 # Internal working docs (plans, decision records, rehearsal artifacts) stay
 # out of the public repository and its verified source export.
 docs/

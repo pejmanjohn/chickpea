@@ -87,6 +87,8 @@ const forbiddenSourcePathRoots = [
   exportPath('.gstack'),
   exportPath('.superpowers'),
   exportPath('evidence'),
+  exportPath('logs'),
+  exportPath('outputs'),
   exportPath('screenshots'),
   exportPath('transcripts'),
   exportPath('tmp'),
@@ -156,8 +158,8 @@ const liveVerifierExportPolicy = Object.freeze({
 });
 
 const forbiddenLiveVerifierArtifactPaths = [
-  /^qa\/live\/(?:artifacts|evidence|private|resolved|runs|screenshots|transcripts)(?:\/|$)/i,
-  /^qa\/live\/.*(?:\.journal\.jsonl|\.snapshot\.json|\.target\.json|\.transcript\.txt)$/i,
+  /^qa\/live\/(?:artifacts|evidence|logs|output|outputs|private|resolved|runs|screenshots|transcripts)(?:\/|$)/i,
+  /^qa\/live\/.*(?:\.journal\.jsonl|\.log|\.snapshot\.json|\.target\.json|\.transcript\.txt)$/i,
   /(?:^|\/)(?:doctor-snapshot|private-target|resolved-target|run-journal|target-overlay)(?:[./-]|$)/i,
 ];
 
