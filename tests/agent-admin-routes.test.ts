@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { keepEventLoopAlive } from './helpers/keep-event-loop-alive.ts';
 
 import { Hono } from 'hono';
-import { PhotonImage } from '@cf-wasm/photon';
+import { deflateSync } from 'node:zlib';
 import * as v from 'valibot';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
@@ -4727,9 +4727,7 @@ test('Avatar uploads create a new immutable revision used by later Slack replies
   const fixture = harness();
   try {
     const { agent } = await createAgent(fixture.app);
-    const source = new PhotonImage(Uint8Array.from([24, 92, 61, 255]), 1, 1);
-    const png = Buffer.from(source.get_bytes());
-    source.free();
+    const png = Buffer.from(onePixelPng([24, 92, 61, 255]));
     const response = await fixture.app.request(
       'http://localhost/admin/api/agents/agent_support/avatar',
       {
@@ -4862,3 +4860,36 @@ test('Archive disables the same Slack handle and restore re-enables it', async (
     fixture.settings.close();
   }
 });
+
+function onePixelPng(pixel: readonly number[]): Uint8Array {
+  const crc32 = (value: Uint8Array) => {
+    let crc = 0xffffffff;
+    for (const byte of value) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Uint8Array) => {
+    const typeBytes = new TextEncoder().encode(type);
+    const out = new Uint8Array(12 + data.length);
+    new DataView(out.buffer).setUint32(0, data.length);
+    out.set(typeBytes, 4);
+    out.set(data, 8);
+    const crcInput = new Uint8Array(typeBytes.length + data.length);
+    crcInput.set(typeBytes, 0);
+    crcInput.set(data, typeBytes.length);
+    new DataView(out.buffer).setUint32(8 + data.length, crc32(crcInput));
+    return out;
+  };
+  const header = new Uint8Array(13);
+  new DataView(header.buffer).setUint32(0, 1);
+  new DataView(header.buffer).setUint32(4, 1);
+  header.set([8, 6, 0, 0, 0], 8);
+  return Buffer.concat([
+    Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header),
+    chunk('IDAT', new Uint8Array(deflateSync(Uint8Array.from([0, ...pixel])))),
+    chunk('IEND', new Uint8Array()),
+  ]);
+}

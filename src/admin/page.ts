@@ -16936,21 +16936,51 @@ button.capability-pill { cursor: pointer; }
     render();
   }
 
+  var AVATAR_MAX_BYTES = 512 * 1024;
+  var AVATAR_MAX_DIMENSION = 512;
+
+  // The server stores uploads as sent: it no longer decodes or resizes images.
+  // Downscale oversized photos here; canvas re-encoding also drops camera
+  // metadata before the bytes leave the browser.
+  function downscaleAvatarImage(file) {
+    if (typeof createImageBitmap !== "function" || typeof document === "undefined") return Promise.resolve(file);
+    return createImageBitmap(file).then(function (bitmap) {
+      var scale = Math.min(1, AVATAR_MAX_DIMENSION / Math.max(bitmap.width, bitmap.height));
+      if (scale === 1 && file.size <= AVATAR_MAX_BYTES) {
+        bitmap.close();
+        return file;
+      }
+      var canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      return canvasBlob(canvas, "image/png").then(function (png) {
+        if (png && png.size <= AVATAR_MAX_BYTES) return png;
+        return canvasBlob(canvas, "image/jpeg", 0.88).then(function (jpeg) {
+          return jpeg && (!png || jpeg.size < png.size) ? jpeg : (png || file);
+        });
+      });
+    }).catch(function () { return file; });
+  }
+
+  function canvasBlob(canvas, type, quality) {
+    return new Promise(function (resolve) { canvas.toBlob(resolve, type, quality); });
+  }
+
   function uploadProfileAvatar(file) {
     var draft = state.profileDraft;
     if (!draft || !draft.id || !file || state.profilePresenceMutation) return;
     state.profileError = "";
-    if (file.size > 512 * 1024) {
-      state.profileError = "Avatar images must be 512 KB or smaller.";
-      render();
-      return;
-    }
     var mutation = beginProfilePresenceMutation("avatar", draft.id);
     if (!mutation) return;
-    Promise.resolve(file.arrayBuffer()).then(function (buffer) {
-      return postJson("/admin/api/agents/" + encodeURIComponent(draft.id) + "/avatar", "PUT", {
-        contentType: file.type,
-        base64: base64FromArrayBuffer(buffer)
+    downscaleAvatarImage(file).then(function (image) {
+      if (image.size > AVATAR_MAX_BYTES) throw new Error("Avatar images must be 512 KB or smaller.");
+      return Promise.resolve(image.arrayBuffer()).then(function (buffer) {
+        return postJson("/admin/api/agents/" + encodeURIComponent(draft.id) + "/avatar", "PUT", {
+          contentType: image.type || file.type,
+          base64: base64FromArrayBuffer(buffer)
+        });
       });
     }).then(function (body) {
       if (!profilePresenceMutationIsCurrent(mutation)) return;
