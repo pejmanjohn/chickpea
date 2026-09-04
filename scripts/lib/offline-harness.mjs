@@ -37,7 +37,7 @@ export function loadFake() {
 
 export async function seedOfflineDemoChannelConfig(stateDbPath, options = {}) {
   const { SqliteConfigStore } = await loadTsModule('src/config/store.ts');
-  const { seededAgents, demoAgentChannelGrants } =
+  const { createDemoStarterAgent, demoAgentChannelGrants } =
     await loadTsModule('src/config/seed.ts');
 
   const demoGrants = options.workspaceId && options.channelId
@@ -49,13 +49,18 @@ export async function seedOfflineDemoChannelConfig(stateDbPath, options = {}) {
     : demoAgentChannelGrants;
 
   const store = new SqliteConfigStore(stateDbPath, {
-    agents: seededAgents,
+    agents: [createDemoStarterAgent()],
     grants: demoGrants,
   });
   for (const grant of demoGrants) {
+    // The offline verifiers exercise the granted default Agent through base-app
+    // mentions (history read, status, streamed final). That is the legacy
+    // routing contract; on chickpea-v1 a base mention routes to the Chickpea
+    // system principal instead. Pin the contract the scenarios assert.
     await store.ensureWorkspaceInstallation({
       workspaceId: grant.workspaceId,
       transportMode: 'direct',
+      runtimeContract: 'legacy',
       defaultAgentId: grant.agentId,
       teamId: grant.workspaceId,
     });

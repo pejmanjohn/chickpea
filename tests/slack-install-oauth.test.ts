@@ -121,7 +121,8 @@ test('confidential callback validates the issued bot capabilities and waits for 
     const workspaceInstallation = await fixture.config.getWorkspaceInstallation('TACME');
     assert.equal(workspaceInstallation?.revision, 3);
     assert.equal(workspaceInstallation?.transportMode, 'direct');
-    assert.equal(workspaceInstallation?.defaultAgentId, 'agent_default');
+    assert.equal(workspaceInstallation?.runtimeContract, 'chickpea-v1');
+    assert.equal(workspaceInstallation?.defaultAgentId, 'agent_chickpea');
     assert.equal(workspaceInstallation?.teamId, 'TACME');
     assert.equal(workspaceInstallation?.appId, 'A12345678');
     assert.equal(workspaceInstallation?.botUserId, 'UBOT');

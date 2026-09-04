@@ -373,7 +373,7 @@ async function seedConfig(store, runtimeContract) {
   const installation = await store.ensureWorkspaceInstallation({
     workspaceId: WORKSPACE_ID,
     transportMode: 'direct',
-    ...(runtimeContract === 'chickpea-v1' ? { runtimeContract } : {}),
+    runtimeContract,
     defaultAgentId: 'agent_research',
     teamId: WORKSPACE_ID,
     appId: 'AVISUAL',

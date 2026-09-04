@@ -7,7 +7,7 @@ import { connectorSkillsForConnections } from '../src/config/connector-skills.ts
 import {
   CONNECTION_CATALOG_PRESETS,
 } from '../src/config/presets.ts';
-import { seededAgents } from '../src/config/seed.ts';
+import { createDemoStarterAgent } from '../src/config/seed.ts';
 
 test('connection removal retries a schedule cleanup race once', () => {
   const page = renderAdminPage();
@@ -11812,7 +11812,7 @@ test('onboarding never paints normal Admin navigation before its first routed re
 test('onboarding skips channel publication, validates a provider, requires a model, and opens a Chickpea DM', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
-    agents: [seededAgents[0]],
+    agents: [createDemoStarterAgent()],
     providers: [
       { id: 'anthropic', status: 'missing', modelCount: null },
       { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscription: { state: 'disconnected', updatedAt: 0 } },
@@ -11894,7 +11894,7 @@ test('onboarding skips channel publication, validates a provider, requires a mod
   assert.doesNotMatch(harness.app.innerHTML, /Waiting for Chickpea to reply&amp;hellip;/);
   assert.match(
     harness.app.innerHTML,
-    /Give me three useful ways you can help me, each with an example prompt I could try next\./,
+    /Hi Chickpea\. I&#39;m on the marketing team\. What&#39;s a good first teammate for us\?/,
   );
   assert.match(harness.app.innerHTML, /data-action="onboarding-proceed-dashboard"[^>]*>Proceed to Dashboard<\/button>/);
   assert.match(harness.app.innerHTML, /Step 4 of 4/);
@@ -11989,7 +11989,7 @@ test('onboarding translates provider and model conflicts into recovery copy', as
 test('onboarding can finish from Try Chickpea without waiting for a Slack reply', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding',
-    agents: [seededAgents[0]],
+    agents: [createDemoStarterAgent()],
     onboarding: {
       stage: 'try',
       revision: '{"version":2,"state":"active","tryStartedAt":1800000000000}',
@@ -14761,13 +14761,12 @@ test('the profile Model picker suppresses configured provider groups with no fav
   assert.match(harness.app.innerHTML, /Star models in Settings to add picker shortcuts/);
 });
 
-test('node-target Sprout seed is unpinned and inherits the Workspace default', async () => {
-  const defaultProfile = seededAgents.find((agent) => agent.id === 'agent_default');
-  assert.ok(defaultProfile);
+test('an unpinned Agent inherits the Workspace default in the editor', async () => {
+  const defaultProfile = createDemoStarterAgent({ target: 'node' });
   assert.equal(defaultProfile.model, undefined);
 
   const harness = runAdminPageHarness({
-    agents: seededAgents,
+    agents: [defaultProfile],
     assignments: [],
     providers: [
       { id: 'anthropic', status: 'missing', modelCount: null },

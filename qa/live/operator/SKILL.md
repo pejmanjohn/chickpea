@@ -80,10 +80,24 @@ blocked rather than passing them or repeatedly asking the same question.
    for target resolution and claims. Refresh readiness when build, actor, claim,
    browser, or target state changes. A status label or live PID alone is not
    evidence that Slack is working.
-5. When deploying, resolve the registered target, AUTH_DB ID, and schema through
-   the environment layer and set `CHICKPEA_DEPLOY_TARGET` explicitly for the
-   guarded `npm run deploy`. Never use a bare/default deploy to reach a QA lane.
-   Preserve source/claim fences. Verification does not imply landing on main.
+5. When deploying, set `CHICKPEA_DEPLOY_TARGET=<alias>` explicitly for the
+   guarded `npm run deploy`. The wrapper resolves the claimed lane's AUTH_DB ID
+   and schema generation from its own preflight; explicit
+   `CHICKPEA_DEPLOY_AUTH_DB_ID` / `CHICKPEA_DEPLOY_SCHEMA_GENERATION` still win.
+   The preflight reads every active lane's live-authority credential, not only
+   the claimed one: from `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_URL` and
+   `_READ_TOKEN`, or from the owner-only file
+   `~/.chickpea/lane-credentials/<color>-live.json` (`origin`,
+   `authorityReadToken`). A `LIVE_AUTHORITY_READ_TOKEN_INVALID` on a lane you
+   did not claim means that other lane's credential is missing. Never print
+   the token. Never use a bare/default deploy to reach a QA lane. Preserve
+   source/claim fences. Verification does not imply landing on main.
+6. `npm run env -- attest <alias>` returns one JSON object whose `targetOverlay`
+   and `doctorSnapshot` members are the two doctor inputs; write each to its
+   own private file before `npm run verify:live:doctor -- --target <overlay>
+   --snapshot <snapshot>`. A doctor `missing_actor` diagnostic is a registry
+   gap (no registered actor alias for that lane), not a build failure: report
+   it, and continue with the attended checklist as the signed-in test actor.
 
 Use one suitable lane by default. Both colors are needed when explicitly
 requested or testing cross-lane isolation, not for every application change.
@@ -126,6 +140,23 @@ For each action, read the resulting state. After a timeout or ambiguous response
 inspect the UI and native dialogs before retrying. Replay only after proving the
 action did not apply. Retry read-only observations within a bounded window. Do
 not repeat a failed mutation merely to obtain a green result.
+
+When an Agent shows "Thinking…" past about two minutes, treat it as a stall, not
+a slow reply. Capture one bounded `npx wrangler tail <worker> --format json`
+window (30 to 60 seconds) into a private file and stop it. The output is
+pretty-printed JSON objects back to back, not one object per line; split on
+top-level braces before reading. A repeating
+`memory_metric {"event":"delivery_lease","outcome":"rejected"}` from the
+`TagStateStore` entrypoint means the run cannot take the thread's delivery lease
+and is polling; record the thread, the prior owner of that thread, and the
+message that triggered it. Follow
+[runtime observability](../../../docs/runbooks/runtime-observability.md) for the
+rest. Do not send the same request again to "unstick" it.
+
+Instruction and identity changes reach an Agent only on a fresh conversation
+root. Existing threads carry a frozen snapshot of the Agent's effective
+instructions, so a redeployed instruction fix must be verified in a new DM root
+or channel message, never by continuing the thread that showed the failure.
 
 Use exact comparisons for saved instructions, opaque proposal identity, fixture
 values, destination, and resource ownership. Grade ordinary explanatory prose

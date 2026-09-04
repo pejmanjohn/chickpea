@@ -10,7 +10,7 @@ import {
   ConfigStoreLogic,
 } from '../src/config/store.ts';
 import { WorkspaceModelDefaultRevisionConflictError } from '../src/config/errors.ts';
-import { createSeededAgents } from '../src/config/seed.ts';
+import { createDemoStarterAgent, createSeededAgents, seededWorkspaceModelDefault } from '../src/config/seed.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type { StateDb } from '../src/state/state-db.ts';
 
@@ -539,23 +539,34 @@ test('activation fails closed for a missing default or reserved identity collisi
   }
 });
 
-test('a post-gate installation creates Chickpea and its default atomically', () => {
+test('a fresh installation creates Chickpea as its default and the keyless Workspace default atomically', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db, {
-      agents: createSeededAgents({ target: 'cloudflare' }),
-    });
+    const store = new ConfigStoreLogic(db, { agents: createSeededAgents() });
+    assert.deepEqual(store.listUserAgents(), []);
     const installation = store.ensureWorkspaceInstallation({
       workspaceId: 'TNEW',
       transportMode: 'gateway',
-      runtimeContract: 'chickpea-v1',
     });
 
     assert.equal(installation.runtimeContract, 'chickpea-v1');
-    assert.equal(store.getWorkspaceModelDefault('TNEW')?.modelId, 'cloudflare/@cf/zai-org/glm-4.7-flash');
+    assert.equal(installation.defaultAgentId, 'agent_chickpea');
     assert.equal(store.getAgent('agent_chickpea').kind, 'system');
-    assert.equal(store.getAgent('agent_default').model, undefined);
+    assert.deepEqual(store.listUserAgents(), []);
     assert.equal(store.preflightChickpeaCutover('TNEW').state, 'activated');
+    assert.equal(
+      store.getWorkspaceModelDefault('TNEW')?.modelId,
+      seededWorkspaceModelDefault(),
+    );
+    assert.equal(
+      store.getWorkspaceModelDefault('TNEW')?.provenance,
+      seededWorkspaceModelDefault() ? 'installation_bootstrap' : 'migration_pending',
+    );
+    assert.equal(
+      seededWorkspaceModelDefault({ target: 'cloudflare' }),
+      'cloudflare/@cf/zai-org/glm-4.7-flash',
+    );
+    assert.equal(seededWorkspaceModelDefault({ target: 'node' }), undefined);
   } finally {
     db.close();
   }
@@ -597,7 +608,7 @@ test('Workspace default writes use optimistic revisions', () => {
 test('removing an Agent thread route also removes its private public-context rows', () => {
   const db = openStateDb(':memory:');
   try {
-    const store = new ConfigStoreLogic(db);
+    const store = new ConfigStoreLogic(db, { agents: [createDemoStarterAgent()] });
     store.putAgentThreadRoute({
       workspaceId: 'T1', channelId: 'D1', threadTs: '100.1',
       agentId: 'agent_default', agentGeneration: 1,

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { AgentRevisionConflictError } from '../src/config/errors.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
@@ -30,7 +31,7 @@ function turn(patch: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {
 }
 
 async function fixture() {
-  const store = new SqliteConfigStore(':memory:');
+  const store = new SqliteConfigStore(':memory:', { agents: [createDemoStarterAgent()] });
   const first = await store.getAgent('agent_default');
   const support = await store.createAgent({
     id: 'agent_support', name: 'Support', description: 'Answers support questions',
@@ -55,7 +56,7 @@ async function fixture() {
     },
   });
   await store.ensureWorkspaceInstallation({
-    workspaceId: 'T1', transportMode: 'direct', defaultAgentId: first.id,
+    workspaceId: 'T1', transportMode: 'direct', defaultAgentId: first.id, runtimeContract: 'legacy',
   });
   await store.putAgentChannelGrant({
     workspaceId: 'T1', channelId: 'C1', agentId: support.id, status: 'active',

@@ -16,6 +16,7 @@ import {
   seededAgentChannelGrants,
   SEED_CLOUDFLARE_MODEL_PIN,
   isSeedCloudflareModelPin,
+  seededWorkspaceModelDefault,
 } from './seed.ts';
 import {
   type AgentChannelReference,
@@ -427,11 +428,21 @@ export class ConfigStoreLogic {
         `This Chickpea deployment is already connected to Slack workspace ${installed[0]!.workspaceId}.`,
       );
     }
-    const defaultAgentId = input.defaultAgentId ?? this.requireFirstActiveAgent().id;
-    const defaultAgent = this.requireActiveUserAgent(defaultAgentId);
-    const runtimeContract = input.runtimeContract ?? 'legacy';
+    // New installations are created on the chickpea-v1 contract: the Chickpea
+    // system principal is the installation default and answers DMs and base
+    // mentions until the person creates their first teammate. 'legacy' remains
+    // only for compatibility installs that predate the system principal.
+    const runtimeContract = input.runtimeContract ?? 'chickpea-v1';
     const now = Date.now();
     return this.db.transaction(() => {
+      if (runtimeContract === 'chickpea-v1') this.materializeChickpeaAgent();
+      const defaultAgentId = input.defaultAgentId ??
+        (runtimeContract === 'chickpea-v1' ? CHICKPEA_AGENT_ID : this.requireFirstActiveAgent().id);
+      const defaultAgent = defaultAgentId === CHICKPEA_AGENT_ID && runtimeContract === 'chickpea-v1'
+        ? this.requireActiveAgent(defaultAgentId)
+        : this.requireActiveUserAgent(defaultAgentId);
+      const bootstrapModel = defaultAgent.model ??
+        (runtimeContract === 'chickpea-v1' ? seededWorkspaceModelDefault() : undefined);
       this.db.run(
         `INSERT INTO config_workspace_installations (
           workspace_id, revision, transport_mode, runtime_contract, default_agent_id, team_id,
@@ -451,12 +462,11 @@ export class ConfigStoreLogic {
       );
       this.insertWorkspaceModelDefault({
         workspaceId: input.workspaceId,
-        ...(defaultAgent.model ? { modelId: defaultAgent.model } : {}),
-        provenance: defaultAgent.model ? 'installation_bootstrap' : 'migration_pending',
+        ...(bootstrapModel ? { modelId: bootstrapModel } : {}),
+        provenance: bootstrapModel ? 'installation_bootstrap' : 'migration_pending',
       }, now);
       this.prepareCutoverRow(input.workspaceId, now);
       if (runtimeContract === 'chickpea-v1') {
-        this.materializeChickpeaAgent();
         const cleared = this.clearProvenStarterPin(input.workspaceId);
         this.db.run(
           `UPDATE config_chickpea_cutovers

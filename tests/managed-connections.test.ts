@@ -1949,9 +1949,17 @@ test('provider reconciliation batches accounts and skips completed work on retry
       inspect,
     }), { restored: 1, needsAttention: 0, retryable: 0 });
     assert.equal(inspections, 2);
-    assert.equal(scheduleReads, 1, 'one reconciliation pass indexes each Agent schedule list once');
+    assert.equal(
+      scheduleReads,
+      (await config.listAgents()).length,
+      'one reconciliation pass indexes each Agent schedule list once',
+    );
     assert.equal(accountReads, 1, 'one reconciliation pass loads each workspace account list once');
-    assert.equal(bindingReads, 1, 'one reconciliation pass loads each Agent binding list once');
+    assert.equal(
+      bindingReads,
+      (await config.listAgents()).length,
+      'one reconciliation pass loads each Agent binding list once',
+    );
     const reconciled = await config.listConnectionAccounts('T_MANAGED');
     assert.equal(reconciled.every((account) => account.policy.kind === 'managed' &&
       account.policy.providerGeneration === 2 &&

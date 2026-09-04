@@ -31,7 +31,7 @@
   });
   var API_CONNECTION_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
   var GOOGLE_WORKSPACE_SCOPES = CONFIG.googleWorkspaceScopes;
-  var ONBOARDING_PROMPT = "Give me three useful ways you can help me, each with an example prompt I could try next.";
+  var ONBOARDING_PROMPT = "Hi Chickpea. I'm on the marketing team. What's a good first teammate for us?";
   var CHANNEL_TRY_PROMPT = "@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next.";
   var state = {
     agents: [],
@@ -2161,14 +2161,15 @@
     if (complete) {
       return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Reply confirmed in Slack</span>' +
         '<h1 class="onboarding-title">Chickpea is ready</h1>' +
-        '<p class="onboarding-lede">Your setup is working. Open the dashboard to manage Chickpea, or keep chatting in Slack.</p>' +
+        '<p class="onboarding-lede">Your setup is working. Keep chatting in Slack to finish your first teammate, or open the dashboard to manage Chickpea.</p>' +
         '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="onboarding-open-dashboard">Open dashboard</button>' +
         '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Keep chatting in Slack</a></div></section>';
     }
     return '<section class="onboarding-panel onboarding-panel-wide"><div class="onboarding-success"><span class="onboarding-success-icon" aria-hidden="true">&#10003;</span><div>' +
-      '<p class="onboarding-eyebrow">Step 4 of 4</p><h1 class="onboarding-title">Try Chickpea in Slack</h1>' +
-      '<p class="onboarding-lede">Open a direct message with Chickpea and try one useful request. Your first reply confirms that everything is working.</p></div></div>' +
+      '<p class="onboarding-eyebrow">Step 4 of 4</p><h1 class="onboarding-title">Meet Chickpea in Slack</h1>' +
+      '<p class="onboarding-lede">Open a direct message with Chickpea and ask for a first teammate. Chickpea suggests a few that work on day one, and its first reply confirms that everything is working.</p></div></div>' +
       '<div class="onboarding-prompt-box"><p class="onboarding-prompt-label">Suggested first message</p><p class="onboarding-prompt">' + esc(ONBOARDING_PROMPT) + '</p>' +
+      '<p class="onboarding-prompt-hint">Swap in your own team before you send it.</p>' +
       '<input id="onboarding-prompt" type="text" hidden readonly value="' + esc(ONBOARDING_PROMPT) + '">' +
       '<p class="onboarding-status" role="status">' + esc(state.onboardingNotice || 'Waiting for Chickpea to reply…') + '</p></div>' +
       (state.onboardingError ? '<div class="onboarding-actions"><span class="field-error" role="alert">' + esc(state.onboardingError) + '</span><button type="button" class="btn btn-soft" data-action="retry-onboarding">Check again</button></div>' : '') +

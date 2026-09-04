@@ -523,19 +523,24 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
   const manualHtml = await manualOpened.text();
   const manualAsset = await fetch(`${baseUrl}/admin/assets/onboarding/create-workspace.webp`);
   const manualAssetBytes = new Uint8Array(await manualAsset.arrayBuffer());
+  const manualConditions = {
+    page: manualOpened.status === 200,
+    create: manualHtml.includes('Create Chickpea'),
+    finish: manualHtml.includes('Finish creating Chickpea'),
+    events: manualHtml.includes('verify the Events URL after Slack installation'),
+    credentials: manualHtml.includes('Add app credentials'),
+    capabilityHidden: !manualHtml.includes(setup.capability),
+    asset: manualAsset.status === 200,
+    assetType: manualAsset.headers.get('content-type') === 'image/webp',
+    assetRiff: new TextDecoder().decode(manualAssetBytes.slice(0, 4)) === 'RIFF',
+    assetSize: manualAssetBytes.byteLength > 10_000,
+  };
   check(
-    manualOpened.status === 200 &&
-      manualHtml.includes('Create Chickpea') &&
-      manualHtml.includes('Finish creating Chickpea') &&
-      manualHtml.includes('verify the Events URL') &&
-      manualHtml.includes('Add app credentials') &&
-      !manualHtml.includes(setup.capability) &&
-      manualAsset.status === 200 &&
-      manualAsset.headers.get('content-type') === 'image/webp' &&
-      new TextDecoder().decode(manualAssetBytes.slice(0, 4)) === 'RIFF' &&
-      manualAssetBytes.byteLength > 10_000,
+    Object.values(manualConditions).every(Boolean),
     'separate manual journey restores its historical screens and public screenshot assets',
-    `page HTTP ${manualOpened.status}; asset HTTP ${manualAsset.status}`,
+    `page HTTP ${manualOpened.status}; asset HTTP ${manualAsset.status}; failed: ${
+      Object.entries(manualConditions).filter(([, ok]) => !ok).map(([name]) => name).join(',') || 'none'
+    }`,
   );
 
   const created = await postForm(baseUrl, '/admin/setup', {
@@ -1065,19 +1070,37 @@ async function main() {
     if (agentsResult.status !== 200 || !Array.isArray(agentsResult.body?.agents)) {
       throw new Error(`authenticated Admin API did not become ready (HTTP ${agentsResult.status})`);
     }
-    const agents = agentsResult.body.agents;
-    const agentIds = agents.map((agent) => agent.id).sort();
+    const seededAgentIds = agentsResult.body.agents.map((agent) => agent.id).sort();
     check(
-      agentIds.includes('agent_default'),
-      'DO-backed config store served the seeded agent',
-      agentIds.join(','),
+      seededAgentIds.length === 0,
+      'DO-backed config store seeds no user Agent on a fresh install',
+      seededAgentIds.join(',') || 'none',
     );
-    const defaultAgent = agents.find((agent) => agent.id === 'agent_default');
+    const workspaceDefault = await adminFetch(baseUrl, '/admin/api/workspace-model-default');
     check(
-      defaultAgent?.model === 'cloudflare/@cf/zai-org/glm-4.7-flash',
-      'Cloudflare seed pins Default to the keyless Workers AI model',
-      String(defaultAgent?.model),
+      workspaceDefault.status === 200 &&
+        workspaceDefault.body?.workspaceDefault?.modelId === 'cloudflare/@cf/zai-org/glm-4.7-flash',
+      'Cloudflare install bootstraps the keyless Workers AI Workspace default',
+      `HTTP ${workspaceDefault.status} ${String(workspaceDefault.body?.workspaceDefault?.modelId)}`,
     );
+    // The remaining cases drive one ordinary user Agent through the real
+    // Admin API, standing in for the first teammate a person creates.
+    const defaultCreate = await adminFetch(baseUrl, '/admin/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: 'agent_default',
+        name: 'Sprout',
+        instructions: 'Answer only from the CF smoke gate fixture.',
+        enabled: true,
+        model: 'cloudflare/@cf/zai-org/glm-4.7-flash',
+      }),
+    });
+    check(
+      defaultCreate.status === 201 && defaultCreate.body?.agent?.id === 'agent_default',
+      'smoke default Agent created through the DO-backed Admin API',
+      `HTTP ${defaultCreate.status}`,
+    );
+    const defaultAgent = defaultCreate.body?.agent;
 
     const stateWrite = await measureRepresentativeStateWrite(baseUrl);
     check(

@@ -212,6 +212,26 @@ if (selectedEnvironmentTarget) {
         selectedEnvironmentTarget,
         { projectRoot, providerContext: deploymentResourceArgs() },
       );
+    // The claimed lane's immutable AUTH_DB and schema generation are already
+    // known from the registry the preflight just validated. Feed them to the
+    // build profile so a claimed deploy does not depend on the operator
+    // exporting CHICKPEA_DEPLOY_AUTH_DB_ID and CHICKPEA_DEPLOY_SCHEMA_GENERATION
+    // by hand; explicit values still win and are still checked below.
+    const metadata = initialEnvironmentPreflight.deploymentMetadata;
+    const resolved = [];
+    if (!process.env.CHICKPEA_DEPLOY_AUTH_DB_ID?.trim() && metadata?.authDatabaseId) {
+      process.env.CHICKPEA_DEPLOY_AUTH_DB_ID = metadata.authDatabaseId;
+      resolved.push('AUTH_DB id');
+    }
+    if (!process.env.CHICKPEA_DEPLOY_SCHEMA_GENERATION?.trim() && metadata?.schemaGeneration) {
+      process.env.CHICKPEA_DEPLOY_SCHEMA_GENERATION = metadata.schemaGeneration;
+      resolved.push('schema generation');
+    }
+    if (resolved.length > 0) {
+      process.stdout.write(
+        `Resolved ${resolved.join(' and ')} for ${selectedEnvironmentTarget} from the claimed registration.\n`,
+      );
+    }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

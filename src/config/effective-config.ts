@@ -134,10 +134,36 @@ function effectiveSlackInstructionLayers(
     {
       source: 'runtime',
       label: 'Runtime',
-      text: `You are assigned to Slack workspace ${assignment.workspaceId} channel ${assignment.channelId}.`,
+      text: runtimeIdentityInstruction(assignment),
     },
     { source: 'guardrail', label: 'Guardrail', text: SLACK_RUNTIME_GUARDRAIL },
   ];
+}
+
+/**
+ * The Agent must recognize itself: its saved name, its Slack handle, and the
+ * user-group id Slack substitutes for that handle in message text. Without
+ * this, a request such as "show me @handle's instructions" reads as a question
+ * about an unrelated subteam instead of a self-inspection.
+ */
+function runtimeIdentityInstruction(
+  assignment: Pick<ResolvedAssignment, 'workspaceId' | 'channelId' | 'agent'>,
+): string {
+  const parts = [
+    `You are assigned to Slack workspace ${assignment.workspaceId} channel ${assignment.channelId}.`,
+    `Your Agent ID is ${assignment.agent.id} and your name is ${assignment.agent.name}.`,
+  ];
+  const presence = assignment.agent.slackPresence;
+  const handle = presence?.normalizedHandle || presence?.requestedHandle;
+  if (handle) {
+    parts.push(
+      presence?.userGroupId
+        ? `Your Slack handle is @${handle}; Slack writes that mention as <!subteam^${presence.userGroupId}> or <!subteam^${presence.userGroupId}|@${handle}>, and either form addresses you.`
+        : `Your Slack handle is @${handle}, and a mention of it addresses you.`,
+    );
+  }
+  parts.push('Questions about your own name, handle, instructions, or configuration are about you; answer them from your saved configuration, using the workspace inspection tool when available, never from Slack subteam lookups.');
+  return parts.join(' ');
 }
 
 export function effectiveSlackInstructions(

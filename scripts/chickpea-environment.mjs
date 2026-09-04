@@ -97,15 +97,31 @@ export async function runEnvironmentCli(argv, io = {}) {
     return 0;
   } catch (error) {
     const code = error instanceof EnvironmentRegistryError ? error.code : 'ENVIRONMENT_COMMAND_FAILED';
+    // A non-registry failure used to surface as a bare code, which hid the
+    // actual cause (a missing host variable, an unreachable Worker, a parse
+    // error). Name it, bounded and without any token-shaped content.
+    const message = error instanceof EnvironmentRegistryError
+      ? undefined
+      : redactCommandFailure(error instanceof Error ? error.message : String(error));
     const body = {
       error: code,
       ...(error instanceof EnvironmentRegistryError && error.details
         ? { details: error.details }
         : {}),
+      ...(message ? { message } : {}),
     };
     stderr(`${JSON.stringify(body)}\n`);
     return 2;
   }
+}
+
+function redactCommandFailure(message) {
+  return String(message)
+    .replace(/[A-Za-z0-9_-]{43}/g, '<redacted>')
+    .replace(/xox[a-z]-[A-Za-z0-9-]+/g, '<redacted>')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
 }
 
 function parseArgs(argv) {
