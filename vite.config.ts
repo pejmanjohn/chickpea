@@ -65,6 +65,13 @@ export default defineConfig({
       },
     }),
   ],
+  resolve: {
+    alias: [
+      // Never reached on Chickpea's paths; see src/build-stubs/empty-module.ts.
+      { find: /^mimetext$/, replacement: path.resolve('src/build-stubs/empty-module.ts') },
+      { find: /^pusher-js$/, replacement: path.resolve('src/build-stubs/empty-module.ts') },
+    ],
+  },
   build: {
     outDir: 'dist-cf',
     copyPublicDir: false,

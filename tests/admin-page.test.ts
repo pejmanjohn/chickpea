@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { test } from 'node:test';
 
-import { renderAdminPage } from '../src/admin/page.ts';
+import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
 import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
 import {
   CONNECTION_CATALOG_PRESETS,
@@ -13709,7 +13709,7 @@ test('Usage navigation is feature-gated off by default', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
   assert.doesNotMatch(harness.app.innerHTML, /data-action="open-usage"/);
-  assert.match(html, /var USAGE_ADMIN_UI = false/);
+  assert.match(html, /"usageAdminUi":false/);
 });
 
 test('Usage shows concise spend, expanded token columns, and non-interactive activity rows', async () => {

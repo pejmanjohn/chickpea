@@ -1,7 +1,7 @@
-import { completeSimple } from '@earendil-works/pi-ai/compat';
 import type { AssistantMessage, Context } from '@earendil-works/pi-ai';
 import { resolveModel } from '@flue/runtime/internal';
 
+import { providerStreamsForModel } from '../config/pi-provider.ts';
 import { resolveRuntimeModel } from '../config/runtime-model.ts';
 import {
   isProviderKeyId,
@@ -395,7 +395,7 @@ async function promptSlackInteractionIntentAgent(
   });
   const model = resolveModel(runtimeModel.model);
   const apiKey = await statelessClassifierApiKey(requestedModel, env, settings);
-  const response = await completeSimple(
+  const response = await providerStreamsForModel(model).streamSimple(
     model,
     interactionClassifierContext(context),
     {
@@ -404,7 +404,7 @@ async function promptSlackInteractionIntentAgent(
       maxRetries: 0,
       ...(apiKey ? { apiKey } : {}),
     },
-  );
+  ).result();
   if (response.stopReason === 'error') {
     throw new Error('Slack interaction classifier was unavailable.');
   }

@@ -6,7 +6,7 @@ import { dirname } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { renderAdminPage } from '../src/admin/page.ts';
+import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
 import {
   createAdminRoutes,
   projectAdminEnvironmentStatus,
@@ -487,7 +487,11 @@ test('canonical visual states use authenticated production URLs and UI actions o
       assert.equal(page.status, 200, state.path);
       const html = await page.text();
       assert.match(html, /<title>Chickpea · \/admin<\/title>/);
-      assert.match(html, /api\("\/admin\/api\/agents"\)/);
+      const scriptSrc = html.match(/<script src="(\/admin-ui\/admin\.js\?v=[^"]+)"><\/script>/)?.[1];
+      assert.ok(scriptSrc, 'the shell references the Admin application script');
+      const script = await fetch(`${fixture.baseUrl}${scriptSrc}`);
+      assert.equal(script.status, 200, scriptSrc);
+      assert.match(await script.text(), /api\("\/admin\/api\/agents"\)/);
       assert.doesNotMatch(html, /data-action="fixture-|visualFixture|fixtureState/);
     }
   } finally {
@@ -592,7 +596,10 @@ test('visual fixture renders every durable onboarding stage through the producti
         headers: { cookie },
       });
       assert.equal(page.status, 200);
-      assert.match(await page.text(), /app\.className = "frame onboarding-frame"/);
+      assert.match(await page.text(), /<script src="\/admin-ui\/admin\.js\?v=/);
+      const script = await fetch(`${fixture.baseUrl}/admin-ui/admin.js`);
+      assert.equal(script.status, 200);
+      assert.match(await script.text(), /app\.className = "frame onboarding-frame"/);
       const state = await fetch(`${fixture.baseUrl}/admin/api/onboarding`, {
         headers: { cookie },
       });

@@ -1,5 +1,5 @@
 import type { Model } from '@earendil-works/pi-ai';
-import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all';
+import { getBuiltinModel } from './pi-builtin-models.ts';
 
 import { compiledModelProfile } from './profiles.ts';
 import type {

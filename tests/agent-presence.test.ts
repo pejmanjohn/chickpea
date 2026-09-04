@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PhotonImage } from '@cf-wasm/photon';
+import { deflateSync } from 'node:zlib';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -533,10 +533,106 @@ test('avatar upload rejects raster signatures that do not decode', async () => {
   }
 });
 
+test('JPEG and WebP uploads keep their pixels but lose embedded metadata', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const secret = new TextEncoder().encode('private-location');
+    const jpeg = concat(
+      Uint8Array.from([0xff, 0xd8]),
+      jpegSegment(0xe1, concat(new TextEncoder().encode('Exif\0\0'), secret)),
+      jpegSegment(0xdb, Uint8Array.from([0, 1, 2, 3])),
+      jpegSegment(0xc0, Uint8Array.from([8, 0, 1, 0, 1, 1, 1, 0x11, 0])),
+      jpegSegment(0xc4, Uint8Array.from([0, 1])),
+      jpegSegment(0xfe, secret),
+      jpegSegment(0xda, Uint8Array.from([1, 1, 0, 0, 0x3f, 0])),
+      Uint8Array.from([0x12, 0xff, 0x00, 0x34, 0xff, 0xd0, 0x56]),
+      Uint8Array.from([0xff, 0xd9]),
+    );
+    await uploadAgentAvatar({
+      config, settings, agentId: 'agent_support', bytes: jpeg,
+      contentType: 'image/jpeg', publicOrigin: 'https://chickpea.example',
+    });
+    const storedJpeg = await readAgentAvatarAsset({ settings, agentId: 'agent_support', revision: 2 });
+    assert.equal(storedJpeg?.contentType, 'image/jpeg');
+    assert.equal(findBytes(storedJpeg!.bytes, secret), -1);
+    assert.ok(findBytes(storedJpeg!.bytes, Uint8Array.from([0xff, 0xc0])) > 0);
+    assert.ok(findBytes(storedJpeg!.bytes, Uint8Array.from([0x12, 0xff, 0x00, 0x34, 0xff, 0xd0, 0x56, 0xff, 0xd9])) > 0);
+
+    const vp8x = Uint8Array.from([0x08, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const webpBody = concat(
+      riffChunk('VP8X', vp8x),
+      riffChunk('EXIF', secret),
+      riffChunk('VP8 ', Uint8Array.from([1, 2, 3, 4])),
+    );
+    const webp = concat(
+      new TextEncoder().encode('RIFF'),
+      uint32le(4 + webpBody.length),
+      new TextEncoder().encode('WEBP'),
+      webpBody,
+    );
+    await uploadAgentAvatar({
+      config, settings, agentId: 'agent_support', bytes: webp,
+      contentType: 'image/webp', publicOrigin: 'https://chickpea.example',
+    });
+    const storedWebp = await readAgentAvatarAsset({ settings, agentId: 'agent_support', revision: 3 });
+    assert.equal(storedWebp?.contentType, 'image/webp');
+    assert.equal(findBytes(storedWebp!.bytes, secret), -1);
+    assert.equal(findBytes(storedWebp!.bytes, new TextEncoder().encode('EXIF')), -1);
+    assert.equal(storedWebp!.bytes[20], 0, 'VP8X EXIF flag is cleared');
+    assert.deepEqual(Array.from(storedWebp!.bytes.subarray(4, 8)), Array.from(uint32le(storedWebp!.bytes.length - 8)));
+    assert.ok(findBytes(storedWebp!.bytes, Uint8Array.from([1, 2, 3, 4])) > 0);
+  } finally {
+    config.close();
+    settings.close();
+  }
+});
+
+function jpegSegment(marker: number, payload: Uint8Array): Uint8Array {
+  const length = payload.length + 2;
+  return concat(Uint8Array.from([0xff, marker, length >> 8, length & 0xff]), payload);
+}
+
+function riffChunk(type: string, payload: Uint8Array): Uint8Array {
+  return concat(
+    new TextEncoder().encode(type),
+    uint32le(payload.length),
+    payload,
+    payload.length & 1 ? new Uint8Array(1) : new Uint8Array(),
+  );
+}
+
+function uint32le(value: number): Uint8Array {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setUint32(0, value, true);
+  return out;
+}
+
+function onePixelPng(pixel: readonly number[]): Uint8Array {
+  const header = new Uint8Array(13);
+  new DataView(header.buffer).setUint32(0, 1);
+  new DataView(header.buffer).setUint32(4, 1);
+  header.set([8, 6, 0, 0, 0], 8);
+  const chunk = (type: string, data: Uint8Array) => {
+    const typeBytes = new TextEncoder().encode(type);
+    const out = new Uint8Array(12 + data.length);
+    new DataView(out.buffer).setUint32(0, data.length);
+    out.set(typeBytes, 4);
+    out.set(data, 8);
+    new DataView(out.buffer).setUint32(8 + data.length, crc32(concat(typeBytes, data)));
+    return out;
+  };
+  return concat(
+    Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header),
+    chunk('IDAT', new Uint8Array(deflateSync(Uint8Array.from([0, ...pixel])))),
+    chunk('IEND', new Uint8Array()),
+  );
+}
+
 function pngWithTextMetadata(pixel = [24, 92, 61, 255]): Uint8Array {
-  const image = new PhotonImage(Uint8Array.from(pixel), 1, 1);
-  const png = Uint8Array.from(image.get_bytes());
-  image.free();
+  const png = onePixelPng(pixel);
   const marker = Uint8Array.from([0x49, 0x45, 0x4e, 0x44]);
   const iendType = findBytes(png, marker);
   assert.ok(iendType >= 4);

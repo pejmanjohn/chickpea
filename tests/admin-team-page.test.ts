@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import vm from 'node:vm';
 
-import { renderAdminPage } from '../src/admin/page.ts';
+import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
 
 interface FakeResponse {
   ok: boolean;

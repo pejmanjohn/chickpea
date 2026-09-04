@@ -9,7 +9,7 @@ import { readPublicAsset } from '../src/assets/read.node.ts';
 import { onboardingAssetBytes } from '../src/admin/onboarding-assets.ts';
 import { CONNECTOR_LOGOS } from '../src/config/connector-logos.ts';
 
-test('Cloudflare build publishes only runtime images', { skip: !existsSync('dist-cf/client') }, async () => {
+test('Cloudflare build publishes only the runtime images and the Admin application assets', { skip: !existsSync('dist-cf/client') }, async () => {
   const files = (await readdir('dist-cf/client', { recursive: true, withFileTypes: true }))
     .filter((entry) => entry.isFile() && entry.name !== '.assetsignore')
     .map((entry) => `${entry.parentPath}/${entry.name}`.replace(/^dist-cf\/client\//, ''));
@@ -19,12 +19,18 @@ test('Cloudflare build publishes only runtime images', { skip: !existsSync('dist
   }
 });
 
-test('every public image is served byte-identically without authentication', async () => {
+test('every public asset is served byte-identically without authentication', async () => {
   const app = createPublicAssetRoutes();
   for (const path of PUBLIC_ASSET_PATHS) {
     const response = await app.request(`/${path}?v=cache-key`);
     assert.equal(response.status, 200, path);
-    assert.equal(response.headers.get('content-type'), path.endsWith('.webp') ? 'image/webp' : 'image/png');
+    assert.equal(
+      response.headers.get('content-type'),
+      path.endsWith('.js') ? 'text/javascript; charset=utf-8'
+        : path.endsWith('.css') ? 'text/css; charset=utf-8'
+        : path.endsWith('.webp') ? 'image/webp'
+        : 'image/png',
+    );
     assert.equal(response.headers.get('cache-control'), 'public, max-age=3600');
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), await readFile(`assets/${path}`), path);

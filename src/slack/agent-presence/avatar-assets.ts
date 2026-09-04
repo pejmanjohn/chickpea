@@ -1,5 +1,3 @@
-import { PhotonImage, SamplingFilter, resize } from '@cf-wasm/photon';
-
 import type { SettingsStore } from '../../config/settings-store.ts';
 import type { ConfigStore } from '../../config/store.ts';
 import type { CustomAgentConfig } from '../../config/types.ts';
@@ -9,14 +7,22 @@ import {
 } from './default-avatar-pool.ts';
 import { base64ToBytes, fnv1aHash } from './hash.ts';
 
+// Uploads are stored as sent, minus embedded metadata. The Worker no longer
+// decodes or resizes images: the wasm codec that did so cost 600 KiB of the
+// compressed Worker size budget for a cosmetic step. The Admin UI downscales
+// oversized photos in the browser before upload, and these caps bound what a
+// direct API client can store per revision.
 const MAX_AGENT_AVATAR_BYTES = 512 * 1_024;
-const MAX_AGENT_AVATAR_SOURCE_DIMENSION = 4_096;
-const MAX_AGENT_AVATAR_SOURCE_PIXELS = 16_777_216;
-const NORMALIZED_AGENT_AVATAR_DIMENSION = 512;
-const MAX_NORMALIZED_AGENT_AVATAR_BYTES = 2 * 1_024 * 1_024;
+const MAX_AGENT_AVATAR_SOURCE_DIMENSION = 2_048;
+const MAX_AGENT_AVATAR_SOURCE_PIXELS = 4_194_304;
+
+type AvatarContentType = 'image/png' | 'image/jpeg' | 'image/webp';
+const AVATAR_CONTENT_TYPES: ReadonlySet<string> = new Set<AvatarContentType>([
+  'image/png', 'image/jpeg', 'image/webp',
+]);
 
 interface StoredAvatarAsset {
-  contentType: 'image/png';
+  contentType: AvatarContentType;
   base64: string;
 }
 
@@ -107,9 +113,10 @@ export async function readAgentAvatarAsset(input: {
       const parsed = JSON.parse(stored) as Partial<StoredAvatarAsset>;
       if (
         typeof parsed.base64 === 'string' &&
-        parsed.contentType === 'image/png'
+        typeof parsed.contentType === 'string' &&
+        AVATAR_CONTENT_TYPES.has(parsed.contentType)
       ) {
-        return { contentType: parsed.contentType!, bytes: base64ToBytes(parsed.base64) };
+        return { contentType: parsed.contentType, bytes: base64ToBytes(parsed.base64) };
       }
     } catch {
       return undefined;
@@ -324,38 +331,120 @@ function normalizeRaster(
       dimensions.width * dimensions.height > MAX_AGENT_AVATAR_SOURCE_PIXELS) {
     throw new AgentAvatarError('too_large');
   }
+  // Uploaded photos routinely carry location and device metadata. Chickpea
+  // serves these bytes publicly for Slack, so strip every metadata container
+  // the three formats define while leaving the encoded pixels untouched.
+  const stripped = detected === 'image/png' ? stripPngMetadata(bytes)
+    : detected === 'image/jpeg' ? stripJpegMetadata(bytes)
+    : stripWebpMetadata(bytes);
+  if (!stripped || stripped.byteLength === 0) throw new AgentAvatarError('invalid_image');
+  return { contentType: detected, bytes: stripped };
+}
 
-  let decoded: PhotonImage | undefined;
-  let output: PhotonImage | undefined;
-  try {
-    decoded = PhotonImage.new_from_byteslice(bytes);
-    const width = decoded.get_width();
-    const height = decoded.get_height();
-    if (width !== dimensions.width || height !== dimensions.height || width <= 0 || height <= 0) {
-      throw new AgentAvatarError('invalid_image');
-    }
-    const scale = Math.min(1, NORMALIZED_AGENT_AVATAR_DIMENSION / Math.max(width, height));
-    output = scale < 1
-      ? resize(
-          decoded,
-          Math.max(1, Math.round(width * scale)),
-          Math.max(1, Math.round(height * scale)),
-          SamplingFilter.Lanczos3,
-        )
-      : decoded;
-    const normalizedBytes = Uint8Array.from(output.get_bytes());
-    if (normalizedBytes.byteLength === 0 ||
-        normalizedBytes.byteLength > MAX_NORMALIZED_AGENT_AVATAR_BYTES) {
-      throw new AgentAvatarError('too_large');
-    }
-    return { contentType: 'image/png', bytes: normalizedBytes };
-  } catch (error) {
-    if (error instanceof AgentAvatarError) throw error;
-    throw new AgentAvatarError('invalid_image');
-  } finally {
-    if (output && output !== decoded) output.free();
-    decoded?.free();
+// Critical chunks plus the ancillary chunks that affect rendering. Text,
+// timestamp, EXIF, ICC profile and animation chunks are dropped.
+const PNG_KEPT_CHUNKS = new Set([
+  'IHDR', 'PLTE', 'tRNS', 'gAMA', 'cHRM', 'sRGB', 'sBIT', 'bKGD', 'pHYs', 'IDAT', 'IEND',
+]);
+
+function stripPngMetadata(bytes: Uint8Array): Uint8Array | undefined {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const parts = [bytes.subarray(0, 8)];
+  let offset = 8;
+  while (offset + 12 <= bytes.byteLength) {
+    const length = view.getUint32(offset);
+    const type = asciiAt(bytes, offset + 4, 4);
+    const end = offset + 12 + length;
+    if (end > bytes.byteLength) return undefined;
+    if (PNG_KEPT_CHUNKS.has(type)) parts.push(bytes.subarray(offset, end));
+    offset = end;
+    if (type === 'IEND') return concatenateBytes(...parts);
   }
+  return undefined;
+}
+
+function stripJpegMetadata(bytes: Uint8Array): Uint8Array | undefined {
+  const parts = [bytes.subarray(0, 2)];
+  let offset = 2;
+  while (offset + 2 <= bytes.byteLength) {
+    if (bytes[offset] !== 0xff) return undefined;
+    const marker = bytes[offset + 1]!;
+    if (marker === 0xff) {
+      offset += 1;
+      continue;
+    }
+    if (marker === 0xd9) {
+      parts.push(bytes.subarray(offset, offset + 2));
+      return concatenateBytes(...parts);
+    }
+    // Standalone markers carry no length: restart markers and TEM.
+    if ((marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+      parts.push(bytes.subarray(offset, offset + 2));
+      offset += 2;
+      continue;
+    }
+    if (offset + 4 > bytes.byteLength) return undefined;
+    const length = (bytes[offset + 2]! << 8) | bytes[offset + 3]!;
+    const segmentEnd = offset + 2 + length;
+    if (length < 2 || segmentEnd > bytes.byteLength) return undefined;
+    // Keep JFIF (APP0) and Adobe (APP14, colour transform) application
+    // segments; drop EXIF, XMP, ICC, IPTC and every other APPn plus comments.
+    const application = marker >= 0xe0 && marker <= 0xef;
+    const keep = marker !== 0xfe && (!application || marker === 0xe0 || marker === 0xee);
+    if (keep) parts.push(bytes.subarray(offset, segmentEnd));
+    offset = segmentEnd;
+    if (marker === 0xda) {
+      // Entropy-coded scan data follows until the next real marker.
+      let scanEnd = offset;
+      while (scanEnd + 1 < bytes.byteLength) {
+        const next = bytes[scanEnd + 1]!;
+        if (bytes[scanEnd] === 0xff && next !== 0x00 && next !== 0xff &&
+            !(next >= 0xd0 && next <= 0xd7)) break;
+        scanEnd += 1;
+      }
+      parts.push(bytes.subarray(offset, scanEnd));
+      offset = scanEnd;
+    }
+  }
+  return undefined;
+}
+
+function stripWebpMetadata(bytes: Uint8Array): Uint8Array | undefined {
+  if (bytes.byteLength < 12 || asciiAt(bytes, 0, 4) !== 'RIFF' || asciiAt(bytes, 8, 4) !== 'WEBP') {
+    return undefined;
+  }
+  const chunks: Uint8Array[] = [];
+  let offset = 12;
+  while (offset + 8 <= bytes.byteLength) {
+    const type = asciiAt(bytes, offset, 4);
+    const size = readUint32LE(bytes, offset + 4);
+    const dataEnd = offset + 8 + size;
+    if (dataEnd > bytes.byteLength) return undefined;
+    if (type === 'VP8X') {
+      const copy = Uint8Array.from(bytes.subarray(offset, dataEnd));
+      // Clear the ICC, EXIF and XMP flags alongside the chunks they announce.
+      copy[8] = copy[8]! & ~(0x20 | 0x08 | 0x04);
+      chunks.push(copy);
+    } else if (type !== 'EXIF' && type !== 'XMP ' && type !== 'ICCP') {
+      chunks.push(bytes.subarray(offset, dataEnd));
+    }
+    if (size & 1) chunks.push(new Uint8Array(1));
+    offset = dataEnd + (size & 1);
+  }
+  const body = concatenateBytes(...chunks);
+  const header = new Uint8Array(12);
+  header.set(new TextEncoder().encode('RIFF'), 0);
+  new DataView(header.buffer).setUint32(4, 4 + body.byteLength, true);
+  header.set(new TextEncoder().encode('WEBP'), 8);
+  return concatenateBytes(header, body);
+}
+
+function asciiAt(bytes: Uint8Array, offset: number, length: number): string {
+  return String.fromCharCode(...bytes.subarray(offset, offset + length));
+}
+
+function readUint32LE(bytes: Uint8Array, offset: number): number {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset, true);
 }
 
 function rasterDimensions(

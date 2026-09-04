@@ -1,4 +1,4 @@
-import { setProvider } from '@flue/runtime';
+import { registerPiProvider } from '../config/pi-provider-registry.ts';
 import {
   createAssistantMessageEventStream,
   type AssistantMessage,
@@ -118,7 +118,7 @@ function registerBundledCompatibilityProvider(provider: ApiKeyCompatibilityProvi
   const api = provider === 'openai' ? OPENAI_PLATFORM_COMPAT_API : ANTHROPIC_COMPAT_API;
   const baseUrl = credential?.baseUrl ?? models[0]?.baseUrl;
   if (!baseUrl) throw new Error(`No compiled compatibility models for ${provider}.`);
-  setProvider(createChickpeaPiProvider({
+  registerPiProvider(createChickpeaPiProvider({
     id: providerId,
     name: provider === 'openai' ? 'OpenAI compatibility' : 'Anthropic compatibility',
     ...(credential?.apiKey ? { apiKey: credential.apiKey } : {}),
@@ -439,7 +439,7 @@ function registerCapturedProviderBinding(
   const credential = boundCredentials.get(registration.provider);
   const baseUrl = credential?.baseUrl ?? registration.models[0]?.baseUrl;
   if (!baseUrl) throw new Error(`No captured models for ${registration.provider}.`);
-  setProvider(createChickpeaPiProvider({
+  registerPiProvider(createChickpeaPiProvider({
     id: registration.providerId,
     name: registration.provider === 'openai'
       ? 'OpenAI captured compatibility'

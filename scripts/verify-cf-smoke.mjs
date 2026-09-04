@@ -673,12 +673,23 @@ async function completeSlackLogin(baseUrl) {
 
 async function renderAdminWithWorkerdState(baseUrl, path = '/admin') {
   const html = await adminPageHtml(baseUrl, path);
-  const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
-  if (!script) {
-    throw new Error('admin page did not include its inline script');
+  const scriptSrc = html.match(/<script src="(\/admin-ui\/admin\.js\?v=[^"]+)"><\/script>/)?.[1];
+  const config = html.match(
+    /<script id="chickpea-admin-config" type="application\/json">([\s\S]*?)<\/script>/,
+  )?.[1];
+  if (!scriptSrc || !config) {
+    throw new Error('admin page did not reference its application script and config');
   }
+  const scriptResponse = await fetch(`${baseUrl}${scriptSrc}`);
+  if (scriptResponse.status !== 200) {
+    throw new Error(`admin application script unavailable (HTTP ${scriptResponse.status})`);
+  }
+  const script = await scriptResponse.text();
   const app = { innerHTML: '' };
-  const elements = new Map([['app', app]]);
+  const elements = new Map([
+    ['app', app],
+    ['chickpea-admin-config', { textContent: config }],
+  ]);
   const listeners = {};
   const document = {
     getElementById(id) {

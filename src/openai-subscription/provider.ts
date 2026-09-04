@@ -1,4 +1,4 @@
-import { setProvider } from '@flue/runtime';
+import { registerPiProvider } from '../config/pi-provider-registry.ts';
 import {
   createAssistantMessageEventStream,
   type AssistantMessage,
@@ -104,7 +104,7 @@ export function registerOpenAiSubscriptionApi(): void {
   // bundled provider shape at startup so a fresh Agent isolate recognizes the
   // route; bindOpenAiSubscriptionProvider installs the request-authorized
   // transport marker before the first stream can leave the process.
-  setProvider(createSubscriptionProvider(BUNDLED_SUBSCRIPTION_REGISTRATION));
+  registerPiProvider(createSubscriptionProvider(BUNDLED_SUBSCRIPTION_REGISTRATION));
 }
 
 export async function bindOpenAiSubscriptionProvider(
@@ -159,7 +159,7 @@ export async function bindOpenAiSubscriptionProvider(
   subscriptionTransportMarkers.set(registration.api, marker);
   const piProvider = createSubscriptionProvider(registration);
   boundSubscriptionProviders.set(registration.providerId, piProvider);
-  setProvider(piProvider);
+  registerPiProvider(piProvider);
   recordRegisteredProvider(OPENAI_SUBSCRIPTION_PROVIDER_ID);
 }
 
@@ -214,7 +214,7 @@ export function registerCapturedOpenAiSubscriptionProvider(options: {
   });
   hostedSubscriptionRegistrations.set(registration.providerId, registration);
   registerCapturedSubscriptionApi(registration);
-  setProvider(createSubscriptionProvider(registration));
+  registerPiProvider(createSubscriptionProvider(registration));
   return aliases;
 }
 

@@ -96,8 +96,16 @@ Cloudflare build uploads that directory as Static Assets alongside the single
 Worker. Node serves the explicit paths in `src/assets/public-assets.ts` from the
 release checkout. Add new runtime images to that list and the source-export
 binary allowlist. Use `npm run avatars:build` or `npm run brand:build` after
-changing their source assets. PDF parsing and uploaded-avatar conversion remain
-server-side and are not public assets.
+changing their source assets. PDF parsing remains server-side and is not a
+public asset.
+
+The Admin application's browser code lives in `assets/admin-ui/admin.js` and
+`assets/admin-ui/admin.css`, served the same way. `src/admin/page.ts` renders
+only the shell and a JSON config island the script reads at start-up. Static
+Assets do not count toward the Worker size limit, so browser code must never
+move back into a server template. `npm run build` fails when the compressed
+Worker exceeds the budget in `scripts/verify-worker-size.mjs`; the Workers Free
+plan caps a Worker at 3 MiB compressed.
 
 Contributions are provided under the repository's [Apache-2.0 license](LICENSE).
 Be respectful in issues and reviews; criticize the work, not the person.
