@@ -294,58 +294,74 @@ try {
   const retiredLogin = await app.request(`${ADMIN_ORIGIN}/admin/login`, { method: 'POST' });
   const pageResponse = await app.request(`${ADMIN_ORIGIN}/admin`);
   const pageHtml = await pageResponse.text();
+  // Follow the production shell's asset references. Inspecting only the HTML
+  // silently lost the client application when it moved out of inline scripts.
+  const scriptPath = pageHtml.match(/<script src="(\/admin-ui\/admin\.js\?v=[^"]+)"/)?.[1];
+  const stylePath = pageHtml.match(/<link rel="stylesheet" href="(\/admin-ui\/admin\.css\?v=[^"]+)"/)?.[1];
+  const assetBodies = [];
+  let assetsReady = Boolean(scriptPath && stylePath);
+  for (const [assetPath, contentType] of [[scriptPath, 'javascript'], [stylePath, 'text/css']]) {
+    if (!assetPath) continue;
+    const response = await app.request(`${ADMIN_ORIGIN}${assetPath}`);
+    const body = await response.text();
+    assetsReady &&= response.status === 200
+      && Boolean(response.headers.get('content-type')?.includes(contentType)) && body.length > 0;
+    assetBodies.push(body);
+  }
+  record('Admin shell references accessible versioned script and stylesheet', assetsReady);
+  const pageSource = [pageHtml, ...assetBodies].join('\n');
   record(
     'Slack-bound Owner opens Admin while the retired token login stays absent',
     retiredLogin.status === 404 &&
       pageResponse.status === 200 &&
       pageResponse.headers.get('cache-control') === 'no-store' &&
-      pageHtml.includes('Agents available here') &&
-      !pageHtml.includes('Resolved configuration') &&
-      pageHtml.includes('data-action="copy-channel-prompt"'),
+      pageSource.includes('Agents available here') &&
+      !pageSource.includes('Resolved configuration') &&
+      pageSource.includes('data-action="copy-channel-prompt"'),
     `retiredLogin=${retiredLogin.status} page=${pageResponse.status}`,
   );
 
   record(
     'admin page keeps Agent-owned Scheduled Work audit without Channel-memory navigation',
-    pageHtml.includes('Audit logs') &&
-      !pageHtml.includes('SESSIONS_ADMIN_UI') &&
-      !pageHtml.includes('data-action="open-sessions"') &&
-      pageHtml.includes('data-action="audit-tab-scheduled">Scheduled work') &&
-      !pageHtml.includes('data-action="audit-tab-memory"') &&
-      pageHtml.includes('aria-disabled="true" title="Coming later">Network events'),
+    pageSource.includes('Audit logs') &&
+      !pageSource.includes('SESSIONS_ADMIN_UI') &&
+      !pageSource.includes('data-action="open-sessions"') &&
+      pageSource.includes('data-action="audit-tab-scheduled">Scheduled work') &&
+      !pageSource.includes('data-action="audit-tab-memory"') &&
+      pageSource.includes('aria-disabled="true" title="Coming later">Network events'),
   );
 
   record(
     'workspace-default Slack setup has no browser credential paste-back surface',
-    pageHtml.includes('Bot tokens are never pasted into Admin') &&
-      !pageHtml.includes('data-action="slack-connect-form"') &&
-      !pageHtml.includes('data-action="slack-update-open"') &&
-      !pageHtml.includes('id="onboarding-signing-secret"') &&
-      !pageHtml.includes('id="onboarding-bot-token"'),
+    pageSource.includes('Bot tokens are never pasted into Admin') &&
+      !pageSource.includes('data-action="slack-connect-form"') &&
+      !pageSource.includes('data-action="slack-update-open"') &&
+      !pageSource.includes('id="onboarding-signing-secret"') &&
+      !pageSource.includes('id="onboarding-bot-token"'),
   );
 
   record(
     'visible Admin resources revalidate without polling or full-page reloads',
-    pageHtml.includes('var visibleResources = {};') &&
-      pageHtml.includes('function revalidateCurrentVisibleResources()') &&
-      pageHtml.includes('window.addEventListener("focus"') &&
-      pageHtml.includes('document.addEventListener("visibilitychange"') &&
-      pageHtml.includes('function invalidateVisibleResource(name, ownerKey)') &&
-      pageHtml.includes('promise.finally(function ()') &&
-      pageHtml.includes('requestGeneration') &&
-      !pageHtml.includes('setInterval(function () {\n      revalidateCurrentVisibleResources()'),
+    pageSource.includes('var visibleResources = {};') &&
+      pageSource.includes('function revalidateCurrentVisibleResources()') &&
+      pageSource.includes('window.addEventListener("focus"') &&
+      pageSource.includes('document.addEventListener("visibilitychange"') &&
+      pageSource.includes('function invalidateVisibleResource(name, ownerKey)') &&
+      pageSource.includes('promise.finally(function ()') &&
+      pageSource.includes('requestGeneration') &&
+      !pageSource.includes('setInterval(function () {\n      revalidateCurrentVisibleResources()'),
   );
 
   record(
     'Agent Schedules uses the compact Flat List and scoped controls only',
-    pageHtml.includes('class="agent-schedule-list"') &&
-      pageHtml.includes('data-action="agent-schedule-control"') &&
-      pageHtml.includes('data-action="agent-schedule-delete-open"') &&
-      pageHtml.includes('function invalidateAgentSchedules(agentId)') &&
-      pageHtml.includes('invalidateAgentSchedules(agentId);') &&
-      !pageHtml.includes('data-action="agent-schedule-create"') &&
-      !pageHtml.includes('data-action="agent-schedule-edit"') &&
-      !pageHtml.includes('data-action="agent-schedule-reassign"'),
+    pageSource.includes('class="agent-schedule-list"') &&
+      pageSource.includes('data-action="agent-schedule-control"') &&
+      pageSource.includes('data-action="agent-schedule-delete-open"') &&
+      pageSource.includes('function invalidateAgentSchedules(agentId)') &&
+      pageSource.includes('invalidateAgentSchedules(agentId);') &&
+      !pageSource.includes('data-action="agent-schedule-create"') &&
+      !pageSource.includes('data-action="agent-schedule-edit"') &&
+      !pageSource.includes('data-action="agent-schedule-reassign"'),
   );
 
   const usageOverview = await adminJson(

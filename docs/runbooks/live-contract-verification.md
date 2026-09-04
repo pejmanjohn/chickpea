@@ -1,7 +1,8 @@
 # Live contract verification
 
-The default is now the attended single-laptop checklist in
-[the operator skill](../../qa/live/operator/SKILL.md). Normal browser evidence and
+The current workflow and its invocation-scoped QA authorization are in
+[the operator skill](../../qa/live/operator/SKILL.md). It offers changed,
+regression, and release modes. Normal browser evidence and
 a lightweight private run record are sufficient. Exact product assertions,
 environment claims, deployment fences, local concurrency and cleanup remain
 required. Byte-for-byte capture matching, one-use challenges and evidence
@@ -9,7 +10,9 @@ certification below belong to the dormant legacy coordinator, not the default
 workflow. Hostnames are display metadata, not local ownership. Moving networks
 does not require manual lock repair. Never copy local lock state between machines.
 
-This runbook covers attended verification of Chickpea in real Admin, Slack, and provider flows. The public files define the behavior contract and safe record formats. They do not contain target coordinates, credentials, browser profiles, or a working live coordinator.
+The remaining coordinator procedures are a legacy reference, loaded only when
+explicitly operating that coordinator. Historical per-step approval gates do not
+request new permission for QA actions already authorized by a skill invocation.
 
 ## Phase 1 operating model
 

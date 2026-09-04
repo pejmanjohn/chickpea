@@ -40,6 +40,13 @@ Merging or pushing does not deploy Chickpea or publish a release.
 
 ## Verification
 
+For iteration, `npm run verify:regression -- --plan` selects checks from the
+branch and working changes. Run without `--plan` to execute them, or select
+`--area routines` and other named areas explicitly. `--mode regression` runs
+the fixed core checks; `--mode release` runs the full local sequence on clean
+committed source. These commands need no browser, live account, or OAuth.
+Use `$chickpea-live-verification` for the corresponding real QA journeys.
+
 Run builds and tests **serially**: tests inspect generated artifacts, so a
 concurrent build can make them read a partially written artifact.
 All verification runs locally. This repository does not use GitHub Actions
@@ -59,8 +66,8 @@ npm run verify:lockfile-integrity
 The offline verifiers use fake Slack/provider services and isolated local state.
 They do not require production credentials. `verify:cf-smoke` builds both
 Cloudflare profiles and runs the core profile in local workerd; it takes several
-minutes. Do not run it against a directory whose `.wrangler-state` you need to
-keep: that directory is disposable smoke-test state.
+minutes. Each run uses a free local port and its own disposable temporary state;
+it does not reset an operator's local Worker state.
 
 After committing the proposed source, run `npm run verify:oss-export`. It checks
 an archive of **HEAD**, not uncommitted edits, installs from the lockfile, and

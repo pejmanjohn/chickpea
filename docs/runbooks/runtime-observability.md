@@ -12,13 +12,24 @@ Successful actions do not require routine log inspection.
 | Historical events, invocations, traces, aggregate metrics, read-only infrastructure | Cloudflare API MCP `cloudflare-api`: discover with `search`, call with `execute` |
 | Live logs during an authorized reproduction | Wrangler `tail`, attached before the action and stopped afterward |
 | Visual trace waterfall or access fallback | Signed-in Cloudflare dashboard |
-| Local development, builds, deployment | Existing repository commands; deployments only through `npm run deploy` |
+| Local workerd runtime, requests, reloads, state | Owning `npm run dev:cf -- start` terminal and `/cdn-cgi/local/explorer` |
+| Local builds and deployed mutation | Existing repository commands; deployments only through `npm run deploy` |
 
 MCP, Wrangler, and dashboard authorization are independent. An error in one
 does not establish that the others are unavailable. Do not change credentials,
 permissions, collection settings, or deployments to follow this runbook.
 Keep the [environment claims and deployment fences](parallel-live-test-environments.md)
 and [attended live workflow](../../qa/live/operator/SKILL.md).
+
+For a local lane, first run `npm run dev:cf -- status --lane <lane>` and verify
+the workerd runtime, HTTP Slack transport, app/workspace IDs, state path,
+endpoint, model, owning worktree, PID, and source SHA. Inspect the owning
+terminal and Local Explorer, including its local observability API. Do not look
+for local invocations in Cloudflare dashboard/MCP telemetry. Switch to the
+deployed path below when the question involves a deployed serving version,
+binding or credential, shared gateway, traffic allocation, Cloudflare telemetry,
+or real scheduled due-time delivery. See
+[local Worker development](local-worker-development.md).
 
 Resolve the account, exact Worker name, environment, and serving version from
 the private environment record and live deployment evidence. Do not infer them

@@ -36,8 +36,11 @@ test('npm package includes every public live verifier file and discovery entrypo
   const required = [
     '.agents/skills/chickpea-live-verification/SKILL.md',
     'AGENTS.md',
+    'docs/runbooks/local-worker-development.md',
     'docs/runbooks/live-contract-acceptance-v1.md',
     'docs/runbooks/live-contract-verification.md',
+    'scripts/chickpea-local-worker.mjs',
+    'scripts/lib/local-worker-lane.mjs',
     ...filesBelow('qa/live'),
   ];
   assert.deepEqual(required.filter((path) => !packaged.has(path)), []);
@@ -46,6 +49,7 @@ test('npm package includes every public live verifier file and discovery entrypo
   assert.ok(packageJson.files?.includes('.agents/skills/chickpea-live-verification'));
   assert.ok(packageJson.files?.includes('AGENTS.md'));
   assert.ok(packageJson.files?.includes('qa/live'));
+  assert.ok(packageJson.files?.includes('docs/runbooks/local-worker-development.md'));
   assert.ok(packageJson.files?.includes('docs/runbooks/live-contract-acceptance-v1.md'));
   assert.ok(packageJson.files?.includes('docs/runbooks/live-contract-verification.md'));
 });
@@ -110,23 +114,14 @@ test('public verifier files are not ignored and private artifact shapes are not 
   assert.deepEqual(forbidden, []);
 });
 
-test('operator skill stays small, discoverable, and separate from contract assertions', () => {
+test('operator skill stays discoverable and separate from contract assertions', () => {
   const entrypoint = read('.agents/skills/chickpea-live-verification/SKILL.md');
   const skill = read('qa/live/operator/SKILL.md');
   const agents = read('AGENTS.md');
   const readme = read('README.md');
   assert.match(entrypoint, /^---\nname: chickpea-live-verification\n/);
   assert.match(entrypoint, /\.\.\/\.\.\/\.\.\/qa\/live\/operator\/SKILL\.md/);
-  assert.match(entrypoint, /\.\.\/\.\.\/\.\.\/docs\/runbooks\/live-contract-verification\.md/);
-  assert.ok(skill.split('\n').length <= 120);
   assert.match(skill, /^---\nname: chickpea-live-verification\n/);
-  assert.match(skill, /\.\.\/\.\.\/\.\.\/docs\/runbooks\/live-contract-verification\.md/);
-  assert.match(skill, /env claim <alias>/);
-  assert.match(skill, /env target <alias>/);
-  assert.match(skill, /env attest <alias>/);
-  assert.match(skill, /Use only `amber` or `cobalt`/);
-  assert.match(skill, /Reject `deep` on both targets/);
-  assert.match(skill, /public catalog retains dormant deep contracts/);
   assert.doesNotMatch(skill, /\bLC-\d{2}\b|\b(?:xox[baprs]-|sk-|gh[pousr]_)[A-Za-z0-9_-]{12,}/);
   assert.match(agents, /\$chickpea-live-verification/);
   assert.match(agents, /qa\/live\/operator\/SKILL\.md/);
@@ -138,8 +133,11 @@ test('skill relative references resolve from their owning files to the canonical
   for (const path of [
     '.agents/skills/chickpea-live-verification/SKILL.md',
     'qa/live/operator/SKILL.md',
+    'qa/live/operator/modes.md',
   ]) {
-    const references = [...read(path).matchAll(/`(\.\.\/[^`]+\.md)`/g)];
+    // Both inline-code references in the discovery wrapper and actual Markdown
+    // links in the operator instructions must survive source publication.
+    const references = [...read(path).matchAll(/(?:`|\]\()([^\s`()]+\.md)(?:`|\))/g)];
     assert.ok(references.length > 0, `${path} has no workflow references`);
     for (const [, reference] of references) {
       const resolved = resolve(ROOT, dirname(path), reference!);

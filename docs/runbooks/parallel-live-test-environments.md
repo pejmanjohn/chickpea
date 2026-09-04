@@ -2,6 +2,14 @@
 
 ## Current execution scope: two standalone lanes
 
+For ordinary verification use the [operator skill](../../qa/live/operator/SKILL.md).
+Its invocation authorizes declared QA actions and exact cleanup, including
+test OAuth consent and product approval dialogs. The historical provisioning
+gates below do not add per-step confirmation to an already authorized QA run.
+New infrastructure, billing, unrelated permissions, and shared app/gateway changes
+remain outside that invocation. Existing claimed Amber and Cobalt lanes may test
+branch candidates without requiring a source merge.
+
 The latest user-approved amendment in
 `docs/plans/2026-08-27-parallel-lanes.md` starts with **Amber and Cobalt only**,
 each in a standalone Slack Pro workspace with the Chickpea-owned shared app.
@@ -123,21 +131,13 @@ Recheck actual workspace usage in Slack before provisioning more resources.
 1. Use Computer Use for every Slack or browser UI action and observation.
    Authorized provider APIs/CLI may set up, inventory, deploy, attest, and
    tear down infrastructure. They cannot perform or score end-user behavior.
-2. Apply the active Computer Use confirmation policy to UI actions, not to
-   ordinary terminal/API operations. For UI actions, stop for action-time
-   confirmation immediately before:
-   - creating a sandbox, workspace, Slack app, configuration token, OAuth key,
-     or other persistent access;
-   - changing permissions, access, app approvals, or policy;
-   - deleting a workspace, app, or sandbox;
-   - typing sensitive identity, address, billing, token, or credential data;
-   - solving a CAPTCHA.
-   Specific prior approval may cover sensitive-data transmission when the
-   active policy permits it. Do not repeat approvals for non-UI setup already
-   authorized by the user. Keep those operations inside the agreed target
-   scope, inspect exact identities before mutation, and reconcile ambiguous
-   outcomes before retrying. This distinction never authorizes out-of-scope
-   access, browser-session extraction, or API-based product verdicts.
+2. Respect the actual tool's execution policy and the user's authorized scope.
+   Invocation of the verification skill authorizes its declared QA actions in
+   both browser and terminal, including consent and confirmation dialogs. Do
+   not add action-time permission questions for these same actions. Inspect
+   target/account/grant identities before mutation and reconcile ambiguous
+   outcomes before retrying. Ask only for missing authority or capabilities;
+   never bypass a tool-enforced gate or extract browser credentials.
 3. The user enters billing details, secret values, OTPs, and unavailable
    credentials directly. Never retain them in the repository, shell history,
    prompts, screenshots, logs, or evidence.

@@ -16,13 +16,27 @@
   `wrangler deploy`. Confirm the intended target before any live mutation.
 - Report local checks and live acceptance separately. A source SHA, build, or
   deployment upload is not evidence of a real Slack reply.
+- For repeated implementation/retest cycles against real Slack, start with an
+  exclusive local Cloudflare Worker lane from
+  [local Worker development](docs/runbooks/local-worker-development.md). Run
+  `npm run dev:cf -- status --lane <lane>` before acting; it must identify the
+  workerd runtime, HTTP Slack transport, immutable app/workspace pair, provider
+  model, persistent state, public endpoint, and owning worktree. Local passes do
+  not satisfy shared-gateway or deployed Amber/Cobalt acceptance.
 - For Chickpea live Slack verification, invoke `$chickpea-live-verification`.
+  A request to run it authorizes its declared QA actions and exact cleanup,
+  including test messages, product approvals, and OAuth with registered test
+  accounts. Do not request the same permission at every step. Use its mode and
+  authorization boundaries; production/shared infrastructure are outside scope.
   If skill discovery is unavailable, read `qa/live/operator/SKILL.md` before
   acting. It points to the public catalog and runbook. Keep target coordinates,
   resolved aliases, journals, transcripts, screenshots, and evidence outside
   this repository.
 - For runtime failures, unexplained behavior, or timing issues, consult existing
   evidence and [runtime observability](docs/runbooks/runtime-observability.md).
+  Use the owning terminal and Local Explorer for a local Worker. Diagnose on the
+  deployed Worker when the question depends on its serving version, bindings,
+  gateway route, credentials, Cloudflare telemetry, or due-time scheduling.
   Use Cloudflare API MCP (`cloudflare-api`) `search` then `execute` for bounded
   historical logs, invocations, traces, aggregate metrics, and read-only
   infrastructure inspection; prefer `dry: true` queries. Use Wrangler `tail`

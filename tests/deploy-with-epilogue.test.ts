@@ -1244,6 +1244,47 @@ test('sandbox deploy rebuilds by default and keeps the selector internal', (cont
   ]);
 });
 
+test('a claimed QA worktree cannot fall through to production or another lane', (context) => {
+  for (const target of ['', 'cobalt']) {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    writeFileSync(path.join(harness.root, '.chickpea-environment'), JSON.stringify({
+      schemaVersion: 'chickpea-environment-claim/v1', target: 'amber',
+    }));
+    const result = runHarness(harness, [], { CHICKPEA_DEPLOY_TARGET: target });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /This worktree claims amber/);
+    assert.equal(existsSync(harness.logPath), false, 'no build, inspection, migration, or upload');
+  }
+});
+
+test('unreadable QA ownership and local lane state refuse a default deployment', (context) => {
+  for (const kind of ['malformed', 'symlink', 'local']) {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    const marker = path.join(harness.root, '.chickpea-environment');
+    if (kind === 'malformed') writeFileSync(marker, '{');
+    if (kind === 'symlink') symlinkSync(path.join(harness.root, 'absent'), marker);
+    if (kind === 'local') mkdirSync(path.join(harness.root, '.chickpea-local-worker'));
+    const result = runHarness(harness, [], { CHICKPEA_DEPLOY_TARGET: '' });
+    assert.equal(result.status, 1);
+    assert.equal(existsSync(harness.logPath), false, kind);
+  }
+});
+
+test('a matching QA target still reaches the existing claim fence before building', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  writeFileSync(path.join(harness.root, '.chickpea-environment'), JSON.stringify({
+    schemaVersion: 'chickpea-environment-claim/v1', target: 'amber',
+  }));
+  const result = runHarness(harness, [], {
+    CHICKPEA_DEPLOY_TARGET: 'amber', DEPLOY_TEST_ENV_PREFLIGHT_FAIL_AT: '1',
+  });
+  assert.equal(result.status, 1);
+  assert.deepEqual(commands(harness.logPath), ['environment-preflight:1:amber']);
+});
+
 test('Phase 1 deploy fences claim authority before build and again before D1 or upload', (context) => {
   const beforeBuild = createHarness();
   const beforeMutation = createHarness();
