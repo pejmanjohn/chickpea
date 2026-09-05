@@ -13,7 +13,7 @@
 <div align="center">
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-555555.svg?labelColor=333333&color=2EA44F)](./LICENSE)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A522.19-555555?labelColor=333333&color=339933)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/Node-24.x-555555?labelColor=333333&color=339933)](https://nodejs.org)
 [![Runs on](https://img.shields.io/badge/Runs_on-Cloudflare_Workers_or_Node-555555?labelColor=333333&color=F38020)](#install)
 [![Built on Flue](https://img.shields.io/badge/Built_on-Flue-555555?labelColor=333333&color=DDA126)](https://flueframework.com)
 
@@ -281,7 +281,7 @@ npx chickpea-cli call https://chickpea.example.com <tool> --args '{...}'
 npx chickpea-cli recipe export https://chickpea.example.com > recipe.json
 ```
 
-The CLI never takes a token or key as an argument, never confirms a proposal on its own, and sends no telemetry. Node 22.19 or newer.
+The CLI never takes a token or key as an argument, never confirms a proposal on its own, and sends no telemetry. Node 24.x, minimum 24.20.0.
 
 ---
 
@@ -358,7 +358,7 @@ Uses Cloudflare Workers, Durable Objects, D1, and Workers AI.
 
 ### Node
 
-Requires Node **>=22.19.0**.
+Requires Node **24.x, minimum 24.20.0**. Use `nvm install && nvm use` to select the pinned development and verification baseline.
 
 ```bash
 git clone https://github.com/pejmanjohn/chickpea && cd chickpea
@@ -466,7 +466,7 @@ npm run verify:management-mcp
 npm run verify:oss-export
 ```
 
-Node **>=22.19.0** is pinned in `.nvmrc`. Several `verify:*:live` variants exist for provider- and Slack-touching evaluations; they are opt-in because they spend real quota. Live Slack acceptance should run against a disposable paid workspace so user-group policy, handle collisions, public auto-join, private invitation, App Home, avatar updates, archive, and restore all get exercised for real.
+Node **24.20.0** is pinned in `.nvmrc` for development, builds, and verification. Node 24.x is the only supported major, with engine range `>=24.20.0 <25`. Later Node 24 updates are supported; update the pin for patch/security releases and verify the new baseline once. Other Node majors are outside this release's support policy. Several `verify:*:live` variants exist for provider- and Slack-touching evaluations; they are opt-in because they spend real quota. Live Slack acceptance should run against a disposable paid workspace so user-group policy, handle collisions, public auto-join, private invitation, App Home, avatar updates, archive, and restore all get exercised for real.
 
 Live Slack verification is available through the repo-scoped [`$chickpea-live-verification`](.agents/skills/chickpea-live-verification/SKILL.md) skill. Codex discovers it automatically in this repository. The thin entry point routes to the [canonical operator workflow](qa/live/operator/SKILL.md) and [runbook](docs/runbooks/live-contract-verification.md), so the operating instructions remain in one place.
 

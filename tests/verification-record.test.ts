@@ -39,7 +39,7 @@ function fixture(t: TestContext) {
 }
 
 function offlinePlan(f: ReturnType<typeof fixture>, scripts: string[], results: string[], options: { node?: string; mode?: string; inputs?: ReturnType<typeof source>; config?: string } = {}) {
-  const node = options.node ?? 'v24.16.0', mode = options.mode ?? 'changed', inputs = options.inputs ?? source();
+  const node = options.node ?? 'v24.20.0', mode = options.mode ?? 'changed', inputs = options.inputs ?? source();
   const steps = scripts.map((script) => ({ kind: 'npm', script }));
   const executionFingerprint = digest({ node, config: options.config ?? 'synthetic-config' });
   const fingerprint = digest({ executionFingerprint, source: inputs.tree, steps });
@@ -258,12 +258,11 @@ test('offline reuse rejects changed input, missing/replaced log, build, and newe
   assert.equal(reusableOffline(f.run, 'npm:test', fp), undefined);
 });
 
-test('release checkpoints require both Node versions, current clean content and intact logs', (t) => {
+test('Node 24 alone completes a release checkpoint with current clean content and intact logs', (t) => {
   const f = fixture(t); f.run.spec.mode = 'release'; f.run.spec.contexts.local.grade = 'deployed';
   const attempt = f.append({ type: 'begin', caseId: 'schedule' }); f.append(f.finish(attempt.id));
   offlinePlan(f, ['test'], ['pass'], { mode: 'release' });
-  assert.equal(status(f.run, source(), NOW).releasePending, true);
-  offlinePlan(f, ['test'], ['pass'], { mode: 'release', node: 'v22.19.0' });
+  assert.equal(status(f.run, source(), NOW).complete, true);
   assert.equal(status(f.run, source(), NOW).releasePending, false);
   assert.equal(status(f.run, { ...source(), dirty: true }, NOW).releasePending, true);
   assert.equal(status(f.run, { ...source(), tree: 'new-tree' }, NOW).releasePending, true);
@@ -282,10 +281,36 @@ test('independent offline plans cannot hide failed required coverage and a relev
   assert.ok(f.run.events.some((e: any) => e.planId === failed.id && e.type === 'offline_finish' && e.result === 'fail'));
 });
 
+test('old Node 22 receipts stay historical and cannot satisfy or block Node 24 acceptance', (t) => {
+  const f = fixture(t); f.run.spec.mode = 'release'; f.run.spec.contexts.local.grade = 'deployed';
+  const live = f.append({ type: 'begin', caseId: 'schedule' }); f.append(f.finish(live.id));
+  offlinePlan(f, ['test'], ['pass'], { node: 'v22.19.0', mode: 'release' });
+  assert.equal(status(f.run, source(), NOW).releasePending, true);
+  offlinePlan(f, ['test'], ['fail'], { node: 'v22.19.0', mode: 'release' });
+  const history = JSON.stringify(f.run.events);
+  offlinePlan(f, ['test'], ['pass'], { mode: 'release' });
+  const view = status(f.run, source(), NOW);
+  assert.equal(view.complete, true);
+  assert.equal(view.offlinePlans.find((p: any) => p.node === 'v22.19.0').required, false);
+  assert.match(renderReport(view), /Historical, unsupported v22.19.0 coverage across plans: fail/);
+  assert.equal(JSON.stringify(f.run.events.slice(0, JSON.parse(history).length)), history);
+  offlinePlan(f, ['test'], ['fail']);
+  assert.equal(status(f.run, source(), NOW).complete, false);
+  assert.equal(status(f.run, source(), NOW).releasePending, true);
+});
+
+test('unsupported or outdated Node 24 proof cannot complete the current release checkpoint', (t) => {
+  for (const node of ['v24.19.0', 'v25.0.0', 'v26.0.0']) {
+    const f = fixture(t); f.run.spec.mode = 'release'; f.run.spec.cases = [];
+    offlinePlan(f, ['test'], ['pass'], { node, mode: 'release' });
+    assert.equal(status(f.run, source(), NOW).complete, false, node);
+  }
+});
+
 test('a failed full release cannot reuse its older checkpoint or be cleared by narrower recovery', (t) => {
   const f = fixture(t); f.run.spec.mode = 'release'; f.run.spec.contexts.local.grade = 'deployed';
   const live = f.append({ type: 'begin', caseId: 'schedule' }); f.append(f.finish(live.id));
-  for (const node of ['v22.19.0', 'v24.16.0']) offlinePlan(f, ['test', 'verify:durability'], ['pass', 'pass'], { node, mode: 'release' });
+  offlinePlan(f, ['test', 'verify:durability'], ['pass', 'pass'], { mode: 'release' });
   assert.equal(status(f.run, source(), NOW).complete, true);
   offlinePlan(f, ['test', 'verify:durability'], ['pass', 'fail'], { mode: 'release' });
   offlinePlan(f, ['verify:durability'], ['pass']);

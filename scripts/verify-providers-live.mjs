@@ -17,7 +17,7 @@
  * Results stay in stdout; this opt-in verifier never writes credentials,
  * replies, or provenance artifacts into the repository.
  *
- * Typical invocation (Node >= 22.19 on PATH; creds via env, never printed):
+ * Typical invocation with the Node 24 baseline from .nvmrc on PATH; creds via env, never printed:
  *   set -a; source .env.slack.local; set +a
  *   node scripts/verify-providers-live.mjs
  */

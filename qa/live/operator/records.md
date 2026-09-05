@@ -292,8 +292,11 @@ failure/open attempt defeats an older pass. Environment changes may conservative
 prevent reuse. Ignored external configuration must be represented in the effective
 environment or recorded context. Never treat unchanged HEAD as sufficient.
 
-Required offline coverage accumulates across the run's plans for each Node
-runtime. Passing a narrower independent plan cannot hide a failed or unfinished
+Required offline coverage accumulates across the run's Node 24 plans. A Node 24
+update carries those obligations forward, but receipts must match the current
+exact version and execution configuration. Other Node majors remain visible
+history and neither satisfy nor block current Node 24 acceptance. Open attempts
+still require reconciliation before another run. Passing a narrower independent plan cannot hide a failed or unfinished
 check from an earlier plan. A relevant passing rerun on current source and matching
 execution configuration can resolve it; the original failure remains recorded.
 The report lists outstanding check obligations. A failed full release run needs
@@ -304,22 +307,25 @@ and choose a bounded useful checkpoint for compatible reviewed repairs. Run the
 union of affected deterministic checks, retest Local with the actual model, then
 test dependent deployed behavior. Follow [modes.md](modes.md#repair-loop-and-final-checkpoint).
 Workflow-only edits need workflow/export contracts. Repeated
-intermediate full tests, both Node versions, and clean export are unnecessary unless
+intermediate full tests and clean export are unnecessary unless
 the impact or failures justify them.
 
 Once the candidate is stable and committed, deliberately run the complete release
-inventory on Node 22.19.0 and Node 24 with `--mode release --record FILE`. `--reuse`
-is refused in release mode. The report requires both current-source checkpoints;
+inventory on Node 24.20.0 from `.nvmrc` with `--mode release --record FILE`. `--reuse`
+is refused in release mode. The report requires this one current-source checkpoint;
 a build change invalidates them. Follow [releasing](../../../docs/runbooks/releasing.md)
 for audit and profile checks and finish the selected live release matrix. These
-receipts never tag, publish, deploy, or grant release approval.
+receipts never tag, publish, deploy, or grant release approval. The clean export
+receipt includes its full root/CLI tests and offline turn/durability/provider
+checks; the outer release plan does not repeat them. Only newly recorded export
+plans declare that coverage. Original receipts and failures remain unchanged.
 
 ```sh
 npm run verify:regression -- --mode release --record "$run_dir/run.json"
 npm run verify:live:record -- report --run "$run_dir/run.json" --output "$run_dir/report-1.md"
 ```
 
-Run that first command with each required Node runtime on PATH. Generate a new
+Run that first command once with the pinned Node 24 runtime on PATH. Generate a new
 report filename after updates; the command refuses to overwrite evidence. Reports
 include first failures, current invalidation, open attempts, exact cleanup, measured
 time and known/unknown cost. Original command duration on a reused receipt is an

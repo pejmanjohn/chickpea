@@ -1,5 +1,8 @@
+import { assertNodeVersion } from './scripts/lib/node-version.mjs';
 import { flue } from '@flue/vite';
 import { defineConfig } from 'vite';
+
+assertNodeVersion();
 
 export default defineConfig({
   publicDir: 'assets',

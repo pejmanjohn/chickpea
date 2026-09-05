@@ -27,23 +27,29 @@ Start from a clean checkout of the exact candidate commit, with no private
 environment files. Use the lockfile and run checks serially per checkout:
 
 ```sh
+nvm install && nvm use
 npm ci
-npm run verify:lockfile-integrity
 npm audit --omit=dev
-npm run build
-TAG_DB_PATH=:memory: SLACK_STATE_DB_PATH=:memory: CHICKPEA_AUTH_DB_PATH=:memory: TAG_REQUIRE_LOOPBACK=1 npm test
-npm run verify:admin-ui
-DO_NOT_TRACK=1 node scripts/verify-flue-offline-turn.mjs
-DO_NOT_TRACK=1 npm run verify:durability
-DO_NOT_TRACK=1 npm run verify:providers
-DO_NOT_TRACK=1 npm run verify:cf-smoke
-npm run verify:oss-export
+npm run verify:regression -- --mode release
 ```
 
-Run these checks locally on Node 22.19.0 and Node 24, including the immutable
-source-export check and local workerd smoke. The source-export check tests
-committed HEAD only. Passing results for an earlier commit do not validate new
-uncommitted changes. No GitHub workflow runs or deploys this release.
+Run the source gates once on Node 24.20.0 from `.nvmrc`. Node 24.x is the only
+supported major, minimum 24.20.0. Update the single baseline for later patch or
+security releases, then verify it once; do not retain a second runtime sweep.
+
+The release command requires clean committed source without private environment
+files. It restores build artifacts and runs authoring, Admin, local workerd,
+lockfile, and immutable source-export checks serially. The export installs from
+the lockfile, builds HEAD, and runs the full root/CLI suite plus offline turn,
+durability, and provider checks and a deployment dry run. Those checks run once
+inside the export instead of again in the outer release sequence. Its receipt
+covers the declared test inventory and offline checks only after the whole export
+passes. Old receipts do not acquire new coverage retroactively. Missing logs,
+source/configuration drift, and unresolved failures still block completion.
+
+Use `--record <private-run.json>` for the existing skill's evidence notebook.
+Passing an earlier commit does not validate new changes. Verify the actual merge
+result before landing. The command never tags, publishes, or deploys a release.
 
 Record the compressed upload size from the deployment dry run, not the size of
 the repository or `node_modules`. Keep headroom below the advertised plan's

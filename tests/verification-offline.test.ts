@@ -20,7 +20,7 @@ function fixture(t: TestContext) {
   const run: any = { id: 'synthetic-run', events: [] };
   const event = (value: object) => offlineEvent(run, value);
   const plan = (steps: object[], extra: object = {}) => event({ type: 'offline_plan', mode: 'changed',
-    steps, source: source(), node: 'v24.16.0', executionFingerprint: 'environment-one',
+    steps, source: source(), node: 'v24.20.0', executionFingerprint: 'environment-one',
     fingerprint: digest({ steps, extra }), ...extra });
   const begin = (p: any, step = p.steps[0]) => event({ type: 'offline_begin', planId: p.id,
     label: offlineStepLabel(step), fingerprint: p.fingerprint, source: p.source, node: p.node });
@@ -91,6 +91,31 @@ test('a full npm test run supersedes only its declared test inventory and typech
   assert.equal(f.view().offlinePlans[0].result, 'pass');
 });
 
+test('a current clean export resolves its declared coverage, while historical or failed exports do not', (t) => {
+  const f = fixture(t), a = 'tests/one.test.ts', custom = 'tests/custom/two.test.ts';
+  const initial = f.plan([tests(a, custom), npm('typecheck'), npm('test'), npm('verify:durability'), npm('verify:providers'), { kind: 'node', file: 'scripts/verify-flue-offline-turn.mjs' }]);
+  f.check(initial, initial.steps[0], 'fail'); f.summary(initial, 'fail');
+  const historical = f.plan([npm('verify:oss-export')], { testFiles: [a] }); f.complete(historical);
+  assert.equal(f.results()[`test:${a}`], 'fail');
+  const failed = f.plan([npm('verify:oss-export')], { sourceExportCoverage: 1, testFiles: [a] });
+  f.check(failed, failed.steps[0], 'fail'); f.summary(failed, 'fail');
+  assert.equal(f.results()['npm:verify:durability'], 'fail');
+  const final = f.plan([npm('verify:oss-export')], { sourceExportCoverage: 1, testFiles: [a] }); f.complete(final);
+  for (const id of ['npm:test', 'npm:typecheck', 'npm:verify:durability', 'npm:verify:providers', 'scripts/verify-flue-offline-turn.mjs', `test:${a}`]) assert.equal(f.results()[id], 'pass', id);
+  assert.equal(f.results()[`test:${custom}`], 'fail');
+});
+
+test('a Node 24 update carries unfinished obligations forward without requiring a second runtime sweep', (t) => {
+  const f = fixture(t), a = npm('test'), b = npm('verify:durability');
+  const old = f.plan([a, b], { node: 'v24.19.0' }); f.check(old, a, 'fail'); f.summary(old, 'fail');
+  const partial = f.plan([b]); f.complete(partial);
+  assert.equal(f.results()['npm:test'], 'stale');
+  const final = f.plan([a, b], { mode: 'release' }); f.complete(final); f.checkpoint(final);
+  assert.equal(f.view().offlinePlans.length, 1);
+  assert.equal(f.view().offlinePlans[0].result, 'pass');
+  assert.equal(f.view().checkpoints.length, 1);
+});
+
 test('a failed source-stability summary cannot be hidden by a later independent success', (t) => {
   const f = fixture(t), step = npm('verify:durability');
   const drifted = f.plan([step]); f.check(drifted); f.summary(drifted, 'fail');
@@ -116,7 +141,7 @@ test('evidence integrity and Node runtime identity remain required for offline r
   const f = fixture(t), step = npm('verify:durability');
   const node24 = f.plan([step]); f.complete(node24);
   const node22 = f.plan([step], { node: 'v22.19.0' }); f.check(node22, step, 'fail'); f.summary(node22, 'fail');
-  assert.deepEqual(f.view().offlinePlans.map((p: any) => [p.node, p.result]), [['v24.16.0', 'pass'], ['v22.19.0', 'fail']]);
+  assert.deepEqual(f.view().offlinePlans.map((p: any) => [p.node, p.result]), [['v24.20.0', 'pass'], ['v22.19.0', 'fail']]);
   const receipt = f.run.events.find((e: any) => e.type === 'offline_finish' && e.planId === node24.id);
   writeFileSync(receipt.evidence[0].path, 'replaced evidence');
   assert.equal(f.view().offlinePlans[0].result, 'stale');
@@ -166,18 +191,18 @@ test('a failure or stale log after the checkpoint requires a fresh full checkpoi
 test('an older Node 24 checkpoint cannot conceal a later failed full run on another Node 24 patch version', (t) => {
   const f = fixture(t), step = npm('test');
   const first = f.plan([step], { mode: 'release' }); f.complete(first); f.checkpoint(first);
-  const later = f.plan([step], { mode: 'release', node: 'v24.17.0' }); f.check(later, step, 'fail'); f.summary(later, 'fail');
+  const later = f.plan([step], { mode: 'release', node: 'v24.20.1' }); f.check(later, step, 'fail'); f.summary(later, 'fail');
   assert.equal(f.view().checkpoints.length, 0);
-  const focused = f.plan([step], { node: 'v24.17.0' }); f.complete(focused);
+  const focused = f.plan([step], { node: 'v24.20.1' }); f.complete(focused);
   assert.ok(f.view().offlinePlans.every((p: any) => p.result === 'pass'));
   assert.equal(f.view().checkpoints.length, 0);
-  const full = f.plan([step], { mode: 'release', node: 'v24.17.0' }); f.complete(full); const checkpoint = f.checkpoint(full);
+  const full = f.plan([step], { mode: 'release', node: 'v24.20.1' }); f.complete(full); const checkpoint = f.checkpoint(full);
   assert.deepEqual(f.view().checkpoints.map((e: any) => e.id), [checkpoint.id]);
 });
 
 test('a release checkpoint needs intact completed full-plan receipts, current clean source and matching configuration', (t) => {
   const f = fixture(t), step = npm('test');
-  f.event({ type: 'checkpoint', result: 'pass', source: source(), node: 'v24.16.0', evidence: [] });
+  f.event({ type: 'checkpoint', result: 'pass', source: source(), node: 'v24.20.0', evidence: [] });
   assert.equal(f.view().checkpoints.length, 0);
   const plan = f.plan([step], { mode: 'release' }); f.summary(plan); f.checkpoint(plan);
   assert.equal(f.view().checkpoints.length, 0);

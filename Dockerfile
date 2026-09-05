@@ -1,6 +1,8 @@
 # Chickpea coding-sandbox image. Extends Cloudflare's Sandbox SDK base — the
 # tag MUST equal the @cloudflare/sandbox npm version (0.12.4); the SDK checks
 # compatibility at startup. Ubuntu 22.04, Node 22.23.1, git/curl/jq preinstalled.
+# This vendor-owned runtime runs sandbox tools, not the Chickpea host/build.
+# It is independent of the Node 24 policy in .nvmrc; preserve SDK/image parity.
 #
 # Cloudflare hard rules (verified 2026-07-23): never set USER, never override
 # ENTRYPOINT (the base ENTRYPOINT runs the sandbox control-plane server). Extend

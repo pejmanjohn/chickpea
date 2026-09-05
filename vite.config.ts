@@ -1,3 +1,4 @@
+import { assertNodeVersion } from './scripts/lib/node-version.mjs';
 import { cloudflare } from '@cloudflare/vite-plugin';
 import { flue, flueWorkerConfig } from '@flue/vite';
 import { readFile } from 'node:fs/promises';
@@ -19,6 +20,8 @@ const configureFlueWorker = flueWorkerConfig();
 
 // Flue must run first: its project and agent scan feeds the Cloudflare
 // plugin's generated Worker configuration during the same config pass.
+assertNodeVersion();
+
 export default defineConfig(({ command }) => {
   const local = command === 'serve' ? localWorkerViteSettings() : undefined;
   return {

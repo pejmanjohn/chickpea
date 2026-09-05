@@ -16,7 +16,7 @@ import { FakeSlackBackend } from './parity/fake-slack.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const MANIFEST_PATH = join(REPO_ROOT, 'slack-app-manifest.json');
-// The verify script loads TypeScript modules, which needs Node >= 22.19; honor
+// The verify script loads TypeScript modules, which needs Node 24.x (see .nvmrc); honor
 // the same escape hatch the parity suite (tests/parity/lane-b.ts) documents.
 const NODE_BIN = process.env.FLUE_NODE_BIN ?? process.execPath;
 const execFileAsync = promisify(execFile);

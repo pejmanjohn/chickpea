@@ -70,7 +70,7 @@
     }
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.20.0 <25"
   },
   "overrides": {
     "@flue/slack": {
@@ -132,7 +132,9 @@
     "reset:test-env": "node scripts/reset-test-env.mjs",
     "test:cli": "npm test --workspace packages/cli",
     "build:cli": "npm run build --workspace packages/cli",
-    "verify:live:record": "node scripts/verification-record.mjs"
+    "verify:live:record": "node scripts/verification-record.mjs",
+    "preinstall": "node scripts/lib/node-version.mjs",
+    "pretest": "node scripts/lib/node-version.mjs"
   },
   "dependencies": {
     "@better-auth/mcp": "1.7.1",

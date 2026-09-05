@@ -6,7 +6,7 @@ The official command line for a self-hosted [Chickpea](https://chickpea.co) depl
 npx chickpea-cli doctor https://chickpea.example.com
 ```
 
-Requires Node 22.19 or newer. The binary is `chickpea`; install it globally with `npm install -g chickpea-cli` or run it through `npx chickpea-cli`.
+Requires Node 24.x, minimum 24.20.0 (`>=24.20.0 <25`). Development and publishing use the repository's `.nvmrc` baseline, 24.20.0. The binary is `chickpea`; install it globally with `npm install -g chickpea-cli` or run it through `npx chickpea-cli`.
 
 ## Commands
 

@@ -94,7 +94,7 @@ stale and needs fresh evidence; never leave the serving version artificially old
 
 Pass `--record <private-run.json>` to the regression command for logs and timing.
 An unchanged repeat may add `--reuse`; a new source/configuration/inventory cannot
-reuse those offline receipts. Reserve both Node versions and clean export for
+reuse those offline receipts. Reserve the full suite and clean export on the pinned Node 24 baseline for
 the deliberate stable-candidate release checkpoint, unless a broader failure or
 impact justifies them earlier. For a release run, once the final candidate is
 stable and committed, run the complete release checkpoint and selected live
@@ -203,7 +203,7 @@ npm run verify:regression -- --mode release
 ```
 
 This command requires clean committed source because OSS export checks HEAD.
-Follow [releasing](../../../docs/runbooks/releasing.md) for required Node versions,
+Follow [releasing](../../../docs/runbooks/releasing.md) for the single Node 24 baseline,
 dependency audit, and advertised deployment profiles. This mode verifies a
 candidate; it never tags, publishes, merges, or deploys production.
 

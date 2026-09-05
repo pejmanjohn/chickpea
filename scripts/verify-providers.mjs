@@ -13,7 +13,7 @@
  * Offline and net-guarded. Assertion summaries are printed to stdout; the
  * harness does not write repository artifacts.
  *
- * Run with Node >= 22.19:
+ * Run with Node 24.x (see .nvmrc):
  *   node scripts/verify-providers.mjs
  */
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';

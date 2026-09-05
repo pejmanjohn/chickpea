@@ -1,5 +1,11 @@
 // Bounded, credential-free checks. Live Slack and real-model evaluation are
 // deliberately separate so this command never needs a browser or consent.
+// The clean HEAD export executes these checks under the runner's Node and
+// isolated environment. Keep this inventory shared with receipt coverage.
+export const SOURCE_EXPORT_CHECKS = [
+  'npm:test', 'npm:typecheck', 'scripts/verify-flue-offline-turn.mjs',
+  'npm:verify:durability', 'npm:verify:providers',
+];
 export const REGRESSION_AREAS = Object.freeze({
   delivery: ['slack-admission', 'slack-thread-context', 'gateway-inbox', 'gateway-session-runner', 'flue-v2-runtime-regressions'],
   agents: ['management-policy', 'management-security-regression', 'management-agent-creation-welcome', 'management-agent-parity', 'slack-proposal-approval-readback', 'agent-authoring-guide'],
@@ -10,7 +16,7 @@ export const REGRESSION_AREAS = Object.freeze({
   auth: ['slack-install-oauth', 'slack-oidc', 'auth-principal', 'admin-authorization'],
   admin: ['admin-page', 'agent-admin-routes', 'admin-authorization'],
   providers: ['provider-runtime-models', 'cloudflare-provider', 'runtime-model-route-evidence'],
-  verification: ['verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'deploy-with-epilogue', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
+  verification: ['node-version', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'deploy-with-epilogue', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
 });
 
 const rules = [
@@ -83,8 +89,13 @@ export function createRegressionPlan({ mode = 'changed', areas = [], files = [],
     npm('verify:lockfile-integrity');
     npm('verify:oss-export');
   }
+  // Retain artifact restoration, workerd, Admin and authoring checks. The
+  // export already installs/builds/tests HEAD and runs these offline checks.
+  const selectedSteps = mode === 'release' ? steps.filter((step) => !SOURCE_EXPORT_CHECKS.includes(
+    step.kind === 'npm' ? `npm:${step.script}` : step.file,
+  )) : steps;
   return {
-    mode, areas: [...selected].sort(), fullTests, unclassified, broadChanges, steps,
+    mode, areas: [...selected].sort(), fullTests, unclassified, broadChanges, steps: selectedSteps,
     coverage: 'Deterministic and fake-service checks only. No real-model, Slack, OAuth, or deployed acceptance.',
   };
 }

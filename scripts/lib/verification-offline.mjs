@@ -1,10 +1,14 @@
 // Project the existing runner's receipts without discarding unfinished coverage
 // when a subsequent invocation selects a smaller plan. No checks run here.
 import { digest } from './verification-inputs.mjs';
+import { isSupportedNodeVersion } from './node-version.mjs';
+import { SOURCE_EXPORT_CHECKS } from './regression-plan.mjs';
 
 export const offlineStepLabel = (step) => step.kind === 'npm' ? `npm:${step.script}`
   : step.kind === 'node' ? step.file : `tests:${digest(step.files).slice(0, 12)}`;
-const coverage = (step, plan) => step.kind === 'tests' ? step.files.map((file) => `test:${file}`)
+const coverage = (step, plan) => step.kind === 'npm' && step.script === 'verify:oss-export' && plan.sourceExportCoverage === 1
+  ? [offlineStepLabel(step), ...SOURCE_EXPORT_CHECKS, ...(plan.testFiles ?? []).map((file) => `test:${file}`)]
+  : step.kind === 'tests' ? step.files.map((file) => `test:${file}`)
   : step.kind === 'npm' && step.script === 'test' && Array.isArray(plan.testFiles)
     ? ['npm:test', 'npm:typecheck', ...plan.testFiles.map((file) => `test:${file}`)] : [offlineStepLabel(step)];
 const configuration = (plan) => plan.executionFingerprint ?? plan.fingerprint;
@@ -50,9 +54,9 @@ const aggregate = (items) => items.some((item) => item.result === 'fail') ? 'fai
     : items.some((item) => item.result === 'stale') ? 'stale'
       : items.some((item) => item.result !== 'pass') ? 'not_run' : 'pass';
 
-/** Current-source coverage is the union of all selected plans per exact Node
- * runtime. Each newly selected obligation needs its own receipt (execution or
- * validated reuse); the plan summary alone never satisfies a check. */
+/** Node 24 updates replace the execution target without dropping obligations.
+ * Receipts still need the exact current Node/configuration; no cross-version
+ * reuse. Other majors remain visible history, never current acceptance. */
 export function offlineProgress(run, source, intact) {
   const plans = run.events.filter((e) => e.type === 'offline_plan');
   const byNode = new Map();
@@ -60,19 +64,23 @@ export function offlineProgress(run, source, intact) {
   const latestRelease = new Map(plans.filter((plan) => plan.mode === 'release')
     .map((plan) => [checkpointFamily(plan.node), plan.id]));
   for (const plan of plans) {
-    if (!byNode.has(plan.node)) byNode.set(plan.node, []);
-    byNode.get(plan.node).push(plan);
+    const family = checkpointFamily(plan.node);
+    if (!byNode.has(family)) byNode.set(family, []);
+    byNode.get(family).push(plan);
   }
   const offlinePlans = [], offlineObligations = [], checkpoints = [];
-  for (const [node, nodePlans] of byNode) {
+  for (const nodePlans of byNode.values()) {
     const latest = nodePlans.at(-1), required = new Map();
+    const node = latest.node, supported = isSupportedNodeVersion(node);
+    const requiredTarget = checkpointFamily(node) === 'v24';
     for (const plan of nodePlans) for (const step of plan.steps) {
-      for (const id of coverage(step, plan)) required.set(id, { id, node, planId: plan.id, requiredAt: plan.sequence });
+      for (const id of coverage(step, plan)) required.set(id, { id, node, required: requiredTarget, planId: plan.id, requiredAt: plan.sequence });
     }
     const receipts = nodePlans.flatMap((plan) => allReceipts.get(plan.id));
     const obligations = [...required.values()].map((item) => {
       const receipt = receipts.findLast((e) => e.sequence > item.requiredAt && e.covers.includes(item.id));
       const current = receipt?.plan.source.tree === source.tree
+        && receipt.plan.node === node
         && configuration(receipt.plan) === configuration(latest);
       return { ...item, result: receipt ? current ? receipt.result : 'stale' : 'not_run',
         receiptId: receipt?.id, label: receipt?.label, evidence: receipt?.evidence ?? [] };
@@ -82,13 +90,13 @@ export function offlineProgress(run, source, intact) {
     const result = aggregate(obligations);
     // Empty plans still need a successful summary and matching source. A
     // failed summary (e.g. detected source drift) remains an explicit blocker.
-    offlinePlans.push({ id: latest.id, node, mode: latest.mode,
-      result: result !== 'pass' ? result : latest.source.tree !== source.tree ? 'stale'
+    offlinePlans.push({ id: latest.id, node, mode: latest.mode, required: requiredTarget,
+      result: result !== 'pass' ? result : requiredTarget && !supported ? 'stale' : latest.source.tree !== source.tree ? 'stale'
         : !summary ? 'in_progress' : summary.result,
       obligationIds: obligations.map((item) => item.id) });
 
     const release = nodePlans.findLast((plan) => plan.mode === 'release');
-    if (!release || source.dirty || release.source.dirty || release.source.tree !== source.tree) continue;
+    if (!supported || !release || release.node !== node || source.dirty || release.source.dirty || release.source.tree !== source.tree) continue;
     if (latestRelease.get(checkpointFamily(node)) !== release.id) continue;
     const end = run.events.findLast((e) => e.type === 'offline_summary' && e.planId === release.id);
     if (end?.result !== 'pass') continue;
