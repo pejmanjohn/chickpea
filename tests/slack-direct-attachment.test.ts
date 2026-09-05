@@ -96,3 +96,15 @@ test('Slack opaque binary MIME retains authoritative text metadata for strict no
   assert.equal(result.contentType, 'text/plain');
   assert.equal(new TextDecoder().decode(result.bytes), 'hello');
 });
+
+test('Slack force-download transport MIME retains authenticated text metadata', async () => {
+  const f = fixture({}, new Response('hello', { headers: { 'content-type': 'application/force-download' } }));
+  const result = await readDirectSlackAttachment({ ...base, fetch: f.fetcher });
+  assert.equal(result.contentType, 'text/plain');
+  assert.equal(result.representation, 'text_original');
+  assert.equal(new TextDecoder().decode(result.bytes), 'hello');
+});
+test('Slack text metadata still rejects an HTML download response', async () => {
+  const f = fixture({}, new Response('hello', { headers: { 'content-type': 'text/html' } }));
+  await assert.rejects(readDirectSlackAttachment({ ...base, fetch: f.fetcher }), /invalid_attachment_response/);
+});
