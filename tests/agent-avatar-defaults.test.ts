@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { createHash } from 'node:crypto';
+import sharp from 'sharp';
 
 import {
   DEFAULT_AGENT_AVATAR_FILES,
@@ -120,8 +121,18 @@ test('upgrade replaces legacy defaults once while preserving historical URLs and
     const current = await readAgentAvatarAsset({ settings, agentId: before.id, revision: 2, avatar });
     assert.deepEqual(current?.bytes, await defaultAgentAvatarPng(avatar.seed!));
     const historical = await readAgentAvatarAsset({ settings, agentId: before.id, revision: 1, avatar });
-    // Captured from the original renderer before this change, not computed by it.
-    assert.equal(digest(historical!.bytes), '7b3502a870bc1d0d79c8bf35230239f1d503f1510c48cccb9c5f3b41a52088d9');
+    assert.equal(historical?.contentType, 'image/png');
+    // Golden decoded from the original renderer's PNG (SHA256 7b3502a870bc1d0d79c8bf35230239f1d503f1510c48cccb9c5f3b41a52088d9).
+    // CompressionStream uses the runtime's zlib: encoded bytes can differ while
+    // every historical RGBA pixel remains identical. Never derive this golden
+    // from the renderer under test.
+    const image = sharp(historical!.bytes);
+    assert.equal((await image.metadata()).format, 'png');
+    const { data: pixels, info } = await image.raw().toBuffer({ resolveWithObject: true });
+    assert.equal(info.width, 128);
+    assert.equal(info.height, 128);
+    assert.equal(info.channels, 4);
+    assert.equal(digest(pixels), '381495047fc2009a8ae43078fa113fc2d20f9ed4adeca33e44232ed36c9de9f7');
     assert.equal(await readAgentAvatarAsset({ settings, agentId: before.id, revision: 3, avatar }), undefined);
     assert.deepEqual(new ConfigStoreLogic(db, { agents: [] }).getAgent(before.id), migrated);
 
@@ -136,6 +147,29 @@ test('upgrade replaces legacy defaults once while preserving historical URLs and
       assert.deepEqual(bytes?.bytes, revision === 1 ? historical?.bytes : current?.bytes);
     }
   } finally { db.close(); settings.close?.(); }
+});
+
+test('stored historical PNGs retain their exact encoding instead of being reconstructed', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const input = {
+      settings, agentId: 'agent_default', revision: 1,
+      avatar: {
+        kind: 'generated' as const, revision: 2,
+        generatedSeedHistory: [{ throughRevision: 1, seed: 'agent_default' }],
+      },
+    };
+    const reconstructed = await readAgentAvatarAsset(input);
+    // Simulate an already-published encoding from a different compressor.
+    const published = await sharp(reconstructed!.bytes).png({ compressionLevel: 0 }).toBuffer();
+    assert.notDeepEqual(published, Buffer.from(reconstructed!.bytes));
+    settings.setSetting('agent.avatar.agent_default.1', JSON.stringify({
+      contentType: 'image/png', base64: published.toString('base64'),
+    }));
+    const historical = await readAgentAvatarAsset(input);
+    assert.equal(historical?.contentType, 'image/png');
+    assert.deepEqual(Buffer.from(historical!.bytes), published);
+  } finally { settings.close?.(); }
 });
 
 function digest(bytes: Uint8Array): string {

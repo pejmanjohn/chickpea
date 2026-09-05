@@ -156,7 +156,9 @@ export async function generatedAgentAvatarPng(seed: string): Promise<Uint8Array>
   return defaultAgentAvatarPng(seed);
 }
 
-/** Preserve bytes already published at immutable legacy revision URLs. */
+/** Reconstruct the original pixels for legacy revisions without stored bytes.
+ * PNG compression can vary by runtime; stored revisions are returned verbatim above.
+ */
 async function legacyGeneratedAgentAvatarPng(seed: string): Promise<Uint8Array> {
   const width = 128;
   const height = 128;
