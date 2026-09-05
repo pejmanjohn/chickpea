@@ -370,7 +370,7 @@ export function buildSlackAdminUrl(
   }
 
   if (params.agentId) {
-    url.searchParams.set('agent', params.agentId);
+    url.pathname = `/admin/agents/${encodeURIComponent(params.agentId)}`;
   }
   if (params.channelId) {
     url.searchParams.set('channel', params.channelId);

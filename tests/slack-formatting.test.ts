@@ -183,7 +183,7 @@ test('product-owned action links use safe descriptive Slack labels', () => {
 test('reply footers render Agent, model, and optional configure link', () => {
   assert.equal(
     buildSlackAdminUrl('https://demo.example', { agentId: 'agent_default' }),
-    'https://demo.example/admin?agent=agent_default',
+    'https://demo.example/admin/agents/agent_default',
   );
 
   const linked = renderSlackReplyFooterBlock({
@@ -197,7 +197,7 @@ test('reply footers render Agent, model, and optional configure link', () => {
     elements: [
       {
         type: 'mrkdwn',
-        text: 'Default &lt;Team&gt; | local-stub/parity-stub-1 | <https://demo.example/admin?agent=agent_default|Configure>',
+        text: 'Default &lt;Team&gt; | local-stub/parity-stub-1 | <https://demo.example/admin/agents/agent_default|Configure>',
       },
     ],
   });
@@ -223,7 +223,7 @@ test('reply footers render Agent, model, and optional configure link', () => {
   });
   assert.equal(
     noModel.elements[0]?.text,
-    'Default | <https://demo.example/admin?agent=agent_default|Configure>',
+    'Default | <https://demo.example/admin/agents/agent_default|Configure>',
   );
 });
 
@@ -237,8 +237,8 @@ test('reply footers disclose cross-channel memory as supplied advisory context',
 });
 
 test('buildSlackAdminUrl only links http(s) bases without userinfo', () => {
-  assert.equal(buildSlackAdminUrl('https://demo.example', { agentId: 'a' }), 'https://demo.example/admin?agent=a');
-  assert.equal(buildSlackAdminUrl('http://localhost:8789', { agentId: 'a' }), 'http://localhost:8789/admin?agent=a');
+  assert.equal(buildSlackAdminUrl('https://demo.example', { agentId: 'a' }), 'https://demo.example/admin/agents/a');
+  assert.equal(buildSlackAdminUrl('http://localhost:8789', { agentId: 'a' }), 'http://localhost:8789/admin/agents/a');
   // Non-http(s) scheme, embedded userinfo, or an unparseable base -> no link.
   assert.equal(buildSlackAdminUrl('ftp://internal-host', { agentId: 'a' }), undefined);
   assert.equal(buildSlackAdminUrl('https://evil.example@real-host', { agentId: 'a' }), undefined);

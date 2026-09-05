@@ -306,6 +306,7 @@ import { validEnabledRepositoryGrants } from '../sandbox/egress-handler.ts';
 import { sandboxBindingInstalled } from '../sandbox/select.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
 import { skillImportSourceSchema } from '../config/skill-provenance.ts';
+import { legacyAgentAdminRedirect } from './agent-url.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
@@ -5472,6 +5473,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   const adminPage = async (c: Context): Promise<Response> => {
+    const legacyTarget = legacyAgentAdminRedirect(c.req.url);
+    if (legacyTarget) return c.redirect(legacyTarget, 302);
     // The shell pins the application script by content hash. Never let a
     // browser keep an older deployment's shell after the Worker has been updated.
     c.header('Cache-Control', 'no-store');
