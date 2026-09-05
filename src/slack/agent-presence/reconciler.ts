@@ -526,7 +526,9 @@ export class AgentPresenceReconciler {
       throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be retried.');
     }
     try {
-      return await this.reconcile(agentId);
+      return agent.slackPresence?.desiredState === 'disabled'
+        ? await this.archive(agentId)
+        : await this.reconcile(agentId);
     } catch (error) {
       const classified = classifyAgentPresenceError(error);
       await this.recordFailure(await this.dependencies.config.getAgent(agentId), classified);
@@ -563,18 +565,24 @@ export class AgentPresenceReconciler {
     );
     if (presence.userGroupId) {
       try {
-        await transport.disableUserGroup(presence.userGroupId);
+        const group = await transport.lookupUserGroup(presence.userGroupId);
+        if (!group?.disabled) await transport.disableUserGroup(presence.userGroupId);
       } catch (error) {
         const classified = classifyAgentPresenceError(error);
-        await this.recordFailure(agent, classified);
-        throw classified;
+        const archiveError = classified.code === 'user_group_policy_denied'
+          ? new AgentPresenceError(classified.code,
+            'Slack did not allow Chickpea to disable the Agent handle. The Agent is not archived.',
+            classified.options)
+          : classified;
+        await this.recordFailure(agent, archiveError);
+        throw archiveError;
       }
     }
     agent = await config.updateAgent(
       agent.id,
       {
         slackPresence: {
-          ...requiredPresence(agent),
+          ...withoutPresenceErrors(requiredPresence(agent)),
           desiredState: 'disabled',
           health: presence.userGroupId ? 'healthy' : 'unpublished',
           observedAt: this.now(),

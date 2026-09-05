@@ -2387,7 +2387,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       message: classified.message,
       retryable: classified.retryable,
       suggestions: classified.suggestions,
-      recovery: agentPresenceRecovery(classified, handle),
+      recovery: agentPresenceRecovery(classified, handle, agent.slackPresence?.desiredState),
       agent: await agentAdminProjectionForRequest(c, agent),
     }, status);
   };
@@ -8021,6 +8021,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           presenceRecovery = agentPresenceRecovery(
             classified,
             updated.slackPresence?.normalizedHandle ?? normalizeAgentHandle(updated.name),
+            updated.slackPresence?.desiredState,
           );
         }
       }
@@ -11133,6 +11134,7 @@ async function agentAdminProjection(
             message: agent.slackPresence.errorDetail ?? 'Slack could not finish the change.',
           },
           agent.slackPresence.normalizedHandle,
+          agent.slackPresence.desiredState,
         )
       : null,
     tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory', 'schedules', 'model'],

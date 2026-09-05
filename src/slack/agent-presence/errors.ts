@@ -1,3 +1,4 @@
+import type { AgentPresenceDesiredState } from '../../config/types.ts';
 import { SlackTransportError } from '../transport/types.ts';
 
 type AgentPresenceErrorCode =
@@ -147,7 +148,23 @@ interface AgentPresenceRecovery {
 export function agentPresenceRecovery(
   error: Pick<AgentPresenceError, 'code' | 'message'>,
   handle: string,
+  desiredState: AgentPresenceDesiredState = 'active',
 ): AgentPresenceRecovery {
+  if (desiredState === 'disabled') {
+    return {
+      title: `Slack could not finish archiving @${handle}`,
+      explanation: 'The Agent is not archived yet because its Slack handle could not be disabled. Retry will finish archiving it, without reactivating the handle.',
+      steps: error.code === 'user_group_policy_denied'
+        ? [
+            `Ask an authorized Slack Workspace Owner or Admin to disable the @${handle} user group.`,
+            'Come back here and select Retry to finish archiving the Agent.',
+          ]
+        : ['Resolve the Slack error, then select Retry to finish archiving the Agent.'],
+      actionLabel: 'Retry',
+      actionKind: 'retry',
+      ...(error.code === 'user_group_policy_denied' ? { adminUrl: 'https://slack.com/admin' } : {}),
+    };
+  }
   if (error.code === 'paid_plan_required') {
     return {
       title: `Slack won't create @${handle}`,
