@@ -1251,10 +1251,11 @@ export async function runTurn(
       await options.onDeferredTerminal?.();
       return;
     }
+    const recoveredText = await options.beforeDelivery?.();
+    let acknowledgeMemoryUpdate = false;
     if (agentResult?.memoryUpdate && preparedMemory?.validateReceiptLease) {
       // A changed memory invalidates the model draft, including forgotten facts.
       // Only a verified own-turn receipt permits this host acknowledgement.
-      let acknowledge = false;
       try {
         const dependencies = resolveManagementApprovalDependencies(options.managementApproval, () => {
           const identity = options.appStores?.identity ?? getIdentityStore(platformEnv);
@@ -1300,7 +1301,7 @@ export async function runTurn(
           requesterText: turn.text,
         } as const;
         const actor = await resolveSlackManagementActor(signal, dependencies.identity);
-        acknowledge = await verifyMemoryUpdateAcknowledgement({
+        acknowledgeMemoryUpdate = await verifyMemoryUpdateAcknowledgement({
           hint: agentResult.memoryUpdate,
           agentId: assignment.agent.id,
           turnJobId,
@@ -1310,22 +1311,17 @@ export async function runTurn(
       } catch {
         // Unavailable receipts or revoked actors retain the ordinary lease check.
       }
-      if (acknowledge) {
-        await preparedMemory.confirmInjection();
-        await statusTurn.prepareFinal();
-        await presenter.deliverFinal('Updated this Agent’s saved memory.', 'plain_text', 'complete');
-        await finishStatus('answer');
-        await finishDelivery();
-        return;
-      }
     }
-    const recoveredText = await options.beforeDelivery?.();
+    if (acknowledgeMemoryUpdate) {
+      text = recoveredText ?? 'Updated this Agent’s saved memory.';
+      tablePresentation = undefined;
+    }
     // Confirmation only prevents reinjecting the same selection into this
     // transcript. A concurrent turn can legitimately advance the epoch before
     // this one finishes; that bookkeeping race must not discard a completed,
     // lease-valid answer.
     await preparedMemory?.confirmInjection();
-    const leaseValid = await preparedMemory?.validateLease() ?? true;
+    const leaseValid = acknowledgeMemoryUpdate || (await preparedMemory?.validateLease() ?? true);
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');

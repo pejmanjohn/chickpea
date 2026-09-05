@@ -1978,6 +1978,13 @@ test('a successful own-turn memory write acknowledges without releasing the stal
       slackUserId: turn.userId, eventId: turn.eventId, messageTs: turn.messageTs, turnJobId,
     };
     const posts: string[] = [];
+    let checkpointed = false;
+    let delivered: string | undefined;
+    const getOperation = f.service.getOperation.bind(f.service);
+    f.service.getOperation = async (...args) => {
+      assert.equal(checkpointed, true, 'checkpoint must precede receipt/visibility validation');
+      return getOperation(...args);
+    };
     const client = {
       conversations: { history: async () => ({ ok: true, messages: [] }) },
       chat: {
@@ -1988,6 +1995,8 @@ test('a successful own-turn memory write acknowledges without releasing the stal
     } as unknown as WebClient;
     await runTurn(turn, { ...assignment, workspaceId, agent }, undefined, {
       client, turnId: turnJobId, usageRecordingEnabled: false,
+      beforeDelivery: async () => { checkpointed = true; return undefined; },
+      onDelivered: (outcome) => { delivered = outcome; },
       appStores: { config: f.config, memory: f.memory, identity: f.identity, management: f.management } as never,
       managementApproval: { identity: f.identity, config: f.config, management: f.management, service: f.service },
       async agentPrompt(): Promise<AgentDispatchResult> {
@@ -2001,6 +2010,8 @@ test('a successful own-turn memory write acknowledges without releasing the stal
           requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
       },
     });
+    assert.equal(checkpointed, true);
+    assert.equal(delivered, 'succeeded', 'acknowledgement uses the common terminal outcome');
     assert.ok(posts.some((text) => text.includes('Updated this Agent’s saved memory.')), JSON.stringify(posts));
     assert.ok(posts.every((text) => !text.includes('Stale model draft') && !text.includes(AGENT_FAILURE_TEXT)));
     assert.equal((await f.memory.getAgentMemory(agent.id)).body, 'A durable fact.');
