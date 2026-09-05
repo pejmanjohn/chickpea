@@ -131,7 +131,8 @@
     "slack:bridge": "node scripts/slack-socket-bridge.mjs",
     "reset:test-env": "node scripts/reset-test-env.mjs",
     "test:cli": "npm test --workspace packages/cli",
-    "build:cli": "npm run build --workspace packages/cli"
+    "build:cli": "npm run build --workspace packages/cli",
+    "verify:live:record": "node scripts/verification-record.mjs"
   },
   "dependencies": {
     "@better-auth/mcp": "1.7.1",

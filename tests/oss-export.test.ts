@@ -134,6 +134,9 @@ test('skill relative references resolve from their owning files to the canonical
     '.agents/skills/chickpea-live-verification/SKILL.md',
     'qa/live/operator/SKILL.md',
     'qa/live/operator/modes.md',
+    'qa/live/operator/environments.md',
+    'qa/live/operator/records.md',
+    'qa/live/operator/recovery.md',
   ]) {
     // Both inline-code references in the discovery wrapper and actual Markdown
     // links in the operator instructions must survive source publication.
