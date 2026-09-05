@@ -55,6 +55,15 @@ tool denial. Name the exact blocked action and reason, ask once, retain the
 pending browser, and continue independent checks. Report blocked checks as
 blocked rather than passing them or repeatedly asking the same question.
 
+## Node baseline
+
+Use Node 24.20.0 from `.nvmrc` for development, builds, and verification. Node
+24.x is the only supported major, minimum 24.20.0. Update the single pin for
+future Node 24 patch/security releases; do not add another recurring target.
+Retain old receipts with their actual Node version. They cannot establish
+current Node 24 proof. Workerd, artifact, and real Slack acceptance remain
+separate requirements.
+
 ## Normal path
 
 1. Inspect the diff with `npm run verify:regression -- --plan`. Select `changed`,

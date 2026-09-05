@@ -5,8 +5,11 @@ deployment wrapper. For first-time Slack setup, use [SETUP_AGENT.md](../../SETUP
 
 ## Production Node
 
-Use Node >=22.19.0 and one running Chickpea process per state directory. Node
-does not support scheduled execution or the coding sandbox. Use your own Slack
+Use Node 24.x, minimum 24.20.0, and one running Chickpea process per state directory.
+Use the 24.20.0 baseline in `.nvmrc` for reproducible installs and verification.
+Later Node 24 updates are supported; other majors are outside the support policy.
+
+Node does not support scheduled execution or the coding sandbox. Use your own Slack
 app: the Node shared-gateway path does not yet have Cloudflare's durable event
 admission guarantee. See [gateway data handling](../shared-gateway-data-handling.md).
 
@@ -191,3 +194,19 @@ upgrade from the preceding supported release. Reverting code does not undo a
 schema migration or recover deleted data. Downgrade only when the release notes
 declare it safe; otherwise use the tested full recovery procedure or a forward
 fix. Never silently reset an incompatible database to make an upgrade pass.
+
+## Build-time Node and Cloudflare runtimes
+
+Cloudflare Workers Builds reads `.nvmrc`; an explicit `NODE_VERSION` build
+variable should match its 24.20.0 pin. Inspect existing build overrides before
+building a candidate. These are build settings, not Worker runtime variables.
+See [Cloudflare's build image documentation](https://developers.cloudflare.com/workers/ci-cd/builds/build-image/).
+
+A Worker runs in workerd with its own `compatibility_date` and flags. Changing
+Node does not change that runtime or remove artifact, workerd, or Slack acceptance.
+See [Node.js compatibility](https://developers.cloudflare.com/workers/runtime-apis/nodejs/).
+
+The optional coding sandbox uses Cloudflare's `sandbox:0.12.4` container, whose
+embedded Node 22.23.1 runs sandbox tooling, not the Chickpea host or build. Its
+image tag must match `@cloudflare/sandbox`; leave this vendor-owned runtime alone
+when updating Chickpea's Node pin. Validate SDK/image updates separately.

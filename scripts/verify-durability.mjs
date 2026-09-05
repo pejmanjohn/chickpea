@@ -27,7 +27,7 @@
  *      first turn, restart, and prove the next reply uses the current Agent
  *      config. Agent edits intentionally apply everywhere on the next message.
  *
- * Run with Node >= 22.19:
+ * Run with Node 24.x (see .nvmrc):
  *   node scripts/verify-durability.mjs
  */
 import { spawnSync } from 'node:child_process';

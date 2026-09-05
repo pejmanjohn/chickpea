@@ -7,10 +7,13 @@ see [SECURITY.md](SECURITY.md).
 
 ## Local development
 
-Use Node 22.19.0 or later. Verify releases locally on the minimum version and
-Node 24.
+Use Node 24.x, minimum 24.20.0. `.nvmrc` pins 24.20.0 as the single
+development, build, and verification baseline; both packages require
+`>=24.20.0 <25`. Update that pin for future Node 24 patch/security releases
+and verify the new baseline once. No other Node major is a routine test target.
 
 ```sh
+nvm install && nvm use
 npm ci
 npm run dev
 ```
@@ -55,6 +58,11 @@ concurrent build can make them read a partially written artifact.
 All verification runs locally. This repository does not use GitHub Actions
 workflows or GitHub-hosted test runs, except the tag-triggered npm publish of
 `packages/cli` (`.github/workflows/publish-cli.yml`), which is not a merge gate.
+
+For iteration, choose the checks relevant to the change from this list. For a
+stable committed candidate, use `verify:regression -- --mode release` once; it
+runs the full suite and offline turn/durability/provider checks inside the clean
+export, so do not also run those as a second outer release gate.
 
 ```sh
 npm run build

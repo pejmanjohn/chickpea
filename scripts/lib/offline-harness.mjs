@@ -17,7 +17,7 @@ const VITE_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'vite');
 export const NET_GUARD = join(REPO_ROOT, 'scripts', 'net-guard.mjs');
 export const SIGNING_SECRET = 'test-signing-secret';
 export const EVENTS_PATH = '/channels/slack/events';
-const MIN_NODE = [22, 19, 0];
+export { assertNodeVersion } from './node-version.mjs';
 let tsLoaderReady;
 
 /** Load an arbitrary repo-relative TypeScript module through tsx's runtime loader. */
@@ -158,24 +158,6 @@ export async function seedOfflineSlackAuthority({
   } finally {
     identity.close();
   }
-}
-
-export function assertNodeVersion() {
-  const raw = execFileSync(process.execPath, ['--version'], { encoding: 'utf8' }).trim();
-  const parts = raw.replace(/^v/, '').split('.').map((piece) => Number(piece));
-  for (let i = 0; i < MIN_NODE.length; i += 1) {
-    if ((parts[i] ?? 0) !== MIN_NODE[i]) {
-      if ((parts[i] ?? 0) < MIN_NODE[i]) {
-        throw new Error(
-          `This script needs Node >= 22.19 to build/run Flue, but ${process.execPath} is ${raw}. ` +
-            'Re-run it with a newer Node first on PATH (e.g. PATH=/path/to/node-22.19+/bin:$PATH); ' +
-            'FLUE_NODE_BIN only affects the parity test suite, not these scripts.',
-        );
-      }
-      break;
-    }
-  }
-  return raw;
 }
 
 /** `vite build --config vite.node.config.ts --outDir <outputDir>`; resolves to the server entry.

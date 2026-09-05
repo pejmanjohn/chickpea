@@ -30,7 +30,7 @@
 // it at the same time as another Socket Mode consumer (e.g. a real test run) —
 // they would steal events from each other.
 //
-// Requires node >= 22.19 (see .nvmrc).
+// Requires Node 24.x (see .nvmrc).
 //
 // Env (from the shell, or from an env file):
 //   SLACK_APP_TOKEN       xapp- app-level token with connections:write (required)

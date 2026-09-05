@@ -4,6 +4,10 @@ Use the private setup link printed by the deployment. Chickpea creates the custo
 
 ## Before starting
 
+For source builds, local Node hosting, or the CLI, use Node 24.x, minimum
+24.20.0. Run `nvm install && nvm use` in the checkout to select `.nvmrc`.
+A Cloudflare Worker itself runs in workerd, independently of build-time Node.
+
 - Know the Slack workspace where Chickpea should live. The installed `team_id` becomes the deployment's immutable workspace boundary.
 - Be signed in to Slack as the person who should become Chickpea's first Owner.
 - Slack decides whether that person may create/install apps. Chickpea does not require the installer to hold Slack's Owner or Admin label.

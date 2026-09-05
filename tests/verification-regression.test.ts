@@ -44,6 +44,9 @@ test('regression and release preserve distinct inventories and reject stale sele
   assert.equal(release.fullTests, true);
   assert.equal(regression.steps.some((step: { script?: string }) => step.script === 'verify:oss-export'), false);
   assert.equal(release.steps.at(-1).script, 'verify:oss-export');
+  for (const script of ['test', 'verify:durability', 'verify:providers']) assert.equal(release.steps.some((step: any) => step.script === script), false);
+  assert.equal(release.steps.some((step: any) => step.file === 'scripts/verify-flue-offline-turn.mjs'), false);
+  for (const script of ['build', 'verify:admin-ui', 'verify:cf-smoke', 'evaluate:agent-authoring', 'verify:lockfile-integrity']) assert.ok(release.steps.some((step: any) => step.script === script));
   assert.throws(() => createRegressionPlan({ areas: ['routines'], testFiles: [] }), /inventory is stale/);
   assert.throws(() => createRegressionPlan({ mode: 'typo', testFiles }), /mode must/);
   assert.throws(() => createRegressionPlan({ areas: ['typo'], testFiles }), /Unknown area/);
@@ -56,7 +59,8 @@ test('offline execution clears live build selectors and overrides operator state
     WRANGLER_CI_OVERRIDE_NAME: 'live-worker', WORKERS_CI: '1', CLOUDFLARE_ENV: 'production',
     TAG_DB_PATH: '/operator/db', SLACK_STATE_DB_PATH: '/operator/slack', CHICKPEA_AUTH_DB_PATH: '/operator/auth',
   });
-  assert.equal(env.PATH, '/test/bin');
+  assert.ok(env.PATH.endsWith('/test/bin'));
+  assert.equal(env.FLUE_NODE_BIN, process.execPath);
   for (const key of ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH']) assert.equal(env[key], ':memory:');
   for (const key of ['CHICKPEA_DEPLOY_TARGET', 'CHICKPEA_DEPLOY_AUTH_DB_ID', 'CHICKPEA_LOCAL_STATE_PATH', 'CHICKPEA_ENV_TARGET', 'WRANGLER_CI_OVERRIDE_NAME', 'WORKERS_CI', 'CLOUDFLARE_ENV']) assert.equal(env[key], undefined);
   assert.equal(env.TAG_REQUIRE_LOOPBACK, '1');

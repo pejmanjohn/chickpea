@@ -8,6 +8,7 @@ import { createRegressionPlan, REGRESSION_AREAS } from './lib/regression-plan.mj
 import { digest, sourceInputs } from './lib/verification-inputs.mjs';
 import { evidenceRefs, offlineEvent, readRun, reusableOffline, updateRun } from './lib/verification-record.mjs';
 import { offlineStepLabel } from './lib/verification-offline.mjs';
+import { assertNodeVersion } from './lib/node-version.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -39,8 +40,15 @@ export function regressionEnvironment(env = process.env) {
   }
   return {
     ...clean, DO_NOT_TRACK: '1', TAG_REQUIRE_LOOPBACK: '1',
+    PATH: [path.dirname(process.execPath), clean.PATH].filter(Boolean).join(path.delimiter),
+    FLUE_NODE_BIN: process.execPath,
     TAG_DB_PATH: ':memory:', SLACK_STATE_DB_PATH: ':memory:', CHICKPEA_AUTH_DB_PATH: ':memory:',
   };
+}
+
+export function assertReleaseEnvironment(root) {
+  const privateFiles = readdirSync(root).filter((file) => /^(?:\.env|\.dev\.vars)(?:$|\.)/.test(file) && !file.endsWith('.example'));
+  if (privateFiles.length) throw new Error(`Release checks require a checkout without private environment files: ${privateFiles.join(', ')}. Use an isolated clean checkout; do not delete operator configuration.`);
 }
 
 function git(args) {
@@ -91,9 +99,11 @@ export function main(argv) {
     const plan = createRegressionPlan({ ...options, files, testFiles });
     console.log(JSON.stringify(plan, null, 2));
     if (options.planOnly) return 0;
+    assertNodeVersion(process.version, { baseline: options.mode === 'release' });
     if (options.mode === 'release' && git(['status', '--porcelain']).length > 0) {
       throw new Error('Release checks require clean committed source; verify:oss-export archives HEAD. Use changed or regression for working changes.');
     }
+    if (options.mode === 'release') assertReleaseEnvironment(ROOT);
     if (plan.steps.length && !existsSync(path.join(ROOT, 'node_modules', 'tsx'))) throw new Error('Run npm ci first with the repository Node version.');
     if (options.record) {
       const run = readRun(options.record); // Validate before executing any checks.
@@ -122,7 +132,7 @@ export function main(argv) {
       config: regressionEnvironment(), timeoutMs: options.timeoutMs }) : undefined;
     const record = (value) => updateRun(options.record, (run) => offlineEvent(run, value));
     const receiptPlan = options.record ? record({ type: 'offline_plan', source: input, node: process.version, mode: options.mode, steps: plan.steps, fingerprint,
-      executionFingerprint, testFiles: testFiles.filter((file) => /^tests\/(?:[^/]+|usage\/[^/]+)\.test\.ts$/.test(file)) }) : undefined;
+      executionFingerprint, sourceExportCoverage: 1, testFiles: testFiles.filter((file) => /^tests\/(?:[^/]+|usage\/[^/]+)\.test\.ts$/.test(file)) }) : undefined;
     const results = runRegressionSteps(plan.steps, (step) => {
       const label = offlineStepLabel(step);
       const reusable = options.reuse ? reusableOffline(readRun(options.record), label, fingerprint) : undefined;

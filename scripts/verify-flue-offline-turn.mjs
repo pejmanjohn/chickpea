@@ -22,7 +22,7 @@
  *      error marker, status cleared when one was set
  *   6. NET_GUARD_LOG empty     -> zero external traffic across all scenarios
  *
- * A suitable Node >= 22.19 builds and spawns the Flue server; the shared
+ * A suitable Node 24.x (see .nvmrc) builds and spawns the Flue server; the shared
  * harness resolves a free port itself:
  *   node scripts/verify-flue-offline-turn.mjs
  */

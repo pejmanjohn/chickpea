@@ -1,24 +1,8 @@
 #!/usr/bin/env node
-// Version guard must run before the TypeScript imports below: Node's native
-// type stripping only exists in >= 22.18, and the raw ERR_UNKNOWN_FILE_EXTENSION
-// crash it produces on older Nodes gives the operator no remediation.
-const MIN_NODE = [22, 19, 0];
-const nodeParts = process.versions.node.split('.').map(Number);
-let nodeSupported = true;
-for (let i = 0; i < MIN_NODE.length; i += 1) {
-  const piece = nodeParts[i] ?? 0;
-  if (piece > MIN_NODE[i]) break;
-  if (piece < MIN_NODE[i]) {
-    nodeSupported = false;
-    break;
-  }
-}
-if (!nodeSupported) {
-  console.error(
-    `FAIL    env - this script needs Node >= 22.19 to load the repo's TypeScript modules, ` +
-      `but ${process.execPath} is v${process.versions.node}. ` +
-      'Re-run with a newer Node first on PATH (e.g. PATH=/path/to/node-22.19+/bin:$PATH).',
-  );
+// Check the supported runtime before loading TypeScript or making requests.
+import { assertNodeVersion } from './lib/node-version.mjs';
+try { assertNodeVersion(); } catch (error) {
+  console.error(`FAIL    env - ${error.message}`);
   process.exit(1);
 }
 

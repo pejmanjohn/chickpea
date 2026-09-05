@@ -11,11 +11,15 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, posix } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { assertNodeVersion, NODE_BASELINE, NODE_ENGINE } from './lib/node-version.mjs';
+import { regressionEnvironment } from './verify-regression.mjs';
+
+assertNodeVersion(process.version, { baseline: true });
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = mkdtempSync(join(tmpdir(), 'chickpea-export-'));
 const offlineVerificationEnv = {
-  ...process.env,
+  ...regressionEnvironment(),
   // This verifier proves the exported package works without external traffic.
   // Exercise the same public opt-out contract users can select at runtime.
   DO_NOT_TRACK: '1',
@@ -434,7 +438,7 @@ function run(command, args, options = {}) {
   console.log(`$ ${[command, ...args].join(' ')}`);
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? REPO_ROOT,
-    env: options.env ?? process.env,
+    env: options.env ?? offlineVerificationEnv,
     stdio: 'inherit',
   });
   if (result.status !== 0) {
@@ -891,6 +895,12 @@ try {
   }
 
   const packageJson = JSON.parse(readFileSync(join(scratch, 'package.json'), 'utf8'));
+  const cliPackage = JSON.parse(readFileSync(join(scratch, 'packages/cli/package.json'), 'utf8'));
+  const lock = JSON.parse(readFileSync(join(scratch, 'package-lock.json'), 'utf8'));
+  if (readFileSync(join(scratch, '.nvmrc'), 'utf8').trim() !== NODE_BASELINE
+    || [packageJson, cliPackage, lock.packages[''], lock.packages['packages/cli']].some((pkg) => pkg.engines.node !== NODE_ENGINE)) {
+    fail('Export Node baseline and root/CLI engine ranges must match the verifying runtime policy');
+  }
   if (packageJson.private !== true || !packageJson.description || packageJson.license !== 'Apache-2.0' || !packageJson.repository) {
     fail('Export package.json must remain private and include its source metadata');
   }

@@ -8,6 +8,7 @@ import { REGRESSION_AREAS } from './regression-plan.mjs';
 import { isExactId } from '../live-test-resource-ledger.mjs';
 import { recordRepair, repairBlocks, repairInputs, repairProgress } from './verification-repairs.mjs';
 import { offlineProgress } from './verification-offline.mjs';
+import { NODE_BASELINE } from './node-version.mjs';
 import { recordTransition, transitionInputs } from './verification-transition.mjs';
 
 const SCHEMA = 'chickpea-attended-run/v1';
@@ -374,7 +375,7 @@ export function status(run, source, now = Date.now()) {
   if (resources.some((r) => r.stopDue)) coordination.nextActions.unshift({ action: 'stop_owned_schedules', resourceIds: resources.filter((r) => r.stopDue).map((r) => r.id) });
   const offline = run.events.filter((e) => e.type === 'offline_finish');
   const { offlinePlans, offlineObligations, checkpoints } = offlineProgress(run, source, intact);
-  const releasePending = spec.mode === 'release' && (!checkpoints.some((e) => e.node === 'v22.19.0') || !checkpoints.some((e) => /^v24\./.test(e.node)));
+  const releasePending = spec.mode === 'release' && !checkpoints.some((e) => e.node === `v${NODE_BASELINE}`);
   const openOffline = run.events.filter((e) => e.type === 'offline_begin' && !offline.some((end) => end.attemptId === e.id));
   const cleanupPending = resources.filter((r) => r.cleanup !== 'verified');
   const totals = { automatedMs: offline.reduce((sum, e) => sum + e.durationMs, 0), browserMs: 0, modelMs: 0, humanWaitMs: 0, observationMs: 0 };
@@ -387,7 +388,7 @@ export function status(run, source, now = Date.now()) {
     runId: run.id, mode: spec.mode, purpose: spec.purpose, source, readiness, cases, resources, ...coordination,
     releasePending, openOffline, offline, offlinePlans, offlineObligations,
     reused: run.events.filter((e) => e.type === 'offline_reuse'),
-    complete: (cases.length > 0 || offlinePlans.length > 0) && cases.every((c) => c.result === 'pass') && cleanupPending.length === 0 && !releasePending && openOffline.length === 0 && offlinePlans.every((p) => p.result === 'pass') && coordination.repairs.every((r) => r.state === 'verified'),
+    complete: (cases.length > 0 || offlinePlans.some((p) => p.required)) && cases.every((c) => c.result === 'pass') && cleanupPending.length === 0 && !releasePending && openOffline.length === 0 && offlinePlans.filter((p) => p.required).every((p) => p.result === 'pass') && coordination.repairs.every((r) => r.state === 'verified'),
     timing: { wallMs: now - Date.parse(run.createdAt), measured: totals,
       unmeasuredAttempts: outcomes.filter((e) => !e.timing).length,
       unknownByCategory: Object.fromEntries(Object.keys(totals).map((key) => [key,
@@ -422,9 +423,9 @@ export function renderReport(view) {
     '## Offline checks and release checkpoint', '',
     ...view.offline.map((e) => `- ${cell(e.label)}: ${e.result}, ${e.durationMs} ms, ${cell(e.node)}. Log: ${cell(e.evidence[0]?.path)}`),
     ...view.reused.map((e) => `- Reused ${cell(e.label)} from receipt ${e.reusedId}; original measured duration ${e.priorDurationMs} ms. Log: ${cell(e.evidence[0]?.path)}`),
-    ...view.offlinePlans.map((e) => `- Required ${cell(e.node)} coverage across plans: ${e.result}`),
-    ...view.offlineObligations.filter((e) => e.result !== 'pass').map((e) => `- Outstanding ${cell(e.node)} ${cell(e.id)}: ${cell(e.result)}`),
-    `Open offline attempts: ${view.openOffline.length}. Final Node 22.19.0 and Node 24 release checkpoints ${view.releasePending ? 'pending' : view.mode === 'release' ? 'present for current source' : 'not requested'}.`, '',
+    ...view.offlinePlans.map((e) => `- ${e.required ? 'Required' : 'Historical, unsupported'} ${cell(e.node)} coverage across plans: ${e.result}`),
+    ...view.offlineObligations.filter((e) => e.required && e.result !== 'pass').map((e) => `- Outstanding ${cell(e.node)} ${cell(e.id)}: ${cell(e.result)}`),
+    `Open offline attempts: ${view.openOffline.length}. Final Node ${NODE_BASELINE} release checkpoint ${view.releasePending ? 'pending' : view.mode === 'release' ? 'present for current source' : 'not requested'}.`, '',
     '## Measured time and cost', '', `Wall time: ${view.timing.wallMs} ms. Categories can overlap; do not add them to infer wall time.`,
     ...Object.entries(view.timing.measured).map(([key, value]) => `- ${key}: ${value}; unmeasured attended attempts: ${view.timing.unknownByCategory[key]}`),
     `Unmeasured attended attempts: ${view.timing.unmeasuredAttempts}. Known cost: USD ${view.timing.knownCostUsd}. Unknown-cost attempts: ${view.timing.unknownCostAttempts}.`, '');
