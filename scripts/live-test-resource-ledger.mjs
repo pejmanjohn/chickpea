@@ -197,7 +197,7 @@ function resourceKey(value) {
   return `${value.provider}:${value.kind}:${value.id}`;
 }
 
-function isExactId(value) {
+export function isExactId(value) {
   return typeof value === 'string' && value.length >= 3 && value.length <= 512 &&
     !/[\s*?\[\]{}]/u.test(value) && !value.startsWith('-') && value !== '.' && value !== '..';
 }

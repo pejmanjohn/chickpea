@@ -5,6 +5,12 @@ Use the [operator skill](operator/SKILL.md) for current verification. It selects
 for the declared QA actions and exact cleanup. It uses normal browser tools and
 a lightweight private run record without the legacy coordinator.
 
+`npm run verify:live:record -- --help` exposes the attended notebook: unresolved
+preflight templates, attempts, interruption recovery, exact resources/cleanup,
+input invalidation, and generated reports. See [record commands](operator/records.md).
+It does not execute live journeys. `verify:regression --record <private-run.json>`
+adds measured offline receipts to the same record.
+
 Run `npm run verify:regression -- --plan` to inspect the checks beneath browser
 automation. `npm run verify:regression` executes them serially with isolated
 databases and fake services. Use `--mode regression` for the fixed core inventory

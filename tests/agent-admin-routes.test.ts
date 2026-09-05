@@ -741,12 +741,30 @@ test('owner setup is write-only, returns Agent continuation, and disable reconci
 
 test('setup shares one request deadline and reports a saved key when preparation exhausts it', { timeout: 5_000 }, async (t) => {
   keepEventLoopAlive(t);
+  const requestDeadline = new AbortController();
+  const preparationDeadline = new AbortController();
+  const timeoutError = new DOMException('Setup request deadline elapsed.', 'TimeoutError');
+  const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+  const timeout = t.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    if (milliseconds === 50) return requestDeadline.signal;
+    if (milliseconds === 45_000) return preparationDeadline.signal;
+    return realTimeout(milliseconds);
+  });
   const settings = new SqliteSettingsStore(':memory:');
   const credentials = {
     store: settings,
     keyring: generateCredentialKeyring('admin_route_composio_preparation_timeout'),
   };
   const validationClient = composioSetupClient();
+  let validationSignal: AbortSignal | undefined;
+  let preparationSignal: AbortSignal | undefined;
+  const validationList = validationClient.authConfigs!.list;
+  validationClient.authConfigs!.list = async (query, requestOptions) => {
+    validationSignal = requestOptions?.signal;
+    assert.ok(validationSignal);
+    assert.equal(validationSignal.aborted, false);
+    return validationList(query, requestOptions);
+  };
   let clientCreations = 0;
   const fixture = harness(new FakeTransport(), {
     composioConfiguration: { credentials },
@@ -759,12 +777,13 @@ test('setup shares one request deadline and reports a saved key when preparation
           async list(_query, requestOptions) {
             const signal = requestOptions?.signal;
             assert.ok(signal);
+            assert.equal(signal.aborted, false);
+            preparationSignal = signal;
             await new Promise<void>((_resolve, reject) => {
-              if (signal.aborted) {
-                reject(signal.reason);
-                return;
-              }
               signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+              // Expire the shared deadline only after preparation is listening;
+              // real elapsed time may otherwise consume it while saving the key.
+              requestDeadline.abort(timeoutError);
             });
             assert.fail('aborted preparation must not return a list');
           },
@@ -793,6 +812,10 @@ test('setup shares one request deadline and reports a saved key when preparation
       message: 'The key was saved, but managed connectors could not be prepared. Retry setup.',
     });
     assert.equal(clientCreations, 2);
+    assert.deepEqual(timeout.mock.calls.map((call) => call.arguments[0]), [50, 45_000]);
+    assert.equal(validationSignal?.reason, timeoutError);
+    assert.equal(preparationSignal?.reason, timeoutError);
+    assert.equal(preparationDeadline.signal.aborted, false);
     assert.equal(
       (await resolveComposioConfiguration({ settings, credentials })).apiKey,
       sentinel,
