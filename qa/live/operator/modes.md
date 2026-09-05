@@ -44,10 +44,19 @@ The mapping is conservative, not proof of complete impact analysis.
   behavior changes. Never count an existing read as fresh authorization proof.
 - Schedules: check saved schedule and acknowledgement, then actual due delivery
   on a deployed lane. Exercise pause or private destination when affected.
+  Run [schedule contract evaluation](model-diagnosis.md) before another live model
+  retry; schema acceptance, admission, persistence and due delivery are distinct.
 - Auth/privacy: test an actual forbidden read or mutation using a distinct
   registered actor. An Owner acting as a Member cannot prove role denial.
+  Denial and silence need a healthy positive control plus canonical state/audit
+  evidence when available; an unhealthy Agent's missing reply proves no boundary.
 - Memory/skills: save or import, verify behavior in a fresh conversation, then
   forget/remove and verify the effect ends. Restore the fixture afterward.
+
+Grade independently required variants as separate case IDs and derive their
+parent through [variant groups](records.md#required-variants). Scope comes from
+the change or agreed release profile; the retrospective's entire inventory is
+not mandatory on each run. A workflow-only merge is not a release checkpoint.
 
 For prompt/model changes, use bounded relevant real-model cases with the lane's
 actual configured model. The invocation authorizes this test-model use. Preserve

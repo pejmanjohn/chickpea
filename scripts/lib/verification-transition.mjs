@@ -2,6 +2,7 @@
 import { caseInputs, changedInputs, digest, recordedInputs } from './verification-inputs.mjs';
 import { repairInputs } from './verification-repairs.mjs';
 import { REGRESSION_AREAS } from './regression-plan.mjs';
+import { suitableCapability } from './verification-scope.mjs';
 
 const need = (value, message) => { if (!value) throw new Error(message); };
 const text = (value) => typeof value === 'string' && value.trim().length > 0;
@@ -18,7 +19,7 @@ function usablePrerequisites(spec, selected, receipts, now, intact) {
   const actors = new Map();
   return selected.requires.every((id) => {
     const cap = spec.capabilities[id];
-    if (!cap?.available || Date.parse(cap.observedAt) > now || Date.parse(cap.expiresAt) <= now
+    if (!cap?.available || !suitableCapability(cap, spec, selected) || Date.parse(cap.observedAt) > now || Date.parse(cap.expiresAt) <= now
       || !receipts?.[id]?.length || !intact(receipts[id])) return false;
     if (cap.kind !== 'actor') return true;
     if (cap.expectedRole && cap.role !== cap.expectedRole || actors.has(cap.identity) && actors.get(cap.identity) !== id) return false;

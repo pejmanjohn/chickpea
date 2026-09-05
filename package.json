@@ -107,6 +107,8 @@
     "verify:live:smoke": "node --import tsx qa/live/cli.ts smoke",
     "verify:live:deep": "node --import tsx qa/live/cli.ts deep",
     "evaluate:agent-authoring": "node --import tsx scripts/evaluate-agent-authoring.mjs",
+    "evaluate:schedule-contract": "node --import tsx scripts/evaluate-schedule-contract.mjs",
+    "verify:host": "node scripts/verify-host.mjs",
     "evaluate:agent-authoring:live": "node --import tsx scripts/evaluate-agent-authoring.mjs --live",
     "verify:composio:live": "node --import tsx scripts/verify-composio-managed-gmail.mjs",
     "verify:composio-gmail:live": "node --import tsx scripts/verify-composio-managed-gmail.mjs",

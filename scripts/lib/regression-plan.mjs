@@ -9,17 +9,19 @@ export const SOURCE_EXPORT_CHECKS = [
 export const REGRESSION_AREAS = Object.freeze({
   delivery: ['slack-admission', 'slack-thread-context', 'gateway-inbox', 'gateway-session-runner', 'flue-v2-runtime-regressions'],
   agents: ['management-policy', 'management-security-regression', 'management-agent-creation-welcome', 'management-agent-parity', 'slack-proposal-approval-readback', 'agent-authoring-guide'],
-  routines: ['routine-schedule', 'routine-scheduler', 'routine-delivery', 'routine-workflow', 'routine-channel-destination'],
+  routines: ['routine-schedule', 'routine-scheduler', 'routine-delivery', 'routine-workflow', 'routine-channel-destination', 'schedule-contract-evaluation'],
   connections: ['connection-accounts', 'managed-authorization-flow', 'api-connection-runtime', 'managed-connections'],
   memory: ['agent-memory', 'memory-runtime', 'memory-validation'],
   skills: ['skill-import', 'management-skill-import', 'connector-skills'],
   auth: ['slack-install-oauth', 'slack-oidc', 'auth-principal', 'admin-authorization'],
   admin: ['admin-page', 'agent-admin-routes', 'admin-authorization'],
   providers: ['provider-runtime-models', 'cloudflare-provider', 'runtime-model-route-evidence'],
-  verification: ['node-version', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'deploy-with-epilogue', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
+  verification: ['node-version', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'verification-host', 'schedule-contract-evaluation', 'deploy-with-epilogue', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
 });
 
 const rules = [
+  [/^(?:evals\/schedule-contract\/|scripts\/(?:evaluate-schedule-contract|lib\/schedule-contract-evaluation)\.mjs)/, ['routines', 'verification']],
+  [/^scripts\/(?:verify-host|lib\/verification-(?:host|scope))\.mjs$/, ['verification']],
   [/^src\/slack\/(?:install-oauth|installation-credentials|credential-keyring|setup|gateway\/installation-authority)/, ['auth', 'delivery']],
   [/^src\/slack\//, ['delivery']],
   [/^src\/agents\//, ['agents', 'delivery']],
@@ -83,6 +85,7 @@ export function createRegressionPlan({ mode = 'changed', areas = [], files = [],
   if (broad || includes('delivery', 'memory')) npm('verify:durability');
   if (broad || includes('providers', 'connections')) npm('verify:providers');
   if (broad || includes('agents', 'routines', 'skills')) npm('evaluate:agent-authoring');
+  if (broad || includes('routines')) npm('evaluate:schedule-contract');
   if (broad || includes('admin')) npm('verify:admin-ui');
   if (fullTests || includes('auth')) npm('verify:cf-smoke');
   if (mode === 'release') {

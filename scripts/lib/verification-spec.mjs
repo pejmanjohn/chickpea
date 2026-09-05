@@ -1,4 +1,5 @@
 import { REGRESSION_AREAS } from './regression-plan.mjs';
+import { contextScope } from './verification-scope.mjs';
 
 // Starting inventory for the attended modes, not executable catalog contracts.
 // Operators add affected variants and the advertised feature matrix for a release.
@@ -16,6 +17,7 @@ const journeys = [
   ['avatar-attachments', ['admin', 'delivery'], ['slack', 'admin'], ['agent', 'image-pdf'], 'release'],
   ['private-schedule', ['routines', 'auth'], ['slack', 'admin'], ['private-channel', 'member'], 'release'],
   ['connection-revocation', ['connections'], ['slack', 'admin', 'provider'], ['disposable-connection', 'member', 'provider-rows'], 'release'],
+  ['connection-dependent-schedule-recovery', ['connections', 'routines'], ['slack', 'admin', 'provider'], ['disposable-connection', 'provider-rows', 'dependent-schedule'], 'release'],
   ['fresh-install', ['auth'], ['slack', 'admin'], ['disposable-install-target', 'public-source-artifact', 'oauth-account'], 'release'],
 ];
 
@@ -35,12 +37,18 @@ export function templateSpec(mode = 'changed', areas = [], now = Date.now()) {
       spec.capabilities[`${ctx}.${name}`] = {
         available: false, kind: ['owner', 'member'].includes(name) ? 'actor' : name === 'target' ? 'target' : ['slack', 'admin'].includes(name) ? 'tool' : 'fixture',
         ...(['owner', 'member'].includes(name) ? { expectedRole: name } : {}),
+        scope: contextScope(ctx, spec.contexts[ctx]),
         observedAt: new Date(now).toISOString(), expiresAt: new Date(now + 1_800_000).toISOString(),
         evidence: [], reason: 'Not yet observed. Resolve with the existing lane status, signed-in UI, or exact synthetic fixture readback.',
       };
     }
     spec.cases.push({ id, title: id.replaceAll('-', ' '), context: ctx, areas: affected,
       requires: [...new Set(requires)].map((name) => `${ctx}.${name}`), proof, maxAttempts: 2, maxWaitMs: 120_000, minObservationMs: id.includes('schedule') ? 30_000 : 0 });
+  }
+  if (spec.cases.some((c) => c.id === 'connection-revocation') && spec.cases.some((c) => c.id === 'connection-dependent-schedule-recovery')) {
+    spec.groups = [{ id: 'LC05-V3-revoke-reconnect', title: 'Revocation and dependent-work recovery',
+      required: ['connection-revocation', 'connection-dependent-schedule-recovery'], optional: [],
+      scopeReason: 'Selected revocation coverage includes exact reconnect/provider read and separately observed dependent-schedule recovery.' }];
   }
   return spec;
 }

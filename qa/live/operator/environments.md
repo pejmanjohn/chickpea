@@ -79,7 +79,8 @@ explicit file ownership and only the retained evidence needed for diagnosis.
 They must not access live/shared resources, another task's checkout or processes,
 Worker state, claims, credentials, or browser sessions. They return patches and
 focused local validation to the verifier. One owner handles overlapping code;
-tests and builds remain serial within each checkout.
+tests and builds remain serial within each checkout and expensive groups use
+the shared [host reservation](host-checks.md).
 
 The verifier alone integrates reviewed repairs when authorized and owns the
 live lane. Keep its serving candidate fixed for each scenario and observation
@@ -95,3 +96,26 @@ Use the existing short UI mutex for competing browser actions. Release it during
 human waits and retain the affected browser reservation. A hostname change does
 not change local ownership. Recovery requires proof that the prior owner stopped.
 Never copy lock state between machines.
+
+## Fixture inventory
+
+Before choosing a lane, inventory capabilities by the operation they must enable.
+Keep this in the existing private spec and evidence, not a public account list.
+
+| Actor and observed role | Exact lane/context | Connection/provider fixture | Operation to prove |
+| --- | --- | --- | --- |
+| Owner or Admin | Chosen candidate | Declared synthetic provider rows and owning Agent binding | Positive read/write and exact restoration |
+| Distinct Member plus authorized completer | Same candidate | Configured connector and the same pending setup | Permission denial or two-completer setup race |
+| Authorized reconnect actor | Same candidate | Disposable connection and dependent run-owned schedule | Authority loss, reconnect and separately graded due recovery |
+| Registered installer | Separate disposable installation target | Fresh public artifact and approved test account | Fresh installation and first real request |
+
+Resolve actor identity/role, lane app/workspace pair, Agent/account binding,
+provider fixture revision, allowed operation and evidence expiry together.
+An existing Member identity does not imply a connector is configured there.
+Refresh each capability's context snapshot after any relevant fixture or lane
+change. Shared browser control is not shared account authority.
+
+Check the disposable installation target at initial scope selection. If it is
+unavailable, keep fresh installation blocked and finish independent cases. Do not
+manufacture availability, repurpose a standing lane or provision accounts or
+infrastructure merely to complete this inventory.

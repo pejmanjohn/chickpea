@@ -12,6 +12,8 @@ import { digest, sourceInputs } from '../scripts/lib/verification-inputs.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
 import { templateSpec } from '../scripts/lib/verification-spec.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
+import { contextScope } from '../scripts/lib/verification-scope.mjs';
+// @ts-expect-error Shared executable JavaScript helpers.
 import { runRecordCli } from '../scripts/verification-record.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
 import { REGRESSION_AREAS } from '../scripts/lib/regression-plan.mjs';
@@ -27,10 +29,11 @@ function fixture(t: TestContext) {
     mode: 'changed', purpose: 'verification',
     contexts: { local: { grade: 'local', target: 'synthetic-local', servingVersion: 'version-one', model: 'test-model', actor: 'synthetic-owner', fixtures: 'fixture-v1', state: 'state-v1', config: 'config-v1' } },
     capabilities: {
-      owner: { kind: 'actor', available: true, identity: 'synthetic-owner', role: 'owner', registered: false, observedAt: new Date(NOW - 1000).toISOString(), expiresAt: new Date(NOW + 60_000).toISOString(), evidence: [evidence] },
+      owner: { kind: 'actor', available: true, scope: {} as any, identity: 'synthetic-owner', role: 'owner', registered: false, observedAt: new Date(NOW - 1000).toISOString(), expiresAt: new Date(NOW + 60_000).toISOString(), evidence: [evidence] },
     },
     cases: [{ id: 'schedule', title: 'Synthetic schedule', context: 'local', areas: ['routines'], requires: ['owner'], proof: ['slack', 'admin'], maxAttempts: 3, maxWaitMs: 120_000, minObservationMs: 0 }],
   };
+  spec.capabilities.owner.scope = contextScope('local', spec.contexts.local);
   const file = join(directory, 'run.json');
   const run = createRun(file, spec, source(), NOW);
   const append = (event: object, at = NOW + 1000, inputs = source()) => appendEvent(run, event, inputs, at);
@@ -76,6 +79,62 @@ test('release template exposes disposable installation, actual member, private c
   for (const capability of ['candidate.member', 'candidate.private-channel', 'candidate.empty-connector-agent', 'installation.disposable-install-target']) assert.equal(spec.capabilities[capability].available, false);
   assert.throws(() => templateSpec('changed'), /needs --area/);
   assert.equal(templateSpec('changed', ['verification'], NOW).cases.length, 0);
+  assert.deepEqual(spec.groups[0].required, ['connection-revocation', 'connection-dependent-schedule-recovery']);
+});
+
+test('target-bound capabilities reject lane pivots, fixture drift and unscoped legacy observations', (t) => {
+  const f = fixture(t), original = readFileSync(f.file, 'utf8');
+  const shifted = structuredClone(f.spec) as any;
+  shifted.contexts.local.target = 'synthetic-other-lane';
+  f.append({ type: 'refresh', spec: shifted, reason: 'Observed target changed.' });
+  assert.match(preflight(f.run, NOW).cases[0].blockers.join(), /scope/);
+  shifted.capabilities.owner.scope = contextScope('local', shifted.contexts.local);
+  f.append({ type: 'refresh', spec: shifted, reason: 'Read back actor on the actual target.' });
+  assert.equal(preflight(f.run, NOW).ready, true);
+  shifted.contexts.local.fixtures = 'new-fixture';
+  f.append({ type: 'refresh', spec: shifted, reason: 'Fixture changed; old receipt does not apply.' });
+  assert.equal(preflight(f.run, NOW).ready, false);
+  const legacy = JSON.parse(original); delete legacy.spec.capabilities.owner.scope;
+  writeFileSync(f.file, JSON.stringify(legacy));
+  const before = readFileSync(f.file, 'utf8');
+  assert.equal(preflight(readRun(f.file), NOW).ready, false);
+  assert.equal(readFileSync(f.file, 'utf8'), before, 'Reading legacy data never migrates it');
+});
+
+test('only explicitly suitable tools can be shared and scoped requirements cannot be weakened', (t) => {
+  const f = fixture(t), next = structuredClone(f.spec) as any;
+  next.capabilities.browser = { ...next.capabilities.owner, kind: 'tool', scope: { shared: true, reason: 'Browser control supports both explicitly selected origins.' } };
+  next.cases[0].requires.push('browser');
+  f.append({ type: 'refresh', spec: next, reason: 'Observed shared browser tool.' });
+  assert.equal(preflight(f.run, NOW).ready, true);
+  next.capabilities.owner.scope = { shared: true, reason: 'Actor exists elsewhere.' };
+  assert.throws(() => f.append({ type: 'refresh', spec: next, reason: 'Attempted weakening.' }), /Only explicitly suitable shared tools/);
+  delete next.capabilities.owner.scope;
+  assert.throws(() => f.append({ type: 'refresh', spec: next, reason: 'Attempted scope removal.' }), /capability contract/);
+});
+
+test('required variants derive aggregate status without hiding optional scope or first failures', (t) => {
+  const f = fixture(t), spec = structuredClone(f.spec) as any;
+  spec.cases.push({ ...spec.cases[0], id: 'recovery' }, { ...spec.cases[0], id: 'optional' });
+  spec.groups = [{ id: 'parent', title: 'Recovery variants', required: ['schedule', 'recovery'], optional: ['optional'], scopeReason: 'Synthetic selected release profile.' }];
+  // Select optional scope at initialization; refresh cannot downgrade existing cases.
+  f.run.spec = spec;
+  const first = f.append({ type: 'begin', caseId: 'schedule' }); f.append(f.finish(first.id));
+  assert.equal(status(f.run, source(), NOW).groups[0].result, 'not_run');
+  const fail = f.append({ type: 'begin', caseId: 'recovery' }); f.append(f.finish(fail.id, { result: 'fail', category: 'product' }));
+  assert.equal(status(f.run, source(), NOW).groups[0].result, 'fail');
+  const retry = f.append({ type: 'begin', caseId: 'recovery', reason: 'Corrected synthetic fixture.' }); f.append(f.finish(retry.id));
+  const view = status(f.run, source(), NOW);
+  assert.equal(view.groups[0].result, 'pass');
+  assert.equal(view.complete, true);
+  assert.equal(view.cases[1].firstFailure.result, 'fail');
+  assert.match(renderReport(view), /optional: optional/);
+  const changed = source(); changed.areas.routines = 'new';
+  assert.equal(status(f.run, changed, NOW).groups[0].result, 'stale');
+  const weaker = structuredClone(spec); weaker.groups[0].required = ['schedule']; weaker.groups[0].optional.push('recovery');
+  assert.throws(() => f.append({ type: 'refresh', spec: weaker, reason: 'Missing variant cannot become optional.' }), /downgrade/);
+  const mixed = structuredClone(spec); mixed.contexts.model = { ...mixed.contexts.local, grade: 'model' }; mixed.cases[1].context = 'model';
+  assert.throws(() => f.append({ type: 'refresh', spec: mixed, reason: 'Attempt to combine model and Local grades.' }), /cannot combine contexts/);
 });
 
 test('preflight rejects wrong member roles and reusing the owner identity as a second actor', (t) => {
@@ -160,6 +219,7 @@ test('refresh cannot hide selected coverage; workflow changes preserve product p
 test('refresh preserves deployed acceptance even when a case moves contexts', (t) => {
   const f = fixture(t);
   f.spec.mode = 'release'; f.spec.contexts.local.grade = 'deployed';
+  f.spec.capabilities.owner.scope = contextScope('local', f.spec.contexts.local);
   const selected = structuredClone(f.spec) as any;
   selected.contexts.installation = { ...selected.contexts.local, target: 'synthetic-installation' };
   selected.cases.push({ ...selected.cases[0], id: 'installation', context: 'installation' });
@@ -171,7 +231,8 @@ test('refresh preserves deployed acceptance even when a case moves contexts', (t
   moved.cases[0].context = 'repair';
   assert.throws(() => f.append({ type: 'refresh', spec: moved, reason: 'Moving the context cannot bypass the grade.' }), /acceptance grade/);
   moved.cases[0].context = 'local';
-  moved.cases.push({ ...moved.cases[0], id: 'local-repair', context: 'repair' });
+  moved.capabilities.repairOwner = { ...moved.capabilities.owner, scope: contextScope('repair', moved.contexts.repair) };
+  moved.cases.push({ ...moved.cases[0], id: 'local-repair', context: 'repair', requires: ['repairOwner'] });
   f.append({ type: 'refresh', spec: moved, reason: 'Local repair gets its own acceptance case.' });
   const local = f.append({ type: 'begin', caseId: 'local-repair' }); f.append(f.finish(local.id));
   const view = status(f.run, source(), NOW + 2000);
@@ -260,6 +321,7 @@ test('offline reuse rejects changed input, missing/replaced log, build, and newe
 
 test('Node 24 alone completes a release checkpoint with current clean content and intact logs', (t) => {
   const f = fixture(t); f.run.spec.mode = 'release'; f.run.spec.contexts.local.grade = 'deployed';
+  f.run.spec.capabilities.owner.scope = contextScope('local', f.run.spec.contexts.local);
   const attempt = f.append({ type: 'begin', caseId: 'schedule' }); f.append(f.finish(attempt.id));
   offlinePlan(f, ['test'], ['pass'], { mode: 'release' });
   assert.equal(status(f.run, source(), NOW).complete, true);
@@ -283,6 +345,7 @@ test('independent offline plans cannot hide failed required coverage and a relev
 
 test('old Node 22 receipts stay historical and cannot satisfy or block Node 24 acceptance', (t) => {
   const f = fixture(t); f.run.spec.mode = 'release'; f.run.spec.contexts.local.grade = 'deployed';
+  f.run.spec.capabilities.owner.scope = contextScope('local', f.run.spec.contexts.local);
   const live = f.append({ type: 'begin', caseId: 'schedule' }); f.append(f.finish(live.id));
   offlinePlan(f, ['test'], ['pass'], { node: 'v22.19.0', mode: 'release' });
   assert.equal(status(f.run, source(), NOW).releasePending, true);
@@ -309,6 +372,7 @@ test('unsupported or outdated Node 24 proof cannot complete the current release 
 
 test('a failed full release cannot reuse its older checkpoint or be cleared by narrower recovery', (t) => {
   const f = fixture(t); f.run.spec.mode = 'release'; f.run.spec.contexts.local.grade = 'deployed';
+  f.run.spec.capabilities.owner.scope = contextScope('local', f.run.spec.contexts.local);
   const live = f.append({ type: 'begin', caseId: 'schedule' }); f.append(f.finish(live.id));
   offlinePlan(f, ['test', 'verify:durability'], ['pass', 'pass'], { mode: 'release' });
   assert.equal(status(f.run, source(), NOW).complete, true);
@@ -380,7 +444,9 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   writeFileSync(join(repo, 'README.md'), 'Synthetic CLI source.');
   execFileSync('git', ['add', '.'], { cwd: repo });
   execFileSync('git', ['-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.invalid', 'commit', '-qm', 'fixture'], { cwd: repo });
-  const actual = structuredClone(f.spec);
+  const actual = structuredClone(f.spec) as any;
+  actual.cases.push({ ...actual.cases[0], id: 'recovery' });
+  actual.groups = [{ id: 'parent', title: 'Synthetic recovery', required: ['schedule', 'recovery'], optional: [], scopeReason: 'Both variants are required.' }];
   actual.capabilities.owner.observedAt = new Date(Date.now() - 1000).toISOString();
   actual.capabilities.owner.expiresAt = new Date(Date.now() + 60_000).toISOString();
   writeFileSync(specFile, JSON.stringify(actual));
@@ -401,6 +467,20 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   const report = join(f.directory, 'report.md');
   assert.equal(cli('report', '--run', runFile, '--output', report), 0, error);
   assert.match(readFileSync(report, 'utf8'), /local.*synthetic-local.*pass/);
+  assert.match(readFileSync(report, 'utf8'), /Variant group parent .*not_run.*pending: recovery/);
+  actual.capabilities.owner.scope.target = 'wrong-lane';
+  writeFileSync(specFile, JSON.stringify(actual));
+  assert.equal(cli('refresh', '--spec', specFile, '--reason', 'Stale capability after lane change.', '--run', runFile), 0, error);
+  assert.equal(cli('preflight', '--run', runFile), 1, error);
+  assert.match(output, /scope missing or differs/);
+  actual.capabilities.owner.scope = contextScope('local', actual.contexts.local);
+  writeFileSync(specFile, JSON.stringify(actual));
+  assert.equal(cli('refresh', '--spec', specFile, '--reason', 'Fresh exact target readback.', '--run', runFile), 0, error);
+  assert.equal(cli('begin', '--case', 'recovery', '--run', runFile), 0, error);
+  writeFileSync(event, JSON.stringify(f.finish(JSON.parse(output).id)));
+  assert.equal(cli('record', '--event', event, '--run', runFile), 0, error);
+  assert.equal(cli('report', '--run', runFile), 0, error);
+  assert.match(output, /Variant group parent .*pass.*pending: \./);
   assert.equal(cli('report', '--run', runFile, '--output', runFile), 2);
   assert.ok(readRun(runFile).events.length > 0);
 });
@@ -541,6 +621,9 @@ test('candidate integration waits for open or unreconciled scenarios even throug
   const f = repairFixture(t), failed = f.fail('schedule');
   f.run.spec.contexts.alias = { ...f.run.spec.contexts.local };
   f.run.spec.cases.find((c: any) => c.id === 'memory').context = 'alias';
+  f.run.spec.capabilities.aliasOwner = { ...f.run.spec.capabilities.owner, scope: contextScope('alias', f.run.spec.contexts.alias) };
+  f.run.spec.cases.find((c: any) => c.id === 'memory').requires = ['aliasOwner'];
+  f.run.capabilityEvidence.aliasOwner = evidenceRefs([f.evidence]);
   f.append(f.ready(f.repair('destination', failed.id, 'routines')));
   const batch = { type: 'batch', batchId: 'one', repairIds: ['destination'], state: 'integrated', reason: 'Unblock schedule coverage.', evidence: [f.evidence] };
   const running = f.append({ type: 'begin', caseId: 'memory' });

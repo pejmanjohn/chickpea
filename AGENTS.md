@@ -14,6 +14,9 @@
   live transcripts, and working documents out of the public repository.
 - Follow [CONTRIBUTING.md](CONTRIBUTING.md). Run tests and builds serially in each
   checkout. Use isolated databases for tests; never reset an operator's state.
+- Serialize expensive full-suite/build/workerd groups across this host with
+  `verify:regression` or `verify:host`; see [host coordination](qa/live/operator/host-checks.md).
+  Continue lightweight independent checks; never stop another task's processes.
 - For Cloudflare deployment use `npm run deploy` (the guarded wrapper), not bare
   `wrangler deploy`. Confirm the intended target before any live mutation.
 - Report local checks and live acceptance separately. A source SHA, build, or

@@ -9,6 +9,7 @@ import { digest, sourceInputs } from './lib/verification-inputs.mjs';
 import { evidenceRefs, offlineEvent, readRun, reusableOffline, updateRun } from './lib/verification-record.mjs';
 import { offlineStepLabel } from './lib/verification-offline.mjs';
 import { assertNodeVersion } from './lib/node-version.mjs';
+import { acquireHostChecks } from './lib/verification-host.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -34,6 +35,7 @@ export function parseRegressionArgs(argv) {
 
 export function regressionEnvironment(env = process.env) {
   const clean = { ...env };
+  delete clean.CHICKPEA_CHECK_OWNER; // Coordination tokens are not verification inputs.
   // Do not let a QA deploy/local lane's selectors stamp offline build artifacts.
   for (const key of Object.keys(clean)) {
     if (/^(?:CHICKPEA_DEPLOY_|CHICKPEA_LOCAL_|CHICKPEA_ENV_|WRANGLER_CI_|WORKERS_CI|CLOUDFLARE_ENV$)/.test(key)) delete clean[key];
@@ -85,6 +87,7 @@ export function runRegressionSteps(steps, run) {
 }
 
 export function main(argv) {
+  let lease, interrupted = false;
   try {
     if (argv.includes('--help')) {
       console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--reuse] [--timeout-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\n--record saves private logs, durations, failures and final release receipts. --reuse accepts only unchanged successful inputs and retained logs; build always runs. Release never reuses steps.`);
@@ -111,9 +114,11 @@ export function main(argv) {
         throw new Error('An offline attempt is still open. Inspect the owning process and log; record offline_interrupted only after its processes have stopped.');
       }
     }
+    if (plan.steps.length) lease = acquireHostChecks({ cwd: ROOT });
     const scratch = mkdtempSync(path.join(tmpdir(), 'chickpea-regression-'));
     const env = {
       ...regressionEnvironment(),
+      ...lease?.env,
       npm_config_cache: path.join(scratch, 'npm-cache'),
       WRANGLER_LOG_PATH: path.join(scratch, 'wrangler.log'),
     };
@@ -160,6 +165,7 @@ export function main(argv) {
           directNpm ? ['run', step.script] : args,
           { cwd: ROOT, env, timeout: options.timeoutMs, killSignal: 'SIGKILL', stdio: fd === undefined ? 'inherit' : ['ignore', fd, fd] });
       } finally { if (fd !== undefined) closeSync(fd); }
+      if (result.signal || result.error) interrupted = true;
       const stable = !options.record || sourceInputs(ROOT).tree === input.tree;
       const status = stable ? result.status ?? 1 : 1;
       if (attempt) record({ type: 'offline_finish', planId: receiptPlan.id, attemptId: attempt.id, label, fingerprint, node: process.version,
@@ -182,6 +188,9 @@ export function main(argv) {
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     return 2;
+  } finally {
+    if (!interrupted) lease?.release();
+    else console.error('Interrupted check: host reservation retained. Inspect the owner and child processes before releasing it.');
   }
 }
 

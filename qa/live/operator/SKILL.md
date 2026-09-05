@@ -77,11 +77,14 @@ separate requirements.
    browser work. Resolve actual signed-in actors, required fixtures, available
    browser tools, and disposable installation targets. A missing fixture blocks
    only dependent cases. Keep that gap in the selected scope; finish other cases.
+   Bind each capability to that case's exact context and select independently
+   graded required variants. See the [fixture inventory](environments.md#fixture-inventory).
 4. Run the selected offline checks serially with `verify:regression --record
    <private-run.json>`. For each attended case, record `begin`, act once, then
    record `finish` with real readbacks. Register exact owned resources and fixture
    before-values immediately. Follow [recovery.md](recovery.md) for an ambiguous
    action, stalled reply, lost tab, or tool failure.
+   Share the [host check reservation](host-checks.md) with other repair worktrees.
 5. Start diagnosis promptly and use [recovery.md](recovery.md) to separate urgent
    repairs from isolated failures that can queue while independent checks continue.
    Delegate eligible repair work below. Integrate compatible reviewed repairs at

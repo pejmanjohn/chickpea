@@ -25,6 +25,12 @@ Useful filters are `--case <case-id>` and `--variant current|baseline|both`. A s
 
 ## Corpus contract
 
+For schedule creation/admission diagnosis, also use the bounded
+[schedule product-contract evaluation](../../qa/live/operator/model-diagnosis.md).
+It shares the active tool's schema and instructions and stops before reservation.
+Its optional private synthetic arguments are separate from this authoring
+runner's content-free report and from production telemetry.
+
 `evals/agent-authoring/cases.json` is versioned and contains synthetic prompts only. Each case declares:
 
 - whether Agent authoring and its skill-creation reference must activate;
