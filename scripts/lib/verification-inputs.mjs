@@ -51,6 +51,7 @@ export function caseInputs(spec, selected, source) {
 export function prerequisiteInputs(spec, selected) {
   return Object.fromEntries(selected.requires.map((id) => [id, {
     kind: spec.capabilities[id]?.kind ?? null, expectedRole: spec.capabilities[id]?.expectedRole ?? null,
+    ...(spec.capabilities[id]?.scope ? { scope: spec.capabilities[id].scope } : {}),
   }]));
 }
 

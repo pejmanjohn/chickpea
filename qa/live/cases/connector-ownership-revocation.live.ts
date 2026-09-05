@@ -30,6 +30,8 @@ export const CONNECTION_OWNERSHIP_REVOCATION_CONTRACT = defineLiveCase({
     ),
     {
       id: 'LC05-V3-revoke-reconnect',
+      // Attended records split reconnect/provider-read and dependent-schedule
+      // recovery into required children under this catalog ID. See operator/records.md.
       title: 'Pause dependent work after revocation and reconnect exactly',
       suites: requiredSuitesForVariant('LC05-V3-revoke-reconnect'),
       fixtures: [

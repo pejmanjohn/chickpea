@@ -29,6 +29,14 @@ Each repair handoff returns:
 - Original failure/attempt IDs and retained private evidence references.
 - Reproduction steps that exercise the failed boundary, causal diagnosis, and
   any remaining uncertainty.
+- The authoritative expected value and its source, traced through each relevant
+  producer, storage, API serialization and UI boundary. Identify the first
+  disagreement with actual readbacks. Exercise realistic newly settled data and
+  retained historical rows, not just a constructed view-model input. Reuse
+  already-landed regressions that cover those paths. For usage, follow canonical
+  ledger measurements including cache dimensions; do not fabricate a backfill.
+  Preserve the failed initial diagnosis and distinguish directly proven causes
+  from inferred mechanisms or unknown earlier arguments.
 - For code repairs, the patch or individual commit and focused validation logs.
   For recovery without a source change, the exact restoration and its readback.
 - Affected scenarios and dependencies, plus recommended Local and deployed
@@ -38,6 +46,11 @@ The verifier reviews repairs before the [batch checkpoint](modes.md#repair-loop-
 An agent's patch or focused pass does not establish live recovery. Keep unresolved
 or conflicting repairs queued with a bounded next checkpoint; they do not delay
 ready compatible work indefinitely.
+
+Before another live model retry, use the bounded
+[product-contract diagnosis](model-diagnosis.md) when relevant. Recheck the
+original default model after a product repair. Recovery must preserve requested
+disabled/archive intent and must never reactivate grants while retrying cleanup.
 
 ## Ambiguous browser or native action
 

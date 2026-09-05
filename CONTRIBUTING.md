@@ -55,6 +55,11 @@ for unchanged repeats; release mode always executes its full checkpoint.
 
 Run builds and tests **serially**: tests inspect generated artifacts, so a
 concurrent build can make them read a partially written artifact.
+Full suites, builds, and workerd groups also share one host reservation across
+worktrees. `verify:regression` acquires it automatically. Wrap standalone groups
+with `npm run verify:host -- COMMAND [ARG ...]`; see
+[host coordination](qa/live/operator/host-checks.md). Focused unit checks can run
+independently when they do not build artifacts or start heavy fixtures.
 All verification runs locally. This repository does not use GitHub Actions
 workflows or GitHub-hosted test runs, except the tag-triggered npm publish of
 `packages/cli` (`.github/workflows/publish-cli.yml`), which is not a merge gate.

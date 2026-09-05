@@ -49,6 +49,25 @@ account and grant using the skill's authority rules before marking it available.
 Preserve the template's `expectedRole`; preflight checks it against the observed
 role and rejects duplicate identities for distinct required actors.
 
+Every capability also needs `scope` containing the exact `context` ID plus that
+context's `target`, `grade`, `model`, `actor`, `fixtures`, `state`, and `config`
+values. The template supplies unresolved snapshots; replace them only after
+readback on the resolved context. `contextScope(id, context)` in
+`scripts/lib/verification-scope.mjs` constructs this snapshot. Serving version
+is excluded because candidate transitions already govern it. A lane/actor/fixture
+or configuration change requires new scoped evidence. An actor on Local and a
+provider fixture on a deployed lane cannot jointly satisfy a same-lane case.
+Use distinct capability IDs for each context, including target aliases.
+
+Only a genuinely shared `kind: "tool"` may use
+`scope: {"shared": true, "reason": "Observed browser supports both selected origins"}`.
+This scopes the control tool, never its signed-in actors, accounts or fixture
+authority. Available capabilities without scope in older records remain readable
+but block new attempts and candidate carry-forward. Read historical records in
+place; do not migrate or rewrite active/private historical runs. A currently
+owned run can append a truthful refresh when continued work is authorized.
+Refresh cannot remove existing scope or broaden a scoped capability to shared.
+
 Preflight returns `runnable` IDs plus per-case blockers and warnings. Exit 1 means
 some selected scope is blocked; independent cases can still run. Exit 2 means
 invalid input. Selection stays visible through refresh; it cannot silently shrink.
@@ -59,6 +78,37 @@ cannot be removed or weakened during refresh.
 Legacy doctor diagnostics remain strict for the legacy coordinator. Its
 `missing_actor` result is a registry hint for this attended preflight, and is not
 enough to mark an actual actor absent or present. Use fresh signed-in UI evidence.
+
+## Required variants
+
+Use existing catalog/attended case IDs for independently observed variants. Keep
+each child's own attempts, prerequisites, proof and context. Add a derived group:
+
+```json
+{
+  "id": "LC05-V3-revoke-reconnect",
+  "title": "Revocation and dependent-work recovery",
+  "required": ["connection-revocation", "connection-dependent-schedule-recovery"],
+  "optional": [],
+  "scopeReason": "Selected release profile includes provider reconnect and dependent scheduled-work recovery."
+}
+```
+
+Place it in the spec's `groups` array. The template includes this split when
+both journeys are selected. Reconnect/provider read alone cannot pass the parent.
+Groups reference case IDs, never nested groups, and all children use the same
+context. Separate Local/deployed/model or different models into separate groups.
+There is no manual parent outcome. Required children must all pass with current
+evidence. Failed, ambiguous, stale, blocked, open or not-run children keep the
+parent incomplete, with the remaining IDs visible in the generated report.
+
+Declare optional variants and the agreed scope reason before initialization.
+Optional results remain visible, including failures and missing coverage; open
+actions and their cleanup still need reconciliation. Ungrouped cases are required.
+Refresh can add required coverage or promote optional coverage, but cannot remove
+a selected group/variant or demote required coverage. A narrower follow-up run
+does not change the broader run's result. Select the relevant release profile,
+not every historical retrospective row by default.
 
 ## Attempts, interruption, and a fix
 
@@ -269,6 +319,13 @@ For reusable fixtures use `ownership: restore`, with identical `before` and
 `expected` objects containing the exact values. For attributed Slack output or
 archived residue use `ownership: retain` and the recorded exact retained state.
 Never infer ownership from names or clean a baseline credential/connection.
+
+Successful exact-command cleanup does not pass a failed natural-language deletion
+case. Keep its original request/result and grade the command path separately.
+Restore standing fixtures to exact before-values. A disposable run-owned Agent
+may instead have an expected archived state; archiving it need not undo every
+temporary avatar/name/model change. Verify archival and removed grants, including
+after Retry, without reactivating intentionally disabled reach.
 
 ## Evidence reuse and the final checkpoint
 

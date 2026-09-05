@@ -1,6 +1,7 @@
 // Optional repair notes in the attended record, not a scheduler or deploy driver.
 import { REGRESSION_AREAS } from './regression-plan.mjs';
 import { isExactId } from '../live-test-resource-ledger.mjs';
+import { suitableCapability } from './verification-scope.mjs';
 
 const need = (value, message) => { if (!value) throw new Error(message); };
 const text = (value) => typeof value === 'string' && value.trim().length > 0;
@@ -25,7 +26,8 @@ function candidateIdle(run, spec, affected) {
 function prerequisitesRefreshed(run, spec, batch, caseId) {
   const refresh = run.events.findLast((e) => e.type === 'refresh' && e.sequence > batch.sequence);
   const selected = spec.cases.find((c) => c.id === caseId);
-  return !!refresh && selected.requires.every((id) => Date.parse(spec.capabilities[id]?.observedAt) >= Date.parse(batch.at));
+  return !!refresh && selected.requires.every((id) => suitableCapability(spec.capabilities[id], spec, selected)
+    && Date.parse(spec.capabilities[id]?.observedAt) >= Date.parse(batch.at));
 }
 
 export function repairState(run, spec) {

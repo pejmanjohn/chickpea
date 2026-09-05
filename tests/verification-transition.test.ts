@@ -12,6 +12,8 @@ import { caseInputs, changedInputs, digest } from '../scripts/lib/verification-i
 import { recordTransition, transitionInputs } from '../scripts/lib/verification-transition.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
 import { REGRESSION_AREAS } from '../scripts/lib/regression-plan.mjs';
+// @ts-expect-error Shared executable JavaScript helpers.
+import { contextScope } from '../scripts/lib/verification-scope.mjs';
 
 const NOW = Date.parse('2026-09-05T12:00:00Z');
 const source = () => ({ head: 'a'.repeat(40), dirty: false, tree: 'tree-one', areas: Object.fromEntries(Object.keys(REGRESSION_AREAS).map((area) => [area, 'one'])) });
@@ -31,6 +33,7 @@ function fixture(t: TestContext) {
     capabilities: { owner: { kind: 'actor', available: true, identity: 'owner-one', role: 'owner', observedAt: new Date(NOW - 1000).toISOString(), expiresAt: new Date(NOW + 120000).toISOString(), evidence: [evidence] } },
     cases: [['routine', 'routines'], ['memory', 'memory'], ['connection', 'connections']].map(([id, area]) => ({ id, title: `Synthetic ${id}`, context: 'candidate', areas: [area], requires: ['owner'], proof: ['slack'], maxAttempts: 3, maxWaitMs: 120000 })),
   };
+  spec.capabilities.owner.scope = contextScope('candidate', spec.contexts.candidate);
   const run = createRun(join(directory, 'run.json'), spec, source(), NOW);
   let tick = 0;
   const append = (event: any, inputs = source()) => appendEvent(run, event, inputs, NOW + ++tick);
@@ -75,6 +78,20 @@ test('actual deployed serving-version change carries only unaffected passes and 
   }
   assert.deepEqual(f.project('routine', f.nextSpec, f.nextSource).invalidation, ['source', 'context']);
   assert.deepEqual(f.passes, originals, 'Original begin/outcome provenance must remain unchanged.');
+});
+
+test('candidate transitions cannot reuse capabilities from another target or unscoped historical observations', (t) => {
+  for (const missing of [false, true]) {
+    const f = fixture(t);
+    if (missing) {
+      delete f.spec.capabilities.owner.scope;
+      delete f.nextSpec.capabilities.owner.scope;
+      for (const { attempt } of Object.values(f.passes) as any[]) delete attempt.inputs.prerequisites;
+    } else f.nextSpec.capabilities.owner.scope.target = 'synthetic-other-worker';
+    f.refresh(f.nextSpec, f.nextSource);
+    assert.deepEqual(f.transition(f.nextSpec, f.nextSource).carried, []);
+    assert.ok(f.project('memory', f.nextSpec, f.nextSource).invalidation.includes('context'));
+  }
 });
 
 test('legacy passing records carry across a real upgrade using their saved prerequisite contract', (t) => {

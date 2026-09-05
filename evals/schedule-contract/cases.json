@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "exact-private-span", "conversationKind": "im",
+      "request": "Schedule a check on June 10, 2030 at 12:30 UTC: reply exactly SYNTHETIC CHECK. Do not run it now. Keep the reply private in this thread.",
+      "arguments": {"action":"create","name":"Synthetic check","description":"Synthetic fixture","taskText":"reply exactly SYNTHETIC CHECK. Do not run it now. Keep the reply private in this thread.","scheduleKind":"once","localDateTime":"2030-06-10T12:30","timezone":"UTC","delivery":"thread"},
+      "variants": [
+        {"id":"verbatim","arguments":{},"admission":"accepted"},
+        {"id":"paraphrase","arguments":{"taskText":"Send SYNTHETIC CHECK privately."},"admission":"rejected","message":"The scheduled task must be explicitly present in the current Slack request."},
+        {"id":"spliced","arguments":{"taskText":"reply exactly SYNTHETIC CHECK. Keep the reply private in this thread."},"admission":"rejected","message":"The scheduled task must be explicitly present in the current Slack request."},
+        {"id":"zero-seconds","arguments":{"localDateTime":"2030-06-10T12:30:00"},"admission":"accepted"},
+        {"id":"trailing-z","arguments":{"localDateTime":"2030-06-10T12:30Z"},"admission":"rejected","message":"The schedule cadence must be explicit in the current Slack request."},
+        {"id":"offset","arguments":{"localDateTime":"2030-06-10T12:30+00:00"},"admission":"rejected"},
+        {"id":"wrong-minute","arguments":{"localDateTime":"2030-06-10T12:31"},"admission":"rejected"},
+        {"id":"wrong-timezone","arguments":{"timezone":"America/Los_Angeles"},"admission":"rejected"},
+        {"id":"missing-fields","arguments":{"taskText":null},"schema":"rejected","admission":"not_run"}
+      ]
+    },
+    {
+      "id":"local-wall-time","conversationKind":"channel",
+      "request":"Schedule a check tomorrow at 09:15 America/Los_Angeles: check the synthetic status and report it.",
+      "arguments":{"action":"create","name":"Local check","description":"Synthetic fixture","taskText":"check the synthetic status and report it.","scheduleKind":"once","localDateTime":"2030-06-11T09:15","timezone":"America/Los_Angeles"},
+      "variants":[{"id":"natural-date","arguments":{},"admission":"accepted"},{"id":"utc-conversion-in-local-field","arguments":{"localDateTime":"2030-06-11T16:15"},"admission":"rejected"}]
+    },
+    {
+      "id":"silent-monitor","conversationKind":"channel",
+      "request":"Schedule a check in 5 minutes: check the synthetic status. Tell me anything new; otherwise stay silent.",
+      "arguments":{"action":"create","name":"Silent check","description":"Synthetic fixture","taskText":"check the synthetic status. Tell me anything new; otherwise stay silent.","scheduleKind":"in","minutes":5,"timezone":"UTC","outputPolicy":"post_on_change"},
+      "variants":[{"id":"authorized-silence","arguments":{},"admission":"accepted"},{"id":"broaden-output","arguments":{"outputPolicy":"post"},"admission":"rejected","message":"The requested output policy does not match the current Slack request."}]
+    }
+  ]
+}

@@ -10,6 +10,7 @@ import { recordRepair, repairBlocks, repairInputs, repairProgress } from './veri
 import { offlineProgress } from './verification-offline.mjs';
 import { NODE_BASELINE } from './node-version.mjs';
 import { recordTransition, transitionInputs } from './verification-transition.mjs';
+import { suitableCapability, validateGroups, groupStatus, optionalCases } from './verification-scope.mjs';
 
 const SCHEMA = 'chickpea-attended-run/v1';
 const GRADES = ['local', 'deployed', 'model'];
@@ -39,7 +40,8 @@ export function readPrivateJson(file) {
 }
 
 export function validateSpec(spec) {
-  keys(spec, ['mode', 'purpose', 'contexts', 'capabilities', 'cases']);
+  keys(spec, ['mode', 'purpose', 'contexts', 'capabilities', 'cases', 'groups']);
+  need(spec.groups === undefined || Array.isArray(spec.groups), 'Variant groups must be a list.');
   noSecrets(spec);
   need(['changed', 'regression', 'release'].includes(spec.mode), 'Choose changed, regression, or release.');
   need(['verification', 'reliability'].includes(spec.purpose), 'Choose verification or intentional reliability testing.');
@@ -53,7 +55,16 @@ export function validateSpec(spec) {
   need(spec.capabilities && typeof spec.capabilities === 'object', 'Capabilities are required.');
   for (const [id, cap] of Object.entries(spec.capabilities)) {
     need(isExactId(id), 'Invalid capability ID.');
-    keys(cap, ['available', 'kind', 'registered', 'identity', 'role', 'expectedRole', 'observedAt', 'expiresAt', 'evidence', 'reason']);
+    keys(cap, ['available', 'kind', 'registered', 'identity', 'role', 'expectedRole', 'observedAt', 'expiresAt', 'evidence', 'reason', 'scope']);
+    if (cap.scope !== undefined) {
+      if (cap.scope.shared === true) {
+        keys(cap.scope, ['shared', 'reason']);
+        need(cap.kind === 'tool' && text(cap.scope.reason), 'Only explicitly suitable shared tools may have shared scope.');
+      } else {
+        keys(cap.scope, ['context', 'target', 'grade', 'model', 'actor', 'fixtures', 'state', 'config']);
+        need(['context', 'target', 'grade', 'model', 'actor', 'fixtures', 'state', 'config'].every((key) => text(cap.scope[key])), 'Capability scope needs exact context inputs.');
+      }
+    }
     need(typeof cap.available === 'boolean' && ['actor', 'fixture', 'tool', 'target'].includes(cap.kind), 'Capability needs availability and kind.');
     need(cap.expectedRole === undefined || ['owner', 'admin', 'member'].includes(cap.expectedRole), 'Invalid expected actor role.');
     need(date(cap.observedAt) && date(cap.expiresAt) && Date.parse(cap.expiresAt) > Date.parse(cap.observedAt), 'Capability needs a bounded observation window.');
@@ -77,7 +88,8 @@ export function validateSpec(spec) {
     need(number(selected.maxWaitMs) && selected.maxWaitMs > 0 && selected.maxWaitMs <= 120_000, 'Each observation wait must be bounded to 120 seconds.');
     need(number(selected.minObservationMs ?? 0) && (selected.minObservationMs ?? 0) <= selected.maxWaitMs, 'Invalid minimum observation duration.');
   }
-  if (spec.mode === 'release') need(spec.cases.some((c) => spec.contexts[c.context].grade === 'deployed'), 'Release scope needs deployed acceptance cases.');
+  validateGroups(spec);
+  if (spec.mode === 'release') need(spec.cases.some((c) => spec.contexts[c.context].grade === 'deployed' && !optionalCases(spec).has(c.id)), 'Release scope needs required deployed acceptance cases.');
   return spec;
 }
 
@@ -182,6 +194,7 @@ export function preflight(run, now = Date.now()) {
     for (const id of selected.requires) {
       const cap = spec.capabilities[id];
       if (!cap?.available) blockers.push(`${id}: ${cap?.reason ?? 'not inventoried'}`);
+      else if (!suitableCapability(cap, spec, selected)) blockers.push(`${id}: scope missing or differs from this case context; obtain target-specific readback`);
       else if (Date.parse(cap.observedAt) > now || Date.parse(cap.expiresAt) <= now || !intact(receipts[id] ?? [])) blockers.push(`${id}: observation expired or evidence changed`);
       else if (cap.kind === 'actor') {
         if (cap.expectedRole && cap.role !== cap.expectedRole) blockers.push(`${id}: expected ${cap.expectedRole}, observed ${cap.role}`);
@@ -238,9 +251,15 @@ export function appendEvent(run, input, source, now = Date.now()) {
         return input.spec.contexts[next.context].grade === spec.contexts[c.context].grade;
       }), 'Refresh cannot change a selected case acceptance grade; add a separate Local repair case.');
       const required = new Set(spec.cases.flatMap((c) => c.requires));
+      need((spec.groups ?? []).every((group) => {
+        const next = input.spec.groups?.find((g) => g.id === group.id);
+        return next && group.required.every((id) => next.required.includes(id))
+          && group.optional.every((id) => [...next.required, ...next.optional].includes(id));
+      }) && [...optionalCases(input.spec)].every((id) => !spec.cases.some((c) => c.id === id) || optionalCases(spec).has(id)), 'Refresh cannot remove variant groups or downgrade required coverage to optional.');
       need([...required].every((id) => {
         const before = spec.capabilities[id], after = input.spec.capabilities[id];
-        return !before || after && before.kind === after.kind && (!before.expectedRole || after.expectedRole === before.expectedRole);
+        return !before || after && before.kind === after.kind && (!before.expectedRole || after.expectedRole === before.expectedRole)
+          && (!before.scope || after.scope && (!after.scope.shared || before.scope.shared));
       }), 'Refresh cannot remove a required capability contract or weaken its kind/expected actor role.');
       event.capabilityEvidence = captureCapabilities(input.spec);
       event.source = source;
@@ -385,10 +404,10 @@ export function status(run, source, now = Date.now()) {
     .map((e) => [e.attemptId, e])).values()];
   for (const e of outcomes) for (const [key, value] of Object.entries(e.timing ?? {})) totals[key] += value;
   return {
-    runId: run.id, mode: spec.mode, purpose: spec.purpose, source, readiness, cases, resources, ...coordination,
+    runId: run.id, mode: spec.mode, purpose: spec.purpose, source, readiness, cases, groups: groupStatus(spec, cases), optional: [...optionalCases(spec)], resources, ...coordination,
     releasePending, openOffline, offline, offlinePlans, offlineObligations,
     reused: run.events.filter((e) => e.type === 'offline_reuse'),
-    complete: (cases.length > 0 || offlinePlans.some((p) => p.required)) && cases.every((c) => c.result === 'pass') && cleanupPending.length === 0 && !releasePending && openOffline.length === 0 && offlinePlans.filter((p) => p.required).every((p) => p.result === 'pass') && coordination.repairs.every((r) => r.state === 'verified'),
+    complete: (cases.length > 0 || offlinePlans.some((p) => p.required)) && cases.every((c) => c.result === 'pass' || optionalCases(spec).has(c.id) && !['in_progress', 'observe_overdue', 'ambiguous'].includes(c.result)) && cleanupPending.length === 0 && !releasePending && openOffline.length === 0 && offlinePlans.filter((p) => p.required).every((p) => p.result === 'pass') && coordination.repairs.every((r) => r.state === 'verified'),
     timing: { wallMs: now - Date.parse(run.createdAt), measured: totals,
       unmeasuredAttempts: outcomes.filter((e) => !e.timing).length,
       unknownByCategory: Object.fromEntries(Object.keys(totals).map((key) => [key,
@@ -403,7 +422,8 @@ export function renderReport(view) {
     `${view.mode} / ${view.purpose}. ${view.complete ? 'Selected evidence complete' : 'Incomplete'}. This report records operator evidence; it does not independently certify live behavior.`, '',
     `Source ${view.source.head}; working tree ${view.source.tree}; dirty: ${view.source.dirty}.`, '',
     '| Case | Grade / target | Current result | Attempts | Invalidation / blockers |', '| --- | --- | --- | --- | --- |',
-    ...view.cases.map((c) => `| ${cell(c.id)} | ${cell(c.grade)} / ${cell(c.target)} | ${c.result} | ${c.attempts} | ${cell([...c.invalidation, ...c.blockers].join('; '))} |`), '',
+    ...view.cases.map((c) => `| ${cell(c.id)}${view.optional.includes(c.id) ? ' (optional)' : ''} | ${cell(c.grade)} / ${cell(c.target)} | ${c.result} | ${c.attempts} | ${cell([...c.invalidation, ...c.blockers].join('; '))} |`), '',
+    ...view.groups.map((g) => `Variant group ${cell(g.id)} (${cell(g.grade)} / ${cell(g.target)}): ${g.result}; required: ${cell(g.required.join(', '))}; optional: ${cell(g.optional.join(', '))}; pending: ${cell(g.pending.join(', '))}. Scope: ${cell(g.scopeReason)}`), '',
     '## Attempts and first failures', ''];
   for (const c of view.cases) {
     if (c.firstFailure) lines.push(`- ${cell(c.id)} first outcome: ${cell(c.firstFailure.result)} / ${cell(c.firstFailure.category)}. ${cell(c.firstFailure.summary)} Evidence: ${cell(c.firstFailure.evidence.map((e) => e.path).join(', '))}`);
