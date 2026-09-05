@@ -1249,6 +1249,10 @@ function slackActivityToolDescriptors(input: {
 }): ActivityToolDescriptor[] {
   const descriptors: ActivityToolDescriptor[] = [];
   if (input.managementEnabled) {
+    descriptors.push({
+      toolName: 'update_agent_memory',
+      descriptor: workspaceManagementSemanticDescriptor('apply_workspace_changes'),
+    });
     descriptors.push(...WORKSPACE_MANAGEMENT_TOOL_NAMES.map((toolName) => ({
       toolName,
       descriptor: workspaceManagementSemanticDescriptor(toolName),

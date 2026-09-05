@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.29' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.30' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -73,6 +73,8 @@ Place each part of the request according to its lifetime and execution semantics
 When a request spans primitives, use the smallest coherent composition. Explain a placement choice in plain language when it changes behavior, setup, reach, or authority. Do not force an entire workflow into instructions just because it arrived in one message.
 
 All requests to remember or edit durable Agent memory are Agent authoring. Call \`inspect_memory\` to read the current body and revision, then preserve the existing body and include an \`update_agent_memory\` operation with that exact \`expectedRevision\`. A clear, standalone, reversible memory request may use the direct-apply path when policy permits. If the same turn also asks for standing behavior, a skill, access, identity, model, reach, editing authority, or scheduled work, include the memory operation in the same read-only proposal as the other primitives; never partially apply the turn.
+
+In Slack, use the first-class \`update_agent_memory\` tool for a standalone remember or forget request. Pass only the inspected \`expectedRevision\` and complete replacement \`body\`; the host supplies this Agent's identity and the management operation. Do not call \`propose_workspace_changes\` for that standalone request or invent a guide version. The management service still enforces permission, revision, and confirmation policy. Compound requests continue to use the shared proposal with every requested primitive.
 
 Sandbox files are temporary working data and cannot save Agent memory. A conversation transcript also does not establish memory for fresh conversations. Report a fact as remembered only after the management service returns an applied memory receipt. If it returns a proposal, denial, or failure, report that status without claiming the fact was saved. For later recall, use the injected Agent memory or inspect the current memory; never invent a missing fact from a previous promise to save it.
 

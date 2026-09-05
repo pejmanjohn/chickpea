@@ -63,6 +63,11 @@ import {
 import { opaqueId } from '../work/admission.ts';
 import type { ManagementApplyResult } from './types.ts';
 import type { SlackAgentCreationTerminalIntent } from '../slack/agent-creation-terminal.ts';
+import {
+  SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION,
+  slackMemoryUpdateArguments,
+  slackUpdateAgentMemoryInputSchema,
+} from './slack-memory-actions.ts';
 
 const SIGNAL_ATTRIBUTE_KEYS = [
   'workspaceId',
@@ -564,6 +569,19 @@ export function useWorkspaceManagementSlackTools(
       return slackToolOutput(await invokeLiveSlackTool(
         signal, resolvePlatformEnv, 'inspect_memory', data, turnGuard,
       ));
+    },
+  });
+  useTool({
+    name: 'update_agent_memory',
+    description: SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION,
+    input: slackUpdateAgentMemoryInputSchema,
+    async run({ data }) {
+      const result = await invokeLiveSlackTool(
+        signal, resolvePlatformEnv, 'apply_workspace_changes',
+        slackMemoryUpdateArguments(signal, data), turnGuard,
+      );
+      creationCoordinator.recordFollowOn(result);
+      return slackToolOutput(result);
     },
   });
   useTool({
