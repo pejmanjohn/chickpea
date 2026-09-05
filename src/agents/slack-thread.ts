@@ -1195,6 +1195,7 @@ export function useRuntimePlanAgent(
     useChickpeaResponseMetadata(options.responseMetadataModel);
   }
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
+  useInstruction('Sandbox files are temporary working data, not durable Agent memory. They do not follow this Agent into a fresh conversation. A successful file or shell write cannot establish that a fact was remembered. Never promise future recall from a sandbox file.');
   useInstruction(SLACK_ACTION_LINK_INSTRUCTION);
   if (options.toolsDisabled) {
     useInstruction(

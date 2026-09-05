@@ -1100,7 +1100,23 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       },
     });
     assert.equal(memoryUpdate.ok, true);
+    assert.equal((memoryUpdate as { ok: true; result: {
+      outcomes: Array<{ disposition: string }>;
+    } }).result.outcomes[0]?.disposition, 'applied');
     assert.equal((await f.memory.getAgentMemory(support.id)).body, 'Escalate P0 incidents immediately.');
+    // A successful memory receipt must be backed by the same Agent body even
+    // when a new Slack conversation has no transcript of the remember request.
+    const freshMemory = await invokeSlackWorkspaceManagementTool({
+      signal: { ...signal(support.id), threadTs: '500.1' },
+      identity: f.identity,
+      service: f.service,
+      name: 'inspect_memory',
+      args: { agentId: support.id },
+    });
+    assert.equal(freshMemory.ok, true);
+    assert.deepEqual((freshMemory as { ok: true; result: unknown }).result, {
+      agentId: support.id, body: 'Escalate P0 incidents immediately.', revision: 1,
+    });
 
     await f.config.putChannel({
       workspaceId,

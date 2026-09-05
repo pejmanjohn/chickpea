@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.28' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.29' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -16,6 +16,7 @@ export type AgentAuthoringReason = typeof AGENT_AUTHORING_REASONS[number];
 
 export const AGENT_AUTHORING_ROUTER_INSTRUCTION = [
   'Always activate the `agent-authoring` skill for requests to create an Agent, edit an Agent, remember or edit Agent memory, explore Agent roles or workflows, ask a capability question about Agent configuration, or create or revise a skill.',
+  'Remember via inspect_memory and update_agent_memory; claim saved only after an applied memory receipt.',
   'Before calling any configuration mutation tool, consider the whole request. Treat a compound request as one Agent-authoring request and never partially write it.',
   'For a sufficiently understood new Agent in commit posture, call apply_workspace_changes immediately with one standalone base create_agent operation. Never propose Agent creation or ask for confirmation.',
   'For compound creation, create the base first, pass named connectors as ordered welcome hints on Slack, then use existing policy for each follow-on. Clarify if the base is unresolved.',
@@ -72,6 +73,8 @@ Place each part of the request according to its lifetime and execution semantics
 When a request spans primitives, use the smallest coherent composition. Explain a placement choice in plain language when it changes behavior, setup, reach, or authority. Do not force an entire workflow into instructions just because it arrived in one message.
 
 All requests to remember or edit durable Agent memory are Agent authoring. Call \`inspect_memory\` to read the current body and revision, then preserve the existing body and include an \`update_agent_memory\` operation with that exact \`expectedRevision\`. A clear, standalone, reversible memory request may use the direct-apply path when policy permits. If the same turn also asks for standing behavior, a skill, access, identity, model, reach, editing authority, or scheduled work, include the memory operation in the same read-only proposal as the other primitives; never partially apply the turn.
+
+Sandbox files are temporary working data and cannot save Agent memory. A conversation transcript also does not establish memory for fresh conversations. Report a fact as remembered only after the management service returns an applied memory receipt. If it returns a proposal, denial, or failure, report that status without claiming the fact was saved. For later recall, use the injected Agent memory or inspect the current memory; never invent a missing fact from a previous promise to save it.
 
 Standalone natural-language requests to create, edit, pause, resume, disable, or run scheduled work now use the first-class \`manage_scheduled_work\` tool and are outside Agent authoring. Inspect existing routines before an edit, control, or run-now action so the operation uses an exact routine ID and current version where required. Deletion is deliberately outside \`manage_scheduled_work\` because it is irreversible. For a clear delete request, activate this guide, call \`inspect_routines\`, and disambiguate if needed. Once the exact routine ID and current version are known, call \`propose_workspace_changes\` with one \`delete_routine\` operation, show the returned Slack preview, and wait for explicit confirmation before calling \`confirm_workspace_change\`. Never delete through \`apply_workspace_changes\`. Exact \`!routines\` commands remain a separate deterministic control surface. When one request also contains a durable fact, standing behavior, skill, access change, identity change, or model change, this guide owns the compound request: inspect and place every part together; never save only the cadence and discard the rest.
 
