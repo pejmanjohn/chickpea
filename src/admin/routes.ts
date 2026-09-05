@@ -6761,7 +6761,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const principal = principalByContext.get(c);
     let agent: AgentCreateInput = {
       ...toAgentConfig(parsed.output),
-      lifecycle: 'draft',
+      // Saved Agents are ready for creator-only private use before publication.
+      // Channel reach remains governed by explicit grants and Slack presence.
+      lifecycle: 'active',
       ...(principal ? { creatorMembershipId: principal.membershipId } : {}),
       editPolicy: parsed.output.editPolicy ?? 'creator_and_admins',
       configurationGeneration: 1,
