@@ -136,8 +136,11 @@ export class AuditStoreLogic {
     }
     if (filter.subjectIds?.length) {
       const subjectIds = [...new Set(filter.subjectIds)].slice(0, 101);
-      clauses.push(`subject_id IN (${subjectIds.map(() => '?').join(', ')})`);
-      params.push(...subjectIds);
+      // A routine detail includes the routine plus up to 100 runs. Bind the
+      // complete bounded set once: DO SQLite permits only 100 parameters per
+      // query, including the domain and LIMIT bindings.
+      clauses.push('subject_id IN (SELECT value FROM json_each(?))');
+      params.push(JSON.stringify(subjectIds));
     }
     if (filter.storeId) {
       clauses.push('store_id = ?');
