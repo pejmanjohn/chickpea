@@ -1051,6 +1051,10 @@ function normalizedCurrentRequest(currentRequest: string): string {
 function stripRequestPreamble(request: string): string {
   const polite = /^(?:(?:please|kindly)\s+|instead,?\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?|i(?:'d| would)?\s+(?:like|want|need)\s+you\s+to\s+|(?:go ahead|proceed)\s+(?:and\s+)?)/i;
   let task = request.replace(polite, '');
+  // An affirmative restatement still carries its full action in this request.
+  // Do not unwrap arbitrary labels, quotations, or references to prior previews.
+  task = task.replace(/^(?:yes,\s*)?perform\s+this\s+exact\s+action\s+now:\s*/i, '')
+    .replace(polite, '');
   const qualified = /^using\s+([^,\n]{1,80}),\s*/i.exec(task);
   if (qualified && MANAGED_CONNECTOR_CATALOG.list().some((connector) =>
     connector.label.toLowerCase() === qualified[1]!.trim().toLowerCase()
