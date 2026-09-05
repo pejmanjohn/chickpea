@@ -39,10 +39,21 @@ export async function readDirectSlackAttachment(input: {
   const token = input.token;
   const metadata = await fetcher('https://slack.com/api/files.info', {
     method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ file: input.fileId }), redirect: 'error', signal,
+    body: new URLSearchParams({ file: input.fileId }), redirect: 'manual', signal,
   });
-  if (!metadata.ok) throw new AttachmentReadError(metadata.status === 429 ? 'ratelimited' : 'attachment_unavailable');
-  const info = record(await metadata.json());
+  if (!metadata.ok) {
+    await metadata.body?.cancel();
+    throw new AttachmentReadError(metadata.status >= 300 && metadata.status < 400
+      ? 'attachment_redirect_rejected'
+      : metadata.status === 429 ? 'ratelimited' : 'attachment_unavailable');
+  }
+  const metadataType = metadata.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
+  if (metadataType && metadataType !== 'application/json') {
+    await metadata.body?.cancel();
+    throw new AttachmentReadError('invalid_file_metadata');
+  }
+  const metadataBytes = await boundedBytes(metadata, 256 * 1024);
+  const info = record(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(metadataBytes)));
   if (info.ok !== true) throw new AttachmentReadError(typeof info.error === 'string' && /^[a-z0-9_]{1,80}$/.test(info.error) ? info.error : 'attachment_unavailable');
   const file = record(info.file);
   if (file.id !== input.fileId) throw new AttachmentReadError('attachment_file_mismatch', 502);

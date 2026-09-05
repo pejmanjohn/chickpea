@@ -7,6 +7,8 @@ function fixture(changes: Record<string, unknown> = {}, response = new Response(
   let calls = 0;
   const fetcher: typeof fetch = async (url, options) => {
     calls++;
+    // workerd supports manual/follow; error is unsupported before any network I/O.
+    assert.equal(options?.redirect, 'manual');
     assert.equal(new Headers(options?.headers).get('authorization'), 'Bearer test-token');
     if (calls === 1) {
       assert.equal(String(url), 'https://slack.com/api/files.info');
@@ -53,4 +55,37 @@ test('direct reader propagates Slack access denial without downloading', async (
   const fetcher: typeof fetch = async () => { calls++; return Response.json({ ok: false, error: 'file_not_found' }); };
   await assert.rejects(readDirectSlackAttachment({ ...base, fetch: fetcher }), /file_not_found/);
   assert.equal(calls, 1);
+});
+
+test('files.info rejects metadata redirects and cancels without a download', async () => {
+  let cancelled = false;
+  let calls = 0;
+  const fetcher: typeof fetch = async (_url, options) => {
+    calls++;
+    assert.equal(options?.redirect, 'manual');
+    return new Response(new ReadableStream({ cancel() { cancelled = true; } }), {
+      status: 302, headers: { location: 'https://attacker.example' },
+    });
+  };
+  await assert.rejects(readDirectSlackAttachment({ ...base, fetch: fetcher }), /attachment_redirect_rejected/);
+  assert.equal(calls, 1);
+  assert.equal(cancelled, true);
+});
+test('files.info caps chunked metadata and cancels its stream before JSON parsing', async () => {
+  let cancelled = false;
+  let calls = 0;
+  const fetcher: typeof fetch = async () => {
+    calls++;
+    return new Response(new ReadableStream({
+      pull(controller) { controller.enqueue(new Uint8Array(128 * 1024)); },
+      cancel() { cancelled = true; },
+    }), { headers: { 'content-type': 'application/json' } });
+  };
+  await assert.rejects(readDirectSlackAttachment({ ...base, fetch: fetcher }), /attachment_byte_limit_exceeded/);
+  assert.equal(calls, 1);
+  assert.equal(cancelled, true);
+});
+test('files.info refuses non-JSON metadata before downloading', async () => {
+  const fetcher: typeof fetch = async () => new Response('<html>login</html>', { headers: { 'content-type': 'text/html' } });
+  await assert.rejects(readDirectSlackAttachment({ ...base, fetch: fetcher }), /invalid_file_metadata/);
 });
