@@ -442,6 +442,18 @@ function oneTimeAuthorityPatterns(localDateTime: string, timezone: string, at: n
     new RegExp(`${escapeRegExp(year!)}-${escapeRegExp(month!)}-${escapeRegExp(day!)}[T\\s]${escapeRegExp(hour!)}:${escapeRegExp(minute!)}`, 'gi'),
     new RegExp(`\\b${Number(month)}/${Number(day)}(?:/${year})?\\b[^.!?;\\n]{0,20}\\b(?:at\\s+)?${clock}\\b`, 'gi'),
   ];
+  // Bind the complete named date, including its year, to the requested clock.
+  // Keep negation, quotation, and direct-intent checks in hasPositiveAuthorityMatch.
+  const monthName = [
+    'january', 'february', 'march', 'april', 'may', 'june',
+    'july', 'august', 'september', 'october', 'november', 'december',
+  ][Number(month) - 1];
+  if (monthName) {
+    patterns.push(new RegExp(
+      `\\b${monthName}\\s*${Number(day)}(?:st|nd|rd|th)?(?:\\s*,\\s*|\\s+)${year}\\s+(?:at\\s*)?${clock}(?=\\s|UTC\\b|GMT\\b|[.,;!?]|$)`,
+      'gi',
+    ));
+  }
   const scheduledDate = `${year}-${month}-${day}`;
   const currentDate = localCalendarDate(at, timezone);
   if (scheduledDate === currentDate) {
