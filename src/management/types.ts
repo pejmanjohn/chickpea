@@ -25,6 +25,8 @@ export type ManagementOrigin =
       threadTs: string;
       /** Trusted requester message coordinate for durable Slack acknowledgements. */
       messageTs?: string;
+      /** Trusted Slack event ID for saved routine request provenance. */
+      eventId?: string;
       /** Trusted current requester text from the Slack delivery, never model-authored. */
       requestText?: string;
       /** Trusted normalized Slack surface. Missing legacy origins receive no implicit Channel grant. */

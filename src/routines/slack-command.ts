@@ -18,6 +18,7 @@ import {
   normalizeRoutineSchedule,
 } from './schedule.ts';
 import { RoutineService } from './service.ts';
+import { normalizeAuthorityText } from './provenance.ts';
 import {
   RoutineStateError,
   type RoutineDefinition,
@@ -36,6 +37,12 @@ export type SlackScheduleCommand =
       channelId: string;
       agentId: string;
       channelThreadTs?: string;
+      sourceRequest?: {
+        requestText: string;
+        eventId: string;
+        messageTs: string;
+        threadTs: string;
+      };
       directDestination?: {
         conversationId: string;
         threadTs: string;
@@ -221,6 +228,17 @@ export async function executeSlackScheduleCommand(
       projectedDailyStarts: projection.projectedDailyStarts,
       reservations: projection.reservations,
       sourceVisibility: direct ? 'private' : 'unknown',
+      ...(command.sourceRequest ? { provenance: {
+        ...command.sourceRequest,
+        sourceKind: 'slack_request' as const,
+        ...(existing && normalizeAuthorityText(command.taskText) === normalizeAuthorityText(existing.taskText)
+          ? {
+              authoritySource: 'previous_revision' as const,
+              sourceRoutineId: existing.id,
+              sourceRoutineVersion: existing.version,
+            }
+          : { authoritySource: 'current_request' as const }),
+      } } : {}),
     }, effectKey(command, 'save'));
 
     try {

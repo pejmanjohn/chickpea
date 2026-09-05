@@ -12,6 +12,8 @@ test('Channel thread delivery requires positive unquoted delivery intent, not ac
   for (const request of [
     'Post the digest in this channel.',
     'Do not post the digest in this thread.',
+    'Deliver each result as a new message in this channel, not in this thread.',
+    'Deliver the result to the channel, not to this thread.',
     'Post exactly "in this thread" every morning.',
     'Explain how to post in this thread.',
     'Post in this thread?',

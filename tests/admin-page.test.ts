@@ -4509,6 +4509,24 @@ test('failed Agent schedule control reloads the latest row and reports a safe er
   assert.doesNotMatch(harness.app.innerHTML, /SECRET_SERVER_DETAIL_MUST_NOT_RENDER/);
 });
 
+test('Agent schedules use the same current channel name as the channel index', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    channelIndex: [{ workspaceId: 'T_RENAMED', channelId: 'C_RENAMED', channelName: 'current-name', grants: [] }],
+    agentSchedules: [{
+      id: 'routine_renamed', name: 'Renamed channel digest', contentAccess: 'readable', status: 'active', version: 1,
+      workspaceId: 'T_RENAMED', channelId: 'C_RENAMED', channelLabel: 'stale-name',
+      cadence: { triggerKind: 'schedule', scheduleInput: '*/5 * * * *', timezone: 'UTC' },
+      actions: {},
+    }],
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'schedules' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /agent-schedule-channel">#current-name/);
+  assert.doesNotMatch(harness.app.innerHTML, /#stale-name/);
+});
+
 test('schedule revalidation preserves an in-flight control and completion cannot reload a stale Agent', async () => {
   let resolveControl!: (response: FakeResponse) => void;
   let resolveOpsSchedules!: (response: FakeResponse) => void;

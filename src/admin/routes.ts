@@ -7644,6 +7644,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
                 }
               : null,
             channelLabel: readable ? channel?.label ?? null : null,
+            workspaceId: readable ? routine.workspaceId : null,
+            channelId: readable ? routine.channelId : null,
             nextRunAt: routine.nextRunAt,
             lastFinishedAt: routine.lastFinishedAt,
             actions,

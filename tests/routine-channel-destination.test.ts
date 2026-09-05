@@ -42,7 +42,7 @@ test('Channel creation separates request thread from saved delivery and edits pr
       conversationKind: 'channel' as const, threadTs: '1787874271.095969',
       slackUserId: owner.binding.slackUserId, eventId: 'Ev_DESTINATION',
       messageTs: '1787874272.000100', turnJobId: 'turn_DESTINATION',
-      requesterText: 'Schedule Report the digest every day at 9am UTC.',
+      requesterText: 'Schedule Report the digest every day at 9am UTC. Deliver each result as a new message in this channel, not in this thread. Do not run it now.',
     };
     const first = await invokeSlackScheduleAction({
       signal, context: await resolveSlackManagementActor(signal, identity), operation, dependencies,
@@ -52,6 +52,11 @@ test('Channel creation separates request thread from saved delivery and edits pr
     assert.equal(first.deliveryDestination, 'channel');
     assert.deepEqual((await routines.getRoutine(first.routineId))?.destination,
       { kind: 'channel', channelId: signal.channelId });
+    const firstProvenance = (await routines.listRevisions(first.routineId))[0]?.provenance;
+    assert.equal(firstProvenance?.requestText, signal.requesterText);
+    assert.equal(firstProvenance?.eventId, signal.eventId);
+    assert.equal(firstProvenance?.messageTs, signal.messageTs);
+    assert.equal(firstProvenance?.authoritySource, 'current_request');
 
     const threadSignal = {
       ...signal, eventId: 'Ev_THREAD', turnJobId: 'turn_THREAD',
@@ -81,6 +86,10 @@ test('Channel creation separates request thread from saved delivery and edits pr
     assert.ok(edit.outcome === 'applied');
     assert.equal(edit.deliveryDestination, 'channel_thread');
     assert.deepEqual((await routines.getRoutine(saved.id))?.destination, saved.destination);
+    const editedProvenance = (await routines.listRevisions(saved.id)).find((revision) => revision.version === 2)?.provenance;
+    assert.equal(editedProvenance?.requestText, editSignal.requesterText);
+    assert.equal(editedProvenance?.authoritySource, 'previous_revision');
+    assert.equal(editedProvenance?.sourceRoutineVersion, saved.version);
 
     const deniedSignal = { ...signal, eventId: 'Ev_DENIED', turnJobId: 'turn_DENIED' };
     const denied = await invokeSlackScheduleAction({

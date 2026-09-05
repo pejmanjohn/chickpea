@@ -811,6 +811,7 @@ export async function resolveSlackManagementActor(
       channelId: signal.channelId,
       threadTs: signal.threadTs,
       messageTs: signal.messageTs,
+      eventId: signal.eventId,
       ...(signal.requesterText ? { requestText: signal.requesterText } : {}),
       ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
       agentId: signal.agentId,

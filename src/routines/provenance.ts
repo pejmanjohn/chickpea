@@ -120,7 +120,8 @@ export function requestsChannelThreadDelivery(requestText: string): boolean {
       text.lastIndexOf(delimiter, offset - 1))) + 1;
     const end = text.slice(offset).search(/[.!?;\n]/);
     const clause = text.slice(start, end < 0 ? undefined : offset + end);
-    if (sourcePrefixNegatesTask(text, offset) ||
+    if (/\bnot\s*$/i.test(text.slice(start, offset)) ||
+        sourcePrefixNegatesTask(text, offset) ||
         /\b(?:acknowledge|acknowledgement|acknowledgment|confirmation|hypothetically|example|explain|what if)\b/i.test(clause) ||
         (end >= 0 && text[offset + end] === '?')) continue;
     return true;

@@ -3663,6 +3663,15 @@ export class WorkspaceManagementService {
       workspaceId: operation.workspaceId,
       channelId,
       agentId: operation.agentId,
+      ...(actor.origin.kind === 'slack' && actor.origin.requestText &&
+          actor.origin.eventId && actor.origin.messageTs
+        ? { sourceRequest: {
+            requestText: actor.origin.requestText,
+            eventId: actor.origin.eventId,
+            messageTs: actor.origin.messageTs,
+            threadTs: actor.origin.threadTs,
+          } }
+        : {}),
       ...(operation.destination?.kind === 'current_channel_thread' && actor.origin.kind === 'slack'
         ? { channelThreadTs: actor.origin.threadTs }
         : {}),

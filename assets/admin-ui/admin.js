@@ -4278,7 +4278,10 @@
     var rows = schedules.schedules.map(function (entry) {
       var scheduleStatus = agentScheduleStatusView(entry.status);
       var name = entry.name || "Restricted schedule";
-      var channel = normalizeChannelLabel(entry.channelLabel || "");
+      var currentChannel = entry.workspaceId && entry.channelId && (state.channelIndex || []).find(function (candidate) {
+        return candidate.workspaceId === entry.workspaceId && candidate.channelId === entry.channelId;
+      });
+      var channel = normalizeChannelLabel(currentChannel && currentChannel.channelName || entry.channelLabel || "");
       var busyAction = String(schedules.busy || "").indexOf(entry.id + ":") === 0
         ? String(schedules.busy).slice(entry.id.length + 1)
         : "";

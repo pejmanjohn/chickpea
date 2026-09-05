@@ -1102,6 +1102,8 @@ test('unknown schedule visibility stays private but remains readable to a proven
     assert.equal(schedule.name, canary);
     assert.equal(schedule.contentAccess, 'private_member');
     assert.equal(schedule.channelLabel, 'unknown-visibility-lab');
+    assert.equal(schedule.workspaceId, 'T_TEST');
+    assert.equal(schedule.channelId, 'C_TEST');
     assert.deepEqual(schedule.actions, { pause: true, resume: false, delete: true });
   } finally {
     routines.close();
