@@ -596,6 +596,8 @@ export type RoutineScheduleActionResult =
   | {
       outcome: 'failed';
       code: string;
+      /** Fixed host-authored validation guidance; never arbitrary exception text. */
+      message?: string;
       routineId?: string;
       safeState?: 'paused' | 'disabled' | 'pending_authority';
     };

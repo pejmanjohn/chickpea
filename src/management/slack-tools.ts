@@ -1214,6 +1214,7 @@ export function scheduleActionToolResult(result: SlackScheduleActionOutcome): Re
   return {
     outcome: 'failed',
     code: result.code,
+    ...(result.message ? { message: result.message } : {}),
     ...(result.routineId ? { routineId: result.routineId } : {}),
     ...(result.safeState ? { safeState: result.safeState } : {}),
     instruction: result.safeState
