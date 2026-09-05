@@ -741,6 +741,7 @@ export interface ManagementRoutineSnapshot {
     timezone: string;
     outputPolicy: RoutineOutputPolicy;
     nextRunAt: number | null;
+    nextRunTime?: { isoUtc: string; local: string; timezone: string } | null;
     contentAccess: 'public' | 'private' | 'authorization_unknown';
     owningAgentId: string;
   }>;

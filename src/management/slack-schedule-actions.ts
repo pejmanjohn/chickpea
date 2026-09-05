@@ -1,4 +1,5 @@
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
+import { routineNextRunTime } from '../routines/message-format.ts';
 import { scheduleActionId } from '../routines/ids.ts';
 import {
   assertRoutineTaskBoundToSource,
@@ -746,6 +747,7 @@ async function applyClaimedScheduleAction(input: {
               : 'controlled',
           routineId: routineRef.id,
           ...(routine ? {
+            nextRunTime: routineNextRunTime(routine.nextRunAt, routine.timezone),
             deliveryDestination: routine.destination.kind === 'direct_thread'
               ? 'direct_thread' as const
               : routine.destination.threadTs ? 'channel_thread' as const : 'channel' as const,

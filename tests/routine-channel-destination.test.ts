@@ -50,6 +50,7 @@ test('Channel creation separates request thread from saved delivery and edits pr
     assert.equal(first.outcome, 'applied');
     assert.ok(first.outcome === 'applied');
     assert.equal(first.deliveryDestination, 'channel');
+    assert.equal(first.nextRunTime?.isoUtc, new Date((await routines.getRoutine(first.routineId))!.nextRunAt!).toISOString());
     assert.deepEqual((await routines.getRoutine(first.routineId))?.destination,
       { kind: 'channel', channelId: signal.channelId });
     const firstProvenance = (await routines.listRevisions(first.routineId))[0]?.provenance;

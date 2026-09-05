@@ -52,6 +52,7 @@ import type {
 } from '../memory/types.ts';
 import { RoutineService } from '../routines/service.ts';
 import { requestsChannelThreadDelivery } from '../routines/provenance.ts';
+import { routineNextRunTime } from '../routines/message-format.ts';
 import { skillImportSource } from '../config/skill-provenance.ts';
 import { reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
 import {
@@ -1389,6 +1390,7 @@ export class WorkspaceManagementService {
           timezone: routine.timezone,
           outputPolicy: routine.outputPolicy,
           nextRunAt: routine.nextRunAt,
+          nextRunTime: routineNextRunTime(routine.nextRunAt, routine.timezone),
           contentAccess,
           owningAgentId: reference.agentId,
         };

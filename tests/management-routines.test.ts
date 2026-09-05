@@ -287,9 +287,10 @@ test('a routed Agent manages and inspects only its own routines', async () => {
       args: { workspaceId, channelId: 'C_SELF_ROUTINE' },
     });
     const routines = (inspected as { ok: true; result: {
-      routines: Array<{ id: string; name: string | null; contentAccess: string }>;
+      routines: Array<{ id: string; name: string | null; contentAccess: string; nextRunAt: number; nextRunTime: { isoUtc: string } }>;
     } }).result.routines;
     assert.equal(routines.length, 1);
+    assert.equal(routines[0]!.nextRunTime.isoUtc, new Date(routines[0]!.nextRunAt).toISOString());
     assert.equal(
       (await f.config.getAgentScheduleReference(routines[0]!.id))?.agentId,
       support.id,

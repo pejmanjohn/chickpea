@@ -1190,6 +1190,10 @@ export function scheduleActionToolResult(result: SlackScheduleActionOutcome): Re
       routineId: result.routineId,
       ...(result.routineVersion ? { routineVersion: result.routineVersion } : {}),
       ...(result.deliveryDestination ? { deliveryDestination: result.deliveryDestination } : {}),
+      ...(result.nextRunTime !== undefined ? {
+        nextRunTime: result.nextRunTime,
+        timeInstruction: 'Quote nextRunTime.local or nextRunTime.isoUtc exactly when stating the next due time. Do not calculate a date from an epoch timestamp or approximate delay. Null means there is no next scheduled occurrence.',
+      } : {}),
       ...(nonActiveSafeState ? { safeState: nonActiveSafeState } : {}),
       instruction: nonActiveSafeState
         ? `The action is complete, but the scheduled work is ${nonActiveSafeState.replace('_', ' ')} and will not run${nonActiveSafeState === 'pending_authority' ? ' until authority is restored' : ''}. Do not ask for approval or invoke another scheduling tool. In a DM, the requesting message receives a checkmark reaction; in a Channel, explicitly state this non-active result in your reply.`
