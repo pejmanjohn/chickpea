@@ -86,6 +86,12 @@ the hypothesis and changed variables; use fresh conversation roots for instructi
 changes. Local results remain separate from deployed acceptance, and successful
 retests never replace first failures.
 
+After a truthful serving-version refresh, record a
+[proven candidate transition](records.md#proven-candidate-transitions) to retain
+unaffected passing evidence when source impact and stable runtime inputs support
+it. Keep original version provenance. Without that proof, changed context stays
+stale and needs fresh evidence; never leave the serving version artificially old.
+
 Pass `--record <private-run.json>` to the regression command for logs and timing.
 An unchanged repeat may add `--reuse`; a new source/configuration/inventory cannot
 reuse those offline receipts. Reserve both Node versions and clean export for

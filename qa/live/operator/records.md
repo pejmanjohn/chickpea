@@ -52,6 +52,10 @@ role and rejects duplicate identities for distinct required actors.
 Preflight returns `runnable` IDs plus per-case blockers and warnings. Exit 1 means
 some selected scope is blocked; independent cases can still run. Exit 2 means
 invalid input. Selection stays visible through refresh; it cannot silently shrink.
+Refresh also preserves each selected case's acceptance grade, even if it moves
+to another context. A Local repair journey needs a separate case while deployed
+acceptance remains pending. Required capability kinds and expected actor roles
+cannot be removed or weakened during refresh.
 Legacy doctor diagnostics remain strict for the legacy coordinator. Its
 `missing_actor` result is a registry hint for this attended preflight, and is not
 enough to mark an actual actor absent or present. Use fresh signed-in UI evidence.
@@ -102,6 +106,45 @@ evidence changes. Unknown/shared runtime paths invalidate all areas. Workflow-on
 edits do not invalidate product areas. The mapping is conservative, and operators
 must declare indirect dependencies. Changes during an attempt prevent a pass.
 Capability observations expire independently; refresh them before new actions.
+
+## Proven candidate transitions
+
+A truthful serving-version refresh initially makes every case on that context
+stale. To carry unaffected evidence across an actual upgrade, record an explicit
+transition after the refresh. Keep the original serving version on the original
+attempt. The receipt links both clean source snapshots to the observed versions
+and records the impact review; it does not deploy or infer which source is serving.
+
+```json
+{
+  "type": "candidate_transition", "fromId": "PASSED_BEGIN_OR_PREVIOUS_TRANSITION_ID",
+  "context": "candidate", "impactAreas": ["routines"],
+  "summary": "Observed the new version serving the reviewed routine-only candidate; model, actors, configuration, fixtures and state are unchanged.",
+  "evidence": ["/private/path/candidate-source-and-impact-readbacks.json"]
+}
+```
+
+`fromId` references the passed attempt that anchors the old candidate, or the
+previous transition for a further upgrade. Evidence must connect the actual
+serving versions to the exact recorded source snapshots and support the impact
+and runtime comparison. A version string alone is insufficient. Finish open
+scenarios, reconcile ambiguous actions, and verify exact cleanup first.
+
+The helper requires the latest refresh to match the current clean source and new
+version. Declared impact must include every changed source area and any indirect
+dependencies. Unknown shared source changes affect all areas; unmapped source
+changes cannot carry evidence. Changed target, grade, model, actor, configuration,
+fixture/state identity, or prerequisite contracts require fresh proof. Changing
+such inputs and later restoring their values does not erase the interruption.
+
+Only intact passing outcomes outside the impact with usable observed prerequisites
+can carry. Recorded loss of a required actor or fixture breaks that continuity,
+even if it is later restored. The event records
+their exact attempt/outcome IDs and prior transition chain. The report shows the
+original observed version and each carry receipt. Lost or replaced transition
+evidence invalidates that chain. Changed cases still need new attempts, and a
+transition can never make an attempt pass after a mid-scenario candidate change.
+Final offline release checkpoints must still validate the current source.
 
 ## Repairs and useful batch checkpoints
 
@@ -248,6 +291,13 @@ and intact retained logs. Builds always rerun to restore ignored artifacts. A la
 failure/open attempt defeats an older pass. Environment changes may conservatively
 prevent reuse. Ignored external configuration must be represented in the effective
 environment or recorded context. Never treat unchanged HEAD as sufficient.
+
+Required offline coverage accumulates across the run's plans for each Node
+runtime. Passing a narrower independent plan cannot hide a failed or unfinished
+check from an earlier plan. A relevant passing rerun on current source and matching
+execution configuration can resolve it; the original failure remains recorded.
+The report lists outstanding check obligations. A failed full release run needs
+a later successful full release checkpoint, even after focused recovery passes.
 
 Repair loop: preserve first failures, diagnose promptly, delegate eligible work,
 and choose a bounded useful checkpoint for compatible reviewed repairs. Run the

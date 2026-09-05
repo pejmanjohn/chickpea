@@ -3,10 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { outsideGit } from './private-evidence.mjs';
-import { caseInputs, changedInputs, digest } from './verification-inputs.mjs';
+import { caseInputs, changedInputs, digest, recordedInputs } from './verification-inputs.mjs';
 import { REGRESSION_AREAS } from './regression-plan.mjs';
 import { isExactId } from '../live-test-resource-ledger.mjs';
 import { recordRepair, repairBlocks, repairInputs, repairProgress } from './verification-repairs.mjs';
+import { offlineProgress } from './verification-offline.mjs';
+import { recordTransition, transitionInputs } from './verification-transition.mjs';
 
 const SCHEMA = 'chickpea-attended-run/v1';
 const GRADES = ['local', 'deployed', 'model'];
@@ -215,6 +217,9 @@ export function appendEvent(run, input, source, now = Date.now()) {
   const attempt = run.events.find((e) => e.type === 'begin' && e.id === input.attemptId);
   const resource = run.events.find((e) => e.type === 'resource' && e.id === input.resourceId);
   switch (input.type) {
+    case 'candidate_transition':
+      Object.assign(event, recordTransition(run, spec, structuredClone(input), source, evidenceRefs, intact, now));
+      break;
     case 'repair':
     case 'batch':
     case 'batch_check':
@@ -227,6 +232,15 @@ export function appendEvent(run, input, source, now = Date.now()) {
       need(input.spec.mode === spec.mode && input.spec.purpose === spec.purpose && spec.cases.every((c) => input.spec.cases.some((next) => next.id === c.id
         && ['areas', 'requires', 'proof'].every((field) => c[field].every((item) => next[field].includes(item)))
         && (next.minObservationMs ?? 0) >= (c.minObservationMs ?? 0) && next.maxAttempts <= c.maxAttempts)), 'Refresh cannot drop or weaken selected coverage or expand its attempt budget.');
+      need(spec.cases.every((c) => {
+        const next = input.spec.cases.find((item) => item.id === c.id);
+        return input.spec.contexts[next.context].grade === spec.contexts[c.context].grade;
+      }), 'Refresh cannot change a selected case acceptance grade; add a separate Local repair case.');
+      const required = new Set(spec.cases.flatMap((c) => c.requires));
+      need([...required].every((id) => {
+        const before = spec.capabilities[id], after = input.spec.capabilities[id];
+        return !before || after && before.kind === after.kind && (!before.expectedRole || after.expectedRole === before.expectedRole);
+      }), 'Refresh cannot remove a required capability contract or weaken its kind/expected actor role.');
       event.capabilityEvidence = captureCapabilities(input.spec);
       event.source = source;
       break;
@@ -266,7 +280,7 @@ export function appendEvent(run, input, source, now = Date.now()) {
       }));
       const contract = spec.cases.find((c) => c.id === attempt.caseId);
       if (input.result === 'pass') {
-        need(changedInputs(attempt.inputs, attendedInputs(run, spec, contract, source)).length === 0, 'Attempt inputs changed; preserve it as a non-pass and retest.');
+        need(changedInputs(recordedInputs(run, attempt), attendedInputs(run, spec, contract, source)).length === 0, 'Attempt inputs changed; preserve it as a non-pass and retest.');
         need(repairBlocks(run, spec, contract.id).length === 0, 'Dependent actions are suspended by a repair; preserve a non-pass until safe retesting.');
         need(contract.proof.every((p) => event.proof[p]?.length > 0), 'Pass lacks a required Slack/Admin/provider/model readback.');
         need((input.timing?.observationMs ?? 0) >= (contract.minObservationMs ?? 0), 'Declared observation window is incomplete.');
@@ -336,7 +350,9 @@ export function status(run, source, now = Date.now()) {
   const cases = spec.cases.map((selected) => {
     const history = attempts(run, selected.id), last = history.at(-1);
     const outcome = last && resultFor(run, last.id);
-    const invalidation = last ? changedInputs(last.inputs, attendedInputs(run, spec, selected, source)) : [];
+    const currentInputs = attendedInputs(run, spec, selected, source);
+    const projection = last ? transitionInputs(run, last, outcome, currentInputs, intact) : undefined;
+    const invalidation = last ? changedInputs(projection.inputs, currentInputs) : [];
     const refs = outcome ? [...outcome.evidence, ...Object.values(outcome.proof).flat()] : [];
     if (outcome && !intact(refs)) invalidation.push('evidence');
     const ready = readiness.cases.find((c) => c.id === selected.id);
@@ -345,6 +361,9 @@ export function status(run, source, now = Date.now()) {
     return { id: selected.id, title: selected.title, grade: spec.contexts[selected.context].grade,
       target: spec.contexts[selected.context].target, result, invalidation, attempts: history.length,
       attemptId: last?.id, blockers: ready.blockers, warnings: ready.warnings,
+      originalServingVersion: last?.inputs.context.servingVersion,
+      effectiveServingVersion: projection?.inputs.context.servingVersion,
+      transitionIds: projection?.transitionIds ?? [],
       firstFailure: run.events.find((event) => event.type === 'finish' && event.result !== 'pass' && history.some((a) => a.id === event.attemptId)),
       outcome };
   });
@@ -354,14 +373,7 @@ export function status(run, source, now = Date.now()) {
   if (openCases.length) coordination.nextActions.unshift({ action: 'observe_open_attempts', caseIds: openCases });
   if (resources.some((r) => r.stopDue)) coordination.nextActions.unshift({ action: 'stop_owned_schedules', resourceIds: resources.filter((r) => r.stopDue).map((r) => r.id) });
   const offline = run.events.filter((e) => e.type === 'offline_finish');
-  const latestPlans = [...new Map(run.events.filter((e) => e.type === 'offline_plan').map((e) => [e.node, e])).values()];
-  const offlinePlans = latestPlans.map((plan) => {
-    const result = run.events.findLast((e) => e.type === 'offline_summary' && e.planId === plan.id);
-    const changed = plan.source.tree !== source.tree;
-    const evidence = run.events.filter((e) => e.planId === plan.id && ['offline_finish', 'offline_reuse'].includes(e.type)).flatMap((e) => e.evidence);
-    return { id: plan.id, node: plan.node, result: changed || !intact(evidence) ? 'stale' : result?.result ?? 'in_progress', mode: plan.mode };
-  });
-  const checkpoints = run.events.filter((e) => e.type === 'checkpoint' && e.result === 'pass' && e.source.tree === source.tree && !source.dirty && intact(e.evidence));
+  const { offlinePlans, offlineObligations, checkpoints } = offlineProgress(run, source, intact);
   const releasePending = spec.mode === 'release' && (!checkpoints.some((e) => e.node === 'v22.19.0') || !checkpoints.some((e) => /^v24\./.test(e.node)));
   const openOffline = run.events.filter((e) => e.type === 'offline_begin' && !offline.some((end) => end.attemptId === e.id));
   const cleanupPending = resources.filter((r) => r.cleanup !== 'verified');
@@ -373,7 +385,7 @@ export function status(run, source, now = Date.now()) {
   for (const e of outcomes) for (const [key, value] of Object.entries(e.timing ?? {})) totals[key] += value;
   return {
     runId: run.id, mode: spec.mode, purpose: spec.purpose, source, readiness, cases, resources, ...coordination,
-    releasePending, openOffline, offline, offlinePlans,
+    releasePending, openOffline, offline, offlinePlans, offlineObligations,
     reused: run.events.filter((e) => e.type === 'offline_reuse'),
     complete: (cases.length > 0 || offlinePlans.length > 0) && cases.every((c) => c.result === 'pass') && cleanupPending.length === 0 && !releasePending && openOffline.length === 0 && offlinePlans.every((p) => p.result === 'pass') && coordination.repairs.every((r) => r.state === 'verified'),
     timing: { wallMs: now - Date.parse(run.createdAt), measured: totals,
@@ -395,6 +407,7 @@ export function renderReport(view) {
   for (const c of view.cases) {
     if (c.firstFailure) lines.push(`- ${cell(c.id)} first outcome: ${cell(c.firstFailure.result)} / ${cell(c.firstFailure.category)}. ${cell(c.firstFailure.summary)} Evidence: ${cell(c.firstFailure.evidence.map((e) => e.path).join(', '))}`);
     if (c.outcome) lines.push(`- ${cell(c.id)} latest: ${cell(c.outcome.summary)} Evidence: ${cell(c.outcome.evidence.map((e) => e.path).join(', '))}`);
+    if (c.transitionIds.length) lines.push(`- ${cell(c.id)} evidence originally observed on ${cell(c.originalServingVersion)}; carried to ${cell(c.effectiveServingVersion)} by transitions ${cell(c.transitionIds.join(', '))}.`);
     for (const warning of c.warnings) lines.push(`- ${cell(c.id)} warning: ${cell(warning)}`);
   }
   if (view.repairs.length) {
@@ -409,7 +422,8 @@ export function renderReport(view) {
     '## Offline checks and release checkpoint', '',
     ...view.offline.map((e) => `- ${cell(e.label)}: ${e.result}, ${e.durationMs} ms, ${cell(e.node)}. Log: ${cell(e.evidence[0]?.path)}`),
     ...view.reused.map((e) => `- Reused ${cell(e.label)} from receipt ${e.reusedId}; original measured duration ${e.priorDurationMs} ms. Log: ${cell(e.evidence[0]?.path)}`),
-    ...view.offlinePlans.map((e) => `- Latest ${cell(e.node)} ${cell(e.mode)} plan: ${e.result}`),
+    ...view.offlinePlans.map((e) => `- Required ${cell(e.node)} coverage across plans: ${e.result}`),
+    ...view.offlineObligations.filter((e) => e.result !== 'pass').map((e) => `- Outstanding ${cell(e.node)} ${cell(e.id)}: ${cell(e.result)}`),
     `Open offline attempts: ${view.openOffline.length}. Final Node 22.19.0 and Node 24 release checkpoints ${view.releasePending ? 'pending' : view.mode === 'release' ? 'present for current source' : 'not requested'}.`, '',
     '## Measured time and cost', '', `Wall time: ${view.timing.wallMs} ms. Categories can overlap; do not add them to infer wall time.`,
     ...Object.entries(view.timing.measured).map(([key, value]) => `- ${key}: ${value}; unmeasured attended attempts: ${view.timing.unknownByCategory[key]}`),

@@ -38,6 +38,24 @@ function fixture(t: TestContext) {
   return { directory, evidence, spec, file, run, append, finish };
 }
 
+function offlinePlan(f: ReturnType<typeof fixture>, scripts: string[], results: string[], options: { node?: string; mode?: string; inputs?: ReturnType<typeof source>; config?: string } = {}) {
+  const node = options.node ?? 'v24.16.0', mode = options.mode ?? 'changed', inputs = options.inputs ?? source();
+  const steps = scripts.map((script) => ({ kind: 'npm', script }));
+  const executionFingerprint = digest({ node, config: options.config ?? 'synthetic-config' });
+  const fingerprint = digest({ executionFingerprint, source: inputs.tree, steps });
+  const plan = offlineEvent(f.run, { type: 'offline_plan', node, mode, source: inputs, steps, fingerprint, executionFingerprint });
+  const evidence = evidenceRefs([f.evidence]);
+  for (const [index, result] of results.entries()) {
+    const label = `npm:${scripts[index]}`;
+    const started = offlineEvent(f.run, { type: 'offline_begin', planId: plan.id, label, node, source: inputs, fingerprint, ownerPid: process.pid });
+    offlineEvent(f.run, { type: 'offline_finish', planId: plan.id, attemptId: started.id, label, node, fingerprint, result, durationMs: 1, evidence });
+  }
+  const pass = results.length === scripts.length && results.every((r) => r === 'pass');
+  offlineEvent(f.run, { type: 'offline_summary', planId: plan.id, result: pass ? 'pass' : 'fail' });
+  if (pass && mode === 'release') offlineEvent(f.run, { type: 'checkpoint', planId: plan.id, result: 'pass', source: inputs, node, fingerprint, evidence });
+  return plan;
+}
+
 test('preflight separates observed actor registry drift from unavailable dependent fixtures', (t) => {
   const f = fixture(t);
   f.run.spec.cases.push({ ...f.spec.cases[0], id: 'fresh-install', requires: ['disposable-install'] });
@@ -139,6 +157,62 @@ test('refresh cannot hide selected coverage; workflow changes preserve product p
   assert.throws(() => f.append(f.finish(second.id), NOW + 2000, product), /inputs changed/);
 });
 
+test('refresh preserves deployed acceptance even when a case moves contexts', (t) => {
+  const f = fixture(t);
+  f.spec.mode = 'release'; f.spec.contexts.local.grade = 'deployed';
+  const selected = structuredClone(f.spec) as any;
+  selected.contexts.installation = { ...selected.contexts.local, target: 'synthetic-installation' };
+  selected.cases.push({ ...selected.cases[0], id: 'installation', context: 'installation' });
+  f.append({ type: 'refresh', spec: selected, reason: 'Select independent deployed installation acceptance.' });
+  const downgraded = structuredClone(selected); downgraded.contexts.local.grade = 'local';
+  assert.throws(() => f.append({ type: 'refresh', spec: downgraded, reason: 'Local repair cannot replace deployed acceptance.' }), /acceptance grade/);
+  const moved = structuredClone(selected);
+  moved.contexts.repair = { ...selected.contexts.local, grade: 'local', target: 'synthetic-local-repair' };
+  moved.cases[0].context = 'repair';
+  assert.throws(() => f.append({ type: 'refresh', spec: moved, reason: 'Moving the context cannot bypass the grade.' }), /acceptance grade/);
+  moved.cases[0].context = 'local';
+  moved.cases.push({ ...moved.cases[0], id: 'local-repair', context: 'repair' });
+  f.append({ type: 'refresh', spec: moved, reason: 'Local repair gets its own acceptance case.' });
+  const local = f.append({ type: 'begin', caseId: 'local-repair' }); f.append(f.finish(local.id));
+  const view = status(f.run, source(), NOW + 2000);
+  assert.equal(view.cases.find((c: any) => c.id === 'local-repair').result, 'pass');
+  assert.equal(view.cases.find((c: any) => c.id === 'schedule').grade, 'deployed');
+  assert.equal(view.cases.find((c: any) => c.id === 'schedule').result, 'not_run');
+  assert.equal(view.complete, false);
+});
+
+test('refresh cannot weaken required capability kinds or expected member roles', (t) => {
+  const f = fixture(t), spec = structuredClone(f.spec) as any;
+  spec.capabilities.member = { ...spec.capabilities.owner, identity: 'synthetic-member', role: 'member', expectedRole: 'member' };
+  spec.cases[0].requires.push('member');
+  f.append({ type: 'refresh', spec, reason: 'Select a real member denial prerequisite.' });
+  for (const change of [
+    (next: any) => { delete next.capabilities.member.expectedRole; },
+    (next: any) => { next.capabilities.member.expectedRole = 'owner'; },
+    (next: any) => { next.capabilities.member.kind = 'fixture'; },
+    (next: any) => { delete next.capabilities.member; },
+  ]) {
+    const weakened = structuredClone(spec); change(weakened);
+    assert.throws(() => f.append({ type: 'refresh', spec: weakened, reason: 'Cannot erase the required member contract.' }), /required capability contract/);
+  }
+  spec.capabilities.member.identity = 'replacement-member';
+  f.append({ type: 'refresh', spec, reason: 'A newly observed member can retain the same contract.' });
+  assert.equal(preflight(f.run, NOW + 2000).ready, true);
+});
+
+test('stronger actor requirements invalidate prior proof while unchanged legacy contracts keep their provenance', (t) => {
+  const f = fixture(t), attempt = f.append({ type: 'begin', caseId: 'schedule' }); f.append(f.finish(attempt.id));
+  delete attempt.inputs.prerequisites; // A persisted record from before explicit prerequisite fingerprints.
+  assert.equal(status(f.run, source(), NOW + 2000).cases[0].result, 'pass');
+  const spec = structuredClone(f.spec) as any; spec.capabilities.owner.expectedRole = 'member';
+  f.append({ type: 'refresh', spec, reason: 'New acceptance requires an actual member.' });
+  const view = status(f.run, source(), NOW + 2000);
+  assert.equal(view.cases[0].result, 'stale');
+  assert.ok(view.cases[0].invalidation.includes('prerequisites'));
+  assert.equal(view.complete, false);
+  assert.throws(() => f.append({ type: 'begin', caseId: 'schedule', reason: 'Owner cannot substitute for member.' }), /blocked/);
+});
+
 test('exact cleanup restoration, failed cleanup recovery, and a reused immutable ID keep distinct obligations', (t) => {
   const f = fixture(t);
   const input = { type: 'resource', caseId: 'schedule', target: 'synthetic-local', provider: 'synthetic', kind: 'sheet', immutableId: 'exact-sheet', ownership: 'restore', before: { rows: [['a', '1']] }, expected: { rows: [['a', '1']] }, evidence: [f.evidence] };
@@ -187,15 +261,38 @@ test('offline reuse rejects changed input, missing/replaced log, build, and newe
 test('release checkpoints require both Node versions, current clean content and intact logs', (t) => {
   const f = fixture(t); f.run.spec.mode = 'release'; f.run.spec.contexts.local.grade = 'deployed';
   const attempt = f.append({ type: 'begin', caseId: 'schedule' }); f.append(f.finish(attempt.id));
-  const checkpoint = { type: 'checkpoint', result: 'pass', source: source(), node: 'v24.16.0', evidence: evidenceRefs([f.evidence]) };
-  offlineEvent(f.run, checkpoint);
+  offlinePlan(f, ['test'], ['pass'], { mode: 'release' });
   assert.equal(status(f.run, source(), NOW).releasePending, true);
-  offlineEvent(f.run, { ...checkpoint, node: 'v22.19.0' });
+  offlinePlan(f, ['test'], ['pass'], { mode: 'release', node: 'v22.19.0' });
   assert.equal(status(f.run, source(), NOW).releasePending, false);
   assert.equal(status(f.run, { ...source(), dirty: true }, NOW).releasePending, true);
   assert.equal(status(f.run, { ...source(), tree: 'new-tree' }, NOW).releasePending, true);
   writeFileSync(f.evidence, 'changed');
   assert.equal(status(f.run, source(), NOW).releasePending, true);
+});
+
+test('independent offline plans cannot hide failed required coverage and a relevant rerun resolves it', (t) => {
+  const f = fixture(t), live = f.append({ type: 'begin', caseId: 'schedule' }); f.append(f.finish(live.id));
+  const failed = offlinePlan(f, ['typecheck', 'verify:durability'], ['pass', 'fail']);
+  assert.equal(status(f.run, source(), NOW).complete, false);
+  offlinePlan(f, ['typecheck'], ['pass']);
+  assert.equal(status(f.run, source(), NOW).complete, false, 'The earlier durability obligation remains failed.');
+  offlinePlan(f, ['verify:durability'], ['pass']);
+  assert.equal(status(f.run, source(), NOW).complete, true);
+  assert.ok(f.run.events.some((e: any) => e.planId === failed.id && e.type === 'offline_finish' && e.result === 'fail'));
+});
+
+test('a failed full release cannot reuse its older checkpoint or be cleared by narrower recovery', (t) => {
+  const f = fixture(t); f.run.spec.mode = 'release'; f.run.spec.contexts.local.grade = 'deployed';
+  const live = f.append({ type: 'begin', caseId: 'schedule' }); f.append(f.finish(live.id));
+  for (const node of ['v22.19.0', 'v24.16.0']) offlinePlan(f, ['test', 'verify:durability'], ['pass', 'pass'], { node, mode: 'release' });
+  assert.equal(status(f.run, source(), NOW).complete, true);
+  offlinePlan(f, ['test', 'verify:durability'], ['pass', 'fail'], { mode: 'release' });
+  offlinePlan(f, ['verify:durability'], ['pass']);
+  assert.equal(status(f.run, source(), NOW).releasePending, true);
+  assert.equal(status(f.run, source(), NOW).complete, false);
+  offlinePlan(f, ['test', 'verify:durability'], ['pass', 'pass'], { mode: 'release' });
+  assert.equal(status(f.run, source(), NOW).complete, true);
 });
 
 test('interrupted offline process cannot be cleared while alive, then closes as a retained infrastructure failure', (t) => {
@@ -299,11 +396,12 @@ function repairFixture(t: TestContext) {
   const ready = (value: object, extra: object = {}) => ({
     ...value, state: 'ready', commits: ['b'.repeat(40)], reviewer: 'verifier', evidence: [f.evidence], ...extra,
   });
-  const refresh = (at = NOW + 3500, inputs = source()) => {
+  const refresh = (at = NOW + 3500, inputs = source(), servingVersion?: string) => {
     const spec = structuredClone(f.run.events.findLast((e: any) => e.type === 'refresh')?.spec ?? f.run.spec);
     for (const cap of Object.values(spec.capabilities) as any[]) {
       cap.observedAt = new Date(at).toISOString(); cap.expiresAt = new Date(at + 60000).toISOString();
     }
+    if (servingVersion) spec.contexts.local.servingVersion = servingVersion;
     f.append({ type: 'refresh', spec, reason: 'Read back restored prerequisites and actual serving candidate.' }, at, inputs);
   };
   return { ...f, fail, repair, ready, refresh };
@@ -366,14 +464,20 @@ test('combined repairs require all original failures and union impact to pass on
   const memory = f.append({ type: 'begin', caseId: 'memory' }); f.append(f.finish(memory.id));
   f.append(f.ready(f.repair('destination', first.id, 'routines')));
   f.append(f.ready(f.repair('connector', second.id, 'connections'), { commits: ['c'.repeat(40)] }));
-  const candidate = source(); candidate.areas.routines = 'two'; candidate.areas.connections = 'two'; candidate.tree = 'combined';
+  const candidate = source(); candidate.areas.routines = 'two'; candidate.areas.connections = 'two'; candidate.tree = 'combined'; candidate.head = 'b'.repeat(40);
   const integrated = f.append({ type: 'batch', batchId: 'combined', repairIds: ['destination', 'connector'], state: 'integrated', reason: 'Reviewed interaction and checked the combined impact once.', evidence: [f.evidence] }, NOW + 3000, candidate);
   assert.deepEqual(integrated.areas, ['connections', 'routines']);
   assert.deepEqual(integrated.commits, ['b'.repeat(40), 'c'.repeat(40)]);
   assert.throws(() => f.append({ type: 'begin', caseId: 'schedule', reason: 'Integration without fresh readbacks.' }, NOW + 3500, candidate), /blocked/);
-  f.refresh(NOW + 3500, candidate);
+  f.refresh(NOW + 3500, candidate, 'version-two');
+  assert.equal(status(f.run, candidate, NOW + 3600).cases.find((c: any) => c.id === 'memory').result, 'stale', 'An actual version change needs explicit transition proof.');
+  const transition = f.append({ type: 'candidate_transition', fromId: memory.id, context: 'local', impactAreas: ['routines', 'connections'],
+    summary: 'Read back version two serving the reviewed source; memory inputs and state are unchanged.', evidence: [f.evidence] }, NOW + 3700, candidate);
   let view = status(f.run, candidate, NOW + 4000);
   assert.equal(view.cases.find((c: any) => c.id === 'memory').result, 'pass');
+  assert.equal(view.cases.find((c: any) => c.id === 'memory').originalServingVersion, 'version-one');
+  assert.equal(view.cases.find((c: any) => c.id === 'memory').effectiveServingVersion, 'version-two');
+  assert.deepEqual(view.cases.find((c: any) => c.id === 'memory').transitionIds, [transition.id]);
   assert.equal(view.cases.find((c: any) => c.id === 'other-schedule').result, 'stale');
   assert.equal(view.complete, false);
   for (const caseId of ['schedule', 'connection']) {
@@ -390,10 +494,14 @@ test('combined repairs require all original failures and union impact to pass on
   assert.equal(view.cases.find((c: any) => c.id === 'schedule').firstFailure.id, first.id);
   assert.equal(JSON.stringify(f.run), journal);
   assert.match(renderReport(view), /Batch combined: retests verified/);
+  assert.match(renderReport(view), /memory evidence originally observed on version-one; carried to version-two/);
   const unrelated = structuredClone(candidate); unrelated.areas.verification = 'new-workflow';
   assert.equal(status(f.run, unrelated, NOW + 10000).batches[0].complete, true);
-  const changed = structuredClone(candidate); changed.areas.routines = 'three';
+  const changed = structuredClone(candidate); changed.areas.routines = 'three'; changed.tree = 'additional-routine-change'; changed.head = 'c'.repeat(40);
   assert.equal(status(f.run, changed, NOW + 10000).batches[0].checksStale, true);
+  f.refresh(NOW + 10500, changed, 'version-three');
+  f.append({ type: 'candidate_transition', fromId: transition.id, context: 'local', impactAreas: ['routines'],
+    summary: 'Read back version three and unchanged memory/connection inputs after the routine-only correction.', evidence: [f.evidence] }, NOW + 10700, changed);
   for (const caseId of ['schedule', 'other-schedule']) {
     const attempt = f.append({ type: 'begin', caseId, reason: 'Additional routine change.' }, NOW + 11000, changed);
     f.append(f.finish(attempt.id), NOW + 12000, changed);

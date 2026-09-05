@@ -1,5 +1,5 @@
 // Explicit carry-forward receipts for an attended candidate upgrade. No live actions.
-import { caseInputs, changedInputs, digest } from './verification-inputs.mjs';
+import { caseInputs, changedInputs, digest, recordedInputs } from './verification-inputs.mjs';
 import { repairInputs } from './verification-repairs.mjs';
 import { REGRESSION_AREAS } from './regression-plan.mjs';
 
@@ -14,12 +14,25 @@ const fullSource = (source) => source && text(source.tree) && /^[a-f0-9]{40}$/.t
   && source.dirty === false && source.areas && Object.keys(REGRESSION_AREAS).every((area) => text(source.areas[area]));
 const attendedInputs = (run, spec, selected, source) => ({ ...caseInputs(spec, selected, source), ...repairInputs(run, selected.id) });
 
+function usablePrerequisites(spec, selected, receipts, now, intact) {
+  const actors = new Map();
+  return selected.requires.every((id) => {
+    const cap = spec.capabilities[id];
+    if (!cap?.available || Date.parse(cap.observedAt) > now || Date.parse(cap.expiresAt) <= now
+      || !receipts?.[id]?.length || !intact(receipts[id])) return false;
+    if (cap.kind !== 'actor') return true;
+    if (cap.expectedRole && cap.role !== cap.expectedRole || actors.has(cap.identity) && actors.get(cap.identity) !== id) return false;
+    actors.set(cap.identity, id);
+    return true;
+  });
+}
+
 /** Project evidence across only its explicitly recorded, intact transition chain.
  * Original attempt inputs/outcomes remain untouched. Call only for status, never
  * to authorize finishing an attempt whose candidate changed mid-scenario.
  */
 export function transitionInputs(run, attempt, outcome, currentInputs, intact) {
-  let inputs = structuredClone(attempt.inputs), source = attempt.source;
+  let inputs = structuredClone(recordedInputs(run, attempt)), source = attempt.source;
   const transitionIds = [];
   if (outcome?.result !== 'pass' || !intact(readbacks(outcome))) return { inputs, transitionIds };
   for (const transition of run.events.filter((event) => event.type === 'candidate_transition' && event.sequence > outcome.sequence)) {
@@ -38,6 +51,7 @@ export function transitionInputs(run, attempt, outcome, currentInputs, intact) {
     const continuous = run.events.filter((event) => event.type === 'refresh' && event.sequence > outcome.sequence).every((event) => {
       const selected = event.spec.cases.find((candidate) => candidate.id === attempt.caseId);
       if (!selected) return false;
+      if (!usablePrerequisites(event.spec, selected, event.capabilityEvidence, Date.parse(event.at), intact)) return false;
       const observed = attendedInputs(run, event.spec, selected, event.source);
       const next = chain.find((transition) => transition.sequence > event.sequence);
       const versions = next ? [next.beforeContext.servingVersion, next.afterContext.servingVersion]
@@ -45,7 +59,7 @@ export function transitionInputs(run, attempt, outcome, currentInputs, intact) {
       return versions.includes(observed.context.servingVersion)
         && same(stableInputs(observed), stableInputs(currentInputs));
     });
-    if (!continuous) return { inputs: structuredClone(attempt.inputs), transitionIds: [] };
+    if (!continuous) return { inputs: structuredClone(recordedInputs(run, attempt)), transitionIds: [] };
   }
   return { inputs, transitionIds };
 }
@@ -54,7 +68,7 @@ export function transitionInputs(run, attempt, outcome, currentInputs, intact) {
  * this journal; the operator supplies private evidence linking both candidates
  * to those exact source snapshots and a conservative impact review.
  */
-export function recordTransition(run, spec, input, source, evidenceRefs, intact) {
+export function recordTransition(run, spec, input, source, evidenceRefs, intact, now = Date.now()) {
   need(input.type === 'candidate_transition', 'Expected a candidate transition.');
   need(Object.keys(input).every((key) => ['type', 'fromId', 'context', 'impactAreas', 'summary', 'evidence'].includes(key)), 'Unexpected candidate transition fields.');
   need(text(input.summary) && spec.contexts[input.context], 'Transition needs a known context and source/impact/readback summary.');
@@ -99,6 +113,7 @@ export function recordTransition(run, spec, input, source, evidenceRefs, intact)
   const carried = [];
   for (const selected of spec.cases.filter((selected) => selected.context === input.context)) {
     if (selected.areas.some((area) => input.impactAreas.includes(area))) continue;
+    if (!usablePrerequisites(spec, selected, refresh.capabilityEvidence, now, intact)) continue;
     const attempt = run.events.findLast((event) => event.type === 'begin' && event.caseId === selected.id);
     const outcome = attempt && outcomeFor(run, attempt.id);
     if (outcome?.result !== 'pass' || !intact(readbacks(outcome))) continue;
@@ -107,14 +122,15 @@ export function recordTransition(run, spec, input, source, evidenceRefs, intact)
     // The new refresh is not yet a proved transition. Project the prior
     // chain at its anchor; continuity from that anchor is checked below.
     const priorRun = { ...run, events: run.events.filter((event) => event.type !== 'refresh' || event.sequence <= anchor.sequence) };
-    const projected = transitionInputs(priorRun, attempt, outcome, previous, intact);
+    const projected = transitionInputs(priorRun, { ...attempt, inputs: recordedInputs(run, attempt) }, outcome, previous, intact);
     const priorSource = projected.transitionIds.length ? run.events.find((event) => event.id === projected.transitionIds.at(-1)).afterSource : attempt.source;
     if (!same(priorSource, beforeSource) || changedInputs(projected.inputs, previous).length) continue;
     // An actor/contract change that was later reversed is still a break in the
     // proof chain; a final matching value cannot erase that history.
     if (!intervening.every((event) => {
       const then = event.spec.cases.find((candidate) => candidate.id === selected.id);
-      return then && same(stableInputs(attendedInputs(run, event.spec, then, source)), stableInputs(current));
+      return then && usablePrerequisites(event.spec, then, event.capabilityEvidence, Date.parse(event.at), intact)
+        && same(stableInputs(attendedInputs(run, event.spec, then, source)), stableInputs(current));
     })) continue;
     carried.push({ caseId: selected.id, attemptId: attempt.id, outcomeId: outcome.id, priorTransitionIds: projected.transitionIds });
   }

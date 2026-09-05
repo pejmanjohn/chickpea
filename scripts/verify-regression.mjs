@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createRegressionPlan, REGRESSION_AREAS } from './lib/regression-plan.mjs';
 import { digest, sourceInputs } from './lib/verification-inputs.mjs';
 import { evidenceRefs, offlineEvent, readRun, reusableOffline, updateRun } from './lib/verification-record.mjs';
+import { offlineStepLabel } from './lib/verification-offline.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -117,10 +118,13 @@ export function main(argv) {
     // Temporary scratch paths are intentionally excluded from the input identity.
     const fingerprint = options.record ? digest({ source: input.tree, node: process.version,
       config: regressionEnvironment(), inventory: plan.steps, timeoutMs: options.timeoutMs }) : undefined;
+    const executionFingerprint = options.record ? digest({ node: process.version,
+      config: regressionEnvironment(), timeoutMs: options.timeoutMs }) : undefined;
     const record = (value) => updateRun(options.record, (run) => offlineEvent(run, value));
-    const receiptPlan = options.record ? record({ type: 'offline_plan', source: input, node: process.version, mode: options.mode, steps: plan.steps, fingerprint }) : undefined;
+    const receiptPlan = options.record ? record({ type: 'offline_plan', source: input, node: process.version, mode: options.mode, steps: plan.steps, fingerprint,
+      executionFingerprint, testFiles: testFiles.filter((file) => /^tests\/(?:[^/]+|usage\/[^/]+)\.test\.ts$/.test(file)) }) : undefined;
     const results = runRegressionSteps(plan.steps, (step) => {
-      const label = step.kind === 'npm' ? `npm:${step.script}` : step.kind === 'node' ? step.file : `tests:${digest(step.files).slice(0, 12)}`;
+      const label = offlineStepLabel(step);
       const reusable = options.reuse ? reusableOffline(readRun(options.record), label, fingerprint) : undefined;
       if (reusable) {
         record({ type: 'offline_reuse', planId: receiptPlan.id, label, fingerprint, reusedId: reusable.id, priorDurationMs: reusable.durationMs, evidence: reusable.evidence });

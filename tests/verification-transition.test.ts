@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 
 // @ts-expect-error Shared executable JavaScript helpers.
-import { appendEvent, createRun, evidenceRefs } from '../scripts/lib/verification-record.mjs';
+import { appendEvent, createRun, evidenceRefs, status } from '../scripts/lib/verification-record.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
 import { caseInputs, changedInputs, digest } from '../scripts/lib/verification-inputs.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
@@ -41,7 +41,7 @@ function fixture(t: TestContext) {
   }));
   const refresh = (nextSpec: any, inputs: any) => append({ type: 'refresh', spec: nextSpec, reason: 'Read back the actual candidate and prerequisites.' }, inputs);
   const transition = (nextSpec: any, inputs: any, extra: any = {}) => {
-    const value = recordTransition(run, nextSpec, { type: 'candidate_transition', fromId: passes.memory.attempt.id, context: 'candidate', impactAreas: ['routines'], summary: 'Candidate readbacks map both serving versions to exact source; reviewed changed areas.', evidence: [proof], ...extra }, inputs, evidenceRefs, intact);
+    const value = recordTransition(run, nextSpec, { type: 'candidate_transition', fromId: passes.memory.attempt.id, context: 'candidate', impactAreas: ['routines'], summary: 'Candidate readbacks map both serving versions to exact source; reviewed changed areas.', evidence: [proof], ...extra }, inputs, evidenceRefs, intact, NOW + tick + 1);
     const event = { ...value, id: `transition-${++tick}`, sequence: run.events.length + 1, at: new Date(NOW + tick).toISOString(), runId: run.id };
     run.events.push(event);
     return event;
@@ -75,6 +75,56 @@ test('actual deployed serving-version change carries only unaffected passes and 
   }
   assert.deepEqual(f.project('routine', f.nextSpec, f.nextSource).invalidation, ['source', 'context']);
   assert.deepEqual(f.passes, originals, 'Original begin/outcome provenance must remain unchanged.');
+});
+
+test('legacy passing records carry across a real upgrade using their saved prerequisite contract', (t) => {
+  const f = fixture(t);
+  for (const { attempt } of Object.values(f.passes) as any[]) delete attempt.inputs.prerequisites;
+  const originals = structuredClone(f.passes);
+  f.refresh(f.nextSpec, f.nextSource);
+  const receipt = f.append({ type: 'candidate_transition', fromId: f.passes.memory.attempt.id, context: 'candidate', impactAreas: ['routines'],
+    summary: 'Current candidate and impact readbacks also support the older recorded contract.', evidence: [f.proof] }, f.nextSource);
+  assert.deepEqual(receipt.carried.map((entry: any) => entry.caseId), ['memory', 'connection']);
+  const view = status(f.run, f.nextSource, NOW + 1000);
+  assert.equal(view.cases.find((c: any) => c.id === 'memory').result, 'pass');
+  assert.deepEqual(view.cases.find((c: any) => c.id === 'memory').transitionIds, [receipt.id]);
+  assert.equal(view.cases.find((c: any) => c.id === 'routine').result, 'stale');
+  assert.deepEqual(f.passes, originals);
+});
+
+test('legacy attempts after the anchor keep the prerequisite snapshot from their own begin', (t) => {
+  const f = fixture(t), stronger = structuredClone(f.spec);
+  stronger.capabilities.owner.expectedRole = 'owner';
+  f.refresh(stronger, f.source);
+  const attempt = f.append({ type: 'begin', caseId: 'connection', reason: 'Fresh proof under the strengthened actor contract.' });
+  const outcome = f.append({ type: 'finish', attemptId: attempt.id, result: 'pass', summary: 'Observed the stronger required role.', evidence: [f.evidence], proof: { slack: [f.evidence] } });
+  delete attempt.inputs.prerequisites;
+  const upgraded = structuredClone(stronger); upgraded.contexts.candidate.servingVersion = 'worker-version-two';
+  f.refresh(upgraded, f.nextSource);
+  const receipt = f.transition(upgraded, f.nextSource);
+  assert.deepEqual(receipt.carried.map((entry: any) => entry.caseId), ['connection']);
+  assert.equal(receipt.carried[0].outcomeId, outcome.id);
+  assert.equal(status(f.run, f.nextSource, NOW + 1000).cases.find((c: any) => c.id === 'connection').result, 'pass');
+  assert.equal(attempt.inputs.prerequisites, undefined);
+});
+
+test('a newly unavailable prerequisite cannot carry old acceptance onto a new candidate', (t) => {
+  const f = fixture(t), missing = structuredClone(f.nextSpec);
+  missing.capabilities.owner.available = false; missing.capabilities.owner.reason = 'The actor is no longer available.';
+  f.refresh(missing, f.nextSource);
+  assert.deepEqual(f.transition(missing, f.nextSource).carried, []);
+  assert.equal(status(f.run, f.nextSource, NOW + 1000).cases.find((c: any) => c.id === 'memory').result, 'stale');
+  f.refresh(f.nextSpec, f.nextSource);
+  assert.deepEqual(f.transition(f.nextSpec, f.nextSource).carried, [], 'Restoring availability cannot erase the intervening loss.');
+});
+
+test('carried evidence stops applying after a prerequisite is reported unavailable', (t) => {
+  const f = fixture(t);
+  f.refresh(f.nextSpec, f.nextSource); f.transition(f.nextSpec, f.nextSource);
+  assert.equal(status(f.run, f.nextSource, NOW + 1000).cases.find((c: any) => c.id === 'memory').result, 'pass');
+  const missing = structuredClone(f.nextSpec); missing.capabilities.owner.available = false; missing.capabilities.owner.reason = 'Actor access was removed.';
+  f.refresh(missing, f.nextSource); f.refresh(f.nextSpec, f.nextSource);
+  assert.equal(status(f.run, f.nextSource, NOW + 1000).cases.find((c: any) => c.id === 'memory').result, 'stale');
 });
 
 test('successive candidate upgrades retain every transition and reject replaced proof anywhere in the chain', (t) => {

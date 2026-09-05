@@ -44,7 +44,22 @@ export function caseInputs(spec, selected, source) {
     context: spec.contexts[selected.context],
     actors: Object.fromEntries(selected.requires.filter((id) => spec.capabilities[id]?.kind === 'actor')
       .map((id) => [id, { identity: spec.capabilities[id].identity, role: spec.capabilities[id].role }])),
+    prerequisites: prerequisiteInputs(spec, selected),
   };
+}
+
+export function prerequisiteInputs(spec, selected) {
+  return Object.fromEntries(selected.requires.map((id) => [id, {
+    kind: spec.capabilities[id]?.kind ?? null, expectedRole: spec.capabilities[id]?.expectedRole ?? null,
+  }]));
+}
+
+// Older journals retain the complete spec at each refresh. Derive the missing
+// contract from that historical snapshot without rewriting the original begin.
+export function recordedInputs(run, attempt) {
+  if (attempt.inputs.prerequisites) return attempt.inputs;
+  const spec = run.events.findLast((e) => e.type === 'refresh' && e.sequence < attempt.sequence)?.spec ?? run.spec;
+  return { ...attempt.inputs, prerequisites: prerequisiteInputs(spec, spec.cases.find((c) => c.id === attempt.caseId)) };
 }
 
 export function changedInputs(before, after) {

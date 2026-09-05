@@ -16,7 +16,7 @@ init      --spec /private/path/spec.json
 preflight                         Show runnable cases, blockers, registry warnings
 refresh   --spec FILE --reason TEXT  Refresh observed capabilities and context
 begin     --case ID [--reason TEXT]  Record an attempt before the action
-record    --event FILE               Record outcome, cleanup, repair, batch or batch_check
+record    --event FILE               Record outcome, cleanup, repair, batch or candidate_transition
 status                              Resume: open attempts, cleanup, repairs and next work
 report    [--output FILE]            Generate Markdown from the record
 
