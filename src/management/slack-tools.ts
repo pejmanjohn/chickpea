@@ -92,7 +92,7 @@ const scheduleActionInputSchema = v.object({
   ownerAgentId: v.optional(v.string()),
   name: v.optional(v.string()),
   description: v.optional(v.string()),
-  taskText: v.optional(v.string()),
+  taskText: v.optional(v.pipe(v.string(), v.description('The complete task to execute when due, copied from the current request. Preserve action verbs, exact-output wording and quotation, and task constraints. Do not save only a quoted reply payload or creation-time acknowledgement instructions.'))),
   scheduleKind: v.optional(v.picklist(['cron', 'once', 'in'])),
   cronExpression: v.optional(v.string()),
   localDateTime: v.optional(v.string()),

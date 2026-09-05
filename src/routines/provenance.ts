@@ -109,6 +109,20 @@ export function normalizeAuthorityText(text: string): string {
     .replace(/\s+/g, ' ');
 }
 
+/** Preserve the governing instruction when a model selects only a quoted reply. */
+export function preserveRoutineOutputInstruction(taskText: string, requestText: string): string {
+  for (const match of requestText.matchAll(/\b(?:reply|respond|output|return|say|print)\s+(?:with\s+)?exactly\s+("[^"\n]+"|“[^”\n]+”|`[^`\n]+`)/gi)) {
+    const payload = match[1]!.slice(1, -1);
+    if (normalizeAuthorityText(taskText) === normalizeAuthorityText(payload)) {
+      // Preserve source spelling and quotation, including negative directives
+      // through the existing authority check instead of manufacturing a task.
+      assertRoutineTaskBoundToSource(match[0], requestText);
+      return match[0];
+    }
+  }
+  return taskText;
+}
+
 /** Only explicit future-delivery wording can bind a Channel routine to a thread. */
 export function requestsChannelThreadDelivery(requestText: string): boolean {
   const text = requestText

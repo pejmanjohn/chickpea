@@ -272,6 +272,9 @@ test('live access and a frozen app checkpoint precede Flue dispatch', async () =
       },
     });
     assert.equal(completed?.flueAgentEnvelope?.schemaVersion, 2);
+    const executionInstructions = parseRoutineExecutionInitialData(completed?.flueAgentEnvelope?.initialData).runtimePlan.instructions;
+    assert.match(executionInstructions, /saved occurrence is due now/);
+    assert.match(executionInstructions, /not an acknowledgement that it has been scheduled/);
     assert.deepEqual(
       parseRoutineExecutionInitialData(completed?.flueAgentEnvelope?.initialData)
         .connectorUsageCorrelation,

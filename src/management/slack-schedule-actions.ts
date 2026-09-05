@@ -3,6 +3,7 @@ import { scheduleActionId } from '../routines/ids.ts';
 import {
   assertRoutineTaskBoundToSource,
   normalizeAuthorityText,
+  preserveRoutineOutputInstruction,
   requestsChannelThreadDelivery,
 } from '../routines/provenance.ts';
 import { SlackScheduleCommandError } from '../routines/slack-command.ts';
@@ -176,7 +177,7 @@ async function bindScheduleOperationToRequester(
 
   let bound = taskMatchesPrevious && previous
     ? { ...operation, taskText: previous.taskText }
-    : operation;
+    : { ...operation, taskText: preserveRoutineOutputInstruction(operation.taskText, requestText) };
   if (!previous && signal.conversationKind === 'channel' && requestsChannelThreadDelivery(requestText)) {
     bound = { ...bound, destination: { kind: 'current_channel_thread' } };
   }

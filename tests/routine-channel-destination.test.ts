@@ -126,6 +126,16 @@ test('Channel creation separates request thread from saved delivery and edits pr
       assert.equal(routine.scheduleInput, '38 * * * *');
       assert.deepEqual(routine.destination, { kind: 'channel', channelId: signal.channelId });
     }
+    const exactReplySignal = {
+      ...signal, turnJobId: 'turn_EXACT_REPLY', eventId: 'Ev_EXACT_REPLY',
+      requesterText: 'Create a recurring schedule every day at 9am UTC. Its task is to output exactly "Ready for review". Acknowledge the saved due time now.',
+    };
+    const exactReply = await invokeSlackScheduleAction({
+      signal: exactReplySignal, context: await resolveSlackManagementActor(exactReplySignal, identity),
+      operation: { ...operation, name: 'Exact reply', taskText: 'Ready for review' }, dependencies,
+    });
+    assert.ok(exactReply.outcome === 'applied');
+    assert.equal((await routines.getRoutine(exactReply.routineId))?.taskText, 'output exactly "Ready for review"');
   } finally {
     routines.close(); management.close(); config.close(); identity.close();
   }
