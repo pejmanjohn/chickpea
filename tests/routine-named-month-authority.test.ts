@@ -34,6 +34,13 @@ async function reachesReservation(text: string, date = '2026-09-05T15:49') {
 
 test('named-month private one-shot reaches reservation only for the exact current requested date and time', async () => {
   assert.equal(await reachesReservation(request), true);
+  assert.equal(await reachesReservation(request, '2026-09-05T15:49:00'), true);
+  assert.equal(await reachesReservation(request, '2026-09-05T15:49:00.000'), true);
+  assert.equal(await reachesReservation(request, '2026-09-05T15:49:01'), false);
+  assert.equal(await reachesReservation(request, '2026-09-05T15:49:00.001'), false);
+  assert.equal(await reachesReservation(request.replace('15:49 UTC', '15:50 UTC'), '2026-09-05T15:49:01'), true);
+  assert.equal(await reachesReservation(request, '2026-09-05T15:49:00Z'), false);
+  assert.equal(await reachesReservation(request, '2026-09-05T15:49+00:00'), false);
   assert.equal(await reachesReservation(request.replace('September 5, 2026 at 15:49 UTC', 'September5,2026 at15:49 UTC')), true);
   for (const date of ['2026-08-05T15:49','2026-09-06T15:49','2027-09-05T15:49','2026-09-05T15:48']) {
     assert.equal(await reachesReservation(request, date), false, date);

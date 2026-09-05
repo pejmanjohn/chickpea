@@ -1,4 +1,5 @@
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
+import { normalizeOneTimeSchedule } from '../routines/schedule.ts';
 import { routineNextRunTime } from '../routines/message-format.ts';
 import { scheduleActionId } from '../routines/ids.ts';
 import {
@@ -434,8 +435,16 @@ function scheduleAuthorityPatterns(
 }
 
 function oneTimeAuthorityPatterns(localDateTime: string, timezone: string, at: number): RegExp[] {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(localDateTime.trim());
-  if (!match) return [new RegExp(escapeRegExp(localDateTime.trim()), 'gi')];
+  // Compare the minute execution actually uses, including its seconds rounding.
+  // Caller formatting must neither reject an equivalent minute nor authorize a different one.
+  let canonical: string;
+  try {
+    canonical = normalizeOneTimeSchedule(localDateTime, timezone, at).schedule.localDateTime;
+  } catch {
+    return [];
+  }
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(canonical);
+  if (!match) return [];
   const [, year, month, day, hour, minute] = match;
   const clock = clockAuthorityPattern(Number(hour), Number(minute));
   const patterns = [
