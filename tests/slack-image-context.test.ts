@@ -12,6 +12,7 @@ import {
   formatSlackAttachmentSignal,
   parseSlackAttachmentIntake,
   slackAttachmentTurnIsReadOnly,
+  isSlackAttachmentContextDelivery,
   type SlackAttachmentIntake,
 } from '../src/slack/attachment-context.ts';
 
@@ -488,4 +489,13 @@ test('unsupported images do not prevent analysis of searchable PDFs and text', a
   assert.equal(result.failureCount, 1);
   assert.equal(result.manifest[0]?.code, 'attachment_image_model_unsupported');
   assert.match(formatSlackAttachmentSignal(result).body, /image-capable model/);
+});
+
+test('host analysis delivery remains read-only only for its bound Slack conversation', () => {
+  const signal = { kind: 'signal' as const, type: 'slack.attachment_context', tagName: 'slack_attachment_context',
+    body: 'Derived analysis', attributes: { workspaceId: 'TDEMO', channelId: 'C_EXEC', threadTs: '1782770400.000100' } };
+  assert.equal(isSlackAttachmentContextDelivery(signal, plan), true);
+  assert.equal(isSlackAttachmentContextDelivery({ ...signal, attributes: { ...signal.attributes, threadTs: 'different' } }, plan), false);
+  assert.equal(isSlackAttachmentContextDelivery({ ...signal, type: 'slack.message' }, plan), false);
+  assert.equal(isSlackAttachmentContextDelivery({ kind: 'user', body: 'Ordinary next request' }, plan), false);
 });

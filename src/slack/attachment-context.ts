@@ -81,6 +81,15 @@ export function slackAttachmentTurnIsReadOnly(intake: SlackAttachmentIntake): bo
 }
 
 /** Recover only host-authored attachment intake bound to this RuntimePlan. */
+/** Flue advances useDelivery to the host's appended analysis signal on rerender. */
+export function isSlackAttachmentContextDelivery(delivery: DeliveredMessage, plan: RuntimePlanV2): boolean {
+  return delivery.kind === 'signal' && delivery.type === 'slack.attachment_context' &&
+    delivery.tagName === 'slack_attachment_context' &&
+    delivery.attributes?.workspaceId === plan.conversation.workspaceId &&
+    delivery.attributes?.channelId === plan.conversation.channelId &&
+    delivery.attributes?.threadTs === plan.conversation.threadTs;
+}
+
 export function parseSlackAttachmentIntake(
   delivery: DeliveredMessage,
   plan: RuntimePlanV2,
@@ -338,7 +347,11 @@ export function useSlackAttachmentContext(
       attachmentSuccessCount: result.successCount,
       attachmentFailureCount: result.failureCount,
     });
-    append(signalMessage);
+    append({ ...signalMessage, attributes: { ...signalMessage.attributes,
+      workspaceId: plan.conversation.workspaceId,
+      channelId: plan.conversation.channelId,
+      threadTs: plan.conversation.threadTs,
+    } });
   });
 }
 

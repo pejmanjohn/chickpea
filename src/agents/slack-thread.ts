@@ -155,6 +155,7 @@ import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 import {
   parseSlackAttachmentIntake,
   slackAttachmentTurnIsReadOnly,
+  isSlackAttachmentContextDelivery,
   useSlackAttachmentContext,
 } from '../slack/attachment-context.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
@@ -1107,7 +1108,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
     schema: SlackAgentCreationTerminalIntentSchema,
   });
   const writeMemoryUpdate = useDataWriter(SLACK_MEMORY_UPDATE_DATA_NAME, { schema: SlackMemoryUpdateSchema });
-  const attachmentReadOnly = slackAttachmentTurnIsReadOnly(
+  const attachmentReadOnly = isSlackAttachmentContextDelivery(delivery, plan) || slackAttachmentTurnIsReadOnly(
     parseSlackAttachmentIntake(delivery, plan),
   );
   const managementEnabled = !!parseSlackManagementSignal(delivery, plan);

@@ -6,7 +6,7 @@ import {
   fauxProvider,
   type Context,
 } from '@earendil-works/pi-ai';
-import { init, useInstruction, useModel } from '@flue/runtime';
+import { init, useInstruction, useModel, useDelivery, useAgentStart } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
@@ -14,6 +14,7 @@ import {
   decorateAttachmentProvider,
   runWithAttachmentModelContext,
 } from '../src/slack/attachment-model-context.ts';
+import { isSlackAttachmentContextDelivery, parseSlackAttachmentIntake, slackAttachmentTurnIsReadOnly } from '../src/slack/attachment-context.ts';
 import type { NormalizedSlackAttachment } from '../src/slack/attachment-normalization.ts';
 
 const MODEL = 'faux/attachment-capabilities';
@@ -98,4 +99,35 @@ test('Flue provider context stays tool-free for the attachment-turn declaration 
   } finally {
     await flue.stop();
   }
+});
+
+function AttachmentRerenderProbe() {
+  useModel(MODEL);
+  const delivery = useDelivery();
+  const intake = parseSlackAttachmentIntake(delivery, PLAN);
+  const readOnly = isSlackAttachmentContextDelivery(delivery, PLAN) || slackAttachmentTurnIsReadOnly(intake);
+  useInstruction(readOnly ? 'ATTACHMENT_READ_ONLY' : 'ORDINARY_TOOLS_ENABLED');
+  if (intake.kind !== 'none') useAgentStart(({ append }) => {
+    append({ kind: 'signal', type: 'slack.attachment_context', tagName: 'slack_attachment_context',
+      body: 'Synthetic attachment analysis', attributes: { workspaceId: 'TDEMO', channelId: 'DDEMO', threadTs: '1.0001' } });
+  });
+  return 'Answer once.';
+}
+
+test('Flue appended attachment signal retains read-only declarations through rerender', async () => {
+  const faux = fauxProvider({ models: [{ id: 'attachment-capabilities' }] });
+  const captures: Context[] = [];
+  faux.setResponses([(context) => { captures.push(context); return fauxAssistantMessage('Done.'); }]);
+  const flue = await start({ agents: [{ agent: AttachmentRerenderProbe, name: 'attachment-rerender-probe' }], providers: [faux.provider] });
+  try {
+    const handle = init(AttachmentRerenderProbe, { id: 'attachment-rerender-instance' });
+    const receipt = await handle.dispatch({ message: { kind: 'signal', type: 'slack.message', tagName: 'slack_message', body: 'Read attachment',
+      attributes: { workspaceId: 'TDEMO', channelId: 'DDEMO', threadTs: '1.0001', attachmentFileIds: 'FTEST', attachmentCount: '1', attachmentIntakeStatus: 'ok' } } });
+    await handle.read(receipt);
+    assert.ok(captures.length > 0);
+    for (const context of captures) {
+      assert.match(context.systemPrompt ?? '', /ATTACHMENT_READ_ONLY/);
+      assert.doesNotMatch(context.systemPrompt ?? '', /ORDINARY_TOOLS_ENABLED/);
+    }
+  } finally { await flue.stop(); }
 });
