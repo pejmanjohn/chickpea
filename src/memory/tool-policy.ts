@@ -268,6 +268,34 @@ export function parseCurrentRequestEnvelope(
     parseCurrentRequestEnvelopeVersion(prompt, 1);
 }
 
+/** Flue renders host Slack signals as escaped XML in model observations. */
+export function parseModelVisibleCurrentRequestEnvelope(
+  text: string,
+): CurrentRequestEnvelope | undefined {
+  const plain = parseCurrentRequestEnvelope(text);
+  if (plain) return plain;
+  const signal = /^<slack_message((?: [A-Za-z][A-Za-z0-9]*="[^"<>]*")+)>\n([^<>]*)\n<\/slack_message>$/.exec(text);
+  if (!signal) return undefined;
+  const attributes = new Map<string, string>();
+  for (const match of signal[1]!.matchAll(/ ([A-Za-z][A-Za-z0-9]*)="([^"]*)"/g)) {
+    if (attributes.has(match[1]!)) return undefined;
+    attributes.set(match[1]!, decodeSignalText(match[2]!));
+  }
+  if (attributes.get('type') !== 'slack.message') return undefined;
+  const envelope = parseCurrentRequestEnvelope(decodeSignalText(signal[2]!));
+  if (!envelope || !envelope.slackActorId || !envelope.slackMessageTs ||
+      envelope.slackActorId !== attributes.get('slackUserId') ||
+      envelope.slackMessageTs !== attributes.get('messageTs')) return undefined;
+  return envelope;
+}
+
+function decodeSignalText(text: string): string {
+  // One pass only: user text containing literal entity spellings stays text.
+  return text.replace(/&(amp|lt|gt|quot);/g, (_entity, name: string) =>
+    ({ amp: '&', lt: '<', gt: '>', quot: '"' })[name]!
+  );
+}
+
 export function currentRequestOffersProgressiveStreaming(
   envelope: CurrentRequestEnvelope | undefined,
 ): boolean {
@@ -1082,7 +1110,7 @@ function envelopeFromMessages(
           content.type === 'text' ? [content.text] : [],
         );
     for (let textIndex = texts.length - 1; textIndex >= 0; textIndex -= 1) {
-      const policy = parseCurrentRequestEnvelope(texts[textIndex]!);
+      const policy = parseModelVisibleCurrentRequestEnvelope(texts[textIndex]!);
       if (policy) return policy;
     }
     // The newest user message is the current submission. Never fall back to an

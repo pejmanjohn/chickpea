@@ -10,7 +10,7 @@ import type {
 import { CHICKPEA_SLACK_AGENT_NAME } from '../agents/names.ts';
 import {
   currentRequestOffersProgressiveStreaming,
-  parseCurrentRequestEnvelope,
+  parseModelVisibleCurrentRequestEnvelope,
   type CurrentRequestEnvelope,
 } from '../memory/tool-policy.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
@@ -147,7 +147,7 @@ function envelopeFromUserMessage(
     ? [message.content]
     : message.content.flatMap((content) => content.type === 'text' ? [content.text] : []);
   for (let index = texts.length - 1; index >= 0; index -= 1) {
-    const envelope = parseCurrentRequestEnvelope(texts[index]!);
+    const envelope = parseModelVisibleCurrentRequestEnvelope(texts[index]!);
     if (envelope) return envelope;
   }
   return undefined;
