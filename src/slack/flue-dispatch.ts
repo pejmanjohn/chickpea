@@ -1,3 +1,4 @@
+import { SLACK_MEMORY_UPDATE_DATA_NAME, parseSlackMemoryUpdate, type SlackMemoryUpdate } from './memory-update-terminal.ts';
 import {
   AgentInstanceExistsError,
   AgentInstanceNotFoundError,
@@ -75,6 +76,7 @@ export interface AgentDispatchResult {
   text: string;
   tablePresentations?: SlackTablePresentation[];
   agentCreationTerminal?: SlackAgentCreationTerminalIntent;
+  memoryUpdate?: SlackMemoryUpdate;
   requestedModel: string | null;
   returnedModel: AgentReturnedModel | null;
   reportedUsage: AgentReportedUsage | null;
@@ -391,6 +393,7 @@ export function resultFromAgentReply(
   const tablePresentations = parseSlackTablePresentations(
     reply.data?.[SLACK_TABLE_PRESENTATION_DATA_NAME],
   );
+  const memoryUpdate = parseSlackMemoryUpdate(reply.data?.[SLACK_MEMORY_UPDATE_DATA_NAME]);
   const agentCreationTerminal = parseSlackAgentCreationTerminalIntents(
     reply.data?.[SLACK_AGENT_CREATION_TERMINAL_DATA_NAME],
   )[0];
@@ -398,6 +401,7 @@ export function resultFromAgentReply(
     text,
     ...(tablePresentations.length > 0 ? { tablePresentations } : {}),
     ...(agentCreationTerminal ? { agentCreationTerminal } : {}),
+    ...(memoryUpdate ? { memoryUpdate } : {}),
     requestedModel: metadata?.requestedModel ?? nonEmptyString(requestedModel),
     returnedModel: metadata?.returnedModel ?? null,
     reportedUsage: usage.reportedUsage,

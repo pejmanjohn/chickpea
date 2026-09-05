@@ -330,6 +330,17 @@ test('an ordinary stale Slack group mapping repairs into the Agent memory path',
     assert.equal(prepared.selection.entries[0]?.entry.agentId, agent.id);
     assert.equal((await config.getAgent(agent.id)).slackPresence?.userGroupId, 'SREPAIRED');
     assert.equal(await prepared.validateLease(), true);
+    await getMemoryStateStore().putAgentMemory({ agentId: agent.id, expectedRevision: 1, body: '' });
+    assert.equal(await prepared.validateLease(), false, 'forget must suppress the stale model draft');
+    assert.equal(await prepared.validateReceiptLease?.(2), true, 'verified current receipt may acknowledge without disclosing memory');
+    assert.equal(await prepared.validateReceiptLease?.(1), false);
+    await config.putAgentChannelGrant({
+      workspaceId: turn.workspaceId, channelId: turn.channelId, agentId: agent.id,
+      status: 'needs_attention', createdByMembershipId: 'membership_owner',
+      channelLabel: 'support', channelIsPrivate: false,
+    });
+    assert.equal(await prepared.validateReceiptLease?.(2), false, 'receipt never bypasses channel revocation');
+
   } finally {
     closeNodeStateStores();
     if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;

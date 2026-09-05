@@ -6,6 +6,7 @@ import {
   useTool,
 } from '@flue/runtime';
 import * as v from 'valibot';
+import { appliedMemoryReceipt, type SlackMemoryUpdate } from '../slack/memory-update-terminal.ts';
 
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import {
@@ -475,6 +476,7 @@ export function useWorkspaceManagementSlackTools(
   plan: RuntimePlanV2,
   resolvePlatformEnv: PlatformEnvResolver,
   writeAgentCreationTerminal?: (intent: SlackAgentCreationTerminalIntent) => void,
+  writeMemoryUpdate?: (receipt: SlackMemoryUpdate) => void,
 ): void {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal) return;
@@ -580,6 +582,8 @@ export function useWorkspaceManagementSlackTools(
         signal, resolvePlatformEnv, 'apply_workspace_changes',
         slackMemoryUpdateArguments(signal, data), turnGuard,
       );
+      const receipt = result.ok ? appliedMemoryReceipt(result.result, signal.agentId) : undefined;
+      if (receipt) writeMemoryUpdate?.(receipt);
       creationCoordinator.recordFollowOn(result);
       return slackToolOutput(result);
     },

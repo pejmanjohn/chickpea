@@ -1,3 +1,4 @@
+import { verifyMemoryUpdateAcknowledgement } from './memory-update-terminal.ts';
 import { WebClient } from '@slack/web-api';
 
 import {
@@ -1249,6 +1250,74 @@ export async function runTurn(
       }
       await options.onDeferredTerminal?.();
       return;
+    }
+    if (agentResult?.memoryUpdate && preparedMemory?.validateReceiptLease) {
+      // A changed memory invalidates the model draft, including forgotten facts.
+      // Only a verified own-turn receipt permits this host acknowledgement.
+      let acknowledge = false;
+      try {
+        const dependencies = resolveManagementApprovalDependencies(options.managementApproval, () => {
+          const identity = options.appStores?.identity ?? getIdentityStore(platformEnv);
+          const config = options.appStores?.config ?? getConfigStore(platformEnv);
+          const management = options.appStores?.management ?? getManagementStore(platformEnv);
+          return {
+            identity,
+            config,
+            management,
+            service: createLiveWorkspaceManagementService(platformEnv, {
+              identity,
+              ...(settingsStore ? { settings: settingsStore } : {}),
+              ...(options.usageStore ? { usage: options.usageStore } : {}),
+              overrides: {
+                identity,
+                config,
+                management,
+                ...(publicUrl ? { setupBaseUrl: publicUrl } : {}),
+                ...(options.appStores
+                  ? {
+                      memory: options.appStores.memory,
+                      routines: options.appStores.routines,
+                      work: options.appStores.work,
+                    }
+                  : {}),
+              },
+            }),
+          };
+        });
+        const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+        const signal = {
+          agentId: assignment.agent.id,
+          workspaceId: turn.workspaceId,
+          channelId: turn.channelId,
+          threadTs: assignment.runtimeContract === 'chickpea-v1'
+            ? turn.threadTs
+            : turn.sessionThreadTs ?? turn.threadTs,
+          conversationKind: slackConversationKind(turn),
+          slackUserId: turn.userId,
+          eventId: turn.eventId,
+          messageTs: turn.messageTs,
+          turnJobId,
+          requesterText: turn.text,
+        } as const;
+        const actor = await resolveSlackManagementActor(signal, dependencies.identity);
+        acknowledge = await verifyMemoryUpdateAcknowledgement({
+          hint: agentResult.memoryUpdate,
+          agentId: assignment.agent.id,
+          turnJobId,
+          getOperation: (operationId) => dependencies.service.getOperation(actor, operationId),
+          validateReceiptLease: preparedMemory.validateReceiptLease,
+        });
+      } catch {
+        // Unavailable receipts or revoked actors retain the ordinary lease check.
+      }
+      if (acknowledge) {
+        await preparedMemory.confirmInjection();
+        await statusTurn.prepareFinal();
+        await presenter.deliverFinal('Updated this Agent’s saved memory.', 'plain_text', 'complete');
+        await finishStatus('answer');
+        await finishDelivery();
+        return;
+      }
     }
     const recoveredText = await options.beforeDelivery?.();
     // Confirmation only prevents reinjecting the same selection into this

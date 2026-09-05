@@ -1,3 +1,5 @@
+import { appliedMemoryReceipt, parseSlackMemoryUpdate, verifyMemoryUpdateAcknowledgement } from '../src/slack/memory-update-terminal.ts';
+import { resolveSlackManagementActor } from '../src/management/slack-tools.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as v from 'valibot';
@@ -42,6 +44,24 @@ test('memory tool delegates scoped, idempotent writes and forget to existing man
     });
     const saved = await invoke();
     assert.equal(saved.ok, true);
+    assert.ok(saved.ok);
+    const hint = appliedMemoryReceipt(saved.result, agent.id)!;
+    assert.ok(hint);
+    assert.deepEqual(parseSlackMemoryUpdate([hint]), hint);
+    assert.equal(parseSlackMemoryUpdate([{ ...hint, body: 'untrusted' }]), undefined);
+    assert.equal(parseSlackMemoryUpdate([hint, hint]), undefined);
+    const actor = await resolveSlackManagementActor(signal, f.identity);
+    const verify = (turnJobId = signal.turnJobId, live = true, nextHint = hint) =>
+      verifyMemoryUpdateAcknowledgement({
+        hint: nextHint, agentId: agent.id, turnJobId,
+        getOperation: (id) => f.service.getOperation(actor, id),
+        validateReceiptLease: async (revision) => live && revision === (await f.memory.getAgentMemory(agent.id)).revision,
+      });
+    assert.equal(await verify(), true, 'durable own-turn receipt authorizes a host acknowledgement');
+    assert.equal(await verify('other-turn'), false, 'another turn cannot reuse a receipt');
+    assert.equal(await verify(signal.turnJobId, false), false, 'revoked visibility fails closed');
+    assert.equal(await verify(signal.turnJobId, true, { ...hint, revision: 99 }), false);
+
     assert.deepEqual(await invoke(), saved, 'retry returns the same receipt');
     assert.equal((await f.memory.getAgentMemory(agent.id)).revision, 1);
     const recalled = await invokeSlackWorkspaceManagementTool({
@@ -70,5 +90,6 @@ test('memory tool delegates scoped, idempotent writes and forget to existing man
     }));
     assert.equal(forget.ok, true);
     assert.equal((await f.memory.getAgentMemory(agent.id)).body, '');
+    assert.equal(await verify(), false, 'a later forget invalidates an earlier acknowledgement');
   } finally { f.close(); }
 });

@@ -1,3 +1,4 @@
+import { SLACK_MEMORY_UPDATE_DATA_NAME, SlackMemoryUpdateSchema, type SlackMemoryUpdate } from '../slack/memory-update-terminal.ts';
 'use agent';
 
 import {
@@ -1104,6 +1105,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
   const writeAgentCreationTerminal = useDataWriter(SLACK_AGENT_CREATION_TERMINAL_DATA_NAME, {
     schema: SlackAgentCreationTerminalIntentSchema,
   });
+  const writeMemoryUpdate = useDataWriter(SLACK_MEMORY_UPDATE_DATA_NAME, { schema: SlackMemoryUpdateSchema });
   const attachmentReadOnly = slackAttachmentTurnIsReadOnly(
     parseSlackAttachmentIntake(delivery, plan),
   );
@@ -1116,6 +1118,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
     writeTablePresentation,
     writeAgentCreationTerminal,
     managementEnabled,
+    writeMemoryUpdate,
   );
   useSlackAttachmentContext(
     plan,
@@ -1134,6 +1137,7 @@ export function useChickpeaSlackRuntimeCapabilities(
   writeTablePresentation: (presentation: SlackTablePresentation) => void,
   writeAgentCreationTerminal: (intent: SlackAgentCreationTerminalIntent) => void,
   managementEnabled: boolean,
+  writeMemoryUpdate?: (receipt: SlackMemoryUpdate) => void,
 ): void {
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
@@ -1150,7 +1154,7 @@ export function useChickpeaSlackRuntimeCapabilities(
   });
   if (!attachmentReadOnly) {
     useAgentAuthoring();
-    useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv, writeAgentCreationTerminal);
+    useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv, writeAgentCreationTerminal, writeMemoryUpdate);
     usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
     useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
     useTool(createSlackPresentTableTool(writeTablePresentation));

@@ -1,3 +1,4 @@
+import { parseSlackMemoryUpdate } from './memory-update-terminal.ts';
 import type {
   SlackInteractionProgressPatch,
   TurnProgress,
@@ -1362,6 +1363,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
     'text',
     'tablePresentations',
     'agentCreationTerminal',
+    'memoryUpdate',
     'requestedModel',
     'returnedModel',
     'reportedUsage',
@@ -1370,6 +1372,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
   ]);
   const text = validateBoundedString(record.text, 'settled result text', 1_000_000);
   const tablePresentations = parseSlackTablePresentations(record.tablePresentations);
+  const memoryUpdate = parseSlackMemoryUpdate(record.memoryUpdate === undefined ? undefined : [record.memoryUpdate]);
   const agentCreationTerminal = parseSlackAgentCreationTerminalIntents(
     record.agentCreationTerminal === undefined ? undefined : [record.agentCreationTerminal],
   )[0];
@@ -1415,6 +1418,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
     text,
     ...(tablePresentations.length > 0 ? { tablePresentations } : {}),
     ...(agentCreationTerminal ? { agentCreationTerminal } : {}),
+    ...(memoryUpdate ? { memoryUpdate } : {}),
     requestedModel,
     returnedModel,
     reportedUsage,
