@@ -803,6 +803,8 @@ async function finalizeSettlement(
           model: routineModelLabel(usage.returnedModel, usage.requestedModel),
           ...(usage.inputTokens === null ? {} : { inputTokens: usage.inputTokens }),
           ...(usage.outputTokens === null ? {} : { outputTokens: usage.outputTokens }),
+          ...(usage.cacheReadTokens === null ? {} : { cacheReadTokens: usage.cacheReadTokens }),
+          ...(usage.cacheWriteTokens === null ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
           ...(prepared.usageRecorder
             ? {
                 usageLedgerOperationId: prepared.run.id,
@@ -835,6 +837,8 @@ async function finalizeSettlement(
         model: routineModelLabel(usage.returnedModel, usage.requestedModel),
         ...(usage.inputTokens === null ? {} : { inputTokens: usage.inputTokens }),
         ...(usage.outputTokens === null ? {} : { outputTokens: usage.outputTokens }),
+        ...(usage.cacheReadTokens === null ? {} : { cacheReadTokens: usage.cacheReadTokens }),
+        ...(usage.cacheWriteTokens === null ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
         ...(prepared.usageRecorder
           ? {
               usageLedgerOperationId: prepared.run.id,

@@ -213,7 +213,7 @@ test('Scheduled Work detail prefers linked ledger facts and labels historical ro
     });
     await recorder.admit();
     await recorder.recordTerminal({
-      status: 'completed', usage: { input: 10, output: 5, totalTokens: 15 },
+      status: 'completed', usage: { input: 3, output: 45, cacheRead: 4482, cacheWrite: 0, totalTokens: 4530 },
     });
     const linked = {
       ...run,
@@ -232,7 +232,10 @@ test('Scheduled Work detail prefers linked ledger facts and labels historical ro
 
     const linkedBody = await (await api.request(`/audit/scheduled_work/runs/${linked.id}`)).json() as any;
     assert.equal(linkedBody.run.usage.source, 'usage_ledger');
-    assert.equal(linkedBody.run.usage.measurements[0].totalTokens, 15);
+    assert.equal(linkedBody.run.usage.measurements[0].totalTokens, 4530);
+    assert.equal(linkedBody.run.usage.measurements[0].cacheReadTokens, 4482);
+    assert.equal(linkedBody.run.usage.measurements[0].cacheWriteTokens, 0);
+    assert.equal(linkedBody.run.cacheReadTokens, null, 'historical row remains unknown; ledger supplies measured cache');
     const legacyBody = await (await api.request(`/audit/scheduled_work/runs/${legacy.id}`)).json() as any;
     assert.equal(legacyBody.run.usage.source, 'legacy_routine');
     assert.match(legacyBody.run.usage.limitation, /No provider or credential attribution/);

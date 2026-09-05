@@ -13590,6 +13590,7 @@ test('Scheduled Work explains legacy names that cannot be safely projected', asy
 test('Scheduled run usage includes cached input without double counting or inventing missing usage', async () => {
   const usageCases = [
     { id: 'fully_cached', inputTokens: 0, outputTokens: 48, cacheReadTokens: 3500, cacheWriteTokens: 0 },
+    { id: 'historical_ledger', inputTokens: 3, outputTokens: 45, cacheReadTokens: null, cacheWriteTokens: null, usage: { source: 'usage_ledger', available: true, measurements: [{ inputTokens: 3, outputTokens: 45, cacheReadTokens: 4482, cacheWriteTokens: 0, totalTokens: 4530, usageCompleteness: 'complete' }] } },
     { id: 'mixed_cache', inputTokens: 100, outputTokens: 51, cacheReadTokens: 2000, cacheWriteTokens: 300 },
     { id: 'legacy', inputTokens: 1200, outputTokens: 300 },
     { id: 'unavailable', inputTokens: null, outputTokens: null },
@@ -13608,13 +13609,14 @@ test('Scheduled run usage includes cached input without double counting or inven
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'scheduled-open-inspector' }) });
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'scheduled-detail-tab', 'data-tab': 'runs' }) });
   const rows = harness.app.innerHTML.match(/<article class="scheduled-run">[\s\S]*?<\/article>/g) ?? [];
-  assert.equal(rows.length, 5);
+  assert.equal(rows.length, 6);
   assert.match(rows[0]!, /3548 tokens \(3500 cached input\)/);
   assert.doesNotMatch(rows[0]!, />48 (?:input|tokens)/);
-  assert.match(rows[1]!, /2451 tokens \(2300 cached input\)/);
-  assert.match(rows[2]!, /1500 tokens/);
-  assert.match(rows[3]!, /Usage unavailable/);
-  assert.match(rows[4]!, /1051 reported tokens \(1000 cached input\)/);
+  assert.match(rows[1]!, /4530 tokens \(4482 cached input\)/);
+  assert.match(rows[2]!, /2451 tokens \(2300 cached input\)/);
+  assert.match(rows[3]!, /1500 reported tokens/);
+  assert.match(rows[4]!, /Usage unavailable/);
+  assert.match(rows[5]!, /1051 reported tokens \(1000 cached input\)/);
 });
 
 test('Scheduled Work detail separates overview, routine runs, and routine activity', async () => {

@@ -7204,10 +7204,22 @@
 
   function scheduledRunsHtml(runs, routine) {
     var body = !runs.length ? '<p class="hint">No occurrences have been admitted yet.</p>' : runs.map(function (run) {
-      var cached = usageCachedTokens(run);
-      var tokens = [run.inputTokens, run.outputTokens, cached].some(function (value) { return value != null; })
-        ? String(Number(run.inputTokens || 0) + Number(run.outputTokens || 0) + Number(cached || 0)) +
-          (run.inputTokens == null || run.outputTokens == null ? " reported tokens" : " tokens") +
+      var ledger = run.usage && run.usage.source === "usage_ledger" && run.usage.available &&
+        Array.isArray(run.usage.measurements) && run.usage.measurements.length ? run.usage : null;
+      var counts = ledger ? {
+        inputTokens: usageOperationTokens(ledger, "inputTokens"),
+        outputTokens: usageOperationTokens(ledger, "outputTokens"),
+        cacheReadTokens: usageOperationTokens(ledger, "cacheReadTokens"),
+        cacheWriteTokens: usageOperationTokens(ledger, "cacheWriteTokens")
+      } : run;
+      var cached = usageCachedTokens(counts);
+      var measuredTotal = ledger ? usageOperationTokens(ledger, "totalTokens") : null;
+      var complete = ledger ? ledger.measurements.every(function (measurement) {
+        return measurement.usageCompleteness === "complete" && measurement.totalTokens != null;
+      }) : [counts.inputTokens, counts.outputTokens, counts.cacheReadTokens, counts.cacheWriteTokens].every(function (value) { return value != null; });
+      var tokens = [counts.inputTokens, counts.outputTokens, cached, measuredTotal].some(function (value) { return value != null; })
+        ? String(measuredTotal != null ? measuredTotal : Number(counts.inputTokens || 0) + Number(counts.outputTokens || 0) + Number(cached || 0)) +
+          (complete ? " tokens" : " reported tokens") +
           (cached > 0 ? " (" + String(cached) + " cached input)" : "")
         : "Usage unavailable";
       var delivery = run.suppressedAsNoOp ? "No post (no-op)" : String(run.deliveryStatus || "none").replace(/_/g, " ");
