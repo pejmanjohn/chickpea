@@ -8,6 +8,37 @@ execution, persistence, and delivery boundaries before changing prompt wording.
 For example, exercise actual text-array serialization and database query limits
 when those boundaries failed. A mock that bypasses the boundary is insufficient.
 
+## Repair priority and handoff
+
+Start diagnosis promptly from the retained first failure. Within the authorized
+repair scope, prioritize broad blockers, fixture contamination, invalid evidence,
+and authorization or isolation failures. Contain the affected state and suspend
+dependent actions until their prerequisites are trustworthy. Meet existing
+ambiguity, schedule-stop, and cleanup obligations; continue independent checks
+that remain safe and allowed.
+
+Queue isolated failures with their original attempt and evidence references.
+Delegate substantial independent repairs while the verifier continues on the
+current candidate, using the [ownership rules](SKILL.md#delegation-and-live-ownership).
+Group symptoms with a suspected common cause for diagnosis, while preserving
+each failure's identity and first outcome. Serialize overlapping edits or give
+them one repair owner. A shared symptom is a hypothesis, not a proven cause.
+
+Each repair handoff returns:
+
+- Original failure/attempt IDs and retained private evidence references.
+- Reproduction steps that exercise the failed boundary, causal diagnosis, and
+  any remaining uncertainty.
+- For code repairs, the patch or individual commit and focused validation logs.
+  For recovery without a source change, the exact restoration and its readback.
+- Affected scenarios and dependencies, plus recommended Local and deployed
+  retests with the actual model where relevant.
+
+The verifier reviews repairs before the [batch checkpoint](modes.md#repair-loop-and-final-checkpoint).
+An agent's patch or focused pass does not establish live recovery. Keep unresolved
+or conflicting repairs queued with a bounded next checkpoint; they do not delay
+ready compatible work indefinitely.
+
 ## Ambiguous browser or native action
 
 1. Record an `ambiguous` finish. A timeout describes an observation failure;

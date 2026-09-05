@@ -73,17 +73,34 @@ blocked rather than passing them or repeatedly asking the same question.
    record `finish` with real readbacks. Register exact owned resources and fixture
    before-values immediately. Follow [recovery.md](recovery.md) for an ambiguous
    action, stalled reply, lost tab, or tool failure.
-5. After a fix, reproduce the boundary that failed, run affected deterministic
-   tests, then retest locally with the actual model. Record the hypothesis and
-   changed variable. Use a fresh conversation root for instruction changes.
-   Repeat the dependent deployed case when its serving build or context changes.
-   Run the full release checkpoint only after the candidate is stable and clean.
+5. Start diagnosis promptly and use [recovery.md](recovery.md) to separate urgent
+   repairs from isolated failures that can queue while independent checks continue.
+   Delegate eligible repair work below. Integrate compatible reviewed repairs at
+   the bounded checkpoints in [modes.md](modes.md), then retest original failures
+   and the combined impact. For release mode, run the full final checkpoint on
+   the stable, clean, committed candidate.
 6. On resume, run `status` on the same record. Refresh capability readbacks after
    browser, actor, claim, build, or fixture changes. Reconcile open attempts and
    overdue schedules before starting new work. Never replace the original record.
 7. Clean exact run-owned IDs, restore exact before-values, and record authoritative
    cleanup readbacks. Generate `report` from the record; do not maintain a second
    handwritten status table. Hold the environment claim through cleanup.
+
+## Delegation and live ownership
+
+Within the authorized repair scope, delegate substantial, bounded, independent
+diagnosis, repair, or review work by default when agent tools and concurrency
+slots are available. Keep the verifier moving on useful independent checks.
+Give each agent a clear scope, code ownership, and the required
+[repair handoff](recovery.md#repair-priority-and-handoff). Group suspected common
+causes; serialize overlapping edits or assign them to one repair owner.
+
+Keep one verifier responsible for live actions, browser control, fixtures,
+claims, deployment, cleanup, and run-record updates. Repair agents work in
+[isolated worktrees](environments.md#repair-worktrees-and-serving-candidates)
+without live or shared resource access. Delegation does not expand edit, landing,
+deployment, or account authority. When tools or safe independent work are
+unavailable, work sequentially and say so; do not claim parallel work occurred.
 
 ## Evidence and stopping rules
 

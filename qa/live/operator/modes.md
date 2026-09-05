@@ -58,16 +58,41 @@ quality. Record every first attempt; exact fixture/state assertions remain stric
 ### Repair loop and final checkpoint
 
 Use the private [run record commands](records.md) to preserve the first failure,
-refresh prerequisites, and see which evidence a fix invalidates. Diagnose the
-failing message, authority, tool, persistence, or delivery boundary before changing
-prompt wording. Run affected deterministic checks and the relevant Local journey
-with the actual model. Repeat the dependent deployed journey when needed.
+refresh prerequisites, and see which evidence a fix invalidates. Follow
+[repair priority and handoff](recovery.md#repair-priority-and-handoff) and keep
+independent journeys running on the current serving candidate while isolated
+repairs proceed.
+
+Choose an integration checkpoint by the useful work a repair unlocks, readiness
+of reviewed fixes, code conflicts, and deployment/retest cost. Urgent blockers
+may justify a single-fix checkpoint. For other failures, batch compatible reviewed
+repairs instead of deploying each as it arrives. Set a bounded wait or next useful
+checkpoint; then integrate the ready compatible subset or record what still
+blocks it. Never wait for an arbitrary bug count or indefinitely for every repair.
+
+When source integration is authorized, preserve individual repair commits and
+failure identities. Review the combined diff for interactions and collect the
+union of affected checks, including indirect dependencies. Run that union once
+on the integrated candidate, with tests and builds serially in the checkout.
+Changed source or a failed check requires the relevant validation again.
+
+Keep the serving candidate fixed throughout each scenario and its observation
+window. At the checkpoint, finish or reconcile open attempts and refresh source,
+context, and prerequisites under the existing [deployment fences](environments.md).
+Run the affected Local journeys with the actual model. Use one guarded QA deploy
+for the batch when dependent deployed proof is required and authorized, then
+retest each original failure and the combined impact on that candidate. Record
+the hypothesis and changed variables; use fresh conversation roots for instruction
+changes. Local results remain separate from deployed acceptance, and successful
+retests never replace first failures.
 
 Pass `--record <private-run.json>` to the regression command for logs and timing.
 An unchanged repeat may add `--reuse`; a new source/configuration/inventory cannot
 reuse those offline receipts. Reserve both Node versions and clean export for
 the deliberate stable-candidate release checkpoint, unless a broader failure or
-impact justifies them earlier. This does not waive any final release gate.
+impact justifies them earlier. For a release run, once the final candidate is
+stable and committed, run the complete release checkpoint and selected live
+release matrix. Batching does not waive any final release gate.
 
 ## Core regression
 

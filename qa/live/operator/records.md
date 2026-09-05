@@ -103,6 +103,95 @@ edits do not invalidate product areas. The mapping is conservative, and operator
 must declare indirect dependencies. Changes during an attempt prevent a pass.
 Capability observations expire independently; refresh them before new actions.
 
+## Repairs and useful batch checkpoints
+
+Use optional `repair` and `batch` events when a run has repair work to coordinate.
+The verifier alone writes them. They preserve failure references, owners, suspended
+cases, reviewed commits, and retest obligations; they never dispatch agents,
+integrate code, run checks, or deploy. Follow the default delegation and priority
+rules in [recovery.md](recovery.md#repair-priority-and-handoff).
+
+After preserving a non-pass, record its returned outcome ID in `failureIds`.
+An isolated failure can stay queued while independent cases continue. Use
+`priority: urgent` for broad blockers, contaminated fixtures, untrustworthy
+evidence, or authorization/isolation failures. `blocks` names only the cases
+whose actions must stop until the repair is integrated and prerequisites restored.
+The report keeps their previous outcomes but marks current acceptance blocked.
+
+```json
+{
+  "type": "repair", "repairId": "schedule-destination",
+  "failureIds": ["ID_FROM_FAILED_FINISH"],
+  "priority": "isolated", "owner": "schedule-repair-agent", "state": "diagnosing",
+  "group": "destination-persistence", "paths": ["src/routines"],
+  "areas": ["routines"], "blocks": ["channel-schedule"],
+  "summary": "Inspect saved destination serialization from the first failed due occurrence."
+}
+```
+
+Send the same repair fields again to update `state` through `queued`, `diagnosing`,
+`repairing`, and `ready`. Keep every prior failure, area, and blocked case.
+`group` is an optional suspected common cause; `paths` makes overlapping ownership
+visible. Overlap is a coordination hint,
+not an automatic merge-conflict detector. Give overlapping edits one owner.
+A ready event also requires individual full SHA `commits`, a `reviewer` distinct
+from the repair owner, and `evidence` paths for the reviewed patch and focused
+validation. Preserve each failure identity even when one fix resolves several.
+For a fixture, tool, or evidence recovery without a source change, set
+`kind: recovery`. It requires independent review and evidence of restoration,
+without a code commit. The default `kind: code` retains the commit requirement.
+
+Record a planned checkpoint with a concrete reason and a future `reviewAt` within
+24 hours. Choose a much shorter wait when useful work is running out. At that
+boundary, integrate the ready compatible subset or record what blocks it. A
+single urgent fix can be its own batch; no minimum repair count applies.
+
+```json
+{
+  "type": "batch", "batchId": "after-independent-checks",
+  "repairIds": ["schedule-destination"], "state": "planned",
+  "reason": "Finish independent memory coverage, then unlock schedule retests.",
+  "reviewAt": "2026-10-01T12:10:00Z"
+}
+```
+
+Use a real future timestamp. `status` reports a due review and the members with
+intact ready evidence. To integrate a ready subset, use that same batch ID and
+only those repair IDs; unfinished repairs remain queued. A repair cannot belong
+to two planned batches. Once authorized code integration and combined review are
+done, run the union of affected checks once on that candidate, serially:
+
+```sh
+npm run verify:regression -- --area routines --area connections --record "$run_dir/run.json"
+```
+
+Record `type: batch`, `state: integrated`, `batchId`, the ready `repairIds`, a
+`reason`, and `evidence` paths for the combined review and checks. The helper
+captures current source and individual commits. It refuses open or unreconciled
+scenarios on the affected target, including aliases for that target. Finish due
+observations and exact cleanup under the existing ownership rules before changing
+the serving candidate. A recorded batch does not grant deployment authority or
+prove a candidate is serving. Dependent actions stay blocked until a later
+`refresh` records contexts and capability observations from after integration.
+Read back the actual serving candidate and restored prerequisites after the
+switch or recovery. Older observations cannot clear the suspension.
+
+The batch invalidates earlier passes for its original failures, blocked cases,
+and the union of declared areas. Unaffected evidence keeps its existing validity
+rules. `status` lists pending retests and useful independent work. The batch stays
+in `retest` until every affected case passes after integration with current inputs;
+its combined check evidence must also remain current. Local, deployed, and model
+grades remain separate. Preserve the original failure and use fresh conversation
+roots when instruction changes require them.
+
+Integrated membership and commit identities are immutable. If later changes or
+replaced evidence make combined checks stale, rerun the relevant checks and
+review, then record `type: batch_check`, `batchId`, `reviewer`, `summary`, and fresh
+`evidence`. This appends a current-source receipt without rewriting the original
+batch or bypassing stale scenario results. The reviewer must be separate from
+the batch's repair owners. This is an operator receipt, not a substitute for the
+offline runner or final release checkpoint.
+
 ## Exact cleanup and schedule limits
 
 Register resources immediately after reading their exact returned ID. Preserve
@@ -160,9 +249,11 @@ failure/open attempt defeats an older pass. Environment changes may conservative
 prevent reuse. Ignored external configuration must be represented in the effective
 environment or recorded context. Never treat unchanged HEAD as sufficient.
 
-Repair loop: preserve the first failure, diagnose the boundary, fix it, run focused
-deterministic checks, retest Local with the actual model, then test the dependent
-deployed behavior. Workflow-only edits need workflow/export contracts. Repeated
+Repair loop: preserve first failures, diagnose promptly, delegate eligible work,
+and choose a bounded useful checkpoint for compatible reviewed repairs. Run the
+union of affected deterministic checks, retest Local with the actual model, then
+test dependent deployed behavior. Follow [modes.md](modes.md#repair-loop-and-final-checkpoint).
+Workflow-only edits need workflow/export contracts. Repeated
 intermediate full tests, both Node versions, and clean export are unnecessary unless
 the impact or failures justify them.
 

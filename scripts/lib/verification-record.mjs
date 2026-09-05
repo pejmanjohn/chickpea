@@ -6,6 +6,7 @@ import { outsideGit } from './private-evidence.mjs';
 import { caseInputs, changedInputs, digest } from './verification-inputs.mjs';
 import { REGRESSION_AREAS } from './regression-plan.mjs';
 import { isExactId } from '../live-test-resource-ledger.mjs';
+import { recordRepair, repairBlocks, repairInputs, repairProgress } from './verification-repairs.mjs';
 
 const SCHEMA = 'chickpea-attended-run/v1';
 const GRADES = ['local', 'deployed', 'model'];
@@ -164,6 +165,7 @@ function capabilities(run) {
 function attempts(run, caseId) { return run.events.filter((event) => event.type === 'begin' && event.caseId === caseId); }
 function resultFor(run, id) { return run.events.findLast((event) => ['finish', 'resolve'].includes(event.type) && event.attemptId === id); }
 function reconcileFor(run, id) { return run.events.findLast((event) => event.type === 'reconcile' && event.attemptId === id); }
+const attendedInputs = (run, spec, selected, source) => ({ ...caseInputs(spec, selected, source), ...repairInputs(run, selected.id) });
 
 export function preflight(run, now = Date.now()) {
   const spec = currentSpec(run);
@@ -185,7 +187,9 @@ export function preflight(run, now = Date.now()) {
         if (cap.registered === false) warnings.push(`${id}: registry warning; observed ${cap.role} identity has readback evidence`);
       }
     }
-    return { id: selected.id, ready: blockers.length === 0, blockers, warnings };
+    const suspendedBy = repairBlocks(run, spec, selected.id);
+    blockers.push(...suspendedBy.map((id) => `repair ${id}: dependent actions suspended`));
+    return { id: selected.id, ready: blockers.length === 0, blockers, warnings, suspendedBy };
   });
   return { ready: cases.every((c) => c.ready), runnable: cases.filter((c) => c.ready).map((c) => c.id), cases };
 }
@@ -211,6 +215,11 @@ export function appendEvent(run, input, source, now = Date.now()) {
   const attempt = run.events.find((e) => e.type === 'begin' && e.id === input.attemptId);
   const resource = run.events.find((e) => e.type === 'resource' && e.id === input.resourceId);
   switch (input.type) {
+    case 'repair':
+    case 'batch':
+    case 'batch_check':
+      Object.assign(event, recordRepair(run, spec, structuredClone(input), source, evidenceRefs, now, intact));
+      break;
     case 'refresh': {
       keys(input, ['type', 'spec', 'reason']);
       validateSpec(input.spec); need(text(input.reason), 'Refresh needs a reason.');
@@ -235,7 +244,7 @@ export function appendEvent(run, input, source, now = Date.now()) {
         need(result.result !== 'ambiguous' || reconciliation?.outcome === 'not_applied', 'Ambiguous action needs authoritative not_applied readback before replay.');
         need(text(input.reason), 'Retest needs a diagnosis and changed variable.');
       }
-      event.inputs = caseInputs(spec, selected, source);
+      event.inputs = attendedInputs(run, spec, selected, source);
       event.source = source;
       event.deadline = new Date(now + selected.maxWaitMs).toISOString();
       break;
@@ -257,7 +266,8 @@ export function appendEvent(run, input, source, now = Date.now()) {
       }));
       const contract = spec.cases.find((c) => c.id === attempt.caseId);
       if (input.result === 'pass') {
-        need(changedInputs(attempt.inputs, caseInputs(spec, contract, source)).length === 0, 'Attempt inputs changed; preserve it as a non-pass and retest.');
+        need(changedInputs(attempt.inputs, attendedInputs(run, spec, contract, source)).length === 0, 'Attempt inputs changed; preserve it as a non-pass and retest.');
+        need(repairBlocks(run, spec, contract.id).length === 0, 'Dependent actions are suspended by a repair; preserve a non-pass until safe retesting.');
         need(contract.proof.every((p) => event.proof[p]?.length > 0), 'Pass lacks a required Slack/Admin/provider/model readback.');
         need((input.timing?.observationMs ?? 0) >= (contract.minObservationMs ?? 0), 'Declared observation window is incomplete.');
       }
@@ -326,12 +336,12 @@ export function status(run, source, now = Date.now()) {
   const cases = spec.cases.map((selected) => {
     const history = attempts(run, selected.id), last = history.at(-1);
     const outcome = last && resultFor(run, last.id);
-    const invalidation = last ? changedInputs(last.inputs, caseInputs(spec, selected, source)) : [];
+    const invalidation = last ? changedInputs(last.inputs, attendedInputs(run, spec, selected, source)) : [];
     const refs = outcome ? [...outcome.evidence, ...Object.values(outcome.proof).flat()] : [];
     if (outcome && !intact(refs)) invalidation.push('evidence');
     const ready = readiness.cases.find((c) => c.id === selected.id);
     const result = last && !outcome ? now >= Date.parse(last.deadline) ? 'observe_overdue' : 'in_progress'
-      : invalidation.length ? 'stale' : outcome?.result ?? (ready.ready ? 'not_run' : 'blocked');
+      : ready.suspendedBy.length ? 'blocked' : invalidation.length ? 'stale' : outcome?.result ?? (ready.ready ? 'not_run' : 'blocked');
     return { id: selected.id, title: selected.title, grade: spec.contexts[selected.context].grade,
       target: spec.contexts[selected.context].target, result, invalidation, attempts: history.length,
       attemptId: last?.id, blockers: ready.blockers, warnings: ready.warnings,
@@ -339,6 +349,10 @@ export function status(run, source, now = Date.now()) {
       outcome };
   });
   const resources = ownedResources(run, now);
+  const coordination = repairProgress(run, spec, cases, source, now, intact);
+  const openCases = cases.filter((c) => ['in_progress', 'observe_overdue'].includes(c.result)).map((c) => c.id);
+  if (openCases.length) coordination.nextActions.unshift({ action: 'observe_open_attempts', caseIds: openCases });
+  if (resources.some((r) => r.stopDue)) coordination.nextActions.unshift({ action: 'stop_owned_schedules', resourceIds: resources.filter((r) => r.stopDue).map((r) => r.id) });
   const offline = run.events.filter((e) => e.type === 'offline_finish');
   const latestPlans = [...new Map(run.events.filter((e) => e.type === 'offline_plan').map((e) => [e.node, e])).values()];
   const offlinePlans = latestPlans.map((plan) => {
@@ -358,10 +372,10 @@ export function status(run, source, now = Date.now()) {
     .map((e) => [e.attemptId, e])).values()];
   for (const e of outcomes) for (const [key, value] of Object.entries(e.timing ?? {})) totals[key] += value;
   return {
-    runId: run.id, mode: spec.mode, purpose: spec.purpose, source, readiness, cases, resources,
+    runId: run.id, mode: spec.mode, purpose: spec.purpose, source, readiness, cases, resources, ...coordination,
     releasePending, openOffline, offline, offlinePlans,
     reused: run.events.filter((e) => e.type === 'offline_reuse'),
-    complete: (cases.length > 0 || offlinePlans.length > 0) && cases.every((c) => c.result === 'pass') && cleanupPending.length === 0 && !releasePending && openOffline.length === 0 && offlinePlans.every((p) => p.result === 'pass'),
+    complete: (cases.length > 0 || offlinePlans.length > 0) && cases.every((c) => c.result === 'pass') && cleanupPending.length === 0 && !releasePending && openOffline.length === 0 && offlinePlans.every((p) => p.result === 'pass') && coordination.repairs.every((r) => r.state === 'verified'),
     timing: { wallMs: now - Date.parse(run.createdAt), measured: totals,
       unmeasuredAttempts: outcomes.filter((e) => !e.timing).length,
       unknownByCategory: Object.fromEntries(Object.keys(totals).map((key) => [key,
@@ -382,6 +396,13 @@ export function renderReport(view) {
     if (c.firstFailure) lines.push(`- ${cell(c.id)} first outcome: ${cell(c.firstFailure.result)} / ${cell(c.firstFailure.category)}. ${cell(c.firstFailure.summary)} Evidence: ${cell(c.firstFailure.evidence.map((e) => e.path).join(', '))}`);
     if (c.outcome) lines.push(`- ${cell(c.id)} latest: ${cell(c.outcome.summary)} Evidence: ${cell(c.outcome.evidence.map((e) => e.path).join(', '))}`);
     for (const warning of c.warnings) lines.push(`- ${cell(c.id)} warning: ${cell(warning)}`);
+  }
+  if (view.repairs.length) {
+    lines.push('', '## Repairs, batches, and next useful work', '',
+      '| Repair / owner | Priority / state | Suspended cases | Cause group / overlap |', '| --- | --- | --- | --- |',
+      ...view.repairs.map((r) => `| ${cell(r.repairId)} / ${cell(r.owner)} | ${r.priority} / ${r.state} | ${cell(r.batchId ? view.batches.find((b) => b.batchId === r.batchId).prerequisitesPending.join(', ') : r.blocks.join(', '))} | ${cell(r.group ?? '')} / ${cell(r.overlapWith.join(', '))} |`),
+      ...view.batches.map((b) => `- Batch ${cell(b.batchId)}: ${b.complete ? 'retests verified' : b.state}; repairs ${cell(b.repairIds.join(', '))}; union areas ${cell(b.areas.join(', '))}; pending retests ${cell(b.pendingRetests.join(', '))}; review ${cell(b.reviewAt ?? 'integration recorded')}${b.reviewDue ? ' DUE' : ''}. ${cell(b.reason)}`),
+      ...view.nextActions.map((a) => `- Next: ${cell(a.action)} ${cell((a.caseIds ?? a.repairIds ?? a.resourceIds ?? [a.batchId]).join(', '))}`));
   }
   lines.push('', '## Exact resource cleanup', '', '| Registration | Target / kind / immutable ID | Cleanup | Required state | Stop condition |', '| --- | --- | --- | --- | --- |',
     ...view.resources.map((r) => `| ${r.id} | ${cell(r.target)} / ${cell(r.kind)} / ${cell(r.immutableId)} | ${r.cleanup} | ${cell(JSON.stringify(r.expected))} | ${r.stopDue ? 'STOP DUE' : r.stopAt ?? ''} ${r.maxOccurrences ? `${r.occurrences}/${r.maxOccurrences} occurrences` : ''} |`), '',

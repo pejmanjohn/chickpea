@@ -24,7 +24,7 @@ const rules = [
   [/^src\/(?:auth|identity)\//, ['auth']],
   [/^(?:src\/admin\/|assets\/admin-ui\/)/, ['admin']],
   [/^src\/(?:cloudflare-provider\.ts|model-compat\/|model-catalog\/)/, ['providers']],
-  [/^(?:qa\/live\/|\.agents\/skills\/chickpea-live-verification\/|scripts\/(?:verify-regression\.mjs|verification-record\.mjs|live-test-resource-ledger\.mjs|deploy-with-epilogue\.mjs|chickpea-(?:environment|local-worker)\.mjs|lib\/(?:verification-(?:record|inputs|spec)|private-evidence|regression-plan|environment-[^/]+|local-worker-lane)\.mjs))/, ['verification']],
+  [/^(?:qa\/live\/|\.agents\/skills\/chickpea-live-verification\/|scripts\/(?:verify-regression\.mjs|verification-record\.mjs|live-test-resource-ledger\.mjs|deploy-with-epilogue\.mjs|chickpea-(?:environment|local-worker)\.mjs|lib\/(?:verification-(?:record|inputs|spec|repairs)|private-evidence|regression-plan|environment-[^/]+|local-worker-lane)\.mjs))/, ['verification']],
 ];
 
 export function createRegressionPlan({ mode = 'changed', areas = [], files = [], testFiles = [] } = {}) {

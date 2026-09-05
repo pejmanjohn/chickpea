@@ -72,6 +72,25 @@ requested or testing cross-lane isolation, not for every application change.
 Amber and Cobalt are ordinary exclusive QA lanes; the historical first protected
 Cobalt qualification is not a standing requirement to merge before testing.
 
+## Repair worktrees and serving candidates
+
+Give repair agents separate worktrees based on an identified candidate, with
+explicit file ownership and only the retained evidence needed for diagnosis.
+They must not access live/shared resources, another task's checkout or processes,
+Worker state, claims, credentials, or browser sessions. They return patches and
+focused local validation to the verifier. One owner handles overlapping code;
+tests and builds remain serial within each checkout.
+
+The verifier alone integrates reviewed repairs when authorized and owns the
+live lane. Keep its serving candidate fixed for each scenario and observation
+window. Fixture changes must follow the declared test actions. Finish or reconcile
+open attempts before switching candidates, including pending due-time observations
+and cleanup.
+Apply the existing source/claim fences at every batch deployment; batching never
+permits a stale claim, a mid-deploy HEAD change, or mutation of another task's lane.
+Refresh affected evidence after a candidate switch. See the
+[batch checkpoint policy](modes.md#repair-loop-and-final-checkpoint).
+
 Use the existing short UI mutex for competing browser actions. Release it during
 human waits and retain the affected browser reservation. A hostname change does
 not change local ownership. Recovery requires proof that the prior owner stopped.

@@ -282,3 +282,190 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   assert.equal(cli('report', '--run', runFile, '--output', runFile), 2);
   assert.ok(readRun(runFile).events.length > 0);
 });
+
+function repairFixture(t: TestContext) {
+  const f = fixture(t);
+  for (const [id, area] of [['other-schedule', 'routines'], ['connection', 'connections'], ['memory', 'memory']]) {
+    f.run.spec.cases.push({ ...f.spec.cases[0], id, areas: [area] });
+  }
+  const fail = (caseId: string) => {
+    const attempt = f.append({ type: 'begin', caseId });
+    return f.append(f.finish(attempt.id, { result: 'fail', category: 'product', summary: `Preserved ${caseId} failure.` }));
+  };
+  const repair = (id: string, failureId: string, area: string, extra: object = {}) => ({
+    type: 'repair', repairId: id, failureIds: [failureId], priority: 'isolated', owner: `agent-${id}`,
+    state: 'diagnosing', areas: [area], blocks: [], summary: 'Diagnose from the retained boundary.', ...extra,
+  });
+  const ready = (value: object, extra: object = {}) => ({
+    ...value, state: 'ready', commits: ['b'.repeat(40)], reviewer: 'verifier', evidence: [f.evidence], ...extra,
+  });
+  const refresh = (at = NOW + 3500, inputs = source()) => {
+    const spec = structuredClone(f.run.events.findLast((e: any) => e.type === 'refresh')?.spec ?? f.run.spec);
+    for (const cap of Object.values(spec.capabilities) as any[]) {
+      cap.observedAt = new Date(at).toISOString(); cap.expiresAt = new Date(at + 60000).toISOString();
+    }
+    f.append({ type: 'refresh', spec, reason: 'Read back restored prerequisites and actual serving candidate.' }, at, inputs);
+  };
+  return { ...f, fail, repair, ready, refresh };
+}
+
+test('isolated delegated repairs preserve failures while independent verification continues', (t) => {
+  const f = repairFixture(t), failure = f.fail('schedule');
+  f.append(f.repair('destination', failure.id, 'routines', { blocks: ['schedule'], paths: ['src/routines'] }));
+  assert.throws(() => f.append({ type: 'begin', caseId: 'schedule', reason: 'Retry unchanged.' }), /preflight is blocked/);
+  const independent = f.append({ type: 'begin', caseId: 'memory' }); f.append(f.finish(independent.id));
+  const before = JSON.stringify(f.run);
+  const view = status(f.run, source(), NOW + 2000);
+  assert.equal(view.cases.find((c: any) => c.id === 'memory').result, 'pass');
+  assert.equal(view.cases.find((c: any) => c.id === 'schedule').firstFailure.id, failure.id);
+  assert.deepEqual(view.nextActions, [{ action: 'continue_independent_cases', caseIds: ['other-schedule', 'connection'] }]);
+  assert.equal(JSON.stringify(f.run), before, 'Status must not rewrite original journal events.');
+  assert.match(renderReport(view), /destination.*agent-destination.*isolated.*diagnosing/);
+  assert.equal(view.complete, false);
+});
+
+test('urgent blockers suspend their dependencies, including earlier passes and active attempts', (t) => {
+  const f = repairFixture(t), failure = f.fail('schedule');
+  const memory = f.append({ type: 'begin', caseId: 'memory' }); f.append(f.finish(memory.id));
+  const running = f.append({ type: 'begin', caseId: 'other-schedule' });
+  f.append(f.repair('isolation', failure.id, 'auth', { priority: 'urgent', blocks: ['schedule', 'other-schedule', 'memory'] }));
+  assert.throws(() => f.append(f.finish(running.id)), /suspended by a repair/);
+  f.append(f.finish(running.id, { result: 'blocked', category: 'infrastructure' }));
+  const view = status(f.run, source(), NOW + 2000);
+  assert.equal(view.cases.find((c: any) => c.id === 'memory').result, 'blocked');
+  assert.deepEqual(view.nextActions[0], { action: 'prioritize_repair', repairIds: ['isolation'] });
+  assert.deepEqual(view.nextActions[1], { action: 'continue_independent_cases', caseIds: ['connection'] });
+  assert.ok(f.append({ type: 'begin', caseId: 'connection' }));
+});
+
+test('batch checkpoints integrate ready compatible work without waiting for an arbitrary repair count', (t) => {
+  const f = repairFixture(t), first = f.fail('schedule'), second = f.fail('connection');
+  const ready = f.repair('destination', first.id, 'routines', { paths: ['src/routines/scheduler.ts'] });
+  const unfinished = f.repair('connector', second.id, 'connections', { paths: ['src/routines', 'src/connections'] });
+  f.append(f.ready(ready)); f.append(unfinished);
+  const plan = { type: 'batch', batchId: 'checkpoint', repairIds: ['destination', 'connector'], state: 'planned', reason: 'Finish independent memory coverage, then unblock schedule retests.', reviewAt: new Date(NOW + 5000).toISOString() };
+  assert.throws(() => f.append({ ...plan, reviewAt: new Date(NOW + 90_000_000).toISOString() }), /bounded review/);
+  f.append(plan);
+  assert.deepEqual(status(f.run, source(), NOW + 6000).nextActions[0], { action: 'review_batch_boundary', batchId: 'checkpoint', readyRepairIds: ['destination'] });
+  assert.deepEqual(status(f.run, source(), NOW + 2000).repairs[0].overlapWith, ['connector']);
+  assert.throws(() => f.append({ type: 'batch', batchId: 'other', repairIds: ['destination'], state: 'integrated', reason: 'Duplicate membership.', evidence: [f.evidence] }), /another planned batch/);
+  assert.throws(() => f.append({ type: 'batch', batchId: 'checkpoint', repairIds: ['destination', 'connector'], state: 'integrated', reason: 'Too early.', evidence: [f.evidence] }), /ready repairs/);
+  f.append({ type: 'batch', batchId: 'checkpoint', repairIds: ['destination'], state: 'integrated', reason: 'Ready subset unlocks two schedule cases; connector stays with its owner.', evidence: [f.evidence] });
+  const view = status(f.run, source(), NOW + 6000);
+  assert.deepEqual(view.batches[0].areas, ['routines']);
+  assert.deepEqual(view.batches[0].pendingRetests, ['other-schedule', 'schedule']);
+  assert.equal(view.repairs.find((r: any) => r.repairId === 'connector').state, 'diagnosing');
+  assert.equal(view.repairs.find((r: any) => r.repairId === 'destination').state, 'retest');
+  f.append(f.ready(unfinished));
+  assert.ok(status(f.run, source(), NOW + 7000).nextActions.some((a: any) => a.action === 'choose_batch_boundary' && a.repairIds.includes('connector')));
+});
+
+test('combined repairs require all original failures and union impact to pass on the integrated candidate', (t) => {
+  const f = repairFixture(t), first = f.fail('schedule'), second = f.fail('connection');
+  const earlier = f.append({ type: 'begin', caseId: 'other-schedule' }); f.append(f.finish(earlier.id));
+  const memory = f.append({ type: 'begin', caseId: 'memory' }); f.append(f.finish(memory.id));
+  f.append(f.ready(f.repair('destination', first.id, 'routines')));
+  f.append(f.ready(f.repair('connector', second.id, 'connections'), { commits: ['c'.repeat(40)] }));
+  const candidate = source(); candidate.areas.routines = 'two'; candidate.areas.connections = 'two'; candidate.tree = 'combined';
+  const integrated = f.append({ type: 'batch', batchId: 'combined', repairIds: ['destination', 'connector'], state: 'integrated', reason: 'Reviewed interaction and checked the combined impact once.', evidence: [f.evidence] }, NOW + 3000, candidate);
+  assert.deepEqual(integrated.areas, ['connections', 'routines']);
+  assert.deepEqual(integrated.commits, ['b'.repeat(40), 'c'.repeat(40)]);
+  assert.throws(() => f.append({ type: 'begin', caseId: 'schedule', reason: 'Integration without fresh readbacks.' }, NOW + 3500, candidate), /blocked/);
+  f.refresh(NOW + 3500, candidate);
+  let view = status(f.run, candidate, NOW + 4000);
+  assert.equal(view.cases.find((c: any) => c.id === 'memory').result, 'pass');
+  assert.equal(view.cases.find((c: any) => c.id === 'other-schedule').result, 'stale');
+  assert.equal(view.complete, false);
+  for (const caseId of ['schedule', 'connection']) {
+    const attempt = f.append({ type: 'begin', caseId, reason: 'Original failed boundary on integrated candidate.' }, NOW + 5000, candidate);
+    f.append(f.finish(attempt.id), NOW + 6000, candidate);
+  }
+  assert.deepEqual(status(f.run, candidate, NOW + 7000).batches[0].pendingRetests, ['other-schedule']);
+  const impact = f.append({ type: 'begin', caseId: 'other-schedule', reason: 'Combined impact beyond the original failures.' }, NOW + 8000, candidate);
+  f.append(f.finish(impact.id), NOW + 9000, candidate);
+  const journal = JSON.stringify(f.run);
+  view = status(f.run, candidate, NOW + 10000);
+  assert.equal(view.complete, true);
+  assert.ok(view.repairs.every((r: any) => r.state === 'verified'));
+  assert.equal(view.cases.find((c: any) => c.id === 'schedule').firstFailure.id, first.id);
+  assert.equal(JSON.stringify(f.run), journal);
+  assert.match(renderReport(view), /Batch combined: retests verified/);
+  const unrelated = structuredClone(candidate); unrelated.areas.verification = 'new-workflow';
+  assert.equal(status(f.run, unrelated, NOW + 10000).batches[0].complete, true);
+  const changed = structuredClone(candidate); changed.areas.routines = 'three';
+  assert.equal(status(f.run, changed, NOW + 10000).batches[0].checksStale, true);
+  for (const caseId of ['schedule', 'other-schedule']) {
+    const attempt = f.append({ type: 'begin', caseId, reason: 'Additional routine change.' }, NOW + 11000, changed);
+    f.append(f.finish(attempt.id), NOW + 12000, changed);
+  }
+  assert.equal(status(f.run, changed, NOW + 13000).complete, false, 'Passing cases do not refresh combined check evidence.');
+  assert.ok(status(f.run, changed, NOW + 13000).nextActions.some((a: any) => a.action === 'refresh_batch_check_evidence'));
+  f.append({ type: 'batch_check', batchId: 'combined', reviewer: 'verifier', summary: 'Reviewed changed union and reran its focused checks.', evidence: [f.evidence] }, NOW + 14000, changed);
+  assert.equal(status(f.run, changed, NOW + 15000).complete, true);
+});
+
+test('candidate integration waits for open or unreconciled scenarios even through a target alias', (t) => {
+  const f = repairFixture(t), failed = f.fail('schedule');
+  f.run.spec.contexts.alias = { ...f.run.spec.contexts.local };
+  f.run.spec.cases.find((c: any) => c.id === 'memory').context = 'alias';
+  f.append(f.ready(f.repair('destination', failed.id, 'routines')));
+  const batch = { type: 'batch', batchId: 'one', repairIds: ['destination'], state: 'integrated', reason: 'Unblock schedule coverage.', evidence: [f.evidence] };
+  const running = f.append({ type: 'begin', caseId: 'memory' });
+  assert.throws(() => f.append(batch), /Finish\/reconcile/);
+  const moved = structuredClone(f.run.spec); moved.contexts.alias.target = 'another-synthetic-target';
+  f.append({ type: 'refresh', spec: moved, reason: 'Context refresh cannot hide an open scenario on its original target.' });
+  assert.throws(() => f.append(batch), /Finish\/reconcile/);
+  f.append({ type: 'refresh', spec: f.run.spec, reason: 'Return to the original observed target.' });
+  f.append(f.finish(running.id, { result: 'ambiguous', category: 'tool' }));
+  assert.throws(() => f.append(batch), /Finish\/reconcile/);
+  f.append({ type: 'reconcile', attemptId: running.id, outcome: 'applied', summary: 'Exact saved mutation is present.', evidence: [f.evidence] });
+  assert.throws(() => f.append(batch), /Finish\/reconcile/);
+  f.append({ ...f.finish(running.id), type: 'resolve' });
+  assert.ok(f.append(batch));
+});
+
+test('repair readiness keeps independent review, evidence integrity, and accumulated failure scope', (t) => {
+  const f = repairFixture(t), failure = f.fail('schedule');
+  const repair = f.repair('destination', failure.id, 'routines', { blocks: ['schedule'] });
+  assert.throws(() => f.append(f.ready(repair, { reviewer: repair.owner })), /separate reviewer/);
+  assert.throws(() => f.append(f.ready(repair, { commits: ['short-sha'] })), /individual commit/);
+  assert.throws(() => f.append(f.ready(repair, { evidence: [] })), /Evidence references/);
+  assert.throws(() => f.append({ ...repair, failureIds: ['missing-failure'] }), /preserved/);
+  f.append(repair);
+  assert.throws(() => f.append({ ...repair, blocks: [] }), /cannot discard/);
+  const reviewed = join(f.directory, 'review.json'); writeFileSync(reviewed, 'initial reviewed patch');
+  f.append(f.ready(repair, { evidence: [reviewed] }));
+  f.append({ type: 'batch', batchId: 'one', repairIds: ['destination'], state: 'planned', reason: 'Wait for independent checks to finish.', reviewAt: new Date(NOW + 5000).toISOString() });
+  writeFileSync(reviewed, 'replaced review');
+  const view = status(f.run, source(), NOW + 6000);
+  assert.equal(view.repairs[0].state, 'evidence_stale');
+  assert.deepEqual(view.batches[0].readyRepairIds, []);
+  const integrated = { type: 'batch', batchId: 'one', repairIds: ['destination'], state: 'integrated', reason: 'Ready checkpoint.', evidence: [f.evidence] };
+  assert.throws(() => f.append(integrated), /intact evidence/);
+  f.append(f.ready(repair, { evidence: [reviewed] }));
+  f.append(integrated);
+  assert.throws(() => f.append(integrated), /immutable/);
+  assert.throws(() => f.append(f.ready(repair)), /immutable/);
+  assert.throws(() => f.append({ type: 'batch_check', batchId: 'one', reviewer: repair.owner, summary: 'Self review.', evidence: [f.evidence] }), /separate from/);
+});
+
+test('urgent fixture recovery needs no code commit but keeps dependents blocked until fresh readback', (t) => {
+  const f = repairFixture(t), failure = f.fail('schedule');
+  const repair = f.repair('fixture', failure.id, 'routines', { kind: 'recovery', priority: 'urgent', blocks: ['schedule'] });
+  f.append(repair);
+  f.append({ ...repair, state: 'ready', reviewer: 'verifier', evidence: [f.evidence], summary: 'Restored the exact before-value and reviewed its readback.' });
+  const batch = f.append({ type: 'batch', batchId: 'restored', repairIds: ['fixture'], state: 'integrated', reason: 'Fixture restored without a source change.', evidence: [f.evidence] });
+  assert.deepEqual(batch.commits, []);
+  assert.throws(() => f.append({ type: 'begin', caseId: 'schedule', reason: 'Too early.' }), /blocked/);
+  f.append({ type: 'refresh', spec: f.spec, reason: 'Old observations are insufficient.' }, NOW + 2000);
+  assert.throws(() => f.append({ type: 'begin', caseId: 'schedule', reason: 'Still too early.' }, NOW + 2500), /blocked/);
+  f.refresh();
+  for (const caseId of ['schedule', 'other-schedule', 'connection', 'memory']) {
+    const attempt = f.append({ type: 'begin', caseId, reason: 'Verify observed restoration.' }, NOW + 4000);
+    f.append(f.finish(attempt.id), NOW + 5000);
+  }
+  const view = status(f.run, source(), NOW + 6000);
+  assert.equal(view.repairs[0].state, 'verified');
+  assert.equal(view.complete, true);
+  assert.equal(view.cases[0].firstFailure.id, failure.id);
+});
