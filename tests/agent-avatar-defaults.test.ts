@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { createHash } from 'node:crypto';
+import sharp from 'sharp';
 
 import {
   DEFAULT_AGENT_AVATAR_FILES,
@@ -120,8 +121,16 @@ test('upgrade replaces legacy defaults once while preserving historical URLs and
     const current = await readAgentAvatarAsset({ settings, agentId: before.id, revision: 2, avatar });
     assert.deepEqual(current?.bytes, await defaultAgentAvatarPng(avatar.seed!));
     const historical = await readAgentAvatarAsset({ settings, agentId: before.id, revision: 1, avatar });
-    // Captured from the original renderer before this change, not computed by it.
-    assert.equal(digest(historical!.bytes), '7b3502a870bc1d0d79c8bf35230239f1d503f1510c48cccb9c5f3b41a52088d9');
+    assert.ok(historical);
+    assert.equal(historical.contentType, 'image/png');
+    const image = sharp(historical.bytes, { failOn: 'warning' });
+    assert.equal((await image.metadata()).format, 'png');
+    const { data, info } = await image.raw().toBuffer({ resolveWithObject: true });
+    assert.deepEqual({ width: info.width, height: info.height, channels: info.channels },
+      { width: 128, height: 128, channels: 4 });
+    // Decoded from the original PNG byte baseline under Node 22.19.0.
+    // Deflate output varies by Node/zlib build; historical pixels must not.
+    assert.equal(digest(data), '381495047fc2009a8ae43078fa113fc2d20f9ed4adeca33e44232ed36c9de9f7');
     assert.equal(await readAgentAvatarAsset({ settings, agentId: before.id, revision: 3, avatar }), undefined);
     assert.deepEqual(new ConfigStoreLogic(db, { agents: [] }).getAgent(before.id), migrated);
 
