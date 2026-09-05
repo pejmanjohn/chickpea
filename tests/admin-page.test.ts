@@ -13587,6 +13587,36 @@ test('Scheduled Work explains legacy names that cannot be safely projected', asy
   assert.match(harness.app.innerHTML, /id="scheduled-summary-title">Name unavailable<\/h2>/);
 });
 
+test('Scheduled run usage includes cached input without double counting or inventing missing usage', async () => {
+  const usageCases = [
+    { id: 'fully_cached', inputTokens: 0, outputTokens: 48, cacheReadTokens: 3500, cacheWriteTokens: 0 },
+    { id: 'mixed_cache', inputTokens: 100, outputTokens: 51, cacheReadTokens: 2000, cacheWriteTokens: 300 },
+    { id: 'legacy', inputTokens: 1200, outputTokens: 300 },
+    { id: 'unavailable', inputTokens: null, outputTokens: null },
+    { id: 'partial', inputTokens: null, outputTokens: 51, cacheReadTokens: 1000 },
+  ];
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/audit-logs/scheduled-work/routine_release_digest',
+    scheduledWork: {
+      routine: { id: 'routine_release_digest', name: 'Cached usage', timezone: 'UTC', state: 'active' },
+      runs: usageCases.map((usage) => ({ ...usage, scheduledFor: 1785081600000, status: 'succeeded' })),
+      revisions: [], events: [], limits: {},
+      capability: { target: 'cloudflare', available: true, enabled: true, reason: 'enabled' },
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'scheduled-open-inspector' }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'scheduled-detail-tab', 'data-tab': 'runs' }) });
+  const rows = harness.app.innerHTML.match(/<article class="scheduled-run">[\s\S]*?<\/article>/g) ?? [];
+  assert.equal(rows.length, 5);
+  assert.match(rows[0]!, /3548 tokens \(3500 cached input\)/);
+  assert.doesNotMatch(rows[0]!, />48 (?:input|tokens)/);
+  assert.match(rows[1]!, /2451 tokens \(2300 cached input\)/);
+  assert.match(rows[2]!, /1500 tokens/);
+  assert.match(rows[3]!, /Usage unavailable/);
+  assert.match(rows[4]!, /1051 reported tokens \(1000 cached input\)/);
+});
+
 test('Scheduled Work detail separates overview, routine runs, and routine activity', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/audit-logs/scheduled-work/routine_release_digest',
@@ -13632,7 +13662,7 @@ test('Scheduled Work detail separates overview, routine runs, and routine activi
   assert.match(harness.app.innerHTML, /Run history for this routine/);
   assert.match(harness.app.innerHTML, /flue_run_release_1/);
   assert.match(harness.app.innerHTML, /access_hash_123/);
-  assert.match(harness.app.innerHTML, /1500 input \+ output tokens/);
+  assert.match(harness.app.innerHTML, /1500 tokens/);
   assert.match(harness.app.innerHTML, /Open message/);
   assert.doesNotMatch(harness.app.innerHTML, /Source Slack request/);
 

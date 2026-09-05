@@ -7204,8 +7204,11 @@
 
   function scheduledRunsHtml(runs, routine) {
     var body = !runs.length ? '<p class="hint">No occurrences have been admitted yet.</p>' : runs.map(function (run) {
-      var tokens = [run.inputTokens, run.outputTokens].some(function (value) { return value != null; })
-        ? String(Number(run.inputTokens || 0) + Number(run.outputTokens || 0)) + " input + output tokens"
+      var cached = usageCachedTokens(run);
+      var tokens = [run.inputTokens, run.outputTokens, cached].some(function (value) { return value != null; })
+        ? String(Number(run.inputTokens || 0) + Number(run.outputTokens || 0) + Number(cached || 0)) +
+          (run.inputTokens == null || run.outputTokens == null ? " reported tokens" : " tokens") +
+          (cached > 0 ? " (" + String(cached) + " cached input)" : "")
         : "Usage unavailable";
       var delivery = run.suppressedAsNoOp ? "No post (no-op)" : String(run.deliveryStatus || "none").replace(/_/g, " ");
       var receipt = scheduledDeliveryLink(run, routine);
