@@ -101,9 +101,9 @@ const scheduleActionInputSchema = v.object({
   taskText: v.optional(v.pipe(v.string(), v.description('Copy the task verbatim as ONE contiguous span of the current Slack request. Preserve case, punctuation, quotes, action verbs, exact-output wording, and negative directives. Do not paraphrase, capitalize, splice sentences, or remove intervening words to combine constraints. If the span includes "Do not run it now" between the task and its constraints, keep it; the due executor knows that refers to creation time. Do not select only a quoted reply payload or only acknowledgement instructions.'))),
   scheduleKind: v.optional(v.picklist(['cron', 'once', 'in'])),
   cronExpression: v.optional(v.string()),
-  localDateTime: v.optional(v.string()),
+  localDateTime: v.optional(v.pipe(v.string(), v.description('For scheduleKind once, use the local wall-clock format YYYY-MM-DDTHH:mm, for example 2026-09-05T16:22. Do not append Z or a UTC offset, even for UTC. Put UTC or the IANA timezone separately in timezone.'))),
   minutes: v.optional(v.number()),
-  timezone: v.optional(v.string()),
+  timezone: v.optional(v.pipe(v.string(), v.description('The explicit timezone from the current request: UTC or an IANA name such as America/Los_Angeles. Keep it separate from localDateTime; do not put Z or an offset in localDateTime.'))),
   outputPolicy: v.optional(v.picklist(['post', 'post_on_change'])),
   delivery: v.optional(v.picklist(['channel', 'thread'])),
 });
