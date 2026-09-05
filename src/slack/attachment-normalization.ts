@@ -44,6 +44,7 @@ export type SlackAttachmentNextAction =
   | 'retry'
   | 'reupload_file'
   | 'reconnect_slack'
+  | 'update_gateway'
   | 'convert_file'
   | 'reduce_file_size'
   | 'split_file'
@@ -585,6 +586,7 @@ function safeFailureCode(error: unknown): string | undefined {
 
 function retrievalNextAction(error: unknown): SlackAttachmentNextAction {
   const code = safeFailureCode(error);
+  if (code === 'gateway_attachment_unsupported') return 'update_gateway';
   if (code === 'missing_scope' || code === 'binding_reconnect_required' ||
       code === 'gateway_not_connected') return 'reconnect_slack';
   if (code?.includes('byte') || code?.includes('large')) return 'reduce_file_size';

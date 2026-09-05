@@ -670,6 +670,22 @@ test('gateway attachment read preserves bounded conversion and reconnect error e
   }
 });
 
+test('an older gateway route-level 404 reports missing attachment support', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({ settings, config,
+    keyring: generateCredentialKeyring('key_gateway'), gatewayBaseUrl: 'https://gateway.chickpea.test',
+    fetch: async (input, init) => new URL(input instanceof Request ? input.url : input.toString()).pathname.endsWith('/attachments/read')
+      ? json({ error: 'not_found' }, 404) : gateway.fetch(input, init), now: () => NOW,
+  });
+  try {
+    await client.beginClaim(); await client.refreshClaim();
+    await assert.rejects(client.readAttachment('F_TEXT', 4096),
+      (error: unknown) => error instanceof SlackTransportError && error.code === 'gateway_attachment_unsupported');
+  } finally { settings.close(); config.close(); }
+});
+
 test('gateway attachment headers and per-file ceiling accept exact values and reject one over', async () => {
   const settings = new SqliteSettingsStore(':memory:', () => NOW);
   const config = configStore();

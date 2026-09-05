@@ -477,6 +477,8 @@ function actionableMessage(entry: SlackAttachmentManifestEntry): string {
   switch (entry.nextAction) {
     case 'reupload_file':
       return 'Re-upload the file so Slack can provide a fresh accessible copy, then retry.';
+    case 'update_gateway':
+      return 'Ask the installation operator to update the Slack gateway to support attachments. Re-uploading will not fix this unavailable capability.';
     case 'reconnect_slack':
       return 'Reconnect Slack to grant the current file access permission, then retry.';
     case 'reduce_file_size':
