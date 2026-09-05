@@ -89,8 +89,10 @@ export async function readDirectSlackAttachment(input: {
       ? 'attachment_redirect_rejected' : 'attachment_download_failed', 502);
   }
   const returnedType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
-  if (returnedType && returnedType !== contentType && returnedType !== 'application/octet-stream') {
+  if (returnedType && returnedType !== contentType && returnedType !== 'application/octet-stream' && returnedType !== 'binary/octet-stream') {
     await response.body?.cancel();
+    // Record only validated MIME values, never credentials, URLs or file content.
+    console.warn('[chickpea] attachment_content_type_mismatch', { expected: contentType, actual: /^[a-z0-9!#$&^_.+/-]{1,128}$/.test(returnedType) ? returnedType : 'invalid' });
     throw new AttachmentReadError('invalid_attachment_response', 502);
   }
   const bytes = await boundedBytes(response, input.maxBytes);

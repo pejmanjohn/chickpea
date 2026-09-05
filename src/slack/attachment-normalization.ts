@@ -49,6 +49,7 @@ export type SlackAttachmentNextAction =
   | 'reduce_file_size'
   | 'split_file'
   | 'use_text_pdf'
+  | 'use_image_model'
   | 'remove_unsupported_file';
 
 interface NormalizedAttachmentIdentity {

@@ -185,12 +185,13 @@ export async function createSlackAttachmentAnalysis(
     if (!observations) throw new Error('empty_attachment_analysis');
     return resultFromNormalization(normalized, observations);
   } catch (error) {
-    if (safeErrorCode(error) === 'attachment_native_pdf_required_failed') {
+    const imageUnsupported = safeErrorCode(error) === 'attachment_image_model_unsupported';
+    if (imageUnsupported || safeErrorCode(error) === 'attachment_native_pdf_required_failed') {
       const compatible = normalized.attachments.filter((attachment) =>
-        attachment.kind !== 'pdf' || attachment.pdfCompleteness !== 'native_required'
+        imageUnsupported ? attachment.kind !== 'image' : attachment.kind !== 'pdf' || attachment.pdfCompleteness !== 'native_required'
       );
       const incompatible = normalized.attachments.filter((attachment) =>
-        attachment.kind === 'pdf' && attachment.pdfCompleteness === 'native_required'
+        imageUnsupported ? attachment.kind === 'image' : attachment.kind === 'pdf' && attachment.pdfCompleteness === 'native_required'
       );
       if (compatible.length > 0 && incompatible.length > 0) {
         const partial = {
@@ -198,7 +199,7 @@ export async function createSlackAttachmentAnalysis(
           attachments: compatible,
           failures: [
             ...normalized.failures,
-            ...incompatible.map(nativePdfFailure),
+            ...incompatible.map(imageUnsupported ? unsupportedImageFailure : nativePdfFailure),
           ],
         };
         try {
@@ -364,6 +365,7 @@ function resultFromAnalysisFailure(
 ): SlackAttachmentAnalysisResult {
   const code = safeErrorCode(error);
   const analysisFailures: SlackAttachmentFailure[] = normalized.attachments.map((attachment) => {
+    if (code === 'attachment_image_model_unsupported' && attachment.kind === 'image') return unsupportedImageFailure(attachment);
     const isNativeFailure = code === 'attachment_native_pdf_required_failed' &&
       attachment.kind === 'pdf' && attachment.pdfCompleteness === 'native_required';
     return {
@@ -384,6 +386,11 @@ function resultFromAnalysisFailure(
     attachments: [],
     failures: [...normalized.failures, ...analysisFailures],
   });
+}
+
+function unsupportedImageFailure(attachment: NormalizedSlackAttachment): SlackAttachmentFailure {
+  return { ordinal: attachment.ordinal, fileId: attachment.fileId, filename: attachment.filename, label: attachment.label,
+    code: 'attachment_image_model_unsupported', nextAction: 'use_image_model' };
 }
 
 function nativePdfFailure(attachment: NormalizedSlackAttachment): SlackAttachmentFailure {
@@ -485,6 +492,8 @@ function actionableMessage(entry: SlackAttachmentManifestEntry): string {
       return 'Reduce or compress the file, then retry.';
     case 'split_file':
       return 'Split the file or attachment set into smaller complete parts, then retry.';
+    case 'use_image_model':
+      return 'Choose an image-capable model for this Agent, or provide the image contents as text.';
     case 'use_text_pdf':
       return 'Provide a text-searchable PDF so its contents can be verified completely.';
     case 'convert_file':

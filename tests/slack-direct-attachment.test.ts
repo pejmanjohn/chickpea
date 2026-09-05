@@ -89,3 +89,10 @@ test('files.info refuses non-JSON metadata before downloading', async () => {
   const fetcher: typeof fetch = async () => new Response('<html>login</html>', { headers: { 'content-type': 'text/html' } });
   await assert.rejects(readDirectSlackAttachment({ ...base, fetch: fetcher }), /invalid_file_metadata/);
 });
+
+test('Slack opaque binary MIME retains authoritative text metadata for strict normalization', async () => {
+  const f = fixture({}, new Response('hello', { headers: { 'content-type': 'binary/octet-stream' } }));
+  const result = await readDirectSlackAttachment({ ...base, fetch: f.fetcher });
+  assert.equal(result.contentType, 'text/plain');
+  assert.equal(new TextDecoder().decode(result.bytes), 'hello');
+});

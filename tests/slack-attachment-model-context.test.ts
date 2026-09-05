@@ -896,3 +896,12 @@ test('a compatibility failure after material output starts settles generically w
   assert.equal(result.errorMessage, 'Model provider stream failed.');
   assert.doesNotMatch(result.errorMessage ?? '', /requires native PDF/i);
 });
+
+test('text-only models reject image input before dispatch and preserve the typed failure', async () => {
+  const captures: Array<{ context: Context; options: unknown }> = [];
+  const streams = decorateAttachmentProviderStreams(captureStreams(captures));
+  await assert.rejects(runWithAttachmentModelContext([imageAttachment(1, 'visual.png')], async () => {
+    streams.stream(model({ input: ['text'] }), { messages: [{ role: 'user', content: 'Read image', timestamp: NOW }] });
+  }), { code: 'attachment_image_model_unsupported' });
+  assert.equal(captures.length, 0);
+});
