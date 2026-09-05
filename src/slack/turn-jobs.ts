@@ -1349,6 +1349,7 @@ function parseFlueSettlement(value: unknown): FlueSettlementCheckpointV1 {
 const FLUE_FAILURE_KINDS = [
   'agent',
   'provider',
+  'invalid-output',
   'openai-subscription-reconnect',
   'openai-subscription-quota',
   'openai-subscription-policy',

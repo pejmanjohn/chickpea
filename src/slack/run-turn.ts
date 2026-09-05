@@ -1566,6 +1566,7 @@ function agentFailureSafeCode(error: unknown): string {
   if (!(error instanceof AgentPromptFailure)) return 'agent_failed';
   switch (error.kind) {
     case 'provider': return 'provider_failed';
+    case 'invalid-output': return 'invalid_model_output';
     case 'openai-subscription-reconnect': return 'subscription_reconnect';
     case 'openai-subscription-quota': return 'subscription_quota';
     case 'openai-subscription-policy': return 'subscription_policy';

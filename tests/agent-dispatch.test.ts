@@ -528,3 +528,31 @@ test('receipt-scoped relay is prepared after durable receipt and drains after se
     'before:result',
   ]);
 });
+
+test('extreme punctuation output settles as terminal failure and never repeats a possibly completed write', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  let reads = 0;
+  let dispatches = 0;
+  const dispatchState = state();
+  const agent = handle({
+    async dispatch() { dispatches++; return RECEIPT; },
+    async read() { reads++; return { text: '!'.repeat(4096), data: {}, metadata: {}, submissionId: RECEIPT.submissionId }; },
+  });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(() => promptSlackThreadAgent(promptInput(dispatchState, agent)),
+      (error: unknown) => error instanceof AgentPromptFailure && error.kind === 'invalid-output' &&
+        !error.retryable && /not retried/.test(agentFailureText(error)) &&
+        /Check the connected service/.test(agentFailureText(error)));
+  }
+  assert.equal(dispatches, 1);
+  assert.equal(reads, 1);
+  assert.equal(dispatchState.flueSettlement?.outcome, 'failed');
+});
+test('short punctuation, structured results and ordinary long answers remain valid', async () => {
+  for (const text of ['!!!', '!'.repeat(1023), '{"ok":true}', '---\n# Answer\n---', 'Confirmed. '.repeat(1000), '!?'.repeat(1024)]) {
+    const result = await promptSlackThreadAgent(promptInput(state(), handle({
+      async read() { return { text, data: {}, metadata: {}, submissionId: RECEIPT.submissionId }; },
+    })));
+    assert.equal(result.text, text);
+  }
+});

@@ -94,6 +94,7 @@ export type FlueSettlementCheckpointV1 =
       failureKind:
         | 'agent'
         | 'provider'
+        | 'invalid-output'
         | 'openai-subscription-reconnect'
         | 'openai-subscription-quota'
         | 'openai-subscription-policy'
