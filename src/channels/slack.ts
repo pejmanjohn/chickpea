@@ -109,7 +109,7 @@ import {
   createSlackWebClient,
   sanitizeError,
 } from '../slack/run-turn.ts';
-import { slackAgentThreadKey, slackThreadKey } from '../slack/thread-key.ts';
+import { slackAgentThreadKey, slackThreadKey, slackConversationKind } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import {
   wakeNodeTurnRelay,
@@ -1465,6 +1465,7 @@ async function processSlackEvent(
       installationHealth: installation.health,
       agentId: assignment.agent.id,
       agentName: assignment.agent.name,
+      conversationKind: slackConversationKind(turn),
       ...(assignmentAvatarUrl ? { avatarUrl: assignmentAvatarUrl } : {}),
       ...(assignment.agent.slackPresence
         ? { slackPresence: assignment.agent.slackPresence }

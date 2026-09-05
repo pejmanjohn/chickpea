@@ -155,6 +155,30 @@ test('Slack admission freezes selected ownership only from a healthy complete pe
   }), { kind: 'chickpea' });
 });
 
+test('creator-private DM admission freezes the unpublished Agent name and current avatar', () => {
+  const privateAgent = {
+    installationHealth: 'healthy' as const,
+    agentId: 'agent_private', agentName: 'Private Helper',
+    conversationKind: 'im' as const,
+    avatarUrl: 'https://chickpea.example/assets/agents/agent_private/avatar/2',
+    slackPresence: { desiredState: 'unpublished' as const, health: 'unpublished' as const, avatar: { revision: 2 } },
+  };
+  assert.deepEqual(selectSlackPresentationOwner(privateAgent), {
+    kind: 'selected_agent', persona: {
+      name: privateAgent.agentName, avatarUrl: privateAgent.avatarUrl, avatarRevision: 2,
+    },
+  });
+  for (const conversationKind of ['channel', 'mpim'] as const) {
+    assert.deepEqual(selectSlackPresentationOwner({ ...privateAgent, conversationKind }), { kind: 'chickpea' });
+  }
+  assert.deepEqual(selectSlackPresentationOwner({ ...privateAgent, installationHealth: 'revoked' }), { kind: 'chickpea' });
+  const { avatarUrl: _avatarUrl, ...withoutAvatar } = privateAgent;
+  assert.deepEqual(selectSlackPresentationOwner(withoutAvatar), { kind: 'chickpea' });
+  assert.deepEqual(selectSlackPresentationOwner({ ...privateAgent,
+    slackPresence: { ...privateAgent.slackPresence, desiredState: 'disabled' },
+  }), { kind: 'chickpea' });
+});
+
 test('local Slack adapter exposes Promise-shaped turn-job delegation', async () => {
   const expected = { continuityKey: 'thread', agentId: 'sprout' };
   const turnJobs = {

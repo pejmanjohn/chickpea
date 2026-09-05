@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.30' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.31' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -60,7 +60,7 @@ Never request credentials, OAuth codes, tokens, private keys, or secret-bearing 
 
 Place each part of the request according to its lifetime and execution semantics:
 
-- **Identity and description**: the Agent's name, handle, concise purpose, and discoverability.
+- **Identity and description**: the Agent's name, handle, concise purpose, and discoverability. Avatar images are configured in Admin: open this Agent using Configure, then select its avatar image to upload a PNG, JPEG, or WebP. The management operation schema does not expose avatar uploads; explain this Admin path instead of saying Agents have no avatar field or claiming an upload succeeded.
 - **Instructions**: standing role, priorities, boundaries, decision posture, and general behavior that should shape most turns.
 - **Skills**: repeatable procedures that should activate for a recognizable class of work. Read \`skill-creation.md\` before drafting or materially revising one.
 - **Memory**: durable facts, decisions, preferences, and context. Memory is not a procedure or a substitute for instructions.
