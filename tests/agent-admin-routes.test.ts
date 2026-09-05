@@ -4937,3 +4937,39 @@ for (const role of ['owner', 'member'] as const) {
     } finally { fixture.store.close(); fixture.settings.close(); }
   });
 }
+
+
+test('Admin Retry finishes a denied archive before pending channel publication', async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    const published = await fixture.app.request('http://localhost/admin/api/agents/agent_support/channels', {
+      method: 'POST', headers: auth(), body: JSON.stringify({ workspaceId: 'T_TEST', channelId: 'C_SUPPORT' }),
+    });
+    const publishedBody = await published.json() as Record<string, any>;
+    assert.equal(published.status, 201);
+    await fixture.store.putAgentChannelGrant({ workspaceId: 'T_TEST', channelId: 'C_PENDING',
+      agentId: 'agent_support', status: 'pending', createdByMembershipId: 'membership_owner' });
+    fixture.transport.disableUserGroup = async () => { throw new SlackTransportError('usergroups.disable', 'permission_denied'); };
+    const denied = await fixture.app.request('http://localhost/admin/api/agents/agent_support/archive', {
+      method: 'POST', headers: auth(), body: JSON.stringify({ expectedRevision: publishedBody.agent.revision }),
+    });
+    assert.equal(denied.status, 409);
+    const denial = await denied.json() as Record<string, any>;
+    assert.match(denial.recovery.title, /archiving/);
+    assert.equal(denial.agent.slackPresence.desiredState, 'disabled');
+    const group = fixture.transport.groups.find(({ id }) => id === publishedBody.agent.slackPresence.userGroupId)!;
+    group.disabled = true; // An authorized Slack admin disabled exactly this handle.
+    fixture.transport.enableUserGroup = async () => { throw new Error('archive retry must not enable'); };
+    const retried = await fixture.app.request('http://localhost/admin/api/agents/agent_support/slack/retry', {
+      method: 'POST', headers: auth(), body: JSON.stringify({ workspaceId: 'T_TEST' }),
+    });
+    assert.equal(retried.status, 200, await retried.clone().text());
+    const body = await retried.json() as Record<string, any>;
+    assert.equal(body.agent.lifecycle, 'archived');
+    assert.equal(body.agent.slackPresence.desiredState, 'disabled');
+    assert.equal(body.agent.slackPresenceRecovery, null);
+    assert.equal(group.disabled, true);
+    assert.deepEqual(await fixture.store.listAgentChannelGrants(), []);
+  } finally { fixture.store.close(); fixture.settings.close(); }
+});

@@ -8175,7 +8175,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           grant.status !== 'active',
       );
       let updated = current;
-      if (pendingGrants.length > 0) {
+      if (current.slackPresence?.desiredState === 'disabled') {
+        updated = await reconciler.retry(agentId);
+      } else if (pendingGrants.length > 0) {
         for (const pendingGrant of pendingGrants) {
           updated = (await reconciler.publish({
             workspaceId,
