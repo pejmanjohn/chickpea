@@ -532,3 +532,19 @@ test('calls outside a managed Slack submission preserve their existing behavior'
   );
   assert.equal(executed, true);
 });
+
+ test('an informational provider preview approval cannot authorize a write and explains recovery', async () => {
+  await withInteractiveSubmission(
+    'Approve write-preview-2. Execute exactly the previewed update of Fixture!B3 to after, once, and then read back only Fixture!A1:C3 to confirm the result.',
+    async () => {
+      assert.throws(() => assertCurrentRequestSideEffectAllowed('managed_capability__sheets.values.update'),
+        (error: unknown) => error instanceof Error && error.name === 'CurrentRequestSideEffectDeniedError' &&
+          /did not execute/.test(error.message) && /update spreadsheet values/.test(error.message) &&
+          /restate the complete request/.test(error.message));
+    },
+  );
+  await withInteractiveSubmission(
+    'Update spreadsheet values in spreadsheet synthetic-sheet, range Fixture!B3, to [["after"]] once.',
+    async () => assertCurrentRequestSideEffectAllowed('managed_capability__sheets.values.update'),
+  );
+});
