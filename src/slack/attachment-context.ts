@@ -21,7 +21,7 @@ import {
   runWithAttachmentModelContext,
 } from './attachment-model-context.ts';
 import type { GatewayAttachmentClient } from './gateway/client.ts';
-import { createGatewayDeploymentClient } from './gateway/runtime.ts';
+import { createSlackAttachmentClient } from './attachment-client.ts';
 
 const MAX_ATTACHMENT_SIGNAL_CHARS = 12_000;
 const MAX_ATTACHMENT_FILE_IDS_CHARS = 1_027;
@@ -298,7 +298,7 @@ export function useSlackAttachmentContext(
   plan: RuntimePlanV2,
   resolvePlatformEnv: PlatformEnvResolver,
   prepareModel: (env?: PlatformEnv) => Promise<string | undefined>,
-  createGateway: (env?: PlatformEnv) => GatewayAttachmentClient = createGatewayDeploymentClient,
+  createGateway: (env?: PlatformEnv) => GatewayAttachmentClient = createSlackAttachmentClient,
 ): void {
   const delivery = useDelivery();
   const intake = parseSlackAttachmentIntake(delivery, plan);
