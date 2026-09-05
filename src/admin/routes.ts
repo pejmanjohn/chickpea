@@ -6891,6 +6891,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (error.code !== 'access_candidate') return skillImportFailure(error);
       }
 
+      // Public imports are available to Agent authors. Private repository
+      // access still requires authority over the shared GitHub App connection.
+      const principal = principalByContext.get(c);
+      if (!principal || !permissionForRole(principal.role).has('admin.configure')) {
+        return repositoryUnavailable();
+      }
+
       const connection = await getGithubConnection(settings(c));
       if (connection.mode !== 'app') {
         return repositoryUnavailable();
@@ -10276,6 +10283,7 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
   ) return 'connection.create_personal';
   if (c.req.path.startsWith('/admin/api/connections/')) return 'connection.create_team';
   if (
+    (c.req.method === 'POST' && c.req.path === '/admin/api/skills/resolve') ||
     c.req.path === '/admin/api/agents' ||
     c.req.path.startsWith('/admin/api/agents/') ||
     (c.req.method === 'GET' && [
