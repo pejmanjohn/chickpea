@@ -6,6 +6,22 @@ import type {
 } from './types.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 
+/** Host-formatted instants for tools: models must not calculate dates from epoch milliseconds. */
+export function routineNextRunTime(nextRunAt: number | null, timezone: string) {
+  if (nextRunAt === null) return null;
+  const instant = new Date(nextRunAt);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(instant);
+  const part = (name: string) => parts.find(({ type }) => type === name)!.value;
+  return {
+    isoUtc: instant.toISOString(),
+    local: `${part('year')}-${part('month')}-${part('day')} ${part('hour')}:${part('minute')}:${part('second')} ${timezone}`,
+    timezone,
+  };
+}
+
 export function renderRoutineList(
   routines: readonly RoutineDefinition[],
   channelId: string,

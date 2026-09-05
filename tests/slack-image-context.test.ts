@@ -12,6 +12,7 @@ import {
   formatSlackAttachmentSignal,
   parseSlackAttachmentIntake,
   slackAttachmentTurnIsReadOnly,
+  isSlackAttachmentContextDelivery,
   type SlackAttachmentIntake,
 } from '../src/slack/attachment-context.ts';
 
@@ -464,4 +465,37 @@ test('attachment startup prepares the provider outside failure degradation and f
   assert.ok(prepareIndex > 0);
   assert.ok(degradationTryIndex > prepareIndex, 'provider authority must fail the turn, not become a file failure');
   assert.equal((source.match(/\.\.\.\(input\.model \? \{ model: input\.model \} : \{\}\)/g) ?? []).length, 2);
+});
+
+test('unsupported images do not prevent analysis of searchable PDFs and text', async () => {
+  let calls = 0;
+  const result = await createSlackAttachmentAnalysis({
+    intake: requiredIntake(),
+    gateway: { async readAttachment() { throw new Error('unused'); } },
+    async normalize() {
+      return normalized([
+        { kind: 'image', ordinal: 1, fileId: 'FIMAGE', filename: 'visual.png', label: 'Attachment 1 - visual.png', representation: 'image_original', contentType: 'image/png', image: { type: 'image', data: 'AAAA', mimeType: 'image/png' } },
+        pdfAttachment(2, 'report.pdf', 'baseline_complete'),
+        textAttachment(3, 'notes.txt', 'Exact text marker.'),
+      ]);
+    },
+    async prompt() {
+      if (++calls === 1) throw Object.assign(new Error('unsupported image'), { code: 'attachment_image_model_unsupported' });
+      return { text: 'Attachment 2 contains a report; Attachment 3 says Exact text marker.' };
+    },
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.successCount, 2);
+  assert.equal(result.failureCount, 1);
+  assert.equal(result.manifest[0]?.code, 'attachment_image_model_unsupported');
+  assert.match(formatSlackAttachmentSignal(result).body, /image-capable model/);
+});
+
+test('host analysis delivery remains read-only only for its bound Slack conversation', () => {
+  const signal = { kind: 'signal' as const, type: 'slack.attachment_context', tagName: 'slack_attachment_context',
+    body: 'Derived analysis', attributes: { workspaceId: 'TDEMO', channelId: 'C_EXEC', threadTs: '1782770400.000100' } };
+  assert.equal(isSlackAttachmentContextDelivery(signal, plan), true);
+  assert.equal(isSlackAttachmentContextDelivery({ ...signal, attributes: { ...signal.attributes, threadTs: 'different' } }, plan), false);
+  assert.equal(isSlackAttachmentContextDelivery({ ...signal, type: 'slack.message' }, plan), false);
+  assert.equal(isSlackAttachmentContextDelivery({ kind: 'user', body: 'Ordinary next request' }, plan), false);
 });

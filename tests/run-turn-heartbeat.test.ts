@@ -1949,3 +1949,71 @@ test('runTurn fails a lease-rejected turn closed instead of returning silently',
     `expected a sanitized final, saw ${JSON.stringify(posted)}`,
   );
 });
+
+test('a successful own-turn memory write acknowledges without releasing the stale model draft', async () => {
+  const { slackMemoryUpdateArguments } = await import('../src/management/slack-memory-actions.ts');
+  const { resolveSlackManagementActor } = await import('../src/management/slack-tools.ts');
+  const { appliedMemoryReceipt } = await import('../src/slack/memory-update-terminal.ts');
+  const f = await createManagementAdapterFixture('memory-delivery');
+  try {
+    const agent = await f.config.createAgent({
+      ...assignment.agent, creatorMembershipId: f.admin.membership.id,
+      editPolicy: 'creator_and_admins',
+    });
+    const workspaceId = f.admin.binding.slackTeamId;
+    const installation = await f.config.ensureWorkspaceInstallation({
+      workspaceId, teamId: workspaceId, transportMode: 'direct',
+      defaultAgentId: agent.id, botUserId: 'U_CHICKPEA',
+    });
+    await f.config.updateWorkspaceInstallation(workspaceId, { health: 'healthy' }, installation.revision);
+    const turn: NormalizedSlackTurn = {
+      ...workTurn('Ev_MEMORY_DELIVERY'), workspaceId, userId: f.admin.binding.slackUserId,
+      actorMembershipId: f.admin.membership.id,
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    };
+    const turnJobId = 'turn_memory_delivery';
+    const signal = {
+      agentId: agent.id, workspaceId, channelId: turn.channelId,
+      threadTs: turn.threadTs, conversationKind: 'im' as const,
+      slackUserId: turn.userId, eventId: turn.eventId, messageTs: turn.messageTs, turnJobId,
+    };
+    const posts: string[] = [];
+    let checkpointed = false;
+    let delivered: string | undefined;
+    const getOperation = f.service.getOperation.bind(f.service);
+    f.service.getOperation = async (...args) => {
+      assert.equal(checkpointed, true, 'checkpoint must precede receipt/visibility validation');
+      return getOperation(...args);
+    };
+    const client = {
+      conversations: { history: async () => ({ ok: true, messages: [] }) },
+      chat: {
+        postMessage: async (input: { text: string }) => { posts.push(input.text); return { ok: true, ts: '206.1' }; },
+        startStream: async (input: { markdown_text: string }) => { posts.push(input.markdown_text); return { ok: true, ts: '206.1' }; },
+        stopStream: async () => ({ ok: true }),
+      },
+    } as unknown as WebClient;
+    await runTurn(turn, { ...assignment, workspaceId, agent }, undefined, {
+      client, turnId: turnJobId, usageRecordingEnabled: false,
+      beforeDelivery: async () => { checkpointed = true; return undefined; },
+      onDelivered: (outcome) => { delivered = outcome; },
+      appStores: { config: f.config, memory: f.memory, identity: f.identity, management: f.management } as never,
+      managementApproval: { identity: f.identity, config: f.config, management: f.management, service: f.service },
+      async agentPrompt(): Promise<AgentDispatchResult> {
+        const result = await f.service.applyWorkspaceChanges({
+          context: await resolveSlackManagementActor(signal, f.identity),
+          ...slackMemoryUpdateArguments(signal, { expectedRevision: 0, body: 'A durable fact.' }),
+        });
+        const memoryUpdate = appliedMemoryReceipt(result, agent.id);
+        assert.ok(memoryUpdate);
+        return { text: 'Stale model draft must stay hidden.', memoryUpdate,
+          requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
+      },
+    });
+    assert.equal(checkpointed, true);
+    assert.equal(delivered, 'succeeded', 'acknowledgement uses the common terminal outcome');
+    assert.ok(posts.some((text) => text.includes('Updated this Agent’s saved memory.')), JSON.stringify(posts));
+    assert.ok(posts.every((text) => !text.includes('Stale model draft') && !text.includes(AGENT_FAILURE_TEXT)));
+    assert.equal((await f.memory.getAgentMemory(agent.id)).body, 'A durable fact.');
+  } finally { f.close(); }
+});

@@ -69,6 +69,7 @@ export function selectSlackPresentationOwner(input: {
   installationHealth: 'pending' | 'healthy' | 'needs_attention' | 'revoked';
   agentId: string;
   agentName: string;
+  conversationKind?: 'im' | 'mpim' | 'channel';
   avatarUrl?: string;
   slackPresence?: {
     desiredState: 'unpublished' | 'active' | 'disabled';
@@ -78,12 +79,15 @@ export function selectSlackPresentationOwner(input: {
 }): SlackPresentationOwner {
   if (input.agentId === CHICKPEA_AGENT_ID) return { kind: 'chickpea' };
   const presence = input.slackPresence;
+  // A routed creator-private DM does not need a published Slack user group.
+  // Admission has already checked private use; retain Channel publication gates.
+  const privateUnpublished = input.conversationKind === 'im' &&
+    presence?.desiredState === 'unpublished' && presence.health === 'unpublished';
   if (
     input.installationHealth !== 'healthy' ||
     !input.avatarUrl ||
     !presence ||
-    presence.desiredState !== 'active' ||
-    presence.health !== 'healthy' ||
+    (!privateUnpublished && (presence.desiredState !== 'active' || presence.health !== 'healthy')) ||
     !Number.isSafeInteger(presence.avatar.revision) ||
     presence.avatar.revision < 1
   ) {

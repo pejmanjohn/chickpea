@@ -47,6 +47,8 @@ interface PreparedMemoryTurn {
   visibilityBarrierAt: null;
   ownerBound: true;
   validateLease(): Promise<boolean>;
+  /** Only for a host acknowledgement after independently verifying an applied receipt. */
+  validateReceiptLease?(revision: number): Promise<boolean>;
   confirmInjection(): Promise<boolean>;
 }
 
@@ -184,6 +186,7 @@ export async function prepareMemoryTurn(input: {
       visibilityBarrierAt: null,
       ownerBound: true,
       confirmInjection: async () => true,
+      validateReceiptLease: (revision) => validateAgentMemoryLease(input.turn, runtime, memory, revision),
       validateLease: async () => {
         const valid = await validateAgentMemoryLease(input.turn, runtime, memory);
         emitMemoryMetric('delivery_lease', { outcome: valid ? 'valid' : 'rejected' });
@@ -434,6 +437,7 @@ async function validateAgentMemoryLease(
   turn: NormalizedSlackTurn,
   runtime: AgentMemoryRuntime,
   selected: AgentMemory,
+  receiptRevision?: number,
 ): Promise<boolean> {
   try {
     const config = runtime.config;
@@ -446,7 +450,9 @@ async function validateAgentMemoryLease(
         !installation || installation.health === 'revoked' ||
         (runtime.botUserId !== null && installation.botUserId !== undefined &&
           installation.botUserId !== runtime.botUserId) ||
-        current.revision !== selected.revision || current.body !== selected.body) return false;
+        (receiptRevision === undefined
+          ? current.revision !== selected.revision || current.body !== selected.body
+          : current.revision !== receiptRevision)) return false;
     // An explicit base-bot mention inside a DM still normalizes to
     // `app_mention`, so trust the conversation shape rather than the source
     // alone: a DM has no Channel grant and no non-im conversation facts.

@@ -1,5 +1,6 @@
 import * as v from 'valibot';
 import { z } from 'zod';
+import { skillImportSourceSchema } from '../config/skill-provenance.ts';
 
 import { AGENT_ID_PATTERN } from '../config/agent-id.ts';
 import {
@@ -41,6 +42,12 @@ const zSkill = z.strictObject({
   description: zOptionalText(2_000),
   instructions: zOptionalText(100_000),
   enabled: z.boolean(),
+  importSource: z.strictObject({
+    repository: z.string().max(256).regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+    commit: z.string().regex(/^[a-f0-9]{40,64}$/),
+    path: z.string().max(1024).refine((path) => !path.startsWith('/') && !path.split('/').includes('..')),
+    contentSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  }).optional(),
 });
 const zMcpTool = z.strictObject({
   name: zText(120),
@@ -382,6 +389,7 @@ const va = <TItem extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>>(
 
 const vSkill = v.strictObject({
   name: vt(64), description: vot(2_000), instructions: vot(100_000), enabled: v.boolean(),
+  importSource: v.optional(skillImportSourceSchema),
 });
 const vMcpTool = v.strictObject({
   name: vt(120), title: v.optional(vot(160)), description: v.optional(vot(400)),

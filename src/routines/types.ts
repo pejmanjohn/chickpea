@@ -590,11 +590,14 @@ export type RoutineScheduleActionResult =
       routineId: string;
       routineVersion?: number;
       deliveryDestination?: 'channel' | 'channel_thread' | 'direct_thread';
+      nextRunTime?: { isoUtc: string; local: string; timezone: string } | null;
       safeState?: 'active' | 'paused' | 'disabled' | 'pending_authority';
     }
   | {
       outcome: 'failed';
       code: string;
+      /** Fixed host-authored validation guidance; never arbitrary exception text. */
+      message?: string;
       routineId?: string;
       safeState?: 'paused' | 'disabled' | 'pending_authority';
     };

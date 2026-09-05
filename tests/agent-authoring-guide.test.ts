@@ -64,6 +64,9 @@ test('router covers all authoring postures while leaving detailed judgment lazy'
     'Never propose Agent creation',
     'ordered welcome hints',
     'remember or edit Agent memory',
+    'inspect_memory',
+    'update_agent_memory',
+    'only after an applied memory receipt',
     'compound request as one Agent-authoring request',
     'use import_skill',
     'use manage_agent_skill',
@@ -144,6 +147,9 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     '`reassign_routine_agent`', 'Group DMs cannot contain scheduled work',
     'All requests to remember or edit durable Agent memory are Agent authoring',
     '`update_agent_memory`', 'exact `expectedRevision`',
+    'Sandbox files are temporary working data',
+    'only after the management service returns an applied memory receipt',
+    'proposal, denial, or failure',
     '`request_chickpea_handoff`', 'mention `@Chickpea`',
     'no Agent record',
   ]) assert.match(AGENT_AUTHORING_GUIDE, new RegExp(phrase, 'i'));
@@ -242,6 +248,10 @@ test('interactive Slack Agent mounts authoring while routine execution does not'
   assert.match(
     slackSource.slice(slackSource.indexOf('export function useRuntimePlanAgent')),
     /useInstruction\(SLACK_ACTION_LINK_INSTRUCTION\)/,
+  );
+  assert.match(
+    slackSource.slice(slackSource.indexOf('export function useRuntimePlanAgent')),
+    /useInstruction\('Sandbox files are temporary working data, not durable Agent memory\.[^']*fresh conversation[^']*Never promise future recall from a sandbox file\.'\)/,
   );
 });
 

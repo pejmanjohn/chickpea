@@ -70,6 +70,7 @@ import { SANDBOX_UNAVAILABLE_FALLBACK_NOTICE } from '../slack/web-client-present
 import {
   normalizeRoutineModelResult,
   prepareRoutinePrompt,
+  routineExecutionInstructions,
   RoutineModelResultSchema,
   type PreparedRoutinePrompt,
 } from './prompt.ts';
@@ -617,6 +618,7 @@ function createEnvelope(input: {
     instructions: [
       input.access.config.instructions,
       externalActionAuthorityInstructions(input.access.config.agent.instructions),
+      ...routineExecutionInstructions(input.routine.destination.kind, Boolean(input.routine.destination.threadTs)),
     ].join('\n'),
     memoryEpoch: input.prompt.memoryEpoch,
     sandboxMode: input.sandboxMode,
@@ -801,6 +803,8 @@ async function finalizeSettlement(
           model: routineModelLabel(usage.returnedModel, usage.requestedModel),
           ...(usage.inputTokens === null ? {} : { inputTokens: usage.inputTokens }),
           ...(usage.outputTokens === null ? {} : { outputTokens: usage.outputTokens }),
+          ...(usage.cacheReadTokens === null ? {} : { cacheReadTokens: usage.cacheReadTokens }),
+          ...(usage.cacheWriteTokens === null ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
           ...(prepared.usageRecorder
             ? {
                 usageLedgerOperationId: prepared.run.id,
@@ -833,6 +837,8 @@ async function finalizeSettlement(
         model: routineModelLabel(usage.returnedModel, usage.requestedModel),
         ...(usage.inputTokens === null ? {} : { inputTokens: usage.inputTokens }),
         ...(usage.outputTokens === null ? {} : { outputTokens: usage.outputTokens }),
+        ...(usage.cacheReadTokens === null ? {} : { cacheReadTokens: usage.cacheReadTokens }),
+        ...(usage.cacheWriteTokens === null ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
         ...(prepared.usageRecorder
           ? {
               usageLedgerOperationId: prepared.run.id,

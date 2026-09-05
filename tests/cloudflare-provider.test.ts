@@ -18,6 +18,7 @@ import { createWorkersAiRestPiProvider, setWorkersAiRestPiProvider } from '../sr
 import { WORKERS_AI_DEFAULT_FAVORITES } from '../src/config/provider-models.ts';
 import { SEED_CLOUDFLARE_MODEL_ID } from '../src/config/seed.ts';
 import { withWorkersAiPayloadPolicy } from '../src/config/workers-ai-payload.ts';
+import { createSlackAttachmentAnalysis } from '../src/slack/attachment-context.ts';
 import { runWithAttachmentModelContext } from '../src/slack/attachment-model-context.ts';
 
 beforeEach(() => resetModelsForTests());
@@ -262,7 +263,7 @@ test('GPT-OSS tool-call replay uses non-null assistant content without changing 
   assert.deepEqual(receivedPayload, {
     ...payload,
     max_tokens: 8_192,
-    messages: [payload.messages[0], { ...payload.messages[1], content: '' }, payload.messages[2]],
+    messages: [{ ...payload.messages[0], content: 'Read the fixture.' }, { ...payload.messages[1], content: '' }, payload.messages[2]],
   });
   assert.deepEqual(payload, before, 'the shared conversation must not be mutated');
   assert.equal(receivedOptions, options, 'preserve abort and streaming options');
@@ -404,11 +405,11 @@ for (const [method, hookStyle] of [
   });
 }
 
-test('Workers AI replay policy leaves non-null content and other models byte-identical', () => {
+test('Workers AI replay policy leaves scalar content and other models byte-identical', () => {
   const toolCalls = [{ id: 'call_read', type: 'function', function: { name: 'read_fixture', arguments: '{}' } }];
   const payload = { messages: [
     { role: 'assistant', content: 'Reading now.', tool_calls: toolCalls },
-    { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] },
+    { role: 'assistant', content: 'Done.' },
     { role: 'tool', content: null },
     { role: 'user', content: null },
   ] };
@@ -450,4 +451,70 @@ test('the Cloudflare binding provider receives the same request-local attachment
 
   assert.match(JSON.stringify(receivedInputs), /binding-only-evidence/);
   assert.match(JSON.stringify(receivedInputs), /Attachment 1 - cloudflare\.txt/);
+});
+
+
+test('GPT-OSS mixed attachments retain searchable files through the real binding serializer', async () => {
+  let requests = 0;
+  const binding: CloudflareAIBinding = { run: async (_modelId, inputs) => {
+    requests += 1;
+    const messages = inputs.messages as Array<Record<string, unknown>>;
+    if (messages.some((message) => typeof message.content !== 'string')) {
+      return new Response('Bad input: mixed string and array message content', { status: 400 });
+    }
+    const text = messages.map(({ content }) => content).join('\n');
+    assert.match(text, /EXACT_TEXT_007/);
+    assert.match(text, /PDF_PAGE_TWO_END/);
+    assert.equal(inputs.tools, undefined);
+    return new Response(`data: ${JSON.stringify({ choices: [{ index: 0,
+      delta: { content: 'The text code is EXACT_TEXT_007 and the PDF ends PDF_PAGE_TWO_END.' },
+      finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
+    { headers: { 'content-type': 'text/event-stream' } });
+  } };
+  registerCloudflareBindingProvider(binding);
+  const provider = createCloudflareBindingProvider(binding);
+  const model = resolveModel('cloudflare/@cf/openai/gpt-oss-120b');
+  const context = { systemPrompt: 'Analyze the supported files.', messages: [
+    { role: 'user' as const, content: 'Read the attached files.', timestamp: 1 },
+  ] };
+  const before = structuredClone(context);
+  let prompts = 0;
+  const result = await createSlackAttachmentAnalysis({
+    intake: { kind: 'ready', request: 'Read supported files.', count: 3, fileIds: ['F_IMAGE', 'F_TEXT', 'F_PDF'] },
+    gateway: { async readAttachment() { throw new Error('unused'); } },
+    async normalize() { return {
+      attachments: [
+        { kind: 'image', ordinal: 1, fileId: 'F_IMAGE', filename: 'image.png', label: 'Image', representation: 'image_original', contentType: 'image/png', image: { type: 'image', data: 'AAAA', mimeType: 'image/png' } },
+        { kind: 'text', ordinal: 2, fileId: 'F_TEXT', filename: 'notes.txt', label: 'Text', representation: 'text_original', contentType: 'text/plain', text: 'EXACT_TEXT_007' },
+        { kind: 'pdf', ordinal: 3, fileId: 'F_PDF', filename: 'report.pdf', label: 'PDF', representation: 'pdf_original', contentType: 'application/pdf', text: 'Page one\nPage two PDF_PAGE_TWO_END', pdfCompleteness: 'baseline_complete', bytes: new Uint8Array([37, 80, 68, 70]) },
+      ], failures: [], totalBytes: 100, totalCharacters: 100,
+    }; },
+    async prompt() {
+      prompts += 1;
+      const response = await provider.streamSimple(model, context).result();
+      if (response.stopReason === 'error') throw new Error(response.errorMessage);
+      return { text: response.content.filter((part) => part.type === 'text').map((part) => part.text).join('') };
+    },
+  });
+  assert.equal(prompts, 2, 'image limitation leaves one compatible-file analysis');
+  assert.equal(requests, 1, 'unsupported image never reaches the provider');
+  assert.equal(result.successCount, 2);
+  assert.equal(result.failureCount, 1);
+  assert.equal(result.manifest[0]?.code, 'attachment_image_model_unsupported');
+  assert.match(result.observations ?? '', /EXACT_TEXT_007/);
+  assert.deepEqual(context, before);
+});
+
+test('GPT-OSS wire normalization preserves non-text parts and other model payloads', () => {
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }] },
+    { role: 'user', content: [{ type: 'image_url', image_url: { url: 'synthetic' } }] },
+    { role: 'user', content: [{ type: 'text', text: 'C', annotations: ['keep'] }] },
+  ];
+  const input = { messages, stream: true };
+  const before = structuredClone(input);
+  const output = withWorkersAiPayloadPolicy('@cf/openai/gpt-oss-120b', input);
+  assert.deepEqual(output.messages, [{ ...messages[0], content: 'A\nB' }, messages[1], messages[2]]);
+  assert.deepEqual(input, before);
+  assert.equal(withWorkersAiPayloadPolicy('@cf/other/model', input), input);
 });

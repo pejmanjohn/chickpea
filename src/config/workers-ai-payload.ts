@@ -3,7 +3,7 @@ import { isRecord } from '../security/content-validation.ts';
 
 const GPT_OSS_MODEL_ID = '@cf/openai/gpt-oss-120b';
 
-/** Normalize only the model whose Workers AI schema rejects null content. */
+/** Normalize GPT-OSS message content to its consistent text-only wire schema. */
 export function withWorkersAiPayloadPolicy(
   modelId: string,
   inputs: Record<string, unknown>,
@@ -11,9 +11,19 @@ export function withWorkersAiPayloadPolicy(
   if (modelId !== GPT_OSS_MODEL_ID || !Array.isArray(inputs.messages)) return inputs;
   let changed = false;
   const messages = inputs.messages.map((message: unknown) => {
-    if (!isRecord(message) || message.role !== 'assistant' || message.content !== null) {
-      return message;
+    if (!isRecord(message)) return message;
+    if (Array.isArray(message.content) && message.content.every((part) =>
+      isRecord(part) && part.type === 'text' && typeof part.text === 'string' &&
+      Object.keys(part).every((key) => key === 'type' || key === 'text')
+    )) {
+      // Pi preserves user text blocks as arrays while serializing system,
+      // assistant, and tool messages as strings. GPT-OSS rejects that mixed
+      // request shape. Retain every text block in order without dropping any
+      // non-text content or altering the shared model context.
+      changed = true;
+      return { ...message, content: message.content.map((part) => part.text).join('\n') };
     }
+    if (message.role !== 'assistant' || message.content !== null) return message;
     // Pi replays tool-call-only assistant messages with null content. GPT-OSS's
     // Workers AI schema requires a string or text-parts array, so its next model
     // turn otherwise fails after the tool has already succeeded. Preserve every

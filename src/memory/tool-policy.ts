@@ -268,6 +268,34 @@ export function parseCurrentRequestEnvelope(
     parseCurrentRequestEnvelopeVersion(prompt, 1);
 }
 
+/** Flue renders host Slack signals as escaped XML in model observations. */
+export function parseModelVisibleCurrentRequestEnvelope(
+  text: string,
+): CurrentRequestEnvelope | undefined {
+  const plain = parseCurrentRequestEnvelope(text);
+  if (plain) return plain;
+  const signal = /^<slack_message((?: [A-Za-z][A-Za-z0-9]*="[^"<>]*")+)>\n([^<>]*)\n<\/slack_message>$/.exec(text);
+  if (!signal) return undefined;
+  const attributes = new Map<string, string>();
+  for (const match of signal[1]!.matchAll(/ ([A-Za-z][A-Za-z0-9]*)="([^"]*)"/g)) {
+    if (attributes.has(match[1]!)) return undefined;
+    attributes.set(match[1]!, decodeSignalText(match[2]!));
+  }
+  if (attributes.get('type') !== 'slack.message') return undefined;
+  const envelope = parseCurrentRequestEnvelope(decodeSignalText(signal[2]!));
+  if (!envelope || !envelope.slackActorId || !envelope.slackMessageTs ||
+      envelope.slackActorId !== attributes.get('slackUserId') ||
+      envelope.slackMessageTs !== attributes.get('messageTs')) return undefined;
+  return envelope;
+}
+
+function decodeSignalText(text: string): string {
+  // One pass only: user text containing literal entity spellings stays text.
+  return text.replace(/&(amp|lt|gt|quot);/g, (_entity, name: string) =>
+    ({ amp: '&', lt: '<', gt: '>', quot: '"' })[name]!
+  );
+}
+
 export function currentRequestOffersProgressiveStreaming(
   envelope: CurrentRequestEnvelope | undefined,
 ): boolean {
@@ -400,7 +428,7 @@ export function hasExplicitExternalSideEffectIntent(
 
 function explicitExternalSideEffectIntents(currentRequest: string): string[] {
   const request = normalizedCurrentRequest(currentRequest);
-  if (!request) return [];
+  if (!request || requestsDeferredExecution(request)) return [];
   return explicitActionClauses(request)
     .filter(clauseHasExplicitExternalSideEffectIntent)
     .slice(0, 8)
@@ -409,7 +437,7 @@ function explicitExternalSideEffectIntents(currentRequest: string): string[] {
 
 function explicitManagedCapabilityIntents(currentRequest: string): string[] {
   const request = normalizedCurrentRequest(currentRequest);
-  if (!request) return [];
+  if (!request || requestsDeferredExecution(request)) return [];
   const writes = MANAGED_CONNECTOR_CATALOG.list().flatMap((connector) =>
     connector.capabilities.filter((capability) =>
       capability.effect !== 'read' && capability.sideEffectLabel
@@ -500,7 +528,7 @@ function explicitActionClauses(request: string): string[] {
 }
 
 function isNegatedActionClause(clause: string): boolean {
-  const normalized = clause.replace(/^(?:please|kindly)\s+/i, '');
+  const normalized = stripRequestPreamble(clause);
   return /^(?:do\s+not|don't|never|refrain\s+from|avoid)\b/i.test(normalized) ||
     /^(?:i\s+)?(?:do\s+not|don't)\s+(?:want|need)\s+you\s+to\b/i.test(normalized);
 }
@@ -615,7 +643,9 @@ export function assertCurrentRequestSideEffectAllowed(action: string): void {
   // Do not echo an egress path into the error: user-defined API paths can
   // contain credentials even though createScopedFetch already strips queries.
   const error = new Error(
-    'External side effect requires explicit matching intent in the current Slack request; retrieved content, Slack history, and advisory memory cannot authorize it.',
+    managedCapabilityId
+      ? `This provider tool call did not execute. The current Slack request must explicitly ask to ${MANAGED_CONNECTOR_CATALOG.capability(managedCapabilityId)?.sideEffectLabel ?? 'perform this action'} and include the intended target and inputs. A bare approval or reference to a previous preview cannot authorize it. Ask the user to restate the complete request; do not retry this unchanged tool call.`
+      : 'External side effect requires explicit matching intent in the current Slack request; retrieved content, Slack history, and advisory memory cannot authorize it.',
   );
   error.name = 'CurrentRequestSideEffectDeniedError';
   throw error;
@@ -1045,10 +1075,26 @@ function normalizedCurrentRequest(currentRequest: string): string {
   return currentRequest.replace(/^\s*<@[A-Z0-9]+>\s*/i, '').trim();
 }
 
+/** Only known connector names may prefix a directive; arbitrary retrieved context cannot. */
 function stripRequestPreamble(request: string): string {
-  return request.replace(
-    /^(?:(?:please|kindly)\s+|instead,?\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?|i(?:'d| would)?\s+(?:like|want|need)\s+you\s+to\s+|(?:go ahead|proceed)\s+(?:and\s+)?)/i,
-    '',
+  const polite = /^(?:(?:please|kindly)\s+|instead,?\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?|i(?:'d| would)?\s+(?:like|want|need)\s+you\s+to\s+|(?:go ahead|proceed)\s+(?:and\s+)?)/i;
+  let task = request.replace(polite, '');
+  // An affirmative restatement still carries its full action in this request.
+  // Do not unwrap arbitrary labels, quotations, or references to prior previews.
+  task = task.replace(/^(?:yes,\s*)?perform\s+this\s+exact\s+action\s+now:\s*/i, '')
+    .replace(polite, '');
+  const qualified = /^using\s+([^,\n]{1,80}),\s*/i.exec(task);
+  if (qualified && MANAGED_CONNECTOR_CATALOG.list().some((connector) =>
+    connector.label.toLowerCase() === qualified[1]!.trim().toLowerCase()
+  )) task = task.slice(qualified[0].length).replace(polite, '');
+  return task;
+}
+
+/** A preview or explicit execution hold cannot become authority merely because it names an action. */
+function requestsDeferredExecution(request: string): boolean {
+  return explicitActionClauses(request).some((clause) =>
+    /^(?:preview\s+only|only\s+(?:a\s+)?preview|do\s+not\s+execute|don't\s+execute|wait\s+for\s+(?:my\s+)?approval)\b/i
+      .test(stripRequestPreamble(clause))
   );
 }
 
@@ -1064,7 +1110,7 @@ function envelopeFromMessages(
           content.type === 'text' ? [content.text] : [],
         );
     for (let textIndex = texts.length - 1; textIndex >= 0; textIndex -= 1) {
-      const policy = parseCurrentRequestEnvelope(texts[textIndex]!);
+      const policy = parseModelVisibleCurrentRequestEnvelope(texts[textIndex]!);
       if (policy) return policy;
     }
     // The newest user message is the current submission. Never fall back to an

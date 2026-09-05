@@ -109,6 +109,20 @@ export function normalizeAuthorityText(text: string): string {
     .replace(/\s+/g, ' ');
 }
 
+/** Preserve the governing instruction when a model selects only a quoted reply. */
+export function preserveRoutineOutputInstruction(taskText: string, requestText: string): string {
+  for (const match of requestText.matchAll(/\b(?:reply|respond|output|return|say|print)\s+(?:with\s+)?exactly\s+("[^"\n]+"|“[^”\n]+”|`[^`\n]+`)/gi)) {
+    const payload = match[1]!.slice(1, -1);
+    if (normalizeAuthorityText(taskText) === normalizeAuthorityText(payload)) {
+      // Preserve source spelling and quotation, including negative directives
+      // through the existing authority check instead of manufacturing a task.
+      assertRoutineTaskBoundToSource(match[0], requestText);
+      return match[0];
+    }
+  }
+  return taskText;
+}
+
 /** Only explicit future-delivery wording can bind a Channel routine to a thread. */
 export function requestsChannelThreadDelivery(requestText: string): boolean {
   const text = requestText
@@ -120,7 +134,8 @@ export function requestsChannelThreadDelivery(requestText: string): boolean {
       text.lastIndexOf(delimiter, offset - 1))) + 1;
     const end = text.slice(offset).search(/[.!?;\n]/);
     const clause = text.slice(start, end < 0 ? undefined : offset + end);
-    if (sourcePrefixNegatesTask(text, offset) ||
+    if (/\bnot\s*$/i.test(text.slice(start, offset)) ||
+        sourcePrefixNegatesTask(text, offset) ||
         /\b(?:acknowledge|acknowledgement|acknowledgment|confirmation|hypothetically|example|explain|what if)\b/i.test(clause) ||
         (end >= 0 && text[offset + end] === '?')) continue;
     return true;

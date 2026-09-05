@@ -51,6 +51,7 @@ interface AttachmentModelState {
 
 type AttachmentModelFailure =
   | { code: 'attachment_model_input_limit_exceeded' }
+  | { code: 'attachment_image_model_unsupported' }
   | { code: 'attachment_native_pdf_required_failed'; label: string };
 
 export interface AttachmentNativePdfRequest {
@@ -72,6 +73,11 @@ export class AttachmentModelInputLimitError extends Error {
     super('The complete attachment analysis request exceeds this model input limit.');
     this.name = 'AttachmentModelInputLimitError';
   }
+}
+
+export class AttachmentImageModelUnsupportedError extends Error {
+  readonly code = 'attachment_image_model_unsupported';
+  constructor() { super('This model does not support image input.'); this.name = 'AttachmentImageModelUnsupportedError'; }
 }
 
 export class AttachmentNativePdfRequiredError extends Error {
@@ -155,7 +161,7 @@ export function recordAttachmentNativePdfRequiredFailure(label: string): void {
 function recordAttachmentModelFailure(error: unknown): void {
   const state = attachmentModelState.getStore();
   if (!state || state.failure) return;
-  if (error instanceof AttachmentModelInputLimitError) {
+  if (error instanceof AttachmentModelInputLimitError || error instanceof AttachmentImageModelUnsupportedError) {
     state.failure = { code: error.code };
   } else if (error instanceof AttachmentNativePdfRequiredError) {
     state.failure = { code: error.code, label: error.label };
@@ -163,6 +169,7 @@ function recordAttachmentModelFailure(error: unknown): void {
 }
 
 function attachmentModelFailureError(failure: AttachmentModelFailure): Error {
+  if (failure.code === 'attachment_image_model_unsupported') return new AttachmentImageModelUnsupportedError();
   return failure.code === 'attachment_model_input_limit_exceeded'
     ? new AttachmentModelInputLimitError()
     : new AttachmentNativePdfRequiredError(failure.label);
@@ -182,6 +189,9 @@ function prepareAttachmentRequest(
     throw new Error('Attachment analysis provider context must be tool-free.');
   }
 
+  if (!model.input.includes('image') && active.attachments.some((attachment) => attachment.kind === 'image')) {
+    throw new AttachmentImageModelUnsupportedError();
+  }
   const cloned = cloneContext(context);
   // Flue always injects its static `task` tool, even with an empty subagent
   // roster. The exact empty-roster form is inert; remove it before the model

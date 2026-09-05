@@ -626,3 +626,12 @@ function makeTextPdf(pages: string[]): Uint8Array {
   body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
   return new TextEncoder().encode(body);
 }
+
+ test('a gateway without attachment support requires an operator update, not re-upload', async () => {
+  const result = await normalizeSlackAttachments({ fileIds: ['F_TEXT'], gateway: {
+    async readAttachment() { throw Object.assign(new Error('unavailable'), {
+      code: 'gateway_attachment_unsupported', retryable: false,
+    }); },
+  } });
+  assert.equal(result.failures[0]?.nextAction, 'update_gateway');
+});

@@ -1,3 +1,4 @@
+import { scheduleActionRpcResult } from './management/slack-schedule-rpc.ts';
 import {
   DurableObject,
   env,
@@ -703,7 +704,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // Arm recovery before the first durable write so a DO interruption after
     // admission cannot strand a pending action without an alarm.
     await this.armAlarmNoLaterThan(Date.now());
-    const result = await invokeSlackScheduleAction({
+    const result = await scheduleActionRpcResult(() => invokeSlackScheduleAction({
       signal: request.signal,
       context,
       operation: request.operation,
@@ -713,7 +714,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         service,
         owner: `rpc:${request.signal.turnJobId}`,
       },
-    });
+    }));
     const nextAction = stores.routines.nextScheduleActionDueAt();
     const nextReceipt = stores.management.nextOutboxDueAt();
     const nextWake = earliestDefined(nextAction, nextReceipt);

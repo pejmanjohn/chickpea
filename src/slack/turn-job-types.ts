@@ -1,3 +1,4 @@
+import { type SlackMemoryUpdate } from './memory-update-terminal.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
@@ -73,6 +74,7 @@ export type FlueSettlementCheckpointV1 =
         text: string;
         tablePresentations?: SlackTablePresentation[];
         agentCreationTerminal?: SlackAgentCreationTerminalIntent;
+        memoryUpdate?: SlackMemoryUpdate;
         requestedModel: string | null;
         returnedModel: { provider: string; id: string } | null;
         reportedUsage: {
@@ -92,6 +94,7 @@ export type FlueSettlementCheckpointV1 =
       failureKind:
         | 'agent'
         | 'provider'
+        | 'invalid-output'
         | 'openai-subscription-reconnect'
         | 'openai-subscription-quota'
         | 'openai-subscription-policy'

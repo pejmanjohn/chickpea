@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 
 import type { ParsedSkillSource, SkillResolution } from '../src/config/skill-import.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
@@ -126,6 +127,15 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
       import: { name: string; replacedExisting: boolean };
     } }).result;
     assert.equal(result.status, 'installed');
+    assert.deepEqual((await f.config.getAgent(agent.id)).skills.find(({ name }) => name === 'unslop')?.importSource, {
+      repository: 'cursor/plugins',
+      commit: '1111111111111111111111111111111111111111',
+      path: 'pstack/skills/unslop',
+      contentSha256: createHash('sha256').update(JSON.stringify([
+        'unslop', 'Remove AI writing tells from prose.',
+        'Rewrite the draft plainly and preserve its meaning.',
+      ])).digest('hex'),
+    });
     assert.equal(result.import.name, 'unslop');
     assert.equal(result.import.replacedExisting, false);
     assert.equal(result.undoAvailable, true);

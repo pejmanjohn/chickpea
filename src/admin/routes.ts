@@ -305,6 +305,8 @@ import {
 import { validEnabledRepositoryGrants } from '../sandbox/egress-handler.ts';
 import { sandboxBindingInstalled } from '../sandbox/select.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
+import { skillImportSourceSchema } from '../config/skill-provenance.ts';
+import { legacyAgentAdminRedirect } from './agent-url.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
@@ -900,6 +902,7 @@ const skillSchema = v.object({
   instructions: v.pipe(v.string(), v.trim(), v.minLength(1)),
   enabled: v.boolean(),
   suggestedSkillId: v.optional(skillName),
+  importSource: v.optional(skillImportSourceSchema),
 });
 // Reject duplicate names at the write boundary — duplicates are a turn-killer
 // downstream, so they must never reach the store.
@@ -2384,7 +2387,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       message: classified.message,
       retryable: classified.retryable,
       suggestions: classified.suggestions,
-      recovery: agentPresenceRecovery(classified, handle),
+      recovery: agentPresenceRecovery(classified, handle, agent.slackPresence?.desiredState),
       agent: await agentAdminProjectionForRequest(c, agent),
     }, status);
   };
@@ -5470,6 +5473,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   const adminPage = async (c: Context): Promise<Response> => {
+    const legacyTarget = legacyAgentAdminRedirect(c.req.url);
+    if (legacyTarget) return c.redirect(legacyTarget, 302);
     // The shell pins the application script by content hash. Never let a
     // browser keep an older deployment's shell after the Worker has been updated.
     c.header('Cache-Control', 'no-store');
@@ -6756,7 +6761,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const principal = principalByContext.get(c);
     let agent: AgentCreateInput = {
       ...toAgentConfig(parsed.output),
-      lifecycle: 'draft',
+      // Saved Agents are ready for creator-only private use before publication.
+      // Channel reach remains governed by explicit grants and Slack presence.
+      lifecycle: 'active',
       ...(principal ? { creatorMembershipId: principal.membershipId } : {}),
       editPolicy: parsed.output.editPolicy ?? 'creator_and_admins',
       configurationGeneration: 1,
@@ -6882,6 +6889,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       } catch (error) {
         if (!(error instanceof SkillImportError)) throw error;
         if (error.code !== 'access_candidate') return skillImportFailure(error);
+      }
+
+      // Public imports are available to Agent authors. Private repository
+      // access still requires authority over the shared GitHub App connection.
+      const principal = principalByContext.get(c);
+      if (!principal || !permissionForRole(principal.role).has('admin.configure')) {
+        return repositoryUnavailable();
       }
 
       const connection = await getGithubConnection(settings(c));
@@ -7644,6 +7658,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
                 }
               : null,
             channelLabel: readable ? channel?.label ?? null : null,
+            workspaceId: readable ? routine.workspaceId : null,
+            channelId: readable ? routine.channelId : null,
             nextRunAt: routine.nextRunAt,
             lastFinishedAt: routine.lastFinishedAt,
             actions,
@@ -8005,6 +8021,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           presenceRecovery = agentPresenceRecovery(
             classified,
             updated.slackPresence?.normalizedHandle ?? normalizeAgentHandle(updated.name),
+            updated.slackPresence?.desiredState,
           );
         }
       }
@@ -8158,7 +8175,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           grant.status !== 'active',
       );
       let updated = current;
-      if (pendingGrants.length > 0) {
+      if (current.slackPresence?.desiredState === 'disabled') {
+        updated = await reconciler.retry(agentId);
+      } else if (pendingGrants.length > 0) {
         for (const pendingGrant of pendingGrants) {
           updated = (await reconciler.publish({
             workspaceId,
@@ -10267,6 +10286,7 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
   ) return 'connection.create_personal';
   if (c.req.path.startsWith('/admin/api/connections/')) return 'connection.create_team';
   if (
+    (c.req.method === 'POST' && c.req.path === '/admin/api/skills/resolve') ||
     c.req.path === '/admin/api/agents' ||
     c.req.path.startsWith('/admin/api/agents/') ||
     (c.req.method === 'GET' && [
@@ -10406,6 +10426,7 @@ function toSkills(
     instructions: skill.instructions,
     enabled: skill.enabled,
     ...(skill.suggestedSkillId !== undefined ? { suggestedSkillId: skill.suggestedSkillId } : {}),
+    ...(skill.importSource !== undefined ? { importSource: skill.importSource } : {}),
   }));
 }
 
@@ -11115,6 +11136,7 @@ async function agentAdminProjection(
             message: agent.slackPresence.errorDetail ?? 'Slack could not finish the change.',
           },
           agent.slackPresence.normalizedHandle,
+          agent.slackPresence.desiredState,
         )
       : null,
     tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory', 'schedules', 'model'],

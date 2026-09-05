@@ -222,6 +222,26 @@ function telemetrySink() {
   };
 }
 
+test('routine settlement persists measured cached tokens in the occurrence row', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const fixture = await admittedFixture(store, 'cached_usage');
+    const reply = { ...successfulReply(),
+      data: { [ROUTINE_RESULT_DATA_NAME]: [{ outcome: 'no_op', message: '' }] },
+      metadata: { chickpea: { schemaVersion: 1, requestedModel: 'openai/gpt-5.6-terra',
+        usage: { input: 3, output: 45, cacheRead: 4482, cacheWrite: 10, totalTokens: 4540 } } },
+    };
+    await executeRoutineOccurrence({ env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt },
+      { ...dependencies([]), handle: fakeHandle({ reply }) });
+    const completed = await store.getRun(fixture.run.id);
+    assert.equal(completed?.status, 'no_op');
+    assert.equal(completed?.inputTokens, 3);
+    assert.equal(completed?.outputTokens, 45);
+    assert.equal(completed?.cacheReadTokens, 4482);
+    assert.equal(completed?.cacheWriteTokens, 10);
+  } finally { store.close(); }
+});
+
 test('live access and a frozen app checkpoint precede Flue dispatch', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   const events: string[] = [];
@@ -272,6 +292,9 @@ test('live access and a frozen app checkpoint precede Flue dispatch', async () =
       },
     });
     assert.equal(completed?.flueAgentEnvelope?.schemaVersion, 2);
+    const executionInstructions = parseRoutineExecutionInitialData(completed?.flueAgentEnvelope?.initialData).runtimePlan.instructions;
+    assert.match(executionInstructions, /saved occurrence is due now/);
+    assert.match(executionInstructions, /not an acknowledgement that it has been scheduled/);
     assert.deepEqual(
       parseRoutineExecutionInitialData(completed?.flueAgentEnvelope?.initialData)
         .connectorUsageCorrelation,

@@ -147,6 +147,29 @@ test('upgrade replaces legacy defaults once while preserving historical URLs and
   } finally { db.close(); settings.close?.(); }
 });
 
+test('stored historical PNGs retain their exact encoding instead of being reconstructed', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const input = {
+      settings, agentId: 'agent_default', revision: 1,
+      avatar: {
+        kind: 'generated' as const, revision: 2,
+        generatedSeedHistory: [{ throughRevision: 1, seed: 'agent_default' }],
+      },
+    };
+    const reconstructed = await readAgentAvatarAsset(input);
+    // Simulate an already-published encoding from a different compressor.
+    const published = await sharp(reconstructed!.bytes).png({ compressionLevel: 0 }).toBuffer();
+    assert.notDeepEqual(published, Buffer.from(reconstructed!.bytes));
+    settings.setSetting('agent.avatar.agent_default.1', JSON.stringify({
+      contentType: 'image/png', base64: published.toString('base64'),
+    }));
+    const historical = await readAgentAvatarAsset(input);
+    assert.equal(historical?.contentType, 'image/png');
+    assert.deepEqual(Buffer.from(historical!.bytes), published);
+  } finally { settings.close?.(); }
+});
+
 function digest(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }

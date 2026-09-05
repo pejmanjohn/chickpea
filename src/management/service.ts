@@ -52,6 +52,8 @@ import type {
 } from '../memory/types.ts';
 import { RoutineService } from '../routines/service.ts';
 import { requestsChannelThreadDelivery } from '../routines/provenance.ts';
+import { routineNextRunTime } from '../routines/message-format.ts';
+import { skillImportSource } from '../config/skill-provenance.ts';
 import { reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
 import {
   executeSlackScheduleCommand,
@@ -868,6 +870,7 @@ export class WorkspaceManagementService {
       description: skill.description,
       instructions: skill.instructions,
       enabled: true,
+      importSource: skillImportSource(`${resolution.owner}/${resolution.repo}`, resolution.ref, skill.path, skill)!,
     };
     const existingIndex = agent.skills.findIndex(({ name }) => name === skill.name);
     const skills = existingIndex >= 0
@@ -1387,6 +1390,7 @@ export class WorkspaceManagementService {
           timezone: routine.timezone,
           outputPolicy: routine.outputPolicy,
           nextRunAt: routine.nextRunAt,
+          nextRunTime: routineNextRunTime(routine.nextRunAt, routine.timezone),
           contentAccess,
           owningAgentId: reference.agentId,
         };
@@ -3663,6 +3667,15 @@ export class WorkspaceManagementService {
       workspaceId: operation.workspaceId,
       channelId,
       agentId: operation.agentId,
+      ...(actor.origin.kind === 'slack' && actor.origin.requestText &&
+          actor.origin.eventId && actor.origin.messageTs
+        ? { sourceRequest: {
+            requestText: actor.origin.requestText,
+            eventId: actor.origin.eventId,
+            messageTs: actor.origin.messageTs,
+            threadTs: actor.origin.threadTs,
+          } }
+        : {}),
       ...(operation.destination?.kind === 'current_channel_thread' && actor.origin.kind === 'slack'
         ? { channelThreadTs: actor.origin.threadTs }
         : {}),

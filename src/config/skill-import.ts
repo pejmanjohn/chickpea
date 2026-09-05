@@ -5,6 +5,8 @@
 // lanes and is unit-testable offline.
 
 import { declaredContentLength, readBoundedText } from '../http/bounded-body.ts';
+import { skillImportSource } from './skill-provenance.ts';
+import type { SkillConfig } from './types.ts';
 
 /** Parsed coordinates of a skill source. */
 export interface ParsedSkillSource {
@@ -29,6 +31,7 @@ interface ResolvedSkillCandidate {
   path: string;
   /** Provenance link back to the skill's directory on GitHub. */
   sourceUrl: string;
+  importSource?: NonNullable<SkillConfig['importSource']>;
 }
 
 export interface SkillResolution {
@@ -315,6 +318,7 @@ export async function resolveSkillSource(
     const hasScripts = blobs.some(
       (blob) => blob.path.startsWith(entry.dir + '/') && blob.path !== entry.path && SCRIPT_EXT_RE.test(blob.path),
     );
+    const importSource = skillImportSource(`${owner}/${repo}`, ref, entry.dir, { name, description, instructions });
     skills.push({
       name,
       description,
@@ -322,6 +326,7 @@ export async function resolveSkillSource(
       hasScripts,
       path: entry.dir || '(root)',
       sourceUrl: `https://github.com/${owner}/${repo}/tree/${ref}/${entry.dir}`,
+      ...(importSource ? { importSource } : {}),
     });
   }
 
@@ -447,6 +452,7 @@ async function resolveExactPublicSkillFromGithubPage(
     hasScripts,
     path: skillPath,
     sourceUrl,
+    importSource: skillImportSource(`${owner}/${repo}`, resolvedRef, skillPath, { name, description, instructions })!,
   }], 1, 0);
 }
 

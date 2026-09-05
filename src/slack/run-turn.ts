@@ -1,3 +1,4 @@
+import { verifyMemoryUpdateAcknowledgement } from './memory-update-terminal.ts';
 import { WebClient } from '@slack/web-api';
 
 import {
@@ -1251,12 +1252,76 @@ export async function runTurn(
       return;
     }
     const recoveredText = await options.beforeDelivery?.();
+    let acknowledgeMemoryUpdate = false;
+    if (agentResult?.memoryUpdate && preparedMemory?.validateReceiptLease) {
+      // A changed memory invalidates the model draft, including forgotten facts.
+      // Only a verified own-turn receipt permits this host acknowledgement.
+      try {
+        const dependencies = resolveManagementApprovalDependencies(options.managementApproval, () => {
+          const identity = options.appStores?.identity ?? getIdentityStore(platformEnv);
+          const config = options.appStores?.config ?? getConfigStore(platformEnv);
+          const management = options.appStores?.management ?? getManagementStore(platformEnv);
+          return {
+            identity,
+            config,
+            management,
+            service: createLiveWorkspaceManagementService(platformEnv, {
+              identity,
+              ...(settingsStore ? { settings: settingsStore } : {}),
+              ...(options.usageStore ? { usage: options.usageStore } : {}),
+              overrides: {
+                identity,
+                config,
+                management,
+                ...(publicUrl ? { setupBaseUrl: publicUrl } : {}),
+                ...(options.appStores
+                  ? {
+                      memory: options.appStores.memory,
+                      routines: options.appStores.routines,
+                      work: options.appStores.work,
+                    }
+                  : {}),
+              },
+            }),
+          };
+        });
+        const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+        const signal = {
+          agentId: assignment.agent.id,
+          workspaceId: turn.workspaceId,
+          channelId: turn.channelId,
+          threadTs: assignment.runtimeContract === 'chickpea-v1'
+            ? turn.threadTs
+            : turn.sessionThreadTs ?? turn.threadTs,
+          conversationKind: slackConversationKind(turn),
+          slackUserId: turn.userId,
+          eventId: turn.eventId,
+          messageTs: turn.messageTs,
+          turnJobId,
+          requesterText: turn.text,
+        } as const;
+        const actor = await resolveSlackManagementActor(signal, dependencies.identity);
+        acknowledgeMemoryUpdate = await verifyMemoryUpdateAcknowledgement({
+          hint: agentResult.memoryUpdate,
+          agentId: assignment.agent.id,
+          turnJobId,
+          getOperation: (operationId) => dependencies.service.getOperation(actor, operationId),
+          validateReceiptLease: preparedMemory.validateReceiptLease,
+        });
+      } catch {
+        // Unavailable receipts or revoked actors retain the ordinary lease check.
+      }
+    }
+    if (acknowledgeMemoryUpdate) {
+      text = recoveredText ?? 'Updated this Agent’s saved memory.';
+      tablePresentation = undefined;
+    }
     // Confirmation only prevents reinjecting the same selection into this
     // transcript. A concurrent turn can legitimately advance the epoch before
     // this one finishes; that bookkeeping race must not discard a completed,
     // lease-valid answer.
     await preparedMemory?.confirmInjection();
-    const leaseValid = await preparedMemory?.validateLease() ?? true;
+    const leaseValid = acknowledgeMemoryUpdate || (await preparedMemory?.validateLease() ?? true);
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
@@ -1501,6 +1566,7 @@ function agentFailureSafeCode(error: unknown): string {
   if (!(error instanceof AgentPromptFailure)) return 'agent_failed';
   switch (error.kind) {
     case 'provider': return 'provider_failed';
+    case 'invalid-output': return 'invalid_model_output';
     case 'openai-subscription-reconnect': return 'subscription_reconnect';
     case 'openai-subscription-quota': return 'subscription_quota';
     case 'openai-subscription-policy': return 'subscription_policy';

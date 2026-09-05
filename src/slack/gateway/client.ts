@@ -681,6 +681,13 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
         'invalid_gateway_response',
       );
     }
+    // Older gateways do not implement the binary attachment endpoint. Their
+    // route-level 404 is distinct from a signed file-not-found response.
+    if (response.status === 404 && payload && typeof payload === 'object' &&
+        !Array.isArray(payload) && Object.keys(payload).length === 1 &&
+        (payload as Record<string, unknown>).error === 'not_found') {
+      throw new SlackTransportError(GATEWAY_ATTACHMENT_OPERATION, 'gateway_attachment_unsupported');
+    }
     let envelope;
     try {
       envelope = parseGatewayOperationResponse(payload);

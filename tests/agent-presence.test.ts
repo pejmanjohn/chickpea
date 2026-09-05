@@ -707,6 +707,9 @@ class FakeSlackTransport implements SlackTransport {
   createCalls = 0;
   createError: Error | undefined;
   enableError: Error | undefined;
+  disableError: Error | undefined;
+  disableCalls = 0;
+  enableCalls = 0;
   ambiguousCreate = false;
   ambiguousCreatePersistsGroup = true;
   onCreate?: () => Promise<void>;
@@ -754,9 +757,12 @@ class FakeSlackTransport implements SlackTransport {
     return { ...group };
   }
   async disableUserGroup(id: string) {
+    this.disableCalls += 1;
+    if (this.disableError) throw this.disableError;
     const group = this.requiredGroup(id); group.disabled = true; return { ...group };
   }
   async enableUserGroup(id: string) {
+    this.enableCalls += 1;
     if (this.enableError) throw this.enableError;
     const group = this.requiredGroup(id); group.disabled = false; return { ...group };
   }
@@ -768,4 +774,44 @@ class FakeSlackTransport implements SlackTransport {
     if (!group) throw new Error(`Unknown group ${id}`);
     return group;
   }
+}
+
+
+for (const externallyDisabled of [false, true]) {
+  test(`archive retry preserves disabled intent after Slack denial (already disabled: ${externallyDisabled})`, async () => {
+    const config = new SqliteConfigStore(':memory:', { agents: [] });
+    const transport = new FakeSlackTransport();
+    try {
+      await config.createAgent(agent('agent_support', 'Support', 'support'));
+      const reconciler = new AgentPresenceReconciler({ config, transport });
+      await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+        actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
+      await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');
+      assert.equal(transport.disableCalls, 0, 'removing the last grant does not disable Slack');
+      transport.disableError = new SlackTransportError('usergroups.disable', 'permission_denied');
+      await assert.rejects(() => reconciler.archive('agent_support'), AgentPresenceError);
+      const failed = await config.getAgent('agent_support');
+      assert.equal(failed.lifecycle, 'needs_attention');
+      assert.equal(failed.slackPresence?.desiredState, 'disabled');
+      assert.match(failed.slackPresence?.errorDetail ?? '', /disable the Agent handle/);
+      const recovery = agentPresenceRecovery(new AgentPresenceError('user_group_policy_denied', 'denied'),
+        'support', failed.slackPresence?.desiredState);
+      assert.match(recovery.title, /archiving @support/);
+      assert.match(recovery.explanation, /without reactivating/);
+      assert.doesNotMatch(recovery.steps.join(' '), /Add Members|create and edit/i);
+      await assert.rejects(() => reconciler.retry('agent_support'), AgentPresenceError);
+      assert.equal((await config.getAgent('agent_support')).slackPresence?.desiredState, 'disabled');
+      assert.equal(transport.enableCalls, 0);
+      if (externallyDisabled) transport.groups[0]!.disabled = true;
+      else transport.disableError = undefined;
+      const disableCalls = transport.disableCalls;
+      const archived = await reconciler.retry('agent_support');
+      assert.equal(archived.lifecycle, 'archived');
+      assert.equal(archived.slackPresence?.desiredState, 'disabled');
+      assert.equal(archived.slackPresence?.errorCode, undefined);
+      assert.equal(transport.groups[0]?.disabled, true);
+      assert.equal(transport.enableCalls, 0);
+      assert.equal(transport.disableCalls, disableCalls + (externallyDisabled ? 0 : 1));
+    } finally { config.close(); }
+  });
 }

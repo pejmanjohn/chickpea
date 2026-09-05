@@ -298,3 +298,42 @@ test('an Agent editor may take over Runs as but cannot grant another member auth
     identity.close();
   }
 });
+
+
+test('Members can resolve public skills without gaining shared GitHub App access', async (t) => {
+  const app = createAdminRoutes(testAdminAuthority('member-token', undefined, undefined, principal('member')));
+  const requests: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL) => {
+    const url = String(input);
+    requests.push(url);
+    if (url.endsWith('/repos/acme/public-skills')) {
+      return Response.json({ default_branch: 'main' });
+    }
+    if (url.includes('/git/trees/main')) {
+      return Response.json({ tree: [{ path: 'skills/example/SKILL.md', type: 'blob' }] });
+    }
+    if (url.includes('raw.githubusercontent.com/acme/public-skills/')) {
+      return new Response('---\nname: example\ndescription: Public test skill.\n---\n# Instructions');
+    }
+    return new Response('', { status: 404 });
+  });
+  const resolve = (source: string) => app.request('http://localhost/admin/api/skills/resolve', {
+    method: 'POST',
+    headers: testAdminHeaders('member-token', { 'content-type': 'application/json' }),
+    body: JSON.stringify({ source }),
+  });
+  const response = await resolve('acme/public-skills');
+  assert.equal(response.status, 200);
+  const body = await response.json() as { resolution: { skills: Array<{ name: string }> } };
+  assert.deepEqual(body.resolution.skills.map((skill) => skill.name), ['example']);
+
+  requests.length = 0;
+  const inaccessible = await resolve('acme/private-skills');
+  assert.equal(inaccessible.status, 404);
+  assert.deepEqual(requests, ['https://api.github.com/repos/acme/private-skills']);
+
+  const unauthenticated = await app.request('http://localhost/admin/api/skills/resolve', {
+    method: 'POST', body: JSON.stringify({ source: 'acme/public-skills' }),
+  });
+  assert.equal(unauthenticated.status, 401);
+});

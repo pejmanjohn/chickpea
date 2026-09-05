@@ -12,6 +12,13 @@ export interface SkillConfig {
   enabled: boolean;
   /** Stable provenance for a copied built-in suggestion; absent for custom/imported skills. */
   suggestedSkillId?: string;
+  /** Origin of the imported snapshot; retained when its local copy is edited. */
+  importSource?: {
+    repository: string;
+    commit: string;
+    path: string;
+    contentSha256: string;
+  };
 }
 
 /**

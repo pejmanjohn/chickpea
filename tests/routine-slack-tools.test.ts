@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { routineNextRunTime } from '../src/routines/message-format.ts';
 import test from 'node:test';
 
 import {
@@ -81,6 +82,21 @@ test('recurring and run-now arguments use the same first-class schedule action',
     workspaceId: signal.workspaceId,
     routineId: 'routine_slack_tool',
   });
+});
+
+test('schedule tools provide host-formatted UTC and local due times without model arithmetic', () => {
+  const instant = 1788596100000;
+  assert.deepEqual(routineNextRunTime(instant, 'UTC'), {
+    isoUtc: '2026-09-05T08:15:00.000Z', local: '2026-09-05 08:15:00 UTC', timezone: 'UTC',
+  });
+  assert.equal(routineNextRunTime(instant, 'America/Los_Angeles')?.local,
+    '2026-09-05 01:15:00 America/Los_Angeles');
+  assert.equal(routineNextRunTime(Date.UTC(2026, 8, 5), 'UTC')?.local, '2026-09-05 00:00:00 UTC');
+  assert.equal(routineNextRunTime(null, 'UTC'), null);
+  const nextRunTime = routineNextRunTime(instant, 'UTC');
+  const result = scheduleActionToolResult({ outcome: 'applied', effect: 'saved', routineId: 'routine_time', nextRunTime });
+  assert.deepEqual(result.nextRunTime, nextRunTime);
+  assert.match(String(result.timeInstruction), /Quote nextRunTime.local or nextRunTime.isoUtc exactly/);
 });
 
 test('an applied action in a non-active safe state says it will not run', () => {

@@ -1,3 +1,4 @@
+import { SLACK_MEMORY_UPDATE_DATA_NAME, parseSlackMemoryUpdate, type SlackMemoryUpdate } from './memory-update-terminal.ts';
 import {
   AgentInstanceExistsError,
   AgentInstanceNotFoundError,
@@ -50,6 +51,7 @@ import {
 type AgentPromptFailureKind =
   | 'agent'
   | 'provider'
+  | 'invalid-output'
   | 'openai-subscription-reconnect'
   | 'openai-subscription-quota'
   | 'openai-subscription-policy'
@@ -75,6 +77,7 @@ export interface AgentDispatchResult {
   text: string;
   tablePresentations?: SlackTablePresentation[];
   agentCreationTerminal?: SlackAgentCreationTerminalIntent;
+  memoryUpdate?: SlackMemoryUpdate;
   requestedModel: string | null;
   returnedModel: AgentReturnedModel | null;
   reportedUsage: AgentReportedUsage | null;
@@ -97,6 +100,7 @@ export class AgentPromptFailure extends Error {
 export function agentFailureText(error: unknown): string {
   if (!(error instanceof AgentPromptFailure)) return AGENT_FAILURE_TEXT;
   if (error.kind === 'provider') return PROVIDER_FAILURE_TEXT;
+  if (error.kind === 'invalid-output') return 'The model returned an unusable response. I have not retried the request. Check the connected service before retrying any write, because its outcome is not confirmed by this response.';
   if (error.kind === 'openai-subscription-reconnect') return OPENAI_SUBSCRIPTION_RECONNECT_TEXT;
   if (error.kind === 'openai-subscription-quota') return OPENAI_SUBSCRIPTION_QUOTA_TEXT;
   if (error.kind === 'openai-subscription-policy') return OPENAI_SUBSCRIPTION_POLICY_TEXT;
@@ -300,14 +304,16 @@ export async function promptSlackThreadAgent(
   let completed: AgentDispatchResult;
   try {
     completed = resultFromAgentReply(reply, input.requestedModel);
-  } catch {
+  } catch (error) {
+    const failureKind = error instanceof AgentPromptFailure && error.kind === 'invalid-output'
+      ? 'invalid-output' : 'agent';
     logDispatchFailure('invalid_result', receipt.submissionId, Boolean(reply.text));
     let checkpoint: FlueSettlementCheckpointV1;
     try {
       checkpoint = await input.state.recordSettlement({
         outcome: 'failed',
         settledAt: now(),
-        failureKind: 'agent',
+        failureKind,
       });
     } catch (settlementError) {
       await progressiveRelay?.invalidateAndDrain('settlement_persist_failed');
@@ -316,7 +322,7 @@ export async function promptSlackThreadAgent(
     input.state.flueSettlement = checkpoint;
     await progressiveRelay?.invalidateAndDrain('invalid_result');
     await input.beforeResult?.();
-    throw new AgentPromptFailure('agent');
+    throw new AgentPromptFailure(failureKind);
   }
 
   let checkpoint: FlueSettlementCheckpointV1;
@@ -383,6 +389,9 @@ export function resultFromAgentReply(
 ): AgentDispatchResult {
   const text = reply.text;
   if (!text) throw new Error('agent prompt returned no result text');
+  // Reject only extreme single-punctuation degeneration, not code, JSON,
+  // Markdown separators, short emphatic answers, or mixed punctuation.
+  if (/^([!?])\1{1023,}$/.test(text.trim())) throw new AgentPromptFailure('invalid-output');
   const metadata = parseResponseMetadata(reply.metadata?.[CHICKPEA_RESPONSE_METADATA_KEY]);
   const usage = metadata ? parseReportedUsage(metadata.usage) : {
     reportedUsage: null,
@@ -391,6 +400,7 @@ export function resultFromAgentReply(
   const tablePresentations = parseSlackTablePresentations(
     reply.data?.[SLACK_TABLE_PRESENTATION_DATA_NAME],
   );
+  const memoryUpdate = parseSlackMemoryUpdate(reply.data?.[SLACK_MEMORY_UPDATE_DATA_NAME]);
   const agentCreationTerminal = parseSlackAgentCreationTerminalIntents(
     reply.data?.[SLACK_AGENT_CREATION_TERMINAL_DATA_NAME],
   )[0];
@@ -398,6 +408,7 @@ export function resultFromAgentReply(
     text,
     ...(tablePresentations.length > 0 ? { tablePresentations } : {}),
     ...(agentCreationTerminal ? { agentCreationTerminal } : {}),
+    ...(memoryUpdate ? { memoryUpdate } : {}),
     requestedModel: metadata?.requestedModel ?? nonEmptyString(requestedModel),
     returnedModel: metadata?.returnedModel ?? null,
     reportedUsage: usage.reportedUsage,

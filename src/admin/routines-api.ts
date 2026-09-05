@@ -491,6 +491,8 @@ function safeRoutineUsage(
       usageCompleteness: measurement.usageCompleteness,
       inputTokens: measurement.inputTokens,
       outputTokens: measurement.outputTokens,
+      cacheReadTokens: measurement.cacheReadTokens,
+      cacheWriteTokens: measurement.cacheWriteTokens,
       totalTokens: measurement.totalTokens,
       usageUnknownReason: measurement.usageUnknownReason,
       estimateCompleteness: measurement.estimateCompleteness,
