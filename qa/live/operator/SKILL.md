@@ -55,160 +55,74 @@ tool denial. Name the exact blocked action and reason, ask once, retain the
 pending browser, and continue independent checks. Report blocked checks as
 blocked rather than passing them or repeatedly asking the same question.
 
-## Select one environment
+## Normal path
 
-1. Inspect the complete diff, including branch, staged, unstaged, and untracked
-   changes. Start with `npm run verify:regression -- --plan`; use `--base REF`
-   when the intended comparison differs from local `origin/main`. The mapping is
-   a starting point. Include indirectly affected behavior identified in review.
-2. Reuse a matching claim. Otherwise inspect `npm run env -- status --worktree
-   <absolute-worktree>`, then claim one free deployed lane when needed. Never
-   borrow another task's claim. A claim drops only at its `expiresAt` or by
-   its holder's own `release`. When `env status` shows a holder whose worktree
-   no longer exists, `npm run env -- reclaim <alias> --adopt-orphan` can adopt
-   it, but freeing another task's hold is the operator's decision: report the
-   holder and ask before adopting. Both busy means report availability and continue
-   offline checks, not ask the operator to manufacture another environment.
-3. Prefer an initialized local workerd/HTTP lane for repeated application edits.
-   Run `npm run dev:cf -- status --lane <lane>` and verify its owning worktree,
-   app/workspace pair, endpoint, state, and actual effective model. Follow
-   [local Worker development](../../../docs/runbooks/local-worker-development.md).
-   Local state is currently worktree-bound. Do not copy it into a fresh worktree;
-   use an available deployed lane until an explicit local handoff is supported.
-4. Use a deployed lane for shared-gateway behavior, deployed bindings/credentials,
-   real due-time delivery, or release acceptance. Claim and attest through the
-   existing environment commands: `npm run env -- claim <alias>`, then
-   `target <alias>` and `attest <alias>` through the same command. Pass
-   `--worktree <absolute-worktree>` throughout. Read the
-   [lane runbook](../../../docs/runbooks/parallel-live-test-environments.md)
-   for target resolution and claims. Refresh readiness when build, actor, claim,
-   browser, or target state changes. A status label or live PID alone is not
-   evidence that Slack is working.
-5. When deploying, set `CHICKPEA_DEPLOY_TARGET=<alias>` explicitly for the
-   guarded `npm run deploy`. The wrapper resolves the claimed lane's AUTH_DB ID
-   and schema generation from its own preflight; explicit
-   `CHICKPEA_DEPLOY_AUTH_DB_ID` / `CHICKPEA_DEPLOY_SCHEMA_GENERATION` still win.
-   The preflight reads every active lane's live-authority credential, not only
-   the claimed one: from `CHICKPEA_ENV_<COLOR>_LIVE_AUTHORITY_URL` and
-   `_READ_TOKEN`, or from the owner-only file
-   `~/.chickpea/lane-credentials/<color>-live.json` (`origin`,
-   `authorityReadToken`). A `LIVE_AUTHORITY_READ_TOKEN_INVALID` on a lane you
-   did not claim means that other lane's credential is missing. Never print
-   the token. Never use a bare/default deploy to reach a QA lane. Preserve
-   source/claim fences. Verification does not imply landing on main.
-   A claim is stamped with the worktree's HEAD. Do not commit, amend, or
-   rebase in that worktree while a claimed deploy is running, and re-claim
-   after committing before the next deploy: a HEAD that differs from the
-   claimed revision fails the deploy's final fence with
-   `MUTATION_LEASE_AUTHORITY_CHANGED`, and then `release`, `reclaim`, and
-   `reconciliation` all refuse with `CLAIM_REVISION_MISMATCH`. Recovery is to
-   check out the claimed revision, run `npm run env -- reconciliation <alias>`
-   (it adopts the uploaded version and clears the intent lock), release, and
-   only then move HEAD again.
-   Only the Slack manifest digest, the required scopes, and
-   `src/auth/setup-capability.mjs` are hard-gated against the lane baseline; a
-   mismatch refuses with `INSTALL_CONTINUATION_REQUIRED`, and the recovery is to
-   prove a fresh install on a disposable target and re-record the baseline.
-   Changes to the setup flow (`src/auth/setup-handoff.ts`,
-   `src/management/setup-routes.ts`, `src/config/onboarding-state.ts`,
-   `src/admin/onboarding-proof.ts`) deploy normally and mark the lane
-   `setupFlowUnprovenSince <sha>` in `env status`. Report that marker; in
-   `release` mode clear it with a fresh-install journey on a disposable target
-   followed by a baseline re-record.
-6. `npm run env -- attest <alias>` returns one JSON object whose `targetOverlay`
-   and `doctorSnapshot` members are the two doctor inputs; write each to its
-   own private file before `npm run verify:live:doctor -- --target <overlay>
-   --snapshot <snapshot>`. A doctor `missing_actor` diagnostic is a registry
-   gap (no registered actor alias for that lane), not a build failure: report
-   it, and continue with the attended checklist as the signed-in test actor.
+1. Inspect the diff with `npm run verify:regression -- --plan`. Select `changed`,
+   `regression`, or `release` in [modes.md](modes.md). For a first release, review
+   the advertised use-case matrix as well. The template is a starting inventory.
+2. Resolve one suitable QA target using [environments.md](environments.md).
+   Reuse its claim. Prefer an owned local workerd/HTTP lane for repair cycles;
+   deployed due-time, gateway, bindings, and release proof require a deployed lane.
+3. Create a private spec and run record using [records.md](records.md). Run
+   `npm run verify:live:record -- preflight --run <private-run.json>` before
+   browser work. Resolve actual signed-in actors, required fixtures, available
+   browser tools, and disposable installation targets. A missing fixture blocks
+   only dependent cases. Keep that gap in the selected scope; finish other cases.
+4. Run the selected offline checks serially with `verify:regression --record
+   <private-run.json>`. For each attended case, record `begin`, act once, then
+   record `finish` with real readbacks. Register exact owned resources and fixture
+   before-values immediately. Follow [recovery.md](recovery.md) for an ambiguous
+   action, stalled reply, lost tab, or tool failure.
+5. After a fix, reproduce the boundary that failed, run affected deterministic
+   tests, then retest locally with the actual model. Record the hypothesis and
+   changed variable. Use a fresh conversation root for instruction changes.
+   Repeat the dependent deployed case when its serving build or context changes.
+   Run the full release checkpoint only after the candidate is stable and clean.
+6. On resume, run `status` on the same record. Refresh capability readbacks after
+   browser, actor, claim, build, or fixture changes. Reconcile open attempts and
+   overdue schedules before starting new work. Never replace the original record.
+7. Clean exact run-owned IDs, restore exact before-values, and record authoritative
+   cleanup readbacks. Generate `report` from the record; do not maintain a second
+   handwritten status table. Hold the environment claim through cleanup.
 
-Use one suitable lane by default. Both colors are needed when explicitly
-requested or testing cross-lane isolation, not for every application change.
-Amber and Cobalt are ordinary exclusive QA lanes; the historical first protected
-Cobalt qualification is not a standing requirement to merge before testing.
+## Evidence and stopping rules
 
-## Execute and grade
-
-Run deterministic checks first, serially in the checkout. The regression command
-uses isolated state and fake services, needs no OAuth, and does not send Slack
-messages. Real-model evaluations are a separate layer. Real browser journeys
-remain necessary for UI, installation, and actual delivery acceptance.
-
-Reuse a completed local check from this task when its source tree (including
-dirty/untracked inputs), lockfile, Node version, relevant configuration, and
-check inventory are unchanged. Record the original result and log reference;
-do not call it a fresh run. A commit SHA alone does not establish those inputs.
-After a relevant edit, rerun the affected checks. Workflow-only edits do not
-invalidate earlier product evidence, but exercise the revised workflow and
-validate its public skill/export contracts. A different serving build, model,
-actor, connection, or lane state requires fresh dependent live evidence.
-
-Use normal browser tools and the existing short local UI mutex for competing
-browser actions. Hold the environment claim through readback and cleanup. Release
-the UI mutex while waiting for human input; retain the affected tab and browser
-reservation. A hostname change does not change local ownership. Recovery requires
-proof that the prior owner stopped. Never copy lock state between machines.
-
-Record one lightweight private run record with mode, selected checks, source
-commit and dirty diff identity, serving version, actual model, target, actor,
-before-state, exact run-owned IDs, evidence references, result, and cleanup.
-Reuse the existing journal when resuming. Capture certification, one-use
-challenges, and the legacy coordinator are not prerequisites for this workflow.
-The `verify:live:case/smoke/deep` CLIs are legacy entrypoints; do not invoke them
-expecting these skill modes to run. Read the
+The record command is an attended notebook. It does not operate browsers, claim
+lanes, deploy, execute cleanup, or certify the truth of an operator receipt.
+Existing legacy journals remain in place when resuming legacy runs. The
+`verify:live:case/smoke/deep` CLIs do not execute these skill modes. Read the
 [legacy coordinator runbook](../../../docs/runbooks/live-contract-verification.md)
-only when explicitly operating that coordinator.
+only when explicitly operating it.
 
-For each action, read the resulting state. After a timeout or ambiguous response,
-inspect the UI and native dialogs before retrying. Replay only after proving the
-action did not apply. Retry read-only observations within a bounded window. Do
-not repeat a failed mutation merely to obtain a green result.
+Saved instructions, frozen proposal identity, fixture values, destination, and
+resource ownership require exact comparisons. Grade explanatory prose by meaning
+unless literal output was requested. Actual Slack/Admin/provider readback is
+required; an Agent's success claim, a log, build, or simulated cron is insufficient.
+Keep Local, deployed, deterministic, and model-only grades separate. Use the lane's
+actual model without substitution. Missing or sampled telemetry proves no absence.
 
-When an Agent shows "Thinking…" past about two minutes, treat it as a stall, not
-a slow reply. Capture one bounded `npx wrangler tail <worker> --format json`
-window (30 to 60 seconds) into a private file and stop it. The output is
-pretty-printed JSON objects back to back, not one object per line; split on
-top-level braces before reading. A repeating
-`memory_metric {"event":"delivery_lease","outcome":"rejected"}` from the
-`TagStateStore` entrypoint means the run cannot take the thread's delivery lease
-and is polling; record the thread, the prior owner of that thread, and the
-message that triggered it. Follow
-[runtime observability](../../../docs/runbooks/runtime-observability.md) for the
-rest. Do not send the same request again to "unstick" it.
+Offline reuse is explicit with `--reuse` and requires matching working contents,
+Node version, effective environment, check inventory, and retained logs. Builds
+always run to restore generated artifacts. Changes invalidate dependent attended
+cases; workflow-only edits preserve earlier product evidence. Serving build,
+model, actor, connection, fixture, or lane-state changes invalidate dependent live
+proof. Record refreshes truthfully; a source SHA alone is not an input fingerprint.
 
-Instruction and identity changes reach an Agent only on a fresh conversation
-root. Existing threads carry a frozen snapshot of the Agent's effective
-instructions, so a redeployed instruction fix must be verified in a new DM root
-or channel message, never by continuing the thread that showed the failure.
+Ordinary verification uses bounded attempts and observations. Schedules stop after
+their declared occurrence budget or deadline; failures also require stopping them.
+Pause/delete them through the product and verify the readback. The notebook only
+shows stop conditions and cannot stop a schedule while the operator is away.
+Overnight reliability testing needs an explicit purpose, larger bounded budget,
+stop condition, and cleanup owner. Do not leave recurring fixtures running by default.
 
-Use exact comparisons for saved instructions, opaque proposal identity, fixture
-values, destination, and resource ownership. Grade ordinary explanatory prose
-by meaning unless the user explicitly requested literal output. Verify real
-provider execution; an Agent's claim of success is insufficient. A simulated
-cron or Run now is not deployed due-time proof. Check duplicates during the
-declared observation window without claiming indefinite exactly-once delivery.
+After ambiguity, observe the actual UI and native dialogs before replaying. Replay
+requires authoritative evidence that the action did not apply. If it applied,
+resolve and grade the original attempt. Preserve its first outcome. Request human
+input only for the missing capabilities listed above, then continue independent
+cases. Use the short UI mutex for competing browser actions, release it during
+human waits, and retain the affected browser reservation.
 
-Clean only exact run-owned IDs or restore recorded before-values. Preserve
-baseline connections and credentials, attributed Slack messages, and archived
-Agent residue. Classify failures as product, verifier, environment, or unknown;
-report cleanup separately. After a failure, rerun its journey and necessary setup
-only when something relevant changed. A targeted pass does not upgrade an earlier
-failed full run; rerun the requested inventory on the final build when needed.
-
-For diagnosis read the existing evidence first and follow
-[runtime observability](../../../docs/runbooks/runtime-observability.md).
-At the first unexplained failure, preserve the request permalink or Run ID,
-UTC window, actual model/build, and expected versus observed result in the
-existing private record before changing state. Use `npm run diagnose -- --help`
-for the bounded Sessions-to-trace lookup; link each attempt's evidence there.
-Record the hypothesis and changed variable before a retest. A missing ledger or
-trace is a coverage gap, not proof that a tool did not run. Successful actions do
-not need an additional log sweep.
-Use the owning terminal locally and bounded historical logs or tail on the
-deployed target. Attach tail before an authorized reproduction and stop afterward.
-Missing sampled logs do not establish that an action never happened.
-
-Return the mode/target/source, checks passed or failed, untested or blocked
-coverage, cleanup, and elapsed time split into automated, browser/model, and human
-waiting where available. Keep coordinates, transcripts, credentials, and evidence
-outside Git. Never describe deterministic or model-only checks as live acceptance.
+Return mode, target, source, passes, failures, blocked/untested coverage, cleanup,
+and measured time/cost gaps. Distinguish product/model failures from tool or
+infrastructure failures. Never upgrade a failed full run because a targeted retest
+passed. See [records.md](records.md) for the deliberate final release checkpoint.

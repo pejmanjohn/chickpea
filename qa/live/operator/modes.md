@@ -55,6 +55,20 @@ the model choice; do not silently substitute one or run the whole provider matri
 The deterministic authoring check uses a faux provider and cannot establish model
 quality. Record every first attempt; exact fixture/state assertions remain strict.
 
+### Repair loop and final checkpoint
+
+Use the private [run record commands](records.md) to preserve the first failure,
+refresh prerequisites, and see which evidence a fix invalidates. Diagnose the
+failing message, authority, tool, persistence, or delivery boundary before changing
+prompt wording. Run affected deterministic checks and the relevant Local journey
+with the actual model. Repeat the dependent deployed journey when needed.
+
+Pass `--record <private-run.json>` to the regression command for logs and timing.
+An unchanged repeat may add `--reuse`; a new source/configuration/inventory cannot
+reuse those offline receipts. Reserve both Node versions and clean export for
+the deliberate stable-candidate release checkpoint, unless a broader failure or
+impact justifies them earlier. This does not waive any final release gate.
+
 ## Core regression
 
 ```sh

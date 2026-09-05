@@ -46,6 +46,9 @@ branch and working changes. Run without `--plan` to execute them, or select
 the fixed core checks; `--mode release` runs the full local sequence on clean
 committed source. These commands need no browser, live account, or OAuth.
 Use `$chickpea-live-verification` for the corresponding real QA journeys.
+Its private [run record](qa/live/operator/records.md) can also capture offline
+checks with `verify:regression --record <private-run.json>`. Add `--reuse` only
+for unchanged repeats; release mode always executes its full checkpoint.
 
 Run builds and tests **serially**: tests inspect generated artifacts, so a
 concurrent build can make them read a partially written artifact.

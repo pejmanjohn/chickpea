@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { outsideGit } from './lib/private-evidence.mjs';
 import { readEnvironmentRegistry } from './lib/environment-registry.mjs';
 import { cloudflareDiagnosticScript, localDiagnosticQuery, projectDiagnosticSession, resolveDiagnosticRequest } from './lib/request-diagnostics.mjs';
 
@@ -31,25 +31,6 @@ const readJson = (file) => {
   try { return JSON.parse(readFileSync(file, 'utf8')); }
   catch { throw new Error('Evidence input could not be read as JSON.'); }
 };
-function outsideGit(path) {
-  let existing = resolve(path);
-  while (!existsSync(existing)) existing = dirname(existing);
-  // An exported source archive has no .git directory but is still public source.
-  const canonical = resolve(realpathSync(existing), relative(existing, resolve(path)));
-  const sourceRoot = realpathSync(join(dirname(fileURLToPath(import.meta.url)), '..'));
-  const withinSource = relative(sourceRoot, canonical);
-  if (withinSource === '' || (!isAbsolute(withinSource) && withinSource !== '..' && !withinSource.startsWith(`..${sep}`))) {
-    throw new Error('Diagnostic evidence must be outside Git and the source checkout.');
-  }
-  let inGit = false;
-  try {
-    const directory = statSync(existing).isDirectory() ? realpathSync(existing) : dirname(realpathSync(existing));
-    inGit = execFileSync('git', ['-C', directory, 'rev-parse', '--is-inside-work-tree'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() === 'true';
-  } catch { /* A non-repository private directory is expected. */ }
-  if (inGit) throw new Error('Diagnostic evidence must be outside Git, including through symlinks.');
-  return resolve(path);
-}
 function privateDirectory(root, prefix) {
   outsideGit(root);
   mkdirSync(root, { recursive: true, mode: 0o700 });

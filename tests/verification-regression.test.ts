@@ -78,4 +78,7 @@ test('argument parsing rejects missing values and supports explicit repeated are
   assert.equal(options.planOnly, true);
   assert.throws(() => parseRegressionArgs(['--base', '--plan']), /requires a value/);
   assert.throws(() => parseRegressionArgs(['--allow-production']), /Unknown argument/);
+  assert.throws(() => parseRegressionArgs(['--reuse']), /needs --record/);
+  assert.throws(() => parseRegressionArgs(['--record', '/private/run.json', '--mode', 'release', '--reuse']), /full release checkpoint/);
+  assert.throws(() => parseRegressionArgs(['--timeout-ms', '0']), /1000/);
 });
