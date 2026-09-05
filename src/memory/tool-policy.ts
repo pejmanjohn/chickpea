@@ -400,7 +400,7 @@ export function hasExplicitExternalSideEffectIntent(
 
 function explicitExternalSideEffectIntents(currentRequest: string): string[] {
   const request = normalizedCurrentRequest(currentRequest);
-  if (!request) return [];
+  if (!request || requestsDeferredExecution(request)) return [];
   return explicitActionClauses(request)
     .filter(clauseHasExplicitExternalSideEffectIntent)
     .slice(0, 8)
@@ -409,7 +409,7 @@ function explicitExternalSideEffectIntents(currentRequest: string): string[] {
 
 function explicitManagedCapabilityIntents(currentRequest: string): string[] {
   const request = normalizedCurrentRequest(currentRequest);
-  if (!request) return [];
+  if (!request || requestsDeferredExecution(request)) return [];
   const writes = MANAGED_CONNECTOR_CATALOG.list().flatMap((connector) =>
     connector.capabilities.filter((capability) =>
       capability.effect !== 'read' && capability.sideEffectLabel
@@ -500,7 +500,7 @@ function explicitActionClauses(request: string): string[] {
 }
 
 function isNegatedActionClause(clause: string): boolean {
-  const normalized = clause.replace(/^(?:please|kindly)\s+/i, '');
+  const normalized = stripRequestPreamble(clause);
   return /^(?:do\s+not|don't|never|refrain\s+from|avoid)\b/i.test(normalized) ||
     /^(?:i\s+)?(?:do\s+not|don't)\s+(?:want|need)\s+you\s+to\b/i.test(normalized);
 }
@@ -1047,10 +1047,22 @@ function normalizedCurrentRequest(currentRequest: string): string {
   return currentRequest.replace(/^\s*<@[A-Z0-9]+>\s*/i, '').trim();
 }
 
+/** Only known connector names may prefix a directive; arbitrary retrieved context cannot. */
 function stripRequestPreamble(request: string): string {
-  return request.replace(
-    /^(?:(?:please|kindly)\s+|instead,?\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?|i(?:'d| would)?\s+(?:like|want|need)\s+you\s+to\s+|(?:go ahead|proceed)\s+(?:and\s+)?)/i,
-    '',
+  const polite = /^(?:(?:please|kindly)\s+|instead,?\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?|i(?:'d| would)?\s+(?:like|want|need)\s+you\s+to\s+|(?:go ahead|proceed)\s+(?:and\s+)?)/i;
+  let task = request.replace(polite, '');
+  const qualified = /^using\s+([^,\n]{1,80}),\s*/i.exec(task);
+  if (qualified && MANAGED_CONNECTOR_CATALOG.list().some((connector) =>
+    connector.label.toLowerCase() === qualified[1]!.trim().toLowerCase()
+  )) task = task.slice(qualified[0].length).replace(polite, '');
+  return task;
+}
+
+/** A preview or explicit execution hold cannot become authority merely because it names an action. */
+function requestsDeferredExecution(request: string): boolean {
+  return explicitActionClauses(request).some((clause) =>
+    /^(?:preview\s+only|only\s+(?:a\s+)?preview|do\s+not\s+execute|don't\s+execute|wait\s+for\s+(?:my\s+)?approval)\b/i
+      .test(stripRequestPreamble(clause))
   );
 }
 

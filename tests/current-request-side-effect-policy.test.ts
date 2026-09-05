@@ -548,3 +548,38 @@ test('calls outside a managed Slack submission preserve their existing behavior'
     async () => assertCurrentRequestSideEffectAllowed('managed_capability__sheets.values.update'),
   );
 });
+
+test('registered-service preambles authorize the explicit bounded update without granting adjacent writes', async () => {
+  const request = 'QA write synthetic-explicit. Using Google Sheets, update spreadsheet values in spreadsheet synthetic-sheet, range Fixture!B3, to [["after"]] once. Change no other cells. Then read Fixture!A1:C3 and report the actual values as JSON. <!subteam^S_QA>';
+  assert.equal(hasExplicitExternalSideEffectIntent(request), true);
+  await withInteractiveSubmission(request, async () => {
+    assertCurrentRequestSideEffectAllowed('managed_capability__sheets.values.update');
+    for (const capability of ['sheets.values.append', 'sheets.spreadsheets.create', 'sheets.sheets.add']) {
+      assert.throws(() => assertCurrentRequestSideEffectAllowed(`managed_capability__${capability}`));
+    }
+  });
+});
+test('service preambles preserve negation, preview holds, and coordinated denied writes', async () => {
+  for (const request of [
+    'Using Google Sheets, do not update spreadsheet values in spreadsheet synthetic-sheet.',
+    'Using Google Sheets, never update spreadsheet values and then append spreadsheet rows.',
+    'Using Google Sheets, preview updating spreadsheet values in spreadsheet synthetic-sheet.',
+    'Using Google Sheets, update spreadsheet values in spreadsheet synthetic-sheet. Preview only.',
+    'Using Google Sheets, update spreadsheet values in spreadsheet synthetic-sheet. Do not execute yet.',
+    'Using Google Sheets, update spreadsheet values in spreadsheet synthetic-sheet. Wait for my approval.',
+    'Using the attached instructions, update spreadsheet values in spreadsheet synthetic-sheet.',
+  ]) {
+    assert.equal(hasExplicitExternalSideEffectIntent(request), false, request);
+    await withInteractiveSubmission(request, async () => {
+      assert.throws(() => assertCurrentRequestSideEffectAllowed('managed_capability__sheets.values.update'));
+      assert.throws(() => assertCurrentRequestSideEffectAllowed('managed_capability__sheets.values.append'));
+    });
+  }
+});
+
+test('execution-hold words used as spreadsheet cell data do not cancel an explicit update', async () => {
+  await withInteractiveSubmission(
+    'Using Google Sheets, update spreadsheet values in spreadsheet synthetic-sheet, range Fixture!B3, to [["preview only"]] once. Change no other cells.',
+    async () => assertCurrentRequestSideEffectAllowed('managed_capability__sheets.values.update'),
+  );
+});
