@@ -18,6 +18,7 @@ import * as v from 'valibot';
 import { toJsonSchema } from '@valibot/to-json-schema';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { proposeWorkspaceChangesValibotSchema } from '../src/management/schemas.ts';
+import { scheduleActionInputSchema, scheduleActionDescription, slackManagementInstruction } from '../src/management/slack-tools.ts';
 
 test('canonical Agent-authoring package is versioned, complete, and digest-bound', async () => {
   assert.equal(AGENT_AUTHORING_SKILL_NAME, 'agent-authoring');
@@ -160,41 +161,27 @@ test('Slack tool selection routes destructive schedule deletion through confirma
     new URL('../src/management/slack-tools.ts', import.meta.url),
     'utf8',
   );
-  const scheduleInput = source.slice(
-    source.indexOf('const scheduleActionInputSchema'),
-    source.indexOf('const slackManagementSignalSchema'),
-  );
-  const selectionInstruction = source.slice(
-    source.indexOf('Standalone requests for future or repeated work belong'),
-    source.indexOf("  ].join(' ');", source.indexOf('Standalone requests for future or repeated work belong')),
-  );
+  const selectionInstruction = slackManagementInstruction('agent_synthetic');
   const scheduleTool = source.slice(
     source.indexOf("name: 'manage_scheduled_work'"),
     source.indexOf("name: 'prepare_connector_setup'"),
   );
 
-  assert.doesNotMatch(scheduleInput, /['"]delete['"]/);
+  assert.equal(v.safeParse(scheduleActionInputSchema, { action: 'delete' }).success, false);
+  assert.match(source, /useInstruction\(slackManagementInstruction\(plan\.agentId\)\)/);
+  assert.match(scheduleTool, /description: scheduleActionDescription/);
+  assert.match(scheduleTool, /input: scheduleActionInputSchema/);
   assert.match(selectionInstruction, /Deletion is deliberately excluded from manage_scheduled_work/i);
   assert.match(selectionInstruction, /first call inspect_routines/i);
   assert.match(selectionInstruction, /delete_routine operation to propose_workspace_changes/i);
   assert.match(selectionInstruction, /show presentation\.slack/i);
   assert.match(selectionInstruction, /wait for explicit requester approval before calling confirm_workspace_change/i);
   assert.match(selectionInstruction, /Never use apply_workspace_changes for deletion/i);
-  assert.match(scheduleTool, /Do not use this tool to delete scheduled work/i);
+  assert.match(scheduleActionDescription, /Do not use this tool to delete scheduled work/i);
 });
 
-test('Slack connector setup skips broad workspace inspection for a named service', async () => {
-  const source = await readFile(
-    new URL('../src/management/slack-tools.ts', import.meta.url),
-    'utf8',
-  );
-  const instructionStart = source.indexOf(
-    'For Agent-design brainstorming or capability questions',
-  );
-  const instructionEnd = source.indexOf("  ].join(' '));", instructionStart);
-  assert.notEqual(instructionStart, -1);
-  assert.notEqual(instructionEnd, -1);
-  const selectionInstruction = source.slice(instructionStart, instructionEnd);
+test('Slack connector setup skips broad workspace inspection for a named service', () => {
+  const selectionInstruction = slackManagementInstruction('agent_synthetic');
 
   assert.match(selectionInstruction, /explicit request to connect a named service/i);
   assert.match(selectionInstruction, /call prepare_connector_setup directly/i);
