@@ -6187,6 +6187,34 @@ test('importing skills from a URL resolves a picker, adds the selected skill, an
   ]);
 });
 
+test('imported skill provenance is visible and survives editing and saving its local copy', async () => {
+  const importSource = {
+    repository: 'acme/skills', commit: '1'.repeat(40), path: 'skills/writing',
+    contentSha256: '2'.repeat(64),
+  };
+  const harness = runAdminPageHarness({ agents: [{
+    id: 'agent_import_source', name: 'Imported source', description: 'Test provenance',
+    instructions: 'Help with writing.', enabled: true, model: 'local-stub/import',
+    skills: [{ name: 'writing', description: 'Write clearly.', instructions: 'Use plain words.', enabled: true, importSource }],
+  }] });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_import_source' }) });
+  assert.match(harness.app.innerHTML, /Imported snapshot/);
+  assert.match(harness.app.innerHTML, /acme\/skills\/skills\/writing/);
+  assert.match(harness.app.innerHTML, new RegExp(importSource.commit));
+  assert.match(harness.app.innerHTML, new RegExp(importSource.contentSha256));
+  click({ target: actionTarget({ 'data-action': 'skill-edit', 'data-index': '0' }) });
+  input({ target: inputTarget({ 'data-action': 'skill-field-instructions' }, 'Use short sentences.') });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  const saved = harness.agentPatchBodies[0]?.body.skills as Array<Record<string, unknown>>;
+  assert.equal(saved[0]?.instructions, 'Use short sentences.');
+  assert.deepEqual(saved[0]?.importSource, importSource);
+});
+
 test('an import error is surfaced in the panel and dedupes a same-named skill on add', async () => {
   const harness = runAdminPageHarness({
     agents: [

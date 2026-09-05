@@ -305,6 +305,7 @@ import {
 import { validEnabledRepositoryGrants } from '../sandbox/egress-handler.ts';
 import { sandboxBindingInstalled } from '../sandbox/select.ts';
 import { parseSkillSource, resolveSkillSource, SkillImportError } from '../config/skill-import.ts';
+import { skillImportSourceSchema } from '../config/skill-provenance.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
@@ -900,6 +901,7 @@ const skillSchema = v.object({
   instructions: v.pipe(v.string(), v.trim(), v.minLength(1)),
   enabled: v.boolean(),
   suggestedSkillId: v.optional(skillName),
+  importSource: v.optional(skillImportSourceSchema),
 });
 // Reject duplicate names at the write boundary — duplicates are a turn-killer
 // downstream, so they must never reach the store.
@@ -10408,6 +10410,7 @@ function toSkills(
     instructions: skill.instructions,
     enabled: skill.enabled,
     ...(skill.suggestedSkillId !== undefined ? { suggestedSkillId: skill.suggestedSkillId } : {}),
+    ...(skill.importSource !== undefined ? { importSource: skill.importSource } : {}),
   }));
 }
 

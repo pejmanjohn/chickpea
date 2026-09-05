@@ -134,6 +134,7 @@ test('resolveSkillSource resolves candidates, flags scripts, and skips test fixt
   assert.equal(foo?.hasScripts, true); // has scripts/run.sh sibling
   assert.equal(result.skills.find((skill) => skill.name === 'bar')?.hasScripts, false);
   assert.match(String(foo?.sourceUrl), /github\.com\/acme\/skills\/tree\/main\/skills\/foo/);
+  assert.equal(foo?.importSource, undefined, 'a mutable branch must not be presented as pinned provenance');
 });
 
 test('resolveSkillSource honors an @skill filter', async () => {
@@ -215,6 +216,10 @@ test('resolveSkillSource resolves an exact public directory without scanning the
   assert.equal(result.total, 1);
   assert.equal(result.skipped, 0);
   assert.equal(result.ref, EXACT_OID);
+  assert.equal(result.skills[0]?.importSource?.commit, EXACT_OID);
+  assert.equal(result.skills[0]?.importSource?.repository, 'acme/skills');
+  assert.equal(result.skills[0]?.importSource?.path, 'skills/foo');
+  assert.match(result.skills[0]?.importSource?.contentSha256 ?? '', /^[a-f0-9]{64}$/);
   assert.match(result.skills[0]!.sourceUrl, new RegExp(EXACT_OID));
 });
 

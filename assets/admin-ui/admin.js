@@ -770,6 +770,7 @@
         enabled: skill.enabled
       };
       if (skill.suggestedSkillId !== undefined) copy.suggestedSkillId = skill.suggestedSkillId;
+      if (skill.importSource !== undefined) copy.importSource = Object.assign({}, skill.importSource);
       return copy;
     });
     draft.duplicateSourceName = selected.name || "Agent";
@@ -4375,6 +4376,18 @@
       '<p class="agent-instructions-guidance">' + icon("check") + '<span>These instructions follow the Agent everywhere it works.</span></p></div>';
   }
 
+  function skillImportSourceHtml(skill) {
+    var source = skill.importSource;
+    if (!source) return "";
+    var path = String(source.path || "").split("/").map(encodeURIComponent).join("/");
+    var url = "https://github.com/" + String(source.repository || "").split("/").map(encodeURIComponent).join("/") + "/tree/" + encodeURIComponent(source.commit) + "/" + path;
+    return '<details class="hint"><summary>Imported snapshot</summary>' +
+      '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' + esc(source.repository) + '/' + esc(source.path || "(root)") + '</a>' +
+      '<div>Commit: <code>' + esc(source.commit) + '</code></div>' +
+      '<div>Imported content SHA-256: <code>' + esc(source.contentSha256) + '</code></div>' +
+      '<div>Source of the original copy; local edits do not change this record.</div></details>';
+  }
+
   function skillsPanelHtml(draft) {
     var skills = draft.skills || [];
     var editor = state.skillEditor;
@@ -4386,7 +4399,7 @@
       if (editor && editor.index === index) return skillEditorFormHtml(editor);
       return '<div class="skill-row">' +
         '<div class="sk-body"><span class="sk-name">' + esc(skill.name) + '<span class="badge-src">custom</span></span>' +
-        '<span class="sk-desc">' + esc(skill.description) + '</span></div>' +
+        '<span class="sk-desc">' + esc(skill.description) + '</span>' + skillImportSourceHtml(skill) + '</div>' +
         '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="skill-toggle" data-index="' + index + '" ' + (skill.enabled ? "checked" : "") + ' aria-label="Skill enabled"></span>' +
         '<button type="button" class="btn btn-ghost btn-sm" data-action="skill-edit" data-index="' + index + '">Edit</button>' +
         '<button type="button" class="x-btn" data-action="skill-remove" data-index="' + index + '" aria-label="Remove skill">&times;</button></div>';
@@ -9651,6 +9664,7 @@
       skills: (agent.skills || []).map(function (skill) {
         var copy = { name: skill.name, description: skill.description, instructions: skill.instructions, enabled: skill.enabled };
         if (skill.suggestedSkillId !== undefined) copy.suggestedSkillId = skill.suggestedSkillId;
+        if (skill.importSource !== undefined) copy.importSource = Object.assign({}, skill.importSource);
         return copy;
       }),
       // Deep-copy each connection (policy only — never a secret) so the inline
@@ -10930,6 +10944,7 @@
             var replaced = skills[editor.index];
             saved.enabled = replaced ? replaced.enabled : true;
             if (replaced && replaced.suggestedSkillId !== undefined) saved.suggestedSkillId = replaced.suggestedSkillId;
+            if (replaced && replaced.importSource !== undefined) saved.importSource = Object.assign({}, replaced.importSource);
             skills[editor.index] = saved;
           }
           state.profileDraft.skills = skills;
@@ -12339,6 +12354,7 @@
       var replaced = skills[editor.index];
       saved.enabled = replaced ? replaced.enabled : true;
       if (replaced && replaced.suggestedSkillId !== undefined) saved.suggestedSkillId = replaced.suggestedSkillId;
+      if (replaced && replaced.importSource !== undefined) saved.importSource = Object.assign({}, replaced.importSource);
       skills[editor.index] = saved;
     }
     state.profileDraft.skills = skills;
@@ -13440,6 +13456,7 @@
     picked.forEach(function (skill, index) {
       if (!selected[index]) return;
       var entry = { name: skill.name, description: skill.description, instructions: skill.instructions, enabled: true };
+      if (skill.importSource !== undefined) entry.importSource = Object.assign({}, skill.importSource);
       var existingIndex = -1;
       for (var i = 0; i < skills.length; i += 1) {
         if (skills[i].name === entry.name) { existingIndex = i; break; }
