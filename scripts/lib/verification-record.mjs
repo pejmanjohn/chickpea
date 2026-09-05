@@ -352,7 +352,10 @@ export function status(run, source, now = Date.now()) {
   const openOffline = run.events.filter((e) => e.type === 'offline_begin' && !offline.some((end) => end.attemptId === e.id));
   const cleanupPending = resources.filter((r) => r.cleanup !== 'verified');
   const totals = { automatedMs: offline.reduce((sum, e) => sum + e.durationMs, 0), browserMs: 0, modelMs: 0, humanWaitMs: 0, observationMs: 0 };
-  const outcomes = run.events.filter((e) => e.type === 'finish');
+  // A resolution's measurements are cumulative for the same attempt. Count
+  // the latest receipt once, while retaining its first outcome in the journal.
+  const outcomes = [...new Map(run.events.filter((e) => ['finish', 'resolve'].includes(e.type))
+    .map((e) => [e.attemptId, e])).values()];
   for (const e of outcomes) for (const [key, value] of Object.entries(e.timing ?? {})) totals[key] += value;
   return {
     runId: run.id, mode: spec.mode, purpose: spec.purpose, source, readiness, cases, resources,
@@ -361,6 +364,8 @@ export function status(run, source, now = Date.now()) {
     complete: (cases.length > 0 || offlinePlans.length > 0) && cases.every((c) => c.result === 'pass') && cleanupPending.length === 0 && !releasePending && openOffline.length === 0 && offlinePlans.every((p) => p.result === 'pass'),
     timing: { wallMs: now - Date.parse(run.createdAt), measured: totals,
       unmeasuredAttempts: outcomes.filter((e) => !e.timing).length,
+      unknownByCategory: Object.fromEntries(Object.keys(totals).map((key) => [key,
+        outcomes.filter((e) => e.timing?.[key] === undefined).length])),
       knownCostUsd: outcomes.reduce((sum, e) => sum + (e.costUsd ?? 0), 0), unknownCostAttempts: outcomes.filter((e) => e.costUsd == null).length },
   };
 }
@@ -386,7 +391,7 @@ export function renderReport(view) {
     ...view.offlinePlans.map((e) => `- Latest ${cell(e.node)} ${cell(e.mode)} plan: ${e.result}`),
     `Open offline attempts: ${view.openOffline.length}. Final Node 22.19.0 and Node 24 release checkpoints ${view.releasePending ? 'pending' : view.mode === 'release' ? 'present for current source' : 'not requested'}.`, '',
     '## Measured time and cost', '', `Wall time: ${view.timing.wallMs} ms. Categories can overlap; do not add them to infer wall time.`,
-    ...Object.entries(view.timing.measured).map(([key, value]) => `- ${key}: ${value}`),
+    ...Object.entries(view.timing.measured).map(([key, value]) => `- ${key}: ${value}; unmeasured attended attempts: ${view.timing.unknownByCategory[key]}`),
     `Unmeasured attended attempts: ${view.timing.unmeasuredAttempts}. Known cost: USD ${view.timing.knownCostUsd}. Unknown-cost attempts: ${view.timing.unknownCostAttempts}.`, '');
   return lines.join('\n');
 }

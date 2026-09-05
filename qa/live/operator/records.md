@@ -94,6 +94,8 @@ until an event with `type: reconcile`, `attemptId`, `outcome: not_applied`, summ
 and evidence proves absence. `outcome: applied` instead permits a `resolve` event
 with the same fields as finish to grade the original action. `unknown` permits
 neither replay nor a pass. See [recovery.md](recovery.md).
+Timing and cost on `resolve` are cumulative for that attempt; the report uses
+the latest receipt once. Missing timing categories stay explicitly unmeasured.
 
 Case status becomes stale when its declared source areas, contract, context, or
 evidence changes. Unknown/shared runtime paths invalidate all areas. Workflow-only

@@ -81,12 +81,16 @@ test('interrupted attended attempt resumes without replay and preserves ambiguou
   updateRun(f.file, (run: object) => appendEvent(run, ended, source(), NOW + 2000));
   assert.throws(() => updateRun(f.file, (run: object) => appendEvent(run, { type: 'begin', caseId: 'schedule', reason: 'try again' }, source(), NOW + 3000)), /not_applied/);
   updateRun(f.file, (run: object) => appendEvent(run, { type: 'reconcile', attemptId: started.id, outcome: 'applied', summary: 'Exact saved object read back.', evidence: [f.evidence] }, source(), NOW + 4000));
-  updateRun(f.file, (run: object) => appendEvent(run, { ...f.finish(started.id), type: 'resolve' }, source(), NOW + 5000));
+  updateRun(f.file, (run: object) => appendEvent(run, { ...f.finish(started.id), type: 'resolve', timing: { browserMs: 3000 }, costUsd: 0.02 }, source(), NOW + 5000));
   const current = status(readRun(f.file), source(), NOW + 6000);
   assert.equal(current.cases[0].result, 'pass');
   assert.equal(current.cases[0].firstFailure.result, 'ambiguous');
   assert.match(renderReport(current), /UI timed out/);
   assert.equal(current.complete, true);
+  assert.equal(current.timing.measured.browserMs, 3000);
+  assert.equal(current.timing.unknownByCategory.browserMs, 0);
+  assert.equal(current.timing.unknownByCategory.modelMs, 1);
+  assert.equal(current.timing.knownCostUsd, 0.02);
 });
 
 test('not_applied reconciliation permits a bounded retest; unknown and applied do not permit replay', (t) => {
