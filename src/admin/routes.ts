@@ -5522,6 +5522,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const principal = principalByContext.get(c);
     return c.html(renderAdminPage({
       usageAdminUi: usageAdminUi(c),
+      installationOwner: Boolean(principal && principal.role === 'owner' && !principal.machine),
       workspaceAdminUi: Boolean(
         principal && permissionForRole(principal.role).has('admin.configure'),
       ),

@@ -10,6 +10,7 @@
   var IS_CLOUDFLARE = CONFIG.isCloudflare === true;
   var USAGE_ADMIN_UI = CONFIG.usageAdminUi === true;
   var WORKSPACE_ADMIN_UI = CONFIG.workspaceAdminUi !== false;
+  var INSTALLATION_OWNER = CONFIG.installationOwner === true;
   var CONNECTOR_PRESETS = CONFIG.connectorPresets;
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
   var MANAGED_CONNECTOR_PRESETS = CONFIG.managedConnectorPresets;
@@ -203,6 +204,7 @@
     // round trip per keystroke.
     settings: null,
     settingsSection: "providers",
+    installation: { details: null, updates: null, busy: false, error: "", dialog: "", report: "", notice: "" },
     settingsLoaded: false,
     settingsLoadGeneration: 0,
     connectionInventory: { accounts: [], loading: false, error: "", notice: "" },
@@ -915,7 +917,7 @@
     lastRenderedPath = renderedPath;
     var app = document.getElementById("app");
     if (app.removeAttribute) app.removeAttribute("aria-busy");
-    var overlays = teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
+    var overlays = installationDialogHtml() + teamConfirmModalHtml() + composioSetupModalHtml() + managedAuthorizationModalHtml() + connectorSettingsConfirmModalHtml() + leavePromptModalHtml() + connectionRemoveModalHtml() + apiConnectionRemoveModalHtml() + slackDisconnectModalHtml() + githubDisconnectModalHtml() + sandboxConfirmModalHtml() + agentScheduleDeleteModalHtml() + scheduledRoutineSummaryModalHtml() + scheduledDeleteModalHtml();
     if (state.view === "onboarding") {
       app.className = "frame onboarding-frame";
       app.innerHTML = onboardingShellHtml() + overlays;
@@ -937,6 +939,14 @@
         : document.querySelector('.topbar-menu > summary');
       state.mobileAgentRosterFocus = "";
       if (mobileRosterFocus && mobileRosterFocus.focus) mobileRosterFocus.focus();
+    }
+    if (state.installation.dialog) {
+      [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
+        if (!region) return;
+        region.inert = true;
+        if (region.setAttribute) region.setAttribute("aria-hidden", "true");
+      });
+      focusAction("installation-dialog-close");
     }
     if (state.teamConfirm) {
       [document.querySelector(".topbar"), document.querySelector(".body")].forEach(function (region) {
@@ -1523,6 +1533,7 @@
       { id: "sandbox", name: "Coding sandbox", meta: "Workspace runtime" },
       { id: "outbound", name: "Outbound access", meta: "Network policy" }
     ];
+    if (INSTALLATION_OWNER) sections.push({ id: "updates", name: "About &amp; updates", meta: "Version and support" });
     var primaryShell = isPrimaryAdminSurface();
     var html = '<nav class="rail' + (primaryShell ? ' primary-shell-sidebar' : '') + '" aria-label="Settings">' +
       (primaryShell ? primaryShellBrandHtml() : '') + '<div class="rail-context">' +
@@ -7921,7 +7932,104 @@
       '<div><button type="button" class="btn btn-soft" data-action="sandbox-save"' + disabled + '>' + (state.sandboxSaving === "advanced" ? "Saving&hellip;" : "Save advanced settings") + '</button></div>';
   }
 
+  function installationCommand() {
+    var current = state.installation;
+    var release = current.updates && current.updates.release;
+    return current.details && current.updates && current.details.deployment === "cloudflare" && current.updates.status === "available" &&
+      release && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(release.version)
+      ? "npm run upgrade -- --to v" + release.version : "";
+  }
+
+  function installationDate(value) {
+    var date = new Date(value);
+    return isFinite(date.getTime()) ? date.toLocaleString() : "Unknown";
+  }
+
+  function installationPageHtml() {
+    var current = state.installation;
+    var details = current.details;
+    var identity = details && details.identity;
+    var update = current.updates;
+    var mode = update ? update.status : "loading";
+    var title = "Checking for updates…";
+    var copy = "Checking the latest published Chickpea release.";
+    if (mode === "available") { title = "Chickpea " + update.release.version + " is available"; copy = "Review what’s changed and update when you’re ready."; }
+    if (mode === "current") { title = "You’re up to date"; copy = "This installation is running the latest available release or a newer version."; }
+    if (mode === "no-release") { title = "No releases published yet"; copy = "Your installation is ready to check for the first published release."; }
+    if (mode === "unversioned") { title = "Confirm your installation’s version"; copy = "This build has no verified release identity. Follow the adoption guide before upgrading."; }
+    if (mode === "failed") { title = "Couldn’t check for updates"; copy = update.error === "rate-limited" ? "GitHub’s request limit was reached. Try again later." : "The release service could not be reached or returned an unreadable response. Try again."; }
+    var label = { available: "Update available", current: "Up to date", failed: "Check failed", "no-release": "Release status", unversioned: "Version unknown", loading: "Checking" }[mode] || "Release status";
+    var releaseAction = mode === "available" ? '<button type="button" class="btn btn-primary" data-action="installation-review">Review update ' + icon("arrow-right") + '</button>' : '';
+    if (mode === "unversioned") releaseAction = '<a class="btn btn-soft" href="https://github.com/pejmanjohn/chickpea/blob/main/docs/runbooks/upgrading.md" target="_blank" rel="noreferrer">Read upgrade guide</a>';
+    return '<div class="installation-page"><div class="about-heading"><div><p class="section-trail">Settings</p><h1 class="page-title">About &amp; updates</h1><p>Keep your Chickpea installation up to date.</p></div><span class="owner-label">Owner settings</span></div>' +
+      (current.error ? '<p class="field-error" role="alert">' + esc(current.error) + '</p>' : '') +
+      '<section class="version-panel"><div class="installed"><img class="installed-mark" src="/chickpea-mark-128.png" alt=""><div class="installed-copy"><h2>Chickpea ' + esc(identity ? identity.version : "") + '</h2><p>Installed version <span class="separator">·</span> <span class="mono">' + esc(identity && identity.sourceCommit ? identity.sourceCommit.slice(0, 7) : "Unknown commit") + '</span></p></div><span class="cloud-host">' + (details ? details.deployment === "cloudflare" ? "Hosted on Cloudflare" : "Hosted on Node" : "Loading installation…") + '</span></div>' +
+      '<div class="release" data-mode="' + esc(mode) + '"><div class="release-status"><span class="status-dot"></span>' + label + '</div><h3>' + esc(title) + '</h3><p>' + esc(copy) + '</p>' +
+      (mode === "failed" && update.lastSuccessfulCheckAt ? '<p class="cached-result">Last successful check: ' + esc(installationDate(update.lastSuccessfulCheckAt)) + (update.release ? '. Last seen release: v' + esc(update.release.version) : '') + '.</p>' : '') +
+      '<div class="release-bottom"><span class="release-meta">Updates are installed when you choose.</span>' + releaseAction + '</div></div>' +
+      '<div class="check-row"><span class="check-note" role="status">' + (current.busy ? "Checking…" : update ? "Last checked " + esc(installationDate(update.checkedAt)) : "Not checked yet") + '</span><button type="button" class="btn btn-ghost" data-action="installation-refresh"' + (current.busy ? ' disabled' : '') + '>Check for updates</button></div>' +
+      '<details class="details-row"><summary>Installation details ' + icon("chevron-right") + '</summary><dl class="deployment-list"><div><dt>Application version</dt><dd>' + esc(identity ? identity.version : "Unknown") + '</dd></div><div><dt>Source commit</dt><dd class="mono">' + esc(identity && identity.sourceCommit ? identity.sourceCommit : "Unknown") + '</dd></div><div><dt>Deployment</dt><dd>' + (details ? details.deployment === "cloudflare" ? "Cloudflare Workers" : "Node" : "Unknown") + '</dd></div><div><dt>Update method</dt><dd>' + (details && details.deployment === "cloudflare" ? "Guided command" : "Manual upgrade guide") + '</dd></div></dl></details></section>' +
+      '<section class="support-panel"><div class="support-copy"><h2>Need a hand?</h2><p>Preview a safe summary of your version, setup, and provider configuration to share when asking for help.</p><p class="privacy">No credentials, conversations, or private workspace content.</p></div><button type="button" class="btn btn-soft" data-action="installation-report">Preview report</button></section>' +
+      '<footer class="page-footer"><span>Chickpea · Open source, self-hosted.</span><span class="footer-links"><a href="https://docs.chickpea.co" target="_blank" rel="noreferrer">Documentation</a><a href="https://github.com/pejmanjohn/chickpea" target="_blank" rel="noreferrer">GitHub</a></span></footer></div>';
+  }
+
+  function installationDialogHtml() {
+    var current = state.installation;
+    if (!current.dialog) return "";
+    var report = current.dialog === "report";
+    var release = current.updates && current.updates.release;
+    var command = installationCommand();
+    var body = report ? '<p class="report-intro">This is the exact report that will be copied. Nothing is sent automatically.</p><pre class="report-data">' + esc(current.report || "Loading report…") + '</pre>' :
+      '<p class="upgrade-path">' + esc(current.details && current.details.identity.version || "Unknown") + ' → ' + esc(release ? release.version : "Unknown") + '</p><h3>What’s changed</h3><div class="release-notes">' + esc(release && release.notes || "Read the full release notes on GitHub.") + '</div>' +
+      (command ? '<div class="command-section"><h3>Update from your terminal</h3><p>Run this in your Chickpea checkout. The command checks compatibility and shows the installation before asking you to confirm.</p><div class="command-box"><code>' + esc(command) + '</code><button type="button" class="btn btn-soft" data-action="installation-copy-command">Copy command</button></div><p class="preflight-note">The command preserves your installation and records recovery details. Code recovery is not a data backup.</p></div>' : '<div class="command-section"><p>Use the upgrade guide for this deployment. The guided Cloudflare command requires a known, supported release.</p></div>') +
+      (current.details && current.details.deployment === "cloudflare" ? '<details class="bootstrap"><summary>Installed with the Cloudflare Deploy button?</summary><p>Complete the one-time local setup and select your existing installation before running an upgrade.</p></details>' : '') + '<p class="upgrade-guide"><a href="https://github.com/pejmanjohn/chickpea/blob/main/docs/runbooks/' + (current.details && current.details.deployment === "node" ? 'operations' : 'upgrading') + '.md" target="_blank" rel="noreferrer">Read the upgrade guide</a></p>';
+    return '<div class="modal-backdrop"><div class="modal-card installation-dialog" role="dialog" aria-modal="true" aria-labelledby="installation-dialog-title" tabindex="-1" data-role="installation-dialog"><h2 class="modal-title" id="installation-dialog-title">' + (report ? "Support report" : "Review update") + '</h2><div class="dialog-content">' + body + '<p class="hint" role="status">' + esc(current.notice) + '</p></div><div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="installation-dialog-close">Done</button><span class="spacer"></span>' + (report ? '<button type="button" class="btn btn-primary" data-action="installation-copy-report"' + (!current.report ? ' disabled' : '') + '>Copy report</button>' : '') + '</div></div></div>';
+  }
+
+  function loadInstallation(refresh) {
+    if (!INSTALLATION_OWNER) return;
+    if (state.installation.busy) { render(); return; }
+    var current = state.installation;
+    current.busy = true; current.error = ""; render();
+    Promise.all([
+      api("/admin/api/installation", { cache: "no-store" }).then(function (body) { current.details = body; }),
+      api("/admin/api/installation/updates" + (refresh ? "?refresh=1" : ""), { cache: "no-store" }).then(function (body) { current.updates = body; }).catch(function () {
+        var previous = current.updates;
+        current.updates = { status: "failed", error: "network", checkedAt: new Date().toISOString(), release: previous && previous.release,
+          lastSuccessfulCheckAt: previous && (previous.lastSuccessfulCheckAt || (previous.status !== "failed" ? previous.checkedAt : null)) };
+      })
+    ]).catch(function () { current.error = "Couldn’t load installation details. Try again."; }).finally(function () {
+      current.busy = false;
+      if (state.view === "settings" && state.settingsSection === "updates") render();
+    });
+  }
+
+  function openInstallationReport() {
+    var current = state.installation;
+    current.dialog = "report"; current.report = ""; current.notice = ""; render();
+    api("/admin/api/installation/support", { cache: "no-store" }).then(function (body) {
+      if (current.dialog !== "report") return;
+      current.report = typeof body.report === "string" ? body.report : "";
+      if (!current.report) current.notice = "Couldn’t load the report. Close and try again.";
+      render();
+    }).catch(function () { if (current.dialog === "report") { current.notice = "Couldn’t load the report. Close and try again."; render(); } });
+  }
+
+  function closeInstallationDialog() {
+    var action = state.installation.dialog === "report" ? "installation-report" : "installation-review";
+    state.installation.dialog = ""; state.installation.notice = ""; render(); focusAction(action);
+  }
+
+  function copyInstallationText(text) {
+    if (!text) return;
+    function failed() { state.installation.notice = "Clipboard unavailable. Select and copy the text above."; render(); }
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { failed(); return; }
+    try { Promise.resolve(navigator.clipboard.writeText(text)).then(function () { state.installation.notice = "Copied."; render(); }).catch(failed); }
+    catch (_) { failed(); }
+  }
+
   function settingsMainHtml() {
+    if (state.settingsSection === "updates" && INSTALLATION_OWNER) return installationPageHtml();
     if (state.settingsSection === "slack") {
       return '<div class="section-head"><div><h1 class="page-title">Slack</h1><p class="hint">Manage the workspace installation and transport behavior. Agent handles and avatars live on each Agent.</p></div></div>' +
         slackWorkspaceSettingsHtml();
@@ -8504,6 +8612,7 @@
       "egress-settings": "outbound"
     };
     var section = aliases[String(value || "")] || String(value || "");
+    if (section === "updates" && INSTALLATION_OWNER) return section;
     return ["slack", "connectors", "providers", "github", "sandbox", "outbound"].includes(section) ? section : "providers";
   }
 
@@ -8534,6 +8643,7 @@
     state.modelCatalogError = "";
     state.workspaceDefaultError = "";
     state.workspaceDefaultNotice = "";
+    if (state.settingsSection === "updates") { loadInstallation(false); return; }
     if (state.settingsSection === "slack") {
       render();
       revalidateCurrentVisibleResources();
@@ -10290,6 +10400,15 @@
     if (!target) return;
     var action = target.getAttribute("data-action");
 
+    if (state.installation.dialog) {
+      if (action === "installation-dialog-close") closeInstallationDialog();
+      if (action === "installation-copy-command") copyInstallationText(installationCommand());
+      if (action === "installation-copy-report" && state.installation.report) copyInstallationText(state.installation.report);
+      return;
+    }
+    if (INSTALLATION_OWNER && action === "installation-refresh") { loadInstallation(true); return; }
+    if (INSTALLATION_OWNER && action === "installation-review") { state.installation.dialog = "review"; state.installation.notice = ""; render(); return; }
+    if (INSTALLATION_OWNER && action === "installation-report") { openInstallationReport(); return; }
     if (state.teamConfirm) {
       if (action === "team-confirm-cancel") {
         var cancelledTeamAction = state.teamConfirm;
@@ -10693,7 +10812,7 @@
     if (action === "settings-section") {
       var nextSettingsSection = normalizeSettingsSection(target.getAttribute("data-section") || "providers");
       if (nextSettingsSection === "slack") openDestination("connection");
-      else if (state.view !== "settings" || nextSettingsSection === "connectors" || state.settingsSection === "connectors") openSettings(nextSettingsSection);
+      else if (state.view !== "settings" || nextSettingsSection === "connectors" || state.settingsSection === "connectors" || nextSettingsSection === "updates" || state.settingsSection === "updates") openSettings(nextSettingsSection);
       else {
         state.settingsSection = nextSettingsSection;
         render();
@@ -11736,6 +11855,11 @@
   }
 
   document.addEventListener("keydown", function (event) {
+    if (state.installation.dialog) {
+      if (trapModalTab(event, '[data-role="installation-dialog"]')) return;
+      if (event.key === "Escape" || event.key === "Esc") { event.preventDefault(); closeInstallationDialog(); }
+      return;
+    }
     if (state.composioSetup) {
       if (trapModalTab(event, '[data-role="composio-setup-dialog"]')) return;
       if ((event.key === "Escape" || event.key === "Esc") && state.composioSetup.phase !== "validating" && state.composioSetup.phase !== "preparing") {

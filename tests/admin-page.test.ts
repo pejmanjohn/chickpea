@@ -158,8 +158,8 @@ const opsAgent = {
   model: 'local-stub/ops',
 };
 
-function inlineScript(usageAdminUi = false, workspaceAdminUi = true): string {
-  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi })
+function inlineScript(usageAdminUi = false, workspaceAdminUi = true, installationOwner = false): string {
+  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi, installationOwner })
     .match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script, 'admin page should include one inline script');
   return script;
@@ -369,6 +369,8 @@ function runAdminPageHarness(
     putIsMember?: boolean;
     putAssignmentError?: { status: number; error: string; message?: string };
     cloudflare?: boolean;
+    installationOwner?: boolean;
+    installationUpdates?: () => unknown;
     agents?: unknown[];
     agentsGetError?: { status: number; error: string };
     creationStatusFetch?: (agentId: string) => Promise<FakeResponse>;
@@ -1276,6 +1278,9 @@ function runAdminPageHarness(
   const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string>; cache?: string }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
     fetchCalls.push({ path, method });
+    if (path === '/admin/api/installation') return Promise.resolve(jsonResponse({ identity: { version: '0.1.0', sourceCommit: 'a'.repeat(40) }, deployment: harnessOptions.cloudflare ? 'cloudflare' : 'node', setup: 'ready', providers: {}, errors: [] }));
+    if (path.startsWith('/admin/api/installation/updates')) return Promise.resolve(jsonResponse(harnessOptions.installationUpdates?.() ?? { status: 'no-release', checkedAt: '2026-09-07T12:00:00Z' }));
+    if (path === '/admin/api/installation/support') return Promise.resolve(jsonResponse({ report: 'Chickpea support report\nApplication version: 0.1.0' }));
     if (
       method === 'GET' &&
       ['/admin/api/github/status', '/admin/api/egress', '/admin/api/sandbox/status'].includes(path)
@@ -2672,6 +2677,7 @@ function runAdminPageHarness(
       options.cloudflare ?? false,
       options.usageAdminUi ?? false,
       options.workspaceAdminUi ?? true,
+      options.installationOwner ?? false,
     ),
     {
       document,
@@ -2883,15 +2889,16 @@ function inlineScriptFor(
   cloudflare: boolean,
   usageAdminUi = false,
   workspaceAdminUi = true,
+  installationOwner = false,
 ): string {
-  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi);
+  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     value: { userAgent: 'Cloudflare-Workers' },
     configurable: true,
   });
   try {
-    return inlineScript(usageAdminUi, workspaceAdminUi);
+    return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else delete (globalThis as { navigator?: unknown }).navigator;
@@ -14984,4 +14991,45 @@ test('a Repositories picker failure stays inside the picker and offers a local r
   click({ target: actionTarget({ 'data-action': 'repo-picker-cancel' }) });
   assert.doesNotMatch(harness.app.innerHTML, /data-action="repo-picker-retry"/);
   assert.match(harness.app.innerHTML, /data-action="repo-add"/);
+});
+
+
+test('Owner updates page reviews escaped notes, copies exact commands and previews the copied report', async () => {
+  let failed = false;
+  const harness = runAdminPageHarness({ cloudflare: true, installationOwner: true, initialPath: '/admin/settings/updates', installationUpdates: () => ({
+    status: failed ? 'failed' : 'available', checkedAt: '2026-09-07T12:00:00Z',
+    ...(failed ? { error: 'network', lastSuccessfulCheckAt: '2026-09-06T12:00:00Z' } : {}),
+    release: { version: '0.1.1', notes: '<script>alert(1)</script>', url: 'https://github.com/pejmanjohn/chickpea/releases/tag/v0.1.1', publishedAt: '2026-09-07T10:00:00Z' },
+  }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /About &amp; updates/);
+  assert.match(harness.app.innerHTML, /Update available/);
+  const click = harness.listeners.click!;
+  click({ target: actionTarget({ 'data-action': 'installation-review' }) });
+  assert.match(harness.app.innerHTML, /&lt;script&gt;alert/);
+  assert.doesNotMatch(harness.app.innerHTML, /<script>alert/);
+  click({ target: actionTarget({ 'data-action': 'installation-copy-command' }) });
+  await flushAsync();
+  assert.equal(harness.clipboardWrites.at(-1), 'npm run upgrade -- --to v0.1.1');
+  click({ target: actionTarget({ 'data-action': 'installation-dialog-close' }) });
+  click({ target: actionTarget({ 'data-action': 'installation-report' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Chickpea support report/);
+  click({ target: actionTarget({ 'data-action': 'installation-copy-report' }) });
+  await flushAsync();
+  assert.equal(harness.clipboardWrites.at(-1), 'Chickpea support report\nApplication version: 0.1.0');
+  click({ target: actionTarget({ 'data-action': 'installation-dialog-close' }) });
+  failed = true;
+  click({ target: actionTarget({ 'data-action': 'installation-refresh' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Couldn.t check for updates/);
+  assert.doesNotMatch(harness.app.innerHTML, /Up to date/);
+  assert.match(harness.app.innerHTML, /Last successful check/);
+});
+
+test('non-Owners have no update controls or installation fetches', async () => {
+  const harness = runAdminPageHarness({ installationOwner: false, initialPath: '/admin/settings/updates' });
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="installation-review"|data-section="updates"/);
+  assert.equal(harness.fetchCalls.filter(call => call.path.startsWith('/admin/api/installation')).length, 0);
 });

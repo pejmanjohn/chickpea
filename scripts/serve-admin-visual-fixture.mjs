@@ -27,6 +27,7 @@ const ENV_KEYS = [
 ];
 
 export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
+  settingsUpdates: Object.freeze({ path: '/admin/settings/updates', actions: Object.freeze(['Preview report']) }),
   settingsProviders: Object.freeze({ path: '/admin/settings/providers', actions: Object.freeze([]) }),
   agentInstructions: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze([]) }),
   agentProposals: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Slack update proposal details', 'Refresh Slack proposals']) }),
@@ -647,6 +648,10 @@ export async function startAdminVisualFixture(options = {}) {
   const runtimeContract = options.runtimeContract ?? 'legacy';
   const onboardingStage = options.onboardingStage ?? null;
   const principalRole = options.principalRole ?? 'owner';
+  const updateState = options.updateState ?? null;
+  if (updateState !== null && !['available', 'current', 'failed', 'unversioned', 'no-release'].includes(updateState)) {
+    throw new Error('Unknown update visual state.');
+  }
   assertLoopbackHost(host);
   if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) {
     throw new Error(`Admin visual fixture port must be an integer from 0 to 65535, received ${port}.`);
@@ -945,7 +950,27 @@ export async function startAdminVisualFixture(options = {}) {
       const result = fakeSlackResponse(c.req.path, body);
       return c.json(result, result.error === 'fixture_endpoint_not_found' ? 404 : 200);
     });
+    // Visual-only response fixtures run AFTER the real authorization gate.
+    // They never become production configuration or contact GitHub.
+    app.use('/admin/api/installation/*', async (c, next) => {
+      await next();
+      if (!updateState || c.res.status !== 200) return;
+      if (c.req.path.endsWith('/updates')) {
+        const release = { version: updateState === 'current' ? '0.1.0' : '0.1.1', notes: 'A small reliability update.\n\n• Clearer setup guidance\n• Improvements to scheduled replies', publishedAt: '2026-09-07T12:00:00Z', url: 'https://github.com/pejmanjohn/chickpea/releases/tag/v0.1.1' };
+        c.res = Response.json({ status: updateState, checkedAt: '2026-09-07T12:00:00Z', ...(updateState === 'no-release' ? {} : { release }), ...(updateState === 'failed' ? { error: 'network', lastSuccessfulCheckAt: '2026-09-06T12:00:00Z' } : {}) });
+      } else if (c.req.path.endsWith('/support') && updateState !== 'unversioned') {
+        const body = await c.res.json();
+        c.res = Response.json({ report: body.report.replace('Application version: development', 'Application version: 0.1.0').replace('Source commit: unknown', `Source commit: ${'a'.repeat(40)}`).replace('Deployment: Node', 'Deployment: Cloudflare') });
+      }
+    });
+    app.use('/admin/api/installation', async (c, next) => {
+      await next();
+      if (!updateState || updateState === 'unversioned' || c.res.status !== 200) return;
+      const body = await c.res.json();
+      c.res = Response.json({ ...body, identity: { version: '0.1.0', sourceCommit: 'a'.repeat(40) }, deployment: 'cloudflare' });
+    });
     app.route('/', createAdminRoutes({
+      updateFetch: async () => new Response('', { status: 404 }),
       store,
       settings,
       memory,
@@ -1044,6 +1069,7 @@ function parseCliArgs(args) {
     else if (value === '--port') parsed.port = Number(args[++index]);
     else if (value === '--runtime-contract') parsed.runtimeContract = args[++index];
     else if (value === '--onboarding-stage') parsed.onboardingStage = args[++index];
+    else if (value === '--update-state') parsed.updateState = args[++index];
     else throw new Error(`Unknown argument: ${value}`);
   }
   return parsed;
