@@ -1,0 +1,14 @@
+{
+  "formatVersion": 1,
+  "version": "0.1.0",
+  "storageGeneration": 1,
+  "supportedOrigins": [],
+  "recovery": "previous-code-only",
+  "migrations": {
+    "d1": "a22d9e323396cf1c464c3f87a4c89fa435e0cc56e16119d9ed6570aecf32155a",
+    "workerConfiguration": "425adafbb6b377e225e240e82d8d29503039946606707a75c08af7b8bb217370",
+    "identity": "33261b08e8876e2bcfac3f9aa93182e7fdc20fe95f05d3c629d818cf2bdde9c7",
+    "configuration": "d823ddf0edbac9fba15724af764b442770690c2a86e56d2901f074f8593210d6",
+    "work": "6f81d60166a2a7740d9189fbb703f66f79ca60532cc9e22d406c579c3560b10f"
+  }
+}

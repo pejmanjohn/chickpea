@@ -13,6 +13,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { assertNodeVersion, NODE_BASELINE, NODE_ENGINE } from './lib/node-version.mjs';
 import { regressionEnvironment } from './verify-regression.mjs';
+import { validateReleaseManifest } from './lib/release-manifest.mjs';
+import { readBuildIdentity } from './lib/build-identity.mjs';
 
 assertNodeVersion(process.version, { baseline: true });
 
@@ -607,7 +609,7 @@ function sha256(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
-function scanExportTree(entries) {
+function scanExportTree(entries, sourceCommit) {
   const findings = [];
   const blobs = new Map();
   for (const { object, path: rel } of entries) {
@@ -628,7 +630,10 @@ function scanExportTree(entries) {
       findings.push(`${rel}: unsupported non-file archive entry`);
     } else if (fileStat) {
       const extracted = readFileSync(file);
-      if (!extracted.equals(buffer)) {
+      const expected = rel === 'release-source.json'
+        ? Buffer.from(buffer.toString('utf8').replace('$Format:%H$', sourceCommit))
+        : buffer;
+      if (!extracted.equals(expected)) {
         findings.push(`${rel}: archived bytes differ from tracked blob ${object}`);
       }
     }
@@ -703,6 +708,8 @@ function verifyNpmPackManifest(entries, packageJson) {
   const files = new Set((manifest[0]?.files ?? []).map((entry) => entry.path));
   const declaredFiles = new Set(packageJson.files ?? []);
   const requiredPackageEntries = [
+    'release.json',
+    'release-source.json',
     '.agents/skills/chickpea-live-verification',
     'AGENTS.md',
     'qa/live',
@@ -887,7 +894,11 @@ try {
   // before any package-specific checks.
   // Only immutable HEAD entries are scanned, so npm-generated scratch content
   // cannot expand or otherwise change the source scan's scope.
-  scanExportTree(entries);
+  scanExportTree(entries, sourceCommit);
+  validateReleaseManifest(scratch);
+  if (readBuildIdentity(scratch).sourceCommit !== sourceCommit) {
+    fail('Export must retain the exact verified source commit.');
+  }
 
   if (!existsSync(join(scratch, 'LICENSE'))) {
     fail('Export is missing LICENSE');

@@ -4,6 +4,8 @@ import { flue, flueWorkerConfig } from '@flue/vite';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
+import { buildIdentityDefines, readBuildIdentity } from './scripts/lib/build-identity.mjs';
 
 import { applyCloudflareDeploymentProfile } from './scripts/cloudflare-deployment-profile.mjs';
 import { localWorkerViteSettings } from './scripts/lib/local-worker-lane.mjs';
@@ -25,6 +27,7 @@ assertNodeVersion();
 export default defineConfig(({ command }) => {
   const local = command === 'serve' ? localWorkerViteSettings() : undefined;
   return {
+    define: buildIdentityDefines(fileURLToPath(new URL('.', import.meta.url))),
     // Public images are uploaded as Static Assets, not embedded in Worker code.
     publicDir: 'assets',
     plugins: [
@@ -72,6 +75,12 @@ export default defineConfig(({ command }) => {
         config(config) {
           configureFlueWorker(config);
           applyCloudflareDeploymentProfile(config);
+          const identity = readBuildIdentity(fileURLToPath(new URL('.', import.meta.url)));
+          config.vars = {
+            ...(config.vars ?? {}),
+            CHICKPEA_APP_VERSION: identity.version,
+            CHICKPEA_SOURCE_COMMIT: identity.sourceCommit ?? 'unknown',
+          };
           if (local) {
             const authDb = config.d1_databases?.find((database) => database.binding === 'AUTH_DB');
             if (!authDb) throw new Error('Local Worker development requires the AUTH_DB binding.');

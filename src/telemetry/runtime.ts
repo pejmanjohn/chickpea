@@ -1,4 +1,5 @@
 import type { SettingsStore } from '../config/settings-store.ts';
+import { applicationIdentity } from '../release/identity.ts';
 import { envValue } from '../config/env-value.ts';
 import {
   createProductTelemetryClient,
@@ -10,7 +11,7 @@ import {
 import { productTelemetryDisabled } from './identity.ts';
 import type { ProductTelemetryInventoryStore } from './adoption.ts';
 
-export const CHICKPEA_APP_VERSION = '0.0.0';
+export const CHICKPEA_APP_VERSION = applicationIdentity.version;
 
 interface ProductTelemetryRuntimeOptions {
   env?: Record<string, unknown>;

@@ -1,10 +1,13 @@
 import { assertNodeVersion } from './scripts/lib/node-version.mjs';
 import { flue } from '@flue/vite';
 import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
+import { buildIdentityDefines } from './scripts/lib/build-identity.mjs';
 
 assertNodeVersion();
 
 export default defineConfig({
+  define: buildIdentityDefines(fileURLToPath(new URL('.', import.meta.url))),
   publicDir: 'assets',
   plugins: [
     flue({

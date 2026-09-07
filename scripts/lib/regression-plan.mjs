@@ -7,6 +7,7 @@ export const SOURCE_EXPORT_CHECKS = [
   'npm:verify:durability', 'npm:verify:providers',
 ];
 export const REGRESSION_AREAS = Object.freeze({
+  releases: ['release-manifest', 'build-identity'],
   delivery: ['slack-admission', 'slack-thread-context', 'gateway-inbox', 'gateway-session-runner', 'flue-v2-runtime-regressions'],
   agents: ['management-policy', 'management-security-regression', 'management-agent-creation-welcome', 'management-agent-parity', 'slack-proposal-approval-readback', 'agent-authoring-guide'],
   routines: ['routine-schedule', 'routine-scheduler', 'routine-delivery', 'routine-workflow', 'routine-channel-destination', 'schedule-contract-evaluation'],
@@ -20,6 +21,7 @@ export const REGRESSION_AREAS = Object.freeze({
 });
 
 const rules = [
+  [/^(?:release(?:-source)?\.json|src\/release\/|scripts\/(?:verify-release|lib\/(?:build-identity|release-manifest))\.mjs)/, ['releases']],
   [/^(?:evals\/schedule-contract\/|scripts\/(?:evaluate-schedule-contract|lib\/schedule-contract-evaluation)\.mjs)/, ['routines', 'verification']],
   [/^scripts\/(?:verify-host|lib\/verification-(?:host|scope))\.mjs$/, ['verification']],
   [/^src\/slack\/(?:install-oauth|installation-credentials|credential-keyring|setup|gateway\/installation-authority)/, ['auth', 'delivery']],
@@ -81,6 +83,7 @@ export function createRegressionPlan({ mode = 'changed', areas = [], files = [],
   }
   const broad = mode !== 'changed' || noSelection || fullTests;
   const includes = (...values) => values.some((area) => selected.has(area));
+  if (broad || includes('releases')) npm('verify:release');
   if (broad || includes('delivery')) steps.push({ kind: 'node', file: 'scripts/verify-flue-offline-turn.mjs' });
   if (broad || includes('delivery', 'memory')) npm('verify:durability');
   if (broad || includes('providers', 'connections')) npm('verify:providers');
