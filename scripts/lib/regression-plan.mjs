@@ -7,7 +7,7 @@ export const SOURCE_EXPORT_CHECKS = [
   'npm:verify:durability', 'npm:verify:providers',
 ];
 export const REGRESSION_AREAS = Object.freeze({
-  releases: ['release-manifest', 'build-identity'],
+  releases: ['release-manifest', 'build-identity', 'release-update-check', 'support-report', 'installation-routes'],
   delivery: ['slack-admission', 'slack-thread-context', 'gateway-inbox', 'gateway-session-runner', 'flue-v2-runtime-regressions'],
   agents: ['management-policy', 'management-security-regression', 'management-agent-creation-welcome', 'management-agent-parity', 'slack-proposal-approval-readback', 'agent-authoring-guide'],
   routines: ['routine-schedule', 'routine-scheduler', 'routine-delivery', 'routine-workflow', 'routine-channel-destination', 'schedule-contract-evaluation'],

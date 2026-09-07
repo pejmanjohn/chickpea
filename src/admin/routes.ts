@@ -4,6 +4,9 @@ import { Hono, type Context, type Next } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 import { actualBodyLimit } from '../security/request-body-limit.ts';
+import { applicationIdentity } from '../release/identity.ts';
+import { createUpdateChecker } from '../release/update-check.ts';
+import { supportReport, type InstallationDetails } from '../release/support-report.ts';
 
 import { isRecord } from '../security/content-validation.ts';
 import {
@@ -724,6 +727,7 @@ function adminEnvironmentTimestamp(input: unknown): input is string {
 }
 
 interface AdminRoutesOptions {
+  updateFetch?: typeof fetch | undefined;
   // Injection seam for tests/harnesses: any async ConfigStore serves the
   // routes; absent, the platform backend is resolved per request (c.env is the
   // Cloudflare bindings object there; Node ignores it).
@@ -1501,6 +1505,7 @@ const turnRecoveryResolveSchema = v.strictObject({
   confirm: v.literal('terminalize'),
 });
 export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
+  const checkUpdates = createUpdateChecker({ identity: applicationIdentity, ...(options.updateFetch ? { fetch: options.updateFetch } : {}) });
   const app = new Hono();
   app.route('/', createPublicAssetRoutes());
   const principalByContext = new WeakMap<object, AuthPrincipal>();
@@ -4071,6 +4076,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (c.req.method === 'GET' &&
         (c.req.path === '/admin/api/runtime/drain' ||
           c.req.path === '/admin/api/runtime/recovery-turns' ||
+          c.req.path === '/admin/api/installation' ||
+          c.req.path.startsWith('/admin/api/installation/') ||
           c.req.path === '/admin/api/environment/status')) {
       return next();
     }
@@ -4094,6 +4101,40 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     return next();
   });
+  const installationOwner = async (c: Context, next: Next) => {
+    c.header('Cache-Control', 'no-store');
+    const principal = principalByContext.get(c);
+    if (!principal || principal.machine || principal.role !== 'owner') return c.json({ error: 'forbidden' }, 403);
+    return next();
+  };
+  app.use('/admin/api/installation', installationOwner);
+  app.use('/admin/api/installation/*', installationOwner);
+  const installationDetails = async (c: Context): Promise<InstallationDetails> => {
+    const details: InstallationDetails = {
+      identity: applicationIdentity,
+      deployment: isCloudflareTarget() ? 'cloudflare' : 'node',
+      setup: 'unknown',
+      providers: { anthropic: 'unknown', openai: 'unknown', openrouter: 'unknown', 'workers-ai': 'unknown' },
+      errors: [],
+    };
+    try {
+      const control = await identity(c).getAuthControl();
+      details.setup = control?.authMode === 'slack_active' && control.healthGate === 'normal' ? 'ready' : 'needs-attention';
+    } catch { details.errors.push('setup-status-unavailable'); }
+    try {
+      const env = c.env as PlatformEnv | undefined;
+      const sources = await describeProviderKeySources(env, settings(c));
+      for (const id of PROVIDER_KEY_IDS) details.providers[id] = sources[id] === 'missing' ? 'missing' : 'configured';
+      const subscription = await getOpenAiSubscriptionAuthorizationStatus(settings(c));
+      if (subscription.state === 'connected') details.providers.openai = 'configured';
+      details.providers['workers-ai'] = workersAiStatus(env) === 'missing' ? 'missing' : 'configured';
+    } catch { details.errors.push('provider-status-unavailable'); }
+    return details;
+  };
+  app.get('/admin/api/installation', async (c) => c.json(await installationDetails(c)));
+  app.get('/admin/api/installation/updates', async (c) => c.json(await checkUpdates(c.req.query('refresh') === '1')));
+  app.get('/admin/api/installation/support', async (c) => c.json({ report: supportReport(await installationDetails(c)) }));
+
   app.get('/admin/api/settings/connectors/composio', async (c) => {
     c.header('Cache-Control', 'no-store');
     try {
