@@ -34,6 +34,13 @@ sending it, allowing maintenance to reconcile a lost response. Ordinary
 maintenance leaves an explicit rollback in socket mode. Restoring an older Worker
 binary alone is not a transport rollback. Preserve the inbox and binding.
 
+The v0.1.8 updater performs this switch before restoring previous code. Its
+`gateway-transport-then-previous-code` release policy makes older updaters refuse
+the transition. Authenticated deployment readiness registers a version- and
+binding-scoped recovery digest; the private receipt retains the capability.
+Recovery must receive confirmation of healthy socket delivery before downgrade.
+See [upgrading](upgrading.md#interrupted-update-or-recovery).
+
 The legacy Durable Object class remains during the migration window. Once HTTP
 is active, its socket runner stops and its recovery alarm is removed. Removal of
 the class/binding requires a separate migration after all supported deployments
