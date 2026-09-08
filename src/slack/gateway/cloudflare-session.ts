@@ -1,3 +1,5 @@
+import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState } from './http-delivery.ts';
+import { resolveSlackPublicUrl } from '../credentials.ts';
 import { DurableObject, type DurableObjectState } from 'cloudflare:workers';
 
 import { getSettingsStore, type PlatformEnv } from '../../config/state-backend.ts';
@@ -55,6 +57,13 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
       await this.state.storage.deleteAlarm();
       return;
     }
+    const publicOrigin = await resolveSlackPublicUrl(platformEnv);
+    if (publicOrigin && await createGatewayDeploymentClient(platformEnv).ensureHttpDelivery(publicOrigin)) {
+      this.supervisor?.stop();
+      this.supervisor = undefined;
+      await this.state.storage.deleteAlarm();
+      return;
+    }
     if (!this.supervisor) {
       // The cross-object settings read can admit another wake. Keep its
       // supervisor so concurrent callers cannot leave orphan delivery sockets.
@@ -91,6 +100,10 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
 
   async status(): Promise<GatewaySessionStatusSnapshot> {
     await this.wake();
+    const delivery = parseHttpDeliveryState(await getSettingsStore(this.env as PlatformEnv).getSetting(GATEWAY_HTTP_SETTING));
+    if (delivery?.mode === 'http' && delivery.active) {
+      return {healthy:true,phase:'healthy',detail:null,generation:null,versionId:cloudflareWorkerVersionId(this.env) ?? null};
+    }
     const live = this.supervisor?.snapshot();
     if (live) {
       return {

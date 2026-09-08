@@ -545,6 +545,7 @@ export interface TagStateRpc {
    * Transactionally accept a normalized shared-gateway delivery and arm the
    * state alarm before returning a receipt to the authenticated session.
    */
+  receiveGatewayHttp(input: {body: string; signature: string; url: string}): Promise<{status: number; body: unknown}>;
   admitGatewayDelivery(
     delivery: GatewayInboundDelivery,
   ): Promise<StateRpcResult<GatewayInboxAdmissionOutcome>>;

@@ -1,3 +1,5 @@
+import { GATEWAY_HTTP_PATH, handleHttpDeliveryRequest } from './slack/gateway/http-delivery.ts';
+import { tagStateStub } from './config/state-rpc.ts';
 import { instrument } from '@flue/runtime';
 import { Hono, type Context } from 'hono';
 
@@ -131,6 +133,10 @@ instrument({
 });
 
 const app = new Hono();
+app.post(GATEWAY_HTTP_PATH, (c) => {
+  if (!isCloudflareTarget()) return c.notFound();
+  return handleHttpDeliveryRequest(c.req.raw, input => tagStateStub(c.env as PlatformEnv).receiveGatewayHttp(input));
+});
 app.use('*', async (c, next) => {
   const control = await getIdentityStore(c.env as PlatformEnv | undefined).getAuthControl();
   if (control?.healthGate === 'recovery_only') return c.notFound();

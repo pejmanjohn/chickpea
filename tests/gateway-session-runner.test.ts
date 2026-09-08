@@ -50,6 +50,9 @@ test('durable alarm restores an evicted gateway owner without cron or Admin traf
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const Probe = vm.runInNewContext(compiled, {
+    resolveSlackPublicUrl: async () => undefined,
+    parseHttpDeliveryState: () => undefined,
+    GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
     Date: { now: () => clock },
     DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
     getSettingsStore: () => ({ getSetting: async () => {
@@ -125,6 +128,9 @@ test('concurrent Durable Object wakes share one supervisor and leave no orphan s
   const pending: Array<(value: string | null) => void> = [];
   const runners: FakeRunnerControl[] = [];
   const Probe = vm.runInNewContext(compiled, {
+    resolveSlackPublicUrl: async () => undefined,
+    parseHttpDeliveryState: () => undefined,
+    GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
     DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
     getSettingsStore: () => ({ getSetting: () => runners.length
       ? Promise.resolve('configured')
@@ -252,6 +258,9 @@ test('Durable Object reconnect recreates a client whose state RPC stub has faile
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const Probe = vm.runInNewContext(compiled, {
+    resolveSlackPublicUrl: async () => undefined,
+    parseHttpDeliveryState: () => undefined,
+    GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
     DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
     getSettingsStore: () => ({ getSetting: async () => 'configured' }),
     GATEWAY_BINDING_SETTING: 'binding',

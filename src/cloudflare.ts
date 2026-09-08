@@ -1,3 +1,7 @@
+import { GatewayInboxConflictError } from './slack/gateway/inbox.ts';
+import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState, verifyHttpDelivery, httpDeliveryReceipt, HttpDeliveryError } from './slack/gateway/http-delivery.ts';
+import { GATEWAY_BINDING_SETTING } from './slack/gateway/client.ts';
+import type { GatewayWorkspaceBinding } from './slack/gateway/protocol.ts';
 import { scheduleActionRpcResult } from './management/slack-schedule-rpc.ts';
 import {
   DurableObject,
@@ -1461,10 +1465,61 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return result;
   }
 
+  async receiveGatewayHttp(input: {body: string; signature: string; url: string}): Promise<{status: number; body: unknown}> {
+    try {
+      const snapshot = this.call(stores => ({
+        binding: stores.settings.getSetting(GATEWAY_BINDING_SETTING),
+        delivery: stores.settings.getSetting(GATEWAY_HTTP_SETTING),
+      }));
+      if (!snapshot.ok || !snapshot.value.binding || !snapshot.value.delivery) throw new HttpDeliveryError(503, 'delivery_not_configured');
+      const binding = JSON.parse(snapshot.value.binding) as GatewayWorkspaceBinding;
+      const state = parseHttpDeliveryState(snapshot.value.delivery)!;
+      const value = await verifyHttpDelivery({...input, binding, state, keyring:loadCredentialKeyring(this.env as PlatformEnv)});
+      // Crypto yields. Recheck the exact settings and installation in the owning
+      // state turn, with no await between authorization and insertion.
+      let admissionError: unknown;
+      const admitted = this.call(stores => {
+        try {
+        if (stores.settings.getSetting(GATEWAY_BINDING_SETTING) !== snapshot.value.binding ||
+            stores.settings.getSetting(GATEWAY_HTTP_SETTING) !== snapshot.value.delivery) throw new HttpDeliveryError(409, 'delivery_state_changed');
+        const installation = stores.config.getWorkspaceInstallation(binding.workspaceId);
+        if (stores.identity.getAuthControl()?.healthGate === 'recovery_only' || !installation ||
+            installation.transportMode !== 'gateway' || installation.health === 'revoked' ||
+            installation.gatewayBindingId !== binding.bindingId || installation.appId !== binding.appId ||
+            installation.botUserId !== binding.botUserId) throw new HttpDeliveryError(409, 'delivery_binding_rejected');
+        if (value.kind === 'gateway.challenge') return 'verified' as const;
+        const outcome = stores.gatewayInbox.admit(value.delivery!);
+        // Only a real delivery proves gateway activation. A challenge must not
+        // retire the old route before the gateway commits its compare-and-swap.
+        if (state.pending?.keyId === value.keyId && state.pending.routeRevision === value.routeRevision) {
+          stores.settings.setSetting(GATEWAY_HTTP_SETTING, JSON.stringify({version:1,bindingId:binding.bindingId,deploymentId:binding.deploymentId,installedAt:binding.installedAt,
+            mode:'http',revision:value.routeRevision,active:state.pending}));
+        }
+        return outcome;
+        } catch (error) { admissionError = error; throw error; }
+      });
+      if (!admitted.ok) {
+        if (admissionError instanceof HttpDeliveryError) throw admissionError;
+        if (admissionError instanceof GatewayInboxConflictError) throw new HttpDeliveryError(409,'delivery_identity_conflict');
+        throw new HttpDeliveryError(503,'delivery_unavailable');
+      }
+      // A duplicate also arms recovery: a previous insert may have survived an
+      // alarm-write failure or loss of the HTTP response.
+      if (admitted.value !== 'verified') await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
+      return {status:200, body:httpDeliveryReceipt(value, admitted.value)};
+    } catch (error) {
+      return {status:error instanceof HttpDeliveryError ? error.status : 503,
+        body:{error:error instanceof HttpDeliveryError ? error.code : 'delivery_unavailable'}};
+    }
+  }
+
   async admitGatewayDelivery(
     delivery: Parameters<TagStateRpc['admitGatewayDelivery']>[0],
   ): ReturnType<TagStateRpc['admitGatewayDelivery']> {
-    const result = this.call((stores) => stores.gatewayInbox.admit(delivery));
+    const result = this.call((stores) => {
+      if (parseHttpDeliveryState(stores.settings.getSetting(GATEWAY_HTTP_SETTING))?.mode === 'http') throw new Error('Socket delivery is disabled.');
+      return stores.gatewayInbox.admit(delivery);
+    });
     if (result.ok) {
       await this.armAlarmNoLaterThan(Date.now() + RELAY_BATCH_WINDOW_MS);
     }

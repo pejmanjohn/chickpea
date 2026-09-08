@@ -53,7 +53,7 @@ export class GatewayInboxCapacityError extends Error {
   override readonly name = 'GatewayInboxCapacityError';
 }
 
-class GatewayInboxConflictError extends Error {
+export class GatewayInboxConflictError extends Error {
   override readonly name = 'GatewayInboxConflictError';
 }
 
