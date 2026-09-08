@@ -20,6 +20,7 @@ import {
   boundedSlackPublicHandoff,
   MAX_SLACK_PUBLIC_HANDOFF_CHARS,
   reconcileSlackPublicContextMutation,
+  retainedSlackReplyBackground,
 } from '../src/slack/public-context.ts';
 import type { SlackPublicContextEntry } from '../src/config/types.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -108,6 +109,29 @@ test('short thread (single page) is returned intact', async () => {
   assert.ok(texts.includes('msg 1'));
   assert.ok(texts.includes('msg 2'));
   assert.equal(client.calls(), 1);
+});
+
+test('new runtime prompts retain only this Agent public replies in the admitted thread', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  try {
+    for (const id of ['agent_support', 'agent_other']) await store.createAgent({ id, name: id, instructions: '', enabled: true, lifecycle: 'active', creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+    const base = { workspaceId: 'T1', channelId: 'C1', rootTs: '1000.0000', role: 'agent' as const, agentId: 'agent_support' };
+    await store.putSlackPublicContext({ ...base, messageTs: '1002.0000', text: '[["fixture","code"],["Acme upgrade","CEDAR-410"]]' });
+    await store.putSlackPublicContext({ ...base, messageTs: '1003.0000', agentId: 'agent_other', text: 'OTHER_AGENT' });
+    await store.putSlackPublicContext({ ...base, messageTs: '2001.0000', text: 'FUTURE_REPLY' });
+    await store.putSlackPublicContext({ ...base, rootTs: '500.0000', messageTs: '1004.0000', text: 'OTHER_THREAD' });
+    const turn = threadTurn();
+    const handoffBlock = await retainedSlackReplyBackground(store, turn, 'agent_support');
+    assert.ok(handoffBlock);
+    const context = await hydrateSlackContextViaWebClient(fakeClientWithReplyPages([{ messages: [humanMsg(1, '1001.0000')] }]) as never, turn);
+    const prompt = assembleSlackPrompt(turn, context, { handoffBlock });
+    assert.match(prompt, /CEDAR-410/);
+    assert.match(prompt, /Historical background only/);
+    assert.doesNotMatch(prompt, /OTHER_AGENT|FUTURE_REPLY|OTHER_THREAD/);
+    await store.deleteSlackPublicContextMessage('T1', 'C1', '1000.0000', '1002.0000');
+    assert.equal(await retainedSlackReplyBackground(store, turn, 'agent_support'), undefined);
+    assert.equal(await retainedSlackReplyBackground(store, threadTurn({ contextMode: 'channel_history' }), 'agent_support'), undefined);
+  } finally { store.close(); }
 });
 
 test('thread hydration retains human file-share text without copying Slack file metadata', async () => {
