@@ -461,7 +461,7 @@ later push could overwrite the release installed by the updater.
 
 Choose an exact destination whose `release.json` lists the installed version
 in `supportedOrigins`. Apply required intermediate releases in order. For
-example, v0.1.0 must go through v0.1.1 before v0.1.2. Fresh installations can
+example, v0.1.0 must go through v0.1.1 and v0.1.2 before v0.1.3. Fresh installations can
 start directly on the latest release. Do not assume every older version can
 upgrade directly to the latest, or that an unknown source is v0.1.0.
 
