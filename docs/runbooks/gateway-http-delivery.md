@@ -39,6 +39,8 @@ The v0.1.8 updater performs this switch before restoring previous code. Its
 the transition. Authenticated deployment readiness registers a version- and
 binding-scoped recovery digest; the private receipt retains the capability.
 Recovery must receive confirmation of healthy socket delivery before downgrade.
+A new authenticated upgrade receipt explicitly resumes HTTP; maintenance and
+retries of the recovery receipt retain socket delivery.
 See [upgrading](upgrading.md#interrupted-update-or-recovery).
 
 The legacy Durable Object class remains during the migration window. Once HTTP

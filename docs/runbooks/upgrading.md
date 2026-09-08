@@ -113,7 +113,9 @@ it in the private receipt. Before restoring v0.1.7, recovery authenticates to th
 serving candidate and switches the gateway back to socket delivery. It requires a
 healthy current-version socket before deploying the previous code. If readiness
 was interrupted, it first redeploys the retained candidate to finish that step.
-An unavailable recovery endpoint stops recovery before any downgrade. Preserve
+A new upgrade receipt explicitly restores HTTP delivery after a rollback; retrying
+the recovery receipt keeps socket delivery. An unavailable recovery endpoint
+stops recovery before any downgrade. Preserve
 the receipt and repair the candidate; a raw Cloudflare version rollback alone
 can leave Slack routed to an HTTP endpoint that old code cannot receive.
 
