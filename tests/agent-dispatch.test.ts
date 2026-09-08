@@ -183,6 +183,28 @@ function promptInput(dispatchState: SlackFlueDispatchState, agent: AgentInstance
   };
 }
 
+test('dispatch persists only the completed assistant step after an interrupted prefix', async () => {
+  const dispatchState = state();
+  const agent = handle({ read: async (_receipt, options) => {
+    let index = 0;
+    for (const text of ['Found the original at 123.', 'Found the original. Complete answer.']) {
+      // Flue deliberately maps both steps onto the same response message ID.
+      options?.onEvent?.({ type: 'message-started', conversationId: 'conversation',
+        messageId: 'response', submissionId: RECEIPT.submissionId, position: { batch: 1, index: index++ } });
+      options?.onEvent?.({ type: 'message-delta', conversationId: 'conversation',
+        messageId: 'response', kind: 'text', delta: text, position: { batch: 1, index: index++ } });
+      options?.onEvent?.({ type: 'message-completed', conversationId: 'conversation',
+        messageId: 'response', position: { batch: 1, index: index++ } });
+    }
+    return { text: 'Found the original at 123.\n\nFound the original. Complete answer.',
+      submissionId: RECEIPT.submissionId, data: {} };
+  } });
+  const result = await promptSlackThreadAgent(promptInput(dispatchState, agent));
+  assert.equal(result.text, 'Found the original. Complete answer.');
+  assert.equal(dispatchState.flueSettlement?.outcome === 'completed' &&
+    dispatchState.flueSettlement.result.text, result.text);
+});
+
 test('dispatch diagnostics distinguish failed settlement from an empty completed reply without logging content', async (t) => {
   const logs: unknown[][] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
@@ -555,4 +577,59 @@ test('short punctuation, structured results and ordinary long answers remain val
     })));
     assert.equal(result.text, text);
   }
+});
+
+test('terminal step selection falls back when a complete boundary cannot be proven', async () => {
+  for (const scenario of ['snapshot', 'incomplete', 'foreign', 'different', 'oversized'] as const) {
+    const dispatchState = state();
+    const agent = handle({ read: async (_receipt, options) => {
+      options?.onEvent?.({ type: 'message-started', conversationId: 'conversation',
+        messageId: 'response', submissionId: scenario === 'foreign' ? 'another-submission' : RECEIPT.submissionId,
+        position: { batch: 1, index: 0 } });
+      options?.onEvent?.({ type: 'message-delta', conversationId: 'conversation', messageId: 'response',
+        kind: 'text', delta: scenario === 'oversized' ? 'x'.repeat(129 * 1024) : 'Final.', position: { batch: 1, index: 1 } });
+      if (scenario !== 'incomplete') options?.onEvent?.({ type: 'message-completed',
+        conversationId: 'conversation', messageId: 'response', position: { batch: 1, index: 2 } });
+      if (scenario === 'snapshot') options?.onEvent?.({ type: 'conversation-reset',
+        conversationId: 'conversation', snapshot: { v: 1, conversationId: 'conversation', messages: [], offset: '1', settlements: [] }, position: { batch: 2, index: 0 } });
+      return { text: scenario === 'different' ? 'Different final.' : 'Prefix.\n\nFinal.',
+        submissionId: RECEIPT.submissionId, data: {} };
+    } });
+    const result = await promptSlackThreadAgent(promptInput(dispatchState, agent));
+    assert.equal(result.text, scenario === 'different' ? 'Different final.' : 'Prefix.\n\nFinal.', scenario);
+  }
+});
+
+test('real Flue durable read separates working narration from the final Slack answer', { timeout: 15_000 }, async () => {
+  const { init, useModel, useTool } = await import('@flue/runtime');
+  const { start } = await import('@flue/runtime/node');
+  const { createCloudflareBindingProvider } = await import('../src/cloudflare-provider.ts');
+  let calls = 0;
+  let reads = 0;
+  function TerminalProbe() {
+    useModel('cloudflare/@cf/zai-org/glm-5.3-flash');
+    useTool({ name: 'read_fixture', description: 'Read the fixture.', run: () => { reads++; return 'CEDAR'; } });
+    return 'Write a self-contained final answer after reading the fixture.';
+  }
+  const provider = createCloudflareBindingProvider({ run: async () => {
+    calls++;
+    const deltas = calls === 1 ? [{ content: 'Checking the fixture.' },
+      { tool_calls: [{ index: 0, id: 'call_fixture', type: 'function', function: { name: 'read_fixture', arguments: '{}' } }] }]
+      : [{ content: 'The fixture is CEDAR.' }];
+    return new Response(deltas.map(delta => `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`).join('') +
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: calls === 1 ? 'tool_calls' : 'stop' }] })}\n\ndata: [DONE]\n\n`,
+      { headers: { 'content-type': 'text/event-stream' } });
+  } });
+  const runtime = await start({ agents: [{ agent: TerminalProbe, name: 'terminal-step-probe' }], providers: [provider] });
+  try {
+    const agent = init(TerminalProbe, { id: 'terminal-step-probe' });
+    const receipt = await agent.dispatch('Read the fixture.');
+    const dispatchState = state({ dispatchEnvelope: ENVELOPE, dispatchReceipt: receipt });
+    const result = await promptSlackThreadAgent(promptInput(dispatchState, agent));
+    assert.equal(result.text, 'The fixture is CEDAR.');
+    assert.equal((await agent.read(receipt)).text, 'Checking the fixture.\n\nThe fixture is CEDAR.',
+      'the real runtime folds both steps but the adapter retains the terminal step');
+    assert.equal(reads, 1);
+    assert.equal(calls, 2);
+  } finally { await runtime.stop(); }
 });

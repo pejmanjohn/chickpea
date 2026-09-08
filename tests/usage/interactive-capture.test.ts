@@ -118,6 +118,34 @@ test('interactive capture persists only bounded attribution and aggregate respon
   }
 });
 
+test('delivery recovery preserves the original usage timestamp, execution link, and totals', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  const events: UsagePersistenceEvent[] = [];
+  const options = { turn, assignment, requestedModel: assignment.model!,
+    operationId: 'msg_replay', executionId: 'exec_replay', store,
+    runId: 'run_replay', runExecutionId: 'execution_original',
+    processEnv: {}, onPersistence: (event: UsagePersistenceEvent) => events.push(event) };
+  try {
+    const first = new InteractiveUsageRecorder({ ...options, now: () => 2_000_000 });
+    await first.admit();
+    await first.recordSuccess(success());
+    const before = await store.getOperation('msg_replay');
+    const replay = new InteractiveUsageRecorder({ ...options,
+      replaySettlementAt: 1_999_999, now: () => 3_000_000 });
+    await replay.admit();
+    await replay.recordSuccess(success());
+    await replay.repairAfterDelivery();
+    assert.equal(events.every((event) => event.outcome === 'recorded'), true);
+    assert.deepEqual((await store.getOperation('msg_replay'))?.measurements, before?.measurements);
+
+    const conflict = new InteractiveUsageRecorder({ ...options,
+      replaySettlementAt: 1_999_999, now: () => 4_000_000 });
+    await conflict.recordSuccess(success({ reportedUsage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }));
+    assert.equal(events.at(-1)?.outcome, 'failed', 'changed usage must still be rejected');
+    assert.deepEqual((await store.getOperation('msg_replay'))?.measurements, before?.measurements);
+  } finally { store.close(); }
+});
+
 test('interactive Usage links an execution only after lifecycle creation', async () => {
   const store = new SqliteUsageStore(':memory:');
   try {

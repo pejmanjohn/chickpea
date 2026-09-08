@@ -43,6 +43,8 @@ interface InteractiveUsageRecorderOptions {
   writeBudgetMs?: number;
   now?: () => number;
   onPersistence?: (event: UsagePersistenceEvent) => void;
+  /** A saved Flue settlement is being delivered again, not a new model call. */
+  replaySettlementAt?: number;
 }
 
 export class InteractiveUsageRecorder {
@@ -143,7 +145,7 @@ export class InteractiveUsageRecorder {
     this.repairAttempted = true;
     const outcome = await this.persist('repair', async () => {
       await this.options.store.admitOperation(this.admission);
-      await this.options.store.recordTerminal(this.terminalInput!);
+      await this.writeTerminal();
     });
     if (outcome === 'recorded') this.needsRepair = false;
   }
@@ -151,9 +153,27 @@ export class InteractiveUsageRecorder {
   private async persistTerminal(): Promise<void> {
     const outcome = await this.persist(
       'terminal',
-      () => this.options.store.recordTerminal(this.terminalInput!),
+      () => this.writeTerminal(),
     );
     this.needsRepair ||= outcome !== 'recorded';
+  }
+
+  private async writeTerminal(): Promise<unknown> {
+    if (this.options.replaySettlementAt !== undefined) {
+      const detail = await this.options.store.getOperation(this.admission.operationId);
+      const original = detail?.measurements.find((row) => row.executionId === this.options.executionId);
+      if (original) {
+        // Preserve observation identity. The store still rejects changed usage,
+        // model, credential, or explicitly supplied execution linkage.
+        this.terminalInput = {
+          ...this.terminalInput!,
+          observedAt: original.observedAt,
+          finishedAt: original.observedAt,
+          runExecutionId: this.runExecutionId ?? original.runExecutionId ?? null,
+        };
+      }
+    }
+    return this.options.store.recordTerminal(this.terminalInput!);
   }
 
   private async persist(
@@ -187,7 +207,7 @@ export class InteractiveUsageRecorder {
       | 'usageUnknownReason'
     >,
   ): RecordUsageTerminalInput {
-    const finishedAt = this.now();
+    const finishedAt = this.options.replaySettlementAt ?? this.now();
     const terminal = {
       operationId: this.admission.operationId,
       executionId: this.options.executionId,

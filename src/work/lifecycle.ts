@@ -6,6 +6,7 @@ import type {
   RunExecutionId,
   RunId,
   RunRecord,
+  RunExecutionRecord,
   WorkStore,
 } from './types.ts';
 
@@ -32,6 +33,7 @@ interface ShadowWorkLifecycleOptions {
   deadlineAt?: number;
   /** Legacy-only budget so shadow writes cannot delay the established path. */
   observeWriteBudgetMs?: number;
+  resumedExecution?: RunExecutionRecord;
 }
 
 type ShadowLifecycleStage =
@@ -65,8 +67,8 @@ export class ShadowWorkLifecycle {
 
   constructor(private readonly options: ShadowWorkLifecycleOptions) {
     this.now = options.now ?? Date.now;
-    this.fencingToken = options.fencingToken ?? options.attemptNumber;
-    this.executionId = shadowRunExecutionId(options.runId, options.attemptNumber);
+    this.fencingToken = options.resumedExecution?.fencingToken ?? options.fencingToken ?? options.attemptNumber;
+    this.executionId = options.resumedExecution?.id ?? shadowRunExecutionId(options.runId, options.attemptNumber);
   }
 
   get hasExecution(): boolean {
@@ -75,6 +77,19 @@ export class ShadowWorkLifecycle {
 
   async prepareExecution(preparedInput: string): Promise<string | undefined> {
     if (!this.usable) return undefined;
+    if (this.options.resumedExecution) {
+      let body: string | undefined;
+      await this.observe('prepare_input', async () => {
+        const run = await this.options.store.getRun(this.options.runId);
+        const content = run?.preparedInputRef ? await this.options.store.getContent(run.preparedInputRef) : undefined;
+        if (!content?.body || run?.fencingToken !== this.fencingToken) {
+          throw new Error('Saved execution input or ownership is unavailable.');
+        }
+        body = content.body;
+        this.executionCreated = true;
+      });
+      return body;
+    }
     let preparedRun: RunRecord | undefined;
     if (!await this.observe('prepare_input', async () => {
       preparedRun = await this.options.store.prepareRunInput({
@@ -163,7 +178,7 @@ export class ShadowWorkLifecycle {
         ? { safeDisagreementCode: input.safeDisagreementCode }
         : {}),
       ...(input.flueSubmissionRef ? { flueSubmissionRef: input.flueSubmissionRef } : {}),
-      finishedAt: this.now(),
+      finishedAt: this.options.resumedExecution?.finishedAt ?? this.now(),
     }));
   }
 
@@ -173,6 +188,23 @@ export class ShadowWorkLifecycle {
     renderedPayload: string;
   }): Promise<string | undefined> {
     if (!this.executionCreated || !this.usable) return undefined;
+    if (this.options.resumedExecution && input.method === 'slack_chat_stream_recover') {
+      let attemptId: string | undefined;
+      await this.observe('start_delivery', async () => {
+        const run = await this.options.store.getRun(this.options.runId);
+        const approved = run?.policyApprovedOutputRef
+          ? await this.options.store.getContent(run.policyApprovedOutputRef) : undefined;
+        if (run?.fencingToken !== this.fencingToken || run.deliveryStatus !== 'pending' ||
+            !run.deliveryAttemptId || !run.deliveryMethod?.startsWith('slack_chat_stream') ||
+            approved?.body !== input.approvedOutput || approved.sensitivity !== this.options.sensitivity) {
+          throw new Error('Stream recovery does not match the pending approved delivery.');
+        }
+        // This is reconciliation of the original effect, not a new delivery.
+        // Keep its immutable render and attempt until Slack confirms replacement.
+        attemptId = run.deliveryAttemptId;
+      });
+      return attemptId;
+    }
     const recorded = await this.observe('record_response', () =>
       this.options.store.recordRunResponse({
         runId: this.options.runId,

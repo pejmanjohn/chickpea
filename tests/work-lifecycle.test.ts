@@ -6,6 +6,7 @@ import { test } from 'node:test';
 
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
+import { createWorkExecutionLifecycle } from '../src/work/executor.ts';
 import { SqliteWorkStore, WorkStoreLogic } from '../src/work/store.ts';
 import {
   WorkStateError,
@@ -17,6 +18,33 @@ import {
 } from '../src/work/types.ts';
 
 const NOW = 1_900_000_000_000;
+
+test('settled Slack recovery reuses the execution and pending delivery without rewriting output', async () => {
+  const fixture = await lifecycleFixture('public');
+  try {
+    await fixture.lifecycle.prepareExecution('original prompt');
+    await fixture.lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    const pending = await fixture.lifecycle.beforeDelivery({ method: 'slack_chat_stream_resume',
+      approvedOutput: 'Approved answer', renderedPayload: '{"stop":"original suffix"}' });
+    const before = await fixture.store.listRunExecutions(fixture.runId);
+    const gaps: string[] = [];
+    const resumed = await createWorkExecutionLifecycle(fixture.store, {
+      runId: fixture.runId, attemptNumber: 2, executorKind: 'agent', agentName: 'profile_alpha',
+      canonicalModel: 'openai/gpt-5.6-sol', flueInstanceRef: 'flueinstance_test', routeEvidence: {},
+      resumeSettled: true,
+    }, { mode: 'enforce', now: () => NOW + 1000, onGap: (stage) => gaps.push(stage) });
+    assert.equal(await resumed.prepareExecution('rehydrated prompt'), 'original prompt');
+    assert.equal(resumed.executionId, fixture.lifecycle.executionId);
+    await resumed.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    const attemptId = await resumed.beforeDelivery({ method: 'slack_chat_stream_recover',
+      approvedOutput: 'Approved answer', renderedPayload: '{"update":"Approved answer"}' });
+    assert.equal(attemptId, pending);
+    await resumed.afterDelivery({ attemptId, outcome: 'delivered', deliveryRef: 'slack:C123:123.456' });
+    assert.deepEqual(await fixture.store.listRunExecutions(fixture.runId), before);
+    assert.equal((await fixture.store.getRun(fixture.runId))?.status, 'settled');
+    assert.deepEqual(gaps, []);
+  } finally { fixture.close(); }
+});
 
 test('legacy shadow writes stop blocking after their bounded observer budget', { timeout: 5000 }, async (context) => {
   context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
@@ -386,6 +414,7 @@ async function lifecycleFixture(
     agentName: 'profile_alpha',
     canonicalModel: 'openai/gpt-5.6-sol',
     sensitivity,
+    flueInstanceRef: 'flueinstance_test',
     routeEvidence: {
       providerAuthRoute: 'openai_api_key',
       catalogSource: 'bundled',
@@ -471,3 +500,25 @@ function lifecycleAdmission(sensitivity: 'public' | 'private'): AdmitShadowRunIn
     auditIdempotencyKey: 'auditkey_lifecycle_alpha',
   };
 }
+
+test('settlement recovery rejects changed execution identity and approved output', async () => {
+  const fixture = await lifecycleFixture('public');
+  try {
+    await fixture.lifecycle.prepareExecution('original prompt');
+    await fixture.lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    await fixture.lifecycle.beforeDelivery({ method: 'slack_chat_stream_resume',
+      approvedOutput: 'Approved answer', renderedPayload: 'original render' });
+    const descriptor = { runId: fixture.runId, attemptNumber: 2, executorKind: 'agent' as const,
+      agentName: 'profile_alpha', canonicalModel: 'openai/gpt-5.6-sol',
+      flueInstanceRef: 'flueinstance_test', routeEvidence: {}, resumeSettled: true };
+    for (const changed of [{ flueInstanceRef: 'other_instance' }, { canonicalModel: 'other/model' }, { agentName: 'other_agent' }]) {
+      await assert.rejects(createWorkExecutionLifecycle(fixture.store, { ...descriptor, ...changed }, { mode: 'enforce' }),
+        (error: unknown) => error instanceof WorkStateError && error.code === 'work_execution_conflict');
+    }
+    const resumed = await createWorkExecutionLifecycle(fixture.store, descriptor, { mode: 'enforce' });
+    await resumed.prepareExecution('rehydrated prompt');
+    await assert.rejects(resumed.beforeDelivery({ method: 'slack_chat_stream_recover',
+      approvedOutput: 'Changed answer', renderedPayload: 'replacement render' }), /pending approved delivery/);
+    assert.equal((await fixture.store.getRun(fixture.runId))?.deliveryStatus, 'pending');
+  } finally { fixture.close(); }
+});
