@@ -32,9 +32,13 @@ function fixture(t: any) {
     import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
     import { writeDeploymentEvent } from '../journal.mjs';
     import path from 'node:path';
+    import { execFileSync } from 'node:child_process';
     const redirect = JSON.parse(readFileSync('.wrangler/deploy/config.json', 'utf8'));
     const config = JSON.parse(readFileSync(path.resolve('.wrangler/deploy', redirect.configPath), 'utf8'));
-    if (config.name !== 'customer-test-worker' || config.d1_databases[0].database_id !== 'existing-db') throw new Error('Installation overlay missed the generated customer artifact');
+    if (config.name !== 'customer-test-worker' || config.topLevelName !== config.name || process.env.WRANGLER_CI_OVERRIDE_NAME !== config.name || config.d1_databases[0].database_id !== 'existing-db') throw new Error('Installation overlay missed the generated customer artifact');
+    const identity = { version: JSON.parse(readFileSync('package.json', 'utf8')).version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() };
+    if (config.vars.CHICKPEA_APP_VERSION !== identity.version || config.vars.CHICKPEA_SOURCE_COMMIT !== identity.commit || readFileSync(path.resolve('.wrangler/deploy', redirect.configPath, '../index.js'), 'utf8') !== JSON.stringify(identity)) throw new Error('Retargeting changed compiled source identity');
+    if (JSON.stringify(config.durable_objects.bindings) !== JSON.stringify([{name:'TAG_STATE',class_name:'TagStateStore'}])) throw new Error('Retargeting changed Durable Object ownership or class');
     appendFileSync(process.env.UPGRADE_FIXTURE_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
     if (!process.argv.includes('--preflight-only')) {
       const context = JSON.parse(readFileSync(process.env.CHICKPEA_UPGRADE_CONTEXT, 'utf8'));
@@ -79,7 +83,7 @@ function fixture(t: any) {
     appendFileSync(process.env.UPGRADE_FIXTURE_LOG,JSON.stringify(args)+'\\n');
     if(process.env.WRANGLER_HOME!=='fixture-oauth-home') throw new Error('OAuth home was discarded');
     const remote=JSON.parse(readFileSync(process.env.UPGRADE_FIXTURE_REMOTE,'utf8'));
-    const bindings=[{name:'AUTH_DB',type:'d1',id:'existing-db'},...Object.entries({CHICKPEA_APP_VERSION:remote.version,CHICKPEA_SOURCE_COMMIT:remote.commit,CHICKPEA_SETUP_CAPABILITY_DIGEST:'a'.repeat(43),CHICKPEA_SETUP_CAPABILITY_ISSUED_AT:'1780000000000'}).map(([name,text])=>({name,text,type:'plain_text'}))];
+    const bindings=[{name:'AUTH_DB',type:'d1',id:'existing-db'},{name:'TAG_STATE',type:'durable_object_namespace',namespace_id:'existing-state',class_name:'TagStateStore',script_name:'customer-test-worker'},...Object.entries({CHICKPEA_APP_VERSION:remote.version,CHICKPEA_SOURCE_COMMIT:remote.commit,CHICKPEA_SETUP_CAPABILITY_DIGEST:'a'.repeat(43),CHICKPEA_SETUP_CAPABILITY_ISSUED_AT:'1780000000000'}).map(([name,text])=>({name,text,type:'plain_text'}))];
     if(args[0]==='secret') console.log(JSON.stringify(['CHICKPEA_AUTH_SECRET','CHICKPEA_CREDENTIAL_KEY_CURRENT_ID','CHICKPEA_CREDENTIAL_KEY_V1'].map(name=>({name}))));
     else if(args[0]==='deployments') console.log(JSON.stringify({versions:[{version_id:remote.id,percentage:100}]}));
     else if(args[0]==='versions') console.log(JSON.stringify({resources:{bindings}}));
@@ -93,13 +97,16 @@ function fixture(t: any) {
     const args=process.argv.slice(2);appendFileSync(process.env.UPGRADE_FIXTURE_LOG,JSON.stringify(args)+'\\n');
     if(args.includes('verify:host')) throw new Error('Maintainer lock entered customer path');
     if(args[0]==='run'&&args[1]==='build'){
-      const output='dist-cf/'+process.env.WRANGLER_CI_OVERRIDE_NAME.replaceAll('-','_');
+      const version=JSON.parse(readFileSync('package.json','utf8')).version;
+      if(version==='0.1.0' && process.env.WRANGLER_CI_OVERRIDE_NAME) throw new Error('Legacy size check cannot build a custom Worker name');
+      const worker=process.env.WRANGLER_CI_OVERRIDE_NAME??'chickpea';
+      const output='dist-cf/'+worker.replaceAll('-','_');
       mkdirSync(output,{recursive:true});
       mkdirSync('.wrangler/deploy',{recursive:true});
       writeFileSync('.wrangler/deploy/config.json',JSON.stringify({configPath:'../../'+output+'/wrangler.json'}));
-      const version=JSON.parse(readFileSync('package.json','utf8')).version;
       const commit=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
-      writeFileSync(output+'/wrangler.json',JSON.stringify({name:process.env.WRANGLER_CI_OVERRIDE_NAME,vars:{CHICKPEA_APP_VERSION:version,CHICKPEA_SOURCE_COMMIT:commit},d1_databases:[{binding:'AUTH_DB',database_id:''}]}));
+      writeFileSync(output+'/wrangler.json',JSON.stringify({name:worker,topLevelName:worker,durable_objects:{bindings:[{name:'TAG_STATE',class_name:'TagStateStore'}]},vars:{CHICKPEA_APP_VERSION:version,CHICKPEA_SOURCE_COMMIT:commit},d1_databases:[{binding:'AUTH_DB',database_id:''}]}));
+      writeFileSync(output+'/index.js',JSON.stringify({version,commit}));
     }
   `);
   // A stale maintainer reservation must not stop a customer build or recovery.
@@ -113,7 +120,7 @@ function fixture(t: any) {
   return { base, home, remote, log, run, configure, receipts: () => join(home, '.chickpea/upgrades/receipts') };
 }
 
-test('custom-named Worker configures, preflights, resumes and recovers with preserved bindings and login context', (t) => {
+test('custom-named Worker upgrades and recovers an immutable legacy release with authored-name builds', (t) => {
   const f = fixture(t); f.configure();
   const initial = readFileSync(f.remote, 'utf8');
   const preflight = f.run(['--to', 'v0.1.1', '--preflight']);

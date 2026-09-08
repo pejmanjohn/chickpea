@@ -61,13 +61,14 @@ function privateDirectory(directory) {
   return realpathSync(directory);
 }
 
-function targetEnvironment(target, { deploy = false } = {}) {
+function targetEnvironment(target, { deploy = false, build = false } = {}) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.startsWith('CHICKPEA_DEPLOY_') || key.startsWith('CHICKPEA_LOCAL_') || key.startsWith('DEPLOY_TEST_') ||
         (key.startsWith('WRANGLER_') && key !== 'WRANGLER_HOME') || key === 'CHICKPEA_UPGRADE_CONTEXT' || key === 'CLOUDFLARE_ENV') delete env[key];
   }
-  Object.assign(env, { CLOUDFLARE_ACCOUNT_ID: target.account, WRANGLER_CI_OVERRIDE_NAME: target.worker, CHICKPEA_DEPLOY_PROFILE: target.profile });
+  Object.assign(env, { CLOUDFLARE_ACCOUNT_ID: target.account, CHICKPEA_DEPLOY_PROFILE: target.profile });
+  if (!build) env.WRANGLER_CI_OVERRIDE_NAME = target.worker;
   if (deploy) env.CHICKPEA_DEPLOY_TARGET = 'production';
   return env;
 }
@@ -186,10 +187,16 @@ async function main() {
     const prepare = async (source, installation) => {
       const checkout = sourceRoot(source);
       verifyReleaseSource(checkout, source);
-      await npm(['ci', '--no-audit', '--no-fund'], checkout, targetEnvironment(target));
-      await npm(['run', 'build'], checkout, targetEnvironment(target));
+      // Build retained releases with their authored name: v0.1.0's size check
+      // assumes that output directory. Retarget only generated configuration,
+      // leaving verified source, compiled app identity, and DO classes intact.
+      const buildEnvironment = targetEnvironment(target, { build: true });
+      await npm(['ci', '--no-audit', '--no-fund'], checkout, buildEnvironment);
+      await npm(['run', 'build'], checkout, buildEnvironment);
       const configPath = builtWorkerConfigPath(checkout);
       const config = JSON.parse(readFileSync(configPath, 'utf8'));
+      config.name = target.worker;
+      config.topLevelName = target.worker;
       overlayInstallation(config, installation, target);
       // Preserve the overlay only in the generated artifact, never tracked source.
       writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
