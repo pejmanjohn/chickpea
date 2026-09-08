@@ -166,7 +166,7 @@ test('transport recovery fails closed on missing hook, foreign version, and canc
 
 test('recovery request pins serving version and refuses redirects or failure statuses', async () => {
   const authority = createRecoveryAuthority();
-  for (const status of [204, 302, 404, 503]) {
+  for (const status of [204, 302, 401, 404, 500]) {
     const request = requestDeliveryRecovery({ url: 'https://test.workers.dev', workerVersion: 'serving-version', capability: authority.capability,
       fetchImpl: async (url: URL, options: RequestInit) => {
         assert.equal(url.pathname, '/internal/deployment/recover-delivery');
@@ -200,4 +200,36 @@ test('another deployment during rollback blocks previous-code deployment', async
   await executePreparedUpgrade(value.options);
   await assert.rejects(executePreparedUpgrade({ ...value.options, direction: 'recover', recoverDelivery: async () => value.change() }), /serving installation changed/);
   assert.equal(value.count(), 1);
+});
+
+
+test('recovery waits for pending socket readiness within one deadline', async () => {
+  let calls = 0;
+  let signal: AbortSignal | undefined;
+  await requestDeliveryRecovery({ url: 'https://test.workers.dev', workerVersion: 'serving-version', capability: createRecoveryAuthority().capability,
+    fetchImpl: async (_url: URL, options: RequestInit) => {
+      calls++;
+      if (signal) assert.equal(options.signal, signal);
+      signal = options.signal as AbortSignal;
+      return new Response(null, {status: calls === 1 ? 503 : 204});
+    },
+  });
+  assert.equal(calls, 2);
+});
+
+test('pending delivery recovery stops at its total deadline', async () => {
+  let calls = 0;
+  let signal: AbortSignal | undefined;
+  const started = Date.now();
+  await assert.rejects(requestDeliveryRecovery({ url: 'https://test.workers.dev', workerVersion: 'serving-version', capability: createRecoveryAuthority().capability,
+    timeoutMs: 20,
+    fetchImpl: async (_url: URL, options: RequestInit) => {
+      calls++; signal = options.signal as AbortSignal;
+      return new Response(null, {status: 503});
+    },
+  }), /not verified/);
+  assert.equal(calls, 1);
+  assert.ok(Date.now() - started < 1000);
+  // The same total deadline bounds fetch and the wait between attempts.
+  assert.ok(signal?.aborted || Date.now() - started >= 20);
 });
