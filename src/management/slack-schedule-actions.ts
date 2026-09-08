@@ -152,7 +152,13 @@ async function bindScheduleOperationToRequester(
   routines: Pick<RoutineStore, 'getRoutine' | 'listRoutines'>,
   at: number,
 ): Promise<SlackScheduleManagementOperation> {
-  const requestText = signal.requesterText?.trim();
+  // Agent handles are Slack user-group mentions, not user mentions. Remove
+  // only leading address tokens before checking the request's direct intent;
+  // otherwise the `!` in <!subteam^...> also looks like a clause boundary.
+  const requestText = signal.requesterText?.trim().replace(
+    /^(?:\s*(?:<@[A-Z0-9]+>|<!subteam\^[A-Z0-9]+(?:\|[^>\r\n]+)?>))+\s*/,
+    '',
+  );
   if (!requestText) {
     throw new ManagementError(
       'invalid_request',
