@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { compareVersions, STABLE_VERSION } from './release-manifest.mjs';
+import { compareVersions, STABLE_VERSION, RECOVERY_POLICIES } from './release-manifest.mjs';
 
 // Literal, reviewed names: accepting a prefix would silently bless future
 // configuration (or credentials) that the upgrader does not understand.
@@ -111,7 +111,7 @@ export function validateInstallation(remote) {
 export function assertCompatibleRelease(before, after) {
   if (!after.supportedOrigins?.includes(before.version) || compareVersions(before.version, after.version) >= 0) throw new Error('This release has not declared the installed version as a supported upgrade origin.');
   if (before.storageGeneration !== after.storageGeneration || stableJson(before.migrations) !== stableJson(after.migrations)) throw new Error('Storage generation or migration content changed. This updater supports only reviewed transitions with unchanged storage.');
-  if (before.recovery !== 'previous-code-only' || after.recovery !== 'previous-code-only') throw new Error('Code recovery is not declared for this transition.');
+  if (!RECOVERY_POLICIES.has(before.recovery) || !RECOVERY_POLICIES.has(after.recovery)) throw new Error('Code recovery is not declared for this transition.');
 }
 
 export function assertSameInstallation(before, after, { allowVersionChange = false } = {}) {

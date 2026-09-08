@@ -13,7 +13,7 @@ export function recognizeUpgradeState(receipt, initial, current, event) {
   throw new Error('An unrelated or unrecorded Worker version is serving. Preserve the receipt and inspect the deployment before continuing.');
 }
 
-export async function executePreparedUpgrade({ receipt, initial, direction = receipt.direction ?? 'upgrade', inspect, readEvent, save, deploy, prepare, confirm }) {
+export async function executePreparedUpgrade({ receipt, initial, direction = receipt.direction ?? 'upgrade', inspect, readEvent, save, deploy, prepare, confirm, recoverDelivery }) {
   if (!['upgrade', 'recover'].includes(direction)) throw new Error('Unknown upgrade direction.');
   const ready = (event, current) => event?.stage === 'ready' && event.workerVersion === current.workerVersion;
   const current = await inspect();
@@ -34,10 +34,32 @@ export async function executePreparedUpgrade({ receipt, initial, direction = rec
   const source = direction === 'recover' ? receipt.previous : receipt.destination;
   await prepare(source, current);
   if (!(await confirm(source, current, direction))) return 'cancelled';
-  const final = await inspect();
+  let final = await inspect();
   assertSameInstallation(current, final);
   await save({ ...receipt, direction, stage: direction === 'recover' ? 'recovering' : 'deploying' });
   try {
+    if (direction === 'recover' && state === 'destination' && receipt.recovery) {
+      if (!recoverDelivery) throw new Error('Transport recovery is required before previous code can be deployed.');
+      if (!ready(event, current)) {
+        // An interrupted upload may never have installed its recovery digest.
+        // Repair the same retained candidate before relying on that authority.
+        await save({ ...receipt, direction, stage: 'repairing-recovery-authority' });
+        await prepare(receipt.destination, final);
+        assertSameInstallation(final, await inspect());
+        await deploy(receipt.destination, final);
+        const repaired = await inspect();
+        assertSameInstallation(initial, repaired, { allowVersionChange: true });
+        if (recognizeUpgradeState(receipt, initial, repaired, readEvent()) !== 'destination' || !ready(readEvent(), repaired)) {
+          throw new Error('Candidate recovery authority readiness was not verified. Previous code was not deployed.');
+        }
+        final = repaired;
+      }
+      await save({ ...receipt, direction, stage: 'recovering-delivery' });
+      await recoverDelivery(final);
+      // The route mutation must not authorize deployment over another operator.
+      assertSameInstallation(final, await inspect());
+      await save({ ...receipt, direction, stage: 'recovering' });
+    }
     await deploy(source, final);
     const serving = await inspect();
     const deployed = readEvent();
@@ -51,4 +73,16 @@ export async function executePreparedUpgrade({ receipt, initial, direction = rec
     await save({ ...receipt, stage: 'needs-inspection', failure: 'deployment-not-verified', direction });
     throw error;
   }
+}
+
+export async function requestDeliveryRecovery({ url, workerVersion, capability, fetchImpl = fetch }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetchImpl(new URL('/internal/deployment/recover-delivery', url), {
+      method: 'POST', redirect: 'manual', signal: controller.signal,
+      headers: { Authorization: `Bearer ${capability}`, 'X-Chickpea-Target-Version': workerVersion },
+    });
+    if (response.status !== 204) throw new Error('Delivery recovery was not verified. Previous code was not deployed; preserve the receipt and retry recovery.');
+  } finally { clearTimeout(timeout); }
 }

@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+export const TRANSPORT_RECOVERY = 'gateway-transport-then-previous-code';
+export const RECOVERY_POLICIES = new Set(['previous-code-only', TRANSPORT_RECOVERY]);
+
 export const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -31,7 +34,7 @@ export function validateReleaseManifest(root, supplied) {
   if (!STABLE_VERSION.test(manifest.version) || [pkg.version, lock.version, lock.packages?.['']?.version].some((version) => version !== manifest.version)) {
     throw new Error('Release, package, and lockfile version must match.');
   }
-  if (manifest.recovery !== 'previous-code-only') throw new Error('Unsupported release recovery policy.');
+  if (!RECOVERY_POLICIES.has(manifest.recovery)) throw new Error('Unsupported release recovery policy.');
   if (!Array.isArray(manifest.supportedOrigins) || new Set(manifest.supportedOrigins).size !== manifest.supportedOrigins.length ||
       manifest.supportedOrigins.some((origin) => typeof origin !== 'string' || !STABLE_VERSION.test(origin) || compareVersions(origin, manifest.version) >= 0)) {
     throw new Error('Invalid supported release origin.');

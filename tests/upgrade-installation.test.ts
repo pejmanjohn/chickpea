@@ -86,5 +86,7 @@ test('equal migration digests alone do not authorize a transition', () => {
   assert.throws(() => assertCompatibleRelease(before, after), /supported/);
   after.supportedOrigins = ['0.1.0'] as never[];
   assert.doesNotThrow(() => assertCompatibleRelease(before, after));
+  assert.doesNotThrow(() => assertCompatibleRelease(before, { ...after, recovery: 'gateway-transport-then-previous-code' }));
+  assert.throws(() => assertCompatibleRelease(before, { ...after, recovery: 'unknown' }), /recovery/);
   assert.throws(() => assertCompatibleRelease(before, { ...after, migrations: { d1: 'b' } }), /migration/);
 });
