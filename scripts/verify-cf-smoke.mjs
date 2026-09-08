@@ -34,6 +34,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import { hasScheduledComposition } from './worker-artifact.mjs';
+import { readBuildIdentity } from './lib/build-identity.mjs';
 
 import {
   REPO_ROOT,
@@ -254,8 +255,10 @@ function verifyBuildArtifacts(expectedProfile = resolveCloudflareDeploymentProfi
     'built artifact exposes no OpenAI Subscription preview gate',
   );
   check(
-    Object.keys(config.vars ?? {}).length === 0,
-    'built artifact exposes no customer-editable runtime defaults',
+    Object.keys(config.vars ?? {}).sort().join(',') === 'CHICKPEA_APP_VERSION,CHICKPEA_SOURCE_COMMIT' &&
+      config.vars.CHICKPEA_APP_VERSION === readBuildIdentity(REPO_ROOT).version &&
+      config.vars.CHICKPEA_SOURCE_COMMIT === (readBuildIdentity(REPO_ROOT).sourceCommit ?? ''),
+    'built artifact carries exact source identity and no customer-editable runtime defaults',
   );
   check(
     config.observability?.traces?.enabled === true,
