@@ -45,7 +45,7 @@ test('the binding provider includes the current reviewed Cloudflare model', () =
 
   assert.ok(model);
   assert.equal(model.provider, 'cloudflare');
-  assert.equal(model.contextWindow, 32_768);
+  assert.equal(model.contextWindow, 1_048_576);
   assert.equal(model.maxTokens, 2_048);
   assert.deepEqual(model.input, ['text', 'image']);
 });
@@ -61,7 +61,7 @@ test('the Workers AI binding registration opts out of the default AI Gateway', (
   assert.equal(options.gateway, false);
 });
 
-test('the reviewed keyless GLM bindings explicitly disable server-side thinking', async () => {
+test('the reviewed GLM bindings select the compatible server-side thinking protocol', async () => {
   const calls: Array<{
     modelId: string;
     inputs: Record<string, unknown>;
@@ -103,7 +103,7 @@ test('the reviewed keyless GLM bindings explicitly disable server-side thinking'
       max_completion_tokens: 2_048,
       chat_template_kwargs: {
         clear_thinking: false,
-        enable_thinking: false,
+        enable_thinking: call.modelId === '@cf/zai-org/glm-5.3-flash',
       },
     });
     assert.equal(call.options?.returnRawResponse, true);
@@ -517,4 +517,32 @@ test('GPT-OSS wire normalization preserves non-text parts and other model payloa
   assert.deepEqual(output.messages, [{ ...messages[0], content: 'A\nB' }, messages[1], messages[2]]);
   assert.deepEqual(input, before);
   assert.equal(withWorkersAiPayloadPolicy('@cf/other/model', input), input);
+});
+
+
+test('GLM 5.3 Flash keeps provider reasoning out of assistant text and preserves the tool call', async () => {
+  const provider = createCloudflareBindingProvider({ run: async (_modelId, inputs) => {
+    // Sanitized native endpoint characterization: disabling the GLM 5.3
+    // parser emits implicit thinking as content plus a closing tag. Enabling
+    // it gives the same response the correct reasoning_content field.
+    const thinking = (inputs.chat_template_kwargs as { enable_thinking: boolean }).enable_thinking;
+    const chunks = [
+      { choices: [{ index: 0, delta: thinking
+        ? { reasoning_content: 'Read the synthetic fixture.' }
+        : { content: 'Read the synthetic fixture.</think>' }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_fixture', type: 'function',
+        function: { name: 'read_fixture', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] },
+    ];
+    return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n',
+      { headers: { 'content-type': 'text/event-stream' } });
+  } });
+  const model = provider.getModels().find(({ id }) => id === '@cf/zai-org/glm-5.3-flash')!;
+  const response = await provider.streamSimple(model, {
+    messages: [{ role: 'user', content: 'Read the fixture.', timestamp: 1 }],
+    tools: [{ name: 'read_fixture', description: 'Read the fixture.', parameters: { type: 'object', properties: {} } }],
+  }).result();
+  assert.equal(response.stopReason, 'toolUse');
+  assert.equal(response.content.some((part) => part.type === 'text'), false);
+  assert.ok(response.content.some((part) => part.type === 'thinking'));
+  assert.ok(response.content.some((part) => part.type === 'toolCall' && part.name === 'read_fixture'));
 });

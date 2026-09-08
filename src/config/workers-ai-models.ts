@@ -5,8 +5,8 @@ import type { Api, Model } from '@earendil-works/pi-ai';
 export const CURRENT_WORKERS_AI_MODEL_ID = '@cf/zai-org/glm-5.3-flash';
 
 /**
- * Workers AI GLM models share one chat template whose thinking mode is on by
- * default. Chickpea applies the same binding-boundary policy to each of them.
+ * Curated Workers AI GLM models use a binding-boundary thinking policy. The
+ * current model requires thinking parsing enabled; older models support off.
  */
 export const WORKERS_AI_GLM_MODEL_IDS = [
   '@cf/zai-org/glm-4.7-flash',
@@ -46,10 +46,10 @@ export function withCurrentWorkersAiModels<TApi extends Api>(
         cacheRead: 0.03,
         cacheWrite: 0,
       },
-      // The provider advertises 1,048,576 tokens. Chickpea keeps the same
-      // conservative floor used by its binding and REST paths until the wider
-      // agent pipeline is validated at that limit.
-      contextWindow: WORKERS_AI_CONTEXT_WINDOW_FLOOR,
+      // Use the actual context window: an artificial 32K floor makes Pi
+      // misclassify valid responses as silent overflow and compact/retry them.
+      // https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/
+      contextWindow: 1_048_576,
       // Chickpea intentionally keeps Workers AI replies within its existing
       // response ceiling even though the provider accepts a larger value.
       maxTokens: 2_048,

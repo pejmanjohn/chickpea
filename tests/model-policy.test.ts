@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { registerCloudflareBindingProvider } from '../src/cloudflare-provider.ts';
 import { resolveAgentModelPolicy } from '../src/config/model-policy.ts';
 import type { CustomAgentConfig, WorkspaceModelDefault } from '../src/config/types.ts';
 
@@ -119,4 +120,19 @@ test('legacy policy retains the environment fallback during Stage 1', () => {
     model: 'openai/gpt-5.4',
     attribution: { source: 'legacy_environment', providerId: 'openai' },
   });
+});
+
+
+test('Cloudflare compaction warning uses registered metadata instead of the provider prefix', (t) => {
+  registerCloudflareBindingProvider({ run: async () => ({ response: 'unused' }) });
+  const warnings = t.mock.method(console, 'warn', () => {});
+  for (const model of ['cloudflare/@cf/zai-org/glm-5.3-flash', 'cloudflare/@cf/zai-org/glm-5.2']) {
+    resolveAgentModelPolicy({ agent: agent({ model }), runtimeContract: 'chickpea-v1' });
+  }
+  assert.equal(warnings.mock.callCount(), 0);
+  const unknown = { agent: agent({ model: 'cloudflare/@cf/test/unregistered' }), runtimeContract: 'chickpea-v1' } as const;
+  resolveAgentModelPolicy(unknown);
+  resolveAgentModelPolicy(unknown);
+  assert.equal(warnings.mock.callCount(), 1);
+  assert.match(String(warnings.mock.calls[0]?.arguments[0]), /no declared context window/);
 });

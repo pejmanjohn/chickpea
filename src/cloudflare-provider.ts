@@ -5,8 +5,10 @@ import {
   type CloudflareAIBinding,
 } from '@flue/runtime/cloudflare/workers-ai';
 
+import { withWorkersAiOverflowPolicy } from './config/workers-ai-overflow.ts';
 import { withWorkersAiPayloadPolicy } from './config/workers-ai-payload.ts';
 import {
+  CURRENT_WORKERS_AI_MODEL_ID,
   isWorkersAiGlmModel,
   withCurrentWorkersAiModels,
 } from './config/workers-ai-models.ts';
@@ -32,7 +34,7 @@ export function registerCloudflareBindingProvider(binding: CloudflareAIBinding):
 export function createCloudflareBindingProvider(binding: CloudflareAIBinding) {
   const provider = cloudflareBindingProvider(cloudflareBindingProviderOptions(binding));
   const models = withCurrentWorkersAiModels(provider.getModels());
-  return decorateAttachmentProvider({ ...provider, getModels: () => models });
+  return decorateAttachmentProvider({ ...provider, ...withWorkersAiOverflowPolicy(provider), getModels: () => models });
 }
 
 /** Pure construction seam: keeps gateway privacy and payload policy testable. */
@@ -69,10 +71,11 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
       // Workers AI enables GLM thinking by default. The Pi provider represents
       // `thinkingLevel: 'off'` by omitting `reasoning_effort`, which therefore
       // leaves that server-side default enabled. Apply Cloudflare's explicit
-      // chat-template switch at the binding boundary, remove any conflicting
+      // chat-template policy at the binding boundary, remove any conflicting
       // effort value, cap each generation to the same 2,048-token ceiling as
       // the app's REST Workers AI path, and abort a provider stream that still
-      // fails to settle. This policy is deliberately limited to the GLM
+      // fails to settle. GLM 5.3 needs its reasoning parser enabled (below).
+      // This policy is deliberately limited to the GLM
       // family Chickpea seeds and curates. glm-5.2 has otherwise held the
       // shared Slack relay alarm until its 15-minute platform deadline.
       const {
@@ -103,7 +106,11 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
           max_completion_tokens: maxCompletionTokens,
           chat_template_kwargs: {
             ...existingTemplateOptions,
-            enable_thinking: false,
+            // GLM 5.3 Flash still generates thinking when this flag is false,
+            // but Workers AI then labels it as ordinary content (ending in
+            // </think>). Keep its parser enabled so thinking stays private.
+            // Older curated GLM endpoints retain their non-thinking policy.
+            enable_thinking: modelId === CURRENT_WORKERS_AI_MODEL_ID,
           },
         },
         { ...options, signal },

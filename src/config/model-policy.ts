@@ -1,4 +1,5 @@
 import { ModelResolutionError } from './errors.ts';
+import { registeredPiProvider } from './pi-provider-registry.ts';
 import type {
   AgentModelAttribution,
   CustomAgentConfig,
@@ -117,23 +118,20 @@ export function resolveAgentModelPolicy(input: {
   };
 }
 
-// A `cloudflare/<model>` id resolves through Flue's binding-backed provider,
-// which declares no context window — Flue then treats contextWindow as 0 and
-// NEVER threshold-compacts. Pre-release transcript testing measured linear DM
-// history growth on that path. Warn ONCE per model id so an operator who runs
-// (or pins) a non-catalog `cloudflare/*` model knows auto-compaction is off.
-// The REST `cloudflare-workers-ai/*` provider declares a floor in src/app.ts
-// and is unaffected, so it is deliberately not matched here.
+// Warn only from registered model metadata. Curated binding models have a
+// context window; a provider prefix alone cannot establish that compaction is off.
 const warnedUnboundedCloudflareModels = new Set<string>();
 function noteResolvedModel(model: string): string {
-  if (model.startsWith('cloudflare/') && !warnedUnboundedCloudflareModels.has(model)) {
-    warnedUnboundedCloudflareModels.add(model);
-    console.warn(
-      `[chickpea] model ${model} resolves through the Workers AI binding with no declared ` +
-        'context window (contextWindow 0): auto-compaction is disabled and long DM transcripts ' +
-        'grow unbounded.',
-    );
-  }
+  if (!model.startsWith('cloudflare/') || warnedUnboundedCloudflareModels.has(model)) return model;
+  const provider = registeredPiProvider('cloudflare');
+  if (!provider) return model;
+  const metadata = provider.getModels().find((candidate) => candidate.id === model.slice('cloudflare/'.length));
+  if (metadata && metadata.contextWindow > 0) return model;
+  warnedUnboundedCloudflareModels.add(model);
+  console.warn(
+    `[chickpea] model ${model} has no declared context window in the registered Workers AI ` +
+      'binding provider: auto-compaction is disabled and long DM transcripts grow unbounded.',
+  );
   return model;
 }
 
