@@ -34,5 +34,5 @@
   ],
   "transitions": ["compatible-upgrade", "interruption-before-upload-and-retry", "interruption-after-upload-and-code-recovery"],
   "liveReadbacks": ["signed-in-owner", "member-owner-settings-denied", "slack-root-reply", "slack-thread-followup", "due-schedule-during-transition", "no-duplicate-terminal-delivery"],
-  "cleanup": ["pause-run-owned-schedule", "remove-only-run-owned-agent-and-memory", "restore-recorded-fixture-values", "retain-private-before-and-after-evidence"]
+  "cleanup": ["pause-run-owned-schedule", "disconnect-only-run-owned-connection", "archive-run-owned-agent-and-verify-channel-and-dm-access-removed", "restore-recorded-fixture-values", "retain-private-before-and-after-evidence"]
 }
