@@ -1229,3 +1229,32 @@ function ready(socket: FakeSocket, sessionId: string): void {
     rotateAt: NOW + 15 * 60_000,
   }));
 }
+
+test('failed HTTP preparation preserves sockets, but active HTTP never falls back', async () => {
+  const source = ts.createSourceFile('cloudflare-session.ts',
+    readFileSync(new URL('../src/slack/gateway/cloudflare-session.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'SlackGatewaySession');
+  assert.ok(declaration);
+  const compiled = ts.transpileModule(declaration.getText(source).replace(/^export /u, '') + '\nSlackGatewaySession',
+    {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+  for (const mode of ['socket','http']) {
+    const runners: FakeRunnerControl[] = [];
+    const warnings: unknown[] = [];
+    const Probe = vm.runInNewContext(compiled, {
+      resolveSlackPublicUrl: async () => 'https://worker.account.workers.dev',
+      parseHttpDeliveryState: () => ({mode}), GATEWAY_HTTP_SETTING:'http',
+      DurableObject: class { constructor(_context:unknown, public env:unknown) {} },
+      getSettingsStore: () => ({getSetting:async()=> 'configured'}),
+      GATEWAY_BINDING_SETTING:'binding', GATEWAY_DURABLE_ADMISSION_CAPABILITY:'durable',
+      cloudflareWorkerVersionId:()=> 'version',
+      createGatewayDeploymentClient:()=>({ensureHttpDelivery:async()=>{throw new Error('private provider response');}}),
+      GatewaySessionRunnerSupervisor,
+      GatewaySessionRunner:class extends FakeRunnerControl { constructor(){super('healthy');runners.push(this);} },
+      console:{info(){},warn(value:unknown){warnings.push(value);}},
+    }) as new(context:object,env:object)=>{wake():Promise<void>};
+    const object = new Probe({storage:alarmStorage(),waitUntil(){}},{});
+    if(mode==='socket'){await object.wake();assert.equal(runners.length,1);assert.equal(runners[0]!.starts,1);}
+    else {await assert.rejects(object.wake(),/registration is pending/);assert.equal(runners.length,0);}
+    assert.equal(warnings.length,1);assert.equal(JSON.stringify(warnings).includes('private provider response'),false);
+  }
+});

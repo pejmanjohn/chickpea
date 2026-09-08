@@ -41,22 +41,26 @@ export async function executePreparedUpgrade({ receipt, initial, direction = rec
   try {
     if (direction === 'recover' && state === 'destination' && receipt.recovery) {
       if (!recoverDelivery) throw new Error('Transport recovery is required before previous code can be deployed.');
-      if (!ready(event, current)) {
+      await save({ ...receipt, direction, stage: 'recovering-delivery' });
+      try {
+        await recoverDelivery(final);
+      } catch (error) {
+        if (!(error instanceof DeliveryRecoveryAuthorityUnavailableError)) throw error;
         // An interrupted upload may never have installed its recovery digest.
         // Repair the same retained candidate before relying on that authority.
         await save({ ...receipt, direction, stage: 'repairing-recovery-authority' });
         await prepare(receipt.destination, final);
         assertSameInstallation(final, await inspect());
-        await deploy(receipt.destination, final);
+        try { await deploy(receipt.destination, final); } catch { /* The recovery hook, not HTTP readiness, decides whether recovery can proceed. */ }
         const repaired = await inspect();
         assertSameInstallation(initial, repaired, { allowVersionChange: true });
-        if (recognizeUpgradeState(receipt, initial, repaired, readEvent()) !== 'destination' || !ready(readEvent(), repaired)) {
-          throw new Error('Candidate recovery authority readiness was not verified. Previous code was not deployed.');
+        if (recognizeUpgradeState(receipt, initial, repaired, readEvent()) !== 'destination') {
+          throw new Error('Candidate recovery authority repair was not verified. Previous code was not deployed.');
         }
         final = repaired;
+        await save({ ...receipt, direction, stage: 'recovering-delivery' });
+        await recoverDelivery(final);
       }
-      await save({ ...receipt, direction, stage: 'recovering-delivery' });
-      await recoverDelivery(final);
       // The route mutation must not authorize deployment over another operator.
       assertSameInstallation(final, await inspect());
       await save({ ...receipt, direction, stage: 'recovering' });
@@ -76,6 +80,10 @@ export async function executePreparedUpgrade({ receipt, initial, direction = rec
   }
 }
 
+export class DeliveryRecoveryAuthorityUnavailableError extends Error {
+  constructor() { super('Delivery recovery was not verified: recovery authority is unavailable. Previous code was not deployed.'); }
+}
+
 export async function requestDeliveryRecovery({ url, workerVersion, capability, fetchImpl = fetch, timeoutMs = 15_000 }) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 15_000) throw new Error('Invalid delivery recovery deadline.');
   const controller = new AbortController();
@@ -89,6 +97,7 @@ export async function requestDeliveryRecovery({ url, workerVersion, capability, 
         headers: { Authorization: `Bearer ${capability}`, 'X-Chickpea-Target-Version': workerVersion },
       });
       if (response.status === 204 && !controller.signal.aborted && Date.now() < deadline) return;
+      if (response.status === 404) throw new DeliveryRecoveryAuthorityUnavailableError();
       // Socket establishment is asynchronous. Only its explicit pending status
       // is retryable; authentication failures and redirects remain terminal.
       if (response.status !== 503) throw failure();
@@ -98,7 +107,8 @@ export async function requestDeliveryRecovery({ url, workerVersion, capability, 
       await delay(Math.min(500, remaining), undefined, { signal: controller.signal });
     }
     throw failure();
-  } catch {
+  } catch (error) {
+    if (error instanceof DeliveryRecoveryAuthorityUnavailableError) throw error;
     throw failure();
   } finally { clearTimeout(timeout); }
 }

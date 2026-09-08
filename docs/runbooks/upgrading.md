@@ -111,10 +111,16 @@ Older updaters reject this release's recovery policy before deployment. The new
 updater registers a recovery capability during authenticated readiness and keeps
 it in the private receipt. Before restoring v0.1.7, recovery authenticates to the
 serving candidate and switches the gateway back to socket delivery. It requires a
-healthy current-version socket before deploying the previous code. If readiness
-was interrupted, it first redeploys the retained candidate to finish that step.
+healthy current-version socket before deploying the previous code. Recovery first
+tries that hook even if HTTP readiness failed. If the recovery authority is
+missing, it redeploys the retained candidate to register it and retries the hook;
+successful HTTP activation is not a prerequisite for restoring socket delivery.
 A new upgrade receipt explicitly restores HTTP delivery after a rollback; retrying
-the recovery receipt keeps socket delivery. An unavailable recovery endpoint
+the recovery receipt keeps socket delivery. Deployment activation time and Worker
+version establish ownership of transport changes. Both the installation and
+gateway reject stale owners, so an older in-flight request cannot undo a newer
+upgrade. Conflicting activation order fails closed.
+An unavailable recovery endpoint
 stops recovery before any downgrade. Preserve
 the receipt and repair the candidate; a raw Cloudflare version rollback alone
 can leave Slack routed to an HTTP endpoint that old code cannot receive.

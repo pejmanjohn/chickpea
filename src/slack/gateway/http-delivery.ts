@@ -5,12 +5,14 @@ import { parseGatewayFrameText, type GatewayInboundDelivery, type GatewayWorkspa
 export const GATEWAY_HTTP_SETTING = 'slack.gateway.httpDelivery.v1';
 export const GATEWAY_HTTP_PATH = '/slack/gateway/delivery';
 export const GATEWAY_HTTP_MAX_BYTES = 1_048_576 + 4096;
+export interface DeliveryOwner { issuedAt: number; versionId: string }
 export interface HttpDeliveryKey {
   operationId: string; endpointUrl: string; routeRevision: number; keyId: string;
   secretEnvelope: SlackSecretEnvelope;
 }
 export interface HttpDeliveryState {
   version: 1; bindingId: string; deploymentId: string; installedAt: number; mode: 'socket' | 'http'; revision: number;
+  owner?: DeliveryOwner;
   active?: HttpDeliveryKey; pending?: HttpDeliveryKey;
   rollback?: {operationId:string; expectedRevision:number};
   registration?: {operationId:string; expectedRevision:number; endpointUrl:string};

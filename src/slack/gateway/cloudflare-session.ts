@@ -58,11 +58,23 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
       return;
     }
     const publicOrigin = await resolveSlackPublicUrl(platformEnv);
-    if (publicOrigin && await createGatewayDeploymentClient(platformEnv).ensureHttpDelivery(publicOrigin)) {
-      this.supervisor?.stop();
-      this.supervisor = undefined;
-      await this.state.storage.deleteAlarm();
-      return;
+    try {
+      if (publicOrigin && await createGatewayDeploymentClient(platformEnv).ensureHttpDelivery(publicOrigin)) {
+        this.supervisor?.stop();
+        this.supervisor = undefined;
+        await this.state.storage.deleteAlarm();
+        return;
+      }
+    } catch {
+      console.warn({component:'slack_gateway',event:'http_registration_pending',versionId:cloudflareWorkerVersionId(this.env) ?? null});
+      const delivery = parseHttpDeliveryState(await getSettingsStore(platformEnv).getSetting(GATEWAY_HTTP_SETTING));
+      if (delivery?.mode === 'http') {
+        this.supervisor?.stop();
+        this.supervisor = undefined;
+        throw new Error('HTTP delivery registration is pending.');
+      }
+      // Preserve service while preparing HTTP. The gateway remains the final
+      // fence and refuses this socket if HTTP became active remotely.
     }
     if (!this.supervisor) {
       // The cross-object settings read can admit another wake. Keep its

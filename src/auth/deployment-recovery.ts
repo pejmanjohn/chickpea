@@ -6,6 +6,7 @@ export const DEPLOYMENT_RECOVERY_SETTING = 'deployment.recovery.v1';
 const CAPABILITY = /^[A-Za-z0-9_-]{43}$/;
 interface RecoveryState {
   versionId: string;
+  issuedAt: number;
   digest: string;
   binding: string | null;
   intent: 'upgrade' | 'recover';
@@ -16,20 +17,27 @@ function parse(raw: string | undefined): RecoveryState | undefined {
   try {
     const value = JSON.parse(raw);
     if (value && typeof value.versionId === 'string' && typeof value.digest === 'string' && CAPABILITY.test(value.digest) &&
-        (value.binding === null || typeof value.binding === 'string') && ['upgrade','recover'].includes(value.intent)) return value;
+        (value.binding === null || typeof value.binding === 'string') && ['upgrade','recover'].includes(value.intent) && (value.issuedAt === undefined || (Number.isSafeInteger(value.issuedAt) && value.issuedAt > 0))) {
+      // The unreleased QA candidate wrote no ordering timestamp. Real v0.1.7
+      // has no recovery authority; preserve QA intent while adopting its fence.
+      return {...value,issuedAt:value.issuedAt ?? 0};
+    }
   } catch { /* Unrecognized authority cannot authorize a mutation. */ }
   return undefined;
 }
 
 // A new receipt starts an upgrade. Re-provisioning the same receipt, including
 // repairing a candidate during recovery, cannot undo its durable recovery intent.
-export async function provisionDeploymentRecovery(settings: SettingsStore, versionId: string, digest: string): Promise<RecoveryAuthority> {
+export async function provisionDeploymentRecovery(settings: SettingsStore, versionId: string, digest: string, issuedAt: number): Promise<RecoveryAuthority> {
+  if (!Number.isSafeInteger(issuedAt) || issuedAt <= 0) throw new Error('Invalid deployment owner time.');
   if (!CAPABILITY.test(digest)) throw new Error('Invalid recovery digest.');
   for (let attempt = 0; attempt < 3; attempt++) {
     const [priorRaw, bindingRaw] = await settings.getSettings([DEPLOYMENT_RECOVERY_SETTING, GATEWAY_BINDING_SETTING]);
     const prior = parse(priorRaw);
+    if (prior && (prior.issuedAt > issuedAt || (prior.issuedAt === issuedAt &&
+        (prior.versionId !== versionId || prior.digest !== digest)))) throw new Error('A newer deployment owns recovery.');
     const binding = bindingRaw ?? null;
-    const value: RecoveryState = {versionId, digest, binding, intent: prior?.digest === digest ? prior.intent : 'upgrade'};
+    const value: RecoveryState = {versionId, issuedAt, digest, binding, intent: prior?.digest === digest ? prior.intent : 'upgrade'};
     const raw = JSON.stringify(value);
     if (!await settings.applySettingsPatch({expected:{key:DEPLOYMENT_RECOVERY_SETTING,value:priorRaw ?? null},
       set:[{key:DEPLOYMENT_RECOVERY_SETTING,value:raw}]})) continue;

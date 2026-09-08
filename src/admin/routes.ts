@@ -1739,7 +1739,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const recoveryDigest = c.req.header('x-chickpea-recovery-digest');
       if (recoveryDigest !== undefined) {
         if (!/^[A-Za-z0-9_-]{43}$/.test(recoveryDigest)) return c.json({error:'invalid_recovery_digest'}, 400);
-        const recovery = await provisionDeploymentRecovery(settings(c), targetVersion, recoveryDigest);
+        const recovery = await provisionDeploymentRecovery(settings(c), targetVersion, recoveryDigest, authority.issuedAt);
+        if (recovery.binding !== null) await createGatewayDeploymentClient(c.env as PlatformEnv | undefined).claimHttpDeliveryOwner();
         if (recovery.binding !== null && recovery.intent === 'upgrade') {
           const publicOrigin = await resolveSlackPublicUrl(c.env as PlatformEnv | undefined, settings(c)) ?? requestOrigin(c);
           const active = await createGatewayDeploymentClient(c.env as PlatformEnv | undefined).ensureHttpDelivery(publicOrigin, {
