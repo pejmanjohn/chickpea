@@ -6840,7 +6840,7 @@ test('saved connection details use a closed identity and revision allowlist', as
   await flushAsync();
   harness.listeners.click!({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
-  const details = harness.app.innerHTML.split('<summary>Saved connection details</summary>')[1]?.split('</details>')[0];
+  const details = harness.app.innerHTML.split('<summary>Troubleshooting details</summary>')[1]?.split('</details>')[0];
   assert.ok(details);
   assert.match(details, /Connection ID[^]*connection_exact/);
   assert.match(details, /Saved revision[^]*>4</);
@@ -8338,15 +8338,57 @@ test('custom Agent-owned API setup directs Google OAuth to the managed connector
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
   const form = harness.app.innerHTML;
-  assert.match(form, /Use a managed Google connector for Google OAuth/);
+  assert.match(form, /For Google sign-in, choose a Google connector/);
   assert.doesNotMatch(form, /<option value="google_oauth"/);
   assert.match(form, /class="connection-account-owner-options"/);
   assert.doesNotMatch(form, /<select[^>]+data-action="connection-account-owner"/);
   assert.doesNotMatch(form, /data-action="connection-account-owner"[^>]+checked/);
   assert.match(form, /data-action="connection-account-create" disabled/);
   assert.match(form, /data-action="connection-account-kind"[\s\S]*?class="[^"]*select-caret/);
-  assert.match(form, /data-action="connection-account-auth"[\s\S]*?class="[^"]*select-caret/);
+  assert.doesNotMatch(form, /data-action="connection-account-auth"/);
 });
+
+for (const access of ['read', 'write']) {
+  test(`custom REST API saves ${access} access with the chosen credential header`, async () => {
+    const harness = runAdminPageHarness({ agents: [connectionsAgent()], connectionAccounts: { attached: [] } });
+    await flushAsync();
+    const { click, change, input } = harness.listeners;
+    assert.ok(click && change && input);
+    click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+    await flushAsync();
+    click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+    await flushAsync();
+    click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
+    input({ target: inputTarget({ 'data-action': 'connection-account-label' }, 'Reports API') });
+    input({ target: inputTarget({ 'data-action': 'connection-account-url' }, 'https://reports.example.test/v1/') });
+    input({ target: inputTarget({ 'data-action': 'connection-account-credential' }, 'discard-on-switch') });
+    change({ target: inputTarget({ 'data-action': 'connection-account-kind' }, 'mcp') });
+    assert.match(harness.app.innerHTML, /Choose authentication/);
+    change({ target: inputTarget({ 'data-action': 'connection-account-kind' }, 'api') });
+    assert.doesNotMatch(harness.app.innerHTML, /discard-on-switch/);
+    input({ target: inputTarget({ 'data-action': 'connection-account-credential' }, 'test-api-token') });
+    if (access === 'write') {
+      change({ target: inputTarget({ 'data-action': 'custom-api-access' }, 'write') });
+      input({ target: inputTarget({ 'data-action': 'custom-api-header' }, 'X-API-Key') });
+      input({ target: inputTarget({ 'data-action': 'custom-api-prefix' }, '') });
+    }
+    chooseConnectionOwner(harness);
+    click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+    await flushAsync();
+    assert.equal(harness.connectionAccountPosts.length, 1);
+    const body = harness.connectionAccountPosts[0]!.body;
+    const api = body.api as Record<string, unknown>;
+    assert.equal(body.credential, 'test-api-token');
+    assert.equal(api.authMode, 'credential');
+    assert.deepEqual(api.allowedHosts, ['reports.example.test']);
+    assert.deepEqual(api.pathPrefixes, ['/v1']);
+    assert.deepEqual(api.allowedMethods, access === 'write' ? ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'] : ['GET', 'HEAD']);
+    assert.equal(api.headerName, access === 'write' ? 'X-API-Key' : 'Authorization');
+    assert.equal(api.headerValuePrefix, access === 'write' ? '' : 'Bearer ');
+    assert.equal(harness.oauthStartPosts.length, 0);
+    assert.match(harness.app.innerHTML, /API token has not been verified/);
+  });
+}
 
 test('self-hosted Agent-owned Google connectors fall back to native OAuth setup without Composio', async () => {
   const harness = runAdminPageHarness({
@@ -8379,8 +8421,8 @@ test('self-hosted Agent-owned Google connectors fall back to native OAuth setup 
   click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
 
   click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
-  assert.match(harness.app.innerHTML, /<option value="google_oauth"/);
-  assert.match(harness.app.innerHTML, /This deployment uses its own Google OAuth client credentials/);
+  assert.doesNotMatch(harness.app.innerHTML, /<option value="google_oauth"/);
+  assert.match(harness.app.innerHTML, /For Google sign-in, choose a Google connector/);
 });
 
 test('Agent-owned Exa accounts support anonymous limits without an API key', async () => {
@@ -15032,4 +15074,88 @@ test('non-Owners have no update controls or installation fetches', async () => {
   await flushAsync();
   assert.doesNotMatch(harness.app.innerHTML, /data-action="installation-review"|data-section="updates"/);
   assert.equal(harness.fetchCalls.filter(call => call.path.startsWith('/admin/api/installation')).length, 0);
+});
+
+test('custom account MCP form restores OAuth without token or provider bookkeeping fields', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()], connectionAccounts: { attached: [] } });
+  await flushAsync();
+  const { click, change, input } = harness.listeners;
+  assert.ok(click && change && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
+  change({ target: inputTarget({ 'data-action': 'connection-account-kind' }, 'mcp') });
+  assert.match(harness.app.innerHTML, /Choose authentication/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-(provider|purpose|capabilities|credential)"/);
+  change({ target: inputTarget({ 'data-action': 'connection-account-auth' }, 'oauth') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-label' }, 'Custom reports') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-url' }, 'https://reports.example.test/mcp') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-scope' }, 'reports:read') });
+  chooseConnectionOwner(harness);
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+  const body = harness.connectionAccountPosts[0]?.body;
+  assert.equal((body?.mcp as Record<string, unknown>)?.authMode, 'oauth');
+  assert.equal((body?.mcp as Record<string, unknown>)?.oauthScope, 'reports:read');
+  assert.equal(body?.credential, undefined);
+  assert.deepEqual((body?.mcp as Record<string, unknown>)?.allowedTools, []);
+  assert.equal(harness.oauthStartPosts.length, 1);
+});
+
+for (const authMode of ['none', 'bearer']) {
+  test(`custom MCP ${authMode} tests before saving and enables only selected discovered tools`, async () => {
+    const harness = runAdminPageHarness({ agents: [connectionsAgent()], connectionAccounts: { attached: [] },
+      mcpTestResult: { ok: true, tools: [{ name: 'read_reports' }, { name: 'delete_reports' }] } });
+    await flushAsync();
+    const { click, change, input } = harness.listeners;
+    assert.ok(click && change && input);
+    click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+    await flushAsync();
+    click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+    await flushAsync();
+    click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
+    change({ target: inputTarget({ 'data-action': 'connection-account-kind' }, 'mcp') });
+    change({ target: inputTarget({ 'data-action': 'connection-account-auth' }, authMode) });
+    input({ target: inputTarget({ 'data-action': 'connection-account-label' }, 'Reports') });
+    input({ target: inputTarget({ 'data-action': 'connection-account-url' }, 'https://reports.example.test/mcp') });
+    if (authMode === 'bearer') input({ target: inputTarget({ 'data-action': 'connection-account-credential' }, 'test-secret') });
+    chooseConnectionOwner(harness);
+    click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+    await flushAsync();
+    assert.equal(harness.connectionAccountPosts.length, 0);
+    assert.equal(harness.mcpTestPosts.length, 1);
+    assert.match(harness.app.innerHTML, /Choose tools/);
+    change({ target: checkboxTarget({ 'data-action': 'custom-mcp-tool', 'data-tool': 'read_reports' }, true) });
+    click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+    await flushAsync();
+    assert.equal(harness.connectionAccountPosts.length, 1);
+    const body = harness.connectionAccountPosts[0]?.body;
+    assert.deepEqual((body?.mcp as Record<string, unknown>).allowedTools, ['read_reports']);
+    assert.equal(body?.credential, authMode === 'bearer' ? 'test-secret' : undefined);
+  });
+}
+
+test('custom OAuth callback opens account tool review and keeps creation and editing separate', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()], initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?oauth=connected&connection=connection_custom&lane=mcp',
+    connectionAccounts: { attached: [{
+      account: { id: 'connection_custom', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'reports', label: 'Reports', revision: 2, lifecycle: 'ready',
+        policy: { kind: 'mcp', authMode: 'oauth', url: 'https://reports.example.test/mcp', transport: 'streamable-http', headerNames: [], discoveredTools: [{ name: 'read_reports' }], allowedTools: [] } },
+      binding: { agentId: 'agent_conn', connectionAccountId: 'connection_custom', providerId: 'reports', allowedCapabilities: [], enabled: true },
+    }] },
+  });
+  await flushAsync();
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
+  assert.doesNotMatch(harness.app.innerHTML, /account is ready for the Agent/);
+  const { click } = harness.listeners;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
+  click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_custom' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-create"/);
+  assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
 });

@@ -650,6 +650,7 @@
     state.connectionEditor = null;
     state.apiConnectionEditor = null;
     state.customConnectionLane = null;
+    state.customMcpToolEditor = null;
   }
 
   function resetRepositoryTransientState() {
@@ -2960,6 +2961,7 @@
   }
 
   function newConnectionAccountForm() {
+    state.customMcpToolEditor = null;
     state.connectorGallerySearch = "";
     state.connectionAccountForm = {
       ownerKind: "",
@@ -2989,6 +2991,7 @@
   }
 
   function newConnectionAccountFormFromPreset(presetId, preferredOwnerKind) {
+    state.customMcpToolEditor = null;
     var googleService = googleServicePresetById(presetId);
     var managedPreset = managedPresetById(presetId);
     var managedCandidate = managedPreset || googleService;
@@ -3138,10 +3141,11 @@
     var presetMcp = form.kind === "mcp" && form.mcpEditor;
     var credentialOptional = !!(form.preset && form.preset.auth && form.preset.auth.optional === true);
     var credentialRequired = !googleOauth && !credentialOptional && (
-      form.kind === "api" ||
+      form.kind === "api" || (form.kind === "mcp" && form.authMode === "bearer") ||
       (presetMcp && (presetMcp.authMode === "bearer" || (presetMcp.headerNames || []).length > 0))
     );
-    if (!providerId) form.error = "Provider is required.";
+    if (form.kind === "mcp" && !form.preset && ["none", "bearer", "oauth"].indexOf(form.authMode) < 0) form.error = "Choose an authentication method.";
+    else if (!providerId) form.error = "Provider is required.";
     else if (!label) form.error = "Account label is required.";
     else if (!googleOauth && !presetApi && !rawUrl) form.error = form.kind === "mcp" ? "Server URL is required." : "API base URL is required.";
     else if (googleOauth && providerId !== "google") form.error = "Google OAuth connections must use the google provider.";
@@ -3182,12 +3186,14 @@
       allowedCapabilities: capabilities
     };
     if (form.kind === "mcp") {
+      if (!form.preset) { body.allowedCapabilities = []; capabilities = []; }
       var sourceMcp = presetMcp || {
         id: connectionId,
         displayName: label,
         url: parsedUrl.toString(),
-        transport: "streamable-http",
-        authMode: body.credential ? "bearer" : "none",
+        transport: form.transport || "streamable-http",
+        authMode: form.authMode,
+        oauthScope: String(form.oauthScope || "").trim() || undefined,
         headerNames: [],
         discoveredTools: [],
         allowedTools: []
@@ -3263,9 +3269,9 @@
         displayName: label,
         allowedHosts: [parsedUrl.hostname],
         pathPrefixes: [path],
-        headerName: "Authorization",
-        headerValuePrefix: "Bearer ",
-        allowedMethods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
+        headerName: String(form.headerName || "Authorization").trim(),
+        headerValuePrefix: form.headerValuePrefix === undefined ? "Bearer " : form.headerValuePrefix,
+        allowedMethods: form.apiAccess === "write" ? ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] : ["GET", "HEAD"],
         enabled: true,
         authMode: "credential"
       };
@@ -3273,6 +3279,31 @@
     form.busy = true;
     render();
     var prepare = Promise.resolve();
+    if (form.kind === "mcp" && !form.preset && !mcpOauth) {
+      var customTest = { id: connectionId, url: body.mcp.url, transport: body.mcp.transport, authMode: body.mcp.authMode };
+      if (body.mcp.authMode === "bearer") customTest.bearerToken = body.credential;
+      if (!form.reviewedTools) {
+        postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/test", "POST", customTest).then(function (tested) {
+          if (state.connectionAccountForm !== form) return;
+          if (!tested || !tested.ok) throw new Error((tested && tested.message) || "Could not connect to this MCP server.");
+          form.reviewedTools = tested.tools || [];
+          form.selectedTools = [];
+          form.busy = false;
+          render();
+        }).catch(function (error) {
+          if (state.connectionAccountForm !== form) return;
+          form.busy = false;
+          form.error = error.serverMessage || error.message || "Could not test connection.";
+          render();
+        });
+        return;
+      }
+      body.mcp.discoveredTools = form.reviewedTools;
+      body.mcp.allowedTools = (form.selectedTools || []).slice();
+      body.allowedCapabilities = [];
+    }
+    if (mcpOauth && !form.preset) delete body.credential;
+    if (form.kind === "mcp" && !form.preset && form.authMode === "none") delete body.credential;
     if (presetMcp && !mcpOauth) {
       presetMcp.bearerToken = presetMcp.authMode === "bearer" ? body.credential || "" : "";
       presetMcp.headerValues = (presetMcp.headerNames || []).map(function () { return body.credential || ""; });
@@ -3310,7 +3341,7 @@
       return loadAgentConnections(agentId);
     }).then(function (result) {
       if (result && result.oauthStarted) return;
-      state.agentConnections.notice = label + " is connected to this Agent.";
+      state.agentConnections.notice = label + (form.kind === "api" && !form.preset ? " is saved. Its API token has not been verified." : " is connected to this Agent.");
       render();
     }).catch(function (error) {
       if (!state.connectionAccountForm) return;
@@ -5449,7 +5480,11 @@
       ? '<button type="button" class="btn btn-primary btn-sm connection-row-action" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">Choose</button>'
       : "";
     var regularAction = '<span class="connection-row-action-placeholder" aria-hidden="true"></span>';
-    var action = managedAction || oauthAction || pendingResourceAction || regularAction;
+    var customMcpAction = account.policy && account.policy.kind === "mcp" && !account.policy.presetId && account.lifecycle === "ready"
+      ? '<button type="button" class="btn btn-soft btn-sm" data-action="custom-mcp-tools-open" data-connection-id="' + esc(account.id) + '">' + ((account.policy.allowedTools || []).length ? 'Edit tools' : 'Choose tools') + '</button>' : '';
+    var recoverMcpAction = account.policy && account.policy.kind === "mcp" && !account.policy.presetId && account.policy.authMode !== "oauth" && account.lifecycle !== "revoked"
+      ? '<button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-enable-oauth" data-connection-id="' + esc(account.id) + '">Sign in with OAuth</button>' : '';
+    var action = (managedAction || oauthAction || pendingResourceAction || customMcpAction || regularAction) + recoverMcpAction;
     var status = account.lifecycle === "ready"
       ? '<span class="connection-account-state-placeholder" aria-hidden="true"></span>'
       : '<span class="connection-account-state connection-account-state-warn">' + esc({
@@ -5470,7 +5505,7 @@
       '<span class="connection-account-copy"><span class="connection-account-name">' + esc(displayName) + '</span>' +
       '<span class="connection-account-identity">' + (identity ? esc(identity) + ' &middot; ' : '') + owner + '</span></span>' +
       status + connectionAccountCapabilitiesHtml(account, entry.binding ? entry.binding.allowedCapabilities : null) + action + menu +
-      '<div class="connection-row-editor">' + connectionSavedRecordHtml(entry) + '</div>' +
+      '<div class="connection-row-editor">' + connectionSavedRecordHtml(entry) + customMcpToolEditorHtml(entry) + '</div>' +
       (resourceEditor ? '<div class="connection-row-editor">' + resourceEditor + '</div>' : '') + '</div>';
   }
 
@@ -5478,7 +5513,7 @@
     var account = entry.account;
     var binding = entry.binding || {};
     // An explicit allowlist: never serialize the account or its credential policy.
-    return '<details class="scheduled-technical"><summary>Saved connection details</summary><div class="scheduled-meta">' +
+    return '<details class="scheduled-technical"><summary>Troubleshooting details</summary><div class="scheduled-meta">' +
       scheduledMeta("Connection ID", account.id, true) +
       scheduledMeta("Saved revision", Number.isInteger(account.revision) ? account.revision : "unavailable", true) +
       scheduledMeta("Lifecycle", account.lifecycle, false) +
@@ -5505,7 +5540,7 @@
       : (supabase ? form.mcpEditor.supabaseProjectRef : form.url);
     var placeholder = hostTemplate
       ? "acme"
-      : (supabase ? "abcdefghijklmnopqrst" : "https://api.example.com/v1");
+      : (supabase ? "abcdefghijklmnopqrst" : form.kind === "mcp" ? "https://mcp.example.com/mcp" : "https://api.example.com/v1");
     var action = hostTemplate
       ? "connection-account-subdomain"
       : (supabase ? "connection-account-supabase-ref" : "connection-account-url");
@@ -5519,6 +5554,7 @@
     if (mcpOauth) {
       return '<p class="hint">You will sign in with ' + esc(preset ? preset.name : "the provider") + ' after adding this connection.</p>';
     }
+    if (form.kind === "mcp" && !preset && form.authMode === "none") return "";
     if (form.mcpEditor && form.mcpEditor.authMode === "none" && !(form.mcpEditor.headerNames || []).length) {
       return '<p class="hint">This server does not require a credential.</p>';
     }
@@ -5564,9 +5600,92 @@
     return '';
   }
 
+
+  function customConnectionTypeHtml(form) {
+    return '<div class="field"><label class="field-label" for="custom-connection-type">Connection type</label><span class="select-wrap"><select id="custom-connection-type" class="input" data-action="connection-account-kind"><option value="mcp"' + (form.kind === 'mcp' ? ' selected' : '') + '>MCP server</option><option value="api"' + (form.kind === 'api' ? ' selected' : '') + '>REST API</option></select>' + icon('chevron-down', 'select-caret') + '</span><p class="hint">' + (form.kind === 'mcp' ? 'Connect a server that publishes tools. Sign in, then choose which tools this Agent can use.' : 'Connect an HTTP API using a token. Choose the URL and request access this Agent can use.') + '</p></div>';
+  }
+
+  function customApiAccountFormHtml(form) {
+    var busy = !!form.busy;
+    return '<fieldset style="border:0;padding:0;margin:0;min-width:0;"' + (busy ? ' disabled' : '') + '><div class="skill-form"><h3>Custom connection</h3>' + customConnectionTypeHtml(form) + connectionAccountOwnerHtml(form) +
+      '<div class="field"><label class="field-label" for="custom-api-name">Name</label><input id="custom-api-name" class="input" value="' + esc(form.label) + '" data-action="connection-account-label"></div>' +
+      connectionAccountEndpointHtml(form, null, false) +
+      '<div class="field"><label class="field-label" for="custom-api-token">API token</label><input id="custom-api-token" class="input mono" type="password" autocomplete="off" value="' + esc(form.credential) + '" data-action="connection-account-credential"><p class="hint">For Google sign-in, choose a Google connector from Connections.</p></div>' +
+      '<div class="field"><label class="field-label" for="custom-api-access">Request access</label><select id="custom-api-access" class="input" data-action="custom-api-access"><option value="read"' + (form.apiAccess !== 'write' ? ' selected' : '') + '>Read only (GET, HEAD)</option><option value="write"' + (form.apiAccess === 'write' ? ' selected' : '') + '>Read and write</option></select><p class="hint">Requests are limited to the host and path entered above. Saving does not verify the token with the API.</p></div>' +
+      '<details class="advanced"><summary>Advanced</summary><div class="field"><label class="field-label" for="custom-api-header">Token header</label><input id="custom-api-header" class="input mono" value="' + esc(form.headerName || 'Authorization') + '" data-action="custom-api-header"></div><div class="field"><label class="field-label" for="custom-api-prefix">Token prefix</label><input id="custom-api-prefix" class="input mono" value="' + esc(form.headerValuePrefix === undefined ? 'Bearer ' : form.headerValuePrefix) + '" data-action="custom-api-prefix"><p class="hint">Use an empty prefix for headers such as X-API-Key.</p></div></details>' +
+      (form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '') +
+      '<div class="skill-form-actions"><button class="btn btn-ghost btn-sm" data-action="connection-account-cancel">Cancel</button><button class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !form.ownerKind ? ' disabled' : '') + '>' + (busy ? 'Saving&hellip;' : 'Save connection') + '</button></div></div></fieldset>';
+  }
+
+  function customMcpToolChoices(tools, selected) {
+    return tools.map(function (tool) {
+      return '<label class="field"><span><input type="checkbox" data-action="custom-mcp-tool" data-tool="' + esc(tool.name) + '"' + (selected.indexOf(tool.name) >= 0 ? ' checked' : '') + '> ' + esc(tool.title || tool.name) + '</span>' + (tool.description ? '<span class="hint">' + esc(tool.description) + '</span>' : '') + '</label>';
+    }).join("") || '<p class="hint">This server returned no tools.</p>';
+  }
+
+  function customMcpAccountFormHtml(form) {
+    var busy = !!form.busy;
+    var error = form.error ? '<div class="err" role="alert">' + esc(form.error) + '</div>' : '';
+    if (form.reviewedTools) {
+      return '<div class="skill-form"><h3>Choose tools</h3><p class="hint">Select the tools this Agent may use.</p>' +
+        customMcpToolChoices(form.reviewedTools, form.selectedTools || []) + error +
+        '<div class="skill-form-actions"><button class="btn btn-ghost btn-sm" data-action="custom-mcp-back"' + (busy ? ' disabled' : '') + '>Back</button><button class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Saving&hellip;' : 'Save connection') + '</button></div></div>';
+    }
+    return '<div class="skill-form"><h3>Custom connection</h3>' + customConnectionTypeHtml(form) +
+      connectionAccountOwnerHtml(form) +
+      '<div class="field"><label class="field-label" for="custom-mcp-name">Name</label><input id="custom-mcp-name" class="input" value="' + esc(form.label) + '" data-action="connection-account-label"></div>' +
+      connectionAccountEndpointHtml(form, null, false) +
+      '<div class="field"><label class="field-label" for="custom-mcp-auth">Authentication</label><select id="custom-mcp-auth" class="input" data-action="connection-account-auth"><option value=""' + (!form.authMode ? ' selected' : '') + '>Choose authentication</option>' +
+      [['oauth','OAuth'],['bearer','Bearer token'],['none','None']].map(function (option) { return '<option value="' + option[0] + '"' + (form.authMode === option[0] ? ' selected' : '') + '>' + option[1] + '</option>'; }).join('') + '</select></div>' +
+      (form.authMode ? connectionAccountCredentialHtml(form, null, false, form.authMode === "oauth") : '') +
+      '<details class="advanced"><summary>Advanced</summary><div class="field"><label class="field-label" for="custom-mcp-transport">Transport</label><select id="custom-mcp-transport" class="input" data-action="custom-mcp-transport"><option value="streamable-http">Streamable HTTP</option><option value="sse"' + (form.transport === 'sse' ? ' selected' : '') + '>SSE</option></select></div>' +
+      (form.authMode === 'oauth' ? '<div class="field"><label class="field-label" for="custom-mcp-scope">Scope (optional)</label><input id="custom-mcp-scope" class="input" value="' + esc(form.oauthScope || '') + '" data-action="connection-account-oauth-scope"><p class="hint">Leave blank to use the provider’s default scope.</p></div>' : '') + '</details>' + error +
+      '<div class="skill-form-actions"><button class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button><button class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !form.ownerKind || !form.authMode ? ' disabled' : '') + '>' + (busy ? 'Connecting&hellip;' : form.authMode === 'oauth' ? 'Continue to sign in' : 'Test connection') + '</button></div></div>';
+  }
+
+  function openCustomMcpTools(accountId) {
+    var entry = (state.agentConnections.attached || []).find(function (entry) { return entry.account.id === accountId; });
+    if (!entry || entry.account.policy.kind !== 'mcp') return;
+    var ceiling = entry.binding && entry.binding.allowedCapabilities || [];
+    state.connectionAccountForm = null;
+    state.customMcpToolEditor = { accountId: accountId, revision: entry.account.revision,
+      tools: (entry.account.policy.discoveredTools || []).filter(function (tool) { return !ceiling.length || ceiling.indexOf(tool.name) >= 0; }),
+      selectedTools: entry.account.policy.allowedTools.slice(), busy: false, error: '' };
+    render();
+  }
+
+  function customMcpToolEditorHtml(entry) {
+    var editor = state.customMcpToolEditor;
+    if (!editor || editor.accountId !== entry.account.id) return '';
+    return '<div class="skill-form"><h3>Choose tools</h3>' + customMcpToolChoices(editor.tools, editor.selectedTools) +
+      (editor.error ? '<div class="err" role="alert">' + esc(editor.error) + '</div>' : '') +
+      '<div class="skill-form-actions"><button class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-cancel"' + (editor.busy ? ' disabled' : '') + '>Cancel</button><button class="btn btn-primary btn-sm" data-action="custom-mcp-tools-save"' + (editor.busy ? ' disabled' : '') + '>Save tool access</button></div></div>';
+  }
+
+  function saveCustomMcpTools() {
+    var editor = state.customMcpToolEditor;
+    var agentId = state.agentConnections.agentId;
+    if (!editor || editor.busy) return;
+    editor.busy = true;
+    render();
+    postJson('/admin/api/agents/' + encodeURIComponent(agentId) + '/connections/' + encodeURIComponent(editor.accountId) + '/mcp/tools', 'PUT', {
+      expectedRevision: editor.revision, allowedTools: editor.selectedTools
+    }).then(function () {
+      state.customMcpToolEditor = null;
+      invalidateAgentConnections(agentId);
+      return loadAgentConnections(agentId);
+    }).catch(function (error) {
+      editor.busy = false;
+      editor.error = error.serverMessage || error.message || 'Could not save tool access.';
+      render();
+    });
+  }
+
   function connectionAccountFormHtml() {
     var form = state.connectionAccountForm;
     if (!form) return '';
+    if (form.kind === "api" && !form.preset) return customApiAccountFormHtml(form);
+    if (form.kind === "mcp" && !form.preset) return '<fieldset style="border:0;padding:0;margin:0;min-width:0;"' + (form.busy ? ' disabled' : '') + '>' + customMcpAccountFormHtml(form) + '</fieldset>';
     var busy = !!form.busy;
     var ownerSelected = form.ownerKind === "member" || form.ownerKind === "team";
     if (form.kind === "managed") {
@@ -5732,7 +5851,10 @@
       var targetName = identity && (identity.workspaceName || identity.accountName)
         ? (identity.workspaceName || identity.accountName)
         : name;
-      if (account) {
+      if (account && account.policy.kind === "mcp" && !account.policy.presetId) {
+        var enabledCount = (account.policy.allowedTools || []).length;
+        message = "Signed in to " + targetName + ". " + (enabledCount ? enabledCount + " tools enabled." : "Choose the tools this Agent may use.");
+      } else if (account) {
         message = "Connected to " + targetName + ". This " + (account.ownerKind === "member" ? "personal" : "team") + " account is ready for the Agent.";
       } else if (lane === "api") {
         message = "Connected to " + targetName + ". The selected Google services are ready to use.";
@@ -10676,6 +10798,23 @@
       // can then reproduce the user's disclosure choice.
       state.profileSlackDestinationOpen = !state.profileSlackDestinationOpen;
     }
+    if (action === "custom-mcp-enable-oauth") {
+      var recoveryId = target.getAttribute("data-connection-id");
+      var recoveryEntry = (state.agentConnections.attached || []).find(function (entry) { return entry.account.id === recoveryId; });
+      if (recoveryEntry) postJson('/admin/api/agents/' + encodeURIComponent(state.agentConnections.agentId) + '/connections/' + encodeURIComponent(recoveryId) + '/mcp/authentication', 'PUT', {
+        expectedRevision: recoveryEntry.account.revision, authMode: 'oauth'
+      }).then(function () {
+        invalidateAgentConnections(state.agentConnections.agentId);
+        return loadAgentConnections(state.agentConnections.agentId);
+      }).then(function () { return startConnectionAccountOAuth(recoveryId, false, 'mcp'); }).catch(function (error) {
+        state.agentConnections.error = error.serverMessage || error.message || 'Could not change authentication.';
+        render();
+      });
+    }
+    if (action === "custom-mcp-back" && state.connectionAccountForm) { state.connectionAccountForm.reviewedTools = null; render(); }
+    if (action === "custom-mcp-tools-open") openCustomMcpTools(target.getAttribute("data-connection-id"));
+    if (action === "custom-mcp-tools-save") saveCustomMcpTools();
+    if (action === "custom-mcp-tools-cancel") { state.customMcpToolEditor = null; render(); }
     if (action === "connection-account-retry" && state.profileDraft) { loadAgentConnections(state.profileDraft.id); }
     if (action === "composio-setup-close" && state.composioSetup && state.composioSetup.phase !== "validating" && state.composioSetup.phase !== "preparing") {
       var returnPresetId = state.composioSetup.returnFocusPresetId;
@@ -11435,6 +11574,9 @@
         state.connectionAccountForm.error = "";
       }
       if (action === "connection-account-capabilities") { state.connectionAccountForm.capabilities = target.value; }
+      if (action === "custom-api-header") state.connectionAccountForm.headerName = target.value;
+      if (action === "custom-api-prefix") state.connectionAccountForm.headerValuePrefix = target.value;
+      if (action === "connection-account-oauth-scope") state.connectionAccountForm.oauthScope = target.value;
       if (action === "connection-account-credential") { state.connectionAccountForm.credential = target.value; }
       if (action === "connection-account-oauth-client-id") { state.connectionAccountForm.oauthClientId = target.value; state.connectionAccountForm.error = ""; }
       if (action === "connection-account-oauth-client-secret") { state.connectionAccountForm.oauthClientSecret = target.value; state.connectionAccountForm.error = ""; }
@@ -11554,13 +11696,33 @@
       state.connectionAccountForm.error = "";
       render();
     }
+    if (action === "custom-mcp-tool") {
+      var selection = state.connectionAccountForm || state.customMcpToolEditor;
+      if (selection && !selection.busy) {
+        var toolName = target.getAttribute("data-tool");
+        selection.selectedTools = (selection.selectedTools || []).filter(function (name) { return name !== toolName; });
+        if (target.checked) selection.selectedTools.push(toolName);
+        render();
+      }
+    }
+    if (state.connectionAccountForm && action === "custom-mcp-transport") state.connectionAccountForm.transport = target.value === "sse" ? "sse" : "streamable-http";
+    if (state.connectionAccountForm && action === "custom-api-access") state.connectionAccountForm.apiAccess = target.value === "write" ? "write" : "read";
     if (state.connectionAccountForm && action === "connection-account-kind") {
       state.connectionAccountForm.kind = target.value === "mcp" ? "mcp" : "api";
-      if (state.connectionAccountForm.kind === "mcp") state.connectionAccountForm.authMode = "credential";
+      if (state.connectionAccountForm.kind === "mcp") state.connectionAccountForm.authMode = "";
+      else state.connectionAccountForm.authMode = "credential";
+      state.connectionAccountForm.credential = "";
+      state.connectionAccountForm.capabilities = "";
+      state.connectionAccountForm.providerId = "";
+      state.connectionAccountForm.reviewedTools = null;
       render();
     }
     if (state.connectionAccountForm && action === "connection-account-auth") {
-      state.connectionAccountForm.authMode = target.value === "google_oauth" ? "google_oauth" : "credential";
+      state.connectionAccountForm.authMode = state.connectionAccountForm.kind === "mcp"
+        ? (["oauth", "bearer", "none"].indexOf(target.value) >= 0 ? target.value : "")
+        : (target.value === "google_oauth" ? "google_oauth" : "credential");
+      state.connectionAccountForm.credential = "";
+      state.connectionAccountForm.reviewedTools = null;
       if (state.connectionAccountForm.authMode === "google_oauth" && !state.connectionAccountForm.providerId) state.connectionAccountForm.providerId = "google";
       render();
     }
@@ -14283,6 +14445,14 @@
             returnedIndex,
             state.profileDraft.mcpServers[returnedIndex]
           );
+        }
+      }
+      if (state.oauthReturn.lane === "mcp" && state.oauthReturn.status === "connected") {
+        await loadAgentConnections(state.profileDraft.id);
+        var returnedAccount = (state.agentConnections.attached || []).find(function (entry) { return entry.account.id === state.oauthReturn.connectionId; });
+        if (returnedAccount && returnedAccount.account.policy.kind === "mcp" && !returnedAccount.account.policy.presetId) {
+          openCustomMcpTools(returnedAccount.account.id);
+          state.agentConnections.notice = "Signed in. Choose the tools this Agent may use.";
         }
       }
       render();

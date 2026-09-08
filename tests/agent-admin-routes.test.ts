@@ -4996,3 +4996,141 @@ test('Admin Retry finishes a denied archive before pending channel publication',
     assert.deepEqual(await fixture.store.listAgentChannelGrants(), []);
   } finally { fixture.store.close(); fixture.settings.close(); }
 });
+
+for (const recoverFromToken of [false, true]) {
+test(`custom MCP ${recoverFromToken ? 'token recovery' : 'OAuth creation'} requires tool approval and revision checks`, async () => {
+  let accountId = '';
+  let startedInput: StartMcpOAuthInput | undefined;
+  const fixture = harness(new FakeTransport(), {
+    startMcpOAuth: async (input) => {
+      startedInput = input;
+      return {
+        authorizationUrl: new URL('https://linear.example.test/oauth?state=opaque'),
+        state: 'opaque',
+      };
+    },
+    completeMcpOAuth: async () => ({
+      ref: { agentId: accountId, connectionId: 'account' },
+      ...(startedInput?.accountRevision !== undefined
+        ? { accountRevision: startedInput.accountRevision }
+        : {}),
+      ...(startedInput?.oauthAttemptId ? { oauthAttemptId: startedInput.oauthAttemptId } : {}),
+      ...(startedInput?.authorizationAuthority
+        ? { authorizationAuthority: startedInput.authorizationAuthority }
+        : {}),
+      returnAgentId: 'agent_support',
+    }),
+    resolveMcpOAuthToken: async () => 'oauth-access-token',
+    discoverMcp: async (input) => {
+      assert.equal(input.headers.Authorization, 'Bearer oauth-access-token');
+      return { tools: [{ name: 'search_issues' }, { name: 'create_issue' }] };
+    },
+    identifyMcp: async () => ({ workspaceName: 'Acme Linear', accountName: 'Owner' }),
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const created = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({
+          workspaceId: 'T_TEST', ownerKind: 'team', providerId: 'linear', label: 'Linear',
+          allowedCapabilities: [], ...(recoverFromToken ? { credential: 'old-header-secret' } : {}),
+          mcp: {
+            id: 'linear', displayName: 'Linear', url: 'https://mcp.linear.app/mcp',
+            transport: 'streamable-http', authMode: recoverFromToken ? 'none' : 'oauth',
+            headerNames: recoverFromToken ? ['x-custom-key'] : [],
+            ...(recoverFromToken ? { credentialHeaderName: 'x-custom-key', credentialValuePrefix: 'Token ', credentialOptional: true } : {}), enabled: true,
+            lifecycleStatus: 'pending', statusText: '', discoveredTools: [], allowedTools: [],
+            oauthScope: 'read write',
+          },
+        }),
+      },
+    );
+    assert.equal(created.status, 201, await created.clone().text());
+    const createdBody = await created.json() as Record<string, any>;
+    accountId = createdBody.account.id;
+    assert.equal(createdBody.account.lifecycle, recoverFromToken ? 'ready' : 'needs_attention');
+    if (recoverFromToken) {
+    const converted = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/mcp/authentication`,
+      { method: 'PUT', headers: auth(), body: JSON.stringify({ expectedRevision: createdBody.account.revision, authMode: 'oauth' }) },
+    );
+    assert.equal(converted.status, 200, await converted.clone().text());
+    const conversion = await converted.json() as Record<string, any>;
+    assert.equal(conversion.account.id, accountId);
+    assert.equal(conversion.account.ownerKind, 'team');
+    assert.equal(conversion.account.lifecycle, 'needs_attention');
+    assert.equal(conversion.account.policy.credentialHeaderName, undefined);
+    assert.equal(conversion.account.policy.credentialValuePrefix, undefined);
+    assert.equal(conversion.account.policy.credentialOptional, undefined);
+    assert.deepEqual(conversion.account.policy.headerNames, []);
+    }
+
+
+    const started = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/oauth/mcp/start`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    assert.deepEqual(startedInput?.ref, { agentId: accountId, connectionId: 'account' });
+    assert.equal(startedInput?.returnAgentId, 'agent_support');
+    assert.equal(typeof startedInput?.accountRevision, 'number');
+    assert.match(
+      startedInput?.oauthAttemptId ?? '',
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+
+    const callback = await fixture.app.request(
+      'http://localhost/oauth/callback?state=opaque&code=accepted',
+    );
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal(
+      callback.headers.get('location'),
+      `/admin/agents/agent_support?oauth=connected&connection=${encodeURIComponent(accountId)}&lane=mcp`,
+    );
+    const account = (await fixture.store.listConnectionAccounts('T_TEST'))
+      .find((candidate) => candidate.id === accountId);
+    assert.equal(account?.lifecycle, 'ready');
+    assert.deepEqual(account?.identity, { workspaceName: 'Acme Linear', accountName: 'Owner' });
+    assert.deepEqual(
+      account?.policy.kind === 'mcp' ? account.policy.allowedTools : [],
+      [],
+    );
+    assert.ok(account);
+    const saveTools = (allowedTools: string[], expectedRevision = account.revision, agentId = 'agent_support') => fixture.app.request(
+      `http://localhost/admin/api/agents/${agentId}/connections/${accountId}/mcp/tools`,
+      { method: 'PUT', headers: auth(), body: JSON.stringify({ allowedTools, expectedRevision }) },
+    );
+    assert.equal((await saveTools(['unknown_tool'])).status, 400);
+    assert.equal((await saveTools(['search_issues'], account.revision - 1)).status, 409);
+    const saved = await saveTools(['search_issues']);
+    assert.equal(saved.status, 200, await saved.clone().text());
+    assert.equal((await saveTools(['create_issue'])).status, 409);
+    const latest = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId);
+    assert.deepEqual(latest?.policy.kind === 'mcp' ? latest.policy.allowedTools : [], ['search_issues']);
+
+
+    const oauthKeys = mcpOAuthSettingKeys(connectionAccountOAuthRef(accountId));
+    await Promise.all(oauthKeys.map((key, index) => fixture.settings.setSetting(key, `secret-${index}`)));
+    const revoked = await fixture.app.request(
+      `http://localhost/admin/api/connections/${accountId}/revoke`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(revoked.status, 200, await revoked.clone().text());
+    assert.deepEqual(await fixture.settings.getSettings(oauthKeys), oauthKeys.map(() => undefined));
+    assert.equal(
+      (await fixture.store.listConnectionAccounts('T_TEST')).find((candidate) => candidate.id === accountId)?.lifecycle,
+      'revoked',
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+}

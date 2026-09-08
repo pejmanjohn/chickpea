@@ -1,9 +1,9 @@
 {
   "formatVersion": 1,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "storageGeneration": 1,
   "supportedOrigins": [
-    "0.1.2"
+    "0.1.3"
   ],
   "recovery": "previous-code-only",
   "migrations": {
