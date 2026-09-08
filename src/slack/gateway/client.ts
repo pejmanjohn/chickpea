@@ -129,17 +129,21 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
   /** Recoverable prepare -> persist receiver key -> prove endpoint -> activate.
    * A lost response is reconciled by operation ID, never by switching transport.
    */
-  async ensureHttpDelivery(publicOrigin: string, options: {rotate?: boolean} = {}): Promise<boolean> {
+  async ensureHttpDelivery(publicOrigin: string, options: {rotate?: boolean; authorizeResume?: () => Promise<boolean>} = {}): Promise<boolean> {
     let endpointUrl: string;
     try { endpointUrl = deliveryEndpoint(publicOrigin); } catch { return false; }
     const binding = await this.requiredBinding();
     let raw = await this.dependencies.settings.getSetting(GATEWAY_HTTP_SETTING);
     let state = parseHttpDeliveryState(raw);
     if (state?.bindingId !== binding.bindingId || state.deploymentId !== binding.deploymentId || state.installedAt !== binding.installedAt) state = undefined;
+    // Read the route before checking intent: a concurrent rollback then either
+    // revokes this authority or invalidates the route's existing CAS fence.
+    const resumeRollback = options.authorizeResume ? await options.authorizeResume() : false;
+    if (options.authorizeResume && !resumeRollback) return false;
     if (state?.rollback) { await this.rollbackHttpDelivery(); return false; }
     if (state?.mode === 'http' && state.active?.endpointUrl === endpointUrl && !state.registration && !options.rotate) return true;
     // An explicit rollback stays rolled back; maintenance cannot undo it.
-    if (state?.mode === 'socket' && state.revision > 0 && !state.registration) return false;
+    if (state?.mode === 'socket' && state.revision > 0 && !state.registration && !resumeRollback) return false;
     const save = async (next: HttpDeliveryState) => {
       const value = JSON.stringify(next);
       if (!await this.dependencies.settings.applySettingsPatch({expected:{key:GATEWAY_HTTP_SETTING,value:raw ?? null},set:[{key:GATEWAY_HTTP_SETTING,value}]})) {

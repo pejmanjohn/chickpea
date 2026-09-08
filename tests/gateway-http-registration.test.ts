@@ -71,3 +71,25 @@ test('legacy gateway without HTTP capability remains recoverable',async()=>{
 test('rollback capability cannot follow a reinstalled binding',async()=>{
  const f=await fixture();try{const original=(await f.settings.getSetting(GATEWAY_BINDING_SETTING))!;await f.client().ensureHttpDelivery(origin);await f.settings.setSetting(GATEWAY_BINDING_SETTING,JSON.stringify({...JSON.parse(original),bindingId:'replacement'}));await assert.rejects(f.client().rollbackHttpDelivery(original),/installation changed/);}finally{f.cleanup();}
 });
+
+test('only newly authorized upgrade intent resumes HTTP after explicit rollback',async()=>{
+ const f=await fixture();try{
+  await f.client().ensureHttpDelivery(origin);await f.client().rollbackHttpDelivery();
+  assert.equal(await f.client().ensureHttpDelivery(origin),false);
+  assert.equal(await f.client().ensureHttpDelivery(origin,{authorizeResume:async()=>false}),false);
+  assert.equal(await f.client().ensureHttpDelivery(origin,{authorizeResume:async()=>true}),true);
+  assert.equal(parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING))?.revision,3);
+ }finally{f.cleanup();}
+});
+test('concurrent rollback invalidates an already-read upgrade route snapshot',async()=>{
+ const f=await fixture();try{
+  await f.client().ensureHttpDelivery(origin);await f.client().rollbackHttpDelivery();
+  await assert.rejects(f.client().ensureHttpDelivery(origin,{authorizeResume:async()=>{
+    await f.client().ensureHttpDelivery(origin,{authorizeResume:async()=>true});
+    await f.client().rollbackHttpDelivery();
+    return true;
+  }}),/changed concurrently/);
+  const state=parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING));
+  assert.equal(state?.mode,'socket');assert.equal(state?.revision,4);
+ }finally{f.cleanup();}
+});

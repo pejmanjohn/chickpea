@@ -132,6 +132,6 @@ test('authenticated readiness provisions recovery before gateway readiness and r
     // this installation even if transport readiness itself remains unavailable.
     assert.equal((await app.request('http://localhost/internal/deployment/ready', {method:'POST',headers: readyHeaders}, env)).status,503);
     const {authorizeDeploymentRecovery} = await import('../src/auth/deployment-recovery.ts');
-    assert.deepEqual(await authorizeDeploymentRecovery(settings,TARGET_VERSION,`Bearer ${recovery.capability}`),{binding:'new-installation'});
+    assert.equal(((await authorizeDeploymentRecovery(settings,TARGET_VERSION,`Bearer ${recovery.capability}`)) as {binding:string}).binding,'new-installation');
   } finally {settings.close();}
 });

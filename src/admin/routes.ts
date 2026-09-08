@@ -137,7 +137,7 @@ import {
   DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING,
   verifyDeploymentActivation,
 } from '../auth/deployment-activation.mjs';
-import { authorizeDeploymentRecovery, provisionDeploymentRecovery } from '../auth/deployment-recovery.ts';
+import { authorizeDeploymentRecovery, provisionDeploymentRecovery, beginDeploymentRecovery, deploymentUpgradeAllowed } from '../auth/deployment-recovery.ts';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
@@ -413,6 +413,7 @@ import {
   readSlackConnectionRevision,
   readStoredSlackTeamInfo,
   resolveSlackCredentials,
+  resolveSlackPublicUrl,
   resolveSlackTeamInfo,
   primeStoredSlackPublicUrl,
   slackAuthTest,
@@ -1738,7 +1739,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const recoveryDigest = c.req.header('x-chickpea-recovery-digest');
       if (recoveryDigest !== undefined) {
         if (!/^[A-Za-z0-9_-]{43}$/.test(recoveryDigest)) return c.json({error:'invalid_recovery_digest'}, 400);
-        await provisionDeploymentRecovery(settings(c), targetVersion, recoveryDigest);
+        const recovery = await provisionDeploymentRecovery(settings(c), targetVersion, recoveryDigest);
+        if (recovery.binding !== null && recovery.intent === 'upgrade') {
+          const publicOrigin = await resolveSlackPublicUrl(c.env as PlatformEnv | undefined, settings(c)) ?? requestOrigin(c);
+          const active = await createGatewayDeploymentClient(c.env as PlatformEnv | undefined).ensureHttpDelivery(publicOrigin, {
+            authorizeResume: () => deploymentUpgradeAllowed(settings(c), recovery),
+          });
+          if (!active && await settings(c).getSetting(GATEWAY_HTTP_SETTING)) {
+            c.header('Retry-After', '1');
+            return c.json({error:'gateway_upgrade_pending'}, 503);
+          }
+        }
       }
       const gatewayConfigured = Boolean(
         await settings(c).getSetting(GATEWAY_BINDING_SETTING),
@@ -1762,7 +1773,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!targetVersion || !currentVersion || targetVersion !== currentVersion) return c.notFound();
     try {
       const authorization = c.req.header('authorization') ?? '';
-      const authority = await authorizeDeploymentRecovery(settings(c), currentVersion, authorization);
+      const authority = await beginDeploymentRecovery(settings(c), currentVersion, authorization);
       if (!authority) return c.notFound();
       if (authority.binding === null) return c.body(null, 204);
       await createGatewayDeploymentClient(c.env as PlatformEnv | undefined).rollbackHttpDelivery(authority.binding);
