@@ -7957,7 +7957,7 @@
     if (mode === "current") { title = "You’re up to date"; copy = "This installation is running the latest available release or a newer version."; }
     if (mode === "no-release") { title = "No releases published yet"; copy = "Your installation is ready to check for the first published release."; }
     if (mode === "unversioned") { title = "Confirm your installation’s version"; copy = "This build has no verified release identity. Follow the adoption guide before upgrading."; }
-    if (mode === "failed") { title = "Couldn’t check for updates"; copy = update.error === "rate-limited" ? "GitHub’s request limit was reached. Try again later." : "The release service could not be reached or returned an unreadable response. Try again."; }
+    if (mode === "failed") { title = "Couldn’t check for updates"; copy = update.error === "rate-limited" ? "GitHub’s request limit was reached. " + (update.retryAt && isFinite(new Date(update.retryAt).getTime()) ? "Try again after " + installationDate(update.retryAt) + "." : "Try again later.") : "The release service could not be reached or returned an unreadable response. Try again."; }
     var label = { available: "Update available", current: "Up to date", failed: "Check failed", "no-release": "Release status", unversioned: "Version unknown", loading: "Checking" }[mode] || "Release status";
     var releaseAction = mode === "available" ? '<button type="button" class="btn btn-primary" data-action="installation-review">Review update ' + icon("arrow-right") + '</button>' : '';
     if (mode === "unversioned") releaseAction = '<a class="btn btn-soft" href="https://github.com/pejmanjohn/chickpea/blob/main/docs/runbooks/upgrading.md" target="_blank" rel="noreferrer">Read upgrade guide</a>';

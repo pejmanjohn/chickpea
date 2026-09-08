@@ -12,29 +12,49 @@ const FINISH_REASONS = new Set([
   'stop', 'length', 'toolUse', 'error', 'aborted', 'tool_calls', 'function_call', 'eos',
 ]);
 
-/** A successful model turn can still end without a usable final response. */
+// Exact structured codes only. Never infer a code from provider error prose.
+const MODEL_ERROR_CODES = new Set([
+  'cloudflare_ai_binding_error', 'operation_failed', 'AbortError', 'TimeoutError',
+  'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT',
+  'context_length_exceeded', 'rate_limit_exceeded',
+]);
+
+/** Retain failed/empty model-turn facts, including attempts later recovered by Flue. */
 export function observeAgentResultDiagnostics(
   event: FlueObservation,
   context: Pick<FlueEventContext, 'agentName'>,
 ): void {
   if (context.agentName !== CHICKPEA_SLACK_AGENT_NAME || event.type !== 'turn' ||
-      event.purpose !== 'agent' || event.isError) return;
+      event.purpose !== 'agent') return;
   try {
     const content = event.response.output?.content ?? [];
-    if (content.some((block) => block.type === 'text' && block.text.length > 0) ||
-        event.response.finishReason === 'toolUse') return;
+    const hasText = content.some((block) => block.type === 'text' && block.text.length > 0);
+    const hasToolCalls = content.some((block) => block.type === 'toolCall');
+    const failed = event.isError || event.response.finishReason === 'error' ||
+      event.response.finishReason === 'aborted';
+    if (!failed && (hasText || (event.response.finishReason === 'toolUse' && hasToolCalls))) return;
     const finishReason = (value: string | undefined) =>
       value === undefined ? null : FINISH_REASONS.has(value) ? value : 'other';
     const tokenCount = (value: number | undefined) =>
       value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : null;
-    console.error('[chickpea] agent model returned no text:', {
+    const errorCode = event.response.error?.code ?? event.response.error?.type;
+    const status = event.response.error?.meta?.status;
+    console.error(failed ? '[chickpea] agent model turn failed:' : '[chickpea] agent model returned no text:', {
       submissionRef: event.submissionId ? opaqueId('fluesubmission', event.submissionId) : null,
       finishReason: finishReason(event.response.finishReason),
       providerFinishReason: finishReason(event.response.providerFinishReason),
       requestedMaxTokens: tokenCount(event.request.maxTokens),
+      inputTokens: tokenCount(event.response.usage?.input),
+      cacheReadTokens: tokenCount(event.response.usage?.cacheRead),
       outputTokens: tokenCount(event.response.usage?.output),
+      hasText,
       hasThinking: content.some((block) => block.type === 'thinking'),
-      hasToolCalls: content.some((block) => block.type === 'toolCall'),
+      hasToolCalls,
+      ...(failed ? {
+        errorCode: errorCode === undefined ? null : MODEL_ERROR_CODES.has(errorCode) ? errorCode : 'other',
+        status: typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+          ? status : null,
+      } : {}),
     });
   } catch {
     // Never interrupt execution, even when diagnostics are unavailable.

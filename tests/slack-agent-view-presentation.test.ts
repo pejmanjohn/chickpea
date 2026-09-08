@@ -1534,3 +1534,45 @@ test('thread titles are deterministic, bounded, and reject credential-shaped inp
     h.db.close();
   }
 });
+
+for (const alreadyStopped of [false, true]) {
+  test(`V3 recovers a finalizing stream after receipt loss (already stopped: ${alreadyStopped})`, async () => {
+    const h = harness({ schemaVersion: 3, stopStreamError: alreadyStopped
+      ? { code: ErrorCode.PlatformError, data: { error: 'message_not_in_streaming_state' } } : undefined });
+    try {
+      applyPresentationMutation(h, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_lost_receipt', result: 'answer' });
+      applyPresentationMutation(h, { kind: 'stream_start_intent' });
+      applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000299',
+        flue: { instanceId: 'instance_lost_receipt', submissionId: 'submission_lost_receipt' } });
+      applyPresentationMutation(h, { kind: 'close_stream', outcome: 'terminal_only' });
+      applyPresentationMutation(h, { kind: 'mark_finalizing' });
+      const events: Array<Record<string, unknown>> = [];
+      const result = await h.presentation.finalize('Saved answer CEDAR.', 'markdown', 'complete', observer(events));
+      assert.equal(result.handled, true);
+      if (!result.handled) assert.fail('the known message must be recovered');
+      assert.equal(result.messageTs, '1785700100.000299');
+      assert.deepEqual(h.calls.map(call => call.method), ['chat.stopStream', 'chat.update']);
+      assert.deepEqual(h.calls[0]?.input, { channel: ROOT.channelId, ts: '1785700100.000299' });
+      assert.match(String(h.calls[1]?.input.text), /Saved answer CEDAR/);
+      assert.equal(h.store.get(h.runId)?.stream.state, 'artifact_delivered');
+      await h.presentation.finalize('Saved answer CEDAR.', 'markdown', 'complete', observer(events));
+      assert.equal(h.calls.length, 2, 'a saved receipt must make replay silent');
+      assert.equal(events.at(-1)?.outcome, 'delivered');
+    } finally { h.db.close(); }
+  });
+}
+
+test('V3 finalizing recovery retains uncertainty when Slack cannot stop the known message', async () => {
+  const h = harness({ schemaVersion: 3, stopStreamError: { code: ErrorCode.PlatformError, data: { error: 'missing_scope' } } });
+  try {
+    applyPresentationMutation(h, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_lost_receipt', result: 'answer' });
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000299',
+      flue: { instanceId: 'instance_lost_receipt', submissionId: 'submission_lost_receipt' } });
+    applyPresentationMutation(h, { kind: 'close_stream', outcome: 'terminal_only' });
+    applyPresentationMutation(h, { kind: 'mark_finalizing' });
+    await assert.rejects(h.presentation.finalize('Saved answer.', 'markdown', 'complete', observer([])));
+    assert.deepEqual(h.calls.map(call => call.method), ['chat.stopStream']);
+    assert.equal(h.store.get(h.runId)?.stream.state, 'finalizing');
+  } finally { h.db.close(); }
+});

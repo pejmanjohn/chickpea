@@ -59,7 +59,7 @@ import { registerSlackStatusTurn } from './status-registry.ts';
 import { currentMessageOnlyContext, type SlackTurnContext } from './thread-context.ts';
 import { slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
-import { formatSlackPublicHandoff } from './public-context.ts';
+import { formatSlackPublicHandoff, retainedSlackReplyBackground } from './public-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import {
   effectiveTurnSlackInstallationId,
@@ -1003,7 +1003,15 @@ export async function runTurn(
       hydratedContext,
       preparedMemory?.visibilityBarrierAt ?? null,
     );
-    const handoffBlock = formatSlackPublicHandoff(frozenHandoff);
+    const handoffBlock = formatSlackPublicHandoff(frozenHandoff) ??
+      (assignment.runtimeContract === 'chickpea-v1'
+        ? await retainedSlackReplyBackground(
+            options.appStores?.config ?? getConfigStore(platformEnv), turn, assignment.agentId,
+          ).catch(() => {
+            console.warn('[chickpea] retained public Slack reply hydration failed');
+            return undefined;
+          })
+        : undefined);
     const progressiveRelayFactory = options.prepareProgressiveRelay ??
       (agentViewPresentation
         ? (input: Parameters<NonNullable<RunTurnOptions['prepareProgressiveRelay']>>[0]) =>

@@ -16,10 +16,13 @@ import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 import { registerPiProvider, registeredPiProvider } from './pi-provider-registry.ts';
 
 import { decorateAttachmentProviderStreams } from '../slack/attachment-model-context.ts';
+import { withWorkersAiOverflowPolicy } from './workers-ai-overflow.ts';
 import { decorateWorkersAiPayloadStreams } from './workers-ai-payload.ts';
 import {
+  CURRENT_WORKERS_AI_MODEL_ID,
   isWorkersAiGlmModel,
   withCurrentWorkersAiModels,
+  workersAiGlmOutputLimit,
 } from './workers-ai-models.ts';
 
 type PiBuiltinProviderId = 'anthropic' | 'openai' | 'openrouter';
@@ -97,8 +100,10 @@ export function createWorkersAiRestPiProvider(options: WorkersAiRestOptions): Pr
     ...(
       isWorkersAiGlmModel(model.id)
       ? {
-          contextWindow: Math.min(model.contextWindow, options.contextWindowFloor),
-          maxTokens: Math.min(model.maxTokens, options.maxTokens),
+          contextWindow: model.id === CURRENT_WORKERS_AI_MODEL_ID
+            ? model.contextWindow
+            : Math.min(model.contextWindow, options.contextWindowFloor),
+          maxTokens: Math.min(model.maxTokens, options.maxTokens, workersAiGlmOutputLimit(model.id)),
         }
       : {}),
   }));
@@ -120,7 +125,7 @@ export function createWorkersAiRestPiProvider(options: WorkersAiRestOptions): Pr
     },
     models,
     api: decorateAttachmentProviderStreams(
-      cloudflareStreams(decorateWorkersAiPayloadStreams(openAICompletionsApi())),
+      withWorkersAiOverflowPolicy(cloudflareStreams(decorateWorkersAiPayloadStreams(openAICompletionsApi()))),
     ),
   });
 }

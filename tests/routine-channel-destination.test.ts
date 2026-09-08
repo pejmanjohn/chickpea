@@ -137,6 +137,28 @@ test('Channel creation separates request thread from saved delivery and edits pr
     });
     assert.ok(exactReply.outcome === 'applied');
     assert.equal((await routines.getRoutine(exactReply.routineId))?.taskText, 'output exactly "Ready for review"');
+
+    for (const [index, mention] of ['<!subteam^S123>', '<!subteam^S123|continuity0908>'].entries()) {
+      const addressedSignal = { ...signal, eventId: `Ev_GROUP_${index}`, turnJobId: `turn_GROUP_${index}`,
+        requesterText: `${mention} Create a one-time schedule for August 27, 2026 at 11:10 PM America/Los_Angeles. Task: Report the digest.` };
+      const once = { ...operation, name: 'Addressed once', timezone: 'America/Los_Angeles',
+        schedule: { kind: 'once' as const, localDateTime: '2026-08-27T23:10' } };
+      const addressedContext = await resolveSlackManagementActor(addressedSignal, identity);
+      const result = await invokeSlackScheduleAction({ signal: addressedSignal,
+        context: addressedContext, operation: once, dependencies });
+      assert.equal(result.outcome, 'applied');
+      for (const request of [
+        'Do not create a one-time schedule',
+        'Explain how to create a one-time schedule',
+        'ACME-TEST: Create a one-time schedule',
+      ]) {
+        await assert.rejects(() => invokeSlackScheduleAction({
+          signal: { ...addressedSignal, requesterText: `${mention} ${request} for August 27, 2026 at 11:10 PM America/Los_Angeles. Task: Report the digest.` },
+          context: addressedContext,
+          operation: once, dependencies,
+        }), /cadence must be explicit/);
+      }
+    }
   } finally {
     routines.close(); management.close(); config.close(); identity.close();
   }

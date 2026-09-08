@@ -274,6 +274,25 @@ test('stronger actor requirements invalidate prior proof while unchanged legacy 
   assert.throws(() => f.append({ type: 'begin', caseId: 'schedule', reason: 'Owner cannot substitute for member.' }), /blocked/);
 });
 
+test('an Agent absence contract can be corrected to supported archival without erasing a failed cleanup', (t) => {
+  const f = fixture(t);
+  const resource = f.append({ type: 'resource', caseId: 'schedule', target: 'synthetic-local', provider: 'chickpea', kind: 'agent', immutableId: 'run-owned-agent', ownership: 'owned', expected: { present: false }, evidence: [f.evidence] });
+  const failed = f.append({ type: 'cleanup', resourceId: resource.id, outcome: 'failed', observed: { present: true }, evidence: [f.evidence] });
+  const expected = { lifecycle: 'archived', channelCount: 0, dmAccess: 'unavailable' };
+  const correction = { type: 'resource_contract_correction', resourceId: resource.id, previousExpected: { present: false }, expected, reason: 'Product cleanup archives Agents and removes access; permanent deletion was the wrong expectation.', evidence: [f.evidence] };
+  assert.throws(() => f.append({ ...correction, expected: { lifecycle: 'active' } }), /archival/);
+  assert.throws(() => f.append({ ...correction, previousExpected: {} }), /previous contract/);
+  f.append(correction);
+  assert.equal(status(f.run, source(), NOW).resources[0].cleanup, 'failed');
+  assert.throws(() => f.append({ type: 'cleanup', resourceId: resource.id, outcome: 'verified', observed: { ...expected, channelCount: 1 }, evidence: [f.evidence] }), /differs/);
+  f.append({ type: 'cleanup', resourceId: resource.id, outcome: 'verified', observed: expected, evidence: [f.evidence] });
+  assert.equal(status(f.run, source(), NOW).resources[0].cleanup, 'verified');
+  assert.equal(f.run.events.find((event: { id: string }) => event.id === failed.id).outcome, 'failed');
+  assert.deepEqual(resource.expected, { present: false });
+  writeFileSync(f.evidence, 'changed evidence');
+  assert.notEqual(status(f.run, source(), NOW).resources[0].cleanup, 'verified');
+});
+
 test('exact cleanup restoration, failed cleanup recovery, and a reused immutable ID keep distinct obligations', (t) => {
   const f = fixture(t);
   const input = { type: 'resource', caseId: 'schedule', target: 'synthetic-local', provider: 'synthetic', kind: 'sheet', immutableId: 'exact-sheet', ownership: 'restore', before: { rows: [['a', '1']] }, expected: { rows: [['a', '1']] }, evidence: [f.evidence] };

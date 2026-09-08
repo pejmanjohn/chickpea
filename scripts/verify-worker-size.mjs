@@ -13,15 +13,14 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
 
 const KIB = 1024;
 export const WORKERS_FREE_LIMIT_BYTES = 3 * KIB * KIB;
 export const WORKER_SIZE_BUDGET_BYTES = 2_800 * KIB;
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const workerDir = path.join(projectRoot, 'dist-cf', 'chickpea');
-
-export function measureWorkerModules(directory = workerDir) {
+export function measureWorkerModules(directory = path.dirname(builtWorkerConfigPath(projectRoot))) {
   const modules = [];
   const visit = (current) => {
     for (const entry of readdirSync(current, { withFileTypes: true })) {
@@ -51,7 +50,8 @@ export function measureWorkerModules(directory = workerDir) {
 const kib = (bytes) => `${(bytes / KIB).toFixed(0)} KiB`;
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { modules, gzip, raw } = measureWorkerModules();
+  const workerDir = path.dirname(builtWorkerConfigPath(projectRoot));
+  const { modules, gzip, raw } = measureWorkerModules(workerDir);
   if (modules.length === 0) {
     console.error(`No Worker modules found under ${path.relative(projectRoot, workerDir)}; run the build first.`);
     process.exit(2);

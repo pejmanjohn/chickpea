@@ -45,8 +45,8 @@ test('the binding provider includes the current reviewed Cloudflare model', () =
 
   assert.ok(model);
   assert.equal(model.provider, 'cloudflare');
-  assert.equal(model.contextWindow, 32_768);
-  assert.equal(model.maxTokens, 2_048);
+  assert.equal(model.contextWindow, 1_048_576);
+  assert.equal(model.maxTokens, 8_192);
   assert.deepEqual(model.input, ['text', 'image']);
 });
 
@@ -61,7 +61,7 @@ test('the Workers AI binding registration opts out of the default AI Gateway', (
   assert.equal(options.gateway, false);
 });
 
-test('the reviewed keyless GLM bindings explicitly disable server-side thinking', async () => {
+test('the reviewed GLM bindings select the compatible server-side thinking protocol', async () => {
   const calls: Array<{
     modelId: string;
     inputs: Record<string, unknown>;
@@ -100,16 +100,31 @@ test('the reviewed keyless GLM bindings explicitly disable server-side thinking'
   for (const call of calls) {
     assert.deepEqual(call.inputs, {
       messages: [{ role: 'user', content: 'hello' }],
-      max_completion_tokens: 2_048,
+      max_completion_tokens: call.modelId === '@cf/zai-org/glm-5.3-flash' ? 8_192 : 2_048,
       chat_template_kwargs: {
         clear_thinking: false,
-        enable_thinking: false,
+        enable_thinking: call.modelId === '@cf/zai-org/glm-5.3-flash',
       },
     });
     assert.equal(call.options?.returnRawResponse, true);
     assert.ok(call.options?.signal instanceof AbortSignal);
     assert.equal((call.options?.signal as AbortSignal).aborted, false);
   }
+});
+
+test('GLM 5.3 has room for reasoning while respecting smaller caller output budgets', async () => {
+  const limits: unknown[] = [];
+  const binding = cloudflareBindingProviderOptions({ run: async (_id, input) => {
+    limits.push(input.max_completion_tokens);
+    return { response: 'ok' };
+  } }).binding;
+  for (const requested of [undefined, 512, 65_536]) {
+    await binding.run('@cf/zai-org/glm-5.3-flash', {
+      messages: [{ role: 'user', content: 'Create the synthetic schedule.' }],
+      ...(requested === undefined ? {} : { max_completion_tokens: requested }),
+    });
+  }
+  assert.deepEqual(limits, [8_192, 512, 8_192]);
 });
 
 test('a caller abort reaches the active Workers AI model request', async () => {
@@ -518,3 +533,55 @@ test('GPT-OSS wire normalization preserves non-text parts and other model payloa
   assert.deepEqual(input, before);
   assert.equal(withWorkersAiPayloadPolicy('@cf/other/model', input), input);
 });
+
+
+test('GLM 5.3 Flash keeps provider reasoning out of assistant text and preserves the tool call', async () => {
+  const provider = createCloudflareBindingProvider({ run: async (_modelId, inputs) => {
+    // Sanitized native endpoint characterization: disabling the GLM 5.3
+    // parser emits implicit thinking as content plus a closing tag. Enabling
+    // it gives the same response the correct reasoning_content field.
+    const thinking = (inputs.chat_template_kwargs as { enable_thinking: boolean }).enable_thinking;
+    const chunks = [
+      { choices: [{ index: 0, delta: thinking
+        ? { reasoning_content: 'Read the synthetic fixture.' }
+        : { content: 'Read the synthetic fixture.</think>' }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_fixture', type: 'function',
+        function: { name: 'read_fixture', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] },
+    ];
+    return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n',
+      { headers: { 'content-type': 'text/event-stream' } });
+  } });
+  const model = provider.getModels().find(({ id }) => id === '@cf/zai-org/glm-5.3-flash')!;
+  const response = await provider.streamSimple(model, {
+    messages: [{ role: 'user', content: 'Read the fixture.', timestamp: 1 }],
+    tools: [{ name: 'read_fixture', description: 'Read the fixture.', parameters: { type: 'object', properties: {} } }],
+  }).result();
+  assert.equal(response.stopReason, 'toolUse');
+  assert.equal(response.content.some((part) => part.type === 'text'), false);
+  assert.ok(response.content.some((part) => part.type === 'thinking'));
+  assert.ok(response.content.some((part) => part.type === 'toolCall' && part.name === 'read_fixture'));
+});
+
+for (const method of ['stream', 'streamSimple'] as const) {
+  for (const finish of ['stop', 'tool_calls', 'length'] as const) {
+    test(`GLM ${method} normalizes complete tool calls without promoting ${finish} failures`, async () => {
+      const provider = createCloudflareBindingProvider({ run: async () => new Response([
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_probe', type: 'function',
+          function: { name: 'probe', arguments: '{}' } }] }, finish_reason: null }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: finish }] },
+      ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n',
+      { headers: { 'content-type': 'text/event-stream' } }) });
+      const model = provider.getModels().find(({ id }) => id === '@cf/zai-org/glm-5.3-flash')!;
+      const stream = provider[method](model, { messages: [{ role: 'user', content: 'Probe.', timestamp: 1 }],
+        tools: [{ name: 'probe', description: 'Probe.', parameters: { type: 'object', properties: {} } }] });
+      const events = [];
+      for await (const event of stream) events.push(event);
+      const result = await stream.result();
+      const expected = finish === 'length' ? 'length' : 'toolUse';
+      assert.equal(result.stopReason, expected);
+      assert.equal(events.at(-1)?.type, 'done');
+      assert.equal((events.at(-1) as { reason: string }).reason, expected);
+      assert.equal(result.content.filter(block => block.type === 'toolCall').length, 1);
+    });
+  }
+}

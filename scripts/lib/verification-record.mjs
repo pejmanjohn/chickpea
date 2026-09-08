@@ -212,14 +212,16 @@ export function preflight(run, now = Date.now()) {
 
 export function ownedResources(run, now = Date.now()) {
   return run.events.filter((event) => event.type === 'resource').map((resource) => {
+    const correction = run.events.findLast((event) => event.type === 'resource_contract_correction' && event.resourceId === resource.id);
     const cleanup = run.events.findLast((event) => event.type === 'cleanup' && event.resourceId === resource.id);
     const occurrences = new Set(run.events.filter((event) => event.type === 'occurrence' && event.resourceId === resource.id).map((event) => event.occurrenceId)).size;
-    const verified = cleanup?.outcome === 'verified' && intact(cleanup.evidence);
+    const verified = cleanup?.outcome === 'verified' && intact(cleanup.evidence) &&
+      (!correction || cleanup.sequence > correction.sequence && intact(correction.evidence));
     const failedCase = run.events.some((event) => ['finish', 'resolve'].includes(event.type)
       && event.sequence > resource.sequence && event.result !== 'pass'
       && attempts(run, resource.caseId).some((attempt) => attempt.id === event.attemptId));
     const stopDue = !verified && resource.kind === 'schedule' && (now >= Date.parse(resource.stopAt) || occurrences >= resource.maxOccurrences || failedCase);
-    return { ...resource, cleanup: verified ? 'verified' : cleanup?.outcome === 'failed' ? 'failed' : 'pending', occurrences, stopDue };
+    return { ...resource, ...(correction ? { originalExpected: resource.expected, expected: correction.expected, correctionId: correction.id } : {}), cleanup: verified ? 'verified' : cleanup?.outcome === 'failed' ? 'failed' : 'pending', occurrences, stopDue };
   });
 }
 
@@ -347,11 +349,23 @@ export function appendEvent(run, input, source, now = Date.now()) {
       event.evidence = evidenceRefs(input.evidence);
       break;
     }
+    case 'resource_contract_correction': {
+      keys(input, ['type', 'resourceId', 'previousExpected', 'expected', 'reason', 'evidence']);
+      need(resource?.ownership === 'owned' && resource.kind === 'agent', 'Only an owned Agent cleanup contract can be corrected.');
+      const effective = ownedResources(run, now).find((r) => r.id === resource.id);
+      need(digest(input.previousExpected) === digest(effective.expected), 'Correction must identify the exact previous contract.');
+      need(digest(input.previousExpected) === digest({ present: false }) &&
+        digest(input.expected) === digest({ lifecycle: 'archived', channelCount: 0, dmAccess: 'unavailable' }),
+      'Agent correction must require archival and removal of Channel and DM access.');
+      need(text(input.reason), 'Explain the incorrect contract and the supported product cleanup.');
+      event.evidence = evidenceRefs(input.evidence);
+      break;
+    }
     case 'cleanup':
       keys(input, ['type', 'resourceId', 'outcome', 'observed', 'evidence']);
       need(resource, 'Cleanup must reference an exact resource registration.');
       need(['verified', 'failed'].includes(input.outcome), 'Cleanup needs verified or failed.');
-      if (input.outcome === 'verified') need(input.observed !== undefined && digest(input.observed) === digest(resource.expected), 'Cleanup readback differs from the declared exact state.');
+      if (input.outcome === 'verified') need(input.observed !== undefined && digest(input.observed) === digest(ownedResources(run, now).find((r) => r.id === resource.id).expected), 'Cleanup readback differs from the declared exact state.');
       event.evidence = evidenceRefs(input.evidence);
       break;
     case 'occurrence':
@@ -439,7 +453,8 @@ export function renderReport(view) {
       ...view.nextActions.map((a) => `- Next: ${cell(a.action)} ${cell((a.caseIds ?? a.repairIds ?? a.resourceIds ?? [a.batchId]).join(', '))}`));
   }
   lines.push('', '## Exact resource cleanup', '', '| Registration | Target / kind / immutable ID | Cleanup | Required state | Stop condition |', '| --- | --- | --- | --- | --- |',
-    ...view.resources.map((r) => `| ${r.id} | ${cell(r.target)} / ${cell(r.kind)} / ${cell(r.immutableId)} | ${r.cleanup} | ${cell(JSON.stringify(r.expected))} | ${r.stopDue ? 'STOP DUE' : r.stopAt ?? ''} ${r.maxOccurrences ? `${r.occurrences}/${r.maxOccurrences} occurrences` : ''} |`), '',
+    ...view.resources.map((r) => `| ${r.id} | ${cell(r.target)} / ${cell(r.kind)} / ${cell(r.immutableId)} | ${r.cleanup} | ${cell(JSON.stringify(r.expected))} | ${r.stopDue ? 'STOP DUE' : r.stopAt ?? ''} ${r.maxOccurrences ? `${r.occurrences}/${r.maxOccurrences} occurrences` : ''} |`),
+    ...view.resources.filter((r) => r.correctionId).map((r) => `- Agent cleanup contract corrected by ${r.correctionId}: original ${cell(JSON.stringify(r.originalExpected))}. Original cleanup outcomes remain in the record; a new archival/access readback is required.`), '',
     '## Offline checks and release checkpoint', '',
     ...view.offline.map((e) => `- ${cell(e.label)}: ${e.result}, ${e.durationMs} ms, ${cell(e.node)}. Log: ${cell(e.evidence[0]?.path)}`),
     ...view.reused.map((e) => `- Reused ${cell(e.label)} from receipt ${e.reusedId}; original measured duration ${e.priorDurationMs} ms. Log: ${cell(e.evidence[0]?.path)}`),

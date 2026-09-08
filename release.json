@@ -1,8 +1,10 @@
 {
   "formatVersion": 1,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "storageGeneration": 1,
-  "supportedOrigins": [],
+  "supportedOrigins": [
+    "0.1.0"
+  ],
   "recovery": "previous-code-only",
   "migrations": {
     "d1": "a22d9e323396cf1c464c3f87a4c89fa435e0cc56e16119d9ed6570aecf32155a",

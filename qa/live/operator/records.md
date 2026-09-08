@@ -327,6 +327,16 @@ may instead have an expected archived state; archiving it need not undo every
 temporary avatar/name/model change. Verify archival and removed grants, including
 after Retry, without reactivating intentionally disabled reach.
 
+Register new run-owned Agents with `expected: {"lifecycle":"archived",
+"channelCount":0,"dmAccess":"unavailable"}`. If an older record incorrectly
+required permanent absence, append `type: resource_contract_correction` with its
+`resourceId`, exact `previousExpected: {"present":false}`, the archived `expected`
+above, a `reason` explaining the product contract, and supporting `evidence`.
+This narrowly corrects an owned Agent's cleanup contract; it cannot change
+customer fixture before-values, schedule limits, or acceptance outcomes. It does
+not verify cleanup. Obtain a fresh archival and access readback, then append a
+new cleanup event. The original registration and failed cleanup remain visible.
+
 ## Evidence reuse and the final checkpoint
 
 The offline runner records each step's start, finish, private log, exit/signal,

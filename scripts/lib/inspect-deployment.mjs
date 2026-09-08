@@ -39,7 +39,12 @@ export function createDeploymentInspector(run) {
     const versions = active();
     const details = versions.map((entry) => version(entry.version_id));
     if (details.some((entry) => !Array.isArray(entry?.resources?.bindings))) throw new Error('Unreadable Worker resource inventory.');
-    return { exists: true, secretNames: [...remote.names].sort(), versions, fingerprint: deploymentFingerprint(versions), bindings: details[0].resources.bindings, details };
+    const bindings = details[0].resources.bindings;
+    // The script-wide secrets endpoint can briefly return an empty inventory
+    // after versions upload, while the serving version retains its secrets.
+    // Bind authority to the same exact version as the rest of this inventory.
+    const secretNames = bindings.filter((binding) => binding?.type === 'secret_text').map((binding) => binding.name).sort();
+    return { exists: true, secretNames, versions, fingerprint: deploymentFingerprint(versions), bindings, details };
   }
   return { worker, active, version, inspect };
 }

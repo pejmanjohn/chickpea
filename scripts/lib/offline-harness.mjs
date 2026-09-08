@@ -252,6 +252,7 @@ export function spawnServer({ serverEntry, port, fakeUrl, netGuardLog, env = {} 
       PORT: String(port),
       SLACK_API_URL: `${fakeUrl}/api/`,
       LOCAL_STUB_URL: `${fakeUrl}/v1`,
+      CHICKPEA_DISABLE_TELEMETRY: 'true',
       SLACK_TAG_MODEL: 'local-stub/parity-stub-1',
       ...(netGuardLog ? { NET_GUARD_LOG: netGuardLog, NODE_OPTIONS: `--import ${NET_GUARD}` } : {}),
       ...env,

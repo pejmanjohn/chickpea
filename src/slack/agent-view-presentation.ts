@@ -775,6 +775,13 @@ export class SlackAgentViewPresentation {
         ? { messageTs: presentation.stream.messageTs }
         : {}) };
     }
+    if (presentation.schemaVersion === 3 && presentation.stream.state === 'finalizing' &&
+        presentation.stream.messageTs && presentation.terminalDelivery.state === 'intended' &&
+        presentation.terminalDelivery.result === (terminalTaskStatus === 'error' ? 'failure' : 'answer') &&
+        (presentation.terminalDelivery.operation.certainty === 'pending' ||
+          presentation.terminalDelivery.operation.certainty === 'unknown')) {
+      return this.recoverFinalizingStream(presentation, text, format, observer, tablePresentation);
+    }
     if (presentation.stream.state === 'starting' || presentation.stream.state === 'unknown') {
       throw new Error('Slack Agent View presentation requires reconciliation.');
     }
@@ -1215,6 +1222,55 @@ export class SlackAgentViewPresentation {
     });
     void approvedOutput;
     return { handled: true, messageTs: presentation.stream.messageTs! };
+  }
+
+  /** Reconcile a crash after stop intent using only the saved message coordinate.
+   * Stopping with no chunks cannot append the suffix twice. Updating the same
+   * message then replaces its contents with the already-approved final answer.
+   */
+  private async recoverFinalizingStream(
+    presentation: SlackRunPresentation,
+    text: string,
+    format: SlackReplyFormat,
+    observer: SlackPresentationDeliveryObserver,
+    tablePresentation?: SlackTablePresentation,
+  ): Promise<AgentViewFinalResult> {
+    const approved = canonicalSlackReplyText(text, format);
+    const table = tablePresentation
+      ? renderSlackTablePresentation(tablePresentation, Math.max(0, 12_000 - approved.length - 2))
+      : undefined;
+    const content = table
+      ? appendSlackTableToRenderedMessage(renderSlackMessage(approved, 'markdown'), approved, table)
+      : renderSlackMessage(approved, 'markdown');
+    const rendered = appendSlackReplyFooter(content, this.options.footer);
+    const messageTs = presentation.stream.messageTs!;
+    const update = { channel: presentation.root.channelId, ts: messageTs,
+      text: rendered.text, blocks: rendered.blocks! };
+    const attemptId = await observer.before({
+      method: 'slack_chat_stream_recover', approvedOutput: approved,
+      renderedPayload: JSON.stringify({ method: 'slack_chat_stream_recover', update }),
+    });
+    try {
+      try {
+        await this.options.client.chat.stopStream({ channel: update.channel, ts: messageTs });
+      } catch (error) {
+        // Slack explicitly reports an already-stopped stream. Other failures
+        // do not establish that it is safe to update the terminal artifact.
+        if (safeSlackErrorCode(error) !== 'message_not_in_streaming_state') throw error;
+      }
+      await this.options.client.chat.update(update);
+      presentation = await this.transition(presentation, {
+        kind: 'mark_artifact_delivered', outcome: presentation.stream.presentationOutcome ?? 'terminal_only',
+      });
+      await this.recordTerminalDeliveryReceipt('acknowledged');
+    } catch (error) {
+      // Keep finalizing and its exact coordinate: another recovery can safely
+      // repeat stop-without-chunks and replacement, never a new message post.
+      await observer.after({ attemptId, outcome: 'unknown', safeFailureCode: 'slack_stream_recovery_unknown' });
+      throw error;
+    }
+    await observer.after({ attemptId, outcome: 'delivered', deliveryRef: deliveryRef(presentation) });
+    return { handled: true, messageTs };
   }
 
   private async correctDivergentStream(

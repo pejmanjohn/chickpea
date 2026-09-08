@@ -30,10 +30,12 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { hasScheduledComposition } from './worker-artifact.mjs';
+import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
 import { wranglerInspector, deploymentFingerprint } from './lib/inspect-deployment.mjs';
 import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from './lib/auth-schema.mjs';
 import { validateInstallation, validateTarget, assertSameInstallation, overlayInstallation } from './lib/upgrade-installation.mjs';
 import { readPrivateJson, writePrivateJson, writeDeploymentEvent } from './lib/upgrade-receipt.mjs';
+import { verifyRetainedBuildRoot } from './lib/upgrade-source.mjs';
 
 import {
   classifyCloudflareDeploymentProfile,
@@ -53,14 +55,29 @@ import {
   mintDeploymentActivation,
 } from '../src/auth/deployment-activation.mjs';
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const runnerRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Invoke wrangler's bin with the current node (mirrors flue-build-cf.mjs):
-// works whether or not node_modules/.bin is on PATH.
-const wranglerBin = path.join(projectRoot, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
+// use the current runner's reviewed deployment tooling, including recovery.
+const wranglerBin = path.join(runnerRoot, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
 const cliArgs = process.argv.slice(2);
 const deployArgs = cliArgs.filter((arg) => !['--skip-build', '--preflight-only'].includes(arg));
 const skipBuild = cliArgs.includes('--skip-build');
 const preflightOnly = cliArgs.includes('--preflight-only');
+const upgradeContextPath = process.env.CHICKPEA_UPGRADE_CONTEXT;
+let upgradeContext;
+let projectRoot = runnerRoot;
+try {
+  if (upgradeContextPath) {
+    upgradeContext = readPrivateJson(upgradeContextPath);
+    if (upgradeContext.sourceRoot !== undefined) {
+      if (!skipBuild) throw new Error('A retained upgrade artifact must already be built.');
+      projectRoot = verifyRetainedBuildRoot(upgradeContextPath, upgradeContext);
+    }
+  }
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
 // A QA checkout must never fall through to the ordinary production target.
 // This is a selection check, not claim authority; the environment preflight
 // below still validates the actual lease, source, and immutable identities.
@@ -287,18 +304,6 @@ function buildCloudflareArtifact() {
 
 if (!skipBuild && !reuseWorkersBuildArtifact) buildCloudflareArtifact();
 
-function builtConfigPath() {
-  try {
-    const redirectPath = path.join(projectRoot, '.wrangler', 'deploy', 'config.json');
-    const redirect = readFileSync(redirectPath, 'utf8');
-    const entry = redirect.match(/"configPath"\s*:\s*"([^"]+)"/);
-    if (entry) return path.resolve(path.dirname(redirectPath), entry[1]);
-  } catch {
-    /* a disabled or not-yet-built capability has nothing to validate */
-  }
-  return undefined;
-}
-
 function sortedUnique(values) {
   return [...new Set(values)].sort();
 }
@@ -320,10 +325,7 @@ function renamedClassNames(migrations) {
 }
 
 function requireBuiltArtifact() {
-  const configPath = builtConfigPath();
-  if (!configPath) {
-    throw new Error('Cloudflare preflight requires the generated Vite Wrangler artifact.');
-  }
+  const configPath = builtWorkerConfigPath(projectRoot);
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   const artifactRoot = path.dirname(configPath);
   const bundlePath = path.resolve(artifactRoot, config.main ?? 'index.js');
@@ -590,14 +592,11 @@ function validateDeploymentArtifact(artifact, options = {}) {
   return artifact;
 }
 
-const upgradeContextPath = process.env.CHICKPEA_UPGRADE_CONTEXT;
-let upgradeContext;
 let builtArtifact;
 let deploymentTargetTuple;
 try {
   const artifact = requireBuiltArtifact();
   if (upgradeContextPath) {
-    upgradeContext = readPrivateJson(upgradeContextPath);
     const target = validateTarget(upgradeContext.target);
     if (upgradeContext.schema !== 1 || !target.url || !explicitProductionTarget || selectedEnvironmentTarget ||
         target.account !== process.env.CLOUDFLARE_ACCOUNT_ID || target.worker !== process.env.WRANGLER_CI_OVERRIDE_NAME ||
@@ -653,7 +652,7 @@ const activeWorkerInspectionTimeoutMs = Number.isFinite(configuredInspectionTime
   : DEFAULT_ACTIVE_WORKER_INSPECTION_TIMEOUT_MS;
 
 function inspector(artifact) {
-  return wranglerInspector({ root: projectRoot, configPath: artifact.configPath,
+  return wranglerInspector({ root: runnerRoot, configPath: artifact.configPath,
     args: deploymentResourceArgs(), timeout: activeWorkerInspectionTimeoutMs });
 }
 function inspectRemoteWorker(artifact) { return inspector(artifact).worker(); }

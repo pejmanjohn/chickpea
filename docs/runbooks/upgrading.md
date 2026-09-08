@@ -8,17 +8,23 @@ Nothing updates automatically. The CLI makes the final compatibility decision.
 ## First-time command setup
 
 Use Node 24.20.0 from `.nvmrc`, Git, and your normal Cloudflare account access.
-Download or clone the official `v0.1.0` source release into a dedicated tooling
+Download or clone the official `v0.1.1` source release into a dedicated tooling
 directory, then run:
 
 ```sh
-git clone --branch v0.1.0 --single-branch https://github.com/pejmanjohn/chickpea.git chickpea-upgrades
+git clone --branch v0.1.1 --single-branch https://github.com/pejmanjohn/chickpea.git chickpea-upgrades
 cd chickpea-upgrades
 nvm install && nvm use
 npm ci
 npx wrangler login
 npm run upgrade -- --configure --account YOUR_ACCOUNT_ID --worker YOUR_EXISTING_WORKER --profile core --url https://YOUR_CHICKPEA_HOST
 ```
+
+For an installation running v0.1.0, use the v0.1.1 tooling above to upgrade it.
+The v0.1.0 launcher predates fixes for custom Worker build paths and deployment
+inspection. Keep the older tooling directory and its receipts for reference;
+run upgrades and recovery from the current tooling directory. This changes the
+launcher only; configuring it does not change the running installation.
 
 Guided upgrades currently support the `core` profile only. Sandbox installations
 require the existing [Sandbox deployment procedure](coding-sandbox-deployment.md);

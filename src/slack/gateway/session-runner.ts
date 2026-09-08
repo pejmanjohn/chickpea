@@ -13,7 +13,7 @@ export interface GatewaySocket {
   close(code?: number, reason?: string): void;
   addEventListener(type: 'open', listener: () => void): void;
   addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
-  addEventListener(type: 'close', listener: () => void): void;
+  addEventListener(type: 'close', listener: (event?: { code?: number; wasClean?: boolean }) => void): void;
   addEventListener(type: 'error', listener: () => void): void;
 }
 
@@ -27,6 +27,7 @@ interface GatewaySessionRunnerOptions {
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
   capabilities?: readonly GatewaySessionCapability[];
   waitUntil?: (promise: Promise<unknown>) => void;
+  onDiagnostic?: (event: { reason: string; generation: number; code?: number; wasClean?: boolean }) => void;
 }
 
 type GatewaySessionRunnerPhase =
@@ -438,7 +439,14 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
       }).catch(() => this.failEndpoint(endpoint, 'invalid_frame'));
       this.options.waitUntil?.(endpoint.messageChain);
     });
-    endpoint.socket.addEventListener('close', () => this.failEndpoint(endpoint, 'closed'));
+    endpoint.socket.addEventListener('close', (event) => {
+      if (this.endpointCurrent(endpoint)) this.options.onDiagnostic?.({
+        reason: 'socket_close', generation: this.generation,
+        ...(typeof event?.code === 'number' ? { code: event.code } : {}),
+        ...(typeof event?.wasClean === 'boolean' ? { wasClean: event.wasClean } : {}),
+      });
+      this.failEndpoint(endpoint, 'closed');
+    });
     endpoint.socket.addEventListener('error', () => this.failEndpoint(endpoint, 'network'));
   }
 
@@ -511,6 +519,7 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
 
   private failEndpoint(endpoint: GatewaySessionEndpoint, reason: string): void {
     if (this.stopped) return;
+    if (this.endpointCurrent(endpoint)) this.options.onDiagnostic?.({ reason, generation: this.generation });
     if (this.candidate === endpoint) {
       this.failCandidate(endpoint, reason);
       return;
@@ -663,7 +672,14 @@ export class GatewaySessionRunner implements GatewaySessionRunnerControl {
   ): Promise<void> {
     const client = this.client;
     const write = this.checkpointWrites.then(async () => {
-      if (allowed()) await client.recordSessionCheckpoint(checkpoint);
+      if (allowed()) {
+        try {
+          await client.recordSessionCheckpoint(checkpoint);
+        } catch (error) {
+          this.options.onDiagnostic?.({ reason: 'checkpoint_write_failed', generation: this.generation });
+          throw error;
+        }
+      }
     });
     this.checkpointWrites = write.catch(() => undefined);
     return write;

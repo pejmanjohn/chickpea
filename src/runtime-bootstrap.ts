@@ -6,7 +6,7 @@ import {
   setWorkersAiRestPiProvider,
 } from './config/pi-provider.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
-import { WORKERS_AI_CONTEXT_WINDOW_FLOOR } from './config/workers-ai-models.ts';
+import { WORKERS_AI_CONTEXT_WINDOW_FLOOR, WORKERS_AI_REASONING_MAX_TOKENS } from './config/workers-ai-models.ts';
 
 export { WORKERS_AI_CONTEXT_WINDOW_FLOOR };
 
@@ -35,7 +35,7 @@ export function bootstrapRuntimeProviders(): void {
       ? { accountId: process.env.CLOUDFLARE_ACCOUNT_ID }
       : {}),
     contextWindowFloor: WORKERS_AI_CONTEXT_WINDOW_FLOOR,
-    maxTokens: 2_048,
+    maxTokens: WORKERS_AI_REASONING_MAX_TOKENS,
   });
   recordRegisteredProvider('cloudflare-workers-ai');
 

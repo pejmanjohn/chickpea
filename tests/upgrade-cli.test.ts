@@ -23,22 +23,34 @@ function fixture(t: any) {
     assert.equal(result.status, 0, result.stderr); return result.stdout.trim();
   };
   git(['init', '--quiet']);
-  put(join(origin, '.gitignore'), 'dist-cf/\nnode_modules/\n');
+  put(join(origin, '.gitignore'), 'dist-cf/\n.wrangler/\nnode_modules/\n');
   put(join(origin, 'wrangler.jsonc'), '{}');
   put(join(origin, 'migrations/better-auth/0001.sql'), 'CREATE TABLE owners (id TEXT PRIMARY KEY);');
   for (const file of ['src/identity/migrations.ts', 'src/config/store.ts', 'src/work/migrations.ts']) put(join(origin, file), '// fixture');
   cpSync('scripts/lib/upgrade-receipt.mjs', join(origin, 'journal.mjs'));
-  put(join(origin, 'scripts/deploy-with-epilogue.mjs'), `
+  cpSync('scripts/lib/upgrade-receipt.mjs', join(launcher, 'journal.mjs'));
+  put(join(origin, 'scripts/deploy-with-epilogue.mjs'), `throw new Error('Retained release wrapper must never execute');`);
+  put(join(launcher, 'scripts/deploy-with-epilogue.mjs'), `
     import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
     import { writeDeploymentEvent } from '../journal.mjs';
+    import path from 'node:path';
+    import { execFileSync } from 'node:child_process';
+    const context = JSON.parse(readFileSync(process.env.CHICKPEA_UPGRADE_CONTEXT, 'utf8'));
+    if (context.sourceRoot !== process.cwd()) throw new Error('Runner did not receive the retained build root');
+    const redirect = JSON.parse(readFileSync('.wrangler/deploy/config.json', 'utf8'));
+    const config = JSON.parse(readFileSync(path.resolve('.wrangler/deploy', redirect.configPath), 'utf8'));
+    if (config.name !== 'customer-test-worker' || config.topLevelName !== config.name || process.env.WRANGLER_CI_OVERRIDE_NAME !== config.name || config.d1_databases[0].database_id !== 'existing-db') throw new Error('Installation overlay missed the generated customer artifact');
+    const identity = { version: JSON.parse(readFileSync('package.json', 'utf8')).version, commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() };
+    if (config.vars.CHICKPEA_APP_VERSION !== identity.version || config.vars.CHICKPEA_SOURCE_COMMIT !== identity.commit || readFileSync(path.resolve('.wrangler/deploy', redirect.configPath, '../index.js'), 'utf8') !== JSON.stringify(identity)) throw new Error('Retargeting changed compiled source identity');
+    if (JSON.stringify(config.durable_objects.bindings) !== JSON.stringify([{name:'TAG_STATE',class_name:'TagStateStore'}])) throw new Error('Retargeting changed Durable Object ownership or class');
     appendFileSync(process.env.UPGRADE_FIXTURE_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
     if (!process.argv.includes('--preflight-only')) {
-      const context = JSON.parse(readFileSync(process.env.CHICKPEA_UPGRADE_CONTEXT, 'utf8'));
       writeDeploymentEvent(process.env.CHICKPEA_UPGRADE_CONTEXT, 'deploying');
       const remote = JSON.parse(readFileSync(process.env.UPGRADE_FIXTURE_REMOTE, 'utf8'));
       remote.version = context.source.version; remote.commit = context.source.commit; remote.id = 'uploaded-' + Date.now();
       writeFileSync(process.env.UPGRADE_FIXTURE_REMOTE, JSON.stringify(remote));
       writeDeploymentEvent(process.env.CHICKPEA_UPGRADE_CONTEXT, 'uploaded', remote.id);
+      if (process.env.UPGRADE_FIXTURE_AFTER_UPLOAD==='1') throw new Error('Fixture interruption after upload');
       writeDeploymentEvent(process.env.CHICKPEA_UPGRADE_CONTEXT, 'ready', remote.id);
     }
   `);
@@ -75,7 +87,7 @@ function fixture(t: any) {
     appendFileSync(process.env.UPGRADE_FIXTURE_LOG,JSON.stringify(args)+'\\n');
     if(process.env.WRANGLER_HOME!=='fixture-oauth-home') throw new Error('OAuth home was discarded');
     const remote=JSON.parse(readFileSync(process.env.UPGRADE_FIXTURE_REMOTE,'utf8'));
-    const bindings=[{name:'AUTH_DB',type:'d1',id:'existing-db'},...Object.entries({CHICKPEA_APP_VERSION:remote.version,CHICKPEA_SOURCE_COMMIT:remote.commit,CHICKPEA_SETUP_CAPABILITY_DIGEST:'a'.repeat(43),CHICKPEA_SETUP_CAPABILITY_ISSUED_AT:'1780000000000'}).map(([name,text])=>({name,text,type:'plain_text'}))];
+    const bindings=[...['CHICKPEA_AUTH_SECRET','CHICKPEA_CREDENTIAL_KEY_CURRENT_ID','CHICKPEA_CREDENTIAL_KEY_V1'].map(name=>({name,type:'secret_text'})),{name:'AUTH_DB',type:'d1',id:'existing-db'},{name:'TAG_STATE',type:'durable_object_namespace',namespace_id:'existing-state',class_name:'TagStateStore',script_name:'customer-test-worker'},...Object.entries({CHICKPEA_APP_VERSION:remote.version,CHICKPEA_SOURCE_COMMIT:remote.commit,CHICKPEA_SETUP_CAPABILITY_DIGEST:'a'.repeat(43),CHICKPEA_SETUP_CAPABILITY_ISSUED_AT:'1780000000000'}).map(([name,text])=>({name,text,type:'plain_text'}))];
     if(args[0]==='secret') console.log(JSON.stringify(['CHICKPEA_AUTH_SECRET','CHICKPEA_CREDENTIAL_KEY_CURRENT_ID','CHICKPEA_CREDENTIAL_KEY_V1'].map(name=>({name}))));
     else if(args[0]==='deployments') console.log(JSON.stringify({versions:[{version_id:remote.id,percentage:100}]}));
     else if(args[0]==='versions') console.log(JSON.stringify({resources:{bindings}}));
@@ -89,24 +101,30 @@ function fixture(t: any) {
     const args=process.argv.slice(2);appendFileSync(process.env.UPGRADE_FIXTURE_LOG,JSON.stringify(args)+'\\n');
     if(args.includes('verify:host')) throw new Error('Maintainer lock entered customer path');
     if(args[0]==='run'&&args[1]==='build'){
-      mkdirSync('dist-cf/chickpea',{recursive:true});
       const version=JSON.parse(readFileSync('package.json','utf8')).version;
+      if(version==='0.1.0' && process.env.WRANGLER_CI_OVERRIDE_NAME) throw new Error('Legacy size check cannot build a custom Worker name');
+      const worker=process.env.WRANGLER_CI_OVERRIDE_NAME??'chickpea';
+      const output='dist-cf/'+worker.replaceAll('-','_');
+      mkdirSync(output,{recursive:true});
+      mkdirSync('.wrangler/deploy',{recursive:true});
+      writeFileSync('.wrangler/deploy/config.json',JSON.stringify({configPath:'../../'+output+'/wrangler.json'}));
       const commit=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
-      writeFileSync('dist-cf/chickpea/wrangler.json',JSON.stringify({name:process.env.WRANGLER_CI_OVERRIDE_NAME,vars:{CHICKPEA_APP_VERSION:version,CHICKPEA_SOURCE_COMMIT:commit},d1_databases:[{binding:'AUTH_DB',database_id:''}]}));
+      writeFileSync(output+'/wrangler.json',JSON.stringify({name:worker,topLevelName:worker,durable_objects:{bindings:[{name:'TAG_STATE',class_name:'TagStateStore'}]},vars:{CHICKPEA_APP_VERSION:version,CHICKPEA_SOURCE_COMMIT:commit},d1_databases:[{binding:'AUTH_DB',database_id:''}]}));
+      writeFileSync(output+'/index.js',JSON.stringify({version,commit}));
     }
   `);
   // A stale maintainer reservation must not stop a customer build or recovery.
   put(join(home, '.chickpea/verification-host/owner.json'), JSON.stringify({ pid: 99999999, token: 'stale-fixture' }));
-  const run = (args: string[], confirm = false) => spawnSync(process.execPath, ['--import', preload, join(launcher, 'scripts/upgrade.mjs'), ...args], {
-    cwd: launcher, encoding: 'utf8', input: confirm ? 'customer\n' : undefined, timeout: 30_000,
+  const run = (args: string[], confirm = false, afterUpload = false) => spawnSync(process.execPath, ['--import', preload, join(launcher, 'scripts/upgrade.mjs'), ...args], {
+    cwd: launcher, encoding: 'utf8', input: confirm ? 'customer-test-worker\n' : undefined, timeout: 30_000,
     env: { ...process.env, HOME: home, PATH: `${join(base, 'bin')}:${process.env.PATH}`, npm_execpath: npm, WRANGLER_HOME: 'fixture-oauth-home',
-      UPGRADE_FIXTURE_LOG: log, UPGRADE_FIXTURE_REMOTE: remote, UPGRADE_FIXTURE_CONFIRM: confirm ? '1' : '0' },
+      UPGRADE_FIXTURE_LOG: log, UPGRADE_FIXTURE_REMOTE: remote, UPGRADE_FIXTURE_CONFIRM: confirm ? '1' : '0', UPGRADE_FIXTURE_AFTER_UPLOAD: afterUpload ? '1' : '0' },
   });
-  const configure = () => { const result = run(['--configure', '--account', 'a'.repeat(32), '--worker', 'customer', '--profile', 'core', '--url', 'https://customer.example']); assert.equal(result.status, 0, result.stderr); };
+  const configure = () => { const result = run(['--configure', '--account', 'a'.repeat(32), '--worker', 'customer-test-worker', '--profile', 'core', '--url', 'https://customer.example']); assert.equal(result.status, 0, result.stderr); };
   return { base, home, remote, log, run, configure, receipts: () => join(home, '.chickpea/upgrades/receipts') };
 }
 
-test('customer CLI configures, preflights, resumes and recovers with preserved login context', (t) => {
+test('current runner upgrades and recovers immutable legacy source without executing retained wrappers', (t) => {
   const f = fixture(t); f.configure();
   const initial = readFileSync(f.remote, 'utf8');
   const preflight = f.run(['--to', 'v0.1.1', '--preflight']);
@@ -119,6 +137,21 @@ test('customer CLI configures, preflights, resumes and recovers with preserved l
   const recover = f.run(['--recover', receipt], true); assert.equal(recover.status, 0, recover.stderr);
   assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
   const again = f.run(['--resume', receipt]); assert.equal(again.status, 0, again.stderr); assert.match(again.stdout, /recovered/);
+});
+
+test('current runner recovers legacy source after a recorded post-upload interruption', (t) => {
+  const f = fixture(t); f.configure();
+  const failed = f.run(['--to', 'v0.1.1'], true, true);
+  assert.equal(failed.status, 1);
+  const directory = join(f.receipts(), readdirSync(f.receipts())[0]!);
+  const receipt = join(directory, 'receipt.json');
+  assert.equal(JSON.parse(readFileSync(receipt, 'utf8')).stage, 'needs-inspection');
+  assert.equal(JSON.parse(readFileSync(join(directory, 'deployment.json'), 'utf8')).stage, 'uploaded');
+  assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.1');
+  const recover = f.run(['--recover', receipt], true);
+  assert.equal(recover.status, 0, recover.stderr);
+  assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
+  assert.equal(JSON.parse(readFileSync(receipt, 'utf8')).stage, 'recovered');
 });
 
 test('CLI refuses altered retained source before dependency scripts or deployment', (t) => {
