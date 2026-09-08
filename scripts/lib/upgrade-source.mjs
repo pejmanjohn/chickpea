@@ -1,7 +1,9 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
+import path from 'node:path';
 import { validateReleaseManifest, STABLE_VERSION } from './release-manifest.mjs';
 import { readBuildIdentity } from './build-identity.mjs';
+import { assertPrivatePath } from './upgrade-receipt.mjs';
 
 const REPOSITORY = 'https://github.com/pejmanjohn/chickpea.git';
 const API = 'https://api.github.com/repos/pejmanjohn/chickpea';
@@ -62,6 +64,24 @@ export function verifyReleaseSource(root, release) {
   }
   const manifest = validateReleaseManifest(root);
   return { ...release, manifest };
+}
+
+// The current deploy runner may consume an older release's generated artifact,
+// but only from one of the verified source checkouts retained with its receipt.
+export function verifyRetainedBuildRoot(contextPath, context) {
+  const sourceRoot = context?.sourceRoot;
+  if (context?.schema !== 1 || typeof sourceRoot !== 'string' || !path.isAbsolute(sourceRoot) ||
+      !['previous', 'destination'].includes(path.basename(sourceRoot)) ||
+      path.dirname(sourceRoot) !== realpathSync(path.dirname(contextPath))) {
+    throw new Error('Upgrade build source must be a retained checkout beside its private context.');
+  }
+  assertPrivatePath(sourceRoot, { directory: true });
+  if (realpathSync(sourceRoot) !== sourceRoot || !SHA.test(context.source?.commit ?? '') ||
+      releaseTag(context.source?.tag).slice(1) !== context.source?.version) {
+    throw new Error('Upgrade build source identity is invalid.');
+  }
+  verifyReleaseSource(sourceRoot, context.source);
+  return sourceRoot;
 }
 
 export function fetchReleaseSource(root, release) {

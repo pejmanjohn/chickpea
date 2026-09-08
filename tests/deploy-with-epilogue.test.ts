@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -22,6 +23,8 @@ import { digestSetupCapability } from '../src/auth/setup-capability.mjs';
 import { validateInstallation } from '../scripts/lib/upgrade-installation.mjs';
 // @ts-expect-error Release tooling JavaScript helper.
 import { writePrivateJson } from '../scripts/lib/upgrade-receipt.mjs';
+// @ts-expect-error Release tooling JavaScript helper.
+import { migrationDigests } from '../scripts/lib/release-manifest.mjs';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEPLOY_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'deploy-with-epilogue.mjs');
@@ -51,7 +54,7 @@ function createHarness() {
   mkdirSync(authDir, { recursive: true });
   mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
-  for (const name of ['built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs']) {
+  for (const name of ['upgrade-source.mjs', 'build-identity.mjs', 'built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs']) {
     copyFileSync(path.join(PROJECT_ROOT, 'scripts/lib', name), path.join(scriptsLibDir, name));
   }
   copyFileSync(DEPLOY_SCRIPT, path.join(scriptsDir, 'deploy-with-epilogue.mjs'));
@@ -400,6 +403,58 @@ test('customer upgrade records the uploaded identity when activation fails', (co
   const event = JSON.parse(readFileSync(path.join(harness.root, 'deployment.json'), 'utf8'));
   assert.equal(event.stage, 'uploaded');
   assert.deepEqual(event.knownVersions, [{ workerVersion: 'new-upgrade-version', version: '0.1.1', commit: 'b'.repeat(40) }]);
+});
+
+test('current wrapper recovers a verified older build without its wrapper or Wrangler installation', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  const environment = prepareUpgrade(harness);
+  const sourceRoot = path.join(realpathSync(harness.root), 'previous');
+  mkdirSync(sourceRoot, { mode: 0o700 });
+  for (const entry of ['wrangler.jsonc', 'slack-app-manifest.json', 'migrations', 'dist-cf', '.wrangler']) {
+    cpSync(path.join(harness.root, entry), path.join(sourceRoot, entry), { recursive: true });
+  }
+  const put = (file: string, value: unknown) => {
+    const target = path.join(sourceRoot, file);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, typeof value === 'string' ? value : JSON.stringify(value));
+  };
+  put('.gitignore', 'dist-cf/\n.wrangler/\n');
+  put('package.json', { version: '0.1.0' });
+  put('package-lock.json', { version: '0.1.0', packages: { '': { version: '0.1.0' } } });
+  put('scripts/deploy-with-epilogue.mjs', "throw new Error('Old wrapper must not execute');");
+  for (const file of ['src/identity/migrations.ts', 'src/config/store.ts', 'src/work/migrations.ts']) put(file, '// legacy source');
+  put('release.json', { formatVersion: 1, version: '0.1.0', storageGeneration: 1, supportedOrigins: [], recovery: 'previous-code-only', migrations: migrationDigests(sourceRoot) });
+  const git = (...args: string[]) => {
+    const result = spawnSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Upgrade Test', '-c', 'user.email=test@example.invalid', ...args], { cwd: sourceRoot, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr); return result.stdout.trim();
+  };
+  git('init', '--quiet'); git('add', '.'); git('commit', '--quiet', '-m', 'legacy release');
+  const commit = git('rev-parse', 'HEAD');
+  const configPath = path.join(sourceRoot, 'dist-cf/chickpea/wrangler.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.vars.CHICKPEA_APP_VERSION = '0.1.0';
+  config.vars.CHICKPEA_SOURCE_COMMIT = commit;
+  config.d1_databases[0].migrations_dir = path.join(sourceRoot, 'migrations/better-auth');
+  writeFileSync(configPath, JSON.stringify(config));
+  const contextPath = environment.CHICKPEA_UPGRADE_CONTEXT;
+  const upgrade = JSON.parse(readFileSync(contextPath, 'utf8'));
+  writePrivateJson(contextPath, { ...upgrade, sourceRoot, source: { tag: 'v0.1.0', version: '0.1.0', commit } });
+  assert.equal(existsSync(path.join(sourceRoot, 'node_modules')), false);
+  const result = runHarness(harness, ['--skip-build'], { ...environment, DEPLOY_TEST_EMPTY_SECRET_LIST_AFTER_UPLOAD: '1' });
+  assert.equal(result.status, 0, result.stderr);
+  const event = JSON.parse(readFileSync(path.join(harness.root, 'deployment.json'), 'utf8'));
+  assert.equal(event.stage, 'ready');
+  assert.equal(event.knownVersions[0].commit, commit);
+  assert.equal(git('status', '--porcelain'), '');
+  assert.equal(existsSync(harness.secretCapturePath), false);
+  assert.ok(commands(harness.logPath).some((line) => line.includes('"versions","deploy","new-upgrade-version@100%"')));
+  put('package.json', { version: '0.1.0', tampered: true });
+  writeFileSync(harness.logPath, '');
+  const refused = runHarness(harness, ['--skip-build'], environment);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /identity or clean-checkout/);
+  assert.equal(readFileSync(harness.logPath, 'utf8'), '');
 });
 
 test('customer upgrade rejects changed inventory and schema before every mutation', (context) => {

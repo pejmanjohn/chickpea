@@ -28,11 +28,15 @@ function fixture(t: any) {
   put(join(origin, 'migrations/better-auth/0001.sql'), 'CREATE TABLE owners (id TEXT PRIMARY KEY);');
   for (const file of ['src/identity/migrations.ts', 'src/config/store.ts', 'src/work/migrations.ts']) put(join(origin, file), '// fixture');
   cpSync('scripts/lib/upgrade-receipt.mjs', join(origin, 'journal.mjs'));
-  put(join(origin, 'scripts/deploy-with-epilogue.mjs'), `
+  cpSync('scripts/lib/upgrade-receipt.mjs', join(launcher, 'journal.mjs'));
+  put(join(origin, 'scripts/deploy-with-epilogue.mjs'), `throw new Error('Retained release wrapper must never execute');`);
+  put(join(launcher, 'scripts/deploy-with-epilogue.mjs'), `
     import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
     import { writeDeploymentEvent } from '../journal.mjs';
     import path from 'node:path';
     import { execFileSync } from 'node:child_process';
+    const context = JSON.parse(readFileSync(process.env.CHICKPEA_UPGRADE_CONTEXT, 'utf8'));
+    if (context.sourceRoot !== process.cwd()) throw new Error('Runner did not receive the retained build root');
     const redirect = JSON.parse(readFileSync('.wrangler/deploy/config.json', 'utf8'));
     const config = JSON.parse(readFileSync(path.resolve('.wrangler/deploy', redirect.configPath), 'utf8'));
     if (config.name !== 'customer-test-worker' || config.topLevelName !== config.name || process.env.WRANGLER_CI_OVERRIDE_NAME !== config.name || config.d1_databases[0].database_id !== 'existing-db') throw new Error('Installation overlay missed the generated customer artifact');
@@ -41,12 +45,12 @@ function fixture(t: any) {
     if (JSON.stringify(config.durable_objects.bindings) !== JSON.stringify([{name:'TAG_STATE',class_name:'TagStateStore'}])) throw new Error('Retargeting changed Durable Object ownership or class');
     appendFileSync(process.env.UPGRADE_FIXTURE_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
     if (!process.argv.includes('--preflight-only')) {
-      const context = JSON.parse(readFileSync(process.env.CHICKPEA_UPGRADE_CONTEXT, 'utf8'));
       writeDeploymentEvent(process.env.CHICKPEA_UPGRADE_CONTEXT, 'deploying');
       const remote = JSON.parse(readFileSync(process.env.UPGRADE_FIXTURE_REMOTE, 'utf8'));
       remote.version = context.source.version; remote.commit = context.source.commit; remote.id = 'uploaded-' + Date.now();
       writeFileSync(process.env.UPGRADE_FIXTURE_REMOTE, JSON.stringify(remote));
       writeDeploymentEvent(process.env.CHICKPEA_UPGRADE_CONTEXT, 'uploaded', remote.id);
+      if (process.env.UPGRADE_FIXTURE_AFTER_UPLOAD==='1') throw new Error('Fixture interruption after upload');
       writeDeploymentEvent(process.env.CHICKPEA_UPGRADE_CONTEXT, 'ready', remote.id);
     }
   `);
@@ -111,16 +115,16 @@ function fixture(t: any) {
   `);
   // A stale maintainer reservation must not stop a customer build or recovery.
   put(join(home, '.chickpea/verification-host/owner.json'), JSON.stringify({ pid: 99999999, token: 'stale-fixture' }));
-  const run = (args: string[], confirm = false) => spawnSync(process.execPath, ['--import', preload, join(launcher, 'scripts/upgrade.mjs'), ...args], {
+  const run = (args: string[], confirm = false, afterUpload = false) => spawnSync(process.execPath, ['--import', preload, join(launcher, 'scripts/upgrade.mjs'), ...args], {
     cwd: launcher, encoding: 'utf8', input: confirm ? 'customer-test-worker\n' : undefined, timeout: 30_000,
     env: { ...process.env, HOME: home, PATH: `${join(base, 'bin')}:${process.env.PATH}`, npm_execpath: npm, WRANGLER_HOME: 'fixture-oauth-home',
-      UPGRADE_FIXTURE_LOG: log, UPGRADE_FIXTURE_REMOTE: remote, UPGRADE_FIXTURE_CONFIRM: confirm ? '1' : '0' },
+      UPGRADE_FIXTURE_LOG: log, UPGRADE_FIXTURE_REMOTE: remote, UPGRADE_FIXTURE_CONFIRM: confirm ? '1' : '0', UPGRADE_FIXTURE_AFTER_UPLOAD: afterUpload ? '1' : '0' },
   });
   const configure = () => { const result = run(['--configure', '--account', 'a'.repeat(32), '--worker', 'customer-test-worker', '--profile', 'core', '--url', 'https://customer.example']); assert.equal(result.status, 0, result.stderr); };
   return { base, home, remote, log, run, configure, receipts: () => join(home, '.chickpea/upgrades/receipts') };
 }
 
-test('custom-named Worker upgrades and recovers an immutable legacy release with authored-name builds', (t) => {
+test('current runner upgrades and recovers immutable legacy source without executing retained wrappers', (t) => {
   const f = fixture(t); f.configure();
   const initial = readFileSync(f.remote, 'utf8');
   const preflight = f.run(['--to', 'v0.1.1', '--preflight']);
@@ -133,6 +137,21 @@ test('custom-named Worker upgrades and recovers an immutable legacy release with
   const recover = f.run(['--recover', receipt], true); assert.equal(recover.status, 0, recover.stderr);
   assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
   const again = f.run(['--resume', receipt]); assert.equal(again.status, 0, again.stderr); assert.match(again.stdout, /recovered/);
+});
+
+test('current runner recovers legacy source after a recorded post-upload interruption', (t) => {
+  const f = fixture(t); f.configure();
+  const failed = f.run(['--to', 'v0.1.1'], true, true);
+  assert.equal(failed.status, 1);
+  const directory = join(f.receipts(), readdirSync(f.receipts())[0]!);
+  const receipt = join(directory, 'receipt.json');
+  assert.equal(JSON.parse(readFileSync(receipt, 'utf8')).stage, 'needs-inspection');
+  assert.equal(JSON.parse(readFileSync(join(directory, 'deployment.json'), 'utf8')).stage, 'uploaded');
+  assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.1');
+  const recover = f.run(['--recover', receipt], true);
+  assert.equal(recover.status, 0, recover.stderr);
+  assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
+  assert.equal(JSON.parse(readFileSync(receipt, 'utf8')).stage, 'recovered');
 });
 
 test('CLI refuses altered retained source before dependency scripts or deployment', (t) => {

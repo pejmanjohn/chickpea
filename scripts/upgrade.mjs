@@ -182,8 +182,11 @@ async function main() {
     writePrivateJson(inspectionConfigPath, inspectionConfig);
     schemaInspection(previousRoot, inspectionConfigPath, target);
     const receiptPath = path.join(directory, 'receipt.json');
+    const contextPath = path.join(directory, 'context.json');
     const save = (value) => writePrivateJson(receiptPath, { ...value, updatedAt: new Date().toISOString() });
     const sourceRoot = (source) => source.commit === receipt.previous.commit ? previousRoot : destinationRoot;
+    const deployEnvironment = () => ({ ...targetEnvironment(target, { deploy: true }), CHICKPEA_UPGRADE_CONTEXT: contextPath });
+    const writeContext = (source, installation) => writePrivateJson(contextPath, { schema: 1, target, installation, source, sourceRoot: sourceRoot(source) });
     const prepare = async (source, installation) => {
       const checkout = sourceRoot(source);
       verifyReleaseSource(checkout, source);
@@ -200,7 +203,8 @@ async function main() {
       overlayInstallation(config, installation, target);
       // Preserve the overlay only in the generated artifact, never tracked source.
       writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
-      await subprocess(process.execPath, [path.join(checkout, 'scripts/deploy-with-epilogue.mjs'), '--skip-build', '--preflight-only'], checkout, targetEnvironment(target, { deploy: true }));
+      writeContext(source, installation);
+      await subprocess(process.execPath, [path.join(root, 'scripts/deploy-with-epilogue.mjs'), '--skip-build', '--preflight-only'], checkout, deployEnvironment());
     };
     if (options.preflight) {
       await prepare(receipt.destination, current);
@@ -218,10 +222,8 @@ async function main() {
         finally { input.close(); }
       },
       deploy: async (source, installation) => {
-        const contextPath = path.join(directory, 'context.json');
-        writePrivateJson(contextPath, { schema: 1, target, installation, source });
-        await subprocess(process.execPath, [path.join(sourceRoot(source), 'scripts/deploy-with-epilogue.mjs'), '--skip-build'], sourceRoot(source),
-          { ...targetEnvironment(target, { deploy: true }), CHICKPEA_UPGRADE_CONTEXT: contextPath });
+        writeContext(source, installation);
+        await subprocess(process.execPath, [path.join(root, 'scripts/deploy-with-epilogue.mjs'), '--skip-build'], sourceRoot(source), deployEnvironment());
       },
     });
     console.log(`Upgrade ${result}. Receipt: ${receiptPath}`);
