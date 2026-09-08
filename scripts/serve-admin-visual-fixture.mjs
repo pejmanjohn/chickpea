@@ -30,7 +30,6 @@ export const CANONICAL_ADMIN_VISUAL_STATES = Object.freeze({
   settingsUpdates: Object.freeze({ path: '/admin/settings/updates', actions: Object.freeze(['Preview report']) }),
   settingsProviders: Object.freeze({ path: '/admin/settings/providers', actions: Object.freeze([]) }),
   agentInstructions: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze([]) }),
-  agentProposals: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Slack update proposal details', 'Refresh Slack proposals']) }),
   agentBlankDescription: Object.freeze({ path: '/admin/agents/agent_customer', actions: Object.freeze([]) }),
   agentMemory: Object.freeze({ path: '/admin/agents/agent_research', actions: Object.freeze(['Memory']) }),
   agentSchedules: Object.freeze({ path: '/admin/agents/agent_release', actions: Object.freeze(['Schedules']) }),

@@ -787,3 +787,55 @@ test('runtime-plan OAuth auth reuses its live policy read for a fresh token', as
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('account-backed runtime MCP resolves OAuth and rechecks live tool and actor authority', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-account-mcp-'));
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db'), CHICKPEA_AUTH_DB_PATH: join(directory, 'auth.db') }, async () => {
+      const { getIdentityStore } = await import('../src/config/state-backend.ts');
+      const { connectionAccountOAuthRef } = await import('../src/config/api-oauth.ts');
+      const config = getConfigStore();
+      const identity = getIdentityStore();
+      const policy = { kind: 'mcp', url: 'https://mcp.example.com/mcp', transport: 'streamable-http', authMode: 'oauth', headerNames: [], discoveredTools: [{ name: 'search' }], allowedTools: ['search'], oauthAttemptId: '11111111-1111-4111-8111-111111111111' };
+      const account = { id: 'connection_test', workspaceId: 'T_TEST', providerId: 'test', label: 'Test MCP', ownerKind: 'team', lifecycle: 'ready', policy };
+      const binding = { agentId: 'agent_test', connectionAccountId: account.id, providerId: 'test', enabled: true, allowedCapabilities: [] };
+      let active = true;
+      t.mock.method(identity, 'getOrganization', async () => ({ id: 'org', slackTeamId: 'T_TEST' }));
+      t.mock.method(identity, 'getMembership', async () => ({ id: 'member', userId: 'user', organizationId: 'org', status: active ? 'active' : 'suspended' }));
+      t.mock.method(identity, 'getMembershipAccessOverlay', async () => null);
+      t.mock.method(identity, 'getUser', async () => ({ id: 'user', slackTeamId: 'T_TEST', slackUserId: 'U_TEST' }));
+      t.mock.method(identity, 'resolveSlackIdentity', async () => ({ user: { id: 'user' }, membership: { id: 'member' }, binding: { membershipId: 'member' } }));
+      t.mock.method(config, 'listConnectionAccounts', async () => [account]);
+      t.mock.method(config, 'listAgentConnectionBindings', async () => [binding]);
+      t.mock.method(config, 'getAgent', async () => { throw new Error('Must not read legacy MCP profile'); });
+      await getSettingsStore().setSetting(mcpOAuthSettingKeys(connectionAccountOAuthRef(account.id))[2], JSON.stringify({
+        serverUrl: policy.url, authorizationServerUrl: 'https://auth.example.com',
+        metadata: { issuer: 'https://auth.example.com', authorization_endpoint: 'https://auth.example.com/authorize', token_endpoint: 'https://auth.example.com/token', response_types_supported: ['code'] },
+        resource: policy.url, clientInformation: { client_id: 'client' },
+        tokens: { access_token: 'account-token', token_type: 'Bearer', expires_in: 3600 },
+        obtainedAt: Date.now(), oauthAttemptId: '11111111-1111-4111-8111-111111111111',
+      }));
+      const [definition] = resolveRuntimePlanMcpConnections('agent_test', [{
+        id: account.id, url: policy.url, transport: 'streamable-http', authMode: 'oauth', headerNames: [], allowedTools: ['search'], optional: true,
+      }], undefined, { workspaceId: 'T_TEST', actorMembershipId: 'member' });
+      const auth = definition!.auth as () => Promise<string>;
+      assert.equal(await auth(), 'account-token');
+      binding.enabled = false;
+      await assert.rejects(auth(), /policy changed/);
+      binding.enabled = true;
+      policy.allowedTools = [];
+      await assert.rejects(auth(), /policy changed/);
+      policy.allowedTools = ['search'];
+      active = false;
+      await assert.rejects(auth(), /not available/);
+      active = true;
+      policy.oauthAttemptId = '22222222-2222-4222-8222-222222222222';
+      await assert.rejects(auth());
+      t.mock.restoreAll();
+    });
+  } finally {
+    t.mock.restoreAll();
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

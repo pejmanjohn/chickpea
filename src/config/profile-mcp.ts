@@ -1,3 +1,5 @@
+import { connectionAccountOAuthRef } from './api-oauth.ts';
+import { isActiveConnectionActor, projectEffectiveMcpConnections, resolveEffectiveConnectionAccounts, resolveConnectionSecretForInvocation } from '../connections/runtime.ts';
 import type {
   McpConnectionDefinition,
   ToolDefinition,
@@ -20,6 +22,7 @@ import { createMcpGuardedFetch, validateMcpUrl } from './mcp-url.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 import {
   getConfigStore,
+  getIdentityStore,
   getSettingsStore,
   type PlatformEnv,
 } from './state-backend.ts';
@@ -157,6 +160,7 @@ export function resolveRuntimePlanMcpConnections(
   profileId: string,
   declarations: readonly RuntimePlanMcpConnectionV2[],
   onConnectionStart?: (connection: { id: string; displayName: string }) => void,
+  accountContext?: { workspaceId: string; actorMembershipId: string },
 ): McpConnectionDefinition[] {
   return declarations.map((declaration) => {
     const validated = validateMcpUrl(declaration.url);
@@ -169,8 +173,20 @@ export function resolveRuntimePlanMcpConnections(
       env: PlatformEnv | undefined;
     }> => {
       const env = await resolveCurrentMcpEnv();
-      const profile = await getConfigStore(env).getAgent(profileId);
-      const server = profile.mcpServers.find((candidate) => candidate.id === declaration.id);
+      const config = getConfigStore(env);
+      let server: McpConnectionConfig | undefined;
+      if (accountContext) {
+        if (!(await isActiveConnectionActor({ ...accountContext, identity: getIdentityStore(env) }))) {
+          throw new Error('Connection account is not available to this actor');
+        }
+        const accounts = await resolveEffectiveConnectionAccounts({
+          ...accountContext, config, agentId: profileId,
+        });
+        server = projectEffectiveMcpConnections(accounts).find((candidate) => candidate.id === declaration.id);
+      } else {
+        const profile = await config.getAgent(profileId);
+        server = profile.mcpServers.find((candidate) => candidate.id === declaration.id);
+      }
       if (!server || !runtimeMcpDeclarationStillAllowed(server, declaration)) {
         throw new Error('MCP connection policy changed; a new agent instance is required.');
       }
@@ -183,11 +199,13 @@ export function resolveRuntimePlanMcpConnections(
     };
     const fetchWithLiveHeaders = withMcpHttpTelemetry(async (input, init) => {
       const { server, env } = await liveServer();
-      const customHeaders = await resolveMcpHeaders(
-        { agentId: profileId, connectionId: server.id },
-        declaration.headerNames,
-        env,
-      );
+      const customHeaders = accountContext
+        ? (await resolveConnectionAccountMcpSecrets(server, (connectionAccountId) =>
+            resolveConnectionSecretForInvocation({ ...accountContext, config: getConfigStore(env),
+              settings: getSettingsStore(env), ...(env ? { env } : {}), agentId: profileId, connectionAccountId }))).headers
+        : await resolveMcpHeaders(
+            { agentId: profileId, connectionId: server.id }, declaration.headerNames, env,
+          );
       const request = new Request(input, init);
       const headers = new Headers(request.headers);
       for (const [name, value] of Object.entries(buildMcpRequestHeaders(
@@ -211,10 +229,30 @@ export function resolveRuntimePlanMcpConnections(
         : {
             auth: async () => {
               const { server, env } = await liveServer();
-              return resolveLiveMcpBearer(server, {
-                agentId: profileId,
-                env,
-              }, true);
+              if (accountContext) {
+                if (server.authMode === 'oauth') {
+                  return resolveMcpOAuthAccessToken({
+                    ref: connectionAccountOAuthRef(server.id), serverUrl: server.url,
+                  }, {
+                    settings: getSettingsStore(env),
+                    validateConnection: async (_ref, serverUrl, _revision, attemptId) => {
+                      await liveServer();
+                      const accounts = await resolveEffectiveConnectionAccounts({
+                        ...accountContext, config: getConfigStore(env), agentId: profileId,
+                      });
+                      const account = accounts.find(({ account }) => account.id === server.id)?.account;
+                      return account?.policy.kind === 'mcp' && account.policy.authMode === 'oauth' &&
+                        account.policy.url === serverUrl &&
+                        (attemptId === undefined || account.policy.oauthAttemptId === attemptId);
+                    },
+                  });
+                }
+                return resolveConnectionSecretForInvocation({
+                  ...accountContext, config: getConfigStore(env), settings: getSettingsStore(env),
+                  ...(env ? { env } : {}), agentId: profileId, connectionAccountId: server.id,
+                });
+              }
+              return resolveLiveMcpBearer(server, { agentId: profileId, env }, true);
             },
           }),
     };

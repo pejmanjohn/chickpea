@@ -1,3 +1,8 @@
+> Product UI policy: the historical diagnostic disclosures described below
+> have been removed from Agent and connection pages. Do not restore them for
+> verification. Use existing authenticated diagnostic APIs as supplemental
+> private evidence, alongside real Slack and normal Admin readback. See AGENTS.md.
+
 # Live contract acceptance v1
 
 This record separates deterministic verifier checks from live Chickpea acceptance. A green local suite does not prove Slack, Admin, provider, gateway, or cleanup behavior on a serving target.
