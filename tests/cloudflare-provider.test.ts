@@ -561,3 +561,27 @@ test('GLM 5.3 Flash keeps provider reasoning out of assistant text and preserves
   assert.ok(response.content.some((part) => part.type === 'thinking'));
   assert.ok(response.content.some((part) => part.type === 'toolCall' && part.name === 'read_fixture'));
 });
+
+for (const method of ['stream', 'streamSimple'] as const) {
+  for (const finish of ['stop', 'tool_calls', 'length'] as const) {
+    test(`GLM ${method} normalizes complete tool calls without promoting ${finish} failures`, async () => {
+      const provider = createCloudflareBindingProvider({ run: async () => new Response([
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_probe', type: 'function',
+          function: { name: 'probe', arguments: '{}' } }] }, finish_reason: null }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: finish }] },
+      ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n',
+      { headers: { 'content-type': 'text/event-stream' } }) });
+      const model = provider.getModels().find(({ id }) => id === '@cf/zai-org/glm-5.3-flash')!;
+      const stream = provider[method](model, { messages: [{ role: 'user', content: 'Probe.', timestamp: 1 }],
+        tools: [{ name: 'probe', description: 'Probe.', parameters: { type: 'object', properties: {} } }] });
+      const events = [];
+      for await (const event of stream) events.push(event);
+      const result = await stream.result();
+      const expected = finish === 'length' ? 'length' : 'toolUse';
+      assert.equal(result.stopReason, expected);
+      assert.equal(events.at(-1)?.type, 'done');
+      assert.equal((events.at(-1) as { reason: string }).reason, expected);
+      assert.equal(result.content.filter(block => block.type === 'toolCall').length, 1);
+    });
+  }
+}
