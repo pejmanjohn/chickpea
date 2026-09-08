@@ -60,6 +60,76 @@ test('redirects are inspected without following a different release endpoint', a
   }
 });
 
+test('rate limits use bounded upstream cooldowns and tolerate missing or invalid headers', async () => {
+  const time = Date.UTC(2026, 8, 8, 12);
+  const cases: Array<[HeadersInit, number]> = [
+    [{ 'retry-after': '120' }, 120_000],
+    [{ 'retry-after': new Date(time + 180_000).toUTCString() }, 180_000],
+    [{ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(time / 1_000 + 240) }, 240_000],
+    [{ 'retry-after': '120', 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(time / 1_000 + 300) }, 300_000],
+    [{ 'retry-after': '120', 'x-ratelimit-remaining': '10', 'x-ratelimit-reset': String(time / 1_000 + 300) }, 120_000],
+    [{ 'retry-after': '1' }, 60_000],
+    [{ 'retry-after': '864000' }, 24 * 60 * 60_000],
+    [{}, 15 * 60_000],
+    [{ 'retry-after': 'nonsense', 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': 'not-a-timestamp' }, 15 * 60_000],
+    [{ 'retry-after': new Date(time - 60_000).toUTCString(), 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(time / 1_000 - 1) }, 15 * 60_000],
+    [{ 'retry-after': new Date(time + 180_000).toISOString() }, 15 * 60_000],
+    [{ 'retry-after': '-10', 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1e12' }, 15 * 60_000],
+    [{ 'retry-after': '9'.repeat(400) }, 15 * 60_000],
+  ];
+  for (const status of [403, 429]) {
+    for (const [headers, delay] of cases) {
+      let cancelled = false;
+      const check = createUpdateChecker({ identity, now: () => time, fetch: async () =>
+        new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status, headers }) });
+      const result = await check();
+      assert.equal(result.error, 'rate-limited');
+      assert.equal(result.retryAt, new Date(time + delay).toISOString(), JSON.stringify(headers));
+      assert.equal(cancelled, true);
+    }
+  }
+});
+
+test('manual and automatic checks respect rate-limit expiry while retaining a dated release', async () => {
+  let time = Date.UTC(2026, 8, 8, 12); let calls = 0;
+  const check = createUpdateChecker({ identity, now: () => time, fetch: async () => {
+    calls++;
+    return calls === 2
+      ? new Response('', { status: 429, headers: { 'retry-after': '300' } })
+      : Response.json(release);
+  } });
+  const success = await check();
+  time += 30_000;
+  const limited = await check(true);
+  assert.equal(limited.status, 'failed');
+  assert.equal(limited.lastSuccessfulCheckAt, success.checkedAt);
+  assert.deepEqual(limited.release, success.release);
+  const retryAt = Date.parse(limited.retryAt!);
+  for (const nextTime of [time + 30_000, retryAt - 1]) {
+    time = nextTime;
+    assert.deepEqual(await Promise.all([check(), check(true)]), [limited, limited]);
+    assert.equal(calls, 2);
+  }
+  time = retryAt;
+  const recovered = await Promise.all([check(true), check()]);
+  assert.equal(calls, 3);
+  assert.equal(recovered[0].status, 'available');
+  assert.equal(recovered[0].retryAt, undefined);
+  assert.equal(recovered[0].lastSuccessfulCheckAt, undefined);
+  assert.equal(recovered[0].checkedAt, new Date(time).toISOString());
+});
+
+test('ordinary failures retain the short retry window without a rate-limit timestamp', async () => {
+  let time = 0; let calls = 0;
+  const check = createUpdateChecker({ identity, now: () => time, fetch: async () => {
+    calls++;
+    return new Response('', { status: 503 });
+  } });
+  assert.equal((await check()).retryAt, undefined);
+  time = 29_999; await check(true); assert.equal(calls, 1);
+  time = 30_000; await check(true); assert.equal(calls, 2);
+});
+
 test('a hung fetch or stalled response body settles as timeout', async () => {
   for (const fetcher of [
     async () => new Promise<Response>(() => {}),

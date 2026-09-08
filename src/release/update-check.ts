@@ -11,9 +11,32 @@ export interface UpdateStatus {
   release?: AvailableRelease;
   error?: CheckError;
   lastSuccessfulCheckAt?: string;
+  /** Earliest retry after a rate limit; manual refresh respects this time. */
+  retryAt?: string;
 }
 class CheckFailure extends Error {
-  constructor(readonly code: CheckError) { super(code); }
+  constructor(readonly code: CheckError, readonly retryAt?: number) { super(code); }
+}
+
+function rateLimitRetryAt(headers: Headers, now: number): number {
+  const retryAfter = headers.get('retry-after')?.trim();
+  const reset = headers.get('x-ratelimit-reset')?.trim();
+  const candidates: number[] = [];
+  if (retryAfter && /^\d+$/.test(retryAfter)) {
+    candidates.push(now + Number(retryAfter) * 1_000);
+  } else if (retryAfter) {
+    const date = Date.parse(retryAfter);
+    if (Number.isFinite(date) && new Date(date).toUTCString() === retryAfter) candidates.push(date);
+  }
+  // GitHub sends the primary window reset even for secondary limits. It only
+  // describes the relevant cooldown when that primary allowance is exhausted.
+  if (headers.get('x-ratelimit-remaining') === '0' && reset && /^\d+$/.test(reset)) {
+    candidates.push(Number(reset) * 1_000);
+  }
+  const future = candidates.filter((value) => Number.isFinite(value) && value > now);
+  const requested = future.length ? Math.max(...future) : now + 15 * 60_000;
+  // Avoid rapid retries and unbounded cooldowns from malformed upstream dates.
+  return Math.min(now + 24 * 60 * 60_000, Math.max(now + 60_000, requested));
 }
 
 export function createUpdateChecker(options: {
@@ -48,7 +71,11 @@ export function createUpdateChecker(options: {
             throw new CheckFailure('invalid-response');
           }
           if (response.status === 404) { await response.body?.cancel(); return undefined; }
-          if (response.status === 403 || response.status === 429) throw new CheckFailure('rate-limited');
+          if (response.status === 403 || response.status === 429) {
+            const retryAt = rateLimitRetryAt(response.headers, now());
+            await response.body?.cancel();
+            throw new CheckFailure('rate-limited', retryAt);
+          }
           if (!response.ok) throw new CheckFailure('network');
           if (!response.headers.get('content-type')?.includes('json') || !response.body) throw new CheckFailure('invalid-response');
           reader = response.body.getReader();
@@ -91,12 +118,15 @@ export function createUpdateChecker(options: {
       cached = { status: !release ? 'no-release' : !known ? 'unversioned' : newer ? 'available' : 'current', checkedAt, ...(release ? { release } : {}) };
       successful = cached;
       expiresAt = now() + 15 * 60_000;
+      refreshAfter = now() + 30_000;
     } catch (error) {
+      const retryAt = error instanceof CheckFailure ? error.retryAt : undefined;
       cached = { status: 'failed', checkedAt, error: error instanceof CheckFailure ? error.code : 'network',
+        ...(retryAt !== undefined ? { retryAt: new Date(retryAt).toISOString() } : {}),
         ...(successful ? { lastSuccessfulCheckAt: successful.checkedAt, ...(successful.release ? { release: successful.release } : {}) } : {}) };
-      expiresAt = now() + 30_000;
+      expiresAt = retryAt ?? now() + 30_000;
+      refreshAfter = expiresAt;
     }
-    refreshAfter = now() + 30_000;
     return cached;
   }
   return (refresh = false): Promise<UpdateStatus> => {
