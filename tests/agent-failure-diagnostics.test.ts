@@ -35,7 +35,7 @@ test('empty model completion diagnostics retain finish and token facts but no co
     '[chickpea] agent model returned no text:', {
       submissionRef: opaqueId('fluesubmission', 'private-submission'),
       finishReason: 'length', providerFinishReason: 'length',
-      requestedMaxTokens: null, outputTokens: 256,
+      requestedMaxTokens: null, inputTokens: 200, cacheReadTokens: 0, outputTokens: 256, hasText: false,
       hasThinking: true, hasToolCalls: false,
     },
   ]]);
@@ -52,7 +52,6 @@ test('model diagnostics ignore valid text, normal tool calls, compaction and oth
       role: 'assistant', content: [{ type: 'toolCall', id: 'private', name: 'private', arguments: {} }],
     } } }),
     terminalEvent({ purpose: 'compaction' }),
-    terminalEvent({ isError: true }),
   ]) observeAgentResultDiagnostics(event, context);
   observeAgentResultDiagnostics(terminalEvent(), { ...context, agentName: 'other-agent' });
   assert.equal(logger.mock.callCount(), 0);
@@ -70,7 +69,7 @@ test('model diagnostics bound arbitrary provider facts and cannot interrupt exec
   assert.deepEqual(logs[0]?.[1], {
     submissionRef: opaqueId('fluesubmission', 'private-submission'),
     finishReason: 'other', providerFinishReason: 'other', requestedMaxTokens: null,
-    outputTokens: null, hasThinking: false, hasToolCalls: false,
+    inputTokens: 200, cacheReadTokens: 0, outputTokens: null, hasText: false, hasThinking: false, hasToolCalls: false,
   });
   t.mock.method(console, 'error', () => { throw new Error('unavailable'); });
   assert.doesNotThrow(() => observeAgentResultDiagnostics(event, context));
@@ -174,4 +173,53 @@ test('diagnostic output is bounded for deep chains, large stacks, and non-Error 
     causes: [{ kind: 'non_error', frames: [] }],
   });
   assert.doesNotMatch(JSON.stringify(logs), /private/);
+});
+
+
+test('failed model turns retain bounded facts even after partial text and tools', (t) => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  observeAgentResultDiagnostics(terminalEvent({ isError: true, response: {
+    ...terminalEvent().response,
+    finishReason: 'error', providerFinishReason: 'private vendor finish',
+    output: { role: 'assistant', content: [
+      { type: 'text', text: 'private output' },
+      { type: 'thinking', thinking: 'private reasoning' },
+      { type: 'toolCall', id: 'private-id', name: 'private-tool', arguments: { credential: 'private' } },
+    ] },
+    error: { type: 'cloudflare_ai_binding_error', message: 'private provider body',
+      stack: '/private/path', meta: { status: 429, statusText: 'private text', arbitrary: 'private' } },
+  } }), context);
+  assert.deepEqual(logs, [['[chickpea] agent model turn failed:', {
+    submissionRef: opaqueId('fluesubmission', 'private-submission'),
+    finishReason: 'error', providerFinishReason: 'other', requestedMaxTokens: null,
+    inputTokens: 200, cacheReadTokens: 0, outputTokens: 256,
+    hasText: true, hasThinking: true, hasToolCalls: true,
+    errorCode: 'cloudflare_ai_binding_error', status: 429,
+  }]]);
+  assert.doesNotMatch(JSON.stringify(logs), /private|credential|provider body|reasoning/);
+});
+
+test('failed finish states are observed without error flags and arbitrary error codes never escape', (t) => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  for (const finishReason of ['error', 'aborted']) {
+    observeAgentResultDiagnostics(terminalEvent({ isError: false, response: {
+      finishReason, error: { type: 'private type', code: 'private code', message: 'ECONNRESET private body',
+        meta: { status: 1000 } },
+      usage: { ...terminalEvent().response.usage!, input: NaN, cacheRead: -1, output: Infinity },
+    } }), context);
+  }
+  for (const entry of logs) {
+    assert.equal(entry[0], '[chickpea] agent model turn failed:');
+    assert.deepEqual({ ...(entry[1] as object), finishReason: 'ignored' }, {
+      submissionRef: opaqueId('fluesubmission', 'private-submission'),
+      finishReason: 'ignored', providerFinishReason: null, requestedMaxTokens: null,
+      inputTokens: null, cacheReadTokens: null, outputTokens: null,
+      hasText: false, hasThinking: false, hasToolCalls: false, errorCode: 'other', status: null,
+    });
+  }
+  assert.doesNotMatch(JSON.stringify(logs), /private|ECONNRESET/);
+  t.mock.method(console, 'error', () => { throw new Error('private logger failure'); });
+  assert.doesNotThrow(() => observeAgentResultDiagnostics(terminalEvent({ isError: true }), context));
 });
