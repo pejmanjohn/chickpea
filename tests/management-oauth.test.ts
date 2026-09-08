@@ -16,6 +16,7 @@ import {
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
 import {
+  createMcpConsentRedirectResponse,
   createMcpAuthenticatedRequestHandler,
   verifySignedOAuthQuery,
 } from '../src/auth/mcp-oauth-routes.ts';
@@ -214,6 +215,43 @@ test('MCP consent can opt into opaque-origin same-origin form navigation', () =>
     ok: false,
     code: 'cross_origin_denied',
   });
+});
+
+test('MCP consent finishes its form POST before returning to a client callback', async () => {
+  for (const callback of [
+    'http://127.0.0.1:47321/callback?code=code_123&state=state_123',
+    'http://localhost:47321/callback?error=access_denied&state=state_123',
+    'http://[::1]:47321/callback?code=code_123&state=state_123',
+    'https://client.example/callback?code=code_123&state=state_123',
+  ]) {
+    const response = createMcpConsentRedirectResponse(callback);
+    assert.equal(response.status, 200, 'a 3xx would remain subject to form-action self');
+    assert.equal(response.headers.get('location'), null);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(response.headers.get('content-security-policy'),
+      "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+    const html = await response.text();
+    const escapedCallback = callback.replaceAll('&', '&amp;');
+    assert.ok(html.includes(`http-equiv="refresh" content="0;url=${escapedCallback}"`));
+    assert.ok(html.includes(`<a href="${escapedCallback}">Continue</a>`));
+    assert.ok(!html.includes('<script'), 'callback navigation does not require JavaScript');
+  }
+});
+
+test('MCP consent callback document rejects unsafe destinations and escapes attributes', async () => {
+  for (const callback of [
+    'javascript:alert(1)', '//attacker.example/callback', 'http://client.example/callback',
+    'https://user:password@client.example/callback', 'https://client.example/callback#token',
+  ]) {
+    const response = createMcpConsentRedirectResponse(callback);
+    assert.equal(response.status, 400, callback);
+    assert.ok(!(await response.text()).includes('http-equiv="refresh"'));
+  }
+  const response = createMcpConsentRedirectResponse('https://client.example/callback?state="><script>alert(1)</script>');
+  const html = await response.text();
+  assert.ok(!html.includes('<script>'));
+  assert.ok(html.includes('&quot;&gt;&lt;script&gt;'));
 });
 
 test('public MCP registration enforces rate, quota, and unused-client retention', async () => {
