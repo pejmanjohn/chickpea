@@ -399,19 +399,19 @@ test('customer upgrade pins named authentication through every remote command an
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
   const environment = prepareUpgrade(harness);
   const upgrade = JSON.parse(readFileSync(environment.CHICKPEA_UPGRADE_CONTEXT, 'utf8'));
-  upgrade.target.wranglerProfile = 'magoosh';
+  upgrade.target.wranglerProfile = 'customer-login';
   writePrivateJson(environment.CHICKPEA_UPGRADE_CONTEXT, upgrade);
-  for (const args of [[], ['--profile', 'other'], ['--profile', 'magoosh', '--env', 'other']]) {
+  for (const args of [[], ['--profile', 'other'], ['--profile', 'customer-login', '--env', 'other']]) {
     const rejected = runHarness(harness, ['--skip-build', ...args], environment);
     assert.equal(rejected.status, 1);
     assert.match(rejected.stderr, /Upgrade context does not match/);
     assert.equal(existsSync(harness.logPath), false);
   }
-  const result = runHarness(harness, ['--skip-build', '--profile', 'magoosh'], environment);
+  const result = runHarness(harness, ['--skip-build', '--profile', 'customer-login'], environment);
   assert.equal(result.status, 0, result.stderr);
   const remote = commands(harness.logPath).filter((line) => line.startsWith('wrangler:')).map((line) => JSON.parse(line.slice('wrangler:'.length)));
   assert.ok(remote.some((args) => args[0] === 'versions' && args[1] === 'deploy'));
-  for (const args of remote) assert.equal(args[args.indexOf('--profile') + 1], 'magoosh', JSON.stringify(args));
+  for (const args of remote) assert.equal(args[args.indexOf('--profile') + 1], 'customer-login', JSON.stringify(args));
 });
 
 test('customer upgrade records the uploaded identity when activation fails', (context) => {
