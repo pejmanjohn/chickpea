@@ -36,6 +36,8 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
     // module-scoped cloudflare:workers declaration currently omits it while
     // @cloudflare/workers-types includes the runtime method.
     this.state = ctx as typeof this.state;
+    console.info({ component: 'slack_gateway', event: 'session_object_started',
+      versionId: cloudflareWorkerVersionId(this.env) ?? null });
   }
 
   async wake(): Promise<void> {
@@ -51,6 +53,8 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
         client: () => createGatewayDeploymentClient(platformEnv),
         capabilities: [GATEWAY_DURABLE_ADMISSION_CAPABILITY],
         waitUntil: (promise) => this.state.waitUntil(promise),
+        onDiagnostic: (diagnostic) => console.warn({ component: 'slack_gateway',
+          event: 'session_connection_failure', ...diagnostic }),
         onEvent: async (delivery) => {
           const result = await tagStateStub(platformEnv).admitGatewayDelivery(delivery);
           return result.ok ? result.value : 'rejected';
