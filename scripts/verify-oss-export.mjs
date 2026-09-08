@@ -190,6 +190,7 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'runbooks', 'auth-db-deployment.md'),
   exportPath('docs', 'runbooks', 'operations.md'),
   exportPath('docs', 'runbooks', 'releasing.md'),
+  exportPath('docs', 'runbooks', 'upgrading.md'),
   exportPath('docs', 'runbooks', 'agent-first-acceptance-2026-08-21.md'),
   exportPath('docs', 'runbooks', 'agent-private-use-acceptance-2026-08-27.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
