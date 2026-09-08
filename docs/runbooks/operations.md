@@ -163,6 +163,11 @@ capability you have not established. Read the [AUTH_DB contract](auth-db-deploym
 
 ## Upgrade and compatibility policy
 
+Use the [guided upgrade command](upgrading.md) for supported Cloudflare releases.
+Its recovery restores previous code only and requires unchanged storage. It does
+not supply a cross-store backup. The manual policy below also covers Node and
+transitions requiring a separate migration procedure.
+
 Before the first tagged release, older experimental schemas may be incompatible.
 That is not permission to delete a production database. A disposable pre-release
 installation may be recreated only when its operator explicitly accepts losing

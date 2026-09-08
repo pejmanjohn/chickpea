@@ -751,6 +751,7 @@ function verifyNpmPackManifest(entries, packageJson) {
     'docs/runbooks/auth-db-deployment.md',
     'docs/runbooks/operations.md',
     'docs/runbooks/releasing.md',
+    'docs/runbooks/upgrading.md',
     'docs/runbooks/agent-first-acceptance-2026-08-21.md',
     'docs/runbooks/coding-sandbox-deployment.md',
     'docs/runbooks/composio-managed-connectors.md',

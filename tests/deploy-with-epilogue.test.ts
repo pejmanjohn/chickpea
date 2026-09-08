@@ -18,6 +18,10 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { digestSetupCapability } from '../src/auth/setup-capability.mjs';
+// @ts-expect-error Release tooling JavaScript helper.
+import { validateInstallation } from '../scripts/lib/upgrade-installation.mjs';
+// @ts-expect-error Release tooling JavaScript helper.
+import { writePrivateJson } from '../scripts/lib/upgrade-receipt.mjs';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEPLOY_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'deploy-with-epilogue.mjs');
@@ -47,6 +51,9 @@ function createHarness() {
   mkdirSync(authDir, { recursive: true });
   mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
+  for (const name of ['inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs']) {
+    copyFileSync(path.join(PROJECT_ROOT, 'scripts/lib', name), path.join(scriptsLibDir, name));
+  }
   copyFileSync(DEPLOY_SCRIPT, path.join(scriptsDir, 'deploy-with-epilogue.mjs'));
   copyFileSync(PROFILE_SCRIPT, path.join(scriptsDir, 'cloudflare-deployment-profile.mjs'));
   copyFileSync(path.join(PROJECT_ROOT, 'scripts', 'worker-artifact.mjs'), path.join(scriptsDir, 'worker-artifact.mjs'));
@@ -271,7 +278,9 @@ function createHarness() {
         }));
       }
       if (process.env.DEPLOY_TEST_URL) process.stdout.write(process.env.DEPLOY_TEST_URL + '\\n');
+      if (args[0] === 'versions' && args[1] === 'upload') process.stdout.write('Worker Version ID: new-upgrade-version\\n');
       if (args[0] === 'deploy') process.stdout.write('Current Version ID: deployed-version\\n');
+      if (args[0] === 'versions' && args[1] === 'deploy' && process.env.DEPLOY_TEST_ACTIVATION_FAIL === '1') process.exit(1);
       if (args[0] === 'deploy' && process.env.DEPLOY_TEST_DEPLOY_STATUS) {
         process.exit(Number(process.env.DEPLOY_TEST_DEPLOY_STATUS));
       }
@@ -326,6 +335,79 @@ function runHarness(
     },
   });
 }
+
+function prepareUpgrade(harness: ReturnType<typeof createHarness>) {
+  const configPath = path.join(harness.root, 'dist-cf/chickpea/wrangler.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.vars.CHICKPEA_APP_VERSION = '0.1.1';
+  config.vars.CHICKPEA_SOURCE_COMMIT = 'b'.repeat(40);
+  writeFileSync(configPath, JSON.stringify(config));
+  const secretNames = ['CHICKPEA_AUTH_SECRET', 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID', 'CHICKPEA_CREDENTIAL_KEY_KEY_V1'];
+  const bindings = [
+    { name: 'AUTH_DB', type: 'd1', id: 'test-database-id' },
+    ...config.durable_objects.bindings.map((binding: any) => ({ ...binding, type: 'durable_object_namespace', namespace_id: `ns-${binding.name}` })),
+    { name: 'CF_VERSION_METADATA', type: 'version_metadata' },
+    ...Object.entries({ CHICKPEA_APP_VERSION: '0.1.0', CHICKPEA_SOURCE_COMMIT: 'a'.repeat(40), CHICKPEA_SETUP_CAPABILITY_DIGEST: 'P'.repeat(43), CHICKPEA_SETUP_CAPABILITY_ISSUED_AT: '1788289200000', DO_NOT_TRACK: '1', SLACK_TAG_LEDGER_CANARY_CHANNELS: '' }).map(([name, text]) => ({ name, text, type: 'plain_text' })),
+  ];
+  const installation = validateInstallation({ exists: true, secretNames, bindings, versions: [{ version_id: 'deployed-version', percentage: 100 }], fingerprint: 'deployed-version:100' });
+  const contextPath = path.join(harness.root, 'upgrade-context.json');
+  writePrivateJson(contextPath, { schema: 1, target: { account: 'a'.repeat(32), worker: 'chickpea', profile: 'core', url: 'https://chickpea.test' }, installation, source: { version: '0.1.1', commit: 'b'.repeat(40) } });
+  return {
+    CHICKPEA_UPGRADE_CONTEXT: contextPath, CHICKPEA_DEPLOY_TARGET: 'production', CHICKPEA_DEPLOY_PROFILE: 'core',
+    CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32), WRANGLER_CI_OVERRIDE_NAME: 'chickpea',
+    DEPLOY_TEST_SECRET_LIST: JSON.stringify(secretNames.map((name) => ({ name }))),
+    DEPLOY_TEST_VERSION_VIEWS: JSON.stringify({ 'deployed-version': { resources: { bindings } } }),
+  };
+}
+
+test('customer upgrade preserves setup and credentials and records readiness without a setup link', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  const result = runHarness(harness, ['--skip-build'], prepareUpgrade(harness));
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /#setup=|mint|\/admin\/setup/);
+  assert.equal(existsSync(harness.secretCapturePath), false);
+  const invoked = commands(harness.logPath);
+  assert.equal(invoked.some((line) => /"create"|"apply"|"put"|"bulk"/.test(line)), false);
+  const config = JSON.parse(readFileSync(path.join(harness.root, 'dist-cf/chickpea/wrangler.json'), 'utf8'));
+  assert.equal(config.vars.CHICKPEA_SETUP_CAPABILITY_DIGEST, 'P'.repeat(43));
+  assert.equal(config.vars.CHICKPEA_SETUP_CAPABILITY_ISSUED_AT, '1788289200000');
+  assert.equal(config.vars.DO_NOT_TRACK, '1');
+  const event = JSON.parse(readFileSync(path.join(harness.root, 'deployment.json'), 'utf8'));
+  assert.equal(event.stage, 'ready');
+  assert.equal(event.workerVersion, 'new-upgrade-version');
+  assert.equal(invoked.some((line) => line.startsWith('[\"deploy\"')), false);
+  assert.ok(invoked.some((line) => line.includes('\"versions\",\"upload\"')));
+  assert.ok(invoked.some((line) => line.includes('\"versions\",\"deploy\",\"new-upgrade-version@100%\"')));
+  const activation = JSON.parse(readFileSync(path.join(harness.root, 'activation-wrangler.json'), 'utf8'));
+  assert.deepEqual(Object.keys(activation).sort(), ['account_id', 'compatibility_date', 'name']);
+  assert.deepEqual(Object.keys(event).sort(), ['at', 'knownVersions', 'schema', 'stage', 'workerVersion']);
+});
+
+test('customer upgrade records the uploaded identity when activation fails', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  const result = runHarness(harness, ['--skip-build'], { ...prepareUpgrade(harness), DEPLOY_TEST_ACTIVATION_FAIL: '1' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /activation was not verified/);
+  const event = JSON.parse(readFileSync(path.join(harness.root, 'deployment.json'), 'utf8'));
+  assert.equal(event.stage, 'uploaded');
+  assert.deepEqual(event.knownVersions, [{ workerVersion: 'new-upgrade-version', version: '0.1.1', commit: 'b'.repeat(40) }]);
+});
+
+test('customer upgrade rejects changed inventory and schema before every mutation', (context) => {
+  for (const overrides of [
+    { DEPLOY_TEST_SECRET_LIST: '[]' },
+    { DEPLOY_TEST_DEPLOYMENT_STATUS: JSON.stringify({ versions: [{ version_id: 'other', percentage: 100 }] }) },
+    { DEPLOY_TEST_AUTH_SCHEMA: JSON.stringify([{ success: true, results: [] }]) },
+  ]) {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    const result = runHarness(harness, ['--skip-build'], { ...prepareUpgrade(harness), ...overrides });
+    assert.equal(result.status, 1, result.stdout);
+    assert.equal(commands(harness.logPath).some((line) => /"deploy"|"create"|"apply"|"put"|"bulk"/.test(line)), false);
+  }
+});
 
 test('successful deploy generates stable auth and prints the setup link after readiness', async (context) => {
   const harness = createHarness();

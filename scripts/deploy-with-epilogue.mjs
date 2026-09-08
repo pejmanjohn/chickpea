@@ -16,7 +16,6 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
 import {
   existsSync,
   lstatSync,
@@ -31,6 +30,10 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { hasScheduledComposition } from './worker-artifact.mjs';
+import { wranglerInspector, deploymentFingerprint } from './lib/inspect-deployment.mjs';
+import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from './lib/auth-schema.mjs';
+import { validateInstallation, validateTarget, assertSameInstallation, overlayInstallation } from './lib/upgrade-installation.mjs';
+import { readPrivateJson, writePrivateJson, writeDeploymentEvent } from './lib/upgrade-receipt.mjs';
 
 import {
   classifyCloudflareDeploymentProfile,
@@ -587,10 +590,25 @@ function validateDeploymentArtifact(artifact, options = {}) {
   return artifact;
 }
 
+const upgradeContextPath = process.env.CHICKPEA_UPGRADE_CONTEXT;
+let upgradeContext;
 let builtArtifact;
 let deploymentTargetTuple;
 try {
   const artifact = requireBuiltArtifact();
+  if (upgradeContextPath) {
+    upgradeContext = readPrivateJson(upgradeContextPath);
+    const target = validateTarget(upgradeContext.target);
+    if (upgradeContext.schema !== 1 || !target.url || !explicitProductionTarget || selectedEnvironmentTarget ||
+        target.account !== process.env.CLOUDFLARE_ACCOUNT_ID || target.worker !== process.env.WRANGLER_CI_OVERRIDE_NAME ||
+        target.profile !== resolveCloudflareDeploymentProfile() || deployArgs.length ||
+        artifact.config.vars?.CHICKPEA_APP_VERSION !== upgradeContext.source?.version ||
+        artifact.config.vars?.CHICKPEA_SOURCE_COMMIT !== upgradeContext.source?.commit) {
+      throw new Error('Upgrade context does not match the selected target, source, or guarded command.');
+    }
+    artifact.config = overlayInstallation(artifact.config, upgradeContext.installation, target);
+    writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
+  }
   builtArtifact = validateDeploymentArtifact(artifact);
   deploymentTargetTuple = readCloudflareDeploymentTargetTuple(builtArtifact.config);
 } catch (error) {
@@ -634,95 +652,15 @@ const activeWorkerInspectionTimeoutMs = Number.isFinite(configuredInspectionTime
   ? Math.min(configuredInspectionTimeout, DEFAULT_ACTIVE_WORKER_INSPECTION_TIMEOUT_MS)
   : DEFAULT_ACTIVE_WORKER_INSPECTION_TIMEOUT_MS;
 
-function inspectRemoteWorker(artifact) {
-  const result = spawnSync(
-    process.execPath,
-    [
-      wranglerBin,
-      'secret',
-      'list',
-      '--format',
-      'json',
-      '--config',
-      artifact.configPath,
-      ...deploymentResourceArgs(),
-    ],
-    { cwd: projectRoot, encoding: 'utf8' },
-  );
-  if (result.error) {
-    throw new Error(`Unable to inspect Worker secrets: ${result.error.message}`);
-  }
-  const detail = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-  if (result.status !== 0 && /Worker\s+"[^"]+"[^\n]*not found/i.test(detail)) {
-    return { exists: false, names: new Set() };
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      'Unable to inspect Worker secrets. The deploy credential must allow secret listing before Chickpea can deploy safely.',
-    );
-  }
-  let entries;
-  try {
-    entries = JSON.parse(result.stdout);
-  } catch {
-    throw new Error('Worker secret discovery returned an unreadable response.');
-  }
-  if (!Array.isArray(entries) || entries.some((entry) => typeof entry?.name !== 'string')) {
-    throw new Error('Worker secret discovery returned an unexpected response.');
-  }
-  return { exists: true, names: new Set(entries.map((entry) => entry.name)) };
+function inspector(artifact) {
+  return wranglerInspector({ root: projectRoot, configPath: artifact.configPath,
+    args: deploymentResourceArgs(), timeout: activeWorkerInspectionTimeoutMs });
 }
-
+function inspectRemoteWorker(artifact) { return inspector(artifact).worker(); }
 function activeDeployment(artifact) {
-  const status = spawnSync(
-    process.execPath,
-    [
-      wranglerBin,
-      'deployments',
-      'status',
-      '--json',
-      '--config',
-      artifact.configPath,
-      ...deploymentResourceArgs(),
-    ],
-    {
-      cwd: projectRoot,
-      encoding: 'utf8',
-      timeout: activeWorkerInspectionTimeoutMs,
-    },
-  );
-  if (status.error) {
-    throw new Error(
-      'Unable to inspect the active Worker deployment. Refusing an update without its current AUTH_DB binding.',
-    );
+  try { return inspector(artifact).active(); } catch {
+    throw new Error('Unable to inspect the active Worker deployment. Refusing an update without its current AUTH_DB binding.');
   }
-  if (status.status !== 0) {
-    throw new Error(
-      'Unable to inspect the active Worker deployment. Refusing an update without its current AUTH_DB binding.',
-    );
-  }
-  let deployment;
-  try {
-    deployment = JSON.parse(status.stdout);
-  } catch {
-    throw new Error('Active Worker deployment discovery returned an unreadable response.');
-  }
-  const versions = Array.isArray(deployment?.versions)
-    ? deployment.versions.filter((version) => Number(version?.percentage) > 0)
-    : [];
-  if (versions.length === 0 || versions.some((version) =>
-    typeof version?.version_id !== 'string' || !version.version_id.trim()
-  )) {
-    throw new Error('Active Worker deployment discovery returned no readable serving versions.');
-  }
-  return versions;
-}
-
-function deploymentFingerprint(versions) {
-  return versions
-    .map((version) => `${version.version_id.trim()}:${Number(version.percentage)}`)
-    .sort()
-    .join(',');
 }
 
 function assertActiveDeploymentUnchanged(artifact, expectedFingerprint) {
@@ -742,41 +680,9 @@ function deployedAuthDatabase(artifact) {
   const setupAuthorities = [];
   let versionsWithoutAuthDatabase = 0;
   for (const version of versions) {
-    const view = spawnSync(
-      process.execPath,
-      [
-        wranglerBin,
-        'versions',
-        'view',
-        version.version_id,
-        '--json',
-        '--config',
-        artifact.configPath,
-        ...deploymentResourceArgs(),
-      ],
-      {
-        cwd: projectRoot,
-        encoding: 'utf8',
-        timeout: activeWorkerInspectionTimeoutMs,
-      },
-    );
-    if (view.error) {
-      throw new Error(
-        `Unable to inspect active Worker version ${version.version_id}. ` +
-        'Refusing an update without its current AUTH_DB binding.',
-      );
-    }
-    if (view.status !== 0) {
-      throw new Error(
-        `Unable to inspect active Worker version ${version.version_id}. ` +
-        'Refusing an update without its current AUTH_DB binding.',
-      );
-    }
     let details;
-    try {
-      details = JSON.parse(view.stdout);
-    } catch {
-      throw new Error(`Active Worker version ${version.version_id} returned unreadable binding details.`);
+    try { details = inspector(artifact).version(version.version_id); } catch {
+      throw new Error(`Unable to inspect active Worker version ${version.version_id}. Refusing an update without its current AUTH_DB binding.`);
     }
     const allBindings = details?.resources?.bindings ?? [];
     const bindings = allBindings.filter(
@@ -790,7 +696,7 @@ function deployedAuthDatabase(artifact) {
       binding?.name === SETUP_CAPABILITY_ISSUED_AT_BINDING
       && typeof (binding.text ?? binding.value) === 'string'
     );
-    if (selectedEnvironmentTarget) {
+    if (selectedEnvironmentTarget || upgradeContext) {
       if (setupDigestBindings.length !== 1 || setupIssuedBindings.length !== 1) {
         throw new Error('Claimed environment active versions must expose one preserved setup authority.');
       }
@@ -822,14 +728,14 @@ function deployedAuthDatabase(artifact) {
     throw new Error('Active Worker versions use different AUTH_DB databases; refusing to update either one.');
   }
   const uniqueSetupAuthorities = [...new Set(setupAuthorities)];
-  if (selectedEnvironmentTarget && uniqueSetupAuthorities.length !== 1) {
+  if ((selectedEnvironmentTarget || upgradeContext) && uniqueSetupAuthorities.length !== 1) {
     throw new Error('Active Worker versions disagree about setup authority; refusing rotation.');
   }
   const [setupDigest, setupIssuedAt] = uniqueSetupAuthorities[0]?.split(':') ?? [];
   return {
     databaseId: uniqueIds[0],
     fingerprint: deploymentFingerprint(versions),
-    ...(selectedEnvironmentTarget ? {
+    ...((selectedEnvironmentTarget || upgradeContext) ? {
       setupAuthority: { digest: setupDigest, issuedAt: Number(setupIssuedAt) },
     } : {}),
   };
@@ -838,8 +744,8 @@ function deployedAuthDatabase(artifact) {
 async function prepareDeploymentAuthority(artifact, secretNames, preservedSetupAuthority) {
   const generatedSecrets = {};
   if (!secretNames.has(AUTH_SECRET)) {
-    if (selectedEnvironmentTarget) {
-      throw new Error('Claimed environment is missing its permanent auth authority; refusing rotation.');
+    if (selectedEnvironmentTarget || upgradeContext) {
+      throw new Error('Existing installation is missing its permanent auth authority; refusing rotation.');
     }
     generatedSecrets[AUTH_SECRET] = (await mintSetupCapability()).capability;
   }
@@ -848,9 +754,9 @@ async function prepareDeploymentAuthority(artifact, secretNames, preservedSetupA
     name.startsWith(CREDENTIAL_KEY_PREFIX) && name !== CREDENTIAL_CURRENT_KEY
   );
   if (!hasCredentialCurrent && credentialSlots.length === 0) {
-    if (selectedEnvironmentTarget) {
+    if (selectedEnvironmentTarget || upgradeContext) {
       throw new Error(
-        'Claimed environment credential encryption authority is missing; refusing to rotate encrypted connections.',
+        'Existing installation credential encryption authority is missing; refusing to rotate encrypted connections.',
       );
     }
     generatedSecrets[CREDENTIAL_CURRENT_KEY] = INITIAL_CREDENTIAL_KEY_ID;
@@ -1030,68 +936,6 @@ function existingAuthDatabaseId(databaseName) {
   return typeof id === 'string' && id.trim() ? id.trim() : undefined;
 }
 
-const AUTH_SCHEMA_QUERY =
-  "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' " +
-  "AND name NOT IN ('d1_migrations','_cf_KV') ORDER BY type,name";
-
-function normalizeAuthSchemaRows(rows) {
-  if (!Array.isArray(rows)) throw new Error('AUTH_DB schema inspection returned no rows.');
-  return rows.filter((row) => row?.name !== '_cf_KV').map((row) => {
-    if (!row || typeof row.type !== 'string' || typeof row.name !== 'string' ||
-        typeof row.tbl_name !== 'string' || typeof row.sql !== 'string') {
-      throw new Error('AUTH_DB schema inspection returned an unreadable row.');
-    }
-    return {
-      type: row.type,
-      name: row.name,
-      table: row.tbl_name,
-      // Cloudflare D1 may serialize a table's outer parentheses as `( ... )`
-      // while Node SQLite preserves the authored `(...)`. Both forms describe
-      // the same schema, so normalize only that insignificant whitespace while
-      // retaining every identifier, column, constraint, and index definition.
-      sql: row.sql
-        .replace(/\s+/g, ' ')
-        .replace(/\(\s+/g, '(')
-        .replace(/\s+\)/g, ')')
-        .trim()
-        .toLowerCase(),
-    };
-  });
-}
-
-function expectedAuthSchema(artifact) {
-  const binding = (artifact.config.d1_databases ?? []).find(
-    (candidate) => candidate.binding === 'AUTH_DB',
-  );
-  const migrationsDirectory = path.resolve(
-    path.dirname(artifact.configPath),
-    binding?.migrations_dir ?? '',
-  );
-  let migrationPaths;
-  try {
-    migrationPaths = readdirSync(migrationsDirectory)
-      .filter((name) => name.endsWith('.sql'))
-      .sort()
-      .map((name) => path.join(migrationsDirectory, name));
-    if (migrationPaths.length === 0) throw new Error('no SQL migrations found');
-  } catch (error) {
-    throw new Error(
-      `Unable to read the reviewed Better Auth migration chain: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-  const database = new DatabaseSync(':memory:');
-  try {
-    for (const migrationPath of migrationPaths) {
-      database.exec(readFileSync(migrationPath, 'utf8'));
-    }
-    return normalizeAuthSchemaRows(database.prepare(AUTH_SCHEMA_QUERY).all());
-  } finally {
-    database.close();
-  }
-}
-
 function verifyRemoteAuthSchema(artifact) {
   const expected = expectedAuthSchema(artifact);
   const inspection = spawnSync(
@@ -1131,11 +975,10 @@ function verifyRemoteAuthSchema(artifact) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(
       'AUTH_DB contains an incompatible reviewed Better Auth migration-chain schema. ' +
-      'This Slack-only release supports a fresh empty AUTH_DB only; reset the disposable database ' +
-      'or provision a new one with the exact preserved binding before deploying.',
+      'Its schema structure differs from the reviewed migration chain. Preserve the database and investigate the mismatch before deploying.',
     );
   }
-  process.stdout.write('Verified the exact fresh Better Auth schema in AUTH_DB...\n');
+  process.stdout.write('Verified the reviewed Better Auth schema in AUTH_DB...\n');
 }
 
 let deploymentAuthority;
@@ -1144,6 +987,11 @@ let expectedActiveDeploymentFingerprint;
 let finalEnvironmentPreflight;
 if (!deployArgs.includes('--dry-run')) {
   try {
+    if (upgradeContext) {
+      const current = validateInstallation(inspector(builtArtifact).inspect());
+      assertSameInstallation(upgradeContext.installation, current);
+      verifyRemoteAuthSchema(builtArtifact);
+    }
     remoteWorker = inspectRemoteWorker(builtArtifact);
     if (selectedEnvironmentTarget && !remoteWorker.exists) {
       throw new Error(
@@ -1160,6 +1008,9 @@ if (!deployArgs.includes('--dry-run')) {
     const deployed = remoteWorker.exists
       ? deployedAuthDatabase(builtArtifact)
       : undefined;
+    if (upgradeContext && (!remoteWorker.exists || !deployed?.databaseId)) {
+      throw new Error('Upgrade requires the existing Worker and AUTH_DB; provisioning is forbidden.');
+    }
     expectedActiveDeploymentFingerprint = deployed?.fingerprint;
     builtArtifact = ensureAuthDatabase(builtArtifact, deployed?.databaseId);
     // This is the final gate immediately before the first mutation of an
@@ -1238,7 +1089,7 @@ if (selectedEnvironmentTarget) {
 // D1 migrations are forward-only and idempotent. Apply them before the Worker
 // starts serving a schema it expects. If deploy later fails, rerunning this
 // command resumes from D1's migration ledger; never attempt schema rollback.
-if (!deployArgs.includes('--dry-run')) {
+if (!deployArgs.includes('--dry-run') && !upgradeContext) {
   process.stdout.write('Applying reviewed Better Auth migrations to AUTH_DB...\n');
   const environmentArgs = deploymentResourceArgs();
   const migration = spawnSync(
@@ -1318,16 +1169,29 @@ if (selectedEnvironmentTarget) {
   }
 }
 
+if (upgradeContext) {
+  try {
+    assertSameInstallation(upgradeContext.installation, validateInstallation(inspector(builtArtifact).inspect()));
+    verifyRemoteAuthSchema(builtArtifact);
+    writeDeploymentEvent(upgradeContextPath, 'deploying');
+  } catch (error) {
+    removeSecretsFile(preparedSecrets);
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
 const child = spawn(
   process.execPath,
   [
     wranglerBin,
-    'deploy',
+    ...(upgradeContext ? ['versions', 'upload'] : ['deploy']),
     ...deployArgs,
     ...(preparedSecrets ? ['--secrets-file', preparedSecrets.file] : []),
   ],
   { cwd: projectRoot, stdio: ['inherit', 'pipe', 'inherit'] },
 );
+let activeChild = child;
 
 let cleanedSecrets = false;
 function cleanupSecrets() {
@@ -1339,7 +1203,7 @@ process.once('exit', cleanupSecrets);
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.once(signal, () => {
     cleanupSecrets();
-    child.kill(signal);
+    activeChild.kill(signal);
     process.exit(signal === 'SIGINT' ? 130 : 143);
   });
 }
@@ -1356,8 +1220,11 @@ child.stdout.on('data', (chunk) => {
   if (match && !deployedUrl) {
     deployedUrl = match[0];
   }
-  const versionMatch = text.match(/Current Version ID:\s*([A-Za-z0-9-]+)/);
-  if (versionMatch?.[1]) deployedVersionId = versionMatch[1];
+  const versionMatch = text.match(/(?:Current|Worker) Version ID:\s*([A-Za-z0-9-]+)/);
+  if (versionMatch?.[1] && versionMatch[1] !== deployedVersionId) {
+    deployedVersionId = versionMatch[1];
+    if (upgradeContext) writeDeploymentEvent(upgradeContextPath, 'uploaded', deployedVersionId);
+  }
   tail = text.slice(-256);
 });
 
@@ -1375,6 +1242,7 @@ const testReadinessStatuses = process.env.DEPLOY_TEST_READINESS_STATUSES
 let testReadinessIndex = 0;
 
 function readinessBaseUrl() {
+  if (upgradeContext) return upgradeContext.target.url;
   if (deployedUrl) return deployedUrl;
   if (process.env.DEPLOY_TEST_READINESS_BASE_URL) {
     return process.env.DEPLOY_TEST_READINESS_BASE_URL;
@@ -1486,6 +1354,20 @@ child.on('close', async (code) => {
     return;
   }
   try {
+    if (upgradeContext) {
+      // Upload does not change traffic. Recheck the serving installation before
+      // activation, and use an isolated minimal config so Wrangler cannot sync
+      // authored routes, crons, observability or other non-versioned settings.
+      assertSameInstallation(upgradeContext.installation, validateInstallation(inspector(builtArtifact).inspect()));
+      const activationConfig = path.join(path.dirname(upgradeContextPath), 'activation-wrangler.json');
+      writePrivateJson(activationConfig, { name: upgradeContext.target.worker, account_id: upgradeContext.target.account, compatibility_date: builtArtifact.config.compatibility_date });
+      await new Promise((resolve, reject) => {
+        activeChild = spawn(process.execPath, [wranglerBin, 'versions', 'deploy', `${deployedVersionId}@100%`, '--yes', '--config', activationConfig],
+          { cwd: path.dirname(activationConfig), stdio: 'inherit' });
+        activeChild.once('error', () => reject(new Error('Unable to activate the uploaded Worker version. Preserve the receipt.')));
+        activeChild.once('close', (status) => status === 0 ? resolve() : reject(new Error('Worker activation was not verified. Preserve the receipt and resume.')));
+      });
+    }
     await waitForDeploymentReadiness(
       baseUrl,
       deployedVersionId,
@@ -1507,7 +1389,10 @@ child.on('close', async (code) => {
     process.exitCode = 1;
     return;
   }
-  if (selectedEnvironmentTarget) {
+  if (upgradeContext) {
+    writeDeploymentEvent(upgradeContextPath, 'ready', deployedVersionId);
+    process.stdout.write('\n✔ Upgrade deployment is ready. Existing setup authority preserved.\n');
+  } else if (selectedEnvironmentTarget) {
     process.stdout.write('\n✔ Claimed environment deployment reconciled.\n');
     if (finalEnvironmentPreflight?.setupFlow?.proven === false) {
       process.stdout.write(

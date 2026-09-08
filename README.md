@@ -489,3 +489,11 @@ instruction, or tool protocol changes.
 [Apache License 2.0](LICENSE). Use it, fork it, run it for your company, sell what you build on it, subject to the license terms.
 
 Copyright (c) 2026 Pejman Pour-Moezzi. See [NOTICE](NOTICE).
+
+## Version and updates
+
+Installation Owners can open **Settings → About & updates** to review the current
+version, check releases, and copy an exact upgrade command. Updates are manual.
+See the [upgrade guide](docs/runbooks/upgrading.md) for first-time command setup,
+compatibility checks, and receipt-based recovery. Node deployments follow the
+[operations guide](docs/runbooks/operations.md).

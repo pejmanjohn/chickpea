@@ -31,6 +31,7 @@
     "docs/runbooks/auth-db-deployment.md",
     "docs/runbooks/operations.md",
     "docs/runbooks/releasing.md",
+    "docs/runbooks/upgrading.md",
     "docs/runbooks/coding-sandbox-deployment.md",
     "docs/runbooks/composio-managed-connectors.md",
     "docs/runbooks/product-telemetry.md",
@@ -140,7 +141,8 @@
     "verify:live:record": "node scripts/verification-record.mjs",
     "preinstall": "node scripts/lib/node-version.mjs",
     "pretest": "node scripts/lib/node-version.mjs",
-    "verify:release": "node scripts/verify-release.mjs"
+    "verify:release": "node scripts/verify-release.mjs",
+    "upgrade": "node scripts/upgrade.mjs"
   },
   "dependencies": {
     "@better-auth/mcp": "1.7.1",

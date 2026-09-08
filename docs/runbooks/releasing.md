@@ -97,3 +97,100 @@ explicit authorization to tag/publish that exact commit. Create the version tag
 and GitHub release together. Verify that downloading its source archive follows
 the documented install path. Publish no secrets or private acceptance evidence.
 Do not move a published tag; issue a new version for corrections.
+
+## Application release contract
+
+`package.json`, both root version entries in `package-lock.json`, and
+`release.json` must agree. Run `npm run verify:release` after updating them.
+`release.json` records the storage generation, reviewed incoming versions,
+previous-code recovery policy, and exact migration-content digests. A digest
+change requires a compatibility/recovery decision; do not merely regenerate
+digests to silence a failed gate. The first updater deliberately rejects any
+changed storage chain, even if a maintainer accidentally lists the origin.
+
+Application tags are `vX.Y.Z`. The separately published `chickpea-cli` package
+has its own version and `cli-vX.Y.Z` publication workflow; it does not establish
+the application's installed version. Keep all other tests/builds local.
+
+Publish stable application releases with GitHub's immutable-release protection
+enabled. The upgrade executor requires the release API's `immutable: true`, a
+matching official tag, and the exact fetched commit before executing dependency
+scripts. Attach complete notes before publishing. Do not mark a release
+prerelease if it is intended for the stable updater. A correction needs a new
+version; neither retagging nor replacing a published artifact is an update path.
+
+Each subsequent supported transition must run the populated recipe in
+`fixtures/upgrades/v0.1.0.json` on an existing disposable customer-path Worker,
+including pre-upload interruption/retry and post-upload recovery. Retain the
+baseline source and private before/after readbacks. Registered QA-lane checks
+alone do not cover the ordinary customer wrapper path. The initial release
+advertises `supportedOrigins: []` until an incoming transition has evidence.
+
+The build embeds application version and commit from the source being built,
+not the launcher checkout or an environment-supplied SHA. `.gitattributes`
+substitutes the commit in Git source archives. Verify the downloaded archive's
+identity as part of publication acceptance; the support report and product
+telemetry use the same embedded identity.
+
+### Shared gateway compatibility
+
+The in-repository protocol constant is
+`src/slack/gateway/protocol.ts:CHICKPEA_GATEWAY_PROTOCOL_VERSION`. Keep the
+gateway implementation private. Record gateway compatibility alongside each
+release's acceptance evidence:
+
+| Application release | Required protocol | Acceptance evidence |
+| --- | --- | --- |
+| v0.1.0 candidate | 1 | Pending the candidate's live release run |
+
+Run `npm run verify:gateway-live` against the explicitly selected approved
+gateway, followed by real installation/Slack delivery on the candidate. The
+command creates a short-lived claim; its result proves the handshake only.
+Do not change the shared gateway's configuration as part of an application
+release. Do not declare old deployments unsupported without a separately
+announced compatibility change and migration path.
+
+## One-time initial-history cut
+
+This repository's initial cut is explicitly authorized to produce one public
+root commit named **`initial version v0.1.0`**, archive previous history, and
+retire the old public branches and `cli-v0.1.0` tag. This is a one-time release
+operation, not a routine step for future releases. Preserve the published npm
+CLI artifact and the source to which its retired tag pointed.
+
+1. Complete the implementation PR/review and all source and attended acceptance
+   gates. Coordinate other open branches/PRs and freeze pushes for the cut.
+   Inventory remote refs, release/tag metadata, repository settings, and branch
+   protection; retain the exact expected remote `main` SHA privately.
+2. Create a private mirror and a `git bundle --all` archive containing all old
+   refs, including the annotated CLI tag. Save GitHub release metadata beside
+   it. Clone from the bundle into a different directory, run `git fsck --full`,
+   compare every archived ref/object ID, and check out the CLI tag's source.
+   Record checksums and restore evidence. An untested bundle is not sufficient.
+3. Create the prospective root commit from the reviewed candidate's exact tree
+   with `git commit-tree <tree>` and no parent. Use the exact message above.
+   Keep all migration files/declarations and attribution unchanged. Check that
+   the candidate/root tree IDs agree. Build and run the full release gate from
+   a clean checkout of this prospective root, including embedded source identity
+   and the source archive. Bind live evidence to this candidate according to
+   the live-verification workflow; a changed tree invalidates prior evidence.
+4. Immediately before replacing public history, re-read remote refs/protection
+   and require the expected SHA. Temporarily change only the protection needed
+   for this authorized cut; use an explicit expected-SHA force-with-lease for
+   `main`. Restore protection immediately and verify it. Stop on any concurrent
+   ref change. Never use an unqualified force push or disable unrelated controls.
+5. Retire only the inventoried, archived old branches and old CLI tag/release
+   reference. Preserve the archive and published npm package. Verify remote
+   `main` has exactly one ancestor-inclusive commit, the expected message/tree,
+   and the restored protection. Close or retarget obsolete PRs deliberately.
+6. Create `v0.1.0` and its immutable GitHub release on that exact root. Verify
+   the API/tag/commit, source archive build identity, installation guide, and
+   Settings no-update/current states. Record the new canonical source SHA.
+
+Tell existing contributors to retain local work and use a fresh clone/rebase
+onto the new root; a normal pull cannot reconcile rewritten ancestry safely.
+Old clones, forks, GitHub pull-request refs, and caches can retain old commits.
+This operation simplifies public history and does not erase previously exposed
+material. Never delete the private archive to imply otherwise.
+
+The initial launcher refuses newly introduced plain Worker variables and resource classes before deployment. A transition requiring either needs a reviewed launcher update and explicit compatibility support first. The customer upgrade path uses version upload plus exact-version activation with a minimal configuration, preserving existing non-versioned settings and triggers. Verify this path on the disposable customer installation; an ordinary deployment does not prove it.
