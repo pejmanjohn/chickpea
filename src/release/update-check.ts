@@ -39,8 +39,14 @@ export function createUpdateChecker(options: {
         (async () => {
           const response = await fetcher(RELEASE_ENDPOINT, {
             headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Chickpea-update-check', 'X-GitHub-Api-Version': '2022-11-28' },
-            redirect: 'error', signal: controller.signal,
+            // Workers supports manual/follow, but rejects redirect: 'error'.
+            // Inspect redirects ourselves so release checks never follow them.
+            redirect: 'manual', signal: controller.signal,
           });
+          if (response.status >= 300 && response.status < 400) {
+            await response.body?.cancel();
+            throw new CheckFailure('invalid-response');
+          }
           if (response.status === 404) { await response.body?.cancel(); return undefined; }
           if (response.status === 403 || response.status === 429) throw new CheckFailure('rate-limited');
           if (!response.ok) throw new CheckFailure('network');

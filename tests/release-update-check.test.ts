@@ -42,6 +42,24 @@ test('comparison handles numeric minor versions and unknown source identity hone
   assert.equal((await createUpdateChecker({ identity: { ...identity, sourceCommit: null }, fetch: async () => Response.json(release) })()).status, 'unversioned');
 });
 
+test('redirects are inspected without following a different release endpoint', async () => {
+  for (const status of [301, 302, 303, 307, 308]) {
+    let calls = 0; let cancelled = false;
+    const result = await createUpdateChecker({ identity, fetch: async (_input, init) => {
+      calls++;
+      assert.equal(init?.redirect, 'manual');
+      return new Response(new ReadableStream({ cancel() { cancelled = true; } }), {
+        status, headers: { Location: 'https://untrusted.example/releases/latest' },
+      });
+    } })();
+    assert.equal(calls, 1);
+    assert.equal(cancelled, true);
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error, 'invalid-response');
+    assert.equal(result.release, undefined);
+  }
+});
+
 test('a hung fetch or stalled response body settles as timeout', async () => {
   for (const fetcher of [
     async () => new Promise<Response>(() => {}),
