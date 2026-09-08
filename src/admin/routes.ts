@@ -137,6 +137,7 @@ import {
   DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING,
   verifyDeploymentActivation,
 } from '../auth/deployment-activation.mjs';
+import { authorizeDeploymentRecovery, provisionDeploymentRecovery } from '../auth/deployment-recovery.ts';
 // Build-time JSON import: the committed manifest is the single source of the
 // Slack app identity; the wizard deep-link below substitutes the request host
 // so users never hand-edit a request_url.
@@ -466,6 +467,7 @@ import {
 } from '../slack/agent-access.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
+import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState } from '../slack/gateway/http-delivery.ts';
 import { createGatewayDeploymentClient, resolveChickpeaGatewayUrl } from '../slack/gateway/runtime.ts';
 import { cloudflareWorkerVersionId } from '../config/cloudflare-version.ts';
 import {
@@ -1655,7 +1657,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.use('*', async (c, next) => {
     // Deployment activation has its own short-lived bearer capability and
     // must remain callable while an older release left Admin in recovery.
-    if (c.req.path === '/internal/deployment/ready' || c.req.path === ENVIRONMENT_AUTHORITY_PATH) return next();
+    if (c.req.path === '/internal/deployment/ready' || c.req.path === '/internal/deployment/recover-delivery' || c.req.path === ENVIRONMENT_AUTHORITY_PATH) return next();
     const control = await identity(c).getAuthControl();
     if (control?.healthGate === 'recovery_only' &&
         c.req.path !== '/admin/recovery' &&
@@ -1733,6 +1735,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
 
     try {
+      const recoveryDigest = c.req.header('x-chickpea-recovery-digest');
+      if (recoveryDigest !== undefined) {
+        if (!/^[A-Za-z0-9_-]{43}$/.test(recoveryDigest)) return c.json({error:'invalid_recovery_digest'}, 400);
+        await provisionDeploymentRecovery(settings(c), targetVersion, recoveryDigest);
+      }
       const gatewayConfigured = Boolean(
         await settings(c).getSetting(GATEWAY_BINDING_SETTING),
       );
@@ -1746,6 +1753,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch {
       c.header('Retry-After', '1');
       return c.json({ error: 'deployment_readiness_unavailable' }, 503);
+    }
+  });
+  app.post('/internal/deployment/recover-delivery', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const targetVersion = c.req.header('x-chickpea-target-version')?.trim();
+    const currentVersion = cloudflareWorkerVersionId(c.env);
+    if (!targetVersion || !currentVersion || targetVersion !== currentVersion) return c.notFound();
+    try {
+      const authorization = c.req.header('authorization') ?? '';
+      const authority = await authorizeDeploymentRecovery(settings(c), currentVersion, authorization);
+      if (!authority) return c.notFound();
+      if (authority.binding === null) return c.body(null, 204);
+      await createGatewayDeploymentClient(c.env as PlatformEnv | undefined).rollbackHttpDelivery(authority.binding);
+      const gateway = await readGatewaySessionStatus(c.env);
+      const deliveryRaw = await settings(c).getSetting(GATEWAY_HTTP_SETTING);
+      const delivery = parseHttpDeliveryState(deliveryRaw);
+      if ((deliveryRaw && (!delivery || delivery.mode !== 'socket' || delivery.rollback || delivery.registration)) ||
+          !gateway.healthy || gateway.versionId !== targetVersion ||
+          !await authorizeDeploymentRecovery(settings(c), currentVersion, authorization)) return c.json({error:'gateway_recovery_pending'}, 503);
+      return c.body(null, 204);
+    } catch {
+      return c.json({error:'gateway_recovery_pending'}, 503);
     }
   });
   const slackApiBaseUrl = (c: Context): string | undefined => {

@@ -102,3 +102,36 @@ test('deployment readiness waits for the installed Slack gateway to run the targ
     settings.close();
   }
 });
+
+test('authenticated readiness provisions recovery before gateway readiness and rejects invalid scope', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const activation = await mintDeploymentActivation();
+  const recovery = await mintDeploymentActivation();
+  const app = createAdminRoutes({ settings });
+  const env = {
+    [DEPLOYMENT_ACTIVATION_DIGEST_BINDING]: activation.digest,
+    [DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING]: String(activation.issuedAt),
+    CF_VERSION_METADATA: { id: TARGET_VERSION },
+  };
+  const readyHeaders = { Authorization: `Bearer ${activation.capability}`, 'X-Chickpea-Target-Version': TARGET_VERSION, 'X-Chickpea-Recovery-Digest': recovery.digest };
+  const recover = (capability = recovery.capability, version = TARGET_VERSION) => app.request('http://localhost/internal/deployment/recover-delivery', {
+    method: 'POST', headers: {Authorization: `Bearer ${capability}`, 'X-Chickpea-Target-Version': version},
+  }, env);
+  try {
+    assert.equal((await recover()).status, 404);
+    assert.equal((await app.request('http://localhost/internal/deployment/ready', {method:'POST',headers: {...readyHeaders, Authorization:'invalid'}}, env)).status,404);
+    assert.equal((await recover()).status,404);
+    assert.equal((await app.request('http://localhost/internal/deployment/ready', {method:'POST',headers: readyHeaders}, env)).status,204);
+    assert.equal((await recover()).status,204);
+    assert.equal((await recover()).status,204);
+    assert.equal((await recover(activation.capability)).status,404);
+    assert.equal((await recover(recovery.capability,OLD_VERSION)).status,404);
+    await settings.setSetting(GATEWAY_BINDING_SETTING,'new-installation');
+    assert.equal((await recover()).status,404);
+    // Re-provisioning with current deployment activation scopes the authority to
+    // this installation even if transport readiness itself remains unavailable.
+    assert.equal((await app.request('http://localhost/internal/deployment/ready', {method:'POST',headers: readyHeaders}, env)).status,503);
+    const {authorizeDeploymentRecovery} = await import('../src/auth/deployment-recovery.ts');
+    assert.deepEqual(await authorizeDeploymentRecovery(settings,TARGET_VERSION,`Bearer ${recovery.capability}`),{binding:'new-installation'});
+  } finally {settings.close();}
+});

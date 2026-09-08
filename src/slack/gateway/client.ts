@@ -198,20 +198,39 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     return true;
   }
 
-  async rollbackHttpDelivery(): Promise<void> {
+  async rollbackHttpDelivery(expectedBinding?: string): Promise<void> {
     const binding = await this.requiredBinding();
+    if (expectedBinding !== undefined) {
+      const expected = parseStoredBinding(expectedBinding);
+      if (expected.bindingId !== binding.bindingId || expected.deploymentId !== binding.deploymentId ||
+          expected.installedAt !== binding.installedAt ||
+          await this.dependencies.settings.getSetting(GATEWAY_BINDING_SETTING) !== expectedBinding) {
+        throw new Error('Gateway installation changed before rollback.');
+      }
+    }
     let raw = await this.dependencies.settings.getSetting(GATEWAY_HTTP_SETTING);
-    const state = parseHttpDeliveryState(raw);
-    if (!state || state.bindingId !== binding.bindingId) throw new Error('Gateway delivery state unavailable.');
+    let state = parseHttpDeliveryState(raw);
+    if (raw && !state) throw new Error('Gateway delivery state unavailable.');
+    if (state && (state.bindingId !== binding.bindingId || state.deploymentId !== binding.deploymentId || state.installedAt !== binding.installedAt)) {
+      throw new Error('Gateway delivery state unavailable.');
+    }
+    const hadState = Boolean(state);
+    state ??= {version:1,bindingId:binding.bindingId,deploymentId:binding.deploymentId,installedAt:binding.installedAt,mode:'socket',revision:0};
     const operationId = state.rollback?.operationId ?? `rollback:${binding.bindingId}:${state.revision}`;
     let expectedRevision = state.rollback?.expectedRevision ?? state.revision;
     if (!state.rollback) {
-      const observed = await this.signedJson('/v1/delivery/status','delivery.status',{
+      let observed: Record<string, unknown>;
+      try { observed = await this.signedJson('/v1/delivery/status','delivery.status',{
         bindingId:binding.bindingId,workspaceId:binding.workspaceId,
         operationId:state.registration?.operationId ?? state.active?.operationId ?? operationId,
-      }) as Record<string, unknown>;
-      if (observed.bindingId !== binding.bindingId || observed.workspaceId !== binding.workspaceId || observed.deploymentId !== binding.deploymentId ||
+      }) as Record<string, unknown>; } catch (error) {
+        if (!hadState && error instanceof SlackTransportError && error.code === 'not_found') return;
+        throw error;
+      }
+      if (observed.protocolVersion !== 1 || observed.appId !== binding.appId || observed.bindingId !== binding.bindingId || observed.workspaceId !== binding.workspaceId || observed.deploymentId !== binding.deploymentId ||
           !Number.isSafeInteger(observed.revision) || Number(observed.revision) < state.revision) throw new Error('Gateway rollback authority mismatch.');
+      if (hadState && state.mode === 'socket' && state.revision > 0 && !state.registration &&
+          observed.mode === 'socket' && observed.revision === state.revision) return;
       expectedRevision = Number(observed.revision);
     }
     if (!state.rollback) {
@@ -222,7 +241,9 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     const response = await this.signedJson('/v1/delivery/rollback','delivery.rollback',{
       bindingId:binding.bindingId,workspaceId:binding.workspaceId,operationId,expectedRevision,
     }) as Record<string, unknown>;
-    if (response.mode !== 'socket' || response.revision !== expectedRevision + 1 || response.bindingId !== binding.bindingId) throw new Error('Gateway rollback mismatch.');
+    if (response.protocolVersion !== 1 || response.mode !== 'socket' || response.revision !== expectedRevision + 1 ||
+        response.bindingId !== binding.bindingId || response.workspaceId !== binding.workspaceId ||
+        response.appId !== binding.appId || response.deploymentId !== binding.deploymentId) throw new Error('Gateway rollback mismatch.');
     if (!await this.dependencies.settings.applySettingsPatch({expected:{key:GATEWAY_HTTP_SETTING,value:raw ?? null},
       set:[{key:GATEWAY_HTTP_SETTING,value:JSON.stringify({version:1,bindingId:binding.bindingId,deploymentId:binding.deploymentId,installedAt:binding.installedAt,mode:'socket',revision:response.revision})}]})) throw new Error('Gateway rollback changed concurrently.');
   }
