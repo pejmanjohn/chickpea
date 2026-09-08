@@ -1,5 +1,24 @@
 # Working on Chickpea
 
+## Product UI requires product intent
+
+- Do not add diagnostic, debugging, QA, or verification details to customer-facing
+  UI without first asking the maintainer and receiving explicit approval for
+  that UI change. This includes collapsed or Advanced sections, internal IDs,
+  revisions, lifecycle internals, membership IDs, receipts, traces, and raw
+  proposal or delivery records. Hiding them behind a disclosure is not approval.
+- Requests to fix bugs, add tests, improve observability, verify behavior, or
+  release software do not authorize diagnostic UI. Keep operator evidence in
+  existing authenticated APIs, logs, CLI tools, and private verification artifacts.
+- Show only information that helps a user complete the requested product task.
+  Useful connection status, actionable errors, and user-facing controls are
+  distinct from internal debugging records. If the need is ambiguous, ask before
+  adding it. Do not invent a diagnostics page or support panel as a workaround.
+- Tests and verification skills must adapt to this boundary; never add product
+  UI solely to make an automated assertion or manual QA step possible.
+
+## Development and delivery
+
 - Use a topic branch and a GitHub pull request by default. A maintainer may
   explicitly authorize a verified local worktree merge into root `main` and a
   direct push. Do not force-push `main`.

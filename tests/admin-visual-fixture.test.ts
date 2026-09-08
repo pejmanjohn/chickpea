@@ -467,7 +467,6 @@ test('canonical visual states use authenticated production URLs and UI actions o
       settingsProviders: { path: '/admin/settings/providers', actions: [] },
       settingsUpdates: { path: '/admin/settings/updates', actions: ['Preview report'] },
       agentInstructions: { path: '/admin/agents/agent_research', actions: [] },
-      agentProposals: { path: '/admin/agents/agent_research', actions: ['Slack update proposal details', 'Refresh Slack proposals'] },
       agentBlankDescription: { path: '/admin/agents/agent_customer', actions: [] },
       agentMemory: { path: '/admin/agents/agent_research', actions: ['Memory'] },
       agentSchedules: { path: '/admin/agents/agent_release', actions: ['Schedules'] },

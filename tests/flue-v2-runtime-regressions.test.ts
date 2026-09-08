@@ -37,6 +37,7 @@ const HOOK_AGENT: CustomAgentConfig = {
 
 function hookRuntimePlan(
   capability = 'gmail.messages.search',
+  customMcp = false,
 ): RuntimePlanV2 {
   const policy = {
     kind: 'managed' as const,
@@ -102,7 +103,14 @@ function hookRuntimePlan(
     instructions: HOOK_AGENT.instructions,
     memoryEpoch: 1,
     sandboxMode: 'bash',
-    effectiveConnections: [managed],
+    effectiveConnections: customMcp ? [{
+      ...managed,
+      account: { ...managed.account, id: 'connection_sql', providerId: 'sql', policy: {
+        kind: 'mcp', url: 'https://mcp.example.com/mcp', transport: 'streamable-http', authMode: 'oauth', headerNames: [], discoveredTools: [{ name: 'get_query_guide' }], allowedTools: ['get_query_guide'],
+      } },
+      binding: { ...managed.binding, connectionAccountId: 'connection_sql', providerId: 'sql', allowedCapabilities: [] },
+      policy: { kind: 'mcp', url: 'https://mcp.example.com/mcp', transport: 'streamable-http', authMode: 'oauth', headerNames: [], discoveredTools: [{ name: 'get_query_guide' }], allowedTools: ['get_query_guide'] },
+    }] : [managed],
   });
 }
 
@@ -423,4 +431,35 @@ test('Flue 2 restores instance context before recovering unready submissions', a
 
   await runtime.drainSubmissions(instance as never);
   assert.equal(ready, true);
+});
+
+test('member Slack requests register custom MCP declarations and attachment turns omit them', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { withEnv } = await import('./helpers/env.ts');
+  const { closeNodeStateStores } = await import('../src/config/state-backend.ts');
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-mcp-hook-'));
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db') }, async () => {
+      for (const attachments of [false, true]) {
+        const plan = hookRuntimePlan(undefined, true);
+        const registered: string[] = [];
+        const context = createFlueContext({
+          id: 'mcp-hook-' + attachments, agentName: 'chickpea-slack-v2', env: {},
+          agentConfig: { resolveModel: () => ({}) } as never,
+          mcpConnections: { resolve: async (definition) => {
+            registered.push(definition.name);
+            return { name: definition.name, tools: [], close: async () => {} };
+          } },
+        });
+        // Stop at the empty fixture's live-Agent authority fence, before a provider call.
+        await assert.rejects(context.initializeRootHarness(ChickpeaSlack, slackDelivery(plan, attachments), plan));
+        assert.deepEqual(registered, attachments ? [] : ['connection_sql']);
+      }
+    });
+  } finally {
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

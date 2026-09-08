@@ -150,19 +150,16 @@ dependent check. Complete the rest and report the gap.
   history. Record its canonical permalink after Slack replaces any provisional
   timestamp. After navigation, wait for the relevant heading or control; a
   loading shell or a short observation timeout is not a failed product action.
-- For instruction updates, use explicit replacement delimiters and a multiline
-  final sentinel. In the Agent's Admin page, expand **Slack update proposal
-  details** and **Refresh Slack proposals**. Compare the full frozen value,
-  target, requester, conversation, and revision before sending bare `approve`
-  in that same thread. Refresh the proposal result, then reload the Agent page
-  before comparing the saved textarea's actual value, including newlines.
-  Refreshing proposals alone does not reload the instruction editor; snapshot
-  prose can also collapse whitespace. Check one retained approval turn and its
-  completed apply result.
-- For creation, use **Saved Agent details** and **Creation delivery details →
-  Refresh creation delivery** to match the welcome's Agent, channel, thread,
-  delivery reference, publication, and settled activity to the actual Slack
-  message. Record the returned Agent ID; do not derive it from its display name.
+- Diagnostic disclosures are not part of the product UI. Do not add or restore
+  them for QA. For instruction updates, compare the real Slack proposal and
+  reply with the saved Admin textarea value after reloading, including newlines.
+  Use existing authenticated proposal-status readback only as supplemental
+  evidence for requester, revisions, and retained approval turns; it does not
+  substitute for the actual Slack result.
+- For creation, match the real Slack welcome to the resulting Agent in Admin.
+  Use existing authenticated creation-status readback for delivery references,
+  publication, and settled activity when required. Keep that evidence private.
+  Record the returned Agent ID; do not derive it from its display name.
   If creation did not request a model, verify workspace-model inheritance in
   **Model** and exercise a real request to the new Agent. A welcome can succeed
   even when a bad model pin makes the Agent's first actual request fail.

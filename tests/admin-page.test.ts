@@ -3499,124 +3499,20 @@ test('Where it works can remove an Agent Channel grant', async () => {
   assert.match(harness.app.innerHTML, /Only the creator can DM this Agent/);
 });
 
-test('saved Agent details expose exact persisted identity without inventing a revision or serializing private fields', async () => {
-  const agent = { id: 'agent_details', revision: 7, name: 'Details Agent', lifecycle: 'active', enabled: true,
-    instructions: 'Saved instructions', secret: 'never-display-this-secret',
-    slackPresence: { normalizedHandle: 'details', health: 'healthy', desiredState: 'active', userGroupId: 'S_DETAILS' } };
-  const harness = runAdminPageHarness({ agents: [agent] });
+test('Agent editor omits internal diagnostic disclosures and their requests', async () => {
+  let diagnosticReads = 0;
+  const harness = runAdminPageHarness({
+    agents: [{ ...releaseAgent, id: 'agent_details', name: 'Details Agent', revision: 7 }],
+    creationStatusFetch: async () => { diagnosticReads++; return jsonResponse({}); },
+    proposalStatusFetch: async () => { diagnosticReads++; return jsonResponse({}); },
+  });
   await flushAsync();
-  harness.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': agent.id }) });
+  harness.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_details' }) });
   await flushAsync();
-  const details = harness.app.innerHTML.split('<summary>Saved Agent details</summary>')[1]?.split('</details>')[0];
-  assert.ok(details);
-  assert.match(details, /Agent ID[^]*agent_details/);
-  assert.match(details, /Saved revision[^]*>7</);
-  assert.match(details, /Presence health[^]*healthy/);
-  assert.match(details, /Slack user group ID[^]*S_DETAILS/);
-  assert.doesNotMatch(details, /never-display-this-secret|Saved instructions/);
-  const missing = runAdminPageHarness({ agents: [{ ...agent, revision: undefined }] });
-  await flushAsync();
-  missing.listeners.click!({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': agent.id }) });
-  await flushAsync();
-  assert.match(missing.app.innerHTML, /Saved revision[^]*>unavailable</);
-});
-
-test('creation delivery disclosure is explicit, escaped, and ignores stale navigation responses', async () => {
-  let reads = 0;
-  let resolve!: (response: FakeResponse) => void;
-  const agents = ['agent_one', 'agent_two'].map((id) => ({ ...releaseAgent, id, name: id }));
-  const harness = runAdminPageHarness({ agents, creationStatusFetch: () => {
-    reads++;
-    return new Promise((done) => { resolve = done; });
-  } });
-  await flushAsync();
-  const click = (action: string, id?: string) => harness.listeners.click!({ target: actionTarget({ 'data-action': action, ...(id ? { 'data-agent': id } : {}) }) });
-  click('edit-profile', 'agent_one');
-  await flushAsync();
-  assert.equal(reads, 0);
-  click('refresh-creation-status');
-  assert.equal(reads, 1);
-  resolve(jsonResponse({ agentId: 'agent_one', welcomes: [{
-    outboxId: '<script>private</script>', status: 'delivered', channelId: 'C_CREATE', threadTs: '1800000000.000100',
-    publication: { status: 'complete', incomplete: [] }, deliveryRef: 'C_CREATE:1800000001.000100',
-    activity: null, secret: 'never-render-receipt-prose',
-  }] }));
-  await flushAsync();
-  assert.match(harness.app.innerHTML, /Welcome records[^]*>1</);
-  assert.match(harness.app.innerHTML, /&lt;script&gt;private&lt;\/script&gt;/);
-  assert.match(harness.app.innerHTML, /Activity state[^]*>unavailable</);
-  assert.doesNotMatch(harness.app.innerHTML, /never-render-receipt-prose/);
-  click('refresh-creation-status');
-  click('edit-profile', 'agent_two');
-  resolve(jsonResponse({ agentId: 'agent_one', welcomes: [{ outboxId: 'STALE_WELCOME' }] }));
-  await flushAsync();
-  assert.doesNotMatch(harness.app.innerHTML, /STALE_WELCOME|Welcome records/);
-  click('refresh-creation-status');
-  resolve(jsonResponse({ error: 'forbidden' }, 403));
-  await flushAsync();
-  assert.match(harness.app.innerHTML, /Creation delivery status unavailable/);
-  assert.doesNotMatch(harness.app.innerHTML, /Welcome records/);
-});
-
-test('proposal disclosure shows the frozen value on demand without rendering secrets or stale Agent data', async () => {
-  let reads = 0;
-  let resolve!: (response: FakeResponse) => void;
-  const agents = ['agent_one', 'agent_two'].map((id) => ({ ...releaseAgent, id, name: id }));
-  const harness = runAdminPageHarness({ agents, proposalStatusFetch: () => {
-    reads++;
-    return new Promise((done) => { resolve = done; });
-  } });
-  await flushAsync();
-  const click = (action: string, id?: string) => harness.listeners.click!({ target: actionTarget({ 'data-action': action, ...(id ? { 'data-agent': id } : {}) }) });
-  click('edit-profile', 'agent_one');
-  await flushAsync();
-  assert.equal(reads, 0);
-  assert.match(harness.app.innerHTML, /<summary>Slack update proposal details<\/summary>/);
-  click('refresh-proposal-status');
-  assert.equal(reads, 1);
-  const instructions = '<script>unsafe</script>\n' + 'Full frozen value. '.repeat(800);
-  const data = { agentId: 'agent_one', requester: { userId: 'internal_owner', membershipId: 'member_owner', slackUserId: 'U_OWNER' }, proposals: [{
-    proposalId: 'proposal_one', actorUserId: 'internal_owner', actorMembershipId: 'member_owner',
-    originKey: 'slack:T_TEST:C_UPDATE:1800000000.000100:agent:agent_one',
-    approvalScopeKey: 'slack:T_TEST:C_UPDATE:1800000000.000100:agent:agent_one', status: 'completed',
-    digest: 'digest', targetRevision: 7, operationCount: 1, createdAt: 1, updatedAt: 3,
-    approval: { workspaceId: 'T_TEST', channelId: 'C_UPDATE', threadTs: '1800000000.000100',
-      requesterUserId: 'U_OWNER', requesterMembershipId: 'member_owner', actingAgentId: 'agent_chickpea',
-      turns: [{ turnJobId: 'turn_one', runId: 'run_one', messageTs: '1800000001.000200', status: 'done', delivered: true,
-        activity: { surface: 'assistant_status', state: 'cleared', cleanup: 'required', lifecycle: 'settled', sessionGeneration: 1800000001000200 },
-        secret: 'NEVER_DISPLAY_TURN' }] },
-    updates: [{ itemId: 'update', kind: 'update_agent', agentId: 'agent_one', expectedRevision: 7, fields: ['description', 'instructions'], instructions, description: 'Frozen description' }],
-    result: { status: 'completed', outcomes: [{ itemId: 'update', disposition: 'applied', changed: [{ kind: 'agent', id: 'agent_one', revision: 8 }], setupUrl: 'NEVER_DISPLAY_SETUP' }] },
-    secret: 'NEVER_DISPLAY_RAW_PROPOSAL',
-  }] };
-  resolve(jsonResponse(data));
-  await flushAsync();
-  assert.match(harness.app.innerHTML, /Requester Slack user ID[^]*U_OWNER/);
-  assert.match(harness.app.innerHTML, /Operation kind[^]*>update_agent</);
-  assert.match(harness.app.innerHTML, /Target Agent ID[^]*>agent_one</);
-  assert.match(harness.app.innerHTML, /Target revision[^]*>7</);
-  assert.match(harness.app.innerHTML, /Resulting Agent revision[^]*>8</);
-  assert.match(harness.app.innerHTML, /Retained approval turns[^]*>1</);
-  assert.match(harness.app.innerHTML, /Approval message timestamp[^]*>1800000001.000200</);
-  assert.match(harness.app.innerHTML, /Approval activity state[^]*>cleared</);
-  assert.match(harness.app.innerHTML, /Approval run lifecycle[^]*>settled</);
-  assert.ok(harness.app.innerHTML.includes(instructions.replaceAll('<', '&lt;').replaceAll('>', '&gt;')));
-  assert.doesNotMatch(harness.app.innerHTML, /<script>unsafe|NEVER_DISPLAY/);
-  click('edit-profile', 'agent_two');
-  click('edit-profile', 'agent_one');
-  await flushAsync();
-  assert.doesNotMatch(harness.app.innerHTML, /proposal_one|Full frozen value/);
-  assert.match(harness.app.innerHTML, /<details class="scheduled-technical"><summary>Slack update proposal details/);
-  click('refresh-proposal-status');
-  click('edit-profile', 'agent_two');
-  resolve(jsonResponse(data));
-  await flushAsync();
-  assert.doesNotMatch(harness.app.innerHTML, /proposal_one|Full frozen value/);
-  click('refresh-proposal-status');
-  resolve(jsonResponse({ error: 'forbidden' }, 403));
-  await flushAsync();
-  assert.match(harness.app.innerHTML, /Slack update proposal details unavailable/);
-  assert.doesNotMatch(harness.app.innerHTML, /Requester Slack user ID/);
+  assert.match(harness.app.innerHTML, /Agent configuration/);
+  assert.doesNotMatch(harness.app.innerHTML, /Saved Agent details|Creation delivery details|Slack update proposal details|Saved revision|Slack user group ID/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="refresh-(creation|proposal)-status"/);
+  assert.equal(diagnosticReads, 0);
 });
 
 test('the profile editor presents reversible archive semantics for an assigned Agent', async () => {
@@ -6827,7 +6723,7 @@ test('Agent connections expose Agent-owned Team and personal accounts with manag
   assert.match(page, /\/oauth\/api\/start/);
 });
 
-test('saved connection details use a closed identity and revision allowlist', async () => {
+test('connection cards omit diagnostic records while retaining the account label', async () => {
   const account = { id: 'connection_exact', revision: 4, workspaceId: 'T_DESIGN', ownerKind: 'member',
     ownerMembershipId: 'membership_exact', createdByMembershipId: 'membership_creator', providerId: 'google',
     label: 'Google Sheets', lifecycle: 'ready', credential: 'never-show-credential',
@@ -6840,13 +6736,9 @@ test('saved connection details use a closed identity and revision allowlist', as
   await flushAsync();
   harness.listeners.click!({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
-  const details = harness.app.innerHTML.split('<summary>Troubleshooting details</summary>')[1]?.split('</details>')[0];
-  assert.ok(details);
-  assert.match(details, /Connection ID[^]*connection_exact/);
-  assert.match(details, /Saved revision[^]*>4</);
-  assert.match(details, /Ownership[^]*Personal/);
-  assert.match(details, /Bound Agent ID[^]*agent_conn/);
-  assert.doesNotMatch(details, /ca_exact|never-show-credential|never-show-access|accessToken/);
+  assert.match(harness.app.innerHTML, /Google Sheets/);
+  assert.doesNotMatch(harness.app.innerHTML, /Troubleshooting details|Connection ID|Saved revision|Owner membership|Created by membership|Bound Agent ID|Binding enabled/);
+  assert.doesNotMatch(harness.app.innerHTML, /never-show-credential|never-show-access/);
 });
 
 test('connection accounts use the compact prototype states without provider implementation details', async () => {

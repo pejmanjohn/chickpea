@@ -1224,13 +1224,14 @@ export function useRuntimePlanAgent(
       useSkill(skill);
     }
   }
-  if (!options.toolsDisabled && !plan.actorMembershipId) {
+  if (!options.toolsDisabled) {
     for (const connection of resolveRuntimePlanMcpConnections(
       plan.agentId,
       plan.mcpConnections,
       () => {
         publishActivityStatus(id, connectingActivityStatus('a connected service'));
       },
+      plan.actorMembershipId ? { workspaceId: plan.conversation.workspaceId, actorMembershipId: plan.actorMembershipId } : undefined,
     )) {
       useMcpConnection(connection);
     }
