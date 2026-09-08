@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "generatedAt": "2026-07-29T00:00:00.000Z",
+  "entries": [
+    {
+      "canonical": "openai/gpt-5.6-sol",
+      "displayName": "GPT-5.6 Sol",
+      "lanes": {
+        "subscription": "openai-codex-responses-standard@1",
+        "apiKey": "openai-platform-responses-sol-tier@1"
+      }
+    },
+    {
+      "canonical": "openai/gpt-5.6-terra",
+      "displayName": "GPT-5.6 Terra",
+      "lanes": {
+        "subscription": "openai-codex-responses-standard@1",
+        "apiKey": "openai-platform-responses-terra-tier@1"
+      }
+    },
+    {
+      "canonical": "openai/gpt-5.6-luna",
+      "displayName": "GPT-5.6 Luna",
+      "lanes": {
+        "subscription": "openai-codex-responses-standard@1",
+        "apiKey": "openai-platform-responses-luna-tier@1"
+      }
+    },
+    {
+      "canonical": "openai/gpt-5.5",
+      "displayName": "GPT-5.5",
+      "lanes": {
+        "subscription": "openai-codex-responses-standard@1"
+      }
+    },
+    {
+      "canonical": "openai/gpt-5.4",
+      "displayName": "GPT-5.4",
+      "lanes": {
+        "subscription": "openai-codex-responses-standard@1"
+      }
+    },
+    {
+      "canonical": "openai/gpt-5.4-mini",
+      "displayName": "GPT-5.4 mini",
+      "lanes": {
+        "subscription": "openai-codex-responses-standard@1"
+      }
+    },
+    {
+      "canonical": "openai/gpt-5.3-codex-spark",
+      "displayName": "GPT-5.3 Codex Spark",
+      "lanes": {
+        "subscription": "openai-codex-responses-text-only@1"
+      },
+      "contextWindow": 128000
+    },
+    {
+      "canonical": "anthropic/claude-opus-5",
+      "displayName": "Claude Opus 5",
+      "lanes": {
+        "apiKey": "anthropic-messages-opus-tier@1"
+      }
+    },
+    {
+      "canonical": "anthropic/claude-sonnet-5",
+      "displayName": "Claude Sonnet 5",
+      "lanes": {
+        "apiKey": "anthropic-messages-sonnet-tier@1"
+      }
+    }
+  ]
+}

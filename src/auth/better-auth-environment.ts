@@ -1,0 +1,98 @@
+import {
+  isCloudflareTarget,
+  type PlatformEnv,
+} from '../config/state-backend.ts';
+import type { AuthControl } from '../identity/types.ts';
+import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
+import {
+  D1BetterAuthBackend,
+  type CloudflareBetterAuthEnv,
+} from './better-auth-cloudflare.ts';
+import { getNodeBetterAuthBackend } from './better-auth-node.ts';
+import { decodeRecoverySecret } from './recovery-secret.ts';
+
+export interface BetterAuthEnvironment {
+  backend: BetterAuthDatabaseBackend;
+  baseURL: string;
+  secret: string;
+  cloudflareEnv?: CloudflareBetterAuthEnv;
+}
+
+interface ResolveBetterAuthEnvironmentInput {
+  control: AuthControl;
+  platformEnv?: PlatformEnv | undefined;
+  /** Operational recovery is independent and never signs Better Auth sessions. */
+  recoveryToken?: string | undefined;
+  authSecret?: string | undefined;
+}
+
+interface ResolveBetterAuthBootstrapEnvironmentInput {
+  canonicalOrigin: string;
+  platformEnv?: PlatformEnv | undefined;
+  /** Accepted for call-site symmetry; never used as Better Auth key material. */
+  recoveryToken?: string | undefined;
+  authSecret?: string | undefined;
+}
+
+export async function resolveBetterAuthEnvironment(
+  input: ResolveBetterAuthEnvironmentInput,
+): Promise<BetterAuthEnvironment | undefined> {
+  if (input.control.authMode !== 'slack_active' ||
+      input.control.healthGate !== 'normal' ||
+      !input.control.canonicalAdminOrigin ||
+      !input.control.betterAuthOrganizationId) return undefined;
+  return resolveBetterAuthBootstrapEnvironment({
+    canonicalOrigin: input.control.canonicalAdminOrigin,
+    platformEnv: input.platformEnv,
+    authSecret: input.authSecret,
+  });
+}
+
+export async function resolveBetterAuthBootstrapEnvironment(
+  input: ResolveBetterAuthBootstrapEnvironmentInput,
+): Promise<BetterAuthEnvironment | undefined> {
+  const stableSecret = input.authSecret ?? authSecret(input.platformEnv);
+  if (!stableSecret) return undefined;
+
+  if (isCloudflareTarget()) {
+    const cloudflareEnv = cloudflareAuthEnv(input.platformEnv);
+    if (!cloudflareEnv) return undefined;
+    return {
+      backend: new D1BetterAuthBackend(cloudflareEnv.AUTH_DB),
+      baseURL: input.canonicalOrigin,
+      secret: stableSecret,
+      cloudflareEnv,
+    };
+  }
+
+  return {
+    backend: getNodeBetterAuthBackend(),
+    baseURL: input.canonicalOrigin,
+    secret: stableSecret,
+  };
+}
+
+function authSecret(env: PlatformEnv | undefined): string | undefined {
+  const bound = env?.CHICKPEA_AUTH_SECRET;
+  if (typeof bound === 'string' && bound) return validStableAuthSecret(bound);
+  const local = process.env.CHICKPEA_AUTH_SECRET;
+  return local ? validStableAuthSecret(local) : undefined;
+}
+
+function validStableAuthSecret(value: string): string {
+  try {
+    decodeRecoverySecret(value);
+  } catch {
+    throw new Error('CHICKPEA_AUTH_SECRET must encode exactly 32 random bytes.');
+  }
+  return value;
+}
+
+function cloudflareAuthEnv(env: PlatformEnv | undefined): CloudflareBetterAuthEnv | undefined {
+  if (!env) return undefined;
+  const authDb = env.AUTH_DB as { prepare?: unknown } | undefined;
+  if (typeof authDb?.prepare !== 'function') {
+    return undefined;
+  }
+  return env as unknown as CloudflareBetterAuthEnv;
+}

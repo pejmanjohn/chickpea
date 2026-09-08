@@ -1,0 +1,143 @@
+import assert from 'node:assert/strict';
+import { routineNextRunTime } from '../src/routines/message-format.ts';
+import test from 'node:test';
+
+import {
+  scheduleActionToolResult,
+  scheduleToolOperation,
+  type SlackManagementSignal,
+} from '../src/management/slack-tools.ts';
+
+const signal: SlackManagementSignal = {
+  agentId: 'agent_sprout_tool',
+  workspaceId: 'T_SLACK_TOOL',
+  channelId: 'D_SLACK_TOOL',
+  conversationKind: 'im',
+  threadTs: '1787883924.314659',
+  slackUserId: 'U_SLACK_TOOL',
+  eventId: 'Ev_SLACK_TOOL',
+  messageTs: '1787883925.000100',
+  turnJobId: 'turn_SLACK_TOOL',
+};
+
+test('natural five-minute follow-up arguments become fresh private thread work', () => {
+  assert.deepEqual(scheduleToolOperation(signal, {
+    action: 'create',
+    name: 'Inbox follow-up',
+    description: 'Check the inbox again after five minutes.',
+    taskText: 'Check this again in 5 minutes and tell me anything new.',
+    scheduleKind: 'in',
+    minutes: 5,
+    timezone: 'America/Los_Angeles',
+    outputPolicy: 'post_on_change',
+  }), {
+    itemId: 'schedule',
+    kind: 'save_routine',
+    agentId: signal.agentId,
+    workspaceId: signal.workspaceId,
+    destination: { kind: 'current_dm_thread' },
+    name: 'Inbox follow-up',
+    description: 'Check the inbox again after five minutes.',
+    taskText: 'Check this again in 5 minutes and tell me anything new.',
+    schedule: { kind: 'in', minutes: 5 },
+    timezone: 'America/Los_Angeles',
+    outputPolicy: 'post_on_change',
+  });
+});
+
+test('recurring and run-now arguments use the same first-class schedule action', () => {
+  const channelSignal = {
+    ...signal,
+    channelId: 'C_SLACK_TOOL',
+    conversationKind: 'channel' as const,
+  };
+  assert.deepEqual(scheduleToolOperation(channelSignal, {
+    action: 'create',
+    name: 'Daily inbox check',
+    description: 'Check each morning.',
+    taskText: 'Report new inbox items.',
+    scheduleKind: 'cron',
+    cronExpression: '0 9 * * *',
+    timezone: 'America/Los_Angeles',
+    outputPolicy: 'post',
+  }), {
+    itemId: 'schedule',
+    kind: 'save_routine',
+    agentId: signal.agentId,
+    workspaceId: signal.workspaceId,
+    channelId: channelSignal.channelId,
+    name: 'Daily inbox check',
+    description: 'Check each morning.',
+    taskText: 'Report new inbox items.',
+    schedule: { kind: 'cron', expression: '0 9 * * *' },
+    timezone: 'America/Los_Angeles',
+    outputPolicy: 'post',
+  });
+  assert.deepEqual(scheduleToolOperation(signal, {
+    action: 'run',
+    routineId: 'routine_slack_tool',
+  }), {
+    itemId: 'schedule',
+    kind: 'run_routine',
+    workspaceId: signal.workspaceId,
+    routineId: 'routine_slack_tool',
+  });
+});
+
+test('schedule tools provide host-formatted UTC and local due times without model arithmetic', () => {
+  const instant = 1788596100000;
+  assert.deepEqual(routineNextRunTime(instant, 'UTC'), {
+    isoUtc: '2026-09-05T08:15:00.000Z', local: '2026-09-05 08:15:00 UTC', timezone: 'UTC',
+  });
+  assert.equal(routineNextRunTime(instant, 'America/Los_Angeles')?.local,
+    '2026-09-05 01:15:00 America/Los_Angeles');
+  assert.equal(routineNextRunTime(Date.UTC(2026, 8, 5), 'UTC')?.local, '2026-09-05 00:00:00 UTC');
+  assert.equal(routineNextRunTime(null, 'UTC'), null);
+  const nextRunTime = routineNextRunTime(instant, 'UTC');
+  const result = scheduleActionToolResult({ outcome: 'applied', effect: 'saved', routineId: 'routine_time', nextRunTime });
+  assert.deepEqual(result.nextRunTime, nextRunTime);
+  assert.match(String(result.timeInstruction), /Quote nextRunTime.local or nextRunTime.isoUtc exactly/);
+});
+
+test('an applied action in a non-active safe state says it will not run', () => {
+  assert.deepEqual(scheduleActionToolResult({
+    outcome: 'applied',
+    effect: 'saved',
+    routineId: 'routine_active_tool',
+    routineVersion: 1,
+    safeState: 'active',
+  }), {
+    outcome: 'applied',
+    effect: 'saved',
+    routineId: 'routine_active_tool',
+    routineVersion: 1,
+    instruction: 'The action is complete. Do not ask for approval or invoke another scheduling tool. In a DM, the requesting message receives a checkmark reaction; in a Channel, acknowledge the result in your reply.',
+  });
+  assert.deepEqual(scheduleActionToolResult({
+    outcome: 'applied',
+    effect: 'saved',
+    routineId: 'routine_paused_tool',
+    routineVersion: 2,
+    safeState: 'paused',
+  }), {
+    outcome: 'applied',
+    effect: 'saved',
+    routineId: 'routine_paused_tool',
+    routineVersion: 2,
+    safeState: 'paused',
+    instruction: 'The action is complete, but the scheduled work is paused and will not run. Do not ask for approval or invoke another scheduling tool. In a DM, the requesting message receives a checkmark reaction; in a Channel, explicitly state this non-active result in your reply.',
+  });
+});
+
+test('saved Channel acknowledgements identify the actual delivery destination', () => {
+  for (const [deliveryDestination, expected] of [
+    ['channel', /new messages in this channel/],
+    ['channel_thread', /saved request thread/],
+  ] as const) {
+    const result = scheduleActionToolResult({
+      outcome: 'applied', effect: 'saved', routineId: 'routine_destination', deliveryDestination,
+    });
+    assert.equal(result.deliveryDestination, deliveryDestination);
+    assert.match(String(result.instruction), expected);
+  }
+});

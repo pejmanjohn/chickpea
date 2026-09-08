@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "chickpea-live-target/v1",
+  "targetAlias": "amber",
+  "transport": "gateway",
+  "workspaceAlias": "qa-workspace",
+  "slackAppAlias": "qa-slack-app",
+  "workerAlias": "qa-worker",
+  "providerProjectAlias": "qa-provider-project",
+  "evidenceRootAlias": "private-evidence-root",
+  "allowedSuites": [
+    "case",
+    "smoke"
+  ],
+  "allowedVariants": [
+    "LC01-V1-create-welcome",
+    "LC01-V2-update-approve",
+    "LC04-V1-personal-read",
+    "LC08-V1-create-due"
+  ],
+  "fixtures": {
+    "qa-owner": {
+      "kind": "actor",
+      "resourceAlias": "owner-browser-profile"
+    },
+    "qa-member-one": {
+      "kind": "actor",
+      "resourceAlias": "member-one-browser-profile"
+    },
+    "qa-channel": {
+      "kind": "slack_channel",
+      "resourceAlias": "acceptance-channel"
+    },
+    "qa-agent": {
+      "kind": "agent",
+      "resourceAlias": "foundation-agent"
+    },
+    "qa-connector-agent": {
+      "kind": "agent",
+      "resourceAlias": "empty-connector-test-agent"
+    },
+    "synthetic-provider": {
+      "kind": "provider_account",
+      "resourceAlias": "synthetic-provider-account"
+    }
+  },
+  "bindings": {
+    "LC01-V1-create-welcome": {
+      "fixtures": {
+        "owner": "qa-owner",
+        "channel": "qa-channel"
+      }
+    },
+    "LC01-V2-update-approve": {
+      "fixtures": {
+        "owner": "qa-owner",
+        "agent": "qa-agent"
+      }
+    },
+    "LC04-V1-personal-read": {
+      "fixtures": {
+        "member": "qa-member-one",
+        "provider": "synthetic-provider",
+        "agent": "qa-connector-agent"
+      }
+    },
+    "LC08-V1-create-due": {
+      "fixtures": {
+        "member": "qa-member-one",
+        "channel": "qa-channel",
+        "agent": "qa-agent"
+      }
+    }
+  }
+}

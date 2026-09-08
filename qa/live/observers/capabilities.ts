@@ -1,0 +1,255 @@
+import {
+  ASSERTION_TOKENS,
+  type AssertionToken,
+  type LiveManifest,
+  type ObserverId,
+} from '../schema.ts';
+
+export type CapabilityStatus = 'present' | 'blocked';
+export type MinimumObserverAuthority =
+  | 'admin_read'
+  | 'cloudflare_deployments_read'
+  | 'provider_account_read'
+  | 'slack_app_home_read'
+  | 'slack_history_read'
+  | 'computer_use_visible'
+  | 'none';
+
+export interface ObserverCapability {
+  observerId: ObserverId;
+  status: CapabilityStatus;
+  source: 'chickpea_admin' | 'cloudflare_control_plane' | 'provider_api' | 'slack_api' | 'computer_use_ui' | 'none';
+  minimumAuthority: MinimumObserverAuthority;
+  allowedTokens: readonly AssertionToken[];
+  reason?: 'non_authoritative_context_only' | 'authoritative_projection_missing';
+}
+
+export const CAPABILITY_INVENTORY: Readonly<Record<ObserverId, ObserverCapability>> = Object.freeze({
+  'agent.read': capability('agent.read', 'computer_use_ui', 'computer_use_visible', [
+    'agent.exists', 'agent.instructions_equal', 'forbidden.no_early_mutation',
+  ]),
+  'connection.read': capability('connection.read', 'computer_use_ui', 'computer_use_visible', [
+    'connection.owner_personal', 'connection.owner_team', 'connection.editor_attributed',
+    'connection.agent_isolated', 'connection.needs_attention', 'connection.reconnected',
+    'forbidden.no_cross_agent_reuse', 'forbidden.no_duplicate',
+  ]),
+  'routine.read': capability('routine.read', 'computer_use_ui', 'computer_use_visible', [
+    'routine.exists', 'routine.paused', 'routine.active', 'routine.run_once',
+    'routine.dependency_paused', 'routine.admin_omitted', 'forbidden.no_duplicate',
+  ]),
+  'slack.messages.read': capability('slack.messages.read', 'computer_use_ui', 'computer_use_visible', [
+    'slack.message_matches', 'routine.due_delivery', 'routine.private_delivery',
+    'skill.behavior_matches', 'forbidden.no_duplicate',
+  ]),
+  'app_home.read': capability('app_home.read', 'computer_use_ui', 'computer_use_visible', [
+    'slack.message_matches', 'forbidden.no_duplicate',
+  ]),
+  'provider.read': capability('provider.read', 'computer_use_ui', 'computer_use_visible', [
+    'forbidden.no_duplicate', 'forbidden.no_cross_agent_reuse',
+  ]),
+  'provider.revocation.read': blockedCapability('provider.revocation.read', [
+    'connection.needs_attention',
+  ]),
+  'private.routine.read': blockedCapability('private.routine.read', [
+    'routine.private_exists', 'routine.authority_disabled',
+  ]),
+  'cloudflare.version.read': capability(
+    'cloudflare.version.read',
+    'cloudflare_control_plane',
+    'cloudflare_deployments_read',
+    [],
+  ),
+  'browser.screenshot': {
+    observerId: 'browser.screenshot',
+    status: 'blocked',
+    source: 'none',
+    minimumAuthority: 'none',
+    allowedTokens: [],
+    reason: 'non_authoritative_context_only',
+  },
+  'agent.avatar.read': blockedCapability('agent.avatar.read', [
+    'avatar.presentation_parity',
+  ]),
+  'slack.persona.read': blockedCapability('slack.persona.read', [
+    'avatar.presentation_parity', 'slack.persona_matches',
+  ]),
+  'asset.digest.read': blockedCapability('asset.digest.read', [
+    'avatar.source_digest_parity',
+  ]),
+  'route.read': blockedCapability('route.read', [
+    'route.ingress_admitted', 'route.owner_exact', 'route.app_home_selected',
+    'forbidden.no_unauthorized_mutation',
+  ]),
+  'skill.read': blockedCapability('skill.read', [
+    'skill.provenance_pinned', 'skill.enabled', 'skill.removed',
+    'skill.behavior_matches', 'forbidden.no_unauthorized_mutation',
+  ]),
+  'memory.read': blockedCapability('memory.read', [
+    'memory.digest_equal', 'memory.revision_advanced', 'memory.conflict_rejected',
+    'memory.forgotten', 'forbidden.no_unauthorized_mutation', 'forbidden.no_raw_memory',
+  ]),
+  'installation.read': blockedCapability('installation.read', [
+    'installation.authorized', 'installation.baseline_restored',
+    'forbidden.no_unauthorized_mutation',
+  ]),
+  'app_home.publication.read': blockedCapability('app_home.publication.read', [
+    'app_home.published',
+  ]),
+});
+
+/** LC-02 remains deliberately blocked until an authoritative source projection exists. */
+export const LC02_AVATAR_SOURCE_CAPABILITY = Object.freeze({
+  contractId: 'LC-02' as const,
+  fact: 'avatar_source_identity' as const,
+  status: 'blocked' as const,
+  reason: 'authoritative_projection_missing' as const,
+});
+
+export interface CapabilityResolution {
+  variantId: string;
+  token: AssertionToken;
+  observerId: ObserverId;
+  status: CapabilityStatus;
+  reason?: 'capability_blocked' | 'token_not_supported';
+}
+
+export function inventoryManifestCapabilities(manifest: LiveManifest): {
+  resolved: CapabilityResolution[];
+  blocked: CapabilityResolution[];
+} {
+  const entries = manifest.contracts.flatMap((contract) => contract.variants.flatMap((variant) =>
+    [...variant.expected, ...variant.forbidden].map((assertion): CapabilityResolution => {
+      const capability = CAPABILITY_INVENTORY[assertion.observerId];
+      if (capability.status === 'blocked') {
+        return { ...assertion, variantId: variant.id, status: 'blocked', reason: 'capability_blocked' };
+      }
+      if (!capability.allowedTokens.includes(assertion.token)) {
+        return { ...assertion, variantId: variant.id, status: 'blocked', reason: 'token_not_supported' };
+      }
+      return { ...assertion, variantId: variant.id, status: 'present' };
+    })
+  ));
+  return {
+    resolved: entries.filter((entry) => entry.status === 'present'),
+    blocked: entries.filter((entry) => entry.status === 'blocked'),
+  };
+}
+
+export type ObservationStatus = 'observed' | 'blocked' | 'rate_limited' | 'unavailable';
+export type ObserverMetadataKey =
+  | 'attempts'
+  | 'count'
+  | 'deadlineMs'
+  | 'generation'
+  | 'identityMatch'
+  | 'phase'
+  | 'retryAfterSeconds'
+  | 'revision'
+  | 'state'
+  | 'versionId';
+export type ObserverMetadata = Partial<Record<ObserverMetadataKey, string | number | boolean | null>>;
+
+export interface ClosedObservation {
+  observerId: ObserverId;
+  status: ObservationStatus;
+  tokens: AssertionToken[];
+  metadata: ObserverMetadata;
+}
+
+export class ObserverOutputError extends Error {
+  constructor() {
+    super('INVALID_OBSERVER_OUTPUT');
+    this.name = 'ObserverOutputError';
+  }
+}
+
+export function closedObservation(input: ClosedObservation): ClosedObservation {
+  const capability = CAPABILITY_INVENTORY[input.observerId];
+  if (capability.status === 'blocked' && input.status === 'observed') throw new ObserverOutputError();
+  if (!Array.isArray(input.tokens)
+    || input.tokens.some((token) => !(ASSERTION_TOKENS as readonly string[]).includes(token)
+      || !capability.allowedTokens.includes(token))
+    || new Set(input.tokens).size !== input.tokens.length
+    || !validMetadata(input.metadata)) {
+    throw new ObserverOutputError();
+  }
+  return Object.freeze({
+    observerId: input.observerId,
+    status: input.status,
+    tokens: [...input.tokens],
+    metadata: Object.freeze({ ...input.metadata }),
+  });
+}
+
+export function blockedObservation(observerId: ObserverId): ClosedObservation {
+  return closedObservation({ observerId, status: 'blocked', tokens: [], metadata: {} });
+}
+
+export function observerRecord(input: unknown): input is Record<string, unknown> {
+  return input !== null && typeof input === 'object' && !Array.isArray(input);
+}
+
+export function hasOnlyObserverKeys(input: object, allowed: readonly string[]): boolean {
+  const accepted = new Set(allowed);
+  return Object.keys(input).every((key) => accepted.has(key));
+}
+
+export function hasExactObserverKeys(input: object, expected: readonly string[]): boolean {
+  const keys = Object.keys(input).sort();
+  const wanted = [...expected].sort();
+  return keys.length === wanted.length && keys.every((key, index) => key === wanted[index]);
+}
+
+export function boundedObserverString(input: unknown, maximum = 128): input is string {
+  return typeof input === 'string' && input.length > 0 && input.length <= maximum;
+}
+
+export function nonNegativeObserverInteger(input: unknown): input is number {
+  return Number.isSafeInteger(input) && Number(input) >= 0;
+}
+
+export function validObserverDeadline(input: unknown, maximum: number): input is number {
+  return Number.isSafeInteger(input) && Number(input) > 0 && Number(input) <= maximum;
+}
+
+function capability(
+  observerId: ObserverId,
+  source: ObserverCapability['source'],
+  minimumAuthority: MinimumObserverAuthority,
+  allowedTokens: readonly AssertionToken[],
+): ObserverCapability {
+  return { observerId, status: 'present', source, minimumAuthority, allowedTokens };
+}
+
+function blockedCapability(
+  observerId: ObserverId,
+  allowedTokens: readonly AssertionToken[],
+): ObserverCapability {
+  return {
+    observerId,
+    status: 'blocked',
+    source: 'none',
+    minimumAuthority: 'none',
+    allowedTokens,
+    reason: 'authoritative_projection_missing',
+  };
+}
+
+function validMetadata(metadata: ObserverMetadata): boolean {
+  if (!isRecord(metadata)) return false;
+  return Object.entries(metadata).every(([key, value]) => {
+    if (['attempts', 'count', 'deadlineMs', 'generation', 'retryAfterSeconds'].includes(key)) {
+      return Number.isSafeInteger(value) && Number(value) >= 0;
+    }
+    if (key === 'identityMatch') return typeof value === 'boolean';
+    if (key === 'revision' || key === 'versionId') {
+      return value === null || (typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value));
+    }
+    if (key === 'phase' || key === 'state') {
+      return typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/u.test(value);
+    }
+    return false;
+  });
+}
+
+const isRecord = observerRecord;

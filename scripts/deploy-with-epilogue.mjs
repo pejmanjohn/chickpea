@@ -1,0 +1,1409 @@
+#!/usr/bin/env node
+/**
+ * `npm run deploy` — build the current source, run wrangler deploy, then print
+ * a next-steps epilogue. Pass `--skip-build` only when a caller has just run
+ * `npm run build` and wants to reuse that exact artifact.
+ *
+ * Workers Builds streams the build and deploy steps into one log that ends,
+ * without this, at wrangler's own output: a raw workers.dev URL and no hint
+ * that /admin is the next stop. Wrangler 4.x has no command that reports the
+ * account's workers.dev subdomain, but `wrangler deploy` prints the deployed
+ * URL on success — so tee its stdout, grep the URL, and append instructions.
+ *
+ * The epilogue is additive: wrangler's output passes through untouched, a
+ * non-zero exit propagates unchanged with no epilogue (never dress up a
+ * failed deploy), and stdout is scanned line-by-line rather than buffered.
+ */
+import { spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import path from 'node:path';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+import { hasScheduledComposition } from './worker-artifact.mjs';
+import { wranglerInspector, deploymentFingerprint } from './lib/inspect-deployment.mjs';
+import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from './lib/auth-schema.mjs';
+import { validateInstallation, validateTarget, assertSameInstallation, overlayInstallation } from './lib/upgrade-installation.mjs';
+import { readPrivateJson, writePrivateJson, writeDeploymentEvent } from './lib/upgrade-receipt.mjs';
+
+import {
+  classifyCloudflareDeploymentProfile,
+  formatCloudflareDeploymentTargetTuple,
+  readCloudflareDeploymentTargetTuple,
+  resolveCloudflareDeploymentProfile,
+} from './cloudflare-deployment-profile.mjs';
+import {
+  mintSetupCapability,
+  SETUP_CAPABILITY_DIGEST_BINDING,
+  SETUP_CAPABILITY_ISSUED_AT_BINDING,
+  setupCapabilityUrl,
+} from '../src/auth/setup-capability.mjs';
+import {
+  DEPLOYMENT_ACTIVATION_DIGEST_BINDING,
+  DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING,
+  mintDeploymentActivation,
+} from '../src/auth/deployment-activation.mjs';
+
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Invoke wrangler's bin with the current node (mirrors flue-build-cf.mjs):
+// works whether or not node_modules/.bin is on PATH.
+const wranglerBin = path.join(projectRoot, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
+const cliArgs = process.argv.slice(2);
+const deployArgs = cliArgs.filter((arg) => !['--skip-build', '--preflight-only'].includes(arg));
+const skipBuild = cliArgs.includes('--skip-build');
+const preflightOnly = cliArgs.includes('--preflight-only');
+// A QA checkout must never fall through to the ordinary production target.
+// This is a selection check, not claim authority; the environment preflight
+// below still validates the actual lease, source, and immutable identities.
+//
+// `CHICKPEA_DEPLOY_TARGET=production` names the ordinary wrangler.jsonc Worker
+// on purpose. It is consumed here so the build profile, which knows only the
+// claimed lanes, still sees an unset target for that deploy.
+const PRODUCTION_DEPLOY_TARGET = 'production';
+// Mirrors defaultEnvironmentRoot() in scripts/lib/environment-registry.mjs;
+// inlined so the ordinary production deploy still loads no lane module.
+const claimedLaneRegistryRoot = process.env.CHICKPEA_ENVIRONMENT_ROOT?.trim()
+  || path.join(homedir(), '.chickpea', 'environments');
+const explicitProductionTarget = process.env.CHICKPEA_DEPLOY_TARGET?.trim() === PRODUCTION_DEPLOY_TARGET;
+if (explicitProductionTarget) delete process.env.CHICKPEA_DEPLOY_TARGET;
+const requestedDeploymentTarget = process.env.CHICKPEA_DEPLOY_TARGET?.trim();
+try {
+  const markerPath = path.join(projectRoot, '.chickpea-environment');
+  let markerStat;
+  try { markerStat = lstatSync(markerPath); } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (markerStat) {
+    if (!markerStat.isFile() || markerStat.isSymbolicLink()) {
+      throw new Error('QA claim marker is not a regular file. Refusing deployment.');
+    }
+    let marker;
+    try { marker = JSON.parse(readFileSync(markerPath, 'utf8')); } catch {
+      throw new Error('QA claim marker is unreadable. Refusing deployment.');
+    }
+    if (marker?.schemaVersion !== 'chickpea-environment-claim/v1'
+      || !['amber', 'cobalt'].includes(marker.target)) {
+      throw new Error('QA claim marker is invalid. Refusing deployment.');
+    }
+    if (requestedDeploymentTarget !== marker.target) {
+      throw new Error(`This worktree claims ${marker.target}. Set CHICKPEA_DEPLOY_TARGET=${marker.target}; refusing an unspecified or different target.`);
+    }
+  }
+  if (!requestedDeploymentTarget && (process.env.CHICKPEA_LOCAL_LANE
+    || existsSync(path.join(projectRoot, '.chickpea-local-worker')))) {
+    throw new Error('This checkout owns a local Worker lane. Select an explicitly claimed QA deployment target; the default production deployment is refused.');
+  }
+  // A machine that operates claimed QA lanes keeps a registry under
+  // ~/.chickpea/environments. On such a machine an unnamed deploy is far more
+  // often a checkout that forgot its lane than a deliberate production push,
+  // so the ordinary Worker must be named explicitly. Self-hosters, Workers
+  // Builds, and non-mutating dry runs have no registry and are unaffected.
+  const mutatingDeploy = !deployArgs.includes('--dry-run') && !preflightOnly;
+  if (!requestedDeploymentTarget && !explicitProductionTarget && mutatingDeploy
+    && process.env.WORKERS_CI !== '1' && existsSync(claimedLaneRegistryRoot)) {
+    throw new Error(
+      'This machine operates claimed QA lanes, so an unnamed deploy is refused. ' +
+      'Set CHICKPEA_DEPLOY_TARGET=amber or cobalt for a claimed lane, or ' +
+      `CHICKPEA_DEPLOY_TARGET=${PRODUCTION_DEPLOY_TARGET} to deploy the ordinary wrangler.jsonc Worker on purpose.`,
+    );
+  }
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+// Workers Builds runs its configured build command immediately before its
+// configured deploy command in the same build workspace. Reuse that exact
+// artifact, but only when both Workers-specific markers are present; local
+// deploys and generic CI retain the build-before-deploy safety boundary.
+const reuseWorkersBuildArtifact =
+  process.env.WORKERS_CI === '1' &&
+  typeof process.env.WORKERS_CI_BUILD_UUID === 'string' &&
+  process.env.WORKERS_CI_BUILD_UUID.trim().length > 0;
+let deploymentProfile;
+try {
+  // Resolve once so build, preflight, D1 setup, and deploy cannot disagree if
+  // a caller mutates process.env later in this process.
+  deploymentProfile = resolveCloudflareDeploymentProfile();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
+const BETA_FLUE_CLASSES = Object.freeze([
+  'FlueRegistry',
+  'FlueSlackThreadAgent',
+  'FlueRoutineIntentAgent',
+  'FlueRoutineWorkflow',
+]);
+const RETIRED_AUTH_CLASSES = Object.freeze(['AuthGuard']);
+const EXPECTED_DELETED_CLASSES = Object.freeze([
+  ...BETA_FLUE_CLASSES,
+  ...RETIRED_AUTH_CLASSES,
+]);
+const V2_AGENT_CLASSES = Object.freeze([
+  'FlueChickpeaSlackV2Agent',
+  'FlueChickpeaRoutineIntentV2Agent',
+  'FlueChickpeaRoutineExecutionV2Agent',
+]);
+const V2_AGENT_BINDINGS = Object.freeze([
+  ['FLUE_CHICKPEA_SLACK_V2_AGENT', 'FlueChickpeaSlackV2Agent'],
+  ['FLUE_CHICKPEA_ROUTINE_INTENT_V2_AGENT', 'FlueChickpeaRoutineIntentV2Agent'],
+  ['FLUE_CHICKPEA_ROUTINE_EXECUTION_V2_AGENT', 'FlueChickpeaRoutineExecutionV2Agent'],
+]);
+const PROTECTED_CLASSES = new Set(['TagStateStore', 'Sandbox', 'ContainerProxy']);
+
+function hasCustomConfigFlag(args) {
+  return args.some((argument) =>
+    argument === '--config' || argument === '-c' || argument.startsWith('--config=')
+  );
+}
+
+function hasWorkerNameOverride(args) {
+  return args.some((argument) => argument === '--name' || argument.startsWith('--name='));
+}
+
+if (hasCustomConfigFlag(deployArgs)) {
+  console.error(
+    'Do not pass a custom Wrangler config. Build the Vite artifact and use its generated deploy redirect.',
+  );
+  process.exit(1);
+}
+
+if (hasWorkerNameOverride(deployArgs)) {
+  console.error(
+    'Do not override the Worker name. Chickpea must inspect and mutate the same Worker it deploys.',
+  );
+  process.exit(1);
+}
+
+function validateAgentViewManifest() {
+  const manifestPath = path.join(projectRoot, 'slack-app-manifest.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to validate the Slack manifest before deployment: ${detail}`);
+  }
+  const hasAgentView = Boolean(manifest?.features?.agent_view);
+  const hasAssistantView = Boolean(manifest?.features?.assistant_view);
+  if (hasAgentView && hasAssistantView) {
+    throw new Error(
+      'Slack manifest is invalid for deployment: agent_view and assistant_view cannot coexist.',
+    );
+  }
+  if (!hasAgentView) {
+    throw new Error(
+      'Slack manifest requires features.agent_view as the permanent app-home contract.',
+    );
+  }
+}
+
+try {
+  validateAgentViewManifest();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
+// A selected Phase 1 lane is a permanent, claimed environment. Resolve that
+// authority before even building so an expired/rotated claim or stale HEAD
+// cannot cause a build hook (or anything after it) to run. The ordinary
+// production deploy does not load this module when no lane was selected and
+// the checkout has no QA ownership marker, as checked above.
+const selectedEnvironmentTarget = !deployArgs.includes('--dry-run')
+  && requestedDeploymentTarget
+  ? requestedDeploymentTarget
+  : undefined;
+let environmentPreflightApi;
+let initialEnvironmentPreflight;
+let resumedEnvironmentDeployment;
+let environmentMutationLease;
+if (selectedEnvironmentTarget) {
+  try {
+    environmentPreflightApi = await import('./lib/environment-preflight.mjs');
+    resumedEnvironmentDeployment = await environmentPreflightApi.resumeEnvironmentDeployment(
+      selectedEnvironmentTarget,
+      { projectRoot, providerContext: deploymentResourceArgs() },
+    );
+    initialEnvironmentPreflight = resumedEnvironmentDeployment?.preflight
+      ?? await environmentPreflightApi.preflightEnvironmentMutation(
+        selectedEnvironmentTarget,
+        { projectRoot, providerContext: deploymentResourceArgs() },
+      );
+    // The claimed lane's immutable AUTH_DB and schema generation are already
+    // known from the registry the preflight just validated. Feed them to the
+    // build profile so a claimed deploy does not depend on the operator
+    // exporting CHICKPEA_DEPLOY_AUTH_DB_ID and CHICKPEA_DEPLOY_SCHEMA_GENERATION
+    // by hand; explicit values still win and are still checked below.
+    const metadata = initialEnvironmentPreflight.deploymentMetadata;
+    const resolved = [];
+    if (!process.env.CHICKPEA_DEPLOY_AUTH_DB_ID?.trim() && metadata?.authDatabaseId) {
+      process.env.CHICKPEA_DEPLOY_AUTH_DB_ID = metadata.authDatabaseId;
+      resolved.push('AUTH_DB id');
+    }
+    if (!process.env.CHICKPEA_DEPLOY_SCHEMA_GENERATION?.trim() && metadata?.schemaGeneration) {
+      process.env.CHICKPEA_DEPLOY_SCHEMA_GENERATION = metadata.schemaGeneration;
+      resolved.push('schema generation');
+    }
+    if (resolved.length > 0) {
+      process.stdout.write(
+        `Resolved ${resolved.join(' and ')} for ${selectedEnvironmentTarget} from the claimed registration.\n`,
+      );
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+function buildCloudflareArtifact() {
+  process.stdout.write('Building the Cloudflare artifact from current source...\n');
+  const npmExecPath = process.env.npm_execpath;
+  const buildCommand = npmExecPath
+    ? [process.execPath, [npmExecPath, 'run', 'build']]
+    : [process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build']];
+  const build = spawnSync(buildCommand[0], buildCommand[1], {
+    cwd: projectRoot,
+    stdio: 'inherit',
+  });
+  if (build.error) {
+    console.error(`Unable to start the Cloudflare build: ${build.error.message}`);
+    process.exit(1);
+  }
+  if (build.status !== 0) {
+    process.exit(build.status ?? 1);
+  }
+}
+
+if (!skipBuild && !reuseWorkersBuildArtifact) buildCloudflareArtifact();
+
+function builtConfigPath() {
+  try {
+    const redirectPath = path.join(projectRoot, '.wrangler', 'deploy', 'config.json');
+    const redirect = readFileSync(redirectPath, 'utf8');
+    const entry = redirect.match(/"configPath"\s*:\s*"([^"]+)"/);
+    if (entry) return path.resolve(path.dirname(redirectPath), entry[1]);
+  } catch {
+    /* a disabled or not-yet-built capability has nothing to validate */
+  }
+  return undefined;
+}
+
+function sortedUnique(values) {
+  return [...new Set(values)].sort();
+}
+
+function sameMembers(actual, expected) {
+  return actual.length === expected.length &&
+    JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort());
+}
+
+function renamedClassNames(migrations) {
+  const names = [];
+  for (const migration of migrations) {
+    for (const rename of migration.renamed_classes ?? []) {
+      if (typeof rename?.from === 'string') names.push(rename.from);
+      if (typeof rename?.to === 'string') names.push(rename.to);
+    }
+  }
+  return names;
+}
+
+function requireBuiltArtifact() {
+  const configPath = builtConfigPath();
+  if (!configPath) {
+    throw new Error('Cloudflare preflight requires the generated Vite Wrangler artifact.');
+  }
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  const artifactRoot = path.dirname(configPath);
+  const bundlePath = path.resolve(artifactRoot, config.main ?? 'index.js');
+  const bundle = existsSync(bundlePath)
+    ? readdirSync(artifactRoot, { recursive: true })
+      .filter((entry) => typeof entry === 'string' && entry.endsWith('.js'))
+      .sort()
+      .map((entry) => readFileSync(path.join(artifactRoot, entry), 'utf8'))
+      .join('\n')
+    : '';
+  return { configPath, config, bundle, entry: existsSync(bundlePath) ? readFileSync(bundlePath, 'utf8') : '' };
+}
+
+function expectedWorkerName(targetTuple) {
+  if (targetTuple) return targetTuple.workerName;
+  const override = process.env.WRANGLER_CI_OVERRIDE_NAME?.trim();
+  if (override) return override;
+  try {
+    const source = readFileSync(path.join(projectRoot, 'wrangler.jsonc'), 'utf8');
+    const match = source.match(/"name"\s*:\s*"([^"]+)"/);
+    if (match?.[1]) return match[1];
+  } catch {
+    /* the generated artifact validation below will report the missing identity */
+  }
+  return undefined;
+}
+
+function validateArtifactIdentity(artifact, { requireDatabaseId = false } = {}) {
+  const { config, configPath } = artifact;
+  const failures = [];
+  const targetTuple = readCloudflareDeploymentTargetTuple(config);
+  const expectedName = expectedWorkerName(targetTuple);
+  if (typeof config.name !== 'string' || !config.name.trim()) {
+    failures.push('a generated Worker name');
+  } else if (expectedName && config.name !== expectedName) {
+    failures.push(`Worker identity ${expectedName} (found ${config.name})`);
+  }
+  if (
+    typeof config.topLevelName === 'string' &&
+    config.topLevelName !== config.name
+  ) {
+    failures.push(`one Worker identity (name=${config.name}, topLevelName=${config.topLevelName})`);
+  }
+  const main = typeof config.main === 'string'
+    ? path.resolve(path.dirname(configPath), config.main)
+    : undefined;
+  if (!main || !existsSync(main)) failures.push('a real generated Worker entry');
+
+  const authDatabases = (config.d1_databases ?? []).filter(
+    (binding) => binding?.binding === 'AUTH_DB',
+  );
+  if (authDatabases.length !== 1) {
+    failures.push('exactly one AUTH_DB binding');
+  } else {
+    const authDb = authDatabases[0];
+    if (typeof authDb.database_name !== 'string' || !authDb.database_name.trim()) {
+      failures.push('an AUTH_DB database name');
+    }
+    if (!String(authDb.migrations_dir ?? '').endsWith('migrations/better-auth')) {
+      failures.push('AUTH_DB with reviewed Better Auth migrations');
+    }
+    if (
+      requireDatabaseId &&
+      (typeof authDb.database_id !== 'string' || !authDb.database_id.trim())
+    ) {
+      failures.push('the resolved AUTH_DB database identity');
+    }
+  }
+  if (failures.length) {
+    throw new Error(`Cloudflare deployment identity preflight failed; missing or unsafe ${failures.join(', ')}.`);
+  }
+}
+
+function validateDeploymentProfile(artifact) {
+  let actualProfile;
+  try {
+    actualProfile = classifyCloudflareDeploymentProfile(artifact.config);
+  } catch (error) {
+    throw new Error(
+      `Cloudflare ${deploymentProfile} profile preflight failed: ` +
+      (error instanceof Error ? error.message : String(error)),
+    );
+  }
+  if (actualProfile !== deploymentProfile) {
+    throw new Error(
+      `Cloudflare deployment profile mismatch: requested ${deploymentProfile}, generated ${actualProfile}.`,
+    );
+  }
+}
+
+function validateFlue2CutoverArtifact(artifact) {
+  const { config, bundle } = artifact;
+  const failures = [];
+  const migrations = config.migrations ?? [];
+  const deleted = migrations.flatMap((migration) => migration.deleted_classes ?? []);
+  const renamed = renamedClassNames(migrations);
+  const destructive = sortedUnique([...deleted, ...renamed]);
+  const unexpected = destructive.filter((name) => !EXPECTED_DELETED_CLASSES.includes(name));
+  if (unexpected.length) failures.push(`unexpected deleted/renamed classes: ${unexpected.join(', ')}`);
+  const protectedDestruction = destructive.filter((name) => PROTECTED_CLASSES.has(name));
+  if (protectedDestruction.length) {
+    failures.push(`protected classes marked deleted/renamed: ${protectedDestruction.join(', ')}`);
+  }
+  if (!sameMembers(deleted, EXPECTED_DELETED_CLASSES) || renamed.length > 0) {
+    failures.push('the exact beta and retired AuthGuard deletion set with no class renames');
+  }
+  const reset = migrations.find((migration) => migration.tag === 'v6');
+  if (!reset || !sameMembers(reset.new_sqlite_classes ?? [], V2_AGENT_CLASSES)) {
+    failures.push('v6 fresh Flue 2 SQLite agent classes');
+  }
+  const sandboxMigration = migrations.find((migration) => migration.tag === 'v3');
+  if (!sandboxMigration || !sameMembers(sandboxMigration.new_sqlite_classes ?? [], ['Sandbox'])) {
+    failures.push('v3 Sandbox SQLite class');
+  }
+  const authGuardMigration = migrations.find((migration) => migration.tag === 'v7');
+  if (!authGuardMigration || !sameMembers(authGuardMigration.new_sqlite_classes ?? [], RETIRED_AUTH_CLASSES)) {
+    failures.push('v7 AuthGuard SQLite class history');
+  }
+  const authGuardRetirement = migrations.find((migration) => migration.tag === 'v8');
+  if (!authGuardRetirement || !sameMembers(authGuardRetirement.deleted_classes ?? [], RETIRED_AUTH_CLASSES)) {
+    failures.push('v8 AuthGuard retirement');
+  }
+  const gatewaySessionMigration = migrations.find((migration) => migration.tag === 'v9');
+  if (!gatewaySessionMigration || !sameMembers(gatewaySessionMigration.new_sqlite_classes ?? [], ['SlackGatewaySession'])) {
+    failures.push('v9 SlackGatewaySession SQLite class');
+  }
+
+  const bindings = config.durable_objects?.bindings ?? [];
+  const hasBinding = (name, className) => bindings.some(
+    (binding) => binding.name === name && binding.class_name === className,
+  );
+  if (!hasBinding('TAG_STATE', 'TagStateStore')) failures.push('TAG_STATE/TagStateStore binding');
+  for (const [name, className] of V2_AGENT_BINDINGS) {
+    if (!hasBinding(name, className)) failures.push(`${name}/${className} binding`);
+  }
+  const betaBindings = bindings.filter((binding) => BETA_FLUE_CLASSES.includes(binding.class_name));
+  if (betaBindings.length) failures.push('no beta Flue Durable Object bindings');
+  if ((config.workflows ?? []).length !== 0) failures.push('no Flue workflow bindings');
+  const authDb = (config.d1_databases ?? []).find((binding) => binding.binding === 'AUTH_DB');
+  if (!authDb || !String(authDb.migrations_dir ?? '').endsWith('migrations/better-auth')) {
+    failures.push('AUTH_DB with reviewed Better Auth migrations');
+  }
+  if (config.observability?.traces?.enabled !== true) {
+    failures.push('enabled Workers Traces for metadata-only Flue spans');
+  }
+  if (!bundle.includes('@flue/runtime/cloudflare-tracing')) {
+    failures.push('explicit content-free Cloudflare tracing instrumentation');
+  }
+  if (!bundle.includes('FLUE_PRIVATE_SANDBOX_COMMAND_V1')) {
+    failures.push('content-free Cloudflare Sandbox exec logging');
+  }
+  if (!bundle.includes('chickpea.response-metadata')) {
+    failures.push('bounded metadata-only Chickpea instrumentation');
+  }
+  if (
+    typeof config.compatibility_date !== 'string' ||
+    config.compatibility_date < '2026-04-01'
+  ) {
+    failures.push('compatibility_date at or above 2026-04-01');
+  }
+  if (!(config.compatibility_flags ?? []).includes('global_fetch_strictly_public')) {
+    failures.push('global_fetch_strictly_public for the shared Slack gateway');
+  }
+  if (config.version_metadata?.binding !== 'CF_VERSION_METADATA') {
+    failures.push('CF_VERSION_METADATA Worker version binding');
+  }
+  if (failures.length) {
+    throw new Error(`Flue 2 cutover preflight failed; missing or unsafe ${failures.join(', ')}.`);
+  }
+}
+
+function cliVariable(name) {
+  for (let index = 0; index < deployArgs.length; index += 1) {
+    const argument = deployArgs[index];
+    const raw = argument === '--var'
+      ? deployArgs[index + 1]
+      : argument.startsWith('--var=')
+        ? argument.slice(6)
+        : undefined;
+    if (typeof raw !== 'string') continue;
+    const separator = raw.search(/[:=]/);
+    if (separator < 1 || raw.slice(0, separator) !== name) continue;
+    return raw.slice(separator + 1);
+  }
+  return undefined;
+}
+
+function validateRoutineArtifact(artifact) {
+  const { config, bundle } = artifact;
+  const failures = [];
+  const crons = config.triggers?.crons ?? [];
+  if (crons.length !== 1 || crons[0] !== '* * * * *') failures.push('one * * * * * heartbeat Cron Trigger');
+  const bindings = config.durable_objects?.bindings ?? [];
+  if (!bindings.some((binding) => binding.name === 'TAG_STATE' && binding.class_name === 'TagStateStore')) {
+    failures.push('TAG_STATE/TagStateStore binding');
+  }
+  for (const [name, className] of V2_AGENT_BINDINGS.slice(1)) {
+    if (!bindings.some((binding) => binding.name === name && binding.class_name === className)) {
+      failures.push(`${name}/${className} binding`);
+    }
+  }
+  if (!hasScheduledComposition(artifact.entry)) {
+    failures.push('composed heartbeat and maintenance handlers');
+  }
+  if (
+    !bundle.includes('chickpea-routine-intent-v2') ||
+    !bundle.includes('chickpea-routine-execution-v2')
+  ) {
+    failures.push('fresh Flue 2 routine agent registrations');
+  }
+  if (failures.length) {
+    throw new Error(
+      'Routine scheduling artifact is unsafe; missing ' + failures.join(', ') + '. ' +
+      'Repair the artifact and verify the heartbeat before deployment.',
+    );
+  }
+}
+
+function validateLedgerCanaryArtifact(artifact) {
+  const { config, bundle } = artifact;
+  const cliSelector = cliVariable('SLACK_TAG_LEDGER_CANARY_CHANNELS');
+  const selector = cliSelector ?? config.vars?.SLACK_TAG_LEDGER_CANARY_CHANNELS ?? '';
+  if (selector === '') return;
+  if (typeof selector !== 'string') {
+    throw new Error('SLACK_TAG_LEDGER_CANARY_CHANNELS must be a string.');
+  }
+  const entries = selector.split(',').map((entry) => entry.trim());
+  const exactPair = /^[A-Za-z][A-Za-z0-9_-]{1,63}\/[A-Za-z][A-Za-z0-9_-]{1,63}$/;
+  if (entries.length > 20 || entries.some((entry) => !exactPair.test(entry))) {
+    throw new Error(
+      'SLACK_TAG_LEDGER_CANARY_CHANNELS is unsafe: use 1-20 exact workspace/channel pairs ' +
+      '(for example T123/C456), comma-separated with no wildcard or empty entry.',
+    );
+  }
+  const requiredSeams = [
+    'SLACK_TAG_LEDGER_CANARY_CHANNELS',
+    'delivery_receipt_persist_unknown',
+    'slack_agent_bindings',
+  ];
+  const missing = requiredSeams.filter((seam) => !bundle.includes(seam));
+  if (missing.length) {
+    throw new Error(
+      'SLACK_TAG_LEDGER_CANARY_CHANNELS is unsafe for this artifact; missing durable driver seams: ' +
+      missing.join(', ') + '. Deploy with the selector empty and repair the artifact.',
+    );
+  }
+}
+
+function validateAgentViewArtifact(artifact) {
+  if (!artifact.bundle.includes('agent_view') || !artifact.bundle.includes('agent_description')) {
+    throw new Error(
+      'Generated Cloudflare artifact is missing the permanent Agent View contract.',
+    );
+  }
+}
+
+function validateDeploymentArtifact(artifact, options = {}) {
+  validateArtifactIdentity(artifact, options);
+  validateDeploymentProfile(artifact);
+  validateAgentViewArtifact(artifact);
+  validateFlue2CutoverArtifact(artifact);
+  validateRoutineArtifact(artifact);
+  validateLedgerCanaryArtifact(artifact);
+  return artifact;
+}
+
+const upgradeContextPath = process.env.CHICKPEA_UPGRADE_CONTEXT;
+let upgradeContext;
+let builtArtifact;
+let deploymentTargetTuple;
+try {
+  const artifact = requireBuiltArtifact();
+  if (upgradeContextPath) {
+    upgradeContext = readPrivateJson(upgradeContextPath);
+    const target = validateTarget(upgradeContext.target);
+    if (upgradeContext.schema !== 1 || !target.url || !explicitProductionTarget || selectedEnvironmentTarget ||
+        target.account !== process.env.CLOUDFLARE_ACCOUNT_ID || target.worker !== process.env.WRANGLER_CI_OVERRIDE_NAME ||
+        target.profile !== resolveCloudflareDeploymentProfile() || deployArgs.length ||
+        artifact.config.vars?.CHICKPEA_APP_VERSION !== upgradeContext.source?.version ||
+        artifact.config.vars?.CHICKPEA_SOURCE_COMMIT !== upgradeContext.source?.commit) {
+      throw new Error('Upgrade context does not match the selected target, source, or guarded command.');
+    }
+    artifact.config = overlayInstallation(artifact.config, upgradeContext.installation, target);
+    writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
+  }
+  builtArtifact = validateDeploymentArtifact(artifact);
+  deploymentTargetTuple = readCloudflareDeploymentTargetTuple(builtArtifact.config);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
+if (deploymentTargetTuple) {
+  process.stdout.write(`${formatCloudflareDeploymentTargetTuple(deploymentTargetTuple)}\n`);
+}
+
+if (selectedEnvironmentTarget && deploymentTargetTuple?.target !== selectedEnvironmentTarget) {
+  console.error(
+    `Selected environment ${selectedEnvironmentTarget} does not match the generated target tuple.`,
+  );
+  process.exit(1);
+}
+if (selectedEnvironmentTarget && deploymentTargetTuple?.stateMode !== 'permanent') {
+  console.error(
+    `Claimed environment ${selectedEnvironmentTarget} requires its registered immutable AUTH_DB and schema generation; disposable target mutation is refused.`,
+  );
+  process.exit(1);
+}
+
+if (preflightOnly) {
+  process.stdout.write('Permanent Cloudflare capability preflight passed. No deployment was attempted.\n');
+  process.exit(0);
+}
+
+const AUTH_SECRET = 'CHICKPEA_AUTH_SECRET';
+const CREDENTIAL_CURRENT_KEY = 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID';
+const CREDENTIAL_KEY_PREFIX = 'CHICKPEA_CREDENTIAL_KEY_';
+const INITIAL_CREDENTIAL_KEY_ID = 'key_v1';
+const INITIAL_CREDENTIAL_KEY_SLOT = `${CREDENTIAL_KEY_PREFIX}KEY_V1`;
+const DEFAULT_ACTIVE_WORKER_INSPECTION_TIMEOUT_MS = 30_000;
+const configuredInspectionTimeout = Number(
+  process.env.CHICKPEA_DEPLOY_INSPECTION_TIMEOUT_MS,
+);
+const activeWorkerInspectionTimeoutMs = Number.isFinite(configuredInspectionTimeout) &&
+  configuredInspectionTimeout > 0
+  ? Math.min(configuredInspectionTimeout, DEFAULT_ACTIVE_WORKER_INSPECTION_TIMEOUT_MS)
+  : DEFAULT_ACTIVE_WORKER_INSPECTION_TIMEOUT_MS;
+
+function inspector(artifact) {
+  return wranglerInspector({ root: projectRoot, configPath: artifact.configPath,
+    args: deploymentResourceArgs(), timeout: activeWorkerInspectionTimeoutMs });
+}
+function inspectRemoteWorker(artifact) { return inspector(artifact).worker(); }
+function activeDeployment(artifact) {
+  try { return inspector(artifact).active(); } catch {
+    throw new Error('Unable to inspect the active Worker deployment. Refusing an update without its current AUTH_DB binding.');
+  }
+}
+
+function assertActiveDeploymentUnchanged(artifact, expectedFingerprint) {
+  const currentFingerprint = deploymentFingerprint(activeDeployment(artifact));
+  if (currentFingerprint === expectedFingerprint) return;
+  throw new Error(
+    'The active Worker deployment changed while this deploy was preparing. ' +
+    'Another task is using the same deployment target; refusing to replace its canary. ' +
+    'Coordinate the live acceptance run, then rebuild and deploy again.',
+  );
+}
+
+function deployedAuthDatabase(artifact) {
+  const versions = activeDeployment(artifact);
+
+  const databaseIds = [];
+  const setupAuthorities = [];
+  let versionsWithoutAuthDatabase = 0;
+  for (const version of versions) {
+    let details;
+    try { details = inspector(artifact).version(version.version_id); } catch {
+      throw new Error(`Unable to inspect active Worker version ${version.version_id}. Refusing an update without its current AUTH_DB binding.`);
+    }
+    const allBindings = details?.resources?.bindings ?? [];
+    const bindings = allBindings.filter(
+      (binding) => binding?.name === 'AUTH_DB' && binding?.type === 'd1',
+    );
+    const setupDigestBindings = allBindings.filter((binding) =>
+      binding?.name === SETUP_CAPABILITY_DIGEST_BINDING
+      && typeof (binding.text ?? binding.value) === 'string'
+    );
+    const setupIssuedBindings = allBindings.filter((binding) =>
+      binding?.name === SETUP_CAPABILITY_ISSUED_AT_BINDING
+      && typeof (binding.text ?? binding.value) === 'string'
+    );
+    if (selectedEnvironmentTarget || upgradeContext) {
+      if (setupDigestBindings.length !== 1 || setupIssuedBindings.length !== 1) {
+        throw new Error('Claimed environment active versions must expose one preserved setup authority.');
+      }
+      const digest = setupDigestBindings[0].text ?? setupDigestBindings[0].value;
+      const issuedAt = setupIssuedBindings[0].text ?? setupIssuedBindings[0].value;
+      if (!/^[A-Za-z0-9_-]{43}$/u.test(digest) || !/^\d{13}$/u.test(issuedAt)) {
+        throw new Error('Claimed environment setup authority is unreadable; refusing rotation.');
+      }
+      setupAuthorities.push(`${digest}:${issuedAt}`);
+    }
+    if (bindings.length > 1) {
+      throw new Error(`Active Worker version ${version.version_id} has duplicate AUTH_DB bindings.`);
+    }
+    if (bindings.length === 0) {
+      versionsWithoutAuthDatabase += 1;
+      continue;
+    }
+    const databaseId = bindings[0].database_id ?? bindings[0].id;
+    if (typeof databaseId !== 'string' || !databaseId.trim()) {
+      throw new Error(`Active Worker version ${version.version_id} has an unreadable AUTH_DB binding.`);
+    }
+    databaseIds.push(databaseId.trim());
+  }
+  if (versionsWithoutAuthDatabase > 0 && databaseIds.length > 0) {
+    throw new Error('Active Worker versions disagree about whether AUTH_DB is bound; refusing to guess.');
+  }
+  const uniqueIds = [...new Set(databaseIds)];
+  if (uniqueIds.length > 1) {
+    throw new Error('Active Worker versions use different AUTH_DB databases; refusing to update either one.');
+  }
+  const uniqueSetupAuthorities = [...new Set(setupAuthorities)];
+  if ((selectedEnvironmentTarget || upgradeContext) && uniqueSetupAuthorities.length !== 1) {
+    throw new Error('Active Worker versions disagree about setup authority; refusing rotation.');
+  }
+  const [setupDigest, setupIssuedAt] = uniqueSetupAuthorities[0]?.split(':') ?? [];
+  return {
+    databaseId: uniqueIds[0],
+    fingerprint: deploymentFingerprint(versions),
+    ...((selectedEnvironmentTarget || upgradeContext) ? {
+      setupAuthority: { digest: setupDigest, issuedAt: Number(setupIssuedAt) },
+    } : {}),
+  };
+}
+
+async function prepareDeploymentAuthority(artifact, secretNames, preservedSetupAuthority) {
+  const generatedSecrets = {};
+  if (!secretNames.has(AUTH_SECRET)) {
+    if (selectedEnvironmentTarget || upgradeContext) {
+      throw new Error('Existing installation is missing its permanent auth authority; refusing rotation.');
+    }
+    generatedSecrets[AUTH_SECRET] = (await mintSetupCapability()).capability;
+  }
+  const hasCredentialCurrent = secretNames.has(CREDENTIAL_CURRENT_KEY);
+  const credentialSlots = [...secretNames].filter((name) =>
+    name.startsWith(CREDENTIAL_KEY_PREFIX) && name !== CREDENTIAL_CURRENT_KEY
+  );
+  if (!hasCredentialCurrent && credentialSlots.length === 0) {
+    if (selectedEnvironmentTarget || upgradeContext) {
+      throw new Error(
+        'Existing installation credential encryption authority is missing; refusing to rotate encrypted connections.',
+      );
+    }
+    generatedSecrets[CREDENTIAL_CURRENT_KEY] = INITIAL_CREDENTIAL_KEY_ID;
+    generatedSecrets[INITIAL_CREDENTIAL_KEY_SLOT] = randomBytes(32).toString('base64url');
+  } else if (!hasCredentialCurrent || credentialSlots.length === 0) {
+    throw new Error(
+      'Cloudflare Slack credential encryption is only partially provisioned. ' +
+      'Restore CHICKPEA_CREDENTIAL_KEY_CURRENT_ID and its versioned ' +
+      'CHICKPEA_CREDENTIAL_KEY_<ID> slot before deploying.',
+    );
+  }
+  const setup = preservedSetupAuthority ?? await mintSetupCapability();
+  artifact.config.vars = {
+    ...(artifact.config.vars ?? {}),
+    [SETUP_CAPABILITY_DIGEST_BINDING]: setup.digest,
+    [SETUP_CAPABILITY_ISSUED_AT_BINDING]: String(setup.issuedAt),
+  };
+  writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
+  return { generatedSecrets, setup };
+}
+
+async function bindDeploymentActivation(artifact) {
+  const activation = await mintDeploymentActivation();
+  artifact.config.vars = {
+    ...(artifact.config.vars ?? {}),
+    [DEPLOYMENT_ACTIVATION_DIGEST_BINDING]: activation.digest,
+    [DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING]: String(activation.issuedAt),
+  };
+  writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
+  return activation;
+}
+
+function createSecretsFile(secrets) {
+  if (Object.keys(secrets).length === 0) return undefined;
+  const directory = mkdtempSync(path.join(tmpdir(), 'chickpea-deploy-secrets-'));
+  const file = path.join(directory, 'secrets.json');
+  try {
+    writeFileSync(file, `${JSON.stringify(secrets)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+  return { directory, file };
+}
+
+function removeSecretsFile(prepared) {
+  if (prepared) rmSync(prepared.directory, { recursive: true, force: true });
+}
+
+function deploymentResourceArgs() {
+  const resolved = new Map();
+  for (let index = 0; index < deployArgs.length; index += 1) {
+    const argument = deployArgs[index];
+    if (['--env', '-e', '--profile'].includes(argument)) {
+      const flag = argument === '-e' ? '--env' : argument;
+      const value = deployArgs[index + 1];
+      if (!value || value.startsWith('--') || resolved.has(flag)) {
+        throw new Error(`Claimed deployment has ambiguous ${flag} provider context.`);
+      }
+      resolved.set(flag, value);
+      index += 1;
+    } else if (argument.startsWith('--env=') || argument.startsWith('--profile=')) {
+      const separator = argument.indexOf('=');
+      const flag = argument.slice(0, separator);
+      const value = argument.slice(separator + 1);
+      if (!value || resolved.has(flag)) {
+        throw new Error(`Claimed deployment has ambiguous ${flag} provider context.`);
+      }
+      resolved.set(flag, value);
+    }
+  }
+  return ['--profile', '--env'].flatMap((flag) =>
+    resolved.has(flag) ? [flag, resolved.get(flag)] : []
+  );
+}
+
+function ensureAuthDatabase(artifact, deployedDatabaseId) {
+  const authDb = (artifact.config.d1_databases ?? []).find(
+    (binding) => binding.binding === 'AUTH_DB',
+  );
+  const targetTuple = readCloudflareDeploymentTargetTuple(artifact.config);
+  if (deployedDatabaseId) {
+    const generatedId = typeof authDb?.database_id === 'string'
+      ? authDb.database_id.trim()
+      : '';
+    if (generatedId && generatedId !== deployedDatabaseId) {
+      throw new Error(
+        `The generated AUTH_DB database (${generatedId}) differs from the deployed database ` +
+        `(${deployedDatabaseId}); refusing to replace customer auth data.`,
+      );
+    }
+    process.stdout.write('Preserving the deployed AUTH_DB database...\n');
+    authDb.database_id = deployedDatabaseId;
+    writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
+    return validateDeploymentArtifact(requireBuiltArtifact(), { requireDatabaseId: true });
+  }
+  if (typeof authDb?.database_id === 'string' && authDb.database_id.trim()) return artifact;
+  const existingId = existingAuthDatabaseId(authDb?.database_name || 'chickpea-auth-db');
+  if (existingId) {
+    if (targetTuple?.stateMode === 'disposable') {
+      throw new Error(
+        `Cloudflare disposable target ${targetTuple.target} already has an existing AUTH_DB. ` +
+        'Remove that disposable state or register its immutable ID and schema generation before deploying.',
+      );
+    }
+    process.stdout.write('Reusing the customer-owned AUTH_DB database...\n');
+    authDb.database_id = existingId;
+    writeFileSync(artifact.configPath, `${JSON.stringify(artifact.config, null, 2)}\n`);
+    return validateDeploymentArtifact(requireBuiltArtifact(), { requireDatabaseId: true });
+  }
+  const rootConfig = path.join(projectRoot, 'wrangler.jsonc');
+  const provisionConfig = targetTuple ? artifact.configPath : rootConfig;
+  process.stdout.write('Provisioning the customer-owned AUTH_DB database...\n');
+  const provision = spawnSync(
+    process.execPath,
+    [
+      wranglerBin,
+      'd1',
+      'create',
+      authDb?.database_name || 'chickpea-auth-db',
+      '--binding',
+      'AUTH_DB',
+      '--update-config',
+      '--config',
+      provisionConfig,
+      ...deploymentResourceArgs(),
+    ],
+    { cwd: projectRoot, stdio: 'inherit' },
+  );
+  if (provision.error) {
+    console.error(`Unable to start AUTH_DB provisioning: ${provision.error.message}`);
+    process.exit(1);
+  }
+  if (provision.status !== 0) {
+    console.error(
+      'AUTH_DB provisioning failed. If the database already exists, copy its ID into ' +
+      'wrangler.jsonc and rerun npm run deploy.',
+    );
+    process.exit(provision.status ?? 1);
+  }
+  if (targetTuple) {
+    return validateDeploymentArtifact(requireBuiltArtifact(), { requireDatabaseId: true });
+  }
+  buildCloudflareArtifact();
+  const rebuilt = requireBuiltArtifact();
+  return validateDeploymentArtifact(rebuilt, { requireDatabaseId: true });
+}
+
+function existingAuthDatabaseId(databaseName) {
+  const list = spawnSync(
+    process.execPath,
+    [wranglerBin, 'd1', 'list', '--json', ...deploymentResourceArgs()],
+    { cwd: projectRoot, encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'] },
+  );
+  if (list.error) {
+    console.error(`Unable to inspect AUTH_DB resources: ${list.error.message}`);
+    process.exit(1);
+  }
+  if (list.status !== 0) process.exit(list.status ?? 1);
+  let databases;
+  try {
+    databases = JSON.parse(list.stdout);
+  } catch {
+    console.error('AUTH_DB discovery returned an unreadable response.');
+    process.exit(1);
+  }
+  if (!Array.isArray(databases)) {
+    console.error('AUTH_DB discovery returned an unexpected response.');
+    process.exit(1);
+  }
+  const matches = databases.filter((database) => database?.name === databaseName);
+  if (matches.length > 1) {
+    console.error(`Multiple D1 databases are named ${databaseName}; refusing to guess.`);
+    process.exit(1);
+  }
+  const id = matches[0]?.uuid ?? matches[0]?.id;
+  return typeof id === 'string' && id.trim() ? id.trim() : undefined;
+}
+
+function verifyRemoteAuthSchema(artifact) {
+  const expected = expectedAuthSchema(artifact);
+  const inspection = spawnSync(
+    process.execPath,
+    [
+      wranglerBin,
+      'd1',
+      'execute',
+      'AUTH_DB',
+      '--remote',
+      '--json',
+      '--command',
+      AUTH_SCHEMA_QUERY,
+      '--config',
+      artifact.configPath,
+      ...deploymentResourceArgs(),
+    ],
+    { cwd: projectRoot, encoding: 'utf8' },
+  );
+  if (inspection.error || inspection.status !== 0) {
+    throw new Error(
+      'Unable to inspect the migrated AUTH_DB schema. Refusing to upload the Worker.',
+    );
+  }
+  let payload;
+  try {
+    payload = JSON.parse(inspection.stdout);
+  } catch {
+    throw new Error('AUTH_DB schema inspection returned unreadable JSON.');
+  }
+  const statements = Array.isArray(payload) ? payload : [];
+  const resultSets = statements.filter((statement) => Array.isArray(statement?.results));
+  if (resultSets.length !== 1 || resultSets[0]?.success === false) {
+    throw new Error('AUTH_DB schema inspection returned an unexpected result.');
+  }
+  const actual = normalizeAuthSchemaRows(resultSets[0].results);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(
+      'AUTH_DB contains an incompatible reviewed Better Auth migration-chain schema. ' +
+      'Its schema structure differs from the reviewed migration chain. Preserve the database and investigate the mismatch before deploying.',
+    );
+  }
+  process.stdout.write('Verified the reviewed Better Auth schema in AUTH_DB...\n');
+}
+
+let deploymentAuthority;
+let remoteWorker;
+let expectedActiveDeploymentFingerprint;
+let finalEnvironmentPreflight;
+if (!deployArgs.includes('--dry-run')) {
+  try {
+    if (upgradeContext) {
+      const current = validateInstallation(inspector(builtArtifact).inspect());
+      assertSameInstallation(upgradeContext.installation, current);
+      verifyRemoteAuthSchema(builtArtifact);
+    }
+    remoteWorker = inspectRemoteWorker(builtArtifact);
+    if (selectedEnvironmentTarget && !remoteWorker.exists) {
+      throw new Error(
+        `Claimed environment ${selectedEnvironmentTarget} has no existing Worker; refusing to provision permanent lane infrastructure.`,
+      );
+    }
+    if (deploymentTargetTuple?.stateMode === 'disposable' && remoteWorker.exists) {
+      throw new Error(
+        `Cloudflare disposable target ${deploymentTargetTuple.target} already has an existing Worker ` +
+        'and Durable Object state. Remove that disposable state or register its immutable AUTH_DB ID ' +
+        'and schema generation before deploying.',
+      );
+    }
+    const deployed = remoteWorker.exists
+      ? deployedAuthDatabase(builtArtifact)
+      : undefined;
+    if (upgradeContext && (!remoteWorker.exists || !deployed?.databaseId)) {
+      throw new Error('Upgrade requires the existing Worker and AUTH_DB; provisioning is forbidden.');
+    }
+    expectedActiveDeploymentFingerprint = deployed?.fingerprint;
+    builtArtifact = ensureAuthDatabase(builtArtifact, deployed?.databaseId);
+    // This is the final gate immediately before the first mutation of an
+    // existing customer resource. It intentionally reruns after both D1 reuse
+    // injection and D1 provisioning/rebuild.
+    builtArtifact = validateDeploymentArtifact(builtArtifact, { requireDatabaseId: true });
+    deploymentAuthority = await prepareDeploymentAuthority(
+      builtArtifact,
+      remoteWorker.names,
+      deployed?.setupAuthority,
+    );
+    if (selectedEnvironmentTarget) {
+      const environmentOptions = {
+        projectRoot,
+        config: builtArtifact.config,
+        configPath: builtArtifact.configPath,
+        targetTuple: deploymentTargetTuple,
+        providerContext: deploymentResourceArgs(),
+      };
+      if (resumedEnvironmentDeployment) {
+        const finalResume = await environmentPreflightApi.recheckResumedEnvironmentDeployment(
+          resumedEnvironmentDeployment,
+          environmentOptions,
+        );
+        finalEnvironmentPreflight = finalResume.preflight;
+        environmentMutationLease = finalResume.mutationLease;
+      } else {
+        finalEnvironmentPreflight = await environmentPreflightApi.preflightEnvironmentMutation(
+          selectedEnvironmentTarget,
+          environmentOptions,
+        );
+      }
+      environmentPreflightApi.assertSameEnvironmentMutationAuthority(
+        initialEnvironmentPreflight,
+        finalEnvironmentPreflight,
+      );
+      builtArtifact.config.vars = {
+        ...(builtArtifact.config.vars ?? {}),
+        // The registry owns this non-secret, project-scoped baseline setting.
+        // Keep the reviewed standard grant across branch deployments. The
+        // smoke contract exercises reads; it does not narrow OAuth consent.
+        COMPOSIO_SHEETS_READ_AUTH_CONFIG_ID:
+          finalEnvironmentPreflight.registration.providerAuthConfigId,
+        COMPOSIO_SHEETS_WRITE_AUTH_CONFIG_ID:
+          finalEnvironmentPreflight.registration.providerAuthConfigId,
+        ...environmentPreflightApi.environmentDeploymentMetadataBindings(
+          finalEnvironmentPreflight.deploymentMetadata,
+        ),
+      };
+      writeFileSync(
+        builtArtifact.configPath,
+        `${JSON.stringify(builtArtifact.config, null, 2)}\n`,
+      );
+      builtArtifact = validateDeploymentArtifact(requireBuiltArtifact(), {
+        requireDatabaseId: true,
+      });
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+if (selectedEnvironmentTarget) {
+  try {
+    environmentMutationLease ??= environmentPreflightApi.beginEnvironmentDeployment(
+      finalEnvironmentPreflight,
+      { projectRoot, providerContext: deploymentResourceArgs() },
+    );
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+// D1 migrations are forward-only and idempotent. Apply them before the Worker
+// starts serving a schema it expects. If deploy later fails, rerunning this
+// command resumes from D1's migration ledger; never attempt schema rollback.
+if (!deployArgs.includes('--dry-run') && !upgradeContext) {
+  process.stdout.write('Applying reviewed Better Auth migrations to AUTH_DB...\n');
+  const environmentArgs = deploymentResourceArgs();
+  const migration = spawnSync(
+    process.execPath,
+    [
+      wranglerBin,
+      'd1',
+      'migrations',
+      'apply',
+      'AUTH_DB',
+      '--remote',
+      '--config',
+      builtArtifact.configPath,
+      ...environmentArgs,
+    ],
+    { cwd: projectRoot, stdio: 'inherit' },
+  );
+  if (migration.error) {
+    console.error(`Unable to start AUTH_DB migration: ${migration.error.message}`);
+    process.exit(1);
+  }
+  if (migration.status !== 0) process.exit(migration.status ?? 1);
+  try {
+    verifyRemoteAuthSchema(builtArtifact);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+let preparedSecrets;
+try {
+  if (deploymentAuthority) {
+    deploymentAuthority.activation = await bindDeploymentActivation(builtArtifact);
+  }
+  preparedSecrets = deploymentAuthority
+    ? createSecretsFile(deploymentAuthority.generatedSecrets)
+    : undefined;
+} catch (error) {
+  console.error(`Unable to prepare the temporary Worker secrets file: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+
+// The inspection above intentionally happens after the build, when this
+// deploy knows the exact target and preserved bindings. A second task may
+// still finish its own deploy while migrations/readiness preparation runs.
+// Re-read the serving versions at the last safe boundary so overlapping
+// disposable acceptance runs fail closed instead of silently replacing one
+// another's Worker and interrupting their admitted Slack turns.
+if (expectedActiveDeploymentFingerprint) {
+  try {
+    assertActiveDeploymentUnchanged(builtArtifact, expectedActiveDeploymentFingerprint);
+  } catch (error) {
+    removeSecretsFile(preparedSecrets);
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+if (selectedEnvironmentTarget) {
+  try {
+    environmentPreflightApi.recheckEnvironmentMutationAuthority(
+      finalEnvironmentPreflight,
+      {
+        projectRoot,
+        config: builtArtifact.config,
+        configPath: builtArtifact.configPath,
+        targetTuple: deploymentTargetTuple,
+        providerContext: deploymentResourceArgs(),
+        mutationLease: environmentMutationLease,
+      },
+    );
+  } catch (error) {
+    removeSecretsFile(preparedSecrets);
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+if (upgradeContext) {
+  try {
+    assertSameInstallation(upgradeContext.installation, validateInstallation(inspector(builtArtifact).inspect()));
+    verifyRemoteAuthSchema(builtArtifact);
+    writeDeploymentEvent(upgradeContextPath, 'deploying');
+  } catch (error) {
+    removeSecretsFile(preparedSecrets);
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+const child = spawn(
+  process.execPath,
+  [
+    wranglerBin,
+    ...(upgradeContext ? ['versions', 'upload'] : ['deploy']),
+    ...deployArgs,
+    ...(preparedSecrets ? ['--secrets-file', preparedSecrets.file] : []),
+  ],
+  { cwd: projectRoot, stdio: ['inherit', 'pipe', 'inherit'] },
+);
+let activeChild = child;
+
+let cleanedSecrets = false;
+function cleanupSecrets() {
+  if (cleanedSecrets) return;
+  cleanedSecrets = true;
+  removeSecretsFile(preparedSecrets);
+}
+process.once('exit', cleanupSecrets);
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.once(signal, () => {
+    cleanupSecrets();
+    activeChild.kill(signal);
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  });
+}
+
+let deployedUrl = '';
+let deployedVersionId = '';
+let tail = '';
+child.stdout.on('data', (chunk) => {
+  process.stdout.write(chunk);
+  // Line-oriented scan without unbounded buffering: keep only a joining tail
+  // in case the URL straddles a chunk boundary.
+  const text = tail + chunk.toString('utf8');
+  const match = text.match(/https?:\/\/[^\s]+\.workers\.dev\b/);
+  if (match && !deployedUrl) {
+    deployedUrl = match[0];
+  }
+  const versionMatch = text.match(/(?:Current|Worker) Version ID:\s*([A-Za-z0-9-]+)/);
+  if (versionMatch?.[1] && versionMatch[1] !== deployedVersionId) {
+    deployedVersionId = versionMatch[1];
+    if (upgradeContext) writeDeploymentEvent(upgradeContextPath, 'uploaded', deployedVersionId);
+  }
+  tail = text.slice(-256);
+});
+
+const DEFAULT_DEPLOYMENT_READINESS_TIMEOUT_MS = 6 * 60 * 1_000;
+const MAX_DEPLOYMENT_READINESS_TIMEOUT_MS = 10 * 60 * 1_000;
+const configuredReadinessTimeout = Number(process.env.CHICKPEA_DEPLOY_READINESS_TIMEOUT_MS);
+const deploymentReadinessTimeoutMs = Number.isFinite(configuredReadinessTimeout) &&
+  configuredReadinessTimeout > 0
+  ? Math.min(configuredReadinessTimeout, MAX_DEPLOYMENT_READINESS_TIMEOUT_MS)
+  : DEFAULT_DEPLOYMENT_READINESS_TIMEOUT_MS;
+const testReadinessStatuses = process.env.DEPLOY_TEST_READINESS_STATUSES
+  ?.split(',')
+  .map((value) => Number(value.trim()))
+  .filter(Number.isInteger);
+let testReadinessIndex = 0;
+
+function readinessBaseUrl() {
+  if (upgradeContext) return upgradeContext.target.url;
+  if (deployedUrl) return deployedUrl;
+  if (process.env.DEPLOY_TEST_READINESS_BASE_URL) {
+    return process.env.DEPLOY_TEST_READINESS_BASE_URL;
+  }
+  const configured = builtArtifact.config.vars?.SLACK_TAG_PUBLIC_URL;
+  return typeof configured === 'string' && configured.trim()
+    ? configured.trim().replace(/\/+$/, '')
+    : undefined;
+}
+
+async function requestDeploymentReadiness(baseUrl, versionId, activation) {
+  if (testReadinessStatuses?.length) {
+    const status = testReadinessStatuses[
+      Math.min(testReadinessIndex, testReadinessStatuses.length - 1)
+    ];
+    testReadinessIndex += 1;
+    return status;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(new URL('/internal/deployment/ready', baseUrl), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${activation.capability}`,
+        'X-Chickpea-Target-Version': versionId,
+      },
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+    return response.status;
+  } catch {
+    return 0;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function waitForDeploymentReadiness(baseUrl, versionId, activation) {
+  const deadline = Date.now() + deploymentReadinessTimeoutMs;
+  process.stdout.write('Waiting for the current Worker and Slack gateway version...\n');
+  while (Date.now() < deadline) {
+    if (await requestDeploymentReadiness(baseUrl, versionId, activation) === 204) {
+      process.stdout.write('Verified current-version deployment readiness.\n');
+      return;
+    }
+    if (testReadinessStatuses?.length &&
+        testReadinessIndex >= testReadinessStatuses.length) break;
+    if (!testReadinessStatuses?.length) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+  }
+  throw new Error(
+    'Worker uploaded, but current-version readiness was not confirmed. ' +
+    'The Slack gateway may still be serving older code.',
+  );
+}
+
+const RULE = '────────────────────────────────────────────────────────';
+function printPrivateSetupLink(baseUrl, setup) {
+  const privateSetupUrl = setupCapabilityUrl(baseUrl, setup.capability);
+  process.stdout.write(
+    [
+      '',
+      RULE,
+      '  ✔ Worker deployed.',
+      '',
+      '  🔐 PRIVATE SETUP LINK — COPY AND OPEN THIS',
+      RULE,
+      `👉 ${privateSetupUrl}`,
+    ].join('\n'),
+  );
+}
+
+function printPrivateSetupPath(setup) {
+  const privatePath = new URL(setupCapabilityUrl('https://chickpea.invalid', setup.capability));
+  process.stdout.write(
+    [
+      '',
+      RULE,
+      '  ✔ Worker deployed.',
+      '',
+      '  🔐 PRIVATE SETUP PATH — copy and open this on your configured Chickpea domain',
+      RULE,
+      `👉 ${privatePath.pathname}${privatePath.hash}`,
+    ].join('\n'),
+  );
+}
+
+// Workers Builds receives stdout through a pipe. Let Node exit naturally after
+// this callback so the final setup link and Cloudflare's completion event can
+// flush; process.exit() can truncate asynchronous pipe writes.
+child.on('close', async (code) => {
+  cleanupSecrets();
+  if (code !== 0) {
+    process.exitCode = code ?? 1;
+    return;
+  }
+  // A dry run deploys nothing — next-steps instructions would be a lie.
+  if (deployArgs.includes('--dry-run')) {
+    return;
+  }
+  const baseUrl = readinessBaseUrl();
+  if (!baseUrl || !deployedVersionId || !deploymentAuthority) {
+    console.error(
+      'Worker uploaded, but its version or public origin was unavailable for readiness verification.',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    if (upgradeContext) {
+      // Upload does not change traffic. Recheck the serving installation before
+      // activation, and use an isolated minimal config so Wrangler cannot sync
+      // authored routes, crons, observability or other non-versioned settings.
+      assertSameInstallation(upgradeContext.installation, validateInstallation(inspector(builtArtifact).inspect()));
+      const activationConfig = path.join(path.dirname(upgradeContextPath), 'activation-wrangler.json');
+      writePrivateJson(activationConfig, { name: upgradeContext.target.worker, account_id: upgradeContext.target.account, compatibility_date: builtArtifact.config.compatibility_date });
+      await new Promise((resolve, reject) => {
+        activeChild = spawn(process.execPath, [wranglerBin, 'versions', 'deploy', `${deployedVersionId}@100%`, '--yes', '--config', activationConfig],
+          { cwd: path.dirname(activationConfig), stdio: 'inherit' });
+        activeChild.once('error', () => reject(new Error('Unable to activate the uploaded Worker version. Preserve the receipt.')));
+        activeChild.once('close', (status) => status === 0 ? resolve() : reject(new Error('Worker activation was not verified. Preserve the receipt and resume.')));
+      });
+    }
+    await waitForDeploymentReadiness(
+      baseUrl,
+      deployedVersionId,
+      deploymentAuthority.activation,
+    );
+    if (selectedEnvironmentTarget) {
+      await environmentPreflightApi.completeEnvironmentDeployment(
+        finalEnvironmentPreflight,
+        {
+          deployedVersion: deployedVersionId,
+          projectRoot,
+          providerContext: deploymentResourceArgs(),
+          mutationLease: environmentMutationLease,
+        },
+      );
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+    return;
+  }
+  if (upgradeContext) {
+    writeDeploymentEvent(upgradeContextPath, 'ready', deployedVersionId);
+    process.stdout.write('\n✔ Upgrade deployment is ready. Existing setup authority preserved.\n');
+  } else if (selectedEnvironmentTarget) {
+    process.stdout.write('\n✔ Claimed environment deployment reconciled.\n');
+    if (finalEnvironmentPreflight?.setupFlow?.proven === false) {
+      process.stdout.write(
+        '! Setup flow unproven for this revision: the first-run install sources '
+        + 'differ from the lane baseline. Prove a fresh install on a disposable '
+        + 'target and re-record the baseline to clear it.\n',
+      );
+    }
+  } else if (deployedUrl && deploymentAuthority) {
+    printPrivateSetupLink(deployedUrl, deploymentAuthority.setup);
+  } else if (deploymentAuthority) {
+    printPrivateSetupPath(deploymentAuthority.setup);
+  }
+});

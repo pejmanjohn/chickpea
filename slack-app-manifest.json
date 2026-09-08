@@ -1,0 +1,96 @@
+{
+  "display_information": {
+    "name": "Chickpea",
+    "description": "A self-hosted, model-agnostic AI agent for Slack.",
+    "background_color": "#bd5732"
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "Chickpea",
+      "always_online": true
+    },
+    "agent_view": {
+      "agent_description": "A self-hosted, model-agnostic AI agent for Slack.",
+      "suggested_prompts": [
+        {
+          "title": "Summarize supplied text",
+          "message": "Summarize the conversation or material I paste here."
+        },
+        {
+          "title": "Investigate a question",
+          "message": "Investigate this question using only material I supply or you are authorized to access:"
+        },
+        {
+          "title": "Plan a task",
+          "message": "Help me plan this task:"
+        }
+      ]
+    }
+  },
+  "oauth_config": {
+    "redirect_urls": [
+      "https://chickpea.example/auth/slack/install/callback",
+      "https://chickpea.example/auth/slack/oidc/callback"
+    ],
+    "scopes": {
+      "user": [
+        "openid",
+        "profile",
+        "email"
+      ],
+      "bot": [
+        "app_mentions:read",
+        "assistant:write",
+        "channels:history",
+        "channels:join",
+        "channels:read",
+        "chat:write",
+        "chat:write.customize",
+        "files:read",
+        "files:write",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:write",
+        "mpim:read",
+        "reactions:read",
+        "reactions:write",
+        "users:read",
+        "usergroups:read",
+        "usergroups:write",
+        "users:read.email"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "request_url": "https://chickpea.example/channels/slack/events",
+      "bot_events": [
+        "app_context_changed",
+        "app_home_opened",
+        "app_mention",
+        "member_joined_channel",
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "reaction_added",
+        "app_uninstalled",
+        "tokens_revoked",
+        "user_change"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://chickpea.example/channels/slack/interactions"
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false,
+    "is_mcp_enabled": false
+  }
+}

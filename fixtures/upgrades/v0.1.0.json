@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "chickpea-upgrade-baseline/v1",
+  "applicationVersion": "0.1.0",
+  "gatewayProtocolVersion": 1,
+  "actors": ["registered-test-owner", "registered-test-member"],
+  "agent": {
+    "name": "Upgrade baseline <run-id>",
+    "instructions": "You are the upgrade acceptance Agent. Preserve the exact phrase: Copper lanterns at sunrise.",
+    "channel": "registered-test-channel"
+  },
+  "memory": "The synthetic release code is CEDAR-410. It belongs only to this test.",
+  "connection": {
+    "credentialReference": "registered-test-provider-connection",
+    "fixtureReference": "registered-synthetic-read-fixture",
+    "operation": "Read the declared synthetic fixture before and after each code transition."
+  },
+  "schedule": {
+    "prompt": "Post the exact synthetic release code from memory to this test channel.",
+    "occurrenceBudget": 2,
+    "stopCondition": "Pause after the second due occurrence or at the run's recorded deadline, whichever comes first."
+  },
+  "preserve": [
+    "worker-account-name-and-url",
+    "auth-db-id-and-schema",
+    "durable-object-namespaces-and-classes",
+    "credential-root-secret-names",
+    "setup-authority",
+    "supported-dashboard-variables",
+    "owner-and-member-access",
+    "agent-id-instructions-and-channel-grants",
+    "memory-content-and-scope",
+    "connection-id-owner-and-real-provider-read",
+    "schedule-id-prompt-destination-and-pause-state"
+  ],
+  "transitions": ["compatible-upgrade", "interruption-before-upload-and-retry", "interruption-after-upload-and-code-recovery"],
+  "liveReadbacks": ["signed-in-owner", "member-owner-settings-denied", "slack-root-reply", "slack-thread-followup", "due-schedule-during-transition", "no-duplicate-terminal-delivery"],
+  "cleanup": ["pause-run-owned-schedule", "remove-only-run-owned-agent-and-memory", "restore-recorded-fixture-values", "retain-private-before-and-after-evidence"]
+}

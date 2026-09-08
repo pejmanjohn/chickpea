@@ -1,0 +1,69 @@
+# Cloudflare Deploy prompts for every active key in this file, so consumer
+# deployment intentionally has none. The deploy wrapper creates Chickpea's
+# stable auth authority and its one-time setup handoff automatically.
+
+# Break-glass recovery is dormant by default. An account holder may create a
+# temporary value only when recovery is needed:
+# CHICKPEA_RECOVERY_TOKEN=""
+
+# Legacy shared Admin login for existing installations during migration only.
+# Fresh deployments must not enable it:
+# TAG_ADMIN_TOKEN=""
+
+# Non-secret defaults live in product code so Cloudflare does not expose them
+# as customer-editable Deploy fields. Advanced operators may still set the
+# documented runtime kill switches after deployment when needed.
+# `CHICKPEA_LIVE_CHANNEL_CONFIG=false` restores write-once thread snapshots for
+# new Channel admissions without changing already admitted TurnJobs.
+
+# Anonymous, content-free product telemetry is enabled by default. To disable
+# it completely, add DO_NOT_TRACK or CHICKPEA_DISABLE_TELEMETRY after deploy as
+# a dashboard variable, or run `npx wrangler secret put DO_NOT_TRACK`. To label
+# a non-production deployment, add CHICKPEA_TELEMETRY_ENVIRONMENT=test as a
+# dashboard variable. These remain comments so the Deploy button adds no prompt.
+# See TELEMETRY.md for the complete event and privacy contract.
+
+# Channel memory is always on for eligible assigned channels. There is no
+# memory feature flag or opt-out secret to configure.
+
+# Optional: add a catalog provider after deploy. Without one, the seeded Default
+# profile runs keyless on the Workers AI binding (@cf/zai-org/glm-5.2). These
+# deliberately remain comments: the Deploy to Cloudflare button renders every
+# active key in this file as a REQUIRED prompt, and provider keys must stay
+# optional. Set any provider you want after deploy instead:
+#   npx wrangler secret put ANTHROPIC_API_KEY
+#   npx wrangler secret put OPENAI_API_KEY
+#   npx wrangler secret put OPENROUTER_API_KEY
+# For normal OSS setup, leave Composio out of this file and use
+# Admin → Settings → Connectors. Get a project key from Composio under
+# Settings → Project Settings → API Keys; Chickpea stores it encrypted and
+# prepares the standard managed-auth defaults.
+#
+# Deployment-owned configuration may set the project key as a secret and the
+# mode as a plain variable. Admin can prepare defaults but cannot replace or
+# disable the deployment key:
+#   npx wrangler secret put COMPOSIO_API_KEY
+# Set CHICKPEA_COMPOSIO_CONFIGURATION_MODE=deployment in the Worker's variables.
+# Rotating this secret changes the provider lineage. Managed execution pauses
+# until an owner/admin opens Settings → Connectors and retries preparation;
+# Chickpea then re-inspects every preserved account before reactivating it.
+# Chickpea polls hosted authorization while connecting and verifies exact
+# account identity on connect, reconnect, and reconciliation. Add the optional
+# webhook to surface upstream revocation promptly between those checks:
+#   npx wrangler secret put COMPOSIO_WEBHOOK_SECRET
+# Existing installations may retain explicit lane-specific auth-config ID
+# overrides. They must belong to the active Composio project and be enabled,
+# Composio-managed, and unrestricted. Chickpea ignores an invalid or temporarily
+# unverifiable lane without taking down the other connectors and logs the safe
+# environment-variable name for repair. Fresh one-key setup does not require
+# overrides. Optional quota overrides are documented in .env.example; values
+# above the defaults require an approved compliance audit.
+# Google Ads also requires COMPOSIO_GOOGLE_ADS_ACCESS_LEVEL=basic|standard and
+# COMPOSIO_GOOGLE_ADS_PERMISSIBLE_USE=reporting|ad_management. Test or Explorer
+# developer tokens are intentionally reported as not production-ready.
+# See docs/runbooks/composio-managed-connectors.md.
+# Optional plain vars can label those environment credentials without exposing
+# them and identify rotations: <PROVIDER>_CREDENTIAL_ALIAS and
+# <PROVIDER>_CREDENTIAL_EPOCH. CHICKPEA_DEPLOYMENT_EPOCH identifies a keyless
+# Workers AI binding deployment. Increment epochs when the underlying route is
+# rotated; omit them to report "rotation unknown" honestly.

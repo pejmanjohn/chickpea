@@ -1,0 +1,315 @@
+import { createHash } from 'node:crypto';
+import type { FlueObservation } from '@flue/runtime';
+import type { ManagementOperation } from './types.ts';
+import { AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
+
+export type ManagementMetricValue = boolean | number | string;
+
+type AgentAuthoringArtifactClass =
+  | 'identity'
+  | 'instructions'
+  | 'skill'
+  | 'memory'
+  | 'connection'
+  | 'repository'
+  | 'schedule'
+  | 'model'
+  | 'slack_presence'
+  | 'reach'
+  | 'edit_authority'
+  | 'mixed'
+  | 'other';
+
+const MANAGEMENT_METRIC_FIELDS = new Set([
+  'action',
+  'agentCount',
+  'artifactClass',
+  'channelCount',
+  'conflictCount',
+  'connectorActionCount',
+  'connectorNoticeCount',
+  'deliveryPersona',
+  'durationMs',
+  'guideVersion',
+  'handoffClass',
+  'operation',
+  'operationCount',
+  'outcome',
+  'posture',
+  'publicationStatus',
+  'proposalOutcome',
+  'reason',
+  'setupRequiredCount',
+  'stage',
+  'staleReason',
+  'surface',
+  'tool',
+]);
+
+const MANAGEMENT_METRIC_EVENTS = new Set([
+  'agent_creation.outcome',
+  'agent_creation.welcome_claim',
+  'agent_creation.welcome_delivery',
+  'agent_authoring.outcome',
+  'live_revision.admission',
+  'oauth.dcr',
+  'oauth.discovery',
+  'oauth.request',
+  'oauth.token',
+  'operation.outcome',
+  'receipt.delivery',
+  'recipe.preview',
+  'setup.lifecycle',
+  'tool.call',
+]);
+
+const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
+  action: new Set([
+    'api_oauth', 'api_credential', 'catalog_connection', 'exchange', 'live', 'mcp_oauth',
+    'mcp_credentials', 'provider_credential', 'repository_access', 'snapshot',
+  ]),
+  operation: new Set([
+    'create_agent', 'update_agent', 'delete_agent', 'archive_agent', 'restore_agent', 'put_channel',
+    'grant_agent_channel', 'revoke_agent_channel',
+    'update_member', 'remove_provider_credential',
+    'update_agent_memory', 'save_routine', 'control_routine', 'run_routine', 'delete_routine',
+    'reassign_routine_agent',
+    'request_setup',
+  ]),
+  artifactClass: new Set([
+    'identity', 'instructions', 'skill', 'memory', 'connection', 'repository',
+    'schedule', 'model', 'slack_presence', 'reach', 'edit_authority', 'mixed', 'other',
+  ]),
+  guideVersion: new Set([AGENT_AUTHORING_GUIDE_VERSION]),
+  handoffClass: new Set(['cross_agent', 'workspace_authority', 'none']),
+  outcome: new Set([
+    'admitted', 'applied', 'completed', 'confirmation_required', 'delivered',
+    'chickpea_handoff', 'clarification', 'created', 'denied', 'error', 'failed', 'partial',
+    'replayed', 'retry', 'setup_required', 'skipped', 'success',
+  ]),
+  deliveryPersona: new Set(['agent', 'chickpea']),
+  publicationStatus: new Set(['complete', 'partial']),
+  posture: new Set(['commit', 'explore', 'capability_question', 'clarify']),
+  proposalOutcome: new Set([
+    'created', 'applied', 'partial', 'setup_required', 'stale', 'denied', 'failed',
+  ]),
+  stage: new Set([
+    'authorization_server', 'bearer', 'exchange', 'membership', 'quota',
+    'registration', 'resource', 'scope', 'validation',
+  ]),
+  staleReason: new Set([
+    'binding', 'digest_mismatch', 'permission_changed', 'target_revision', 'unknown',
+  ]),
+  surface: new Set(['admin', 'mcp', 'service', 'setup', 'slack', 'unknown']),
+  tool: new Set([
+    'inspect_workspace', 'prepare_connector_setup', 'discover_slack_channels', 'test_mcp_connection',
+    'inspect_memory', 'inspect_routines',
+    'export_workspace_recipe', 'preview_workspace_recipe',
+    'import_skill', 'manage_agent_skill', 'propose_skill_import',
+    'propose_workspace_changes', 'apply_workspace_changes', 'confirm_workspace_change',
+    'undo_workspace_change', 'get_operation', 'revoke_setup_link',
+  ]),
+};
+
+const REASON_TOKENS = new Set([
+  'capability_scope_expansion', 'credential_replacement', 'dependency_not_applied',
+  'chickpea_handoff',
+  'forbidden', 'idempotency_conflict', 'insufficient_scope', 'invalid_request',
+  'invalid_state', 'invalid_token', 'live_access_denied', 'management_error',
+  'management_outcome_unknown',
+  'missing_token', 'operation_in_progress', 'operation_not_found', 'other',
+  'operational_access_required', 'owner_required', 'proposal_binding_mismatch',
+  'proposal_not_found', 'proposal_stale', 'revision_conflict', 'setup_expired',
+  'base_agent_capabilities_require_setup',
+  'setup_failed', 'setup_not_found', 'setup_session_mismatch', 'setup_unavailable',
+  'target_changed', 'undo_unavailable', 'validation_failed',
+  'routines_unavailable_on_target', 'schedule_authority_missing',
+  'archive_agent_reach', 'restore_agent_reach',
+  'schedule_agent_reassignment',
+  'paid_plan_required', 'user_group_policy_denied', 'two_factor_required',
+  'handle_collision', 'invalid_handle', 'channel_membership_required',
+  'private_channel_invite_required', 'rate_limited', 'user_group_create_ambiguous',
+  'slack_unavailable', 'slack_operation_failed',
+]);
+
+interface ManagementTelemetrySink {
+  info(record: Record<string, unknown>): void;
+}
+
+/**
+ * Emit one content-free management metric. Only allowlisted fields and short
+ * machine tokens cross this boundary: no actor, workspace, object, recipe,
+ * prompt, account, credential, URL, or error text is accepted.
+ */
+export function emitManagementMetric(
+  event: string,
+  fields: Readonly<Record<string, ManagementMetricValue>> = {},
+  sink: ManagementTelemetrySink = console,
+): void {
+  const eventToken = safeToken(event);
+  const payload: Record<string, ManagementMetricValue> = {
+    component: 'management',
+    event: MANAGEMENT_METRIC_EVENTS.has(eventToken) ? eventToken : 'other',
+  };
+  for (const [key, value] of Object.entries(fields)) {
+    if (!MANAGEMENT_METRIC_FIELDS.has(key)) continue;
+    if (typeof value === 'string') payload[key] = safeFieldToken(key, value);
+    else if (typeof value === 'number' && Number.isFinite(value)) payload[key] = Math.max(0, value);
+    else if (typeof value === 'boolean') payload[key] = value;
+  }
+  try {
+    sink.info(payload);
+  } catch {
+    // Observability is best effort and never changes control-plane behavior.
+  }
+}
+
+/** Reduce exact operations to a content-free Agent-authoring primitive. */
+export function agentAuthoringArtifactClass(
+  operations: readonly ManagementOperation[],
+): AgentAuthoringArtifactClass {
+  const classes = new Set<Exclude<AgentAuthoringArtifactClass, 'mixed'>>();
+  for (const operation of operations) {
+    switch (operation.kind) {
+      case 'create_agent':
+        classes.add('identity');
+        if (operation.agent.instructions) classes.add('instructions');
+        if (operation.agent.skills.length > 0) classes.add('skill');
+        if (operation.agent.model) classes.add('model');
+        if (operation.agent.requestedHandle) classes.add('slack_presence');
+        if (operation.agent.editPolicy) classes.add('edit_authority');
+        break;
+      case 'update_agent':
+        if ('name' in operation.patch || 'description' in operation.patch) classes.add('identity');
+        if ('instructions' in operation.patch) classes.add('instructions');
+        if ('skills' in operation.patch) classes.add('skill');
+        if ('model' in operation.patch) classes.add('model');
+        if ('requestedHandle' in operation.patch || 'slackPresence' in operation.patch) {
+          classes.add('slack_presence');
+        }
+        if ('editPolicy' in operation.patch) classes.add('edit_authority');
+        if ('mcpServers' in operation.patch || 'apiConnections' in operation.patch) {
+          classes.add('connection');
+        }
+        if ('repositories' in operation.patch) classes.add('repository');
+        break;
+      case 'update_agent_memory':
+        classes.add('memory');
+        break;
+      case 'save_routine':
+      case 'control_routine':
+      case 'run_routine':
+      case 'delete_routine':
+      case 'reassign_routine_agent':
+        classes.add('schedule');
+        break;
+      case 'grant_agent_channel':
+      case 'revoke_agent_channel':
+      case 'put_channel':
+      case 'archive_agent':
+      case 'restore_agent':
+      case 'delete_agent':
+        classes.add('reach');
+        break;
+      case 'request_setup':
+        if (operation.target.kind === 'repository_access') classes.add('repository');
+        else classes.add('connection');
+        break;
+      case 'update_member':
+        classes.add('edit_authority');
+        break;
+      case 'remove_provider_credential':
+        classes.add('connection');
+        break;
+      default:
+        classes.add('other');
+    }
+  }
+  if (classes.size === 0) return 'other';
+  if (classes.size > 1) return 'mixed';
+  return [...classes][0]!;
+}
+
+function safeToken(value: string): string {
+  return /^[a-z0-9][a-z0-9_.-]{0,63}$/i.test(value) ? value : 'other';
+}
+
+function safeFieldToken(key: string, value: string): string {
+  const token = safeToken(value);
+  if (token === 'other') return token;
+  if (key === 'reason') {
+    return REASON_TOKENS.has(token) || /^http_[1-5][0-9]{2}$/.test(token) ? token : 'other';
+  }
+  const allowed = METRIC_TOKENS[key];
+  return allowed?.has(token) ? token : 'other';
+}
+
+/** Tool failures, including schema rejection before the tool handler runs.
+ * Keep correlation IDs and known field names, never arguments or error text.
+ * The digest identifies repeated failures/static throw sites without publishing
+ * messages that can contain requester-authored values.
+ */
+export function emitManagementToolFailure(
+  observation: FlueObservation,
+  sink: ManagementTelemetrySink = console,
+): void {
+  if (observation.type !== 'tool' || !observation.isError || ![
+    'manage_scheduled_work', 'propose_workspace_changes', 'confirm_workspace_change',
+  ].includes(observation.toolName)) return;
+  try {
+    const error = observation.errorInfo;
+    const knownFields = new Set([
+      'action', 'name', 'description', 'taskText', 'scheduleKind', 'cronExpression',
+      'timezone', 'localDateTime', 'minutes', 'outputPolicy', 'delivery', 'routineId',
+      'expectedVersion', 'ownerAgentId', 'idempotencyKey', 'guideVersion',
+      'authoringReason', 'operations', 'itemId', 'kind', 'agentId',
+      'expectedRevision', 'patch', 'instructions', 'proposalId',
+    ]);
+    const issues = error?.meta?.issues;
+    const fields = new Set<string>(Array.isArray(issues) ? issues.flatMap((issue) =>
+      issue && Array.isArray(issue.path)
+        ? issue.path.filter((field: unknown) => typeof field === 'string' && knownFields.has(field))
+        : [],
+    ) : []);
+    // Pi's JSON-schema precheck happens before Flue's handler wrapper. It
+    // returns text rather than throwing through errorInfo. Discard the entire
+    // Received arguments section, and project only recognized validation data.
+    const result = observation.result as { content?: { type?: string; text?: string }[] } | undefined;
+    const validation = result?.content?.find((part) => part.type === 'text' &&
+      part.text?.startsWith(`Validation failed for tool "${observation.toolName}":\n`))
+      ?.text?.split('\n\nReceived arguments:')[0];
+    const validationCodes = new Set<string>();
+    if (validation) {
+      for (const line of validation.split('\n').slice(1)) {
+        const path = line.match(/^  - ([^:]+):/)?.[1];
+        for (const field of path?.split('.') ?? []) if (knownFields.has(field)) fields.add(field);
+        for (const [phrase, code] of [
+          ['additional properties', 'additional_properties'], ['required', 'required'],
+          ['constant', 'const'], ['type', 'type'], ['anyOf', 'any_of'], ['pattern', 'pattern'],
+        ]) if (line.toLowerCase().includes(phrase!.toLowerCase())) validationCodes.add(code!);
+      }
+    }
+    sink.info({
+      component: 'management',
+      event: 'tool.validation_failure', tool: observation.toolName,
+      ...diagnosticCorrelation(observation),
+      errorType: validation ? 'schema_validation' : ['ManagementError', 'ToolInputValidationError', 'ToolOutputValidationError']
+        .includes(error?.name ?? '') ? error!.name : 'other',
+      code: validation ? 'validation_failed' : safeFieldToken('reason', error?.code ?? 'other'),
+      fields: [...fields].sort(), validationCodes: [...validationCodes].sort(),
+      messageDigest: typeof (validation ?? error?.message) === 'string'
+        ? createHash('sha256').update((validation ?? error!.message)!).digest('hex') : undefined,
+    });
+  } catch {
+    // A diagnostic cannot change the tool's outcome.
+  }
+}
+
+function diagnosticCorrelation(source: object): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const key of ['instanceId', 'submissionId', 'conversationId', 'toolCallId', 'turnJobId', 'messageTs']) {
+    const value = (source as Record<string, unknown>)[key];
+    if (typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(value)) result[key] = value;
+  }
+  return result;
+}

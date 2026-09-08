@@ -1,0 +1,112 @@
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u;
+/**
+ * One table behind three consumers: the detector, the redactor, and the plain
+ * text markers the Slack streaming path holds back until a token boundary
+ * proves terminal redaction can no longer rewrite the tail.
+ *
+ * Flags are per signature on purpose: the AWS access-key-id shape is
+ * case-sensitive today, and widening it to `i` would change what counts as a
+ * credential.
+ */
+const CREDENTIAL_SIGNATURES: readonly {
+  source: string;
+  flags: string;
+  markers: readonly string[];
+}[] = [
+  { source: String.raw`\bxox[a-z]-[a-z0-9-]{20,}\b`, flags: 'i', markers: ['xox'] },
+  { source: String.raw`\bxapp-[a-z0-9-]{20,}\b`, flags: 'i', markers: ['xapp-'] },
+  { source: String.raw`\bsk-ant-[a-z0-9_-]{20,}\b`, flags: 'i', markers: ['sk-ant-'] },
+  {
+    source: String.raw`\bsk-proj-[a-z0-9_-]{20,}(?![a-z0-9_-])`,
+    flags: 'i',
+    markers: ['sk-proj-'],
+  },
+  {
+    source: String.raw`\b(?:gh[pousr]|github_pat)_[a-z0-9_]{20,}\b`,
+    flags: 'i',
+    markers: ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_'],
+  },
+  { source: String.raw`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`, flags: '', markers: ['AKIA', 'ASIA'] },
+  {
+    // Consume complete armor, including traditional encrypted-PEM metadata
+    // and blank lines. The hard character ceiling bounds malformed input.
+    source: String.raw`-----BEGIN ((?:[A-Z0-9][A-Z0-9 -]{0,62} )?PRIVATE KEY)-----[\s\S]{0,262144}?-----END \1-----`,
+    flags: 'i',
+    markers: ['-----BEGIN '],
+  },
+  {
+    // A truncated PEM has no trustworthy content boundary. Fail closed by
+    // removing the bounded remainder instead of exposing key material after
+    // merely replacing the BEGIN line.
+    source: String.raw`-----BEGIN (?:[A-Z0-9][A-Z0-9 -]{0,62} )?PRIVATE KEY-----[\s\S]{0,262144}$`,
+    flags: 'i',
+    markers: [],
+  },
+  {
+    source: String.raw`\b(?:CHICKPEA_(?:AUTH_SECRET|RECOVERY_TOKEN|CREDENTIAL_KEY_[A-Z0-9_]+)|TAG_ADMIN_TOKEN|ADMIN_TOKEN|SLACK_(?:BOT|APP)_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|COMPOSIO_(?:API_KEY|WEBHOOK_SECRET)|GITHUB_TOKEN)\s*=\s*[^\s]{8,}`,
+    flags: 'i',
+    markers: [
+      'CHICKPEA_AUTH_SECRET',
+      'CHICKPEA_RECOVERY_TOKEN',
+      'CHICKPEA_CREDENTIAL_KEY_',
+      'TAG_ADMIN_TOKEN',
+      'ADMIN_TOKEN',
+      'SLACK_BOT_TOKEN',
+      'SLACK_APP_TOKEN',
+      'ANTHROPIC_API_KEY',
+      'OPENAI_API_KEY',
+      'COMPOSIO_API_KEY',
+      'COMPOSIO_WEBHOOK_SECRET',
+      'GITHUB_TOKEN',
+    ],
+  },
+  {
+    source: String.raw`\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY)\b["']?\s*(?:=|:)\s*["']?[a-z0-9/+=]{8,}`,
+    flags: 'i',
+    markers: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'],
+  },
+];
+
+const CREDENTIAL_PATTERNS = CREDENTIAL_SIGNATURES.map(
+  (signature) => new RegExp(signature.source, signature.flags),
+);
+const CREDENTIAL_REDACTIONS = CREDENTIAL_SIGNATURES.map(
+  (signature) => new RegExp(signature.source, `${signature.flags}g`),
+);
+const CREDENTIAL_MARKERS: readonly string[] = CREDENTIAL_SIGNATURES.flatMap(
+  (signature) => signature.markers,
+);
+
+export function hasDisallowedControlCharacter(value: string): boolean {
+  return CONTROL_CHARACTER_PATTERN.test(value);
+}
+
+export function hasCredentialLikeContent(value: string): boolean {
+  return CREDENTIAL_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+export function redactCredentialLikeContent(text: string): string {
+  return CREDENTIAL_REDACTIONS.reduce(
+    (value, pattern) => value.replace(pattern, '[credential redacted]'),
+    text,
+  );
+}
+
+/** Literal prefixes of the signatures above, for streaming tail suppression. */
+export function credentialMarkers(): readonly string[] {
+  return CREDENTIAL_MARKERS;
+}
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** An empty string is never a usable credential, id, or label. */
+export function nonEmpty(value: string | undefined): string | undefined {
+  return value ? value : undefined;
+}
+
+/** As `nonEmpty`, for values whose surrounding whitespace is not significant. */
+export function trimmedNonEmpty(value: string | undefined): string | undefined {
+  return value?.trim() || undefined;
+}
