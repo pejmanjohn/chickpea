@@ -39,8 +39,9 @@ const stableJson = (value) => JSON.stringify(value, (_, entry) => entry && typeo
 export const inventoryDigest = (value) => createHash('sha256').update(stableJson(value)).digest('hex');
 
 export function validateTarget(target) {
-  if (!target || !/^[a-f0-9]{32}$/i.test(target.account) || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(target.worker) || !['core', 'sandbox'].includes(target.profile)) {
-    throw new Error('Select an existing Cloudflare account ID, Worker name, and core or sandbox profile.');
+  if (target?.profile === 'sandbox') throw new Error('Guided upgrades currently support the core profile only. Sandbox container images require the existing coding-sandbox deployment runbook.');
+  if (!target || !/^[a-f0-9]{32}$/i.test(target.account) || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(target.worker) || target.profile !== 'core') {
+    throw new Error('Select an existing Cloudflare account ID, Worker name, and core profile.');
   }
   let origin;
   if (target.url) {

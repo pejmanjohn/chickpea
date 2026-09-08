@@ -3,7 +3,7 @@ import { test } from 'node:test';
 // @ts-expect-error Release tooling JavaScript helper.
 import { createDeploymentInspector } from '../scripts/lib/inspect-deployment.mjs';
 // @ts-expect-error Release tooling JavaScript helper.
-import { validateInstallation, assertCompatibleRelease, overlayInstallation } from '../scripts/lib/upgrade-installation.mjs';
+import { validateTarget, validateInstallation, assertCompatibleRelease, overlayInstallation } from '../scripts/lib/upgrade-installation.mjs';
 
 function fixture() {
   return {
@@ -17,6 +17,14 @@ function fixture() {
     ],
   };
 }
+test('guided upgrades reject Sandbox profiles and malformed readiness origins', () => {
+  const target = { account: 'a'.repeat(32), worker: 'customer', profile: 'core', url: 'https://customer.example/' };
+  assert.equal(validateTarget(target).url, 'https://customer.example');
+  assert.throws(() => validateTarget({ ...target, profile: 'sandbox' }), /Sandbox container images/);
+  for (const url of ['http://customer.example', 'https://user:password@customer.example', 'https://customer.example/admin', 'https://customer.example/?token=x']) {
+    assert.throws(() => validateTarget({ ...target, url }), /existing public HTTPS/);
+  }
+});
 test('inspection performs only reads and returns the serving inventory', () => {
   const calls: string[][] = [];
   const inspector = createDeploymentInspector((args: string[]) => {

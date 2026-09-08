@@ -137,6 +137,8 @@ test('CLI rejects conflicting arguments and receipts outside its private directo
   const f = fixture(t);
   assert.match(f.run(['--to', 'v0.1.1', '--recover', '/tmp/receipt.json']).stderr, /exactly one/);
   assert.match(f.run(['--to', 'latest']).stderr, /exact stable/);
+  assert.match(f.run(['--configure', '--account', 'a'.repeat(32), '--worker', 'customer', '--profile', 'sandbox', '--url', 'https://customer.example']).stderr, /Sandbox container images/);
+  assert.equal(readFileSync(f.log, 'utf8'), '');
   const outside = join(f.base, 'outside'); mkdirSync(outside, { mode: 0o700 });
   writeFileSync(join(outside, 'receipt.json'), '{}', { mode: 0o600 });
   assert.match(f.run(['--resume', join(outside, 'receipt.json')]).stderr, /different upgrade-state/);

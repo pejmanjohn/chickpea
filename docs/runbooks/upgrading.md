@@ -20,7 +20,9 @@ npx wrangler login
 npm run upgrade -- --configure --account YOUR_ACCOUNT_ID --worker YOUR_EXISTING_WORKER --profile core --url https://YOUR_CHICKPEA_HOST
 ```
 
-Use `sandbox` only for an existing Sandbox-profile installation. The command
+Guided upgrades currently support the `core` profile only. Sandbox installations
+require the existing [Sandbox deployment procedure](coding-sandbox-deployment.md);
+version upload does not build or update their container image. The command
 inspects the selected existing Worker and records its account, name, profile,
 existing HTTPS origin, and resource identities privately under `~/.chickpea/upgrades/`. It never creates
 a Worker or database. For multiple deployments, add `--installation NAME` to
@@ -55,7 +57,7 @@ and its maintainer must have completed the populated upgrade/recovery test.
 
 During deployment the wrapper checks the current Worker again, preserves its
 AUTH_DB and Durable Object identities, supported plain variables, existing
-secrets, and setup authority, and verifies readiness at the recorded origin. It uploads a Worker version, rechecks the serving installation, then activates that exact version at 100% traffic. It does not deploy triggers or synchronize authored non-versioned settings, so existing routes, domains, crons, and observability remain in place. It does not apply schema
+secrets, and setup authority, and verifies readiness at the recorded origin. It uploads a Worker version, rechecks the serving installation, then activates that exact version at 100% traffic. It does not deploy triggers or synchronize authored observability, logpush, or tail consumers. Existing routes, domains, crons, and those settings remain in place. Wrangler may synchronize service and environment tags during version upload. It does not apply schema
 changes, replace encryption keys, or print another setup link. A split deployment,
 unknown binding/variable, missing authority, changed identity, or schema mismatch
 stops the command. Review unsupported configuration explicitly; do not delete it
