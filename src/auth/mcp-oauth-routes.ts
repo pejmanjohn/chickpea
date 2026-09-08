@@ -255,9 +255,8 @@ async function submitMcpConsent(c: Context, options: McpOAuthRuntimeOptions): Pr
   const response = await result.clone().json().catch(() => undefined) as
     | { redirect?: unknown; url?: unknown }
     | undefined;
-  if (response?.redirect === true && typeof response.url === 'string' &&
-      validClientRedirect(response.url)) {
-    return noStoreRedirect(response.url);
+  if (response?.redirect === true && typeof response.url === 'string') {
+    return createMcpConsentRedirectResponse(response.url);
   }
   return result;
 }
@@ -455,6 +454,22 @@ function browserHeaders(contentType: string): Headers {
     'Content-Type': contentType,
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
+  });
+}
+
+export function createMcpConsentRedirectResponse(location: string): Response {
+  if (!validClientRedirect(location)) return invalidBrowserRequest();
+  const destination = escapeHtml(location);
+  // Chrome applies the submitting page's form-action policy to HTTP redirects.
+  // Finish the same-origin POST before navigating to the OAuth client's callback.
+  // A scriptless document also supports loopback clients without relaxing CSP.
+  return new Response(`<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=${destination}"><title>Return to your coding agent</title></head>
+<body><main><h1>Return to your coding agent</h1><p>You are being returned to the app that requested access.</p><p><a href="${destination}">Continue</a> if you are not redirected automatically.</p></main></body>
+</html>`, {
+    status: 200,
+    headers: browserHeaders('text/html; charset=utf-8'),
   });
 }
 

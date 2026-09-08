@@ -733,6 +733,7 @@ function verifyNpmPackManifest(entries, packageJson) {
     'SECURITY.md',
     'AGENTS.md',
     'SETUP_AGENT.md',
+    'INSTALL_CHICKPEA_CLOUDFLARE.md',
     'TELEMETRY.md',
     'assets/admin-agent.png',
     'assets/bot-avatar.png',
