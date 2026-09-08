@@ -157,6 +157,13 @@ Cloudflare Builds triggers and supported upgrade paths.
 
 ## 2. Connect Cloudflare and select the target
 
+The core installation supports Workers Free; a Workers Paid upgrade is not
+required for this setup. Keep the account's existing plan. Cloudflare hosting
+and model-provider usage are separate: using Workers Free does not make OpenAI
+or another provider's API usage free. The optional coding sandbox requires
+Workers Paid and is outside this installation. See the README's
+[usage and billing notes](README.md#good-to-know) for limits and optional costs.
+
 Use the repository's installed Wrangler:
 
 ```sh
@@ -174,10 +181,45 @@ Cloudflare authorization, using the user's intended account. If they need to
 sign in, leave the page ready for them. Return to the terminal and run
 `whoami` again. A signed-in dashboard does not by itself authenticate Wrangler.
 
-Resolve the exact account ID. Use an explicitly selected Wrangler profile
-when needed, and use that same profile for inspection and deployment. Confirm
-the account, Worker name, and new-versus-existing install before mutation.
-If the user already supplied an unambiguous target, report it and continue.
+One email can have access to several Cloudflare accounts. The intended account
+may differ from the one authorized in Wrangler, even when the dashboard is
+already open to the right account. Resolve the exact account ID and confirm
+Wrangler can access it; an email match alone is insufficient. Confirm the
+account, Worker name, and new-versus-existing install before mutation. If the
+user already supplied an unambiguous target, report it and continue.
+
+If the current authorization can reach the selected account, keep it and set
+the explicit `account_id` below. If a separate login is needed, preserve the
+existing default login by using a named Wrangler authentication profile.
+From this installation's checkout, inspect available profiles:
+
+```sh
+npx --no-install wrangler auth list
+```
+
+Reuse a matching profile when available. Otherwise choose an unused name,
+replace `<selected-profile>` below, and complete authorization for the intended
+account:
+
+```sh
+npx --no-install wrangler auth create <selected-profile>
+```
+
+Activate the selected profile from this checkout, then verify its identity and
+account access:
+
+```sh
+npx --no-install wrangler auth activate <selected-profile>
+npx --no-install wrangler whoami
+```
+
+Activation binds the profile to the current directory and its subdirectories;
+do not activate it from a shared projects folder. Use plain `whoami` after
+activation, rather than assuming it accepts `--profile`. Keep the same profile
+for inspection and deployment, and record its name in the private receipt.
+These are Wrangler authentication profiles, distinct from Chickpea's `core`
+deployment profile. See [Wrangler's command reference](https://developers.cloudflare.com/workers/wrangler/commands/general/)
+if the installed CLI reports different options.
 
 For a **fresh** installation, inspect the account for both the proposed Worker
 name and D1 database name. The repository defaults are `chickpea` and
@@ -411,7 +453,9 @@ verified Slack installation available.
 | What happened | What the agent should do |
 | --- | --- |
 | The task stopped halfway through | Read the private receipt, inspect the exact deployment, and resume the current screen. Do not automatically clone, deploy, or install again. |
+| Wrangler authorization expired or the callback timed out | Inspect the terminal result. If authorization completed, activate the named profile if applicable and verify access with `whoami`. Otherwise restart the same `login` or `auth create <selected-profile>` command and use its fresh authorization URL. Preserve the chosen account and requested scopes. Wait for terminal confirmation, then activate the named profile if needed and verify with `whoami`. Do not replace an unrelated login or broaden access to recover. |
 | Build or deploy failed | Keep the first error and private logs. Check Node, dependencies, account, and target. Correct the diagnosed problem and rerun the guarded command against the same resources. |
+| A new `workers.dev` address temporarily returns a TLS or HTTPS connection error | Let the guarded deployment's bounded readiness wait finish; a newly provisioned address may not be reachable immediately. Do not start another deployment or disable TLS verification while it waits. If it still fails, preserve the error and use the serving-version and readiness checks below. |
 | Upload succeeded but readiness failed | Inspect the existing Worker's serving version and the readiness error. Preserve the original evidence before any retry; do not create another Worker or call this a successful install. |
 | Admin shows an unexpected release or source commit | Compare Installation details with the selected release and Cloudflare serving version. Check for a competing Cloudflare Builds trigger or a different target before changing anything. Never edit version labels to hide a mismatch. |
 | A D1 migration or database identity check failed | Preserve the database. Read [the AUTH_DB contract](docs/runbooks/auth-db-deployment.md). Do not delete data, clear IDs, or rewrite migration history to bypass the failure. |
