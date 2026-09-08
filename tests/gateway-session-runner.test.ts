@@ -24,6 +24,91 @@ import {
 
 const NOW = Date.UTC(2026, 7, 20, 12);
 
+function alarmStorage() {
+  let scheduled: number | null = null;
+  return {
+    getAlarm: async () => scheduled,
+    setAlarm: async (time: number) => { scheduled = time; },
+    deleteAlarm: async () => { scheduled = null; },
+  };
+}
+
+test('durable alarm restores an evicted gateway owner without cron or Admin traffic', async () => {
+  let clock = NOW;
+  let configured = true;
+  let failRead = false;
+  const storage = alarmStorage();
+  const runners: FakeRunnerControl[] = [];
+  const source = ts.createSourceFile('cloudflare-session.ts',
+    readFileSync(new URL('../src/slack/gateway/cloudflare-session.ts', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node) =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackGatewaySession');
+  assert.ok(declaration);
+  const compiled = ts.transpileModule(
+    declaration.getText(source).replace(/^export /u, '') + '\nSlackGatewaySession',
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const Probe = vm.runInNewContext(compiled, {
+    Date: { now: () => clock },
+    DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    getSettingsStore: () => ({ getSetting: async () => {
+      assert.ok(await storage.getAlarm(), 'recovery must be durable before external I/O');
+      if (failRead) throw new Error('state temporarily unavailable');
+      return configured ? 'configured' : null;
+    } }),
+    GATEWAY_BINDING_SETTING: 'binding',
+    GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
+    cloudflareWorkerVersionId: () => 'test-version',
+    GatewaySessionRunnerSupervisor,
+    GatewaySessionRunner: class extends FakeRunnerControl {
+      constructor() { super('healthy'); runners.push(this); }
+    },
+  }) as new (context: object, env: object) => { wake(): Promise<void>; alarm(): Promise<void> };
+  const context = { storage, waitUntil() {} };
+  const first = new Probe(context, {});
+  await first.wake();
+  const deadline = await storage.getAlarm();
+  assert.equal(deadline, NOW + 30_000);
+  clock += 10_000;
+  await first.wake();
+  assert.equal(await storage.getAlarm(), deadline, 'ordinary requests must not postpone recovery');
+
+  // Drop all instance state. Only storage and the platform alarm survive.
+  clock = deadline!;
+  await storage.deleteAlarm();
+  const recovered = new Probe(context, {});
+  await recovered.alarm();
+  assert.equal(runners.length, 2);
+  assert.equal(runners[1]!.starts, 1);
+  assert.equal(await storage.getAlarm(), clock + 30_000);
+
+  // An unhealthy live runner is replaced by the same alarm path.
+  runners[1]!.phase = 'stale';
+  await storage.deleteAlarm();
+  await recovered.alarm();
+  assert.equal(runners[1]!.stops, 1);
+  assert.equal(runners.length, 3);
+
+  configured = false;
+  await recovered.wake();
+  assert.equal(runners[2]!.stops, 1);
+  assert.equal(await storage.getAlarm(), null, 'disconnect stops an already-running owner');
+  configured = true;
+
+  // Failed recovery must leave another durable attempt, not just a timer.
+  await storage.deleteAlarm();
+  failRead = true;
+  const retry = new Probe(context, {});
+  await assert.rejects(retry.alarm(), /temporarily unavailable/);
+  assert.equal(await storage.getAlarm(), clock + 30_000);
+  failRead = false;
+  configured = false;
+  await storage.deleteAlarm();
+  await retry.alarm();
+  assert.equal(await storage.getAlarm(), null, 'unconfigured installations must not wake forever');
+});
+
 test('concurrent Durable Object wakes share one supervisor and leave no orphan session on restart', async () => {
   // Execute the real DO class with a delayed cross-object settings read. The
   // runner supervisor is real; socket transport itself is covered below.
@@ -41,7 +126,9 @@ test('concurrent Durable Object wakes share one supervisor and leave no orphan s
   const runners: FakeRunnerControl[] = [];
   const Probe = vm.runInNewContext(compiled, {
     DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
-    getSettingsStore: () => ({ getSetting: () => new Promise<string | null>((resolve) => pending.push(resolve)) }),
+    getSettingsStore: () => ({ getSetting: () => runners.length
+      ? Promise.resolve('configured')
+      : new Promise<string | null>((resolve) => pending.push(resolve)) }),
     GATEWAY_BINDING_SETTING: 'binding',
     GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
     createGatewayDeploymentClient: () => ({ loadSessionCheckpoint: async () => undefined }),
@@ -54,8 +141,9 @@ test('concurrent Durable Object wakes share one supervisor and leave no orphan s
   }) as new (context: object, env: object) => {
     wake(): Promise<void>; restart(): Promise<void>; status(): Promise<{ healthy: boolean }>;
   };
-  const object = new Probe({ waitUntil() {} }, {});
+  const object = new Probe({ waitUntil() {}, storage: alarmStorage() }, {});
   const calls = [object.wake(), object.wake(), object.status()];
+  await spin();
   assert.equal(pending.length, 3, 'external settings RPC allows startup calls to interleave');
   pending.splice(0).forEach((resolve) => resolve('configured'));
   await Promise.all(calls);
@@ -191,7 +279,7 @@ test('Durable Object reconnect recreates a client whose state RPC stub has faile
     const bootstrap = makeClient();
     await bootstrap.beginClaim();
     await bootstrap.refreshClaim();
-    const object = new Probe({ waitUntil() {} }, {});
+    const object = new Probe({ waitUntil() {}, storage: alarmStorage() }, {});
     await object.wake();
     sockets[0]!.open();
     await waitFor(() => sockets[0]!.sent.length === 1);
