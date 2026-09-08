@@ -495,7 +495,10 @@ npm run upgrade -- --configure --installation <installation-name> --account <acc
 ```
 
 Here `--profile core` selects Chickpea's deployment profile, not a Wrangler
-authentication profile. Configuration only inspects the existing deployment
+authentication profile. If you use a named Wrangler login, add
+`--wrangler-profile <selected-profile>` to this configure command. The updater
+remembers it for inspection, deployment, resume, and recovery across temporary
+directories. Configuration only inspects the existing deployment
 and records its resource identities privately under `~/.chickpea/upgrades/`.
 It does not create resources or deploy. Record the tooling directory and chosen
 installation name in the installation receipt, and use that same name below.
