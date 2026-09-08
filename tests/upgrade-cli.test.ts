@@ -83,7 +83,7 @@ function fixture(t: any) {
     appendFileSync(process.env.UPGRADE_FIXTURE_LOG,JSON.stringify(args)+'\\n');
     if(process.env.WRANGLER_HOME!=='fixture-oauth-home') throw new Error('OAuth home was discarded');
     const remote=JSON.parse(readFileSync(process.env.UPGRADE_FIXTURE_REMOTE,'utf8'));
-    const bindings=[{name:'AUTH_DB',type:'d1',id:'existing-db'},{name:'TAG_STATE',type:'durable_object_namespace',namespace_id:'existing-state',class_name:'TagStateStore',script_name:'customer-test-worker'},...Object.entries({CHICKPEA_APP_VERSION:remote.version,CHICKPEA_SOURCE_COMMIT:remote.commit,CHICKPEA_SETUP_CAPABILITY_DIGEST:'a'.repeat(43),CHICKPEA_SETUP_CAPABILITY_ISSUED_AT:'1780000000000'}).map(([name,text])=>({name,text,type:'plain_text'}))];
+    const bindings=[...['CHICKPEA_AUTH_SECRET','CHICKPEA_CREDENTIAL_KEY_CURRENT_ID','CHICKPEA_CREDENTIAL_KEY_V1'].map(name=>({name,type:'secret_text'})),{name:'AUTH_DB',type:'d1',id:'existing-db'},{name:'TAG_STATE',type:'durable_object_namespace',namespace_id:'existing-state',class_name:'TagStateStore',script_name:'customer-test-worker'},...Object.entries({CHICKPEA_APP_VERSION:remote.version,CHICKPEA_SOURCE_COMMIT:remote.commit,CHICKPEA_SETUP_CAPABILITY_DIGEST:'a'.repeat(43),CHICKPEA_SETUP_CAPABILITY_ISSUED_AT:'1780000000000'}).map(([name,text])=>({name,text,type:'plain_text'}))];
     if(args[0]==='secret') console.log(JSON.stringify(['CHICKPEA_AUTH_SECRET','CHICKPEA_CREDENTIAL_KEY_CURRENT_ID','CHICKPEA_CREDENTIAL_KEY_V1'].map(name=>({name}))));
     else if(args[0]==='deployments') console.log(JSON.stringify({versions:[{version_id:remote.id,percentage:100}]}));
     else if(args[0]==='versions') console.log(JSON.stringify({resources:{bindings}}));

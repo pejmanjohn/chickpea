@@ -195,6 +195,12 @@ function createHarness() {
           process.stderr.write('Authentication error [code: 10000]');
           process.exit(1);
         }
+        const eventPath = path.join(process.cwd(), 'deployment.json');
+        if (process.env.DEPLOY_TEST_EMPTY_SECRET_LIST_AFTER_UPLOAD === '1' && existsSync(eventPath) &&
+            JSON.parse(readFileSync(eventPath, 'utf8')).stage === 'uploaded') {
+          process.stdout.write('[]');
+          process.exit(0);
+        }
         process.stdout.write(process.env.DEPLOY_TEST_SECRET_LIST || '[]');
         process.exit(0);
       }
@@ -344,6 +350,7 @@ function prepareUpgrade(harness: ReturnType<typeof createHarness>) {
   writeFileSync(configPath, JSON.stringify(config));
   const secretNames = ['CHICKPEA_AUTH_SECRET', 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID', 'CHICKPEA_CREDENTIAL_KEY_KEY_V1'];
   const bindings = [
+    ...secretNames.map((name) => ({ name, type: 'secret_text' })),
     { name: 'AUTH_DB', type: 'd1', id: 'test-database-id' },
     ...config.durable_objects.bindings.map((binding: any) => ({ ...binding, type: 'durable_object_namespace', namespace_id: `ns-${binding.name}` })),
     { name: 'CF_VERSION_METADATA', type: 'version_metadata' },
@@ -360,10 +367,10 @@ function prepareUpgrade(harness: ReturnType<typeof createHarness>) {
   };
 }
 
-test('customer upgrade preserves setup and credentials and records readiness without a setup link', (context) => {
+test('customer upgrade preserves authority through a transient empty secret list after upload', (context) => {
   const harness = createHarness();
   context.after(() => rmSync(harness.root, { recursive: true, force: true }));
-  const result = runHarness(harness, ['--skip-build'], prepareUpgrade(harness));
+  const result = runHarness(harness, ['--skip-build'], { ...prepareUpgrade(harness), DEPLOY_TEST_EMPTY_SECRET_LIST_AFTER_UPLOAD: '1' });
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /#setup=|mint|\/admin\/setup/);
   assert.equal(existsSync(harness.secretCapturePath), false);

@@ -10,6 +10,7 @@ function fixture() {
     exists: true, fingerprint: 'old:100', versions: [{ version_id: 'old', percentage: 100 }],
     secretNames: ['CHICKPEA_AUTH_SECRET', 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID', 'CHICKPEA_CREDENTIAL_KEY_V1', 'OPENAI_API_KEY'],
     bindings: [
+      ...['CHICKPEA_AUTH_SECRET', 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID', 'CHICKPEA_CREDENTIAL_KEY_V1', 'OPENAI_API_KEY'].map((name) => ({ name, type: 'secret_text' })),
       { name: 'AUTH_DB', type: 'd1', id: 'db-1' },
       { name: 'TAG_STATE', type: 'durable_object_namespace', namespace_id: 'ns-1', class_name: 'TagStateStore' },
       { name: 'AI', type: 'ai' }, { name: 'ASSETS', type: 'assets' }, { name: 'CF_VERSION_METADATA', type: 'version_metadata' },
@@ -35,6 +36,24 @@ test('inspection performs only reads and returns the serving inventory', () => {
   });
   assert.equal(inspector.inspect().fingerprint, 'old:100');
   assert.deepEqual(calls.map((args) => args.slice(0, 2)), [['secret', 'list'], ['deployments', 'status'], ['versions', 'view']]);
+});
+test('serving secret authority survives a transient empty script-wide list after upload', () => {
+  const inspector = createDeploymentInspector((args: string[]) => {
+    if (args[0] === 'secret') return { status: 0, stdout: '[]' };
+    if (args[0] === 'deployments') return { status: 0, stdout: JSON.stringify({ versions: fixture().versions }) };
+    return { status: 0, stdout: JSON.stringify({ resources: { bindings: fixture().bindings } }) };
+  });
+  const installed = validateInstallation(inspector.inspect());
+  assert.deepEqual(installed.secretNames, fixture().secretNames.sort());
+  assert.equal(installed.workerVersion, 'old');
+});
+test('script-wide secret names cannot substitute for missing serving-version authority', () => {
+  const inspector = createDeploymentInspector((args: string[]) => {
+    if (args[0] === 'secret') return { status: 0, stdout: JSON.stringify(fixture().secretNames.map((name) => ({ name }))) };
+    if (args[0] === 'deployments') return { status: 0, stdout: JSON.stringify({ versions: fixture().versions }) };
+    return { status: 0, stdout: JSON.stringify({ resources: { bindings: fixture().bindings.filter((binding) => binding.type !== 'secret_text') } }) };
+  });
+  assert.throws(() => validateInstallation(inspector.inspect()), /Permanent auth or credential-encryption secrets are missing/);
 });
 test('installation preserves supported vars and resources without copying secrets', () => {
   const installation = validateInstallation(fixture());
