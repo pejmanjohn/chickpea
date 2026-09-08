@@ -34,6 +34,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import {
   REPO_ROOT,
@@ -191,7 +192,7 @@ try {
 
   // --- Turn 1 on DB_A, then kill the process. ---
   {
-    const { child } = await runServerTurn({
+    const { child, getOutput } = await runServerTurn({
       serverEntry,
       fakeUrl: fake.url,
       dbPath: dbA,
@@ -200,7 +201,25 @@ try {
     });
     const finals = await waitForFinals(backend, 1, 15_000);
     const t1Final = finals.at(-1);
-    await stopChild(child);
+    // This case proves restart after a completed turn. A Slack HTTP effect is
+    // visible before its local receipt is committed; killing at that boundary
+    // instead tests ambiguous delivery recovery and can strand T2 behind T1.
+    // Wait for the receipt, not an arbitrary sleep or another model response.
+    const state = new DatabaseSync(`${dbA}.state`, { readOnly: true });
+    let delivered = false;
+    try {
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        const job = state.prepare('SELECT delivered FROM turn_jobs WHERE id = ?')
+          .get(`msg:${EXEC_CHANNEL}:${ROOT_TS}`);
+        if (job?.delivered === 1) { delivered = true; break; }
+        await delay(25);
+      }
+    } finally {
+      state.close();
+      await stopChild(child);
+    }
+    if (!delivered) throw new Error(`T1 delivery receipt was not persisted:\n${getOutput()}`);
     record(
       'T1 delivers a final carrying the durability marker, then server SIGKILLed',
       finals.length === 1 && !!t1Final && t1Final.text.includes(DURABILITY_MARKER),
