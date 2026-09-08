@@ -4087,6 +4087,14 @@ test('shared-gateway channel discovery uses the credential-free transport', asyn
     assert.equal(channelsBody.discovery.connected, true);
     assert.equal(channelsBody.channels[0].channelId, 'C_SUPPORT');
     assert.equal(channelsBody.channels[0].isPrivate, true);
+    fixture.transport.channel = {
+      id: 'C_NEW', name: 'new-channel', private: false, member: true, archived: false,
+    };
+    const cached = await fixture.app.request('http://localhost/admin/api/slack-channels', { headers: auth() });
+    assert.equal((await cached.json() as any).channels[0].id, 'C_SUPPORT');
+    const refreshed = await fixture.app.request('http://localhost/admin/api/slack-channels?refresh=1', { headers: auth() });
+    assert.equal((await refreshed.json() as any).channels[0].id, 'C_NEW');
+
   } finally {
     fixture.store.close();
     fixture.settings.close();
@@ -4111,8 +4119,8 @@ test('channel inventory refreshes renamed labels only within the discovered work
       fixture.transport.channel = {
         id: 'C_SUPPORT', name: 'renamed-channel', private: true, member: false, archived: false,
       };
-      const readChannels = async () => {
-        const response = await fixture.app.request('http://localhost/admin/api/channels', { headers: auth() });
+      const readChannels = async (refresh = false) => {
+        const response = await fixture.app.request('http://localhost/admin/api/channels' + (refresh ? '?refresh=1' : ''), { headers: auth() });
         assert.equal(response.status, 200);
         return (await response.json() as Record<string, any>).channels;
       };
@@ -4127,7 +4135,7 @@ test('channel inventory refreshes renamed labels only within the discovered work
       assert.equal(foreign.isMember, null);
       assert.equal(foreign.source, 'granted');
       fixture.transport.listChannels = async () => { throw new Error('unavailable'); };
-      const unavailable = await readChannels();
+      const unavailable = await readChannels(true);
       assert.equal(unavailable.find((channel: any) => channel.workspaceId === 'T_TEST').channelName, 'old-name');
     } finally {
       fixture.store.close();

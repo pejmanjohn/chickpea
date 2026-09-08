@@ -1,3 +1,4 @@
+import { ChannelDirectoryCache } from '../slack/channel-directory-cache.ts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { Hono, type Context, type Next } from 'hono';
@@ -1993,6 +1994,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return { teamId };
     }
   };
+  const channelDirectories = new WeakMap<object, ChannelDirectoryCache<Awaited<ReturnType<SlackTransport["listChannels"]>>>>();
   const discoverSlackChannels = async (
     c: Context,
   ): Promise<{
@@ -2027,7 +2029,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     if (workspaceId && (options.slackTransport || installation)) {
       try {
-        const listed = await (await agentSlackTransport(c, workspaceId)).listChannels();
+        // Scope cached discovery to this environment and installation revision.
+        // Live membership and channel authorization continue to use the transport.
+        const scope = platformEnv ?? settingsStore;
+        let directory = channelDirectories.get(scope);
+        if (!directory) {
+          directory = new ChannelDirectoryCache();
+          channelDirectories.set(scope, directory);
+        }
+        const key = JSON.stringify([workspaceId, installation?.revision, installation?.gatewayBindingId, installation?.appId]);
+        const listed = await directory.get(key,
+          async () => (await agentSlackTransport(c, workspaceId)).listChannels(),
+          c.req.query('refresh') === '1');
         return {
           channels: listed.channels
             .filter(({ archived }) => !archived)
