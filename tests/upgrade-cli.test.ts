@@ -9,7 +9,7 @@ import { migrationDigests } from '../scripts/lib/release-manifest.mjs';
 
 // Run the real command and Git/source/schema/journal code. Only GitHub, the
 // Cloudflare CLI, dependency installation, build, and deploy are offline doubles.
-function fixture(t: any) {
+function fixture(t: any, wranglerProfile?: string) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'chickpea-upgrade-cli-')));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const launcher = join(base, 'launcher'); const origin = join(base, 'origin'); const home = join(base, 'home');
@@ -35,6 +35,8 @@ function fixture(t: any) {
     import { writeDeploymentEvent } from '../journal.mjs';
     import path from 'node:path';
     import { execFileSync } from 'node:child_process';
+    const expectedProfile = process.env.UPGRADE_FIXTURE_PROFILE;
+    if (expectedProfile && process.argv[process.argv.indexOf('--profile') + 1] !== expectedProfile) throw new Error('Wrapper lost named login');
     const context = JSON.parse(readFileSync(process.env.CHICKPEA_UPGRADE_CONTEXT, 'utf8'));
     if (context.sourceRoot !== process.cwd()) throw new Error('Runner did not receive the retained build root');
     const redirect = JSON.parse(readFileSync('.wrangler/deploy/config.json', 'utf8'));
@@ -86,6 +88,7 @@ function fixture(t: any) {
     const {readFileSync,appendFileSync}=require('node:fs');const args=process.argv.slice(2);
     appendFileSync(process.env.UPGRADE_FIXTURE_LOG,JSON.stringify(args)+'\\n');
     if(process.env.WRANGLER_HOME!=='fixture-oauth-home') throw new Error('OAuth home was discarded');
+    if(process.env.UPGRADE_FIXTURE_PROFILE && args[args.indexOf('--profile')+1]!==process.env.UPGRADE_FIXTURE_PROFILE) throw new Error('Inspection lost named login');
     const remote=JSON.parse(readFileSync(process.env.UPGRADE_FIXTURE_REMOTE,'utf8'));
     const bindings=[...['CHICKPEA_AUTH_SECRET','CHICKPEA_CREDENTIAL_KEY_CURRENT_ID','CHICKPEA_CREDENTIAL_KEY_V1'].map(name=>({name,type:'secret_text'})),{name:'AUTH_DB',type:'d1',id:'existing-db'},{name:'TAG_STATE',type:'durable_object_namespace',namespace_id:'existing-state',class_name:'TagStateStore',script_name:'customer-test-worker'},...Object.entries({CHICKPEA_APP_VERSION:remote.version,CHICKPEA_SOURCE_COMMIT:remote.commit,CHICKPEA_SETUP_CAPABILITY_DIGEST:'a'.repeat(43),CHICKPEA_SETUP_CAPABILITY_ISSUED_AT:'1780000000000'}).map(([name,text])=>({name,text,type:'plain_text'}))];
     if(args[0]==='secret') console.log(JSON.stringify(['CHICKPEA_AUTH_SECRET','CHICKPEA_CREDENTIAL_KEY_CURRENT_ID','CHICKPEA_CREDENTIAL_KEY_V1'].map(name=>({name}))));
@@ -118,20 +121,21 @@ function fixture(t: any) {
   const run = (args: string[], confirm = false, afterUpload = false) => spawnSync(process.execPath, ['--import', preload, join(launcher, 'scripts/upgrade.mjs'), ...args], {
     cwd: launcher, encoding: 'utf8', input: confirm ? 'customer-test-worker\n' : undefined, timeout: 30_000,
     env: { ...process.env, HOME: home, PATH: `${join(base, 'bin')}:${process.env.PATH}`, npm_execpath: npm, WRANGLER_HOME: 'fixture-oauth-home',
-      UPGRADE_FIXTURE_LOG: log, UPGRADE_FIXTURE_REMOTE: remote, UPGRADE_FIXTURE_CONFIRM: confirm ? '1' : '0', UPGRADE_FIXTURE_AFTER_UPLOAD: afterUpload ? '1' : '0' },
+      ...(wranglerProfile ? { UPGRADE_FIXTURE_PROFILE: wranglerProfile } : {}), UPGRADE_FIXTURE_LOG: log, UPGRADE_FIXTURE_REMOTE: remote, UPGRADE_FIXTURE_CONFIRM: confirm ? '1' : '0', UPGRADE_FIXTURE_AFTER_UPLOAD: afterUpload ? '1' : '0' },
   });
-  const configure = () => { const result = run(['--configure', '--account', 'a'.repeat(32), '--worker', 'customer-test-worker', '--profile', 'core', '--url', 'https://customer.example']); assert.equal(result.status, 0, result.stderr); };
+  const configure = () => { const result = run(['--configure', '--account', 'a'.repeat(32), '--worker', 'customer-test-worker', '--profile', 'core', '--url', 'https://customer.example', ...(wranglerProfile ? ['--wrangler-profile', wranglerProfile] : [])]); assert.equal(result.status, 0, result.stderr); };
   return { base, home, remote, log, run, configure, receipts: () => join(home, '.chickpea/upgrades/receipts') };
 }
 
-test('current runner upgrades and recovers immutable legacy source without executing retained wrappers', (t) => {
-  const f = fixture(t); f.configure();
+for (const profile of [undefined, 'magoosh']) test(`current runner upgrades and recovers immutable legacy source with ${profile ?? 'default'} login`, (t) => {
+  const f = fixture(t, profile); f.configure();
   const initial = readFileSync(f.remote, 'utf8');
   const preflight = f.run(['--to', 'v0.1.1', '--preflight']);
   assert.equal(preflight.status, 0, preflight.stderr); assert.match(preflight.stdout, /Preflight passed/);
   assert.equal(readFileSync(f.remote, 'utf8'), initial);
   const receipt = join(f.receipts(), readdirSync(f.receipts())[0]!, 'receipt.json');
   assert.equal(JSON.parse(readFileSync(receipt, 'utf8')).stage, 'prepared');
+  assert.equal(JSON.parse(readFileSync(receipt, 'utf8')).target.wranglerProfile, profile);
   const resume = f.run(['--resume', receipt], true); assert.equal(resume.status, 0, resume.stderr);
   assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.1');
   const recover = f.run(['--recover', receipt], true); assert.equal(recover.status, 0, recover.stderr);
@@ -140,7 +144,7 @@ test('current runner upgrades and recovers immutable legacy source without execu
 });
 
 test('current runner recovers legacy source after a recorded post-upload interruption', (t) => {
-  const f = fixture(t); f.configure();
+  const f = fixture(t, 'magoosh'); f.configure();
   const failed = f.run(['--to', 'v0.1.1'], true, true);
   assert.equal(failed.status, 1);
   const directory = join(f.receipts(), readdirSync(f.receipts())[0]!);
@@ -169,6 +173,8 @@ test('CLI refuses altered retained source before dependency scripts or deploymen
 test('CLI rejects conflicting arguments and receipts outside its private directory', (t) => {
   const f = fixture(t);
   assert.match(f.run(['--to', 'v0.1.1', '--recover', '/tmp/receipt.json']).stderr, /exactly one/);
+  assert.match(f.run(['--to', 'v0.1.1', '--wrangler-profile', 'other']).stderr, /only during --configure/);
+  assert.match(f.run(['--configure', '--account', 'a'.repeat(32), '--worker', 'customer', '--profile', 'core', '--wrangler-profile', '../bad']).stderr, /authentication profile/);
   assert.match(f.run(['--to', 'latest']).stderr, /exact stable/);
   assert.match(f.run(['--configure', '--account', 'a'.repeat(32), '--worker', 'customer', '--profile', 'sandbox', '--url', 'https://customer.example']).stderr, /Sandbox container images/);
   assert.equal(readFileSync(f.log, 'utf8'), '');

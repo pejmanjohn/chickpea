@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
 import { assertNodeVersion } from './lib/node-version.mjs';
 import { wranglerInspector } from './lib/inspect-deployment.mjs';
-import { assertCompatibleRelease, inventoryDigest, overlayInstallation, validateInstallation, validateTarget } from './lib/upgrade-installation.mjs';
+import { assertCompatibleRelease, inventoryDigest, overlayInstallation, validateInstallation, validateTarget, wranglerProfileArgs } from './lib/upgrade-installation.mjs';
 import { assertPrivatePath, readPrivateJson, writePrivateJson } from './lib/upgrade-receipt.mjs';
 import { fetchReleaseSource, releaseTag, resolveOfficialRelease, verifyReleaseSource } from './lib/upgrade-source.mjs';
 import { executePreparedUpgrade } from './lib/upgrade-execution.mjs';
@@ -28,6 +28,8 @@ Resume or recover using the private receipt printed by the command:
   npm run upgrade -- --resume /absolute/path/to/receipt.json
   npm run upgrade -- --recover /absolute/path/to/receipt.json
 
+Use --wrangler-profile NAME during --configure to retain a named Wrangler login
+across inspection, deployment, resume, and recovery. This is separate from --profile core.
 Use --installation NAME for multiple installations (default: default).
 Recovery restores eligible previous code, not a data backup.
 Unversioned installations require the evidence described in docs/runbooks/upgrading.md.
@@ -36,7 +38,7 @@ Unversioned installations require the evidence described in docs/runbooks/upgrad
 function parseArgs(args) {
   const result = {};
   const flags = new Set(['help', 'configure', 'preflight']);
-  const values = new Set(['account', 'worker', 'profile', 'url', 'to', 'installation', 'resume', 'recover']);
+  const values = new Set(['account', 'worker', 'profile', 'wrangler-profile', 'url', 'to', 'installation', 'resume', 'recover']);
   for (let i = 0; i < args.length; i++) {
     const key = args[i].startsWith('--') ? args[i].slice(2) : '';
     if ((!flags.has(key) && !values.has(key)) || Object.hasOwn(result, key)) throw new Error('Unknown or repeated upgrade argument. Run npm run upgrade -- --help.');
@@ -48,7 +50,7 @@ function parseArgs(args) {
   }
   if (result.help) return result;
   if ([result.configure, result.to, result.resume, result.recover].filter(Boolean).length !== 1) throw new Error('Choose exactly one operation: --configure, --to, --resume, or --recover.');
-  if (!result.configure && (result.account || result.worker || result.profile || result.url)) throw new Error('Target overrides are accepted only during --configure.');
+  if (!result.configure && (result.account || result.worker || result.profile || result['wrangler-profile'] || result.url)) throw new Error('Target overrides are accepted only during --configure.');
   if (result.preflight && !result.to) throw new Error('--preflight requires --to.');
   if (result.to) releaseTag(result.to);
   if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(result.installation ?? 'default')) throw new Error('Installation names use lowercase letters, digits, and hyphens.');
@@ -107,7 +109,7 @@ function lockTarget(directory) {
 function schemaInspection(sourceRoot, configPath, target) {
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   const expected = expectedAuthSchema({ config, configPath });
-  const result = spawnSync(process.execPath, [path.join(root, 'node_modules/wrangler/bin/wrangler.js'), 'd1', 'execute', 'AUTH_DB', '--remote', '--json', '--command', AUTH_SCHEMA_QUERY, '--config', configPath],
+  const result = spawnSync(process.execPath, [path.join(root, 'node_modules/wrangler/bin/wrangler.js'), 'd1', 'execute', 'AUTH_DB', '--remote', '--json', '--command', AUTH_SCHEMA_QUERY, '--config', configPath, ...wranglerProfileArgs(target)],
     { cwd: sourceRoot, env: targetEnvironment(target), encoding: 'utf8', timeout: 30_000, maxBuffer: 2 * 1024 * 1024 });
   if (result.error || result.status !== 0) throw new Error('Unable to inspect the existing AUTH_DB schema. No deployment was attempted.');
   let payload;
@@ -137,7 +139,7 @@ async function main() {
     if (receipt.schema !== 1 || receipt.id !== path.basename(directory)) throw new Error('Unknown or malformed upgrade receipt.');
   }
   const stored = receipt ? undefined : options.configure ? undefined : readPrivateJson(installationFile);
-  const target = validateTarget(receipt?.target ?? (options.configure ? options : stored?.target));
+  const target = validateTarget(receipt?.target ?? (options.configure ? { ...options, wranglerProfile: options['wrangler-profile'] } : stored?.target));
   if (!target.url) throw new Error('Configure the existing Chickpea HTTPS origin with --url before upgrading.');
   const targetLock = privateDirectory(path.join(stateRoot, inventoryDigest({ account: target.account, worker: target.worker })));
   const unlock = lockTarget(targetLock);
@@ -146,7 +148,7 @@ async function main() {
     const inspectionConfigPath = path.join(inspectionDirectory, 'wrangler.json');
     const inspectionConfig = { name: target.worker, account_id: target.account, compatibility_date: '2026-08-20' };
     writePrivateJson(inspectionConfigPath, inspectionConfig);
-    const inspect = () => validateInstallation(wranglerInspector({ root, configPath: inspectionConfigPath, env: targetEnvironment(target) }).inspect());
+    const inspect = () => validateInstallation(wranglerInspector({ root, configPath: inspectionConfigPath, args: wranglerProfileArgs(target), env: targetEnvironment(target) }).inspect());
     const current = inspect();
     if (stored && (stored.schema !== 1 || stored.bindingsDigest !== inventoryDigest(current.resources))) throw new Error('The selected installation resources changed since configuration. Inspect the account and Worker before configuring again.');
     if (options.configure) {
@@ -154,7 +156,7 @@ async function main() {
       const previous = await resolveOfficialRelease(`v${current.version}`);
       if (previous.commit !== current.commit) throw new Error('Serving source does not match the official release. Follow the adoption guide.');
       writePrivateJson(installationFile, { schema: 1, target, bindingsDigest: inventoryDigest(current.resources) });
-      console.log(`Configured existing Worker ${target.worker} in account ${target.account} (${target.profile}).`);
+      console.log(`Configured existing Worker ${target.worker} in account ${target.account} (${target.profile}; Wrangler login: ${target.wranglerProfile ?? 'automatic'}).`);
       return;
     }
     if (!receipt) {
@@ -204,7 +206,7 @@ async function main() {
       // Preserve the overlay only in the generated artifact, never tracked source.
       writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
       writeContext(source, installation);
-      await subprocess(process.execPath, [path.join(root, 'scripts/deploy-with-epilogue.mjs'), '--skip-build', '--preflight-only'], checkout, deployEnvironment());
+      await subprocess(process.execPath, [path.join(root, 'scripts/deploy-with-epilogue.mjs'), '--skip-build', '--preflight-only', ...wranglerProfileArgs(target)], checkout, deployEnvironment());
     };
     if (options.preflight) {
       await prepare(receipt.destination, current);
@@ -215,7 +217,7 @@ async function main() {
     const result = await executePreparedUpgrade({ receipt, initial, direction: options.recover ? 'recover' : receipt.direction ?? 'upgrade', inspect,
       readEvent: () => readEvent(directory), save, prepare,
       confirm: async (source, installation, direction) => {
-        console.log(`\n${direction === 'recover' ? 'Recover previous code' : 'Upgrade'}: ${target.worker}\nCloudflare account: ${target.account}\nProfile: ${target.profile}\nChickpea URL: ${target.url}\nServing: v${installation.version} (${installation.commit.slice(0, 12)})\nDestination: ${source.tag} (${source.commit.slice(0, 12)})\nExisting data and credential roots will be retained. This is not a data backup.\nReceipt: ${receiptPath}`);
+        console.log(`\n${direction === 'recover' ? 'Recover previous code' : 'Upgrade'}: ${target.worker}\nCloudflare account: ${target.account}\nProfile: ${target.profile}\nWrangler login: ${target.wranglerProfile ?? 'automatic'}\nChickpea URL: ${target.url}\nServing: v${installation.version} (${installation.commit.slice(0, 12)})\nDestination: ${source.tag} (${source.commit.slice(0, 12)})\nExisting data and credential roots will be retained. This is not a data backup.\nReceipt: ${receiptPath}`);
         if (!process.stdin.isTTY) throw new Error('Interactive confirmation is required. Run this command in your terminal.');
         const input = createInterface({ input: process.stdin, output: process.stdout });
         try { return (await input.question(`Type ${target.worker} to continue: `)).trim() === target.worker; }
@@ -223,7 +225,7 @@ async function main() {
       },
       deploy: async (source, installation) => {
         writeContext(source, installation);
-        await subprocess(process.execPath, [path.join(root, 'scripts/deploy-with-epilogue.mjs'), '--skip-build'], sourceRoot(source), deployEnvironment());
+        await subprocess(process.execPath, [path.join(root, 'scripts/deploy-with-epilogue.mjs'), '--skip-build', ...wranglerProfileArgs(target)], sourceRoot(source), deployEnvironment());
       },
     });
     console.log(`Upgrade ${result}. Receipt: ${receiptPath}`);
