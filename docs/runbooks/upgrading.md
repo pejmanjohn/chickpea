@@ -8,11 +8,11 @@ Nothing updates automatically. The CLI makes the final compatibility decision.
 ## First-time command setup
 
 Use Node 24.20.0 from `.nvmrc`, Git, and your normal Cloudflare account access.
-Download or clone the official `v0.1.4` source release into a dedicated tooling
+Download or clone the official `v0.1.5` source release into a dedicated tooling
 directory, then run:
 
 ```sh
-git clone --branch v0.1.4 --single-branch https://github.com/pejmanjohn/chickpea.git chickpea-upgrades
+git clone --branch v0.1.5 --single-branch https://github.com/pejmanjohn/chickpea.git chickpea-upgrades
 cd chickpea-upgrades
 nvm install && nvm use
 npm ci
@@ -20,9 +20,9 @@ npx wrangler login
 npm run upgrade -- --configure --account YOUR_ACCOUNT_ID --worker YOUR_EXISTING_WORKER --profile core --url https://YOUR_CHICKPEA_HOST
 ```
 
-v0.1.4 supports guided upgrades from v0.1.3. For older installations, use
+v0.1.5 supports guided upgrades from v0.1.4. For older installations, use
 current tooling to apply each intermediate release in order:
-v0.1.0 → v0.1.1 → v0.1.2 → v0.1.3 → v0.1.4. Only the reviewed incoming version is accepted.
+v0.1.0 → v0.1.1 → v0.1.2 → v0.1.3 → v0.1.4 → v0.1.5. Only the reviewed incoming version is accepted.
 The v0.1.0 launcher predates fixes for custom Worker build paths and deployment
 inspection. Keep the older tooling directory and its receipts for reference;
 run upgrades and recovery from the current tooling directory. This changes the
@@ -52,8 +52,8 @@ Run the command from the tooling directory. The version below is illustrative;
 copy the actual destination shown in Settings.
 
 ```sh
-npm run upgrade -- --to v0.1.4 --preflight
-npm run upgrade -- --to v0.1.4
+npm run upgrade -- --to v0.1.5 --preflight
+npm run upgrade -- --to v0.1.5
 ```
 
 The command verifies the exact immutable official GitHub release and tag commit,

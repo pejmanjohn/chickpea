@@ -3287,7 +3287,7 @@
           if (state.connectionAccountForm !== form) return;
           if (!tested || !tested.ok) throw new Error((tested && tested.message) || "Could not connect to this MCP server.");
           form.reviewedTools = tested.tools || [];
-          form.selectedTools = [];
+          form.selectedTools = form.reviewedTools.map(function (tool) { return tool.name; });
           form.busy = false;
           render();
         }).catch(function (error) {
@@ -5618,9 +5618,11 @@
   }
 
   function customMcpToolChoices(tools, selected) {
-    return tools.map(function (tool) {
+    var busy = !!((state.connectionAccountForm || state.customMcpToolEditor || {}).busy);
+    var controls = '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>';
+    return controls + (tools.map(function (tool) {
       return '<label class="field"><span><input type="checkbox" data-action="custom-mcp-tool" data-tool="' + esc(tool.name) + '"' + (selected.indexOf(tool.name) >= 0 ? ' checked' : '') + '> ' + esc(tool.title || tool.name) + '</span>' + (tool.description ? '<span class="hint">' + esc(tool.description) + '</span>' : '') + '</label>';
-    }).join("") || '<p class="hint">This server returned no tools.</p>';
+    }).join("") || '<p class="hint">This server returned no tools.</p>');
   }
 
   function customMcpAccountFormHtml(form) {
@@ -5643,7 +5645,7 @@
       '<div class="skill-form-actions"><button class="btn btn-ghost btn-sm" data-action="connection-account-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button><button class="btn btn-primary btn-sm" data-action="connection-account-create"' + (busy || !form.ownerKind || !form.authMode ? ' disabled' : '') + '>' + (busy ? 'Connecting&hellip;' : form.authMode === 'oauth' ? 'Continue to sign in' : 'Test connection') + '</button></div></div>';
   }
 
-  function openCustomMcpTools(accountId) {
+  function openCustomMcpTools(accountId, selectAllIfEmpty) {
     var entry = (state.agentConnections.attached || []).find(function (entry) { return entry.account.id === accountId; });
     if (!entry || entry.account.policy.kind !== 'mcp') return;
     var ceiling = entry.binding && entry.binding.allowedCapabilities || [];
@@ -5651,6 +5653,9 @@
     state.customMcpToolEditor = { accountId: accountId, revision: entry.account.revision,
       tools: (entry.account.policy.discoveredTools || []).filter(function (tool) { return !ceiling.length || ceiling.indexOf(tool.name) >= 0; }),
       selectedTools: entry.account.policy.allowedTools.slice(), busy: false, error: '' };
+    if (selectAllIfEmpty && !state.customMcpToolEditor.selectedTools.length) {
+      state.customMcpToolEditor.selectedTools = state.customMcpToolEditor.tools.map(function (tool) { return tool.name; });
+    }
     render();
   }
 
@@ -10387,7 +10392,9 @@
     } catch (_) { copyFailed(); }
   }
 
-  function refreshData(renderAfterRefresh) {
+  var refreshGeneration = 0;
+  function refreshData(renderAfterRefresh, progressive) {
+    var generation = ++refreshGeneration;
     var slackRequest = WORKSPACE_ADMIN_UI
       ? api("/admin/api/slack-connection").catch(function () { return null; })
       : Promise.resolve(null);
@@ -10416,6 +10423,46 @@
     var environmentStatusRequest = WORKSPACE_ADMIN_UI
       ? api("/admin/api/environment/status", { cache: "no-store" }).catch(function () { return null; })
       : Promise.resolve(null);
+    if (progressive) {
+      var progressiveReady = false;
+      // Agent deep links must not wait for Slack discovery or provider checks.
+      // Each response updates only its own state and never replaces an edit draft.
+      function auxiliary(request, apply) {
+        return request.then(function (body) {
+          if (generation !== refreshGeneration) return;
+          apply(body);
+          syncChannelFormWorkspacePrefill();
+          if (progressiveReady) renderPreservingPagePosition();
+        }).catch(function () {});
+      }
+      auxiliary(api("/admin/api/models"), function (body) { state.models = body; });
+      auxiliary(slackRequest, function (body) { state.slack = body; });
+      auxiliary(onboardingRequest, function (result) { state.onboarding = result.body; state.onboardingError = result.error; });
+      auxiliary(workspaceDefaultRequest, function (body) {
+        if (body && body.workspaceDefault) applyWorkspaceDefault(body.workspaceDefault, false);
+      });
+      auxiliary(environmentStatusRequest, function (body) { state.environmentStatus = body; });
+      auxiliary(channelsRequest, function (result) {
+        state.channelIndex = result.channels;
+        state.channelIndexError = result.error;
+        state.grants = [];
+        result.channels.forEach(function (channel) {
+          (channel.grants || []).forEach(function (grant) {
+            state.grants.push(Object.assign({}, grant, {
+              workspaceId: channel.workspaceId, channelId: channel.channelId,
+              channelLabel: channel.channelName || channel.channelId
+            }));
+          });
+        });
+      });
+      return api("/admin/api/agents").then(function (body) {
+        state.agents = body.agents || [];
+        progressiveReady = true;
+        render();
+      }).catch(function (error) {
+        document.querySelector(".main-inner").innerHTML = '<div class="empty"><p class="field-label">Admin failed to load</p><p class="error">' + esc(error.message) + '</p></div>';
+      });
+    }
     return Promise.all([
       api("/admin/api/agents"),
       api("/admin/api/models"),
@@ -10812,6 +10859,14 @@
       });
     }
     if (action === "custom-mcp-back" && state.connectionAccountForm) { state.connectionAccountForm.reviewedTools = null; render(); }
+    if (action === "custom-mcp-tools-all" || action === "custom-mcp-tools-none") {
+      var toolSelection = state.connectionAccountForm || state.customMcpToolEditor;
+      if (toolSelection && !toolSelection.busy) {
+        toolSelection.selectedTools = action === "custom-mcp-tools-all"
+          ? (toolSelection.reviewedTools || toolSelection.tools || []).map(function (tool) { return tool.name; }) : [];
+        render();
+      }
+    }
     if (action === "custom-mcp-tools-open") openCustomMcpTools(target.getAttribute("data-connection-id"));
     if (action === "custom-mcp-tools-save") saveCustomMcpTools();
     if (action === "custom-mcp-tools-cancel") { state.customMcpToolEditor = null; render(); }
@@ -14404,7 +14459,7 @@
   state.oauthReturn = canNavigate ? oauthReturnFromSearch(location.search || "") : null;
   var connectorSetup = canNavigate ? connectorSetupFromPath(location.pathname) : null;
   var connectorSetupConsumed = false;
-  refreshData().then(async function () {
+  refreshData(null, initialRoute === "/admin" || /^\/admin\/agents(?:\/|$)/.test(initialRoute)).then(async function () {
     // Managed-only presets and the native-vs-managed Google decision both
     // depend on the Agent connections response. Do not consume the one-shot
     // connector handoff until that catalog and availability flag are known.
@@ -14451,8 +14506,7 @@
         await loadAgentConnections(state.profileDraft.id);
         var returnedAccount = (state.agentConnections.attached || []).find(function (entry) { return entry.account.id === state.oauthReturn.connectionId; });
         if (returnedAccount && returnedAccount.account.policy.kind === "mcp" && !returnedAccount.account.policy.presetId) {
-          openCustomMcpTools(returnedAccount.account.id);
-          state.agentConnections.notice = "Signed in. Choose the tools this Agent may use.";
+          openCustomMcpTools(returnedAccount.account.id, true);
         }
       }
       render();

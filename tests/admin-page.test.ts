@@ -15126,8 +15126,12 @@ for (const authMode of ['none', 'bearer']) {
     await flushAsync();
     assert.equal(harness.connectionAccountPosts.length, 0);
     assert.equal(harness.mcpTestPosts.length, 1);
-    assert.match(harness.app.innerHTML, /Choose tools/);
-    change({ target: checkboxTarget({ 'data-action': 'custom-mcp-tool', 'data-tool': 'read_reports' }, true) });
+    assert.match(harness.app.innerHTML, /2 of 2 selected/);
+    click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-none' }) });
+    assert.match(harness.app.innerHTML, /0 of 2 selected/);
+    click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-all' }) });
+    assert.match(harness.app.innerHTML, /2 of 2 selected/);
+    change({ target: checkboxTarget({ 'data-action': 'custom-mcp-tool', 'data-tool': 'delete_reports' }, false) });
     click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
     await flushAsync();
     assert.equal(harness.connectionAccountPosts.length, 1);
@@ -15151,6 +15155,8 @@ test('custom OAuth callback opens account tool review and keeps creation and edi
   await flushAsync();
   assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
   assert.doesNotMatch(harness.app.innerHTML, /account is ready for the Agent/);
+  assert.match(harness.app.innerHTML, /1 of 1 selected/);
+  assert.doesNotMatch(harness.app.innerHTML, /Signed in\. Choose/);
   const { click } = harness.listeners;
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
@@ -15158,4 +15164,31 @@ test('custom OAuth callback opens account tool review and keeps creation and edi
   click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_custom' }) });
   assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-create"/);
   assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
+  assert.match(harness.app.innerHTML, /0 of 1 selected/);
+});
+
+test('Agent deep links render before channel discovery and auxiliary checks finish', async () => {
+  const pending = new Map<string, (value: FakeResponse) => void>();
+  const delayed = new Set(['/admin/api/channels', '/admin/api/models', '/admin/api/onboarding', '/admin/api/environment/status']);
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()], initialPath: '/admin/agents/agent_conn',
+    settingsLoadFetch(path, method) {
+      if (method !== 'GET' || !delayed.has(path)) return undefined;
+      return new Promise<FakeResponse>(resolve => { pending.set(path, resolve); });
+    },
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Agent configuration/);
+  assert.match(harness.app.innerHTML, /Instructions/);
+  assert.equal(pending.size, 4);
+  // The delayed channel response must update discovery without resetting the editor.
+  const input = harness.listeners.input!;
+  input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Keep my unsaved instructions') });
+  pending.get('/admin/api/channels')!(jsonResponse({ channels: [] }));
+  pending.get('/admin/api/models')!(jsonResponse({ providers: [] }));
+  pending.get('/admin/api/onboarding')!(jsonResponse({ error: 'onboarding_not_found' }, 404));
+  pending.get('/admin/api/environment/status')!(jsonResponse({}));
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Keep my unsaved instructions/);
+  assert.match(harness.app.innerHTML, /Agent configuration/);
 });
