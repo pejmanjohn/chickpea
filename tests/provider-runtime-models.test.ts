@@ -36,7 +36,10 @@ test('the app supplements the compatible Pi catalog with current Workers AI meta
   const model = resolveModel('cloudflare-workers-ai/@cf/zai-org/glm-5.3-flash');
 
   assert.equal(model.name, 'GLM 5.3 Flash');
-  assert.equal(model.contextWindow, 32_768);
+  // The current GLM model retains its documented context window; applying
+  // the legacy floor here would misclassify valid responses as overflow.
+  // https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/
+  assert.equal(model.contextWindow, 1_048_576);
   assert.equal(model.maxTokens, 2_048);
   assert.equal(model.reasoning, true);
   assert.deepEqual(model.input, ['text', 'image']);
