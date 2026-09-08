@@ -110,6 +110,25 @@ test('short thread (single page) is returned intact', async () => {
   assert.equal(client.calls(), 1);
 });
 
+test('a fresh runtime prompt retains authenticated app replies as bounded background', async () => {
+  const client = fakeClientWithReplyPages([{ messages: [
+    humanMsg(1, '1001.000000'),
+    { user: 'U_APP', bot_id: 'B_APP', subtype: 'bot_message', text: '[["fixture","code"],["Acme upgrade","CEDAR-410"]]', ts: '1002.000000' },
+    { user: 'U_OTHER', bot_id: 'B_OTHER', text: 'Unrelated bot answer', ts: '1003.000000' },
+    { user: 'U_APP', bot_id: 'B_APP', subtype: 'message_deleted', text: 'Deleted control event', ts: '1004.000000' },
+    { user: 'U_APP', bot_id: 'B_APP', text: 'Future answer', ts: '2001.000000' },
+  ] }]);
+  const turn = threadTurn();
+  const context = await hydrateSlackContextViaWebClient(client as never, turn, { replyBotUserId: 'U_APP' });
+  const prompt = assembleSlackPrompt(turn, context);
+  assert.match(prompt, /CEDAR-410/);
+  assert.match(prompt, /Historical background only/);
+  assert.doesNotMatch(prompt, /Unrelated bot answer|Deleted control event|Future answer/);
+  assert.equal(context.messages.filter((message) => message.isTrigger).length, 1);
+  const withoutIdentity = await hydrateSlackContextViaWebClient(client as never, turn);
+  assert.ok(!withoutIdentity.messages.some((message) => message.text.includes('CEDAR-410')));
+});
+
 test('thread hydration retains human file-share text without copying Slack file metadata', async () => {
   const client = fakeClientWithReplyPages([
     {

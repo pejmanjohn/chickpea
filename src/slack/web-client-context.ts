@@ -45,6 +45,8 @@ interface SlackPromptApp {
 interface HydrateSlackContextOptions {
   maxMessages?: number;
   maxPages?: number;
+  /** Authenticated installation identity; applies only to thread replies. */
+  replyBotUserId?: string;
 }
 
 export async function hydrateSlackContextViaWebClient(
@@ -57,7 +59,7 @@ export async function hydrateSlackContextViaWebClient(
 
   try {
     if (turn.contextMode === 'thread') {
-      return await fetchThread(client, turn, maxMessages, maxPages);
+      return await fetchThread(client, turn, maxMessages, maxPages, options.replyBotUserId);
     }
     return await fetchHistory(client, turn, maxMessages);
   } catch (error) {
@@ -151,6 +153,7 @@ async function fetchThread(
   turn: NormalizedSlackTurn,
   maxMessages: number,
   maxPages: number,
+  replyBotUserId?: string,
 ): Promise<SlackTurnContext> {
   // conversations.replies paginates OLDEST-first from the thread root. A long
   // thread's most recent messages (including the one that triggered this turn)
@@ -171,7 +174,7 @@ async function fetchThread(
 
     const rawMessages = (response.messages ?? []) as unknown as SlackWebApiMessage[];
     collected.push(
-      ...toContextMessages(rawMessages).filter((message) =>
+      ...toContextMessages(rawMessages, replyBotUserId).filter((message) =>
         atOrBeforeSlackWatermark(message.ts, turn.messageTs)
       ),
     );
@@ -209,10 +212,10 @@ async function fetchThread(
 
 /**
  * Build the user-message prompt for the durable agent from the trigger text and
- * the hydrated (already bot-filtered) context rows. Reuses the shared
+ * the hydrated context rows, including authenticated app replies in threads. Reuses the shared
  * `formatSlackContextRows` / `slackContextWindowLabel` helpers so the emitted
- * provider request observably carries the human context rows and excludes the
- * filtered bot rows (scenario S07). The agent's own instructions are assembled
+ * provider request carries visible background and excludes unrelated bot rows.
+ * The agent's own instructions are assembled
  * separately inside the agent module.
  */
 export function assembleSlackPrompt(

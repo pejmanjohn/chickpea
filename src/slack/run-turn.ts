@@ -998,7 +998,9 @@ export async function runTurn(
       assignment.handoffContext ?? [];
     const hydratedContext = frozenHandoff.length > 0
       ? currentMessageOnlyContext(turn)
-      : await hydrateSlackContextViaWebClient(client, turn);
+      : await hydrateSlackContextViaWebClient(client, turn, {
+          ...(installationContext ? { replyBotUserId: installationContext.botUserId } : {}),
+        });
     const context = applyVisibilityBarrier(
       hydratedContext,
       preparedMemory?.visibilityBarrierAt ?? null,

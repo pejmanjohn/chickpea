@@ -130,12 +130,20 @@ export function computeHistoryWindow(
   };
 }
 
-export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextMessage[] {
+export function toContextMessages(
+  messages: SlackWebApiMessage[],
+  replyBotUserId?: string,
+): SlackContextMessage[] {
   return messages.flatMap((message) => {
     if (!message.user || !message.text || !message.text.trim() || !message.ts) {
       return [];
     }
-    if (message.bot_id || (message.subtype && message.subtype !== 'file_share')) {
+    // Only the authenticated installation's replies may join thread background.
+    // Other bots and Slack control events remain excluded.
+    const ownReply = Boolean(replyBotUserId && message.user === replyBotUserId && message.bot_id);
+    if ((!ownReply && message.bot_id) ||
+        (message.subtype && message.subtype !== 'file_share' &&
+          !(ownReply && message.subtype === 'bot_message'))) {
       return [];
     }
     return [
