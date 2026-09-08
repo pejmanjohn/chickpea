@@ -494,6 +494,7 @@ export async function runTurn(
         ...(options.workStore ? { workStore: options.workStore } : {}),
         ...(settingsStore ? { settingsStore } : {}),
         mode: ledgerAuthority ? 'enforce' : 'observe',
+        resumeSettled: !ledgerAuthority && options.flueDispatch?.flueSettlement !== undefined,
       })
     : undefined;
   let onNativeStarted = async (): Promise<void> => {};
@@ -931,6 +932,8 @@ export async function runTurn(
         operationId: statusGeneration,
         executionId: options.usageExecutionId ?? `exec:${statusGeneration}:1`,
         store: options.usageStore ?? options.appStores?.usage ?? getUsageStore(platformEnv),
+        ...(options.flueDispatch?.flueSettlement
+          ? { replaySettlementAt: options.flueDispatch.flueSettlement.settledAt } : {}),
         ...(options.runId ? { runId: options.runId } : {}),
         ...(platformEnv ? { platformEnv } : {}),
         ...(options.usageWriteBudgetMs === undefined
@@ -1540,6 +1543,7 @@ async function createSlackShadowLifecycle(input: {
   workStore?: WorkStore;
   settingsStore?: SettingsStore;
   mode: 'observe' | 'enforce';
+  resumeSettled?: boolean;
 }): Promise<ShadowWorkLifecycle | undefined> {
   try {
     const store = input.workStore ?? getWorkStore(input.platformEnv);
@@ -1560,6 +1564,7 @@ async function createSlackShadowLifecycle(input: {
         providerAuthRoute,
         input.assignment.modelCredential,
       ),
+      ...(input.resumeSettled ? { resumeSettled: true } : {}),
     }, {
       mode: input.mode,
     });

@@ -3,6 +3,8 @@ import test from 'node:test';
 import { init, useModel, useTool } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import { createCloudflareBindingProvider } from '../src/cloudflare-provider.ts';
+import { promptSlackThreadAgent } from '../src/slack/flue-dispatch.ts';
+import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
 import { createWorkersAiRestPiProvider } from '../src/config/pi-provider.ts';
 
 const modelId = '@cf/zai-org/glm-5.3-flash';
@@ -59,8 +61,22 @@ test('real Flue overflow compaction resumes after a successful tool without exec
   try {
     const agent = init(OverflowProbe, { id: 'synthetic-overflow' });
     await agent.read(await agent.dispatch('First synthetic context. '.repeat(5000)));
-    const reply = await agent.read(await agent.dispatch('Second synthetic context. '.repeat(2000)));
-    assert.match(reply.text, /Recovered answer\.$/);
+    const receipt = await agent.dispatch('Second synthetic context. '.repeat(2000));
+    const reply = await promptSlackThreadAgent({
+      handle: agent, message: 'unused saved dispatch', turnId: 'overflow-probe',
+      conversationKey: 'T_FIXTURE:C_FIXTURE:1', useCloudflareSandbox: false,
+      requestedModel: `cloudflare/${modelId}`,
+      state: {
+        dispatchEnvelope: { instanceId: 'synthetic-overflow' } as FlueDispatchEnvelopeV1,
+        dispatchReceipt: receipt,
+        prepare: () => { throw new Error('Must reuse saved dispatch'); },
+        reconcileExistingInstance: () => { throw new Error('Must reuse saved instance'); },
+        recordReceipt: value => value,
+        recordSettlement: value => value,
+        markRecoveryRequired: () => {},
+      },
+    });
+    assert.equal(reply.text, 'Recovered answer.');
     assert.equal(reads, 1, 'recovery must retain the completed tool result');
     assert.equal(calls, 5, 'one failed completion, one compaction and one recovery');
   } finally {

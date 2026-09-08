@@ -21,6 +21,8 @@ export interface WorkExecutionDescriptor {
   routeEvidence: SafeRuntimeModelRouteEvidence;
   /** Defer only when a later runtime seam will persist the resolved route. */
   deferRoute?: boolean;
+  /** Delivery of a durable settlement must retain its original execution. */
+  resumeSettled?: boolean;
 }
 
 interface WorkActionStartInput {
@@ -86,6 +88,17 @@ export async function createWorkExecutionBoundary(
     );
   }
   const now = options.now ?? Date.now;
+  const resumedExecution = descriptor.resumeSettled
+    ? (await store.listRunExecutions(run.id)).find((execution) =>
+        execution.fencingToken === run.fencingToken &&
+        execution.executorKind === descriptor.executorKind &&
+        execution.agentName === descriptor.agentName &&
+        execution.canonicalModel === descriptor.canonicalModel &&
+        execution.flueInstanceRef === descriptor.flueInstanceRef)
+    : undefined;
+  if (descriptor.resumeSettled && !resumedExecution) {
+    throw new WorkStateError('work_execution_conflict', 'The saved settlement has no matching current execution.');
+  }
   const lifecycle = new ShadowWorkLifecycle({
     store,
     runId: run.id,
@@ -99,6 +112,7 @@ export async function createWorkExecutionBoundary(
     flueInstanceRef: descriptor.flueInstanceRef,
     sensitivity: binding.sourceVisibility,
     routeEvidence: descriptor.routeEvidence,
+    ...(resumedExecution ? { resumedExecution } : {}),
     ...(descriptor.deferRoute ? { deferRoute: true } : {}),
     now,
     ...(options.onGap ? { onGap: options.onGap } : {}),

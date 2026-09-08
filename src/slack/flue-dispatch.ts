@@ -264,11 +264,17 @@ export async function promptSlackThreadAgent(
     }
   }
 
+  // Flue's UI reply folds every assistant step (including interrupted drafts)
+  // into one text value. Retain the durable step boundary before that fold.
+  const terminalText = new TerminalStepText(receipt.submissionId);
   let reply: AgentReply;
   try {
     reply = await handle.read(
       receipt as DispatchReceipt,
-      progressiveRelay ? { onEvent: progressiveRelay.onEvent } : undefined,
+      { onEvent: (chunk) => {
+        terminalText.onEvent(chunk);
+        progressiveRelay?.onEvent(chunk);
+      } },
     );
   } catch (error) {
     if (!(error instanceof AgentRunError)) {
@@ -303,7 +309,7 @@ export async function promptSlackThreadAgent(
 
   let completed: AgentDispatchResult;
   try {
-    completed = resultFromAgentReply(reply, input.requestedModel);
+    completed = resultFromAgentReply({ ...reply, text: terminalText.resolve(reply.text) }, input.requestedModel);
   } catch (error) {
     const failureKind = error instanceof AgentPromptFailure && error.kind === 'invalid-output'
       ? 'invalid-output' : 'agent';
@@ -340,6 +346,41 @@ export async function promptSlackThreadAgent(
   await progressiveRelay?.closeAndDrain();
   await input.beforeResult?.();
   return resultFromSettlement(checkpoint);
+}
+
+/** Slack presents the final self-contained assistant step, not working narration. */
+class TerminalStepText {
+  private step: { conversationId: string; messageId: string; text: string; completed: boolean } | undefined;
+  private position: { batch: number; index: number } | undefined;
+  constructor(private readonly submissionId: string) {}
+
+  onEvent(chunk: import('@flue/runtime').ConversationStreamChunk): void {
+    const prior = this.position;
+    if (prior && (chunk.position.batch < prior.batch ||
+        (chunk.position.batch === prior.batch && chunk.position.index <= prior.index))) return;
+    this.position = chunk.position;
+    if (chunk.type === 'conversation-reset') {
+      // A folded snapshot has no assistant-step boundaries. Do not guess.
+      this.step = undefined;
+    } else if (chunk.type === 'message-started' && chunk.submissionId === this.submissionId) {
+      this.step = { conversationId: chunk.conversationId, messageId: chunk.messageId, text: '', completed: false };
+    } else if (this.step && chunk.conversationId === this.step.conversationId &&
+        'messageId' in chunk && chunk.messageId === this.step.messageId) {
+      if (chunk.type === 'message-delta' && chunk.kind === 'text' && !this.step.completed) {
+        this.step.text += chunk.delta;
+        if (this.step.text.length > 128 * 1024) this.step = undefined;
+      } else if (chunk.type === 'message-completed') {
+        this.step.completed = true;
+      }
+    }
+  }
+
+  resolve(folded: string): string {
+    const text = this.step?.completed ? this.step.text : undefined;
+    // Only replace a proven complete trailing step. Legacy/snapshot-only reads
+    // and structured replies without text retain their existing behavior.
+    return text && (folded === text || folded.endsWith(`\n\n${text}`)) ? text : folded;
+  }
 }
 
 /** Distinguish terminal failure boundaries without logging error or reply content. */
