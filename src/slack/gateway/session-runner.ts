@@ -207,6 +207,11 @@ export class GatewaySessionRunnerSupervisor {
     return this.runner?.healthSnapshot();
   }
 
+  stop(): void {
+    this.runner?.stop();
+    this.runner = undefined;
+  }
+
   private async replace(
     stale: GatewaySessionRunnerControl | undefined,
   ): Promise<GatewaySessionRunnerHealthSnapshot | undefined> {

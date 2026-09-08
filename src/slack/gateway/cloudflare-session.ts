@@ -21,8 +21,8 @@ interface SlackGatewaySessionRpc {
 
 /**
  * One Cloudflare Durable Object owns the deployment's outbound delivery
- * socket. The minutely Worker heartbeat wakes it after eviction; while live,
- * the session runner rotates before Cloudflare's outbound-WebSocket ceiling.
+ * socket. A durable alarm restores it after eviction, independently of Worker
+ * maintenance; while live, the runner rotates the outbound WebSocket.
  */
 export class SlackGatewaySession extends DurableObject implements SlackGatewaySessionRpc {
   private supervisor: GatewaySessionRunnerSupervisor | undefined;
@@ -41,10 +41,21 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
   }
 
   async wake(): Promise<void> {
+    // Arm recovery before any remote read or connection attempt. In-memory
+    // retry timers disappear with the object and cannot recover an eviction.
+    // Do not postpone a pending alarm when Admin or maintenance also wakes us.
+    if (await this.state.storage.getAlarm() === null) {
+      await this.state.storage.setAlarm(Date.now() + 30_000);
+    }
     const platformEnv = this.env as PlatformEnv;
+    const binding = await getSettingsStore(platformEnv).getSetting(GATEWAY_BINDING_SETTING);
+    if (!binding) {
+      this.supervisor?.stop();
+      this.supervisor = undefined;
+      await this.state.storage.deleteAlarm();
+      return;
+    }
     if (!this.supervisor) {
-      const binding = await getSettingsStore(platformEnv).getSetting(GATEWAY_BINDING_SETTING);
-      if (!binding) return;
       // The cross-object settings read can admit another wake. Keep its
       // supervisor so concurrent callers cannot leave orphan delivery sockets.
       this.supervisor ??= new GatewaySessionRunnerSupervisor(() => new GatewaySessionRunner({
@@ -62,6 +73,12 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
       }));
     }
     await this.supervisor.ensureHealthy();
+  }
+
+  async alarm(): Promise<void> {
+    // getAlarm() is null while the alarm is executing. wake() persists the
+    // next attempt before doing I/O, even if this attempt subsequently fails.
+    await this.wake();
   }
 
   async restart(): Promise<void> {
