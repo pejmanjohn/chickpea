@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
 
 import {
   classifyCloudflareDeploymentProfile,
@@ -19,35 +20,13 @@ import {
 } from './cloudflare-deployment-profile.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const expectedOutputRoot = path.join(projectRoot, 'dist-cf');
-const redirectPath = path.join(projectRoot, '.wrangler', 'deploy', 'config.json');
 
 if (process.argv.length !== 3 || process.argv[2] !== '--validate-only') {
   console.error('Usage: npm run flue:build:cf (this validator is not a build command)');
   process.exit(2);
 }
 
-if (!existsSync(redirectPath)) {
-  throw new Error('Cloudflare build did not emit .wrangler/deploy/config.json.');
-}
-
-const redirect = JSON.parse(readFileSync(redirectPath, 'utf8'));
-if (typeof redirect.configPath !== 'string' || redirect.configPath.length === 0) {
-  throw new Error('Cloudflare deploy redirect has no configPath.');
-}
-
-const configPath = path.resolve(path.dirname(redirectPath), redirect.configPath);
-const relativeConfig = path.relative(expectedOutputRoot, configPath);
-if (
-  relativeConfig === '..' ||
-  relativeConfig.startsWith(`..${path.sep}`) ||
-  path.isAbsolute(relativeConfig)
-) {
-  throw new Error(`Cloudflare deploy config escaped dist-cf: ${configPath}`);
-}
-if (!existsSync(configPath)) {
-  throw new Error(`Cloudflare deploy config is missing: ${configPath}`);
-}
+const configPath = builtWorkerConfigPath(projectRoot);
 
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
 const expectedProfile = resolveCloudflareDeploymentProfile();

@@ -12,6 +12,7 @@ import { assertPrivatePath, readPrivateJson, writePrivateJson } from './lib/upgr
 import { fetchReleaseSource, releaseTag, resolveOfficialRelease, verifyReleaseSource } from './lib/upgrade-source.mjs';
 import { executePreparedUpgrade } from './lib/upgrade-execution.mjs';
 import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from './lib/auth-schema.mjs';
+import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HELP = `Chickpea guided upgrades (Cloudflare)
@@ -187,7 +188,7 @@ async function main() {
       verifyReleaseSource(checkout, source);
       await npm(['ci', '--no-audit', '--no-fund'], checkout, targetEnvironment(target));
       await npm(['run', 'build'], checkout, targetEnvironment(target));
-      const configPath = path.join(checkout, 'dist-cf/chickpea/wrangler.json');
+      const configPath = builtWorkerConfigPath(checkout);
       const config = JSON.parse(readFileSync(configPath, 'utf8'));
       overlayInstallation(config, installation, target);
       // Preserve the overlay only in the generated artifact, never tracked source.

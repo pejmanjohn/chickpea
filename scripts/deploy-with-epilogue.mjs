@@ -30,6 +30,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { hasScheduledComposition } from './worker-artifact.mjs';
+import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
 import { wranglerInspector, deploymentFingerprint } from './lib/inspect-deployment.mjs';
 import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from './lib/auth-schema.mjs';
 import { validateInstallation, validateTarget, assertSameInstallation, overlayInstallation } from './lib/upgrade-installation.mjs';
@@ -287,18 +288,6 @@ function buildCloudflareArtifact() {
 
 if (!skipBuild && !reuseWorkersBuildArtifact) buildCloudflareArtifact();
 
-function builtConfigPath() {
-  try {
-    const redirectPath = path.join(projectRoot, '.wrangler', 'deploy', 'config.json');
-    const redirect = readFileSync(redirectPath, 'utf8');
-    const entry = redirect.match(/"configPath"\s*:\s*"([^"]+)"/);
-    if (entry) return path.resolve(path.dirname(redirectPath), entry[1]);
-  } catch {
-    /* a disabled or not-yet-built capability has nothing to validate */
-  }
-  return undefined;
-}
-
 function sortedUnique(values) {
   return [...new Set(values)].sort();
 }
@@ -320,10 +309,7 @@ function renamedClassNames(migrations) {
 }
 
 function requireBuiltArtifact() {
-  const configPath = builtConfigPath();
-  if (!configPath) {
-    throw new Error('Cloudflare preflight requires the generated Vite Wrangler artifact.');
-  }
+  const configPath = builtWorkerConfigPath(projectRoot);
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   const artifactRoot = path.dirname(configPath);
   const bundlePath = path.resolve(artifactRoot, config.main ?? 'index.js');

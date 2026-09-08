@@ -23,7 +23,7 @@ function fixture(t: any) {
     assert.equal(result.status, 0, result.stderr); return result.stdout.trim();
   };
   git(['init', '--quiet']);
-  put(join(origin, '.gitignore'), 'dist-cf/\nnode_modules/\n');
+  put(join(origin, '.gitignore'), 'dist-cf/\n.wrangler/\nnode_modules/\n');
   put(join(origin, 'wrangler.jsonc'), '{}');
   put(join(origin, 'migrations/better-auth/0001.sql'), 'CREATE TABLE owners (id TEXT PRIMARY KEY);');
   for (const file of ['src/identity/migrations.ts', 'src/config/store.ts', 'src/work/migrations.ts']) put(join(origin, file), '// fixture');
@@ -31,6 +31,10 @@ function fixture(t: any) {
   put(join(origin, 'scripts/deploy-with-epilogue.mjs'), `
     import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
     import { writeDeploymentEvent } from '../journal.mjs';
+    import path from 'node:path';
+    const redirect = JSON.parse(readFileSync('.wrangler/deploy/config.json', 'utf8'));
+    const config = JSON.parse(readFileSync(path.resolve('.wrangler/deploy', redirect.configPath), 'utf8'));
+    if (config.name !== 'customer-test-worker' || config.d1_databases[0].database_id !== 'existing-db') throw new Error('Installation overlay missed the generated customer artifact');
     appendFileSync(process.env.UPGRADE_FIXTURE_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
     if (!process.argv.includes('--preflight-only')) {
       const context = JSON.parse(readFileSync(process.env.CHICKPEA_UPGRADE_CONTEXT, 'utf8'));
@@ -89,24 +93,27 @@ function fixture(t: any) {
     const args=process.argv.slice(2);appendFileSync(process.env.UPGRADE_FIXTURE_LOG,JSON.stringify(args)+'\\n');
     if(args.includes('verify:host')) throw new Error('Maintainer lock entered customer path');
     if(args[0]==='run'&&args[1]==='build'){
-      mkdirSync('dist-cf/chickpea',{recursive:true});
+      const output='dist-cf/'+process.env.WRANGLER_CI_OVERRIDE_NAME.replaceAll('-','_');
+      mkdirSync(output,{recursive:true});
+      mkdirSync('.wrangler/deploy',{recursive:true});
+      writeFileSync('.wrangler/deploy/config.json',JSON.stringify({configPath:'../../'+output+'/wrangler.json'}));
       const version=JSON.parse(readFileSync('package.json','utf8')).version;
       const commit=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
-      writeFileSync('dist-cf/chickpea/wrangler.json',JSON.stringify({name:process.env.WRANGLER_CI_OVERRIDE_NAME,vars:{CHICKPEA_APP_VERSION:version,CHICKPEA_SOURCE_COMMIT:commit},d1_databases:[{binding:'AUTH_DB',database_id:''}]}));
+      writeFileSync(output+'/wrangler.json',JSON.stringify({name:process.env.WRANGLER_CI_OVERRIDE_NAME,vars:{CHICKPEA_APP_VERSION:version,CHICKPEA_SOURCE_COMMIT:commit},d1_databases:[{binding:'AUTH_DB',database_id:''}]}));
     }
   `);
   // A stale maintainer reservation must not stop a customer build or recovery.
   put(join(home, '.chickpea/verification-host/owner.json'), JSON.stringify({ pid: 99999999, token: 'stale-fixture' }));
   const run = (args: string[], confirm = false) => spawnSync(process.execPath, ['--import', preload, join(launcher, 'scripts/upgrade.mjs'), ...args], {
-    cwd: launcher, encoding: 'utf8', input: confirm ? 'customer\n' : undefined, timeout: 30_000,
+    cwd: launcher, encoding: 'utf8', input: confirm ? 'customer-test-worker\n' : undefined, timeout: 30_000,
     env: { ...process.env, HOME: home, PATH: `${join(base, 'bin')}:${process.env.PATH}`, npm_execpath: npm, WRANGLER_HOME: 'fixture-oauth-home',
       UPGRADE_FIXTURE_LOG: log, UPGRADE_FIXTURE_REMOTE: remote, UPGRADE_FIXTURE_CONFIRM: confirm ? '1' : '0' },
   });
-  const configure = () => { const result = run(['--configure', '--account', 'a'.repeat(32), '--worker', 'customer', '--profile', 'core', '--url', 'https://customer.example']); assert.equal(result.status, 0, result.stderr); };
+  const configure = () => { const result = run(['--configure', '--account', 'a'.repeat(32), '--worker', 'customer-test-worker', '--profile', 'core', '--url', 'https://customer.example']); assert.equal(result.status, 0, result.stderr); };
   return { base, home, remote, log, run, configure, receipts: () => join(home, '.chickpea/upgrades/receipts') };
 }
 
-test('customer CLI configures, preflights, resumes and recovers with preserved login context', (t) => {
+test('custom-named Worker configures, preflights, resumes and recovers with preserved bindings and login context', (t) => {
   const f = fixture(t); f.configure();
   const initial = readFileSync(f.remote, 'utf8');
   const preflight = f.run(['--to', 'v0.1.1', '--preflight']);
