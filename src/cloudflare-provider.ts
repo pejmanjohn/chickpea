@@ -11,10 +11,10 @@ import {
   CURRENT_WORKERS_AI_MODEL_ID,
   isWorkersAiGlmModel,
   withCurrentWorkersAiModels,
+  workersAiGlmOutputLimit,
 } from './config/workers-ai-models.ts';
 import { decorateAttachmentProvider } from './slack/attachment-model-context.ts';
 
-const SEED_CLOUDFLARE_MAX_COMPLETION_TOKENS = 2_048;
 const SEED_CLOUDFLARE_RESPONSE_TIMEOUT_MS = 90_000;
 const GPT_OSS_MODEL_ID = '@cf/openai/gpt-oss-120b';
 const GPT_OSS_DEFAULT_MAX_TOKENS = 8_192;
@@ -72,7 +72,7 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
       // `thinkingLevel: 'off'` by omitting `reasoning_effort`, which therefore
       // leaves that server-side default enabled. Apply Cloudflare's explicit
       // chat-template policy at the binding boundary, remove any conflicting
-      // effort value, cap each generation to the same 2,048-token ceiling as
+      // effort value, cap each generation to the same model-specific ceiling as
       // the app's REST Workers AI path, and abort a provider stream that still
       // fails to settle. GLM 5.3 needs its reasoning parser enabled (below).
       // This policy is deliberately limited to the GLM
@@ -91,8 +91,8 @@ function withCloudflareModelPolicies(binding: CloudflareAIBinding): CloudflareAI
         typeof requestedMaxTokens === 'number' &&
         Number.isFinite(requestedMaxTokens) &&
         requestedMaxTokens > 0
-          ? Math.min(requestedMaxTokens, SEED_CLOUDFLARE_MAX_COMPLETION_TOKENS)
-          : SEED_CLOUDFLARE_MAX_COMPLETION_TOKENS;
+          ? Math.min(requestedMaxTokens, workersAiGlmOutputLimit(modelId))
+          : workersAiGlmOutputLimit(modelId);
       const timeoutSignal = AbortSignal.timeout(SEED_CLOUDFLARE_RESPONSE_TIMEOUT_MS);
       const callerSignal = options?.signal;
       const signal =

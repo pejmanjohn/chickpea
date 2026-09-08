@@ -51,6 +51,17 @@ test('the app supplements the compatible Pi catalog with current Workers AI meta
   });
 });
 
+test('REST Workers AI raises only the current reasoning model output budget', () => {
+  setWorkersAiRestPiProvider({
+    baseUrl: 'https://workers-ai.example.invalid/v1',
+    contextWindowFloor: 32_768,
+    maxTokens: 8_192,
+  });
+  assert.equal(resolveModel('cloudflare-workers-ai/@cf/zai-org/glm-5.3-flash').maxTokens, 8_192);
+  assert.equal(resolveModel('cloudflare-workers-ai/@cf/zai-org/glm-5.2').maxTokens, 2_048);
+  assert.equal(resolveModel('cloudflare-workers-ai/@cf/zai-org/glm-4.7-flash').maxTokens, 2_048);
+});
+
 test('an OpenRouter model discovered live is registered before runtime resolution', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   try {

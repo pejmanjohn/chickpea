@@ -46,7 +46,7 @@ test('the binding provider includes the current reviewed Cloudflare model', () =
   assert.ok(model);
   assert.equal(model.provider, 'cloudflare');
   assert.equal(model.contextWindow, 1_048_576);
-  assert.equal(model.maxTokens, 2_048);
+  assert.equal(model.maxTokens, 8_192);
   assert.deepEqual(model.input, ['text', 'image']);
 });
 
@@ -100,7 +100,7 @@ test('the reviewed GLM bindings select the compatible server-side thinking proto
   for (const call of calls) {
     assert.deepEqual(call.inputs, {
       messages: [{ role: 'user', content: 'hello' }],
-      max_completion_tokens: 2_048,
+      max_completion_tokens: call.modelId === '@cf/zai-org/glm-5.3-flash' ? 8_192 : 2_048,
       chat_template_kwargs: {
         clear_thinking: false,
         enable_thinking: call.modelId === '@cf/zai-org/glm-5.3-flash',
@@ -110,6 +110,21 @@ test('the reviewed GLM bindings select the compatible server-side thinking proto
     assert.ok(call.options?.signal instanceof AbortSignal);
     assert.equal((call.options?.signal as AbortSignal).aborted, false);
   }
+});
+
+test('GLM 5.3 has room for reasoning while respecting smaller caller output budgets', async () => {
+  const limits: unknown[] = [];
+  const binding = cloudflareBindingProviderOptions({ run: async (_id, input) => {
+    limits.push(input.max_completion_tokens);
+    return { response: 'ok' };
+  } }).binding;
+  for (const requested of [undefined, 512, 65_536]) {
+    await binding.run('@cf/zai-org/glm-5.3-flash', {
+      messages: [{ role: 'user', content: 'Create the synthetic schedule.' }],
+      ...(requested === undefined ? {} : { max_completion_tokens: requested }),
+    });
+  }
+  assert.deepEqual(limits, [8_192, 512, 8_192]);
 });
 
 test('a caller abort reaches the active Workers AI model request', async () => {

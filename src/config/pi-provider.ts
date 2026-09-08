@@ -22,6 +22,7 @@ import {
   CURRENT_WORKERS_AI_MODEL_ID,
   isWorkersAiGlmModel,
   withCurrentWorkersAiModels,
+  workersAiGlmOutputLimit,
 } from './workers-ai-models.ts';
 
 type PiBuiltinProviderId = 'anthropic' | 'openai' | 'openrouter';
@@ -102,7 +103,7 @@ export function createWorkersAiRestPiProvider(options: WorkersAiRestOptions): Pr
           contextWindow: model.id === CURRENT_WORKERS_AI_MODEL_ID
             ? model.contextWindow
             : Math.min(model.contextWindow, options.contextWindowFloor),
-          maxTokens: Math.min(model.maxTokens, options.maxTokens),
+          maxTokens: Math.min(model.maxTokens, options.maxTokens, workersAiGlmOutputLimit(model.id)),
         }
       : {}),
   }));

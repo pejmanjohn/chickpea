@@ -3,6 +3,11 @@ import type { Api, Model } from '@earendil-works/pi-ai';
 // Reviewed successor model. Note it requires Workers Paid; the Free-plan
 // default lives in src/config/seed.ts.
 export const CURRENT_WORKERS_AI_MODEL_ID = '@cf/zai-org/glm-5.3-flash';
+export const WORKERS_AI_REASONING_MAX_TOKENS = 8_192;
+
+export function workersAiGlmOutputLimit(modelId: string): number {
+  return modelId === CURRENT_WORKERS_AI_MODEL_ID ? WORKERS_AI_REASONING_MAX_TOKENS : 2_048;
+}
 
 /**
  * Curated Workers AI GLM models use a binding-boundary thinking policy. The
@@ -50,9 +55,9 @@ export function withCurrentWorkersAiModels<TApi extends Api>(
       // misclassify valid responses as silent overflow and compact/retry them.
       // https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/
       contextWindow: 1_048_576,
-      // Chickpea intentionally keeps Workers AI replies within its existing
-      // response ceiling even though the provider accepts a larger value.
-      maxTokens: 2_048,
+      // This budget includes reasoning. The previous 2K cap could end a
+      // generation before the first tool call or user-visible answer.
+      maxTokens: WORKERS_AI_REASONING_MAX_TOKENS,
       thinkingLevelMap: {
         off: null,
         minimal: null,
