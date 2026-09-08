@@ -189,6 +189,7 @@ import {
 } from '../config/effective-config.ts';
 import {
   AgentRevisionConflictError,
+  ConnectionAccountRevisionConflictError,
   AgentExistsError,
   AgentStillAssignedError,
   AgentStillReferencedError,
@@ -7572,6 +7573,62 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  app.put('/admin/api/agents/:agentId/connections/:connectionAccountId/mcp/authentication', async (c) => {
+    const parsed = v.safeParse(v.object({
+      expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+      authMode: v.literal('oauth'),
+    }), await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const { account } = await managedConnectionAccount(c, c.req.param('agentId'), c.req.param('connectionAccountId'));
+      if (account.policy.kind !== 'mcp' || account.policy.presetId || account.policy.authMode === 'oauth' || account.lifecycle === 'revoked') {
+        return c.json({ error: 'authentication_change_unavailable' }, 409);
+      }
+      const { credentialHeaderName: _header, credentialValuePrefix: _prefix, credentialOptional: _optional, ...oauthPolicy } = account.policy;
+      const updated = await store(c).putConnectionAccount({
+        ...account, lifecycle: 'needs_attention',
+        policy: { ...oauthPolicy, authMode: 'oauth', headerNames: [], discoveredTools: [], allowedTools: [] },
+      }, parsed.output.expectedRevision);
+      return c.json({ account: toConnectionAccountView(updated) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof ConnectionAccountRevisionConflictError) return c.json({ error: 'revision_conflict' }, 409);
+      return internalError(c, error);
+    }
+  });
+
+  app.put('/admin/api/agents/:agentId/connections/:connectionAccountId/mcp/tools', async (c) => {
+    const parsed = v.safeParse(v.object({
+      expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+      allowedTools: v.pipe(v.array(v.pipe(v.string(), v.minLength(1), v.maxLength(256))), v.maxLength(128)),
+    }), await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const { account, binding } = await managedConnectionAccount(
+        c, c.req.param('agentId'), c.req.param('connectionAccountId'),
+      );
+      if (account.policy.kind !== 'mcp' || account.policy.presetId || account.lifecycle !== 'ready') {
+        return c.json({ error: 'connection_not_ready' }, 409);
+      }
+      const discovered = new Set(account.policy.discoveredTools.map((tool) => tool.name));
+      const ceiling = binding?.allowedCapabilities ?? [];
+      const allowedTools = [...new Set(parsed.output.allowedTools)];
+      if (allowedTools.some((tool) => !discovered.has(tool) || (ceiling.length > 0 && !ceiling.includes(tool)))) {
+        return c.json({ error: 'invalid_tool_selection' }, 400);
+      }
+      const updated = await store(c).putConnectionAccount({
+        ...account, policy: { ...account.policy, allowedTools },
+      }, parsed.output.expectedRevision);
+      return c.json({ account: toConnectionAccountView(updated) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof ConnectionAccountRevisionConflictError) return c.json({ error: 'revision_conflict', message: 'This connection changed. Reload it before saving tool access.' }, 409);
+      return internalError(c, error);
+    }
+  });
+
   app.delete('/admin/api/agents/:id/connections/:connectionAccountId', async (c) => {
     try {
       const principal = principalByContext.get(c);
@@ -9865,7 +9922,9 @@ async function replaceVerifiedMcpConnection(
       ? result.discoveredTools
       : account.policy.discoveredTools;
     const allowedTools = result.lifecycleStatus === 'ready'
-      ? allowedToolsAfterMcpDiscovery(account.policy, discoveredTools)
+      ? (account.policy.presetId
+          ? allowedToolsAfterMcpDiscovery(account.policy, discoveredTools)
+          : discoveredTools.map((tool) => tool.name).filter((name) => account.policy.kind === 'mcp' && account.policy.allowedTools.includes(name)))
       : account.policy.allowedTools;
     await configStore.putConnectionAccount({
       ...account,

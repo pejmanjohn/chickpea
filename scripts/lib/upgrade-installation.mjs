@@ -43,6 +43,10 @@ export function validateTarget(target) {
   if (!target || !/^[a-f0-9]{32}$/i.test(target.account) || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(target.worker) || target.profile !== 'core') {
     throw new Error('Select an existing Cloudflare account ID, Worker name, and core profile.');
   }
+  if (target.wranglerProfile !== undefined && (typeof target.wranglerProfile !== 'string' ||
+      !/^[a-zA-Z0-9_-]+$/.test(target.wranglerProfile) || target.wranglerProfile.toLowerCase() === 'staging')) {
+    throw new Error('Use a valid Wrangler authentication profile name.');
+  }
   let origin;
   if (target.url) {
     try {
@@ -51,7 +55,12 @@ export function validateTarget(target) {
       origin = url.origin;
     } catch { throw new Error('Use the existing public HTTPS Chickpea origin, without a path or credentials.'); }
   }
-  return { account: target.account, worker: target.worker, profile: target.profile, ...(origin ? { url: origin } : {}) };
+  return { account: target.account, worker: target.worker, profile: target.profile, ...(target.wranglerProfile !== undefined ? { wranglerProfile: target.wranglerProfile } : {}), ...(origin ? { url: origin } : {}) };
+}
+
+// Authentication selection must survive temporary config and retained-source directories.
+export function wranglerProfileArgs(target) {
+  return target.wranglerProfile ? ['--profile', target.wranglerProfile] : [];
 }
 
 export function validateInstallation(remote) {

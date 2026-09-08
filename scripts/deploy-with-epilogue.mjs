@@ -33,7 +33,7 @@ import { hasScheduledComposition } from './worker-artifact.mjs';
 import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
 import { wranglerInspector, deploymentFingerprint } from './lib/inspect-deployment.mjs';
 import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from './lib/auth-schema.mjs';
-import { validateInstallation, validateTarget, assertSameInstallation, overlayInstallation } from './lib/upgrade-installation.mjs';
+import { validateInstallation, validateTarget, assertSameInstallation, overlayInstallation, wranglerProfileArgs } from './lib/upgrade-installation.mjs';
 import { readPrivateJson, writePrivateJson, writeDeploymentEvent } from './lib/upgrade-receipt.mjs';
 import { verifyRetainedBuildRoot } from './lib/upgrade-source.mjs';
 
@@ -600,7 +600,7 @@ try {
     const target = validateTarget(upgradeContext.target);
     if (upgradeContext.schema !== 1 || !target.url || !explicitProductionTarget || selectedEnvironmentTarget ||
         target.account !== process.env.CLOUDFLARE_ACCOUNT_ID || target.worker !== process.env.WRANGLER_CI_OVERRIDE_NAME ||
-        target.profile !== resolveCloudflareDeploymentProfile() || deployArgs.length ||
+        target.profile !== resolveCloudflareDeploymentProfile() || JSON.stringify(deployArgs) !== JSON.stringify(wranglerProfileArgs(target)) ||
         artifact.config.vars?.CHICKPEA_APP_VERSION !== upgradeContext.source?.version ||
         artifact.config.vars?.CHICKPEA_SOURCE_COMMIT !== upgradeContext.source?.commit) {
       throw new Error('Upgrade context does not match the selected target, source, or guarded command.');
@@ -1361,7 +1361,7 @@ child.on('close', async (code) => {
       const activationConfig = path.join(path.dirname(upgradeContextPath), 'activation-wrangler.json');
       writePrivateJson(activationConfig, { name: upgradeContext.target.worker, account_id: upgradeContext.target.account, compatibility_date: builtArtifact.config.compatibility_date });
       await new Promise((resolve, reject) => {
-        activeChild = spawn(process.execPath, [wranglerBin, 'versions', 'deploy', `${deployedVersionId}@100%`, '--yes', '--config', activationConfig],
+        activeChild = spawn(process.execPath, [wranglerBin, 'versions', 'deploy', `${deployedVersionId}@100%`, '--yes', '--config', activationConfig, ...deploymentResourceArgs()],
           { cwd: path.dirname(activationConfig), stdio: 'inherit' });
         activeChild.once('error', () => reject(new Error('Unable to activate the uploaded Worker version. Preserve the receipt.')));
         activeChild.once('close', (status) => status === 0 ? resolve() : reject(new Error('Worker activation was not verified. Preserve the receipt and resume.')));
