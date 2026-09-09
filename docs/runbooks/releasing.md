@@ -103,7 +103,7 @@ Do not move a published tag; issue a new version for corrections.
 `package.json`, both root version entries in `package-lock.json`, and
 `release.json` must agree. Run `npm run verify:release` after updating them.
 `release.json` records the storage generation, reviewed incoming versions,
-previous-code recovery policy, and exact migration-content digests. A digest
+reviewed recovery policy, and exact migration-content digests. A digest
 change requires a compatibility/recovery decision; do not merely regenerate
 digests to silence a failed gate. The first updater deliberately rejects any
 changed storage chain, even if a maintainer accidentally lists the origin.

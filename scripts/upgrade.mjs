@@ -8,11 +8,13 @@ import { createInterface } from 'node:readline/promises';
 import { assertNodeVersion } from './lib/node-version.mjs';
 import { wranglerInspector } from './lib/inspect-deployment.mjs';
 import { assertCompatibleRelease, inventoryDigest, overlayInstallation, validateInstallation, validateTarget, wranglerProfileArgs } from './lib/upgrade-installation.mjs';
-import { assertPrivatePath, readPrivateJson, writePrivateJson } from './lib/upgrade-receipt.mjs';
+import { assertPrivatePath, readPrivateJson, writePrivateJson, createRecoveryAuthority, validateRecoveryAuthority } from './lib/upgrade-receipt.mjs';
 import { fetchReleaseSource, releaseTag, resolveOfficialRelease, verifyReleaseSource } from './lib/upgrade-source.mjs';
-import { executePreparedUpgrade } from './lib/upgrade-execution.mjs';
+import { executePreparedUpgrade, requestDeliveryRecovery } from './lib/upgrade-execution.mjs';
 import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from './lib/auth-schema.mjs';
 import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
+
+import { TRANSPORT_RECOVERY } from './lib/release-manifest.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HELP = `Chickpea guided upgrades (Cloudflare)
@@ -179,6 +181,14 @@ async function main() {
     const previous = verifyReleaseSource(previousRoot, receipt.previous);
     const destination = verifyReleaseSource(destinationRoot, receipt.destination);
     assertCompatibleRelease(previous.manifest, destination.manifest);
+    if (destination.manifest.recovery === TRANSPORT_RECOVERY) {
+      if (!receipt.recovery) {
+        if (readEvent(directory)?.knownVersions?.length) throw new Error('Deployed upgrade is missing its recovery authority. Preserve the receipt.');
+        receipt.recovery = createRecoveryAuthority();
+        writePrivateJson(path.join(directory, 'receipt.json'), receipt);
+      }
+      validateRecoveryAuthority(receipt.recovery);
+    }
     inspectionConfig.d1_databases = [{ binding: 'AUTH_DB', database_name: 'chickpea-auth-db', database_id: initial.databaseId,
       migrations_dir: path.join(previousRoot, 'migrations/better-auth') }];
     writePrivateJson(inspectionConfigPath, inspectionConfig);
@@ -188,7 +198,7 @@ async function main() {
     const save = (value) => writePrivateJson(receiptPath, { ...value, updatedAt: new Date().toISOString() });
     const sourceRoot = (source) => source.commit === receipt.previous.commit ? previousRoot : destinationRoot;
     const deployEnvironment = () => ({ ...targetEnvironment(target, { deploy: true }), CHICKPEA_UPGRADE_CONTEXT: contextPath });
-    const writeContext = (source, installation) => writePrivateJson(contextPath, { schema: 1, target, installation, source, sourceRoot: sourceRoot(source) });
+    const writeContext = (source, installation) => writePrivateJson(contextPath, { schema: 1, target, installation, source, sourceRoot: sourceRoot(source), ...(source.commit === receipt.destination.commit && receipt.recovery ? { recovery: receipt.recovery } : {}) });
     const prepare = async (source, installation) => {
       const checkout = sourceRoot(source);
       verifyReleaseSource(checkout, source);
@@ -216,6 +226,8 @@ async function main() {
     }
     const result = await executePreparedUpgrade({ receipt, initial, direction: options.recover ? 'recover' : receipt.direction ?? 'upgrade', inspect,
       readEvent: () => readEvent(directory), save, prepare,
+      recoverDelivery: (installation) => requestDeliveryRecovery({ url: target.url,
+        workerVersion: installation.workerVersion, capability: validateRecoveryAuthority(receipt.recovery).capability }),
       confirm: async (source, installation, direction) => {
         console.log(`\n${direction === 'recover' ? 'Recover previous code' : 'Upgrade'}: ${target.worker}\nCloudflare account: ${target.account}\nProfile: ${target.profile}\nWrangler login: ${target.wranglerProfile ?? 'automatic'}\nChickpea URL: ${target.url}\nServing: v${installation.version} (${installation.commit.slice(0, 12)})\nDestination: ${source.tag} (${source.commit.slice(0, 12)})\nExisting data and credential roots will be retained. This is not a data backup.\nReceipt: ${receiptPath}`);
         if (!process.stdin.isTTY) throw new Error('Interactive confirmation is required. Run this command in your terminal.');

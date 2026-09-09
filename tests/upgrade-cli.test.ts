@@ -127,7 +127,7 @@ function fixture(t: any, wranglerProfile?: string) {
   return { base, home, remote, log, run, configure, receipts: () => join(home, '.chickpea/upgrades/receipts') };
 }
 
-for (const profile of [undefined, 'magoosh']) test(`current runner upgrades and recovers immutable legacy source with ${profile ?? 'default'} login`, (t) => {
+for (const profile of [undefined, 'customer-login']) test(`current runner upgrades and recovers immutable legacy source with ${profile ?? 'default'} login`, (t) => {
   const f = fixture(t, profile); f.configure();
   const initial = readFileSync(f.remote, 'utf8');
   const preflight = f.run(['--to', 'v0.1.1', '--preflight']);
@@ -144,7 +144,7 @@ for (const profile of [undefined, 'magoosh']) test(`current runner upgrades and 
 });
 
 test('current runner recovers legacy source after a recorded post-upload interruption', (t) => {
-  const f = fixture(t, 'magoosh'); f.configure();
+  const f = fixture(t, 'customer-login'); f.configure();
   const failed = f.run(['--to', 'v0.1.1'], true, true);
   assert.equal(failed.status, 1);
   const directory = join(f.receipts(), readdirSync(f.receipts())[0]!);

@@ -1,0 +1,148 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import {SqliteSettingsStore} from '../src/config/settings-store.ts';
+import {SqliteConfigStore} from '../src/config/store.ts';
+import {generateCredentialKeyring} from '../src/slack/credential-keyring.ts';
+import {GatewayDeploymentClient,GATEWAY_BINDING_SETTING} from '../src/slack/gateway/client.ts';
+import {GATEWAY_HTTP_SETTING,parseHttpDeliveryState} from '../src/slack/gateway/http-delivery.ts';
+import {loadOrCreateGatewayDeploymentIdentity,verifyGatewayRequestSignature} from '../src/slack/gateway/identity.ts';
+
+const origin='https://worker.account.workers.dev';
+async function fixture(loss?:'prepare'|'activate'|'rollback'){
+ const settings=new SqliteSettingsStore(':memory:');const config=new SqliteConfigStore(':memory:');const keyring=generateCredentialKeyring('test');
+ const identity=await loadOrCreateGatewayDeploymentIdentity({settings,keyring});
+ const binding={bindingId:'binding',workspaceId:'T_TEST',appId:'A_TEST',deploymentId:identity.deploymentId,clientId:'client',botUserId:'U_BOT',installerSlackUserId:'U_OWNER',sessionUrl:'wss://gateway.test/session',installedAt:1};
+ await settings.setSetting(GATEWAY_BINDING_SETTING,JSON.stringify(binding));
+ let remote:any={protocolVersion:1,...binding,mode:'socket',revision:0};let lost=false;let prepares=0;let activations=0;let blockActivation=false;let legacy=false;let hook:undefined|((action:string,request:any)=>Promise<void>);
+ const fetcher:typeof fetch=async(_url,init)=>{
+  const request=JSON.parse(String(init?.body));assert.equal(await verifyGatewayRequestSignature({publicKey:identity.publicKey,request}),true);
+  const action=request.kind.split('.')[1];
+  if(hook)await hook(action,request);
+  if(action==='claim'){
+    if(!request.owner || (remote.owner && (request.owner.issuedAt<remote.owner.issuedAt || (request.owner.issuedAt===remote.owner.issuedAt && request.owner.versionId!==remote.owner.versionId))))return Response.json({error:'delivery_owner_conflict'},{status:409});
+    if(!remote.owner || remote.owner.versionId!==request.owner.versionId)remote={...remote,owner:request.owner,candidate:undefined};
+  }
+  if(['prepare','activate','rollback'].includes(action)&&remote.owner&&JSON.stringify(request.owner)!==JSON.stringify(remote.owner))return Response.json({error:'delivery_owner_conflict'},{status:409});
+  if(legacy)return Response.json({error:'not_found'},{status:404});
+  if(action==='prepare'){
+   if(!remote.candidate&&remote.active?.operationId!==request.operationId){prepares++;remote.candidate={operationId:request.operationId,endpointUrl:request.endpointUrl,routeRevision:remote.revision+1,keyId:'key'+prepares,secret:Buffer.alloc(32,8).toString('base64url'),expiresAt:Date.now()+900000};}
+  }
+  if(action==='activate'){
+   if(blockActivation)return Response.json({error:'delivery_endpoint_unverified'},{status:409});
+   const staged=parseHttpDeliveryState(await settings.getSetting(GATEWAY_HTTP_SETTING));assert.equal(staged?.pending?.keyId,remote.candidate?.keyId);
+   activations++;remote={...remote,mode:'http',revision:remote.candidate.routeRevision,active:remote.candidate,candidate:undefined};
+  }
+  if(action==='rollback'&&remote.rollbackOperationId!==request.operationId&&remote.revision!==request.expectedRevision)return Response.json({error:'delivery_revision_conflict'},{status:409});
+  if(action==='rollback'){if(remote.rollbackOperationId!==request.operationId)remote={...remote,mode:'socket',revision:remote.revision+1,active:undefined,candidate:undefined,rollbackOperationId:request.operationId};}
+  if(action===loss&&!lost){lost=true;throw Error('synthetic response loss');}
+  return Response.json(remote);
+ };
+ const client=(deliveryOwner?:{issuedAt:number;versionId:string})=>new GatewayDeploymentClient({...(deliveryOwner?{deliveryOwner}:{}),settings,config,keyring,gatewayBaseUrl:'https://gateway.test',fetch:fetcher});
+ return {settings,config,client,remote:()=>remote,onAction(value:typeof hook){hook=value;},legacy(){legacy=true;},counts:()=>({prepares,activations}),block(value:boolean){blockActivation=value;},expire(){remote.candidate=undefined;},cleanup(){settings.close();config.close();}};
+}
+for(const loss of ['prepare','activate'] as const)test(`HTTP registration recovers lost ${loss} response using the same operation`,async()=>{
+ const f=await fixture(loss);try{
+  await assert.rejects(f.client().ensureHttpDelivery(origin));
+  assert.equal(await f.client().ensureHttpDelivery(origin),true);
+  const state=parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING));assert.equal(state?.mode,'http');assert.equal(state?.revision,1);assert.ok(state?.active);assert.equal(state?.pending,undefined);
+  assert.equal(f.counts().prepares,1);assert.equal(f.counts().activations,1);
+  assert.equal(await f.client().ensureHttpDelivery(origin),true);
+ }finally{f.cleanup();}
+});
+test('explicit HTTP rollback stays on socket during maintenance',async()=>{
+ const f=await fixture();try{await f.client().ensureHttpDelivery(origin);await f.client().rollbackHttpDelivery();assert.equal(await f.client().ensureHttpDelivery(origin),false);assert.equal(parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING))?.revision,2);}finally{f.cleanup();}
+});
+test('concurrent HTTP registration does not overwrite another local operation',async()=>{
+ const f=await fixture();try{const results=await Promise.allSettled([f.client().ensureHttpDelivery(origin),f.client().ensureHttpDelivery(origin)]);assert.equal(results.filter(r=>r.status==='fulfilled').length,1);assert.equal(await f.client().ensureHttpDelivery(origin),true);assert.equal(f.counts().prepares,1);}finally{f.cleanup();}
+});
+
+test('rollback reconciles an activation whose response was lost before any delivery',async()=>{
+ const f=await fixture('activate');try{await assert.rejects(f.client().ensureHttpDelivery(origin));await f.client().rollbackHttpDelivery();assert.equal(await f.client().ensureHttpDelivery(origin),false);assert.equal(parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING))?.revision,2);}finally{f.cleanup();}
+});
+test('maintenance recovers a lost rollback response',async()=>{
+ const f=await fixture('rollback');try{await f.client().ensureHttpDelivery(origin);await assert.rejects(f.client().rollbackHttpDelivery());assert.equal(await f.client().ensureHttpDelivery(origin),false);assert.equal(parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING))?.rollback,undefined);}finally{f.cleanup();}
+});
+test('expired key rotation restarts preparation without stranding the active HTTP route',async()=>{
+ const f=await fixture();try{await f.client().ensureHttpDelivery(origin);f.block(true);await assert.rejects(f.client().ensureHttpDelivery(origin,{rotate:true}));f.expire();f.block(false);assert.equal(await f.client().ensureHttpDelivery(origin),true);assert.equal(parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING))?.revision,2);}finally{f.cleanup();}
+});
+
+test('repeated explicit rollback preserves the completed route revision',async()=>{
+ const f=await fixture();try{await f.client().ensureHttpDelivery(origin);await f.client().rollbackHttpDelivery();await f.client().rollbackHttpDelivery();assert.equal(parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING))?.revision,2);}finally{f.cleanup();}
+});
+test('rollback before any HTTP registration pins the new gateway to socket',async()=>{
+ const f=await fixture();try{await f.client().rollbackHttpDelivery();assert.equal(await f.client().ensureHttpDelivery(origin),false);assert.equal(parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING))?.revision,1);}finally{f.cleanup();}
+});
+test('legacy gateway without HTTP capability remains recoverable',async()=>{
+ const f=await fixture();try{f.legacy();await f.client().rollbackHttpDelivery();assert.equal(await f.settings.getSetting(GATEWAY_HTTP_SETTING),undefined);}finally{f.cleanup();}
+});
+test('rollback capability cannot follow a reinstalled binding',async()=>{
+ const f=await fixture();try{const original=(await f.settings.getSetting(GATEWAY_BINDING_SETTING))!;await f.client().ensureHttpDelivery(origin);await f.settings.setSetting(GATEWAY_BINDING_SETTING,JSON.stringify({...JSON.parse(original),bindingId:'replacement'}));await assert.rejects(f.client().rollbackHttpDelivery(original),/installation changed/);}finally{f.cleanup();}
+});
+
+test('only newly authorized upgrade intent resumes HTTP after explicit rollback',async()=>{
+ const f=await fixture();try{
+  await f.client().ensureHttpDelivery(origin);await f.client().rollbackHttpDelivery();
+  assert.equal(await f.client().ensureHttpDelivery(origin),false);
+  assert.equal(await f.client().ensureHttpDelivery(origin,{authorizeResume:async()=>false}),false);
+  assert.equal(await f.client().ensureHttpDelivery(origin,{authorizeResume:async()=>true}),true);
+  assert.equal(parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING))?.revision,3);
+ }finally{f.cleanup();}
+});
+test('concurrent rollback invalidates an already-read upgrade route snapshot',async()=>{
+ const f=await fixture();try{
+  await f.client().ensureHttpDelivery(origin);await f.client().rollbackHttpDelivery();
+  await assert.rejects(f.client().ensureHttpDelivery(origin,{authorizeResume:async()=>{
+    await f.client().ensureHttpDelivery(origin,{authorizeResume:async()=>true});
+    await f.client().rollbackHttpDelivery();
+    return true;
+  }}),/changed concurrently/);
+  const state=parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING));
+  assert.equal(state?.mode,'socket');assert.equal(state?.revision,4);
+ }finally{f.cleanup();}
+});
+
+const oldOwner={issuedAt:1,versionId:'old-worker'};
+const newOwner={issuedAt:2,versionId:'new-worker'};
+test('a stale Worker cannot borrow the newest persisted delivery owner',async()=>{
+ const f=await fixture();try{
+  await f.client(oldOwner).ensureHttpDelivery(origin);
+  await f.client(newOwner).ensureHttpDelivery(origin);
+  await assert.rejects(f.client(oldOwner).rollbackHttpDelivery(),/different Worker/);
+  await assert.rejects(f.client(oldOwner).ensureHttpDelivery(origin));
+  assert.equal(f.remote().mode,'http');assert.deepEqual(f.remote().owner,newOwner);
+  assert.deepEqual(parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING))?.owner,newOwner);
+ }finally{f.cleanup();}
+});
+test('an in-flight old rollback cannot alter transport after newer readiness',async()=>{
+ const f=await fixture();let release!:()=>void;let entered!:()=>void;
+ const paused=new Promise<void>(resolve=>{release=resolve;});const waiting=new Promise<void>(resolve=>{entered=resolve;});
+ try{
+  await f.client(oldOwner).ensureHttpDelivery(origin);
+  f.onAction(async(action,request)=>{if(action==='rollback'&&request.owner.versionId===oldOwner.versionId){entered();await paused;}});
+  const stale=f.client(oldOwner).rollbackHttpDelivery();const rejected=assert.rejects(stale);
+  await waiting;
+  // The new owner can finish the old durable rollback before explicitly
+  // activating its own HTTP route; the paused old command remains fenced.
+  await f.client(newOwner).ensureHttpDelivery(origin,{authorizeResume:async()=>true});
+  assert.equal(await f.client(newOwner).ensureHttpDelivery(origin,{authorizeResume:async()=>true}),true);
+  release();await rejected;
+  assert.equal(f.remote().mode,'http');assert.deepEqual(f.remote().owner,newOwner);
+  const state=parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING));
+  assert.equal(state?.mode,'http');assert.equal(state?.rollback,undefined);
+ }finally{release?.();f.cleanup();}
+});
+
+test('rollback reconciles a same-owner activation racing its captured revision',async()=>{
+ const f=await fixture();let release!:()=>void;let entered!:()=>void;
+ const paused=new Promise<void>(resolve=>{release=resolve;});const waiting=new Promise<void>(resolve=>{entered=resolve;});
+ try{
+  f.onAction(async(action)=>{if(action==='activate'){entered();await paused;}});
+  const activation=f.client(oldOwner).ensureHttpDelivery(origin).catch(()=>false);
+  await waiting;let resumed=false;
+  f.onAction(async(action)=>{if(action==='rollback'&&!resumed){resumed=true;release();await activation;}});
+  await f.client(oldOwner).rollbackHttpDelivery();
+  assert.equal(f.remote().mode,'socket');assert.equal(f.remote().revision,2);
+  const state=parseHttpDeliveryState(await f.settings.getSetting(GATEWAY_HTTP_SETTING));
+  assert.equal(state?.mode,'socket');assert.equal(state?.rollback,undefined);
+ }finally{release?.();f.cleanup();}
+});

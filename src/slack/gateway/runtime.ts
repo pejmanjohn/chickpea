@@ -1,3 +1,5 @@
+import { cloudflareWorkerVersionId } from '../../config/cloudflare-version.ts';
+import { DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING } from '../../auth/deployment-activation.mjs';
 import {
   getConfigStore,
   getIdentityStore,
@@ -35,9 +37,12 @@ export function createGatewayDeploymentClient(
     settings,
     config,
   });
+  const versionId = cloudflareWorkerVersionId(env);
+  const issuedAt = Number(env?.[DEPLOYMENT_ACTIVATION_ISSUED_AT_BINDING]);
   return new GatewayDeploymentClient({
     settings,
     config,
+    ...(versionId && Number.isSafeInteger(issuedAt) && issuedAt > 0 ? {deliveryOwner:{versionId,issuedAt}} : {}),
     identity: getIdentityStore(env),
     keyring: getSlackCredentialDependencies(env).keyring,
     gatewayBaseUrl: resolveChickpeaGatewayUrl(env),

@@ -1,5 +1,5 @@
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 
 export function assertPrivatePath(file, { directory = false } = {}) {
@@ -55,4 +55,18 @@ export function writeDeploymentEvent(contextPath, stage, workerVersion) {
   // which fails before Wrangler returns an upload ID. Readiness stays specific
   // to the latest event; a historical upload alone never proves health.
   writePrivateJson(file, { schema: 1, stage, knownVersions: knownVersions.slice(-32), ...(workerVersion ? { workerVersion } : {}), at: new Date().toISOString() });
+}
+
+// The raw capability is private receipt authority, never a Worker binding or log.
+export function createRecoveryAuthority() {
+  const capability = randomBytes(32).toString('base64url');
+  return { capability, digest: createHash('sha256').update(capability).digest('base64url') };
+}
+
+export function validateRecoveryAuthority(value) {
+  if (!value || !/^[A-Za-z0-9_-]{43}$/.test(value.capability ?? '') ||
+      value.digest !== createHash('sha256').update(value.capability).digest('base64url')) {
+    throw new Error('The private upgrade recovery authority is missing or invalid. Preserve the receipt.');
+  }
+  return value;
 }

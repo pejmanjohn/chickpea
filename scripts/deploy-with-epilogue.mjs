@@ -1268,6 +1268,7 @@ async function requestDeploymentReadiness(baseUrl, versionId, activation) {
       headers: {
         Authorization: `Bearer ${activation.capability}`,
         'X-Chickpea-Target-Version': versionId,
+        ...(upgradeContext?.recovery?.digest ? { 'X-Chickpea-Recovery-Digest': upgradeContext.recovery.digest } : {}),
       },
       redirect: 'manual',
       signal: controller.signal,

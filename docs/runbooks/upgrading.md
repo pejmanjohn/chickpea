@@ -8,11 +8,11 @@ Nothing updates automatically. The CLI makes the final compatibility decision.
 ## First-time command setup
 
 Use Node 24.20.0 from `.nvmrc`, Git, and your normal Cloudflare account access.
-Download or clone the official `v0.1.7` source release into a dedicated tooling
+Download or clone the official `v0.1.8` source release into a dedicated tooling
 directory, then run:
 
 ```sh
-git clone --branch v0.1.7 --single-branch https://github.com/pejmanjohn/chickpea.git chickpea-upgrades
+git clone --branch v0.1.8 --single-branch https://github.com/pejmanjohn/chickpea.git chickpea-upgrades
 cd chickpea-upgrades
 nvm install && nvm use
 npm ci
@@ -20,9 +20,9 @@ npx wrangler login
 npm run upgrade -- --configure --account YOUR_ACCOUNT_ID --worker YOUR_EXISTING_WORKER --profile core --url https://YOUR_CHICKPEA_HOST
 ```
 
-v0.1.7 supports guided upgrades from v0.1.6. For older installations, use
+v0.1.8 supports guided upgrades from v0.1.7. For older installations, use
 current tooling to apply each intermediate release in order:
-v0.1.0 → v0.1.1 → v0.1.2 → v0.1.3 → v0.1.4 → v0.1.5 → v0.1.6 → v0.1.7. Only the reviewed incoming version is accepted.
+v0.1.0 → v0.1.1 → v0.1.2 → v0.1.3 → v0.1.4 → v0.1.5 → v0.1.6 → v0.1.7 → v0.1.8. Only the reviewed incoming version is accepted.
 The v0.1.0 launcher predates fixes for custom Worker build paths and deployment
 inspection. Keep the older tooling directory and its receipts for reference;
 run upgrades and recovery from the current tooling directory. This changes the
@@ -52,8 +52,8 @@ Run the command from the tooling directory. The version below is illustrative;
 copy the actual destination shown in Settings.
 
 ```sh
-npm run upgrade -- --to v0.1.7 --preflight
-npm run upgrade -- --to v0.1.7
+npm run upgrade -- --to v0.1.8 --preflight
+npm run upgrade -- --to v0.1.8
 ```
 
 The command verifies the exact immutable official GitHub release and tag commit,
@@ -90,7 +90,7 @@ activation; it cannot establish every application journey by itself.
 ## Interrupted update or recovery
 
 Keep the printed receipt and its neighboring private source directories. They
-contain target coordinates and configuration, not a data backup. Do not publish
+contain target coordinates, configuration, and a recovery capability. They are not a data backup. Do not publish
 them. The browser's separately previewed support report is safe to review/copy;
 it omits those private deployment details and credentials.
 
@@ -106,8 +106,27 @@ Otherwise the command rebuilds the verified source and asks for confirmation.
 If source download was interrupted before either checkout was verified, preserve
 that incomplete receipt and start a new exact-version command.
 
-Recover deploys the retained previous release's code with the same resources and
-credentials. It works independently of Admin. It is permitted only for this
+For v0.1.8, run both upgrade and recovery from the v0.1.8 tooling checkout.
+Older updaters reject this release's recovery policy before deployment. The new
+updater registers a recovery capability during authenticated readiness and keeps
+it in the private receipt. Before restoring v0.1.7, recovery authenticates to the
+serving candidate and switches the gateway back to socket delivery. It requires a
+healthy current-version socket before deploying the previous code. Recovery first
+tries that hook even if HTTP readiness failed. If the recovery authority is
+missing, it redeploys the retained candidate to register it and retries the hook;
+successful HTTP activation is not a prerequisite for restoring socket delivery.
+A new upgrade receipt explicitly restores HTTP delivery after a rollback; retrying
+the recovery receipt keeps socket delivery. Deployment activation time and Worker
+version establish ownership of transport changes. Both the installation and
+gateway reject stale owners, so an older in-flight request cannot undo a newer
+upgrade. Conflicting activation order fails closed.
+An unavailable recovery endpoint
+stops recovery before any downgrade. Preserve
+the receipt and repair the candidate; a raw Cloudflare version rollback alone
+can leave Slack routed to an HTTP endpoint that old code cannot receive.
+
+Recover then deploys the retained previous release's code with the same resources
+and credentials. It works independently of Admin. It is permitted only for this
 unchanged-storage transition and a recognized recorded serving state. It does
 not undo application writes, restore deleted data, or roll back schemas. A failure
 after upload may already be serving new code; never infer the serving version
