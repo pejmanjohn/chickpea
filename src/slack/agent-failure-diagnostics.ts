@@ -70,10 +70,20 @@ function serializedProviderFailure(message: unknown): Record<string, string | nu
   const http = /^OpenAI API error \(([45]\d{2})\): /.exec(message) ??
     /^([45]\d{2})(?:: | )/.exec(message);
   if (http) {
+    const status = Number(http[1]);
+    let remainder = message.slice(http[0].length);
+    // For a text body the OpenAI SDK's own message already begins with the
+    // status ("503 <body>") and pi-ai prefixes the same status again. Unwrap
+    // that inner status exactly once and only when it matches the outer one;
+    // any other leading number is body text and stays unparsed.
+    if (http[0].startsWith('OpenAI API error')) {
+      const inner = new RegExp(`^${status}(?:: | )`).exec(remainder);
+      if (inner) remainder = remainder.slice(inner[0].length);
+    }
     return {
       providerFailureKind: 'http',
-      providerHttpStatus: Number(http[1]),
-      ...providerErrorBodyFacts(message.slice(http[0].length)),
+      providerHttpStatus: status,
+      ...providerErrorBodyFacts(remainder),
     };
   }
   const streamCode = /^(?:Error Code )?(server_error|rate_limit_exceeded|context_length_exceeded): /.exec(message);

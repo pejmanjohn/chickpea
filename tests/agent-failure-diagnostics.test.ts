@@ -315,3 +315,55 @@ test('failed finish states are observed without error flags and arbitrary error 
   t.mock.method(console, 'error', () => { throw new Error('private logger failure'); });
   assert.doesNotThrow(() => observeAgentResultDiagnostics(terminalEvent({ isError: true }), context));
 });
+
+test('the installed provider SDK pipeline yields the edge code through the doubled status prefix', async (t) => {
+  // Real modules, not hand-written strings: the OpenAI SDK builds the error
+  // exactly as its client does for a text body, and pi-ai formats it before
+  // Flue records the message.
+  const { APIError } = await import('openai');
+  const errorBody = await import(new URL(
+    '../node_modules/@earendil-works/pi-ai/dist/utils/error-body.js', import.meta.url,
+  ).href) as {
+    normalizeProviderError(error: unknown): unknown;
+    formatProviderError(normalized: never, prefix: string): string;
+  };
+  const rendered = (status: number, body: Record<string, unknown> | undefined, text?: string) =>
+    errorBody.formatProviderError(
+      errorBody.normalizeProviderError(APIError.generate(status, body, text, new Headers())) as never,
+      'OpenAI API error',
+    );
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  const facts = (message: string) => {
+    observeAgentResultDiagnostics(terminalEvent({ isError: true, response: {
+      finishReason: 'error', error: { type: 'unknown', message },
+    } }), context);
+    const record = logs.at(-1)![1] as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(record).filter(([key]) =>
+      ['providerFailureKind', 'providerHttpStatus', 'providerBodyKind', 'providerErrorType', 'providerErrorCode', 'providerEdgeErrorCode'].includes(key)));
+  };
+
+  const textBody = rendered(503, undefined, 'error code: 1019\n');
+  assert.equal(textBody, 'OpenAI API error (503): 503 error code: 1019\n', 'pi-ai doubles the status for text bodies');
+  assert.deepEqual(facts(textBody), {
+    providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'cloudflare_error', providerEdgeErrorCode: 1019,
+  });
+
+  const jsonBody = rendered(503, { error: { message: 'private backend prose', type: 'server_error', code: null } });
+  assert.match(jsonBody, /^OpenAI API error \(503\): \{/, 'a JSON body is appended once, not doubled');
+  assert.deepEqual(facts(jsonBody), {
+    providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'json', providerErrorType: 'server_error',
+  });
+
+  // Only the same status unwraps, and only once.
+  assert.deepEqual(facts('OpenAI API error (503): 502 error code: 1019'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'text' });
+  assert.deepEqual(facts('OpenAI API error (503): 503 503 error code: 1019'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'text' });
+  assert.deepEqual(facts('OpenAI API error (503): 503 error code: 1019 private trailer'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'text' });
+  assert.deepEqual(facts('503 503 error code: 1019'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'text' },
+    'the bare SDK form has no outer prefix and is never unwrapped');
+  assert.doesNotMatch(JSON.stringify(logs), /private|prose|trailer/);
+});
