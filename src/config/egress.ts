@@ -1,6 +1,5 @@
 import type { NetworkConfig, SecureFetch } from 'just-bash';
 
-import { assertCurrentRequestSideEffectAllowed } from '../memory/tool-policy.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
 
 type EgressMode = 'allowlist' | 'open' | 'off';
@@ -256,15 +255,6 @@ export function createScopedFetch(params: {
 
   return async (url, options) => {
     const method = (options?.method || 'GET').toUpperCase();
-    if (method !== 'GET' && method !== 'HEAD') {
-      const requestUrl = new URL(url);
-      // Preserve the credential-free route shape for effect classification.
-      // Origin-only admission lets one allowed POST authorize a destructive
-      // POST endpoint on the same API. Never include query/fragment data here.
-      assertCurrentRequestSideEffectAllowed(
-        `${method} ${requestUrl.origin}${requestUrl.pathname}`,
-      );
-    }
     // Several scopes can share a prefix (one guarded /search/code scope per
     // installation), so a guard rejection falls through to the NEXT matching
     // scope — but never past the matching set to the base delegate: base

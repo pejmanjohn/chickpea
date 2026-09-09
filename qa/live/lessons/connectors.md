@@ -9,17 +9,19 @@ result, and verify that the working status clears.
 
 Custom connections use opaque IDs. Test those real identifier shapes through
 the runtime interceptor; readable fixture names can hide authorization failures.
-Tool effects come from owner-reviewed `toolPolicies`, then captured MCP
-`readOnlyHint` metadata. Undeclared tools retain the conservative name fallback.
-Do not mark a general query tool read-only without verifying the backend's
-enforcement. Owner policies can constrain exact tool arguments, for example a
-query data source backed by a read replica. Restrictions are enforced before the
-outbound tool request and frozen into the Agent runtime plan. Changed policies
-invalidate the old plan.
+Selected MCP tools are capability grants, including tools with missing or write-capable
+server hints. Do not infer permissions from tool names or require matching words
+in a Slack request. The model interprets task intent; retrieved content cannot
+expand the approved tools or replace the user's task. Existing `toolPolicies.effect`
+fields are legacy metadata, not an access-level selection. Explicit argument
+constraints remain enforced before outbound invocation and frozen into the
+runtime plan. Changed restrictions invalidate the old plan.
 
-Verify both an authorized invocation and a denied one. Tool names, retrieved
-content, and memory cannot register host policy or grant access to another
-connection. Writes still require matching current request intent.
+REST connections enforce the owner's selected methods, hosts, and paths. Managed
+connections enforce selected capabilities and resources. Verify both an approved
+write and a denied request outside these grants, including Read only selections,
+disabled or revoked accounts, and stale plans. No hidden read declaration is
+required to make an approved custom query tool execute.
 
 LC-04 anchors connector verification on a synthetic Google Sheets read. It checks product records and the structural provider result. It does not retain an account label, document title, URL, OAuth response, or worksheet content in the journal.
 

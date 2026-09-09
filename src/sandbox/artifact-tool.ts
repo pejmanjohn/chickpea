@@ -1,7 +1,7 @@
 import { defineTool, type SandboxFactory, type SessionEnv } from '@flue/runtime';
 import * as v from 'valibot';
 
-import { assertCurrentRequestSideEffectAllowed } from '../memory/tool-policy.ts';
+import { assertArtifactDeliveryAllowed } from '../memory/tool-policy.ts';
 import type {
   SlackArtifactInput,
   SlackArtifactResult,
@@ -35,7 +35,7 @@ export function createWorkspaceArtifactTool(options: WorkspaceArtifactToolOption
     }),
     harness: true,
     async run({ data, harness }) {
-      assertCurrentRequestSideEffectAllowed('post_artifact');
+      assertArtifactDeliveryAllowed();
       const sessionEnv = harness.sandbox;
       const path = workspaceArtifactPath(data.path);
       const stat = await sessionEnv.stat(path);
@@ -89,7 +89,7 @@ export function createWorkspaceArtifactCapability(
       title: v.optional(v.pipe(v.string(), v.minLength(1))),
     }),
     async run({ data }) {
-      assertCurrentRequestSideEffectAllowed('post_artifact');
+      assertArtifactDeliveryAllowed();
       if (!sessionEnv) {
         throw new Error('workspace is not initialized');
       }

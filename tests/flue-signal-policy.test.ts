@@ -5,7 +5,7 @@ import type { FlueEventContext, FlueObservation } from '@flue/runtime';
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
 import { createManagedConnectionTools } from '../src/connections/managed-tools.ts';
 import {
-  assertCurrentRequestSideEffectAllowed,
+  assertArtifactDeliveryAllowed,
   memoryToolPolicyInterceptor,
   observeMemoryToolPolicy,
   parseCurrentRequestEnvelope,
@@ -41,10 +41,10 @@ function observation(texts: string[]): FlueObservation {
   } } as unknown as FlueObservation;
 }
 
-test('actual Flue Slack signal restores exact capability admission and reaches the canonical Sheets tool', async () => {
+test('actual Flue Slack signal preserves identity while the approved Sheets tool reaches the provider', async () => {
   const rendered = signal();
   assert.equal(parseCurrentRequestEnvelope(rendered), undefined, 'raw terminal-marker parser cannot read a signal');
-  assert.deepEqual(parseModelVisibleCurrentRequestEnvelope(rendered)?.managedCapabilityIntents, ['sheets.values.update']);
+  assert.deepEqual(parseModelVisibleCurrentRequestEnvelope(rendered)?.managedCapabilityIntents, []);
   let reachedProvider = 0;
   const [tool] = createManagedConnectionTools({
     workspaceId: 'T_FIXTURE', agentId: 'agent_fixture', actorMembershipId: 'membership_fixture',
@@ -58,7 +58,7 @@ test('actual Flue Slack signal restores exact capability admission and reaches t
     await assert.rejects((tool!.run as (input: unknown) => Promise<unknown>)({
       data: { spreadsheetId: 'fixture-sheet', range: 'Fixture!B3', values: [['after']] },
     }), /provider-boundary-reached/);
-    assert.throws(() => assertCurrentRequestSideEffectAllowed('managed_capability__sheets.spreadsheets.create'), { name: 'CurrentRequestSideEffectDeniedError' });
+    assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' });
   });
   assert.equal(reachedProvider, 1);
 });
@@ -75,11 +75,11 @@ test('signal decoding is one pass and requires matching host actor and message c
   ]) assert.equal(parseModelVisibleCurrentRequestEnvelope(invalid), undefined);
 });
 
-test('current read, negation, and malformed signals never borrow an older write envelope', async () => {
+test('current read and malformed signals never borrow older artifact delivery authority', async () => {
   for (const latest of [signal(body('Read the sheet.')), signal(body('Do not update spreadsheet values.')), signal('Approve the previous preview.'), signal().replace('</slack_message>', '</wrong>')]) {
     await memoryToolPolicyInterceptor(operation, context, async () => {
-      observeMemoryToolPolicy(observation([signal(), latest]), context as unknown as FlueEventContext);
-      assert.throws(() => assertCurrentRequestSideEffectAllowed('managed_capability__sheets.values.update'), { name: 'CurrentRequestSideEffectDeniedError' });
+      observeMemoryToolPolicy(observation([signal(body('Create a report file.')), latest]), context as unknown as FlueEventContext);
+      assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' });
     });
   }
 });

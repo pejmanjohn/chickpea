@@ -130,7 +130,7 @@ export const MANAGED_YOUTUBE_CONNECTORS: readonly ManagedConnectorDefinition[] =
   label: 'YouTube',
   description: 'Analyze and manage explicitly selected YouTube channels.',
   securityDescription:
-    'Google sign-in opens through Composio. An Admin must select an authorized channel before Agents receive tools. Chickpea confines video uploads to frozen workspace artifacts, reserves provider-wide quota before dispatch, and requires confirmation for publication. Delete, account administration, permissions, bulk moderation, and raw API tools are absent.',
+    'Google sign-in opens through Composio. An Admin must select an authorized channel before Agents receive tools. Chickpea confines video uploads to frozen workspace artifacts, reserves provider-wide quota before dispatch, and limits publication to the selected channel. Delete, account administration, permissions, bulk moderation, and raw API tools are absent.',
   resources: [{
     key: 'channelIds',
     label: 'YouTube channels',

@@ -153,7 +153,7 @@ Every connection belongs to one Agent for its lifetime. A **team account** is sh
 
 **Credentials never enter model context or the tool arguments the model writes.** The model picks a connection by ID and the secret goes in at egress. An interrupted OAuth flow resumes bound to the provider, the account owner, the Agent, and the Slack task it left. Disconnecting revokes that one connection, tombstones secret access, and retires it from dependent schedules.
 
-Minor reversible writes may proceed without confirmation. Consequential ones (sending a message or email, deleting, publishing, broad or bulk changes) require confirmation unless the saved Agent instructions explicitly authorize that class of action. Nothing said in a conversation, and nothing returned by an API, gives an Agent more than it was granted. The [Security Model](#security-model) has the full list.
+Selected connection capabilities authorize the Agent to carry out the requested task. The model uses the conversation and saved instructions to determine intent, without requiring particular words or an extra confirmation merely because a tool can write. Explicit read-only permissions, preview-only requests, and saved confirmation requirements remain in force. Conversation text and API results cannot expand connection grants. The [Security Model](#security-model) has the full list.
 
 What you can connect, 35 presets in all. 13 run through a single Composio key; the other 22 go through the vendor's hosted MCP server or a direct API:
 
@@ -326,7 +326,7 @@ What the design guarantees:
 - **No ambient listening.** Unmentioned root messages never trigger classification, model spend, memory writes, or work. There is no "read the channel and decide if you're needed" mode.
 - **Credentials never reach the model.** Never in model context, never in the tool arguments the model writes. The model picks a connection by ID; the runtime resolves the secret at the moment of the call and injects it at egress.
 - **Conversation cannot expand authority.** Authority comes from stored grants and saved instructions, read from stored state and re-checked at the moment of each use, never from anything produced during the turn. Message text, retrieved content, and tool output are data, never permission.
-- **Confirmation for consequential actions**, unless saved Agent instructions explicitly authorize that class.
+- **Connection permissions**, enforced through selected tools, resource scopes, and argument restrictions. Saved confirmation requirements and preview-only requests guide the model's behavior.
 - **Per-Agent isolation.** Connections, memory, skills, repositories, and reach all stop at the Agent. Nothing is reused across Agents implicitly.
 - **Slack OIDC is the only human sign-in.** No passwords. The first installer becomes the first Owner, bound to an exact workspace and user tuple. Email is mutable contact information, not the identity key. See [authentication](docs/authentication.md).
 - **An editor may publish only to a channel they belong to.** Chickpea Admin status does not bypass Slack channel membership.

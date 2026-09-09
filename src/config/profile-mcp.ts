@@ -7,7 +7,7 @@ import type {
 
 import { mcpDebugText } from './mcp-errors.ts';
 import { withMcpHttpTelemetry } from './mcp-telemetry.ts';
-import { assertMcpToolArguments, mcpToolEffect } from './mcp-tool-policy.ts';
+import { assertMcpToolArguments } from './mcp-tool-policy.ts';
 import {
   isCurrentMcpOAuthConnection,
   resolveMcpOAuthAccessToken,
@@ -200,11 +200,19 @@ export function resolveRuntimePlanMcpConnections(
     };
     const fetchWithLiveHeaders = withMcpHttpTelemetry(async (input, init) => {
       const request = new Request(input, init);
-      if (declaration.toolArgumentConstraints && request.method === 'POST') {
+      if (request.method === 'POST') {
         const rpc = await request.clone().json() as { method?: string; params?: { name?: string; arguments?: unknown } };
+        if (!rpc || typeof rpc !== 'object' || Array.isArray(rpc)) {
+          throw new Error('Invalid MCP tool invocation.');
+        }
         if (rpc.method === 'tools/call') {
           if (typeof rpc.params?.name !== 'string') throw new Error('Invalid MCP tool invocation.');
-          assertMcpToolArguments(rpc.params.name, rpc.params.arguments, declaration.toolArgumentConstraints);
+          if (!declaration.allowedTools.includes(rpc.params.name)) {
+            throw new Error('MCP tool is not selected for this Agent.');
+          }
+          if (declaration.toolArgumentConstraints) {
+            assertMcpToolArguments(rpc.params.name, rpc.params.arguments, declaration.toolArgumentConstraints);
+          }
         }
       }
       const { server, env } = await liveServer();
@@ -273,11 +281,6 @@ function runtimeMcpDeclarationStillAllowed(
 ): boolean {
   return isProfileMcpServerEligible(server) &&
     (declaration.displayName === undefined || server.displayName === declaration.displayName) &&
-    [true, false].every((hint) => {
-      const frozen = hint ? declaration.readOnlyTools : declaration.writeTools;
-      const live = declaration.allowedTools.filter((tool) => mcpToolEffect(server, tool) === hint).sort();
-      return JSON.stringify([...(frozen ?? [])].sort()) === JSON.stringify(live);
-    }) &&
     declaration.allowedTools.every((tool) => {
       const current = server.toolPolicies?.[tool]?.argumentConstraints ?? {};
       const frozen = declaration.toolArgumentConstraints?.[tool] ?? {};
