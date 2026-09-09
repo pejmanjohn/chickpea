@@ -33,7 +33,7 @@ const staticPayrollTable: SlackTablePresentation = {
   rowHeaderIndex: 0,
 };
 
-test('a static verified result renders as a typed Slack table block', () => {
+test('a static verified result renders visible numeric values as Slack text cells', () => {
   const rendered = renderSlackTablePresentation(staticPayrollTable);
 
   assert.equal(rendered.kind, 'table');
@@ -50,31 +50,31 @@ test('a static verified result renders as a typed Slack table block', () => {
       ],
       [
         { type: 'raw_text', text: 'Taxable' },
-        { type: 'raw_number', value: 9_350, text: '9350' },
+        { type: 'raw_text', text: '9350' },
       ],
       [
         { type: 'raw_text', text: 'Non-taxable' },
-        { type: 'raw_number', value: 650, text: '650' },
+        { type: 'raw_text', text: '650' },
       ],
       [
         { type: 'raw_text', text: 'Employer tax' },
-        { type: 'raw_number', value: 420, text: '420' },
+        { type: 'raw_text', text: '420' },
       ],
       [
         { type: 'raw_text', text: 'Benefits adjustment' },
-        { type: 'raw_number', value: 80, text: '80' },
+        { type: 'raw_text', text: '80' },
       ],
       [
         { type: 'raw_text', text: 'Gross addition' },
-        { type: 'raw_number', value: 10_500, text: '10500' },
+        { type: 'raw_text', text: '10500' },
       ],
       [
         { type: 'raw_text', text: 'Net one-time earning' },
-        { type: 'raw_number', value: 9_920, text: '9920' },
+        { type: 'raw_text', text: '9920' },
       ],
       [
         { type: 'raw_text', text: 'Total' },
-        { type: 'raw_number', value: 10_000, text: '10000' },
+        { type: 'raw_text', text: '10000' },
       ],
     ],
   });

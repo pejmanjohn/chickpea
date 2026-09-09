@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
+import { createGatewaySlackWebClient } from '../src/slack/gateway/web-client.ts';
 
 import type { SlackPresentationStatePort } from '../src/slack/agent-view-presentation.ts';
 import {
@@ -390,7 +391,19 @@ test('an exhausted deferred terminal delivery suspends session and clears activi
     const settled = await abandonDeferredTerminalSlackDelivery({
       runId,
       state: statePort(store),
-      resolveClient: async () => repairClient({ calls }),
+      resolveClient: async () => createGatewaySlackWebClient({
+        workspaceId: current.root.workspaceId,
+        call: async (operation, input) => {
+          if (operation === 'agents.sessions.setStatus') {
+            assert.equal(input.status, 'suspended');
+            calls.push('agent_session');
+          } else if (operation === 'assistant.threads.setStatus') {
+            assert.equal(input.status, '');
+            calls.push('assistant_status_clear');
+          } else assert.fail(`Unexpected gateway operation: ${operation}`);
+          return { ok: true };
+        },
+      }),
     });
 
     assert.deepEqual(calls, ['agent_session', 'assistant_status_clear']);

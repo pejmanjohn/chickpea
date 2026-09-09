@@ -71,7 +71,7 @@ type SlackNativeTableCell = SlackRawTextTableCell | SlackRawNumberTableCell;
 
 interface SlackTableBlock {
   type: 'table';
-  rows: SlackNativeTableCell[][];
+  rows: SlackRawTextTableCell[][];
   column_settings: Array<{
     align?: 'left' | 'center' | 'right';
     is_wrapped?: boolean;
@@ -201,7 +201,7 @@ export function renderSlackTablePresentation(
   const rows = [
     header,
     ...presentation.rows.map((row) => row.map((cell, columnIndex) =>
-      nativeCell(cell, presentation.columns[columnIndex]!)
+      nativeCell(cell, presentation.columns[columnIndex]!, kind)
     )),
   ];
   const block: SlackNativeTableBlock = kind === 'data_table'
@@ -214,7 +214,7 @@ export function renderSlackTablePresentation(
       }
     : {
         type: 'table',
-        rows,
+        rows: rows as SlackRawTextTableCell[][],
         column_settings: presentation.columns.map((column) => ({
           align: column.align ?? (column.type === 'number' ? 'right' : 'left'),
           is_wrapped: column.wrap ?? column.type !== 'number',
@@ -258,8 +258,11 @@ function nativeTableKind(presentation: SlackTablePresentation): SlackNativeTable
 function nativeCell(
   cell: SlackTableCell,
   column: SlackTableColumn,
+  kind: SlackNativeTableBlock['type'],
 ): SlackNativeTableCell {
-  if (column.type === 'number') {
+  // Static table clients render raw_text/rich_text cells. Numeric cells belong
+  // to data_table, where their values also drive numeric sorting.
+  if (kind === 'data_table' && column.type === 'number') {
     const value = cell as number;
     return { type: 'raw_number', value, text: String(value) };
   }
