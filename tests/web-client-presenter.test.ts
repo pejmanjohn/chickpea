@@ -78,12 +78,14 @@ test('compatibility status uses meaningful activity without repeating the Agent 
       thread_ts: '1782770400.000100',
       status: 'Preparing your request…',
       loading_messages: ['Preparing your request…'],
+      username: 'Test agent',
     },
     {
       channel_id: 'C_BOUND',
       thread_ts: '1782770400.000100',
       status: 'Searching the workspace…',
       loading_messages: ['Searching the workspace…'],
+      username: 'Test agent',
     },
   ]);
 });
@@ -117,6 +119,8 @@ test('new activity stays on native status and clears without a progress message'
     thread_ts: '1782770400.000100',
     status: 'Drafting the initial skill…',
     loading_messages: ['Drafting the initial skill…'],
+    username: 'Test agent',
+    icon_url: 'https://chickpea.example/assets/agents/test/avatar/1',
   });
   assert.deepEqual(events[1]?.input, {
     channel_id: 'C_BOUND',
