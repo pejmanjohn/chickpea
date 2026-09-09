@@ -1,4 +1,5 @@
 import type { WebClient } from '@slack/web-api';
+import { settlementFailureFacts } from './agent-failure-diagnostics.ts';
 
 import {
   getSlackStateStore,
@@ -337,6 +338,9 @@ async function drainNodeTurnRelayOnce(
         return true;
       } catch (error) {
         if (flueDispatch.dispatchEnvelope) {
+          console.error('[chickpea] durable reattachment failed:', {
+            causes: settlementFailureFacts(error),
+          });
           // The row now owns the only legal redrive: replay the same keyed
           // admission, re-read its receipt, or replay its saved settlement.
           if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);

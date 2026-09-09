@@ -24,6 +24,9 @@ test('durable failure facts retain serialized cause kinds without private error 
   const cyclic = { type: 'internal_error', cause: undefined as unknown };
   cyclic.cause = cyclic;
   assert.equal(settlementFailureFacts(cyclic).length, 1);
+  assert.deepEqual(settlementFailureFacts(new Error('Slack terminal delivery requires reconciliation.')), [
+    { kind: 'Error', presentationFailureKind: 'terminal_reconciliation' },
+  ]);
 });
 
 type ModelTurn = Extract<FlueObservation, { type: 'turn' }>;

@@ -27,6 +27,18 @@ const SETTLEMENT_ERROR_TYPES = new Set([
   'conversation_stream_store_failure', 'invalid_request',
 ]);
 
+const PRESENTATION_FAILURES: Record<string, string> = {
+  'Slack progressive eligibility did not freeze.': 'eligibility_unfrozen',
+  'Slack Agent View presentation requires reconciliation.': 'presentation_reconciliation',
+  'Slack terminal delivery requires reconciliation.': 'terminal_reconciliation',
+  'Slack Agent View presentation is not terminalizable.': 'not_terminalizable',
+  'Progressive Slack prefix cannot be reconstructed.': 'prefix_unavailable',
+  'Slack Agent View presentation fence is stale.': 'stale_fence',
+  'Slack Agent View presentation is missing.': 'presentation_missing',
+  'Slack Agent View presentation writer is stale.': 'stale_writer',
+  'Slack stream receipt is incomplete.': 'stream_receipt_incomplete',
+};
+
 /** The durable read carries a serialized cause, even if live observations were lost. */
 export function settlementFailureFacts(error: unknown): Record<string, unknown>[] {
   const facts: Record<string, unknown>[] = [];
@@ -43,6 +55,8 @@ export function settlementFailureFacts(error: unknown): Record<string, unknown>[
         ? type : 'unknown',
       ...serializedProviderFailure(value.message),
       ...serializedProviderFailure(meta?.reason),
+      ...(typeof value.message === 'string' && Object.hasOwn(PRESENTATION_FAILURES, value.message)
+        ? { presentationFailureKind: PRESENTATION_FAILURES[value.message] } : {}),
     });
     current = value.cause;
   }

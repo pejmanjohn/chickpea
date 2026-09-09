@@ -56,6 +56,7 @@ import type {
 } from './config/settings-store.ts';
 import { SettingsStoreLogic } from './config/settings-store.ts';
 import { SnapshotStoreLogic } from './config/snapshot-store.ts';
+import { settlementFailureFacts } from './slack/agent-failure-diagnostics.ts';
 import type {
   StateRpcResult,
   StateRpcErrorCode,
@@ -1872,6 +1873,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           return true;
         }
         if (flueDispatch.dispatchEnvelope) {
+          console.error('[chickpea] durable reattachment failed:', {
+            causes: settlementFailureFacts(err),
+          });
           // A dispatched turn is never discarded or replaced. A later alarm
           // replays its admission key, receipt read, or terminal settlement.
           if (attempt >= MAX_POST_DISPATCH_ATTEMPTS) {
