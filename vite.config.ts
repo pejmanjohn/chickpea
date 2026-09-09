@@ -27,7 +27,13 @@ assertNodeVersion();
 export default defineConfig(({ command }) => {
   const local = command === 'serve' ? localWorkerViteSettings() : undefined;
   return {
-    define: buildIdentityDefines(fileURLToPath(new URL('.', import.meta.url))),
+    define: {
+      ...buildIdentityDefines(fileURLToPath(new URL('.', import.meta.url))),
+      // Explicit build-time mode: every Vite serve lane is local development,
+      // where the committed build identity does not track working-tree schema
+      // edits. Local serve must never attach to a persisted schema marker.
+      __CHICKPEA_VITE_SERVE__: JSON.stringify(command === 'serve'),
+    },
     // Public images are uploaded as Static Assets, not embedded in Worker code.
     publicDir: 'assets',
     plugins: [

@@ -5121,6 +5121,18 @@ test(`custom MCP ${recoverFromToken ? 'token recovery' : 'OAuth creation'} requi
     assert.equal((await saveTools(['create_issue'])).status, 409);
     const latest = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId);
     assert.deepEqual(latest?.policy.kind === 'mcp' ? latest.policy.allowedTools : [], ['search_issues']);
+    const savePolicy = (toolPolicies: unknown) => fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/mcp/tools`,
+      { method: 'PUT', headers: auth(), body: JSON.stringify({
+        allowedTools: ['search_issues'], expectedRevision: latest!.revision, toolPolicies,
+      }) },
+    );
+    assert.equal((await savePolicy({ create_issue: { effect: 'read' } })).status, 400);
+    const policySaved = await savePolicy({ search_issues: { effect: 'read', argumentConstraints: { team: ['support'] } } });
+    assert.equal(policySaved.status, 200, await policySaved.clone().text());
+    const policyAccount = (await fixture.store.listConnectionAccounts('T_TEST')).find((entry) => entry.id === accountId);
+    assert.deepEqual(policyAccount?.policy.kind === 'mcp' ? policyAccount.policy.toolPolicies : undefined,
+      { search_issues: { effect: 'read', argumentConstraints: { team: ['support'] } } });
 
 
     const oauthKeys = mcpOAuthSettingKeys(connectionAccountOAuthRef(accountId));

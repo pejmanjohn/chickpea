@@ -2,12 +2,32 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { FlueObservation } from '@flue/runtime';
-import { agentFailureDiagnosticsInterceptor, observeAgentResultDiagnostics } from '../src/slack/agent-failure-diagnostics.ts';
+import { agentFailureDiagnosticsInterceptor, observeAgentResultDiagnostics, settlementFailureFacts } from '../src/slack/agent-failure-diagnostics.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
 import { opaqueId } from '../src/work/admission.ts';
 
 const operation = { type: 'agent', operationId: 'private-submission', operationKind: 'prompt' } as const;
 const context = { agentName: CHICKPEA_SLACK_AGENT_NAME, submissionId: 'private-submission' };
+
+test('durable failure facts retain serialized cause kinds without private error content', () => {
+  const cause = { type: 'tool_input_validation', message: 'private SQL and credentials',
+    meta: { input: 'private' }, cause: { name: 'Error', message: 'terminated' } };
+  const error = new Error('private run', { cause });
+  assert.deepEqual(settlementFailureFacts(error), [
+    { kind: 'Error' }, { kind: 'tool_input_validation' },
+    { kind: 'Error', providerFailureKind: 'stream_terminated' },
+  ]);
+  assert.deepEqual(settlementFailureFacts({ type: 'private', message: 'private' }), [{ kind: 'unknown' }]);
+  assert.deepEqual(settlementFailureFacts({ type: 'operation_failed', meta: {
+    reason: 'server_error: private provider response',
+  } }), [{ kind: 'operation_failed', providerFailureKind: 'provider_stream_error', providerErrorCode: 'server_error' }]);
+  const cyclic = { type: 'internal_error', cause: undefined as unknown };
+  cyclic.cause = cyclic;
+  assert.equal(settlementFailureFacts(cyclic).length, 1);
+  assert.deepEqual(settlementFailureFacts(new Error('Slack terminal delivery requires reconciliation.')), [
+    { kind: 'Error', presentationFailureKind: 'terminal_reconciliation' },
+  ]);
+});
 
 type ModelTurn = Extract<FlueObservation, { type: 'turn' }>;
 function terminalEvent(overrides: Partial<ModelTurn> = {}): ModelTurn {
@@ -55,6 +75,78 @@ test('model diagnostics ignore valid text, normal tool calls, compaction and oth
   ]) observeAgentResultDiagnostics(event, context);
   observeAgentResultDiagnostics(terminalEvent(), { ...context, agentName: 'other-agent' });
   assert.equal(logger.mock.callCount(), 0);
+});
+
+test('serialized provider failures retain fixed transport facts without error bodies', (t) => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  for (const [message, expected] of [
+    ['OpenAI API error (429): private credential and query', { providerFailureKind: 'http', providerHttpStatus: 429 }],
+    ['OpenAI API error (400): private tool input', { providerFailureKind: 'http', providerHttpStatus: 400 }],
+    ['429: private response', { providerFailureKind: 'http', providerHttpStatus: 429 }],
+    ['503 private response', { providerFailureKind: 'http', providerHttpStatus: 503 }],
+    ['Network connection lost.', { providerFailureKind: 'network_connection_lost' }],
+    ['Request was aborted.', { providerFailureKind: 'request_aborted' }],
+    ['private prose mentioning 429 and Network connection lost.', {}],
+    ['OpenAI API error (999): private', {}],
+    ['constructor', {}],
+  ] as const) {
+    observeAgentResultDiagnostics(terminalEvent({ isError: true, response: {
+      finishReason: 'error', error: { type: 'unknown', message },
+    } }), context);
+    const facts = logs.at(-1)![1] as Record<string, unknown>;
+    assert.deepEqual(Object.fromEntries(Object.entries(facts).filter(([key]) =>
+      key === 'providerFailureKind' || key === 'providerHttpStatus')), expected);
+  }
+  assert.doesNotMatch(JSON.stringify(logs), /private|credential|query|tool input|Network connection lost/);
+});
+
+test('an HTTP provider failure keeps only the fixed error type and code from its JSON body', (t) => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  const facts = (message: string) => {
+    observeAgentResultDiagnostics(terminalEvent({ isError: true, response: {
+      finishReason: 'error', error: { type: 'unknown', message },
+    } }), context);
+    const record = logs.at(-1)![1] as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(record).filter(([key]) =>
+      ['providerFailureKind', 'providerHttpStatus', 'providerBodyKind', 'providerErrorType', 'providerErrorCode', 'providerEdgeErrorCode'].includes(key)));
+  };
+  assert.deepEqual(
+    facts('OpenAI API error (503): {"message":"private backend prose","type":"server_error","param":null,"code":null}'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'json', providerErrorType: 'server_error' },
+  );
+  assert.deepEqual(
+    facts('OpenAI API error (429): {"error":{"message":"private","type":"tokens","code":"rate_limit_exceeded"}}'),
+    { providerFailureKind: 'http', providerHttpStatus: 429, providerBodyKind: 'json', providerErrorType: 'tokens', providerErrorCode: 'rate_limit_exceeded' },
+  );
+  assert.deepEqual(
+    facts('503 <html><body>private edge page</body></html>'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'text' },
+  );
+  assert.deepEqual(
+    facts('OpenAI API error (500): {"type":"Not A Token; private","code":"' + 'x'.repeat(41) + '"}'),
+    { providerFailureKind: 'http', providerHttpStatus: 500, providerBodyKind: 'json' },
+  );
+  assert.deepEqual(
+    facts('OpenAI API error (502): {not json private'),
+    { providerFailureKind: 'http', providerHttpStatus: 502, providerBodyKind: 'text' },
+  );
+  // A Cloudflare edge in front of the provider answers non-browser clients
+  // with exactly "error code: NNNN". Only that anchored numeric code is kept.
+  assert.deepEqual(
+    facts('503 error code: 1019\n'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'cloudflare_error', providerEdgeErrorCode: 1019 },
+  );
+  assert.deepEqual(
+    facts('OpenAI API error (429): error code: 1015'),
+    { providerFailureKind: 'http', providerHttpStatus: 429, providerBodyKind: 'cloudflare_error', providerEdgeErrorCode: 1015 },
+  );
+  for (const unanchored of ['503 error code: 10195', '503 error code: 1019 private trailer', '503 private error code: 1019']) {
+    assert.deepEqual(facts(unanchored), { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'text' }, unanchored);
+  }
+  assert.deepEqual(facts('503 '), { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'none' });
+  assert.doesNotMatch(JSON.stringify(logs), /private|prose|edge page|html|trailer/);
 });
 
 test('model diagnostics bound arbitrary provider facts and cannot interrupt execution', (t) => {
@@ -222,4 +314,56 @@ test('failed finish states are observed without error flags and arbitrary error 
   assert.doesNotMatch(JSON.stringify(logs), /private|ECONNRESET/);
   t.mock.method(console, 'error', () => { throw new Error('private logger failure'); });
   assert.doesNotThrow(() => observeAgentResultDiagnostics(terminalEvent({ isError: true }), context));
+});
+
+test('the installed provider SDK pipeline yields the edge code through the doubled status prefix', async (t) => {
+  // Real modules, not hand-written strings: the OpenAI SDK builds the error
+  // exactly as its client does for a text body, and pi-ai formats it before
+  // Flue records the message.
+  const { APIError } = await import('openai');
+  const errorBody = await import(new URL(
+    '../node_modules/@earendil-works/pi-ai/dist/utils/error-body.js', import.meta.url,
+  ).href) as {
+    normalizeProviderError(error: unknown): unknown;
+    formatProviderError(normalized: never, prefix: string): string;
+  };
+  const rendered = (status: number, body: Record<string, unknown> | undefined, text?: string) =>
+    errorBody.formatProviderError(
+      errorBody.normalizeProviderError(APIError.generate(status, body, text, new Headers())) as never,
+      'OpenAI API error',
+    );
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  const facts = (message: string) => {
+    observeAgentResultDiagnostics(terminalEvent({ isError: true, response: {
+      finishReason: 'error', error: { type: 'unknown', message },
+    } }), context);
+    const record = logs.at(-1)![1] as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(record).filter(([key]) =>
+      ['providerFailureKind', 'providerHttpStatus', 'providerBodyKind', 'providerErrorType', 'providerErrorCode', 'providerEdgeErrorCode'].includes(key)));
+  };
+
+  const textBody = rendered(503, undefined, 'error code: 1019\n');
+  assert.equal(textBody, 'OpenAI API error (503): 503 error code: 1019\n', 'pi-ai doubles the status for text bodies');
+  assert.deepEqual(facts(textBody), {
+    providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'cloudflare_error', providerEdgeErrorCode: 1019,
+  });
+
+  const jsonBody = rendered(503, { error: { message: 'private backend prose', type: 'server_error', code: null } });
+  assert.match(jsonBody, /^OpenAI API error \(503\): \{/, 'a JSON body is appended once, not doubled');
+  assert.deepEqual(facts(jsonBody), {
+    providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'json', providerErrorType: 'server_error',
+  });
+
+  // Only the same status unwraps, and only once.
+  assert.deepEqual(facts('OpenAI API error (503): 502 error code: 1019'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'text' });
+  assert.deepEqual(facts('OpenAI API error (503): 503 503 error code: 1019'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'text' });
+  assert.deepEqual(facts('OpenAI API error (503): 503 error code: 1019 private trailer'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'text' });
+  assert.deepEqual(facts('503 503 error code: 1019'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'text' },
+    'the bare SDK form has no outer prefix and is never unwrapped');
+  assert.doesNotMatch(JSON.stringify(logs), /private|prose|trailer/);
 });

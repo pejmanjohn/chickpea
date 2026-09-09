@@ -29,6 +29,7 @@ import {
   type FrozenRuntimeModelRoute,
 } from '../config/runtime-model.ts';
 import { isCompiledModelProfileId } from '../model-catalog/profiles.ts';
+import { mcpToolEffect } from '../config/mcp-tool-policy.ts';
 import {
   buildSemanticActivityContext,
   type ActivityContext,
@@ -66,6 +67,10 @@ export interface RuntimePlanSkillV2 {
 
 export interface RuntimePlanMcpConnectionV2 {
   id: string;
+  displayName?: string;
+  readOnlyTools?: string[];
+  writeTools?: string[];
+  toolArgumentConstraints?: Record<string, Record<string, string[]>>;
   url: string;
   transport: 'streamable-http' | 'sse';
   authMode: 'none' | 'bearer' | 'oauth';
@@ -692,6 +697,12 @@ function compileMcpConnections(
     )
     .map((connection) => ({
       id: connection.id,
+      displayName: connection.displayName,
+      readOnlyTools: sortedUnique(connection.allowedTools.filter((tool) => mcpToolEffect(connection, tool) === true)),
+      writeTools: sortedUnique(connection.allowedTools.filter((tool) => mcpToolEffect(connection, tool) === false)),
+      ...(connection.toolPolicies ? { toolArgumentConstraints: parseMcpArgumentConstraints(Object.fromEntries(connection.allowedTools
+        .filter((tool) => connection.toolPolicies?.[tool]?.argumentConstraints)
+        .map((tool) => [tool, connection.toolPolicies![tool]!.argumentConstraints!])), connection.allowedTools) } : {}),
       url: connection.url,
       transport: connection.transport,
       authMode: connection.authMode,
@@ -1042,22 +1053,54 @@ function parseSkill(value: unknown, index: number): RuntimePlanSkillV2 {
   };
 }
 
+function parseMcpArgumentConstraints(value: unknown, allowedTools: string[]): Record<string, Record<string, string[]>> {
+  const record = exactRecord(value, 'MCP argument constraints', allowedTools, allowedTools);
+  return Object.fromEntries(Object.entries(record).map(([tool, fields]) => {
+    if (!fields || typeof fields !== 'object' || Array.isArray(fields) || Object.keys(fields).length > 32) {
+      throw new Error('Invalid MCP argument constraints.');
+    }
+    return [tool, Object.fromEntries(Object.entries(fields).map(([key, values]) => [
+      boundedString(key, 'MCP argument name', 1, 120),
+      sortedUniqueStringArray(values, 'MCP argument values', 120),
+    ]))];
+  }));
+}
+
 function parseMcpConnection(value: unknown, index: number): RuntimePlanMcpConnectionV2 {
   const label = `mcpConnections[${index}]`;
   const record = exactRecord(value, label, [
     'id',
+    'displayName',
+    'readOnlyTools',
+    'writeTools',
+    'toolArgumentConstraints',
     'url',
     'transport',
     'authMode',
     'headerNames',
     'allowedTools',
     'optional',
-  ]);
+  ], ['displayName', 'readOnlyTools', 'writeTools', 'toolArgumentConstraints']);
   if (record.optional !== true && record.optional !== false) {
     throw new Error(`Runtime plan ${label}.optional must be boolean.`);
   }
+  const allowedTools = sortedUniqueStringArray(record.allowedTools, `${label}.allowedTools`, 256);
+  const readOnlyTools = record.readOnlyTools === undefined ? undefined
+    : sortedUniqueStringArray(record.readOnlyTools, `${label}.readOnlyTools`, 256);
+  const writeTools = record.writeTools === undefined ? undefined
+    : sortedUniqueStringArray(record.writeTools, `${label}.writeTools`, 256);
+  if ([...(readOnlyTools ?? []), ...(writeTools ?? [])].some((tool) => !allowedTools.includes(tool)) ||
+      readOnlyTools?.some((tool) => writeTools?.includes(tool))) {
+    throw new Error(`Runtime plan ${label} has invalid tool effect declarations.`);
+  }
   return {
     id: boundedString(record.id, `${label}.id`, 1, 120),
+    ...(record.displayName !== undefined
+      ? { displayName: boundedString(record.displayName, `${label}.displayName`, 1, 240) } : {}),
+    ...(readOnlyTools !== undefined ? { readOnlyTools } : {}),
+    ...(writeTools !== undefined ? { writeTools } : {}),
+    ...(record.toolArgumentConstraints !== undefined
+      ? { toolArgumentConstraints: parseMcpArgumentConstraints(record.toolArgumentConstraints, allowedTools) } : {}),
     url: httpsUrl(record.url, `${label}.url`),
     transport: oneOf(
       record.transport,
@@ -1070,7 +1113,7 @@ function parseMcpConnection(value: unknown, index: number): RuntimePlanMcpConnec
       ['none', 'bearer', 'oauth'] as const,
     ),
     headerNames: sortedUniqueStringArray(record.headerNames, `${label}.headerNames`, 64),
-    allowedTools: sortedUniqueStringArray(record.allowedTools, `${label}.allowedTools`, 256),
+    allowedTools,
     optional: record.optional,
   };
 }

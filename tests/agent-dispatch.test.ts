@@ -225,7 +225,9 @@ test('dispatch diagnostics distinguish failed settlement from an empty completed
   assert.deepEqual(logs, ['settlement_failed', 'invalid_result'].map((stage) => [
     '[chickpea] agent dispatch failed:',
     { stage, submissionRef: opaqueId('fluesubmission', RECEIPT.submissionId),
-      ...(stage === 'invalid_result' ? { hasText: false } : {}) },
+      ...(stage === 'invalid_result' ? { hasText: false } : {
+        causes: [{ kind: 'unknown' }, { kind: 'internal_error' }],
+      }) },
   ]));
   assert.doesNotMatch(JSON.stringify(logs), /private|Bearer|secret|submission_dispatch_test/);
 });
@@ -632,4 +634,132 @@ test('real Flue durable read separates working narration from the final Slack an
     assert.equal(reads, 1);
     assert.equal(calls, 2);
   } finally { await runtime.stop(); }
+});
+
+// --- Bounded reply observation (Cloudflare) -------------------------------
+
+function withCloudflareTarget<T>(run: () => Promise<T>): Promise<T> {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { userAgent: 'Cloudflare-Workers' },
+    configurable: true,
+  });
+  return run().finally(() => {
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+  });
+}
+
+test('an interrupted bounded observation retains the receipt and reconnects without re-dispatch', async () => {
+  let dispatches = 0;
+  let settlements = 0;
+  const dispatchState = state({
+    recordSettlement: async (settlement) => { settlements += 1; return settlement; },
+  });
+  const agent = handle({
+    dispatch: async () => { dispatches += 1; return RECEIPT; },
+    read: async (_receipt, options) => {
+      assert.equal(options, undefined, 'after settlement Flue reads once, with nothing to long-poll for');
+      return { text: 'settled reply', data: {}, submissionId: RECEIPT.submissionId };
+    },
+  });
+  const observed: string[] = [];
+  await assert.rejects(
+    () => promptSlackThreadAgent({
+      ...promptInput(dispatchState, agent),
+      observeReply: async () => { throw new TypeError('Network connection lost'); },
+    }),
+    (error: unknown) => error instanceof AgentPromptFailure && error.retryable,
+  );
+  assert.equal(dispatches, 1);
+  assert.equal(settlements, 0);
+  assert.deepEqual(dispatchState.dispatchReceipt, RECEIPT, 'the durable receipt survives the interruption');
+
+  const recovered = await promptSlackThreadAgent({
+    ...promptInput(dispatchState, agent),
+    observeReply: async ({ handle: reader, receipt, instanceId, onEvent }) => {
+      assert.equal(receipt.submissionId, RECEIPT.submissionId);
+      assert.equal(instanceId, ENVELOPE.instanceId);
+      onEvent({ type: 'message-started', conversationId: 'c', messageId: 'response',
+        submissionId: RECEIPT.submissionId, position: { batch: 1, index: 0 } });
+      observed.push('observed');
+      return reader.read(receipt as never);
+    },
+  });
+  assert.equal(recovered.text, 'settled reply');
+  assert.deepEqual(observed, ['observed']);
+  assert.equal(dispatches, 1, 'the retry observes the same submission; it never re-dispatches');
+  assert.equal(settlements, 1);
+});
+
+test('a failed settlement read through the bounded reader keeps AgentRunError semantics', async () => {
+  const dispatchState = state();
+  await assert.rejects(() => promptSlackThreadAgent({
+    ...promptInput(dispatchState, handle({
+      async read() {
+        throw new AgentRunError({ outcome: 'failed', submissionId: RECEIPT.submissionId,
+          cause: { type: 'internal_error', message: 'private' } });
+      },
+    })),
+    observeReply: async ({ handle: reader, receipt }) => reader.read(receipt as never),
+  }), (error: unknown) => error instanceof AgentPromptFailure && !error.retryable);
+  assert.equal(dispatchState.flueSettlement?.outcome, 'failed');
+});
+
+test('on Cloudflare the adapter observes through the agent namespace binding without a long-poll', async () => {
+  await withCloudflareTarget(async () => {
+    // Missing binding: fail before admitting a turn nobody could observe.
+    let dispatches = 0;
+    await assert.rejects(
+      () => promptSlackThreadAgent({
+        ...promptInput(state(), handle({ dispatch: async () => { dispatches += 1; return RECEIPT; } })),
+        env: {},
+      }),
+      { name: 'AgentObjectBindingUnavailableError' },
+    );
+    assert.equal(dispatches, 0);
+
+    const requests: URL[] = [];
+    const pages = [
+      [{ type: 'stream-checkpoint', incarnation: 1 }],
+      [{ type: 'stream-checkpoint', incarnation: 1 },
+        { type: 'submission-settled', submissionId: RECEIPT.submissionId, outcome: 'completed' }],
+    ];
+    const namespace = {
+      idFromName: (name: string) => name,
+      get: (id: string) => ({
+        fetch: async (request: Request) => {
+          const url = new URL(request.url);
+          requests.push(url);
+          assert.equal(id, ENVELOPE.instanceId);
+          return Response.json(pages.shift(), { headers: {
+            'Stream-Next-Offset': '0_1', ...(pages.length ? { 'Stream-Up-To-Date': 'true' } : {}),
+          } });
+        },
+      }),
+    };
+    let reads = 0;
+    const dispatchState = state();
+    const started = Date.now();
+    const result = await promptSlackThreadAgent({
+      ...promptInput(dispatchState, handle({
+        read: async (_receipt, options) => {
+          reads += 1;
+          assert.equal(options, undefined);
+          return { text: 'done', data: {}, submissionId: RECEIPT.submissionId };
+        },
+      })),
+      env: { FLUE_CHICKPEA_SLACK_V2_AGENT: namespace },
+    });
+    assert.equal(result.text, 'done');
+    assert.equal(reads, 1);
+    assert.equal(requests.length, 2);
+    assert.ok(Date.now() - started >= 700, 'the idle page waited the real poll interval');
+    for (const url of requests) {
+      assert.equal(url.pathname, `/agents/chickpea-slack-v2/${ENVELOPE.instanceId}`);
+      assert.equal(url.searchParams.get('view'), 'updates');
+      assert.equal(url.searchParams.has('live'), false);
+    }
+    assert.equal(dispatchState.flueSettlement?.outcome, 'completed');
+  });
 });

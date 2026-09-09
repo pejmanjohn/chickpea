@@ -7,7 +7,6 @@ import {
   DurableObject,
   env,
   type DurableObjectState,
-  type DurableObjectStorage,
 } from 'cloudflare:workers';
 import { getSandbox, Sandbox as CloudflareSandbox } from '@cloudflare/sandbox';
 import { instrument } from '@flue/runtime';
@@ -56,6 +55,7 @@ import type {
 } from './config/settings-store.ts';
 import { SettingsStoreLogic } from './config/settings-store.ts';
 import { SnapshotStoreLogic } from './config/snapshot-store.ts';
+import { settlementFailureFacts } from './slack/agent-failure-diagnostics.ts';
 import type {
   StateRpcResult,
   StateRpcErrorCode,
@@ -160,6 +160,7 @@ import {
 import { AgentPromptFailure } from './slack/flue-dispatch.ts';
 import { DURABLE_RECOVERY_FAILURE_TEXT } from './slack/web-client-presenter.ts';
 import {
+  abandonTerminalSlackPresentationBestEffort,
   drainSlackPresentationRepairs,
   type SlackPresentationRepairDrainResult,
 } from './slack/presentation-repair.ts';
@@ -175,7 +176,10 @@ import {
   replayTextForTurnProgress,
   TurnJobStoreLogic,
 } from './slack/turn-jobs.ts';
-import type { SqlParam, StateDb } from './state/state-db.ts';
+import { DoSqlStateDb } from './state/do-state-db.ts';
+import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
+import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
+import { applicationIdentity, viteServeLane } from './release/identity.ts';
 import { registerCloudflareBindingProvider } from './cloudflare-provider.ts';
 import { MemoryStoreLogic } from './memory/store.ts';
 import { MemoryStateError, type MemoryRpcRequest, type MemoryRpcResponse } from './memory/types.ts';
@@ -563,46 +567,6 @@ const RELAY_BATCH_WINDOW_MS = 250;
  * migration live in wrangler.jsonc (TAG_STATE / migrations v2).
  */
 
-/**
- * StateDb over a Durable Object's synchronous SQL storage.
- *
- * `changes` is derived from `SELECT changes()` — NOT the cursor's
- * `rowsWritten`, which counts index writes too (a single INSERT into a table
- * with a PRIMARY KEY reports rowsWritten=2; measured on workerd 2026-07-06).
- * The store logic's write-once semantics (claims, snapshot putIfAbsent,
- * createAgent) depend on exact SQLite changes semantics, which changes()
- * returns (1/0) both standalone and inside transactionSync.
- */
-class DoSqlStateDb implements StateDb {
-  constructor(private readonly storage: DurableObjectStorage) {}
-
-  run(sql: string, ...params: SqlParam[]): { changes: number } {
-    // Drain the write cursor before reading changes(): cursors execute
-    // incrementally, and changes() must observe the completed statement.
-    this.storage.sql.exec(sql, ...params).toArray();
-    const row = this.storage.sql.exec('SELECT changes() AS changes').one();
-    return { changes: Number(row.changes) };
-  }
-
-  get(sql: string, ...params: SqlParam[]): Record<string, unknown> | undefined {
-    return this.storage.sql.exec(sql, ...params).toArray()[0];
-  }
-
-  all(sql: string, ...params: SqlParam[]): Record<string, unknown>[] {
-    return this.storage.sql.exec(sql, ...params).toArray();
-  }
-
-  exec(sql: string): void {
-    // Single statements only (the StateDb contract) — DO SQLite rejects
-    // multi-statement strings, which is exactly why the contract exists.
-    this.storage.sql.exec(sql).toArray();
-  }
-
-  transaction<T>(fn: () => T): T {
-    return this.storage.transactionSync(fn);
-  }
-}
-
 interface TagStateStores {
   identity: IdentityStoreLogic;
   config: ConfigStoreLogic;
@@ -733,42 +697,75 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    */
   private tryInit(): TagStateStores | undefined {
     try {
+      const fingerprint = stateSchemaFingerprint(
+        cloudflareWorkerVersionId(this.env),
+        applicationIdentity,
+        { localServe: viteServeLane },
+      );
+      const marker = fingerprint === undefined
+        ? undefined
+        : new StateSchemaMarker(new DoSqlStateDb(this.ctx.storage), fingerprint);
+      if (marker?.isInstalled()) {
+        // This exact Worker version already completed and verified the
+        // install on this storage. Attach without DDL, migrations, probes or
+        // seeds: Durable Objects SQLite meters every row those statements
+        // read, and this constructor runs on every cold start.
+        this.initError = undefined;
+        return this.buildStores(new DoSqlStateDb(this.ctx.storage, 'attach'));
+      }
+      // The install and its marker commit atomically: constructor
+      // transactions (config seedOnce) nest as savepoints inside this one, and
+      // an uncaught throw anywhere discards every table, row and the marker,
+      // so the next cold start installs again. Any deploy, forward or
+      // rollback, carries a new upload id and installs once.
       const db = new DoSqlStateDb(this.ctx.storage);
-      // Same construction order as the node backend: each logic class creates
-      // its own tables (and the config store runs migrations + seedOnce), so a
-      // fresh DO is fully seeded before it answers its first RPC.
-      const stores = {
-        identity: new IdentityStoreLogic(db),
-        config: new ConfigStoreLogic(db),
-        snapshots: new SnapshotStoreLogic(db),
-        slack: new SlackStateLogic(db),
-        settings: new SettingsStoreLogic(db),
-        turnJobs: new TurnJobStoreLogic(db),
-        gatewayInbox: new GatewayInboxStoreLogic(db),
-        presentations: new SlackRunPresentationStoreLogic(db),
-        memory: new MemoryStoreLogic(db),
-        routines: new RoutineStoreLogic(db),
-        usage: new UsageStoreLogic(db),
-        management: new ManagementStoreLogic(db),
-      } as Omit<TagStateStores, 'work'>;
-      const completeStores: TagStateStores = {
-        ...stores,
-        work: new WorkStoreLogic(db, {
-          env: {
-            TAG_RUN_BODY_RETENTION_DAYS:
-              typeof (this.env as PlatformEnv).TAG_RUN_BODY_RETENTION_DAYS === 'string'
-                ? (this.env as PlatformEnv).TAG_RUN_BODY_RETENTION_DAYS as string
-                : undefined,
-          },
-        }),
-      };
+      const stores = db.transaction(() => {
+        const built = this.buildStores(db);
+        marker?.record(Date.now());
+        return built;
+      });
+      if (marker) {
+        console.info('[chickpea] TagStateStore schema installed', JSON.stringify({ fingerprint }));
+      }
       this.initError = undefined;
-      return completeStores;
+      return stores;
     } catch (err) {
       this.initError = err instanceof Error ? err.message : String(err);
       console.error('[chickpea] TagStateStore init failed:', this.initError);
       return undefined;
     }
+  }
+
+  private buildStores(db: DoSqlStateDb): TagStateStores {
+    // Same construction order as the node backend: each logic class creates
+    // its own tables (and the config store runs migrations + seedOnce), so a
+    // fresh DO is fully seeded before it answers its first RPC.
+    const stores = {
+      identity: new IdentityStoreLogic(db),
+      config: new ConfigStoreLogic(db),
+      snapshots: new SnapshotStoreLogic(db),
+      slack: new SlackStateLogic(db),
+      settings: new SettingsStoreLogic(db),
+      turnJobs: new TurnJobStoreLogic(db),
+      gatewayInbox: new GatewayInboxStoreLogic(db),
+      presentations: new SlackRunPresentationStoreLogic(db),
+      memory: new MemoryStoreLogic(db),
+      routines: new RoutineStoreLogic(db),
+      usage: new UsageStoreLogic(db),
+      management: new ManagementStoreLogic(db),
+    } as Omit<TagStateStores, 'work'>;
+    const completeStores: TagStateStores = {
+      ...stores,
+      work: new WorkStoreLogic(db, {
+        env: {
+          TAG_RUN_BODY_RETENTION_DAYS:
+            typeof (this.env as PlatformEnv).TAG_RUN_BODY_RETENTION_DAYS === 'string'
+              ? (this.env as PlatformEnv).TAG_RUN_BODY_RETENTION_DAYS as string
+              : undefined,
+        },
+      }),
+    };
+    return completeStores;
   }
 
   // ── config: agents ───────────────────────────────────────────────────────
@@ -1738,6 +1735,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           });
           return true;
         } catch {
+          // The recovery notice shares the run's V3 presentation. When that
+          // presentation already holds an unresolved terminal (the reason the
+          // preceding attempts threw), this replay throws the same way, so
+          // abandon it: that is the only transition which lets durable repair
+          // suspend the Agent Session and clear the visible activity status.
+          console.error('[chickpea] durable recovery final failed:', { reasonCode });
+          if (job.runId) {
+            await abandonTerminalSlackPresentationBestEffort({
+              runId: job.runId,
+              state: presentationState,
+              client,
+              requireUnresolvedDelivery: true,
+            });
+          }
           stores.turnJobs.markRecoveryRequired(job.id, reasonCode);
           if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
           return false;
@@ -1857,6 +1868,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           return true;
         }
         if (flueDispatch.dispatchEnvelope) {
+          console.error('[chickpea] durable reattachment failed:', {
+            causes: settlementFailureFacts(err),
+          });
           // A dispatched turn is never discarded or replaced. A later alarm
           // replays its admission key, receipt read, or terminal settlement.
           if (attempt >= MAX_POST_DISPATCH_ATTEMPTS) {

@@ -1576,3 +1576,221 @@ test('V3 finalizing recovery retains uncertainty when Slack cannot stop the know
     assert.equal(h.store.get(h.runId)?.stream.state, 'finalizing');
   } finally { h.db.close(); }
 });
+
+test('V3 reconciles an unknown stream with a known coordinate instead of refusing every reattachment', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000377',
+      flue: { instanceId: 'instance_unknown_effect', submissionId: 'submission_unknown_effect' } });
+    applyPresentationMutation(h, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
+    const events: Array<Record<string, unknown>> = [];
+    const result = await h.presentation.finalize('The work failed.', 'plain_text', 'error', observer(events));
+    assert.equal(result.handled, true);
+    if (!result.handled) assert.fail('the known message must be recovered');
+    assert.equal(result.messageTs, '1785700100.000377');
+    assert.deepEqual(h.calls.map((call) => call.method), ['chat.stopStream', 'chat.update']);
+    assert.deepEqual(h.calls[0]?.input, { channel: ROOT.channelId, ts: '1785700100.000377' });
+    assert.match(String(h.calls[1]?.input.text), /The work failed/);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.stream.state, 'artifact_delivered');
+    assert.equal(stored?.stream.presentationOutcome, 'terminal_only');
+    assert.equal(stored?.schemaVersion, 3);
+    if (stored?.schemaVersion === 3 && stored.terminalDelivery.state === 'intended') {
+      assert.equal(stored.terminalDelivery.result, 'failure');
+      assert.equal(stored.terminalDelivery.operation.certainty, 'acknowledged');
+    } else {
+      assert.fail('the failure terminal must be frozen and acknowledged');
+    }
+    assert.equal(events.at(-1)?.outcome, 'delivered');
+    await h.presentation.finalize('The work failed.', 'plain_text', 'error', observer(events));
+    assert.equal(h.calls.length, 2, 'a saved receipt must make replay silent');
+  } finally { h.db.close(); }
+});
+
+test('V3 reconciles a frozen failure terminal whose stop lost certainty', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    applyPresentationMutation(h, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_failure_lost', result: 'failure' });
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000378',
+      flue: { instanceId: 'instance_stop_lost', submissionId: 'submission_stop_lost' } });
+    applyPresentationMutation(h, { kind: 'close_stream', outcome: 'terminal_only' });
+    applyPresentationMutation(h, { kind: 'mark_finalizing' });
+    applyPresentationMutation(h, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
+    applyPresentationMutation(h, { kind: 'record_terminal_delivery_receipt', operationId: 'terminal_failure_lost', certainty: 'unknown' });
+    const result = await h.presentation.finalize('The work failed.', 'plain_text', 'error', observer([]));
+    assert.equal(result.handled, true);
+    assert.deepEqual(h.calls.map((call) => call.method), ['chat.stopStream', 'chat.update']);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.stream.state, 'artifact_delivered');
+    assert.equal(stored?.schemaVersion, 3);
+    if (stored?.schemaVersion === 3 && stored.terminalDelivery.state === 'intended') {
+      assert.equal(stored.terminalDelivery.operation.operationId, 'terminal_failure_lost');
+      assert.equal(stored.terminalDelivery.operation.certainty, 'acknowledged');
+    } else {
+      assert.fail('the frozen failure terminal must be acknowledged');
+    }
+  } finally { h.db.close(); }
+});
+
+test('V3 reconciles a stream interrupted between close and finalizing', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000379',
+      flue: { instanceId: 'instance_reconciling', submissionId: 'submission_reconciling' } });
+    applyPresentationMutation(h, { kind: 'close_stream', outcome: 'terminal_only' });
+    assert.equal(h.store.get(h.runId)?.stream.state, 'reconciling');
+    const result = await h.presentation.finalize('Saved answer MAPLE.', 'markdown', 'complete', observer([]));
+    assert.equal(result.handled, true);
+    assert.deepEqual(h.calls.map((call) => call.method), ['chat.stopStream', 'chat.update']);
+    assert.match(String(h.calls[1]?.input.text), /Saved answer MAPLE/);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.stream.state, 'artifact_delivered');
+    if (stored?.schemaVersion === 3 && stored.terminalDelivery.state === 'intended') {
+      assert.equal(stored.terminalDelivery.result, 'answer');
+      assert.equal(stored.terminalDelivery.operation.certainty, 'acknowledged');
+    } else {
+      assert.fail('the answer terminal must be frozen and acknowledged');
+    }
+  } finally { h.db.close(); }
+});
+
+test('V3 still refuses an unknown stream without a coordinate and never overwrites a different frozen terminal', async () => {
+  const noCoordinate = harness({ schemaVersion: 3 });
+  try {
+    applyPresentationMutation(noCoordinate, { kind: 'stream_start_intent' });
+    applyPresentationMutation(noCoordinate, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
+    await assert.rejects(
+      noCoordinate.presentation.finalize('The work failed.', 'plain_text', 'error', observer([])),
+      /requires reconciliation/,
+    );
+    assert.equal(noCoordinate.calls.length, 0);
+    assert.equal(noCoordinate.store.get(noCoordinate.runId)?.stream.state, 'unknown');
+    const current = noCoordinate.store.get(noCoordinate.runId);
+    assert.ok(current);
+    let applied = false;
+    try {
+      applied = noCoordinate.store.transition({
+        runId: current.runId,
+        workBindingGeneration: current.workBindingGeneration,
+        runFencingToken: current.runFencingToken,
+        expectedProjectionVersion: current.projectionVersion,
+        expectedStreamState: current.stream.state,
+        mutation: { kind: 'reconcile_unknown_stream' },
+      }).outcome === 'applied';
+    } catch {
+      applied = false;
+    }
+    assert.equal(applied, false, 'no coordinate means nothing to reconcile against');
+  } finally { noCoordinate.db.close(); }
+
+  const differentResult = harness({ schemaVersion: 3 });
+  try {
+    applyPresentationMutation(differentResult, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_answer_pending', result: 'answer' });
+    applyPresentationMutation(differentResult, { kind: 'stream_start_intent' });
+    applyPresentationMutation(differentResult, { kind: 'stream_started', messageTs: '1785700100.000380',
+      flue: { instanceId: 'instance_answer_pending', submissionId: 'submission_answer_pending' } });
+    applyPresentationMutation(differentResult, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
+    await assert.rejects(
+      differentResult.presentation.finalize('The work failed.', 'plain_text', 'error', observer([])),
+      /requires reconciliation/,
+    );
+    assert.equal(differentResult.calls.length, 0);
+    const stored = differentResult.store.get(differentResult.runId);
+    assert.equal(stored?.stream.state, 'unknown');
+    if (stored?.schemaVersion === 3 && stored.terminalDelivery.state === 'intended') {
+      assert.equal(stored.terminalDelivery.result, 'answer');
+    } else {
+      assert.fail('the frozen answer terminal must be retained');
+    }
+  } finally { differentResult.db.close(); }
+});
+
+test('V3 reconciles an unknown progressive stream as a progressive answer on its known message', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    applyPresentationMutation(h, { kind: 'freeze_progressive_eligibility',
+      eligibility: { allowed: true, reason: 'safe_early_release' } });
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000381',
+      flue: { instanceId: 'instance_progressive_unknown', submissionId: 'submission_progressive_unknown', messageId: 'message_progressive_unknown' } });
+    applyPresentationMutation(h, { kind: 'append_intent', position: { batch: 5, index: 0 }, from: 0, to: 5, hash: 'a'.repeat(64) });
+    applyPresentationMutation(h, { kind: 'append_acknowledged', cursor: 1, acknowledgedPrefixHash: 'a'.repeat(64) });
+    applyPresentationMutation(h, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
+    const result = await h.presentation.finalize('Today bookings by product.', 'markdown', 'complete', observer([]));
+    assert.equal(result.handled, true);
+    assert.deepEqual(h.calls.map((call) => call.method), ['chat.stopStream', 'chat.update']);
+    const stored = h.store.get(h.runId);
+    assert.equal(stored?.stream.state, 'artifact_delivered');
+    assert.equal(stored?.stream.presentationOutcome, 'progressive');
+    assert.equal(stored?.stream.pendingAppend, undefined);
+  } finally { h.db.close(); }
+});
+
+test('V3 unknown-stream reconciliation re-validates after a competing actor changes the terminal between reads', async () => {
+  const competingResult = harness({ schemaVersion: 3 });
+  try {
+    applyPresentationMutation(competingResult, { kind: 'stream_start_intent' });
+    applyPresentationMutation(competingResult, { kind: 'stream_started', messageTs: '1785700100.000382',
+      flue: { instanceId: 'instance_race_answer', submissionId: 'submission_race_answer' } });
+    applyPresentationMutation(competingResult, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
+    const port = competingResult.presentationState;
+    const originalRead = port.getRunPresentation;
+    let reads = 0;
+    port.getRunPresentation = (id) => {
+      reads += 1;
+      // The second read belongs to prepareTerminalDelivery. A deferred delivery
+      // path freezes an answer terminal just before it.
+      if (reads === 2) {
+        applyPresentationMutation(competingResult, {
+          kind: 'record_terminal_delivery_intent', operationId: 'terminal_race_answer', result: 'answer',
+        });
+      }
+      return originalRead(id);
+    };
+    await assert.rejects(
+      competingResult.presentation.finalize('The work failed.', 'plain_text', 'error', observer([])),
+      /requires reconciliation/,
+    );
+    assert.equal(competingResult.calls.length, 0, 'a different frozen terminal is never overwritten');
+    const stored = competingResult.store.get(competingResult.runId);
+    assert.equal(stored?.stream.state, 'unknown');
+    if (stored?.schemaVersion === 3 && stored.terminalDelivery.state === 'intended') {
+      assert.equal(stored.terminalDelivery.result, 'answer');
+      assert.equal(stored.terminalDelivery.operation.certainty, 'pending');
+    } else {
+      assert.fail('the competing answer terminal must be retained');
+    }
+  } finally { competingResult.db.close(); }
+
+  const competingAbandonment = harness({ schemaVersion: 3 });
+  try {
+    applyPresentationMutation(competingAbandonment, { kind: 'stream_start_intent' });
+    applyPresentationMutation(competingAbandonment, { kind: 'stream_started', messageTs: '1785700100.000383',
+      flue: { instanceId: 'instance_race_abandon', submissionId: 'submission_race_abandon' } });
+    applyPresentationMutation(competingAbandonment, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
+    const port = competingAbandonment.presentationState;
+    const originalRead = port.getRunPresentation;
+    let reads = 0;
+    port.getRunPresentation = (id) => {
+      reads += 1;
+      if (reads === 2) {
+        applyPresentationMutation(competingAbandonment, {
+          kind: 'record_terminal_delivery_intent', operationId: 'terminal_race_abandon', result: 'failure',
+        });
+        applyPresentationMutation(competingAbandonment, {
+          kind: 'abandon_terminal_delivery', operationId: 'terminal_race_abandon',
+        });
+      }
+      return originalRead(id);
+    };
+    const result = await competingAbandonment.presentation.finalize('The work failed.', 'plain_text', 'error', observer([]));
+    assert.equal(result.handled, true, 'an abandoned terminal is already closed by durable repair');
+    assert.equal(competingAbandonment.calls.length, 0);
+    const stored = competingAbandonment.store.get(competingAbandonment.runId);
+    assert.equal(stored?.stream.state, 'unknown');
+    assert.equal(stored?.schemaVersion === 3 ? stored.terminalDelivery.state : undefined, 'abandoned');
+  } finally { competingAbandonment.db.close(); }
+});

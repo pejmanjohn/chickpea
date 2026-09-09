@@ -820,6 +820,11 @@ test('account-backed runtime MCP resolves OAuth and rechecks live tool and actor
       }], undefined, { workspaceId: 'T_TEST', actorMembershipId: 'member' });
       const auth = definition!.auth as () => Promise<string>;
       assert.equal(await auth(), 'account-token');
+      // A new effect declaration must not silently change the authority of a
+      // running instance. A fresh plan captures the new approved metadata.
+      Object.assign(policy.discoveredTools[0]!, { readOnlyHint: true });
+      await assert.rejects(auth(), /policy changed/);
+      policy.discoveredTools = [{ name: 'search' }];
       binding.enabled = false;
       await assert.rejects(auth(), /policy changed/);
       binding.enabled = true;

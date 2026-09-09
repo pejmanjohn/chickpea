@@ -1,4 +1,4 @@
-import type { StateDb } from '../../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../../state/state-db.ts';
 import type { GatewayInboundDelivery } from './protocol.ts';
 
 const GATEWAY_INBOX_MAX_TOTAL_ROWS = 1_000_000;
@@ -87,6 +87,7 @@ export class GatewayInboxStoreLogic {
       ...limits,
     };
     validateLimits(this.limits);
+    if (!schemaInstallRequired(db)) return;
     db.exec(
       `CREATE TABLE IF NOT EXISTS gateway_inbox (
         id TEXT PRIMARY KEY,

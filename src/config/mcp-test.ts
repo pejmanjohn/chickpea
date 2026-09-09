@@ -4,6 +4,9 @@ import {
   type McpConnectionDefinition,
   type ToolDefinition,
 } from '@flue/runtime';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 
 import { McpBlockedUrlError } from './mcp-errors.ts';
 import {
@@ -36,6 +39,7 @@ interface McpDiscoveredTool {
   name: string;
   title?: string;
   description?: string;
+  readOnlyHint?: boolean;
 }
 
 export interface McpDiscoveryResult {
@@ -71,13 +75,71 @@ const connectWithFlueV2: McpConnector = (name, definition) =>
  */
 export async function discoverMcpTools(
   input: McpConnectInput,
-  connect: McpConnector = connectWithFlueV2,
+  connect?: McpConnector,
+  createGuardedFetch: (options: McpGuardedFetchOptions) => typeof fetch = createMcpGuardedFetch,
 ): Promise<McpDiscoveryResult> {
+  // Discovery needs the protocol metadata that Flue's executable tool adapter
+  // intentionally omits. Keep invocation on Flue, but discover with the SDK.
+  if (!connect) return discoverProtocolTools(input, createGuardedFetch);
   const connection = await connectMcp(input, connect);
   try {
     return { tools: mapTools(input.id, connection.tools) };
   } finally {
     await connection.close().catch(() => undefined);
+  }
+}
+
+async function discoverProtocolTools(
+  input: McpConnectInput,
+  createGuardedFetch: (options: McpGuardedFetchOptions) => typeof fetch,
+): Promise<McpDiscoveryResult> {
+  const validated = validateMcpUrl(input.url);
+  if (!validated.ok) throw new McpBlockedUrlError(validated.reason);
+  const controller = new AbortController();
+  const fetch = createGuardedFetch({
+    allowedOrigin: new URL(validated.url).origin,
+    signal: controller.signal,
+  });
+  const options = { requestInit: { headers: input.headers }, fetch };
+  const transport = input.transport === 'sse'
+    ? new SSEClientTransport(new URL(validated.url), options)
+    : new StreamableHTTPClientTransport(new URL(validated.url), options);
+  const client = new Client({ name: 'chickpea', version: '1' });
+  try {
+    await raceDeadline(
+      // SDK entrypoints disagree only on the optional sessionId property.
+      client.connect(transport as Parameters<Client['connect']>[0]),
+      input.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+      (error) => controller.abort(error),
+    );
+    const tools: McpDiscoveredTool[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const page = await client.listTools(cursor ? { cursor } : {}, {
+        timeout: input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+      });
+      for (const tool of page.tools) {
+        if (tool.execution?.taskSupport === 'required') continue;
+        if (tools.length >= MAX_TOOLS) break;
+        const description = truncate(tool.description, DESCRIPTION_MAX);
+        const title = truncate(tool.title ?? tool.annotations?.title, 160);
+        tools.push({
+          name: truncate(tool.name, NAME_MAX) ?? tool.name.slice(0, NAME_MAX),
+          ...(title ? { title } : {}),
+          ...(description ? { description } : {}),
+          ...(typeof tool.annotations?.readOnlyHint === 'boolean'
+            ? { readOnlyHint: tool.annotations.readOnlyHint } : {}),
+        });
+      }
+      cursor = page.nextCursor;
+      if (cursor && cursors.has(cursor)) throw new Error('MCP discovery repeated a cursor.');
+      if (cursor) cursors.add(cursor);
+    } while (cursor && tools.length < MAX_TOOLS);
+    return { tools };
+  } finally {
+    controller.abort();
+    await client.close().catch(() => undefined);
   }
 }
 

@@ -53,7 +53,12 @@ const zMcpTool = z.strictObject({
   name: zText(120),
   title: zOptionalText(160).optional(),
   description: zOptionalText(400).optional(),
+  readOnlyHint: z.boolean().optional(),
 });
+const zMcpToolPolicies = z.record(zText(120), z.strictObject({
+  effect: z.enum(['read', 'write']),
+  argumentConstraints: z.record(zText(120), z.array(zText(120)).min(1).max(50)).optional(),
+}));
 const zConnectionIdentity = z.strictObject({
   workspaceName: zOptionalText(240).optional(),
   accountName: zOptionalText(240).optional(),
@@ -69,6 +74,7 @@ const zMcpConnection = z.strictObject({
   lifecycleStatus: z.enum(['pending', 'ready', 'failed']),
   statusText: zOptionalText(1_000),
   discoveredTools: z.array(zMcpTool).max(500),
+  toolPolicies: zMcpToolPolicies.optional(),
   allowedTools: z.array(zText(120)).max(500),
   oauthScope: zOptionalText(2_000).optional(),
   lastCheckedAt: z.number().int().nonnegative().optional(),
@@ -393,6 +399,7 @@ const vSkill = v.strictObject({
 });
 const vMcpTool = v.strictObject({
   name: vt(120), title: v.optional(vot(160)), description: v.optional(vot(400)),
+  readOnlyHint: v.optional(v.boolean()),
 });
 const vConnectionIdentity = v.strictObject({
   workspaceName: v.optional(vot(240)), accountName: v.optional(vot(240)),
@@ -408,6 +415,10 @@ const vMcpConnection = v.strictObject({
   lifecycleStatus: v.picklist(['pending', 'ready', 'failed']),
   statusText: vot(1_000),
   discoveredTools: va(vMcpTool, 500),
+  toolPolicies: v.optional(v.record(vt(120), v.strictObject({
+    effect: v.picklist(['read', 'write']),
+    argumentConstraints: v.optional(v.record(vt(120), va(vt(120), 50))),
+  }))),
   allowedTools: va(vt(120), 500),
   oauthScope: v.optional(vot(2_000)),
   lastCheckedAt: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),

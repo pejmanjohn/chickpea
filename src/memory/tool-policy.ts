@@ -53,9 +53,38 @@ interface SubmissionPolicyState {
   requireExplicitEffectIntent?: boolean;
   /** A semantic tool boundary already matched the current request. */
   nestedEffectAuthorized?: boolean;
+  mcpTools?: Map<string, { readOnly?: boolean; displayName?: string }>;
 }
 
 const submissionPolicy = new AsyncLocalStorage<SubmissionPolicyState>();
+
+/** Host-only policy from the approved runtime plan, never from model messages. */
+export function registerMcpToolPolicies(connections: readonly {
+  id: string;
+  displayName?: string;
+  allowedTools: readonly string[];
+  readOnlyTools?: readonly string[];
+  writeTools?: readonly string[];
+}[]): void {
+  const state = submissionPolicy.getStore();
+  if (!state) return;
+  const policies = new Map<string, { readOnly?: boolean; displayName?: string }>();
+  for (const connection of connections) {
+    for (const tool of connection.allowedTools) {
+      const read = connection.readOnlyTools?.includes(tool) === true;
+      const write = connection.writeTools?.includes(tool) === true;
+      if (read && write) throw new Error('Conflicting MCP tool effect declarations.');
+      const sanitize = (value: string) => value.replace(/[^A-Za-z0-9_-]/g, '_').replace(/^_+|_+$/g, '') || 'unnamed';
+      const name = `mcp__${sanitize(connection.id)}__${sanitize(tool)}`;
+      if (policies.has(name)) throw new Error('Duplicate MCP tool policy.');
+      policies.set(name, {
+        ...(read || write ? { readOnly: read } : {}),
+        ...(connection.displayName ? { displayName: connection.displayName } : {}),
+      });
+    }
+  }
+  state.mcpTools = policies;
+}
 
 const INTRINSIC_EXTERNAL_WRITE_VERBS = new Set([
   'attach',
@@ -588,7 +617,7 @@ export const memoryToolPolicyInterceptor: FlueExecutionInterceptor = async (
       return withCurrentRequestSideEffectAuthorization(operation.toolName, next);
     } else if (
       operation.toolName.startsWith('mcp__') &&
-      !isReadOnlyMcpToolName(operation.toolName)
+      !(active.mcpTools?.get(operation.toolName)?.readOnly ?? isReadOnlyMcpToolName(operation.toolName))
     ) {
       return withCurrentRequestSideEffectAuthorization(operation.toolName, next);
     }
@@ -635,7 +664,9 @@ export function assertCurrentRequestSideEffectAllowed(action: string): void {
     if (state.policy?.explicitArtifactDeliveryIntent === true) return;
   } else if (
     state.policy?.explicitExternalSideEffectIntent === true &&
-    state.policy.externalSideEffectIntents.some((intent) => effectIntentMatchesAction(intent, action))
+    state.policy.externalSideEffectIntents.some((intent) => effectIntentMatchesAction(
+      intent, action, state.mcpTools?.get(action)?.displayName,
+    ))
   ) {
     return;
   }
@@ -771,9 +802,15 @@ interface EffectActionAnalysis {
   rawDestinationTokens: string[];
 }
 
-function effectIntentMatchesAction(intent: string, action: string): boolean {
+function effectIntentMatchesAction(intent: string, action: string, displayName?: string): boolean {
   const intentVerb = directExternalWriteVerb(intent);
   const actionAnalysis = analyzeEffectAction(action);
+  // Runtime connection IDs are opaque storage keys. A host-resolved label is
+  // the service the requester can actually name; never take it from tool output.
+  if (displayName !== undefined && action.startsWith('mcp__')) {
+    actionAnalysis.destination = new Set(semanticEffectTokens(displayName)
+      .filter(isMeaningfulDestinationToken).map(serviceTokenAlias));
+  }
   if (!intentVerb || !actionAnalysis.verb) return false;
   const intentClass = effectVerbClass(intentVerb);
   if (!intentClass || !actionAllowsEffect(

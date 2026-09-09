@@ -1,4 +1,5 @@
 import type { WebClient } from '@slack/web-api';
+import { settlementFailureFacts } from './agent-failure-diagnostics.ts';
 
 import {
   getSlackStateStore,
@@ -47,7 +48,10 @@ import { recordSlackInstallationUnavailable } from './installation-observability
 import { MAX_POST_DISPATCH_ATTEMPTS } from './turn-jobs.ts';
 import { slackPresentationStatePort } from './presentation-state-port.ts';
 import { recordDeliveredSlackAgentMessage } from './public-context.ts';
-import { drainSlackPresentationRepairs } from './presentation-repair.ts';
+import {
+  abandonTerminalSlackPresentationBestEffort,
+  drainSlackPresentationRepairs,
+} from './presentation-repair.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 
@@ -255,6 +259,20 @@ async function drainNodeTurnRelayOnce(
           });
           return true;
         } catch {
+          // Same contract as the Cloudflare relay: the recovery notice shares
+          // the run's V3 presentation, so an unresolved terminal makes this
+          // replay throw too. Abandon it so durable repair can suspend the
+          // Agent Session and clear the visible activity status.
+          console.error('[chickpea] node durable recovery final failed:', { reasonCode });
+          const recoveryClient = installationContext?.client ?? options.client;
+          if (job.runId && recoveryClient) {
+            await abandonTerminalSlackPresentationBestEffort({
+              runId: job.runId,
+              state: presentationState,
+              client: recoveryClient,
+              requireUnresolvedDelivery: true,
+            });
+          }
           await markTurnRecoveryRequired(job.id, reasonCode);
           if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);
           return false;
@@ -320,6 +338,9 @@ async function drainNodeTurnRelayOnce(
         return true;
       } catch (error) {
         if (flueDispatch.dispatchEnvelope) {
+          console.error('[chickpea] durable reattachment failed:', {
+            causes: settlementFailureFacts(error),
+          });
           // The row now owns the only legal redrive: replay the same keyed
           // admission, re-read its receipt, or replay its saved settlement.
           if (activeWorkKey) await state.setActiveWork(activeWorkKey, job.id, false);

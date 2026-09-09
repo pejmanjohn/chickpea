@@ -44,6 +44,20 @@ import {
 
 const NOW = Date.UTC(2026, 7, 20, 12);
 
+test('gateway client survives async resolver and Promise assimilation without a Slack call', async () => {
+  const calls: string[] = [];
+  const client = createGatewaySlackWebClient({
+    workspaceId: 'TTEST',
+    call: async (operation) => { calls.push(operation); return {}; },
+  });
+  assert.equal(await Promise.resolve(client), client);
+  assert.equal(await (async () => client)(), client);
+  assert.deepEqual(calls, []);
+  await client.assistant.threads.setStatus({ channel_id: 'DTEST', thread_ts: '1.0', status: '' });
+  assert.deepEqual(calls, ['assistant.threads.setStatus']);
+  assert.throws(() => (client as unknown as Record<string, unknown>).notAllowed, /unavailable/);
+});
+
 test('gateway installation authority authenticates the exact binding and rejects stale or expanded responses', async () => {
   const settings = new SqliteSettingsStore(':memory:', () => NOW);
   const config = configStore();

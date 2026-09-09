@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
+import { createGatewaySlackWebClient } from '../src/slack/gateway/web-client.ts';
 
 import type { SlackPresentationStatePort } from '../src/slack/agent-view-presentation.ts';
 import {
   abandonDeferredTerminalSlackDelivery,
+  abandonTerminalSlackPresentationBestEffort,
   acknowledgeDeferredTerminalSlackDelivery,
   drainSlackPresentationRepairs,
   hasRetryableTerminalRepair,
@@ -19,6 +21,15 @@ import {
 } from '../src/slack/run-presentations.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
+import { wakeNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
+import type { SlackStateStore } from '../src/slack/claim-store.ts';
+import type { WorkStore } from '../src/work/types.ts';
+import { MAX_POST_DISPATCH_ATTEMPTS } from '../src/slack/turn-jobs.ts';
+import { closeNodeStateStores } from '../src/config/state-backend.ts';
+import { withEnv } from './helpers/env.ts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const BASE_NOW = 1_800_000_000_000;
 
@@ -380,7 +391,19 @@ test('an exhausted deferred terminal delivery suspends session and clears activi
     const settled = await abandonDeferredTerminalSlackDelivery({
       runId,
       state: statePort(store),
-      resolveClient: async () => repairClient({ calls }),
+      resolveClient: async () => createGatewaySlackWebClient({
+        workspaceId: current.root.workspaceId,
+        call: async (operation, input) => {
+          if (operation === 'agents.sessions.setStatus') {
+            assert.equal(input.status, 'suspended');
+            calls.push('agent_session');
+          } else if (operation === 'assistant.threads.setStatus') {
+            assert.equal(input.status, '');
+            calls.push('assistant_status_clear');
+          } else assert.fail(`Unexpected gateway operation: ${operation}`);
+          return { ok: true };
+        },
+      }),
     });
 
     assert.deepEqual(calls, ['agent_session', 'assistant_status_clear']);
@@ -395,6 +418,77 @@ test('an exhausted deferred terminal delivery suspends session and clears activi
     assert.equal(settled?.repairRequired, false);
   } finally {
     db.close();
+  }
+});
+
+test('recovery abandonment preserves a presentation with no unresolved delivery', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => BASE_NOW);
+    const current = createV3(store, 'run_pre_delivery', root('PRE_DELIVERY'), 100);
+    const calls: string[] = [];
+    await abandonTerminalSlackPresentationBestEffort({
+      runId: current.runId, state: statePort(store), client: repairClient({ calls }),
+      requireUnresolvedDelivery: true,
+    });
+    assert.deepEqual(store.get(current.runId), current);
+    assert.deepEqual(calls, []);
+  } finally {
+    db.close();
+  }
+});
+
+test('the relay clears activity when exhausted execution and its recovery notice both fail', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-recovery-relay-'));
+  const db = openStateDb(':memory:');
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db') }, async () => {
+      const store = new SlackRunPresentationStoreLogic(db, () => BASE_NOW);
+      const runId = 'run_relay_exhausted';
+      const presentationRoot = root('RELAY');
+      let current = createV3(store, runId, presentationRoot, 100);
+      current = advance(store, current, { kind: 'select_activity_projection', surface: 'assistant_status' });
+      current = advance(store, current, {
+        kind: 'record_activity_receipt', operationId: `activity_${runId}_1`, certainty: 'acknowledged',
+      });
+      advance(store, current, {
+        kind: 'record_terminal_delivery_intent', operationId: 'terminal_relay', result: 'answer',
+      });
+      const calls: string[] = [];
+      const quarantined: string[] = [];
+      const noop = () => undefined;
+      const state = {
+        ...statePort(store),
+        listPendingTurns: () => [{
+          id: 'turn_relay', runId, attempts: MAX_POST_DISPATCH_ATTEMPTS - 1,
+          turn: { ...presentationRoot, text: 'bookings', source: 'app_mention' },
+          assignment: { agentId: 'analyst' }, progress: {}, dispatchEnvelope: {},
+        }],
+        freezeRuntimePlan: noop, prepareFlueDispatch: noop,
+        reconcileFlueExistingInstance: noop, recordFlueReceipt: noop,
+        recordFlueSettlement: noop, matchFlueObservation: noop,
+        markTurnRecoveryRequired: (_id: string, reason: string) => quarantined.push(reason),
+        recordTurnAttempt: noop, recordInteractionIntent: noop,
+        recordSlackInteractionProgress: noop, markTurnDelivered: noop, discardTurn: noop,
+      } as unknown as SlackStateStore;
+      let executions = 0;
+      await wakeNodeTurnRelay(undefined, {
+        state, work: {} as WorkStore, client: repairClient({ calls }),
+        executeTurn: async () => { executions += 1; throw new Error('fixture failure'); },
+      });
+      assert.equal(executions, 2, 'execution and its recovery notice both ran');
+      assert.deepEqual(quarantined, ['post_dispatch_attempts_exhausted']);
+      assert.ok(calls.includes('assistant_status_clear'));
+      const settled = store.get(runId);
+      assert.equal(settled?.schemaVersion, 3);
+      if (settled?.schemaVersion !== 3) assert.fail('expected V3');
+      assert.equal(settled.terminalDelivery.state, 'abandoned');
+      assert.equal(settled.activityProjection.state, 'cleared');
+    });
+  } finally {
+    closeNodeStateStores();
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type {
   ActivityKind,
   SemanticActivityPhase,
@@ -183,7 +183,8 @@ type SlackPresentationTerminalDelivery =
       operation: SlackPresentationOperationReceipt;
     }
   | {
-      /** A durable delivery path proved that no terminal artifact can be posted. */
+      /** Further terminal writes were stopped after the delivery budget was
+       * exhausted. An uncertain prior write may still be visible in Slack. */
       state: 'abandoned';
       result: 'failure';
       operation: SlackPresentationOperationReceipt & { certainty: 'failed' };
@@ -475,6 +476,7 @@ export type SlackPresentationMutation =
   | { kind: 'mark_finalized' }
   | { kind: 'mark_non_stream_finalized' }
   | { kind: 'mark_unknown'; degradationReason: SlackPresentationDegradationReason }
+  | { kind: 'reconcile_unknown_stream' }
   | { kind: 'adopt_plan'; taskLabels: readonly string[] }
   | { kind: 'set_task_status'; status: 'in_progress' | 'complete' | 'error' }
   | {
@@ -668,6 +670,7 @@ export class SlackRunPresentationStoreLogic {
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
   ) {
+    if (!schemaInstallRequired(db)) return;
     db.exec(
       `CREATE TABLE IF NOT EXISTS slack_run_presentations (
         run_id TEXT PRIMARY KEY,
@@ -1598,6 +1601,22 @@ function applyMutation(
       next.stream.state = 'unknown';
       next.stream.presentationOutcome = 'unknown';
       next.stream.degradationReason = mutation.degradationReason;
+      next.repairRequired = true;
+      return next;
+    case 'reconcile_unknown_stream':
+      // An uncertain Slack effect on a stream whose message coordinate is
+      // already known is recoverable exactly like a finalizing stream: stop
+      // without chunks, then replace the message contents. Without a
+      // coordinate there is nothing to reconcile against, so the state stays
+      // unknown for abandonment.
+      requireState(current, 'unknown');
+      if (!current.stream.messageTs) {
+        throw stateError('invalid_transition', 'Only a stream with a known Slack coordinate can reconcile.');
+      }
+      next.stream.state = 'finalizing';
+      delete next.stream.pendingAppend;
+      next.stream.presentationOutcome =
+        current.stream.acknowledgedByteLength > 0 ? 'progressive' : 'terminal_only';
       next.repairRequired = true;
       return next;
     case 'adopt_plan': {

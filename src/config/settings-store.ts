@@ -1,6 +1,6 @@
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { promisify } from '../state/async-facade.ts';
-import type { StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type { SlackSecretEnvelope } from '../slack/secret-envelope.ts';
 
 export interface EncryptedCredentialRevision {
@@ -78,6 +78,7 @@ export class SettingsStoreLogic {
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
   ) {
+    if (!schemaInstallRequired(db)) return;
     db.exec(
       `CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,

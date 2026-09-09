@@ -279,7 +279,7 @@ export class WebClientPresenter {
         thread_ts: this.target.threadTs,
         status: slackStatusText(update),
         loading_messages: slackLoadingMessages(update),
-        ...this.nativeStatusPersona(),
+        ...this.persona(),
       });
       this.statusWasSet = true;
       this.lastActivityReceiptCertainty = 'acknowledged';
@@ -875,13 +875,6 @@ export class WebClientPresenter {
     };
   }
 
-  private nativeStatusPersona(): { username?: string; icon_url?: string } {
-    if (this.target.visibleOwner?.kind !== 'selected_agent') return {};
-    return {
-      username: this.target.visibleOwner.persona.name,
-      icon_url: this.target.visibleOwner.persona.avatarUrl,
-    };
-  }
 }
 
 function activitySurface(

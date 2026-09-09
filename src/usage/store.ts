@@ -1,7 +1,7 @@
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { addColumnIfMissing, installLedgerLinks } from '../state/schema-links.ts';
 import { promisify } from '../state/async-facade.ts';
-import type { StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { AuditStoreLogic } from '../audit/store.ts';
 import type { AuditEvent } from '../audit/types.ts';
 import {
@@ -193,7 +193,7 @@ export class UsageStoreLogic {
     private readonly now: () => number = Date.now,
   ) {
     this.audit = new AuditStoreLogic(db);
-    this.initializeSchema();
+    if (schemaInstallRequired(db)) this.initializeSchema();
   }
 
   admitOperation(raw: AdmitUsageOperationInput): UsageOperation {

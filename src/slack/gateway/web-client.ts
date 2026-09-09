@@ -104,6 +104,9 @@ export function createGatewaySlackWebClient(client: GatewayOperationClient): Web
 
   return new Proxy({}, {
     get(_target, property): unknown {
+      // Async installation resolvers return this object. Promise assimilation
+      // probes `then`; this facade is a client, not a thenable or Slack method.
+      if (property === 'then') return undefined;
       if (property === 'assistant') return assistant;
       if (property === 'apiCall') {
         return (operation: string, input: Record<string, unknown> = {}) => {

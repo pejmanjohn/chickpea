@@ -1544,8 +1544,11 @@ test('unknown final effect remains repair-required and replay never posts a dupl
   try {
     await assert.rejects(() => runTurn(turn, assignment, undefined, options));
     await assert.rejects(() => runTurn(turn, assignment, undefined, options));
+    // The replay reconciles on the one known message coordinate: it repeats a
+    // chunk-less stop there and never starts or posts a second message. Slack
+    // still refuses, so the terminal stays unresolved for the next attempt.
     assert.deepEqual({ activityPosts, finalStarts, finalStops, deletes }, {
-      activityPosts: 0, finalStarts: 1, finalStops: 1, deletes: 0,
+      activityPosts: 0, finalStarts: 1, finalStops: 2, deletes: 0,
     });
     const persisted = h.store.get(runId);
     assert.equal(persisted?.schemaVersion === 3 &&
@@ -1553,6 +1556,8 @@ test('unknown final effect remains repair-required and replay never posts a dupl
       ? persisted.terminalDelivery.operation.certainty
       : undefined, 'unknown');
     assert.equal(persisted?.repairRequired, true);
+    assert.equal(persisted?.stream.state, 'finalizing');
+    assert.equal(persisted?.stream.messageTs, '1787776300.000300');
   } finally {
     h.db.close();
   }

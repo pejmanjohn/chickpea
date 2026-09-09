@@ -929,7 +929,15 @@ const mcpToolInfoSchema = v.object({
   name: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120)),
   title: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(160))),
   description: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(400))),
+  readOnlyHint: v.optional(v.boolean()),
 });
+
+const mcpToolPoliciesSchema = v.pipe(v.record(v.pipe(v.string(), v.minLength(1), v.maxLength(120)), v.strictObject({
+  effect: v.picklist(['read', 'write']),
+  argumentConstraints: v.optional(v.pipe(v.record(v.pipe(v.string(), v.minLength(1), v.maxLength(120)),
+    v.pipe(v.array(v.pipe(v.string(), v.maxLength(120))), v.minLength(1), v.maxLength(50))),
+    v.check((fields) => Object.keys(fields).length <= 32))),
+})), v.check((policies) => Object.keys(policies).length <= 50));
 
 const mcpIdentitySchema = v.object({
   workspaceName: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(160))),
@@ -957,6 +965,7 @@ const mcpServerSchema = v.pipe(
     lifecycleStatus: v.picklist(['pending', 'ready', 'failed']),
     statusText: v.pipe(v.string(), v.maxLength(300)),
     discoveredTools: v.pipe(v.array(mcpToolInfoSchema), v.maxLength(50)),
+    toolPolicies: v.optional(mcpToolPoliciesSchema),
     allowedTools: v.pipe(
       v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
       v.maxLength(50),
@@ -7589,8 +7598,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               name: tool.name,
               ...(tool.title ? { title: tool.title } : {}),
               ...(tool.description ? { description: tool.description } : {}),
+              ...(tool.readOnlyHint !== undefined ? { readOnlyHint: tool.readOnlyHint } : {}),
             })),
             allowedTools: [...parsed.output.mcp!.allowedTools],
+            ...(parsed.output.mcp!.toolPolicies ? { toolPolicies: parsed.output.mcp!.toolPolicies } : {}),
             ...(parsed.output.mcp!.oauthScope ? { oauthScope: parsed.output.mcp!.oauthScope } : {}),
             ...(parsed.output.mcp!.presetId ? { presetId: parsed.output.mcp!.presetId } : {}),
           };
@@ -7656,6 +7667,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const parsed = v.safeParse(v.object({
       expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
       allowedTools: v.pipe(v.array(v.pipe(v.string(), v.minLength(1), v.maxLength(256))), v.maxLength(128)),
+      toolPolicies: v.optional(mcpToolPoliciesSchema),
     }), await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
@@ -7671,8 +7683,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (allowedTools.some((tool) => !discovered.has(tool) || (ceiling.length > 0 && !ceiling.includes(tool)))) {
         return c.json({ error: 'invalid_tool_selection' }, 400);
       }
+      if (parsed.output.toolPolicies && Object.keys(parsed.output.toolPolicies).some((tool) => !allowedTools.includes(tool))) {
+        return c.json({ error: 'invalid_tool_policy' }, 400);
+      }
       const updated = await store(c).putConnectionAccount({
-        ...account, policy: { ...account.policy, allowedTools },
+        ...account, policy: { ...account.policy, allowedTools,
+          ...(parsed.output.toolPolicies ? { toolPolicies: parsed.output.toolPolicies } : {}),
+        },
       }, parsed.output.expectedRevision);
       return c.json({ account: toConnectionAccountView(updated) });
     } catch (error) {
@@ -10606,8 +10623,10 @@ function toMcpServers(
       name: tool.name,
       ...(tool.title !== undefined ? { title: tool.title } : {}),
       ...(tool.description !== undefined ? { description: tool.description } : {}),
+      ...(tool.readOnlyHint !== undefined ? { readOnlyHint: tool.readOnlyHint } : {}),
     })),
     allowedTools: server.allowedTools,
+    ...(server.toolPolicies ? { toolPolicies: server.toolPolicies } : {}),
     ...(server.oauthScope !== undefined ? { oauthScope: server.oauthScope } : {}),
     ...(server.lastCheckedAt !== undefined ? { lastCheckedAt: server.lastCheckedAt } : {}),
     ...(server.identity !== undefined

@@ -124,6 +124,44 @@ export async function abandonDeferredTerminalSlackDelivery(input: {
 }
 
 /**
+ * Close a run's V3 lifecycle when its terminal can no longer be posted by the
+ * relay that owns it. Abandonment is the only transition that moves an
+ * unresolved terminal (pending, unknown, or failed receipt; starting/unknown stream)
+ * into the auto-repairable set. Without it the Agent Session stays
+ * "processing" and the visible activity status is never cleared, because
+ * `listAutoRepairableV3` only selects acknowledged or abandoned terminals.
+ * Never throws: the caller is already recording recovery, and durable repair
+ * owns any Slack effect that fails here.
+ */
+export async function abandonTerminalSlackPresentationBestEffort(input: {
+  runId: string;
+  state: SlackPresentationStatePort | undefined;
+  client: WebClient;
+  requireUnresolvedDelivery?: boolean;
+}): Promise<void> {
+  if (!input.state) return;
+  try {
+    if (input.requireUnresolvedDelivery) {
+      const current = await input.state.getRunPresentation(input.runId);
+      if (current?.schemaVersion !== 3) return;
+      const unresolvedTerminal = current.terminalDelivery.state === 'intended' &&
+        current.terminalDelivery.operation.certainty !== 'acknowledged';
+      if (!unresolvedTerminal && current.stream.state !== 'starting' &&
+          current.stream.state !== 'unknown') return;
+    }
+    await abandonDeferredTerminalSlackDelivery({
+      runId: input.runId,
+      state: input.state,
+      resolveClient: async () => input.client,
+    });
+  } catch {
+    // Terminal delivery is already ambiguous or exhausted. Do not post a
+    // second answer; durable presentation repair owns later idempotent cleanup.
+    console.warn('[chickpea] Slack terminal presentation abandonment needs repair');
+  }
+}
+
+/**
  * Retry only idempotent post-terminal effects with confirmed non-delivery.
  * Pending or unknown receipts remain quarantined because Slack may already
  * have applied them.

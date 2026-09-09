@@ -2,7 +2,7 @@ import { AuditStoreLogic } from '../audit/store.ts';
 import { constantTimeEquals } from '../security/constant-time.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
-import type { StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { addColumnIfMissing } from '../state/schema-links.ts';
 import {
   ManagementError,
@@ -279,7 +279,7 @@ export class ManagementStoreLogic {
 
   constructor(private readonly db: StateDb) {
     this.audit = new AuditStoreLogic(db);
-    this.installSchema();
+    if (schemaInstallRequired(db)) this.installSchema();
   }
 
   execute(request: ManagementRpcRequest): ManagementRpcResponse {

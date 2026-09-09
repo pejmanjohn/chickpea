@@ -1,5 +1,5 @@
 import { openStateDb, type NodeStateDb } from '../state/node-state-db.ts';
-import type { StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { WorkStoreLogic } from '../work/store.ts';
 import type { AdmitShadowRunInput, ShadowRunAdmission } from '../work/types.ts';
 import type {
@@ -244,6 +244,7 @@ export class SlackStateLogic {
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
   ) {
+    if (!schemaInstallRequired(db)) return;
     // One statement per exec: DO SQLite rejects multi-statement strings.
     db.exec(
       'CREATE TABLE IF NOT EXISTS slack_claims (key TEXT PRIMARY KEY, claimed_at INTEGER NOT NULL)',

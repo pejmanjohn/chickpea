@@ -19,6 +19,132 @@ const MODEL_ERROR_CODES = new Set([
   'context_length_exceeded', 'rate_limit_exceeded',
 ]);
 
+const SETTLEMENT_ERROR_TYPES = new Set([
+  'internal_error', 'operation_failed', 'tool_input_validation',
+  'tool_output_validation', 'tool_output_serialization', 'tool_name_conflict',
+  'submission_interrupted', 'submission_retry_exhausted', 'submission_timeout',
+  'submission_aborted', 'conversation_record_invariant',
+  'conversation_stream_store_failure', 'invalid_request',
+]);
+
+const PRESENTATION_FAILURES: Record<string, string> = {
+  'Slack progressive eligibility did not freeze.': 'eligibility_unfrozen',
+  'Slack Agent View presentation requires reconciliation.': 'presentation_reconciliation',
+  'Slack terminal delivery requires reconciliation.': 'terminal_reconciliation',
+  'Slack Agent View presentation is not terminalizable.': 'not_terminalizable',
+  'Progressive Slack prefix cannot be reconstructed.': 'prefix_unavailable',
+  'Slack Agent View presentation fence is stale.': 'stale_fence',
+  'Slack Agent View presentation is missing.': 'presentation_missing',
+  'Slack Agent View presentation writer is stale.': 'stale_writer',
+  'Slack stream receipt is incomplete.': 'stream_receipt_incomplete',
+};
+
+/** The durable read carries a serialized cause, even if live observations were lost. */
+export function settlementFailureFacts(error: unknown): Record<string, unknown>[] {
+  const facts: Record<string, unknown>[] = [];
+  const seen = new Set<unknown>();
+  for (let current = error; current && typeof current === 'object' &&
+      facts.length < 5 && !seen.has(current);) {
+    seen.add(current);
+    const value = current as Record<string, unknown>;
+    const type = typeof value.type === 'string' ? value.type : value.name;
+    const meta = value.meta && typeof value.meta === 'object'
+      ? value.meta as Record<string, unknown> : undefined;
+    facts.push({
+      kind: typeof type === 'string' && (SETTLEMENT_ERROR_TYPES.has(type) || ERROR_KINDS.has(type))
+        ? type : 'unknown',
+      ...serializedProviderFailure(value.message),
+      ...serializedProviderFailure(meta?.reason),
+      ...(typeof value.message === 'string' && Object.hasOwn(PRESENTATION_FAILURES, value.message)
+        ? { presentationFailureKind: PRESENTATION_FAILURES[value.message] } : {}),
+    });
+    current = value.cause;
+  }
+  return facts;
+}
+
+/** Pi serializes SDK errors before Flue observes them. Read only its fixed
+ * transport envelope; never emit the provider body or classify arbitrary prose. */
+function serializedProviderFailure(message: unknown): Record<string, string | number> {
+  if (typeof message !== 'string') return {};
+  const http = /^OpenAI API error \(([45]\d{2})\): /.exec(message) ??
+    /^([45]\d{2})(?:: | )/.exec(message);
+  if (http) {
+    const status = Number(http[1]);
+    let remainder = message.slice(http[0].length);
+    // For a text body the OpenAI SDK's own message already begins with the
+    // status ("503 <body>") and pi-ai prefixes the same status again. Unwrap
+    // that inner status exactly once and only when it matches the outer one;
+    // any other leading number is body text and stays unparsed.
+    if (http[0].startsWith('OpenAI API error')) {
+      const inner = new RegExp(`^${status}(?:: | )`).exec(remainder);
+      if (inner) remainder = remainder.slice(inner[0].length);
+    }
+    return {
+      providerFailureKind: 'http',
+      providerHttpStatus: status,
+      ...providerErrorBodyFacts(remainder),
+    };
+  }
+  const streamCode = /^(?:Error Code )?(server_error|rate_limit_exceeded|context_length_exceeded): /.exec(message);
+  if (streamCode) return { providerFailureKind: 'provider_stream_error', providerErrorCode: streamCode[1]! };
+  const transportErrors: Record<string, string> = {
+    'Network connection lost.': 'network_connection_lost',
+    'fetch failed': 'fetch_failed',
+    'Connection error.': 'connection_error',
+    'Request timed out.': 'request_timeout',
+    'Request was aborted': 'request_aborted',
+    'Request was aborted.': 'request_aborted',
+    'terminated': 'stream_terminated',
+    'OpenAI Responses stream ended without a stop reason': 'stream_incomplete',
+    'OpenAI Responses stream ended before a terminal response event': 'stream_incomplete',
+  };
+  const kind = Object.hasOwn(transportErrors, message) ? transportErrors[message] : undefined;
+  return kind ? { providerFailureKind: kind } : {};
+}
+
+const PROVIDER_ERROR_TOKEN = /^[a-z][a-z0-9_]{0,39}$/;
+// Cloudflare serves edge errors to non-browser clients as exactly this body.
+const CLOUDFLARE_ERROR_CODE_BODY = /^error code: (\d{4})$/;
+
+/**
+ * The provider SDK appends the parsed JSON error body to an HTTP failure.
+ * Keep only its fixed-vocabulary `type` and `code` fields and whether a JSON
+ * body existed at all: a backend failure returns JSON such as `server_error`,
+ * while a Cloudflare edge in front of the provider returns the bare text
+ * `error code: NNNN`, whose numeric code is the only fact kept. Any other
+ * text is recorded as text. The human message is never emitted.
+ */
+function providerErrorBodyFacts(remainder: string): Record<string, string | number> {
+  const text = remainder.trim();
+  if (!text.startsWith('{')) {
+    if (!text) return { providerBodyKind: 'none' };
+    const edge = CLOUDFLARE_ERROR_CODE_BODY.exec(text);
+    return edge
+      ? { providerBodyKind: 'cloudflare_error', providerEdgeErrorCode: Number(edge[1]) }
+      : { providerBodyKind: 'text' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { providerBodyKind: 'text' };
+  }
+  if (!parsed || typeof parsed !== 'object') return { providerBodyKind: 'text' };
+  const outer = parsed as Record<string, unknown>;
+  const body = outer.error && typeof outer.error === 'object'
+    ? outer.error as Record<string, unknown> : outer;
+  const token = (value: unknown): string | undefined =>
+    typeof value === 'string' && PROVIDER_ERROR_TOKEN.test(value) ? value : undefined;
+  const type = token(body.type);
+  const code = token(body.code);
+  return {
+    providerBodyKind: 'json',
+    ...(type ? { providerErrorType: type } : {}),
+    ...(code ? { providerErrorCode: code } : {}),
+  };
+}
+
 /** Retain failed/empty model-turn facts, including attempts later recovered by Flue. */
 export function observeAgentResultDiagnostics(
   event: FlueObservation,
@@ -51,6 +177,7 @@ export function observeAgentResultDiagnostics(
       hasThinking: content.some((block) => block.type === 'thinking'),
       hasToolCalls,
       ...(failed ? {
+        ...serializedProviderFailure(event.response.error?.message),
         errorCode: errorCode === undefined ? null : MODEL_ERROR_CODES.has(errorCode) ? errorCode : 'other',
         status: typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
           ? status : null,

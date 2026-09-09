@@ -1,5 +1,26 @@
 # Connector verification lessons
 
+## Custom MCP execution
+
+Reproduce the user's actual question through the deployed Slack Agent. A successful
+OAuth callback, tool listing, or guide lookup does not prove that the requested
+query or action can execute. Check the final Slack answer against the provider
+result, and verify that the working status clears.
+
+Custom connections use opaque IDs. Test those real identifier shapes through
+the runtime interceptor; readable fixture names can hide authorization failures.
+Tool effects come from owner-reviewed `toolPolicies`, then captured MCP
+`readOnlyHint` metadata. Undeclared tools retain the conservative name fallback.
+Do not mark a general query tool read-only without verifying the backend's
+enforcement. Owner policies can constrain exact tool arguments, for example a
+query data source backed by a read replica. Restrictions are enforced before the
+outbound tool request and frozen into the Agent runtime plan. Changed policies
+invalidate the old plan.
+
+Verify both an authorized invocation and a denied one. Tool names, retrieved
+content, and memory cannot register host policy or grant access to another
+connection. Writes still require matching current request intent.
+
 LC-04 anchors connector verification on a synthetic Google Sheets read. It checks product records and the structural provider result. It does not retain an account label, document title, URL, OAuth response, or worksheet content in the journal.
 
 ## Ownership and attribution

@@ -6,10 +6,15 @@ import {
   SubmissionConflictError,
   init,
   type AgentReply,
+  type ConversationStreamChunk,
   type DispatchReceipt,
 } from '@flue/runtime';
 
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
+import {
+  createCloudflareBoundedAgentReplyReader,
+  type BoundedReplyReader,
+} from './bounded-agent-observation.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
@@ -20,6 +25,7 @@ import {
   type ChickpeaResponseMetadata,
 } from '../usage/response-metadata.ts';
 import { opaqueId } from '../work/admission.ts';
+import { settlementFailureFacts } from './agent-failure-diagnostics.ts';
 import type { WorkTraceCorrelation } from '../work/trace-correlation.ts';
 import type {
   FlueDispatchEnvelopeV1,
@@ -150,6 +156,12 @@ interface PromptSlackAgentInput {
   }) => Promise<SlackProgressiveReadRelay | undefined>;
   /** Focused contract seam; production uses the real Flue handle. */
   handle?: ReturnType<typeof init>;
+  /**
+   * Focused seam. On Cloudflare the adapter always observes the reply with
+   * bounded reads (see ./bounded-agent-observation.ts); Node uses Flue's
+   * in-process `read()`.
+   */
+  observeReply?: BoundedReplyReader;
   /** Focused seam; production uses the Cloudflare Sandbox turn preparer. */
   prepareSandbox?: typeof prepareCloudflareSandboxTurn;
 }
@@ -192,6 +204,12 @@ export async function promptSlackThreadAgent(
         }
       : {}),
   };
+  // Resolved before dispatch: a turn that cannot be observed must not be
+  // admitted. On Cloudflare a long-poll into the agent object nests
+  // cross-object subrequests until the platform rejects them, so the reply is
+  // observed with bounded immediate reads instead of Flue's `read()`.
+  const observeReply = input.observeReply ??
+    (isCloudflareTarget() ? createCloudflareBoundedAgentReplyReader(input.env) : undefined);
   let envelope = input.state.dispatchEnvelope ??
     await input.state.prepare(input.message, observation);
   input.state.dispatchEnvelope = envelope;
@@ -268,14 +286,14 @@ export async function promptSlackThreadAgent(
   // into one text value. Retain the durable step boundary before that fold.
   const terminalText = new TerminalStepText(receipt.submissionId);
   let reply: AgentReply;
+  const onEvent = (chunk: ConversationStreamChunk) => {
+    terminalText.onEvent(chunk);
+    progressiveRelay?.onEvent(chunk);
+  };
   try {
-    reply = await handle.read(
-      receipt as DispatchReceipt,
-      { onEvent: (chunk) => {
-        terminalText.onEvent(chunk);
-        progressiveRelay?.onEvent(chunk);
-      } },
-    );
+    reply = observeReply
+      ? await observeReply({ handle, instanceId: envelope.instanceId, receipt, onEvent })
+      : await handle.read(receipt as DispatchReceipt, { onEvent });
   } catch (error) {
     if (!(error instanceof AgentRunError)) {
       await progressiveRelay?.invalidateAndDrain('read_interrupted');
@@ -289,7 +307,7 @@ export async function promptSlackThreadAgent(
       throw new AgentPromptFailure('agent', 503, false, true);
     }
     const kind = classifyFlueRunFailure(error);
-    logDispatchFailure('settlement_failed', receipt.submissionId);
+    logDispatchFailure('settlement_failed', receipt.submissionId, undefined, error);
     let checkpoint: FlueSettlementCheckpointV1;
     try {
       checkpoint = await input.state.recordSettlement({
@@ -388,12 +406,14 @@ function logDispatchFailure(
   stage: 'settlement_failed' | 'invalid_result',
   submissionId: string,
   hasText?: boolean,
+  error?: unknown,
 ): void {
   try {
     console.error('[chickpea] agent dispatch failed:', {
       stage,
       submissionRef: opaqueId('fluesubmission', submissionId),
       ...(hasText === undefined ? {} : { hasText }),
+      ...(error === undefined ? {} : { causes: settlementFailureFacts(error) }),
     });
   } catch {
     // Diagnostics must not interrupt settlement or change retry behavior.
