@@ -699,6 +699,14 @@ export class SlackRunPresentationStoreLogic {
        ON slack_run_presentations (repair_required, updated_at, run_id)`,
     );
     db.exec(
+      `CREATE INDEX IF NOT EXISTS slack_run_presentations_finalized_idx
+       ON slack_run_presentations (finalized_at, run_id) WHERE finalized_at IS NOT NULL`,
+    );
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS slack_run_presentations_hard_expiry_idx
+       ON slack_run_presentations (hard_expires_at, run_id)`,
+    );
+    db.exec(
       `CREATE TABLE IF NOT EXISTS slack_workspace_append_budgets (
         workspace_id TEXT PRIMARY KEY,
         capacity INTEGER NOT NULL,

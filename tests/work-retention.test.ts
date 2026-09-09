@@ -92,3 +92,25 @@ test('invalid retention never writes a body', () => {
     db.close();
   }
 });
+
+test('indexed body purge respects the batch limit and retains metadata for purged bodies', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new WorkStoreLogic(db, { now: () => NOW, env: {} });
+    const prior = store.putContent({ sensitivity: 'private', body: 'prior', createdAt: NOW - DAY_MS });
+    store.purgeContent(NOW + 29 * DAY_MS);
+    const expiring = [0, 1, 2].map((offset) =>
+      store.putContent({ sensitivity: 'private', body: `body ${offset}`, createdAt: NOW + offset }));
+    const live = store.putContent({ sensitivity: 'private', body: 'live', createdAt: NOW + DAY_MS });
+    assert.deepEqual(store.purgeContent(NOW + 30 * DAY_MS + 2, 2), {
+      purgedCount: 2, remainingExpiredCount: 1,
+    });
+    for (const content of [prior, expiring[0]!, expiring[1]!]) {
+      assert.deepEqual({ ...db.get('SELECT body, byte_size FROM ledger_content WHERE ref = ?', content.ref) },
+        { body: null, byte_size: 0 });
+    }
+    assert.equal(db.get('SELECT body FROM ledger_content WHERE ref = ?', expiring[2]!.ref)?.body, 'body 2');
+    assert.equal(store.getContent(live.ref, NOW + 30 * DAY_MS + 2)?.body, 'live');
+    assert.equal(db.get('SELECT COUNT(*) AS n FROM ledger_content')?.n, 5);
+  } finally { db.close(); }
+});

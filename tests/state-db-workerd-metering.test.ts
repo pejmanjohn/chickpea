@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import type { meterMaintenance } from './fixtures/state-db/maintenance-meter.ts';
 import { stateSchemaFingerprint } from '../src/state/schema-lifecycle.ts';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -24,6 +25,7 @@ interface Probe {
     markerTableRows: number;
     priorValue: string;
   };
+  maintenance: ReturnType<typeof meterMaintenance>;
   localVersionId: string | null;
 }
 
@@ -47,6 +49,7 @@ test('Durable Objects SQLite meters schema probes as scans and installs atomical
     name: 'chickpea-state-db-metering',
     main: FIXTURE,
     compatibility_date: compatibilityDate,
+    compatibility_flags: ['nodejs_compat'],
     durable_objects: { bindings: [{ name: 'METERING', class_name: 'MeteringStore' }] },
     migrations: [{ tag: 'v1', new_sqlite_classes: ['MeteringStore'] }],
     version_metadata: { binding: 'CF_VERSION_METADATA' },
@@ -56,6 +59,27 @@ test('Durable Objects SQLite meters schema probes as scans and installs atomical
   try {
     worker = startWorker(configPath, port);
     const probe = await waitForWorker(worker, `http://127.0.0.1:${port}/`);
+    const repeated = await fetch(`http://127.0.0.1:${port}/`);
+    assert.ok(repeated.ok);
+    assert.deepEqual(await repeated.json(), probe, 'retry returns the persisted report without reseeding');
+    const m = probe.maintenance;
+    assert.equal(m.failedInstallRollback, true);
+    assert.deepEqual(m.indexed.result, m.baseline.result);
+    assert.deepEqual(m.reinstalled.result, m.baseline.result);
+    assert.ok(m.indexed.reads <= 100, `idle maintenance reads: ${m.indexed.reads}`);
+    assert.ok(m.baseline.reads > 10_000, `baseline scans: ${m.baseline.reads}`);
+    assert.ok(m.missing.reads <= 2);
+    assert.equal(m.indexed.writes, m.baseline.writes);
+    assert.ok(m.turnLifecycle.writes < 100, `turn lifecycle writes: ${m.turnLifecycle.writes}`);
+    assert.ok(m.runLifecycle.writes < 200, `run lifecycle writes: ${m.runLifecycle.writes}`);
+    assert.equal(m.runLifecycle.result, 'succeeded');
+    assert.equal(m.baselineRunLifecycle.result, 'succeeded');
+    assert.ok(m.runLifecycle.writes - m.baselineRunLifecycle.writes <= 16, 'bounded routine index write amplification');
+    assert.ok(m.turnLifecycle.writes - m.baselineTurnLifecycle.writes <= 4, 'bounded turn index write amplification');
+    for (const name of ['routine_runs_status_finished_idx', 'slack_run_presentations_hard_expiry_idx']) {
+      assert.equal(m.builds.find((b) => b.name === name)?.writes, 1_001, `${name} build writes`);
+    }
+    console.info('[learning] actual store maintenance', JSON.stringify(m));
     const byLabel = new Map(probe.results.map((entry) => [entry.label, entry]));
     const read = (label: string) => {
       const entry = byLabel.get(label);
@@ -126,11 +150,15 @@ async function waitForWorker(handle: WorkerHandle, origin: string): Promise<Prob
     if (handle.child.exitCode !== null) {
       throw new Error(`wrangler dev exited early (${handle.child.exitCode}):\n${handle.output()}`);
     }
+    let response: Response | undefined;
     try {
-      const response = await fetch(origin);
-      if (response.ok) return await response.json() as Probe;
+      response = await fetch(origin);
     } catch {
       // Not ready yet.
+    }
+    if (response?.ok) return await response.json() as Probe;
+    if (response?.status === 500) {
+      throw new Error(`Metering fixture failed: ${await response.text()}\n${handle.output()}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }

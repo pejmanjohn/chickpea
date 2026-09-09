@@ -1750,3 +1750,32 @@ test('presentation recovery authority survives the independent TurnJob terminal 
     db.close();
   }
 });
+
+test('indexed maintenance orders finalized ties before spending the remaining batch on hard expiry', () => {
+  let clock = 1_800_000_000_000;
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db, () => clock);
+    store.create(createInput('run_hard_expired'));
+    for (const id of ['run_final_b', 'run_final_a']) {
+      let current = store.create(createInput(id));
+      for (const mutation of [
+        { kind: 'stream_start_intent' },
+        { kind: 'mark_fallback', outcome: 'fallback' },
+        { kind: 'mark_artifact_delivered', outcome: 'fallback' },
+        { kind: 'mark_finalized' },
+      ] as const) current = advance(store, current, mutation);
+    }
+    clock += SLACK_PRESENTATION_RETENTION_MS + 1;
+    store.create(createInput('run_live'));
+    assert.deepEqual(store.maintain(1), { finalizedPurged: 1, expiredTombstoned: 0 });
+    assert.equal(store.get('run_final_a'), undefined);
+    assert.ok(store.get('run_final_b'));
+    assert.ok(store.get('run_hard_expired'));
+    assert.deepEqual(store.maintain(2), { finalizedPurged: 1, expiredTombstoned: 1 });
+    assert.equal(store.get('run_final_b'), undefined);
+    assert.equal(store.get('run_hard_expired'), undefined);
+    assert.ok(store.get('run_live'));
+    assert.equal(store.listRetentionTombstones().length, 1);
+  } finally { db.close(); }
+});

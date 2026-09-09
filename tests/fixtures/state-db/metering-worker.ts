@@ -5,6 +5,7 @@
 import { DurableObject } from 'cloudflare:workers';
 
 import { DoSqlStateDb } from '../../../src/state/do-state-db.ts';
+import { meterMaintenance } from './maintenance-meter.ts';
 import { StateSchemaMarker } from '../../../src/state/schema-lifecycle.ts';
 
 interface Measurement {
@@ -19,6 +20,15 @@ const FINGERPRINT = 'worker:11111111-2222-4333-8444-555555555555:' +
 
 export class MeteringStore extends DurableObject {
   async fetch(): Promise<Response> {
+    // A readiness request can lose its response after the probe committed.
+    // Persist the report so retry/reload never seeds fixed fixture IDs twice.
+    // The application's minimal ambient storage type omits the KV API.
+    const reportStorage = this.ctx.storage as typeof this.ctx.storage & {
+      get(key: string): Promise<unknown>;
+      put(key: string, value: unknown): Promise<void>;
+    };
+    const cached = await reportStorage.get('meter-result');
+    if (cached) return Response.json(cached);
     const sql = this.ctx.storage.sql;
     const db = new DoSqlStateDb(this.ctx.storage);
     const measure = (label: string, query: string, ...params: (string | number)[]): Measurement => {
@@ -86,8 +96,9 @@ export class MeteringStore extends DurableObject {
       installError = error instanceof Error ? error.message : String(error);
     }
     const metadata = (this.env as { CF_VERSION_METADATA?: { id?: string } }).CF_VERSION_METADATA;
-    return Response.json({
+    const report = {
       results,
+      maintenance: meterMaintenance(this.ctx.storage),
       nested: { innerError, rows: nestedRows },
       bootstrap: {
         installError,
@@ -97,7 +108,9 @@ export class MeteringStore extends DurableObject {
         priorValue: String(db.get('SELECT v FROM prior_data WHERE id = 1')?.v),
       },
       localVersionId: metadata?.id ?? null,
-    });
+    };
+    await reportStorage.put('meter-result', report);
+    return Response.json(report);
   }
 }
 
