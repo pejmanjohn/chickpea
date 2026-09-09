@@ -20,6 +20,7 @@ import {
   type ChickpeaResponseMetadata,
 } from '../usage/response-metadata.ts';
 import { opaqueId } from '../work/admission.ts';
+import { settlementFailureFacts } from './agent-failure-diagnostics.ts';
 import type { WorkTraceCorrelation } from '../work/trace-correlation.ts';
 import type {
   FlueDispatchEnvelopeV1,
@@ -289,7 +290,7 @@ export async function promptSlackThreadAgent(
       throw new AgentPromptFailure('agent', 503, false, true);
     }
     const kind = classifyFlueRunFailure(error);
-    logDispatchFailure('settlement_failed', receipt.submissionId);
+    logDispatchFailure('settlement_failed', receipt.submissionId, undefined, error);
     let checkpoint: FlueSettlementCheckpointV1;
     try {
       checkpoint = await input.state.recordSettlement({
@@ -388,12 +389,14 @@ function logDispatchFailure(
   stage: 'settlement_failed' | 'invalid_result',
   submissionId: string,
   hasText?: boolean,
+  error?: unknown,
 ): void {
   try {
     console.error('[chickpea] agent dispatch failed:', {
       stage,
       submissionRef: opaqueId('fluesubmission', submissionId),
       ...(hasText === undefined ? {} : { hasText }),
+      ...(error === undefined ? {} : { causes: settlementFailureFacts(error) }),
     });
   } catch {
     // Diagnostics must not interrupt settlement or change retry behavior.

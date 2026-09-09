@@ -2,12 +2,29 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { FlueObservation } from '@flue/runtime';
-import { agentFailureDiagnosticsInterceptor, observeAgentResultDiagnostics } from '../src/slack/agent-failure-diagnostics.ts';
+import { agentFailureDiagnosticsInterceptor, observeAgentResultDiagnostics, settlementFailureFacts } from '../src/slack/agent-failure-diagnostics.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
 import { opaqueId } from '../src/work/admission.ts';
 
 const operation = { type: 'agent', operationId: 'private-submission', operationKind: 'prompt' } as const;
 const context = { agentName: CHICKPEA_SLACK_AGENT_NAME, submissionId: 'private-submission' };
+
+test('durable failure facts retain serialized cause kinds without private error content', () => {
+  const cause = { type: 'tool_input_validation', message: 'private SQL and credentials',
+    meta: { input: 'private' }, cause: { name: 'Error', message: 'terminated' } };
+  const error = new Error('private run', { cause });
+  assert.deepEqual(settlementFailureFacts(error), [
+    { kind: 'Error' }, { kind: 'tool_input_validation' },
+    { kind: 'Error', providerFailureKind: 'stream_terminated' },
+  ]);
+  assert.deepEqual(settlementFailureFacts({ type: 'private', message: 'private' }), [{ kind: 'unknown' }]);
+  assert.deepEqual(settlementFailureFacts({ type: 'operation_failed', meta: {
+    reason: 'server_error: private provider response',
+  } }), [{ kind: 'operation_failed', providerFailureKind: 'provider_stream_error', providerErrorCode: 'server_error' }]);
+  const cyclic = { type: 'internal_error', cause: undefined as unknown };
+  cyclic.cause = cyclic;
+  assert.equal(settlementFailureFacts(cyclic).length, 1);
+});
 
 type ModelTurn = Extract<FlueObservation, { type: 'turn' }>;
 function terminalEvent(overrides: Partial<ModelTurn> = {}): ModelTurn {

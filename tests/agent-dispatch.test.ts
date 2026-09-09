@@ -225,7 +225,9 @@ test('dispatch diagnostics distinguish failed settlement from an empty completed
   assert.deepEqual(logs, ['settlement_failed', 'invalid_result'].map((stage) => [
     '[chickpea] agent dispatch failed:',
     { stage, submissionRef: opaqueId('fluesubmission', RECEIPT.submissionId),
-      ...(stage === 'invalid_result' ? { hasText: false } : {}) },
+      ...(stage === 'invalid_result' ? { hasText: false } : {
+        causes: [{ kind: 'unknown' }, { kind: 'internal_error' }],
+      }) },
   ]));
   assert.doesNotMatch(JSON.stringify(logs), /private|Bearer|secret|submission_dispatch_test/);
 });

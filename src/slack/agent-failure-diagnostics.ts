@@ -19,6 +19,36 @@ const MODEL_ERROR_CODES = new Set([
   'context_length_exceeded', 'rate_limit_exceeded',
 ]);
 
+const SETTLEMENT_ERROR_TYPES = new Set([
+  'internal_error', 'operation_failed', 'tool_input_validation',
+  'tool_output_validation', 'tool_output_serialization', 'tool_name_conflict',
+  'submission_interrupted', 'submission_retry_exhausted', 'submission_timeout',
+  'submission_aborted', 'conversation_record_invariant',
+  'conversation_stream_store_failure', 'invalid_request',
+]);
+
+/** The durable read carries a serialized cause, even if live observations were lost. */
+export function settlementFailureFacts(error: unknown): Record<string, unknown>[] {
+  const facts: Record<string, unknown>[] = [];
+  const seen = new Set<unknown>();
+  for (let current = error; current && typeof current === 'object' &&
+      facts.length < 5 && !seen.has(current);) {
+    seen.add(current);
+    const value = current as Record<string, unknown>;
+    const type = typeof value.type === 'string' ? value.type : value.name;
+    const meta = value.meta && typeof value.meta === 'object'
+      ? value.meta as Record<string, unknown> : undefined;
+    facts.push({
+      kind: typeof type === 'string' && (SETTLEMENT_ERROR_TYPES.has(type) || ERROR_KINDS.has(type))
+        ? type : 'unknown',
+      ...serializedProviderFailure(value.message),
+      ...serializedProviderFailure(meta?.reason),
+    });
+    current = value.cause;
+  }
+  return facts;
+}
+
 /** Pi serializes SDK errors before Flue observes them. Read only its fixed
  * transport envelope; never emit the provider body or classify arbitrary prose. */
 function serializedProviderFailure(message: unknown): Record<string, string | number> {
@@ -26,6 +56,8 @@ function serializedProviderFailure(message: unknown): Record<string, string | nu
   const http = /^OpenAI API error \(([45]\d{2})\): /.exec(message) ??
     /^([45]\d{2})(?:: | )/.exec(message);
   if (http) return { providerFailureKind: 'http', providerHttpStatus: Number(http[1]) };
+  const streamCode = /^(?:Error Code )?(server_error|rate_limit_exceeded|context_length_exceeded): /.exec(message);
+  if (streamCode) return { providerFailureKind: 'provider_stream_error', providerErrorCode: streamCode[1]! };
   const transportErrors: Record<string, string> = {
     'Network connection lost.': 'network_connection_lost',
     'fetch failed': 'fetch_failed',
@@ -33,6 +65,9 @@ function serializedProviderFailure(message: unknown): Record<string, string | nu
     'Request timed out.': 'request_timeout',
     'Request was aborted': 'request_aborted',
     'Request was aborted.': 'request_aborted',
+    'terminated': 'stream_terminated',
+    'OpenAI Responses stream ended without a stop reason': 'stream_incomplete',
+    'OpenAI Responses stream ended before a terminal response event': 'stream_incomplete',
   };
   const kind = Object.hasOwn(transportErrors, message) ? transportErrors[message] : undefined;
   return kind ? { providerFailureKind: kind } : {};
