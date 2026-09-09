@@ -101,6 +101,54 @@ test('serialized provider failures retain fixed transport facts without error bo
   assert.doesNotMatch(JSON.stringify(logs), /private|credential|query|tool input|Network connection lost/);
 });
 
+test('an HTTP provider failure keeps only the fixed error type and code from its JSON body', (t) => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  const facts = (message: string) => {
+    observeAgentResultDiagnostics(terminalEvent({ isError: true, response: {
+      finishReason: 'error', error: { type: 'unknown', message },
+    } }), context);
+    const record = logs.at(-1)![1] as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(record).filter(([key]) =>
+      ['providerFailureKind', 'providerHttpStatus', 'providerBodyKind', 'providerErrorType', 'providerErrorCode', 'providerEdgeErrorCode'].includes(key)));
+  };
+  assert.deepEqual(
+    facts('OpenAI API error (503): {"message":"private backend prose","type":"server_error","param":null,"code":null}'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'json', providerErrorType: 'server_error' },
+  );
+  assert.deepEqual(
+    facts('OpenAI API error (429): {"error":{"message":"private","type":"tokens","code":"rate_limit_exceeded"}}'),
+    { providerFailureKind: 'http', providerHttpStatus: 429, providerBodyKind: 'json', providerErrorType: 'tokens', providerErrorCode: 'rate_limit_exceeded' },
+  );
+  assert.deepEqual(
+    facts('503 <html><body>private edge page</body></html>'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'text' },
+  );
+  assert.deepEqual(
+    facts('OpenAI API error (500): {"type":"Not A Token; private","code":"' + 'x'.repeat(41) + '"}'),
+    { providerFailureKind: 'http', providerHttpStatus: 500, providerBodyKind: 'json' },
+  );
+  assert.deepEqual(
+    facts('OpenAI API error (502): {not json private'),
+    { providerFailureKind: 'http', providerHttpStatus: 502, providerBodyKind: 'text' },
+  );
+  // A Cloudflare edge in front of the provider answers non-browser clients
+  // with exactly "error code: NNNN". Only that anchored numeric code is kept.
+  assert.deepEqual(
+    facts('503 error code: 1019\n'),
+    { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'cloudflare_error', providerEdgeErrorCode: 1019 },
+  );
+  assert.deepEqual(
+    facts('OpenAI API error (429): error code: 1015'),
+    { providerFailureKind: 'http', providerHttpStatus: 429, providerBodyKind: 'cloudflare_error', providerEdgeErrorCode: 1015 },
+  );
+  for (const unanchored of ['503 error code: 10195', '503 error code: 1019 private trailer', '503 private error code: 1019']) {
+    assert.deepEqual(facts(unanchored), { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'text' }, unanchored);
+  }
+  assert.deepEqual(facts('503 '), { providerFailureKind: 'http', providerHttpStatus: 503, providerBodyKind: 'none' });
+  assert.doesNotMatch(JSON.stringify(logs), /private|prose|edge page|html|trailer/);
+});
+
 test('model diagnostics bound arbitrary provider facts and cannot interrupt execution', (t) => {
   const logs: unknown[][] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });

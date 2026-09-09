@@ -69,7 +69,13 @@ function serializedProviderFailure(message: unknown): Record<string, string | nu
   if (typeof message !== 'string') return {};
   const http = /^OpenAI API error \(([45]\d{2})\): /.exec(message) ??
     /^([45]\d{2})(?:: | )/.exec(message);
-  if (http) return { providerFailureKind: 'http', providerHttpStatus: Number(http[1]) };
+  if (http) {
+    return {
+      providerFailureKind: 'http',
+      providerHttpStatus: Number(http[1]),
+      ...providerErrorBodyFacts(message.slice(http[0].length)),
+    };
+  }
   const streamCode = /^(?:Error Code )?(server_error|rate_limit_exceeded|context_length_exceeded): /.exec(message);
   if (streamCode) return { providerFailureKind: 'provider_stream_error', providerErrorCode: streamCode[1]! };
   const transportErrors: Record<string, string> = {
@@ -85,6 +91,48 @@ function serializedProviderFailure(message: unknown): Record<string, string | nu
   };
   const kind = Object.hasOwn(transportErrors, message) ? transportErrors[message] : undefined;
   return kind ? { providerFailureKind: kind } : {};
+}
+
+const PROVIDER_ERROR_TOKEN = /^[a-z][a-z0-9_]{0,39}$/;
+// Cloudflare serves edge errors to non-browser clients as exactly this body.
+const CLOUDFLARE_ERROR_CODE_BODY = /^error code: (\d{4})$/;
+
+/**
+ * The provider SDK appends the parsed JSON error body to an HTTP failure.
+ * Keep only its fixed-vocabulary `type` and `code` fields and whether a JSON
+ * body existed at all: a backend failure returns JSON such as `server_error`,
+ * while a Cloudflare edge in front of the provider returns the bare text
+ * `error code: NNNN`, whose numeric code is the only fact kept. Any other
+ * text is recorded as text. The human message is never emitted.
+ */
+function providerErrorBodyFacts(remainder: string): Record<string, string | number> {
+  const text = remainder.trim();
+  if (!text.startsWith('{')) {
+    if (!text) return { providerBodyKind: 'none' };
+    const edge = CLOUDFLARE_ERROR_CODE_BODY.exec(text);
+    return edge
+      ? { providerBodyKind: 'cloudflare_error', providerEdgeErrorCode: Number(edge[1]) }
+      : { providerBodyKind: 'text' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { providerBodyKind: 'text' };
+  }
+  if (!parsed || typeof parsed !== 'object') return { providerBodyKind: 'text' };
+  const outer = parsed as Record<string, unknown>;
+  const body = outer.error && typeof outer.error === 'object'
+    ? outer.error as Record<string, unknown> : outer;
+  const token = (value: unknown): string | undefined =>
+    typeof value === 'string' && PROVIDER_ERROR_TOKEN.test(value) ? value : undefined;
+  const type = token(body.type);
+  const code = token(body.code);
+  return {
+    providerBodyKind: 'json',
+    ...(type ? { providerErrorType: type } : {}),
+    ...(code ? { providerErrorCode: code } : {}),
+  };
 }
 
 /** Retain failed/empty model-turn facts, including attempts later recovered by Flue. */
