@@ -2525,6 +2525,10 @@ export class RoutineStoreLogic {
        ON routine_confirmations (expires_at, consumed_at)`,
     );
     this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_confirmations_consumed_idx
+       ON routine_confirmations (consumed_at) WHERE consumed_at IS NOT NULL`,
+    );
+    this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_schedule_actions (
         action_id TEXT PRIMARY KEY,
         action_digest TEXT NOT NULL,
@@ -2679,6 +2683,17 @@ export class RoutineStoreLogic {
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS routine_runs_start_capacity_idx
        ON routine_runs (queued_at) WHERE skip_reason IS NULL`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_runs_delivery_lease_idx
+       ON routine_runs (delivery_lease_until, id)
+       WHERE delivery_status = 'leased' AND delivery_lease_until IS NOT NULL`,
+    );
+    // Status seeks bound recovery to active runs; finished_at bounds retention
+    // without revisiting the rest of the terminal history on every heartbeat.
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS routine_runs_status_finished_idx
+       ON routine_runs (status, finished_at, id)`,
     );
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS routine_run_admissions (
@@ -3653,12 +3668,9 @@ export class RoutineStoreLogic {
   }
 
   private routineRunProjection(): string {
-    const hasExecutions = Boolean(
-      this.db.get(
-        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'run_executions'",
-      ),
-    );
-    if (!hasExecutions) return 'SELECT rr.* FROM routine_runs rr';
+    // Construction installs the nested Work store, including run_executions.
+    // Attach mode requires that same completed schema, so no per-read probe
+    // is needed. sqlite_master probes otherwise scan the entire schema.
     return `SELECT rr.*,
       COALESCE((
         SELECT execution.provider_auth_route

@@ -365,9 +365,7 @@ export class SlackStateLogic {
     // cleanup) keeps all three admission claims alive. Expiring one would let
     // a late Slack redelivery create a second TurnJob while the original still
     // owns an unread Flue receipt or external cleanup.
-    this.turnJobsAvailable ||= this.db.get(
-      "SELECT 1 AS available FROM sqlite_master WHERE type = 'table' AND name = 'turn_jobs'",
-    ) !== undefined;
+    this.turnJobsAvailable ||= this.db.all('PRAGMA table_info(turn_jobs)').length > 0;
     if (this.turnJobsAvailable) {
       this.db.run(
         `DELETE FROM slack_claims

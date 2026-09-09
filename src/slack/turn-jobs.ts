@@ -205,6 +205,13 @@ export class TurnJobStoreLogic {
     }
     db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_instance_id_idx ON turn_jobs(agent_instance_id)');
     db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_submission_id_idx ON turn_jobs(submission_id)');
+    // Keep this predicate aligned with hasPending and listPending. Recovery
+    // rows remain durable but must not participate in automatic dispatch.
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS turn_jobs_pending_idx
+       ON turn_jobs (execution_authority, enqueued_at)
+       WHERE delivered = 0 AND status != 'recovery_required'`,
+    );
     db.exec(
       `CREATE TABLE IF NOT EXISTS slack_agent_bindings (
         continuity_key TEXT PRIMARY KEY,

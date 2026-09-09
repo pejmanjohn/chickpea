@@ -200,6 +200,13 @@ const MIGRATIONS: readonly WorkMigration[] = [
     statements: [],
     after: installLedgerLinks,
   },
+  {
+    version: 3,
+    statements: [
+      `CREATE INDEX IF NOT EXISTS ledger_content_expiry_idx
+       ON ledger_content (expires_at, ref) WHERE purged_at IS NULL`,
+    ],
+  },
 ];
 
 export function installWorkMigrations(db: StateDb): void {

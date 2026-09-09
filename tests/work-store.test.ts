@@ -130,7 +130,7 @@ test('Work migrations install the six product tables without a Session table or 
       db
         .all("SELECT version FROM app_migrations WHERE domain = 'work' ORDER BY version")
         .map((row) => Number(row.version)),
-      [1, 2],
+      [1, 2, 3],
     );
   } finally {
     db.close();
@@ -149,7 +149,7 @@ test('a fresh database gets every ledger link column whichever store opens it fi
       db
         .all("SELECT version FROM app_migrations WHERE domain = 'work' ORDER BY version")
         .map((row) => Number(row.version)),
-      [1, 2],
+      [1, 2, 3],
     );
     new RoutineStoreLogic(db, () => NOW);
     new UsageStoreLogic(db, () => NOW);
@@ -210,17 +210,21 @@ test('each Work migration statement and marker is crash-atomic and retryable', (
         undefined,
       );
     } else {
-      assert.deepEqual(applied, [1]);
+      assert.ok(applied.length <= 2, 'the failing migration has no committed marker');
+      assert.deepEqual(applied, [1, 2].slice(0, applied.length));
       assert.ok(
         db.get("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'works'"),
       );
     }
+    assert.equal(db.get("SELECT name FROM sqlite_master WHERE name = 'ledger_content_expiry_idx'"), undefined,
+      'an index from the failed migration rolls back with its marker');
     installWorkMigrations(faulted);
+    assert.ok(db.get("SELECT name FROM sqlite_master WHERE name = 'ledger_content_expiry_idx'"));
     assert.deepEqual(
       db
         .all("SELECT version FROM app_migrations WHERE domain = 'work' ORDER BY version")
         .map((row) => Number(row.version)),
-      [1, 2],
+      [1, 2, 3],
     );
     db.close();
   }
@@ -254,7 +258,7 @@ test('concurrent Node openers converge on one complete Work schema', async () =>
       db
         .all("SELECT version FROM app_migrations WHERE domain = 'work' ORDER BY version")
         .map((row) => Number(row.version)),
-      [1, 2],
+      [1, 2, 3],
     );
     db.close();
   } finally {
