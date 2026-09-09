@@ -57,6 +57,30 @@ test('model diagnostics ignore valid text, normal tool calls, compaction and oth
   assert.equal(logger.mock.callCount(), 0);
 });
 
+test('serialized provider failures retain fixed transport facts without error bodies', (t) => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });
+  for (const [message, expected] of [
+    ['OpenAI API error (429): private credential and query', { providerFailureKind: 'http', providerHttpStatus: 429 }],
+    ['OpenAI API error (400): private tool input', { providerFailureKind: 'http', providerHttpStatus: 400 }],
+    ['429: private response', { providerFailureKind: 'http', providerHttpStatus: 429 }],
+    ['503 private response', { providerFailureKind: 'http', providerHttpStatus: 503 }],
+    ['Network connection lost.', { providerFailureKind: 'network_connection_lost' }],
+    ['Request was aborted.', { providerFailureKind: 'request_aborted' }],
+    ['private prose mentioning 429 and Network connection lost.', {}],
+    ['OpenAI API error (999): private', {}],
+    ['constructor', {}],
+  ] as const) {
+    observeAgentResultDiagnostics(terminalEvent({ isError: true, response: {
+      finishReason: 'error', error: { type: 'unknown', message },
+    } }), context);
+    const facts = logs.at(-1)![1] as Record<string, unknown>;
+    assert.deepEqual(Object.fromEntries(Object.entries(facts).filter(([key]) =>
+      key === 'providerFailureKind' || key === 'providerHttpStatus')), expected);
+  }
+  assert.doesNotMatch(JSON.stringify(logs), /private|credential|query|tool input|Network connection lost/);
+});
+
 test('model diagnostics bound arbitrary provider facts and cannot interrupt execution', (t) => {
   const logs: unknown[][] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => { logs.push(args); });

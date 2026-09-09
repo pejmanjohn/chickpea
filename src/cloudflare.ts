@@ -160,6 +160,7 @@ import {
 import { AgentPromptFailure } from './slack/flue-dispatch.ts';
 import { DURABLE_RECOVERY_FAILURE_TEXT } from './slack/web-client-presenter.ts';
 import {
+  abandonTerminalSlackPresentationBestEffort,
   drainSlackPresentationRepairs,
   type SlackPresentationRepairDrainResult,
 } from './slack/presentation-repair.ts';
@@ -1738,6 +1739,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           });
           return true;
         } catch {
+          // The recovery notice shares the run's V3 presentation. When that
+          // presentation already holds an unresolved terminal (the reason the
+          // preceding attempts threw), this replay throws the same way, so
+          // abandon it: that is the only transition which lets durable repair
+          // suspend the Agent Session and clear the visible activity status.
+          console.error('[chickpea] durable recovery final failed:', { reasonCode });
+          if (job.runId) {
+            await abandonTerminalSlackPresentationBestEffort({
+              runId: job.runId,
+              state: presentationState,
+              client,
+              requireUnresolvedDelivery: true,
+            });
+          }
           stores.turnJobs.markRecoveryRequired(job.id, reasonCode);
           if (activeWorkKey) stores.slack.setActiveWork(activeWorkKey, job.id, false);
           return false;

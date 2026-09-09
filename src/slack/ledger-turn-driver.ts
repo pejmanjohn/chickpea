@@ -46,7 +46,7 @@ import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
 import { AgentPromptFailure } from './flue-dispatch.ts';
 import {
-  abandonDeferredTerminalSlackDelivery,
+  abandonTerminalSlackPresentationBestEffort,
   hasRetryableTerminalRepair,
   repairTerminalSlackPresentation,
 } from './presentation-repair.ts';
@@ -686,18 +686,11 @@ async function abandonTerminalPresentationBestEffort(
   runId: string,
   client: WebClient,
 ): Promise<void> {
-  if (!options.presentationState) return;
-  try {
-    await abandonDeferredTerminalSlackDelivery({
-      runId,
-      state: options.presentationState,
-      resolveClient: async () => client,
-    });
-  } catch {
-    // Terminal delivery is already ambiguous or exhausted. Do not post a
-    // second answer; durable presentation repair owns later idempotent cleanup.
-    console.warn('[chickpea] Slack terminal presentation abandonment needs repair');
-  }
+  await abandonTerminalSlackPresentationBestEffort({
+    runId,
+    state: options.presentationState,
+    client,
+  });
 }
 
 async function clearActiveWork(

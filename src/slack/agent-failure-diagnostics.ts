@@ -19,6 +19,25 @@ const MODEL_ERROR_CODES = new Set([
   'context_length_exceeded', 'rate_limit_exceeded',
 ]);
 
+/** Pi serializes SDK errors before Flue observes them. Read only its fixed
+ * transport envelope; never emit the provider body or classify arbitrary prose. */
+function serializedProviderFailure(message: unknown): Record<string, string | number> {
+  if (typeof message !== 'string') return {};
+  const http = /^OpenAI API error \(([45]\d{2})\): /.exec(message) ??
+    /^([45]\d{2})(?:: | )/.exec(message);
+  if (http) return { providerFailureKind: 'http', providerHttpStatus: Number(http[1]) };
+  const transportErrors: Record<string, string> = {
+    'Network connection lost.': 'network_connection_lost',
+    'fetch failed': 'fetch_failed',
+    'Connection error.': 'connection_error',
+    'Request timed out.': 'request_timeout',
+    'Request was aborted': 'request_aborted',
+    'Request was aborted.': 'request_aborted',
+  };
+  const kind = Object.hasOwn(transportErrors, message) ? transportErrors[message] : undefined;
+  return kind ? { providerFailureKind: kind } : {};
+}
+
 /** Retain failed/empty model-turn facts, including attempts later recovered by Flue. */
 export function observeAgentResultDiagnostics(
   event: FlueObservation,
@@ -51,6 +70,7 @@ export function observeAgentResultDiagnostics(
       hasThinking: content.some((block) => block.type === 'thinking'),
       hasToolCalls,
       ...(failed ? {
+        ...serializedProviderFailure(event.response.error?.message),
         errorCode: errorCode === undefined ? null : MODEL_ERROR_CODES.has(errorCode) ? errorCode : 'other',
         status: typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
           ? status : null,

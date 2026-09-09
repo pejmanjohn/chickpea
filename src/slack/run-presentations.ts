@@ -183,7 +183,8 @@ type SlackPresentationTerminalDelivery =
       operation: SlackPresentationOperationReceipt;
     }
   | {
-      /** A durable delivery path proved that no terminal artifact can be posted. */
+      /** Further terminal writes were stopped after the delivery budget was
+       * exhausted. An uncertain prior write may still be visible in Slack. */
       state: 'abandoned';
       result: 'failure';
       operation: SlackPresentationOperationReceipt & { certainty: 'failed' };
