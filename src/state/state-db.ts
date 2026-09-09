@@ -11,7 +11,19 @@
 /** Bindable parameter values — the JSON-safe subset both backends accept. */
 export type SqlParam = string | number | null;
 
+/**
+ * Schema lifecycle a handle carries into store constructors. `install` (the
+ * default) runs DDL, migrations, probes and seeds exactly as today. `attach`
+ * asserts that this exact code version already installed the schema on this
+ * storage, so constructors must issue no schema work at all: Durable Objects
+ * SQLite meters every row a statement reads and constructors run on every
+ * cold start. See `schema-lifecycle.ts` for who may assert `attach`.
+ */
+export type StateSchemaMode = 'install' | 'attach';
+
 export interface StateDb {
+  /** Absent means `install`. Only a verified installation marker sets `attach`. */
+  readonly schema?: StateSchemaMode;
   /** Execute a single write statement with bindings; report affected rows. */
   run(sql: string, ...params: SqlParam[]): { changes: number };
   /** Execute a query with bindings and return the first row, if any. */
@@ -30,6 +42,11 @@ export interface StateDb {
    * stay synchronous — DO transactions cannot span awaits.
    */
   transaction<T>(fn: () => T): T;
+}
+
+/** Store constructors gate their one schema block on this. */
+export function schemaInstallRequired(db: StateDb): boolean {
+  return db.schema !== 'attach';
 }
 
 interface StateDbIntegrity {

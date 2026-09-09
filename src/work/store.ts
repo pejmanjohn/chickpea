@@ -7,7 +7,7 @@ import { hasCredentialLikeContent } from '../security/content-validation.ts';
 import { promisify } from '../state/async-facade.ts';
 import { tableExists } from '../state/schema-links.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
-import { inspectStateDbIntegrity, type StateDb } from '../state/state-db.ts';
+import { inspectStateDbIntegrity, schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { installWorkMigrations } from './migrations.ts';
 import { runBodyExpiry } from './retention.ts';
 import {
@@ -81,8 +81,10 @@ export class WorkStoreLogic {
   ) {
     this.now = options.now ?? Date.now;
     this.env = options.env ?? process.env;
-    installWorkMigrations(db);
+    const install = schemaInstallRequired(db);
+    if (install) installWorkMigrations(db);
     this.audit = new AuditStoreLogic(db);
+    if (!install) return;
     db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS audit_work_action_status_unique
        ON audit_events (json_extract(metadata_json, '$.actionAttemptId'), event_type)
@@ -91,6 +93,8 @@ export class WorkStoreLogic {
          'work.action_failed', 'work.action_unknown'
        )`,
     );
+    // Verified once per installation. A warm attach relies on that verified
+    // install; the explicit `integrity` RPC remains available on demand.
     const integrity = this.verifyIntegrity();
     if (!integrity.foreignKeysEnabled || integrity.foreignKeyViolationCount > 0) {
       throw workError('work_integrity_failed', 'Work ledger foreign-key integrity failed.');

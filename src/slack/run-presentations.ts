@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type {
   ActivityKind,
   SemanticActivityPhase,
@@ -670,6 +670,7 @@ export class SlackRunPresentationStoreLogic {
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
   ) {
+    if (!schemaInstallRequired(db)) return;
     db.exec(
       `CREATE TABLE IF NOT EXISTS slack_run_presentations (
         run_id TEXT PRIMARY KEY,

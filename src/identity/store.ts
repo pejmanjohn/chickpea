@@ -4,7 +4,7 @@ import { AuditStoreLogic } from '../audit/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb } from '../state/node-state-db.ts';
-import type { StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { identityError } from './errors.ts';
 import { installIdentityMigrations } from './migrations.ts';
 import type {
@@ -102,7 +102,7 @@ export class IdentityStoreLogic {
 
   constructor(private readonly db: StateDb, options: IdentityStoreOptions = {}) {
     this.now = options.now ?? Date.now;
-    installIdentityMigrations(db);
+    if (schemaInstallRequired(db)) installIdentityMigrations(db);
     this.audit = new AuditStoreLogic(db);
   }
 

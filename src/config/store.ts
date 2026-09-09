@@ -54,7 +54,7 @@ import {
 } from './types.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
-import type { StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { addColumnIfMissing, tableExists } from '../state/schema-links.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
@@ -411,17 +411,23 @@ export class ConfigStoreLogic {
     private readonly db: StateDb,
     seed: ConfigSeed = DEFAULT_SEED,
   ) {
-    this.installConfigSchema();
-    this.installAgentConnectionBindingMigrations();
-    this.installAgentScheduleReferenceMigrations();
-    const channelTable = this.db.get(
-      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'config_channels'",
+    const install = schemaInstallRequired(db);
+    if (install) {
+      this.installConfigSchema();
+      this.installAgentConnectionBindingMigrations();
+      this.installAgentScheduleReferenceMigrations();
+    }
+    // Column presence, read from the schema cache rather than by scanning
+    // sqlite_master: this runs on every construction, including attach.
+    const channelColumns = new Set(
+      this.db.all('PRAGMA table_info(config_channels)').map((column) => String(column.name)),
     );
-    const channelSql = String(channelTable?.sql ?? '');
-    this.legacyChannelBehaviorColumns = channelSql.includes('participation_mode') &&
-      channelSql.includes('additional_instructions');
-    this.seedOnce(seed);
-    this.migrateLegacyAgentAvatars();
+    this.legacyChannelBehaviorColumns = channelColumns.has('participation_mode') &&
+      channelColumns.has('additional_instructions');
+    if (install) {
+      this.seedOnce(seed);
+      this.migrateLegacyAgentAvatars();
+    }
   }
 
   ensureWorkspaceInstallation(input: EnsureWorkspaceInstallationInput): WorkspaceInstallation {

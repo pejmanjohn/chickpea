@@ -23,7 +23,7 @@ import type {
 import { parseSlackTablePresentations } from './table-presentation.ts';
 import { parseSlackAgentCreationTerminalIntents } from './agent-creation-terminal.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
-import type { StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
 import type { SlackTurnRecoveryItem } from '../config/state-rpc.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
@@ -140,6 +140,7 @@ export class TurnJobStoreLogic {
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
   ) {
+    if (!schemaInstallRequired(db)) return;
     db.exec(
       `CREATE TABLE IF NOT EXISTS turn_jobs (
         id TEXT PRIMARY KEY,

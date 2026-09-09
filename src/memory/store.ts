@@ -1,6 +1,6 @@
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
-import type { StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import {
   MemoryStateError,
   type AgentMemory,
@@ -16,6 +16,7 @@ const MAX_MUTATION_RECEIPTS_PER_AGENT = 1_024;
 /** Target-neutral single-body Agent memory storage. */
 export class MemoryStoreLogic {
   constructor(private readonly db: StateDb, _now: () => number = Date.now) {
+    if (!schemaInstallRequired(db)) return;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS agent_memories (
         agent_id TEXT PRIMARY KEY,

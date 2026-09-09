@@ -1,4 +1,4 @@
-import type { StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type { AppendAuditEvent, AuditEvent, AuditEventFilter } from './types.ts';
 
 interface AuditRow {
@@ -23,6 +23,7 @@ interface AuditRow {
 
 export class AuditStoreLogic {
   constructor(private readonly db: StateDb) {
+    if (!schemaInstallRequired(db)) return;
     db.exec(
       `CREATE TABLE IF NOT EXISTS audit_events (
         event_id TEXT PRIMARY KEY,

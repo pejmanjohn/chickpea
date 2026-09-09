@@ -5,7 +5,7 @@ import type { ResolvedAssignment } from '../config/types.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { addColumnIfMissing, installLedgerLinks } from '../state/schema-links.ts';
-import type { SqlParam, StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type SqlParam, type StateDb } from '../state/state-db.ts';
 import {
   hashRoutineValue,
   isOpaqueRoutineId,
@@ -317,7 +317,7 @@ export class RoutineStoreLogic {
     private readonly now: () => number = Date.now,
   ) {
     this.audit = new AuditStoreLogic(db);
-    this.initializeSchema();
+    if (schemaInstallRequired(db)) this.initializeSchema();
     this.config = new ConfigStoreLogic(db);
     this.work = new WorkStoreLogic(db, { now });
   }

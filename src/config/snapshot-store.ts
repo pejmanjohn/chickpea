@@ -11,7 +11,7 @@ import {
 import { THREAD_TTL_MS } from '../slack/claim-store.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { promisify } from '../state/async-facade.ts';
-import type { StateDb } from '../state/state-db.ts';
+import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import { addColumnIfMissing } from '../state/schema-links.ts';
 
 interface SnapshotRow {
@@ -59,6 +59,7 @@ export class SnapshotStoreLogic {
     private readonly db: StateDb,
     private readonly now: () => number = Date.now,
   ) {
+    if (!schemaInstallRequired(db)) return;
     db.exec(
       `CREATE TABLE IF NOT EXISTS agent_snapshots (
         thread_key TEXT PRIMARY KEY,
