@@ -5,6 +5,7 @@ import {
   type ToolDefinition,
 } from '@flue/runtime';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 
@@ -104,7 +105,11 @@ async function discoverProtocolTools(
   const transport = input.transport === 'sse'
     ? new SSEClientTransport(new URL(validated.url), options)
     : new StreamableHTTPClientTransport(new URL(validated.url), options);
-  const client = new Client({ name: 'chickpea', version: '1' });
+  // Tool output schemas are compiled during listTools. Use the SDK's
+  // interpreter so discovery also works where dynamic code is prohibited.
+  const client = new Client({ name: 'chickpea', version: '1' }, {
+    jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
+  });
   try {
     await raceDeadline(
       // SDK entrypoints disagree only on the optional sessionId property.
