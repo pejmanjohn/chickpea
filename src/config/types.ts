@@ -30,6 +30,14 @@ export interface McpConnectionToolInfo {
   name: string;
   title?: string;
   description?: string;
+  /** Server declaration captured during discovery; absent means undeclared. */
+  readOnlyHint?: boolean;
+}
+
+/** Owner-reviewed effects and optional exact input restrictions. */
+export interface McpToolPolicy {
+  effect: 'read' | 'write';
+  argumentConstraints?: Record<string, string[]> | undefined;
 }
 
 /** Non-secret account labels returned by a provider identity probe. */
@@ -63,6 +71,7 @@ export interface McpConnectionConfig {
   lifecycleStatus: 'pending' | 'ready' | 'failed';
   statusText: string;
   discoveredTools: McpConnectionToolInfo[];
+  toolPolicies?: Record<string, McpToolPolicy>;
   allowedTools: string[];
   /** OAuth scopes are connection policy, never credentials. */
   oauthScope?: string;
@@ -440,6 +449,7 @@ export interface ConnectionAccountMcpPolicy {
   /** The connector remains usable when no credential is stored. */
   credentialOptional?: boolean;
   discoveredTools: McpConnectionToolInfo[];
+  toolPolicies?: Record<string, McpToolPolicy>;
   allowedTools: string[];
   oauthScope?: string;
   /** Internal generation token for the currently authorized OAuth attempt. */

@@ -170,6 +170,30 @@ function compile(overrides: Partial<Parameters<typeof compileRuntimePlanV2>[0]> 
   });
 }
 
+test('runtime plans freeze approved MCP effects and keep legacy declarations readable', () => {
+  const effectiveConnections = structuredClone(EFFECTIVE_CONNECTIONS);
+  const policy = effectiveConnections[0]!.policy;
+  assert.equal(policy.kind, 'mcp');
+  if (policy.kind !== 'mcp') throw new Error('MCP fixture expected');
+  policy.discoveredTools = [
+    { name: 'search', readOnlyHint: true },
+    { name: 'read', readOnlyHint: true },
+  ];
+  const plan = compile({ effectiveConnections });
+  assert.deepEqual(plan.mcpConnections[0]!.readOnlyTools, ['search']);
+  assert.deepEqual(plan.mcpConnections[0]!.writeTools, []);
+  assert.notEqual(deriveRuntimePlanInstanceId(plan), deriveRuntimePlanInstanceId(compile()));
+  const legacy = structuredClone(plan);
+  delete legacy.mcpConnections[0]!.displayName;
+  delete legacy.mcpConnections[0]!.readOnlyTools;
+  delete legacy.mcpConnections[0]!.writeTools;
+  legacy.harnessRevision = compatibilityHarnessRevision(legacy);
+  assert.doesNotThrow(() => parseRuntimePlanV2(legacy));
+  const invalid = structuredClone(plan);
+  invalid.mcpConnections[0]!.readOnlyTools = ['unapproved'];
+  assert.throws(() => parseRuntimePlanV2(invalid), /invalid tool effect/);
+});
+
 test('the sandbox conversation key stays a Slack coordinate instead of a Flue instance id', () => {
   const plan = compile();
 
@@ -288,6 +312,9 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
   assert.deepEqual(plan.skills.map(({ name }) => name), ['research']);
   assert.deepEqual(plan.mcpConnections, [{
     id: 'notion',
+    displayName: 'Notion',
+    readOnlyTools: [],
+    writeTools: [],
     url: 'https://mcp.example.com/notion',
     transport: 'streamable-http',
     authMode: 'oauth',
@@ -718,6 +745,13 @@ function compatibilityHarnessRevision(plan: ReturnType<typeof compile>): string 
       ? { configurationRevision: plan.configurationRevision }
       : {}),
     model: plan.model,
+    ...(plan.ownerIncarnation ? { ownerIncarnation: plan.ownerIncarnation } : {}),
+    ...(plan.handoffContext?.length ? { handoffContext: plan.handoffContext } : {}),
+    ...(plan.runtimeModel ? { runtimeModel: plan.runtimeModel } : {}),
+    ...(plan.runtimeModelRoute ? { runtimeModelRoute: plan.runtimeModelRoute } : {}),
+    ...(plan.modelAttribution ? { modelAttribution: plan.modelAttribution } : {}),
+    ...(plan.modelCredential ? { modelCredential: plan.modelCredential } : {}),
+    ...(plan.managedConnections !== undefined ? { managedConnections: plan.managedConnections } : {}),
     instructions: plan.instructions,
     memoryEpoch: plan.memoryEpoch,
     skills: plan.skills,

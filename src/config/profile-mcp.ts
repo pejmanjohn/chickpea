@@ -7,6 +7,7 @@ import type {
 
 import { mcpDebugText } from './mcp-errors.ts';
 import { withMcpHttpTelemetry } from './mcp-telemetry.ts';
+import { assertMcpToolArguments, mcpToolEffect } from './mcp-tool-policy.ts';
 import {
   isCurrentMcpOAuthConnection,
   resolveMcpOAuthAccessToken,
@@ -198,6 +199,14 @@ export function resolveRuntimePlanMcpConnections(
       return { server, env };
     };
     const fetchWithLiveHeaders = withMcpHttpTelemetry(async (input, init) => {
+      const request = new Request(input, init);
+      if (declaration.toolArgumentConstraints && request.method === 'POST') {
+        const rpc = await request.clone().json() as { method?: string; params?: { name?: string; arguments?: unknown } };
+        if (rpc.method === 'tools/call') {
+          if (typeof rpc.params?.name !== 'string') throw new Error('Invalid MCP tool invocation.');
+          assertMcpToolArguments(rpc.params.name, rpc.params.arguments, declaration.toolArgumentConstraints);
+        }
+      }
       const { server, env } = await liveServer();
       const customHeaders = accountContext
         ? (await resolveConnectionAccountMcpSecrets(server, (connectionAccountId) =>
@@ -206,7 +215,6 @@ export function resolveRuntimePlanMcpConnections(
         : await resolveMcpHeaders(
             { agentId: profileId, connectionId: server.id }, declaration.headerNames, env,
           );
-      const request = new Request(input, init);
       const headers = new Headers(request.headers);
       for (const [name, value] of Object.entries(buildMcpRequestHeaders(
         declaration.authMode,
@@ -264,6 +272,19 @@ function runtimeMcpDeclarationStillAllowed(
   declaration: RuntimePlanMcpConnectionV2,
 ): boolean {
   return isProfileMcpServerEligible(server) &&
+    (declaration.displayName === undefined || server.displayName === declaration.displayName) &&
+    [true, false].every((hint) => {
+      const frozen = hint ? declaration.readOnlyTools : declaration.writeTools;
+      const live = declaration.allowedTools.filter((tool) => mcpToolEffect(server, tool) === hint).sort();
+      return JSON.stringify([...(frozen ?? [])].sort()) === JSON.stringify(live);
+    }) &&
+    declaration.allowedTools.every((tool) => {
+      const current = server.toolPolicies?.[tool]?.argumentConstraints ?? {};
+      const frozen = declaration.toolArgumentConstraints?.[tool] ?? {};
+      const canonical = (fields: Record<string, string[]>) => JSON.stringify(Object.entries(fields)
+        .sort(([a], [b]) => a.localeCompare(b)).map(([key, values]) => [key, [...values].sort()]));
+      return canonical(current) === canonical(frozen);
+    }) &&
     server.url === declaration.url &&
     server.transport === declaration.transport &&
     server.authMode === declaration.authMode &&

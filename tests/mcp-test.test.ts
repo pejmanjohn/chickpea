@@ -56,6 +56,33 @@ const baseInput: McpConnectInput = {
   headers: {},
 };
 
+test('protocol discovery preserves true, false and absent read-only declarations', async () => {
+  const methods: string[] = [];
+  const fakeFetch: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    if (request.method !== 'POST') return new Response(null, { status: 405 });
+    const rpc = await request.json() as { id?: number; method: string };
+    methods.push(rpc.method);
+    if (rpc.id === undefined) return new Response(null, { status: 202 });
+    const result = rpc.method === 'initialize'
+      ? { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'test', version: '1' } }
+      : { tools: [
+          { name: 'task_only', inputSchema: { type: 'object' }, execution: { taskSupport: 'required' } },
+          { name: 'run_query', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
+          { name: 'get_messages', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false } },
+          { name: 'unknown', inputSchema: { type: 'object' } },
+        ] };
+    return Response.json({ jsonrpc: '2.0', id: rpc.id, result });
+  };
+  const result = await discoverMcpTools(baseInput, undefined, () => fakeFetch);
+  assert.deepEqual(result.tools, [
+    { name: 'run_query', readOnlyHint: true },
+    { name: 'get_messages', readOnlyHint: false },
+    { name: 'unknown' },
+  ]);
+  assert.ok(methods.includes('tools/list'));
+});
+
 test('discoverMcpTools maps tools, strips the mcp__<id>__ prefix, and closes', async () => {
   let closed = false;
   const conn = fakeConnection(

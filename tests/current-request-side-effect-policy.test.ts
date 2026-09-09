@@ -15,6 +15,7 @@ import {
   isReadOnlyMcpToolName,
   memoryToolPolicyInterceptor,
   observeMemoryToolPolicy,
+  registerMcpToolPolicies,
   serializeCurrentRequestEnvelope,
 } from '../src/memory/tool-policy.ts';
 
@@ -71,6 +72,59 @@ function callTool<T>(
     next,
   );
 }
+
+test('approved declared reads work with opaque custom connection IDs and the real bookings request', async () => {
+  const id = 'connection_e2b2dfe08db24201a21483710dbfccf0';
+  const name = `mcp__${id}__run_query`;
+  assert.equal(isReadOnlyMcpToolName(name), false);
+  await withInteractiveSubmission('how much bookings have happened today across each product', async (context) => {
+    await assert.rejects(callTool(context, name, async () => 'unexpected'));
+    registerMcpToolPolicies([{
+      id, displayName: 'SQL Dash', allowedTools: ['run_query'], readOnlyTools: ['run_query'],
+    }]);
+    assert.equal(await callTool(context, name, async () => 'bookings'), 'bookings');
+    await assert.rejects(callTool(context, 'mcp__another_connection__run_query', async () => 'unexpected'));
+    await assert.rejects(callTool(context, `mcp__${id}__delete_query`, async () => 'unexpected'));
+  });
+  await withInteractiveSubmission('how much bookings have happened today across each product', async (context) => {
+    await assert.rejects(callTool(context, name, async () => 'leaked prior submission permission'));
+  });
+});
+
+test('a declared write overrides a read-looking MCP name', async () => {
+  await withInteractiveSubmission('Summarize the latest inbox message.', async (context) => {
+    registerMcpToolPolicies([{
+      id: 'mail', allowedTools: ['get_and_send'], writeTools: ['get_and_send'],
+    }]);
+    await assert.rejects(callTool(context, 'mcp__mail__get_and_send', async () => 'unexpected'));
+    registerMcpToolPolicies([{
+      id: 'mail', allowedTools: ['get_messages'], writeTools: ['get_messages'],
+    }]);
+    await assert.rejects(callTool(context, 'mcp__mail__get_messages', async () => 'unexpected'));
+  });
+});
+
+test('custom writes match the host-resolved service label rather than an opaque ID', async () => {
+  await withInteractiveSubmission('Create a record in Sales Desk.', async (context) => {
+    registerMcpToolPolicies([
+      { id: 'connection_0123456789abcdef', displayName: 'Sales Desk', allowedTools: ['create_record'] },
+      { id: 'connection_fedcba9876543210', displayName: 'Billing Desk', allowedTools: ['create_record'] },
+    ]);
+    assert.equal(await callTool(context, 'mcp__connection_0123456789abcdef__create_record', async () => 'created'), 'created');
+    await assert.rejects(callTool(context, 'mcp__connection_fedcba9876543210__create_record', async () => 'unexpected'));
+    await assert.rejects(callTool(context, 'mcp__connection_0123456789abcdef__delete_record', async () => 'unexpected'));
+  });
+});
+
+test('unapproved tool declarations cannot grant access and conflicting declarations are rejected', async () => {
+  await withInteractiveSubmission('Summarize bookings.', async (context) => {
+    registerMcpToolPolicies([{ id: 'custom', allowedTools: [], readOnlyTools: ['run_query'] }]);
+    await assert.rejects(callTool(context, 'mcp__custom__run_query', async () => 'unexpected'));
+    assert.throws(() => registerMcpToolPolicies([{
+      id: 'custom', allowedTools: ['run_query'], readOnlyTools: ['run_query'], writeTools: ['run_query'],
+    }]), /Conflicting/);
+  });
+});
 
 test('untrusted read results cannot authorize a later external write', async () => {
   await withInteractiveSubmission(

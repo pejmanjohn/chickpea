@@ -151,7 +151,7 @@ import { createWorkspaceArtifactCapability } from '../sandbox/artifact-tool.ts';
 import { createWorkspaceArtifactTool } from '../sandbox/artifact-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
-import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
+import { parseCurrentRequestEnvelope, registerMcpToolPolicies } from '../memory/tool-policy.ts';
 import {
   parseSlackAttachmentIntake,
   slackAttachmentTurnIsReadOnly,
@@ -1225,6 +1225,14 @@ export function useRuntimePlanAgent(
     }
   }
   if (!options.toolsDisabled) {
+    registerMcpToolPolicies(plan.mcpConnections);
+    const restrictions = plan.mcpConnections.filter((connection) =>
+      Object.keys(connection.toolArgumentConstraints ?? {}).length > 0);
+    if (restrictions.length > 0) {
+      useInstruction(`The owner restricts these connection tool inputs. Use only the listed values; do not retry disallowed inputs: ${JSON.stringify(restrictions.map((connection) => ({
+        connection: connection.id, tools: connection.toolArgumentConstraints,
+      })))}`);
+    }
     for (const connection of resolveRuntimePlanMcpConnections(
       plan.agentId,
       plan.mcpConnections,
