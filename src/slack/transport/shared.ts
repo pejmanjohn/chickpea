@@ -99,6 +99,7 @@ export function mapMember(user: SlackApiResult): SlackMember {
     .find(Boolean);
   return {
     id: requiredString(user.id, 'users.info'),
+    ...(stringValue(user.tz) ? { timezone: stringValue(user.tz) } : {}),
     ...(stringValue(user.team_id) ? { teamId: stringValue(user.team_id) } : {}),
     ...(handle ? { name: handle, handle } : {}),
     ...(displayName ? { displayName } : {}),

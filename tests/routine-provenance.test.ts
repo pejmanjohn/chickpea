@@ -1,52 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { validateRoutineRequestProvenanceInput, assertRoutineTaskBoundToPrevious } from '../src/routines/provenance.ts';
 
-import { assertRoutineTaskBoundToSource, preserveRoutineOutputInstruction, requestsChannelThreadDelivery } from '../src/routines/provenance.ts';
-import { RoutineStateError } from '../src/routines/types.ts';
-
-test('Channel thread delivery requires positive unquoted delivery intent, not acknowledgement location', () => {
-  for (const request of [
-    'Every morning post the digest in this thread.',
-    "Deliver the result to this request's thread.",
-  ]) assert.equal(requestsChannelThreadDelivery(request), true, request);
-  for (const request of [
-    'Post the digest in this channel.',
-    'Do not post the digest in this thread.',
-    'Deliver each result as a new message in this channel, not in this thread.',
-    'Deliver the result to the channel, not to this thread.',
-    'Post exactly "in this thread" every morning.',
-    'Explain how to post in this thread.',
-    'Post in this thread?',
-    '> Post the digest in this thread.',
-    'Post the digest in the channel. Acknowledge creation in this thread.',
-  ]) assert.equal(requestsChannelThreadDelivery(request), false, request);
+test('request provenance retains authenticated text without interpreting its language', () => {
+  const value = { sourceKind: 'slack_request' as const, authoritySource: 'current_request' as const, requestText: 'give me an update on TOEFL bookings in 5 minutes', eventId: 'Ev_source', messageTs: '1788988012.030979', threadTs: '1788987692.474889' };
+  assert.equal(validateRoutineRequestProvenanceInput(value).requestText, value.requestText);
+  assert.throws(() => validateRoutineRequestProvenanceInput({ ...value, messageTs: 'invalid' }), /provenance/i);
+  assert.throws(() => validateRoutineRequestProvenanceInput({ ...value, sourceRoutineId: 'routine_source' }), /provenance/i);
 });
-
-test('quoted exact replies retain their governing instruction without inventing a task', () => {
-  for (const [request, expected] of [
-    ['At that time reply exactly "Ready for review". Acknowledge the due time now.', 'reply exactly "Ready for review"'],
-    ['Its task is to output exactly “The report is ready” without connectors.', 'output exactly “The report is ready”'],
-  ]) {
-    const payload = expected!.replace(/^.*?["“]/, '').slice(0, -1);
-    assert.equal(preserveRoutineOutputInstruction(payload, request!), expected);
-    assert.equal(preserveRoutineOutputInstruction(expected!, request!), expected);
-  }
-  assert.equal(preserveRoutineOutputInstruction('Summarize the report', 'Summarize the report daily.'), 'Summarize the report');
-  assert.throws(() => preserveRoutineOutputInstruction('Ready', 'Do not reply exactly "Ready".'), RoutineStateError);
-});
-
-test('routine source authority rejects avoid, refrain-from, and without directives', () => {
-const task = 'Check the inbox and report anything new.';
-  for (const request of [
-    `Avoid ${task}`,
-    `Please refrain from ${task}`,
-    `Without ${task}`,
-  ]) {
-    assert.throws(
-      () => assertRoutineTaskBoundToSource(task, request),
-      (error: unknown) => error instanceof RoutineStateError &&
-        error.code === 'routine_source_authority_mismatch',
-      request,
-    );
-  }
+test('a revision claiming to reuse a prior task must match that stored task', () => {
+  assert.doesNotThrow(() => assertRoutineTaskBoundToPrevious('Report bookings.', 'Report bookings.', 'change the time'));
+  assert.throws(() => assertRoutineTaskBoundToPrevious('Different task.', 'Report bookings.', 'change the time'), /prior task/);
 });

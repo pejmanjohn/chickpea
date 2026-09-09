@@ -188,7 +188,7 @@ export const MANAGED_CONNECTOR_PRESETS: ManagedConnectorPreset[] = [
     managedToolkit: 'hubspot',
     providerId: 'hubspot',
     name: 'HubSpot',
-    description: 'Research CRM records and make explicitly confirmed updates in one portal.',
+    description: 'Research CRM records and make requested updates in one portal.',
     category: 'business',
     accent: '#FF7A59',
     logoId: 'hubspot',

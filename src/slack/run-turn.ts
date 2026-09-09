@@ -1235,6 +1235,7 @@ export async function runTurn(
         messageTs: turn.messageTs,
         turnJobId,
         requesterText: turn.text,
+        ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
       } as const;
       const actor = await resolveSlackManagementActor(signal, dependencies.identity);
       await preparedMemory?.confirmInjection();
@@ -1310,6 +1311,7 @@ export async function runTurn(
           messageTs: turn.messageTs,
           turnJobId,
           requesterText: turn.text,
+        ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
         } as const;
         const actor = await resolveSlackManagementActor(signal, dependencies.identity);
         acknowledgeMemoryUpdate = await verifyMemoryUpdateAcknowledgement({

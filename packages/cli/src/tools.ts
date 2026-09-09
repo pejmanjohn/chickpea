@@ -120,7 +120,7 @@ export function renderToolList(tools: Tool[]): string {
   return tools
     .map((tool) => {
       const tags: string[] = [];
-      if (tool.annotations?.readOnlyHint) tags.push('read-only');
+      if (tool.annotations?.readOnlyHint) tags.push('server hint: read-only');
       if (tool.annotations?.destructiveHint) tags.push('destructive');
       if (tool.annotations?.idempotentHint) tags.push('idempotent');
       const summary = firstSentence(tool.description ?? '');

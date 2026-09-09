@@ -82,7 +82,7 @@ test('an expired access token is refreshed silently before the call, and rotated
   clock.now += 1201 * 1_000;
   const list = await runCli(['tools', 'list', deployment.url], { store, now });
   assert.equal(list.code, 0, list.stderr);
-  assert.match(list.stdout, /inspect_workspace\s+\[read-only\] Fake inspect_workspace\.\n/);
+  assert.match(list.stdout, /inspect_workspace\s+\[server hint: read-only\] Fake inspect_workspace\.\n/);
   assert.equal(deployment.refreshCount, refreshesBefore + 1);
   const refresh = deployment.tokenRequests.at(-1)!;
   assert.equal(refresh.get('grant_type'), 'refresh_token');

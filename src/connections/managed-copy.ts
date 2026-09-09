@@ -33,10 +33,10 @@ export function managedConnectorWriteSummary(
   connectorLabel: string,
 ): string {
   if (toolkit.trim().toLowerCase() === 'hubspot') {
-    return 'Can search and read CRM records, and make explicitly confirmed updates.';
+    return 'Can search and read CRM records and make requested updates within the selected permissions.';
   }
   const label = connectorLabel.trim() || 'the connected account';
-  return `Can use read and write ${label} capabilities. Changes still require your confirmation.`;
+  return `Can use selected read and write ${label} capabilities to carry out your requests. Agent instructions can require confirmation.`;
 }
 
 function possessive(value: string): string {

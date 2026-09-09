@@ -16,7 +16,6 @@ import {
 import { ROUTINE_LIMITS } from './limits.ts';
 import {
   assertRoutineTaskBoundToPrevious,
-  assertRoutineTaskBoundToSource,
   validateRoutineRequestProvenanceInput,
 } from './provenance.ts';
 import {
@@ -3270,7 +3269,7 @@ export class RoutineStoreLogic {
       if (provenance.sourceKind !== 'slack_request' || provenance.sourceRoutineId != null) {
         throw routineError('routine_provenance_invalid', 'Routine request provenance is invalid.');
       }
-      assertRoutineTaskBoundToSource(definition.taskText, provenance.requestText);
+      // Request text is authenticated audit evidence; the task may be an Agent interpretation.
     } else if (provenance.authoritySource === 'previous_revision') {
       if (
         !previous ||

@@ -217,9 +217,9 @@ export const MANAGED_HUBSPOT_CONNECTORS: readonly ManagedConnectorDefinition[] =
   toolkit: 'hubspot',
   providerId: 'hubspot',
   label: 'HubSpot',
-  description: 'Research CRM records and make explicitly confirmed updates in one connected portal.',
+  description: 'Research CRM records and make requested updates in one connected portal.',
   securityDescription:
-    'HubSpot sign-in opens through Composio. Chickpea pins one exact connected portal and exposes only typed CRM reads and confirmed record writes. Privacy, delete, import, schema, workflow, marketing publication, batch, and trigger operations are absent. HubSpot may show an unverified-app warning for Composio managed OAuth.',
+    'HubSpot sign-in opens through Composio. Chickpea pins one exact connected portal and exposes only typed CRM reads and selected record writes. Privacy, delete, import, schema, workflow, marketing publication, batch, and trigger operations are absent. HubSpot may show an unverified-app warning for Composio managed OAuth.',
   capabilities: [
     capability('hubspot.account.get', 'read', 'read', 'hubspot_get_account', 'Verify the connected HubSpot portal identity.', v.strictObject({})),
     capability('hubspot.objects.search', 'read', 'read', 'hubspot_search_objects', 'Search bounded contacts, companies, deals, tickets, and activities.', SearchSchema),

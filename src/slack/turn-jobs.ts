@@ -470,6 +470,7 @@ export class TurnJobStoreLogic {
             messageTs: turn.messageTs,
             turnJobId: id,
             requesterText: turn.text.slice(0, 40_000),
+            ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
             ...(turn.attachments?.length
               ? { attachmentFileIds: turn.attachments.map(({ fileId }) => fileId).join(',') }
               : {}),
@@ -1204,6 +1205,7 @@ function parseSlackSignalMessage(
     'workspaceId', 'channelId', 'threadTs', 'slackUserId', 'eventId', 'messageTs', 'turnJobId',
     'conversationKind',
     'requesterText',
+    'requesterTimezone',
     'attachmentFileIds',
     'attachmentIntakeStatus', 'attachmentCount',
   ]);
@@ -1218,6 +1220,9 @@ function parseSlackSignalMessage(
     eventId: validateBoundedString(attributes.eventId, 'Slack event id', 256),
     messageTs: validateBoundedString(attributes.messageTs, 'Slack message timestamp', 80),
     turnJobId: validateBoundedString(attributes.turnJobId, 'TurnJob id', 256),
+    ...(attributes.requesterTimezone === undefined ? {} : {
+      requesterTimezone: validateBoundedString(attributes.requesterTimezone, 'Slack requester timezone', 64),
+    }),
     ...(attributes.requesterText === undefined
       ? {}
       : { requesterText: validateBoundedString(attributes.requesterText, 'Slack requester text', 40_000) }),

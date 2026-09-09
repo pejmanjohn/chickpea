@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
 import type { ToolDefinition } from '@flue/runtime';
@@ -68,7 +69,7 @@ test('protocol discovery preserves true, false and absent read-only declarations
       ? { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'test', version: '1' } }
       : { tools: [
           { name: 'task_only', inputSchema: { type: 'object' }, execution: { taskSupport: 'required' } },
-          { name: 'run_query', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
+          { name: 'run_query', inputSchema: { type: 'object' }, outputSchema: { type: 'object', properties: { rows: { type: 'array' } }, required: ['rows'] }, annotations: { readOnlyHint: true } },
           { name: 'get_messages', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false } },
           { name: 'unknown', inputSchema: { type: 'object' } },
         ] };
@@ -81,6 +82,17 @@ test('protocol discovery preserves true, false and absent read-only declarations
     { name: 'unknown' },
   ]);
   assert.ok(methods.includes('tools/list'));
+});
+
+test('MCP output-schema discovery works when dynamic code generation is forbidden', () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const child = spawnSync(process.execPath, [
+    '--disallow-code-generation-from-strings', '--import', 'tsx', '--test',
+    '--test-name-pattern=^protocol discovery', new URL(import.meta.url).pathname,
+  ], { encoding: 'utf8', timeout: 30_000, env });
+  assert.equal(child.status, 0, child.stderr + child.stdout);
+  assert.match(child.stdout, /protocol discovery preserves/);
 });
 
 test('discoverMcpTools maps tools, strips the mcp__<id>__ prefix, and closes', async () => {

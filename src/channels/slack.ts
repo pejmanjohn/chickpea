@@ -523,6 +523,7 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
   };
 }
 export interface ResolvedAgentRoutingActor {
+  requesterTimezone?: string;
   routing: AgentRoutingActor;
   principal?: AuthPrincipal;
 }
@@ -596,6 +597,7 @@ export async function resolveAgentRoutingActor(input: {
       fullMember,
     },
     ...(principal ? { principal } : {}),
+    ...(member.timezone ? { requesterTimezone: member.timezone } : {}),
   };
 }
 
@@ -1246,6 +1248,7 @@ async function processSlackEvent(
     reason: 'slack_truth_unavailable',
   };
   let admittedActorMembershipId = agentRoutingActor?.principal?.membershipId;
+  let admittedRequesterTimezone = agentRoutingActor?.requesterTimezone;
   if (agentRoutingActor && agentSourceVisibility) {
     admissionTruth = {
       eligible: true,
@@ -1260,6 +1263,7 @@ async function processSlackEvent(
         resolvedBotUserId,
         slackAdmissionTruthReader(botToken),
         async (user) => {
+          admittedRequesterTimezone = user.timezone;
           const authControl = await stores.identity.getAuthControl();
           // Slack can be connected before the workspace Owner finishes the
           // separate product-auth handoff. Preserve that setup/runtime lane;
@@ -1285,6 +1289,12 @@ async function processSlackEvent(
       // Shadow truth is observational in U3. A transient resolver failure must
       // not change the established Slack execution path before authority cutover.
     }
+  }
+  if (admissionTruth.eligible && admittedRequesterTimezone) {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: admittedRequesterTimezone });
+      turn.requesterTimezone = admittedRequesterTimezone;
+    } catch { /* Do not infer a timezone from invalid profile data. */ }
   }
   if (admissionTruth.eligible && admittedActorMembershipId) {
     turn.actorMembershipId = admittedActorMembershipId;

@@ -36,6 +36,7 @@ export interface McpConnectionToolInfo {
 
 /** Owner-reviewed effects and optional exact input restrictions. */
 export interface McpToolPolicy {
+  /** Legacy descriptive effect metadata; selected tools grant access. Not a read-only permission. */
   effect: 'read' | 'write';
   argumentConstraints?: Record<string, string[]> | undefined;
 }

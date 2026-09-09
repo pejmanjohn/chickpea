@@ -15,6 +15,7 @@ export interface SlackInboundEnvelope {
 }
 
 export interface SlackMember {
+  timezone?: string;
   id: string;
   teamId?: string;
   name?: string;

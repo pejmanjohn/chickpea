@@ -167,6 +167,8 @@ type SlackTurnIgnoreReason =
   | 'unsupported_reaction_item';
 
 export interface NormalizedSlackTurn {
+  /** Verified requester Slack profile timezone for schedule defaults. */
+  requesterTimezone?: string;
   workspaceId: string;
   channelId: string;
   eventId: string;

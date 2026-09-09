@@ -111,7 +111,7 @@ test('an applied action in a non-active safe state says it will not run', () => 
     effect: 'saved',
     routineId: 'routine_active_tool',
     routineVersion: 1,
-    instruction: 'The action is complete. Do not ask for approval or invoke another scheduling tool. In a DM, the requesting message receives a checkmark reaction; in a Channel, acknowledge the result in your reply.',
+    instruction: 'The action is complete. Do not ask for approval or invoke another scheduling tool. In a DM, the requesting message receives a checkmark reaction; in a Channel, acknowledge the result in your reply. Restate the saved task in one sentence and quote the next run time.',
   });
   assert.deepEqual(scheduleActionToolResult({
     outcome: 'applied',
@@ -140,4 +140,15 @@ test('saved Channel acknowledgements identify the actual delivery destination', 
     assert.equal(result.deliveryDestination, deliveryDestination);
     assert.match(String(result.instruction), expected);
   }
+});
+
+test('create accepts omitted nonessential description and partial edit leaves fields unset', () => {
+  const signal = { agentId: 'agent_test', workspaceId: 'T_TEST', channelId: 'D_TEST', conversationKind: 'im' } as const;
+  const created = scheduleToolOperation(signal as never, { action: 'create', name: 'TOEFL update', taskText: 'Report TOEFL bookings using SQL Dash.', scheduleKind: 'in', minutes: 5 });
+  assert.ok(created.kind === 'save_routine');
+  assert.equal(created.description, '');
+  const edited = scheduleToolOperation(signal as never, { action: 'edit', routineId: 'routine_test', expectedVersion: 2, minutes: 10, scheduleKind: 'in' });
+  assert.ok(edited.kind === 'save_routine');
+  assert.equal(edited.taskText, undefined);
+  assert.equal(edited.outputPolicy, undefined);
 });

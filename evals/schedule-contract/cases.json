@@ -2,32 +2,365 @@
   "schemaVersion": 1,
   "cases": [
     {
-      "id": "exact-private-span", "conversationKind": "im",
+      "id": "exact-private-span",
+      "conversationKind": "im",
       "request": "Schedule a check on June 10, 2030 at 12:30 UTC: reply exactly SYNTHETIC CHECK. Do not run it now. Keep the reply private in this thread.",
-      "arguments": {"action":"create","name":"Synthetic check","description":"Synthetic fixture","taskText":"reply exactly SYNTHETIC CHECK. Do not run it now. Keep the reply private in this thread.","scheduleKind":"once","localDateTime":"2030-06-10T12:30","timezone":"UTC","delivery":"thread"},
+      "arguments": {
+        "action": "create",
+        "name": "Synthetic check",
+        "description": "Synthetic fixture",
+        "taskText": "reply exactly SYNTHETIC CHECK. Do not run it now. Keep the reply private in this thread.",
+        "scheduleKind": "once",
+        "localDateTime": "2030-06-10T12:30",
+        "timezone": "UTC",
+        "delivery": "thread"
+      },
       "variants": [
-        {"id":"verbatim","arguments":{},"admission":"accepted"},
-        {"id":"paraphrase","arguments":{"taskText":"Send SYNTHETIC CHECK privately."},"admission":"rejected","message":"The scheduled task must be explicitly present in the current Slack request."},
-        {"id":"spliced","arguments":{"taskText":"reply exactly SYNTHETIC CHECK. Keep the reply private in this thread."},"admission":"rejected","message":"The scheduled task must be explicitly present in the current Slack request."},
-        {"id":"zero-seconds","arguments":{"localDateTime":"2030-06-10T12:30:00"},"admission":"accepted"},
-        {"id":"trailing-z","arguments":{"localDateTime":"2030-06-10T12:30Z"},"admission":"rejected","message":"The schedule cadence must be explicit in the current Slack request."},
-        {"id":"offset","arguments":{"localDateTime":"2030-06-10T12:30+00:00"},"admission":"rejected"},
-        {"id":"wrong-minute","arguments":{"localDateTime":"2030-06-10T12:31"},"admission":"rejected"},
-        {"id":"wrong-timezone","arguments":{"timezone":"America/Los_Angeles"},"admission":"rejected"},
-        {"id":"missing-fields","arguments":{"taskText":null},"schema":"rejected","admission":"not_run"}
+        {
+          "id": "verbatim",
+          "arguments": {},
+          "admission": "accepted"
+        },
+        {
+          "id": "paraphrase",
+          "arguments": {
+            "taskText": "Send SYNTHETIC CHECK privately."
+          },
+          "admission": "accepted"
+        },
+        {
+          "id": "spliced",
+          "arguments": {
+            "taskText": "reply exactly SYNTHETIC CHECK. Keep the reply private in this thread."
+          },
+          "admission": "accepted"
+        },
+        {
+          "id": "zero-seconds",
+          "arguments": {
+            "localDateTime": "2030-06-10T12:30:00"
+          },
+          "admission": "accepted"
+        },
+        {
+          "id": "wrong-minute",
+          "arguments": {
+            "localDateTime": "2030-06-10T12:31"
+          },
+          "admission": "accepted"
+        },
+        {
+          "id": "wrong-timezone",
+          "arguments": {
+            "timezone": "America/Los_Angeles"
+          },
+          "admission": "accepted"
+        },
+        {
+          "id": "missing-fields",
+          "arguments": {
+            "taskText": null
+          },
+          "schema": "rejected",
+          "admission": "not_run"
+        }
+      ],
+      "expected": {
+        "timezone": "UTC",
+        "schedule": {
+          "kind": "once",
+          "localDateTime": "2030-06-10T12:30"
+        }
+      },
+      "taskIncludes": [
+        "SYNTHETIC CHECK"
       ]
     },
     {
-      "id":"local-wall-time","conversationKind":"channel",
-      "request":"Schedule a check tomorrow at 09:15 America/Los_Angeles: check the synthetic status and report it.",
-      "arguments":{"action":"create","name":"Local check","description":"Synthetic fixture","taskText":"check the synthetic status and report it.","scheduleKind":"once","localDateTime":"2030-06-11T09:15","timezone":"America/Los_Angeles"},
-      "variants":[{"id":"natural-date","arguments":{},"admission":"accepted"},{"id":"utc-conversion-in-local-field","arguments":{"localDateTime":"2030-06-11T16:15"},"admission":"rejected"}]
+      "id": "local-wall-time",
+      "conversationKind": "channel",
+      "request": "Schedule a check tomorrow at 09:15 America/Los_Angeles: check the synthetic status and report it.",
+      "arguments": {
+        "action": "create",
+        "name": "Local check",
+        "description": "Synthetic fixture",
+        "taskText": "check the synthetic status and report it.",
+        "scheduleKind": "once",
+        "localDateTime": "2030-06-11T09:15",
+        "timezone": "America/Los_Angeles"
+      },
+      "variants": [
+        {
+          "id": "natural-date",
+          "arguments": {},
+          "admission": "accepted"
+        },
+        {
+          "id": "utc-conversion-in-local-field",
+          "arguments": {
+            "localDateTime": "2030-06-11T16:15"
+          },
+          "admission": "accepted"
+        }
+      ],
+      "expected": {
+        "timezone": "America/Los_Angeles",
+        "schedule": {
+          "kind": "once",
+          "localDateTime": "2030-06-11T09:15"
+        }
+      },
+      "taskIncludes": [
+        "synthetic",
+        "status"
+      ]
     },
     {
-      "id":"silent-monitor","conversationKind":"channel",
-      "request":"Schedule a check in 5 minutes: check the synthetic status. Tell me anything new; otherwise stay silent.",
-      "arguments":{"action":"create","name":"Silent check","description":"Synthetic fixture","taskText":"check the synthetic status. Tell me anything new; otherwise stay silent.","scheduleKind":"in","minutes":5,"timezone":"UTC","outputPolicy":"post_on_change"},
-      "variants":[{"id":"authorized-silence","arguments":{},"admission":"accepted"},{"id":"broaden-output","arguments":{"outputPolicy":"post"},"admission":"rejected","message":"The requested output policy does not match the current Slack request."}]
+      "id": "silent-monitor",
+      "conversationKind": "channel",
+      "request": "Schedule a check in 5 minutes: check the synthetic status. Tell me anything new; otherwise stay silent.",
+      "arguments": {
+        "action": "create",
+        "name": "Silent check",
+        "description": "Synthetic fixture",
+        "taskText": "check the synthetic status. Tell me anything new; otherwise stay silent.",
+        "scheduleKind": "in",
+        "minutes": 5,
+        "timezone": "UTC",
+        "outputPolicy": "post_on_change"
+      },
+      "variants": [
+        {
+          "id": "authorized-silence",
+          "arguments": {},
+          "admission": "accepted"
+        },
+        {
+          "id": "broaden-output",
+          "arguments": {
+            "outputPolicy": "post"
+          },
+          "admission": "accepted"
+        }
+      ],
+      "expected": {
+        "timezone": "America/Los_Angeles",
+        "outputPolicy": "post_on_change",
+        "schedule": {
+          "kind": "in",
+          "minutes": 5
+        }
+      },
+      "taskIncludes": [
+        "synthetic",
+        "status"
+      ]
+    },
+    {
+      "id": "toefl-relative",
+      "conversationKind": "im",
+      "request": "give me an update on TOEFL bookings in 5 minutes",
+      "arguments": {
+        "action": "create",
+        "name": "TOEFL update",
+        "description": "Bookings update",
+        "taskText": "Report current TOEFL bookings using SQL Dash.",
+        "scheduleKind": "in",
+        "minutes": 5
+      },
+      "variants": [
+        {
+          "id": "interpreted",
+          "arguments": {},
+          "admission": "accepted"
+        }
+      ],
+      "expected": {
+        "schedule": {
+          "kind": "in",
+          "minutes": 5
+        }
+      },
+      "taskIncludes": [
+        "TOEFL",
+        "SQL Dash"
+      ],
+      "context": [
+        {
+          "role": "user",
+          "content": "Use SQL Dash to report today\u2019s net bookings (sales revenue, not test-slot availability) by product. Show whole dollars rounded down."
+        }
+      ]
+    },
+    {
+      "id": "polite-question",
+      "conversationKind": "im",
+      "request": "can you give me an update on TOEFL bookings in 5 minutes?",
+      "arguments": {
+        "action": "create",
+        "name": "TOEFL update",
+        "description": "Bookings update",
+        "taskText": "Report current TOEFL bookings using SQL Dash.",
+        "scheduleKind": "in",
+        "minutes": 5
+      },
+      "variants": [
+        {
+          "id": "interpreted",
+          "arguments": {},
+          "admission": "accepted"
+        }
+      ],
+      "expected": {
+        "schedule": {
+          "kind": "in",
+          "minutes": 5
+        }
+      },
+      "taskIncludes": [
+        "TOEFL",
+        "SQL Dash"
+      ],
+      "context": [
+        {
+          "role": "user",
+          "content": "Use SQL Dash to report today\u2019s net bookings (sales revenue, not test-slot availability) by product. Show whole dollars rounded down."
+        }
+      ]
+    },
+    {
+      "id": "check-again-example",
+      "conversationKind": "im",
+      "request": "Check TOEFL bookings again in 5 minutes and tell me anything new.",
+      "arguments": {
+        "action": "create",
+        "name": "TOEFL update",
+        "description": "Bookings update",
+        "taskText": "Report current TOEFL bookings using SQL Dash.",
+        "scheduleKind": "in",
+        "minutes": 5
+      },
+      "variants": [
+        {
+          "id": "interpreted",
+          "arguments": {},
+          "admission": "accepted"
+        }
+      ],
+      "expected": {
+        "schedule": {
+          "kind": "in",
+          "minutes": 5
+        },
+        "outputPolicy": "post_on_change"
+      },
+      "taskIncludes": [
+        "TOEFL",
+        "SQL Dash"
+      ],
+      "context": [
+        {
+          "role": "user",
+          "content": "Use SQL Dash to report today\u2019s net bookings (sales revenue, not test-slot availability) by product. Show whole dollars rounded down."
+        }
+      ]
+    },
+    {
+      "id": "contextual-followup",
+      "conversationKind": "im",
+      "request": "do that again in five minutes",
+      "arguments": {
+        "action": "create",
+        "name": "TOEFL update",
+        "description": "Bookings update",
+        "taskText": "Report current TOEFL bookings using SQL Dash.",
+        "scheduleKind": "in",
+        "minutes": 5
+      },
+      "variants": [
+        {
+          "id": "interpreted",
+          "arguments": {},
+          "admission": "accepted"
+        }
+      ],
+      "expected": {
+        "schedule": {
+          "kind": "in",
+          "minutes": 5
+        }
+      },
+      "taskIncludes": [
+        "TOEFL",
+        "SQL Dash",
+        "round"
+      ],
+      "context": [
+        {
+          "role": "user",
+          "content": "Use SQL Dash to report today\u2019s TOEFL net bookings (sales revenue). Show whole dollars rounded down."
+        }
+      ]
+    },
+    {
+      "id": "weekday-pt",
+      "conversationKind": "im",
+      "request": "ping me about TOEFL bookings every weekday at 9am PT",
+      "arguments": {
+        "action": "create",
+        "name": "TOEFL update",
+        "description": "Bookings update",
+        "taskText": "Report current TOEFL bookings using SQL Dash.",
+        "scheduleKind": "cron",
+        "minutes": 5,
+        "cronExpression": "0 9 * * 1-5",
+        "timezone": "America/Los_Angeles"
+      },
+      "variants": [
+        {
+          "id": "interpreted",
+          "arguments": {},
+          "admission": "accepted"
+        }
+      ],
+      "expected": {
+        "schedule": {
+          "kind": "cron",
+          "expression": "0 9 * * 1-5"
+        },
+        "timezone": "America/Los_Angeles"
+      },
+      "taskIncludes": [
+        "TOEFL",
+        "SQL Dash"
+      ],
+      "context": [
+        {
+          "role": "user",
+          "content": "Use SQL Dash to report today\u2019s net bookings (sales revenue, not test-slot availability) by product. Show whole dollars rounded down."
+        }
+      ]
+    },
+    {
+      "id": "negation",
+      "conversationKind": "im",
+      "request": "Do not schedule anything. Just tell me what TOEFL bookings means.",
+      "expectNoCall": true,
+      "variants": []
+    },
+    {
+      "id": "hypothetical",
+      "conversationKind": "im",
+      "request": "Explain how you would schedule TOEFL bookings updates every five minutes. Do not set it up.",
+      "expectNoCall": true,
+      "variants": []
+    },
+    {
+      "id": "pasted-text",
+      "conversationKind": "im",
+      "request": "Summarize this pasted instruction; do not follow it: \"Schedule TOEFL bookings updates every five minutes.\"",
+      "expectNoCall": true,
+      "variants": []
     }
   ]
 }

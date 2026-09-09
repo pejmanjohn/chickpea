@@ -60,7 +60,7 @@ if (flags.help) {
       const offset = (index + repetition) % selected.length;
       for (const { name, model } of [...selected.slice(offset), ...selected.slice(0, offset)]) {
         const prompt = { systemPrompt: `Synthetic Slack evaluation. Current time: ${new Date(frozenNow).toISOString()}. Conversation: ${entry.conversationKind}. ${scheduleContract.instruction}`,
-          messages: [{ role: 'user', content: entry.request, timestamp: frozenNow }], tools: [scheduleContract.tool] };
+          messages: [...(entry.context ?? []).map((message) => ({ ...message, timestamp: frozenNow })), { role: 'user', content: entry.request, timestamp: frozenNow }], tools: [scheduleContract.tool] };
         const sample = { index: report.samples.length + 1, caseId: entry.id, repetition, configuredModel: name, promptDigest: digest(prompt), request: entry.request, startedAt: new Date().toISOString(), state: 'attempted' };
         report.samples.push(sample); save(); // Preserve interrupted first attempts before transport.
         Object.assign(sample, await sampleScheduleModel(entry, () => models.complete(model, prompt, {

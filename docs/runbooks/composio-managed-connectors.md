@@ -93,7 +93,7 @@ Each Google service is a separate connection and consent flow. Choosing **Read a
 | Slides | `slides.presentations.copy_template` | `GOOGLESLIDES_PRESENTATIONS_COPY_FROM_TEMPLATE` | `google_slides_copy_template` |
 | Slides | `slides.presentations.batch_update` | `GOOGLESLIDES_PRESENTATIONS_BATCH_UPDATE` | `google_slides_update` |
 
-Gmail search omits bodies, snippets, previews, raw payloads, and attachment data unless the model explicitly requests body access. Artifact searches return compact ID/title/link metadata. Sheets ranges and Markdown are bounded, and Slides accepts only reviewed create-slide, insert-text, and replace-all-text operations. Composio's deprecated Sheets batch update, SQL-like table query, arbitrary batch bodies, sharing, and delete tools are absent. Write and destructive tools pass through Chickpea's side-effect policy. Connector output is size-bounded before it returns to the model.
+Gmail search omits bodies, snippets, previews, raw payloads, and attachment data unless the model explicitly requests body access. Artifact searches return compact ID/title/link metadata. Sheets ranges and Markdown are bounded, and Slides accepts only reviewed create-slide, insert-text, and replace-all-text operations. Composio's deprecated Sheets batch update, SQL-like table query, arbitrary batch bodies, sharing, and delete tools are absent. Selected capabilities authorize execution within their resource scopes; explicit read-only grants remain enforced. The model interprets the requested task without a request-word classifier. Connector output is size-bounded before it returns to the model.
 
 ### Growth analytics resource boundary
 

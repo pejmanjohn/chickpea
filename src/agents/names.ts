@@ -5,7 +5,7 @@
  * them (see `isManagedCurrentRequestAgent` in ../memory/tool-policy.ts, and the
  * activity bridge in ../app.ts). The Flue 2 cutover renamed the agents and the
  * policy predicate kept matching the pre-cutover names, which silently disabled
- * the only deterministic side-effect gate in production while its unit tests —
+ * the artifact delivery gate in production while its unit tests —
  * which passed the old names in explicitly — stayed green.
  *
  * The agent modules cannot import these: the Flue build reads
@@ -28,8 +28,8 @@ export const MANAGED_SUBMISSION_AGENT_NAMES = [
 
 /**
  * Unattended agents. They have no human in the loop for the turn they execute,
- * so an external write needs explicit authority in the saved task text itself —
- * never merely the absence of selected memory.
+ * and use the saved task with the same connection capability grants as
+ * interactive turns.
  */
 export const UNATTENDED_AGENT_NAMES = [
   CHICKPEA_ROUTINE_INTENT_AGENT_NAME,

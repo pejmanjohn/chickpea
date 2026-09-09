@@ -1,4 +1,5 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 import { isRecord } from '../security/content-validation.ts';
@@ -60,7 +61,9 @@ async function loadIdentityPayload(
   probe: McpIdentityProbe,
 ): Promise<unknown> {
   if (input.transport !== 'streamable-http') return undefined;
-  const client = new Client({ name: 'chickpea', version: '0.0.0' });
+  const client = new Client({ name: 'chickpea', version: '0.0.0' }, {
+    jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
+  });
   const transport = new StreamableHTTPClientTransport(new URL(input.url), {
     requestInit: { headers: input.headers },
     fetch: createMcpGuardedFetch({ allowedOrigin: new URL(input.url).origin }),

@@ -6,25 +6,14 @@ import type { SlackScheduleActionOutcome } from './slack-schedule-actions.ts';
 const REQUEST_VALIDATION_MESSAGES = new Set([
   'A Channel schedule must use the current Channel.',
   'A DM schedule must use the current DM thread.',
-  'An edit that reuses the previous task needs an explicit cadence or output change in the current Slack request.',
-  'Posting only on change must be explicit in the current Slack request.',
-  'Recurring and wall-clock schedules require an explicit timezone in the current Slack request.',
   'Scheduled work requires the trusted current Slack request.',
   'Scheduling in group DMs is not supported.',
-  'The current Slack request contains conflicting output instructions.',
-  'The current Slack request must name the scheduled work being changed.',
-  'The requested output policy does not match the current Slack request.',
-  'The requested schedule timezone does not match the current Slack request.',
-  'The schedule cadence must be explicit in the current Slack request.',
   'The schedule destination must match this conversation.',
   'The schedule workspace must match this conversation.',
-  'The scheduled task must be explicitly present in the current Slack request.',
-  'The scheduled work name is ambiguous. Name its exact ID in the current Slack request.',
   'The scheduled work was not found.',
-  'The current Slack request must explicitly run the scheduled work.',
-  'The current Slack request must explicitly pause the scheduled work.',
-  'The current Slack request must explicitly resume the scheduled work.',
-  'The current Slack request must explicitly delete the scheduled work.',
+  'The scheduled work changed. Inspect it again before editing.',
+  'Name, description, task text, and schedule are required.',
+  "A timezone is required and none is available from the requester's Slack profile.",
 ]);
 
 export async function scheduleActionRpcResult(

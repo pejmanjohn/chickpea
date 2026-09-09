@@ -100,7 +100,7 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
   const hostTemplate = 'api' in preset && preset.api.hostTemplate === true;
   const oauth = mcpAuth?.kind === 'oauth' || 'api' in preset && Boolean(preset.api.oauth);
   const accessSummary = mcpAuth?.kind === 'oauth'
-    ? `${connector} requests native ${/\bwrite\b/i.test(mcpAuth.scope ?? '') ? 'read and write' : 'account'} access. Changes still require your confirmation.`
+    ? `${connector} requests native ${/\bwrite\b/i.test(mcpAuth.scope ?? '') ? 'read and write' : 'account'} access. Selected tools can carry out your requests; Agent instructions can require confirmation.`
     : preset.notes ?? preset.description;
   const failureMessage = input.failureMessage ?? '';
   return pageShell({
