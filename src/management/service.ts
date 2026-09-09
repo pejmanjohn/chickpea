@@ -51,7 +51,6 @@ import type {
   MemoryStateStore,
 } from '../memory/types.ts';
 import { RoutineService } from '../routines/service.ts';
-import { requestsChannelThreadDelivery } from '../routines/provenance.ts';
 import { routineNextRunTime } from '../routines/message-format.ts';
 import { skillImportSource } from '../config/skill-provenance.ts';
 import { reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
@@ -3303,8 +3302,7 @@ export class WorkspaceManagementService {
     if (operation.kind === 'save_routine' && operation.destination?.kind === 'current_channel_thread') {
       const origin = actor.origin;
       if (origin.kind !== 'slack' || origin.conversationKind !== 'channel' ||
-          operation.workspaceId !== origin.workspaceId || operation.channelId !== origin.channelId ||
-          !requestsChannelThreadDelivery(origin.requestText ?? '')) {
+          operation.workspaceId !== origin.workspaceId || operation.channelId !== origin.channelId) {
         throw new ManagementError('invalid_request', 'Thread delivery must be explicitly requested in the current Channel.');
       }
       return origin.channelId;

@@ -6,7 +6,7 @@ import { invokeCloudflareSlackScheduleAction, scheduleActionToolResult } from '.
 
 test('RPC preserves fixed request validation guidance without transport retry', async () => {
   let attempts = 0;
-  const message = 'The schedule cadence must be explicit in the current Slack request.';
+  const message = 'The scheduled work was not found.';
   const result = await invokeCloudflareSlackScheduleAction({
     stub: { slackScheduleActionInvoke: async () => {
       attempts++;
@@ -33,7 +33,7 @@ test('transport exceptions still retry while unknown exception text never become
   assert.equal(result.outcome, 'pending');
   const privateError = new ManagementError('invalid_request', 'private request or credential body');
   await assert.rejects(scheduleActionRpcResult(async () => { throw privateError; }), e => e === privateError);
-  await assert.rejects(scheduleActionRpcResult(async () => { throw new Error('The schedule cadence must be explicit in the current Slack request.'); }));
+  await assert.rejects(scheduleActionRpcResult(async () => { throw new Error('The scheduled work was not found.'); }));
 });
 
 test('real pre-admission schedule validation returns before any state reservation', async () => {
@@ -46,4 +46,9 @@ test('real pre-admission schedule validation returns before any state reservatio
     dependencies: {} as never,
   }));
   assert.deepEqual(result, { outcome: 'failed', code: 'invalid_request', message: 'The schedule workspace must match this conversation.' });
+});
+
+test('unavailable revision guidance crosses RPC without a transport retry', async () => {
+  const message = 'The scheduled work changed. Inspect it again before editing.';
+  assert.deepEqual(await scheduleActionRpcResult(async () => { throw new ManagementError('invalid_request', message); }), { outcome: 'failed', code: 'invalid_request', message });
 });

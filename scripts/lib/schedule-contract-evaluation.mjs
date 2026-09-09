@@ -40,7 +40,7 @@ export async function evaluateScheduleArguments(entry, args) {
   if (!parsed.success) return { ...result, schema: 'rejected', branch: 'tool_schema' };
   result.schema = 'accepted';
   const signal = { agentId: 'agent_synthetic', workspaceId: 'T_SYNTHETIC', channelId: entry.conversationKind === 'im' ? 'D_SYNTHETIC' : 'C_SYNTHETIC',
-    conversationKind: entry.conversationKind, threadTs: '1907323200.000001', messageTs: '1907323200.000001', slackUserId: 'U_SYNTHETIC', eventId: 'Ev_synthetic', turnJobId: 'turn_synthetic', requesterText: entry.request };
+    conversationKind: entry.conversationKind, threadTs: '1907323200.000001', messageTs: '1907323200.000001', slackUserId: 'U_SYNTHETIC', eventId: 'Ev_synthetic', turnJobId: 'turn_synthetic', requesterText: entry.request, requesterTimezone: entry.requesterTimezone ?? 'America/Los_Angeles' };
   let stage = 'converter', admitted;
   const stop = new Error('evaluation_before_reservation');
   const forbidden = new Proxy({}, { get(_target, property) { throw new Error(`Evaluation attempted unavailable dependency: ${String(property)}`); } });
@@ -65,7 +65,7 @@ export async function evaluateScheduleArguments(entry, args) {
 
 export async function deterministicScheduleEvaluation(corpus) {
   const results = [];
-  for (const entry of corpus.cases) for (const variant of entry.variants) {
+  for (const entry of corpus.cases) for (const variant of entry.variants ?? []) {
     const result = await evaluateScheduleArguments(entry, { ...entry.arguments, ...variant.arguments });
     results.push({ caseId: entry.id, variant: variant.id, ...result,
       passed: result.schema === (variant.schema ?? 'accepted') && result.admission === variant.admission
@@ -87,5 +87,19 @@ export async function sampleScheduleModel(entry, complete) {
   for (const call of calls) evaluated.push({ name: call.name, arguments: call.arguments,
     result: call.name === scheduleContract.tool.name ? await evaluateScheduleArguments(entry, call.arguments) : null });
   return { ...identity, elapsedMs, evaluable: true, category: 'model', stopReason: response.stopReason, usage: response.usage ?? null,
-    calls: evaluated, passed: evaluated.length === 1 && evaluated[0].result?.admission === 'accepted' };
+    calls: evaluated, passed: entry.expectNoCall
+      ? evaluated.length === 0
+      : evaluated.length === 1 && evaluated[0].result?.admission === 'accepted'
+        && scheduleMeaningMatches(entry, evaluated[0].result.operation) };
+}
+
+// These assertions score known evaluation fixtures, never authorize live actions.
+export function scheduleMeaningMatches(entry, operation) {
+  if (!operation) return false;
+  const expected = entry.expected ?? {};
+  for (const [key, value] of Object.entries(expected)) {
+    if (JSON.stringify(operation[key]) !== JSON.stringify(value)) return false;
+  }
+  const task = (operation.taskText ?? '').toLowerCase();
+  return (entry.taskIncludes ?? []).every((part) => task.includes(part.toLowerCase()));
 }
