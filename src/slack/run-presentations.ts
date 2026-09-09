@@ -476,6 +476,7 @@ export type SlackPresentationMutation =
   | { kind: 'mark_finalized' }
   | { kind: 'mark_non_stream_finalized' }
   | { kind: 'mark_unknown'; degradationReason: SlackPresentationDegradationReason }
+  | { kind: 'reconcile_unknown_stream' }
   | { kind: 'adopt_plan'; taskLabels: readonly string[] }
   | { kind: 'set_task_status'; status: 'in_progress' | 'complete' | 'error' }
   | {
@@ -1599,6 +1600,22 @@ function applyMutation(
       next.stream.state = 'unknown';
       next.stream.presentationOutcome = 'unknown';
       next.stream.degradationReason = mutation.degradationReason;
+      next.repairRequired = true;
+      return next;
+    case 'reconcile_unknown_stream':
+      // An uncertain Slack effect on a stream whose message coordinate is
+      // already known is recoverable exactly like a finalizing stream: stop
+      // without chunks, then replace the message contents. Without a
+      // coordinate there is nothing to reconcile against, so the state stays
+      // unknown for abandonment.
+      requireState(current, 'unknown');
+      if (!current.stream.messageTs) {
+        throw stateError('invalid_transition', 'Only a stream with a known Slack coordinate can reconcile.');
+      }
+      next.stream.state = 'finalizing';
+      delete next.stream.pendingAppend;
+      next.stream.presentationOutcome =
+        current.stream.acknowledgedByteLength > 0 ? 'progressive' : 'terminal_only';
       next.repairRequired = true;
       return next;
     case 'adopt_plan': {

@@ -782,6 +782,34 @@ export class SlackAgentViewPresentation {
           presentation.terminalDelivery.operation.certainty === 'unknown')) {
       return this.recoverFinalizingStream(presentation, text, format, observer, tablePresentation);
     }
+    if (presentation.schemaVersion === 3 && presentation.stream.messageTs &&
+        (presentation.stream.state === 'unknown' || presentation.stream.state === 'reconciling') &&
+        this.terminalIntentAcceptsRecovery(presentation, terminalTaskStatus)) {
+      // A prior attempt lost certainty after Slack already gave this run its
+      // message coordinate. Replaying the terminal without reconciling can
+      // never succeed, so recover on the known message instead of throwing
+      // until the relay abandons the run silently.
+      const terminal = await this.prepareTerminalDelivery(
+        terminalTaskStatus === 'error' ? 'failure' : 'answer',
+      );
+      if (terminal.acknowledged) {
+        return { handled: true, messageTs: presentation.stream.messageTs };
+      }
+      // Another actor may have frozen, acknowledged, or abandoned a terminal
+      // between the first read and this one. Re-validate on the state the
+      // compare-and-swap below will fence, and never overwrite a different
+      // frozen terminal.
+      presentation = await this.requirePresentation();
+      if (presentation.schemaVersion !== 3 || !presentation.stream.messageTs ||
+          (presentation.stream.state !== 'unknown' && presentation.stream.state !== 'reconciling') ||
+          !this.terminalIntentAcceptsRecovery(presentation, terminalTaskStatus)) {
+        throw new Error('Slack Agent View presentation requires reconciliation.');
+      }
+      presentation = await this.transition(presentation, presentation.stream.state === 'unknown'
+        ? { kind: 'reconcile_unknown_stream' }
+        : { kind: 'mark_finalizing' });
+      return this.recoverFinalizingStream(presentation, text, format, observer, tablePresentation);
+    }
     if (presentation.stream.state === 'starting' || presentation.stream.state === 'unknown') {
       throw new Error('Slack Agent View presentation requires reconciliation.');
     }
@@ -1550,6 +1578,23 @@ export class SlackAgentViewPresentation {
         safeSlackErrorCode(error),
       );
     }
+  }
+
+  /**
+   * Recovery on a known coordinate may proceed when this run has not frozen a
+   * terminal yet, or froze the same terminal result without acknowledgement.
+   * A different frozen result is never overwritten blindly: Slack may already
+   * show it, so that case stays with durable reconciliation.
+   */
+  private terminalIntentAcceptsRecovery(
+    presentation: Extract<SlackRunPresentation, { schemaVersion: 3 }>,
+    terminalTaskStatus: 'complete' | 'error',
+  ): boolean {
+    const terminal = presentation.terminalDelivery;
+    if (terminal.state === 'none') return true;
+    return terminal.state === 'intended' &&
+      terminal.result === (terminalTaskStatus === 'error' ? 'failure' : 'answer') &&
+      terminal.operation.certainty !== 'acknowledged';
   }
 
   private async prepareTerminalDelivery(result: 'answer' | 'failure'): Promise<{
