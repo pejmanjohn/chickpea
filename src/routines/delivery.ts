@@ -7,7 +7,7 @@ import {
   buildSlackAdminUrl,
   canonicalSlackReplyText,
   escapeSlackControlCharacters,
-  renderSlackFileBlocks,
+  renderSlackArtifactMessage,
   renderSlackMessage,
   type RenderedSlackMessage,
   type SlackReplyFooter,
@@ -28,17 +28,11 @@ import type {
 import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import {
+  isCompletedSlackArtifactReceipt,
   selectDeliverableArtifacts,
   type SlackArtifactReceipt,
 } from '../slack/artifact-receipts.ts';
-import {
-  createSlackFileTransport,
-  resolveFileShares,
-  slackFileCompletionFailureOutcome,
-  type SlackFileCompletionInput,
-  type SlackFileShare,
-  type SlackFileTransport,
-} from '../slack/file-transport.ts';
+import type { SlackFileTransport } from '../slack/file-transport.ts';
 import { ARTIFACT_UNDELIVERED_NOTE } from '../slack/web-client-presenter.ts';
 
 const ROUTINE_SLACK_TIMEOUT_MS = 10_000;
@@ -129,9 +123,8 @@ export async function drainRoutinePauseNotices(
 
 /**
  * One at-most-once Slack delivery of a routine result. Ambiguous transport
- * failures are never retried. When the occurrence staged files for exactly
- * this destination, the result is one file share carrying the rendered text,
- * footer, and the owning Agent's identity.
+ * failures are never retried. Privately completed files for this destination
+ * appear through labeled permalinks in the same customized result message.
  */
 export async function deliverRoutineResult(
   input: {
@@ -158,157 +151,20 @@ export async function deliverRoutineResult(
   if ((input.artifacts?.length ?? 0) > files.length) {
     throw new RoutineRuntimeError('result_invalid', 'Staged files do not match the saved destination.');
   }
-  const rendered = renderRoutineDelivery(
-    input.message,
-    routineReplyFooter(input.access, input.routine),
-  );
-  const approvedOutput = canonicalSlackReplyText(input.message, 'markdown');
-  if (files.length === 0) {
-    return deliverRoutineSlackMessage({ ...input, approvedOutput }, rendered, client);
-  }
-  return deliverRoutineFileShare({ ...input, approvedOutput, files }, client);
-}
-
-/**
- * Publish staged files and the result text as one file share. Completion is
- * the commit point: an ambiguous outcome is recorded unknown and never
- * retried or followed by a text post; a confirmed rejection publishes the
- * text once, with a note that the file was lost.
- */
-async function deliverRoutineFileShare(
-  input: {
-    store: RoutineStore;
-    run: RoutineRun;
-    routine: RoutineDefinition;
-    access: RoutineRuntimeAccess;
-    message: string;
-    changeKeyHash: string | null;
-    approvedOutput: string;
-    files: SlackArtifactReceipt[];
-    workLifecycle?: ShadowWorkLifecycle;
-    now?: () => number;
-    sleep?: (delayMs: number) => Promise<void>;
-    fileTransport?: SlackFileTransport;
-  },
-  client: WebClient,
-): Promise<RoutineDeliveryReceipt> {
-  const now = input.now ?? Date.now;
-  const claimedAt = await claimRoutineDelivery(input.store, input.run.id, now);
-  const agentAvatarUrl = agentAvatarUrlForPresentation(
-    input.access.config.agent,
-    input.access.publicUrl,
-  );
-  const completion: SlackFileCompletionInput = {
-    files: input.files.map((file) => ({ id: file.fileId, ...(file.title ? { title: file.title } : {}) })),
-    channelId: input.routine.channelId,
-    ...(input.routine.destination.threadTs ? { threadTs: input.routine.destination.threadTs } : {}),
-    blocks: renderSlackFileBlocks(input.approvedOutput, 'markdown', {
-      ...routineReplyFooter(input.access, input.routine),
+  const completedFiles = files.filter(isCompletedSlackArtifactReceipt);
+  const message = completedFiles.length < files.length
+    ? `${ARTIFACT_UNDELIVERED_NOTE}\n\n${input.message}`
+    : input.message;
+  const footer = routineReplyFooter(input.access, input.routine);
+  const rendered = completedFiles.length > 0
+    ? renderSlackArtifactMessage(message, 'markdown', {
+      ...footer,
       includeConfigureLink: false,
       scheduled: true,
-    }),
-    persona: {
-      username: input.access.config.agent.name,
-      ...(agentAvatarUrl ? { icon_url: agentAvatarUrl } : {}),
-    },
-  };
-  const share = {
-    fileIds: input.files.map((file) => file.fileId),
-    channel: input.routine.channelId,
-    ...(input.routine.destination.threadTs ? { threadTs: input.routine.destination.threadTs } : {}),
-  };
-  const rejectedFallback = {
-    channel: input.routine.channelId,
-    ...(completion.threadTs ? { thread_ts: completion.threadTs } : {}),
-    ...renderRoutineDelivery(`${input.message}\n\n${ARTIFACT_UNDELIVERED_NOTE}`, routineReplyFooter(input.access, input.routine)),
-    ...completion.persona,
-    unfurl_links: false,
-    unfurl_media: false,
-  };
-  const workAttemptId = await input.workLifecycle?.beforeDelivery({
-    method: 'slack_files_complete',
-    approvedOutput: input.approvedOutput,
-    renderedPayload: JSON.stringify({
-      method: 'slack_files_complete',
-      rejectedFallback,
-      completion: {
-        files: completion.files,
-        channel_id: completion.channelId,
-        ...(completion.threadTs ? { thread_ts: completion.threadTs } : {}),
-        blocks: completion.blocks,
-        ...completion.persona,
-      },
-      share,
-    }),
-  });
-  const transport = input.fileTransport ?? createSlackFileTransport(client);
-  let resolvedShare: SlackFileShare | undefined;
-  let rateLimitRetries = 0;
-  while (true) {
-    try {
-      resolvedShare = (await transport.complete(completion)).share;
-      break;
-    } catch (error) {
-      const retryAfterMs = slackRateLimitRetryAfterMs(error);
-      if (retryAfterMs !== undefined &&
-          rateLimitRetries < ROUTINE_LIMITS.deliveryRateLimitMaxRetries &&
-          retryAfterMs <= ROUTINE_LIMITS.deliveryRateLimitMaxRetryAfterMs &&
-          now() + retryAfterMs + ROUTINE_SLACK_TIMEOUT_MS <= Math.min(
-            Number.isSafeInteger(input.run.deadlineAt)
-              ? input.run.deadlineAt
-              : claimedAt + ROUTINE_LIMITS.deliveryLeaseMs,
-            claimedAt + ROUTINE_LIMITS.deliveryLeaseMs,
-          )) {
-        rateLimitRetries += 1;
-        await (input.sleep ?? sleep)(retryAfterMs);
-        continue;
-      }
-      if (slackFileCompletionFailureOutcome(error) !== 'failed') {
-        await recordFailedDelivery(input.store, input.run.id, 'unknown', now(), 'delivery_unknown');
-        await input.workLifecycle?.afterDelivery({
-          attemptId: workAttemptId,
-          outcome: 'unknown',
-          safeFailureCode: 'slack_files_complete_unknown',
-        });
-        throw routineDeliveryFailure('delivery_unknown');
-      }
-      // Slack confirmed nothing was published. The text is still owed once;
-      // the staged files lapse and are never completed again.
-      await input.workLifecycle?.afterDelivery({
-        attemptId: workAttemptId,
-        outcome: 'failed',
-        safeFailureCode: 'slack_files_complete_failed',
-      });
-      const message = `${input.message}\n\n${ARTIFACT_UNDELIVERED_NOTE}`;
-      return postClaimedRoutineMessage(
-        input,
-        renderRoutineDelivery(message, routineReplyFooter(input.access, input.routine)),
-        client,
-        claimedAt,
-      );
-    }
-  }
-  if (!resolvedShare) {
-    try {
-      resolvedShare = await resolveFileShares(transport, {
-        fileIds: share.fileIds,
-        channelId: share.channel,
-        ...(share.threadTs ? { threadTs: share.threadTs } : {}),
-      });
-    } catch {
-      // Delivered, coordinate unknown. Never complete or post again to learn it.
-      console.warn('[chickpea] routine file share coordinate could not be resolved');
-    }
-  }
-  const messageTs = resolvedShare?.shared ? resolvedShare.ts : undefined;
-  if (!messageTs) {
-    await recordFailedDelivery(input.store, input.run.id, 'unknown', now(), 'delivery_unknown');
-    await input.workLifecycle?.afterDelivery({
-      attemptId: workAttemptId, outcome: 'unknown', safeFailureCode: 'slack_files_share_unresolved',
-    });
-    throw routineDeliveryFailure('delivery_unknown');
-  }
-  return recordRoutineDelivered(input, workAttemptId, input.routine.channelId, messageTs, now);
+    }, completedFiles)
+    : renderRoutineDelivery(message, footer);
+  const approvedOutput = canonicalSlackReplyText(input.message, 'markdown');
+  return deliverRoutineSlackMessage({ ...input, approvedOutput, unfurlArtifacts: completedFiles.length > 0 }, rendered, client);
 }
 
 export async function deliverRoutineFailureNotice(
@@ -368,6 +224,7 @@ interface ClaimedRoutineMessageInput {
   access: RoutineRuntimeAccess;
   changeKeyHash: string | null;
   approvedOutput: string;
+  unfurlArtifacts?: boolean;
   workLifecycle?: ShadowWorkLifecycle;
   now?: () => number;
   sleep?: (delayMs: number) => Promise<void>;
@@ -424,8 +281,8 @@ async function postClaimedRoutineMessage(
     ...(agentAvatarUrl
       ? { icon_url: agentAvatarUrl }
       : {}),
-    unfurl_links: false,
-    unfurl_media: false,
+    unfurl_links: input.unfurlArtifacts === true,
+    unfurl_media: input.unfurlArtifacts === true,
   };
   const workAttemptId = await input.workLifecycle?.beforeDelivery({
     method: 'slack_chat_post_message',
