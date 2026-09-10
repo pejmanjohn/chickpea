@@ -1227,7 +1227,7 @@ export function useRuntimePlanAgent(
   }
   if (!options.toolsDisabled && plan.sandbox.mode === 'bash' && plan.apiConnections.length > 0) {
     useInstruction([
-      'REST connections are declared for this turn. Use the bash tool with curl to perform requested HTTP operations within the listed hosts, path prefixes, and methods. Credentials are injected automatically by the connection transport; do not supply, retrieve, or print authentication headers or credential values.',
+      'REST connections are declared for this turn. Use the bash tool with curl -sS to perform requested HTTP operations within the listed hosts, path prefixes, and methods, preserving error messages. Credentials are injected automatically by the connection transport; do not supply, retrieve, or print authentication headers or credential values.',
       'These declarations describe the frozen permission ceiling, not a guarantee of availability. The runtime rechecks current account authority on every request; if access is denied or unavailable, report that result without bypassing it or claiming success.',
       JSON.stringify(plan.apiConnections.map(({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }) => ({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }))),
     ].join('\n'));
