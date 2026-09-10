@@ -271,7 +271,7 @@ export interface ApiConnectionResolutionDependencies {
     provider: ApiOAuthProvider;
   }) => Promise<string>;
   accountContext?: {
-    config: Pick<ConfigStore, 'listConnectionAccounts' | 'listAgentConnectionBindings'>;
+    config: ConfigStore;
     settings?: SettingsStore;
     workspaceId: string;
     actorMembershipId: string;

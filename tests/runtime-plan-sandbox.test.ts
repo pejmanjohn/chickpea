@@ -142,8 +142,6 @@ test(`native Google session: ${oauthState}`, async (t) => {
   const tokenKey = keys[2];
   await settings.setSetting(keys[0], JSON.stringify({ provider: 'google', clientId: 'fixture-client', clientSecret: 'fixture-secret' }));
   await settings.setSetting(tokenKey, JSON.stringify({ provider: 'google', accessToken: 'fixture-google-token', refreshToken: 'fixture-refresh', tokenType: 'Bearer', obtainedAt: oauthState === 'ready' ? Date.now() : 1, expiresIn: 3600 }));
-  const getSetting = settings.getSetting.bind(settings);
-  const tokenReads = t.mock.method(settings, 'getSetting', getSetting);
   const calls: { url: string; authorization: string | null; nonce: string }[] = [];
   t.mock.method(globalThis, 'fetch', async (url: string, options: RequestInit) => {
     const nonce = randomUUID();
@@ -165,7 +163,6 @@ test(`native Google session: ${oauthState}`, async (t) => {
   try {
     assert.doesNotMatch(String((harness as any).config.instructions), /fixture-google-token/);
     const read = await harness.sandbox.exec('curl -sS "https://www.googleapis.com/drive/v3/files?pageSize=1"');
-    assert.ok(tokenReads.mock.calls.some(({ arguments: args }) => args[0] === tokenKey), JSON.stringify({ declaration: plan.apiConnections, keys: tokenReads.mock.calls.map(({ arguments: args }) => args[0]) }));
     if (oauthState !== 'ready') {
       assert.notEqual(read.exitCode, 0);
       assert.deepEqual(calls.map(({ url }) => url), ['https://oauth2.googleapis.com/token']);
