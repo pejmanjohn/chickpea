@@ -73,7 +73,8 @@ test('the shared schedule command replays save and immediate run effects once', 
       timezone: 'UTC',
       outputPolicy: 'post' as const,
     };
-    await assert.rejects(executeSlackScheduleCommand({ ...save, requiredConnectionAccountIds: undefined }, dependencies),
+    const { requiredConnectionAccountIds: _requiredAccounts, ...saveWithoutAccounts } = save;
+    await assert.rejects(executeSlackScheduleCommand(saveWithoutAccounts, dependencies),
       /Declare requiredConnectionAccountIds/);
     assert.deepEqual(await routines.listRoutines('T_SCHEDULE_COMMAND', 'C_SCHEDULE_COMMAND'), []);
     const first = await executeSlackScheduleCommand(save, dependencies);
@@ -82,14 +83,16 @@ test('the shared schedule command replays save and immediate run effects once', 
     assert.equal(replay.effect, 'saved');
     assert.equal(first.routine.id, replay.routine.id);
     assert.equal((await routines.listRoutines('T_SCHEDULE_COMMAND', 'C_SCHEDULE_COMMAND')).length, 1);
-    const renamed = await executeSlackScheduleCommand({ ...save, actionKey: 'rename',
+    await assert.rejects(executeSlackScheduleCommand({ ...save, actionKey: 'unversioned-edit',
+      routineId: first.routine.id, taskText: 'An unversioned changed task.',
+    }, dependencies), /current expectedVersion is required/);
+    assert.equal((await routines.getRoutine(first.routine.id))?.version, first.routine.version);
+    const renamed = await executeSlackScheduleCommand({ ...saveWithoutAccounts, actionKey: 'rename',
       routineId: first.routine.id, expectedVersion: first.routine.version, name: 'Renamed check',
-      requiredConnectionAccountIds: undefined,
     }, dependencies);
     assert.deepEqual((await config.getAgentScheduleReference(first.routine.id))?.requiredConnectionAccountIds, []);
-    await assert.rejects(executeSlackScheduleCommand({ ...save, actionKey: 'task-change',
+    await assert.rejects(executeSlackScheduleCommand({ ...saveWithoutAccounts, actionKey: 'task-change',
       routineId: first.routine.id, expectedVersion: renamed.routine.version, taskText: 'A materially different task.',
-      requiredConnectionAccountIds: undefined,
     }, dependencies), /Declare requiredConnectionAccountIds/);
     const oldReplay = await executeSlackScheduleCommand(save, dependencies);
     assert.equal(oldReplay.routine.version, renamed.routine.version);

@@ -57,7 +57,7 @@ test('exact schedule dependencies govern disconnects, mounting, metadata edits, 
     const authority = await resolveRoutineAgentAuthority(routine, undefined, { config, identity });
     const plan = compileRuntimePlanV2({ assignment: authority.assignment,
       turn: { workspaceId: WORKSPACE, channelId: CHANNEL, eventId: 'run', userId: 'U_OWNER',
-        actorMembershipId: owner.membership.id, messageTs: '1000', threadTs: '1000', text: 'Run the saved task',
+        actorMembershipId: owner.membership.id, messageTs: '1785509000.000100', threadTs: '1785509000.000100', text: 'Run the saved task',
         source: 'app_mention', contextMode: 'channel_history' },
       instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash', effectiveConnections: authority.effectiveConnections });
     assert.deepEqual(plan.connectionAccountIds, [source.id]);

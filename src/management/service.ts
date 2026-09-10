@@ -3694,7 +3694,9 @@ export class WorkspaceManagementService {
       name: operation.name,
       description: operation.description,
       taskText: operation.taskText,
-      requiredConnectionAccountIds: operation.requiredConnectionAccountIds,
+      ...(operation.requiredConnectionAccountIds !== undefined
+          ? { requiredConnectionAccountIds: operation.requiredConnectionAccountIds }
+          : {}),
       schedule: operation.schedule,
       timezone: operation.timezone,
       outputPolicy: operation.outputPolicy,
@@ -4385,7 +4387,9 @@ export class WorkspaceManagementService {
           scheduleId: routine.id,
           agentId: operation.agentId,
           ownerMembershipId: actor.membershipId,
-          requiredConnectionAccountIds: operation.requiredConnectionAccountIds,
+          ...(operation.requiredConnectionAccountIds !== undefined
+          ? { requiredConnectionAccountIds: operation.requiredConnectionAccountIds }
+          : {}),
           receiptId: `schedule_authority_${createHash('sha256')
             .update(`${proposalId}:${operation.itemId}:${operation.agentId}`)
             .digest('hex')

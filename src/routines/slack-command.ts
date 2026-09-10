@@ -131,6 +131,11 @@ export async function executeSlackScheduleCommand(
   });
 
   try {
+    if (command.kind === 'save' && command.routineId &&
+        (!Number.isSafeInteger(command.expectedVersion) || command.expectedVersion! < 1)) {
+      throw new RoutineStateError('routine_version_required',
+        'A current expectedVersion is required to edit scheduled work. Inspect the schedule before editing.');
+    }
     if (command.kind === 'control') {
       if (command.action === 'resume') await requireSchedulingAvailable(dependencies);
       const routine = await service.control({
@@ -256,7 +261,7 @@ export async function executeSlackScheduleCommand(
       } } : {}),
     }, effectKey(command, 'save'));
 
-    const intendedVersion = command.routineId ? (command.expectedVersion ?? 0) + 1 : 1;
+    const intendedVersion = command.routineId ? command.expectedVersion! + 1 : 1;
     if (routine.version > intendedVersion) {
       return { effect: 'saved', routine, created: false };
     }
@@ -277,7 +282,9 @@ export async function executeSlackScheduleCommand(
         routine,
         assignment,
         actorMembershipId: command.actorMembershipId,
-        requiredConnectionAccountIds: command.requiredConnectionAccountIds,
+        ...(command.requiredConnectionAccountIds !== undefined
+          ? { requiredConnectionAccountIds: command.requiredConnectionAccountIds }
+          : {}),
         env: undefined,
       });
       if (!existing && routine.destination.kind === 'direct_thread') {

@@ -7994,7 +7994,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const reference = await reassignRoutineAgentAuthority({
         scheduleId: current.scheduleId,
         runsAsMembershipId: membership.id,
-        requiredConnectionAccountIds: parsed.output.requiredConnectionAccountIds,
+        ...(parsed.output.requiredConnectionAccountIds !== undefined
+          ? { requiredConnectionAccountIds: parsed.output.requiredConnectionAccountIds }
+          : {}),
         config,
         identity: identity(c),
       });

@@ -17,7 +17,6 @@ import { ConnectionAccountAlreadyBoundError } from '../src/config/errors.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
   ConnectionAccountService,
-  ConnectionScheduleConflictError,
 } from '../src/connections/store.ts';
 import {
   applyConnectionCapabilityCeiling,
