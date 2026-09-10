@@ -23,11 +23,17 @@ import {
   MAX_SLACK_PUBLIC_HANDOFF_MESSAGES,
   reconcileSlackPublicContextMutation,
   recordDeliveredSlackAgentMessage,
-  retainedSlackReplyBackground,
 } from '../src/slack/public-context.ts';
 import type { SlackPublicContextEntry } from '../src/config/types.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { currentMessageOnlyContext } from '../src/slack/thread-context.ts';
+import { classifyCandidateTurn } from '../src/channels/slack.ts';
+
+async function retainedPrompt(store: SqliteConfigStore, turn: NormalizedSlackTurn, agentId: string) {
+  const context = await assembleRetainedSlackContext(currentMessageOnlyContext(turn), turn, { store, agentId });
+  return context.messages.some((message) => !message.isTrigger) ? assembleSlackPrompt(turn, context) : undefined;
+}
 
 // Minimal WebClient stand-in: only conversations.replies is exercised for a
 // thread turn. Pages are returned oldest-first with forward cursors, mirroring
@@ -73,6 +79,52 @@ function threadTurn(overrides: Partial<NormalizedSlackTurn> = {}): NormalizedSla
 function humanMsg(n: number, ts: string) {
   return { user: 'U_HUMAN', type: 'message', text: `msg ${n}`, ts };
 }
+
+test('candidate classification recovers a retained correction beyond its two-page scan', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  const turn = threadTurn({ messageTs: '1100.000000', text: 'Please use the correction for the report.' });
+  try {
+    const agent = await store.createAgent({ id: 'agent_classifier', name: 'Classifier fixture', instructions: '',
+      enabled: true, lifecycle: 'active', creatorMembershipId: 'owner', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+    await store.putSlackPublicContext({ workspaceId: turn.workspaceId, channelId: turn.channelId,
+      rootTs: turn.threadTs, messageTs: '1099.000000', role: 'human', text: 'CORRECTION: budget is 42.' });
+    const client = fakeClientWithReplyPages(Array.from({ length: 3 }, (_, page) => ({
+      messages: Array.from({ length: 12 }, (_, row) => humanMsg(page * 12 + row, `${1001 + page * 12 + row}.000000`)),
+      ...(page < 2 ? { next_cursor: `page${page + 1}` } : {}),
+    })));
+    let seen = '';
+    const result = await classifyCandidateTurn(turn, { workspaceId: turn.workspaceId, channelId: turn.channelId,
+      agentId: agent.id, agent, runtimeContract: 'chickpea-v1' }, undefined, client as never, {
+      config: store,
+      classify: async (input) => {
+        seen = input.recentContext?.join('\n') ?? '';
+        return { intent: { disposition: 'reply', reason: 'substantive_request' }, failed: false };
+      },
+    });
+    assert.equal(client.calls(), 2);
+    assert.match(seen, /CORRECTION: budget is 42/);
+    assert.match(seen, /context is incomplete/);
+    assert.doesNotMatch(seen, /msg 23/);
+    assert.equal(result.classification.intent.disposition, 'reply');
+  } finally { store.close(); }
+});
+
+test('channel history shares the prompt budget, keeps the newest rows, and discloses omitted context', async () => {
+  const turn = threadTurn({ contextMode: 'channel_history' });
+  const client = { conversations: { history: async () => ({ messages: [
+    { user: 'U_HUMAN', ts: '1999.000000', text: `LATEST_CORRECTION ${'x'.repeat(11_980)}` },
+    { user: 'U_HUMAN', ts: '1900.000000', text: 'OLDEST_CONTEXT' },
+  ] }) } };
+  const hydrated = await hydrateSlackContextViaWebClient(client as never, turn);
+  const context = await assembleRetainedSlackContext(hydrated, turn);
+  const prompt = assembleSlackPrompt(turn, context);
+  assert.match(prompt, /LATEST_CORRECTION/);
+  assert.doesNotMatch(prompt, /OLDEST_CONTEXT/);
+  assert.match(prompt, /Slack context is incomplete/);
+  assert.ok(context.messages.filter((row) => !row.isTrigger).reduce((sum, row) => sum + row.text.length, 0) <= MAX_SLACK_PUBLIC_HANDOFF_CHARS);
+  assert.ok(context.messages.some((row) => row.isTrigger && row.text === turn.text));
+});
 
 test('a capped forward scan omits its stale segment and recovers retained recent corrections', async () => {
   const store = new SqliteConfigStore(':memory:');
@@ -200,16 +252,15 @@ test('new runtime prompts retain only this Agent public replies in the admitted 
     await store.putSlackPublicContext({ ...base, messageTs: '2001.0000', text: 'FUTURE_REPLY' });
     await store.putSlackPublicContext({ ...base, rootTs: '500.0000', messageTs: '1004.0000', text: 'OTHER_THREAD' });
     const turn = threadTurn();
-    const handoffBlock = await retainedSlackReplyBackground(store, turn, 'agent_support');
-    assert.ok(handoffBlock);
-    const context = await hydrateSlackContextViaWebClient(fakeClientWithReplyPages([{ messages: [humanMsg(1, '1001.0000')] }]) as never, turn);
-    const prompt = assembleSlackPrompt(turn, context, { handoffBlock });
+    const hydrated = await hydrateSlackContextViaWebClient(fakeClientWithReplyPages([{ messages: [humanMsg(1, '1001.0000')] }]) as never, turn);
+    const context = await assembleRetainedSlackContext(hydrated, turn, { store, agentId: 'agent_support' });
+    const prompt = assembleSlackPrompt(turn, context);
     assert.match(prompt, /CEDAR-410/);
     assert.match(prompt, /Historical background only/);
     assert.doesNotMatch(prompt, /OTHER_AGENT|FUTURE_REPLY|OTHER_THREAD/);
     await store.deleteSlackPublicContextMessage('T1', 'C1', '1000.0000', '1002.0000');
-    assert.equal(await retainedSlackReplyBackground(store, turn, 'agent_support'), undefined);
-    assert.equal(await retainedSlackReplyBackground(store, threadTurn({ contextMode: 'channel_history' }), 'agent_support'), undefined);
+    assert.equal(await retainedPrompt(store, turn, 'agent_support'), undefined);
+    assert.equal(await retainedPrompt(store, threadTurn({ contextMode: 'channel_history' }), 'agent_support'), undefined);
   } finally { store.close(); }
 });
 
@@ -234,14 +285,13 @@ test('top-level DMs retain this Agent replies across roots with filters before t
     }
     await store.putSlackPublicContext({ ...base, messageTs: '2000.0000', text: 'TRIGGER_ROW' });
     const second = threadTurn({ channelId: 'D1', contextMode: 'dm_history', threadTs: '2000.0000' });
-    const background = await retainedSlackReplyBackground(store, second, 'agent_support');
+    const background = await retainedPrompt(store, second, 'agent_support');
     assert.ok(background);
     assert.match(background, /CEDAR-410/);
-    assert.match(background, /in this Slack DM/);
     assert.match(background, /Historical background only/);
     assert.doesNotMatch(background, /OTHER_AGENT|OTHER_WORKSPACE|OTHER_DM|HUMAN_ROW|FUTURE_REPLY|TRIGGER_ROW/);
-    assert.equal(await retainedSlackReplyBackground(store, { ...second, contextMode: 'channel_history' }, 'agent_support'), undefined);
-    assert.equal(await retainedSlackReplyBackground(store, { ...second, channelId: 'D_EMPTY' }, 'agent_support'), undefined);
+    assert.equal(await retainedPrompt(store, { ...second, contextMode: 'channel_history' }, 'agent_support'), undefined);
+    assert.equal(await retainedPrompt(store, { ...second, channelId: 'D_EMPTY' }, 'agent_support'), undefined);
   } finally { store.close(); }
 });
 
@@ -259,12 +309,12 @@ test('recent DM replies are bounded by message count and public text budget', as
     assert.equal(recent.at(-1)?.messageTs, '1005.0001');
     assert.deepEqual(await store.listRecentSlackPublicContext({ ...query, limit: 0 }), []);
     assert.deepEqual(await store.listRecentSlackPublicContext({ ...query, beforeMessageTs: 'invalid' }), []);
-    const background = await retainedSlackReplyBackground(store, threadTurn({ channelId: 'D1', contextMode: 'dm_history' }), 'agent_support');
+    const background = await retainedPrompt(store, threadTurn({ channelId: 'D1', contextMode: 'dm_history' }), 'agent_support');
     assert.ok(background);
     assert.doesNotMatch(background, /OLDEST/);
     assert.match(background, /\[truncated\]/);
-    const replyText = background.split('\n').filter((line) => line.startsWith('- [')).map((line) => line.replace(/^- \[[^\]]+\] /, '')).join('');
-    assert.ok(replyText.length <= MAX_SLACK_PUBLIC_HANDOFF_CHARS);
+    const bounded = await assembleRetainedSlackContext(currentMessageOnlyContext(threadTurn({ channelId: 'D1', contextMode: 'dm_history' })), threadTurn({ channelId: 'D1', contextMode: 'dm_history' }), { store, agentId: 'agent_support' });
+    assert.ok(bounded.messages.filter((row) => !row.isTrigger).reduce((sum, row) => sum + row.text.length, 0) <= MAX_SLACK_PUBLIC_HANDOFF_CHARS);
   } finally { store.close(); }
 });
 

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { processGatewaySlackEnvelope } from '../src/channels/slack.ts';
 import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
-import { recordDeliveredSlackAgentMessage, retainedSlackReplyBackground } from '../src/slack/public-context.ts';
+import { recordDeliveredSlackAgentMessage, assembleRetainedSlackContext } from '../src/slack/public-context.ts';
 import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
+import { currentMessageOnlyContext } from '../src/slack/thread-context.ts';
 import { assembleSlackPrompt, hydrateSlackContextViaWebClient } from '../src/slack/web-client-context.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
@@ -65,17 +66,20 @@ test('gateway-admitted Agent DM roots retain only their own delivered public rep
     await stores.config.putSlackPublicContext({ workspaceId: 'T1', channelId: 'D1', rootTs: '1500', messageTs: '1501', role: 'agent', agentId: 'agent_other', text: 'OTHER_AGENT_PRIVATE_ROOT' });
     const second = await admit('2000', '<!subteam^SSUPPORT|@support> What code did you give me?');
     assert.equal(second.turn.contextMode, 'thread');
-    const handoffBlock = await retainedSlackReplyBackground(stores.config, second.turn, second.assignment.agentId);
     const context = await hydrateSlackContextViaWebClient({ conversations: {
       async replies(input: { ts: string }) { assert.equal(input.ts, second.turn.threadTs); return { ok: true, messages: [{ ts: '2000', user: 'U1', text: second.turn.text }] }; },
       async history() { assert.fail('shared DM history must remain inaccessible'); },
     } } as unknown as WebClient, second.turn);
-    const prompt = assembleSlackPrompt(second.turn, context, { ...(handoffBlock ? { handoffBlock } : {}) });
+    const retained = await assembleRetainedSlackContext(context, second.turn, { store: stores.config, agentId: second.assignment.agentId });
+    const prompt = assembleSlackPrompt(second.turn, retained);
     assert.match(prompt, /CEDARX/);
     assert.match(prompt, /Historical background only/);
     assert.doesNotMatch(prompt, /OTHER_AGENT_PRIVATE_ROOT/);
-    assert.equal(await retainedSlackReplyBackground(stores.config, { ...second.turn, channelType: 'mpim' }, second.assignment.agentId), undefined, 'group DMs do not use the cross-root reader');
-    assert.equal(await retainedSlackReplyBackground(stores.config, { ...second.turn, messageTs: '2001' }, second.assignment.agentId), undefined, 'a follow-up inside the new thread must not import another root');
+    for (const isolatedTurn of [{ ...second.turn, channelType: 'mpim' as const }, { ...second.turn, messageTs: '2001' }]) {
+      const isolated = await assembleRetainedSlackContext(currentMessageOnlyContext(isolatedTurn), isolatedTurn,
+        { store: stores.config, agentId: second.assignment.agentId });
+      assert.doesNotMatch(assembleSlackPrompt(isolatedTurn, isolated), /CEDARX|OTHER_AGENT_PRIVATE_ROOT/);
+    }
   } finally {
     if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator);
     else Reflect.deleteProperty(globalThis, 'navigator');
