@@ -44,6 +44,35 @@ import {
 
 const NOW = Date.UTC(2026, 7, 20, 12);
 
+test('gateway uploads reject oversized encoded requests before sending any file bytes', async () => {
+  const settings = new SqliteSettingsStore(':memory:', () => NOW);
+  const config = configStore();
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    settings, config, keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test', fetch: gateway.fetch, now: () => NOW,
+  });
+  try {
+    await client.beginClaim();
+    await client.refreshClaim();
+    const before = gateway.requests.length;
+    await assert.rejects(client.call('files.uploadV2', {
+      channel_id: 'CTEST', thread_ts: '1.0', filename: 'large.bin',
+      file: new Uint8Array(800 * 1024),
+    }), (error: unknown) => error instanceof SlackTransportError &&
+      error.code === 'gateway_request_too_large' && !error.retryable && error.effectOutcome === 'failed');
+    assert.equal(gateway.requests.length, before);
+    await client.call('files.uploadV2', {
+      channel_id: 'CTEST', thread_ts: '1.0', filename: 'small.bin',
+      file: new Uint8Array(700 * 1024),
+    });
+    assert.equal(gateway.requests.length, before + 1);
+  } finally {
+    settings.close();
+    config.close();
+  }
+});
+
 test('gateway client survives async resolver and Promise assimilation without a Slack call', async () => {
   const calls: string[] = [];
   const client = createGatewaySlackWebClient({

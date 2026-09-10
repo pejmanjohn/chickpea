@@ -32,6 +32,7 @@ export type SlackProgressiveEligibilityReason =
   | 'recovery'
   | 'effect_capable'
   | 'concurrent_join'
+  | 'artifact'
   | 'other';
 
 type SlackProgressiveEligibility =
@@ -213,6 +214,8 @@ export interface SlackPresentationRoot {
 interface SlackPresentationStream {
   state: SlackPresentationStreamState;
   messageTs?: string;
+  /** Exact interim stream being removed before a combined file reply. */
+  priorStreamMessageTs?: string;
   flue?: {
     instanceId: string;
     submissionId: string;
@@ -468,6 +471,10 @@ export type SlackPresentationMutation =
     }
   | { kind: 'mark_finalizing' }
   | { kind: 'mark_fallback'; outcome: 'fallback' }
+  /** The terminal is a staged file share, which Slack cannot stream. */
+  | { kind: 'mark_file_share_intent' }
+  | { kind: 'retire_stream_for_file_share' }
+  | { kind: 'file_share_stream_retired'; messageTs: string }
   | {
       kind: 'mark_artifact_delivered';
       outcome: SlackPresentationOutcome;
@@ -1576,9 +1583,52 @@ function applyMutation(
       // Keep it visible to repair until that post has an exact receipt.
       next.repairRequired = true;
       return next;
+    case 'mark_file_share_intent':
+      // Files publish through one completion call that Slack cannot stream,
+      // so the terminal takes the fallback route from the start. Repair stays
+      // visible until the completion has a receipt.
+      requireState(current, 'absent');
+      next.stream.state = 'fallback';
+      next.stream.presentationOutcome = 'terminal_only';
+      next.repairRequired = true;
+      return next;
+    case 'retire_stream_for_file_share': {
+      // Reserve cleanup before any Slack call. A resumed cleanup keeps the
+      // same coordinate and takes a fresh fence; no terminal may race it.
+      if (current.schemaVersion === 3 && current.terminalDelivery.state !== 'none') {
+        throw stateError('terminal_rewrite', 'A terminal stream cannot be retired for a file share.');
+      }
+      if (current.stream.state === 'fallback' && current.stream.priorStreamMessageTs) {
+        return next;
+      }
+      requireState(current, 'streaming');
+      if (!current.stream.messageTs || current.stream.pendingAppend) {
+        throw stateError('invalid_transition', 'File sharing requires a known, settled interim stream.');
+      }
+      next.stream = {
+        state: 'fallback',
+        priorStreamMessageTs: current.stream.messageTs,
+        acknowledgedByteLength: 0,
+        slackAppendCursor: 0,
+        presentationOutcome: 'terminal_only',
+      };
+      next.repairRequired = true;
+      return next;
+    }
+    case 'file_share_stream_retired':
+      requireState(current, 'fallback');
+      if (current.stream.priorStreamMessageTs !== mutation.messageTs) {
+        throw stateError('coordinate_conflict', 'File share cleanup does not match the saved stream.');
+      }
+      validateSlackTimestamp(mutation.messageTs, 'Retired Slack stream coordinate');
+      delete next.stream.priorStreamMessageTs;
+      return next;
     case 'mark_artifact_delivered':
       if (current.stream.state !== 'finalizing' && current.stream.state !== 'fallback') {
         throw stateError('invalid_transition', 'Only a finalizing or fallback artifact can deliver.');
+      }
+      if (current.stream.priorStreamMessageTs) {
+        throw stateError('invalid_transition', 'Interim stream cleanup must finish before file delivery.');
       }
       if (mutation.messageTs !== undefined) {
         if (current.stream.state !== 'fallback' || current.stream.messageTs) {
@@ -1995,6 +2045,9 @@ function applyMutation(
       requireV3(next);
       if (current.terminalDelivery.state !== 'none') {
         throw stateError('terminal_rewrite', 'Terminal delivery intent is already frozen.');
+      }
+      if (current.stream.priorStreamMessageTs) {
+        throw stateError('invalid_transition', 'Interim stream cleanup must finish before terminal delivery.');
       }
       validateId(mutation.operationId, 'Terminal delivery operation id');
       next.terminalDelivery = {
@@ -2546,6 +2599,9 @@ function decodePresentation(row: PresentationRow): SlackRunPresentation {
     !isPresentationTelemetry(presentation.telemetry)
   ) {
     throw stateError('invalid_input', 'Stored presentation columns do not match payload.');
+  }
+  if (presentation.stream.priorStreamMessageTs !== undefined) {
+    validateSlackTimestamp(presentation.stream.priorStreamMessageTs, 'Retired Slack stream coordinate');
   }
   if (
     (presentation.schemaVersion === 1 &&

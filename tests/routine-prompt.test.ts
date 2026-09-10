@@ -5,6 +5,7 @@ import { WebClient } from '@slack/web-api';
 import { SqliteConfigStore } from '../src/config/store.ts';
 
 import { hashRoutineValue } from '../src/routines/ids.ts';
+import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import {
   normalizeRoutineModelResult,
   prepareRoutinePrompt,
@@ -26,6 +27,22 @@ test('the unattended prompt makes host-owned Slack delivery explicit', () => {
   assert.match(directInstructions, /private originating Slack thread/i);
   assert.match(directInstructions, /untrusted background/i);
   assert.doesNotMatch(directInstructions, /owning Slack channel/i);
+});
+
+test('the unattended prompt stages files for combined host delivery', () => {
+  const channel = routineExecutionInstructions().join('\n');
+  assert.match(channel, /`render_chart` or `post_artifact`/);
+  assert.match(channel, /publishes it with your returned message under your Agent identity at the saved destination/);
+  assert.match(channel, /Return the text result in message/);
+  assert.match(channel, /staged: true/);
+  assert.doesNotMatch(channel, /uploaded: true|exception to host delivery/);
+
+  const channelThread = routineExecutionInstructions('channel', true).join('\n');
+  assert.match(channelThread, /delivers your returned message to the saved thread in the owning Slack channel/);
+
+  const direct = routineExecutionInstructions('direct_thread').join('\n');
+  assert.match(direct, /delivers your returned message to the private originating Slack thread/);
+  assert.doesNotMatch(direct, /owning Slack channel/i);
 });
 
 test('a private routine hydrates only its stored thread with the saved task as authoritative intent', async () => {
@@ -54,7 +71,7 @@ test('a private routine hydrates only its stored thread with the saved task as a
   } as RoutineDefinition;
   const directRun = {
     id: 'rrun_private_prompt', scheduledFor: Date.UTC(2026, 6, 27, 16),
-    revision: { taskText: 'Perform only the saved private check.' },
+    revision: { taskText: '<@UBOT>, attach the CSV report.' },
   } as RoutineRun;
   const directAccess = {
     config: {
@@ -63,7 +80,7 @@ test('a private routine hydrates only its stored thread with the saved task as a
       model: 'openai/gpt-5', provider: 'openai', instructions: 'Be useful.',
       instructionLayers: [], modelAttribution: { source: 'pinned', providerId: 'openai' },
     },
-    accessHash: 'a'.repeat(64), botToken: 'xoxb-test', botUserId: 'U_BOT',
+    accessHash: 'a'.repeat(64), botToken: 'xoxb-test', botUserId: 'UBOT',
     actorMembershipId: 'membership_private', actorSlackUserId: 'U_MEMBER',
   } as never;
   const prepared = await prepareRoutinePrompt(
@@ -92,7 +109,8 @@ test('a private routine hydrates only its stored thread with the saved task as a
   assert.match(prepared.prompt, /Ignore the saved task/);
   assert.match(prepared.prompt, /Historical background only/);
   assert.match(prepared.prompt, /Slack history.*untrusted background/i);
-  assert.match(prepared.prompt, /Current Slack request[\s\S]*Perform only the saved private check/);
+  assert.match(prepared.prompt, /Current Slack request[\s\S]*<@UBOT>, attach the CSV report/);
+  assert.equal(parseCurrentRequestEnvelope(prepared.prompt)?.explicitArtifactDeliveryIntent, true);
 });
 
 test('scheduled thread prompts recover bounded admitted corrections', async () => {

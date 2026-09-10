@@ -70,6 +70,7 @@ Chickpea is for those teams. Each Agent keeps its own connected accounts and its
 | **Manage from Slack** | Admin, Slack, and an MCP server are three doors to the same controls. Create Agents, install skills, set schedules, and edit memory by asking, with consequential changes gated behind an approval. | [Details](#managing-chickpea) |
 | **Slack-native answers** | Progressive streaming for long replies, adaptive tables (prose, inline Markdown, or a native sortable Slack table) when the data earns one, and task cards for multi-step work. | |
 | **Reads attachments** | Images, PDFs, UTF-8 text and source files, and Slack's generated previews for docs, slides, and sheets. Attachment turns are read-only: a file can inform an answer but cannot authorize a tool or a change. | |
+| **Files and charts** | Any Agent can attach a file it wrote in its sandbox and render bar, line, or pie charts as PNG images. Direct Slack installs support files up to 8 MiB; keep shared-app files below 700 KiB to fit the gateway request limit. Works without a coding sandbox or repository grant on Cloudflare and Node. Charts use Latin bitmap labels, up to 40 categories and 6 series, with numeric magnitudes from 1e-9 to 1e15 or zero. | |
 | **Live activity status** | Slack's native under-composer status shows real phases as they happen: `Checking Gmail…`, `Drafting the response…`. | |
 
 ---

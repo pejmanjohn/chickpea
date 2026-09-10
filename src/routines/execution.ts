@@ -75,6 +75,12 @@ import {
   RoutineModelResultSchema,
   type PreparedRoutinePrompt,
 } from './prompt.ts';
+import { ROUTINE_SCHEDULE_SIGNAL_TYPE } from './schedule-signal.ts';
+import {
+  parseSlackArtifactReceipts,
+  SLACK_ARTIFACT_RECEIPTS_DATA_NAME,
+  type SlackArtifactReceipt,
+} from '../slack/artifact-receipts.ts';
 import {
   resolveRoutineRuntimeAccess,
   RoutineRuntimeError,
@@ -617,6 +623,9 @@ function createEnvelope(input: {
     ].join('\n'),
     memoryEpoch: input.prompt.memoryEpoch,
     sandboxMode: input.sandboxMode,
+    // Files and charts follow the saved destination only. The prompt turn's
+    // thread is the synthetic due-time stamp when no thread was saved.
+    artifactThreadTs: input.routine.destination.threadTs ?? null,
     ...(input.access.effectiveConnections
       ? { effectiveConnections: input.access.effectiveConnections }
       : {}),
@@ -636,7 +645,7 @@ function createEnvelope(input: {
     idempotencyKey: input.attemptId,
     message: {
       kind: 'signal',
-      type: 'schedule',
+      type: ROUTINE_SCHEDULE_SIGNAL_TYPE,
       body: input.prompt.prompt,
       attributes: {
         routineId: input.routine.id,
@@ -649,6 +658,9 @@ function createEnvelope(input: {
         threadTs: input.routine.destination.threadTs ?? '',
         triggerSource: input.run.triggerSource,
         scheduledFor: String(input.run.scheduledFor),
+        // Mirrors the actor the prompt stamped into its envelope so admission
+        // can cross-check identity, not only the due time.
+        actorSlackUserId: input.access.actorSlackUserId ?? input.routine.creatorUserId,
       },
     },
     initialData,
@@ -788,6 +800,7 @@ async function finalizeSettlement(
             store: prepared.store, run: prepared.run, routine: prepared.routine,
             access: prepared.access, message: settlement.result.message,
             changeKeyHash: settlement.result.changeKeyHash,
+            ...(settlement.result.artifacts ? { artifacts: settlement.result.artifacts } : {}),
             ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
           }, prepared.access.client);
         } catch (error) {
@@ -967,7 +980,17 @@ function routineResult(reply: AgentReply, run: RoutineRun, routine: RoutineDefin
   if (!parsed.success) {
     throw new RoutineRuntimeError('result_invalid', 'The routine did not produce a valid structured result.');
   }
-  return normalizeRoutineModelResult(parsed.output, run, routine);
+  const normalized = normalizeRoutineModelResult(parsed.output, run, routine);
+  let artifacts: SlackArtifactReceipt[];
+  try {
+    artifacts = parseSlackArtifactReceipts(reply.data[SLACK_ARTIFACT_RECEIPTS_DATA_NAME]);
+  } catch {
+    throw new RoutineRuntimeError('result_invalid', 'The routine staged files without a valid receipt.');
+  }
+  return {
+    ...normalized,
+    ...(artifacts.length > 0 && normalized.status === 'succeeded' ? { artifacts } : {}),
+  };
 }
 
 export function routineUsageFromAgentReply(

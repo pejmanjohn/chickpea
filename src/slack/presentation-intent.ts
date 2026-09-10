@@ -30,7 +30,11 @@ export function createSlackStreamAnswerTool() {
 export function slackPresentationIntentCapability(
   envelope: CurrentRequestEnvelope | undefined,
 ) {
-  if (!currentRequestOffersProgressiveStreaming(envelope)) return undefined;
+  // A request that admits files publishes text and files in one completion
+  // call, which Slack cannot stream. Never offer the declaration for it.
+  if (!currentRequestOffersProgressiveStreaming(envelope) || envelope?.explicitArtifactDeliveryIntent) {
+    return undefined;
+  }
   return {
     instruction: SLACK_STREAM_ANSWER_INSTRUCTION,
     tool: createSlackStreamAnswerTool(),

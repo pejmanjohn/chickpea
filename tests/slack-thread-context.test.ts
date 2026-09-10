@@ -80,6 +80,25 @@ function humanMsg(n: number, ts: string) {
   return { user: 'U_HUMAN', type: 'message', text: `msg ${n}`, ts };
 }
 
+test('artifact admission uses the resolved recipient while preserving the original request', () => {
+  const artifactAddress = { botUserId: 'UBOT', agentUserGroupId: 'S123456', agentHandle: 'reports' };
+  for (const [text, allowed] of [
+    ['<!subteam^S123456|reports>, please attach the CSV file', true],
+    ['@reports: create a chart image', true],
+    ['<@UALICE> attach the CSV file', false],
+    ['<!subteam^SOTHER|reports> attach the CSV file', false],
+    ['@reports, do not attach the CSV file', false],
+  ] as const) {
+    const turn = threadTurn({ text });
+    const context = currentMessageOnlyContext(turn);
+    const prompt = assembleSlackPrompt(turn, context, { artifactAddress });
+    const envelope = parseCurrentRequestEnvelope(prompt);
+    assert.equal(envelope?.explicitArtifactDeliveryIntent, allowed, text);
+    assert.ok(prompt.includes(text));
+    assert.equal(parseCurrentRequestEnvelope(assembleSlackPrompt(turn, context))?.explicitArtifactDeliveryIntent, false);
+  }
+});
+
 test('candidate classification recovers a retained correction beyond its two-page scan', async () => {
   const store = new SqliteConfigStore(':memory:');
   const turn = threadTurn({ messageTs: '1100.000000', text: 'Please use the correction for the report.' });

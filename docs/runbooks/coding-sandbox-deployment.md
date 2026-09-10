@@ -11,6 +11,11 @@ work that needs a real checkout, package installation, tests, or a development
 server. Node installations continue to use the standard in-memory bash sandbox
 and never receive host filesystem or host git/SSH access.
 
+File attachments and chart images do not depend on this tier. Every sandbox
+mode mounts `post_artifact` (attach a file the Agent wrote) and `render_chart`
+(render a bar, line, or pie chart PNG in the runtime). The container adds real
+repository checkouts, package installation, and the Playwright screenshot recipe.
+
 ## Before installing
 
 - The Cloudflare account must be on **Workers Paid**. Container application and

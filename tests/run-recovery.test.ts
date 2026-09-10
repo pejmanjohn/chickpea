@@ -27,6 +27,7 @@ import { prepareSubmitRun, type SubmitRunInput } from '../src/work/submit-run.ts
 import { WorkStoreLogic } from '../src/work/store.ts';
 import type { WorkStore } from '../src/work/types.ts';
 import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-observability.ts';
+import { ARTIFACT_UNDELIVERED_NOTE, rejectedFileFallbackPayload } from '../src/slack/web-client-presenter.ts';
 
 const NOW = 1_940_000_000_000;
 
@@ -1334,3 +1335,212 @@ test(`fallback recovery respects ${certainty} terminal receipt`, async () => {
 
 
 }
+
+const recoveredFileIds = ['F1234567', 'F2345678'];
+
+async function stagedFileRecoveryFixture(input: {
+  certainty: 'pending' | 'unknown';
+  workOutcome?: 'failed' | 'unknown';
+  failureCode?: string;
+}) {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  const now = () => ++clock;
+  const work = new WorkStoreLogic(db, { now });
+  const turns = new TurnJobStoreLogic(db, now);
+  const presentations = new SlackRunPresentationStoreLogic(db, now);
+  const admission = work.admitShadowRun(prepareSubmitRun(submission('file-recovery')));
+  const first = work.claimNextInteractiveRun({
+    ownerId: 'first_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: now(),
+  })!;
+  const lifecycle = lifecycleFor(work, admission.run.id, first.fencingToken, now);
+  await lifecycle.prepareExecution('Prepared input');
+  await lifecycle.markInvoked();
+  await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+  const fallback = {
+    channel: 'C_canary', thread_ts: '100.001', username: 'Canary',
+    text: `Persisted answer\n\n${ARTIFACT_UNDELIVERED_NOTE}`,
+  };
+  const rendered = JSON.stringify({
+    method: 'slack_files_complete',
+    completion: {
+      files: recoveredFileIds.map((id) => ({ id })), channel_id: 'C_canary', thread_ts: '100.001',
+      username: 'Canary', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'Persisted answer' } }],
+    },
+    share: { fileIds: recoveredFileIds, channel: 'C_canary', threadTs: '100.001' },
+    rejectedFallback: fallback,
+  });
+  const originalAttemptId = await lifecycle.beforeDelivery({
+    method: 'slack_files_complete', approvedOutput: 'Persisted answer', renderedPayload: rendered,
+  });
+  if (input.workOutcome) await lifecycle.afterDelivery({
+    attemptId: originalAttemptId, outcome: input.workOutcome,
+    safeFailureCode: input.failureCode ?? `slack_files_complete_${input.workOutcome}`,
+  });
+  let presentation = presentations.create({
+    schemaVersion: 3, runId: admission.run.id, turnJobId: 'turn_file-recovery',
+    bindingId: admission.binding.id, workBindingGeneration: admission.binding.generation,
+    runFencingToken: first.fencingToken, owner: { kind: 'chickpea' }, sessionGeneration: 1,
+    currentActivity: {
+      kind: 'preparing', action: 'Preparing', object: 'your request', generation: 1, sequence: 1,
+      operation: { operationId: 'activity_file_recovery', certainty: 'pending' },
+    },
+    root: {
+      workspaceId: 'T_canary', channelId: 'C_canary', threadTs: '100.001', requesterUserId: 'U_member',
+    },
+  });
+  for (const mutation of [
+    { kind: 'select_activity_projection', surface: 'message' } as const,
+    { kind: 'record_activity_receipt', operationId: 'activity_file_recovery', certainty: 'acknowledged', messageTs: '100.003' } as const,
+    { kind: 'mark_file_share_intent' } as const,
+    { kind: 'record_terminal_delivery_intent', operationId: 'terminal_file_recovery', result: 'answer' } as const,
+    ...(input.certainty === 'unknown' ? [{
+      kind: 'record_terminal_delivery_receipt', operationId: 'terminal_file_recovery', certainty: 'unknown',
+    } as const] : []),
+  ]) presentation = transitionPresentation(presentations, presentation, mutation);
+  turns.enqueue(turnJob(admission.run.id, 'file-recovery'));
+  if (input.workOutcome !== 'unknown') work.releaseRunLease({
+    runId: admission.run.id, ownerId: first.leaseOwner, fencingToken: first.fencingToken,
+    outcome: 'requeue', reasonCode: 'interrupted', releasedAt: now(),
+  });
+  const claim = () => work.claimNextInteractiveRun({
+    ownerId: 'recovery_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: now(),
+  });
+  return { db, work, turns, presentations, presentation, admission, originalAttemptId, rendered, fallback, now, claim };
+}
+
+for (const certainty of ['pending', 'unknown'] as const) {
+  test(`pending file completion reconciles every exact share with ${certainty} terminal certainty`, async () => {
+    const fixture = await stagedFileRecoveryFixture({ certainty });
+    const { db, work, turns, presentations, admission, originalAttemptId, now } = fixture;
+    try {
+      const reads: string[] = [];
+      const deletes: string[] = [];
+      const publicReplies: unknown[] = [];
+      const handler = createLedgerSlackRunHandler({
+        work: work as unknown as WorkStore, turns, now,
+        presentationState: presentationPort(presentations, turns),
+        executeTurn: async () => { assert.fail('File recovery must not run the Agent.'); },
+        onPublicMessageDelivered: async (_turn, _assignment, delivery) => { publicReplies.push(delivery); },
+        client: {
+          apiCall: async () => ({ ok: true }),
+          files: {
+            completeUploadExternal: async () => { assert.fail('Never complete a persisted file again.'); },
+            info: async ({ file }: { file: string }) => {
+              reads.push(file);
+              return { ok: true, file: { id: file, shares: { public: {
+                C_canary: [{ ts: '100.004', thread_ts: '100.001' }],
+              } } } };
+            },
+          },
+          chat: {
+            postMessage: async () => { assert.fail('Readback must not post another message.'); },
+            delete: async ({ ts }: { ts: string }) => { deletes.push(ts); return { ok: true }; },
+          },
+        } as unknown as WebClient,
+      });
+      assert.deepEqual(await handler(fixture.claim()!), { kind: 'completed' });
+      assert.deepEqual(reads, recoveredFileIds);
+      assert.equal(work.getRun(admission.run.id)?.deliveryAttemptId, originalAttemptId);
+      assert.equal(work.getRun(admission.run.id)?.deliveryRef, 'slack:C_canary:100.004');
+      assert.equal(work.getRun(admission.run.id)?.status, 'settled');
+      assert.deepEqual(publicReplies, [{ messageTs: '100.004', text: 'Persisted answer' }]);
+      assert.deepEqual(deletes, ['100.003'], 'Only the activity message is retired.');
+      const final = presentations.get(admission.run.id)!;
+      assert.equal(final.stream.state, 'finalized');
+      assert.equal(final.stream.messageTs, '100.004');
+      assert.equal(final.schemaVersion === 3 && final.terminalDelivery.state === 'intended' &&
+        final.terminalDelivery.operation.certainty, 'acknowledged');
+    } finally { db.close(); }
+  });
+}
+
+for (const missing of ['all', 'one', 'different_thread', 'different_message'] as const) {
+  test(`file reconciliation stays unknown with ${missing} shares and never posts`, async () => {
+    const fixture = await stagedFileRecoveryFixture({ certainty: 'unknown' });
+    const { db, work, turns, presentations, admission, originalAttemptId, now } = fixture;
+    try {
+      const handler = createLedgerSlackRunHandler({
+        work: work as unknown as WorkStore, turns, now,
+        presentationState: presentationPort(presentations, turns),
+        client: {
+          apiCall: async () => ({ ok: true }),
+          files: {
+            completeUploadExternal: async () => { assert.fail('Completion must not repeat.'); },
+            info: async ({ file }: { file: string }) => ({ ok: true, file: { id: file, shares: { public: {
+              C_canary: missing === 'all' || missing === 'one' && file === recoveredFileIds[1] ? [] : [{
+                ts: missing === 'different_message' && file === recoveredFileIds[1] ? '100.005' : '100.004',
+                thread_ts: missing === 'different_thread' ? '100.009' : '100.001',
+              }],
+            } } } }),
+          },
+          chat: {
+            postMessage: async () => { assert.fail('Ambiguous file completion cannot fall back.'); },
+            delete: async () => ({ ok: true }),
+          },
+        } as unknown as WebClient,
+      });
+      assert.deepEqual(await handler(fixture.claim()!), { kind: 'completed' });
+      assert.equal(work.getRun(admission.run.id)?.deliveryAttemptId, originalAttemptId);
+      assert.equal(work.getRun(admission.run.id)?.deliveryStatus, 'unknown');
+      assert.equal(work.getRun(admission.run.id)?.status, 'recovery_required');
+      assert.equal(fixture.claim(), undefined);
+    } finally { db.close(); }
+  });
+}
+
+for (const certainty of ['pending', 'unknown'] as const) {
+for (const crashAt of ['after_rejection', 'after_fallback_render', 'after_terminal_intent'] as const) {
+  test(`confirmed file rejection resumes its exact text fallback ${crashAt} with ${certainty} terminal`, async () => {
+    const fixture = await stagedFileRecoveryFixture({ certainty, workOutcome: 'failed' });
+    const { db, work, turns, presentations, admission, now, rendered, fallback } = fixture;
+    try {
+      if (crashAt !== 'after_rejection') {
+        let presentation = transitionPresentation(presentations, fixture.presentation, {
+          kind: 'record_terminal_delivery_receipt', operationId: 'terminal_file_recovery', certainty: 'failed',
+        });
+        const run = work.getRun(admission.run.id)!;
+        work.recordRunResponse({
+          runId: run.id, fencingToken: run.fencingToken, sensitivity: 'public',
+          approvedOutput: 'Persisted answer', renderedPayload: rejectedFileFallbackPayload(rendered), recordedAt: now(),
+        });
+        if (crashAt === 'after_terminal_intent') presentation = transitionPresentation(presentations, presentation, {
+          kind: 'retry_terminal_delivery', operationId: 'terminal_file_recovery_retry',
+        });
+      }
+      const sent: unknown[] = [];
+      const handler = createLedgerSlackRunHandler({
+        work: work as unknown as WorkStore, turns, now,
+        presentationState: presentationPort(presentations, turns),
+        client: {
+          apiCall: async () => ({ ok: true }),
+          files: {
+            completeUploadExternal: async () => { assert.fail('Rejected completion must not repeat.'); },
+            info: async () => { assert.fail('A durable rejection already proves the fallback is owed.'); },
+          },
+          chat: {
+            postMessage: async (payload: unknown) => { sent.push(payload); return { ok: true, channel: 'C_canary', ts: '100.004' }; },
+            delete: async () => ({ ok: true }),
+          },
+        } as unknown as WebClient,
+      });
+      assert.deepEqual(await handler(fixture.claim()!), { kind: 'completed' });
+      assert.deepEqual(sent, [fallback]);
+      const run = work.getRun(admission.run.id)!;
+      assert.equal(run.deliveryMethod, 'slack_chat_post_message');
+      assert.equal(run.deliveryStatus, 'delivered');
+      assert.equal(work.getContent(run.policyApprovedOutputRef!)?.body, 'Persisted answer');
+      assert.equal(work.getContent(run.renderedPayloadRef!)?.body, rejectedFileFallbackPayload(rendered));
+      assert.equal(presentations.get(admission.run.id)?.stream.state, 'finalized');
+    } finally { db.close(); }
+  });
+}
+}
+
+test('a durable unknown file completion remains fenced outside automatic claims', async () => {
+  const fixture = await stagedFileRecoveryFixture({ certainty: 'unknown', workOutcome: 'unknown' });
+  try {
+    assert.equal(fixture.claim(), undefined);
+    assert.equal(fixture.work.getRun(fixture.admission.run.id)?.status, 'recovery_required');
+  } finally { fixture.db.close(); }
+});

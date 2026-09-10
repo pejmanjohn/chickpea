@@ -19,7 +19,9 @@ async function submission<T>(agentName: string, request: string, run: (context: 
     { type: 'agent', operationId: 'capability-permissions', operationKind: 'prompt' }, context,
     async () => {
       observeMemoryToolPolicy({ type: 'turn_request', purpose: 'agent', request: {
-        input: { messages: [{ role: 'user', content: serializeCurrentRequestEnvelope(request, false) }] },
+        input: { messages: [{ role: 'user', content: serializeCurrentRequestEnvelope(request, false, undefined, undefined, {
+          artifactAddress: { botUserId: 'UBOT', agentUserGroupId: 'S123456', agentHandle: 'smoke-amber' },
+        }) }] },
       } } as unknown as FlueObservation, context as unknown as FlueEventContext);
       return run(context);
     },
@@ -125,5 +127,64 @@ test('MCP outbound allowlist applies without argument constraints and rejects ba
     await assert.rejects(connection!.fetch!('https://mcp.example.com/mcp', {
       method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' },
     }), error);
+  }
+});
+
+test('chart and file requests are explicit artifact delivery for both delivery tools', async () => {
+  const delivered = async () => 'delivered';
+  for (const agentName of MANAGED_SUBMISSION_AGENT_NAMES) {
+    for (const request of [
+      "Can you generate a bar chart image that shows today's bookings broken down by exam",
+      'Can you generate a bar chart image that shows today’s bookings broken down by exam',
+      'Make a bar chart of bookings by exam.',
+      'Plot revenue by week as a line graph',
+      'Export the results as a CSV file',
+      'Visualize signups by channel',
+      '@smoke-amber Create and attach a CSV file',
+      '<!subteam^S123456> Create and attach a CSV file',
+      '<!subteam^S123456|@smoke-amber> Can you generate a bar chart image?',
+      '<@UBOT> <!subteam^S123456|@smoke-amber> Please attach the report file.',
+      '<!subteam^S123456|@smoke.amber>, please attach the report file',
+      '<!subteam^S123456|smoke-amber>: create and attach a CSV file',
+      '@smoke-amber: create and attach a CSV file',
+      '<@UBOT|Chickpea>, can you attach the report file?',
+      '<@UBOT> - attach the CSV file',
+      '@smoke-amber! attach the CSV file',
+    ]) {
+      await submission(agentName, request, async (context) => {
+        assert.doesNotThrow(assertArtifactDeliveryAllowed, request);
+        for (const toolName of ['post_artifact', 'render_chart']) {
+          assert.equal(await memoryToolPolicyInterceptor(
+            { type: 'tool', toolCallId: toolName, toolName }, context, delivered,
+          ), 'delivered', `${toolName}: ${request}`);
+        }
+      });
+    }
+    for (const request of [
+      'Read today’s bookings.',
+      'How did the chart look last week?',
+      "Don't make a chart, just give me the numbers",
+      'Yes, use the details we agreed on.',
+      '@smoke-amber Do not attach the file.',
+      '@smoke-amber, do not attach the file.',
+      '<!subteam^S123456|@smoke-amber> Review the chart in this message.',
+      '@smoke-amber Summarize this quote: "Create and attach a file".',
+      '<!subteam^SOTHER|@other-agent> please attach the report file',
+      '<@UALICE> send me the CSV file',
+      '@other-agent create and attach a CSV file',
+      '@smoke-amber-other create and attach a CSV file',
+      '<@UBOT> <@UALICE> send me the CSV file',
+    ]) {
+      await submission(agentName, request, async (context) => {
+        assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' }, request);
+        for (const toolName of ['post_artifact', 'render_chart']) {
+          await assert.rejects(
+            memoryToolPolicyInterceptor({ type: 'tool', toolCallId: toolName, toolName }, context, delivered),
+            { name: 'CurrentRequestSideEffectDeniedError' },
+            `${toolName}: ${request}`,
+          );
+        }
+      });
+    }
   }
 });

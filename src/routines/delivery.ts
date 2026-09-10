@@ -7,6 +7,7 @@ import {
   buildSlackAdminUrl,
   canonicalSlackReplyText,
   escapeSlackControlCharacters,
+  renderSlackArtifactMessage,
   renderSlackMessage,
   type RenderedSlackMessage,
   type SlackReplyFooter,
@@ -26,6 +27,13 @@ import type {
 } from './types.ts';
 import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
+import {
+  isCompletedSlackArtifactReceipt,
+  selectDeliverableArtifacts,
+  type SlackArtifactReceipt,
+} from '../slack/artifact-receipts.ts';
+import type { SlackFileTransport } from '../slack/file-transport.ts';
+import { ARTIFACT_UNDELIVERED_NOTE } from '../slack/web-client-presenter.ts';
 
 const ROUTINE_SLACK_TIMEOUT_MS = 10_000;
 const DEFINITIVE_DIRECT_THREAD_ERRORS = new Set([
@@ -113,7 +121,11 @@ export async function drainRoutinePauseNotices(
   return { scanned: pending.length, settled };
 }
 
-/** One at-most-once top-level Slack delivery. Ambiguous transport failures are never retried. */
+/**
+ * One at-most-once Slack delivery of a routine result. Ambiguous transport
+ * failures are never retried. Privately completed files for this destination
+ * appear through labeled permalinks in the same customized result message.
+ */
 export async function deliverRoutineResult(
   input: {
     store: RoutineStore;
@@ -122,20 +134,37 @@ export async function deliverRoutineResult(
     access: RoutineRuntimeAccess;
     message: string;
     changeKeyHash: string | null;
+    artifacts?: readonly SlackArtifactReceipt[];
     workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
     sleep?: (delayMs: number) => Promise<void>;
+    fileTransport?: SlackFileTransport;
   },
   client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
 ): Promise<RoutineDeliveryReceipt> {
-  return deliverRoutineSlackMessage(
-    { ...input, approvedOutput: canonicalSlackReplyText(input.message, 'markdown') },
-    renderRoutineDelivery(
-      input.message,
-      routineReplyFooter(input.access, input.routine),
-    ),
-    client,
-  );
+  const files = selectDeliverableArtifacts(input.artifacts, {
+    workspaceId: input.routine.workspaceId,
+    agentId: input.access.config.agentId,
+    channelId: input.routine.channelId,
+    threadTs: input.routine.destination.threadTs,
+  });
+  if ((input.artifacts?.length ?? 0) > files.length) {
+    throw new RoutineRuntimeError('result_invalid', 'Staged files do not match the saved destination.');
+  }
+  const completedFiles = files.filter(isCompletedSlackArtifactReceipt);
+  const message = completedFiles.length < files.length
+    ? `${ARTIFACT_UNDELIVERED_NOTE}\n\n${input.message}`
+    : input.message;
+  const footer = routineReplyFooter(input.access, input.routine);
+  const rendered = completedFiles.length > 0
+    ? renderSlackArtifactMessage(message, 'markdown', {
+      ...footer,
+      includeConfigureLink: false,
+      scheduled: true,
+    }, completedFiles)
+    : renderRoutineDelivery(message, footer);
+  const approvedOutput = canonicalSlackReplyText(input.message, 'markdown');
+  return deliverRoutineSlackMessage({ ...input, approvedOutput, unfurlArtifacts: completedFiles.length > 0 }, rendered, client);
 }
 
 export async function deliverRoutineFailureNotice(
@@ -188,25 +217,37 @@ export async function deliverRoutineFailureNotice(
   );
 }
 
+interface ClaimedRoutineMessageInput {
+  store: RoutineStore;
+  run: RoutineRun;
+  routine: RoutineDefinition;
+  access: RoutineRuntimeAccess;
+  changeKeyHash: string | null;
+  approvedOutput: string;
+  unfurlArtifacts?: boolean;
+  workLifecycle?: ShadowWorkLifecycle;
+  now?: () => number;
+  sleep?: (delayMs: number) => Promise<void>;
+}
+
 async function deliverRoutineSlackMessage(
-  input: {
-    store: RoutineStore;
-    run: RoutineRun;
-    routine: RoutineDefinition;
-    access: RoutineRuntimeAccess;
-    changeKeyHash: string | null;
-    approvedOutput: string;
-    workLifecycle?: ShadowWorkLifecycle;
-    now?: () => number;
-    sleep?: (delayMs: number) => Promise<void>;
-  },
+  input: ClaimedRoutineMessageInput,
   message: string | RenderedSlackMessage,
   client: WebClient,
 ): Promise<RoutineDeliveryReceipt> {
   const now = input.now ?? Date.now;
+  const claimedAt = await claimRoutineDelivery(input.store, input.run.id, now);
+  return postClaimedRoutineMessage(input, message, client, claimedAt);
+}
+
+async function claimRoutineDelivery(
+  store: RoutineStore,
+  occurrenceId: string,
+  now: () => number,
+): Promise<number> {
   const claimedAt = now();
-  const claimed = await input.store.claimDelivery({
-    occurrenceId: input.run.id,
+  const claimed = await store.claimDelivery({
+    occurrenceId,
     at: claimedAt,
     leaseUntil: claimedAt + ROUTINE_LIMITS.deliveryLeaseMs,
   });
@@ -216,7 +257,16 @@ async function deliverRoutineSlackMessage(
       'The routine result already has a delivery attempt that requires inspection.',
     );
   }
+  return claimedAt;
+}
 
+async function postClaimedRoutineMessage(
+  input: ClaimedRoutineMessageInput,
+  message: string | RenderedSlackMessage,
+  client: WebClient,
+  claimedAt: number,
+): Promise<RoutineDeliveryReceipt> {
+  const now = input.now ?? Date.now;
   const agentAvatarUrl = agentAvatarUrlForPresentation(
     input.access.config.agent,
     input.access.publicUrl,
@@ -231,8 +281,8 @@ async function deliverRoutineSlackMessage(
     ...(agentAvatarUrl
       ? { icon_url: agentAvatarUrl }
       : {}),
-    unfurl_links: false,
-    unfurl_media: false,
+    unfurl_links: input.unfurlArtifacts === true,
+    unfurl_media: input.unfurlArtifacts === true,
   };
   const workAttemptId = await input.workLifecycle?.beforeDelivery({
     method: 'slack_chat_post_message',
@@ -291,6 +341,16 @@ async function deliverRoutineSlackMessage(
       'Slack delivery returned an incomplete receipt; Chickpea did not retry it.',
     );
   }
+  return recordRoutineDelivered(input, workAttemptId, channelId, messageTs, now);
+}
+
+async function recordRoutineDelivered(
+  input: Pick<ClaimedRoutineMessageInput, 'store' | 'run' | 'changeKeyHash' | 'workLifecycle'>,
+  workAttemptId: string | undefined,
+  channelId: string,
+  messageTs: string,
+  now: () => number,
+): Promise<RoutineDeliveryReceipt> {
   try {
     await input.store.recordDelivery({
       occurrenceId: input.run.id,

@@ -1,3 +1,4 @@
+import type { SlackArtifactReceipt } from '../slack/artifact-receipts.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import type { ProviderAuthRoute } from '../config/runtime-model.ts';
 import type { SourceVisibility } from '../work/types.ts';
@@ -388,6 +389,8 @@ interface RoutineScheduleSignalV2 {
     threadTs: string;
     triggerSource: RoutineTriggerSource;
     scheduledFor: string;
+    /** The Slack member the saved task runs as; absent on envelopes queued before it was stamped. */
+    actorSlackUserId?: string;
   };
 }
 
@@ -429,6 +432,8 @@ interface RoutineAgentCompletedResultV1 {
   suppressedAsNoOp: boolean;
   toolCallCount: number;
   usage: RoutineAgentUsageV1;
+  /** Host-staged files to publish with the result; never model-authored. */
+  artifacts?: SlackArtifactReceipt[];
 }
 
 export type RoutineAgentSettlementV1 =

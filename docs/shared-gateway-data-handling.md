@@ -8,6 +8,12 @@ This durable-admission and 48-hour deduplication contract currently applies to C
 
 ## What is stored
 
+Outbound file uploads pass through the gateway in memory as base64 inside a
+signed JSON request. Its 1 MiB request limit includes that encoding and metadata,
+so keep individual files below 700 KiB for this transport. Chickpea rejects an
+oversized encoded request before sending it; using your own Slack app retains
+the 8 MiB artifact limit. Built-in chart PNGs are usually a few kilobytes.
+
 | Location | Data | Retention |
 |---|---|---|
 | Shared gateway request handling | The Slack request body in transient process memory while the signature is checked, the event is routed, and the deployment receipt is awaited. | Not written to Durable Object storage, KV, R2, logs, or analytics. A live delivery receipt times out after 2 seconds. |

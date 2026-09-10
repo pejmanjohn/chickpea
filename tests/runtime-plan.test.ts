@@ -338,6 +338,7 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
   assert.deepEqual(plan.artifactDestination, {
     kind: 'slack_conversation',
     channelId: 'C_RUNTIME',
+    threadTs: '1783000000.000100',
   });
   assert.deepEqual(plan.configurationRevision, { agent: 1 });
   assert.match(plan.harnessRevision, /^[a-f0-9]{64}$/);
@@ -785,3 +786,86 @@ function canonicalJson(value: unknown): string {
   }
   return JSON.stringify(value);
 }
+
+test('bash-mode plans mount file and chart delivery like the container mode', () => {
+  const context = buildRuntimePlanActivityContext(compile({ sandboxMode: 'bash' }));
+  const descriptors = new Map(
+    context.toolDescriptors?.map(({ toolName, descriptor }) => [toolName, descriptor]),
+  );
+  assert.equal(descriptors.get('post_artifact')?.target, 'artifact');
+  assert.equal(descriptors.get('render_chart')?.target, 'artifact');
+  assert.ok((context.enabledFamilies ?? []).includes('artifact'));
+});
+
+test('file delivery follows the real turn thread by default and only a trusted override otherwise', () => {
+  assert.equal(compile().artifactDestination.threadTs, '1783000000.000100');
+
+  const topLevel = compile({ artifactThreadTs: null });
+  assert.deepEqual(topLevel.artifactDestination, { kind: 'slack_conversation', channelId: 'C_RUNTIME' });
+  assert.equal('threadTs' in topLevel.artifactDestination, false);
+
+  const saved = compile({ artifactThreadTs: '1790000000.000500' });
+  assert.equal(saved.artifactDestination.threadTs, '1790000000.000500');
+
+  // A direct-message session keys its conversation by `dm`, which Slack never
+  // accepts as thread_ts; files still follow the message's real thread.
+  const dm = compile({
+    turn: turn({
+      channelId: 'D_RUNTIME',
+      threadTs: '1783000000.000300',
+      sessionThreadTs: 'dm',
+      source: 'dm_message',
+      channelType: 'im',
+      contextMode: 'dm_history',
+    }),
+    assignment: assignment({ channelId: 'D_RUNTIME' }),
+  });
+  assert.equal(dm.conversation.threadTs, 'dm');
+  assert.equal(dm.artifactDestination.threadTs, '1783000000.000300');
+
+  // The thread is delivery metadata, not harness identity: a queued plan from
+  // before the field existed still matches its harness revision.
+  assert.equal(topLevel.harnessRevision, compile().harnessRevision);
+  assert.equal(saved.harnessRevision, compile().harnessRevision);
+});
+
+test('an artifact thread must be a Slack timestamp', () => {
+  assert.throws(() => compile({ artifactThreadTs: 'dm' }), /artifactDestination\.threadTs is invalid/);
+  const plan = JSON.parse(JSON.stringify(compile())) as { artifactDestination: { threadTs: unknown } };
+  plan.artifactDestination.threadTs = 'not-a-timestamp';
+  assert.throws(() => parseRuntimePlanV2(plan), /artifactDestination\.threadTs is invalid/);
+  plan.artifactDestination.threadTs = 7;
+  assert.throws(() => parseRuntimePlanV2(plan), /artifactDestination\.threadTs/);
+});
+
+test('plans persisted before artifact threads existed fall back safely', () => {
+  const legacy = JSON.parse(JSON.stringify(compile())) as {
+    conversation: { threadTs: string };
+    artifactDestination: { threadTs?: string };
+  };
+  delete legacy.artifactDestination.threadTs;
+
+  // Interactive records reuse their real conversation thread.
+  assert.equal(parseRuntimePlanV2(legacy).artifactDestination.threadTs, '1783000000.000100');
+  // A caller that knows the conversation stamp may be synthetic opts out.
+  assert.equal(
+    parseRuntimePlanV2(legacy, { legacyArtifactThread: 'none' }).artifactDestination.threadTs,
+    undefined,
+  );
+  // A `dm` session key is never promoted to a thread.
+  legacy.conversation.threadTs = 'dm';
+  assert.equal(parseRuntimePlanV2(legacy).artifactDestination.threadTs, undefined);
+});
+
+test('hook-mounted delivery tools bind the frozen artifact destination, not the conversation key', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) =>
+    readFile(new URL('../src/agents/slack-thread.ts', import.meta.url), 'utf8')
+  );
+  const start = source.indexOf('function createRuntimePlanArtifactTools(');
+  assert.ok(start > 0);
+  const body = source.slice(start, source.indexOf('\n}\n', start));
+  assert.match(body, /channelId: plan\.artifactDestination\.channelId/);
+  assert.match(body, /channel: destination\.channelId/);
+  assert.match(body, /plan\.artifactDestination\.threadTs \? \{ threadTs: plan\.artifactDestination\.threadTs \} : \{\}/);
+  assert.doesNotMatch(body, /threadTs: plan\.conversation\.threadTs/);
+});

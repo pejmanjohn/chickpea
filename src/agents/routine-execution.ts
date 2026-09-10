@@ -2,9 +2,11 @@
 
 import {
   useDataWriter,
+  useDelivery,
   useInitialData,
   useInstruction,
   useTool,
+  type DeliveredMessage,
 } from '@flue/runtime';
 import * as v from 'valibot';
 
@@ -42,7 +44,9 @@ export function parseRoutineExecutionInitialData(value: unknown): RoutineExecuti
   }), value);
   if (!parsed.success) throw new Error('Routine execution creation data is invalid.');
   return {
-    runtimePlan: parseRuntimePlanV2(parsed.output.runtimePlan),
+    // Queued envelopes from before artifact threads were frozen carry a
+    // synthetic due-time conversation stamp; never let it become a thread.
+    runtimePlan: parseRuntimePlanV2(parsed.output.runtimePlan, { legacyArtifactThread: 'none' }),
     requestedModel: parsed.output.requestedModel,
     ...(parsed.output.connectorUsageCorrelation
       ? {
@@ -59,12 +63,17 @@ export function parseRoutineExecutionInitialData(value: unknown): RoutineExecuti
 
 export function ChickpeaRoutineExecution({ id }: { id: string }) {
   const data = parseRoutineExecutionInitialData(useInitialData());
-  useRuntimePlanAgent(data.runtimePlan, id, {
+  const artifactPlan = routineArtifactPlan(data.runtimePlan, useDelivery());
+  useRuntimePlanAgent(artifactPlan ?? data.runtimePlan, id, {
+    artifactToolsDisabled: artifactPlan === undefined,
     sandboxConversationKey: runtimePlanSandboxConversationKey(data.runtimePlan, id),
     ...(data.connectorUsageCorrelation
       ? { connectorUsageCorrelation: data.connectorUsageCorrelation }
       : {}),
   });
+  if (!artifactPlan) {
+    useInstruction('This old queued occurrence has no verified file destination. Return its result as text; file delivery requires a newly scheduled occurrence.');
+  }
   useChickpeaResponseMetadata(data.requestedModel);
   useInstruction(
     'Finish by calling submit_routine_result exactly once. Ordinary assistant text and JSON are not a result.',
@@ -83,6 +92,34 @@ export function ChickpeaRoutineExecution({ id }: { id: string }) {
     },
   });
   return data.runtimePlan.instructions;
+}
+
+/** Recover the saved destination from the durable host signal, including old plans. */
+export function routineArtifactPlan(
+  plan: RuntimePlanV2,
+  delivery: DeliveredMessage,
+): RuntimePlanV2 | undefined {
+  // V1 envelopes were plain strings and carry no authoritative destination.
+  // Disable file tools for those occurrences instead of widening delivery.
+  if (delivery.kind !== 'signal' || delivery.type !== 'schedule') return undefined;
+  const attrs = delivery.attributes;
+  if (!attrs || attrs.workspaceId !== plan.conversation.workspaceId ||
+    attrs.conversationId !== plan.artifactDestination.channelId ||
+    attrs.ownerAgentId !== plan.agentId ||
+    !['channel', 'direct_thread'].includes(attrs.destinationKind ?? '') ||
+    typeof attrs.threadTs !== 'string' ||
+    (attrs.threadTs !== '' && !/^\d{1,20}\.\d{1,10}$/.test(attrs.threadTs)) ||
+    (attrs.destinationKind === 'direct_thread' && attrs.threadTs === '')) {
+    throw new Error('Routine file destination does not match its saved schedule signal.');
+  }
+  return {
+    ...plan,
+    artifactDestination: {
+      kind: 'slack_conversation',
+      channelId: plan.artifactDestination.channelId,
+      ...(attrs.threadTs ? { threadTs: attrs.threadTs } : {}),
+    },
+  };
 }
 
 // MUST stay a top-level string literal: the Flue build reads it statically to

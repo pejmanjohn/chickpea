@@ -334,6 +334,9 @@ export function toolActivityStatus(
   if (toolName === 'post_artifact') {
     return activityStatus('finishing', 'Sharing', 'a workspace artifact');
   }
+  if (toolName === 'render_chart') {
+    return activityStatus('finishing', 'Sharing', 'a chart');
+  }
   return activityStatus('running', 'Working with', 'a tool');
 }
 

@@ -19,10 +19,12 @@ import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type {
   RoutineDefinition,
   RoutineDefinitionContent,
+  RoutineDestination,
   RoutineRun,
 } from '../src/routines/types.ts';
 import {
   parseRoutineExecutionInitialData,
+  routineArtifactPlan,
   ROUTINE_RESULT_DATA_NAME,
 } from '../src/agents/routine-execution.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
@@ -181,6 +183,7 @@ async function admittedFixture(
   beforeOccurrence?: (routine: RoutineDefinition) => Promise<void>,
   sourceVisibility?: 'public' | 'private' | 'unknown',
   deadlineAt = NOW + 60_000,
+  destination?: RoutineDestination,
 ) {
   const definition: RoutineDefinitionContent = {
     name: 'Execution fixture', description: '', taskText: 'Inspect current state.',
@@ -197,6 +200,7 @@ async function admittedFixture(
     },
     idempotencyKey: `create:${suffix}`,
     ...(sourceVisibility ? { sourceVisibility } : {}),
+    ...(destination ? { destination } : {}),
   });
   await beforeOccurrence?.(saved);
   const run = await store.createOccurrence({
@@ -423,6 +427,9 @@ test('live access and a frozen app checkpoint precede Flue dispatch', async () =
         threadTs: '',
         triggerSource: 'schedule',
         scheduledFor: String(NOW),
+        // The member the saved task runs as, mirrored from the prompt envelope
+        // so admission can cross-check identity as well as the due time.
+        actorSlackUserId: 'U_MEMBER',
       },
     });
     assert.equal(completed?.flueAgentEnvelope?.schemaVersion, 2);
@@ -701,6 +708,20 @@ test('a definitive private-thread rejection pauses recurring work and posts one 
     const failed = await store.getRun(run.id);
     assert.equal(failed?.status, 'failed');
     assert.equal(failed?.failureClass, 'direct_thread_unavailable');
+    // Files from a private schedule follow the saved originating thread.
+    assert.equal(
+      parseRoutineExecutionInitialData(failed?.flueAgentEnvelope?.initialData)
+        .runtimePlan.artifactDestination.threadTs,
+      destination.threadTs,
+    );
+    const legacyDirect = JSON.parse(JSON.stringify(failed!.flueAgentEnvelope!.initialData));
+    delete legacyDirect.runtimePlan.artifactDestination.threadTs;
+    const directEnvelope = failed!.flueAgentEnvelope!;
+    assert.equal(directEnvelope.schemaVersion, 2);
+    if (directEnvelope.schemaVersion !== 2) throw new Error('expected schedule signal');
+    assert.equal(routineArtifactPlan(
+      parseRoutineExecutionInitialData(legacyDirect).runtimePlan, directEnvelope.message,
+    )?.artifactDestination.threadTs, destination.threadTs);
     assert.equal((await store.getRoutine(routine.id))?.state, 'paused');
     assert.equal((await store.getRoutine(routine.id))?.pausedReason, 'direct_thread_unavailable');
     assert.equal((await store.getRecoveryDelivery(run.id))?.status, 'accepted');
@@ -1400,5 +1421,72 @@ test('permanent Usage terminal failure after Slack delivery cannot post or repla
   } finally {
     usage.close();
     routines.close();
+  }
+});
+
+test('scheduled envelopes freeze file delivery to the saved destination, never the prompt turn', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    // A channel schedule without a saved thread posts files at the top level,
+    // even though its prompt turn carries a thread-shaped due-time stamp.
+    const channel = await admittedFixture(store, 'artifact_channel');
+    assert.equal(await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: channel.run.id, attempt: channel.attempt.attempt,
+    }, { ...dependencies(), handle: fakeHandle({}) }), 'completed');
+    const channelPlan = parseRoutineExecutionInitialData(
+      (await store.getRun(channel.run.id))?.flueAgentEnvelope?.initialData,
+    ).runtimePlan;
+    assert.equal(channelPlan.conversation.threadTs, '1785100000.000100');
+    assert.deepEqual(channelPlan.artifactDestination, {
+      kind: 'slack_conversation',
+      channelId: 'C_TEST',
+    });
+
+    // A channel schedule saved into a real thread attaches there.
+    const threaded = await admittedFixture(store, 'artifact_thread', undefined, undefined, undefined, {
+      kind: 'channel', channelId: 'C_TEST', threadTs: '1785000000.000900',
+    });
+    assert.equal(await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: threaded.run.id, attempt: threaded.attempt.attempt,
+    }, { ...dependencies(), handle: fakeHandle({}) }), 'completed');
+    const threadedEnvelope = (await store.getRun(threaded.run.id))?.flueAgentEnvelope;
+    const threadedPlan = parseRoutineExecutionInitialData(threadedEnvelope?.initialData).runtimePlan;
+    assert.equal(threadedPlan.artifactDestination.threadTs, '1785000000.000900');
+    assert.equal(threadedPlan.artifactDestination.channelId, 'C_TEST');
+
+    // An envelope queued before artifact threads were frozen never inherits
+    // the conversation stamp, which for schedules can be synthetic.
+    const legacy = JSON.parse(JSON.stringify(threadedEnvelope?.initialData)) as {
+      runtimePlan: { conversation: { threadTs: string }; artifactDestination: { threadTs?: string } };
+    };
+    delete legacy.runtimePlan.artifactDestination.threadTs;
+    const legacyPlan = parseRoutineExecutionInitialData(legacy).runtimePlan;
+    assert.equal(legacyPlan.conversation.threadTs, '1785100000.000100');
+    assert.equal(legacyPlan.artifactDestination.threadTs, undefined);
+    assert.equal(threadedEnvelope?.schemaVersion, 2);
+    if (threadedEnvelope?.schemaVersion !== 2) throw new Error('expected schedule signal');
+    assert.equal(routineArtifactPlan(legacyPlan, threadedEnvelope.message)?.artifactDestination.threadTs,
+      '1785000000.000900');
+    assert.equal(routineArtifactPlan(legacyPlan, {
+      ...threadedEnvelope.message,
+      attributes: { ...threadedEnvelope.message.attributes, threadTs: '' },
+    })?.artifactDestination.threadTs, undefined);
+    assert.equal(routineArtifactPlan(legacyPlan, { kind: 'user', body: 'old V1 task' }), undefined);
+    assert.throws(() => routineArtifactPlan(legacyPlan, {
+      ...threadedEnvelope.message,
+      attributes: { ...threadedEnvelope.message.attributes, conversationId: 'C_OTHER' },
+    }), /does not match/);
+    for (const invalid of [
+      { destinationKind: 'direct_thread', threadTs: '' },
+      { threadTs: 'not-a-timestamp' },
+      { destinationKind: 'unknown' },
+    ]) {
+      assert.throws(() => routineArtifactPlan(legacyPlan, {
+        ...threadedEnvelope.message,
+        attributes: { ...threadedEnvelope.message.attributes, ...invalid },
+      }), /does not match/);
+    }
+  } finally {
+    store.close();
   }
 });
