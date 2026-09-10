@@ -219,9 +219,32 @@ when updating Chickpea's Node pin. Validate SDK/image updates separately.
 ### Schedule account requirements during edits
 
 A saved schedule revision cannot run until its account requirements have been
-bound to that revision. Pause and resume retain the saved binding. If another
-edit is still binding accounts, retry metadata-only edits after it finishes;
-do not select extra accounts to bypass the pending edit.
+bound to that revision. Pause and resume retain the saved binding. An unbound
+revision may mean an edit is still running or that binding failed; waiting alone
+does not repair a failed edit. Retry the original durable action, or submit a
+fresh edit declaring the exact required accounts (`requiredConnectionAccountIds`,
+including `[]` for connection-free work). Use the intended accounts, not extra
+accounts to bypass the check. This repairs the binding but preserves an existing
+pause; resume only after the underlying failure is resolved.
+
+A due run can encounter the short save-to-bind window and pause the schedule for
+missing authority. A later successful bind intentionally does not clear a
+`needs_attention` reference: the same state can represent other authority
+failures. After binding has completed and the actor, Agent, destination and
+connections are available, repair Channel schedule authority through the existing
+authenticated Admin route
+`POST /admin/api/agents/:id/schedules/:scheduleId/reassign`. The Runs as member
+must be signed in as an Agent editor; supply their own `runsAsMembershipId` and
+the current `expectedAuthorityRevision`. Omit account IDs to retain the existing
+exact set, or explicitly supply its intended replacement. The route revalidates
+authority and resumes only recognized authority-related pauses. It does not
+repair an unbound saved revision, so complete the binding repair first.
+
+For a private DM schedule, the owner can ask Chickpea to reassign its owning
+Agent through the existing `reassign_routine_agent` operation, retaining the same
+Agent if appropriate, then resume the schedule. Private schedules are excluded
+from the Channel Admin repair route. Do not clear a pause or edit state records
+directly to skip these checks.
 
 Existing schedules retain their saved account requirements. Cloning requires
 the source schedule's saved requirements; a legacy source without an authority

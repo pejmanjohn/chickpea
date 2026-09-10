@@ -812,7 +812,7 @@ for (const legacy of [false, true]) {
       const { requiredConnectionAccountIds: _ids, ...metadataEdit } = edit;
       await assert.rejects(executeSlackScheduleCommand({ ...metadataEdit,
         expectedVersion: saved.version, name: 'Renamed while binding', actionKey: 'rsaction_pending_metadata',
-      }, dependencies), /previous schedule edit is still binding/);
+      }, dependencies), /saved schedule connections are not bound.*Retry the original edit/);
       assert.equal((await routines.getRoutine(first.id))!.version, saved.version);
       await assert.rejects(resolveRoutineAgentAuthority(saved, undefined, { config, identity }), RoutineAuthorityError);
       const paused = await routines.control({ routineId: saved.id, expectedVersion: saved.version,

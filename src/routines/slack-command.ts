@@ -211,7 +211,7 @@ export async function executeSlackScheduleCommand(
         existing.authorityBindingVersion === command.expectedVersion + 1;
       if (reference?.boundRoutineVersion !== existing.authorityBindingVersion && !retryingSavedRevision) {
         throw new RoutineStateError('routine_connections_required',
-          'The previous schedule edit is still binding its connections. Retry after that edit finishes.');
+          'The saved schedule connections are not bound. Retry the original edit, or save the schedule again and explicitly choose its required connections, including none if appropriate.');
       }
     }
     if (command.requiredConnectionAccountIds !== undefined) {
