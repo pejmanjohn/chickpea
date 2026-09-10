@@ -420,6 +420,9 @@ export class ConfigStoreLogic {
       this.installConfigSchema();
       this.installAgentConnectionBindingMigrations();
       this.installAgentScheduleReferenceMigrations();
+      // Existing installs already carry the extension marker. Their column
+      // upgrades must run after the marker-guarded table creation path too.
+      addColumnIfMissing(this.db, 'config_slack_public_context', 'content_version_ts', 'TEXT');
     }
     // Column presence, read from the schema cache rather than by scanning
     // sqlite_master: this runs on every construction, including attach.
@@ -2726,7 +2729,6 @@ export class ConfigStoreLogic {
         PRIMARY KEY (workspace_id, channel_id, root_ts, message_ts)
       )`,
     );
-    addColumnIfMissing(this.db, 'config_slack_public_context', 'content_version_ts', 'TEXT');
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS config_slack_public_context_root_idx
        ON config_slack_public_context(workspace_id, channel_id, root_ts, updated_at)`,
