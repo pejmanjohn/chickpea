@@ -44,10 +44,21 @@ section blocks followed by one context footer, with both `unfurl_links` and
 The signed-in recipient opened both files in web for each case; the phone
 screenshots established presentation, not phone download behavior.
 
-Prefer that tested shape for general file delivery. It still requires actual
-Agent generation and real due-time scheduling acceptance after implementation.
-The top-level protocol message did not execute a schedule. Do not implement an
-attachment-update architecture solely because Slack accepted `file_ids`.
+Prefer that tested shape for general file delivery. After implementation, a
+separate deployed QA run on the same day verified actual Agent generation in a
+channel thread and a DM thread, ten files in one reply, a mention-free follow-up,
+and an honest missing-file response. Two actual one-time schedules delivered
+CSV and PNG together, one at the channel root and one in the saved request
+thread. Fresh desktop and signed-in web readbacks preserved the selected Agent
+and the appropriate footer; the recipient opened the CSV and PNG files. Both
+test schedules completed once and were removed afterward.
+
+The real-phone evidence above belongs to the fixed protocol finalists. Do not
+describe it as a phone test of every subsequent Agent-generated result. Likewise,
+the top-level protocol message did not execute a schedule. Keep protocol and
+Agent acceptance records separate, even when they establish the same method
+shape. Do not implement an attachment-update architecture solely because Slack
+accepted `file_ids`.
 
 ### Public message readback is a projection
 
@@ -121,6 +132,14 @@ Check these boundaries independently:
   visible file card; the file-ID experiments demonstrated that difference.
 - Blocks and fallback `text` can diverge. Verify accessibility/notification text,
   exact filenames, code literals, long answers, tables, and the compact footer.
+- Verify that a link fixture remains an active link after formatting. The
+  ten-file Agent test rendered all ten file cards, but its model-written
+  `<https://example.com|label>` reference appeared literally because the classic
+  prose formatter escapes Slack control syntax. That test does not prove ten
+  files alongside an active external link. Use a descriptive standard Markdown
+  link for that variant, assert its actual `href`, and distinguish link access
+  from preview generation. Do not infer a shared file/preview limit from the
+  number of rendered cards alone.
 - Permalinks can use a workspace subdomain. Validate Slack-owned URL structure
   and file identity without assuming the host is literally `slack.com`.
 - Replay retained real response samples through offline validators. A mocked
@@ -139,8 +158,10 @@ to the exact workspace, Agent, channel, and thread.
 Start with `src/slack/file-transport.ts`, `artifact-staging.ts`,
 `artifact-receipts.ts`, `web-client-presenter.ts`, `agent-view-presentation.ts`,
 and `src/routines/delivery.ts`. Inspect current source: these entrypoints can
-change, and this guide deliberately does not assert that the tested candidate
-has already replaced the old completion path.
+change. Current receipt-based delivery privately completes files before posting
+their validated permalinks in the selected Agent's final message. Persisted
+legacy receipts and legacy assembly paths have separate compatibility behavior;
+do not infer their behavior from the current path's acceptance.
 
 Follow [runtime observability](runtime-observability.md) for first-failure
 evidence and [the live verification workflow](../../qa/live/operator/SKILL.md)
