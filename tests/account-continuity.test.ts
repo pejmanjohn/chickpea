@@ -78,11 +78,12 @@ async function fixture() {
         assert.ok(input.runtimePlan);
         observed = input.runtimePlan;
         const envelope = jobs.prepareFlueDispatch(id, input.message, { generation: id });
-        jobs.recordFlueReceipt(id, { uid: envelope.uid ?? `uid_${id}`, submissionId: `submission_${id}`, acceptedAt: new Date(clock).toISOString() });
+        jobs.recordFlueReceipt(id, { uid: envelope.uid ?? `inst_${String(sequence).padStart(26, '0')}`, submissionId: `submission_${id}`, acceptedAt: new Date(clock).toISOString() });
         return { text: 'Done.', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
       },
     });
     assert.ok(observed, 'real runTurn must reach the agent with a frozen plan');
+    assert.equal(jobs.getAgentBinding(observed.conversation.continuityKey)?.instanceId, jobs.getFrozenRuntimePlan(id)!.instanceId, 'dispatch must pin the actual conversation before the next turn');
     jobs.markDelivered(id);
     return { id, turn, plan: observed, instanceId: jobs.getFrozenRuntimePlan(id)!.instanceId };
   }
