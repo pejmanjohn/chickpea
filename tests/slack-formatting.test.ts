@@ -13,6 +13,7 @@ import {
   renderSlackActionLink,
   renderSlackMarkdownActionLink,
   renderSlackMessage,
+  renderSlackFileInitialComment,
   sanitizeSlackMarkdownLinks,
   slackActionLink,
   slackMarkdownBlockTextLimit,
@@ -147,6 +148,77 @@ test('fallback text is plain enough for notifications and accessibility', () => 
   const fallback = markdownFallbackText('## Hello <team>\n\n**Ship** [docs](https://example.com)');
 
   assert.equal(fallback, 'Hello &lt;team&gt;\n\nShip docs (https://example.com)');
+});
+
+test('file comments retain the 12,000-character canonical answer without changing notification limits', () => {
+  const text = `${'x'.repeat(11_992)}TAIL_END`;
+  const comment = renderSlackFileInitialComment(text, 'markdown', {
+    agentName: 'Analyst', agentId: 'agent_analyst', publicUrl: 'https://example.com',
+  });
+  assert.ok(comment.startsWith(text));
+  assert.match(comment, /TAIL_END\n\nAnalyst \| <https:\/\/example.com\/admin\/agents\/agent_analyst\|Configure>$/);
+  assert.equal(markdownFallbackText(text).length, 4_000);
+  assert.match(markdownFallbackText(text), /\[truncated\]$/);
+});
+
+test('file comments preserve safe action labels while escaping malformed content and redacting credentials', () => {
+  const canary = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789';
+  const comment = renderSlackFileInitialComment([
+    '## Report <team>',
+    '**GRE:** $2,400 & TOEFL: $800',
+    '[View report](https://example.com/report?exam=gre&row=1)',
+    '[Unsafe](javascript:alert)',
+    '[Malformed](https://example.com/<broken',
+    '<!channel>',
+    `Credential: ${canary}`,
+  ].join('\n'), 'markdown', {
+    agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+  });
+  assert.match(comment, /Report &lt;team&gt;/);
+  assert.match(comment, /GRE: \$2,400 &amp; TOEFL: \$800/);
+  assert.match(comment, /<https:\/\/example.com\/report\?exam=gre&amp;row=1\|View report>/);
+  assert.match(comment, /Unsafe\n\[Malformed\]\(https:\/\/example.com\/&lt;broken/);
+  assert.match(comment, /&lt;!channel&gt;/);
+  assert.match(comment, /\[credential redacted\]/);
+  assert.doesNotMatch(comment, new RegExp(`${canary}|javascript:|<!channel>`));
+});
+
+test('plain file comments escape Slack control syntax and retain readable table data', () => {
+  const comment = renderSlackFileInitialComment('Result for <@U123> & team', 'plain_text', {
+    agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+  }, 'Exam: GRE | Bookings: 2400\nExam: TOEFL | Bookings: 800');
+  assert.equal(comment, 'Result for &lt;@U123&gt; &amp; team\n\nExam: GRE | Bookings: 2400\nExam: TOEFL | Bookings: 800\n\nAnalyst');
+});
+
+test('file comments preserve exact inline and unformatted filenames and mathematical expressions', () => {
+  const body = [
+    'File: `qa_artifacts_1531.csv`',
+    'Also attached: qa_artifacts_1531.csv and qa__artifacts__1531.png',
+    'Compute `x_i * y_j + z_k ** 2` with $x_i + y_j$ and a*b*c.',
+    'Example: `[literal_link](https://example.com/a_b)`',
+  ].join('\n');
+  const comment = renderSlackFileInitialComment(body, 'markdown', {
+    agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+  });
+  assert.equal(comment, `${body}\n\nAnalyst`);
+});
+
+test('file comments preserve fenced code and table-like literals while still escaping Slack controls', () => {
+  const body = [
+    'Use this snippet:',
+    '```python',
+    'filename = "qa_artifacts_1531.csv"',
+    'total_value = x_i * y_j + z_k ** 2',
+    'literal = "**keep** _this_ [link](https://example.com/a_b)"',
+    '| column_a | column_b |',
+    '| --- | --- |',
+    '```',
+    'Inline: `x_i < y_j && y_j > z_k`',
+  ].join('\n');
+  const comment = renderSlackFileInitialComment(body, 'markdown', {
+    agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+  });
+  assert.equal(comment, `${body.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}\n\nAnalyst`);
 });
 
 test('product-owned action links use safe descriptive Slack labels', () => {

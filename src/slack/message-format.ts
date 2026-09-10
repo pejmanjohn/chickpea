@@ -106,6 +106,28 @@ export function renderSlackMessage(text: string, format: SlackReplyFormat): Rend
   };
 }
 
+/** Render the full answer for native file completion without message blocks. */
+export function renderSlackFileInitialComment(
+  text: string,
+  format: SlackReplyFormat,
+  footer: SlackReplyFooter,
+  tableText?: string,
+): string {
+  const displayText = canonicalSlackReplyText(text, format);
+  const body = format === 'markdown'
+    ? fileCommentMarkdownText(displayText)
+    : format === 'plain_text' ? escapeSlackControlCharacters(displayText) : displayText;
+  const sections = [body];
+  if (tableText) {
+    sections.push(escapeSlackControlCharacters(truncateText(
+      canonicalSlackReplyText(tableText, 'plain_text'),
+      slackMarkdownBlockTextLimit,
+    )));
+  }
+  sections.push(renderSlackReplyFooterBlock(footer).elements[0]!.text);
+  return sections.join('\n\n');
+}
+
 /** Canonical credential-safe text shared by every terminal Slack delivery path. */
 export function canonicalSlackReplyText(text: string, format: SlackReplyFormat): string {
   const normalized = normalizeMessageText(text);
@@ -381,10 +403,15 @@ export function buildSlackAdminUrl(
 }
 
 export function markdownFallbackText(markdown: string): string {
+  const fallback = readableMarkdownText(markdown).trim();
+  return truncateText(escapeSlackControlCharacters(fallback || '(empty reply)'), slackFallbackTextLimit);
+}
+
+function readableMarkdownText(markdown: string): string {
   const withoutCodeFences = linearizeMarkdownTables(
     markdown.replace(/```[a-zA-Z0-9_-]*\n?([\s\S]*?)```/g, '$1'),
   );
-  const fallback = withoutCodeFences
+  return withoutCodeFences
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
     .replace(/`([^`]+)`/g, '$1')
@@ -396,10 +423,43 @@ export function markdownFallbackText(markdown: string): string {
     .replace(/\*([^*\n]+)\*/g, '$1')
     .replace(/_([^_\n]+)_/g, '$1')
     .replace(/^\s{0,3}[-*+]\s+/gm, '- ')
-    .replace(/[ \t]+\n/g, '\n')
-    .trim();
+    .replace(/[ \t]+\n/g, '\n');
+}
 
-  return truncateText(escapeSlackControlCharacters(fallback || '(empty reply)'), slackFallbackTextLimit);
+function fileCommentMarkdownText(markdown: string): string {
+  // Native Slack mrkdwn understands code fences and inline backticks. Protect
+  // those literals before converting prose so filenames, expressions, and
+  // example links retain their exact characters. An unfinished fence can be
+  // the result of the canonical answer limit and still needs literal handling.
+  return markdown.split(/(```[\s\S]*?(?:```|$))/g).map((segment, index) => index % 2 === 1
+    ? escapeSlackControlCharacters(segment)
+    : fileCommentProseText(segment)
+  ).join('').trim() || '(empty reply)';
+}
+
+function fileCommentProseText(markdown: string): string {
+  const content = linearizeMarkdownTables(markdown);
+  // Convert only complete Markdown links. Escape all other text, including
+  // malformed links and Slack control syntax, before adding the trusted footer.
+  // Keep the entire canonical answer; the 4,000-character fallback is only a
+  // notification preview, not the body of the file-share message.
+  return content.split(/(`[^`\n]+`|!?\[[^\]\n]*\]\([^)]+\))/g).map((segment) => {
+    if (segment.startsWith('`')) return escapeSlackControlCharacters(segment);
+    const link = segment.match(/^(!?)\[([^\]\n]*)\]\(([^)]+)\)$/);
+    if (!link) {
+      // Keep native mrkdwn emphasis and literal underscores/operators. The
+      // notification fallback deliberately removes them and is unsuitable for
+      // a message body containing exact filenames or mathematical values.
+      return escapeSlackControlCharacters(segment
+        .replace(/^#{1,6}\s+/gm, '')
+        .replace(/^>\s?/gm, '')
+        .replace(/(?<![\p{L}\p{N}_])\*\*([^*\n]+)\*\*(?![\p{L}\p{N}_])/gu, '$1')
+        .replace(/^\s{0,3}[-*+]\s+/gm, '- '));
+    }
+    return link[1]
+      ? escapeSlackControlCharacters(link[2]!)
+      : renderSlackActionLink(link[3]!, link[2]!);
+  }).join('');
 }
 
 function linearizeMarkdownTables(markdown: string): string {

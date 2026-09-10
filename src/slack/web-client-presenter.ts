@@ -11,6 +11,7 @@ import { isSafeTypedActivityStatus } from '../activity/status.ts';
 import {
   appendSlackReplyFooter,
   canonicalSlackReplyText,
+  renderSlackFileInitialComment,
   renderSlackMessage,
   renderSlackReplyFooterBlock,
   type SlackReplyFormat,
@@ -829,19 +830,13 @@ export class WebClientPresenter {
     forcePostFallback: boolean;
     fallbackOperationId?: string;
   }): Promise<boolean> {
-    const content = input.renderedTable
-      ? appendSlackTableToRenderedMessage(
-          renderSlackMessage(input.displayText, input.format),
-          input.displayText,
-          input.renderedTable,
-        )
-      : renderSlackMessage(input.displayText, input.format);
-    const rendered = appendSlackReplyFooter(content, input.footer);
     const completion: SlackFileCompletionInput = {
       files: input.files.map((file) => ({ id: file.fileId, ...(file.title ? { title: file.title } : {}) })),
       channelId: this.target.channelId,
       threadTs: this.target.threadTs,
-      blocks: rendered.blocks ?? [],
+      initialComment: renderSlackFileInitialComment(
+        input.displayText, input.format, input.footer, input.renderedTable?.fallbackText,
+      ),
       persona: this.persona(),
     };
     const failureText = `${input.displayText}\n\n${ARTIFACT_UNDELIVERED_NOTE}`;
@@ -862,7 +857,7 @@ export class WebClientPresenter {
         files: completion.files,
         channel_id: completion.channelId,
         thread_ts: completion.threadTs,
-        blocks: completion.blocks,
+        initial_comment: completion.initialComment,
         ...this.persona(),
       },
       share: {

@@ -58,6 +58,32 @@ test('gateway uses stage, native completion and exact-share readback without upl
   assert.deepEqual(operations, ['chickpea.files.stage', 'files.completeUploadExternal', 'chickpea.files.getShare']);
 });
 
+test('direct and gateway completion send the same full initial comment without blocks', async () => {
+  const initialComment = `${'x'.repeat(5_000)}\n\nSmoke Amber | <https://example.com/admin|Configure>`;
+  let directPayload: Record<string, string> | undefined;
+  const direct = new WebClient('xoxb-test', { retryConfig: { retries: 0 }, fetch: async (_url, init) => {
+    directPayload = Object.fromEntries(new URLSearchParams(String(init!.body)));
+    return Response.json({ ok: true, files: [{ id: fileId }] });
+  } });
+  let gatewayPayload: Record<string, unknown> | undefined;
+  const gateway = createGatewaySlackWebClient({ workspaceId: 'T12345678', async call(operation, value) {
+    assert.equal(operation, 'files.completeUploadExternal');
+    gatewayPayload = value;
+    return { files: [{ id: fileId }] };
+  } } as GatewayOperationClient);
+  for (const client of [direct, gateway]) {
+    await createSlackFileTransport(client).complete({ ...input, initialComment });
+  }
+  for (const payload of [directPayload, gatewayPayload]) {
+    assert.equal(payload?.initial_comment, initialComment);
+    assert.equal(payload?.blocks, undefined);
+    assert.equal(payload?.channel_id, channelId);
+    assert.equal(payload?.thread_ts, threadTs);
+    assert.equal(payload?.username, input.persona.username);
+    assert.equal(payload?.icon_url, input.persona.icon_url);
+  }
+});
+
 test('partial completion receipts and inconsistent file shares remain unknown', async () => {
   const client = { files: { completeUploadExternal: async () => ({ ok: true, files: [{ id: fileId }] }) } } as unknown as WebClient;
   const transport = createSlackFileTransport(client);

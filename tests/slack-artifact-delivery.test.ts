@@ -8,7 +8,7 @@ import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
 import type { AgentReply } from '@flue/runtime';
 
-const target = { workspaceId: 'T12345678', channelId: 'D12345678', threadTs: '1789063000.000100', agentId: 'agent_smoke', agentName: 'Smoke Amber', agentAvatarUrl: 'https://example.com/smoke.png' };
+const target = { workspaceId: 'T12345678', channelId: 'D12345678', threadTs: '1789063000.000100', agentId: 'agent_smoke', agentName: 'Smoke Amber', agentAvatarUrl: 'https://example.com/smoke.png', publicUrl: 'https://example.com', modelLabel: 'openai/test' };
 const receipt: SlackArtifactReceipt = {
   schemaVersion: 1, fileId: 'F12345678', filename: 'bookings.png', title: 'Bookings', kind: 'chart', byteLength: 123, stagedAt: 1,
   destination: { workspaceId: target.workspaceId, channelId: target.channelId, threadTs: target.threadTs, agentId: target.agentId },
@@ -44,10 +44,43 @@ test('PNG and final text publish together with the selected Agent identity and o
   assert.equal(h.posts.length, 0);
   assert.deepEqual(h.completions[0]!.persona, { username: 'Smoke Amber', icon_url: target.agentAvatarUrl });
   assert.deepEqual(h.completions[0]!.files, [{ id: receipt.fileId, title: 'Bookings' }]);
-  assert.match(JSON.stringify(h.completions[0]!.blocks), /GRE: \$2,400/);
-  assert.match(JSON.stringify(h.completions[0]!.blocks), /Smoke Amber/);
+  assert.equal(h.completions[0]!.blocks, undefined);
+  assert.equal(h.completions[0]!.initialComment, 'GRE: $2,400\n\nSmoke Amber | openai/test | <https://example.com/admin/agents/agent_smoke|Configure>');
+  const envelope = JSON.parse(h.observations[0]!.renderedPayload as string);
+  assert.equal(envelope.completion.initial_comment, h.completions[0]!.initialComment);
+  assert.equal(envelope.completion.blocks, undefined);
   assert.deepEqual(h.handoffs, [{ messageTs: ts, text: 'GRE: $2,400' }]);
   assert.equal(h.observations.at(-1)!.outcome, 'delivered');
+});
+
+test('a file comment preserves a full-length answer and readable native table rows', async () => {
+  const h = setup();
+  const lastFigure = '\nFinal figure: $2,400';
+  const answer = `${'x'.repeat(12_000 - lastFigure.length)}${lastFigure}`;
+  await h.presenter.deliverFinal(answer, 'markdown', 'complete', {
+    caption: 'Bookings by exam',
+    presentation: 'static',
+    columns: [{ header: 'Exam' }, { header: 'Bookings', type: 'number' }],
+    rows: Array.from({ length: 7 }, (_, index) => [`Exam ${index + 1}`, 2400 - index * 100]),
+  }, [receipt]);
+  const comment = h.completions[0]!.initialComment!;
+  assert.ok(comment.startsWith(answer));
+  assert.match(comment, /Bookings by exam\nExam: Exam 1 \| Bookings: 2400/);
+  assert.match(comment, /Exam: Exam 7 \| Bookings: 1800/);
+  assert.match(comment, /Smoke Amber \| openai\/test \| <https:\/\/example.com\/admin\/agents\/agent_smoke\|Configure>$/);
+  assert.equal(h.posts.length, 0);
+});
+
+test('interactive file completion preserves the exact named file and code literals', async () => {
+  const h = setup();
+  const answer = 'Attached `qa_artifacts_1531.csv`.\n\n```\nrow_total = x_i * y_j\n```';
+  await h.presenter.deliverFinal(answer, 'markdown', 'complete', undefined, [{
+    ...receipt, filename: 'qa_artifacts_1531.csv', kind: 'file',
+  }]);
+  assert.ok(h.completions[0]!.initialComment!.startsWith(`${answer}\n\n`));
+  const envelope = JSON.parse(h.observations[0]!.renderedPayload as string);
+  assert.equal(envelope.completion.initial_comment, h.completions[0]!.initialComment);
+  assert.equal(h.posts.length, 0);
 });
 
 for (const error of [new SlackTransportError('files.completeUploadExternal', 'slack_completion_outcome_unknown'), { code: ErrorCode.PlatformError, data: { error: 'internal_error' } }]) {

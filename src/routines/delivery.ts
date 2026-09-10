@@ -7,6 +7,7 @@ import {
   buildSlackAdminUrl,
   canonicalSlackReplyText,
   escapeSlackControlCharacters,
+  renderSlackFileInitialComment,
   renderSlackMessage,
   type RenderedSlackMessage,
   type SlackReplyFooter,
@@ -165,7 +166,7 @@ export async function deliverRoutineResult(
   if (files.length === 0) {
     return deliverRoutineSlackMessage({ ...input, approvedOutput }, rendered, client);
   }
-  return deliverRoutineFileShare({ ...input, approvedOutput, files }, rendered, client);
+  return deliverRoutineFileShare({ ...input, approvedOutput, files }, client);
 }
 
 /**
@@ -189,7 +190,6 @@ async function deliverRoutineFileShare(
     sleep?: (delayMs: number) => Promise<void>;
     fileTransport?: SlackFileTransport;
   },
-  rendered: RenderedSlackMessage,
   client: WebClient,
 ): Promise<RoutineDeliveryReceipt> {
   const now = input.now ?? Date.now;
@@ -202,7 +202,11 @@ async function deliverRoutineFileShare(
     files: input.files.map((file) => ({ id: file.fileId, ...(file.title ? { title: file.title } : {}) })),
     channelId: input.routine.channelId,
     ...(input.routine.destination.threadTs ? { threadTs: input.routine.destination.threadTs } : {}),
-    blocks: rendered.blocks ?? [],
+    initialComment: renderSlackFileInitialComment(input.approvedOutput, 'markdown', {
+      ...routineReplyFooter(input.access, input.routine),
+      includeConfigureLink: false,
+      scheduled: true,
+    }),
     persona: {
       username: input.access.config.agent.name,
       ...(agentAvatarUrl ? { icon_url: agentAvatarUrl } : {}),
@@ -231,7 +235,7 @@ async function deliverRoutineFileShare(
         files: completion.files,
         channel_id: completion.channelId,
         ...(completion.threadTs ? { thread_ts: completion.threadTs } : {}),
-        blocks: completion.blocks,
+        initial_comment: completion.initialComment,
         ...completion.persona,
       },
       share,

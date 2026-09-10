@@ -14,7 +14,7 @@ function setup(kind: 'root' | 'thread' | 'direct' = 'root', error?: unknown) {
   const threadTs = kind === 'root' ? undefined : '1789063300.000100';
   const routine = { id: 'routine_file', workspaceId: 'T12345678', channelId, destination: { kind: kind === 'direct' ? 'direct_thread' : 'channel', ...(threadTs ? { threadTs } : {}) }, agentId: 'agent_smoke' } as unknown as RoutineDefinition;
   const run = { id: 'run_file', deadlineAt: now + 60_000 } as RoutineRun;
-  const access = { config: { agentId: 'agent_smoke', agent: { id: 'agent_smoke', name: 'Smoke Amber' } }, publicUrl: 'https://example.com' } as RoutineRuntimeAccess;
+  const access = { config: { agentId: 'agent_smoke', agent: { id: 'agent_smoke', name: 'Smoke Amber' }, model: 'openai/test' }, publicUrl: 'https://example.com' } as RoutineRuntimeAccess;
   const files: SlackArtifactReceipt[] = [{ schemaVersion: 1, fileId: 'F12345678', filename: 'scheduled.png', kind: 'chart', byteLength: 100, stagedAt: now, destination: { workspaceId: routine.workspaceId, agentId: 'agent_smoke', channelId, ...(threadTs ? { threadTs } : {}) } }];
   const completions: SlackFileCompletionInput[] = [];
   const posts: unknown[] = [];
@@ -46,12 +46,39 @@ for (const kind of ['root', 'thread', 'direct'] as const) {
     assert.equal(h.completions[0]!.channelId, h.channelId);
     assert.equal(h.completions[0]!.threadTs, h.threadTs);
     assert.equal(h.completions[0]!.persona?.username, 'Smoke Amber');
-    assert.match(JSON.stringify(h.completions[0]!.blocks), /GRE: \$2,400/);
+    assert.equal(h.completions[0]!.blocks, undefined);
+    assert.equal(h.completions[0]!.initialComment, 'GRE: $2,400\n\nSmoke Amber | openai/test | Scheduled');
+    const envelope = JSON.parse(h.attempts[0]!.renderedPayload as string);
+    assert.equal(envelope.completion.initial_comment, h.completions[0]!.initialComment);
+    assert.equal(envelope.completion.blocks, undefined);
     assert.equal(h.records[0]!.outcome, 'delivered');
     await assert.rejects(deliverRoutineResult(h.input, h.client));
     assert.equal(h.completions.length, 1, 'claim prevents duplicate completion');
   });
 }
+
+test('scheduled file comments retain long answers, table figures, and one Scheduled footer', async () => {
+  const h = setup();
+  const prefix = 'x'.repeat(8_000);
+  h.input.message = `${prefix}\n\n| Exam | Bookings |\n| --- | ---: |\n| GRE | $2,400 |\n| TOEFL | $800 |`;
+  await deliverRoutineResult(h.input, h.client);
+  const comment = h.completions[0]!.initialComment!;
+  assert.ok(comment.startsWith(prefix));
+  assert.match(comment, /Exam — Bookings\nGRE — \$2,400\nTOEFL — \$800/);
+  assert.match(comment, /Smoke Amber \| openai\/test \| Scheduled$/);
+  assert.equal(comment.match(/Scheduled/g)?.length, 1);
+  assert.doesNotMatch(comment, /Configure|\[truncated\]/);
+  assert.equal(h.posts.length, 0);
+});
+
+test('scheduled file completion preserves exact filenames and code literals', async () => {
+  const h = setup();
+  h.input.message = 'Attached `qa_artifacts_1531.csv`.\n\n```\nrow_total = x_i * y_j\n```';
+  h.input.artifacts[0]!.filename = 'qa_artifacts_1531.csv';
+  await deliverRoutineResult(h.input, h.client);
+  assert.equal(h.completions[0]!.initialComment, `${h.input.message}\n\nSmoke Amber | openai/test | Scheduled`);
+  assert.equal(h.posts.length, 0);
+});
 
 for (const code of ['internal_error', 'fatal_error']) {
   test(`scheduled ${code} remains unknown with no fallback post`, async () => {
