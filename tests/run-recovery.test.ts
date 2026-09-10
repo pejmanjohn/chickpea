@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
+import { isDeliveredOnboardingReply } from '../src/admin/onboarding-proof.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -1059,13 +1060,18 @@ test(`recovered ${recovery.outcome} delivery preserves disposition and records c
   try {
     const work = new WorkStoreLogic(db, { now: () => clock });
     const turns = new TurnJobStoreLogic(db, () => clock);
-    const admission = work.admitShadowRun(prepareSubmitRun(submission('delivery-retry')));
+    const input = submission('delivery-retry');
+    input.binding.externalAccountId = opaqueId('account', 'slack:T_canary');
+    input.binding.configMode = 'resolve_each_run';
+    input.trigger.kind = 'slack_dm_message';
+    input.actor.ref = opaqueId('actor', 'slack:T_canary:U_member');
+    const admission = work.admitShadowRun(prepareSubmitRun(input));
     const first = work.claimNextInteractiveRun({
       ownerId: 'first_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
     });
     assert.equal(first?.phase, 'execute');
     const payload = {
-      channel: 'C_canary',
+      channel: 'D_canary',
       thread_ts: '100.001',
       text: 'Persisted answer',
       blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'Persisted answer' } }],
@@ -1116,7 +1122,7 @@ test(`recovered ${recovery.outcome} delivery preserves disposition and records c
         chat: {
           postMessage: async (actual: unknown) => {
             sent.push(actual);
-            return { ok: true, channel: 'C_canary', ts: '100.002' };
+            return { ok: true, channel: 'D_canary', ts: '100.002' };
           },
         },
       } as unknown as WebClient,
@@ -1132,6 +1138,10 @@ test(`recovered ${recovery.outcome} delivery preserves disposition and records c
     assert.equal(work.getRun(admission.run.id)?.status, 'settled');
     assert.equal(work.getRun(admission.run.id)?.terminalDisposition, recovery.outcome);
     const deliveredRun = work.getRun(admission.run.id)!;
+    assert.equal(isDeliveredOnboardingReply({
+      work: admission.work, binding: admission.binding, run: deliveredRun,
+    }, { workspaceId: 'T_canary', slackUserId: 'U_member', tryStartedAt: NOW }),
+    recovery.outcome === 'succeeded');
     assert.deepEqual(work.finalizeRunDelivery({
       runId: deliveredRun.id, fencingToken: second!.fencingToken,
       attemptId: deliveredRun.deliveryAttemptId!, outcome: 'delivered',
@@ -1246,8 +1256,32 @@ test(`fallback recovery respects ${certainty} terminal receipt`, async () => {
     const firstResult=await handler(second);
 
     if (certainty !== 'failed') {
-      assert.deepEqual(firstResult, { kind: 'requeue', reasonCode: 'slack_presentation_terminal_repair_pending' });
+      assert.deepEqual(firstResult, { kind: 'recovery_required', reasonCode: 'slack_presentation_effect_unresolved' });
       assert.equal(calls.filter((call) => call === 'post').length, 0);
+      // The driver records this result. Unknown effects retain their ordering
+      // fence until the existing authenticated operator quarantine resolves it.
+      work.releaseRunLease({
+        runId: admission.run.id, ownerId: second.leaseOwner, fencingToken: second.fencingToken,
+        outcome: 'recovery_required', reasonCode: firstResult.reasonCode, releasedAt: ++clock,
+      });
+      const nextInput = submission('next-delivery');
+      nextInput.trigger.createdAt = ++clock;
+      nextInput.binding.orderingKey = admission.binding.orderingKey;
+      const next = work.admitShadowRun(prepareSubmitRun(nextInput));
+      assert.equal(work.getRun(admission.run.id)?.status, 'recovery_required');
+      assert.equal(work.claimNextInteractiveRun({
+        ownerId: 'next_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
+      }), undefined);
+      work.quarantineRun({
+        runId: admission.run.id, adminCredentialId: 'admin_fixture', operatorLabel: 'Test operator',
+        authOrigin: 'admin_session', safeReasonCode: 'accepted_unknown',
+        requestId: 'request_fallback_quarantine', idempotencyKey: 'work:quarantine:fallback',
+        resolvedAt: ++clock,
+      });
+      assert.equal(work.getRun(admission.run.id)?.terminalDisposition, 'quarantined');
+      assert.equal(work.claimNextInteractiveRun({
+        ownerId: 'next_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
+      })?.run.id, next.run.id);
       return;
     }
     assert.deepEqual(firstResult,{kind:'completed'});

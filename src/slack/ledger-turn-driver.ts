@@ -423,7 +423,12 @@ async function deliverPersistedResponse(
     presentation?.schemaVersion === 3 && presentation.terminalDelivery.state === 'intended' &&
       presentation.terminalDelivery.result === 'failure' ? 'failure' : 'answer',
   )) {
-    return { kind: 'requeue', reasonCode: 'slack_presentation_terminal_repair_pending' };
+    // A fallback receipt that cannot authorize a new write has no automatic
+    // repair path. Stop claims until its external effect is reconciled.
+    await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
+    await options.turns.markRecoveryRequired(job.id, 'slack_presentation_effect_unresolved');
+    await clearActiveWork(options, job);
+    return { kind: 'recovery_required', reasonCode: 'slack_presentation_effect_unresolved' };
   }
   try {
     await options.work.startRunDelivery({
