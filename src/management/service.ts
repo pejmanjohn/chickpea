@@ -5471,7 +5471,9 @@ function routineOperationPreview(
     ...(agentName ? { ownerAgent: agentName } : {}),
     description: operation.description,
     taskText: operation.taskText,
-    schedule: operation.schedule.kind === 'once'
+    schedule: operation.schedule.kind === 'preserve'
+      ? existing ? routinePreview(existing).schedule : 'Unchanged schedule'
+      : operation.schedule.kind === 'once'
       ? `Once at ${operation.schedule.localDateTime}`
       : operation.schedule.kind === 'in'
         ? `Once, ${operation.schedule.minutes} minute${operation.schedule.minutes === 1 ? '' : 's'} from now`

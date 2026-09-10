@@ -16,6 +16,7 @@ import {
   normalizeOneTimeSchedule,
   normalizeRelativeOneTimeSchedule,
   normalizeRoutineSchedule,
+  parseRoutineSchedule,
 } from './schedule.ts';
 import { RoutineService } from './service.ts';
 import { normalizeAuthorityText } from './provenance.ts';
@@ -54,6 +55,7 @@ export type SlackScheduleCommand =
       description: string;
       taskText: string;
       schedule:
+        | { kind: 'preserve' }
         | { kind: 'cron'; expression: string }
         | { kind: 'once'; localDateTime: string }
         | { kind: 'in'; minutes: number };
@@ -175,11 +177,13 @@ export async function executeSlackScheduleCommand(
     }
 
     await requireSchedulingAvailable(dependencies);
-    const projection = command.schedule.kind === 'cron'
-      ? normalizeRoutineSchedule(command.schedule.expression, command.timezone, now())
-      : command.schedule.kind === 'once'
-        ? normalizeOneTimeSchedule(command.schedule.localDateTime, command.timezone, now())
-        : normalizeRelativeOneTimeSchedule(command.schedule.minutes, command.timezone, now());
+    const projection = command.schedule.kind === 'preserve'
+      ? await preserveScheduleProjection(command, dependencies.routines, now())
+      : command.schedule.kind === 'cron'
+        ? normalizeRoutineSchedule(command.schedule.expression, command.timezone, now())
+        : command.schedule.kind === 'once'
+          ? normalizeOneTimeSchedule(command.schedule.localDateTime, command.timezone, now())
+          : normalizeRelativeOneTimeSchedule(command.schedule.minutes, command.timezone, now());
     const existing = command.routineId
       ? await dependencies.routines.getRoutine(command.routineId)
       : undefined;
@@ -194,7 +198,7 @@ export async function executeSlackScheduleCommand(
       name: command.name,
       description: command.description,
       taskText: command.taskText,
-      triggerKind: command.schedule.kind === 'cron' ? 'schedule' as const : 'once' as const,
+      triggerKind: projection.schedule.kind === 'cron' ? 'schedule' as const : 'once' as const,
       scheduleInput: projection.schedule.kind === 'cron'
         ? projection.schedule.expression
         : projection.schedule.localDateTime,
@@ -370,4 +374,33 @@ async function requireSchedulingAvailable(
       'Routine scheduling is unavailable on this deployment.',
     );
   }
+}
+
+/** Read the exact reviewed revision; the caller supplies no canonical timestamp. */
+async function preserveScheduleProjection(
+  command: Extract<SlackScheduleCommand, { kind: 'save' }>,
+  routines: RoutineStore,
+  at: number,
+) {
+  if (!command.routineId || !Number.isSafeInteger(command.expectedVersion) || command.expectedVersion! < 1) {
+    throw new RoutineStateError('routine_invalid_schedule', 'Preserving a schedule requires its ID and expected version.');
+  }
+  const revision = (await routines.listRevisions(command.routineId))
+    .find((entry) => entry.version === command.expectedVersion);
+  const definition = revision?.definition;
+  if (!definition || definition.timezone !== command.timezone) {
+    throw new RoutineStateError('routine_invalid_schedule', 'The saved schedule could not be preserved. Inspect it again before editing.');
+  }
+  const schedule = parseRoutineSchedule(definition.scheduleJson);
+  if (schedule.kind === 'cron') {
+    return normalizeRoutineSchedule(schedule.expression, definition.timezone, at);
+  }
+  return {
+    schedule,
+    scheduleJson: definition.scheduleJson,
+    nextRunAt: schedule.at,
+    preview: [schedule.at],
+    projectedDailyStarts: 0,
+    reservations: [{ windowStart: schedule.at, count: 1 }],
+  };
 }

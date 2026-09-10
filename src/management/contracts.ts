@@ -70,6 +70,10 @@ export function validateManagementOperations(
         throw invalid('Agent IDs must start with a lowercase letter or digit and contain only lowercase letters, digits, underscores, or hyphens.');
       }
     }
+    if (operation.kind === 'save_routine' && operation.schedule.kind === 'preserve' &&
+        (!operation.routineId || !Number.isSafeInteger(operation.expectedVersion) || operation.expectedVersion! < 1)) {
+      throw invalid('Preserving a schedule requires its ID and expected version.');
+    }
     if (operation.kind === 'grant_agent_channel') {
       const hasClientRef = operation.agentClientRef !== undefined;
       const hasAgentId = operation.agentId !== undefined;

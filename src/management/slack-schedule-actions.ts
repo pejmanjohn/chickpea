@@ -170,9 +170,11 @@ async function bindScheduleOperationToRequester(
     previous = { ...previous, ...revision.definition };
   }
   const schedule = operation.schedule ?? (previous
-    ? previous.triggerKind === 'schedule'
-      ? { kind: 'cron' as const, expression: previous.scheduleInput }
-      : { kind: 'once' as const, localDateTime: previous.scheduleInput }
+    ? operation.timezone === undefined
+      ? { kind: 'preserve' as const }
+      : previous.triggerKind === 'schedule'
+        ? { kind: 'cron' as const, expression: previous.scheduleInput }
+        : { kind: 'once' as const, localDateTime: previous.scheduleInput }
     : undefined);
   let profileTimezone: string | undefined;
   if (signal.requesterTimezone) {
