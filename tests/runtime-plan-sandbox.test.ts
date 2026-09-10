@@ -8,14 +8,15 @@ import { getConfigStore, getIdentityStore, getSettingsStore } from '../src/confi
 import { connectionAccountSecretSettingKey } from '../src/config/connector-secrets.ts';
 import { serializeCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 
-const policy = { kind: 'api' as const, authMode: 'credential' as const, allowedHosts: ['93.184.216.34', 'app.asana.com'], pathPrefixes: ['/v1'], headerName: 'X-Test-Key', headerValuePrefix: 'Token ', allowedMethods: ['GET', 'POST'] };
+const basePolicy = { kind: 'api' as const, authMode: 'credential' as const, allowedHosts: ['93.184.216.34', 'app.asana.com'], pathPrefixes: ['/v1'], headerName: 'X-Test-Key', headerValuePrefix: 'Token ', allowedMethods: ['GET', 'POST'] };
 
-for (const scenario of ['live', 'empty', 'wider', 'routine'] as const) {
+for (const scenario of ['live', 'empty', 'wider', 'routine', 'personal-custom'] as const) {
 test(`native REST session: ${scenario}`, async (t) => {
+  const policy = { ...basePolicy, allowedHosts: scenario === 'personal-custom' ? ['93.184.216.34'] : [...basePolicy.allowedHosts] };
   const store = getConfigStore();
   const identity = getIdentityStore();
   const agent = { id: 'agent_rest_test', kind: 'user', revision: 1, name: 'REST', instructions: 'Read the API', enabled: true, model: 'local-stub/proof', skills: [], mcpServers: [], apiConnections: [], repositories: [] };
-  const account = { id: 'connection_rest', workspaceId: 'T_TEST', revision: 1, ownerKind: 'team', createdByMembershipId: 'member', providerId: 'custom', label: 'REST', policy, secretRefId: 'rest_test', lifecycle: 'ready', createdAt: 1, updatedAt: 1 };
+  const account = { id: 'connection_rest', workspaceId: 'T_TEST', revision: 1, ownerKind: scenario === 'personal-custom' ? 'member' : 'team', ownerMembershipId: scenario === 'personal-custom' ? 'member' : undefined, createdByMembershipId: 'member', providerId: 'custom', label: 'REST', policy, secretRefId: 'rest_test', lifecycle: 'ready', createdAt: 1, updatedAt: 1 };
   const binding = { agentId: agent.id, connectionAccountId: account.id, providerId: 'custom', allowedCapabilities: ['GET', 'POST'], enabled: true, createdAt: 1, updatedAt: 1 };
   t.mock.method(store, 'getAgent', async () => agent);
   const accountReads = t.mock.method(store, 'listConnectionAccounts', async () => [account]);
@@ -44,6 +45,17 @@ test(`native REST session: ${scenario}`, async (t) => {
     ? await context.initializeRootHarness(ChickpeaRoutineExecution, signal, { runtimePlan: plan, requestedModel: plan.model })
     : await context.initializeRootHarness(ChickpeaSlack, signal, plan);
   try {
+    const instructions = String((harness as any).config.instructions);
+    if (scenario === 'empty') assert.doesNotMatch(instructions, /REST connections are declared/);
+    else {
+      assert.match(instructions, /REST connections are declared/);
+      assert.match(instructions, /bash tool with curl/);
+      assert.match(instructions, /Credentials are injected automatically/);
+      assert.match(instructions, /93\.184\.216\.34/);
+      assert.match(instructions, /"id":"connection_rest"/);
+      assert.match(instructions, /"displayName":"REST"/);
+      assert.doesNotMatch(instructions, /fixture-secret|X-Test-Key|Token /);
+    }
     assert.equal(settingReads.mock.calls.filter(({ arguments: args }) => args[0] === 'egress.policy').length, 0);
     if (scenario === 'empty' || scenario === 'wider') {
       assert.notEqual((await harness.sandbox.exec('curl -sS https://93.184.216.34/v1/data')).exitCode, 0);
@@ -57,7 +69,8 @@ test(`native REST session: ${scenario}`, async (t) => {
       return;
     }
     if (scenario === 'routine') assert.ok((harness as any).agentTools.some((tool: any) => tool.name === 'submit_routine_result'));
-    assert.ok((harness as any).config.skills['asana-api']);
+    if (scenario !== 'personal-custom') assert.ok((harness as any).config.skills['asana-api']);
+    else assert.equal((harness as any).config.skills?.['asana-api'], undefined);
     const first = await harness.sandbox.exec('curl -sS https://93.184.216.34/v1/data');
     assert.equal(first.exitCode, 0, JSON.stringify(first));
     assert.equal(calls[0]?.headers.get('x-test-key'), 'Token fixture-secret');
@@ -76,7 +89,7 @@ test(`native REST session: ${scenario}`, async (t) => {
 }
 
 test('REST frozen ceiling rejects wider or changed identity and permits narrowing', () => {
-  const frozen = { id: 'rest', ...policy };
+  const frozen = { id: 'rest', ...basePolicy };
   assert.equal(runtimeApiDeclarationStillAllowed({ ...frozen, allowedMethods: ['GET'], pathPrefixes: ['/v1/data'] }, frozen), true);
   for (const change of [{ allowedMethods: ['DELETE'] }, { allowedHosts: ['evil.example'] }, { headerName: 'Other' }, { headerValuePrefix: 'Other ' }, { pathPrefixes: ['/v10'] }, { oauthScopes: ['extra'] }]) {
     assert.equal(runtimeApiDeclarationStillAllowed({ ...frozen, ...change }, frozen), false);

@@ -324,6 +324,7 @@ test('a complete first-turn plan contains policy descriptors but no auth materia
   }]);
   assert.deepEqual(plan.apiConnections, [{
     id: 'crm',
+    displayName: 'CRM',
     allowedHosts: ['api.example.com'],
     pathPrefixes: ['/v1/accounts'],
     allowedMethods: ['GET'],

@@ -80,6 +80,7 @@ export interface RuntimePlanMcpConnectionV2 {
 }
 
 export interface RuntimePlanApiConnectionV2 {
+  displayName?: string;
   presetId?: string;
   id: string;
   allowedHosts: string[];
@@ -726,6 +727,7 @@ function compileApiConnections(
     )
     .map((connection) => ({
       id: connection.id,
+      ...(connection.displayName ? { displayName: connection.displayName } : {}),
       allowedHosts: sortedUnique(connection.allowedHosts.map((host) => host.toLowerCase())),
       pathPrefixes: sortedUnique(connection.pathPrefixes),
       allowedMethods: sortedUnique(connection.allowedMethods.map((method) => method.toUpperCase())),
@@ -1133,7 +1135,8 @@ function parseApiConnection(value: unknown, index: number): RuntimePlanApiConnec
     'oauthProvider',
     'oauthScopes',
     'presetId',
-  ], ['headerValuePrefix', 'oauthProvider', 'oauthScopes', 'presetId']);
+    'displayName',
+  ], ['headerValuePrefix', 'oauthProvider', 'oauthScopes', 'presetId', 'displayName']);
   const authMode = oneOf(
     record.authMode,
     `${label}.authMode`,
@@ -1153,6 +1156,7 @@ function parseApiConnection(value: unknown, index: number): RuntimePlanApiConnec
   }
   return {
     id: boundedString(record.id, `${label}.id`, 1, 120),
+    ...(record.displayName === undefined ? {} : { displayName: boundedString(record.displayName, `${label}.displayName`, 1, 240) }),
     allowedHosts: sortedUniqueStringArray(record.allowedHosts, `${label}.allowedHosts`, 128),
     pathPrefixes: sortedUniqueStringArray(record.pathPrefixes, `${label}.pathPrefixes`, 128),
     allowedMethods: sortedUniqueStringArray(record.allowedMethods, `${label}.allowedMethods`, 16),
