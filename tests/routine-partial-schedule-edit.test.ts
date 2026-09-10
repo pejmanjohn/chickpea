@@ -12,8 +12,9 @@ import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = Date.UTC(2026, 10, 1, 8, 45);
 
-for (const edit of ['task', 'ordinary', 'time', 'timezone', 'cron'] as const) {
+for (const edit of ['task', 'ordinary', 'time', 'timezone', 'echo', 'completed', 'cron'] as const) {
 test(`partial schedule edit preserves canonical timing: ${edit}`, async () => {
+  let now = NOW;
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const owner = await createSlackOwner(identity, {
     now: NOW,
@@ -21,7 +22,7 @@ test(`partial schedule edit preserves canonical timing: ${edit}`, async () => {
     suffix: 'schedule-command',
   });
   const config = new SqliteConfigStore(':memory:', { agents: [] });
-  const routines = new SqliteRoutineStore(':memory:', () => NOW);
+  const routines = new SqliteRoutineStore(':memory:', () => now);
   try {
     const agent = await config.createAgent({
       id: 'agent_schedule_command',
@@ -50,7 +51,7 @@ test(`partial schedule edit preserves canonical timing: ${edit}`, async () => {
       config,
       identity,
       schedulingAvailable: true,
-      now: () => NOW,
+      now: () => now,
       createRunId: () => 'run_schedule_command',
     };
     const save = {
@@ -71,6 +72,28 @@ test(`partial schedule edit preserves canonical timing: ${edit}`, async () => {
       outputPolicy: 'post' as const,
     };
     const first = await executeSlackScheduleCommand(save, dependencies);
+    if (edit === 'completed') {
+      now = first.routine.nextRunAt! + 1;
+      const run = await routines.createOccurrence({
+        runId: 'rrun_completed_once', idempotencyKey: 'completed-once', routineId: first.routine.id,
+        routineVersion: first.routine.version, scheduledFor: first.routine.nextRunAt!,
+        triggerSource: 'once', queuedAt: now, deadlineAt: now + 60_000,
+      });
+      await routines.startAdmissionAttempt({ occurrenceId: run.id, owner: 'heartbeat',
+        invokeStartedAt: now, leaseUntil: now + 30_000 });
+      await routines.beginOccurrence({ occurrenceId: run.id, flueRunId: 'run_completed_once', startedAt: now });
+      await routines.transitionRun({ occurrenceId: run.id, from: ['running'], to: 'succeeded', at: now });
+      const completed = await routines.getRoutine(first.routine.id);
+      assert.equal(completed?.state, 'completed');
+      await assert.rejects(executeSlackScheduleCommand({ ...save, actionKey: 'rename_completed',
+        routineId: first.routine.id, expectedVersion: first.routine.version,
+        name: 'Renamed completed job', schedule: { kind: 'preserve' },
+      }, dependencies), { code: 'routine_one_time_elapsed' });
+      assert.deepEqual(await routines.getRoutine(first.routine.id), completed);
+      assert.equal(completed?.nextRunAt, null);
+      assert.equal((await routines.listRuns()).length, 1);
+      return;
+    }
     if (edit === 'task') assert.equal(new Date(first.routine.nextRunAt!).toISOString(), '2026-11-01T09:30:00.000Z');
     let captured: any;
     const sentinel = new Error('captured-before-reservation');
@@ -85,7 +108,8 @@ test(`partial schedule edit preserves canonical timing: ${edit}`, async () => {
           workspaceId: save.workspaceId, channelId: save.channelId, routineId: first.routine.id,
           expectedVersion: first.routine.version, taskText: 'Tell me what changed, including refunds.',
           ...(edit === 'time' ? { schedule: { kind: 'once', localDateTime: '2026-11-01T02:30' } } : {}),
-          ...(edit === 'timezone' ? { timezone: 'Pacific/Honolulu' } : {}) },
+          ...(edit === 'timezone' ? { timezone: 'Pacific/Honolulu' } : {}),
+          ...(edit === 'echo' ? { timezone: save.timezone } : {}) },
         dependencies: { ...dependencies, management: { reserveRequest: async (request: any) => {
           captured = request.operations[0]; throw sentinel;
         } } as any, service: {} as any }

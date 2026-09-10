@@ -395,6 +395,10 @@ async function preserveScheduleProjection(
   if (schedule.kind === 'cron') {
     return normalizeRoutineSchedule(schedule.expression, definition.timezone, at);
   }
+  if (schedule.at <= at) {
+    throw new RoutineStateError('routine_one_time_elapsed',
+      'This one-time job has elapsed. Choose a new future time to run it again.');
+  }
   return {
     schedule,
     scheduleJson: definition.scheduleJson,

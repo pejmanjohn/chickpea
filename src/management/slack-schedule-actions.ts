@@ -170,7 +170,7 @@ async function bindScheduleOperationToRequester(
     previous = { ...previous, ...revision.definition };
   }
   const schedule = operation.schedule ?? (previous
-    ? operation.timezone === undefined
+    ? operation.timezone === undefined || operation.timezone === previous.timezone
       ? { kind: 'preserve' as const }
       : previous.triggerKind === 'schedule'
         ? { kind: 'cron' as const, expression: previous.scheduleInput }
