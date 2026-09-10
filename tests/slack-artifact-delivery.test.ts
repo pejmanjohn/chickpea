@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ErrorCode, type WebClient } from '@slack/web-api';
+import type { WebClient } from '@slack/web-api';
 import { ARTIFACT_UNDELIVERED_NOTE, WebClientPresenter, deliverPersistedSlackPayload, rejectedFileFallbackPayload } from '../src/slack/web-client-presenter.ts';
 import type { CompletedSlackArtifactReceipt, SlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
 import type { SlackFileCompletionInput, SlackFileTransport } from '../src/slack/file-transport.ts';
@@ -147,7 +147,7 @@ test('interactive file message preserves the exact named file and code literals'
   assert.equal(h.posts.length, 1);
 });
 
-for (const error of [new SlackTransportError('chat.postMessage', 'gateway_network', { effectOutcome: 'unknown' }), { code: ErrorCode.PlatformError, data: { error: 'internal_error' } }]) {
+for (const error of [new SlackTransportError('chat.postMessage', 'gateway_network', { effectOutcome: 'unknown' }), new Error('Connection reset while posting')]) {
   test(`uncertain artifact post uses the existing unknown-delivery outcome without a replacement (${JSON.stringify(error)})`, async () => {
     const h = setup({ error, ledger: true });
     await assert.rejects(h.presenter.deliverFinal('Chart ready.', 'markdown', 'complete', undefined, [receipt]));
