@@ -127,10 +127,11 @@ async function discoverProtocolTools(
       for (const tool of page.tools) {
         if (tool.execution?.taskSupport === 'required') continue;
         if (tools.length >= MAX_TOOLS) break;
+        if (!supportedToolName(tool.name)) continue;
         const description = truncate(tool.description, DESCRIPTION_MAX);
         const title = truncate(tool.title ?? tool.annotations?.title, 160);
         tools.push({
-          name: truncate(tool.name, NAME_MAX) ?? tool.name.slice(0, NAME_MAX),
+          name: tool.name,
           ...(title ? { title } : {}),
           ...(description ? { description } : {}),
           ...(typeof tool.annotations?.readOnlyHint === 'boolean'
@@ -211,16 +212,14 @@ function mapTools(id: string, tools: ToolDefinition[]): McpDiscoveredTool[] {
   const mapped: McpDiscoveredTool[] = [];
   for (const raw of tools) {
     if (mapped.length >= MAX_TOOLS) break;
+    if (!supportedToolName(stripPrefix(id, raw.name))) continue;
     mapped.push(toDiscovered(id, raw));
   }
   return mapped;
 }
 
 function toDiscovered(id: string, raw: ToolDefinition): McpDiscoveredTool {
-  // The name is required. Fall back to the raw stripped value if collapse
-  // yields empty (a name should never be blank, but stay defensive).
-  const stripped = stripPrefix(id, raw.name);
-  const name = truncate(stripped, NAME_MAX) ?? stripped.slice(0, NAME_MAX);
+  const name = stripPrefix(id, raw.name);
   // Flue's adapter folds any MCP tool title into the description string, so the
   // adapted ToolDefinition never exposes a title field — we surface description
   // only. The stored McpDiscoveredTool keeps an optional `title` for schema
@@ -230,6 +229,12 @@ function toDiscovered(id: string, raw: ToolDefinition): McpDiscoveredTool {
     name,
     ...(description ? { description } : {}),
   };
+}
+
+function supportedToolName(name: string): boolean {
+  if (name.length <= NAME_MAX) return true;
+  console.warn('MCP discovery omitted a tool whose identifier exceeds the supported length.');
+  return false;
 }
 
 /**
