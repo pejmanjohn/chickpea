@@ -6,65 +6,63 @@ import type {
   SlackArtifactInput,
   SlackArtifactResult,
 } from '../slack/web-client-presenter.ts';
+import type { SandboxSelection } from './select.ts';
 
 export const MAX_ARTIFACT_BYTES = 8 * 1024 * 1024;
+export const POST_ARTIFACT_TOOL_NAME = 'post_artifact';
 
-interface WorkspaceArtifactCapabilityOptions {
-  sandbox: SandboxFactory;
+/**
+ * Model-facing guidance shared by every lane that mounts the artifact tools.
+ * It is deliberately short: the tool descriptions carry the mechanics.
+ */
+export const ARTIFACT_TOOLS_INSTRUCTION =
+  'Use `render_chart` when the user asks for a chart, graph, plot, or an image of numbers; use `post_artifact` to attach another file you wrote in the sandbox (CSV, Markdown, JSON, text, SVG, or a workspace build output). These tools deliver to the bound Slack destination. State the key figures in the final reply as well. If a tool reports uploaded: false with reason missing-scope, explain that this workspace does not permit uploads and include the content in the reply. If the reason is too-large, explain the returned size limit and offer a smaller file; do not retry the same file. If the current-request policy denies delivery because the user did not explicitly ask for a file or chart, answer in text and say they can ask explicitly for a chart or file. Never claim an upload succeeded without a successful tool result.';
+
+export interface ArtifactDestinationBinding {
   channel: string;
-  threadTs: string;
+  threadTs?: string;
   postArtifact(input: SlackArtifactInput): Promise<SlackArtifactResult>;
+  /**
+   * Which sandbox holds the file. The container sandbox freezes a bounded
+   * copy through the shell; the in-memory sandbox reads bytes directly,
+   * because just-bash pipes are string-based and would re-encode binary data.
+   */
+  sandboxKind: SandboxSelection;
 }
 
-interface WorkspaceArtifactToolOptions {
-  channel: string;
-  threadTs: string;
-  postArtifact(input: SlackArtifactInput): Promise<SlackArtifactResult>;
+interface WorkspaceArtifactCapabilityOptions extends ArtifactDestinationBinding {
+  sandbox: SandboxFactory;
+}
+
+const ARTIFACT_INPUT = v.object({
+  path: v.pipe(v.string(), v.minLength(1)),
+  filename: v.pipe(v.string(), v.minLength(1)),
+  title: v.optional(v.pipe(v.string(), v.minLength(1))),
+});
+
+function artifactToolDescription(sandboxKind: SandboxSelection): string {
+  return sandboxKind === 'cloudflare'
+    ? 'Attach a file from the coding workspace (a path under /workspace, up to 8 MiB for direct Slack apps or 700 KiB through the shared gateway) to the bound Slack destination. If the result reports uploaded: false, explain the reason and describe the verified artifact in the final reply instead.'
+    : 'Attach a file you wrote in the sandbox filesystem (an absolute path, or a path relative to the working directory, up to 8 MiB for direct Slack apps or 700 KiB through the shared gateway) to the bound Slack destination. Write the file first with the write tool or the shell, then call this with a filename the user will see. If the result reports uploaded: false, explain the reason and include the content in the final reply instead.';
 }
 
 /** Flue 2 hook-agent variant: the harness supplies the initialized sandbox. */
-export function createWorkspaceArtifactTool(options: WorkspaceArtifactToolOptions) {
+export function createWorkspaceArtifactTool(options: ArtifactDestinationBinding) {
   return defineTool({
-    name: 'post_artifact',
-    description:
-      'Attach a file written under /workspace to the current Slack thread. If Slack file uploads are unavailable, describe the verified artifact in the final reply instead.',
-    input: v.object({
-      path: v.pipe(v.string(), v.minLength(1)),
-      filename: v.pipe(v.string(), v.minLength(1)),
-      title: v.optional(v.pipe(v.string(), v.minLength(1))),
-    }),
+    name: POST_ARTIFACT_TOOL_NAME,
+    description: artifactToolDescription(options.sandboxKind),
+    input: ARTIFACT_INPUT,
     harness: true,
     async run({ data, harness }) {
-      assertArtifactDeliveryAllowed();
-      const sessionEnv = harness.sandbox;
-      const path = workspaceArtifactPath(data.path);
-      const stat = await sessionEnv.stat(path);
-      if (!stat.isFile) throw new Error('artifact path must identify a file');
-      if (!Number.isSafeInteger(stat.size) || Number(stat.size) < 0) {
-        throw new Error('artifact size is unavailable');
-      }
-      if (Number(stat.size) > MAX_ARTIFACT_BYTES) {
-        throw new Error('artifact exceeds the 8 MB upload limit');
-      }
-      const bytes = await readFrozenWorkspaceArtifact(sessionEnv, path);
-      return {
-        output: await options.postArtifact({
-          channel: options.channel,
-          threadTs: options.threadTs,
-          bytes,
-          filename: data.filename,
-          ...(data.title === undefined ? {} : { title: data.title }),
-        }),
-      };
+      return { output: await deliverArtifact(harness.sandbox, data, options) };
     },
   });
 }
 
 /**
- * Capture the SessionEnv Flue creates for the selected workspace and expose
- * one destination-bound upload tool. The model selects only a file under the
- * workspace root and presentation metadata; trusted code owns the Slack
- * channel and thread.
+ * Capture the SessionEnv Flue creates for the selected sandbox and expose
+ * one destination-bound upload tool. The model selects only a file path and
+ * presentation metadata; trusted code owns the Slack channel and thread.
  */
 export function createWorkspaceArtifactCapability(
   options: WorkspaceArtifactCapabilityOptions,
@@ -80,53 +78,75 @@ export function createWorkspaceArtifactCapability(
   };
 
   const tool = defineTool({
-    name: 'post_artifact',
-    description:
-      'Attach a file written under /workspace to the current Slack thread. If Slack file uploads are unavailable, describe the verified artifact in the final reply instead.',
-    input: v.object({
-      path: v.pipe(v.string(), v.minLength(1)),
-      filename: v.pipe(v.string(), v.minLength(1)),
-      title: v.optional(v.pipe(v.string(), v.minLength(1))),
-    }),
+    name: POST_ARTIFACT_TOOL_NAME,
+    description: artifactToolDescription(options.sandboxKind),
+    input: ARTIFACT_INPUT,
     async run({ data }) {
-      assertArtifactDeliveryAllowed();
       if (!sessionEnv) {
         throw new Error('workspace is not initialized');
       }
-      const path = workspaceArtifactPath(data.path);
-      const stat = await sessionEnv.stat(path);
-      if (!stat.isFile) {
-        throw new Error('artifact path must identify a file');
-      }
-      if (
-        typeof stat.size !== 'number' ||
-        !Number.isSafeInteger(stat.size) ||
-        stat.size < 0
-      ) {
-        throw new Error('artifact size is unavailable');
-      }
-      if (stat.size > MAX_ARTIFACT_BYTES) {
-        throw new Error('artifact exceeds the 8 MB upload limit');
-      }
-      const bytes = await readFrozenWorkspaceArtifact(sessionEnv, path);
-      return { output: await options.postArtifact({
-        channel: options.channel,
-        threadTs: options.threadTs,
-        bytes,
-        filename: data.filename,
-        ...(data.title === undefined ? {} : { title: data.title }),
-      }) };
+      return { output: await deliverArtifact(sessionEnv, data, options) };
     },
   });
 
   return { sandbox, tool };
 }
 
-async function readFrozenWorkspaceArtifact(
+async function deliverArtifact(
   sessionEnv: SessionEnv,
-  sourcePath: string,
+  data: v.InferOutput<typeof ARTIFACT_INPUT>,
+  binding: ArtifactDestinationBinding,
+): Promise<SlackArtifactResult> {
+  assertArtifactDeliveryAllowed();
+  const bytes = await readSandboxArtifact(sessionEnv, data.path, binding.sandboxKind);
+  return binding.postArtifact({
+    channel: binding.channel,
+    ...(binding.threadTs ? { threadTs: binding.threadTs } : {}),
+    bytes,
+    filename: data.filename,
+    ...(data.title === undefined ? {} : { title: data.title }),
+  });
+}
+
+/**
+ * Read a model-selected file with the strategy that is safe for its sandbox.
+ * Both strategies stat first, refuse anything over the cap without reading,
+ * and re-check the bytes actually obtained.
+ */
+export async function readSandboxArtifact(
+  sessionEnv: SessionEnv,
+  requestedPath: string,
+  sandboxKind: SandboxSelection,
 ): Promise<Uint8Array> {
-  return freezeWorkspaceArtifact(sessionEnv, sourcePath, MAX_ARTIFACT_BYTES, true);
+  if (sandboxKind === 'cloudflare') {
+    const path = workspaceArtifactPath(requestedPath);
+    await assertArtifactWithinCap(sessionEnv, path, MAX_ARTIFACT_BYTES);
+    return freezeWorkspaceArtifact(sessionEnv, path, MAX_ARTIFACT_BYTES, true);
+  }
+  const path = sandboxArtifactPath(sessionEnv, requestedPath);
+  await assertArtifactWithinCap(sessionEnv, path, MAX_ARTIFACT_BYTES);
+  // The in-memory filesystem hands back a complete buffer in one call, so a
+  // concurrent tool cannot grow the file between this read and the check.
+  const bytes = await sessionEnv.readFileBuffer(path);
+  if (bytes.byteLength > MAX_ARTIFACT_BYTES) throw artifactSizeError(MAX_ARTIFACT_BYTES);
+  return bytes;
+}
+
+async function assertArtifactWithinCap(
+  sessionEnv: SessionEnv,
+  path: string,
+  maxBytes: number,
+): Promise<void> {
+  const stat = await sessionEnv.stat(path);
+  if (!stat.isFile) throw new Error('artifact path must identify a file');
+  if (
+    typeof stat.size !== 'number' ||
+    !Number.isSafeInteger(stat.size) ||
+    stat.size < 0
+  ) {
+    throw new Error('artifact size is unavailable');
+  }
+  if (stat.size > maxBytes) throw artifactSizeError(maxBytes);
 }
 
 /** Freeze a workspace-owned file under a trusted random name before reading it. */
@@ -141,12 +161,7 @@ export async function freezeWorkspaceArtifact(
     throw new Error('artifact size limit is invalid');
   }
   if (!sourceAlreadyValidated) {
-    const sourceStat = await sessionEnv.stat(normalizedSource);
-    if (!sourceStat.isFile) throw new Error('artifact path must identify a file');
-    if (!Number.isSafeInteger(sourceStat.size) || Number(sourceStat.size) < 0) {
-      throw new Error('artifact size is unavailable');
-    }
-    if (Number(sourceStat.size) > maxBytes) throw artifactSizeError(maxBytes);
+    await assertArtifactWithinCap(sessionEnv, normalizedSource, maxBytes);
   }
   const tempPath = randomWorkspaceArtifactPath();
   try {
@@ -218,4 +233,24 @@ export function workspaceArtifactPath(path: string): string {
     throw new Error('artifact path must be a normalized file under /workspace');
   }
   return `/workspace/${relative}`;
+}
+
+/**
+ * Resolve a path inside the in-memory sandbox. Relative paths follow the
+ * session's working directory; the result must be an absolute, normalized
+ * file path so the model cannot smuggle traversal segments past the check.
+ */
+export function sandboxArtifactPath(
+  sessionEnv: Pick<SessionEnv, 'resolvePath'>,
+  requestedPath: string,
+): string {
+  const trimmed = requestedPath.trim();
+  if (trimmed.length === 0) throw new Error('artifact path is required');
+  const resolved = sessionEnv.resolvePath(trimmed);
+  if (!resolved.startsWith('/')) throw new Error('artifact path must resolve to an absolute path');
+  const segments = resolved.slice(1).split('/');
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    throw new Error('artifact path must be a normalized file path');
+  }
+  return resolved;
 }

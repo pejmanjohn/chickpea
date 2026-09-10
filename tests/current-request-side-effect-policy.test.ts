@@ -127,3 +127,43 @@ test('MCP outbound allowlist applies without argument constraints and rejects ba
     }), error);
   }
 });
+
+test('chart and file requests are explicit artifact delivery for both delivery tools', async () => {
+  const delivered = async () => 'delivered';
+  for (const agentName of MANAGED_SUBMISSION_AGENT_NAMES) {
+    for (const request of [
+      "Can you generate a bar chart image that shows today's bookings broken down by exam",
+      'Can you generate a bar chart image that shows today’s bookings broken down by exam',
+      'Make a bar chart of bookings by exam.',
+      'Plot revenue by week as a line graph',
+      'Export the results as a CSV file',
+      'Visualize signups by channel',
+    ]) {
+      await submission(agentName, request, async (context) => {
+        assert.doesNotThrow(assertArtifactDeliveryAllowed, request);
+        for (const toolName of ['post_artifact', 'render_chart']) {
+          assert.equal(await memoryToolPolicyInterceptor(
+            { type: 'tool', toolCallId: toolName, toolName }, context, delivered,
+          ), 'delivered', `${toolName}: ${request}`);
+        }
+      });
+    }
+    for (const request of [
+      'Read today’s bookings.',
+      'How did the chart look last week?',
+      "Don't make a chart, just give me the numbers",
+      'Yes, use the details we agreed on.',
+    ]) {
+      await submission(agentName, request, async (context) => {
+        assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' }, request);
+        for (const toolName of ['post_artifact', 'render_chart']) {
+          await assert.rejects(
+            memoryToolPolicyInterceptor({ type: 'tool', toolCallId: toolName, toolName }, context, delivered),
+            { name: 'CurrentRequestSideEffectDeniedError' },
+            `${toolName}: ${request}`,
+          );
+        }
+      });
+    }
+  }
+});

@@ -147,8 +147,13 @@ import {
   requireSandboxTurnId,
   type SandboxTurnContext,
 } from '../sandbox/turn-context.ts';
-import { createWorkspaceArtifactCapability } from '../sandbox/artifact-tool.ts';
-import { createWorkspaceArtifactTool } from '../sandbox/artifact-tool.ts';
+import {
+  ARTIFACT_TOOLS_INSTRUCTION,
+  createWorkspaceArtifactCapability,
+  createWorkspaceArtifactTool,
+  POST_ARTIFACT_TOOL_NAME,
+} from '../sandbox/artifact-tool.ts';
+import { createChartArtifactTool, RENDER_CHART_TOOL_NAME } from '../sandbox/chart-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
@@ -174,7 +179,7 @@ import {
   type SlackAgentCreationTerminalIntent,
 } from '../slack/agent-creation-terminal.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
-import { WebClientPresenter } from '../slack/web-client-presenter.ts';
+import { WebClientPresenter, type SlackArtifactInput, type SlackArtifactResult } from '../slack/web-client-presenter.ts';
 import {
   parseSlackManagementSignal,
   useWorkspaceManagementSlackTools,
@@ -970,38 +975,48 @@ export async function createSlackAgentRuntime(
     monthlySessionCap: sandboxSettings.monthlySessionCap,
   });
   let tools = [...mcpTools, ...managedTools];
-  if (sandboxSelection !== 'bash' && artifactThreadTs) {
+  if (artifactThreadTs) {
     let presenter: Promise<WebClientPresenter> | undefined;
+    const postArtifact = async (input: SlackArtifactInput): Promise<SlackArtifactResult> => {
+      presenter ??= Promise.all([
+        resolveSlackInstallationExecutionContext(
+          workspaceId,
+          env,
+          { settings: settingsStore },
+        ),
+        resolveSlackPublicUrl(env, settingsStore).catch(() => undefined),
+      ]).then(([installation, publicUrl]) => {
+        const agentAvatarUrl = agentAvatarUrlForPresentation(config.agent, publicUrl);
+        return new WebClientPresenter(installation.client, {
+          channelId,
+          threadTs: artifactThreadTs,
+          agentName: config.agent.name,
+          ...(agentAvatarUrl
+            ? { agentAvatarUrl }
+            : {}),
+          agentId: config.agent.id,
+          workspaceId,
+        });
+      });
+      return (await presenter).postArtifact(input);
+    };
+    // Every sandbox kind delivers files: the container freezes a bounded copy
+    // through the shell, the in-memory sandbox reads its bytes directly, and
+    // charts are rendered in-process, so no Agent depends on the coding tier.
     const artifactCapability = createWorkspaceArtifactCapability({
       sandbox,
+      sandboxKind: sandboxSelection,
       channel: channelId,
       threadTs: artifactThreadTs,
-      postArtifact: async (input) => {
-        presenter ??= Promise.all([
-          resolveSlackInstallationExecutionContext(
-            workspaceId,
-            env,
-            { settings: settingsStore },
-          ),
-          resolveSlackPublicUrl(env, settingsStore).catch(() => undefined),
-        ]).then(([installation, publicUrl]) => {
-          const agentAvatarUrl = agentAvatarUrlForPresentation(config.agent, publicUrl);
-          return new WebClientPresenter(installation.client, {
-            channelId,
-            threadTs: artifactThreadTs,
-            agentName: config.agent.name,
-            ...(agentAvatarUrl
-              ? { agentAvatarUrl }
-              : {}),
-            agentId: config.agent.id,
-            workspaceId,
-          });
-        });
-        return (await presenter).postArtifact(input);
-      },
+      postArtifact,
     });
     sandbox = artifactCapability.sandbox;
-    tools = [...mcpTools, ...managedTools, artifactCapability.tool];
+    tools = [
+      ...mcpTools,
+      ...managedTools,
+      artifactCapability.tool,
+      createChartArtifactTool({ channel: channelId, threadTs: artifactThreadTs, postArtifact }),
+    ];
   }
 
   if (input.registerActivityContext !== false) {
@@ -1021,11 +1036,12 @@ export async function createSlackAgentRuntime(
     for (const toolName of ['bash', 'read', 'write', 'edit', 'grep', 'glob']) {
       activityDescriptors.push({ toolName, descriptor: sandboxDescriptor });
     }
-    if (tools.some(({ name }) => name === 'post_artifact')) {
-      activityDescriptors.push({
-        toolName: 'post_artifact',
-        descriptor: genericSemanticDescriptor('artifact'),
-      });
+    if (tools.some(({ name }) => name === POST_ARTIFACT_TOOL_NAME)) {
+      const artifact = genericSemanticDescriptor('artifact');
+      activityDescriptors.push(
+        { toolName: POST_ARTIFACT_TOOL_NAME, descriptor: artifact },
+        { toolName: RENDER_CHART_TOOL_NAME, descriptor: artifact },
+      );
     }
     registerActivityContext(id, buildSemanticActivityContext(activityDescriptors, [
       ...(managedTools.length > 0 ? ['managed_connector' as const] : []),
@@ -1034,7 +1050,7 @@ export async function createSlackAgentRuntime(
         : []),
       ...(skills.length > 0 ? ['skill' as const] : []),
       ...(repositoryAccess.grants.length > 0 ? ['repository' as const] : []),
-      ...(tools.some(({ name }) => name === 'post_artifact') ? ['artifact' as const] : []),
+      ...(tools.some(({ name }) => name === POST_ARTIFACT_TOOL_NAME) ? ['artifact' as const] : []),
     ]));
   }
 
@@ -1046,9 +1062,11 @@ export async function createSlackAgentRuntime(
     // tool call even at low effort, so disable extra reasoning only for the
     // Workers AI GLM family. Other models keep Flue's policy.
     ...(thinkingLevel ? { thinkingLevel } : {}),
-    instructions: managedTools.length > 0
-      ? `${config.instructions}\n\n${MANAGED_CONNECTION_RESULT_INSTRUCTION}`
-      : config.instructions,
+    instructions: [
+      config.instructions,
+      ...(managedTools.length > 0 ? [MANAGED_CONNECTION_RESULT_INSTRUCTION] : []),
+      ...(tools.some(({ name }) => name === POST_ARTIFACT_TOOL_NAME) ? [ARTIFACT_TOOLS_INSTRUCTION] : []),
+    ].join('\n\n'),
     tools,
     sandbox,
     ...(skills.length > 0 ? { skills } : {}),
@@ -1191,6 +1209,7 @@ export function useRuntimePlanAgent(
     sandboxConversationKey?: string;
     connectorUsageCorrelation?: import('../connections/managed-tools.ts').ManagedToolUsageCorrelation;
     toolsDisabled?: boolean;
+    artifactToolsDisabled?: boolean;
     includeAgentAuthoringSkill?: boolean;
     additionalActivityToolDescriptors?: readonly ActivityToolDescriptor[];
   } = {},
@@ -1275,8 +1294,9 @@ export function useRuntimePlanAgent(
     useSandbox(createRuntimePlanPreparationSandbox(plan));
   } else {
     useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
-    if (plan.sandbox.mode === 'cloudflare') {
-      useTool(createRuntimePlanArtifactTool(plan));
+    if (!options.artifactToolsDisabled) {
+      for (const tool of createRuntimePlanArtifactTools(plan)) useTool(tool);
+      useInstruction(ARTIFACT_TOOLS_INSTRUCTION);
     }
   }
 }
@@ -1496,12 +1516,16 @@ function runtimeRepositoryMatches(
     Boolean(current.allRepos) === Boolean(planned.allRepos);
 }
 
-function createRuntimePlanArtifactTool(plan: RuntimePlanV2) {
+/** Destination-bound file and chart delivery for hook-mounted runtime plans. */
+function createRuntimePlanArtifactTools(plan: RuntimePlanV2) {
   let presenter: Promise<WebClientPresenter> | undefined;
-  return createWorkspaceArtifactTool({
+  // Files follow the frozen artifact destination, not the conversation key:
+  // a scheduled run's conversation thread is a synthetic due-time stamp and a
+  // DM session key is `dm`, neither of which Slack accepts as thread_ts.
+  const binding = {
     channel: plan.artifactDestination.channelId,
-    threadTs: plan.conversation.threadTs,
-    async postArtifact(input) {
+    ...(plan.artifactDestination.threadTs ? { threadTs: plan.artifactDestination.threadTs } : {}),
+    async postArtifact(input: SlackArtifactInput): Promise<SlackArtifactResult> {
       presenter ??= (async () => {
         const env = await resolveAgentPlatformEnv();
         const config = getConfigStore(env);
@@ -1528,7 +1552,11 @@ function createRuntimePlanArtifactTool(plan: RuntimePlanV2) {
       })();
       return (await presenter).postArtifact(input);
     },
-  });
+  };
+  return [
+    createWorkspaceArtifactTool({ ...binding, sandboxKind: plan.sandbox.mode }),
+    createChartArtifactTool(binding),
+  ];
 }
 
 export function thinkingLevelForModel(model: string): 'off' | undefined {

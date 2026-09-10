@@ -2,6 +2,8 @@ import type { SlackInboundEnvelope } from '../transport/types.ts';
 
 export const CHICKPEA_GATEWAY_PROTOCOL_VERSION = 1 as const;
 export const MAX_GATEWAY_FRAME_BYTES = 1_048_576;
+/** Leaves space for base64 expansion, metadata, and the signed request envelope. */
+export const MAX_GATEWAY_ARTIFACT_BYTES = 700 * 1024;
 export const GATEWAY_DURABLE_ADMISSION_CAPABILITY = 'durable_admission_v1' as const;
 export type GatewaySessionCapability = typeof GATEWAY_DURABLE_ADMISSION_CAPABILITY;
 

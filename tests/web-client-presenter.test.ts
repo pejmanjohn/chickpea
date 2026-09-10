@@ -477,6 +477,18 @@ test('postArtifact sends bytes to files.uploadV2 in the requested thread', async
   });
 });
 
+test('postArtifact reports the shared gateway file limit and omits an absent thread', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const presenter = presenterWith({ files: { async uploadV2(input: Record<string, unknown>) {
+    calls.push(input);
+    throw new SlackTransportError('files.uploadV2', 'gateway_request_too_large');
+  } } });
+  assert.deepEqual(await presenter.postArtifact({
+    channel: 'C_ARTIFACT', bytes: new Uint8Array([1]), filename: 'report.csv',
+  }), { uploaded: false, reason: 'too-large', maxBytes: 700 * 1024 });
+  assert.equal(Object.hasOwn(calls[0]!, 'thread_ts'), false);
+});
+
 test('postArtifact degrades missing Slack file-upload scope errors', async () => {
   for (const error of ['missing_scope', 'not_allowed_token_type']) {
     const presenter = presenterWith({

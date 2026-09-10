@@ -28,6 +28,22 @@ test('the unattended prompt makes host-owned Slack delivery explicit', () => {
   assert.doesNotMatch(directInstructions, /owning Slack channel/i);
 });
 
+test('the unattended prompt reconciles host text delivery with tool file delivery', () => {
+  const channel = routineExecutionInstructions().join('\n');
+  assert.match(channel, /Files are the one exception to host delivery/);
+  assert.match(channel, /`render_chart` or `post_artifact`/);
+  assert.match(channel, /attach as a new file in the owning Slack channel/);
+  assert.match(channel, /Still return the text result in message/);
+  assert.match(channel, /uploaded: true/);
+
+  const channelThread = routineExecutionInstructions('channel', true).join('\n');
+  assert.match(channelThread, /attach to the saved thread in the owning Slack channel/);
+
+  const direct = routineExecutionInstructions('direct_thread').join('\n');
+  assert.match(direct, /attach to the same private originating thread/);
+  assert.doesNotMatch(direct, /owning Slack channel/i);
+});
+
 test('a private routine hydrates only its stored thread with the saved task as authoritative intent', async () => {
   const threadTs = '1785000000.000100';
   let request: Record<string, string> | undefined;

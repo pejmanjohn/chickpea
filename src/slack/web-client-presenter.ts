@@ -41,6 +41,7 @@ import type {
 import { slackClientMessageId } from './transport/message-id.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { slackPlatformErrorCode } from './errors.ts';
+import { MAX_GATEWAY_ARTIFACT_BYTES } from './gateway/protocol.ts';
 
 /** Static failure copy keeps raw provider errors out of Slack (scenario S15). */
 export const PROVIDER_FAILURE_TEXT =
@@ -89,7 +90,7 @@ export interface SlackPresenterTarget {
 
 export interface SlackArtifactInput {
   channel: string;
-  threadTs: string;
+  threadTs?: string;
   bytes: Uint8Array;
   filename: string;
   title?: string;
@@ -97,7 +98,8 @@ export interface SlackArtifactInput {
 
 export type SlackArtifactResult =
   | { uploaded: true }
-  | { uploaded: false; reason: 'missing-scope' };
+  | { uploaded: false; reason: 'missing-scope' }
+  | { uploaded: false; reason: 'too-large'; maxBytes: number };
 
 export interface SlackReactionCoordinate {
   channelId: string;
@@ -586,7 +588,7 @@ export class WebClientPresenter {
     try {
       await this.client.files.uploadV2({
         channel_id: input.channel,
-        thread_ts: input.threadTs,
+        ...(input.threadTs ? { thread_ts: input.threadTs } : {}),
         file: Buffer.from(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength),
         filename: input.filename,
         ...(input.title === undefined ? {} : { title: input.title }),
@@ -594,6 +596,9 @@ export class WebClientPresenter {
       } as unknown as Parameters<WebClient['files']['uploadV2']>[0]);
       return { uploaded: true };
     } catch (err) {
+      if (err instanceof SlackTransportError && err.code === 'gateway_request_too_large') {
+        return { uploaded: false, reason: 'too-large', maxBytes: MAX_GATEWAY_ARTIFACT_BYTES };
+      }
       if (isMissingFilesScopeError(err)) {
         return { uploaded: false, reason: 'missing-scope' };
       }

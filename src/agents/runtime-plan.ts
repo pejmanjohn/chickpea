@@ -179,6 +179,12 @@ export interface RuntimePlanV2 {
   artifactDestination: {
     kind: 'slack_conversation';
     channelId: string;
+    /**
+     * Trusted Slack thread for file and chart delivery. Absent means the
+     * files post at the top level of the conversation. Never a synthetic
+     * timestamp: scheduled runs set it only from the saved routine thread.
+     */
+    threadTs?: string;
   };
   harnessRevision: string;
 }
@@ -198,6 +204,13 @@ export interface CompileRuntimePlanV2Input {
   connectionAuthorizations?: readonly PersonalConnectionAuthorizationOption[];
   connectionChoices?: readonly RuntimePlanConnectionChoiceV2[];
   connectionSelections?: readonly ConnectionAccountSelection[];
+  /**
+   * Thread that `post_artifact` and `render_chart` deliver into. Defaults to
+   * the turn's real Slack thread. Scheduled runs must pass the saved routine
+   * destination thread, or `null` for top-level channel delivery, because
+   * their turn timestamp is synthetic and not a Slack thread.
+   */
+  artifactThreadTs?: string | null;
 }
 
 export interface RuntimePlanActivityContextOptions {
@@ -222,6 +235,9 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     ? input.turn.threadTs
     : input.turn.sessionThreadTs ?? input.turn.threadTs;
   const continuityKey = opaqueId('agent', slackAgentThreadKey(input.turn, input.assignment));
+  const artifactThreadTs = input.artifactThreadTs === undefined
+    ? input.turn.threadTs
+    : input.artifactThreadTs ?? undefined;
   const effectiveConnections = input.effectiveConnections ?? [];
   const mcpConnections = projectEffectiveMcpConnections(effectiveConnections);
   const apiConnections = projectEffectiveApiConnections(effectiveConnections);
@@ -288,13 +304,16 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     artifactDestination: {
       kind: 'slack_conversation',
       channelId: input.turn.channelId,
+      ...(artifactThreadTs ? { threadTs: artifactThreadTs } : {}),
     },
   };
   const plan: RuntimePlanV2 = {
     ...planWithoutRevision,
     harnessRevision: computeHarnessRevision(planWithoutRevision),
   };
-  return parseRuntimePlanV2(plan);
+  // A freshly compiled plan states its artifact thread explicitly; an absent
+  // key here means top-level delivery, not a record that predates the field.
+  return parseRuntimePlanV2(plan, { legacyArtifactThread: 'none' });
 }
 
 /**
@@ -346,13 +365,13 @@ export function buildRuntimePlanActivityContext(
   if (plan.repositories.length > 0) families.add('repository');
   if (plan.apiConnections.length > 0) families.add('custom_connection');
 
-  if (plan.sandbox.mode === 'cloudflare') {
-    descriptors.push({
-      toolName: 'post_artifact',
-      descriptor: genericSemanticDescriptor('artifact'),
-    });
-    families.add('artifact');
-  }
+  // File and chart delivery is mounted for every sandbox mode.
+  const artifact = genericSemanticDescriptor('artifact');
+  descriptors.push(
+    { toolName: 'post_artifact', descriptor: artifact },
+    { toolName: 'render_chart', descriptor: artifact },
+  );
+  families.add('artifact');
 
   for (const descriptor of options.additionalToolDescriptors ?? []) {
     descriptors.push(descriptor);
@@ -456,7 +475,17 @@ export function runtimePlanSandboxConversationKey(
 }
 
 /** Strict allowlist parser for persisted/runtime-provided Flue initial data. */
-export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
+export type RuntimePlanLegacyArtifactThread = 'conversation' | 'none';
+
+export interface ParseRuntimePlanV2Options {
+  /** Artifact thread for records that predate `artifactDestination.threadTs`. */
+  legacyArtifactThread?: RuntimePlanLegacyArtifactThread;
+}
+
+export function parseRuntimePlanV2(
+  value: unknown,
+  options: ParseRuntimePlanV2Options = {},
+): RuntimePlanV2 {
   const record = exactRecord(value, 'runtime plan', [
     'schemaVersion',
     'continuityPolicy',
@@ -616,16 +645,22 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
   const sandbox = {
     mode: oneOf(sandboxRecord.mode, 'sandbox.mode', ['bash', 'cloudflare'] as const),
   };
-  const artifactRecord = exactRecord(record.artifactDestination, 'artifactDestination', [
-    'kind',
-    'channelId',
-  ]);
+  const artifactRecord = exactRecord(
+    record.artifactDestination,
+    'artifactDestination',
+    ['kind', 'channelId', 'threadTs'],
+    ['threadTs'],
+  );
   if (artifactRecord.kind !== 'slack_conversation') {
     throw new Error('Runtime plan artifactDestination.kind is invalid.');
   }
+  const artifactThreadTs = 'threadTs' in artifactRecord
+    ? artifactThread(artifactRecord.threadTs)
+    : legacyArtifactThread(conversation.threadTs, options.legacyArtifactThread ?? 'conversation');
   const artifactDestination: RuntimePlanV2['artifactDestination'] = {
     kind: 'slack_conversation',
     channelId: slackIdentity(artifactRecord.channelId, 'artifactDestination.channelId'),
+    ...(artifactThreadTs ? { threadTs: artifactThreadTs } : {}),
   };
   if (artifactDestination.channelId !== conversation.channelId) {
     throw new Error('Runtime plan artifact destination does not match its conversation.');
@@ -1340,10 +1375,34 @@ function slackIdentity(value: unknown, label: string): string {
 
 function conversationThread(value: unknown): string {
   const parsed = boundedString(value, 'conversation.threadTs', 2, 80);
-  if (parsed !== 'dm' && !/^\d{1,20}\.\d{1,10}$/.test(parsed)) {
+  if (parsed !== 'dm' && !SLACK_TIMESTAMP.test(parsed)) {
     throw new Error('Runtime plan conversation.threadTs is invalid.');
   }
   return parsed;
+}
+
+const SLACK_TIMESTAMP = /^\d{1,20}\.\d{1,10}$/;
+
+/** A persisted artifact thread must be a real Slack timestamp, never the `dm` session key. */
+function artifactThread(value: unknown): string {
+  const parsed = boundedString(value, 'artifactDestination.threadTs', 2, 80);
+  if (!SLACK_TIMESTAMP.test(parsed)) {
+    throw new Error('Runtime plan artifactDestination.threadTs is invalid.');
+  }
+  return parsed;
+}
+
+/**
+ * Plans persisted before `artifactDestination.threadTs` existed. Interactive
+ * plans may reuse their real conversation thread; a scheduled envelope must
+ * not, because its conversation thread can be a synthetic due-time stamp.
+ */
+function legacyArtifactThread(
+  conversationThreadTs: string,
+  policy: RuntimePlanLegacyArtifactThread,
+): string | undefined {
+  if (policy === 'none') return undefined;
+  return SLACK_TIMESTAMP.test(conversationThreadTs) ? conversationThreadTs : undefined;
 }
 
 function opaqueAgentId(value: unknown, label: string): string {

@@ -18,6 +18,7 @@ import {
   CHICKPEA_GATEWAY_PROTOCOL_VERSION,
   GATEWAY_ATTACHMENT_REPRESENTATIONS,
   MAX_GATEWAY_FRAME_BYTES,
+  MAX_GATEWAY_ARTIFACT_BYTES,
   gatewayOperationAllowed,
   parseGatewayClaimCreateResponse,
   parseGatewayClaimStatusResponse,
@@ -476,6 +477,13 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     if (!gatewayOperationAllowed(operation)) {
       throw new SlackTransportError(String(operation), 'operation_not_allowed');
     }
+    // Refuse unsendable files before base64 allocation and request signing.
+    if (operation === 'files.uploadV2' && input.file instanceof Uint8Array &&
+      input.file.byteLength > MAX_GATEWAY_ARTIFACT_BYTES) {
+      throw new SlackTransportError(operation, 'gateway_request_too_large', {
+        retryable: false, effectOutcome: 'failed',
+      });
+    }
     const binding = await this.loadBinding();
     if (!binding) throw new SlackTransportError(operation, 'gateway_not_connected', { retryable: true });
     const identity = await this.identity();
@@ -492,9 +500,16 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       input: encodeGatewayInput(input),
     } satisfies Omit<GatewayOperationRequest, 'signature'>;
     const request = await signGatewayRequest(identity, unsigned);
+    const body = JSON.stringify(request);
+    if (new TextEncoder().encode(body).byteLength > MAX_GATEWAY_FRAME_BYTES) {
+      throw new SlackTransportError(operation, 'gateway_request_too_large', {
+        retryable: false,
+        effectOutcome: 'failed',
+      });
+    }
     const response = parseGatewayOperationResponse(await this.requestJson(
       `/v1/workspaces/${encodeURIComponent(binding.workspaceId)}/operations`,
-      { method: 'POST', body: JSON.stringify(request) },
+      { method: 'POST', body },
       operation,
     ));
     if (response.requestId !== request.requestId) {

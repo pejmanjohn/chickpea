@@ -14,7 +14,7 @@ import { serializeCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 
 const basePolicy = { kind: 'api' as const, authMode: 'credential' as const, allowedHosts: ['93.184.216.34', 'app.asana.com'], pathPrefixes: ['/v1'], headerName: 'X-Test-Key', headerValuePrefix: 'Token ', allowedMethods: ['GET', 'HEAD', 'POST'] };
 
-for (const scenario of ['live', 'empty', 'wider', 'routine', 'personal-custom'] as const) {
+for (const scenario of ['live', 'empty', 'wider', 'routine', 'routine-scheduled', 'routine-scheduled-top', 'personal-custom'] as const) {
 test(`native REST session: ${scenario}`, async (t) => {
   const policy = { ...basePolicy, allowedHosts: scenario === 'personal-custom' ? ['93.184.216.34'] : [...basePolicy.allowedHosts] };
   const store = getConfigStore();
@@ -47,8 +47,16 @@ test(`native REST session: ${scenario}`, async (t) => {
   assert.doesNotMatch(JSON.stringify(plan), /fixture-secret/);
   const context = createFlueContext({ id: 'rest-test', agentName: 'chickpea-slack-v2', env: {}, agentConfig: { resolveModel: () => ({}) } as any });
   const signal = { kind: 'signal', type: 'slack.message', tagName: 'slack_message', body: serializeCurrentRequestEnvelope('Read', false, 'U_TEST', '1787000000.000200', { schemaVersion: 2, progressiveStreamingOffered: true }), attributes: { workspaceId: 'T_TEST', channelId: 'C_TEST', threadTs: plan.conversation.threadTs, slackUserId: 'U_TEST', eventId: 'E_TEST', messageTs: '1787000000.000200', turnJobId: 'proof' } } as any;
-  const harness = scenario === 'routine'
-    ? await context.initializeRootHarness(ChickpeaRoutineExecution, signal, { runtimePlan: plan, requestedModel: plan.model })
+  const scheduled = scenario.startsWith('routine-scheduled');
+  const routineSignal = scheduled ? {
+    kind: 'signal', type: 'schedule', body: 'Create and attach a chart.',
+    attributes: {
+      workspaceId: 'T_TEST', conversationId: 'C_TEST', ownerAgentId: agent.id,
+      destinationKind: 'channel', threadTs: scenario === 'routine-scheduled-top' ? '' : '1786999999.000900',
+    },
+  } as const : signal;
+  const harness = scenario.startsWith('routine')
+    ? await context.initializeRootHarness(ChickpeaRoutineExecution, routineSignal, { runtimePlan: plan, requestedModel: plan.model })
     : await context.initializeRootHarness(ChickpeaSlack, signal, plan);
   try {
     const instructions = String((harness as any).config.instructions);
@@ -75,7 +83,13 @@ test(`native REST session: ${scenario}`, async (t) => {
       }
       return;
     }
-    if (scenario === 'routine') assert.ok((harness as any).agentTools.some((tool: any) => tool.name === 'submit_routine_result'));
+    if (scenario.startsWith('routine')) {
+      const names = (harness as any).agentTools.map((tool: any) => tool.name);
+      assert.ok(names.includes('submit_routine_result'));
+      for (const name of ['post_artifact', 'render_chart']) assert.equal(names.includes(name), scheduled);
+      if (scheduled) assert.doesNotMatch(instructions, /old queued occurrence has no verified file destination/);
+      else assert.match(instructions, /old queued occurrence has no verified file destination/);
+    }
     if (scenario !== 'personal-custom') assert.ok((harness as any).config.skills['asana-api']);
     else assert.equal((harness as any).config.skills?.['asana-api'], undefined);
     const first = await harness.sandbox.exec('curl -sS https://93.184.216.34/v1/data');

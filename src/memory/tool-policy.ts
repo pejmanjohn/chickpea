@@ -49,14 +49,17 @@ interface SubmissionPolicyState {
 
 const submissionPolicy = new AsyncLocalStorage<SubmissionPolicyState>();
 
+/** Tools whose only side effect is delivering a file into the current thread. */
+export const ARTIFACT_DELIVERY_TOOL_NAMES: ReadonlySet<string> = new Set(['post_artifact', 'render_chart']);
+
 const ARTIFACT_ACTION_PATTERN =
-  'attach|capture|create|generate|give|include|make|post|render|send|share|show|screenshot|take|upload';
+  'attach|capture|chart|create|draw|export|generate|give|graph|include|make|plot|post|render|send|share|show|screenshot|take|upload|visuali[sz]e';
 const ARTIFACT_TARGET_PATTERN =
-  'artifact|document|file|image|report|screenshot|video';
+  'artifact|chart|csv|document|file|graph|image|plot|png|report|screenshot|spreadsheet|video|visuali[sz]ation|visuali[sz]e';
 const ARTIFACT_ACTION = new RegExp(`\\b(?:${ARTIFACT_ACTION_PATTERN})\\b`, 'i');
 const ARTIFACT_TARGET = new RegExp(`\\b(?:${ARTIFACT_TARGET_PATTERN})\\b`, 'i');
 const DIRECT_TASK_START =
-  /^(?:attach|build|capture|change|create|edit|generate|give|include|make|open|post|prepare|render|run|send|share|show|screenshot|take|test|update|upload|write)\b/i;
+  /^(?:attach|build|capture|change|chart|create|draw|edit|export|generate|give|graph|include|make|open|plot|post|prepare|render|run|send|share|show|screenshot|take|test|update|upload|visuali[sz]e|write)\b/i;
 
 /**
  * A terminal app-generated envelope is the only source of admission state.
@@ -286,7 +289,7 @@ export const memoryToolPolicyInterceptor: FlueExecutionInterceptor = async (
   }
 
   if (operation.type === 'tool' && active !== undefined) {
-    if (operation.toolName === 'post_artifact') {
+    if (ARTIFACT_DELIVERY_TOOL_NAMES.has(operation.toolName)) {
       assertArtifactDeliveryAllowed();
       return next();
 

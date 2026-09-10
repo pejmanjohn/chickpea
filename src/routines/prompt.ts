@@ -57,6 +57,9 @@ export function routineExecutionInstructions(
       : `Chickpea itself delivers your returned message ${channelThread ? 'to the saved thread in the owning Slack channel' : 'as a new message in the owning Slack channel'}. When the task says to post, send, or reply here, return that channel-visible content in message; do not use tools, sandbox commands, network calls, credentials, tokens, or Chickpea internals to deliver it to Slack, and do not duplicate host delivery.`,
     'Use a Slack tool only when the saved task explicitly requests an additional Slack side effect distinct from posting this routine result.',
     direct
+      ? 'Files are the one exception to host delivery: when the saved task asks for a file, chart, image, or export, use `render_chart` or `post_artifact`; they attach to the same private originating thread. Still return the text result in message, and do not describe the file as posted unless the tool reported uploaded: true.'
+      : `Files are the one exception to host delivery: when the saved task asks for a file, chart, image, or export, use \`render_chart\` or \`post_artifact\`; they attach ${channelThread ? 'to the saved thread in the owning Slack channel' : 'as a new file in the owning Slack channel'}. Still return the text result in message, and do not describe the file as posted unless the tool reported uploaded: true.`,
+    direct
       ? 'Return outcome="no_op" when nothing should be posted. Otherwise return outcome="succeeded", a concise thread-visible message, and a stable non-secret changeKey when the routine posts only on change.'
       : 'Return outcome="no_op" when nothing should be posted. Otherwise return outcome="succeeded", a concise channel-visible message, and a stable non-secret changeKey when the routine posts only on change.',
   ];

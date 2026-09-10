@@ -617,6 +617,9 @@ function createEnvelope(input: {
     ].join('\n'),
     memoryEpoch: input.prompt.memoryEpoch,
     sandboxMode: input.sandboxMode,
+    // Files and charts follow the saved destination only. The prompt turn's
+    // thread is the synthetic due-time stamp when no thread was saved.
+    artifactThreadTs: input.routine.destination.threadTs ?? null,
     ...(input.access.effectiveConnections
       ? { effectiveConnections: input.access.effectiveConnections }
       : {}),
