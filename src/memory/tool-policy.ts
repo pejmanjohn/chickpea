@@ -8,6 +8,11 @@ import type {
 } from '@flue/runtime';
 
 import { MANAGED_SUBMISSION_AGENT_NAMES } from '../agents/names.ts';
+import {
+  ROUTINE_SCHEDULE_SIGNAL_IDENTITY_ATTRIBUTES,
+  ROUTINE_SCHEDULE_SIGNAL_TYPE,
+  scheduleSignalMessageTsFromAttribute,
+} from '../routines/schedule-signal.ts';
 
 export const MEMORY_CURRENT_REQUEST_ENVELOPE_START =
   '--- BEGIN CHICKPEA CURRENT REQUEST POLICY v1 ---';
@@ -68,6 +73,15 @@ export interface ArtifactRequestAddress {
 }
 
 /**
+ * Which host surface authored the current request. A live Slack message is
+ * classified as written. A saved routine task is the Agent's verbatim span of
+ * an earlier request, so it may keep the scheduling wrapper that preceded the
+ * work ("At that due time, generate and attach…"); admission evaluates the
+ * task's own clauses instead of only its first word.
+ */
+export type CurrentRequestKind = 'slack_message' | 'saved_task';
+
+/**
  * A terminal app-generated envelope is the only source of admission state.
  * User and memory text precede it, so marker lookalikes in either cannot win
  * the last-marker + exact-end parse below.
@@ -81,6 +95,7 @@ export function serializeCurrentRequestEnvelope(
     schemaVersion?: 1 | 2;
     progressiveStreamingOffered?: boolean;
     artifactAddress?: ArtifactRequestAddress;
+    requestKind?: CurrentRequestKind;
   } = {},
 ): string {
   const shared: CurrentRequestEnvelopeBase = {
@@ -91,7 +106,7 @@ export function serializeCurrentRequestEnvelope(
     externalSideEffectIntents: [],
     managedCapabilityIntents: [],
     explicitArtifactDeliveryIntent:
-      hasExplicitArtifactDeliveryIntent(currentRequest, options.artifactAddress),
+      hasExplicitArtifactDeliveryIntent(currentRequest, options.artifactAddress, options.requestKind),
     ...(slackActorId && slackMessageTs ? { slackActorId, slackMessageTs } : {}),
   };
   const schemaVersion = options.schemaVersion ?? 2;
@@ -119,25 +134,49 @@ export function parseCurrentRequestEnvelope(
     parseCurrentRequestEnvelopeVersion(prompt, 1);
 }
 
-/** Flue renders host Slack signals as escaped XML in model observations. */
+/**
+ * Flue renders host signals as escaped XML in model observations. Two host
+ * signals carry a current-request envelope: the Slack turn (`slack_message`)
+ * and the due routine occurrence (`signal type="schedule"`). Each must prove
+ * the terminal envelope in its body belongs to the signal's own host-owned
+ * coordinates; an envelope from any other message never admits delivery.
+ */
 export function parseModelVisibleCurrentRequestEnvelope(
   text: string,
 ): CurrentRequestEnvelope | undefined {
   const plain = parseCurrentRequestEnvelope(text);
   if (plain) return plain;
-  const signal = /^<slack_message((?: [A-Za-z][A-Za-z0-9]*="[^"<>]*")+)>\n([^<>]*)\n<\/slack_message>$/.exec(text);
+  const signal = /^<(slack_message|signal)((?: [A-Za-z][A-Za-z0-9]*="[^"<>]*")+)>\n([^<>]*)\n<\/\1>$/.exec(text);
   if (!signal) return undefined;
   const attributes = new Map<string, string>();
-  for (const match of signal[1]!.matchAll(/ ([A-Za-z][A-Za-z0-9]*)="([^"]*)"/g)) {
+  for (const match of signal[2]!.matchAll(/ ([A-Za-z][A-Za-z0-9]*)="([^"]*)"/g)) {
     if (attributes.has(match[1]!)) return undefined;
     attributes.set(match[1]!, decodeSignalText(match[2]!));
   }
-  if (attributes.get('type') !== 'slack.message') return undefined;
-  const envelope = parseCurrentRequestEnvelope(decodeSignalText(signal[2]!));
-  if (!envelope || !envelope.slackActorId || !envelope.slackMessageTs ||
-      envelope.slackActorId !== attributes.get('slackUserId') ||
-      envelope.slackMessageTs !== attributes.get('messageTs')) return undefined;
-  return envelope;
+  const envelope = parseCurrentRequestEnvelope(decodeSignalText(signal[3]!));
+  if (!envelope || !envelope.slackActorId || !envelope.slackMessageTs) return undefined;
+  const type = attributes.get('type');
+  if (signal[1] === 'slack_message' && type === 'slack.message') {
+    return envelope.slackActorId === attributes.get('slackUserId') &&
+      envelope.slackMessageTs === attributes.get('messageTs')
+      ? envelope
+      : undefined;
+  }
+  if (signal[1] === 'signal' && type === ROUTINE_SCHEDULE_SIGNAL_TYPE) {
+    // A due occurrence has no Slack message. The host stamps its due time as
+    // the synthetic message coordinate when it assembles the saved task, and
+    // repeats that due time as a signal attribute, so the envelope must match
+    // exactly this occurrence rather than any other saved task or prompt.
+    // Envelopes queued before the actor attribute existed carry no actor to
+    // compare; newer signals must name the same member the prompt ran as.
+    const actor = attributes.get('actorSlackUserId');
+    return ROUTINE_SCHEDULE_SIGNAL_IDENTITY_ATTRIBUTES.every((name) => attributes.get(name)) &&
+      envelope.slackMessageTs === scheduleSignalMessageTsFromAttribute(attributes.get('scheduledFor')) &&
+      (actor === undefined || actor === envelope.slackActorId)
+      ? envelope
+      : undefined;
+  }
+  return undefined;
 }
 
 function decodeSignalText(text: string): string {
@@ -266,6 +305,15 @@ function isManagedCapabilityIntentList(value: unknown): value is string[] {
   );
 }
 
+/** Host-side view of the same admission the envelope freezes for the model. */
+export function requestAdmitsArtifactDelivery(
+  currentRequest: string,
+  address?: ArtifactRequestAddress,
+  requestKind?: CurrentRequestKind,
+): boolean {
+  return hasExplicitArtifactDeliveryIntent(currentRequest, address, requestKind);
+}
+
 /**
  * Artifact delivery is scoped separately from generic connector mutation. A
  * task request must name both creation/delivery work and the artifact itself;
@@ -274,11 +322,89 @@ function isManagedCapabilityIntentList(value: unknown): value is string[] {
 function hasExplicitArtifactDeliveryIntent(
   currentRequest: string,
   address?: ArtifactRequestAddress,
+  requestKind: CurrentRequestKind = 'slack_message',
 ): boolean {
   const request = normalizedCurrentRequest(currentRequest, address);
-  if (!request || /^(?:do not|don't|never)\b/i.test(request)) return false;
+  if (!request) return false;
+  if (requestKind === 'saved_task') return savedTaskAdmitsArtifactDelivery(request);
+  if (/^(?:do not|don't|never)\b/i.test(request)) return false;
   const task = stripRequestPreamble(request);
+  return artifactTaskClause(task);
+}
+
+function artifactTaskClause(task: string): boolean {
   return DIRECT_TASK_START.test(task) && ARTIFACT_ACTION.test(task) && ARTIFACT_TARGET.test(task);
+}
+
+const QUOTED_SPAN = /```[\s\S]*?(?:```|$)|`[^`\n]*`|"[^"]*(?:"|$)|\u201c[^\u201d]*(?:\u201d|$)|\u2018[^\u2019]*(?:\u2019|$)|(?<!\w)'[^']*'(?!\w)/g;
+const CLAUSE_BOUNDARY = /[.!?;\n]+|\bbut\b/i;
+const NEGATED_CLAUSE = /^(?:do not|don't|never|not|without|no longer)\b/i;
+const SAVED_TASK_START = /^(?:analy[sz]e|calculate|check|compare|count|describe|fetch|find|inspect|list|read|report|review|summari[sz]e)\b/i;
+const SAVED_TASK_CONJUNCTION = /\s*,?\s+and(?:\s+then)?\s+|,\s*(?:then\s+)?/i;
+const ARTIFACT_NEGATION = /\b(?:do not|don't|never|must not|should not|cannot|can't|without|avoid|no longer)\b([^.!?;\n]*)/gi;
+const ARTIFACT_WRITE_ACTION = /\b(?:attach(?:ing)?|captur(?:e|ing)|creat(?:e|ing)|draw(?:ing)?|export(?:ing)?|generat(?:e|ing)|giv(?:e|ing)|includ(?:e|ing)|mak(?:e|ing)|plot(?:ting)?|post(?:ing)?|render(?:ing)?|send(?:ing)?|shar(?:e|ing)|show(?:ing)?|upload(?:ing)?)\b/i;
+const ARTIFACT_OR_ATTACHMENT = new RegExp(`\\b(?:${ARTIFACT_TARGET_PATTERN}|attachment)s?\\b`, 'i');
+const ARTIFACT_PROHIBITION = /\b(?:no|without)\s+(?:(?:more|any|an?)\s+)?(?:attachments?|files?|images?|charts?|exports?)\b/i;
+const ARTIFACT_PRONOUN = /\b(?:it|them|anything)\b/i;
+// An instruction introduced as text to quote or an example is not a task,
+// including an unquoted example on the next line. Keep preceding real work.
+const QUOTED_TASK_INTRODUCTION = /\b(?:example|(?:quoted?|following|exact)\s+(?:text|instruction|example)|(?:say|repeat|return|reply)\s+(?:exactly|verbatim))\s*:[\s\S]*/i;
+const SCHEDULE_WRAPPERS: readonly RegExp[] = [
+  // "At that due time,", "when the scheduled time comes,", "once it is due,"
+  /^(?:at|when|once|after)\s+(?:that|the|its?|this)\s+(?:due\s+|scheduled\s+)?(?:time|moment|run|occurrence)(?:\s+(?:comes|arrives))?[,:]?\s*/i,
+  /^(?:when|once|whenever)\s+(?:it(?:'s| is)\s+)?due[,:]?\s*/i,
+  // "at 18:06 UTC generate…", "at 6 pm on September 10, 2026,"
+  /^at\s+\d{1,2}(?::\d{2})?(?:\s*(?:am|pm|a\.m\.|p\.m\.))?(?:\s+(?:utc|gmt|[a-z]{2,4}t|[A-Za-z]+\/[A-Za-z_]+))?(?:\s+on\s+[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s*\d{4})?)?[,:]?\s*/i,
+  // "Every Monday at 9am,", "each weekday,"
+  /^(?:every|each)\s+(?:day|weekday|week|month|morning|evening|afternoon|night|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d+\s+[a-z]+)(?:\s+at\s+[^,:]{1,30})?[,:]?\s*/i,
+  // "On Monday,", "tomorrow at 9,", "on September 10 at 18:06 UTC,"
+  /^(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s*\d{4})?)s?(?:\s+at\s+[^,:]{1,30})?[,:]\s*/,
+  /^(?:then|and then|next)[,:]?\s+/i,
+];
+
+/**
+ * A saved task is the Agent's verbatim span of the request that scheduled it.
+ * It may start with the scheduling wrapper or a "do not run it now" sentence
+ * that the interactive rule would treat as a non-task or a negation. Evaluate
+ * each of its own clauses after removing quoted text, so a quoted example, a
+ * negated clause, or history-like prose never opens delivery on its own.
+ */
+function savedTaskAdmitsArtifactDelivery(taskText: string): boolean {
+  const unquoted = taskText
+    .replace(QUOTED_SPAN, ' ')
+    .replace(/^\s*>[^\n]*$/gm, ' ')
+    .replace(QUOTED_TASK_INTRODUCTION, ' ')
+    .replace(/\u2019/g, "'");
+  // Evaluate constraints before accepting any affirmative clause. These tools
+  // publish every staged file, so a conflicting artifact prohibition must fail
+  // closed rather than being forgotten after an earlier "generate a chart".
+  if (ARTIFACT_PROHIBITION.test(unquoted)) return false;
+  for (const negated of unquoted.matchAll(ARTIFACT_NEGATION)) {
+    if (ARTIFACT_WRITE_ACTION.test(negated[1]!) && (
+      ARTIFACT_OR_ATTACHMENT.test(negated[1]!) ||
+      (ARTIFACT_OR_ATTACHMENT.test(unquoted) && ARTIFACT_PRONOUN.test(negated[1]!))
+    )) {
+      return false;
+    }
+  }
+  for (const rawClause of unquoted.split(CLAUSE_BOUNDARY)) {
+    let clause = rawClause.trim();
+    if (!clause) continue;
+    for (let pass = 0; pass < 2; pass += 1) {
+      for (const wrapper of SCHEDULE_WRAPPERS) clause = clause.replace(wrapper, '');
+      clause = stripRequestPreamble(clause.trim());
+    }
+    if (!clause || NEGATED_CLAUSE.test(clause)) continue;
+    // A later imperative in the same saved task is equally authoritative:
+    // "Summarize bookings and attach a CSV." Requiring an imperative at the
+    // start also prevents history such as "the user said ... and attach ..."
+    // from becoming an independent request through conjunction splitting.
+    if (!DIRECT_TASK_START.test(clause) && !SAVED_TASK_START.test(clause)) continue;
+    for (const task of clause.split(SAVED_TASK_CONJUNCTION)) {
+      if (artifactTaskClause(stripRequestPreamble(task.trim()))) return true;
+    }
+  }
+  return false;
 }
 
 /** Restore one mutable admission cell around the complete durable submission. */

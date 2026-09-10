@@ -1,4 +1,5 @@
 import { AuditStoreLogic } from '../audit/store.ts';
+import { parseSlackArtifactReceipts } from '../slack/artifact-receipts.ts';
 import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import { ConfigStoreLogic } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
@@ -3942,7 +3943,8 @@ function validateAgentSettlement(settlement: RecordRoutineAgentSettlementInput['
       typeof result.message !== 'string' || result.message.length > 16_000 ||
       (result.changeKeyHash !== null && !/^[a-f0-9]{64}$/.test(result.changeKeyHash)) ||
       typeof result.suppressedAsNoOp !== 'boolean' ||
-      !Number.isSafeInteger(result.toolCallCount) || result.toolCallCount < 0
+      !Number.isSafeInteger(result.toolCallCount) || result.toolCallCount < 0 ||
+      !validArtifactReceipts(result.artifacts)
     )) ||
     (settlement.outcome !== 'completed' && (
       !settlement.failureClass ||
@@ -3952,6 +3954,15 @@ function validateAgentSettlement(settlement: RecordRoutineAgentSettlementInput['
     (usage !== null && usage !== undefined && !validAgentUsage(usage))
   ) {
     throw routineError('routine_run_transition_invalid', 'Routine agent settlement is invalid.');
+  }
+}
+
+function validArtifactReceipts(value: unknown): boolean {
+  if (value === undefined) return true;
+  try {
+    return Array.isArray(value) && parseSlackArtifactReceipts([value]).length === value.length;
+  } catch {
+    return false;
   }
 }
 

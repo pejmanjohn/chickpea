@@ -83,6 +83,48 @@ function advance(
   return result.presentation;
 }
 
+test('file reply retirement retains its cleanup coordinate and blocks premature terminal writes', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new SlackRunPresentationStoreLogic(db);
+    let current = store.create(createV3Input('run_file_retirement'));
+    current = advance(store, current, { kind: 'stream_start_intent' });
+    current = advance(store, current, {
+      kind: 'stream_started', messageTs: '1785700000.000211',
+      flue: { instanceId: 'instance_file', submissionId: 'submission_file' },
+    });
+    const streaming = current;
+    current = advance(store, current, { kind: 'retire_stream_for_file_share' });
+    assert.equal(current.stream.state, 'fallback');
+    assert.equal(current.stream.messageTs, undefined);
+    assert.equal(current.stream.priorStreamMessageTs, '1785700000.000211');
+    assert.deepEqual(store.get(current.runId), current, 'cleanup identity survives durable readback');
+    assert.equal(store.transition({
+      runId: streaming.runId, workBindingGeneration: streaming.workBindingGeneration,
+      runFencingToken: streaming.runFencingToken, expectedProjectionVersion: streaming.projectionVersion,
+      expectedStreamState: 'streaming', mutation: { kind: 'close_stream', outcome: 'terminal_only' },
+    }).outcome, 'stale', 'the old stream actor can no longer finalize its coordinate');
+    for (const mutation of [
+      { kind: 'record_terminal_delivery_intent', operationId: 'terminal_file', result: 'answer' },
+      { kind: 'mark_artifact_delivered', outcome: 'fallback', messageTs: '1785700000.000311' },
+      { kind: 'file_share_stream_retired', messageTs: '1785700000.000999' },
+    ] as const) assert.throws(() => advance(store, current, mutation), SlackPresentationStateError);
+
+    current = advance(store, current, { kind: 'retire_stream_for_file_share' });
+    assert.equal(current.stream.priorStreamMessageTs, '1785700000.000211', 'replay retains the same cleanup target');
+    current = advance(store, current, { kind: 'file_share_stream_retired', messageTs: '1785700000.000211' });
+    current = advance(store, current, {
+      kind: 'record_terminal_delivery_intent', operationId: 'terminal_file', result: 'answer',
+    });
+    current = advance(store, current, {
+      kind: 'mark_artifact_delivered', outcome: 'fallback', messageTs: '1785700000.000311',
+    });
+    assert.equal(current.stream.messageTs, '1785700000.000311');
+    assert.equal(current.stream.priorStreamMessageTs, undefined);
+    assert.equal(current.stream.state, 'artifact_delivered');
+  } finally { db.close(); }
+});
+
 test('presentation creation writes V2 with stable native tasks and feature-free identity', () => {
   let clock = 1_800_000_000_000;
   const db = openStateDb(':memory:');

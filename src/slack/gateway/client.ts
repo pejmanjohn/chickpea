@@ -478,7 +478,8 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       throw new SlackTransportError(String(operation), 'operation_not_allowed');
     }
     // Refuse unsendable files before base64 allocation and request signing.
-    if (operation === 'files.uploadV2' && input.file instanceof Uint8Array &&
+    if ((operation === 'files.uploadV2' || operation === 'chickpea.files.stage') &&
+      input.file instanceof Uint8Array &&
       input.file.byteLength > MAX_GATEWAY_ARTIFACT_BYTES) {
       throw new SlackTransportError(operation, 'gateway_request_too_large', {
         retryable: false, effectOutcome: 'failed',

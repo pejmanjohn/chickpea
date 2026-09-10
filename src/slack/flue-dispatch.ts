@@ -40,6 +40,11 @@ import {
   type SlackTablePresentation,
 } from './table-presentation.ts';
 import {
+  parseSlackArtifactReceipts,
+  SLACK_ARTIFACT_RECEIPTS_DATA_NAME,
+  type SlackArtifactReceipt,
+} from './artifact-receipts.ts';
+import {
   parseSlackAgentCreationTerminalIntents,
   SLACK_AGENT_CREATION_TERMINAL_DATA_NAME,
   type SlackAgentCreationTerminalIntent,
@@ -82,6 +87,8 @@ interface AgentReturnedModel {
 export interface AgentDispatchResult {
   text: string;
   tablePresentations?: SlackTablePresentation[];
+  /** Host-staged files to publish with the final reply; never model-authored. */
+  artifacts?: SlackArtifactReceipt[];
   agentCreationTerminal?: SlackAgentCreationTerminalIntent;
   memoryUpdate?: SlackMemoryUpdate;
   requestedModel: string | null;
@@ -448,8 +455,11 @@ export function resultFromAgentReply(
   reply: AgentReply,
   requestedModel: string | null,
 ): AgentDispatchResult {
-  const text = reply.text;
-  if (!text) throw new Error('agent prompt returned no result text');
+  const artifacts = parseSlackArtifactReceipts(reply.data?.[SLACK_ARTIFACT_RECEIPTS_DATA_NAME]);
+  // Checkpoints and the Work ledger require nonempty approved text. A file-only
+  // model result still has a useful host caption for its combined Slack reply.
+  const text = reply.text || (artifacts.length > 0 ? 'Requested files' : '');
+  if (!text && artifacts.length === 0) throw new Error('agent prompt returned no result text');
   // Reject only extreme single-punctuation degeneration, not code, JSON,
   // Markdown separators, short emphatic answers, or mixed punctuation.
   if (/^([!?])\1{1023,}$/.test(text.trim())) throw new AgentPromptFailure('invalid-output');
@@ -468,6 +478,7 @@ export function resultFromAgentReply(
   return {
     text,
     ...(tablePresentations.length > 0 ? { tablePresentations } : {}),
+    ...(artifacts.length > 0 ? { artifacts } : {}),
     ...(agentCreationTerminal ? { agentCreationTerminal } : {}),
     ...(memoryUpdate ? { memoryUpdate } : {}),
     requestedModel: metadata?.requestedModel ?? nonEmptyString(requestedModel),

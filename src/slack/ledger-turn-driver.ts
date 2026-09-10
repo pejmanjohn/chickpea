@@ -14,6 +14,7 @@ import { runTurn, type RunTurnOptions } from './run-turn.ts';
 import {
   DURABLE_RECOVERY_FAILURE_TEXT,
   deliverPersistedSlackPayload,
+  rejectedFileFallbackPayload,
   parseSlackDeliveryRef,
   PersistedSlackDeliveryError,
   type PersistedSlackDeliveryReceipt,
@@ -355,7 +356,7 @@ async function deliverPersistedResponse(
   attempt: number,
   now: () => number,
 ): Promise<RunDriverHandlerResult> {
-  const run = await options.work.getRun(claim.run.id);
+  let run = await options.work.getRun(claim.run.id);
   const rendered = run?.renderedPayloadRef
     ? await options.work.getContent(run.renderedPayloadRef)
     : undefined;
@@ -365,12 +366,63 @@ async function deliverPersistedResponse(
     await clearActiveWork(options, job);
     return { kind: 'recovery_required', reasonCode: 'ledger_render_missing' };
   }
-  const presentation = await options.presentationState?.getRunPresentation(claim.run.id);
-  const renderedMethod = persistedDeliveryMethod(rendered.body);
+  let presentation = await options.presentationState?.getRunPresentation(claim.run.id);
+  let renderedBody = rendered.body;
+  let renderedMethod = persistedDeliveryMethod(renderedBody);
+  if (renderedMethod === 'slack_files_complete' && run.deliveryStatus === 'failed' &&
+      run.safeFailureCode === 'slack_files_complete_failed') {
+    // The durable Slack rejection proves the file completion did not publish.
+    // Record the matching terminal rejection before replacing the render, so
+    // a crash between either write can still resume the owed text safely.
+    try {
+      const fallback = rejectedFileFallbackPayload(renderedBody);
+      if (presentation?.schemaVersion === 3) {
+        if (presentation.stream.state !== 'fallback' || presentation.terminalDelivery.state === 'abandoned' ||
+            (presentation.terminalDelivery.state === 'intended' &&
+              presentation.terminalDelivery.operation.certainty === 'acknowledged')) {
+          throw new Error('File rejection conflicts with the terminal presentation.');
+        }
+        if (presentation.terminalDelivery.state === 'intended' &&
+            presentation.terminalDelivery.operation.certainty !== 'failed') {
+          presentation = await applyPresentationMutation(options.presentationState!, presentation, {
+            kind: 'record_terminal_delivery_receipt',
+            operationId: presentation.terminalDelivery.operation.operationId,
+            certainty: 'failed',
+          });
+        }
+      }
+      const approved = run.policyApprovedOutputRef
+        ? await options.work.getContent(run.policyApprovedOutputRef)
+        : undefined;
+      if (approved?.body == null) throw new Error('Approved file reply is unavailable.');
+      run = await options.work.recordRunResponse({
+        runId: run.id,
+        fencingToken: claim.fencingToken,
+        sensitivity: approved.sensitivity,
+        approvedOutput: approved.body,
+        renderedPayload: fallback,
+        recordedAt: now(),
+      });
+      renderedBody = fallback;
+      renderedMethod = 'slack_chat_post_message';
+    } catch (error) {
+      if (error instanceof PersistedSlackDeliveryError || attempt >= MAX_TURN_ATTEMPTS) {
+        await options.turns.markRecoveryRequired(job.id, 'slack_file_fallback_unavailable');
+        await clearActiveWork(options, job);
+        return { kind: 'recovery_required', reasonCode: 'slack_file_fallback_unavailable' };
+      }
+      return { kind: 'requeue', reasonCode: 'slack_file_fallback_preparation_interrupted' };
+    }
+  }
+  // A pending file completion is already the outward attempt. Recovery reads
+  // every expected file's exact share and keeps that attempt's immutable id.
+  const reconcileFiles = renderedMethod === 'slack_files_complete' && run.deliveryStatus === 'pending' &&
+    run.deliveryMethod === renderedMethod && Boolean(run.deliveryAttemptId);
   if (presentation && presentationRequiresOperatorRecovery(
     presentation,
     renderedMethod,
     run.deliveryStatus,
+    reconcileFiles,
   )) {
     await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
     await options.turns.markRecoveryRequired(job.id, 'slack_presentation_effect_unresolved');
@@ -378,7 +430,7 @@ async function deliverPersistedResponse(
     return { kind: 'recovery_required', reasonCode: 'slack_presentation_effect_unresolved' };
   }
   if (
-    presentation &&
+    presentation && !reconcileFiles &&
     (presentation.stream.state === 'artifact_delivered' ||
       presentation.stream.state === 'finalized') &&
     run.deliveryStatus === 'pending' &&
@@ -408,12 +460,12 @@ async function deliverPersistedResponse(
     await clearActiveWork(options, job);
     return { kind: 'completed' };
   }
-  const attemptId = opaqueId(
+  const attemptId = reconcileFiles ? run.deliveryAttemptId! : opaqueId(
     'delivery',
     `${claim.run.id}:${claim.fencingToken}:persisted`,
   );
   const fallbackPresenter = presentation?.schemaVersion === 3 &&
-    presentation.stream.state === 'fallback' && renderedMethod === 'slack_chat_post_message' &&
+    presentation.stream.state === 'fallback' && FALLBACK_REPLAY_METHODS.has(renderedMethod) &&
     options.presentationState
     ? new SlackAgentViewPresentation({
         client, state: options.presentationState, runId: presentation.runId,
@@ -421,7 +473,14 @@ async function deliverPersistedResponse(
         footer: { agentId: job.assignment.agentId, agentName: job.assignment.agent.name },
       })
     : undefined;
-  if (fallbackPresenter && !await fallbackPresenter.prepareDeferredTerminalDelivery(
+  // If a replacement render was recorded before a crash, not_ready proves
+  // Work has not started its outward attempt. A pending terminal intent may
+  // be reused; an unknown terminal receipt still blocks a new text write.
+  const resumeUnstartedTerminal = run.deliveryStatus === 'not_ready' && run.deliveryAttemptId === null &&
+    presentation?.schemaVersion === 3 && presentation.terminalDelivery.state === 'intended' &&
+    presentation.terminalDelivery.operation.certainty === 'pending';
+  if (fallbackPresenter && !reconcileFiles && !resumeUnstartedTerminal &&
+      !await fallbackPresenter.prepareDeferredTerminalDelivery(
     presentation?.schemaVersion === 3 && presentation.terminalDelivery.state === 'intended' &&
       presentation.terminalDelivery.result === 'failure' ? 'failure' : 'answer',
   )) {
@@ -433,14 +492,16 @@ async function deliverPersistedResponse(
     return { kind: 'recovery_required', reasonCode: 'slack_presentation_effect_unresolved' };
   }
   try {
-    await options.work.startRunDelivery({
-      runId: claim.run.id,
-      fencingToken: claim.fencingToken,
-      method: renderedMethod,
-      attemptId,
-      startedAt: now(),
-    });
-    const delivered = await deliverPersistedSlackPayload(client, rendered.body);
+    if (!reconcileFiles) {
+      await options.work.startRunDelivery({
+        runId: claim.run.id,
+        fencingToken: claim.fencingToken,
+        method: renderedMethod,
+        attemptId,
+        startedAt: now(),
+      });
+    }
+    const delivered = await deliverPersistedSlackPayload(client, renderedBody);
     if (fallbackPresenter) {
       await fallbackPresenter.markFallbackDelivered(parseSlackDeliveryRef(delivered.deliveryRef)?.messageTs);
     }
@@ -479,7 +540,12 @@ async function deliverPersistedResponse(
       ? error
       : new PersistedSlackDeliveryError('unknown', 'delivery_receipt_persist_unknown');
     try {
-      await fallbackPresenter?.markFallbackDeliveryFailed(failure.outcome);
+      // Readback may confirm that an already-unknown terminal is still
+      // unknown. Its receipt cannot transition unknown -> unknown again.
+      if (!(presentation?.schemaVersion === 3 && presentation.terminalDelivery.state === 'intended' &&
+          presentation.terminalDelivery.operation.certainty === failure.outcome)) {
+        await fallbackPresenter?.markFallbackDeliveryFailed(failure.outcome);
+      }
       await options.work.finalizeRunDelivery({
         runId: claim.run.id,
         fencingToken: claim.fencingToken,
@@ -556,6 +622,9 @@ function recoveredV3TerminalIsSettled(
   );
 }
 
+/** Fallback artifacts whose persisted render may replay after a confirmed rejection. */
+const FALLBACK_REPLAY_METHODS = new Set(['slack_chat_post_message', 'slack_files_complete']);
+
 function persistedDeliveryMethod(renderedPayload: string): string {
   try {
     const parsed = JSON.parse(renderedPayload) as { method?: unknown };
@@ -569,9 +638,11 @@ function presentationRequiresOperatorRecovery(
   presentation: SlackRunPresentation,
   method: string,
   deliveryStatus: string,
+  reconcileFiles = false,
 ): boolean {
   if (presentation.stream.state === 'fallback') {
-    return method !== 'slack_chat_post_message' || deliveryStatus !== 'failed';
+    return !FALLBACK_REPLAY_METHODS.has(method) ||
+      (!reconcileFiles && deliveryStatus !== 'failed' && deliveryStatus !== 'not_ready');
   }
   if (presentation.stream.state === 'starting' || presentation.stream.state === 'unknown') {
     // These states have no proven coordinate for a possibly accepted start or

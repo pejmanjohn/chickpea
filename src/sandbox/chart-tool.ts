@@ -11,10 +11,7 @@ import {
   validateChartSpec,
 } from '../charts/render-chart.ts';
 import { assertArtifactDeliveryAllowed } from '../memory/tool-policy.ts';
-import type {
-  SlackArtifactInput,
-  SlackArtifactResult,
-} from '../slack/web-client-presenter.ts';
+import type { SlackArtifactStageInput, SlackArtifactStageOutcome } from './artifact-tool.ts';
 
 export const RENDER_CHART_TOOL_NAME = 'render_chart';
 const DEFAULT_CHART_FILENAME = 'chart.png';
@@ -23,12 +20,12 @@ const MAX_FILENAME_CHARS = 64;
 export interface ChartArtifactToolOptions {
   channel: string;
   threadTs?: string;
-  postArtifact(input: SlackArtifactInput): Promise<SlackArtifactResult>;
+  stageArtifact(input: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome>;
 }
 
 export type ChartArtifactResult =
-  | { uploaded: true; filename: string; width: number; height: number; byteLength: number }
-  | (Extract<SlackArtifactResult, { uploaded: false }> & { filename: string });
+  | { attached: true; filename: string; width: number; height: number; byteLength: number }
+  | (Extract<SlackArtifactStageOutcome, { attached: false }> & { filename: string });
 
 const CHART_TOOL_INPUT = v.object({
   ...chartSpecSchema.entries,
@@ -36,16 +33,17 @@ const CHART_TOOL_INPUT = v.object({
 });
 
 /**
- * Render a chart PNG inside the runtime and attach it to the bound Slack
- * thread. No sandbox, container, repository grant, or paid plan is involved:
- * the renderer is a bounded pure-JS rasterizer, and delivery reuses the same
- * destination-bound upload path and side-effect policy as `post_artifact`.
+ * Render a chart PNG inside the runtime and stage it for the bound Slack
+ * destination. No sandbox, container, repository grant, or paid plan is
+ * involved: the renderer is a bounded pure-JS rasterizer, and staging reuses
+ * the same destination-bound receipt path and side-effect policy as
+ * `post_artifact`; the host publishes the file with the final reply.
  */
 export function createChartArtifactTool(options: ChartArtifactToolOptions) {
   return defineTool({
     name: RENDER_CHART_TOOL_NAME,
     description:
-      `Render a bar, line, or pie chart as a PNG image and attach it to the bound Slack destination. Give category labels and one or more numeric series with one value per label (up to ${CHART_MAX_CATEGORIES} categories and ${CHART_MAX_SERIES} series; a pie chart takes one series of non-negative values and at most ${CHART_MAX_PIE_SLICES} slices). Values are printed on the chart, so pass exact numbers, plus valuePrefix such as "$" or valueSuffix such as "%" when the unit matters. State the key figures in the final reply as well. If the result reports uploaded: false, explain the returned reason and describe the figures instead.`,
+      `Render a bar, line, or pie chart as a PNG image and attach it to your final reply in the bound Slack destination. Give category labels and one or more numeric series with one value per label (up to ${CHART_MAX_CATEGORIES} categories and ${CHART_MAX_SERIES} series; a pie chart takes one series of non-negative values and at most ${CHART_MAX_PIE_SLICES} slices). Values are printed on the chart, so pass exact numbers, plus valuePrefix such as "$" or valueSuffix such as "%" when the unit matters. State the key figures in the final reply as well. If the result reports attached: false, explain the returned reason and describe the figures instead.`,
     input: CHART_TOOL_INPUT,
     async run({ data }) {
       assertArtifactDeliveryAllowed();
@@ -58,16 +56,15 @@ export function createChartArtifactTool(options: ChartArtifactToolOptions) {
       }
       const rendered = await renderChart(spec);
       const name = chartFilename(filename);
-      const result = await options.postArtifact({
-        channel: options.channel,
-        ...(options.threadTs ? { threadTs: options.threadTs } : {}),
+      const result = await options.stageArtifact({
         bytes: rendered.png,
         filename: name,
         ...(spec.title === undefined ? {} : { title: spec.title }),
+        kind: 'chart',
       });
-      const output: ChartArtifactResult = result.uploaded
+      const output: ChartArtifactResult = result.attached
         ? {
-            uploaded: true,
+            attached: true,
             filename: name,
             width: rendered.width,
             height: rendered.height,

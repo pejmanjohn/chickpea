@@ -152,6 +152,8 @@ import {
   createWorkspaceArtifactCapability,
   createWorkspaceArtifactTool,
   POST_ARTIFACT_TOOL_NAME,
+  type SlackArtifactStageInput,
+  type SlackArtifactStageOutcome,
 } from '../sandbox/artifact-tool.ts';
 import { createChartArtifactTool, RENDER_CHART_TOOL_NAME } from '../sandbox/chart-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
@@ -180,6 +182,13 @@ import {
 } from '../slack/agent-creation-terminal.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { WebClientPresenter, type SlackArtifactInput, type SlackArtifactResult } from '../slack/web-client-presenter.ts';
+import {
+  createArtifactReceiptAccumulator,
+  useSlackArtifactReceipts,
+  type SlackArtifactReceipts,
+} from '../slack/artifact-receipts.ts';
+import { stageArtifactWithReceipt } from '../slack/artifact-staging.ts';
+import { createSlackFileTransport, type SlackFileTransport } from '../slack/file-transport.ts';
 import {
   parseSlackManagementSignal,
   useWorkspaceManagementSlackTools,
@@ -1000,6 +1009,22 @@ export async function createSlackAgentRuntime(
       });
       return (await presenter).postArtifact(input);
     };
+    // Legacy assembly has no settled-reply receipt channel, so it keeps the
+    // immediate app-identity upload. Hook-mounted plans stage instead.
+    const stageArtifact = async (input: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome> => {
+      const result = await postArtifact({
+        channel: channelId,
+        threadTs: artifactThreadTs,
+        bytes: input.bytes,
+        filename: input.filename,
+        ...(input.title === undefined ? {} : { title: input.title }),
+      });
+      return result.uploaded
+        ? { attached: true, byteLength: input.bytes.byteLength }
+        : result.reason === 'too-large'
+          ? { attached: false, reason: 'too-large', maxBytes: result.maxBytes }
+          : { attached: false, reason: 'missing-scope' };
+    };
     // Every sandbox kind delivers files: the container freezes a bounded copy
     // through the shell, the in-memory sandbox reads its bytes directly, and
     // charts are rendered in-process, so no Agent depends on the coding tier.
@@ -1008,14 +1033,14 @@ export async function createSlackAgentRuntime(
       sandboxKind: sandboxSelection,
       channel: channelId,
       threadTs: artifactThreadTs,
-      postArtifact,
+      stageArtifact,
     });
     sandbox = artifactCapability.sandbox;
     tools = [
       ...mcpTools,
       ...managedTools,
       artifactCapability.tool,
-      createChartArtifactTool({ channel: channelId, threadTs: artifactThreadTs, postArtifact }),
+      createChartArtifactTool({ channel: channelId, threadTs: artifactThreadTs, stageArtifact }),
     ];
   }
 
@@ -1214,6 +1239,7 @@ export function useRuntimePlanAgent(
     additionalActivityToolDescriptors?: readonly ActivityToolDescriptor[];
   } = {},
 ): void {
+  const { accumulator: artifactAccumulator, writeReceipts: writeArtifactReceipts } = useSlackArtifactReceipts();
   registerActivityContext(id, buildRuntimePlanActivityContext(plan, {
     ...(options.toolsDisabled === undefined ? {} : { toolsDisabled: options.toolsDisabled }),
     ...(options.includeAgentAuthoringSkill === undefined
@@ -1295,7 +1321,9 @@ export function useRuntimePlanAgent(
   } else {
     useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
     if (!options.artifactToolsDisabled) {
-      for (const tool of createRuntimePlanArtifactTools(plan)) useTool(tool);
+      for (const tool of createRuntimePlanArtifactTools(plan, artifactAccumulator, writeArtifactReceipts)) {
+        useTool(tool);
+      }
       useInstruction(ARTIFACT_TOOLS_INSTRUCTION);
     }
   }
@@ -1516,41 +1544,46 @@ function runtimeRepositoryMatches(
     Boolean(current.allRepos) === Boolean(planned.allRepos);
 }
 
-/** Destination-bound file and chart delivery for hook-mounted runtime plans. */
-function createRuntimePlanArtifactTools(plan: RuntimePlanV2) {
-  let presenter: Promise<WebClientPresenter> | undefined;
-  // Files follow the frozen artifact destination, not the conversation key:
-  // a scheduled run's conversation thread is a synthetic due-time stamp and a
-  // DM session key is `dm`, neither of which Slack accepts as thread_ts.
-  const binding = {
-    channel: plan.artifactDestination.channelId,
+/**
+ * Destination-bound file and chart staging for hook-mounted runtime plans.
+ * Files follow the frozen artifact destination, not the conversation key: a
+ * scheduled run's conversation thread is a synthetic due-time stamp and a DM
+ * session key is `dm`, neither of which Slack accepts as thread_ts. Staging
+ * uploads bytes only; the host completes the upload with the final reply so
+ * the file carries the Agent's identity and text in one message.
+ */
+function createRuntimePlanArtifactTools(
+  plan: RuntimePlanV2,
+  accumulator: ReturnType<typeof createArtifactReceiptAccumulator>,
+  writeArtifactReceipts: (receipts: SlackArtifactReceipts) => void,
+) {
+  let transport: Promise<SlackFileTransport> | undefined;
+  const destination = {
+    workspaceId: plan.conversation.workspaceId,
+    agentId: plan.agentId,
+    channelId: plan.artifactDestination.channelId,
     ...(plan.artifactDestination.threadTs ? { threadTs: plan.artifactDestination.threadTs } : {}),
-    async postArtifact(input: SlackArtifactInput): Promise<SlackArtifactResult> {
-      presenter ??= (async () => {
+  };
+  const binding = {
+    channel: destination.channelId,
+    ...(destination.threadTs ? { threadTs: destination.threadTs } : {}),
+    async stageArtifact(artifact: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome> {
+      transport ??= (async () => {
         const env = await resolveAgentPlatformEnv();
-        const config = getConfigStore(env);
-        const [profile, installation, publicUrl] = await Promise.all([
-          config.getAgent(plan.agentId),
-          resolveSlackInstallationExecutionContext(
-            plan.conversation.workspaceId,
-            env,
-            { config, settings: getSettingsStore(env) },
-          ),
-          resolveSlackPublicUrl(env).catch(() => undefined),
-        ]);
-        const agentAvatarUrl = agentAvatarUrlForPresentation(profile, publicUrl);
-        return new WebClientPresenter(installation.client, {
-          channelId: plan.conversation.channelId,
-          threadTs: plan.conversation.threadTs,
-          agentName: profile.name,
-          ...(agentAvatarUrl
-            ? { agentAvatarUrl }
-            : {}),
-          agentId: plan.agentId,
-          workspaceId: plan.conversation.workspaceId,
-        });
+        const installation = await resolveSlackInstallationExecutionContext(
+          plan.conversation.workspaceId,
+          env,
+          { config: getConfigStore(env), settings: getSettingsStore(env) },
+        );
+        return createSlackFileTransport(installation.client);
       })();
-      return (await presenter).postArtifact(input);
+      return stageArtifactWithReceipt({
+        transport: await transport,
+        artifact,
+        destination,
+        accumulator,
+        writeReceipts: writeArtifactReceipts,
+      });
     },
   };
   return [

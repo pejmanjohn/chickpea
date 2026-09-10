@@ -26,6 +26,19 @@ import type {
 } from './types.ts';
 import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
+import {
+  selectDeliverableArtifacts,
+  type SlackArtifactReceipt,
+} from '../slack/artifact-receipts.ts';
+import {
+  createSlackFileTransport,
+  resolveFileShares,
+  slackFileCompletionFailureOutcome,
+  type SlackFileCompletionInput,
+  type SlackFileShare,
+  type SlackFileTransport,
+} from '../slack/file-transport.ts';
+import { ARTIFACT_UNDELIVERED_NOTE } from '../slack/web-client-presenter.ts';
 
 const ROUTINE_SLACK_TIMEOUT_MS = 10_000;
 const DEFINITIVE_DIRECT_THREAD_ERRORS = new Set([
@@ -113,7 +126,12 @@ export async function drainRoutinePauseNotices(
   return { scanned: pending.length, settled };
 }
 
-/** One at-most-once top-level Slack delivery. Ambiguous transport failures are never retried. */
+/**
+ * One at-most-once Slack delivery of a routine result. Ambiguous transport
+ * failures are never retried. When the occurrence staged files for exactly
+ * this destination, the result is one file share carrying the rendered text,
+ * footer, and the owning Agent's identity.
+ */
 export async function deliverRoutineResult(
   input: {
     store: RoutineStore;
@@ -122,20 +140,171 @@ export async function deliverRoutineResult(
     access: RoutineRuntimeAccess;
     message: string;
     changeKeyHash: string | null;
+    artifacts?: readonly SlackArtifactReceipt[];
     workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
     sleep?: (delayMs: number) => Promise<void>;
+    fileTransport?: SlackFileTransport;
   },
   client: WebClient = input.access.client ?? createRoutineSlackClient(requiredRoutineBotToken(input.access)),
 ): Promise<RoutineDeliveryReceipt> {
-  return deliverRoutineSlackMessage(
-    { ...input, approvedOutput: canonicalSlackReplyText(input.message, 'markdown') },
-    renderRoutineDelivery(
-      input.message,
-      routineReplyFooter(input.access, input.routine),
-    ),
-    client,
+  const files = selectDeliverableArtifacts(input.artifacts, {
+    workspaceId: input.routine.workspaceId,
+    agentId: input.access.config.agentId,
+    channelId: input.routine.channelId,
+    threadTs: input.routine.destination.threadTs,
+  });
+  if ((input.artifacts?.length ?? 0) > files.length) {
+    throw new RoutineRuntimeError('result_invalid', 'Staged files do not match the saved destination.');
+  }
+  const rendered = renderRoutineDelivery(
+    input.message,
+    routineReplyFooter(input.access, input.routine),
   );
+  const approvedOutput = canonicalSlackReplyText(input.message, 'markdown');
+  if (files.length === 0) {
+    return deliverRoutineSlackMessage({ ...input, approvedOutput }, rendered, client);
+  }
+  return deliverRoutineFileShare({ ...input, approvedOutput, files }, rendered, client);
+}
+
+/**
+ * Publish staged files and the result text as one file share. Completion is
+ * the commit point: an ambiguous outcome is recorded unknown and never
+ * retried or followed by a text post; a confirmed rejection publishes the
+ * text once, with a note that the file was lost.
+ */
+async function deliverRoutineFileShare(
+  input: {
+    store: RoutineStore;
+    run: RoutineRun;
+    routine: RoutineDefinition;
+    access: RoutineRuntimeAccess;
+    message: string;
+    changeKeyHash: string | null;
+    approvedOutput: string;
+    files: SlackArtifactReceipt[];
+    workLifecycle?: ShadowWorkLifecycle;
+    now?: () => number;
+    sleep?: (delayMs: number) => Promise<void>;
+    fileTransport?: SlackFileTransport;
+  },
+  rendered: RenderedSlackMessage,
+  client: WebClient,
+): Promise<RoutineDeliveryReceipt> {
+  const now = input.now ?? Date.now;
+  const claimedAt = await claimRoutineDelivery(input.store, input.run.id, now);
+  const agentAvatarUrl = agentAvatarUrlForPresentation(
+    input.access.config.agent,
+    input.access.publicUrl,
+  );
+  const completion: SlackFileCompletionInput = {
+    files: input.files.map((file) => ({ id: file.fileId, ...(file.title ? { title: file.title } : {}) })),
+    channelId: input.routine.channelId,
+    ...(input.routine.destination.threadTs ? { threadTs: input.routine.destination.threadTs } : {}),
+    blocks: rendered.blocks ?? [],
+    persona: {
+      username: input.access.config.agent.name,
+      ...(agentAvatarUrl ? { icon_url: agentAvatarUrl } : {}),
+    },
+  };
+  const share = {
+    fileIds: input.files.map((file) => file.fileId),
+    channel: input.routine.channelId,
+    ...(input.routine.destination.threadTs ? { threadTs: input.routine.destination.threadTs } : {}),
+  };
+  const rejectedFallback = {
+    channel: input.routine.channelId,
+    ...(completion.threadTs ? { thread_ts: completion.threadTs } : {}),
+    ...renderRoutineDelivery(`${input.message}\n\n${ARTIFACT_UNDELIVERED_NOTE}`, routineReplyFooter(input.access, input.routine)),
+    ...completion.persona,
+    unfurl_links: false,
+    unfurl_media: false,
+  };
+  const workAttemptId = await input.workLifecycle?.beforeDelivery({
+    method: 'slack_files_complete',
+    approvedOutput: input.approvedOutput,
+    renderedPayload: JSON.stringify({
+      method: 'slack_files_complete',
+      rejectedFallback,
+      completion: {
+        files: completion.files,
+        channel_id: completion.channelId,
+        ...(completion.threadTs ? { thread_ts: completion.threadTs } : {}),
+        blocks: completion.blocks,
+        ...completion.persona,
+      },
+      share,
+    }),
+  });
+  const transport = input.fileTransport ?? createSlackFileTransport(client);
+  let resolvedShare: SlackFileShare | undefined;
+  let rateLimitRetries = 0;
+  while (true) {
+    try {
+      resolvedShare = (await transport.complete(completion)).share;
+      break;
+    } catch (error) {
+      const retryAfterMs = slackRateLimitRetryAfterMs(error);
+      if (retryAfterMs !== undefined &&
+          rateLimitRetries < ROUTINE_LIMITS.deliveryRateLimitMaxRetries &&
+          retryAfterMs <= ROUTINE_LIMITS.deliveryRateLimitMaxRetryAfterMs &&
+          now() + retryAfterMs + ROUTINE_SLACK_TIMEOUT_MS <= Math.min(
+            Number.isSafeInteger(input.run.deadlineAt)
+              ? input.run.deadlineAt
+              : claimedAt + ROUTINE_LIMITS.deliveryLeaseMs,
+            claimedAt + ROUTINE_LIMITS.deliveryLeaseMs,
+          )) {
+        rateLimitRetries += 1;
+        await (input.sleep ?? sleep)(retryAfterMs);
+        continue;
+      }
+      if (slackFileCompletionFailureOutcome(error) !== 'failed') {
+        await recordFailedDelivery(input.store, input.run.id, 'unknown', now(), 'delivery_unknown');
+        await input.workLifecycle?.afterDelivery({
+          attemptId: workAttemptId,
+          outcome: 'unknown',
+          safeFailureCode: 'slack_files_complete_unknown',
+        });
+        throw routineDeliveryFailure('delivery_unknown');
+      }
+      // Slack confirmed nothing was published. The text is still owed once;
+      // the staged files lapse and are never completed again.
+      await input.workLifecycle?.afterDelivery({
+        attemptId: workAttemptId,
+        outcome: 'failed',
+        safeFailureCode: 'slack_files_complete_failed',
+      });
+      const message = `${input.message}\n\n${ARTIFACT_UNDELIVERED_NOTE}`;
+      return postClaimedRoutineMessage(
+        input,
+        renderRoutineDelivery(message, routineReplyFooter(input.access, input.routine)),
+        client,
+        claimedAt,
+      );
+    }
+  }
+  if (!resolvedShare) {
+    try {
+      resolvedShare = await resolveFileShares(transport, {
+        fileIds: share.fileIds,
+        channelId: share.channel,
+        ...(share.threadTs ? { threadTs: share.threadTs } : {}),
+      });
+    } catch {
+      // Delivered, coordinate unknown. Never complete or post again to learn it.
+      console.warn('[chickpea] routine file share coordinate could not be resolved');
+    }
+  }
+  const messageTs = resolvedShare?.shared ? resolvedShare.ts : undefined;
+  if (!messageTs) {
+    await recordFailedDelivery(input.store, input.run.id, 'unknown', now(), 'delivery_unknown');
+    await input.workLifecycle?.afterDelivery({
+      attemptId: workAttemptId, outcome: 'unknown', safeFailureCode: 'slack_files_share_unresolved',
+    });
+    throw routineDeliveryFailure('delivery_unknown');
+  }
+  return recordRoutineDelivered(input, workAttemptId, input.routine.channelId, messageTs, now);
 }
 
 export async function deliverRoutineFailureNotice(
@@ -188,25 +357,36 @@ export async function deliverRoutineFailureNotice(
   );
 }
 
+interface ClaimedRoutineMessageInput {
+  store: RoutineStore;
+  run: RoutineRun;
+  routine: RoutineDefinition;
+  access: RoutineRuntimeAccess;
+  changeKeyHash: string | null;
+  approvedOutput: string;
+  workLifecycle?: ShadowWorkLifecycle;
+  now?: () => number;
+  sleep?: (delayMs: number) => Promise<void>;
+}
+
 async function deliverRoutineSlackMessage(
-  input: {
-    store: RoutineStore;
-    run: RoutineRun;
-    routine: RoutineDefinition;
-    access: RoutineRuntimeAccess;
-    changeKeyHash: string | null;
-    approvedOutput: string;
-    workLifecycle?: ShadowWorkLifecycle;
-    now?: () => number;
-    sleep?: (delayMs: number) => Promise<void>;
-  },
+  input: ClaimedRoutineMessageInput,
   message: string | RenderedSlackMessage,
   client: WebClient,
 ): Promise<RoutineDeliveryReceipt> {
   const now = input.now ?? Date.now;
+  const claimedAt = await claimRoutineDelivery(input.store, input.run.id, now);
+  return postClaimedRoutineMessage(input, message, client, claimedAt);
+}
+
+async function claimRoutineDelivery(
+  store: RoutineStore,
+  occurrenceId: string,
+  now: () => number,
+): Promise<number> {
   const claimedAt = now();
-  const claimed = await input.store.claimDelivery({
-    occurrenceId: input.run.id,
+  const claimed = await store.claimDelivery({
+    occurrenceId,
     at: claimedAt,
     leaseUntil: claimedAt + ROUTINE_LIMITS.deliveryLeaseMs,
   });
@@ -216,7 +396,16 @@ async function deliverRoutineSlackMessage(
       'The routine result already has a delivery attempt that requires inspection.',
     );
   }
+  return claimedAt;
+}
 
+async function postClaimedRoutineMessage(
+  input: ClaimedRoutineMessageInput,
+  message: string | RenderedSlackMessage,
+  client: WebClient,
+  claimedAt: number,
+): Promise<RoutineDeliveryReceipt> {
+  const now = input.now ?? Date.now;
   const agentAvatarUrl = agentAvatarUrlForPresentation(
     input.access.config.agent,
     input.access.publicUrl,
@@ -291,6 +480,16 @@ async function deliverRoutineSlackMessage(
       'Slack delivery returned an incomplete receipt; Chickpea did not retry it.',
     );
   }
+  return recordRoutineDelivered(input, workAttemptId, channelId, messageTs, now);
+}
+
+async function recordRoutineDelivered(
+  input: Pick<ClaimedRoutineMessageInput, 'store' | 'run' | 'changeKeyHash' | 'workLifecycle'>,
+  workAttemptId: string | undefined,
+  channelId: string,
+  messageTs: string,
+  now: () => number,
+): Promise<RoutineDeliveryReceipt> {
   try {
     await input.store.recordDelivery({
       occurrenceId: input.run.id,

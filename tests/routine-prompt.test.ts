@@ -29,19 +29,19 @@ test('the unattended prompt makes host-owned Slack delivery explicit', () => {
   assert.doesNotMatch(directInstructions, /owning Slack channel/i);
 });
 
-test('the unattended prompt reconciles host text delivery with tool file delivery', () => {
+test('the unattended prompt stages files for combined host delivery', () => {
   const channel = routineExecutionInstructions().join('\n');
-  assert.match(channel, /Files are the one exception to host delivery/);
   assert.match(channel, /`render_chart` or `post_artifact`/);
-  assert.match(channel, /attach as a new file in the owning Slack channel/);
-  assert.match(channel, /Still return the text result in message/);
-  assert.match(channel, /uploaded: true/);
+  assert.match(channel, /publishes it with your returned message under your Agent identity at the saved destination/);
+  assert.match(channel, /Return the text result in message/);
+  assert.match(channel, /staged: true/);
+  assert.doesNotMatch(channel, /uploaded: true|exception to host delivery/);
 
   const channelThread = routineExecutionInstructions('channel', true).join('\n');
-  assert.match(channelThread, /attach to the saved thread in the owning Slack channel/);
+  assert.match(channelThread, /delivers your returned message to the saved thread in the owning Slack channel/);
 
   const direct = routineExecutionInstructions('direct_thread').join('\n');
-  assert.match(direct, /attach to the same private originating thread/);
+  assert.match(direct, /delivers your returned message to the private originating Slack thread/);
   assert.doesNotMatch(direct, /owning Slack channel/i);
 });
 

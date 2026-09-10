@@ -864,7 +864,8 @@ test('hook-mounted delivery tools bind the frozen artifact destination, not the 
   const start = source.indexOf('function createRuntimePlanArtifactTools(');
   assert.ok(start > 0);
   const body = source.slice(start, source.indexOf('\n}\n', start));
-  assert.match(body, /channel: plan\.artifactDestination\.channelId/);
+  assert.match(body, /channelId: plan\.artifactDestination\.channelId/);
+  assert.match(body, /channel: destination\.channelId/);
   assert.match(body, /plan\.artifactDestination\.threadTs \? \{ threadTs: plan\.artifactDestination\.threadTs \} : \{\}/);
-  assert.doesNotMatch(body, /threadTs: plan\.conversation\.threadTs,\n    async postArtifact/);
+  assert.doesNotMatch(body, /threadTs: plan\.conversation\.threadTs/);
 });

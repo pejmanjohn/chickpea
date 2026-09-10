@@ -4,6 +4,7 @@ import type { RunExecutionAuthority } from '../work/types.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { WorkTraceCorrelation } from '../work/trace-correlation.ts';
 import type { SlackTablePresentation } from './table-presentation.ts';
+import type { SlackArtifactReceipt } from './artifact-receipts.ts';
 import type { SlackAgentCreationTerminalIntent } from './agent-creation-terminal.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 
@@ -74,6 +75,7 @@ export type FlueSettlementCheckpointV1 =
       result: {
         text: string;
         tablePresentations?: SlackTablePresentation[];
+        artifacts?: SlackArtifactReceipt[];
         agentCreationTerminal?: SlackAgentCreationTerminalIntent;
         memoryUpdate?: SlackMemoryUpdate;
         requestedModel: string | null;

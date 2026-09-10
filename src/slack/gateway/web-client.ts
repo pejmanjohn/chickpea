@@ -49,6 +49,7 @@ const NAMESPACED_OPERATIONS = new Set<GatewaySlackOperation>([
   'chat.appendStream',
   'chat.stopStream',
   'files.uploadV2',
+  'files.completeUploadExternal',
   'reactions.get',
   'reactions.add',
   'reactions.remove',
@@ -60,9 +61,24 @@ const ASSISTANT_THREAD_OPERATIONS = new Set<GatewaySlackOperation>([
   'assistant.threads.setTitle',
 ]);
 
-const AGENT_SESSION_OPERATIONS = new Set<GatewaySlackOperation>([
+/** Untyped operations reached through `apiCall`, mirroring the SDK bridge. */
+const API_CALL_OPERATIONS = new Set<GatewaySlackOperation>([
   AGENT_SESSION_SET_STATUS_OPERATION,
+  'chickpea.files.stage',
+  'chickpea.files.getShare',
 ]);
+
+/** Marker property answered only by the gateway facade, never by the SDK client. */
+export const GATEWAY_WEB_CLIENT_MARKER = 'chickpeaGatewayWebClient';
+
+export function isGatewaySlackWebClient(client: unknown): boolean {
+  if (!client || typeof client !== 'object') return false;
+  try {
+    return (client as Record<string, unknown>)[GATEWAY_WEB_CLIENT_MARKER] === true;
+  } catch {
+    return false;
+  }
+}
 
 /** Narrow SDK-version bridge for the untyped Agent Sessions method. */
 export function setAgentSessionStatus(
@@ -107,10 +123,11 @@ export function createGatewaySlackWebClient(client: GatewayOperationClient): Web
       // Async installation resolvers return this object. Promise assimilation
       // probes `then`; this facade is a client, not a thenable or Slack method.
       if (property === 'then') return undefined;
+      if (property === GATEWAY_WEB_CLIENT_MARKER) return true;
       if (property === 'assistant') return assistant;
       if (property === 'apiCall') {
         return (operation: string, input: Record<string, unknown> = {}) => {
-          if (!AGENT_SESSION_OPERATIONS.has(operation as GatewaySlackOperation)) {
+          if (!API_CALL_OPERATIONS.has(operation as GatewaySlackOperation)) {
             return Promise.reject(unsupported(operation));
           }
           return apiMethod(client, operation)(input);
@@ -131,7 +148,7 @@ function apiMethod(client: GatewayOperationClient, operationName: string): ApiMe
   const operation = operationName as GatewaySlackOperation;
   if (!NAMESPACED_OPERATIONS.has(operation) &&
       !ASSISTANT_THREAD_OPERATIONS.has(operation) &&
-      !AGENT_SESSION_OPERATIONS.has(operation)) {
+      !API_CALL_OPERATIONS.has(operation)) {
     throw unsupported(operationName);
   }
   return async (input = {}) => {

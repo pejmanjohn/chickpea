@@ -14,6 +14,7 @@ import {
 import { hashRoutineValue } from './ids.ts';
 import { ROUTINE_LIMITS } from './limits.ts';
 import { RoutineRuntimeError, type RoutineRuntimeAccess } from './runtime.ts';
+import { scheduleSignalMessageTs } from './schedule-signal.ts';
 import type { RoutineDefinition, RoutineRun } from './types.ts';
 
 export const RoutineModelResultSchema = v.strictObject({
@@ -56,9 +57,7 @@ export function routineExecutionInstructions(
       ? 'Chickpea itself delivers your returned message to the private originating Slack thread. When the task says to post, send, or reply here, return that thread-visible content in message; do not use tools, sandbox commands, network calls, credentials, tokens, or Chickpea internals to deliver it to Slack, and do not duplicate host delivery.'
       : `Chickpea itself delivers your returned message ${channelThread ? 'to the saved thread in the owning Slack channel' : 'as a new message in the owning Slack channel'}. When the task says to post, send, or reply here, return that channel-visible content in message; do not use tools, sandbox commands, network calls, credentials, tokens, or Chickpea internals to deliver it to Slack, and do not duplicate host delivery.`,
     'Use a Slack tool only when the saved task explicitly requests an additional Slack side effect distinct from posting this routine result.',
-    direct
-      ? 'Files are the one exception to host delivery: when the saved task asks for a file, chart, image, or export, use `render_chart` or `post_artifact`; they attach to the same private originating thread. Still return the text result in message, and do not describe the file as posted unless the tool reported uploaded: true.'
-      : `Files are the one exception to host delivery: when the saved task asks for a file, chart, image, or export, use \`render_chart\` or \`post_artifact\`; they attach ${channelThread ? 'to the saved thread in the owning Slack channel' : 'as a new file in the owning Slack channel'}. Still return the text result in message, and do not describe the file as posted unless the tool reported uploaded: true.`,
+    'When the saved task asks for a file, chart, image, or export, use `render_chart` or `post_artifact`. A staged: true result prepares the file for this reply; Chickpea publishes it with your returned message under your Agent identity at the saved destination. Return the text result in message. Do not invent file links or claim a file is ready when staging failed.',
     direct
       ? 'Return outcome="no_op" when nothing should be posted. Otherwise return outcome="succeeded", a concise thread-visible message, and a stable non-secret changeKey when the routine posts only on change.'
       : 'Return outcome="no_op" when nothing should be posted. Otherwise return outcome="succeeded", a concise channel-visible message, and a stable non-secret changeKey when the routine posts only on change.',
@@ -95,8 +94,11 @@ export async function prepareRoutinePrompt(
     text: revision.taskText,
     userId: access.actorSlackUserId ?? routine.creatorUserId,
     ...(access.actorMembershipId ? { actorMembershipId: access.actorMembershipId } : {}),
-    messageTs: slackTimestamp(run.scheduledFor),
-    threadTs: routine.destination.threadTs ?? slackTimestamp(run.scheduledFor),
+    // The due time doubles as the synthetic Slack coordinate. The schedule
+    // signal repeats it as a host attribute so admission can bind the envelope
+    // below to exactly this occurrence.
+    messageTs: scheduleSignalMessageTs(run.scheduledFor),
+    threadTs: routine.destination.threadTs ?? scheduleSignalMessageTs(run.scheduledFor),
     source: direct ? 'dm_message' : 'app_mention',
     ...(direct ? { channelType: 'im' } : {}),
     contextMode: routine.destination.threadTs ? 'thread' : 'channel_history',
@@ -128,6 +130,8 @@ export async function prepareRoutinePrompt(
     },
     ...(memory.promptBlock ? { memoryBlock: memory.promptBlock } : {}),
     memorySelected: (memory.selection?.entries.length ?? 0) > 0,
+    // The saved task bytes stay verbatim; only admission reads them as a task.
+    currentRequestKind: 'saved_task',
   });
   return {
     prompt: [
@@ -189,8 +193,4 @@ export function normalizeRoutineModelResult(
     changeKeyHash,
     suppressedAsNoOp: false,
   };
-}
-
-function slackTimestamp(timestamp: number): string {
-  return `${Math.floor(timestamp / 1_000)}.${String(timestamp % 1_000).padStart(3, '0')}000`;
 }

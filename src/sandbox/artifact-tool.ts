@@ -2,10 +2,6 @@ import { defineTool, type SandboxFactory, type SessionEnv } from '@flue/runtime'
 import * as v from 'valibot';
 
 import { assertArtifactDeliveryAllowed } from '../memory/tool-policy.ts';
-import type {
-  SlackArtifactInput,
-  SlackArtifactResult,
-} from '../slack/web-client-presenter.ts';
 import type { SandboxSelection } from './select.ts';
 
 export const MAX_ARTIFACT_BYTES = 8 * 1024 * 1024;
@@ -16,12 +12,31 @@ export const POST_ARTIFACT_TOOL_NAME = 'post_artifact';
  * It is deliberately short: the tool descriptions carry the mechanics.
  */
 export const ARTIFACT_TOOLS_INSTRUCTION =
-  'Use `render_chart` when the user asks for a chart, graph, plot, or an image of numbers; use `post_artifact` to attach another file you wrote in the sandbox (CSV, Markdown, JSON, text, SVG, or a workspace build output). These tools deliver to the bound Slack destination. State the key figures in the final reply as well. If a tool reports uploaded: false with reason missing-scope, explain that this workspace does not permit uploads and include the content in the reply. If the reason is too-large, explain the returned size limit and offer a smaller file; do not retry the same file. If the current-request policy denies delivery because the user did not explicitly ask for a file or chart, answer in text and say they can ask explicitly for a chart or file. Never claim an upload succeeded without a successful tool result.';
+  'Use `render_chart` when the user asks for a chart, graph, plot, or an image of numbers; use `post_artifact` to attach another file you wrote in the sandbox (CSV, Markdown, JSON, text, SVG, or a workspace build output). A result with attached: true means Chickpea attaches that file to your final reply in the bound Slack destination; the file is not visible until your reply is delivered, so describe it as attached to this reply and never as already uploaded or posted. State the key figures in the final reply as well. If a tool reports attached: false with reason missing-scope, explain that this workspace does not permit uploads and include the content in the reply. If the reason is too-large, explain the returned size limit and offer a smaller file; do not retry the same file. If the reason is unavailable, say file attachments are temporarily unavailable through this Slack connection and include the content in the reply. If the current-request policy denies delivery because the user did not explicitly ask for a file or chart, answer in text and say they can ask explicitly for a chart or file. Never claim a file is attached without an attached: true tool result.';
+
+/** What the model chose for one staged file: bytes, visible name, optional title. */
+export interface SlackArtifactStageInput {
+  bytes: Uint8Array;
+  filename: string;
+  title?: string;
+  kind: 'file' | 'chart';
+}
+
+/**
+ * Staging outcome. `attached: true` means the host holds a durable receipt and
+ * will publish the file as part of the final reply; the model never sees the
+ * Slack file id or upload coordinates.
+ */
+export type SlackArtifactStageOutcome =
+  | { attached: true; byteLength: number }
+  | { attached: false; reason: 'missing-scope' }
+  | { attached: false; reason: 'too-large'; maxBytes: number }
+  | { attached: false; reason: 'unavailable' };
 
 export interface ArtifactDestinationBinding {
   channel: string;
   threadTs?: string;
-  postArtifact(input: SlackArtifactInput): Promise<SlackArtifactResult>;
+  stageArtifact(input: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome>;
   /**
    * Which sandbox holds the file. The container sandbox freezes a bounded
    * copy through the shell; the in-memory sandbox reads bytes directly,
@@ -42,9 +57,13 @@ const ARTIFACT_INPUT = v.object({
 
 function artifactToolDescription(sandboxKind: SandboxSelection): string {
   return sandboxKind === 'cloudflare'
-    ? 'Attach a file from the coding workspace (a path under /workspace, up to 8 MiB for direct Slack apps or 700 KiB through the shared gateway) to the bound Slack destination. If the result reports uploaded: false, explain the reason and describe the verified artifact in the final reply instead.'
-    : 'Attach a file you wrote in the sandbox filesystem (an absolute path, or a path relative to the working directory, up to 8 MiB for direct Slack apps or 700 KiB through the shared gateway) to the bound Slack destination. Write the file first with the write tool or the shell, then call this with a filename the user will see. If the result reports uploaded: false, explain the reason and include the content in the final reply instead.';
+    ? 'Attach a file from the coding workspace (a path under /workspace, up to 8 MiB for direct Slack apps or 700 KiB through the shared gateway) to your final reply in the bound Slack destination. If the result reports attached: false, explain the reason and describe the verified artifact in the final reply instead.'
+    : 'Attach a file you wrote in the sandbox filesystem (an absolute path, or a path relative to the working directory, up to 8 MiB for direct Slack apps or 700 KiB through the shared gateway) to your final reply in the bound Slack destination. Write the file first with the write tool or the shell, then call this with a filename the user will see. If the result reports attached: false, explain the reason and include the content in the final reply instead.';
 }
+
+export type ArtifactToolResult =
+  | { attached: true; filename: string; byteLength: number }
+  | Extract<SlackArtifactStageOutcome, { attached: false }>;
 
 /** Flue 2 hook-agent variant: the harness supplies the initialized sandbox. */
 export function createWorkspaceArtifactTool(options: ArtifactDestinationBinding) {
@@ -96,16 +115,18 @@ async function deliverArtifact(
   sessionEnv: SessionEnv,
   data: v.InferOutput<typeof ARTIFACT_INPUT>,
   binding: ArtifactDestinationBinding,
-): Promise<SlackArtifactResult> {
+): Promise<ArtifactToolResult> {
   assertArtifactDeliveryAllowed();
   const bytes = await readSandboxArtifact(sessionEnv, data.path, binding.sandboxKind);
-  return binding.postArtifact({
-    channel: binding.channel,
-    ...(binding.threadTs ? { threadTs: binding.threadTs } : {}),
+  const staged = await binding.stageArtifact({
     bytes,
     filename: data.filename,
     ...(data.title === undefined ? {} : { title: data.title }),
+    kind: 'file',
   });
+  return staged.attached
+    ? { attached: true, filename: data.filename, byteLength: staged.byteLength }
+    : staged;
 }
 
 /**

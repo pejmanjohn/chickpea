@@ -1,6 +1,6 @@
 import type { WebClient } from '@slack/web-api';
 
-import { serializeCurrentRequestEnvelope, type ArtifactRequestAddress } from '../memory/tool-policy.ts';
+import { serializeCurrentRequestEnvelope, type ArtifactRequestAddress, type CurrentRequestKind } from '../memory/tool-policy.ts';
 import { formatSlackContextRows, slackContextWindowLabel } from './context-format.ts';
 import {
   computeHistoryWindow,
@@ -228,6 +228,8 @@ export function assembleSlackPrompt(
     progressiveStreamingOffered?: boolean;
     slackApp?: SlackPromptApp;
     artifactAddress?: ArtifactRequestAddress;
+    /** A saved routine task keeps its scheduling wrapper; see tool-policy. */
+    currentRequestKind?: CurrentRequestKind;
   } = {},
 ): string {
   const backgroundMessages = context.messages.filter((message) => !message.isTrigger);
@@ -291,6 +293,7 @@ export function assembleSlackPrompt(
         schemaVersion: options.currentRequestPolicyVersion ?? 2,
         progressiveStreamingOffered: options.progressiveStreamingOffered === true,
         ...(options.artifactAddress ? { artifactAddress: options.artifactAddress } : {}),
+        ...(options.currentRequestKind ? { requestKind: options.currentRequestKind } : {}),
       },
     ),
   );

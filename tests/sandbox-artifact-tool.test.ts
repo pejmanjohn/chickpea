@@ -76,9 +76,9 @@ test('workspace artifact tool reads through SessionEnv and binds the Slack desti
     sandboxKind: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
-    async postArtifact(input) {
+    async stageArtifact(input) {
       uploads.push(input);
-      return { uploaded: true };
+      return { attached: true, byteLength: input.bytes.byteLength };
     },
   });
 
@@ -92,7 +92,7 @@ test('workspace artifact tool reads through SessionEnv and binds the Slack desti
     },
   });
 
-  assert.deepEqual(result, { output: { uploaded: true } });
+  assert.deepEqual(result, { output: { attached: true, filename: 'proof.png', byteLength: 3 } });
   assert.equal(statPaths[0], '/workspace/proof.png');
   const frozenPath = statPaths[1];
   assert.match(
@@ -108,13 +108,14 @@ test('workspace artifact tool reads through SessionEnv and binds the Slack desti
       `head -c ${MAX_ARTIFACT_BYTES + 1} -- '/workspace/proof\\.png' > '/workspace/\\.chickpea-artifact-[a-f0-9]{32}\\.tmp'$`,
     ),
   );
+  // The tool hands the host only the bytes and the model's naming; the frozen
+  // Slack destination is bound by the host receipt, never by tool input.
   assert.deepEqual(uploads, [
     {
-      channel: 'C_BOUND',
-      threadTs: '1782770400.000100',
       bytes: new Uint8Array([1, 2, 3]),
       filename: 'proof.png',
       title: 'Proof',
+      kind: 'file',
     },
   ]);
 });
@@ -133,9 +134,9 @@ test('workspace artifact tool rejects over-cap files without reading or posting 
     sandboxKind: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
-    async postArtifact(input) {
+    async stageArtifact(input) {
       uploads.push(input);
-      return { uploaded: true };
+      return { attached: true, byteLength: input.bytes.byteLength };
     },
   });
 
@@ -176,9 +177,9 @@ test('workspace artifact copy-freeze bounds a source that grows after the pre-st
     sandboxKind: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
-    async postArtifact(input) {
+    async stageArtifact(input) {
       uploadedBytes = input.bytes.byteLength;
-      return { uploaded: true };
+      return { attached: true, byteLength: input.bytes.byteLength };
     },
   });
 
@@ -215,9 +216,9 @@ test('workspace artifact tool rejects post-read oversize bytes and cleans up', a
     sandboxKind: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
-    async postArtifact(input) {
+    async stageArtifact(input) {
       uploads.push(input);
-      return { uploaded: true };
+      return { attached: true, byteLength: input.bytes.byteLength };
     },
   });
 
@@ -251,8 +252,8 @@ test('workspace artifact temp name is random and independent of model input', as
     sandboxKind: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
-    async postArtifact() {
-      return { uploaded: true };
+    async stageArtifact(input) {
+      return { attached: true, byteLength: input.bytes.byteLength };
     },
   });
 
@@ -292,8 +293,8 @@ test('workspace artifact tool keeps the container root and rejects paths outside
     sandboxKind: 'cloudflare',
     channel: 'C_BOUND',
     threadTs: '1782770400.000100',
-    async postArtifact() {
-      return { uploaded: true };
+    async stageArtifact(input) {
+      return { attached: true, byteLength: input.bytes.byteLength };
     },
   });
   await capability.sandbox.createSessionEnv({ id: 'thread-1' });
@@ -306,7 +307,7 @@ test('workspace artifact tool keeps the container root and rejects paths outside
         filename: 'proof.png',
       },
     }),
-    { output: { uploaded: true } },
+    { output: { attached: true, filename: 'proof.png', byteLength: 3 } },
   );
   assert.equal(readPaths.length, 1);
   assert.match(
@@ -336,9 +337,9 @@ test('in-memory sandbox artifacts are read directly, byte for byte, with no shel
     sandboxKind: 'bash',
     channel: 'C_BOUND',
     threadTs: '1782770400.000300',
-    async postArtifact(input) {
+    async stageArtifact(input) {
       uploads.push({ bytes: input.bytes, filename: input.filename });
-      return { uploaded: true };
+      return { attached: true, byteLength: input.bytes.byteLength };
     },
   });
   const env = await capability.sandbox.createSessionEnv({ id: 'thread-bash' });
@@ -350,7 +351,9 @@ test('in-memory sandbox artifacts are read directly, byte for byte, with no shel
     ...TOOL_RUN_CONTEXT,
     data: { path: 'bookings.csv', filename: 'bookings.csv' },
   });
-  assert.deepEqual(textResult, { output: { uploaded: true } });
+  assert.deepEqual(textResult, {
+    output: { attached: true, filename: 'bookings.csv', byteLength: new TextEncoder().encode(csv).byteLength },
+  });
   assert.deepEqual(uploads[0]?.bytes, new TextEncoder().encode(csv));
 
   // Binary bytes survive untouched, which the string-based shell pipe cannot
@@ -390,9 +393,9 @@ test('in-memory sandbox artifacts stat before reading and reject malformed resol
     sandboxKind: 'bash',
     channel: 'C_BOUND',
     threadTs: '1782770400.000400',
-    async postArtifact(input) {
+    async stageArtifact(input) {
       uploads.push(input);
-      return { uploaded: true };
+      return { attached: true, byteLength: input.bytes.byteLength };
     },
   });
 
@@ -440,9 +443,9 @@ test('the hook-agent artifact tool reads the in-memory sandbox through the harne
     sandboxKind: 'bash',
     channel: 'C_PLAN',
     threadTs: '1782770400.000500',
-    async postArtifact(input) {
+    async stageArtifact(input) {
       uploads.push(input);
-      return { uploaded: true };
+      return { attached: true, byteLength: input.bytes.byteLength };
     },
   });
   const env = fakeSessionEnv(readPaths, [], 3);
@@ -451,7 +454,7 @@ test('the hook-agent artifact tool reads the in-memory sandbox through the harne
     data: { path: '/home/user/summary.json', filename: 'summary.json' },
     harness: { sandbox: env },
   } as never);
-  assert.deepEqual(result, { output: { uploaded: true } });
+  assert.deepEqual(result, { output: { attached: true, filename: 'summary.json', byteLength: 3 } });
   assert.deepEqual(readPaths, ['/home/user/summary.json']);
   assert.equal(uploads.length, 1);
 });

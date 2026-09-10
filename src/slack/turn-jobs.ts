@@ -21,6 +21,7 @@ import type {
   TurnJob,
 } from './turn-job-types.ts';
 import { parseSlackTablePresentations } from './table-presentation.ts';
+import { parseSlackArtifactReceipts } from './artifact-receipts.ts';
 import { parseSlackAgentCreationTerminalIntents } from './agent-creation-terminal.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
@@ -1418,6 +1419,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
   const record = exactObject(value, 'Flue settled result', [
     'text',
     'tablePresentations',
+    'artifacts',
     'agentCreationTerminal',
     'memoryUpdate',
     'requestedModel',
@@ -1428,6 +1430,9 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
   ]);
   const text = validateBoundedString(record.text, 'settled result text', 1_000_000);
   const tablePresentations = parseSlackTablePresentations(record.tablePresentations);
+  const artifacts = parseSlackArtifactReceipts(
+    record.artifacts === undefined ? undefined : [record.artifacts],
+  );
   const memoryUpdate = parseSlackMemoryUpdate(record.memoryUpdate === undefined ? undefined : [record.memoryUpdate]);
   const agentCreationTerminal = parseSlackAgentCreationTerminalIntents(
     record.agentCreationTerminal === undefined ? undefined : [record.agentCreationTerminal],
@@ -1473,6 +1478,7 @@ function parseSettledResult(value: unknown): Extract<FlueSettlementCheckpointV1,
   return {
     text,
     ...(tablePresentations.length > 0 ? { tablePresentations } : {}),
+    ...(artifacts.length > 0 ? { artifacts } : {}),
     ...(agentCreationTerminal ? { agentCreationTerminal } : {}),
     ...(memoryUpdate ? { memoryUpdate } : {}),
     requestedModel,

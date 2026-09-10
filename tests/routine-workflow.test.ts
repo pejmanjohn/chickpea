@@ -427,6 +427,9 @@ test('live access and a frozen app checkpoint precede Flue dispatch', async () =
         threadTs: '',
         triggerSource: 'schedule',
         scheduledFor: String(NOW),
+        // The member the saved task runs as, mirrored from the prompt envelope
+        // so admission can cross-check identity as well as the due time.
+        actorSlackUserId: 'U_MEMBER',
       },
     });
     assert.equal(completed?.flueAgentEnvelope?.schemaVersion, 2);

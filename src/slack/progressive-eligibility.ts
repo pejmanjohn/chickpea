@@ -9,6 +9,8 @@ interface ProgressiveEligibilityInput {
   concurrentAttributionProven: boolean;
   /** Another post-read policy can withhold or replace the model draft. */
   replacementCapable: boolean;
+  /** The request admits staged files, which publish with the final text in one call. */
+  artifactDeliveryRequested?: boolean;
 }
 
 export interface ProgressiveEligibilityDecision {
@@ -20,6 +22,9 @@ export interface ProgressiveEligibilityDecision {
 export function decideProgressiveEligibility(
   input: ProgressiveEligibilityInput,
 ): ProgressiveEligibilityDecision {
+  // File replies also suppress native task streams, even when progressive
+  // answer streaming is disabled for an independent reason.
+  if (input.artifactDeliveryRequested) return { allowed: false, reason: 'artifact' };
   if (!input.operationsEnabled) {
     return { allowed: false, reason: 'operations_disabled' };
   }

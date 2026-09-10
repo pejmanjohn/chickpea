@@ -94,6 +94,8 @@ import {
   type SlackReactionReceipt,
 } from './web-client-presenter.ts';
 import type { SlackTablePresentation } from './table-presentation.ts';
+import type { SlackArtifactReceipt } from './artifact-receipts.ts';
+import { requestAdmitsArtifactDelivery } from '../memory/tool-policy.ts';
 import {
   InteractiveUsageRecorder,
   InteractionUsageRecorder,
@@ -1038,6 +1040,13 @@ export async function runTurn(
         concurrentAttributionProven: options.progressiveAttributionProven === true,
         replacementCapable: options.beforeDelivery !== undefined &&
           runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare',
+        // The same classification the envelope freezes for the model: a
+        // request that admits files must end in one file share, not a stream.
+        artifactDeliveryRequested: requestAdmitsArtifactDelivery(turn.text, {
+          ...commandAddress,
+          agentHandle: assignment.agent.slackPresence?.normalizedHandle ??
+            assignment.agent.slackPresence?.requestedHandle,
+        }),
       });
       if (agentViewPresentation) {
         const frozen = await agentViewPresentation.freezeProgressiveEligibility(candidate);
@@ -1095,6 +1104,10 @@ export async function runTurn(
       options.flueDispatch?.flueSettlement?.outcome === 'completed'
         ? options.flueDispatch.flueSettlement.result.tablePresentations?.[0]
         : undefined;
+    let artifacts: SlackArtifactReceipt[] | undefined =
+      options.flueDispatch?.flueSettlement?.outcome === 'completed'
+        ? options.flueDispatch.flueSettlement.result.artifacts
+        : undefined;
     if (options.replayText !== undefined) {
       text = options.replayText;
     } else {
@@ -1150,6 +1163,7 @@ export async function runTurn(
           ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${agentResult.text}`
           : agentResult.text;
         tablePresentation = agentResult.tablePresentations?.[0];
+        artifacts = agentResult.artifacts;
         await workLifecycle?.settleExecution({
           outcome: 'succeeded',
           rawStatus: 'flue_succeeded',
@@ -1335,6 +1349,7 @@ export async function runTurn(
     if (acknowledgeMemoryUpdate) {
       text = recoveredText ?? agentResult?.memoryUpdate?.summary ?? 'I updated my memory.';
       tablePresentation = undefined;
+      artifacts = undefined;
     }
     // Confirmation only prevents reinjecting the same selection into this
     // transcript. A concurrent turn can legitimately advance the epoch before
@@ -1359,11 +1374,17 @@ export async function runTurn(
     }
     const terminalResult = options.replayTerminalResult ?? 'answer';
     await statusTurn.prepareFinal();
+    // Files publish only with the model's own lease-valid answer. A recovered
+    // or replaced text never adopts staged files.
+    const deliverableArtifacts = recoveredText === undefined && leaseValid && terminalResult === 'answer'
+      ? artifacts
+      : undefined;
     await presenter.deliverFinal(
       text,
       'markdown',
       terminalResult === 'failure' ? 'error' : 'complete',
       tablePresentation,
+      deliverableArtifacts,
     );
     // Clear after the final reaches Slack. A custom Agent persona does not
     // reliably trigger Slack's automatic app-status cleanup, and clearing

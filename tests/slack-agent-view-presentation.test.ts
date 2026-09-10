@@ -17,6 +17,7 @@ import {
 import type { SlackPresentationFinalizationRecord } from '../src/slack/run-presentations.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
+import type { SlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
 
 const ROOT = {
   workspaceId: 'T_AGENT_VIEW',
@@ -33,6 +34,8 @@ function harness(input: {
   failIntentMutation?: boolean;
   startStreamError?: unknown;
   stopStreamError?: unknown;
+  deleteError?: unknown;
+  failRetirementReceipt?: boolean;
   sessionError?: unknown;
   onNativeStarted?: () => Promise<void>;
   persona?: { name: string; avatarUrl: string; avatarRevision: number };
@@ -116,6 +119,11 @@ function harness(input: {
         calls.push({ method: 'chat.update', input: value });
         return { ok: true };
       },
+      async delete(value: Record<string, unknown>) {
+        calls.push({ method: 'chat.delete', input: value });
+        if (input.deleteError) throw input.deleteError;
+        return { ok: true };
+      },
     },
     conversations: {
       async replies(value: Record<string, unknown>) {
@@ -135,6 +143,9 @@ function harness(input: {
     transitionRunPresentation: (value) => {
       if (input.failIntentMutation && value.mutation.kind === 'progressive_intent_requested') {
         throw new Error('synthetic intent persistence failure');
+      }
+      if (input.failRetirementReceipt && value.mutation.kind === 'file_share_stream_retired') {
+        throw new Error('synthetic retirement receipt persistence failure');
       }
       return store.transition(value);
     },
@@ -170,6 +181,7 @@ function harness(input: {
     store,
     runId,
     calls,
+    client,
     finalizationRecords,
     presentation,
     presentationState: state,
@@ -234,6 +246,205 @@ function declareProgressiveIntent(
   });
   void input.submissionId;
 }
+
+const STAGED_CHART: SlackArtifactReceipt = {
+  schemaVersion: 1,
+  fileId: 'F12345678',
+  filename: 'bookings.png',
+  kind: 'chart',
+  byteLength: 100,
+  stagedAt: 1_800_000_000_000,
+  destination: {
+    workspaceId: ROOT.workspaceId,
+    agentId: 'agent_default',
+    channelId: ROOT.channelId,
+    threadTs: ROOT.threadTs,
+  },
+};
+
+for (const mode of ['native', 'progressive'] as const) {
+  test(`an existing ${mode} stream retires before one combined file terminal`, async () => {
+    const h = harness({
+      schemaVersion: 3,
+      ...(mode === 'native' ? { tasks: ['Inspect bookings', 'Prepare chart'] } : {}),
+    });
+    try {
+      if (mode === 'native') {
+        const stored = h.store.get(h.runId)!;
+        await h.presentation.transitionMilestone({ taskId: stored.plan!.tasks[0]!.id, to: 'in_progress' });
+      }
+      const relay = await prepareReceipt(h, {
+        instanceId: 'instance_files',
+        receipt: { submissionId: 'submission_files', acceptedAt: 'now', uid: 'uid' },
+        eligibility: mode === 'native'
+          ? { allowed: false, reason: 'effect_capable' }
+          : { allowed: true, reason: 'safe_early_release' },
+      });
+      if (mode === 'progressive') {
+        assert.ok(relay);
+        relay.onEvent({
+          type: 'message-started', conversationId: 'conversation', submissionId: 'submission_files',
+          messageId: 'message_files', position: { batch: 1, index: 0 },
+        });
+        declareProgressiveIntent(relay, { submissionId: 'submission_files', messageId: 'message_files' });
+        relay.onEvent({
+          type: 'message-delta', conversationId: 'conversation', messageId: 'message_files',
+          kind: 'text', delta: 'Preparing the chart.', position: { batch: 4, index: 0 },
+        });
+        await relay.closeAndDrain();
+      }
+      const prior = h.store.get(h.runId)!;
+      assert.equal(prior.stream.state, 'streaming');
+      assert.ok(prior.stream.messageTs);
+      const initialCallCount = h.calls.length;
+      const events: Array<Record<string, unknown>> = [];
+      const result = await h.presentation.finalize(
+        'Here is the bookings chart.', 'markdown', 'complete', observer(events), undefined, [STAGED_CHART],
+      );
+      assert.equal(result.handled, false);
+      assert.equal(result.fallbackPresentation, true);
+      assert.deepEqual(h.calls.slice(initialCallCount), [
+        { method: 'chat.stopStream', input: { channel: ROOT.channelId, ts: prior.stream.messageTs } },
+        { method: 'chat.delete', input: { channel: ROOT.channelId, ts: prior.stream.messageTs } },
+      ]);
+      assert.deepEqual(events, [], 'interim cleanup must not acknowledge canonical delivery');
+      const ready = h.store.get(h.runId)!;
+      assert.equal(ready.stream.state, 'fallback');
+      assert.equal(ready.stream.messageTs, undefined);
+      assert.equal(ready.stream.priorStreamMessageTs, undefined);
+      assert.equal(ready.schemaVersion === 3 && ready.terminalDelivery.state === 'intended'
+        ? ready.terminalDelivery.operation.certainty : undefined, 'pending');
+
+      // The presenter's completion receipt, not the retired stream, owns final delivery.
+      await h.presentation.markFallbackDelivered('1785700100.000999');
+      await h.presentation.markCanonicalFinalized();
+      const final = h.store.get(h.runId)!;
+      assert.equal(final.stream.state, 'finalized');
+      assert.equal(final.stream.messageTs, '1785700100.000999');
+    } finally { h.db.close(); }
+  });
+}
+
+for (const interruption of ['stop', 'delete', 'receipt'] as const) {
+  test(`file stream retirement resumes after an interrupted ${interruption} without delivering early`, async () => {
+    const controls: Parameters<typeof harness>[0] = {
+      schemaVersion: 3,
+      ...(interruption === 'stop' ? { stopStreamError: new Error('synthetic connection lost') } : {}),
+      ...(interruption === 'delete' ? { deleteError: new Error('synthetic connection lost') } : {}),
+      ...(interruption === 'receipt' ? { failRetirementReceipt: true } : {}),
+    };
+    const h = harness(controls);
+    try {
+      applyPresentationMutation(h, { kind: 'stream_start_intent' });
+      applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000288',
+        flue: { instanceId: 'instance_cleanup', submissionId: 'submission_cleanup' } });
+      const events: Array<Record<string, unknown>> = [];
+      await assert.rejects(h.presentation.finalize(
+        'Here is the chart.', 'markdown', 'complete', observer(events), undefined, [STAGED_CHART],
+      ), /synthetic/);
+      const interrupted = h.store.get(h.runId)!;
+      assert.equal(interrupted.stream.state, 'fallback');
+      assert.equal(interrupted.stream.priorStreamMessageTs, '1785700100.000288');
+      assert.equal(interrupted.stream.messageTs, undefined);
+      assert.equal(interrupted.schemaVersion === 3 ? interrupted.terminalDelivery.state : undefined, 'none');
+      assert.deepEqual(events, []);
+
+      controls.stopStreamError = { code: ErrorCode.PlatformError, data: { error: 'message_not_found' } };
+      controls.deleteError = { code: ErrorCode.PlatformError, data: { error: 'message_not_found' } };
+      controls.failRetirementReceipt = false;
+      const replay = new SlackAgentViewPresentation({
+        client: h.client, state: h.presentationState, runId: h.runId, runFencingToken: 0,
+        footer: { agentName: 'Chickpea', agentId: 'agent_default' },
+      });
+      assert.equal(await replay.prepareDeferredTerminalDelivery('answer'), true);
+      assert.deepEqual(h.calls.slice(-2), [
+        { method: 'chat.stopStream', input: { channel: ROOT.channelId, ts: '1785700100.000288' } },
+        { method: 'chat.delete', input: { channel: ROOT.channelId, ts: '1785700100.000288' } },
+      ]);
+      assert.equal(h.store.get(h.runId)?.stream.priorStreamMessageTs, undefined);
+      assert.deepEqual(events, [], 'replay cleanup still cannot settle Work');
+    } finally { h.db.close(); }
+  });
+}
+
+test('file retirement accepts an already-stopped stream but retains explicit cleanup failures', async () => {
+  const controls = {
+    schemaVersion: 3 as const,
+    stopStreamError: { code: ErrorCode.PlatformError, data: { error: 'message_not_in_streaming_state' } },
+    deleteError: { code: ErrorCode.PlatformError, data: { error: 'missing_scope' } } as unknown,
+  };
+  const h = harness(controls);
+  try {
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000288',
+      flue: { instanceId: 'instance_cleanup', submissionId: 'submission_cleanup' } });
+    await assert.rejects(h.presentation.finalize(
+      'Here is the chart.', 'markdown', 'complete', observer([]), undefined, [STAGED_CHART],
+    ));
+    assert.equal(h.store.get(h.runId)?.stream.priorStreamMessageTs, '1785700100.000288');
+    controls.deleteError = undefined;
+    const result = await h.presentation.finalize(
+      'Here is the chart.', 'markdown', 'complete', observer([]), undefined, [STAGED_CHART],
+    );
+    assert.equal(result.handled, false);
+    assert.equal(h.store.get(h.runId)?.stream.priorStreamMessageTs, undefined);
+  } finally { h.db.close(); }
+});
+
+for (const boundary of ['starting', 'unknown', 'pending_terminal', 'finalizing', 'finalized'] as const) {
+  test(`file retirement preserves the ${boundary} presentation boundary`, async () => {
+    const h = harness({ schemaVersion: 3 });
+    try {
+      applyPresentationMutation(h, { kind: 'stream_start_intent' });
+      if (boundary !== 'starting') {
+        applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000288',
+          flue: { instanceId: 'instance_boundary', submissionId: 'submission_boundary' } });
+      }
+      if (boundary === 'unknown') {
+        applyPresentationMutation(h, { kind: 'mark_unknown', degradationReason: 'unknown_effect' });
+      }
+      if (boundary === 'pending_terminal' || boundary === 'finalizing' || boundary === 'finalized') {
+        applyPresentationMutation(h, { kind: 'record_terminal_delivery_intent', operationId: 'terminal_boundary', result: 'answer' });
+      }
+      if (boundary === 'finalizing' || boundary === 'finalized') {
+        applyPresentationMutation(h, { kind: 'close_stream', outcome: 'terminal_only' });
+        applyPresentationMutation(h, { kind: 'mark_finalizing' });
+      }
+      if (boundary === 'finalized') {
+        applyPresentationMutation(h, { kind: 'mark_artifact_delivered', outcome: 'terminal_only' });
+        await h.presentation.recordTerminalDeliveryReceipt('acknowledged');
+        applyPresentationMutation(h, { kind: 'mark_finalized' });
+      }
+      const before = h.store.get(h.runId);
+      const deliver = () => h.presentation.finalize(
+        'Here is the chart.', 'markdown', 'complete', observer([]), undefined, [STAGED_CHART],
+      );
+      if (boundary === 'finalized') assert.equal((await deliver()).handled, true);
+      else await assert.rejects(deliver);
+      assert.deepEqual(h.calls, []);
+      assert.deepEqual(h.store.get(h.runId), before);
+    } finally { h.db.close(); }
+  });
+}
+
+test('file retirement must acquire the current presentation fence before touching Slack', async () => {
+  const h = harness({ schemaVersion: 3 });
+  try {
+    applyPresentationMutation(h, { kind: 'stream_start_intent' });
+    applyPresentationMutation(h, { kind: 'stream_started', messageTs: '1785700100.000288',
+      flue: { instanceId: 'instance_fence', submissionId: 'submission_fence' } });
+    const original = h.presentationState.transitionRunPresentation;
+    h.presentationState.transitionRunPresentation = (input) => {
+      if (input.mutation.kind === 'retire_stream_for_file_share') return { outcome: 'stale' };
+      return original(input);
+    };
+    await assert.rejects(h.presentation.finalize(
+      'Here is the chart.', 'markdown', 'complete', observer([]), undefined, [STAGED_CHART],
+    ));
+    assert.deepEqual(h.calls, []);
+    assert.equal(h.store.get(h.runId)?.stream.state, 'streaming');
+  } finally { h.db.close(); }
+});
 
 test('ordinary eligible answers start once, append ordered suffixes, and stop once', async () => {
   const h = harness({

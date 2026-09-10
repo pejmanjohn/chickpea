@@ -20,6 +20,7 @@ import {
   type RenderedSlackTablePresentation,
   type SlackTablePresentation,
 } from './table-presentation.ts';
+import type { SlackArtifactReceipt } from './artifact-receipts.ts';
 import {
   ReceiptScopedTextRelay,
   type ProgressiveIntentTransition,
@@ -364,11 +365,15 @@ export class SlackAgentViewPresentation {
 
   /**
    * Freeze terminal intent for content that another durable delivery path owns.
+   * Resume any saved interim-stream cleanup before authorizing that write.
    * Returns whether a new write is safe. The caller must acknowledge that
    * delivery later before lifecycle cleanup.
    */
   async prepareDeferredTerminalDelivery(result: 'answer' | 'failure'): Promise<boolean> {
-    const presentation = await this.requirePresentation();
+    let presentation = await this.requirePresentation();
+    if (presentation.stream.priorStreamMessageTs) {
+      presentation = await this.retireInterimStreamForFileShare(presentation);
+    }
     if (presentation.schemaVersion !== 3) return false;
     const terminal = await this.prepareTerminalDelivery(result);
     return terminal.mayWrite;
@@ -761,6 +766,7 @@ export class SlackAgentViewPresentation {
     terminalTaskStatus: 'complete' | 'error',
     observer: SlackPresentationDeliveryObserver,
     tablePresentation?: SlackTablePresentation,
+    artifacts: readonly SlackArtifactReceipt[] = [],
   ): Promise<AgentViewFinalResult> {
     let presentation = await this.requirePresentation();
     if (presentation.stream.state === 'finalized' ||
@@ -775,6 +781,16 @@ export class SlackAgentViewPresentation {
       return { handled: true, ...(presentation.stream.messageTs
         ? { messageTs: presentation.stream.messageTs }
         : {}) };
+    }
+    if (presentation.stream.priorStreamMessageTs ||
+        artifacts.length > 0 && presentation.stream.state === 'streaming') {
+      presentation = await this.retireInterimStreamForFileShare(presentation);
+    }
+    if (artifacts.length > 0 &&
+        presentation.stream.state !== 'absent' && presentation.stream.state !== 'fallback') {
+      // A previous terminal may already be visible. Never turn its ambiguous
+      // stop/update into a second file message, or silently drop the files.
+      throw new Error('Slack file delivery requires reconciliation of the existing presentation.');
     }
     if (presentation.schemaVersion === 3 && presentation.stream.state === 'finalizing' &&
         presentation.stream.messageTs && presentation.terminalDelivery.state === 'intended' &&
@@ -827,6 +843,17 @@ export class SlackAgentViewPresentation {
     }
     presentation = await this.requirePresentation();
     if (presentation.stream.state === 'fallback') {
+      return {
+        handled: false,
+        fallbackPresentation: true,
+        ...(terminal.operationId ? { operationId: terminal.operationId } : {}),
+      };
+    }
+    if (artifacts.length > 0 && presentation.stream.state === 'absent') {
+      // Staged files publish with the text in one completion call, which
+      // Slack cannot stream. Route the terminal through the fallback state so
+      // the presenter's file share owns the coordinate and repair semantics.
+      await this.transition(presentation, { kind: 'mark_file_share_intent' });
       return {
         handled: false,
         fallbackPresentation: true,
@@ -971,6 +998,33 @@ export class SlackAgentViewPresentation {
     certainty: Exclude<SlackPresentationReceiptCertainty, 'pending' | 'acknowledged'>,
   ): Promise<void> {
     await this.recordTerminalDeliveryReceipt(certainty);
+  }
+
+  /** Retire only the exact saved interim stream, before any terminal write. */
+  private async retireInterimStreamForFileShare(
+    presentation: SlackRunPresentation,
+  ): Promise<SlackRunPresentation> {
+    presentation = await this.transition(presentation, { kind: 'retire_stream_for_file_share' });
+    const messageTs = presentation.stream.priorStreamMessageTs!;
+    const coordinate = { channel: presentation.root.channelId, ts: messageTs };
+    try {
+      await this.options.client.chat.stopStream(coordinate);
+    } catch (error) {
+      if (slackEffectOutcome(error) !== 'failed' ||
+          !['message_not_in_streaming_state', 'message_not_found'].includes(safeSlackErrorCode(error))) {
+        throw error;
+      }
+    }
+    try {
+      await this.options.client.chat.delete(coordinate);
+    } catch (error) {
+      if (slackEffectOutcome(error) !== 'failed' || safeSlackErrorCode(error) !== 'message_not_found') {
+        throw error;
+      }
+    }
+    // A crash before this receipt repeats only stop/delete at this coordinate.
+    // It cannot repeat completion because terminal intent has not begun.
+    return this.transition(presentation, { kind: 'file_share_stream_retired', messageTs });
   }
 
   async markCanonicalFinalized(): Promise<void> {
@@ -1152,6 +1206,8 @@ export class SlackAgentViewPresentation {
     instanceId: string,
     submissionId: string,
   ): Promise<SlackRunPresentation> {
+    if (presentation.progressiveEligibility.status === 'frozen' &&
+        presentation.progressiveEligibility.reason === 'artifact') return presentation;
     if (presentation.stream.state === 'streaming') return presentation;
     if (presentation.stream.state !== 'absent' || !presentation.plan) return presentation;
     if (presentation.schemaVersion === 3 &&
