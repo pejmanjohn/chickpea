@@ -590,7 +590,7 @@ export type RoutineScheduleActionResult =
       routineId: string;
       routineVersion?: number;
       deliveryDestination?: 'channel' | 'channel_thread' | 'direct_thread';
-      nextRunTime?: { isoUtc: string; local: string; timezone: string } | null;
+      nextRunTime?: { isoUtc: string; local: string; display: string; timezone: string } | null;
       safeState?: 'active' | 'paused' | 'disabled' | 'pending_authority';
     }
   | {
