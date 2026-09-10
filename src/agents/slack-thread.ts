@@ -17,7 +17,7 @@ import {
   useSkill,
   useTool,
 } from '@flue/runtime';
-import { Bash, InMemoryFs, type NetworkConfig, type SecureFetch } from 'just-bash';
+import { Bash, InMemoryFs } from 'just-bash';
 import * as v from 'valibot';
 
 import {
@@ -49,11 +49,10 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
 import { connectorSkillsForConnections } from '../config/connector-skills.ts';
 import {
-  buildEgressPlan,
-  createScopedFetch,
+  createConnectorScopedBash,
+  matchesEgressPrefix,
   resolveEgressPolicy,
   type ResolvedApiConnection,
-  type ScopedDelegate,
 } from '../config/egress.ts';
 import {
   resolveEffectiveSlackConfig,
@@ -192,6 +191,7 @@ import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
 import {
   buildRuntimePlanActivityContext,
   parseRuntimePlanV2,
+  type RuntimePlanApiConnectionV2,
   type RuntimePlanModelCredentialV3,
   type RuntimePlanRepositoryV2,
   type RuntimePlanV2,
@@ -536,6 +536,7 @@ export async function resolveApiConnectionsForTurn(
     });
   });
   const accountContext = dependencies.accountContext;
+  const identity = accountContext ? getIdentityStore(env) : undefined;
   if (accountContext && !(await isActiveConnectionActor({
     identity: getIdentityStore(env),
     workspaceId: accountContext.workspaceId,
@@ -613,6 +614,16 @@ export async function resolveApiConnectionsForTurn(
             headerName: policy.headerName,
             headerValue: (policy.headerValuePrefix ?? '') + credential,
             allowedMethods: policy.allowedMethods,
+            ...(accountContext ? { authorize: async () => {
+              if (!(await isActiveConnectionActor({ identity: identity!, workspaceId: accountContext.workspaceId, actorMembershipId: accountContext.actorMembershipId }))) return false;
+              const current = projectEffectiveApiConnections(await resolveEffectiveConnectionAccounts({ ...accountContext, agentId }));
+              const live = current.find(({ id }) => id === connection.id);
+              // Credentials are resolved per session. Any policy change invalidates
+              // its frozen delegate, including narrowing; rotation takes effect in
+              // the next session. A revoked account disappears from this projection.
+              return !!live && runtimeApiDeclarationStillAllowed(live, connection) &&
+                runtimeApiDeclarationStillAllowed(connection, live);
+            } } : {}),
           })),
           displayName: connection.displayName,
           policy: connection,
@@ -622,6 +633,40 @@ export async function resolveApiConnectionsForTurn(
   return resolved.filter(
     (connection): connection is ResolvedApiConnectionForTurn => connection !== undefined,
   );
+}
+
+/** Live authority can narrow a frozen plan but never expand or change its credential identity. */
+export function runtimeApiDeclarationStillAllowed(
+  live: ApiConnectionConfig | RuntimePlanApiConnectionV2,
+  frozen: ApiConnectionConfig | RuntimePlanApiConnectionV2,
+): boolean {
+  const subset = (a: string[] = [], b: string[] = []) => a.every((value) => b.includes(value));
+  return live.id === frozen.id &&
+    (live.authMode ?? 'credential') === (frozen.authMode ?? 'credential') &&
+    live.headerName.toLowerCase() === frozen.headerName.toLowerCase() &&
+    (live.headerValuePrefix ?? '') === (frozen.headerValuePrefix ?? '') &&
+    live.oauthProvider === frozen.oauthProvider &&
+    subset(live.oauthScopes, frozen.oauthScopes) &&
+    subset(live.allowedHosts.map((host) => host.toLowerCase()), frozen.allowedHosts.map((host) => host.toLowerCase())) &&
+    subset(live.allowedMethods.map((method) => method.toUpperCase()), frozen.allowedMethods.map((method) => method.toUpperCase())) &&
+    (live.pathPrefixes.length ? live.pathPrefixes : ['/']).every((path) =>
+      (frozen.pathPrefixes.length ? frozen.pathPrefixes : ['/']).some((prefix) =>
+        matchesEgressPrefix('https://policy.invalid' + path, 'https://policy.invalid' + prefix)));
+}
+
+async function resolveRuntimePlanApiConnections(plan: RuntimePlanV2, env?: PlatformEnv) {
+  if (!plan.apiConnections.length || !plan.actorMembershipId) return [];
+  const accountContext = { config: getConfigStore(env), settings: getSettingsStore(env), workspaceId: plan.conversation.workspaceId, actorMembershipId: plan.actorMembershipId };
+  const current = projectEffectiveApiConnections(await resolveEffectiveConnectionAccounts({ ...accountContext, agentId: plan.agentId }));
+  const connections = plan.apiConnections.flatMap((declaration) => {
+    const live = current.find(({ id }) => id === declaration.id);
+    if (!live || !runtimeApiDeclarationStillAllowed(live, declaration)) {
+      console.warn(`[chickpea] API connection unavailable under frozen policy (${declaration.id})`);
+      return [];
+    }
+    return [{ ...live, headerName: declaration.headerName, headerValuePrefix: declaration.headerValuePrefix ?? '' }];
+  });
+  return resolveApiConnectionsForTurn(plan.agentId, connections, env, { accountContext });
 }
 
 export interface SlackAgentRuntimeInput {
@@ -905,43 +950,7 @@ export async function createSlackAgentRuntime(
         },
       });
 
-  const { scopes, baseNetwork, baseMethods, fallbackNetwork } = buildEgressPlan(
-    egressPolicy,
-    { cloudflare: isCloudflareTarget() },
-    resolvedConnectors,
-  );
-  const secureFetchOf = (network: NetworkConfig): SecureFetch | undefined =>
-    (
-      new Bash({ fs: new InMemoryFs(), network }) as unknown as {
-        secureFetch?: SecureFetch;
-      }
-    ).secureFetch;
-  let virtualSandbox: SandboxFactory;
-  const baseDelegate = secureFetchOf(baseNetwork);
-  const scopeDelegates = scopes.map((scope) => ({
-    prefixes: scope.prefixes,
-    methods: scope.methods,
-    delegate: secureFetchOf(scope.network),
-    ...(scope.matchesRequest ? { matchesRequest: scope.matchesRequest } : {}),
-  }));
-  if (
-    typeof baseDelegate === 'function' &&
-    scopeDelegates.every((scope) => typeof scope.delegate === 'function')
-  ) {
-    // Each connector rides its own secure-fetch scoped to just its hosts and
-    // methods, so a redirect off a connector host cannot carry an elevated
-    // method to any other allow-listed host.
-    const scopedFetch = createScopedFetch({
-      scopes: scopeDelegates as ScopedDelegate[],
-      baseDelegate,
-      baseMethods,
-    });
-    virtualSandbox = bash(() => new Bash({ fs: new InMemoryFs(), fetch: scopedFetch }));
-  } else {
-    // just-bash stopped exposing secureFetch; fall back to the supported network
-    // path at the fail-closed baseline (connector write methods not granted).
-    virtualSandbox = bash(() => new Bash({ fs: new InMemoryFs(), network: fallbackNetwork }));
-  }
+  const virtualSandbox = createConnectorScopedBash(egressPolicy, isCloudflareTarget(), resolvedConnectors);
   let sandbox = await resolveAgentSandbox({
     selection: sandboxSelection,
     fallback: virtualSandbox,
@@ -1216,9 +1225,19 @@ export function useRuntimePlanAgent(
       [AGENT_AUTHORING_SKILL_NAME],
     );
   }
+  if (!options.toolsDisabled && plan.sandbox.mode === 'bash' && plan.apiConnections.length > 0) {
+    useInstruction([
+      'REST connections are declared for this turn. Use the bash tool with curl -sS to perform requested HTTP operations within the listed hosts, path prefixes, and methods, preserving error messages. Credentials are injected automatically by the connection transport; do not supply, retrieve, or print authentication headers or credential values.',
+      'These declarations describe the frozen permission ceiling, not a guarantee of availability. The runtime rechecks current account authority on every request; if access is denied or unavailable, report that result without bypassing it or claiming success.',
+      JSON.stringify(plan.apiConnections.map(({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }) => ({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }))),
+    ].join('\n'));
+  }
   if (!options.toolsDisabled) {
     for (const skill of resolveProfileSkills(
-      plan.skills.map((entry) => ({ ...entry, enabled: true })),
+      [
+        ...suppressProfileNamedConnectorSkills(connectorSkillsForConnections(plan.apiConnections), plan.skills.map((entry) => ({ ...entry, enabled: true }))),
+        ...plan.skills.map((entry) => ({ ...entry, enabled: true })),
+      ],
       { reservedNames: [AGENT_AUTHORING_SKILL_NAME] },
     )) {
       useSkill(skill);
@@ -1313,20 +1332,24 @@ function createRuntimePlanSandbox(
   plan: RuntimePlanV2,
   sandboxConversationKey?: string,
 ): SandboxFactory {
-  // RuntimePlanV2 has already frozen the sandbox decision and stripped legacy
-  // arbitrary API connections from the Agent projection. A bash-only plan
-  // therefore needs only Flue's local, content-free workspace. Rebuilding the
-  // full live Agent runtime here is both semantically redundant and, on
-  // Cloudflare, creates a deep Agent DO -> state DO call chain before the
-  // provider can even start. Repository-backed plans retain the live
-  // revocation and credential checks below.
   if (plan.sandbox.mode === 'bash') {
-    const localSandbox = bash(() => new Bash({ fs: new InMemoryFs() }));
     return {
       async createSessionEnv(options) {
         const env = await resolveAgentPlatformEnv();
         await prepareRuntimePlanModel(plan, env);
-        return localSandbox.createSessionEnv(options);
+        // Native plans grant only their frozen connector scopes. Operator-wide
+        // egress settings belong to the legacy runtime and must not become an
+        // incidental grant when any connection is bound. Empty plans need no
+        // account or egress setting reads.
+        if (!plan.apiConnections.length) {
+          return bash(() => new Bash({ fs: new InMemoryFs() })).createSessionEnv(options);
+        }
+        const connections = await resolveRuntimePlanApiConnections(plan, env);
+        const sandbox = createConnectorScopedBash(
+          { mode: 'allowlist', domains: [] }, isCloudflareTarget(),
+          mergeRepositoryAndApiConnectors([], connections.flatMap(({ connectors }) => connectors)),
+        );
+        return sandbox.createSessionEnv(options);
       },
     };
   }

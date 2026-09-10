@@ -109,6 +109,8 @@ test('Work state proxy preserves clone-safe request and response shapes', async 
       flueInstanceRef: 'flueinstance_rpc',
       startedAt: 1_800_000_000_002,
     });
+    assert.deepEqual(await proxy.latestRunExecution(input.run.id), execution);
+    assert.equal(await proxy.latestRunExecution('run_missing' as RunId), undefined);
     await proxy.recordRunExecutionRoute({
       executionId: execution.id,
       recordedAt: 1_800_000_000_002,

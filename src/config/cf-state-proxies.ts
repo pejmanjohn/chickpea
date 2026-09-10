@@ -54,6 +54,7 @@ import type {
   RollbackChickpeaCutoverInput,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
+  RecentSlackPublicContextInput,
   WorkspaceModelDefault,
   WorkspaceModelDefaultInput,
   WorkspaceInstallation,
@@ -1375,6 +1376,12 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configListSlackPublicContext(workspaceId, channelId, rootTs));
   }
 
+  async listRecentSlackPublicContext(
+    input: RecentSlackPublicContextInput,
+  ): Promise<SlackPublicContextEntry[]> {
+    return unwrap(await this.stub.configListRecentSlackPublicContext(input));
+  }
+
   async putSlackPublicContext(
     input: SlackPublicContextEntryInput,
   ): Promise<SlackPublicContextEntry> {
@@ -2239,6 +2246,12 @@ export class CfWorkStore implements WorkStore {
     const response = await this.execute({ kind: 'count_executing_runs' });
     if (response.kind !== 'count') throw unexpectedWorkResponse();
     return response.count;
+  }
+
+  async latestRunExecution(runId: RunId) {
+    const response = await this.execute({ kind: 'latest_run_execution', runId });
+    if (response.kind !== 'execution') throw unexpectedWorkResponse();
+    return response.execution ?? undefined;
   }
 
   async listRunExecutions(runId: RunId, limit?: number) {

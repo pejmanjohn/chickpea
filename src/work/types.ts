@@ -493,6 +493,7 @@ export type WorkRpcRequest =
   | { kind: 'renew_run_lease'; input: RenewRunLeaseInput }
   | { kind: 'release_run_lease'; input: ReleaseRunLeaseInput }
   | { kind: 'list_runs'; input: ListWorkRunsInput }
+  | { kind: 'latest_run_execution'; runId: RunId }
   | { kind: 'list_run_executions'; runId: RunId; limit?: number }
   | { kind: 'create_execution'; input: CreateRunExecutionInput }
   | { kind: 'record_execution_route'; input: RunExecutionRouteInput }
@@ -550,6 +551,7 @@ export interface WorkStore {
   releaseRunLease(input: ReleaseRunLeaseInput): Promise<RunRecord>;
   listRuns(input: ListWorkRunsInput): Promise<WorkRunPage>;
   countExecutingRuns(): Promise<number>;
+  latestRunExecution(runId: RunId): Promise<RunExecutionRecord | undefined>;
   listRunExecutions(runId: RunId, limit?: number): Promise<RunExecutionRecord[]>;
   createRunExecution(input: CreateRunExecutionInput): Promise<RunExecutionRecord>;
   recordRunExecutionRoute(input: RunExecutionRouteInput): Promise<RunExecutionRecord>;

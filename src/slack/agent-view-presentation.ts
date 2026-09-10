@@ -364,13 +364,14 @@ export class SlackAgentViewPresentation {
 
   /**
    * Freeze terminal intent for content that another durable delivery path owns.
-   * The caller must acknowledge that delivery later before lifecycle cleanup.
+   * Returns whether a new write is safe. The caller must acknowledge that
+   * delivery later before lifecycle cleanup.
    */
   async prepareDeferredTerminalDelivery(result: 'answer' | 'failure'): Promise<boolean> {
     const presentation = await this.requirePresentation();
     if (presentation.schemaVersion !== 3) return false;
     const terminal = await this.prepareTerminalDelivery(result);
-    return terminal.operationId !== undefined;
+    return terminal.mayWrite;
   }
 
   /**

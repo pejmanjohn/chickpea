@@ -141,6 +141,8 @@ export class WorkStoreLogic {
         return { kind: 'run', run: this.releaseRunLease(request.input) };
       case 'list_runs':
         return { kind: 'run_page', page: this.listRuns(request.input) };
+      case 'latest_run_execution':
+        return { kind: 'execution', execution: this.latestRunExecution(request.runId) ?? null };
       case 'list_run_executions':
         return {
           kind: 'executions',
@@ -862,6 +864,16 @@ export class WorkStoreLogic {
     );
   }
 
+  latestRunExecution(runId: RunId): RunExecutionRecord | undefined {
+    assertOpaqueId(runId, 'Run ID');
+    const row = this.db.get(
+      `SELECT * FROM run_executions WHERE run_id = ?
+       ORDER BY attempt_number DESC, id DESC LIMIT 1`,
+      runId,
+    );
+    return row ? rowToExecution(row) : undefined;
+  }
+
   listRunExecutions(runId: RunId, limit = 50): RunExecutionRecord[] {
     assertOpaqueId(runId, 'Run ID');
     boundedInteger(limit, 1, 100, 'Run execution limit');
@@ -1249,6 +1261,17 @@ export class WorkStoreLogic {
     });
   }
 
+  private recoveredTerminalDisposition(runId: RunId): 'succeeded' | 'failed' {
+    const execution = this.latestRunExecution(runId);
+    if (execution?.modelInvocationStatus === 'settled') {
+      return execution.outcome === 'succeeded' ? 'succeeded' : 'failed';
+    }
+    // Compatibility for deliveries with no settled execution (for example,
+    // older records). Delivery alone is not evidence that execution succeeded.
+    console.warn('[work] recovered delivery has no settled execution', { runId });
+    return 'succeeded';
+  }
+
   finalizeRunDelivery(input: FinalizeRunDeliveryInput): RunRecord {
     validateFinalizeDelivery(input);
     return this.db.transaction(() => {
@@ -1261,7 +1284,7 @@ export class WorkStoreLogic {
       const delivered = input.outcome === 'delivered';
       const unknown = input.outcome === 'unknown';
       const terminalDisposition = delivered
-        ? (input.terminalDisposition ?? 'succeeded')
+        ? (input.terminalDisposition ?? this.recoveredTerminalDisposition(run.id))
         : null;
       if (delivered) {
         this.db.run(
@@ -2741,7 +2764,10 @@ function sameDeliveryFinalization(
       run.deliveryStatus === 'delivered' &&
       run.deliveryRef === input.deliveryRef &&
       run.deliveryFinalizedAt === input.finalizedAt &&
-      run.terminalDisposition === (input.terminalDisposition ?? 'succeeded')
+      // An omitted disposition was inferred on the first commit; keep that
+      // durable result on retries instead of assuming it was successful.
+      (input.terminalDisposition === undefined ||
+        run.terminalDisposition === input.terminalDisposition)
     );
   }
   if (input.outcome === 'unknown') {

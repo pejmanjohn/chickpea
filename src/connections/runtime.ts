@@ -1,3 +1,4 @@
+import { googleWorkspaceApiPolicy } from '../config/api-oauth-policy.ts';
 import {
   resolveConnectionAccountSecret,
   type ConnectionAccountSecretRef,
@@ -526,7 +527,15 @@ export function applyConnectionCapabilityCeiling(
     return { ...policy, allowedTools: policy.allowedTools.filter((tool) => allowed.has(tool)) };
   }
   if (policy.authMode === 'oauth') {
-    return { ...policy, oauthScopes: (policy.oauthScopes ?? []).filter((scope) => allowed.has(scope)) };
+    const oauthScopes = (policy.oauthScopes ?? []).filter((scope) => allowed.has(scope));
+    if (policy.oauthProvider !== 'google') return { ...policy, oauthScopes };
+    try {
+      return { ...policy, oauthScopes, ...googleWorkspaceApiPolicy(oauthScopes) };
+    } catch {
+      // Invalid or retired scopes disable this connection, not every other
+      // account projected for the Agent.
+      return { ...policy, oauthScopes, allowedHosts: [], pathPrefixes: [], allowedMethods: [] };
+    }
   }
   return { ...policy, allowedMethods: policy.allowedMethods.filter((method) => allowed.has(method)) };
 }

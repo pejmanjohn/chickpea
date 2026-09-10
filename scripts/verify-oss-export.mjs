@@ -151,6 +151,7 @@ const liveVerifierExportPolicy = Object.freeze({
     exportPath('qa', 'live', 'operator', 'recovery.md'),
     exportPath('qa', 'live', 'operator', 'host-checks.md'),
     exportPath('qa', 'live', 'operator', 'model-diagnosis.md'),
+    exportPath('qa', 'live', 'operator', 'rest-probe.md'),
     exportPath('qa', 'live', 'privacy.ts'),
     exportPath('qa', 'live', 'private-config.ts'),
     exportPath('qa', 'live', 'public-sources.ts'),

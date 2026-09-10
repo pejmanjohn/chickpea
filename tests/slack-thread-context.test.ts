@@ -19,7 +19,9 @@ import { slackPresentationIntentCapability } from '../src/slack/presentation-int
 import {
   boundedSlackPublicHandoff,
   MAX_SLACK_PUBLIC_HANDOFF_CHARS,
+  MAX_SLACK_PUBLIC_HANDOFF_MESSAGES,
   reconcileSlackPublicContextMutation,
+  recordDeliveredSlackAgentMessage,
   retainedSlackReplyBackground,
 } from '../src/slack/public-context.ts';
 import type { SlackPublicContextEntry } from '../src/config/types.ts';
@@ -131,6 +133,61 @@ test('new runtime prompts retain only this Agent public replies in the admitted 
     await store.deleteSlackPublicContextMessage('T1', 'C1', '1000.0000', '1002.0000');
     assert.equal(await retainedSlackReplyBackground(store, turn, 'agent_support'), undefined);
     assert.equal(await retainedSlackReplyBackground(store, threadTurn({ contextMode: 'channel_history' }), 'agent_support'), undefined);
+  } finally { store.close(); }
+});
+
+test('top-level DMs retain this Agent replies across roots with filters before the limit', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  try {
+    for (const id of ['agent_support', 'agent_other']) await store.createAgent({ id, name: id, instructions: '', enabled: true, lifecycle: 'active', creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+    const first = threadTurn({ channelId: 'D1', contextMode: 'dm_history', messageTs: '1000.0000', threadTs: '1000.0000' });
+    await recordDeliveredSlackAgentMessage(store, first, { runtimeContract: 'chickpea-v1', agentId: 'agent_support' }, {
+      messageTs: '1001.0000', text: 'Your reference code is CEDAR-410.',
+    });
+    const base = { workspaceId: 'T1', channelId: 'D1', rootTs: first.threadTs, role: 'agent' as const, agentId: 'agent_support' };
+    // All of these rows are newer than the retained answer. Filtering after
+    // LIMIT would allow unrelated messages to crowd it out.
+    for (let index = 0; index < MAX_SLACK_PUBLIC_HANDOFF_MESSAGES + 1; index += 1) {
+      const messageTs = `${1100 + index}.0000`;
+      await store.putSlackPublicContext({ ...base, messageTs, agentId: 'agent_other', text: 'OTHER_AGENT' });
+      await store.putSlackPublicContext({ ...base, messageTs, workspaceId: 'T_OTHER', text: 'OTHER_WORKSPACE' });
+      await store.putSlackPublicContext({ ...base, messageTs, channelId: 'D_OTHER', text: 'OTHER_DM' });
+      await store.putSlackPublicContext({ workspaceId: 'T1', channelId: 'D1', rootTs: first.threadTs, messageTs: `${1200 + index}.0000`, role: 'human', text: 'HUMAN_ROW' });
+      await store.putSlackPublicContext({ ...base, messageTs: `${2100 + index}.0000`, text: 'FUTURE_REPLY' });
+    }
+    await store.putSlackPublicContext({ ...base, messageTs: '2000.0000', text: 'TRIGGER_ROW' });
+    const second = threadTurn({ channelId: 'D1', contextMode: 'dm_history', threadTs: '2000.0000' });
+    const background = await retainedSlackReplyBackground(store, second, 'agent_support');
+    assert.ok(background);
+    assert.match(background, /CEDAR-410/);
+    assert.match(background, /in this Slack DM/);
+    assert.match(background, /Historical background only/);
+    assert.doesNotMatch(background, /OTHER_AGENT|OTHER_WORKSPACE|OTHER_DM|HUMAN_ROW|FUTURE_REPLY|TRIGGER_ROW/);
+    assert.equal(await retainedSlackReplyBackground(store, { ...second, contextMode: 'channel_history' }, 'agent_support'), undefined);
+    assert.equal(await retainedSlackReplyBackground(store, { ...second, channelId: 'D_EMPTY' }, 'agent_support'), undefined);
+  } finally { store.close(); }
+});
+
+test('recent DM replies are bounded by message count and public text budget', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  try {
+    await store.createAgent({ id: 'agent_support', name: 'Support', instructions: '', enabled: true, lifecycle: 'active', creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+    for (let index = 0; index < 25; index += 1) {
+      await store.putSlackPublicContext({ workspaceId: 'T1', channelId: 'D1', rootTs: `${1000 + index}.0000`, messageTs: `${1000 + index}.0001`, role: 'agent', agentId: 'agent_support', text: `${index === 0 ? 'OLDEST' : 'REPLY'} ${'x'.repeat(1000)}` });
+    }
+    const query = { workspaceId: 'T1', channelId: 'D1', agentId: 'agent_support', beforeMessageTs: '2000.0000', limit: 10_000 };
+    const recent = await store.listRecentSlackPublicContext(query);
+    assert.equal(recent.length, MAX_SLACK_PUBLIC_HANDOFF_MESSAGES);
+    assert.equal(recent[0]?.messageTs, '1024.0001');
+    assert.equal(recent.at(-1)?.messageTs, '1005.0001');
+    assert.deepEqual(await store.listRecentSlackPublicContext({ ...query, limit: 0 }), []);
+    assert.deepEqual(await store.listRecentSlackPublicContext({ ...query, beforeMessageTs: 'invalid' }), []);
+    const background = await retainedSlackReplyBackground(store, threadTurn({ channelId: 'D1', contextMode: 'dm_history' }), 'agent_support');
+    assert.ok(background);
+    assert.doesNotMatch(background, /OLDEST/);
+    assert.match(background, /\[truncated\]/);
+    const replyText = background.split('\n').filter((line) => line.startsWith('- [')).map((line) => line.replace(/^- \[[^\]]+\] /, '')).join('');
+    assert.ok(replyText.length <= MAX_SLACK_PUBLIC_HANDOFF_CHARS);
   } finally { store.close(); }
 });
 

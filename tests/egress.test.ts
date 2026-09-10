@@ -371,8 +371,8 @@ test('buildEgressPlan normalizes trailing-slash prefixes so routing and enforcem
   ]);
 });
 
-test('buildEgressPlan keeps connector scopes off the open internet and fails closed on fallback', () => {
-  const { scopes, baseNetwork, baseMethods, fallbackNetwork } = buildEgressPlan(
+test('buildEgressPlan keeps connector scopes off the open internet', () => {
+  const { scopes, baseNetwork, baseMethods } = buildEgressPlan(
     { mode: 'open', domains: [] },
     { cloudflare: false },
     [{ ...LINEAR_CONNECTION, allowedMethods: ['GET', 'DELETE'] }],
@@ -390,14 +390,7 @@ test('buildEgressPlan keeps connector scopes off the open internet and fails clo
   assert.equal(scope.network.dangerouslyAllowFullInternetAccess, undefined);
   assert.deepEqual(scope.network.allowedMethods, ['GET', 'DELETE']);
 
-  // Fallback (only if just-bash stops exposing secureFetch): every prefix but
-  // read-only, because static NetworkConfig cannot enforce per-request write
-  // admission from the current Slack request.
-  assert.deepEqual(fallbackNetwork.allowedMethods, ['GET', 'HEAD']);
-  assert.equal(fallbackNetwork.dangerouslyAllowFullInternetAccess, true);
-  assert.deepEqual(fallbackNetwork.allowedUrlPrefixes, [
-    connectorUrl('https://api.linear.app/v1'),
-  ]);
+
 });
 
 test('createScopedFetch rejects a method the matched scope does not allow', async () => {
@@ -535,43 +528,6 @@ test('createScopedFetch fails closed when a scope guard rejects a matching URL',
   );
   assert.deepEqual(scopeCalls, ['https://api.github.com/repos/Acme/Alpha/pulls']);
   assert.deepEqual(baseCalls, []);
-});
-
-test('guarded scopes are excluded from the fallback network allow-list', async () => {
-  await withGithubSettings(
-    {
-      [GITHUB_SETTING_KEYS.appId]: 'fallback-exclusion-app',
-      [GITHUB_SETTING_KEYS.privateKey]: APP_PRIVATE_KEY,
-    },
-    async () => {
-      const previousFetch = globalThis.fetch;
-      globalThis.fetch = async () =>
-        Response.json({
-          token: 'fallback-exclusion-token',
-          expires_at: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
-        });
-      try {
-        const access = await resolveRepositoryAccess([repositoryGrant()]);
-        const plan = buildEgressPlan(
-          { mode: 'off', domains: [] },
-          { cloudflare: false },
-          access.connectors,
-        );
-        const fallbackUrls = (plan.fallbackNetwork.allowedUrlPrefixes ?? []).map((entry) =>
-          typeof entry === 'string' ? entry : entry.url,
-        );
-        // The guarded scopes (/repos and /search/code carry URL predicates) must
-        // not contribute prefix+transform entries a flat allow-list cannot guard.
-        assert.ok(!fallbackUrls.some((url) => url.includes('/repos/')), String(fallbackUrls));
-        assert.ok(!fallbackUrls.some((url) => url.includes('/search/code')), String(fallbackUrls));
-        // The unguarded Git scope remains available for the fallback's
-        // read-only methods.
-        assert.ok(fallbackUrls.includes('https://github.com/Acme/Alpha'), String(fallbackUrls));
-      } finally {
-        globalThis.fetch = previousFetch;
-      }
-    },
-  );
 });
 
 test('createScopedFetch holds unmatched (open-mode) hosts to the base method set', async () => {

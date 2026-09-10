@@ -46,6 +46,8 @@ import {
   type RollbackChickpeaCutoverInput,
   type SlackPublicContextEntry,
   type SlackPublicContextEntryInput,
+  type RecentSlackPublicContextInput,
+  MAX_SLACK_PUBLIC_HANDOFF_MESSAGES,
   type WorkspaceModelDefault,
   type WorkspaceModelDefaultInput,
   type WorkspaceInstallation,
@@ -351,6 +353,7 @@ export interface ConfigStore {
     channelId: string,
     rootTs: string,
   ): Promise<SlackPublicContextEntry[]>;
+  listRecentSlackPublicContext(input: RecentSlackPublicContextInput): Promise<SlackPublicContextEntry[]>;
   putSlackPublicContext(input: SlackPublicContextEntryInput): Promise<SlackPublicContextEntry>;
   deleteSlackPublicContextMessage(
     workspaceId: string,
@@ -1223,6 +1226,24 @@ export class ConfigStoreLogic {
       workspaceId,
       channelId,
       rootTs,
+    ).map((row) => rowToSlackPublicContext(row as unknown as SlackPublicContextRow));
+  }
+
+  listRecentSlackPublicContext(input: RecentSlackPublicContextInput): SlackPublicContextEntry[] {
+    const watermark = Number(input.beforeMessageTs);
+    if (!Number.isFinite(watermark) || !Number.isFinite(input.limit) || input.limit <= 0) return [];
+    const limit = Math.min(Math.floor(input.limit), MAX_SLACK_PUBLIC_HANDOFF_MESSAGES);
+    this.pruneExpiredSlackPublicContext(Date.now());
+    return this.db.all(
+      `SELECT * FROM config_slack_public_context
+       WHERE workspace_id = ? AND channel_id = ? AND role = 'agent' AND agent_id = ?
+         AND CAST(message_ts AS REAL) <= ?
+       ORDER BY CAST(message_ts AS REAL) DESC, message_ts DESC LIMIT ?`,
+      input.workspaceId,
+      input.channelId,
+      input.agentId,
+      watermark,
+      limit,
     ).map((row) => rowToSlackPublicContext(row as unknown as SlackPublicContextRow));
   }
 

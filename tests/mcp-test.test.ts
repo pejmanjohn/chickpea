@@ -72,6 +72,8 @@ test('protocol discovery preserves true, false and absent read-only declarations
           { name: 'run_query', inputSchema: { type: 'object' }, outputSchema: { type: 'object', properties: { rows: { type: 'array' } }, required: ['rows'] }, annotations: { readOnlyHint: true } },
           { name: 'get_messages', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false } },
           { name: 'unknown', inputSchema: { type: 'object' } },
+          { name: 'x'.repeat(121), inputSchema: { type: 'object' } },
+          { name: 'y'.repeat(120), inputSchema: { type: 'object' } },
         ] };
     return Response.json({ jsonrpc: '2.0', id: rpc.id, result });
   };
@@ -80,6 +82,7 @@ test('protocol discovery preserves true, false and absent read-only declarations
     { name: 'run_query', readOnlyHint: true },
     { name: 'get_messages', readOnlyHint: false },
     { name: 'unknown' },
+    { name: 'y'.repeat(120) },
   ]);
   assert.ok(methods.includes('tools/list'));
 });
@@ -130,20 +133,22 @@ test('discoverMcpTools defaults callTimeoutMs to 30000', async () => {
   assert.equal(calls[0]?.options.timeoutMs, 30_000);
 });
 
-test('discoverMcpTools truncates name/description with whitespace collapse', async () => {
+test('discoverMcpTools preserves supported identifiers, omits overlong names and truncates descriptions', async () => {
   // Flue's adapter folds any MCP title into the description, so the adapted
   // ToolDefinition never carries a title — we surface name + description only.
   const longName = 'a'.repeat(200);
   const longDesc = 'c'.repeat(500);
   const conn = fakeConnection([
-    tool('mcp__srv__' + longName, 'first   line\n\tsecond    line ' + longDesc),
+    tool('mcp__srv__' + longName),
+    tool('mcp__srv__' + 'b'.repeat(120), 'first   line\n\tsecond    line ' + longDesc),
   ]);
   const { fn } = stubConnect(conn);
 
   const result = await discoverMcpTools(baseInput, fn);
   const t = result.tools[0];
   assert.ok(t);
-  assert.equal(t.name.length, 120, 'name truncated to 120');
+  assert.equal(result.tools.length, 1, 'unsupported identifiers are not rewritten into different tools');
+  assert.equal(t.name, 'b'.repeat(120), 'supported identifier is preserved exactly');
   assert.equal(t.title, undefined, 'title never surfaced (folded into description by Flue)');
   assert.equal(t.description?.length, 400, 'description truncated to 400');
   // Whitespace collapsed: no runs of 2+ spaces, tabs, or newlines survive.

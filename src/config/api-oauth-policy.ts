@@ -113,7 +113,7 @@ export function isValidApiOAuthConnectionPolicy(
   }
   return sameStringSet(connection.allowedHosts, expected.allowedHosts) &&
     sameStringSet(connection.pathPrefixes, expected.pathPrefixes) &&
-    connection.headerName === expected.headerName &&
+    connection.headerName.toLowerCase() === expected.headerName.toLowerCase() &&
     connection.headerValuePrefix === expected.headerValuePrefix &&
     sameStringSet(connection.allowedMethods, expected.allowedMethods);
 }

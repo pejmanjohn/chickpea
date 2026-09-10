@@ -7,12 +7,14 @@ import { opaqueId } from '../work/admission.ts';
 import type { RunDriverHandlerResult } from '../work/driver.ts';
 import type {
   InteractiveRunClaim,
+  RunRecord,
   WorkStore,
 } from '../work/types.ts';
 import { runTurn, type RunTurnOptions } from './run-turn.ts';
 import {
   DURABLE_RECOVERY_FAILURE_TEXT,
   deliverPersistedSlackPayload,
+  parseSlackDeliveryRef,
   PersistedSlackDeliveryError,
   type PersistedSlackDeliveryReceipt,
 } from './web-client-presenter.ts';
@@ -50,7 +52,7 @@ import {
   hasRetryableTerminalRepair,
   repairTerminalSlackPresentation,
 } from './presentation-repair.ts';
-import type { SlackPresentationStatePort } from './agent-view-presentation.ts';
+import { SlackAgentViewPresentation, type SlackPresentationStatePort } from './agent-view-presentation.ts';
 import type {
   SlackPresentationMutation,
   SlackRunPresentation,
@@ -396,9 +398,9 @@ async function deliverPersistedResponse(
       deliveryRef: presentation.stream.messageTs
         ? `slack:${presentation.root.channelId}:${presentation.stream.messageTs}`
         : `slack:${presentation.root.channelId}:acknowledged`,
-      terminalDisposition: 'succeeded',
       finalizedAt: now(),
     });
+    await recordRecoveredPublicReply(options, job, run, presentation.stream.messageTs);
     await options.turns.markDelivered(job.id);
     await markRecoveredPresentationFinalized(options.presentationState, presentation);
     await clearActiveWork(options, job);
@@ -408,6 +410,26 @@ async function deliverPersistedResponse(
     'delivery',
     `${claim.run.id}:${claim.fencingToken}:persisted`,
   );
+  const fallbackPresenter = presentation?.schemaVersion === 3 &&
+    presentation.stream.state === 'fallback' && renderedMethod === 'slack_chat_post_message' &&
+    options.presentationState
+    ? new SlackAgentViewPresentation({
+        client, state: options.presentationState, runId: presentation.runId,
+        runFencingToken: presentation.runFencingToken,
+        footer: { agentId: job.assignment.agentId, agentName: job.assignment.agent.name },
+      })
+    : undefined;
+  if (fallbackPresenter && !await fallbackPresenter.prepareDeferredTerminalDelivery(
+    presentation?.schemaVersion === 3 && presentation.terminalDelivery.state === 'intended' &&
+      presentation.terminalDelivery.result === 'failure' ? 'failure' : 'answer',
+  )) {
+    // A fallback receipt that cannot authorize a new write has no automatic
+    // repair path. Stop claims until its external effect is reconciled.
+    await abandonTerminalPresentationBestEffort(options, claim.run.id, client);
+    await options.turns.markRecoveryRequired(job.id, 'slack_presentation_effect_unresolved');
+    await clearActiveWork(options, job);
+    return { kind: 'recovery_required', reasonCode: 'slack_presentation_effect_unresolved' };
+  }
   try {
     await options.work.startRunDelivery({
       runId: claim.run.id,
@@ -417,6 +439,9 @@ async function deliverPersistedResponse(
       startedAt: now(),
     });
     const delivered = await deliverPersistedSlackPayload(client, rendered.body);
+    if (fallbackPresenter) {
+      await fallbackPresenter.markFallbackDelivered(parseSlackDeliveryRef(delivered.deliveryRef)?.messageTs);
+    }
     const recoveredPresentation = await recordRecoveredPresentationDelivery(
       options.presentationState,
       presentation,
@@ -436,9 +461,10 @@ async function deliverPersistedResponse(
       attemptId,
       outcome: 'delivered',
       deliveryRef: delivered.deliveryRef,
-      terminalDisposition: 'succeeded',
       finalizedAt: now(),
     });
+    await recordRecoveredPublicReply(options, job, run,
+      parseSlackDeliveryRef(delivered.deliveryRef)?.messageTs);
     await options.turns.markDelivered(job.id);
     await markRecoveredPresentationFinalized(
       options.presentationState,
@@ -451,6 +477,7 @@ async function deliverPersistedResponse(
       ? error
       : new PersistedSlackDeliveryError('unknown', 'delivery_receipt_persist_unknown');
     try {
+      await fallbackPresenter?.markFallbackDeliveryFailed(failure.outcome);
       await options.work.finalizeRunDelivery({
         runId: claim.run.id,
         fencingToken: claim.fencingToken,
@@ -485,6 +512,25 @@ async function deliverPersistedResponse(
       return { kind: 'completed' };
     }
     return { kind: 'requeue', reasonCode: 'confirmed_delivery_failure' };
+  }
+}
+
+async function recordRecoveredPublicReply(
+  options: LedgerSlackRunHandlerOptions,
+  job: PendingTurnJob,
+  run: RunRecord,
+  messageTs: string | undefined,
+): Promise<void> {
+  if (!messageTs || !run.policyApprovedOutputRef || !options.onPublicMessageDelivered) return;
+  // Context is best effort after the durable receipt; never retry a Slack send
+  // because its public-context projection failed.
+  try {
+    const approved = await options.work.getContent(run.policyApprovedOutputRef);
+    if (approved?.body != null) await options.onPublicMessageDelivered(job.turn, job.assignment, {
+      messageTs, text: approved.body,
+    });
+  } catch {
+    console.warn('[slack] recovered public context could not be recorded');
   }
 }
 
@@ -660,10 +706,7 @@ async function classifyExecutionFailure(
     return { kind: 'requeue', reasonCode: 'confirmed_delivery_failure' };
   }
   if (run.status === 'preparing_input' || run.status === 'input_ready' || run.status === 'executing') {
-    // Presentation APIs keep executions in chronological order. Classify from
-    // the newest bounded attempt, never the first historical pre-submit row.
-    const executions = await options.work.listRunExecutions(claim.run.id, 50);
-    const latest = executions.at(-1);
+    const latest = await options.work.latestRunExecution(claim.run.id);
     if (!latest || latest.modelInvocationStatus === 'ready' ||
         latest.modelInvocationStatus === 'not_invoked' || latest.outcome === 'not_submitted') {
       if (attempt >= MAX_TURN_ATTEMPTS) {
