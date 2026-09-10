@@ -152,7 +152,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
     expected?: SlackAgentBindingExpectation,
   ): Promise<SlackAgentBinding>;
   getAgentBinding(continuityKey: string): Promise<SlackAgentBinding | undefined>;
-  getBoundRuntimePlan?(continuityKey: string, beforeMessageTs: string): Promise<RuntimePlanV2 | undefined>;
+  getBoundRuntimePlan?(continuityKey: string, beforeMessageTs: string, actorMembershipId: string, agentId: string): Promise<RuntimePlanV2 | undefined>;
   runtimeDrainCounts(): Promise<SlackRuntimeDrainCounts>;
   countPendingDeliveriesForWorkspace(workspaceId: string): Promise<number>;
   /** Node-only durable legacy relay operations; Cloudflare owns these in its DO alarm. */

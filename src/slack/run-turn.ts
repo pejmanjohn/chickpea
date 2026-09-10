@@ -205,6 +205,8 @@ export interface RunTurnOptions {
   getBoundRuntimePlan?: (
     continuityKey: string,
     beforeMessageTs: string,
+    actorMembershipId: string,
+    agentId: string,
   ) => RuntimePlanV2 | undefined | Promise<RuntimePlanV2 | undefined>;
   /** Persist the first complete plan before the agent dispatch boundary. */
   onRuntimePlan?: (
@@ -1684,9 +1686,10 @@ async function freezeRuntimePlanForTurn(input: {
     : undefined;
   const allEffectiveConnections = connectionContext?.effective ?? [];
   const connectionAuthorizations = connectionContext?.authorizations;
-  const previous = await input.getBoundRuntimePlan?.(
+  const previous = input.turn.actorMembershipId ? await input.getBoundRuntimePlan?.(
     opaqueId('agent', slackAgentThreadKey(input.turn, input.assignment)), input.turn.messageTs,
-  );
+    input.turn.actorMembershipId, input.assignment.agentId,
+  ) : undefined;
   const sameActorThread = previous && input.turn.actorMembershipId &&
     previous.actorMembershipId === input.turn.actorMembershipId &&
     previous.agentId === input.assignment.agentId &&

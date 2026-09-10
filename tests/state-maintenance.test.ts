@@ -99,11 +99,8 @@ test('turn retention computes the bound-plan ID list outside the terminal-row sc
     const plan = db.all(`EXPLAIN QUERY PLAN ${cleanup.sql}`, ...cleanup.params);
     const retainedIds = plan.find((row) => /^LIST SUBQUERY/.test(String(row.detail)) && Number(row.parent) === 0);
     assert.ok(retainedIds, 'retained IDs must be one uncorrelated list, not a per-terminal-row subquery');
-    const bindingScan = plan.find((row) => String(row.detail) === 'SCAN b');
-    assert.equal(bindingScan?.parent, retainedIds.id);
-    assert.ok(plan.some((row) => String(row.detail).includes('SEARCH prior USING INDEX turn_jobs_instance_id_idx')));
-    assert.ok(plan.filter((row) => /CORRELATED/.test(String(row.detail)))
-      .every((row) => row.parent === retainedIds.id), 'only latest-plan lookups within the retained list may correlate');
+    assert.ok(plan.some((row) => String(row.detail).includes('USING INDEX turn_jobs_actor_context_idx')));
+    assert.ok(plan.every((row) => !/CORRELATED/.test(String(row.detail))), 'retention must not repeat subqueries per terminal row');
   } finally { db.close(); }
 });
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WebClient } from '@slack/web-api';
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { connectionChoiceInstructions } from '../src/connections/slack-authorization.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -45,7 +46,11 @@ async function fixture() {
     model: 'local-stub/continuity', modelAttribution: { source: 'pinned', providerId: 'local-stub' },
   };
   const client = {
+    auth: { test: async () => ({ ok: true, user_id: 'U_CHICKPEA' }) },
+    users: { info: async ({ user }: { user: string }) => ({ ok: true, user: { id: user, team_id: workspaceId, is_bot: false, deleted: false } }) },
     conversations: {
+      info: async ({ channel }: { channel: string }) => ({ ok: true, channel: { id: channel, context_team_id: workspaceId, is_member: true, is_archived: false } }),
+      members: async () => ({ ok: true, members: [f.admin.binding.slackUserId, f.owner.user.slackUserId, 'U_CHICKPEA'] }),
       history: async () => ({ ok: true, messages: [] }),
       replies: async () => ({ ok: true, messages: [] }),
     },
@@ -110,6 +115,45 @@ test('real consecutive turn freezes retain the account and instance until explic
   } finally { f.close(); }
 });
 
+test('interleaved actors preserve their own account defaults in one channel thread across retention cleanup', async () => {
+  const f = await fixture();
+  try {
+    const channel = { source: 'app_mention' as const, channelType: 'channel' as const, channelId: 'C_INTERLEAVED' };
+    await f.config.putAgentChannelGrant({ workspaceId: f.assignment.workspaceId, channelId: channel.channelId, agentId: f.assignment.agentId, createdByMembershipId: f.admin.membership.id, status: 'active' });
+    const scope = { channelId: channel.channelId };
+    const first = await f.run('Search Work for invoices', channel, scope);
+    const otherActor = { ...channel, actorMembershipId: f.owner.membership.id, userId: f.owner.user.slackUserId };
+    const other = await f.run('Open mail', otherActor, scope);
+    assert.deepEqual(other.plan.connectionAccountIds, [], 'B never inherits A choice');
+    assert.notEqual(other.instanceId, first.instanceId);
+    f.advance(TURN_JOB_TTL_MS + 1);
+    const returning = await f.run('Open the first result', channel, scope);
+    assert.deepEqual(returning.plan.connectionAccountIds, ['connection_work']);
+    assert.equal(returning.instanceId, first.instanceId);
+    await f.run('Use Personal', otherActor, scope);
+    assert.deepEqual((await f.run('Continue', channel, scope)).plan.connectionAccountIds, ['connection_work']);
+    assert.deepEqual((await f.run('Continue', otherActor, scope)).plan.connectionAccountIds, ['connection_personal']);
+  } finally { f.close(); }
+});
+
+test('no remaining eligible account retains the prior choice and gives reconnect guidance', async () => {
+  const f = await fixture();
+  try {
+    await f.run('Use Work');
+    for (const account of await f.config.listConnectionAccounts(f.assignment.workspaceId)) {
+      await f.config.putConnectionAccount({ ...account, lifecycle: 'revoked' }, account.revision);
+    }
+    const next = await f.run('Open the first result');
+    assert.deepEqual(next.plan.connectionAccountIds, []);
+    assert.deepEqual(next.plan.connectionChoices, [{ providerId: 'mail', previousAccountUnavailable: true, choices: [] }]);
+    assert.equal(next.plan.connectionSelections?.[0]?.accountId, 'connection_work');
+    const instructions = connectionChoiceInstructions(next.plan.connectionChoices!);
+    assert.match(instructions, /ask the user to reconnect/);
+    assert.doesNotMatch(instructions, /Ask the user to choose one of these labels/);
+    assert.deepEqual((await f.run('Try again')).plan.connectionAccountIds, []);
+  } finally { f.close(); }
+});
+
 test('unavailable prior account remains withheld across repeated turns until explicit switch', async () => {
   const f = await fixture();
   try {
@@ -165,13 +209,13 @@ test('only latest bound dispatched context survives terminal TTL and expires wit
       continuityKey: `agent_${'a'.repeat(40)}`, instanceId: `agent_${'b'.repeat(40)}`,
       uid: 'inst_00000000000000000000000009', updatedAt: Date.now(),
     });
-    assert.equal(f.jobs.getBoundRuntimePlan(second.plan.conversation.continuityKey, first.turn.messageTs), undefined, 'future messages are never prior routing context');
+    assert.equal(f.jobs.getBoundRuntimePlan(second.plan.conversation.continuityKey, first.turn.messageTs, f.admin.membership.id, f.assignment.agentId), undefined, 'future messages are never prior routing context');
     f.advance(TURN_JOB_TTL_MS + 1);
-    assert.ok(f.jobs.getBoundRuntimePlan(second.plan.conversation.continuityKey, '1800000001.000000'));
+    assert.ok(f.jobs.getBoundRuntimePlan(second.plan.conversation.continuityKey, '1800000001.000000', f.admin.membership.id, f.assignment.agentId));
     assert.equal(f.jobs.getFrozenRuntimePlan(first.id), undefined);
     assert.ok(f.jobs.getFrozenRuntimePlan(second.id));
     f.advance(31 * 24 * 60 * 60 * 1000);
-    assert.equal(f.jobs.getBoundRuntimePlan(second.plan.conversation.continuityKey, '1800000001.000000'), undefined);
+    assert.equal(f.jobs.getBoundRuntimePlan(second.plan.conversation.continuityKey, '1800000001.000000', f.admin.membership.id, f.assignment.agentId), undefined);
     assert.equal(f.jobs.getFrozenRuntimePlan(second.id), undefined);
   } finally { f.close(); }
 });
