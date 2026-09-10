@@ -201,6 +201,13 @@ export interface RunTurnOptions {
   continuityKey?: string;
   /** First-write-wins decision restored from a prior durable attempt. */
   runtimePlanDecision?: FrozenRuntimePlanDecision;
+  /** Trusted routing context from the bound, previously dispatched TurnJob. */
+  getBoundRuntimePlan?: (
+    continuityKey: string,
+    beforeMessageTs: string,
+    actorMembershipId: string,
+    agentId: string,
+  ) => RuntimePlanV2 | undefined | Promise<RuntimePlanV2 | undefined>;
   /** Persist the first complete plan before the agent dispatch boundary. */
   onRuntimePlan?: (
     candidate: RuntimePlanV2,
@@ -461,6 +468,7 @@ export async function runTurn(
           ...(settingsStore ? { settingsStore } : {}),
           ...(options.appStores?.config ? { configStore: options.appStores.config } : {}),
           ...(options.onRuntimePlan ? { persist: options.onRuntimePlan } : {}),
+          ...(options.getBoundRuntimePlan ? { getBoundRuntimePlan: options.getBoundRuntimePlan } : {}),
         });
     runtimePlanDecision = frozen.decision;
     sandboxUnavailableFallback = frozen.unavailableFallback;
@@ -1642,6 +1650,7 @@ async function freezeRuntimePlanForTurn(input: {
   configStore?: ReturnType<typeof getConfigStore>;
   memoryEpoch: number;
   persist?: (candidate: RuntimePlanV2) => FrozenRuntimePlanDecision | Promise<FrozenRuntimePlanDecision>;
+  getBoundRuntimePlan?: RunTurnOptions['getBoundRuntimePlan'];
 }): Promise<{
   decision: FrozenRuntimePlanDecision;
   unavailableFallback: boolean;
@@ -1672,9 +1681,21 @@ async function freezeRuntimePlanForTurn(input: {
     : undefined;
   const allEffectiveConnections = connectionContext?.effective ?? [];
   const connectionAuthorizations = connectionContext?.authorizations;
+  const previous = input.turn.actorMembershipId ? await input.getBoundRuntimePlan?.(
+    opaqueId('agent', slackAgentThreadKey(input.turn, input.assignment)), input.turn.messageTs,
+    input.turn.actorMembershipId, input.assignment.agentId,
+  ) : undefined;
+  const sameActorThread = previous && input.turn.actorMembershipId &&
+    previous.actorMembershipId === input.turn.actorMembershipId &&
+    previous.agentId === input.assignment.agentId &&
+    previous.ownerIncarnation === (input.assignment.ownerIncarnation ?? 1) &&
+    previous.conversation.workspaceId === input.turn.workspaceId &&
+    previous.conversation.channelId === input.turn.channelId &&
+    previous.conversation.threadTs === input.turn.threadTs;
   const connectionResolution = selectConnectionsForRequest({
     connections: allEffectiveConnections,
     requestText: input.turn.text,
+    ...(sameActorThread && previous.connectionSelections ? { previousSelections: previous.connectionSelections } : {}),
   });
   const canonicalModel = resolvedAssignmentModel(input.assignment);
   if (!canonicalModel) {
@@ -1703,6 +1724,7 @@ async function freezeRuntimePlanForTurn(input: {
     effectiveConnections: connectionResolution.selected,
     ...(connectionAuthorizations ? { connectionAuthorizations } : {}),
     connectionChoices: connectionResolution.ambiguous,
+    connectionSelections: connectionResolution.selections,
   });
   const decision = input.persist
     ? await input.persist(candidate)

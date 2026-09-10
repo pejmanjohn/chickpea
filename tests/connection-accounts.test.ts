@@ -514,6 +514,48 @@ test('personal accounts resolve only for their owner and language selects a uniq
   }
 });
 
+test('Google service defaults carry independently and an unavailable mail account never substitutes the remaining one', () => {
+  const work = effectiveManagedGoogleService('connection_work', 'Work', 'gmail');
+  const personal = effectiveManagedGoogleService('connection_personal', 'Personal', 'gmail');
+  const drive = effectiveManagedGoogleService('connection_drive', 'Drive', 'googledrive');
+  const connections = [work, personal, drive];
+  const first = selectConnectionsForRequest({ connections, requestText: 'Search Work' });
+  const next = selectConnectionsForRequest({ connections, requestText: 'Open the first result', previousSelections: first.selections });
+  assert.deepEqual(next.selected.map(({ account }) => account.id), ['connection_work', 'connection_drive']);
+  const unavailable = selectConnectionsForRequest({ connections: [personal, drive], requestText: 'Try again', previousSelections: next.selections });
+  assert.deepEqual(unavailable.selected.map(({ account }) => account.id), ['connection_drive']);
+  assert.equal(unavailable.ambiguous[0]?.previousAccountUnavailable, true);
+  const switched = selectConnectionsForRequest({ connections: [personal, drive], requestText: 'Use Personal', previousSelections: unavailable.selections });
+  assert.deepEqual(switched.selected.map(({ account }) => account.id), ['connection_personal', 'connection_drive']);
+});
+
+test('a native replacement cannot bypass a remembered managed Google service choice', () => {
+  const work = effectiveManagedGoogleService('connection_work_mail', 'Work', 'gmail');
+  const first = selectConnectionsForRequest({ connections: [work], requestText: 'Use Work' });
+  const replacement = effectiveGoogleService('connection_personal_broad', 'Personal', ['/gmail/v1/users/me', '/drive/v3']);
+  const unavailable = selectConnectionsForRequest({ connections: [replacement], requestText: 'Continue', previousSelections: first.selections });
+  assert.deepEqual(unavailable.selected, []);
+  assert.equal(unavailable.ambiguous[0]?.previousAccountUnavailable, true);
+  const switched = selectConnectionsForRequest({ connections: [replacement], requestText: 'Use Personal', previousSelections: unavailable.selections });
+  assert.deepEqual(switched.selected.map(({ account }) => account.id), ['connection_personal_broad']);
+  assert.deepEqual(selectConnectionsForRequest({ connections: [replacement], requestText: 'Continue', previousSelections: switched.selections }).ambiguous, []);
+});
+
+test('broad native account continuity cannot escape a conflicting service choice', () => {
+  const broad = effectiveGoogleService('connection_broad', 'Work', ['/gmail/v1/users/me', '/drive/v3']);
+  const gmail = effectiveManagedGoogleService('connection_personal_mail', 'Personal', 'gmail');
+  const drive = effectiveManagedGoogleService('connection_personal_drive', 'Personal', 'googledrive');
+  const connections = [broad, gmail, drive];
+  const first = selectConnectionsForRequest({ connections, requestText: 'Use Work' });
+  const followup = selectConnectionsForRequest({ connections, requestText: 'Continue', previousSelections: first.selections });
+  assert.deepEqual(followup.selected.map(({ account }) => account.id), ['connection_broad']);
+  const unavailable = selectConnectionsForRequest({ connections: [gmail, drive], requestText: 'Continue', previousSelections: followup.selections });
+  assert.deepEqual(unavailable.selected, []);
+  assert.ok(unavailable.ambiguous.every((choice) => choice.previousAccountUnavailable));
+  const conflicting = selectConnectionsForRequest({ connections, requestText: 'Work and Personal', previousSelections: first.selections });
+  assert.deepEqual(conflicting.selected, []);
+});
+
 test('Google service accounts select independently while duplicate service accounts stay ambiguous', () => {
   const gmail = effectiveGoogleService('connection_gmail', 'Gmail', ['/gmail/v1/users/me']);
   const calendar = effectiveGoogleService(
