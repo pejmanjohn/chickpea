@@ -65,6 +65,7 @@ import {
   deliverRoutineRecoveryNotice,
   deliverRoutineFailureNotice,
   deliverRoutineResult,
+  routineDeliveryFailure,
 } from './delivery.ts';
 import { SANDBOX_UNAVAILABLE_FALLBACK_NOTICE } from '../slack/web-client-presenter.ts';
 import {
@@ -215,8 +216,7 @@ export async function executeRoutineOccurrence(
   if (prepared.run.flueAgentSettlement) {
     try {
       await recordUsage(prepared, prepared.run.flueAgentSettlement);
-      await finalizeSettlement(prepared, prepared.run.flueAgentSettlement, now());
-      return 'completed';
+      return await finalizeSettlement(prepared, prepared.run.flueAgentSettlement, now());
     } finally {
       await prepared.usageRecorder?.repairAfterTerminal();
       prepared.persistence.emit();
@@ -233,126 +233,122 @@ export async function executeRoutineOccurrence(
   let modelSettled = false;
   let settledUsage: RoutineAgentUsageV1 | null = null;
   let retainPreparedSandbox = false;
+  let settlement: RoutineAgentSettlementV1;
   try {
-    if (!receipt) {
-      if (now() >= prepared.run.deadlineAt) {
+    // Only model execution and result validation belong to this catch. Once a
+    // settlement is saved, delivery cannot rewrite it as a different execution.
+    try {
+      if (!receipt) {
+        if (now() >= prepared.run.deadlineAt) {
+          throw new RoutineRuntimeError(
+            'deadline_exceeded',
+            'The routine occurrence exceeded its execution deadline.',
+          );
+        }
+        let admitted: DispatchReceipt;
+        try {
+          admitted = await handle.dispatch({
+            message: prepared.envelope.message,
+            initialData: prepared.envelope.initialData,
+            idempotencyKey: prepared.envelope.idempotencyKey,
+          });
+        } catch (error) {
+          if (now() < prepared.run.deadlineAt) {
+            retainPreparedSandbox = true;
+            return 'resumable';
+          }
+          throw error;
+        }
+        const checkpoint = boundedReceipt(admitted);
+        const recorded = await input.store.recordAgentReceipt({
+          occurrenceId: prepared.run.id,
+          attempt: input.attempt,
+          receipt: checkpoint,
+          at: now(),
+        });
+        receipt = recorded.flueAgentReceipt ?? checkpoint;
+      }
+      await prepared.workLifecycle?.markInvoked();
+
+      const remainingMs = prepared.run.deadlineAt - now();
+      if (remainingMs <= 0) {
+        await handle.abort();
         throw new RoutineRuntimeError(
           'deadline_exceeded',
           'The routine occurrence exceeded its execution deadline.',
         );
       }
-      let admitted: DispatchReceipt;
+      let reply: AgentReply;
       try {
-        admitted = await handle.dispatch({
-          message: prepared.envelope.message,
-          initialData: prepared.envelope.initialData,
-          idempotencyKey: prepared.envelope.idempotencyKey,
+        reply = await handle.read(receipt as DispatchReceipt, {
+          signal: AbortSignal.timeout(remainingMs),
+          onEvent: (event) => toolCalls.observe(event),
         });
       } catch (error) {
-        if (now() < prepared.run.deadlineAt) {
+        if (isLocalReadInterruption(error) && now() < prepared.run.deadlineAt) {
           retainPreparedSandbox = true;
           return 'resumable';
         }
+        if (isLocalReadInterruption(error)) {
+          await handle.abort().catch(() => undefined);
+          throw new RoutineRuntimeError(
+            'deadline_exceeded',
+            'The routine occurrence exceeded its execution deadline.',
+          );
+        }
         throw error;
       }
-      const checkpoint = boundedReceipt(admitted);
-      const recorded = await input.store.recordAgentReceipt({
-        occurrenceId: prepared.run.id,
-        attempt: input.attempt,
-        receipt: checkpoint,
-        at: now(),
-      });
-      receipt = recorded.flueAgentReceipt ?? checkpoint;
-    }
-    await prepared.workLifecycle?.markInvoked();
 
-    const remainingMs = prepared.run.deadlineAt - now();
-    if (remainingMs <= 0) {
-      await handle.abort();
-      throw new RoutineRuntimeError(
-        'deadline_exceeded',
-        'The routine occurrence exceeded its execution deadline.',
-      );
-    }
-    let reply: AgentReply;
-    try {
-      reply = await handle.read(receipt as DispatchReceipt, {
-        signal: AbortSignal.timeout(remainingMs),
-        onEvent: (event) => toolCalls.observe(event),
+      settledUsage = routineUsageFromAgentReply(reply, prepared.access.config.model);
+      await prepared.workLifecycle?.settleExecution({
+        outcome: 'succeeded',
+        rawStatus: 'flue_succeeded',
+        flueSubmissionRef: opaqueId('fluesubmission', reply.submissionId),
       });
-    } catch (error) {
-      if (isLocalReadInterruption(error) && now() < prepared.run.deadlineAt) {
-        retainPreparedSandbox = true;
-        return 'resumable';
-      }
-      if (isLocalReadInterruption(error)) {
-        await handle.abort().catch(() => undefined);
+      modelSettled = true;
+      if (
+        prepared.prompt.prompt !== executionPrompt(prepared.envelope) ||
+        prepared.prompt.memoryEpoch !== executionInitialData(prepared.envelope).runtimePlan.memoryEpoch ||
+        !(await prepared.prompt.validateMemoryLease())
+      ) {
         throw new RoutineRuntimeError(
-          'deadline_exceeded',
-          'The routine occurrence exceeded its execution deadline.',
+          toolCalls.count > 0 ? 'unknown_external_outcome' : 'access_denied',
+          'Channel access changed while the routine was running.',
         );
       }
-      throw error;
-    }
-
-    settledUsage = routineUsageFromAgentReply(reply, prepared.access.config.model);
-    await prepared.workLifecycle?.settleExecution({
-      outcome: 'succeeded',
-      rawStatus: 'flue_succeeded',
-      flueSubmissionRef: opaqueId('fluesubmission', reply.submissionId),
-    });
-    modelSettled = true;
-    if (
-      prepared.prompt.prompt !== executionPrompt(prepared.envelope) ||
-      prepared.prompt.memoryEpoch !== executionInitialData(prepared.envelope).runtimePlan.memoryEpoch ||
-      !(await prepared.prompt.validateMemoryLease())
-    ) {
-      throw new RoutineRuntimeError(
-        toolCalls.count > 0 ? 'unknown_external_outcome' : 'access_denied',
-        'Channel access changed while the routine was running.',
-      );
-    }
-    await prepared.prompt.confirmMemory();
-    const result = routineResult(reply, prepared.run, prepared.routine);
-    if (prepared.sandboxUnavailableFallback) {
-      result.message = result.message
-        ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${result.message}`
-        : SANDBOX_UNAVAILABLE_FALLBACK_NOTICE;
-    }
-    const settlement: RoutineAgentSettlementV1 = {
-      schemaVersion: 1,
-      outcome: 'completed',
-      settledAt: now(),
-      result: { ...result, toolCallCount: toolCalls.count, usage: settledUsage },
-    };
-    await recordUsage(prepared, settlement);
-    prepared.run = await input.store.recordAgentSettlement({
-      occurrenceId: prepared.run.id,
-      settlement,
-    });
-    await finalizeSettlement(prepared, settlement, now());
-    await prepared.usageRecorder?.repairAfterTerminal();
-    prepared.persistence.emit();
-    return 'completed';
-  } catch (error) {
-    const toolCallCount = toolCalls.count;
-    const failure = runtimeFailure(error, toolCallCount > 0);
-    const settlement: RoutineAgentSettlementV1 = {
-      schemaVersion: 1,
-      outcome: error instanceof AgentRunError && error.outcome === 'aborted' ? 'aborted' : 'failed',
-      settledAt: now(),
-      failureClass: failure.failureClass,
-      publicError: failure.publicError,
-      toolCallCount,
-      usage: settledUsage,
-    };
-    if (!modelSettled) {
-      await prepared.workLifecycle?.settleExecution({
-        outcome: toolCallCount > 0 ? 'ambiguous' : 'failed',
-        rawStatus: toolCallCount > 0 ? 'flue_ambiguous' : 'flue_failed',
-        safeFailureCode: routineLifecycleFailureCode(failure.failureClass),
-        ...(receipt ? { flueSubmissionRef: opaqueId('fluesubmission', receipt.submissionId) } : {}),
-      });
+      await prepared.prompt.confirmMemory();
+      const result = routineResult(reply, prepared.run, prepared.routine);
+      if (prepared.sandboxUnavailableFallback) {
+        result.message = result.message
+          ? `${SANDBOX_UNAVAILABLE_FALLBACK_NOTICE}\n\n${result.message}`
+          : SANDBOX_UNAVAILABLE_FALLBACK_NOTICE;
+      }
+      settlement = {
+        schemaVersion: 1,
+        outcome: 'completed',
+        settledAt: now(),
+        result: { ...result, toolCallCount: toolCalls.count, usage: settledUsage },
+      };
+    } catch (error) {
+      const toolCallCount = toolCalls.count;
+      const failure = runtimeFailure(error, toolCallCount > 0);
+      settlement = {
+        schemaVersion: 1,
+        outcome: error instanceof AgentRunError && error.outcome === 'aborted' ? 'aborted' : 'failed',
+        settledAt: now(),
+        failureClass: failure.failureClass,
+        publicError: failure.publicError,
+        toolCallCount,
+        usage: settledUsage,
+      };
+      if (!modelSettled) {
+        await prepared.workLifecycle?.settleExecution({
+          outcome: toolCallCount > 0 ? 'ambiguous' : 'failed',
+          rawStatus: toolCallCount > 0 ? 'flue_ambiguous' : 'flue_failed',
+          safeFailureCode: routineLifecycleFailureCode(failure.failureClass),
+          ...(receipt ? { flueSubmissionRef: opaqueId('fluesubmission', receipt.submissionId) } : {}),
+        });
+      }
     }
     await recordUsage(prepared, settlement);
     try {
@@ -360,12 +356,11 @@ export async function executeRoutineOccurrence(
         occurrenceId: prepared.run.id,
         settlement,
       });
-      await finalizeSettlement(prepared, settlement, now());
+      return await finalizeSettlement(prepared, settlement, now());
     } finally {
       await prepared.usageRecorder?.repairAfterTerminal();
       prepared.persistence.emit();
     }
-    return 'completed';
   } finally {
     if (!retainPreparedSandbox) {
       await releasePreparedSandbox(input.env, prepared, dependencies);
@@ -775,95 +770,68 @@ async function finalizeSettlement(
   prepared: PreparedExecution,
   settlement: RoutineAgentSettlementV1,
   at: number,
-): Promise<void> {
+): Promise<RoutineExecutionOutcome> {
   if (settlement.outcome === 'completed') {
-    let delivered = false;
+    prepared.run = await prepared.store.getRun(prepared.run.id) ?? prepared.run;
+    let failure: RoutineRuntimeError | undefined;
     if (settlement.result.status === 'succeeded') {
-      try {
-        await deliverRoutineResult({
-          store: prepared.store,
-          run: prepared.run,
-          routine: prepared.routine,
-          access: prepared.access,
-          message: settlement.result.message,
-          changeKeyHash: settlement.result.changeKeyHash,
-          ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
-        }, prepared.access.client);
-      } catch (error) {
-        if (!(error instanceof RoutineRuntimeError) ||
-            error.failureClass !== 'direct_thread_unavailable') throw error;
-        const usage = settlement.result.usage;
-        prepared.run = await prepared.store.transitionRun({
-          occurrenceId: prepared.run.id,
-          from: ['running'],
-          to: 'failed',
-          at,
-          failureClass: error.failureClass,
-          publicError: error.publicError,
-          model: routineModelLabel(usage.returnedModel, usage.requestedModel),
-          ...(usage.inputTokens === null ? {} : { inputTokens: usage.inputTokens }),
-          ...(usage.outputTokens === null ? {} : { outputTokens: usage.outputTokens }),
-          ...(usage.cacheReadTokens === null ? {} : { cacheReadTokens: usage.cacheReadTokens }),
-          ...(usage.cacheWriteTokens === null ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
-          ...(prepared.usageRecorder
-            ? {
-                usageLedgerOperationId: prepared.run.id,
-                usageProvenance: 'usage_ledger' as const,
-              }
-            : {}),
-          usageCompleteness: usage.completeness,
-          toolCallCount: settlement.result.toolCallCount,
+      if (prepared.run.deliveryStatus === 'leased') {
+        // A concurrent post may still be in flight. Keep its lease intact.
+        if ((prepared.run.deliveryLeaseUntil ?? Infinity) > at) return 'resumable';
+        prepared.run = await prepared.store.recordDelivery({
+          occurrenceId: prepared.run.id, outcome: 'unknown', at, failureClass: 'delivery_unknown',
         });
-        captureScheduledRun(prepared, 'failed');
-        await deliverRoutineRecoveryNotice({
-          store: prepared.store,
-          run: prepared.run,
-          routine: prepared.routine,
-          access: prepared.access,
-        }, prepared.access.client).catch(() => undefined);
-        return;
       }
-      delivered = true;
+      if (prepared.run.deliveryStatus === 'none') {
+        try {
+          await deliverRoutineResult({
+            store: prepared.store, run: prepared.run, routine: prepared.routine,
+            access: prepared.access, message: settlement.result.message,
+            changeKeyHash: settlement.result.changeKeyHash,
+            ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
+          }, prepared.access.client);
+        } catch (error) {
+          if (!(error instanceof RoutineRuntimeError)) throw error;
+          failure = error;
+        }
+        prepared.run = await prepared.store.getRun(prepared.run.id) ?? prepared.run;
+      }
+      if (prepared.run.deliveryStatus === 'delivered') {
+        // The receipt is authoritative even if a later bookkeeping callback failed.
+        failure = undefined;
+      } else if (!failure) {
+        const cause = prepared.run.failureClass;
+        failure = routineDeliveryFailure(
+          cause === 'direct_thread_unavailable' || cause === 'channel_destination_unavailable' ||
+          cause === 'slack_rate_limited' ? cause : 'delivery_unknown',
+        );
+      }
     } else {
       await prepared.workLifecycle?.settleWithoutDelivery({ terminalDisposition: 'no_op' });
     }
     const usage = settlement.result.usage;
-    try {
-      prepared.run = await prepared.store.transitionRun({
-        occurrenceId: prepared.run.id,
-        from: ['running'],
-        to: settlement.result.status,
-        at,
-        model: routineModelLabel(usage.returnedModel, usage.requestedModel),
-        ...(usage.inputTokens === null ? {} : { inputTokens: usage.inputTokens }),
-        ...(usage.outputTokens === null ? {} : { outputTokens: usage.outputTokens }),
-        ...(usage.cacheReadTokens === null ? {} : { cacheReadTokens: usage.cacheReadTokens }),
-        ...(usage.cacheWriteTokens === null ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
-        ...(prepared.usageRecorder
-          ? {
-              usageLedgerOperationId: prepared.run.id,
-              usageProvenance: 'usage_ledger' as const,
-            }
-          : {}),
-        usageCompleteness: usage.completeness,
-        toolCallCount: settlement.result.toolCallCount,
-        changeKeyHash: settlement.result.changeKeyHash,
-        suppressedAsNoOp: settlement.result.suppressedAsNoOp,
-      });
-      captureScheduledRun(
-        prepared,
-        settlement.result.status === 'succeeded' ? 'succeeded' : 'no_op',
-      );
-    } catch (error) {
-      if (delivered) {
-        throw new RoutineRuntimeError(
-          'unknown_external_outcome',
-          'The Slack result was posted but the occurrence could not be finalized.',
-        );
-      }
-      throw error;
-    }
-    return;
+    prepared.run = await prepared.store.transitionRun({
+      occurrenceId: prepared.run.id,
+      from: ['running'],
+      to: failure ? 'failed' : settlement.result.status,
+      at,
+      ...(failure ? { failureClass: failure.failureClass, publicError: failure.publicError } : {}),
+      model: routineModelLabel(usage.returnedModel, usage.requestedModel),
+      ...(usage.inputTokens === null ? {} : { inputTokens: usage.inputTokens }),
+      ...(usage.outputTokens === null ? {} : { outputTokens: usage.outputTokens }),
+      ...(usage.cacheReadTokens === null ? {} : { cacheReadTokens: usage.cacheReadTokens }),
+      ...(usage.cacheWriteTokens === null ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
+      ...(prepared.usageRecorder ? {
+        usageLedgerOperationId: prepared.run.id, usageProvenance: 'usage_ledger' as const,
+      } : {}),
+      usageCompleteness: usage.completeness,
+      toolCallCount: settlement.result.toolCallCount,
+      changeKeyHash: settlement.result.changeKeyHash,
+      suppressedAsNoOp: settlement.result.suppressedAsNoOp,
+    });
+    captureScheduledRun(prepared, failure ? 'failed' : settlement.result.status);
+    if (failure) await deliverPauseNoticeBestEffort(prepared);
+    return 'completed';
   }
   await prepared.workLifecycle?.settleWithoutDelivery({
     terminalDisposition: 'failed',
@@ -888,8 +856,8 @@ async function finalizeSettlement(
   captureScheduledRun(prepared, 'failed');
   await deliverFailureNoticeBestEffort(prepared, settlement.publicError);
   await deliverPauseNoticeBestEffort(prepared);
+  return 'completed';
 }
-
 function captureScheduledRun(
   prepared: PreparedExecution,
   outcome: 'succeeded' | 'no_op' | 'failed',

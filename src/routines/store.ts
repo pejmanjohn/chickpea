@@ -297,6 +297,7 @@ const ATTRIBUTABLE_FAILURES = new Set<RoutineRun['failureClass']>([
   'deadline_exceeded',
   'tool_failed',
   'result_invalid',
+  'slack_rate_limited',
 ]);
 const ACCESS_FAILURES = new Set<RoutineRun['failureClass']>([
   'creator_ineligible',
@@ -2259,7 +2260,8 @@ export class RoutineStoreLogic {
       !Number.isSafeInteger(input.at) ||
       !['delivered', 'unknown', 'failed'].includes(input.outcome) ||
       (input.failureClass !== undefined &&
-        (input.failureClass !== 'direct_thread_unavailable' || input.outcome !== 'failed')) ||
+        (!['direct_thread_unavailable', 'channel_destination_unavailable', 'slack_rate_limited', 'delivery_unknown'].includes(input.failureClass) ||
+          input.outcome !== (input.failureClass === 'delivery_unknown' ? 'unknown' : 'failed'))) ||
       (input.channelId !== undefined && !isOpaqueRoutineId(input.channelId)) ||
       (input.messageTs !== undefined && !/^\d{1,20}\.\d{1,12}$/.test(input.messageTs)) ||
       (input.changeKeyHash !== undefined &&
@@ -2283,10 +2285,12 @@ export class RoutineStoreLogic {
       this.db.run(
         `UPDATE routine_runs SET delivery_status = ?, delivery_lease_until = NULL,
            delivery_channel_id = ?, delivery_message_ts = ?,
+           failure_class = CASE WHEN status = 'running' THEN ? ELSE failure_class END,
            change_key_hash = COALESCE(?, change_key_hash) WHERE id = ?`,
         input.outcome,
         input.channelId ?? null,
         input.messageTs ?? null,
+        input.failureClass ?? (input.outcome === 'unknown' ? 'delivery_unknown' : null),
         input.changeKeyHash ?? null,
         run.id,
       );
@@ -3454,6 +3458,22 @@ export class RoutineStoreLogic {
     const routineId = run.routineId;
     const routine = this.getRoutine(routineId);
     if (!routine || routine.deletedAt !== null) return;
+    if (failureClass === 'channel_destination_unavailable') {
+      this.db.run(
+        `UPDATE routines SET state = 'paused', paused_at = ?, paused_by = NULL,
+           paused_reason = ?, next_run_at = NULL, projected_daily_starts = 0,
+           reservation_windows_json = '[]', last_finished_at = ?, updated_at = ?
+         WHERE id = ? AND deleted_at IS NULL`,
+        at, failureClass, at, at, routineId,
+      );
+      this.db.run('DELETE FROM routine_schedule_reservations WHERE routine_id = ?', routineId);
+      const paused = required(this.getRoutine(routineId), 'Paused routine was not readable.');
+      this.appendRoutineAudit(`routine:auto-pause:${run.id}:${failureClass}`, 'routine.auto_paused',
+        paused, null, 'system', definitionHash(routine), definitionHash(paused), at, failureClass);
+      // The unavailable channel cannot receive a recovery notice. Its saved status
+      // remains available through the existing schedule management views.
+      return;
+    }
     if (failureClass === 'direct_thread_unavailable') {
       this.pauseRoutineForDirectThreadFailure(run, at);
       return;

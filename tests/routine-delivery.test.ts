@@ -280,7 +280,7 @@ test('an ambiguous Slack failure records unknown and is never retried', async ()
     (error: unknown) => error instanceof RoutineRuntimeError && error.failureClass === 'delivery_unknown',
   );
   assert.equal(requests, 1);
-  assert.deepEqual(events, ['claim', 'record:unknown::']);
+  assert.deepEqual(events, ['claim', 'record:unknown::delivery_unknown']);
 });
 
 test('an explicit Slack rate limit retries once inside the claimed attempt and deadline', async () => {
@@ -412,7 +412,7 @@ test('unknown private-thread Slack errors remain ambiguous and never fall back',
     console.log = originalConsole.log;
   }
   assert.equal(requests, 1);
-  assert.deepEqual(events, ['claim', 'record:unknown::']);
+  assert.deepEqual(events, ['claim', 'record:unknown::delivery_unknown']);
   assert.doesNotMatch(
     logs.join('\n'),
     /RAW_PRIVATE_SLACK_ERROR_MUST_NOT_LOG|D_TEST|1784000000\.000100|Private result/,
