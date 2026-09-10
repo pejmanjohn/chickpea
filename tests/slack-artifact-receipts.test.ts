@@ -31,7 +31,8 @@ test('legacy and privately completed receipts survive persisted and Flue data pa
 
 test('completed receipt permalinks require Slack ownership and the exact file id', () => {
   const valid = completedReceipt(1);
-  for (const host of ['example-workspace.slack.com', 'other-workspace.slack.com']) {
+  for (const host of ['example-workspace.slack.com', 'other-workspace.slack.com',
+    'example-workspace.enterprise.slack.com', 'example-workspace.slack-gov.com']) {
     assert.ok(isSlackFilePermalink(valid.permalink.replace('example-workspace.slack.com', host), valid.fileId));
   }
   assert.ok(isSlackFilePermalink(valid.permalink.padEnd(2_048, 'a'), valid.fileId));
@@ -39,6 +40,7 @@ test('completed receipt permalinks require Slack ownership and the exact file id
     valid.permalink.replace('https:', 'http:'),
     valid.permalink.replace('example-workspace.slack.com', 'example.com'),
     valid.permalink.replace('example-workspace.slack.com', 'example-workspace.slack.com.attacker.invalid'),
+    valid.permalink.replace('example-workspace.slack.com', 'example.slack-gov.com.attacker.invalid'),
     valid.permalink.replace('https://', 'https://token@'),
     valid.permalink.replace('https://', 'https://user:password@'),
     valid.permalink.replace('/files/', ':444/files/'),
@@ -181,4 +183,25 @@ test('ambiguous, rejected or malformed private completion emits no receipt and n
   const legacy = stagingState(legacyTransport);
   assert.deepEqual(await legacy.run(), { attached: false, reason: 'unavailable' });
   assert.equal(legacy.writes.length, 0);
+});
+
+test('private staging failures expose only static operational categories', async (t) => {
+  const warnings: unknown[][] = [];
+  t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args); });
+  const canary = 'https://private.example/file?token=do-not-log';
+  for (const failure of [new TypeError(canary),
+    new SlackTransportError('files.uploadV2', 'invalid_private_completion_receipt'),
+    { fileId: 'F12345671', byteLength: 4, permalink: completedReceipt(1).permalink }]) {
+    const state = stagingState({ ...legacyTransport, async stagePrivate() {
+      if (failure instanceof Error) throw failure;
+      return failure;
+    } });
+    assert.deepEqual(await state.run(), { attached: false, reason: 'unavailable' });
+  }
+  assert.deepEqual(warnings, [
+    ['[chickpea] artifact staging failed', { code: 'private_stage_failed' }],
+    ['[chickpea] artifact staging failed', { code: 'private_receipt_invalid' }],
+    ['[chickpea] artifact staging failed', { code: 'private_receipt_invalid' }],
+  ]);
+  assert.doesNotMatch(JSON.stringify(warnings), /private\.example|do-not-log|F12345671/);
 });

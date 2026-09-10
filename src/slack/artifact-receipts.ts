@@ -29,7 +29,7 @@ export function isSlackFilePermalink(value: unknown, fileId: string): value is s
     const url = new URL(value);
     const path = url.pathname.split('/');
     return url.href.length <= MAX_PERMALINK_CHARS && url.protocol === 'https:' &&
-      /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.slack\.com$/.test(url.hostname) &&
+      /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+slack(?:-gov)?\.com$/.test(url.hostname) &&
       !url.username && !url.password && !url.port && path[1] === 'files' &&
       typeof path[2] === 'string' && SLACK_ID.test(path[2]) && path[3] === fileId;
   } catch {

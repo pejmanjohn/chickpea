@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 import { ARTIFACT_UNDELIVERED_NOTE, WebClientPresenter, deliverPersistedSlackPayload, rejectedFileFallbackPayload } from '../src/slack/web-client-presenter.ts';
 import type { CompletedSlackArtifactReceipt, SlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
-import type { SlackFileCompletionInput, SlackFileTransport } from '../src/slack/file-transport.ts';
+import type { SlackFileCompletionInput } from '../src/slack/file-transport.ts';
 import type { SlackAgentViewPresentation } from '../src/slack/agent-view-presentation.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
@@ -41,17 +41,16 @@ function setup(options: { error?: unknown; ledger?: boolean; presentation?: Slac
     },
     async startStream() { streams.push('start'); return { ok: true, ts }; },
     async stopStream() { streams.push('stop'); return { ok: true }; },
+  }, files: {
+    async getUploadURLExternal() { throw new Error('Final delivery must not stage again'); },
+    async uploadV2() { throw new Error('Final delivery must not stage again'); },
+    async completeUploadExternal(input: SlackFileCompletionInput) { completions.push(input); throw new Error('Final delivery must not complete files'); },
+    async info() { throw new Error('New finals must not require a share read'); },
   } } as unknown as WebClient;
-  const transport = {
-    async stage() { throw new Error('Final delivery must not stage again'); },
-    async stagePrivate() { throw new Error('Final delivery must not stage again'); },
-    async complete(input: SlackFileCompletionInput) { completions.push(input); throw new Error('Final delivery must not complete files'); },
-    async resolveShare() { throw new Error('New finals must not require a share read'); },
-  } as SlackFileTransport;
   const presenter = new WebClientPresenter(client, target, {
     async beforeDelivery(input) { observations.push({ phase: 'before', ...input }); return `attempt-${observations.length}`; },
     async afterDelivery(input) { observations.push({ phase: 'after', ...input }); },
-  }, { fileTransport: transport, deliverySafety: options.ledger ? 'ledger' : 'legacy',
+  }, { deliverySafety: options.ledger ? 'ledger' : 'legacy',
     ...(options.presentation ? { agentViewPresentation: options.presentation } : {}),
     onPublicDelivery(input) { handoffs.push(input); } });
   return { presenter, completions, posts, streams, observations, handoffs };

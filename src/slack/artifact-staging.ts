@@ -41,6 +41,7 @@ export async function stageArtifactWithReceipt(input: {
   const now = input.now ?? Date.now;
   const stagedAt = now();
   let receipt: CompletedSlackArtifactReceipt;
+  let completed = false;
   try {
     const staged = await input.transport.stagePrivate({
       filename,
@@ -48,7 +49,11 @@ export async function stageArtifactWithReceipt(input: {
       ...(title ? { title } : {}),
       ...(input.artifact.kind === 'chart' && title ? { altText: title } : {}),
     });
-    if (staged.byteLength !== input.artifact.bytes.byteLength) return { attached: false, reason: 'unavailable' };
+    completed = true;
+    if (staged.byteLength !== input.artifact.bytes.byteLength) {
+      reportStagingFailure('private_receipt_invalid');
+      return { attached: false, reason: 'unavailable' };
+    }
     const parsed = v.parse(SlackArtifactReceiptSchema, {
       schemaVersion: 2,
       fileId: staged.fileId,
@@ -64,6 +69,12 @@ export async function stageArtifactWithReceipt(input: {
     if (!isCompletedSlackArtifactReceipt(parsed)) return { attached: false, reason: 'unavailable' };
     receipt = parsed;
   } catch (error) {
+    // Static categories only. Never log filenames, URLs, bytes, raw messages,
+    // or an untrusted upstream error code. A rejected completion receipt can
+    // leave a private orphan; the final message must not claim it was attached.
+    reportStagingFailure(completed || (error instanceof SlackTransportError &&
+      error.code === 'invalid_private_completion_receipt')
+      ? 'private_receipt_invalid' : 'private_stage_failed');
     if (error instanceof SlackTransportError && error.code === 'gateway_request_too_large') {
       return { attached: false, reason: 'too-large', maxBytes: MAX_GATEWAY_ARTIFACT_BYTES };
     }
@@ -73,4 +84,8 @@ export async function stageArtifactWithReceipt(input: {
   const receipts = input.accumulator.add(receipt);
   input.writeReceipts({ schemaVersion: 1, receipts });
   return { attached: true, byteLength: receipt.byteLength };
+}
+
+function reportStagingFailure(code: 'private_receipt_invalid' | 'private_stage_failed'): void {
+  console.warn('[chickpea] artifact staging failed', { code });
 }

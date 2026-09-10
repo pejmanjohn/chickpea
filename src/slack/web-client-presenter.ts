@@ -51,7 +51,6 @@ import {
 import {
   createSlackFileTransport,
   resolveFileShares,
-  type SlackFileTransport,
 } from './file-transport.ts';
 
 /** Static failure copy keeps raw provider errors out of Slack (scenario S15). */
@@ -156,8 +155,6 @@ export interface SlackPresenterOptions {
   };
   /** Fixed-schema content-free observability; injectable for focused tests. */
   activityTelemetry?: SemanticActivityTelemetrySink;
-  /** Compatibility seam for existing callers; new finals publish files through chat.postMessage. */
-  fileTransport?: SlackFileTransport;
 }
 
 export interface SlackActivityWrite {
