@@ -163,6 +163,8 @@ export type ManagementOperation =
       description: string;
       taskText: string;
       schedule:
+        /** Use canonical timing from routineId at expectedVersion; never a caller-supplied instant. */
+        | { kind: 'preserve' }
         | { kind: 'cron'; expression: string }
         | { kind: 'once'; localDateTime: string }
         /** Relative lead time; the service computes the future instant on its own clock. */
