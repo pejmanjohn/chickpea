@@ -1,4 +1,5 @@
 import { credentialMarkers, redactCredentialLikeContent } from '../security/content-validation.ts';
+import type { CompletedSlackArtifactReceipt } from './artifact-receipts.ts';
 import type { SlackNativeTableBlock } from './table-presentation.ts';
 
 export const slackMarkdownBlockTextLimit = 12_000;
@@ -115,6 +116,60 @@ export function renderSlackFileBlocks(
   footer: SlackReplyFooter,
   tableText?: string,
 ): Array<SlackSectionBlock | SlackContextBlock> {
+  return [
+    ...renderSlackFileContent(text, format, tableText, slackFileContentBlockLimit),
+    renderSlackReplyFooterBlock(footer),
+  ];
+}
+
+/** Private Slack files become attachments on an ordinary persona-authored post.
+ * Keep links outside generated code spans and reserve room for every file.
+ * This classic section/context shape is verified across desktop, web and mobile.
+ */
+export function renderSlackArtifactMessage(
+  text: string,
+  format: SlackReplyFormat,
+  footer: SlackReplyFooter,
+  files: readonly CompletedSlackArtifactReceipt[],
+  tableText?: string,
+): RenderedSlackMessage {
+  const links = files.map((file) => {
+    // Receipt validation bounds the encoded URL and excludes Slack delimiters.
+    const url = new URL(file.permalink).href;
+    const label = escapeSlackControlCharacters(redactCredentialLikeContent(file.filename)
+      .replace(/[|\r\n\u0000-\u001f\u007f]/g, ' '));
+    const shortLabel = splitSlackText(label, 256)[0]?.trim() || 'Download file';
+    return `<${url}|${shortLabel}>`;
+  }).join('\n');
+  const linkChunks = splitSlackFileSections(links);
+  const content = renderSlackFileContent(
+    text, format, tableText, slackFileContentBlockLimit - linkChunks.length,
+  );
+  const fallbackBody = [renderSlackMessage(text, format).text,
+    tableText ? renderSlackMessage(tableText, 'plain_text').text : '',
+  ].filter(Boolean).join('\n\n');
+  // 4,000 is Slack's recommendation, not its 40,000-character hard limit.
+  // Ten long file URLs can exceed the recommendation on their own. Preserve
+  // every link and a bounded answer instead of silently dropping attachments.
+  const bodyBudget = Math.max(1_000, slackFallbackTextLimit - links.length - 2);
+  return {
+    text: [truncateText(fallbackBody, bodyBudget), links].filter(Boolean).join('\n\n'),
+    blocks: [
+      ...content,
+      ...linkChunks.map((text): SlackSectionBlock => ({
+        type: 'section', text: { type: 'mrkdwn', text },
+      })),
+      renderSlackReplyFooterBlock(footer),
+    ],
+  };
+}
+
+function renderSlackFileContent(
+  text: string,
+  format: SlackReplyFormat,
+  tableText: string | undefined,
+  maxBlocks: number,
+): SlackSectionBlock[] {
   const displayText = truncateText(canonicalSlackReplyText(text, format), slackMarkdownBlockTextLimit);
   const body = format === 'markdown'
     ? fileReplyMrkdwnText(displayText)
@@ -131,7 +186,7 @@ export function renderSlackFileBlocks(
   let chunks = plainText
     ? splitSlackText(content, slackSectionTextLimit)
     : splitSlackFileSections(content);
-  if (chunks.length > slackFileContentBlockLimit) {
+  if (chunks.length > maxBlocks) {
     // Protecting many separate code/link spans can exceed Slack's 50-block
     // message limit. Repack the bounded canonical source without losing data
     // or expanding a Unicode URL through percent encoding. The 12,000-character
@@ -141,15 +196,17 @@ export function renderSlackFileBlocks(
     ].join('\n\n'), slackSectionTextLimit);
     plainText = true;
   }
-  return [
-    ...chunks.map((text): SlackSectionBlock => ({
+  if (chunks.length > maxBlocks) {
+    chunks = chunks.slice(0, maxBlocks);
+    const last = chunks.length - 1;
+    chunks[last] = truncateText(`${chunks[last]}\n\n[truncated]`, slackSectionTextLimit);
+  }
+  return chunks.map((text): SlackSectionBlock => ({
       type: 'section',
       text: plainText
         ? { type: 'plain_text', text, emoji: false }
         : { type: 'mrkdwn', text },
-    })),
-    renderSlackReplyFooterBlock(footer),
-  ];
+    }));
 }
 
 function splitSlackFileSections(text: string): string[] {

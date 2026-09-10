@@ -14,6 +14,7 @@ import {
   renderSlackMarkdownActionLink,
   renderSlackMessage,
   renderSlackFileBlocks,
+  renderSlackArtifactMessage,
   sanitizeSlackMarkdownLinks,
   slackActionLink,
   slackMarkdownBlockTextLimit,
@@ -26,6 +27,83 @@ import {
 } from '../src/slack/replies.ts';
 import { activityStatus } from '../src/activity/status.ts';
 import { syntheticPem } from './helpers/credential-fixtures.ts';
+import type { CompletedSlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
+
+function completedFile(index: number, suffix = 'report.csv'): CompletedSlackArtifactReceipt {
+  return {
+    schemaVersion: 2, fileId: `F123456${index}`, filename: `report_${index}.csv`,
+    permalink: `https://example.slack.com/files/U123456/F123456${index}/${suffix}`,
+    kind: 'file', byteLength: 33, stagedAt: 1, completedAt: 2,
+    destination: { workspaceId: 'T123456', agentId: 'analyst', channelId: 'C123456' },
+  };
+}
+
+test('artifact links remain outside unfinished generated code and before one compact footer', () => {
+  const files = [completedFile(0), completedFile(1)];
+  const rendered = renderSlackArtifactMessage('**Report**\n```csv\nexam,bookings\nGRE,2400', 'markdown', {
+    agentName: 'Analyst', agentId: 'analyst', publicUrl: 'https://example.test',
+  }, files, 'TOEFL: 800');
+  const sections = rendered.blocks?.filter((block) => block.type === 'section') ?? [];
+  assert.ok(sections.some((block) => block.text.text.includes('*Report*')));
+  assert.ok(sections.some((block) => block.text.text.includes('TOEFL: 800')));
+  const linkSection = sections.find((block) => block.text.text.includes(files[0]!.permalink));
+  assert.ok(linkSection);
+  assert.doesNotMatch(linkSection.text.text, /```/);
+  for (const file of files) {
+    const link = `<${file.permalink}|${file.filename}>`;
+    assert.ok(linkSection.text.text.includes(link));
+    assert.ok(rendered.text.includes(link));
+  }
+  assert.equal(rendered.blocks?.filter((block) => block.type === 'context').length, 1);
+  assert.equal(rendered.blocks?.at(-1)?.type, 'context');
+  assert.ok(rendered.text.length <= 4_000);
+});
+
+test('artifact plain text stays literal while filenames remain usable labeled links', () => {
+  const file = { ...completedFile(0), filename: 'report_<&|_2026.csv' };
+  const rendered = renderSlackArtifactMessage('*literal* <@U123> & data', 'plain_text', {
+    agentName: 'Analyst', agentId: 'analyst', includeConfigureLink: false, scheduled: true,
+  }, [file]);
+  const first = rendered.blocks?.[0];
+  assert.equal(first?.type, 'section');
+  if (first?.type === 'section') {
+    assert.equal(first.text.type, 'plain_text');
+    assert.equal(first.text.text, '*literal* &lt;@U123&gt; &amp; data');
+  }
+  assert.ok(rendered.text.includes('|report_&lt;&amp; _2026.csv>'));
+  assert.equal((JSON.stringify(rendered.blocks).match(/Scheduled/g) ?? []).length, 1);
+  assert.doesNotMatch(JSON.stringify(rendered), /Configure/);
+});
+
+test('ten long artifact links survive long body and table limits in both message representations', () => {
+  const files = Array.from({ length: 10 }, (_, index) => ({
+    ...completedFile(index, 'a'.repeat(1_950)), filename: '&'.repeat(256),
+  }));
+  const rendered = renderSlackArtifactMessage('<'.repeat(12_000), 'plain_text', {
+    agentName: 'Analyst', agentId: 'analyst',
+  }, files, '&'.repeat(12_000));
+  assert.ok((rendered.blocks?.length ?? 0) <= 50);
+  assert.ok(rendered.text.length < 40_000);
+  assert.ok(rendered.text.length > 4_000, 'retain links beyond the recommended fallback size');
+  for (const block of rendered.blocks ?? []) {
+    if (block.type === 'section') assert.ok(block.text.text.length <= 3_000);
+  }
+  const visible = JSON.stringify(rendered.blocks);
+  for (const file of files) {
+    assert.ok(visible.includes(file.permalink));
+    assert.ok(rendered.text.includes(file.permalink));
+  }
+  assert.equal(rendered.blocks?.filter((block) => block.type === 'context').length, 1);
+});
+
+test('artifact rendering redacts credentials in generated body, table and filename', () => {
+  const canary = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789';
+  const rendered = renderSlackArtifactMessage(`Credential: ${canary}`, 'markdown', {
+    agentName: 'Analyst', agentId: 'analyst',
+  }, [{ ...completedFile(0), filename: `${canary}.csv` }], `Table: ${canary}`);
+  assert.doesNotMatch(JSON.stringify(rendered), new RegExp(canary));
+  assert.match(JSON.stringify(rendered), /credential redacted/);
+});
 
 function fileBody(blocks: ReturnType<typeof renderSlackFileBlocks>): string {
   return blocks.filter((block) => block.type === 'section').map((block) => block.text.text).join('');

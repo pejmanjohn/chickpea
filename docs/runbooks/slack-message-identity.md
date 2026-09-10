@@ -35,11 +35,19 @@ production rollout or a guarantee about every Slack client/version.
 | Customized stopped stream followed by that same file-ID update | Same missing-attachment result. Streaming did not fix it. |
 | Customized post with an image block using `slack_file: { id }` | Chart rendered inside the Agent message on desktop and web. This establishes an image path, not generic file support. |
 
-Prefer the proven ordinary-post permalink approach when investigating general
-file delivery. Validate the exact destination, multiple-file behavior, labeled
-links, and production adapter before adopting it. Those were separate follow-up
-gates after this initial comparison. Do not implement an attachment-update
-architecture solely because Slack accepted `file_ids`.
+The follow-up protocol session also passed with CSV and PNG together in each
+message, labeled `<permalink|filename>` links, and the production gateway's
+ordinary-post serializer. It covered a channel thread, a DM thread, and a
+top-level channel message with the Scheduled footer. Every case used classic
+section blocks followed by one context footer, with both `unfurl_links` and
+`unfurl_media` explicitly true. Fresh desktop, web, and real phone views agreed.
+The signed-in recipient opened both files in web for each case; the phone
+screenshots established presentation, not phone download behavior.
+
+Prefer that tested shape for general file delivery. It still requires actual
+Agent generation and real due-time scheduling acceptance after implementation.
+The top-level protocol message did not execute a schedule. Do not implement an
+attachment-update architecture solely because Slack accepted `file_ids`.
 
 ### Public message readback is a projection
 
@@ -115,6 +123,10 @@ Check these boundaries independently:
   exact filenames, code literals, long answers, tables, and the compact footer.
 - Permalinks can use a workspace subdomain. Validate Slack-owned URL structure
   and file identity without assuming the host is literally `slack.com`.
+- Replay retained real response samples through offline validators. A mocked
+  response can repeat the same wrong hostname assumption as the validator.
+  Repairing a local evidence parser does not require repeating a completed
+  Slack mutation; preserve and re-evaluate its original response.
 
 For ambiguous completion or posting outcomes, persist the intent and reconcile
 with readback. Do not post another message to learn whether the first succeeded.
