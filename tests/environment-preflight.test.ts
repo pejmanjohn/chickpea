@@ -1071,7 +1071,46 @@ for (const transport of ['events', 'gateway']) test(`production ${transport} aut
   assert.equal((await observeProductionEnvironmentAuthority(context, providerOptions)).schemaGeneration, 'd1:0002_mcp_oauth;do:v9');
   serviceEtag = 'different-script';
   await assert.rejects(observeProductionEnvironmentAuthority(context, providerOptions), rejects('DURABLE_OBJECT_AUTHORITY_MISMATCH'));
+  // A rollback changes active traffic without changing the service's latest
+  // upload. Corroborate the selected version against current namespace state.
+  let versionTag: unknown = 'v9';
+  const rolledBackOptions = {
+    ...providerOptions,
+    runWrangler: (args: string[]) => {
+      const result = providerOptions.runWrangler(args);
+      if (args[0] !== 'versions') return result;
+      const view = JSON.parse(result.stdout);
+      view.resources.script_runtime = { migration_tag: versionTag };
+      return { ...result, stdout: JSON.stringify(view) };
+    },
+  };
+  assert.equal((await observeProductionEnvironmentAuthority(context, rolledBackOptions)).schemaGeneration,
+    'd1:0002_mcp_oauth;do:v9');
+  for (const invalid of [{}, 9, '', 'v8']) {
+    versionTag = invalid;
+    await assert.rejects(observeProductionEnvironmentAuthority(context, rolledBackOptions),
+      rejects('DURABLE_OBJECT_AUTHORITY_MISMATCH'));
+  }
   serviceEtag = 'serving-script-etag';
+  versionTag = 'v8';
+  await assert.rejects(observeProductionEnvironmentAuthority(context, rolledBackOptions),
+    rejects('DURABLE_OBJECT_AUTHORITY_MISMATCH'));
+  versionTag = 'v9';
+  assert.equal((await observeProductionEnvironmentAuthority(context, rolledBackOptions)).schemaGeneration,
+    'd1:0002_mcp_oauth;do:v9');
+  // Even if provider version metadata reflected live namespace state, an
+  // older version's immutable deployment stamp still refuses schema rollback.
+  await assert.rejects(observeProductionEnvironmentAuthority(context, {
+    ...rolledBackOptions,
+    runWrangler: (args: string[]) => {
+      const result = rolledBackOptions.runWrangler(args);
+      if (args[0] !== 'versions') return result;
+      const view = JSON.parse(result.stdout);
+      view.resources.bindings.find((binding: { name: string }) =>
+        binding.name === 'CHICKPEA_ENV_SCHEMA_GENERATION').text = 'd1:0002_mcp_oauth;do:v8';
+      return { ...result, stdout: JSON.stringify(view) };
+    },
+  }), rejects('INCOMPATIBLE_SCHEMA_GENERATION'));
   serviceTag = undefined;
   await assert.rejects(observeProductionEnvironmentAuthority(context, providerOptions), rejects('DURABLE_OBJECT_AUTHORITY_MISMATCH'));
 

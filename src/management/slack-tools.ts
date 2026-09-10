@@ -6,7 +6,7 @@ import {
   useTool,
 } from '@flue/runtime';
 import * as v from 'valibot';
-import { appliedMemoryReceipt, type SlackMemoryUpdate } from '../slack/memory-update-terminal.ts';
+import type { SlackMemoryUpdate } from '../slack/memory-update-terminal.ts';
 
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import {
@@ -66,7 +66,7 @@ import type { ManagementApplyResult } from './types.ts';
 import type { SlackAgentCreationTerminalIntent } from '../slack/agent-creation-terminal.ts';
 import {
   SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION,
-  slackMemoryUpdateArguments,
+  executeSlackMemoryUpdate,
   slackUpdateAgentMemoryInputSchema,
 } from './slack-memory-actions.ts';
 
@@ -589,11 +589,11 @@ export function useWorkspaceManagementSlackTools(
     description: SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION,
     input: slackUpdateAgentMemoryInputSchema,
     async run({ data }) {
-      const result = await invokeLiveSlackTool(
-        signal, resolvePlatformEnv, 'apply_workspace_changes',
-        slackMemoryUpdateArguments(signal, data), turnGuard,
-      );
-      const receipt = result.ok ? appliedMemoryReceipt(result.result, signal.agentId) : undefined;
+      const { result, receipt } = await executeSlackMemoryUpdate({
+        signal, data, memoryEpoch: plan.memoryEpoch,
+        inspect: () => invokeLiveSlackTool(signal, resolvePlatformEnv, 'inspect_memory', { agentId: signal.agentId }, turnGuard),
+        apply: (args) => invokeLiveSlackTool(signal, resolvePlatformEnv, 'apply_workspace_changes', args, turnGuard),
+      });
       if (receipt) writeMemoryUpdate?.(receipt);
       creationCoordinator.recordFollowOn(result);
       return slackToolOutput(result);
