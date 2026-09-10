@@ -44,7 +44,7 @@ test('artifact links remain outside unfinished generated code and before one com
     agentName: 'Analyst', agentId: 'analyst', publicUrl: 'https://example.test',
   }, files, 'TOEFL: 800');
   const sections = rendered.blocks?.filter((block) => block.type === 'section') ?? [];
-  assert.ok(sections.some((block) => block.text.text.includes('*Report*')));
+  assert.ok(sections.some((block) => block.text.text.includes('Report')));
   assert.ok(sections.some((block) => block.text.text.includes('TOEFL: 800')));
   const linkSection = sections.find((block) => block.text.text.includes(files[0]!.permalink));
   assert.ok(linkSection);

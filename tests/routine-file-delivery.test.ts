@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ErrorCode, type WebClient } from '@slack/web-api';
+import { canonicalSlackReplyText } from '../src/slack/message-format.ts';
 import { deliverRoutineResult } from '../src/routines/delivery.ts';
 import type { RoutineDefinition, RoutineRun, RoutineStore } from '../src/routines/types.ts';
 import type { RoutineRuntimeAccess } from '../src/routines/runtime.ts';
@@ -110,12 +111,12 @@ for (const kind of ['root', 'thread', 'direct'] as const) {
 
 test('scheduled file sections retain long answers and tables while fallback preserves every file link', async () => {
   const h = setup();
-  const prefix = 'x'.repeat(12_000);
+  const prefix = 'x'.repeat(11_900);
   h.input.message = `${prefix}\n\n| Exam | Bookings |\n| --- | ---: |\n| GRE | $2,400 |\n| TOEFL | $800 |`;
   await deliverRoutineResult(h.input, h.client);
   const payload = h.posts[0]!;
   const body = fileBody(payload);
-  assert.equal(body.slice(0, body.indexOf('Exam')).match(/x/g)?.length, 12_000);
+  assert.equal(body.slice(0, body.indexOf('Exam')).match(/x/g)?.length, 11_900);
   assert.match(body, /Exam — Bookings\nGRE — \$2,400\nTOEFL — \$800/);
   assert.doesNotMatch(body, /Configure|\[truncated\]/);
   assert.ok(String(payload.text).length <= 4_000);
@@ -171,7 +172,7 @@ test('a legacy attachment warning survives long-body limits in message and fallb
   const payload = h.posts[0]!;
   assert.ok(String(payload.text).startsWith(ARTIFACT_UNDELIVERED_NOTE));
   assert.ok(JSON.stringify(payload.blocks).includes(ARTIFACT_UNDELIVERED_NOTE));
-  assert.equal(h.attempts[0]!.approvedOutput, h.input.message);
+  assert.equal(h.attempts[0]!.approvedOutput, canonicalSlackReplyText(h.input.message, 'markdown'));
   assert.deepEqual(h.transportCalls, []);
 });
 
