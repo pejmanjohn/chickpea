@@ -73,9 +73,10 @@ export interface SlackReplyFooter {
   modelLabel?: string | undefined;
   agentId: string;
   publicUrl?: string | undefined;
-  /** Private scheduled-work replies keep Agent/model attribution without an Admin link. */
+  /** Omit the Admin link while keeping Agent/model attribution. */
   includeConfigureLink?: boolean | undefined;
   memoryItems?: readonly string[] | undefined;
+  scheduled?: boolean | undefined;
 }
 
 export function renderSlackMessage(text: string, format: SlackReplyFormat): RenderedSlackMessage {
@@ -238,6 +239,7 @@ export function renderSlackReplyFooterBlock(footer: SlackReplyFooter): SlackCont
   if (footer.includeConfigureLink !== false) {
     segments.push(renderSlackConfigureLink(footer.publicUrl, { agentId: footer.agentId }));
   }
+  if (footer.scheduled) segments.push('Scheduled');
   for (const item of footer.memoryItems ?? []) {
     segments.push(escapeSlackControlCharacters(item));
   }

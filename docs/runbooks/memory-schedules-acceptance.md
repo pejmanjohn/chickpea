@@ -52,7 +52,7 @@ August 25 evidence:
 2. Resume a paused recurring schedule and confirm the success notice.
 3. In a second already-open Admin tab, switch into Schedules and confirm it shows the active state without a page reload.
 4. Let one occurrence run. Confirm a single Slack root, successful delivery, complete Usage data, and a durable Work/Run record.
-5. Confirm the new Slack message uses `View schedule`, not `View in Audit`, and opens `/admin/agents/{agentId}?tab=schedules`.
+5. Confirm the successful Slack message starts with its content and has one gray `Agent | model | Scheduled` footer, without an automatic title, success icon, timestamp, or Admin link. Channel failure notices retain their `View schedule` link to `/admin/agents/{agentId}?tab=schedules`.
 6. Pause the recurring schedule and confirm no subsequent occurrence is admitted.
 7. Delete a disposable completed one-time schedule. Confirm the destructive dialog, success notice, immediate list/count update, and the same no-reload update in the second Admin tab.
 
