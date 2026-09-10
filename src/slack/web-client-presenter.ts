@@ -11,7 +11,7 @@ import { isSafeTypedActivityStatus } from '../activity/status.ts';
 import {
   appendSlackReplyFooter,
   canonicalSlackReplyText,
-  renderSlackFileBlocks,
+  renderSlackArtifactMessage,
   renderSlackMessage,
   renderSlackReplyFooterBlock,
   type SlackReplyFormat,
@@ -44,15 +44,13 @@ import { SlackTransportError } from './transport/types.ts';
 import { slackPlatformErrorCode } from './errors.ts';
 import { MAX_GATEWAY_ARTIFACT_BYTES } from './gateway/protocol.ts';
 import {
+  isCompletedSlackArtifactReceipt,
   selectDeliverableArtifacts,
   type SlackArtifactReceipt,
 } from './artifact-receipts.ts';
 import {
   createSlackFileTransport,
   resolveFileShares,
-  slackFileCompletionFailureOutcome,
-  type SlackFileCompletionInput,
-  type SlackFileShare,
   type SlackFileTransport,
 } from './file-transport.ts';
 
@@ -83,7 +81,7 @@ export const SANDBOX_UNAVAILABLE_FALLBACK_NOTICE =
 export const AGENT_FAILURE_TEXT =
   'I reached the Slack thread, but the agent run failed before completion. I did not expose internal error details in Slack.';
 
-/** Appended when Slack confirmed it rejected the file completion, so the text still ships once. */
+/** Appended when legacy staged files cannot be attached to the final message. */
 export const ARTIFACT_UNDELIVERED_NOTE =
   'Slack could not deliver the requested file attachment.';
 
@@ -158,7 +156,7 @@ export interface SlackPresenterOptions {
   };
   /** Fixed-schema content-free observability; injectable for focused tests. */
   activityTelemetry?: SemanticActivityTelemetrySink;
-  /** Staged file completion seam; production derives it from the client. */
+  /** Compatibility seam for existing callers; new finals publish files through chat.postMessage. */
   fileTransport?: SlackFileTransport;
 }
 
@@ -633,11 +631,10 @@ export class WebClientPresenter {
    * the final is never duplicated (S18). Throws only when BOTH the stream and
    * the fallback post fail, so the caller can release its claim for a retry.
    *
-   * With staged files for exactly this destination, the final is one
-   * `files.completeUploadExternal` call carrying the rendered text, footer,
-   * and Agent persona. Completion is the publishing commit point: an ambiguous
-   * outcome is never retried and never followed by a text post; a confirmed
-   * rejection publishes the text once, with a note that the file was lost.
+   * Privately completed files for this destination travel in one ordinary
+   * Agent-authored post with their Slack permalinks and explicit unfurls. Legacy
+   * staged receipts add one undelivered note; final delivery never completes an
+   * upload. Posting uses the same durable envelope and failure handling as text.
    */
   async deliverFinal(
     text: string,
@@ -662,7 +659,7 @@ export class WebClientPresenter {
       throw new Error('Staged files do not match the final destination.');
     }
 
-    let forcePostFallback = false;
+    let forcePostFallback = files.length > 0;
     let fallbackOperationId: string | undefined;
     if (this.options.agentViewPresentation) {
       const result = await this.options.agentViewPresentation.finalize(
@@ -680,24 +677,13 @@ export class WebClientPresenter {
         if (result.messageTs) await this.notifyPublicDelivery(result.messageTs, displayText);
         return;
       }
-      forcePostFallback = result.fallbackPresentation;
+      forcePostFallback ||= result.fallbackPresentation;
       fallbackOperationId = result.operationId;
     }
 
-    if (files.length > 0) {
-      const completed = await this.completeFilesAsFinal({
-        files,
-        displayText,
-        format,
-        renderedTable,
-        footer,
-        forcePostFallback,
-        ...(fallbackOperationId ? { fallbackOperationId } : {}),
-      });
-      if (completed) return;
-      // Slack confirmed it rejected the completion: the files are gone but
-      // nothing was posted, so the text is still owed exactly once.
-      displayText = `${displayText}\n\n${ARTIFACT_UNDELIVERED_NOTE}`;
+    const completedFiles = files.filter(isCompletedSlackArtifactReceipt);
+    if (completedFiles.length < files.length) {
+      displayText = `${ARTIFACT_UNDELIVERED_NOTE}\n\n${displayText}`;
     }
 
     if (!forcePostFallback && this.target.userId && this.target.workspaceId) {
@@ -765,18 +751,20 @@ export class WebClientPresenter {
       }
     }
 
-    const content = renderedTable
-      ? appendSlackTableToRenderedMessage(
-          renderSlackMessage(displayText, format),
-          displayText,
-          renderedTable,
-        )
-      : renderSlackMessage(displayText, format);
-    const rendered = appendSlackReplyFooter(content, footer);
+    const rendered = completedFiles.length > 0
+      ? renderSlackArtifactMessage(displayText, format, footer, completedFiles, renderedTable?.fallbackText)
+      : appendSlackReplyFooter(renderedTable
+          ? appendSlackTableToRenderedMessage(
+              renderSlackMessage(displayText, format),
+              displayText,
+              renderedTable,
+            )
+          : renderSlackMessage(displayText, format), footer);
     const postPayload = {
       channel: this.target.channelId,
       thread_ts: this.target.threadTs,
       ...rendered,
+      ...(completedFiles.length > 0 ? { unfurl_links: true, unfurl_media: true } : {}),
       ...(forcePostFallback && fallbackOperationId
         ? { client_msg_id: slackClientMessageId(fallbackOperationId) }
         : {}),
@@ -814,122 +802,6 @@ export class WebClientPresenter {
       });
       throw error;
     }
-  }
-
-  /**
-   * Publish staged files and the final text as one Slack file share. Returns
-   * false only when Slack confirmed the completion was rejected, so the caller
-   * may publish the text alone. Ambiguity throws and is never retried here.
-   */
-  private async completeFilesAsFinal(input: {
-    files: SlackArtifactReceipt[];
-    displayText: string;
-    format: SlackReplyFormat;
-    renderedTable: ReturnType<typeof renderSlackTablePresentation> | undefined;
-    footer: SlackReplyFooter;
-    forcePostFallback: boolean;
-    fallbackOperationId?: string;
-  }): Promise<boolean> {
-    const completion: SlackFileCompletionInput = {
-      files: input.files.map((file) => ({ id: file.fileId, ...(file.title ? { title: file.title } : {}) })),
-      channelId: this.target.channelId,
-      threadTs: this.target.threadTs,
-      blocks: renderSlackFileBlocks(
-        input.displayText, input.format, input.footer, input.renderedTable?.fallbackText,
-      ),
-      persona: this.persona(),
-    };
-    const failureText = `${input.displayText}\n\n${ARTIFACT_UNDELIVERED_NOTE}`;
-    const failureContent = input.renderedTable
-      ? appendSlackTableToRenderedMessage(renderSlackMessage(failureText, input.format), failureText, input.renderedTable)
-      : renderSlackMessage(failureText, input.format);
-    const rejectedFallback = {
-      channel: this.target.channelId,
-      thread_ts: this.target.threadTs,
-      ...appendSlackReplyFooter(failureContent, input.footer),
-      ...(input.fallbackOperationId ? { client_msg_id: slackClientMessageId(input.fallbackOperationId) } : {}),
-      ...this.persona(),
-    };
-    const envelope = {
-      method: 'slack_files_complete' as const,
-      rejectedFallback,
-      completion: {
-        files: completion.files,
-        channel_id: completion.channelId,
-        thread_ts: completion.threadTs,
-        blocks: completion.blocks,
-        ...this.persona(),
-      },
-      share: {
-        fileIds: input.files.map((file) => file.fileId),
-        channel: this.target.channelId,
-        ...(this.target.threadTs ? { threadTs: this.target.threadTs } : {}),
-      },
-    };
-    const attemptId = await this.observeBeforeDelivery({
-      method: envelope.method,
-      approvedOutput: input.displayText,
-      renderedPayload: JSON.stringify(envelope),
-    });
-    const transport = this.fileTransport();
-    let share: SlackFileShare | undefined;
-    try {
-      share = (await transport.complete(completion)).share;
-    } catch (error) {
-      const outcome = slackFileCompletionFailureOutcome(error);
-      await this.observeAfterDelivery({
-        attemptId,
-        outcome,
-        safeFailureCode: outcome === 'failed'
-          ? 'slack_files_complete_failed'
-          : 'slack_files_complete_unknown',
-      });
-      if (outcome === 'unknown') {
-        if (input.forcePostFallback) {
-          await this.options.agentViewPresentation?.markFallbackDeliveryFailed('unknown');
-        }
-        throw error;
-      }
-      return false;
-    }
-    share ??= await this.resolveShareBestEffort(transport, input.files.map((file) => file.fileId));
-    const messageTs = share?.shared ? share.ts : undefined;
-    if (!messageTs) {
-      await this.observeAfterDelivery({ attemptId, outcome: 'unknown', safeFailureCode: 'slack_files_share_unresolved' });
-      if (input.forcePostFallback) await this.options.agentViewPresentation?.markFallbackDeliveryFailed('unknown');
-      throw new SlackTransportError('files.completeUploadExternal', 'slack_files_share_unresolved');
-    }
-    if (input.forcePostFallback) {
-      await this.options.agentViewPresentation?.markFallbackDelivered(messageTs);
-    }
-    await this.observeAfterDelivery({
-      attemptId,
-      outcome: 'delivered',
-      deliveryRef: slackDeliveryRef(this.target.channelId, messageTs),
-    });
-    if (messageTs) await this.notifyPublicDelivery(messageTs, input.displayText);
-    return true;
-  }
-
-  private async resolveShareBestEffort(
-    transport: SlackFileTransport,
-    fileIds: readonly string[],
-  ): Promise<SlackFileShare | undefined> {
-    try {
-      return await resolveFileShares(transport, {
-        fileIds,
-        channelId: this.target.channelId,
-        ...(this.target.threadTs ? { threadTs: this.target.threadTs } : {}),
-      });
-    } catch {
-      // Delivered, coordinate unknown. Never complete or post again to learn it.
-      console.warn('[chickpea] Slack file share coordinate could not be resolved');
-      return undefined;
-    }
-  }
-
-  private fileTransport(): SlackFileTransport {
-    return this.options.fileTransport ?? createSlackFileTransport(this.client);
   }
 
   async markCanonicalPresentationFinalized(): Promise<void> {
