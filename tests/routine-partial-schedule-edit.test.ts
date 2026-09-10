@@ -56,6 +56,7 @@ test(`partial schedule edit preserves canonical timing: ${edit}`, async () => {
     };
     const save = {
       kind: 'save' as const,
+      requiredConnectionAccountIds: [],
       actionKey: 'rsaction_shared_save',
       itemId: 'save',
       actorUserId: owner.user.id,
@@ -104,7 +105,7 @@ test(`partial schedule edit preserves canonical timing: ${edit}`, async () => {
     try {
       await invokeSlackScheduleAction({ signal, context: { organizationId: owner.membership.organizationId,
         userId: owner.user.id, membershipId: owner.membership.id, origin: { kind: 'slack', ...signal } },
-        operation: { kind: 'save_routine', itemId: 'edit', agentId: save.agentId,
+        operation: { kind: 'save_routine', requiredConnectionAccountIds: [], itemId: 'edit', agentId: save.agentId,
           workspaceId: save.workspaceId, channelId: save.channelId, routineId: first.routine.id,
           expectedVersion: first.routine.version, taskText: 'Tell me what changed, including refunds.',
           ...(edit === 'time' ? { schedule: { kind: 'once', localDateTime: '2026-11-01T02:30' } } : {}),
