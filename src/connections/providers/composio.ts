@@ -24,6 +24,7 @@ import type {
 import {
   ManagedAuthorizationAllocatedError,
   ManagedAuthorizationExpiredError,
+  ManagedAuthorityDeniedError,
   ManagedProviderRequestError,
 } from '../managed-errors.ts';
 import { composioToolkitVersion } from './composio/versions.ts';
@@ -1986,38 +1987,61 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
     let remoteCallCount = 0;
     let providerToolCallCount = 0;
     let capabilityToolDispatched = false;
+    let dispatchingCapability = false;
     try {
-      const client = await this.client(apiKey);
+      const rawClient = await this.client(apiKey);
+      const beforeCall = async (toolCall: boolean): Promise<void> => {
+        // Readback after an accepted write must finish even if authority changed.
+        if (!capabilityToolDispatched) await input.revalidateAuthority?.();
+        remoteCallCount += 1;
+        if (toolCall) providerToolCallCount += 1;
+      };
+      const client: ComposioClientLike = {
+        ...rawClient,
+        ...(rawClient.tools ? { tools: { execute: async (...args: Parameters<NonNullable<ComposioClientLike['tools']>['execute']>) => {
+          await beforeCall(true);
+          if (dispatchingCapability) capabilityToolDispatched = true;
+          return rawClient.tools!.execute(...args);
+        } } } : {}),
+        sessions: { create: async (...args) => {
+          await beforeCall(false);
+          const session = await rawClient.sessions.create(...args);
+          return { execute: async (...executionArgs) => {
+            await beforeCall(true);
+            if (dispatchingCapability) capabilityToolDispatched = true;
+            return session.execute(...executionArgs);
+          } };
+        } },
+      };
       // Validate the exact publishing identity before staging customer bytes
       // into Composio. Ambiguous Brand-channel credentials must fail without
       // the artifact leaving Chickpea's invocation sandbox.
       if (capability.toolkit === 'youtube') {
-        const preflight = await validateYouTubeExecutionTarget(
+        await validateYouTubeExecutionTarget(
           client,
           input.policy,
           input.capability,
           executionArguments,
           signal,
         );
-        remoteCallCount += preflight.remoteCallCount;
-        providerToolCallCount += preflight.providerToolCallCount;
       }
       if (input.capability === 'youtube.videos.upload') {
         const artifact = requireManagedArtifact(executionArguments[MANAGED_ARTIFACT_ARGUMENT]);
         const staged = await stageComposioFile({
           apiKey,
           artifact,
+          beforeCall: () => beforeCall(false),
           tool: capability.tool,
           toolkit: capability.toolkit,
           signal,
         });
-        remoteCallCount += 2;
         toolArguments = capability.arguments({
           ...executionArguments,
           [MANAGED_ARTIFACT_ARGUMENT]: staged,
         });
       }
       if (!toolArguments) throw new Error('Composio capability arguments are unavailable');
+      dispatchingCapability = true;
       let result: {
         data: Record<string, unknown>;
         error?: string | null | undefined;
@@ -2025,9 +2049,6 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         logId?: string | undefined;
       };
       if (client.tools) {
-        capabilityToolDispatched = true;
-        remoteCallCount += 1;
-        providerToolCallCount += 1;
         result = await client.tools.execute(capability.tool, {
           userId: input.policy.principalRef,
           connectedAccountId: input.policy.accountRef,
@@ -2037,15 +2058,11 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
       } else {
         // Test/compatibility seam for injected clients. Production clients use
         // the version-pinned direct execution path above.
-        remoteCallCount += 1;
         const session = await client.sessions.create(
           input.policy.principalRef,
           sessionConfig(input.policy, capability.tool),
           { signal },
         );
-        remoteCallCount += 1;
-        providerToolCallCount += 1;
-        capabilityToolDispatched = true;
         result = await session.execute(
           capability.tool,
           toolArguments,
@@ -2080,8 +2097,6 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
           mutation: result.data,
           signal,
         });
-        remoteCallCount += verification.remoteCallCount;
-        providerToolCallCount += verification.providerToolCallCount;
         if (!verification.verified) {
           throw new ManagedProviderRequestError(
             'ambiguous',
@@ -2118,7 +2133,15 @@ export class ComposioManagedConnectionProvider implements ManagedConnectionProvi
         ...(quotaRemaining === undefined ? {} : { rateLimitRemaining: quotaRemaining }),
       };
     } catch (error) {
+      if (error instanceof ManagedAuthorityDeniedError) {
+        throw new ManagedProviderRequestError('validation_failed', error.message, {
+          providerTool: capability.tool, providerVersion, remoteCallCount,
+          providerToolCallCount, capabilityToolDispatched: false, definiteFailure: true,
+        });
+      }
       if (error instanceof ManagedProviderRequestError) {
+        error.metadata.remoteCallCount = remoteCallCount;
+        error.metadata.providerToolCallCount = providerToolCallCount;
         if (error.code === 'provider_unavailable' &&
             error.metadata.capabilityToolDispatched === true &&
             error.metadata.definiteFailure !== true &&
@@ -2779,6 +2802,7 @@ async function verifyYouTubeWrite(input: {
 }
 
 async function stageComposioFile(input: {
+  beforeCall: () => Promise<void>;
   apiKey: string;
   artifact: ManagedConnectionArtifact;
   tool: string;
@@ -2788,6 +2812,7 @@ async function stageComposioFile(input: {
   const digest = [...md5(input.artifact.bytes)]
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');
+  await input.beforeCall();
   const request = await fetch('https://backend.composio.dev/api/v3.1/files/upload/request', {
     method: 'POST',
     headers: {
@@ -2819,6 +2844,7 @@ async function stageComposioFile(input: {
   if (metadata.storage_backend === 'azure_blob_storage') headers['x-ms-blob-type'] = 'BlockBlob';
   const bytes = new Uint8Array(input.artifact.bytes.byteLength);
   bytes.set(input.artifact.bytes);
+  await input.beforeCall();
   const upload = await fetch(uploadUrl, {
     method: 'PUT',
     headers,
