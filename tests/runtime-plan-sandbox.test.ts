@@ -113,7 +113,8 @@ test(`native REST session: ${scenario}`, async (t) => {
 });
 }
 
-test('native Google session mounts only the narrowed binding and injects its OAuth token', async (t) => {
+for (const oauthState of ['ready', 'invalid_grant', 'temporarily_unavailable'] as const) {
+test(`native Google session: ${oauthState}`, async (t) => {
   const store = getConfigStore();
   const identity = getIdentityStore();
   const scopes = ['https://www.googleapis.com/auth/gmail.modify', 'https://www.googleapis.com/auth/drive.readonly'];
@@ -124,19 +125,32 @@ test('native Google session mounts only the narrowed binding and injects its OAu
   t.mock.method(store, 'getAgent', async () => agent);
   t.mock.method(store, 'listConnectionAccounts', async () => [account]);
   t.mock.method(store, 'listAgentConnectionBindings', async () => [binding]);
+  t.mock.method(store, 'listAgents', async () => [agent]);
+  t.mock.method(store, 'listAgentScheduleReferences', async () => []);
+  const accountWrites = t.mock.method(store, 'putConnectionAccount', async (updated: typeof account, revision: number) => {
+    assert.equal(revision, account.revision);
+    Object.assign(account, updated, { revision: revision + 1 });
+    return account;
+  });
   t.mock.method(identity, 'getOrganization', async () => ({ id: 'org', slackTeamId: 'T_TEST' }));
   t.mock.method(identity, 'getMembership', async () => ({ id: 'member', organizationId: 'org', status: 'active', userId: 'user' }));
   t.mock.method(identity, 'getMembershipAccessOverlay', async () => undefined);
   t.mock.method(identity, 'getUser', async () => ({ id: 'user', slackTeamId: 'T_TEST', slackUserId: 'U_TEST' }));
   t.mock.method(identity, 'resolveSlackIdentity', async () => ({ user: { id: 'user' }, membership: { id: 'member' }, binding: { membershipId: 'member' } }));
-  const tokenKey = apiOAuthSettingKeys(connectionAccountOAuthRef(account.id))[2];
-  const tokenReads = t.mock.method(getSettingsStore(), 'getSetting', async (key: string) => key === tokenKey
-    ? JSON.stringify({ provider: 'google', accessToken: 'fixture-google-token', tokenType: 'Bearer', obtainedAt: Date.now() })
-    : undefined);
+  const settings = getSettingsStore();
+  const keys = apiOAuthSettingKeys(connectionAccountOAuthRef(account.id));
+  const tokenKey = keys[2];
+  await settings.setSetting(keys[0], JSON.stringify({ provider: 'google', clientId: 'fixture-client', clientSecret: 'fixture-secret' }));
+  await settings.setSetting(tokenKey, JSON.stringify({ provider: 'google', accessToken: 'fixture-google-token', refreshToken: 'fixture-refresh', tokenType: 'Bearer', obtainedAt: oauthState === 'ready' ? Date.now() : 1, expiresIn: 3600 }));
+  const getSetting = settings.getSetting.bind(settings);
+  const tokenReads = t.mock.method(settings, 'getSetting', getSetting);
   const calls: { url: string; authorization: string | null; nonce: string }[] = [];
   t.mock.method(globalThis, 'fetch', async (url: string, options: RequestInit) => {
     const nonce = randomUUID();
     calls.push({ url: String(url), authorization: new Headers(options.headers).get('authorization'), nonce });
+    if (String(url) === 'https://oauth2.googleapis.com/token') {
+      return Response.json({ error: oauthState }, { status: oauthState === 'invalid_grant' ? 400 : 503 });
+    }
     return Response.json({ files: [], nonce });
   });
   const effectiveConnections = await resolveEffectiveConnectionAccounts({ config: store, workspaceId: 'T_TEST', agentId: agent.id, actorMembershipId: 'member' });
@@ -152,6 +166,16 @@ test('native Google session mounts only the narrowed binding and injects its OAu
     assert.doesNotMatch(String((harness as any).config.instructions), /fixture-google-token/);
     const read = await harness.sandbox.exec('curl -sS "https://www.googleapis.com/drive/v3/files?pageSize=1"');
     assert.ok(tokenReads.mock.calls.some(({ arguments: args }) => args[0] === tokenKey), JSON.stringify({ declaration: plan.apiConnections, keys: tokenReads.mock.calls.map(({ arguments: args }) => args[0]) }));
+    if (oauthState !== 'ready') {
+      assert.notEqual(read.exitCode, 0);
+      assert.deepEqual(calls.map(({ url }) => url), ['https://oauth2.googleapis.com/token']);
+      assert.equal(account.lifecycle, oauthState === 'invalid_grant' ? 'needs_attention' : 'ready');
+      assert.equal(accountWrites.mock.callCount(), oauthState === 'invalid_grant' ? 1 : 0);
+      assert.equal((await settings.getSetting(tokenKey)) === undefined, oauthState === 'invalid_grant');
+      const nextTurn = await resolveEffectiveConnectionAccounts({ config: store, workspaceId: 'T_TEST', agentId: agent.id, actorMembershipId: 'member' });
+      assert.equal(nextTurn.length, oauthState === 'invalid_grant' ? 0 : 1);
+      return;
+    }
     assert.equal(read.exitCode, 0, JSON.stringify(read));
     assert.equal(JSON.parse(read.stdout).nonce, calls[0]?.nonce);
     assert.equal(calls[0]?.authorization, 'Bearer fixture-google-token');
@@ -164,8 +188,12 @@ test('native Google session mounts only the narrowed binding and injects its OAu
       assert.match(denied.stderr, /not in allow-list/);
     }
     assert.equal(calls.length, 1);
-  } finally { await harness.close(); }
+  } finally {
+    await harness.close();
+    for (const key of keys) await settings.deleteSetting(key);
+  }
 });
+}
 
 test('REST frozen ceiling rejects wider or changed identity and permits narrowing', () => {
   const frozen = { id: 'rest', ...basePolicy };

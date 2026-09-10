@@ -1,4 +1,5 @@
 import { ChannelDirectoryCache } from '../slack/channel-directory-cache.ts';
+import { apiOAuthLifecycleDependencies } from '../connections/api-oauth-lifecycle.ts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { Hono, type Context, type Next } from 'hono';
@@ -2603,6 +2604,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
   const apiOAuthDependencies = (c: Context): ApiOAuthDependencies => ({
     settings: settings(c),
+    ...apiOAuthLifecycleDependencies(store(c), settings(c)),
     ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
     validateAuthorization: (authority, ref) =>
       currentOAuthAuthorization(c, authority, ref),
@@ -2622,24 +2624,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return true;
       }
       return isCurrentApiOAuthConnection(store(c), ref, provider);
-    },
-    onReauthorizationRequired: async (ref, provider) => {
-      const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
-      if (connectionAccountId) {
-        const account = await findConnectionAccount(store(c), connectionAccountId);
-        if (!account || account.lifecycle === 'revoked' ||
-            !isApiOAuthAccount(account, provider)) return;
-        await store(c).putConnectionAccount(
-          { ...account, lifecycle: 'needs_attention' },
-          account.revision,
-        );
-        return;
-      }
-      await store(c).markOAuthReauthorizationRequired({
-        lane: 'api',
-        ...ref,
-        provider,
-      });
     },
   });
   const openAiSubscriptionDependencies = (

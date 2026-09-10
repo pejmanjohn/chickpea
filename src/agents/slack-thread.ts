@@ -1,5 +1,6 @@
 'use agent';
 
+import { apiOAuthLifecycleDependencies } from '../connections/api-oauth-lifecycle.ts';
 import { SLACK_MEMORY_UPDATE_DATA_NAME, SlackMemoryUpdateSchema, type SlackMemoryUpdate } from '../slack/memory-update-terminal.ts';
 
 import {
@@ -565,6 +566,11 @@ export async function resolveApiConnectionsForTurn(
             credential = accountContext && !dependencies.resolveOAuthToken
               ? await resolveApiOAuthAccessToken(oauthInput, {
                   settings: accountContext.settings ?? getSettingsStore(env),
+                  ...apiOAuthLifecycleDependencies(
+                    accountContext.config,
+                    accountContext.settings ?? getSettingsStore(env),
+                    accountContext.workspaceId,
+                  ),
                   validateConnection: async (ref, provider, _accountRevision, oauthAttemptId) => {
                     const current = await resolveEffectiveConnectionAccounts({
                       config: accountContext.config,
