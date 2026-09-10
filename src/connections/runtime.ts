@@ -528,9 +528,14 @@ export function applyConnectionCapabilityCeiling(
   }
   if (policy.authMode === 'oauth') {
     const oauthScopes = (policy.oauthScopes ?? []).filter((scope) => allowed.has(scope));
-    return policy.oauthProvider === 'google'
-      ? { ...policy, oauthScopes, ...(oauthScopes.length ? googleWorkspaceApiPolicy(oauthScopes) : { oauthScopes, allowedHosts: [], pathPrefixes: [], allowedMethods: [] }) }
-      : { ...policy, oauthScopes };
+    if (policy.oauthProvider !== 'google') return { ...policy, oauthScopes };
+    try {
+      return { ...policy, oauthScopes, ...googleWorkspaceApiPolicy(oauthScopes) };
+    } catch {
+      // Invalid or retired scopes disable this connection, not every other
+      // account projected for the Agent.
+      return { ...policy, oauthScopes, allowedHosts: [], pathPrefixes: [], allowedMethods: [] };
+    }
   }
   return { ...policy, allowedMethods: policy.allowedMethods.filter((method) => allowed.has(method)) };
 }

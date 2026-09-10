@@ -1330,14 +1330,16 @@ function createRuntimePlanSandbox(
       async createSessionEnv(options) {
         const env = await resolveAgentPlatformEnv();
         await prepareRuntimePlanModel(plan, env);
-        // Preserve the connection-free plan's lightweight workspace: no account
-        // or egress setting reads just to initialize a tool sandbox.
+        // Native plans grant only their frozen connector scopes. Operator-wide
+        // egress settings belong to the legacy runtime and must not become an
+        // incidental grant when any connection is bound. Empty plans need no
+        // account or egress setting reads.
         if (!plan.apiConnections.length) {
           return bash(() => new Bash({ fs: new InMemoryFs() })).createSessionEnv(options);
         }
         const connections = await resolveRuntimePlanApiConnections(plan, env);
         const sandbox = createConnectorScopedBash(
-          await resolveEgressPolicy(env), isCloudflareTarget(),
+          { mode: 'allowlist', domains: [] }, isCloudflareTarget(),
           mergeRepositoryAndApiConnectors([], connections.flatMap(({ connectors }) => connectors)),
         );
         return sandbox.createSessionEnv(options);

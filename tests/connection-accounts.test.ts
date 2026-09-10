@@ -21,6 +21,7 @@ import {
 } from '../src/connections/store.ts';
 import {
   applyConnectionCapabilityCeiling,
+  projectEffectiveApiConnections,
   externalActionAuthorityInstructions,
   resolveConnectionAccountContext,
   resolveConnectionSecretForInvocation,
@@ -1560,4 +1561,27 @@ test('narrowed Google bindings derive the complete service policy before resolvi
   assert.deepEqual(resolved[0]?.connectors[0]?.allowedMethods, ['GET', 'HEAD']);
   const empty = applyConnectionCapabilityCeiling(policy, { ...binding, allowedCapabilities: ['unknown'] });
   assert.deepEqual(empty.kind === 'api' && empty.allowedHosts, []);
+});
+
+test('invalid Google scopes fail closed without breaking other account projections', async () => {
+  const invalid = effectiveGoogleService('invalid', 'Invalid Google', ['/gmail/v1/users/me']);
+  invalid.account.policy = { ...gmailPolicy(), oauthScopes: ['https://example.test/retired-scope'] };
+  invalid.binding.allowedCapabilities = ['https://example.test/retired-scope'];
+  const valid = effectiveGoogleService('valid', 'Valid Google', ['/gmail/v1/users/me']);
+  valid.binding.allowedCapabilities = gmailPolicy().oauthScopes;
+  const effective = await resolveEffectiveConnectionAccounts({
+    config: {
+      listConnectionAccounts: async () => [invalid.account, valid.account],
+      listAgentConnectionBindings: async () => [invalid.binding, valid.binding],
+    },
+    workspaceId: 'T_CONNECTIONS', agentId: 'agent_workspace', actorMembershipId: 'membership_creator',
+  });
+  const projected = projectEffectiveApiConnections(effective);
+  assert.equal(projected.length, 2);
+  assert.deepEqual(projected.find(({ id }) => id === 'invalid')?.allowedHosts, []);
+  assert.deepEqual(projected.find(({ id }) => id === 'invalid')?.allowedMethods, []);
+  const resolved = await resolveApiConnectionsForTurn('agent_workspace', projected, undefined, {
+    resolveOAuthToken: async () => 'fixture-token',
+  });
+  assert.deepEqual(resolved.map(({ policy }) => policy.id), ['valid']);
 });
