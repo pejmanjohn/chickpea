@@ -35,6 +35,7 @@ import type {
   RollbackChickpeaCutoverInput,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
+  RecentSlackPublicContextInput,
   WorkspaceModelDefault,
   WorkspaceModelDefaultInput,
   WorkspaceInstallation,
@@ -342,6 +343,9 @@ export interface TagStateRpc {
     workspaceId: string,
     channelId: string,
     rootTs: string,
+  ): Promise<StateRpcResult<SlackPublicContextEntry[]>>;
+  configListRecentSlackPublicContext(
+    input: RecentSlackPublicContextInput,
   ): Promise<StateRpcResult<SlackPublicContextEntry[]>>;
   configPutSlackPublicContext(
     input: SlackPublicContextEntryInput,

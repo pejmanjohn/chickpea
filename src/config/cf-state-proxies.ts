@@ -54,6 +54,7 @@ import type {
   RollbackChickpeaCutoverInput,
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
+  RecentSlackPublicContextInput,
   WorkspaceModelDefault,
   WorkspaceModelDefaultInput,
   WorkspaceInstallation,
@@ -1373,6 +1374,12 @@ export class CfConfigStore implements ConfigStore {
     rootTs: string,
   ): Promise<SlackPublicContextEntry[]> {
     return unwrap(await this.stub.configListSlackPublicContext(workspaceId, channelId, rootTs));
+  }
+
+  async listRecentSlackPublicContext(
+    input: RecentSlackPublicContextInput,
+  ): Promise<SlackPublicContextEntry[]> {
+    return unwrap(await this.stub.configListRecentSlackPublicContext(input));
   }
 
   async putSlackPublicContext(

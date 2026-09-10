@@ -732,6 +732,10 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
       state: 'rolled_back' as const,
     }),
     configListSlackPublicContext: () => ok([publicContext]),
+    configListRecentSlackPublicContext: (input: unknown) => {
+      assert.deepEqual(input, { workspaceId: 'T_PLATFORM', channelId: 'D_OWNER', agentId: 'agent_support', beforeMessageTs: '200.0', limit: 20 });
+      return ok([publicContext]);
+    },
     configPutSlackPublicContext: () => ok(publicContext),
     configDeleteSlackPublicContextMessage: () => ok(true),
     configDeleteSlackPublicContextRoot: () => ok(1),
@@ -836,6 +840,9 @@ test('Cloudflare config proxy mirrors Agent platform state without projection ch
     await store.listSlackPublicContext('T_PLATFORM', 'D_OWNER', publicContext.rootTs),
     [publicContext],
   );
+  assert.deepEqual(await store.listRecentSlackPublicContext({
+    workspaceId: 'T_PLATFORM', channelId: 'D_OWNER', agentId: 'agent_support', beforeMessageTs: '200.0', limit: 20,
+  }), [publicContext]);
   assert.deepEqual(await store.putSlackPublicContext({
     workspaceId: publicContext.workspaceId,
     channelId: publicContext.channelId,

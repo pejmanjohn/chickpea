@@ -417,6 +417,16 @@ export interface SlackPublicContextEntry {
 
 export type SlackPublicContextEntryInput = Omit<SlackPublicContextEntry, 'updatedAt'>;
 
+export const MAX_SLACK_PUBLIC_HANDOFF_MESSAGES = 20;
+
+export interface RecentSlackPublicContextInput {
+  workspaceId: string;
+  channelId: string;
+  agentId: string;
+  beforeMessageTs: string;
+  limit: number;
+}
+
 export type ConnectionAccountOwnerKind = 'team' | 'member';
 export type ConnectionAccountLifecycle = 'pending' | 'ready' | 'needs_attention' | 'revoked';
 
