@@ -1,10 +1,14 @@
 import type { SlackArtifactStageInput, SlackArtifactStageOutcome } from '../sandbox/artifact-tool.ts';
+import * as v from 'valibot';
 import {
   createArtifactReceiptAccumulator,
+  isCompletedSlackArtifactReceipt,
+  SlackArtifactReceiptSchema,
+  type CompletedSlackArtifactReceipt,
   type SlackArtifactReceipt,
   type SlackArtifactReceipts,
 } from './artifact-receipts.ts';
-import { isSlackFileTransportUnsupported, type SlackFileTransport } from './file-transport.ts';
+import type { SlackFileTransport } from './file-transport.ts';
 import { MAX_GATEWAY_ARTIFACT_BYTES } from './gateway/protocol.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { isMissingFilesScopeError } from './web-client-presenter.ts';
@@ -33,32 +37,40 @@ export async function stageArtifactWithReceipt(input: {
   if (title !== undefined && (title.length > FILENAME_LIMIT || CONTROL_CHARACTERS.test(title))) {
     throw new Error(`title must be at most ${FILENAME_LIMIT} characters without control characters`);
   }
-  let staged: Awaited<ReturnType<SlackFileTransport['stage']>>;
+  if (!input.transport.stagePrivate) return { attached: false, reason: 'unavailable' };
+  const now = input.now ?? Date.now;
+  const stagedAt = now();
+  let receipt: CompletedSlackArtifactReceipt;
   try {
-    staged = await input.transport.stage({
+    const staged = await input.transport.stagePrivate({
       filename,
       bytes: input.artifact.bytes,
+      ...(title ? { title } : {}),
       ...(input.artifact.kind === 'chart' && title ? { altText: title } : {}),
     });
+    if (staged.byteLength !== input.artifact.bytes.byteLength) return { attached: false, reason: 'unavailable' };
+    const parsed = v.parse(SlackArtifactReceiptSchema, {
+      schemaVersion: 2,
+      fileId: staged.fileId,
+      permalink: staged.permalink,
+      filename,
+      ...(title ? { title } : {}),
+      kind: input.artifact.kind,
+      byteLength: staged.byteLength,
+      stagedAt,
+      completedAt: now(),
+      destination: { ...input.destination },
+    });
+    if (!isCompletedSlackArtifactReceipt(parsed)) return { attached: false, reason: 'unavailable' };
+    receipt = parsed;
   } catch (error) {
     if (error instanceof SlackTransportError && error.code === 'gateway_request_too_large') {
       return { attached: false, reason: 'too-large', maxBytes: MAX_GATEWAY_ARTIFACT_BYTES };
     }
     if (isMissingFilesScopeError(error)) return { attached: false, reason: 'missing-scope' };
-    if (isSlackFileTransportUnsupported(error)) return { attached: false, reason: 'unavailable' };
-    throw error;
+    return { attached: false, reason: 'unavailable' };
   }
-  const receipt: SlackArtifactReceipt = {
-    schemaVersion: 1,
-    fileId: staged.fileId,
-    filename,
-    ...(title ? { title } : {}),
-    kind: input.artifact.kind,
-    byteLength: staged.byteLength,
-    stagedAt: (input.now ?? Date.now)(),
-    destination: { ...input.destination },
-  };
   const receipts = input.accumulator.add(receipt);
   input.writeReceipts({ schemaVersion: 1, receipts });
-  return { attached: true, byteLength: staged.byteLength };
+  return { attached: true, byteLength: receipt.byteLength };
 }

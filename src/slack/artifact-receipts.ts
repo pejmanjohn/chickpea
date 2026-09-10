@@ -4,13 +4,10 @@ import { useDataWriter, usePersistentState, useResponseStart } from '@flue/runti
 /**
  * Host-authored receipts for files an Agent staged during one response.
  *
- * Staging uploads bytes to Slack without publishing them. The receipt carries
- * only bounded identity: the Slack file id, the visible filename and title,
- * the byte count, and the frozen destination the file may be published to.
- * It never carries bytes, upload URLs, or anything the model authored beyond
- * the filename and title it chose. Receipts travel as one Flue data part on
- * the settled reply, so final delivery can complete the upload as part of the
- * Agent's own final message.
+ * New receipts describe privately completed uploads and their Slack permalinks.
+ * Legacy receipts remain readable for persisted work. Neither carries bytes
+ * or upload URLs. The frozen destination controls where final delivery may
+ * share the file in the Agent's message.
  */
 
 export const SLACK_ARTIFACT_RECEIPTS_DATA_NAME = 'slackArtifactReceipts';
@@ -22,9 +19,25 @@ const SLACK_FILE_ID = /^F[A-Z0-9]{6,40}$/;
 const SLACK_ID = /^[A-Z0-9]{1,40}$/;
 const SLACK_TS = /^\d{1,20}\.\d{1,10}$/;
 const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
+const MAX_PERMALINK_CHARS = 2_048;
 
-export const SlackArtifactReceiptSchema = v.strictObject({
-  schemaVersion: v.literal(1),
+/** Slack workspace permalinks must name this exact file without bearer data. */
+export function isSlackFilePermalink(value: unknown, fileId: string): value is string {
+  if (typeof value !== 'string' || value.length > MAX_PERMALINK_CHARS ||
+      !SLACK_FILE_ID.test(fileId) || /[\u0000-\u0020\u007f<>&|\\?#]/.test(value)) return false;
+  try {
+    const url = new URL(value);
+    const path = url.pathname.split('/');
+    return url.href.length <= MAX_PERMALINK_CHARS && url.protocol === 'https:' &&
+      /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.slack\.com$/.test(url.hostname) &&
+      !url.username && !url.password && !url.port && path[1] === 'files' &&
+      typeof path[2] === 'string' && SLACK_ID.test(path[2]) && path[3] === fileId;
+  } catch {
+    return false;
+  }
+}
+
+const receiptFields = {
   fileId: v.pipe(v.string(), v.regex(SLACK_FILE_ID)),
   filename: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_FILENAME_CHARS)),
   title: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_TITLE_CHARS))),
@@ -37,9 +50,24 @@ export const SlackArtifactReceiptSchema = v.strictObject({
     channelId: v.pipe(v.string(), v.regex(SLACK_ID)),
     threadTs: v.optional(v.pipe(v.string(), v.regex(SLACK_TS))),
   }),
-});
+};
+
+export const SlackArtifactReceiptSchema = v.pipe(v.variant('schemaVersion', [
+  v.strictObject({ schemaVersion: v.literal(1), ...receiptFields }),
+  v.strictObject({
+    schemaVersion: v.literal(2),
+    ...receiptFields,
+    permalink: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_PERMALINK_CHARS)),
+    completedAt: v.pipe(v.number(), v.integer(), v.minValue(0)),
+  }),
+]), v.check((receipt) => receipt.schemaVersion === 1 || isSlackFilePermalink(receipt.permalink, receipt.fileId)));
 
 export type SlackArtifactReceipt = v.InferOutput<typeof SlackArtifactReceiptSchema>;
+export type CompletedSlackArtifactReceipt = Extract<SlackArtifactReceipt, { schemaVersion: 2 }>;
+
+export function isCompletedSlackArtifactReceipt(receipt: SlackArtifactReceipt): receipt is CompletedSlackArtifactReceipt {
+  return receipt.schemaVersion === 2;
+}
 
 /** The one data part value: the full list staged so far, rewritten on every stage. */
 export const SlackArtifactReceiptsSchema = v.strictObject({

@@ -4,25 +4,18 @@ import { isRecord } from '../security/content-validation.ts';
 import { isGatewaySlackWebClient } from './gateway/web-client.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { slackPlatformErrorCode } from './errors.ts';
+import { isSlackFilePermalink } from './artifact-receipts.ts';
 
 /**
- * Staged Slack file delivery: upload bytes now, publish later.
- *
- * Slack's external upload flow has three steps: request an upload URL, send
- * the bytes, and complete the upload. Completion is the only publishing step
- * and the only one that accepts a channel, a thread, message blocks, and the
- * `username`/`icon_url` persona. Splitting staging from completion lets the
- * Agent's final message carry its files, its text, and its own identity in
- * one Slack post. The pinned SDK `files.uploadV2` helper completes inside the
- * call and drops the persona, so it is never used on this path.
- *
- * Direct installations perform the three native calls themselves. Shared
- * gateway installations map them to the reviewed gateway operations.
+ * Private staging uploads and completes a file without a destination. Final
+ * delivery shares its returned permalink in an ordinary Agent message.
+ * The legacy stage/complete pair remains available for persisted replay.
  */
 
 export interface SlackFileStageInput {
   filename: string;
   bytes: Uint8Array;
+  title?: string;
   altText?: string;
   snippetType?: string;
 }
@@ -30,6 +23,10 @@ export interface SlackFileStageInput {
 export interface SlackFileStageResult {
   fileId: string;
   byteLength: number;
+}
+
+export interface SlackFilePrivateStageResult extends SlackFileStageResult {
+  permalink: string;
 }
 
 export interface SlackFileCompletionInput {
@@ -52,12 +49,18 @@ export interface SlackFileCompletionResult {
 }
 
 export interface SlackFileTransport {
+  /** Completes privately once. A missing method marks a legacy transport. */
+  stagePrivate?(input: SlackFileStageInput): Promise<SlackFilePrivateStageResult>;
   /** Safe to retry: an uncompleted upload is discarded by Slack. */
   stage(input: SlackFileStageInput): Promise<SlackFileStageResult>;
   /** The publishing commit point. Never retried by callers after ambiguity. */
   complete(input: SlackFileCompletionInput): Promise<SlackFileCompletionResult>;
   /** Read-only: which message, if any, shares this file at the destination. */
   resolveShare(input: { fileId: string; channelId: string; threadTs?: string }): Promise<SlackFileShare>;
+}
+
+export interface SlackPrivateFileTransport extends SlackFileTransport {
+  stagePrivate(input: SlackFileStageInput): Promise<SlackFilePrivateStageResult>;
 }
 
 export const SLACK_FILE_STAGE_OPERATION = 'chickpea.files.stage' as const;
@@ -83,14 +86,22 @@ export function isSlackFileTransportUnsupported(error: unknown): boolean {
 export function createSlackFileTransport(
   client: WebClient,
   options: { fetch?: typeof fetch } = {},
-): SlackFileTransport {
+): SlackPrivateFileTransport {
   return isGatewaySlackWebClient(client)
     ? createGatewayFileTransport(client)
     : createDirectFileTransport(client, options.fetch ?? globalThis.fetch.bind(globalThis));
 }
 
-function createGatewayFileTransport(client: WebClient): SlackFileTransport {
+function createGatewayFileTransport(client: WebClient): SlackPrivateFileTransport {
   return {
+    async stagePrivate(input) {
+      const result = await client.files.uploadV2({
+        filename: input.filename,
+        file: Buffer.from(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength),
+        ...(input.title ? { title: input.title } : {}),
+      });
+      return privateStageResult(result, input.bytes.byteLength, 'files.uploadV2');
+    },
     async stage(input) {
       const result = await client.apiCall(SLACK_FILE_STAGE_OPERATION, {
         filename: input.filename,
@@ -121,8 +132,15 @@ function createGatewayFileTransport(client: WebClient): SlackFileTransport {
   };
 }
 
-function createDirectFileTransport(client: WebClient, fetcher: typeof fetch): SlackFileTransport {
-  return {
+function createDirectFileTransport(client: WebClient, fetcher: typeof fetch): SlackPrivateFileTransport {
+  const transport: SlackPrivateFileTransport = {
+    async stagePrivate(input) {
+      const staged = await transport.stage(input);
+      const result = await client.files.completeUploadExternal({
+        files: [{ id: staged.fileId, ...(input.title ? { title: input.title } : {}) }],
+      });
+      return privateStageResult(result, staged.byteLength, SLACK_FILE_COMPLETE_OPERATION, staged.fileId);
+    },
     async stage(input) {
       const ticket = await client.files.getUploadURLExternal({
         filename: input.filename,
@@ -164,6 +182,26 @@ function createDirectFileTransport(client: WebClient, fetcher: typeof fetch): Sl
       return shareFromFileRecord(info.file, input.channelId, input.threadTs);
     },
   };
+  return transport;
+}
+
+function privateStageResult(
+  result: unknown,
+  byteLength: number,
+  operation: string,
+  expectedFileId?: string,
+): SlackFilePrivateStageResult {
+  const file = isRecord(result) && result.ok === true && Array.isArray(result.files) && result.files.length === 1
+    ? result.files[0] : undefined;
+  if (!isRecord(file) || typeof file.id !== 'string' || !SLACK_FILE_ID.test(file.id) ||
+      (expectedFileId !== undefined && file.id !== expectedFileId) ||
+      !isSlackFilePermalink(file.permalink, file.id) ||
+      (file.size !== undefined && file.size !== byteLength)) {
+    throw new SlackTransportError(operation, 'invalid_private_completion_receipt', {
+      retryable: false, effectOutcome: 'unknown',
+    });
+  }
+  return { fileId: file.id, permalink: file.permalink, byteLength };
 }
 
 // Slack explicitly warns that internal_error/fatal_error may have partly
