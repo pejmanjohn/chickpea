@@ -40,6 +40,10 @@
   `wrangler deploy`. Confirm the intended target before any live mutation.
 - Report local checks and live acceptance separately. A source SHA, build, or
   deployment upload is not evidence of a real Slack reply.
+- Before changing Slack senders, avatars, attachments, streaming, message updates,
+  or attribution footers, read [Slack message identity](docs/runbooks/slack-message-identity.md).
+  Verify sender, file owner, footer, and recipient-visible attachment separately;
+  compare exact-message API readback with fresh desktop and real mobile views.
 - For repeated implementation/retest cycles against real Slack, start with an
   exclusive local Cloudflare Worker lane from
   [local Worker development](docs/runbooks/local-worker-development.md). Run
