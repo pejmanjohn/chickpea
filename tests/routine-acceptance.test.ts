@@ -149,6 +149,7 @@ async function seedDirectAcceptanceRoutine(
     destination,
   );
   const reference = await configStore.putAgentScheduleReference({
+    boundRoutineVersion: pending.authorityBindingVersion ?? pending.version,
     scheduleId: pending.id,
     agentId: ownerAgentId,
     workspaceId: pending.workspaceId,

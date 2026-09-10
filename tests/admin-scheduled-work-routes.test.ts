@@ -436,6 +436,7 @@ test('direct schedules are absent from shared list, detail, and mutation surface
     });
     const digest = routineDestinationBindingDigest(pending.id, pending.workspaceId, destination);
     const reference = await config.putAgentScheduleReference({
+      boundRoutineVersion: pending.authorityBindingVersion ?? pending.version,
       scheduleId: pending.id,
       agentId: agent.id,
       workspaceId: pending.workspaceId,
@@ -749,6 +750,7 @@ test('private schedule projections are readable only to proven Channel members a
       lifecycle: 'active',
     });
     await config.putAgentScheduleReference({
+      boundRoutineVersion: routine.authorityBindingVersion ?? routine.version,
       scheduleId: routine.id,
       agentId: agent.id,
       workspaceId: routine.workspaceId,
@@ -867,6 +869,7 @@ test('private schedule projections are readable only to proven Channel members a
       sourceVisibility: 'private',
     }, 'seed-private-member-routine-second');
     await config.putAgentScheduleReference({
+      boundRoutineVersion: secondRoutine.authorityBindingVersion ?? secondRoutine.version,
       scheduleId: secondRoutine.id,
       agentId: agent.id,
       workspaceId: secondRoutine.workspaceId,
@@ -1078,6 +1081,7 @@ test('unknown schedule visibility stays private but remains readable to a proven
       workspaceId: 'T_TEST', channelId: 'C_TEST', label: 'unknown-visibility-lab', lifecycle: 'active',
     });
     await config.putAgentScheduleReference({
+      boundRoutineVersion: routine.authorityBindingVersion ?? routine.version,
       scheduleId: routine.id, agentId: agent.id, workspaceId: 'T_TEST', channelId: 'C_TEST',
       createdByMembershipId: 'membership_member', runsAsMembershipId: 'membership_member',
       authorityReceiptId: 'receipt_unknown_visibility', requiredConnectionAccountIds: [], state: 'active',

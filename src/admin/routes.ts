@@ -1187,6 +1187,7 @@ function managedAuthorizationRemoteRef(
 }
 
 const scheduleAuthorityReassignSchema = v.strictObject({
+  requiredConnectionAccountIds: v.optional(v.pipe(v.array(v.pipe(v.string(), v.regex(/^[A-Za-z0-9_-]{1,200}$/))), v.maxLength(100))),
   runsAsMembershipId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9_-]{1,200}$/)),
   expectedAuthorityRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
 });
@@ -7977,6 +7978,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const reference = await reassignRoutineAgentAuthority({
         scheduleId: current.scheduleId,
         runsAsMembershipId: membership.id,
+        ...(parsed.output.requiredConnectionAccountIds !== undefined
+          ? { requiredConnectionAccountIds: parsed.output.requiredConnectionAccountIds }
+          : {}),
         config,
         identity: identity(c),
       });

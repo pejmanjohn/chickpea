@@ -278,9 +278,12 @@ async function executeRoutineCommand(
       if (scope.kind === 'handoff') return directAgentHandoffText();
       if (scope.kind !== 'allowed') return notFoundText();
     }
-    // New flows only create deletion confirmations. Accept any unexpired
-    // pre-upgrade create/edit receipt until normal retention removes it.
-    if (confirmation.draft.action !== 'delete') requireRoutineScheduling(capability);
+    // Old create/edit receipts cannot declare the exact account set required
+    // by current saves. Do not apply one and report an unbound schedule as ready.
+    if (confirmation.draft.action !== 'delete') {
+      throw new RoutineStateError('routine_connections_required',
+        'This older schedule confirmation cannot be applied. Ask the Agent to create or edit the schedule again and select the connections it needs.');
+    }
     const routine = await service.confirm({
       token: command.token,
       actorId: turn.userId,
@@ -289,9 +292,7 @@ async function executeRoutineCommand(
       previewHash: confirmation.previewHash,
       idempotencyKey: `routine:slack:${turn.eventId}:confirm`,
     });
-    return confirmation.draft.action === 'delete'
-      ? `🗑️ **Routine deleted**\n**ID:** \`${routine.id}\`\nIts saved body was scrubbed; body-free audit and run metadata is retained.`
-      : renderRoutineSaved(routine, { action: confirmation.draft.action });
+    return `🗑️ **Routine deleted**\n**ID:** \`${routine.id}\`\nIts saved body was scrubbed; body-free audit and run metadata is retained.`;
   }
   if (command.kind === 'cancel') {
     const confirmation = await store.getConfirmation(hashRoutineValue(command.token));
@@ -378,6 +379,8 @@ async function executeRoutineCommand(
         'Create a new one-time job with a future time instead of cloning this one.',
       );
     }
+    const sourceReference = await config.getAgentScheduleReference(routine.id);
+    if (!sourceReference) throw new RoutineStateError('routine_access_denied', 'The source schedule account requirements are unavailable.');
     const projection = normalizeRoutineSchedule(routine.scheduleInput, routine.timezone, now());
     const owningAssignment = routine.destination.kind === 'direct_thread'
       ? (await resolveAuthority(routine, env)).assignment
@@ -424,7 +427,7 @@ async function executeRoutineCommand(
           ),
     }, `routine:slack:${turn.eventId}:clone:${routine.id}`);
     const activated = await bindSavedRoutineAuthority(
-      created, owningAssignment, turn, env, service, store, bindAuthority,
+      created, owningAssignment, turn, env, service, store, bindAuthority, sourceReference.requiredConnectionAccountIds,
     );
     return renderRoutineSaved(activated, { action: 'create' });
   }
@@ -447,6 +450,7 @@ async function bindSavedRoutineAuthority(
   service: RoutineService,
   store: RoutineStore,
   bindAuthority: typeof bindRoutineAgentAuthority,
+  requiredConnectionAccountIds: string[],
 ): Promise<RoutineDefinition> {
   const pendingDirect = routine.destination.kind === 'direct_thread' &&
     routine.state === 'pending_authority';
@@ -474,6 +478,7 @@ async function bindSavedRoutineAuthority(
       routine,
       assignment,
       actorMembershipId: turn.actorMembershipId,
+      requiredConnectionAccountIds,
       env,
     });
     if (routine.destination.kind === 'direct_thread') {

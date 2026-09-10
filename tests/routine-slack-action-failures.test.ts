@@ -60,7 +60,7 @@ test('a third unexpected schedule failure terminates its request, replays durabl
   };
   const operation = {
     itemId: 'schedule',
-    kind: 'save_routine' as const,
+    kind: 'save_routine' as const, requiredConnectionAccountIds: [],
     agentId: signal.agentId,
     workspaceId: signal.workspaceId,
     destination: { kind: 'current_dm_thread' as const },

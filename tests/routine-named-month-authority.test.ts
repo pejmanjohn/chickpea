@@ -16,7 +16,7 @@ async function reachesReservation(text: string, date = '2026-09-05T15:49', selec
       context: { organizationId: 'org_fixture', userId: 'user_fixture', membershipId: 'member_fixture',
         origin: { kind: 'slack', workspaceId: 'T_FIXTURE', channelId: 'D_FIXTURE', conversationKind: 'im',
           slackUserId: 'U_FIXTURE', threadTs: '1788623000.000001', messageTs: '1788623000.000001' } } as never,
-      operation: { itemId: 'fixture', kind: 'save_routine', agentId: 'agent_fixture', workspaceId: 'T_FIXTURE',
+      operation: { itemId: 'fixture', kind: 'save_routine', requiredConnectionAccountIds: [], agentId: 'agent_fixture', workspaceId: 'T_FIXTURE',
         destination: { kind: 'current_dm_thread' }, name: 'Private follow-up', description: '',
         taskText: selectedTask, schedule: { kind: 'once', localDateTime: date }, timezone: 'UTC', outputPolicy: 'post' },
       dependencies: { now: () => Date.UTC(2026, 8, 5, 15, 43, 56), routines: {},

@@ -1861,12 +1861,12 @@ test('an archived Agent restores its schedules across a managed provider outage'
       'schedule_archive_outage',
     );
     assert.equal(parkedAfterRevocation?.state, 'paused');
-    assert.deepEqual(parkedAfterRevocation?.requiredConnectionAccountIds, []);
-    assert.equal(parkedAfterRevocation?.connectionPauseAccountIds, undefined);
+    assert.deepEqual(parkedAfterRevocation?.requiredConnectionAccountIds, [account.id]);
+    assert.deepEqual(parkedAfterRevocation?.connectionPauseAccountIds, [account.id]);
     await config.restoreAgent('agent_archive_outage');
     assert.equal(
       (await config.getAgentScheduleReference('schedule_archive_outage'))?.state,
-      'active',
+      'needs_attention',
     );
   } finally {
     config.close();

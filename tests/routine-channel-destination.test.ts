@@ -32,7 +32,7 @@ test('Channel creation separates request thread from saved delivery and edits pr
     });
     const dependencies = { management, routines, service, now: () => NOW };
     const operation = {
-      kind: 'save_routine' as const, itemId: 'schedule', agentId: agent.id,
+      kind: 'save_routine' as const, requiredConnectionAccountIds: [], itemId: 'schedule', agentId: agent.id,
       workspaceId: 'T_DESTINATION', channelId: 'C_DESTINATION', name: 'Digest',
       description: 'Daily digest.', taskText: 'Report the digest',
       schedule: { kind: 'cron' as const, expression: '0 9 * * *' }, timezone: 'UTC', outputPolicy: 'post' as const,

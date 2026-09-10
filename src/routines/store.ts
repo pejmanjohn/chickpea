@@ -115,6 +115,7 @@ interface RoutineRow {
   authority_mode: RoutineDefinition['authorityMode'];
   state: RoutineDefinition['state'];
   version: number;
+  authority_binding_version: number | null;
   next_run_at: number | null;
   last_scheduled_at: number | null;
   last_finished_at: number | null;
@@ -1098,7 +1099,7 @@ export class RoutineStoreLogic {
     this.db.run(
       `UPDATE routines SET name = ?, description = ?, task_text = ?, trigger_kind = ?,
          schedule_input = ?, schedule_json = ?, timezone = ?, output_policy = ?,
-         authority_mode = ?, state = ?, version = ?, next_run_at = ?, projected_daily_starts = ?,
+         authority_mode = ?, state = ?, version = ?, authority_binding_version = ?, next_run_at = ?, projected_daily_starts = ?,
          reservation_windows_json = ?, updated_at = ?, updated_by = ?
        WHERE id = ? AND version = ? AND deleted_at IS NULL`,
       definition.name,
@@ -1111,6 +1112,7 @@ export class RoutineStoreLogic {
       definition.outputPolicy,
       definition.authorityMode,
       nextState,
+      nextVersion,
       nextVersion,
       draft.nextRunAt,
       draft.projectedDailyStarts,
@@ -2624,6 +2626,7 @@ export class RoutineStoreLogic {
       addColumnIfMissing(this.db, 'routine_runs', name, definition);
     }
     for (const [name, definition] of [
+      ['authority_binding_version', 'INTEGER'],
       ['source_visibility', "TEXT NOT NULL DEFAULT 'unknown'"],
       ['destination_kind', "TEXT NOT NULL DEFAULT 'channel'"],
       ['direct_thread_ts', 'TEXT'],
@@ -2806,12 +2809,12 @@ export class RoutineStoreLogic {
         direct_thread_ts, direct_owner_membership_id, channel_thread_ts,
         creator_user_id, name, description, task_text,
         trigger_kind, schedule_input, schedule_json, timezone, output_policy,
-        authority_mode, state, version, next_run_at, last_scheduled_at,
+        authority_mode, state, version, authority_binding_version, next_run_at, last_scheduled_at,
         last_finished_at, consecutive_failures, last_change_key_hash,
         projected_daily_starts, reservation_windows_json, created_at, created_by,
         updated_at, updated_by, paused_at, paused_by, paused_reason, disabled_at,
         disabled_by, disabled_reason, deleted_at, deleted_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, NULL,
                 NULL, 0, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL,
                 NULL, NULL, NULL)`,
       input.id,
@@ -4066,6 +4069,7 @@ function rowToRoutine(row: RoutineRow): RoutineDefinition {
     authorityMode: row.authority_mode,
     state: row.state,
     version: row.version,
+    ...(row.authority_binding_version == null ? {} : { authorityBindingVersion: row.authority_binding_version }),
     nextRunAt: row.next_run_at,
     lastScheduledAt: row.last_scheduled_at,
     lastFinishedAt: row.last_finished_at,

@@ -79,7 +79,7 @@ test('management-created schedules accept active grant-only destinations and bin
       idempotencyKey: 'save-support-routine',
       operations: [{
         itemId: 'routine',
-        kind: 'save_routine',
+        kind: 'save_routine', requiredConnectionAccountIds: [],
         agentId: 'agent_support',
         workspaceId: 'T_MANAGEMENT_ROUTINE',
         channelId: 'C_SUPPORT',
@@ -111,7 +111,7 @@ test('management-created schedules accept active grant-only destinations and bin
       idempotencyKey: 'save-support-routine',
       operations: [{
         itemId: 'routine',
-        kind: 'save_routine',
+        kind: 'save_routine', requiredConnectionAccountIds: [],
         agentId: 'agent_support',
         workspaceId: 'T_MANAGEMENT_ROUTINE',
         channelId: 'C_SUPPORT',
@@ -144,7 +144,7 @@ test('management-created schedules accept active grant-only destinations and bin
       idempotencyKey: 'save-invalid-support-routine',
       operations: [{
         itemId: 'invalid-routine',
-        kind: 'save_routine',
+        kind: 'save_routine', requiredConnectionAccountIds: [],
         agentId: 'agent_support',
         workspaceId: 'T_MANAGEMENT_ROUTINE',
         channelId: 'C_SUPPORT',
@@ -231,7 +231,7 @@ test('a routed Agent manages and inspects only its own routines', async () => {
   };
   const routineOperation = (agentId: string, itemId: string) => ({
     itemId,
-    kind: 'save_routine' as const,
+    kind: 'save_routine' as const, requiredConnectionAccountIds: [],
     agentId,
     workspaceId,
     channelId: 'C_SELF_ROUTINE',
@@ -371,7 +371,7 @@ test('private DM routines need no deployment flag and use trusted thread managem
       turnJobId: `turn_DIRECT_${sequence}`,
     });
     const createOperation = {
-      itemId: 'private-schedule', kind: 'save_routine' as const,
+      itemId: 'private-schedule', kind: 'save_routine' as const, requiredConnectionAccountIds: [],
       agentId: support.id, workspaceId: 'T_DIRECT_ROUTINE',
       destination: { kind: 'current_dm_thread' as const },
       name: 'Private support pulse', description: 'Check private support state.',
@@ -648,7 +648,7 @@ test('identical relative DM follow-ups create fresh future schedules repeatedly'
     // and tell me anything new": relative lead time, fresh routine, no
     // model-computed wall-clock localDateTime.
     const followUp = {
-      itemId: 'follow-up', kind: 'save_routine' as const,
+      itemId: 'follow-up', kind: 'save_routine' as const, requiredConnectionAccountIds: [],
       agentId: support.id, workspaceId: 'T_RELATIVE_ROUTINE',
       destination: { kind: 'current_dm_thread' as const },
       name: 'Follow-up check', description: 'Re-check the thread topic.',

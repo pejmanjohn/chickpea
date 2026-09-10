@@ -17,7 +17,6 @@ import { ConnectionAccountAlreadyBoundError } from '../src/config/errors.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
   ConnectionAccountService,
-  ConnectionScheduleConflictError,
 } from '../src/connections/store.ts';
 import {
   applyConnectionCapabilityCeiling,
@@ -1264,7 +1263,7 @@ test('personal MCP accounts cannot substitute a different credential header poli
   }
 });
 
-test('a retry finishes terminal schedule cleanup after revocation already tombstoned the secret', async () => {
+test('revocation and retry keep the exact schedule dependency after tombstoning the secret', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   let nextId = 0;
@@ -1288,20 +1287,9 @@ test('a retry finishes terminal schedule cleanup after revocation already tombst
       runsAsMembershipId: 'membership_creator', authorityReceiptId: 'schedule_authority_creator',
       requiredConnectionAccountIds: [account.id], state: 'active',
     });
-    const putSchedule = config.putAgentScheduleReference.bind(config);
-    config.putAgentScheduleReference = (input, expectedRevision) => {
-      if (input.scheduleId === 'schedule_triage' &&
-          input.requiredConnectionAccountIds.length === 0) {
-        throw new Error('simulated terminal schedule cleanup race');
-      }
-      return putSchedule(input, expectedRevision);
-    };
-    await assert.rejects(
-      service.revoke({
-        principal: principal('membership_creator', 'admin'), connectionAccountId: account.id,
-      }),
-      ConnectionScheduleConflictError,
-    );
+    await service.revoke({
+      principal: principal('membership_creator', 'admin'), connectionAccountId: account.id,
+    });
     assert.equal(
       (await config.listConnectionAccounts('T_CONNECTIONS'))
         .find(({ id }) => id === account.id)?.lifecycle,
@@ -1312,15 +1300,14 @@ test('a retry finishes terminal schedule cleanup after revocation already tombst
     assert.equal(pendingCleanup?.state, 'needs_attention');
     assert.deepEqual(pendingCleanup?.requiredConnectionAccountIds, [account.id]);
     assert.deepEqual(pendingCleanup?.connectionPauseAccountIds, [account.id]);
-    config.putAgentScheduleReference = putSchedule;
     const revoked = await service.revoke({
       principal: principal('membership_creator', 'admin'), connectionAccountId: account.id,
     });
     assert.equal(revoked.lifecycle, 'revoked');
     const schedule = (await config.listAgentScheduleReferences('agent_support'))[0];
     assert.equal(schedule?.state, 'needs_attention');
-    assert.deepEqual(schedule?.requiredConnectionAccountIds, []);
-    assert.equal(schedule?.connectionPauseAccountIds, undefined);
+    assert.deepEqual(schedule?.requiredConnectionAccountIds, [account.id]);
+    assert.deepEqual(schedule?.connectionPauseAccountIds, [account.id]);
   } finally {
     config.close();
     settings.close();

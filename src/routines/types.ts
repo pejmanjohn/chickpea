@@ -84,6 +84,8 @@ export interface RoutineDefinition extends RoutineDefinitionContent {
   creatorUserId: string;
   state: RoutineState;
   version: number;
+  /** Last saved definition revision; controls do not change its authority binding. */
+  authorityBindingVersion?: number;
   nextRunAt: number | null;
   lastScheduledAt: number | null;
   lastFinishedAt: number | null;

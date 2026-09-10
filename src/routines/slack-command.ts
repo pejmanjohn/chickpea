@@ -1,9 +1,12 @@
 import type { ConfigStore } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
+import { resolveEffectiveConnectionAccounts } from '../connections/runtime.ts';
 import {
   bindRoutineAgentAuthority,
   resolveRoutineAgentAuthority,
+  selectScheduleConnectionAccounts,
+  RoutineAuthorityError,
 } from './agent-authority.ts';
 import {
   createRoutineRunId,
@@ -54,6 +57,7 @@ export type SlackScheduleCommand =
       name: string;
       description: string;
       taskText: string;
+      requiredConnectionAccountIds?: string[];
       schedule:
         | { kind: 'preserve' }
         | { kind: 'cron'; expression: string }
@@ -129,6 +133,11 @@ export async function executeSlackScheduleCommand(
   });
 
   try {
+    if (command.kind === 'save' && command.routineId &&
+        (!Number.isSafeInteger(command.expectedVersion) || command.expectedVersion! < 1)) {
+      throw new RoutineStateError('routine_version_required',
+        'A current expectedVersion is required to edit scheduled work. Inspect the schedule before editing.');
+    }
     if (command.kind === 'control') {
       if (command.action === 'resume') await requireSchedulingAvailable(dependencies);
       const routine = await service.control({
@@ -193,6 +202,28 @@ export async function executeSlackScheduleCommand(
           deterministicRoutineId(command.actionKey, command.itemId),
         );
     const created = !command.routineId && !priorCreate;
+    if (command.requiredConnectionAccountIds === undefined && (!existing ||
+        normalizeAuthorityText(command.taskText) !== normalizeAuthorityText(existing.taskText))) {
+      throw new RoutineStateError('routine_connections_required',
+        'Declare requiredConnectionAccountIds for new work or a changed task; use [] when no connection is needed.');
+    }
+    if (command.requiredConnectionAccountIds === undefined && existing?.authorityBindingVersion !== undefined) {
+      const reference = await dependencies.config.getAgentScheduleReference(existing.id);
+      // The same save may be retrying its own pending binding, even after
+      // controls advanced version. A different stale action still fails store CAS.
+      const retryingSavedRevision = command.expectedVersion !== undefined &&
+        existing.authorityBindingVersion === command.expectedVersion + 1;
+      if (reference?.boundRoutineVersion !== existing.authorityBindingVersion && !retryingSavedRevision) {
+        throw new RoutineStateError('routine_connections_required',
+          'The saved schedule connections are not bound. Retry the original edit, or save the schedule again and explicitly choose its required connections, including none if appropriate.');
+      }
+    }
+    if (command.requiredConnectionAccountIds !== undefined) {
+      selectScheduleConnectionAccounts(command.requiredConnectionAccountIds, undefined,
+        await resolveEffectiveConnectionAccounts({ config: dependencies.config,
+          workspaceId: command.workspaceId, agentId: command.agentId,
+          actorMembershipId: command.actorMembershipId }));
+    }
     const direct = Boolean(command.directDestination) || existing?.destination.kind === 'direct_thread';
     const definition = {
       name: command.name,
@@ -245,6 +276,10 @@ export async function executeSlackScheduleCommand(
       } } : {}),
     }, effectKey(command, 'save'));
 
+    const intendedVersion = command.routineId ? command.expectedVersion! + 1 : 1;
+    if (routine.version > intendedVersion && routine.authorityBindingVersion !== intendedVersion) {
+      return { effect: 'saved', routine, created: false };
+    }
     try {
       const agent = await dependencies.config.getAgent(command.agentId);
       const assignment: ResolvedAssignment = {
@@ -262,6 +297,9 @@ export async function executeSlackScheduleCommand(
         routine,
         assignment,
         actorMembershipId: command.actorMembershipId,
+        ...(command.requiredConnectionAccountIds !== undefined
+          ? { requiredConnectionAccountIds: command.requiredConnectionAccountIds }
+          : {}),
         env: undefined,
       });
       if (!existing && routine.destination.kind === 'direct_thread') {
@@ -307,6 +345,7 @@ export async function executeSlackScheduleCommand(
     return { effect: 'saved', routine, created };
   } catch (error) {
     if (error instanceof SlackScheduleCommandError || error instanceof RoutineStateError) throw error;
+    if (error instanceof RoutineAuthorityError) throw new RoutineStateError('routine_connections_invalid', error.message);
     console.warn('[chickpea:routines] schedule command failed', JSON.stringify({
       errorName: error instanceof Error ? error.name : 'unknown',
     }));

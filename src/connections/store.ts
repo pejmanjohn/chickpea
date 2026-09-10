@@ -457,12 +457,9 @@ export class ConnectionAccountService {
   private async revokeOwnedAccount(account: ConnectionAccount): Promise<ConnectionAccount> {
     if (account.lifecycle === 'revoked') {
       try {
-        await retireConnectionFromDependentSchedules(
+        await markRevokedConnectionDependencies(
           this.dependencies.config,
           account.id,
-          undefined,
-          undefined,
-          true,
         );
       } catch {
         throw new ConnectionScheduleConflictError(
@@ -503,12 +500,10 @@ export class ConnectionAccountService {
       needsAttention.revision,
     );
     try {
-      await retireConnectionFromDependentSchedules(
+      await markRevokedConnectionDependencies(
         this.dependencies.config,
         account.id,
-        undefined,
         scheduleIndex,
-        true,
       );
     } catch {
       throw new ConnectionScheduleConflictError(
@@ -1408,13 +1403,10 @@ async function resumeDependentSchedules(
   return changed;
 }
 
-async function retireConnectionFromDependentSchedules(
+async function markRevokedConnectionDependencies(
   config: ConfigStore,
   connectionAccountId: string,
-  agentId?: string,
   scheduleIndex?: ConnectionScheduleIndex,
-  keepPaused = false,
-  eligibleScheduleIds?: ReadonlySet<string>,
 ): Promise<number> {
   const index = scheduleIndex ?? await buildConnectionScheduleIndex(config);
   const scheduleIds = new Set([
@@ -1424,28 +1416,17 @@ async function retireConnectionFromDependentSchedules(
   let changed = 0;
   for (const scheduleId of scheduleIds) {
     const schedule = index.schedules.get(scheduleId);
-    if (!schedule || (agentId && schedule.agentId !== agentId) ||
-        (eligibleScheduleIds && !eligibleScheduleIds.has(scheduleId))) continue;
+    if (!schedule) continue;
     const pausedBy = schedule.connectionPauseAccountIds ?? [];
-    const requiredConnectionAccountIds = schedule.requiredConnectionAccountIds
-      .filter((id) => id !== connectionAccountId);
-    let nextPauseIds = pausedBy.filter((id) => id !== connectionAccountId);
-    let state = schedule.state;
-    if (keepPaused && schedule.state !== 'archived' &&
-        (pausedBy.includes(connectionAccountId) ||
-          schedule.requiredConnectionAccountIds.includes(connectionAccountId))) {
-      state = schedule.state === 'paused' && index.archivedAgentIds.has(schedule.agentId)
-        ? schedule.state
-        : 'needs_attention';
-    } else if (pausedBy.includes(connectionAccountId) && schedule.state !== 'archived') {
-      const available = effectiveConnectionIds(index, schedule);
-      nextPauseIds = requiredConnectionAccountIds.filter((id) => !available.has(id));
-      state = nextPauseIds.length > 0
-        ? 'needs_attention'
-        : index.archivedAgentIds.has(schedule.agentId)
-          ? schedule.state
-          : schedule.connectionPausePreservesState ? schedule.state : 'active';
-    }
+    // Revocation changes availability, never the saved task's dependency set.
+    // Keeping the exact ID prevents a reconnect or metadata edit from silently
+    // replacing a personal account (or resuming work with missing inputs).
+    const requiredConnectionAccountIds = schedule.requiredConnectionAccountIds;
+    const nextPauseIds = [...new Set([...pausedBy, ...requiredConnectionAccountIds
+      .filter((id) => id === connectionAccountId)])];
+    const state = schedule.state === 'archived' ||
+      (schedule.state === 'paused' && index.archivedAgentIds.has(schedule.agentId))
+      ? schedule.state : nextPauseIds.length > 0 ? 'needs_attention' : schedule.state;
     if (sameStringSet(requiredConnectionAccountIds, schedule.requiredConnectionAccountIds) &&
         sameStringSet(nextPauseIds, pausedBy) && state === schedule.state) continue;
     const {
