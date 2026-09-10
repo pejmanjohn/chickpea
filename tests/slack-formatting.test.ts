@@ -227,6 +227,15 @@ test('reply footers render Agent, model, and optional configure link', () => {
   );
 });
 
+test('scheduled reply footers add only the Scheduled segment', () => {
+  const footer = { agentName: 'Analyst', agentId: 'analyst', modelLabel: 'openai/test', includeConfigureLink: false };
+  assert.equal(renderSlackReplyFooterBlock(footer).elements[0]?.text, 'Analyst | openai/test');
+  assert.equal(renderSlackReplyFooterBlock({ ...footer, scheduled: true }).elements[0]?.text,
+    'Analyst | openai/test | Scheduled');
+  assert.equal(renderSlackReplyFooterBlock({ ...footer, scheduled: true, memoryItems: ['Agent memory supplied'] }).elements[0]?.text,
+    'Analyst | openai/test | Scheduled | Agent memory supplied');
+});
+
 test('reply footers disclose cross-channel memory as supplied advisory context', () => {
   const block = renderSlackReplyFooterBlock({
     agentName: 'Chickpea', agentId: 'agent',
