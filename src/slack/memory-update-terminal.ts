@@ -1,10 +1,12 @@
 import { opaqueId } from '../work/admission.ts';
 import * as v from 'valibot';
+import { memoryUpdateSummarySchema } from '../memory/acknowledgement.ts';
 
 export const SLACK_MEMORY_UPDATE_DATA_NAME = 'slackMemoryUpdate';
 export const SlackMemoryUpdateSchema = v.strictObject({
   operationId: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
   revision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  summary: v.optional(memoryUpdateSummarySchema),
 });
 export type SlackMemoryUpdate = v.InferOutput<typeof SlackMemoryUpdateSchema>;
 

@@ -30,6 +30,30 @@ import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-
 
 const NOW = 1_940_000_000_000;
 
+test('memory confirmation survives durable settlement storage with legacy receipts still readable', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    for (const [index, summary] of [undefined, 'I updated my memory to use readable dates.'].entries()) {
+      const id = `memory-replay-${index}`;
+      turns.enqueue({ id, evtKey: id, msgKey: id, turn: turn(), assignment: assignment() });
+      turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+        turn: turn(), assignment: assignment(), instructions: 'Test memory.', memoryEpoch: 1, sandboxMode: 'bash',
+      }));
+      turns.prepareFlueDispatch(id, 'Test memory.', { generation: id });
+      turns.recordFlueReceipt(id, { submissionId: id, acceptedAt: '2026-08-01T12:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' });
+      const memoryUpdate = { operationId: id, revision: 1, ...(summary ? { summary } : {}) };
+      turns.recordFlueSettlement(id, { outcome: 'completed', settledAt: NOW, result: {
+        text: 'Hidden old draft', memoryUpdate, requestedModel: null, returnedModel: null,
+        reportedUsage: null, usageCompleteness: 'not_reported',
+      } });
+      const restored = turns.getFlueSettlement(id);
+      assert.equal(restored?.outcome, 'completed');
+      assert.deepEqual(restored?.outcome === 'completed' ? restored.result.memoryUpdate : undefined, memoryUpdate);
+    }
+  } finally { db.close(); }
+});
+
 test('pull request recovery uses descriptive link text', () => {
   assert.equal(replayTextForTurnProgress({
     pullRequest: {
