@@ -3,6 +3,7 @@ import test from 'node:test';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+// @ts-expect-error The executable intentionally stays plain Node ESM.
 import { startRestProbe } from '../scripts/live-test-rest-probe.mjs';
 
 test('REST witness correlates authenticated nonce reads and records refused writes without secrets', async () => {
