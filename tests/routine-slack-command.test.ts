@@ -58,7 +58,7 @@ test('the shared schedule command replays save and immediate run effects once', 
       createRunId: () => 'run_schedule_command',
     };
     const save = {
-      kind: 'save' as const,
+      kind: 'save' as const, requiredConnectionAccountIds: [],
       actionKey: 'rsaction_shared_save',
       itemId: 'save',
       actorUserId: owner.user.id,
@@ -73,12 +73,27 @@ test('the shared schedule command replays save and immediate run effects once', 
       timezone: 'UTC',
       outputPolicy: 'post' as const,
     };
+    await assert.rejects(executeSlackScheduleCommand({ ...save, requiredConnectionAccountIds: undefined }, dependencies),
+      /Declare requiredConnectionAccountIds/);
+    assert.deepEqual(await routines.listRoutines('T_SCHEDULE_COMMAND', 'C_SCHEDULE_COMMAND'), []);
     const first = await executeSlackScheduleCommand(save, dependencies);
     const replay = await executeSlackScheduleCommand(save, dependencies);
     assert.equal(first.effect, 'saved');
     assert.equal(replay.effect, 'saved');
     assert.equal(first.routine.id, replay.routine.id);
     assert.equal((await routines.listRoutines('T_SCHEDULE_COMMAND', 'C_SCHEDULE_COMMAND')).length, 1);
+    const renamed = await executeSlackScheduleCommand({ ...save, actionKey: 'rename',
+      routineId: first.routine.id, expectedVersion: first.routine.version, name: 'Renamed check',
+      requiredConnectionAccountIds: undefined,
+    }, dependencies);
+    assert.deepEqual((await config.getAgentScheduleReference(first.routine.id))?.requiredConnectionAccountIds, []);
+    await assert.rejects(executeSlackScheduleCommand({ ...save, actionKey: 'task-change',
+      routineId: first.routine.id, expectedVersion: renamed.routine.version, taskText: 'A materially different task.',
+      requiredConnectionAccountIds: undefined,
+    }, dependencies), /Declare requiredConnectionAccountIds/);
+    const oldReplay = await executeSlackScheduleCommand(save, dependencies);
+    assert.equal(oldReplay.routine.version, renamed.routine.version);
+    assert.equal((await config.getAgentScheduleReference(first.routine.id))?.boundRoutineVersion, renamed.routine.version);
 
     const run = {
       kind: 'run' as const,
@@ -140,7 +155,7 @@ test('authority failure leaves a durable safe routine state', async () => {
     });
     await assert.rejects(
       executeSlackScheduleCommand({
-        kind: 'save',
+        kind: 'save', requiredConnectionAccountIds: [],
         actionKey: 'rsaction_authority_failure',
         itemId: 'save',
         actorUserId: owner.user.id,
@@ -198,7 +213,7 @@ test('a direct schedule retry activates the saved pending routine without report
       skills: [], mcpServers: [], apiConnections: [], repositories: [],
     });
     const command = {
-      kind: 'save' as const,
+      kind: 'save' as const, requiredConnectionAccountIds: [],
       actionKey: 'rsaction_direct_retry',
       itemId: 'save',
       actorUserId: owner.user.id,

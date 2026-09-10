@@ -254,6 +254,7 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('save_routine'),
+    requiredConnectionAccountIds: z.array(zId).max(100).optional(),
     agentId: zAgentId,
     workspaceId: zId,
     channelId: zId.optional(),
@@ -294,6 +295,7 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     ...zOperationBase,
     kind: z.literal('reassign_routine_agent'),
+    requiredConnectionAccountIds: z.array(zId).max(100).optional(),
     workspaceId: zId,
     routineId: zId,
     expectedVersion: z.number().int().positive(),
@@ -595,6 +597,7 @@ export const managementOperationValibotSchema = v.variant('kind', [
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('save_routine'),
+    requiredConnectionAccountIds: v.optional(v.pipe(v.array(vid), v.maxLength(100))),
     agentId: vAgentId,
     workspaceId: vid,
     channelId: v.optional(vid),
@@ -635,6 +638,7 @@ export const managementOperationValibotSchema = v.variant('kind', [
   v.strictObject({
     ...vOperationBase,
     kind: v.literal('reassign_routine_agent'),
+    requiredConnectionAccountIds: v.optional(v.pipe(v.array(vid), v.maxLength(100))),
     workspaceId: vid,
     routineId: vid,
     expectedVersion: v.pipe(v.number(), v.integer(), v.minValue(1)),

@@ -21,9 +21,77 @@ import {
 import { createManagedConnectionProviderRegistry } from '../src/connections/managed.ts';
 import type { RoutineDefinition } from '../src/routines/types.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
+import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 
 const WORKSPACE = 'T_AUTHORITY';
 const CHANNEL = 'C_SUPPORT';
+
+test('exact schedule dependencies govern disconnects, mounting, metadata edits, and legacy references', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const identity = new SqliteIdentityStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const owner = await createSlackOwner(identity, { teamId: WORKSPACE, userId: 'U_OWNER', suffix: 'exact_schedule' });
+    const agent = await config.createAgent({ id: 'agent_exact', name: 'Exact', instructions: 'Run the saved task.',
+      model: 'local-stub/exact', enabled: true, lifecycle: 'active', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+    await config.ensureWorkspaceInstallation({ workspaceId: WORKSPACE, transportMode: 'direct', defaultAgentId: agent.id });
+    await config.putAgentChannelGrant({ workspaceId: WORKSPACE, channelId: CHANNEL, agentId: agent.id,
+      status: 'active', createdByMembershipId: owner.membership.id });
+    const source = await putConnection(config, 'connection_source', 'team', owner.membership.id);
+    const unrelated = await putConnection(config, 'connection_unused', 'team', owner.membership.id);
+    for (const account of [source, unrelated]) await config.putAgentConnectionBinding({
+      agentId: agent.id, connectionAccountId: account.id, providerId: account.providerId, allowedCapabilities: [], enabled: true,
+    });
+    const routine = routineDefinition();
+    const assignment: ResolvedAssignment = { workspaceId: WORKSPACE, channelId: CHANNEL, agentId: agent.id, agent };
+    const bind = (definition: RoutineDefinition, ids?: string[]) => bindRoutineAgentAuthority({ routine: definition,
+      assignment, actorMembershipId: owner.membership.id, env: undefined,
+      ...(ids !== undefined ? { requiredConnectionAccountIds: ids } : {}),
+    }, { config, identity });
+    await assert.rejects(bind(routine), /Declare the accounts/);
+    await assert.rejects(bind(routine, ['connection_invented']), /unavailable/);
+    const first = await bind(routine, [source.id]);
+    const empty = await bind({ ...routine, id: 'routine_without_connections' }, []);
+    assert.deepEqual(empty.requiredConnectionAccountIds, []);
+    const authority = await resolveRoutineAgentAuthority(routine, undefined, { config, identity });
+    const plan = compileRuntimePlanV2({ assignment: authority.assignment,
+      turn: { workspaceId: WORKSPACE, channelId: CHANNEL, eventId: 'run', userId: 'U_OWNER',
+        actorMembershipId: owner.membership.id, messageTs: '1000', threadTs: '1000', text: 'Run the saved task',
+        source: 'app_mention', contextMode: 'channel_history' },
+      instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash', effectiveConnections: authority.effectiveConnections });
+    assert.deepEqual(plan.connectionAccountIds, [source.id]);
+    assert.equal(plan.apiConnections.length, 1);
+    const service = new ConnectionAccountService({ config, settings });
+    const principal = { userId: owner.user.id, membershipId: owner.membership.id,
+      organizationId: owner.membership.organizationId, role: 'owner' as const, authenticatorKind: 'better_auth',
+      credentialId: 'test', correlationId: 'test', machine: false };
+    await service.disconnectForAgent({ principal, agentId: agent.id, connectionAccountId: unrelated.id });
+    assert.equal((await config.getAgentScheduleReference(routine.id))?.state, 'active');
+    assert.equal((await config.getAgentScheduleReference(empty.scheduleId))?.state, 'active');
+    const added = await putConnection(config, 'connection_later', 'team', owner.membership.id);
+    await config.putAgentConnectionBinding({ agentId: agent.id, connectionAccountId: added.id,
+      providerId: added.providerId, allowedCapabilities: [], enabled: true });
+    const metadata = await bind({ ...routine, version: 2, name: 'Renamed' });
+    assert.deepEqual(metadata.requiredConnectionAccountIds, [source.id]);
+    await service.disconnectForAgent({ principal, agentId: agent.id, connectionAccountId: source.id });
+    assert.equal((await config.getAgentScheduleReference(routine.id))?.state, 'needs_attention');
+    assert.equal((await config.getAgentScheduleReference(empty.scheduleId))?.state, 'active');
+    const outageEdit = await bind({ ...routine, version: 3, name: 'Still paused' });
+    assert.deepEqual(outageEdit.requiredConnectionAccountIds, [source.id]);
+    assert.equal(outageEdit.state, 'needs_attention');
+    await assert.rejects(resolveRoutineAgentAuthority(routine, undefined, { config, identity }));
+    const replaced = await bind({ ...routine, version: 4, taskText: 'Use the replacement source.' }, [added.id]);
+    assert.deepEqual(replaced.requiredConnectionAccountIds, [added.id]);
+    assert.equal(replaced.state, 'active');
+    assert.deepEqual((await bind(routine, [source.id])).requiredConnectionAccountIds, [added.id], 'stale save replay cannot restore an old set');
+    const { boundRoutineVersion: _boundVersion, ...legacy } = first;
+    const legacyRoutine = { ...routine, id: 'routine_legacy_broad' };
+    await config.putAgentScheduleReference({ ...legacy, scheduleId: legacyRoutine.id, requiredConnectionAccountIds: [added.id], state: 'active' }, 0);
+    assert.deepEqual((await bind({ ...legacyRoutine, version: 2, name: 'Legacy rename' })).requiredConnectionAccountIds, [added.id]);
+    assert.deepEqual((await bind({ ...legacyRoutine, version: 3 }, [])).requiredConnectionAccountIds, []);
+  } finally { config.close(); identity.close(); settings.close(); }
+});
 
 test('direct schedules bind and resolve a full member without any Channel grant', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
@@ -77,6 +145,7 @@ test('direct schedules bind and resolve a full member without any Channel grant'
     };
 
     const reference = await bindRoutineAgentAuthority({
+      requiredConnectionAccountIds: [],
       routine,
       assignment,
       actorMembershipId: member.resolution.membership.id,
@@ -229,6 +298,7 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
       agent,
     };
     const first = await bindRoutineAgentAuthority({
+      requiredConnectionAccountIds: [team.id, ownerPersonal.id],
       routine, assignment, actorMembershipId: owner.membership.id, env: undefined,
     }, { config, identity });
     assert.equal(first.createdByMembershipId, owner.membership.id);
@@ -245,7 +315,7 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
       connectionPauseAccountIds: [ownerPersonal.id],
     }, first.revision);
     const editedDuringOutage = await bindRoutineAgentAuthority({
-      routine: { ...routine, taskText: 'Review support carefully.' },
+      routine: { ...routine, version: 2, taskText: 'Review support carefully.' },
       assignment,
       actorMembershipId: owner.membership.id,
       env: undefined,
@@ -263,7 +333,8 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
       connectionAccountId: ownerPersonal.id,
     });
     const editedAfterDisconnect = await bindRoutineAgentAuthority({
-      routine: { ...routine, taskText: 'Continue without the disconnected personal connection.' },
+      routine: { ...routine, version: 3, taskText: 'Continue without the disconnected personal connection.' },
+      requiredConnectionAccountIds: [team.id],
       assignment,
       actorMembershipId: owner.membership.id,
       env: undefined,
@@ -287,6 +358,7 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
       scheduleId: routine.id,
       runsAsMembershipId: owner.membership.id,
       receiptId: 'schedule_authority_owner_recovered',
+      requiredConnectionAccountIds: [team.id, replacementPersonal.id],
       config,
       identity,
     });
@@ -308,10 +380,15 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
         error.reason === 'creator_ineligible',
     );
 
+    await assert.rejects(reassignRoutineAgentAuthority({
+      scheduleId: routine.id, runsAsMembershipId: bob.resolution.membership.id, config, identity,
+    }), /accounts are never substituted/);
+    assert.equal((await config.getAgentScheduleReference(routine.id))?.runsAsMembershipId, owner.membership.id);
     const reassigned = await reassignRoutineAgentAuthority({
       scheduleId: routine.id,
       runsAsMembershipId: bob.resolution.membership.id,
       receiptId: 'schedule_authority_bob',
+      requiredConnectionAccountIds: [team.id, bobPersonal.id],
       config,
       identity,
     });
@@ -377,8 +454,8 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
     });
     const afterRevoke = await config.getAgentScheduleReference(routine.id);
     assert.equal(afterRevoke?.state, 'needs_attention');
-    assert.deepEqual(afterRevoke?.requiredConnectionAccountIds, [team.id]);
-    assert.equal(afterRevoke?.connectionPauseAccountIds, undefined);
+    assert.deepEqual(afterRevoke?.requiredConnectionAccountIds.sort(), [team.id, bobPersonal.id].sort());
+    assert.deepEqual(afterRevoke?.connectionPauseAccountIds, [bobPersonal.id]);
     const replacementBob = await putConnection(
       config, 'connection_bob_reconnected', 'member', bob.resolution.membership.id,
       bob.resolution.membership.id, true,
@@ -388,7 +465,8 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
       providerId: replacementBob.providerId, allowedCapabilities: [], enabled: true,
     });
     const editedAfterRevoke = await bindRoutineAgentAuthority({
-      routine: { ...routine, taskText: 'Continue without the disconnected mailbox.' },
+      routine: { ...routine, version: 4, taskText: 'Use the explicitly selected replacement mailbox.' },
+      requiredConnectionAccountIds: [team.id, replacementBob.id],
       assignment,
       actorMembershipId: bob.resolution.membership.id,
       env: undefined,
@@ -485,6 +563,7 @@ test('routine authority uses only the Runs as member account exactly bound to th
       workspaceId: WORKSPACE, channelId: CHANNEL, agentId: agent.id, agent,
     };
     const bound = await bindRoutineAgentAuthority({
+      requiredConnectionAccountIds: [bobGmail.id],
       routine,
       assignment,
       actorMembershipId: bob.resolution.membership.id,
@@ -501,7 +580,7 @@ test('routine authority uses only the Runs as member account exactly bound to th
     assert.deepEqual(paused?.connectionPauseAccountIds, [bobGmail.id]);
 
     const edited = await bindRoutineAgentAuthority({
-      routine: { ...routine, taskText: 'Keep using the substituted mailbox.' },
+      routine: { ...routine, version: 2, taskText: 'Keep using the substituted mailbox.' },
       assignment,
       actorMembershipId: bob.resolution.membership.id,
       env: undefined,
@@ -532,7 +611,7 @@ test('routine authority uses only the Runs as member account exactly bound to th
     assert.deepEqual(attentionWithOutage?.connectionPauseAccountIds, [bobGmail.id]);
     assert.equal(attentionWithOutage?.connectionPausePreservesState, true);
     const editedAfterOverlappingOutage = await bindRoutineAgentAuthority({
-      routine: { ...routine, taskText: 'Preserve overlapping authority and connector failures.' },
+      routine: { ...routine, version: 3, taskText: 'Preserve overlapping authority and connector failures.' },
       assignment,
       actorMembershipId: bob.resolution.membership.id,
       env: undefined,

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { invokeSlackScheduleAction } from '../src/management/slack-schedule-actions.ts';
 
-const base = { kind: 'save_routine', itemId: 'schedule', agentId: 'agent_test', workspaceId: 'T_TEST', destination: { kind: 'current_dm_thread' }, name: 'TOEFL update', description: 'Bookings update', taskText: 'Report current TOEFL bookings using SQL Dash.', schedule: { kind: 'in', minutes: 5 }, timezone: 'UTC', outputPolicy: 'post' };
+const base = { kind: 'save_routine', requiredConnectionAccountIds: [], itemId: 'schedule', agentId: 'agent_test', workspaceId: 'T_TEST', destination: { kind: 'current_dm_thread' }, name: 'TOEFL update', description: 'Bookings update', taskText: 'Report current TOEFL bookings using SQL Dash.', schedule: { kind: 'in', minutes: 5 }, timezone: 'UTC', outputPolicy: 'post' };
 const previous = { id: 'routine_test', workspaceId: 'T_TEST', channelId: 'D_TEST', destination: { kind: 'direct_thread' }, deletedAt: null, name: 'Original', description: 'Original description', taskText: 'Report TOEFL bookings using SQL Dash.', timezone: 'America/Los_Angeles', outputPolicy: 'post_on_change', triggerKind: 'schedule', scheduleInput: '0 9 * * 1-5', version: 2 };
 async function admitted(requesterText: string, patch: Record<string, unknown> = {}, timezone?: string, stored: unknown = previous) {
   let captured: any;

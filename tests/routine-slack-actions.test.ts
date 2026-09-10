@@ -78,7 +78,7 @@ test('first-class DM actions create once, queue reactions, and run now without a
     const context = await resolveSlackManagementActor(signal, identity);
     const operation = {
       itemId: 'schedule',
-      kind: 'save_routine' as const,
+      kind: 'save_routine' as const, requiredConnectionAccountIds: [],
       agentId: agent.id,
       workspaceId: signal.workspaceId,
       destination: { kind: 'current_dm_thread' as const },
@@ -299,7 +299,7 @@ test('a transient first-class action failure recovers from the durable alarm led
     const context = await resolveSlackManagementActor(signal, identity);
     const operation = {
       itemId: 'schedule',
-      kind: 'save_routine' as const,
+      kind: 'save_routine' as const, requiredConnectionAccountIds: [],
       agentId: agent.id,
       workspaceId: signal.workspaceId,
       destination: { kind: 'current_dm_thread' as const },

@@ -236,6 +236,7 @@ interface AgentScheduleReferenceRow {
   runs_as_membership_id: string;
   authority_receipt_id: string;
   required_connection_account_ids_json: string;
+  bound_routine_version?: number | null;
   connection_pause_account_ids_json: string;
   connection_pause_preserves_state: number;
   state: string;
@@ -1576,8 +1577,8 @@ export class ConfigStoreLogic {
           destination_binding_digest, created_by_membership_id,
           runs_as_membership_id, authority_receipt_id,
           required_connection_account_ids_json, connection_pause_account_ids_json,
-          connection_pause_preserves_state, state, revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+          connection_pause_preserves_state, bound_routine_version, state, revision, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         input.scheduleId,
         input.agentId,
         input.workspaceId,
@@ -1590,6 +1591,7 @@ export class ConfigStoreLogic {
         JSON.stringify(input.requiredConnectionAccountIds),
         JSON.stringify(input.connectionPauseAccountIds ?? []),
         input.connectionPausePreservesState ? 1 : 0,
+        input.boundRoutineVersion ?? null,
         input.state,
         now,
         now,
@@ -1629,7 +1631,7 @@ export class ConfigStoreLogic {
              destination_binding_digest = ?, created_by_membership_id = ?,
              runs_as_membership_id = ?, authority_receipt_id = ?,
              required_connection_account_ids_json = ?, connection_pause_account_ids_json = ?,
-             connection_pause_preserves_state = ?, state = ?,
+             connection_pause_preserves_state = ?, bound_routine_version = ?, state = ?,
              revision = revision + 1, updated_at = ?
          WHERE schedule_id = ? AND revision = ?`,
         input.agentId,
@@ -1643,6 +1645,7 @@ export class ConfigStoreLogic {
         JSON.stringify(input.requiredConnectionAccountIds),
         JSON.stringify(input.connectionPauseAccountIds ?? []),
         input.connectionPausePreservesState ? 1 : 0,
+        input.boundRoutineVersion ?? null,
         input.state,
         now,
         input.scheduleId,
@@ -2631,6 +2634,9 @@ export class ConfigStoreLogic {
       this.db.all('PRAGMA table_info(config_agent_schedule_references)')
         .map((column) => String(column.name)),
     );
+    if (!scheduleColumns.has('bound_routine_version')) {
+      this.db.exec('ALTER TABLE config_agent_schedule_references ADD COLUMN bound_routine_version INTEGER');
+    }
     if (!scheduleColumns.has('connection_pause_account_ids_json')) {
       this.db.exec(
         "ALTER TABLE config_agent_schedule_references ADD COLUMN connection_pause_account_ids_json TEXT NOT NULL DEFAULT '[]'",
@@ -3320,6 +3326,7 @@ function rowToAgentScheduleReference(row: AgentScheduleReferenceRow): AgentSched
     runsAsMembershipId: row.runs_as_membership_id,
     authorityReceiptId: row.authority_receipt_id,
     requiredConnectionAccountIds,
+    ...(row.bound_routine_version != null ? { boundRoutineVersion: Number(row.bound_routine_version) } : {}),
     ...(connectionPauseAccountIds.length > 0 ? { connectionPauseAccountIds } : {}),
     ...(connectionPauseAccountIds.length > 0 && Number(row.connection_pause_preserves_state) === 1
       ? { connectionPausePreservesState: true }

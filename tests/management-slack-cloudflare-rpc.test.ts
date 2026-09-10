@@ -216,7 +216,7 @@ test('first-class schedule RPC retries the same host-bound action without an unk
   const calls: unknown[] = [];
   const operation = {
     itemId: 'schedule',
-    kind: 'save_routine' as const,
+    kind: 'save_routine' as const, requiredConnectionAccountIds: [],
     agentId: SIGNAL.agentId,
     workspaceId: SIGNAL.workspaceId,
     channelId: SIGNAL.channelId,

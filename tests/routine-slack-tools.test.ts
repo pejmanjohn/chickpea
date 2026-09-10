@@ -152,3 +152,17 @@ test('create accepts omitted nonessential description and partial edit leaves fi
   assert.equal(edited.taskText, undefined);
   assert.equal(edited.outputPolicy, undefined);
 });
+
+test('schedule tools carry explicit account choices and preserve omission on metadata edits', () => {
+  const created = scheduleToolOperation(signal, { action: 'create', name: 'Report', taskText: 'Read Work inbox.',
+    scheduleKind: 'in', minutes: 5, requiredConnectionAccountIds: ['connection_work'] });
+  assert.ok(created.kind === 'save_routine');
+  assert.deepEqual(created.requiredConnectionAccountIds, ['connection_work']);
+  const empty = scheduleToolOperation(signal, { action: 'create', name: 'Reminder', taskText: 'Remind me to stretch.',
+    scheduleKind: 'in', minutes: 5, requiredConnectionAccountIds: [] });
+  assert.ok(empty.kind === 'save_routine');
+  assert.deepEqual(empty.requiredConnectionAccountIds, []);
+  const renamed = scheduleToolOperation(signal, { action: 'edit', routineId: 'routine_test', expectedVersion: 1, name: 'Renamed' });
+  assert.ok(renamed.kind === 'save_routine');
+  assert.equal(renamed.requiredConnectionAccountIds, undefined);
+});

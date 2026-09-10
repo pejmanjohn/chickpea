@@ -152,6 +152,8 @@ export type ManagementOperation =
     })
   | (ManagementOperationBase & {
       kind: 'save_routine';
+      /** Required on create or task change; omitted metadata edits retain the saved set. */
+      requiredConnectionAccountIds?: string[];
       agentId: string;
       workspaceId: string;
       /** Required for Channel work. Direct work resolves only from trusted Slack origin. */
@@ -193,6 +195,7 @@ export type ManagementOperation =
     })
   | (ManagementOperationBase & {
       kind: 'reassign_routine_agent';
+      requiredConnectionAccountIds?: string[];
       workspaceId: string;
       routineId: string;
       expectedVersion: number;
@@ -744,6 +747,7 @@ export interface ManagementRoutineSnapshot {
     nextRunTime?: { isoUtc: string; local: string; timezone: string } | null;
     contentAccess: 'public' | 'private' | 'authorization_unknown';
     owningAgentId: string;
+    requiredConnectionAccountIds: string[];
   }>;
 }
 

@@ -601,6 +601,8 @@ export interface AgentScheduleReference {
   /** Changes only through an explicit authority assignment receipt. */
   authorityReceiptId: string;
   requiredConnectionAccountIds: string[];
+  /** Routine revision whose account requirements were last bound by a save. */
+  boundRoutineVersion?: number;
   /** Connections whose provider outage changed this schedule from active to needs-attention. */
   connectionPauseAccountIds?: string[];
   /** The schedule was already non-active before the first recorded connection outage. */
