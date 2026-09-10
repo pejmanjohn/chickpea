@@ -1191,6 +1191,11 @@ function stringField(value: unknown, key: string): string | undefined {
     : undefined;
 }
 
+export function parseSlackDeliveryRef(ref: string | undefined): { channelId: string; messageTs: string } | undefined {
+  const match = /^slack:([^:]+):([0-9]+(?:\.[0-9]+)?)$/.exec(ref ?? '');
+  return match ? { channelId: match[1]!, messageTs: match[2]! } : undefined;
+}
+
 function slackDeliveryRef(channelId: string, messageTs: unknown): string {
   const safeTs = typeof messageTs === 'string' && /^[0-9]+(?:\.[0-9]+)?$/.test(messageTs)
     ? messageTs

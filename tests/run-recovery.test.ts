@@ -596,7 +596,9 @@ test('delivery recovery settles an acknowledged V3 terminal before completing it
     })!;
     const calls: string[] = [];
     let cleanupAttempts = 0;
+    const publicReplies: unknown[] = [];
     const handler = createLedgerSlackRunHandler({
+      onPublicMessageDelivered: (_turn, _assignment, delivery) => { publicReplies.push(delivery); },
       work: work as unknown as WorkStore,
       turns,
       client: {
@@ -621,6 +623,7 @@ test('delivery recovery settles an acknowledged V3 terminal before completing it
       kind: 'requeue', reasonCode: 'slack_presentation_terminal_repair_pending',
     });
     assert.equal(work.getRun(admission.run.id)?.status, 'response_ready');
+    assert.deepEqual(publicReplies, []);
     const pending = presentations.get(admission.run.id);
     assert.equal(pending?.schemaVersion, 3);
     if (pending?.schemaVersion === 3) {
@@ -636,6 +639,7 @@ test('delivery recovery settles an acknowledged V3 terminal before completing it
     })!;
     assert.deepEqual(await handler(third), { kind: 'completed' });
     assert.deepEqual(calls, ['stream', 'session', 'activity', 'activity']);
+    assert.deepEqual(publicReplies, [{ messageTs: '100.002', text: 'Persisted answer' }]);
     const settled = presentations.get(admission.run.id);
     assert.equal(settled?.schemaVersion, 3);
     if (settled?.schemaVersion !== 3) return;
@@ -1042,4 +1046,233 @@ function submission(suffix: string): SubmitRunInput {
       eventId: opaqueId('audit', scope), idempotencyKey: opaqueId('auditkey', scope),
     },
   };
+}
+
+for (const recovery of [
+  { outcome: 'failed', contextThrows: false },
+  { outcome: 'succeeded', contextThrows: false },
+  { outcome: 'succeeded', contextThrows: true },
+] as const) {
+test(`recovered ${recovery.outcome} delivery preserves disposition and records context (throws=${recovery.contextThrows})`, async () => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('delivery-retry')));
+    const first = work.claimNextInteractiveRun({
+      ownerId: 'first_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    });
+    assert.equal(first?.phase, 'execute');
+    const payload = {
+      channel: 'C_canary',
+      thread_ts: '100.001',
+      text: 'Persisted answer',
+      blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'Persisted answer' } }],
+    };
+    const lifecycle = lifecycleFor(work, admission.run.id, first!.fencingToken, () => ++clock);
+    await lifecycle.prepareExecution('Prepared input');
+    await lifecycle.markInvoked();
+    await lifecycle.settleExecution({ outcome: recovery.outcome, rawStatus: `flue_${recovery.outcome}`,
+      ...(recovery.outcome === 'failed' ? { safeFailureCode: 'provider_failed' } : {}), });
+    const attemptId = await lifecycle.beforeDelivery({
+      method: 'slack_chat_post_message',
+      approvedOutput: 'Persisted answer',
+      renderedPayload: JSON.stringify({ method: 'slack_chat_post_message', payload }),
+    });
+    await lifecycle.afterDelivery({
+      attemptId,
+      outcome: 'failed',
+      safeFailureCode: 'slack_rate_limited',
+    });
+    work.releaseRunLease({
+      runId: admission.run.id,
+      ownerId: first!.leaseOwner,
+      fencingToken: first!.fencingToken,
+      outcome: 'requeue',
+      reasonCode: 'confirmed_delivery_failure',
+      releasedAt: ++clock,
+    });
+    turns.enqueue(turnJob(admission.run.id));
+    turns.recordAttempt('turn_delivery-retry', 1);
+    const second = work.claimNextInteractiveRun({
+      ownerId: 'second_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
+    });
+    assert.equal(second?.phase, 'delivery');
+
+    const sent: unknown[] = [];
+    let executions = 0;
+    let publicReplies = 0;
+    const handler = createLedgerSlackRunHandler({
+      onPublicMessageDelivered: async (_turn, _assignment, delivery) => {
+        assert.deepEqual(delivery, { messageTs: '100.002', text: 'Persisted answer' });
+        assert.equal(work.getRun(admission.run.id)?.deliveryStatus, 'delivered');
+        publicReplies += 1;
+        if (recovery.contextThrows) throw new Error('context unavailable');
+      },
+      work: work as unknown as WorkStore,
+      turns,
+      client: {
+        chat: {
+          postMessage: async (actual: unknown) => {
+            sent.push(actual);
+            return { ok: true, channel: 'C_canary', ts: '100.002' };
+          },
+        },
+      } as unknown as WebClient,
+      executeTurn: (async () => {
+        executions += 1;
+      }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+    assert.deepEqual(await handler(second!), { kind: 'completed' });
+    assert.equal(executions, 0);
+    assert.equal(publicReplies, 1);
+    assert.deepEqual(sent, [payload]);
+    assert.equal(work.getRun(admission.run.id)?.status, 'settled');
+    assert.equal(work.getRun(admission.run.id)?.terminalDisposition, recovery.outcome);
+    const deliveredRun = work.getRun(admission.run.id)!;
+    assert.deepEqual(work.finalizeRunDelivery({
+      runId: deliveredRun.id, fencingToken: second!.fencingToken,
+      attemptId: deliveredRun.deliveryAttemptId!, outcome: 'delivered',
+      deliveryRef: deliveredRun.deliveryRef!, finalizedAt: deliveredRun.deliveryFinalizedAt!,
+    }), deliveredRun);
+    assert.equal(work.getRun(admission.run.id)?.deliveryStatus, 'delivered');
+    assert.equal(turns.getPendingByRunId(admission.run.id), undefined);
+  } finally {
+    db.close();
+  }
+});
+
+}
+
+for (const certainty of ['failed', 'pending', 'unknown'] as const) {
+test(`fallback recovery respects ${certainty} terminal receipt`, async () => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const presentations = new SlackRunPresentationStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('v3-delivery-recovery')));
+    const first = work.claimNextInteractiveRun({
+      ownerId: 'first_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const lifecycle = lifecycleFor(work, admission.run.id, first.fencingToken, () => ++clock);
+    await lifecycle.prepareExecution('Prepared input');
+    await lifecycle.markInvoked();
+    await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    const attemptId = await lifecycle.beforeDelivery({
+      method: 'slack_chat_post_message',
+      approvedOutput: 'Persisted answer',
+      renderedPayload: JSON.stringify({
+        method: 'slack_chat_post_message',
+        payload: {channel: 'C_canary', thread_ts: '100.001', text:'Persisted answer'},
+      }),
+    });
+    await lifecycle.afterDelivery({
+      attemptId,
+      outcome: 'failed',
+      safeFailureCode: 'slack_stream_finalize_failed',
+    });
+    let presentation = presentations.create({
+      schemaVersion: 3,
+      runId: admission.run.id,
+      turnJobId: 'turn_v3-delivery-recovery',
+      bindingId: admission.binding.id,
+      workBindingGeneration: admission.binding.generation,
+      runFencingToken: first.fencingToken,
+      owner: { kind: 'chickpea' },
+      sessionGeneration: 1,
+      currentActivity: {
+        kind: 'preparing', action: 'Preparing', object: 'your request', generation: 1, sequence: 1,
+        operation: { operationId: 'activity_v3_delivery_recovery_1', certainty: 'pending' },
+      },
+      root: {
+        workspaceId: 'T_canary', channelId: 'C_canary', threadTs: '100.001',
+        requesterUserId: 'U_member',
+      },
+    });
+    for (const mutation of [
+      { kind: 'select_activity_projection', surface: 'message' as const } as const,
+      {
+        kind: 'record_activity_receipt', operationId: 'activity_v3_delivery_recovery_1',
+        certainty: 'acknowledged' as const, messageTs: '100.003',
+      } as const,
+      { kind: 'freeze_progressive_eligibility', eligibility: {
+        allowed: false, reason: 'other' as const,
+      } } as const,
+      { kind: 'stream_start_intent' } as const,
+      { kind: 'mark_fallback', outcome: 'fallback' as const } as const,
+      {
+        kind: 'record_terminal_delivery_intent', operationId: 'terminal_v3_delivery_recovery_1',
+        result: 'answer' as const,
+      } as const,
+      ...(certainty === 'pending' ? [] : [{
+        kind: 'record_terminal_delivery_receipt', operationId: 'terminal_v3_delivery_recovery_1',
+        certainty,
+      } as const]),
+    ]) {
+      presentation = transitionPresentation(presentations, presentation, mutation);
+    }
+    work.releaseRunLease({
+      runId: admission.run.id, ownerId: first.leaseOwner, fencingToken: first.fencingToken,
+      outcome: 'requeue', reasonCode: 'confirmed_delivery_failure', releasedAt: ++clock,
+    });
+    turns.enqueue(turnJob(admission.run.id, 'v3-delivery-recovery'));
+    const second = work.claimNextInteractiveRun({
+      ownerId: 'second_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
+    })!;
+    const calls: string[] = [];
+    let cleanupAttempts = 0;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: {
+        apiCall: async () => { calls.push('session'); return { ok: true }; },
+        chat: {
+          postMessage: async () => { calls.push('post'); return {ok:true,channel:'C_canary',ts:'100.002'}; },
+          delete: async () => {
+            calls.push('activity');
+            cleanupAttempts += 1;
+            return { ok: true };
+          },
+        },
+      } as unknown as WebClient,
+      presentationState: presentationPort(presentations, turns),
+      now: () => ++clock,
+    });
+
+    const firstResult=await handler(second);
+
+    if (certainty !== 'failed') {
+      assert.deepEqual(firstResult, { kind: 'requeue', reasonCode: 'slack_presentation_terminal_repair_pending' });
+      assert.equal(calls.filter((call) => call === 'post').length, 0);
+      return;
+    }
+    assert.deepEqual(firstResult,{kind:'completed'});
+    assert.equal(work.getRun(admission.run.id)?.status,'settled');
+    assert.equal(work.getRun(admission.run.id)?.deliveryStatus, 'delivered');
+    assert.equal(calls.filter((call) => call === 'post').length, 1);
+    assert.equal(cleanupAttempts, 1);
+    const final = presentations.get(admission.run.id)!;
+    assert.equal(final.stream.state, 'finalized');
+    assert.equal(final.stream.messageTs, '100.002');
+    assert.equal(final.schemaVersion, 3);
+    if (final.schemaVersion !== 3 || final.terminalDelivery.state !== 'intended') throw new Error('missing receipt');
+    assert.equal(final.terminalDelivery.operation.certainty, 'acknowledged');
+    assert.notEqual(final.terminalDelivery.operation.operationId, 'terminal_v3_delivery_recovery_1');
+    const nextInput = submission('next-delivery');
+    nextInput.binding.orderingKey = admission.binding.orderingKey;
+    const next = work.admitShadowRun(prepareSubmitRun(nextInput));
+    assert.equal(work.claimNextInteractiveRun({
+      ownerId: 'next_worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: ++clock,
+    })?.run.id, next.run.id);
+
+  } finally {
+    db.close();
+  }
+});
+
+
 }

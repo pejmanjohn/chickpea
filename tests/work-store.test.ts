@@ -834,3 +834,27 @@ function runChild(args: string[]): Promise<{ code: number | null; stderr: string
     child.on('close', (code) => resolve({ code, stderr }));
   });
 }
+
+
+test('latest execution reads beyond the oldest-first list window', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new WorkStoreLogic(db, { now: () => NOW });
+    const config = store.putConfigRevision(safeConfig());
+    const admitted = store.createGraph(graph(config.id, 'latest'));
+    const prepared = store.putContent({ sensitivity: 'public', body: 'input', createdAt: NOW });
+    for (let attempt = 1; attempt <= 51; attempt += 1) {
+      db.run(`UPDATE runs SET status = 'input_ready', prepared_input_ref = ? WHERE id = ?`,
+        prepared.ref, admitted.run.id);
+      store.createRunExecution({
+        id: `execution_latest_${attempt}` as RunExecutionId,
+        runId: admitted.run.id, attemptNumber: attempt, fencingToken: attempt,
+        executorKind: 'agent', agentName: 'slack-thread', canonicalModel: 'local-stub/test',
+        startedAt: NOW + attempt,
+      });
+    }
+    assert.equal(store.listRunExecutions(admitted.run.id).at(-1)?.attemptNumber, 50);
+    assert.equal(store.latestRunExecution(admitted.run.id)?.attemptNumber, 51);
+    assert.equal(store.latestRunExecution('run_missing' as RunId), undefined);
+  } finally { db.close(); }
+});

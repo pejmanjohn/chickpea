@@ -2248,6 +2248,12 @@ export class CfWorkStore implements WorkStore {
     return response.count;
   }
 
+  async latestRunExecution(runId: RunId) {
+    const response = await this.execute({ kind: 'latest_run_execution', runId });
+    if (response.kind !== 'execution') throw unexpectedWorkResponse();
+    return response.execution ?? undefined;
+  }
+
   async listRunExecutions(runId: RunId, limit?: number) {
     const response = await this.execute({
       kind: 'list_run_executions',
