@@ -62,6 +62,7 @@ import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 type MaybePromise<T> = T | Promise<T>;
 
 interface LedgerSlackTurnStore {
+  getBoundRuntimePlan?(continuityKey: string, beforeMessageTs: string): MaybePromise<RuntimePlanV2 | undefined>;
   getPendingByRunId(runId: string): MaybePromise<PendingTurnJob | undefined>;
   freezeRuntimePlan(
     id: string,
@@ -207,6 +208,7 @@ export function createLedgerSlackRunHandler(
         executionAuthority: 'ledger',
         ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
         onRuntimePlan: (candidate) => options.turns.freezeRuntimePlan(job.id, candidate),
+        ...(options.turns.getBoundRuntimePlan ? { getBoundRuntimePlan: options.turns.getBoundRuntimePlan.bind(options.turns) } : {}),
         flueDispatch: {
           ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
           ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),

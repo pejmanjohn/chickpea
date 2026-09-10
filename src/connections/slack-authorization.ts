@@ -241,9 +241,9 @@ export function usePersonalConnectionAuthorizationSlackTool(
   if (!signal || !plan.actorMembershipId) return;
   if (plan.connectionChoices?.length) {
     useInstruction([
-      'Some connection credentials were withheld because the request did not identify one account uniquely.',
+      'Some connection credentials were withheld because the account choice is ambiguous or the previously selected account is no longer available.',
       `Ask the user to choose one of these labels before using that provider: ${JSON.stringify(plan.connectionChoices)}.`,
-      'Do not guess, invoke a withheld account, or claim the connected service is unavailable.',
+      'When previousAccountUnavailable is true, explain that the previously selected account needs reconnecting or an explicit switch; do not silently substitute another account. Otherwise do not claim the connected service is unavailable. Never guess or invoke a withheld account.',
     ].join(' '));
   }
   if (!(plan.connectionAuthorizations?.length)) return;

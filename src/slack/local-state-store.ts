@@ -32,6 +32,7 @@ export function localSlackStateStore(input: {
       turnJobs.resumeAfterOAuth(originalTaskId, continuationId),
     pinAgentBinding: async (binding, expected) => turnJobs.pinAgentBinding(binding, expected),
     getAgentBinding: async (continuityKey) => turnJobs.getAgentBinding(continuityKey),
+    getBoundRuntimePlan: async (continuityKey, beforeMessageTs) => turnJobs.getBoundRuntimePlan(continuityKey, beforeMessageTs),
     runtimeDrainCounts: async () => turnJobs.runtimeDrainCounts(),
     countPendingDeliveriesForWorkspace: async (workspaceId) =>
       turnJobs.countPendingDeliveriesForWorkspace(workspaceId),

@@ -1814,6 +1814,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           managementApproval: resolveManagementApproval,
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
           onRuntimePlan: (candidate) => stores.turnJobs.freezeRuntimePlan(job.id, candidate),
+          getBoundRuntimePlan: (continuityKey, beforeMessageTs) => stores.turnJobs.getBoundRuntimePlan(continuityKey, beforeMessageTs),
           flueDispatch,
           presentationState,
           progressiveAttributionProven: true,

@@ -540,6 +540,18 @@ test('personal authorization choices freeze labels and lifecycle without credent
   assert.equal(parseRuntimePlanV2(structuredClone(plan)).harnessRevision, plan.harnessRevision);
 });
 
+test('routing defaults remain credential-free, survive parsing and cannot be changed without revising the plan', () => {
+  const plan = compile({
+    connectionSelections: [{ group: 'google:gmail', providerId: 'google', accountId: 'connection_work' }],
+    connectionChoices: [{ providerId: 'google', previousAccountUnavailable: true, choices: [] }],
+  });
+  assert.deepEqual(parseRuntimePlanV2(structuredClone(plan)).connectionSelections, plan.connectionSelections);
+  assert.equal(parseRuntimePlanV2(structuredClone(plan)).connectionChoices?.[0]?.previousAccountUnavailable, true);
+  const changed = structuredClone(plan);
+  changed.connectionSelections![0]!.accountId = 'connection_personal';
+  assert.throws(() => parseRuntimePlanV2(changed), /harnessRevision/);
+});
+
 test('semantic-memory runtime policy rotates new plans while v2 plans remain readable', () => {
   const semanticMemoryPlan = compile();
   const legacy = compile({ continuityPolicy: 'slack-runtime-v2' });

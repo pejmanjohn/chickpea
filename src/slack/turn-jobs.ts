@@ -408,6 +408,23 @@ export class TurnJobStoreLogic {
     };
   }
 
+  /** Read only an admitted plan from the currently bound conversation instance. */
+  getBoundRuntimePlan(continuityKey: string, beforeMessageTs: string): RuntimePlanV2 | undefined {
+    const binding = this.getAgentBinding(continuityKey);
+    if (!binding) return undefined;
+    if (!/^\d+\.\d+$/.test(beforeMessageTs)) throw new Error('Invalid Slack message timestamp');
+    const row = this.db.get(
+      `SELECT runtime_plan_json FROM turn_jobs
+       WHERE agent_instance_id = ? AND dispatch_receipt_json IS NOT NULL
+         AND CAST(json_extract(turn_json, '$.messageTs') AS REAL) < CAST(? AS REAL)
+       ORDER BY CAST(json_extract(turn_json, '$.messageTs') AS REAL) DESC LIMIT 1`,
+      binding.instanceId, beforeMessageTs,
+    );
+    if (!row?.runtime_plan_json) return undefined;
+    const plan = parseRuntimePlanV2(JSON.parse(String(row.runtime_plan_json)));
+    return plan.conversation.continuityKey === continuityKey ? plan : undefined;
+  }
+
   /**
    * Freeze the exact Flue admission before crossing the dispatch boundary.
    * A retry always receives the byte-equivalent envelope, including its
@@ -1061,14 +1078,24 @@ export class TurnJobStoreLogic {
       );
     }
     this.db.run(
-      `DELETE FROM turn_jobs
-       WHERE delivered = 1 AND enqueued_at < ?
-         AND progress_json NOT LIKE '%"cleanup":"pending"%'`,
-      now - TURN_JOB_TTL_MS,
-    );
-    this.db.run(
       'DELETE FROM slack_agent_bindings WHERE updated_at < ?',
       now - SLACK_AGENT_BINDING_TTL_MS,
+    );
+    // Keep one dispatched routing context per live binding. Other completed
+    // turns retain the ordinary redelivery TTL; expired bindings retain none.
+    this.db.run(
+      `DELETE FROM turn_jobs
+       WHERE delivered = 1 AND enqueued_at < ?
+         AND progress_json NOT LIKE '%"cleanup":"pending"%'
+         AND NOT EXISTS (
+           SELECT 1 FROM slack_agent_bindings b WHERE turn_jobs.id = (
+             SELECT prior.id FROM turn_jobs prior
+             WHERE prior.agent_instance_id = b.instance_id
+               AND prior.dispatch_receipt_json IS NOT NULL
+             ORDER BY CAST(json_extract(prior.turn_json, '$.messageTs') AS REAL) DESC LIMIT 1
+           )
+         )`,
+      now - TURN_JOB_TTL_MS,
     );
   }
 
