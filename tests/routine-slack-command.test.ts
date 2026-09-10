@@ -248,6 +248,7 @@ test('a direct schedule retry activates the saved pending routine without report
         if (attempts === 1) throw new Error('simulated first-attempt authority failure');
         assert.equal(input.routine.destination.kind, 'direct_thread');
         return config.putAgentScheduleReference({
+          boundRoutineVersion: input.routine.authorityBindingVersion ?? input.routine.version,
           scheduleId: input.routine.id,
           agentId: input.assignment.agentId,
           workspaceId: input.routine.workspaceId,

@@ -113,6 +113,7 @@ async function linkAgentSchedule(
     channelIsPrivate: false,
   });
   await store.putAgentScheduleReference({
+    boundRoutineVersion: routine.authorityBindingVersion ?? routine.version,
     scheduleId: routine.id,
     agentId: config.agentId,
     workspaceId: routine.workspaceId,
@@ -426,6 +427,7 @@ test('a direct schedule with permanently missing Agent authority fails and auto-
     });
     const digest = routineDestinationBindingDigest(routine.id, routine.workspaceId, destination);
     const reference = await configStore.putAgentScheduleReference({
+      boundRoutineVersion: routine.authorityBindingVersion ?? routine.version,
       scheduleId: routine.id, agentId: 'agent_direct', workspaceId: routine.workspaceId,
       channelId: destination.conversationId, destinationKind: 'direct_thread',
       destinationBindingDigest: digest, createdByMembershipId: destination.ownerMembershipId,
@@ -504,6 +506,7 @@ test('a definitive private-thread rejection pauses recurring work and posts one 
     });
     const digest = routineDestinationBindingDigest(pending.id, pending.workspaceId, destination);
     const reference = await configStore.putAgentScheduleReference({
+      boundRoutineVersion: pending.authorityBindingVersion ?? pending.version,
       scheduleId: pending.id, agentId: 'agent_direct', workspaceId: pending.workspaceId,
       channelId: destination.conversationId, destinationKind: 'direct_thread',
       destinationBindingDigest: digest, createdByMembershipId: destination.ownerMembershipId,

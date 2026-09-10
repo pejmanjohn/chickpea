@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SqliteRoutineStore } from '../src/routines/store.ts';
+import { executeSlackScheduleCommand } from '../src/routines/slack-command.ts';
 
 import { provisionSlackInteractionMember } from '../src/auth/slack-admission.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -339,6 +345,7 @@ test('Agent schedules capture one Runs as authority and safely reassign future r
       actorMembershipId: owner.membership.id,
       env: undefined,
     }, { config, identity });
+    routine.version = 3;
     assert.equal(editedAfterDisconnect.state, 'active');
     assert.deepEqual(editedAfterDisconnect.requiredConnectionAccountIds, [team.id]);
     assert.equal(editedAfterDisconnect.connectionPauseAccountIds, undefined);
@@ -748,4 +755,96 @@ function routineDefinition(): RoutineDefinition {
     updatedAt: 1, updatedBy: 'U_OWNER', pausedAt: null, pausedBy: null, pausedReason: null,
     disabledAt: null, disabledBy: null, disabledReason: null, deletedAt: null, deletedBy: null,
   };
+}
+
+for (const legacy of [false, true]) {
+  test(`saved task authority is fenced through delayed binding and controls (legacy=${legacy})`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'routine-binding-fence-'));
+    const path = join(dir, 'state.sqlite');
+    const config = new SqliteConfigStore(path, { agents: [] });
+    const routines = new SqliteRoutineStore(path);
+    const identity = new SqliteIdentityStore(':memory:');
+    try {
+      const owner = await createSlackOwner(identity, { teamId: WORKSPACE, userId: 'U_FENCE', suffix: 'fence' });
+      const agent = await config.createAgent({ id: 'agent_fence', name: 'Fence', instructions: 'Run saved work.',
+        model: 'local-stub/fence', enabled: true, lifecycle: 'active', creatorMembershipId: owner.membership.id,
+        editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+      await config.ensureWorkspaceInstallation({ workspaceId: WORKSPACE, transportMode: 'direct', defaultAgentId: agent.id });
+      await config.putAgentChannelGrant({ workspaceId: WORKSPACE, channelId: CHANNEL, agentId: agent.id,
+        status: 'active', createdByMembershipId: owner.membership.id });
+      const account = await putConnection(config, 'connection_fence', 'team', owner.membership.id);
+      await config.putAgentConnectionBinding({ agentId: agent.id, connectionAccountId: account.id,
+        providerId: account.providerId, enabled: true, allowedCapabilities: [] });
+      const dependencies = { config, routines, identity, schedulingAvailable: true };
+      const save = { kind: 'save' as const, actionKey: 'rsaction_fence_create', itemId: 'save',
+        workspaceId: WORKSPACE, channelId: CHANNEL, agentId: agent.id,
+        actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+        name: 'Fence', description: '', taskText: 'Run saved work.',
+        schedule: { kind: 'cron' as const, expression: '0 9 * * *' }, timezone: 'UTC',
+        outputPolicy: 'post' as const, requiredConnectionAccountIds: [account.id] };
+      let first = (await executeSlackScheduleCommand(save, dependencies)).routine;
+      if (legacy) {
+        const db = new DatabaseSync(path);
+        try { db.prepare('UPDATE routines SET authority_binding_version = NULL WHERE id = ?').run(first.id); }
+        finally { db.close(); }
+        const reference = (await config.getAgentScheduleReference(first.id))!;
+        const { boundRoutineVersion: _version, ...prior } = reference;
+        await config.putAgentScheduleReference(prior, reference.revision);
+        first = (await routines.getRoutine(first.id))!;
+        assert.equal(first.authorityBindingVersion, undefined);
+      }
+      assert.equal((await resolveRoutineAgentAuthority(first, undefined, { config, identity })).effectiveConnections.length, 1);
+      let entered!: () => void;
+      let resume!: () => void;
+      const waiting = new Promise<void>((resolve) => { entered = resolve; });
+      const released = new Promise<void>((resolve) => { resume = resolve; });
+      // Same task text: dependency-only edits still need a new binding epoch.
+      const edit = { ...save, routineId: first.id, expectedVersion: first.version,
+        actionKey: 'rsaction_fence_edit', requiredConnectionAccountIds: [] };
+      const pending = executeSlackScheduleCommand(edit, { ...dependencies,
+        bindAuthority: async (input) => { entered(); await released;
+          return bindRoutineAgentAuthority(input, { config, identity }); },
+      });
+      await waiting;
+      const saved = (await routines.getRoutine(first.id))!;
+      assert.equal(saved.authorityBindingVersion, 2);
+      assert.equal(saved.state, 'active');
+      const { requiredConnectionAccountIds: _ids, ...metadataEdit } = edit;
+      await assert.rejects(executeSlackScheduleCommand({ ...metadataEdit,
+        expectedVersion: saved.version, name: 'Renamed while binding', actionKey: 'rsaction_pending_metadata',
+      }, dependencies), /previous schedule edit is still binding/);
+      assert.equal((await routines.getRoutine(first.id))!.version, saved.version);
+      await assert.rejects(resolveRoutineAgentAuthority(saved, undefined, { config, identity }), RoutineAuthorityError);
+      const paused = await routines.control({ routineId: saved.id, expectedVersion: saved.version,
+        actorId: owner.user.id, actorClass: 'operator', action: 'pause', idempotencyKey: 'fence_pause' });
+      const resumed = await routines.control({ routineId: saved.id, expectedVersion: paused.version,
+        actorId: owner.user.id, actorClass: 'operator', action: 'resume', idempotencyKey: 'fence_resume' });
+      assert.equal(resumed.version, 4);
+      assert.equal(resumed.authorityBindingVersion, 2);
+      await assert.rejects(resolveRoutineAgentAuthority(resumed, undefined, { config, identity }), RoutineAuthorityError);
+      resume();
+      await pending;
+      assert.deepEqual((await resolveRoutineAgentAuthority(resumed, undefined, { config, identity })).effectiveConnections, []);
+      // Old new-format task snapshots cannot use the replacement binding.
+      await assert.rejects(resolveRoutineAgentAuthority(first, undefined, { config, identity }), RoutineAuthorityError);
+      const replay = await executeSlackScheduleCommand(edit, dependencies);
+      assert.equal(replay.routine.authorityBindingVersion, 2);
+      assert.equal((await config.getAgentScheduleReference(first.id))!.boundRoutineVersion, 2);
+      const finalPause = await routines.control({ routineId: first.id, expectedVersion: resumed.version,
+        actorId: owner.user.id, actorClass: 'operator', action: 'pause', idempotencyKey: 'fence_pause_after' });
+      const finalResume = await routines.control({ routineId: first.id, expectedVersion: finalPause.version,
+        actorId: owner.user.id, actorClass: 'operator', action: 'resume', idempotencyKey: 'fence_resume_after' });
+      assert.deepEqual((await resolveRoutineAgentAuthority(finalResume, undefined, { config, identity })).effectiveConnections, []);
+      const { requiredConnectionAccountIds: _requirements, ...metadataSave } = save;
+      const retryableMetadata = { ...metadataSave, routineId: first.id, expectedVersion: finalResume.version,
+        actionKey: 'rsaction_retry_metadata', name: 'Rename with interrupted binding' };
+      await assert.rejects(executeSlackScheduleCommand(retryableMetadata, { ...dependencies,
+        bindAuthority: async () => { throw new Error('Interrupted binding'); },
+      }));
+      const retried = await executeSlackScheduleCommand(retryableMetadata, dependencies);
+      assert.equal(retried.routine.authorityBindingVersion, finalResume.version + 1);
+      assert.equal((await config.getAgentScheduleReference(first.id))!.boundRoutineVersion, finalResume.version + 1);
+      assert.equal(retried.routine.state, 'paused', 'repairing the binding does not undo the failure pause');
+    } finally { routines.close(); config.close(); identity.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
 }

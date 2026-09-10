@@ -203,6 +203,17 @@ export async function executeSlackScheduleCommand(
       throw new RoutineStateError('routine_connections_required',
         'Declare requiredConnectionAccountIds for new work or a changed task; use [] when no connection is needed.');
     }
+    if (command.requiredConnectionAccountIds === undefined && existing?.authorityBindingVersion !== undefined) {
+      const reference = await dependencies.config.getAgentScheduleReference(existing.id);
+      // The same save may be retrying its own pending binding, even after
+      // controls advanced version. A different stale action still fails store CAS.
+      const retryingSavedRevision = command.expectedVersion !== undefined &&
+        existing.authorityBindingVersion === command.expectedVersion + 1;
+      if (reference?.boundRoutineVersion !== existing.authorityBindingVersion && !retryingSavedRevision) {
+        throw new RoutineStateError('routine_connections_required',
+          'The previous schedule edit is still binding its connections. Retry after that edit finishes.');
+      }
+    }
     if (command.requiredConnectionAccountIds !== undefined) {
       selectScheduleConnectionAccounts(command.requiredConnectionAccountIds, undefined,
         await resolveEffectiveConnectionAccounts({ config: dependencies.config,
@@ -262,7 +273,7 @@ export async function executeSlackScheduleCommand(
     }, effectKey(command, 'save'));
 
     const intendedVersion = command.routineId ? command.expectedVersion! + 1 : 1;
-    if (routine.version > intendedVersion) {
+    if (routine.version > intendedVersion && routine.authorityBindingVersion !== intendedVersion) {
       return { effect: 'saved', routine, created: false };
     }
     try {

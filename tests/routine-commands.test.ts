@@ -349,6 +349,7 @@ test('exact DM commands need no deployment flag and stay scoped across threads',
         routine.destination as Extract<RoutineDefinition['destination'], { kind: 'direct_thread' }>,
       );
       return config.putAgentScheduleReference({
+        boundRoutineVersion: routine.authorityBindingVersion ?? routine.version,
         scheduleId: routine.id, agentId: ownerAssignment.agentId,
         workspaceId: routine.workspaceId, channelId: routine.channelId,
         destinationKind: 'direct_thread', destinationBindingDigest: digest,
@@ -475,4 +476,31 @@ test('unsupported deployments report capability state without disclosing Routine
   } finally {
     store.close();
   }
+});
+
+test('pre-upgrade schedule edit confirmations require a fresh request without changing the schedule', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const routine = await seedRoutine(store);
+    const confirmation = await new RoutineService(store, { now: () => NOW }).createConfirmation({
+      action: 'delete', routineId: routine.id, expectedVersion: routine.version,
+      actorId: 'U_MEMBER', workspaceId: 'T_TEST', channelId: 'C_TEST',
+    });
+    // Current APIs only issue deletion receipts. Supply the historical persisted
+    // edit shape at the store-read seam, then exercise the real command handler.
+    const legacyStore = new Proxy(store, { get(target, key, receiver) {
+      if (key === 'getConfirmation') return async (tokenHash: string) => {
+        const saved = await target.getConfirmation(tokenHash);
+        return saved ? { ...saved, draft: { action: 'edit', routineId: routine.id,
+          expectedVersion: routine.version, definition: { ...routine, taskText: 'Change the old task.' },
+          nextRunAt: routine.nextRunAt, projectedDailyStarts: routine.projectedDailyStarts,
+          reservations: routine.reservationWindows } } : undefined;
+      };
+      return Reflect.get(target, key, receiver);
+    } });
+    const reply = await handleRoutineSlackRequest(turn(`!routines confirm ${confirmation.token}`), legacyStore);
+    assert.match(reply ?? '', /older schedule confirmation cannot be applied/);
+    assert.equal((await store.getRoutine(routine.id))!.version, routine.version);
+    assert.equal((await store.getRoutine(routine.id))!.taskText, routine.taskText);
+  } finally { store.close(); }
 });

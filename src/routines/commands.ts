@@ -278,9 +278,12 @@ async function executeRoutineCommand(
       if (scope.kind === 'handoff') return directAgentHandoffText();
       if (scope.kind !== 'allowed') return notFoundText();
     }
-    // New flows only create deletion confirmations. Accept any unexpired
-    // pre-upgrade create/edit receipt until normal retention removes it.
-    if (confirmation.draft.action !== 'delete') requireRoutineScheduling(capability);
+    // Old create/edit receipts cannot declare the exact account set required
+    // by current saves. Do not apply one and report an unbound schedule as ready.
+    if (confirmation.draft.action !== 'delete') {
+      throw new RoutineStateError('routine_connections_required',
+        'This older schedule confirmation cannot be applied. Ask the Agent to create or edit the schedule again and select the connections it needs.');
+    }
     const routine = await service.confirm({
       token: command.token,
       actorId: turn.userId,
@@ -289,9 +292,7 @@ async function executeRoutineCommand(
       previewHash: confirmation.previewHash,
       idempotencyKey: `routine:slack:${turn.eventId}:confirm`,
     });
-    return confirmation.draft.action === 'delete'
-      ? `🗑️ **Routine deleted**\n**ID:** \`${routine.id}\`\nIts saved body was scrubbed; body-free audit and run metadata is retained.`
-      : renderRoutineSaved(routine, { action: confirmation.draft.action });
+    return `🗑️ **Routine deleted**\n**ID:** \`${routine.id}\`\nIts saved body was scrubbed; body-free audit and run metadata is retained.`;
   }
   if (command.kind === 'cancel') {
     const confirmation = await store.getConfirmation(hashRoutineValue(command.token));

@@ -154,7 +154,8 @@ export async function bindRoutineAgentAuthority(input: {
   }
   // A save retry must not replace a later save's requirements or re-resolve
   // account choices after its own binding completed.
-  if (current?.boundRoutineVersion !== undefined && current.boundRoutineVersion >= input.routine.version) return current;
+  const bindingVersion = input.routine.authorityBindingVersion ?? input.routine.version;
+  if (current?.boundRoutineVersion !== undefined && current.boundRoutineVersion >= bindingVersion) return current;
   const runsAsMembershipId = current?.runsAsMembershipId ?? input.actorMembershipId;
   const [accounts, bindings] = await Promise.all([
     config.listConnectionAccounts(input.routine.workspaceId),
@@ -184,7 +185,7 @@ export async function bindRoutineAgentAuthority(input: {
       input.actorMembershipId,
     ),
     requiredConnectionAccountIds,
-    boundRoutineVersion: input.routine.version,
+    boundRoutineVersion: bindingVersion,
     ...(connectionPauseAccountIds.length > 0 ? { connectionPauseAccountIds } : {}),
     ...(connectionPauseAccountIds.length > 0 && current?.connectionPausePreservesState
       ? { connectionPausePreservesState: true }
@@ -326,7 +327,11 @@ export async function resolveRoutineAgentAuthority(
   const config = dependencies.config ?? getConfigStore(env);
   const identity = dependencies.identity ?? getIdentityStore(env);
   const reference = await config.getAgentScheduleReference(routine.id);
-  if (!reference || reference.state !== 'active') {
+  if (!reference || reference.state !== 'active' ||
+      (routine.authorityBindingVersion !== undefined &&
+        reference.boundRoutineVersion !== routine.authorityBindingVersion) ||
+      (routine.authorityBindingVersion === undefined && reference?.boundRoutineVersion !== undefined &&
+        reference.boundRoutineVersion > routine.version)) {
     throw new RoutineAuthorityError('schedule_authority_missing', 'This schedule needs an active Runs as assignment.');
   }
   if (

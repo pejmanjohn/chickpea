@@ -215,3 +215,17 @@ The optional coding sandbox uses Cloudflare's `sandbox:0.12.4` container, whose
 embedded Node 22.23.1 runs sandbox tooling, not the Chickpea host or build. Its
 image tag must match `@cloudflare/sandbox`; leave this vendor-owned runtime alone
 when updating Chickpea's Node pin. Validate SDK/image updates separately.
+
+### Schedule account requirements during edits
+
+A saved schedule revision cannot run until its account requirements have been
+bound to that revision. Pause and resume retain the saved binding. If another
+edit is still binding accounts, retry metadata-only edits after it finishes;
+do not select extra accounts to bypass the pending edit.
+
+Existing schedules retain their saved account requirements. Cloning requires
+the source schedule's saved requirements; a legacy source without an authority
+reference must be repaired before cloning. Unexpired pre-upgrade create/edit
+confirmation receipts cannot supply the current account requirements. Request
+a fresh create or edit instead; rejecting the old receipt does not change the
+schedule. Deletion confirmations continue to work.
