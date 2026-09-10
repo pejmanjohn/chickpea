@@ -25,7 +25,7 @@ test('partial edits preserve untouched fields and explicit output changes apply'
   const result = await admitted('make it every ten minutes', { ...patch, schedule: { kind: 'cron', expression: '*/10 * * * *' } });
   for (const key of ['name', 'description', 'taskText', 'timezone', 'outputPolicy'] as const) assert.equal(result[key], previous[key]);
   const taskOnly = await admitted('include refunds too', { ...patch, schedule: undefined, taskText: 'Report TOEFL bookings and refunds using SQL Dash.', outputPolicy: 'post' });
-  assert.deepEqual(taskOnly.schedule, { kind: 'cron', expression: previous.scheduleInput });
+  assert.deepEqual(taskOnly.schedule, { kind: 'preserve' });
   assert.equal(taskOnly.outputPolicy, 'post');
 });
 test('timezone defaults use host profile and relative delays need no wall-clock zone', async () => {
