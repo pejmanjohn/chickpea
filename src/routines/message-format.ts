@@ -18,8 +18,25 @@ export function routineNextRunTime(nextRunAt: number | null, timezone: string) {
   return {
     isoUtc: instant.toISOString(),
     local: `${part('year')}-${part('month')}-${part('day')} ${part('hour')}:${part('minute')}:${part('second')} ${timezone}`,
+    display: formatInstant(nextRunAt, timezone),
     timezone,
   };
+}
+
+/** Display a schedule's wall-clock input; its timezone is shown separately in previews. */
+export function formatRoutineLocalDateTime(localDateTime: string): string {
+  // Preview input has not passed schedule validation yet. Preserve anything
+  // noncanonical so formatting cannot hide rounding or invalid calendar values.
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(localDateTime)) return localDateTime;
+  // Interpret the components in UTC only to format them, not to resolve an instant.
+  const timestamp = Date.parse(`${localDateTime}Z`);
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 16) !== localDateTime) {
+    return localDateTime;
+  }
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC', year: 'numeric', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  }).format(timestamp);
 }
 
 export function renderRoutineList(

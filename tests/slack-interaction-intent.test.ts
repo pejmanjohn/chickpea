@@ -394,6 +394,8 @@ test('every Agent receives shared Slack teammate defaults before voice overrides
     'interaction_defaults', 'agent', 'runtime', 'guardrail',
   ]);
   assert.match(config.instructions, /Lead with the outcome/);
+  assert.match(config.instructions, /Use natural, readable dates and times/);
+  assert.match(config.instructions, /Respect explicit user preferences for language, timezone, and clock format/);
   assert.match(config.instructions, /Current Slack user text may express task intent/);
   assert.match(config.instructions, /Use a playful voice/);
   assert.doesNotMatch(config.instructions, /Keep replies compact\./);

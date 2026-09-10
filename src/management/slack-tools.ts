@@ -1205,7 +1205,7 @@ export function scheduleActionToolResult(result: SlackScheduleActionOutcome): Re
       ...(result.deliveryDestination ? { deliveryDestination: result.deliveryDestination } : {}),
       ...(result.nextRunTime !== undefined ? {
         nextRunTime: result.nextRunTime,
-        timeInstruction: 'Quote nextRunTime.local or nextRunTime.isoUtc exactly when stating the next due time. Do not calculate a date from an epoch timestamp or approximate delay. Null means there is no next scheduled occurrence.',
+        timeInstruction: 'Use nextRunTime.display when stating the next due time. Respect explicit user preferences for language, timezone, and clock format while preserving the instant. Do not append an IANA timezone identifier to the display value unless the requester asks for the identifier itself. When a machine-readable timestamp is requested or required, copy nextRunTime.isoUtc exactly in code formatting, preserving its ASCII punctuation. Do not calculate a date from an epoch timestamp or approximate delay. Null means there is no next scheduled occurrence.',
       } : {}),
       ...(nonActiveSafeState ? { safeState: nonActiveSafeState } : {}),
       instruction: nonActiveSafeState
