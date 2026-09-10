@@ -9,6 +9,7 @@ import { ErrorCode, type WebClient } from '@slack/web-api';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteMemoryStateStore } from '../src/memory/store.ts';
+import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import {
   AgentPromptFailure,
   type AgentDispatchResult,
@@ -1149,6 +1150,36 @@ test('activated turns never fall back to SLACK_TAG_MODEL when the frozen model i
   assert.equal(deliveredTombstones, 1);
   assert.equal(delivered, WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT);
   assert.doesNotMatch(delivered, /legacy-environment-fallback/);
+});
+
+test('runTurn forwards only the routed Agent address for artifact permission', async () => {
+  const client = {
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      postMessage: async () => ({ ok: true, channel: assignment.channelId, ts: 'final-ts' }),
+      startStream: async () => ({ ok: true, ts: 'final-ts' }),
+      stopStream: async () => ({ ok: true }),
+    },
+  } as unknown as WebClient;
+  const bound: ResolvedAssignment = { ...assignment, agent: { ...assignment.agent,
+    slackPresence: { userGroupId: 'S123456', normalizedHandle: 'reports', requestedHandle: 'reports',
+      desiredState: 'active', health: 'healthy', avatar: { kind: 'generated', revision: 1 } },
+  } };
+  for (const [group, allowed] of [['S123456', true], ['SOTHER', false]] as const) {
+    let dispatched = false;
+    await runTurn({ ...workTurn(`Ev_ARTIFACT_${group}`),
+      text: `<!subteam^${group}|reports>, attach the CSV report.`,
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    }, bound, undefined, {
+      client, usageRecordingEnabled: false,
+      agentPrompt: async ({ message }) => {
+        dispatched = true;
+        assert.equal(parseCurrentRequestEnvelope(message)?.explicitArtifactDeliveryIntent, allowed);
+        return { text: 'Checked.', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
+      },
+    });
+    assert.equal(dispatched, true);
+  }
 });
 
 test('runTurn resolves the authenticated self-mention placeholder before Slack delivery', async () => {

@@ -1051,6 +1051,10 @@ export async function runTurn(
       }
     }
     const prompt = assembleSlackPrompt(turn, context, {
+      artifactAddress: {
+        ...commandAddress,
+        agentHandle: assignment.agent.slackPresence?.normalizedHandle ?? assignment.agent.slackPresence?.requestedHandle,
+      },
       ...(handoffBlock ? { handoffBlock } : {}),
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,

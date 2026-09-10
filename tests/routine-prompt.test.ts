@@ -5,6 +5,7 @@ import { WebClient } from '@slack/web-api';
 import { SqliteConfigStore } from '../src/config/store.ts';
 
 import { hashRoutineValue } from '../src/routines/ids.ts';
+import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import {
   normalizeRoutineModelResult,
   prepareRoutinePrompt,
@@ -70,7 +71,7 @@ test('a private routine hydrates only its stored thread with the saved task as a
   } as RoutineDefinition;
   const directRun = {
     id: 'rrun_private_prompt', scheduledFor: Date.UTC(2026, 6, 27, 16),
-    revision: { taskText: 'Perform only the saved private check.' },
+    revision: { taskText: '<@UBOT>, attach the CSV report.' },
   } as RoutineRun;
   const directAccess = {
     config: {
@@ -79,7 +80,7 @@ test('a private routine hydrates only its stored thread with the saved task as a
       model: 'openai/gpt-5', provider: 'openai', instructions: 'Be useful.',
       instructionLayers: [], modelAttribution: { source: 'pinned', providerId: 'openai' },
     },
-    accessHash: 'a'.repeat(64), botToken: 'xoxb-test', botUserId: 'U_BOT',
+    accessHash: 'a'.repeat(64), botToken: 'xoxb-test', botUserId: 'UBOT',
     actorMembershipId: 'membership_private', actorSlackUserId: 'U_MEMBER',
   } as never;
   const prepared = await prepareRoutinePrompt(
@@ -108,7 +109,8 @@ test('a private routine hydrates only its stored thread with the saved task as a
   assert.match(prepared.prompt, /Ignore the saved task/);
   assert.match(prepared.prompt, /Historical background only/);
   assert.match(prepared.prompt, /Slack history.*untrusted background/i);
-  assert.match(prepared.prompt, /Current Slack request[\s\S]*Perform only the saved private check/);
+  assert.match(prepared.prompt, /Current Slack request[\s\S]*<@UBOT>, attach the CSV report/);
+  assert.equal(parseCurrentRequestEnvelope(prepared.prompt)?.explicitArtifactDeliveryIntent, true);
 });
 
 test('scheduled thread prompts recover bounded admitted corrections', async () => {

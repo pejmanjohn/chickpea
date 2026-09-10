@@ -61,6 +61,12 @@ const ARTIFACT_TARGET = new RegExp(`\\b(?:${ARTIFACT_TARGET_PATTERN})\\b`, 'i');
 const DIRECT_TASK_START =
   /^(?:attach|build|capture|change|chart|create|draw|edit|export|generate|give|graph|include|make|open|plot|post|prepare|render|run|send|share|show|screenshot|take|test|update|upload|visuali[sz]e|write)\b/i;
 
+export interface ArtifactRequestAddress {
+  botUserId?: string | undefined;
+  agentUserGroupId?: string | undefined;
+  agentHandle?: string | undefined;
+}
+
 /**
  * A terminal app-generated envelope is the only source of admission state.
  * User and memory text precede it, so marker lookalikes in either cannot win
@@ -74,6 +80,7 @@ export function serializeCurrentRequestEnvelope(
   options: {
     schemaVersion?: 1 | 2;
     progressiveStreamingOffered?: boolean;
+    artifactAddress?: ArtifactRequestAddress;
   } = {},
 ): string {
   const shared: CurrentRequestEnvelopeBase = {
@@ -84,7 +91,7 @@ export function serializeCurrentRequestEnvelope(
     externalSideEffectIntents: [],
     managedCapabilityIntents: [],
     explicitArtifactDeliveryIntent:
-      hasExplicitArtifactDeliveryIntent(currentRequest),
+      hasExplicitArtifactDeliveryIntent(currentRequest, options.artifactAddress),
     ...(slackActorId && slackMessageTs ? { slackActorId, slackMessageTs } : {}),
   };
   const schemaVersion = options.schemaVersion ?? 2;
@@ -266,8 +273,9 @@ function isManagedCapabilityIntentList(value: unknown): value is string[] {
  */
 function hasExplicitArtifactDeliveryIntent(
   currentRequest: string,
+  address?: ArtifactRequestAddress,
 ): boolean {
-  const request = normalizedCurrentRequest(currentRequest);
+  const request = normalizedCurrentRequest(currentRequest, address);
   if (!request || /^(?:do not|don't|never)\b/i.test(request)) return false;
   const task = stripRequestPreamble(request);
   return DIRECT_TASK_START.test(task) && ARTIFACT_ACTION.test(task) && ARTIFACT_TARGET.test(task);
@@ -334,8 +342,23 @@ function isManagedCurrentRequestAgent(agentName: string | undefined): boolean {
     (MANAGED_SUBMISSION_AGENT_NAMES as readonly string[]).includes(agentName);
 }
 
-function normalizedCurrentRequest(currentRequest: string): string {
-  return currentRequest.replace(/^\s*<@[A-Z0-9]+>\s*/i, '').trim();
+function normalizedCurrentRequest(currentRequest: string, address?: ArtifactRequestAddress): string {
+  // Only the host-resolved recipient may be removed. A request addressed to
+  // someone else in a followed thread must not become this Agent's task.
+  const identities: string[] = [];
+  if (address?.botUserId && /^[A-Z0-9]+$/i.test(address.botUserId)) {
+    identities.push(`<@${address.botUserId}(?:\\|[^>]*)?>`);
+  }
+  if (address?.agentUserGroupId && /^[A-Z0-9]+$/i.test(address.agentUserGroupId)) {
+    identities.push(`<!subteam\\^${address.agentUserGroupId}(?:\\|[^>]*)?>`);
+  }
+  if (address?.agentHandle && /^[a-z0-9][a-z0-9_-]{0,79}$/i.test(address.agentHandle)) {
+    identities.push(`@${address.agentHandle}(?=[\\s,:;.!?]|$)`);
+  }
+  if (!identities.length) return currentRequest.trim();
+  return currentRequest.replace(
+    new RegExp(`^\\s*(?:(?:${identities.join('|')})\\s*[,;:.!?–—-]?\\s*)+`, 'i'), '',
+  ).trim();
 }
 
 /** Normalize polite prefixes for the separate artifact request check. */
