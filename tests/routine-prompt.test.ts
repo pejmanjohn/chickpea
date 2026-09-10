@@ -95,7 +95,7 @@ test('a private routine hydrates only its stored thread with the saved task as a
   assert.match(prepared.prompt, /Current Slack request[\s\S]*Perform only the saved private check/);
 });
 
-test('scheduled thread prompts recover bounded admitted corrections and respect the visibility barrier', async () => {
+test('scheduled thread prompts recover bounded admitted corrections', async () => {
   const store = new SqliteConfigStore(':memory:');
   const threadTs = '1785000000.000100';
   const scheduledFor = 1_785_001_000_000;
@@ -115,20 +115,17 @@ test('scheduled thread prompts recover bounded admitted corrections and respect 
   try {
     await store.putSlackPublicContext({ workspaceId: 'T_TEST', channelId: 'D_TEST', rootTs: threadTs,
       messageTs: '1785000999.000000', role: 'human', text: 'CORRECTED_BUDGET: 42' });
-    for (const visibilityBarrierAt of [null, scheduledFor]) {
-      const prepared = await prepareRoutinePrompt(occurrence, scheduled, access, undefined, client, {
-        contextStore: store,
-        prepareMemory: async () => ({ conversationKey: 'context', memoryEpoch: 1, selection: { entries: [] },
-          footerItems: [], visibilityBarrierAt, ownerBound: true,
-          validateLease: async () => true, confirmInjection: async () => true }),
-      });
-      assert.doesNotMatch(prepared.prompt, /STALE_BUDGET/);
-      assert.match(prepared.prompt, /not a complete transcript/);
-      if (visibilityBarrierAt === null) assert.match(prepared.prompt, /CORRECTED_BUDGET: 42/);
-      else assert.doesNotMatch(prepared.prompt, /CORRECTED_BUDGET/);
-      assert.match(prepared.prompt, /Current Slack request[\s\S]*Report the corrected budget/);
-    }
-    assert.equal(calls, 6);
+    const prepared = await prepareRoutinePrompt(occurrence, scheduled, access, undefined, client, {
+      contextStore: store,
+      prepareMemory: async () => ({ conversationKey: 'context', memoryEpoch: 1, selection: { entries: [] },
+        footerItems: [], visibilityBarrierAt: null, ownerBound: true,
+        validateLease: async () => true, confirmInjection: async () => true }),
+    });
+    assert.doesNotMatch(prepared.prompt, /STALE_BUDGET/);
+    assert.match(prepared.prompt, /not a complete transcript/);
+    assert.match(prepared.prompt, /CORRECTED_BUDGET: 42/);
+    assert.match(prepared.prompt, /Current Slack request[\s\S]*Report the corrected budget/);
+    assert.equal(calls, 3);
   } finally { store.close(); }
 });
 

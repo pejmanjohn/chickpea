@@ -127,6 +127,7 @@ test('runTurn retains the admitted latest correction across runtime rollover bey
     const agent = await f.config.createAgent({ ...assignment.agent,
       creatorMembershipId: f.admin.membership.id, editPolicy: 'creator_and_admins' });
     const workspaceId = f.admin.binding.slackTeamId;
+    await f.config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', defaultAgentId: agent.id });
     const turn: NormalizedSlackTurn = {
       ...workTurn('Ev_CONTEXT_ROLLOVER'), workspaceId, userId: f.admin.binding.slackUserId,
       actorMembershipId: f.admin.membership.id, contextMode: 'thread',
