@@ -80,6 +80,7 @@ export interface RuntimePlanMcpConnectionV2 {
 }
 
 export interface RuntimePlanApiConnectionV2 {
+  presetId?: string;
   id: string;
   allowedHosts: string[];
   pathPrefixes: string[];
@@ -729,6 +730,7 @@ function compileApiConnections(
       pathPrefixes: sortedUnique(connection.pathPrefixes),
       allowedMethods: sortedUnique(connection.allowedMethods.map((method) => method.toUpperCase())),
       headerName: connection.headerName.toLowerCase(),
+      ...(connection.presetId ? { presetId: connection.presetId } : {}),
       ...(connection.headerValuePrefix ? { headerValuePrefix: connection.headerValuePrefix } : {}),
       authMode: connection.authMode ?? 'credential',
       ...(connection.oauthProvider ? { oauthProvider: connection.oauthProvider } : {}),
@@ -1130,7 +1132,8 @@ function parseApiConnection(value: unknown, index: number): RuntimePlanApiConnec
     'authMode',
     'oauthProvider',
     'oauthScopes',
-  ], ['headerValuePrefix', 'oauthProvider', 'oauthScopes']);
+    'presetId',
+  ], ['headerValuePrefix', 'oauthProvider', 'oauthScopes', 'presetId']);
   const authMode = oneOf(
     record.authMode,
     `${label}.authMode`,
@@ -1159,6 +1162,7 @@ function parseApiConnection(value: unknown, index: number): RuntimePlanApiConnec
       : { headerValuePrefix: boundedString(record.headerValuePrefix, `${label}.headerValuePrefix`, 0, 200) }),
     authMode,
     ...(oauthProvider ? { oauthProvider } : {}),
+    ...(record.presetId === undefined ? {} : { presetId: boundedString(record.presetId, `${label}.presetId`, 1, 120) }),
     ...(oauthScopes ? { oauthScopes } : {}),
   };
 }

@@ -1,3 +1,5 @@
+import { googleWorkspaceApiPolicy, isValidApiOAuthConnectionPolicy } from '../src/config/api-oauth-policy.ts';
+import { resolveApiConnectionsForTurn } from '../src/agents/slack-thread.ts';
 import { managedConnectorWriteSummary } from '../src/connections/managed-copy.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -18,6 +20,7 @@ import {
   ConnectionScheduleConflictError,
 } from '../src/connections/store.ts';
 import {
+  applyConnectionCapabilityCeiling,
   externalActionAuthorityInstructions,
   resolveConnectionAccountContext,
   resolveConnectionSecretForInvocation,
@@ -71,16 +74,11 @@ function principal(membershipId: string, role: 'member' | 'admin' | 'owner' = 'm
 function gmailPolicy() {
   return {
     kind: 'api' as const,
-    allowedHosts: ['gmail.googleapis.com'],
-    pathPrefixes: ['/gmail/v1/'],
-    headerName: 'Authorization',
-    headerValuePrefix: 'Bearer ',
-    allowedMethods: ['GET', 'POST'],
+    ...googleWorkspaceApiPolicy(['https://www.googleapis.com/auth/gmail.readonly']),
     authMode: 'oauth' as const,
     oauthProvider: 'google' as const,
     oauthScopes: [
       'https://www.googleapis.com/auth/gmail.readonly',
-      'https://www.googleapis.com/auth/gmail.modify',
     ],
   };
 }
@@ -1544,4 +1542,22 @@ test('write connection receipts describe requested capabilities without promisin
     assert.doesNotMatch(summary, /require your confirmation|explicitly confirmed/);
     assert.match(summary, /requested|requests/);
   }
+});
+
+test('narrowed Google bindings derive the complete service policy before resolving credentials', async () => {
+  const oauthScopes = ['https://www.googleapis.com/auth/gmail.modify', 'https://www.googleapis.com/auth/drive.readonly'];
+  const policy = { kind: 'api' as const, authMode: 'oauth' as const, oauthProvider: 'google' as const, oauthScopes, ...googleWorkspaceApiPolicy(oauthScopes) };
+  const binding = { agentId: 'agent', connectionAccountId: 'google', providerId: 'google', allowedCapabilities: [oauthScopes[1]!], enabled: true, createdAt: 1, updatedAt: 1 };
+  const narrowed = applyConnectionCapabilityCeiling(policy, binding);
+  assert.equal(narrowed.kind, 'api');
+  if (narrowed.kind !== 'api') throw new Error('Expected API policy');
+  const connection = { ...narrowed, id: 'google', displayName: 'Drive', enabled: true, lifecycleStatus: 'ready' as const, statusText: 'Connected' };
+  assert.equal(isValidApiOAuthConnectionPolicy(connection), true);
+  assert.deepEqual(connection.allowedHosts, ['www.googleapis.com']);
+  assert.deepEqual(connection.allowedMethods, ['GET', 'HEAD']);
+  const resolved = await resolveApiConnectionsForTurn('agent', [connection], undefined, { resolveOAuthToken: async () => 'fixture-token' });
+  assert.equal(resolved.length, 1);
+  assert.deepEqual(resolved[0]?.connectors[0]?.allowedMethods, ['GET', 'HEAD']);
+  const empty = applyConnectionCapabilityCeiling(policy, { ...binding, allowedCapabilities: ['unknown'] });
+  assert.deepEqual(empty.kind === 'api' && empty.allowedHosts, []);
 });

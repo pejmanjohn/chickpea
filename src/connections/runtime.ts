@@ -1,3 +1,4 @@
+import { googleWorkspaceApiPolicy } from '../config/api-oauth-policy.ts';
 import {
   resolveConnectionAccountSecret,
   type ConnectionAccountSecretRef,
@@ -526,7 +527,10 @@ export function applyConnectionCapabilityCeiling(
     return { ...policy, allowedTools: policy.allowedTools.filter((tool) => allowed.has(tool)) };
   }
   if (policy.authMode === 'oauth') {
-    return { ...policy, oauthScopes: (policy.oauthScopes ?? []).filter((scope) => allowed.has(scope)) };
+    const oauthScopes = (policy.oauthScopes ?? []).filter((scope) => allowed.has(scope));
+    return policy.oauthProvider === 'google'
+      ? { ...policy, oauthScopes, ...(oauthScopes.length ? googleWorkspaceApiPolicy(oauthScopes) : { oauthScopes, allowedHosts: [], pathPrefixes: [], allowedMethods: [] }) }
+      : { ...policy, oauthScopes };
   }
   return { ...policy, allowedMethods: policy.allowedMethods.filter((method) => allowed.has(method)) };
 }

@@ -1,4 +1,5 @@
-import type { NetworkConfig, SecureFetch } from 'just-bash';
+import { Bash, InMemoryFs, type NetworkConfig, type SecureFetch } from 'just-bash';
+import { bash, type SandboxFactory } from '@flue/runtime';
 
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
 
@@ -17,6 +18,7 @@ export interface ResolvedApiConnection {
   allowedMethods: string[];
   /** Optional credential-free routing guard for scopes that share a URL path. */
   matchesRequest?: (url: string) => boolean;
+  authorize?: () => Promise<boolean>;
 }
 
 export const DEFAULT_EGRESS_POLICY: EgressPolicy = {
@@ -47,6 +49,7 @@ interface ConnectorScopeSpec {
   entries: PrefixEntry[];
   methods: string[];
   matchesRequest?: (url: string) => boolean;
+  authorize?: () => Promise<boolean>;
 }
 
 // A per-connector egress scope: a network whose allow-list contains ONLY this
@@ -59,6 +62,7 @@ interface EgressScope {
   methods: Set<string>;
   network: NetworkConfig;
   matchesRequest?: (url: string) => boolean;
+  authorize?: () => Promise<boolean>;
 }
 
 interface EgressPlan {
@@ -78,6 +82,7 @@ export interface ScopedDelegate {
   methods: Set<string>;
   delegate: SecureFetch;
   matchesRequest?: (url: string) => boolean;
+  authorize?: () => Promise<boolean>;
 }
 
 // The methods permitted for any host NOT governed by a specific connection —
@@ -173,6 +178,7 @@ export function buildEgressPlan(
     prefixes: spec.entries.map((entry) => entry.url),
     methods: new Set(spec.methods),
     ...(spec.matchesRequest ? { matchesRequest: spec.matchesRequest } : {}),
+    ...(spec.authorize ? { authorize: spec.authorize } : {}),
     // A scope network is never open-internet: its allow-list is exactly this
     // connector's hosts, so a redirect target outside them is refused by
     // just-bash's own allow-list re-check on each redirect hop.
@@ -187,7 +193,7 @@ export function buildEgressPlan(
     [
       ...domainEntries,
       ...connectorSpecs
-        .filter((spec) => spec.matchesRequest === undefined)
+        .filter((spec) => spec.matchesRequest === undefined && spec.authorize === undefined)
         .flatMap((spec) => spec.entries),
     ],
     policy,
@@ -249,6 +255,7 @@ export function createScopedFetch(params: {
         methods: scope.methods,
         delegate: scope.delegate,
         matchesRequest: scope.matchesRequest,
+        authorize: scope.authorize,
       })),
     )
     .sort((left, right) => right.prefix.length - left.prefix.length);
@@ -275,6 +282,11 @@ export function createScopedFetch(params: {
         "HTTP method '" + method + "' not allowed. Allowed methods: " + [...allowed].join(', '),
       );
       error.name = 'MethodNotAllowedError';
+      throw error;
+    }
+    if (route?.authorize && !(await route.authorize())) {
+      const error = new Error('Connection authority changed; refresh the runtime.');
+      error.name = 'BlockedUrlError';
       throw error;
     }
     return (route ? route.delegate : params.baseDelegate)(url, options);
@@ -313,6 +325,7 @@ function buildConnectorScopeSpecs(connectors: ResolvedApiConnection[]): Connecto
         entries,
         methods: connector.allowedMethods,
         ...(connector.matchesRequest ? { matchesRequest: connector.matchesRequest } : {}),
+        ...(connector.authorize ? { authorize: connector.authorize } : {}),
       };
     });
 }
@@ -392,4 +405,26 @@ async function fetchDnsFamily(
   return answers
     .filter((answer) => answer.type === answerType && typeof answer.data === 'string')
     .map((answer) => ({ address: answer.data as string, family }));
+}
+
+/** Shared virtual sandbox for ordinary and repository-fallback Agent turns. */
+export function createConnectorScopedBash(
+  policy: EgressPolicy,
+  cloudflare: boolean,
+  connectors: ResolvedApiConnection[],
+): SandboxFactory {
+  if (connectors.length === 0 && policy.mode !== 'open' && policy.domains.length === 0) {
+    return bash(() => new Bash({ fs: new InMemoryFs() }));
+  }
+  const { scopes, baseNetwork, baseMethods } = buildEgressPlan(policy, { cloudflare }, connectors);
+  const secureFetchOf = (network: NetworkConfig) =>
+    (new Bash({ fs: new InMemoryFs(), network }) as unknown as { secureFetch?: SecureFetch }).secureFetch;
+  const baseDelegate = secureFetchOf(baseNetwork);
+  const delegates = scopes.map((scope) => ({ ...scope, delegate: secureFetchOf(scope.network) }));
+  if (!baseDelegate || delegates.some(({ delegate }) => !delegate)) {
+    // Without the scoped admission seam, credentials must never be mounted.
+    return bash(() => new Bash({ fs: new InMemoryFs() }));
+  }
+  const fetch = createScopedFetch({ scopes: delegates as ScopedDelegate[], baseDelegate, baseMethods });
+  return bash(() => new Bash({ fs: new InMemoryFs(), fetch }));
 }
