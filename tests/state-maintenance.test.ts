@@ -87,6 +87,26 @@ test('seven indexes install on populated upgrade without changing state; repeat 
   } finally { db.close(); }
 });
 
+test('turn retention computes the bound-plan ID list outside the terminal-row scan', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const trace = recordingDb(db);
+    const turns = new TurnJobStoreLogic(trace.db, () => NOW);
+    trace.statements.length = 0;
+    turns.getAgentBinding(`agent_${'0'.repeat(40)}`);
+    const cleanup = trace.statements.find(({ sql }) => /DELETE FROM turn_jobs/.test(sql));
+    assert.ok(cleanup);
+    const plan = db.all(`EXPLAIN QUERY PLAN ${cleanup.sql}`, ...cleanup.params);
+    const retainedIds = plan.find((row) => /^LIST SUBQUERY/.test(String(row.detail)) && Number(row.parent) === 0);
+    assert.ok(retainedIds, 'retained IDs must be one uncorrelated list, not a per-terminal-row subquery');
+    const bindingScan = plan.find((row) => String(row.detail) === 'SCAN b');
+    assert.equal(bindingScan?.parent, retainedIds.id);
+    assert.ok(plan.some((row) => String(row.detail).includes('SEARCH prior USING INDEX turn_jobs_instance_id_idx')));
+    assert.ok(plan.filter((row) => /CORRELATED/.test(String(row.detail)))
+      .every((row) => row.parent === retainedIds.id), 'only latest-plan lookups within the retained list may correlate');
+  } finally { db.close(); }
+});
+
 test('real maintenance queries use all seven indexes and skip routine runtime schema probes', () => {
   const db = openStateDb(':memory:');
   try {

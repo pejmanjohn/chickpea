@@ -159,6 +159,12 @@ test('only latest bound dispatched context survives terminal TTL and expires wit
   try {
     const first = await f.run('Search Work for invoices');
     const second = await f.run('Open the first result');
+    // A binding without a surviving dispatched row contributes null to the
+    // retention lookup; it must not make NOT IN retain every completed job.
+    f.jobs.pinAgentBinding({
+      continuityKey: `agent_${'a'.repeat(40)}`, instanceId: `agent_${'b'.repeat(40)}`,
+      uid: 'inst_00000000000000000000000009', updatedAt: Date.now(),
+    });
     assert.equal(f.jobs.getBoundRuntimePlan(second.plan.conversation.continuityKey, first.turn.messageTs), undefined, 'future messages are never prior routing context');
     f.advance(TURN_JOB_TTL_MS + 1);
     assert.ok(f.jobs.getBoundRuntimePlan(second.plan.conversation.continuityKey, '1800000001.000000'));

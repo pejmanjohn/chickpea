@@ -1083,17 +1083,20 @@ export class TurnJobStoreLogic {
     );
     // Keep one dispatched routing context per live binding. Other completed
     // turns retain the ordinary redelivery TTL; expired bindings retain none.
+    // Build the retained-ID list once, independently of the terminal-row scan.
     this.db.run(
       `DELETE FROM turn_jobs
        WHERE delivered = 1 AND enqueued_at < ?
          AND progress_json NOT LIKE '%"cleanup":"pending"%'
-         AND NOT EXISTS (
-           SELECT 1 FROM slack_agent_bindings b WHERE turn_jobs.id = (
-             SELECT prior.id FROM turn_jobs prior
-             WHERE prior.agent_instance_id = b.instance_id
-               AND prior.dispatch_receipt_json IS NOT NULL
-             ORDER BY CAST(json_extract(prior.turn_json, '$.messageTs') AS REAL) DESC LIMIT 1
-           )
+         AND id NOT IN (
+           SELECT retained_id FROM (
+             SELECT (
+               SELECT prior.id FROM turn_jobs prior
+               WHERE prior.agent_instance_id = b.instance_id
+                 AND prior.dispatch_receipt_json IS NOT NULL
+               ORDER BY CAST(json_extract(prior.turn_json, '$.messageTs') AS REAL) DESC LIMIT 1
+             ) AS retained_id FROM slack_agent_bindings b
+           ) WHERE retained_id IS NOT NULL
          )`,
       now - TURN_JOB_TTL_MS,
     );
