@@ -56,10 +56,10 @@ import { agentAvatarUrlForPresentation } from './agent-presence/avatar-assets.ts
 import type { SlackStatusUpdate } from './replies.ts';
 import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { registerSlackStatusTurn } from './status-registry.ts';
-import { currentMessageOnlyContext, type SlackTurnContext } from './thread-context.ts';
+import { currentMessageOnlyContext } from './thread-context.ts';
 import { slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
-import { formatSlackPublicHandoff, retainedSlackReplyBackground } from './public-context.ts';
+import { assembleRetainedSlackContext, formatSlackPublicHandoff } from './public-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import {
   effectiveTurnSlackInstallationId,
@@ -201,6 +201,13 @@ export interface RunTurnOptions {
   continuityKey?: string;
   /** First-write-wins decision restored from a prior durable attempt. */
   runtimePlanDecision?: FrozenRuntimePlanDecision;
+  /** Trusted routing context from the bound, previously dispatched TurnJob. */
+  getBoundRuntimePlan?: (
+    continuityKey: string,
+    beforeMessageTs: string,
+    actorMembershipId: string,
+    agentId: string,
+  ) => RuntimePlanV2 | undefined | Promise<RuntimePlanV2 | undefined>;
   /** Persist the first complete plan before the agent dispatch boundary. */
   onRuntimePlan?: (
     candidate: RuntimePlanV2,
@@ -461,6 +468,7 @@ export async function runTurn(
           ...(settingsStore ? { settingsStore } : {}),
           ...(options.appStores?.config ? { configStore: options.appStores.config } : {}),
           ...(options.onRuntimePlan ? { persist: options.onRuntimePlan } : {}),
+          ...(options.getBoundRuntimePlan ? { getBoundRuntimePlan: options.getBoundRuntimePlan } : {}),
         });
     runtimePlanDecision = frozen.decision;
     sandboxUnavailableFallback = frozen.unavailableFallback;
@@ -1002,19 +1010,13 @@ export async function runTurn(
     const hydratedContext = frozenHandoff.length > 0
       ? currentMessageOnlyContext(turn)
       : await hydrateSlackContextViaWebClient(client, turn);
-    const context = applyVisibilityBarrier(
-      hydratedContext,
-      preparedMemory?.visibilityBarrierAt ?? null,
-    );
-    const handoffBlock = formatSlackPublicHandoff(frozenHandoff) ??
-      (assignment.runtimeContract === 'chickpea-v1'
-        ? await retainedSlackReplyBackground(
-            options.appStores?.config ?? getConfigStore(platformEnv), turn, assignment.agentId,
-          ).catch(() => {
-            console.warn('[chickpea] retained public Slack reply hydration failed');
-            return undefined;
-          })
-        : undefined);
+    const context = await assembleRetainedSlackContext(hydratedContext, turn, {
+      visibilityBarrierAt: preparedMemory?.visibilityBarrierAt ?? null,
+      ...(assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0
+        ? { store: options.appStores?.config ?? getConfigStore(platformEnv), agentId: assignment.agentId }
+        : {}),
+    });
+    const handoffBlock = formatSlackPublicHandoff(frozenHandoff);
     const progressiveRelayFactory = options.prepareProgressiveRelay ??
       (agentViewPresentation
         ? (input: Parameters<NonNullable<RunTurnOptions['prepareProgressiveRelay']>>[0]) =>
@@ -1323,10 +1325,11 @@ export async function runTurn(
         });
       } catch {
         // Unavailable receipts or revoked actors retain the ordinary lease check.
+        acknowledgeMemoryUpdate = false;
       }
     }
     if (acknowledgeMemoryUpdate) {
-      text = recoveredText ?? 'Updated this Agent’s saved memory.';
+      text = recoveredText ?? agentResult?.memoryUpdate?.summary ?? 'I updated my memory.';
       tablePresentation = undefined;
     }
     // Confirmation only prevents reinjecting the same selection into this
@@ -1647,6 +1650,7 @@ async function freezeRuntimePlanForTurn(input: {
   configStore?: ReturnType<typeof getConfigStore>;
   memoryEpoch: number;
   persist?: (candidate: RuntimePlanV2) => FrozenRuntimePlanDecision | Promise<FrozenRuntimePlanDecision>;
+  getBoundRuntimePlan?: RunTurnOptions['getBoundRuntimePlan'];
 }): Promise<{
   decision: FrozenRuntimePlanDecision;
   unavailableFallback: boolean;
@@ -1677,9 +1681,21 @@ async function freezeRuntimePlanForTurn(input: {
     : undefined;
   const allEffectiveConnections = connectionContext?.effective ?? [];
   const connectionAuthorizations = connectionContext?.authorizations;
+  const previous = input.turn.actorMembershipId ? await input.getBoundRuntimePlan?.(
+    opaqueId('agent', slackAgentThreadKey(input.turn, input.assignment)), input.turn.messageTs,
+    input.turn.actorMembershipId, input.assignment.agentId,
+  ) : undefined;
+  const sameActorThread = previous && input.turn.actorMembershipId &&
+    previous.actorMembershipId === input.turn.actorMembershipId &&
+    previous.agentId === input.assignment.agentId &&
+    previous.ownerIncarnation === (input.assignment.ownerIncarnation ?? 1) &&
+    previous.conversation.workspaceId === input.turn.workspaceId &&
+    previous.conversation.channelId === input.turn.channelId &&
+    previous.conversation.threadTs === input.turn.threadTs;
   const connectionResolution = selectConnectionsForRequest({
     connections: allEffectiveConnections,
     requestText: input.turn.text,
+    ...(sameActorThread && previous.connectionSelections ? { previousSelections: previous.connectionSelections } : {}),
   });
   const canonicalModel = resolvedAssignmentModel(input.assignment);
   if (!canonicalModel) {
@@ -1708,6 +1724,7 @@ async function freezeRuntimePlanForTurn(input: {
     effectiveConnections: connectionResolution.selected,
     ...(connectionAuthorizations ? { connectionAuthorizations } : {}),
     connectionChoices: connectionResolution.ambiguous,
+    connectionSelections: connectionResolution.selections,
   });
   const decision = input.persist
     ? await input.persist(candidate)
@@ -1796,33 +1813,6 @@ function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): s
   } catch {
     return undefined;
   }
-}
-
-function applyVisibilityBarrier(
-  context: SlackTurnContext,
-  barrierAt: number | null,
-): SlackTurnContext {
-  if (barrierAt === null) return context;
-  return {
-    ...context,
-    messages: context.messages.filter((message) => {
-      if (message.isTrigger) return true;
-      return slackTimestampAtOrAfter(message.ts, barrierAt);
-    }),
-  };
-}
-
-function slackTimestampAtOrAfter(timestamp: string, barrierAt: number): boolean {
-  if (!Number.isSafeInteger(barrierAt) || barrierAt < 0) return false;
-  const match = /^(\d+)(?:\.(\d+))?$/.exec(timestamp);
-  if (!match) return false;
-  const fraction = match[2] ?? '';
-  const scaleDigits = Math.max(3, fraction.length);
-  const scale = 10n ** BigInt(scaleDigits);
-  const timestampUnits =
-    BigInt(match[1]!) * scale + BigInt(fraction.padEnd(scaleDigits, '0') || '0');
-  const barrierUnits = BigInt(barrierAt) * (scale / 1_000n);
-  return timestampUnits >= barrierUnits;
 }
 
 export function sanitizeError(err: unknown): string {

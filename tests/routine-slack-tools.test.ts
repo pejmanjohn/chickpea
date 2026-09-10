@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { routineNextRunTime } from '../src/routines/message-format.ts';
+import { formatRoutineLocalDateTime, routineNextRunTime } from '../src/routines/message-format.ts';
 import test from 'node:test';
 
 import {
@@ -87,7 +87,8 @@ test('recurring and run-now arguments use the same first-class schedule action',
 test('schedule tools provide host-formatted UTC and local due times without model arithmetic', () => {
   const instant = 1788596100000;
   assert.deepEqual(routineNextRunTime(instant, 'UTC'), {
-    isoUtc: '2026-09-05T08:15:00.000Z', local: '2026-09-05 08:15:00 UTC', timezone: 'UTC',
+    isoUtc: '2026-09-05T08:15:00.000Z', local: '2026-09-05 08:15:00 UTC',
+    display: 'Sep 5, 2026, 8:15 AM UTC', timezone: 'UTC',
   });
   assert.equal(routineNextRunTime(instant, 'America/Los_Angeles')?.local,
     '2026-09-05 01:15:00 America/Los_Angeles');
@@ -96,7 +97,34 @@ test('schedule tools provide host-formatted UTC and local due times without mode
   const nextRunTime = routineNextRunTime(instant, 'UTC');
   const result = scheduleActionToolResult({ outcome: 'applied', effect: 'saved', routineId: 'routine_time', nextRunTime });
   assert.deepEqual(result.nextRunTime, nextRunTime);
-  assert.match(String(result.timeInstruction), /Quote nextRunTime.local or nextRunTime.isoUtc exactly/);
+  assert.match(String(result.timeInstruction), /Use nextRunTime.display/);
+  assert.match(String(result.timeInstruction), /machine-readable timestamp is requested or required/);
+  assert.match(String(result.timeInstruction), /copy nextRunTime.isoUtc exactly in code formatting/);
+  assert.match(String(result.timeInstruction), /Do not append an IANA timezone identifier/);
+});
+
+test('friendly due times preserve calendar dates, DST offsets, and half-hour zones', () => {
+  const cases = [
+    ['2026-09-10T04:54:00Z', 'America/Los_Angeles', 'Sep 9, 2026, 9:54 PM PDT'],
+    ['2026-03-08T09:30:00Z', 'America/Los_Angeles', 'Mar 8, 2026, 1:30 AM PST'],
+    ['2026-03-08T10:30:00Z', 'America/Los_Angeles', 'Mar 8, 2026, 3:30 AM PDT'],
+    ['2026-11-01T08:30:00Z', 'America/Los_Angeles', 'Nov 1, 2026, 1:30 AM PDT'],
+    ['2026-11-01T09:30:00Z', 'America/Los_Angeles', 'Nov 1, 2026, 1:30 AM PST'],
+    ['2026-09-09T20:00:00Z', 'Asia/Kolkata', 'Sep 10, 2026, 1:30 AM GMT+5:30'],
+  ];
+  for (const [iso, zone, expected] of cases) {
+    const result = routineNextRunTime(Date.parse(iso!), zone!);
+    assert.equal(result?.display, expected);
+    assert.equal(result?.isoUtc, new Date(iso!).toISOString());
+  }
+});
+
+test('one-time preview displays the original wall clock without converting its timezone', () => {
+  assert.equal(formatRoutineLocalDateTime('2026-09-09T21:54'), 'Sep 9, 2026, 9:54 PM');
+  assert.equal(formatRoutineLocalDateTime('2027-01-01T00:00'), 'Jan 1, 2027, 12:00 AM');
+  for (const input of ['2026-09-09T21:54:30', '2026-02-30T10:00', '2026-09-09T24:00', '2026-09-09']) {
+    assert.equal(formatRoutineLocalDateTime(input), input, 'unvalidated input must remain visible');
+  }
 });
 
 test('an applied action in a non-active safe state says it will not run', () => {

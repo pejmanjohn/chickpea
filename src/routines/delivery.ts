@@ -19,6 +19,7 @@ import {
 } from './runtime.ts';
 import type {
   RoutineDefinition,
+  RoutineDeliveryFailureClass,
   RoutineRecoveryDelivery,
   RoutineRun,
   RoutineStore,
@@ -32,6 +33,7 @@ const DEFINITIVE_DIRECT_THREAD_ERRORS = new Set([
   'restricted_action_non_threadable_channel',
   'restricted_action_thread_locked',
 ]);
+const UNAVAILABLE_DESTINATION_ERRORS = new Set(['channel_not_found', 'is_archived', 'not_in_channel']);
 
 export const DIRECT_ROUTINE_RECOVERY_NOTICE =
   'Chickpea paused private scheduled work because its original thread could not receive a reply. Ask Chickpea here to list private schedules.';
@@ -129,8 +131,6 @@ export async function deliverRoutineResult(
   return deliverRoutineSlackMessage(
     { ...input, approvedOutput: canonicalSlackReplyText(input.message, 'markdown') },
     renderRoutineDelivery(
-      input.routine,
-      input.run,
       input.message,
       routineReplyFooter(input.access, input.routine),
     ),
@@ -240,6 +240,18 @@ async function deliverRoutineSlackMessage(
     renderedPayload: JSON.stringify({ method: 'slack_chat_post_message', payload }),
   });
 
+  const rejectDelivery = async (failureClass: RoutineDeliveryFailureClass): Promise<never> => {
+    const outcome = failureClass === 'delivery_unknown' ? 'unknown' : 'failed';
+    await recordFailedDelivery(input.store, input.run.id, outcome, now(), failureClass);
+    await input.workLifecycle?.afterDelivery({
+      attemptId: workAttemptId,
+      outcome,
+      ...(outcome === 'failed' ? { terminalDisposition: 'failed' as const } : {}),
+      safeFailureCode: failureClass,
+    });
+    throw routineDeliveryFailure(failureClass);
+  };
+
   let response: ChatPostMessageResponse;
   let rateLimitRetries = 0;
   while (true) {
@@ -261,60 +273,12 @@ async function deliverRoutineSlackMessage(
         await (input.sleep ?? sleep)(retryAfterMs);
         continue;
       }
-      const directThreadUnavailable = input.routine.destination.kind === 'direct_thread' &&
-        isDefinitiveDirectThreadError(error);
-      const rateLimited = slackErrorCode(error) === ErrorCode.RateLimitedError;
-      await input.workLifecycle?.afterDelivery({
-        attemptId: workAttemptId,
-        outcome: directThreadUnavailable || rateLimited ? 'failed' : 'unknown',
-        ...(directThreadUnavailable ? { terminalDisposition: 'failed' as const } : {}),
-        safeFailureCode: directThreadUnavailable
-          ? 'direct_thread_unavailable'
-          : rateLimited ? 'slack_rate_limited' : 'delivery_unknown',
-      });
-      await recordFailedDelivery(
-        input.store,
-        input.run.id,
-        directThreadUnavailable || rateLimited ? 'failed' : 'unknown',
-        now(),
-        directThreadUnavailable ? 'direct_thread_unavailable' : undefined,
-      );
-      if (directThreadUnavailable) {
-        throw new RoutineRuntimeError(
-          'direct_thread_unavailable',
-          'The private routine thread could not receive a reply.',
-        );
-      }
-      throw new RoutineRuntimeError(
-        rateLimited ? 'slack_rate_limited' : 'delivery_unknown',
-        rateLimited
-          ? 'Slack rate-limited the routine result after a bounded retry.'
-          : 'Slack delivery may have completed but could not be confirmed; Chickpea did not retry it.',
-      );
+      return rejectDelivery(classifyRoutineSlackRejection(error, input.routine.destination.kind));
     }
   }
   const channelId = typeof response.channel === 'string' ? response.channel : undefined;
   const messageTs = typeof response.ts === 'string' ? response.ts : undefined;
-  if (input.routine.destination.kind === 'direct_thread' &&
-      isDefinitiveDirectThreadError(response)) {
-    await input.workLifecycle?.afterDelivery({
-      attemptId: workAttemptId,
-      outcome: 'failed',
-      terminalDisposition: 'failed',
-      safeFailureCode: 'direct_thread_unavailable',
-    });
-    await recordFailedDelivery(
-      input.store,
-      input.run.id,
-      'failed',
-      now(),
-      'direct_thread_unavailable',
-    );
-    throw new RoutineRuntimeError(
-      'direct_thread_unavailable',
-      'The private routine thread could not receive a reply.',
-    );
-  }
+  if (!response.ok) return rejectDelivery(classifyRoutineSlackRejection(response, input.routine.destination.kind));
   if (!response.ok || channelId !== input.routine.channelId || !messageTs) {
     await input.workLifecycle?.afterDelivery({
       attemptId: workAttemptId,
@@ -426,29 +390,15 @@ export async function deliverRoutineRecoveryNotice(
 }
 
 export function renderRoutineDelivery(
-  routine: Pick<RoutineDefinition, 'name' | 'id' | 'timezone' | 'destination'>,
-  run: Pick<RoutineRun, 'id' | 'scheduledFor'>,
   message: string,
-  footer?: SlackReplyFooter,
+  footer: SlackReplyFooter,
 ): RenderedSlackMessage {
-  // Successful Channel work is the Agent's result, not a status card. Keep
-  // schedule metadata in Admin while retaining the normal safe Slack renderer.
-  if (routine.destination.kind === 'channel') return renderSlackMessage(message, 'markdown');
-  const rendered = renderSlackMessage(
-    `✅ **Routine completed**\n**${escapeSlackControlCharacters(routine.name)}**\n\n${message}`,
-    'markdown',
-  );
-  const fallback = renderSlackMessage(`Routine completed: ${routine.name}\n\n${message}`, 'plain_text');
-  const withRunContext = appendRoutineRunContext(
-    rendered,
-    routine,
-    run,
-    footer?.publicUrl,
-    footer?.agentId,
-    routine.destination.kind === 'direct_thread',
-  );
-  const withFallback = { ...withRunContext, text: fallback.text };
-  return footer ? appendSlackReplyFooter(withFallback, footer) : withFallback;
+  const rendered = renderSlackMessage(message, 'markdown');
+  return appendSlackReplyFooter(rendered, {
+    ...footer,
+    includeConfigureLink: false,
+    scheduled: true,
+  });
 }
 
 function appendRoutineRunContext(
@@ -548,7 +498,7 @@ async function recordFailedDelivery(
   occurrenceId: string,
   outcome: 'unknown' | 'failed',
   at: number,
-  failureClass?: 'direct_thread_unavailable',
+  failureClass?: RoutineDeliveryFailureClass,
 ): Promise<void> {
   try {
     await store.recordDelivery({
@@ -652,9 +602,27 @@ function sleep(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
-function isDefinitiveDirectThreadError(error: unknown): boolean {
+function classifyRoutineSlackRejection(
+  error: unknown,
+  destination: RoutineDefinition['destination']['kind'],
+): RoutineDeliveryFailureClass {
   const code = slackPlatformErrorCode(error);
-  return code !== undefined && DEFINITIVE_DIRECT_THREAD_ERRORS.has(code);
+  if (slackErrorCode(error) === ErrorCode.RateLimitedError || code === 'ratelimited') return 'slack_rate_limited';
+  if (code && (UNAVAILABLE_DESTINATION_ERRORS.has(code) ||
+      destination === 'direct_thread' && DEFINITIVE_DIRECT_THREAD_ERRORS.has(code))) {
+    return destination === 'direct_thread' ? 'direct_thread_unavailable' : 'channel_destination_unavailable';
+  }
+  return 'delivery_unknown';
+}
+
+export function routineDeliveryFailure(failureClass: RoutineDeliveryFailureClass): RoutineRuntimeError {
+  const messages: Record<RoutineDeliveryFailureClass, string> = {
+    direct_thread_unavailable: 'The private routine thread could not receive a reply.',
+    channel_destination_unavailable: 'The scheduled destination channel could not receive a reply. Restore access before resuming.',
+    slack_rate_limited: 'Slack rate-limited the routine result after a bounded retry.',
+    delivery_unknown: 'Slack delivery may have completed but could not be confirmed; Chickpea did not retry it.',
+  };
+  return new RoutineRuntimeError(failureClass, messages[failureClass]);
 }
 
 function slackPlatformErrorCode(error: unknown): string | undefined {

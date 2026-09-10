@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import type { AgentInstanceHandle, AgentReply, DispatchReceipt } from '@flue/runtime';
+import { WebClient } from '@slack/web-api';
 
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
@@ -31,6 +32,138 @@ import type { RunExecutionId, WorkStore } from '../src/work/types.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 
 const NOW = Date.UTC(2026, 6, 27, 12);
+
+for (const rejection of ['channel_not_found', 'is_archived', 'not_in_channel', 'ratelimited']) {
+  test(`completed execution settles definite delivery rejection ${rejection} without rewriting its result`, async () => {
+    const store = new SqliteRoutineStore(':memory:', () => NOW);
+    let posts = 0;
+    const client = new WebClient('xoxb-test', {
+      retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, slackApiUrl: 'https://slack.invalid/api/',
+      fetch: async () => {
+        posts += 1;
+        return Response.json({ ok: false, error: rejection }, rejection === 'ratelimited'
+          ? { status: 429, headers: { 'retry-after': '120' } } : {});
+      },
+    });
+    try {
+      const fixture = await admittedFixture(store, rejection);
+      const base = dependencies();
+      const deps = { ...base,
+        resolveAccess: async (...args: Parameters<typeof base.resolveAccess>) => ({ ...await base.resolveAccess(...args), client }),
+        handle: fakeHandle({ reply: successfulReply() }),
+      };
+      const input = { env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt };
+      assert.equal(await executeRoutineOccurrence(input, deps), 'completed');
+      const run = await store.getRun(fixture.run.id);
+      const routine = await store.getRoutine(fixture.routine.id);
+      assert.equal(run?.flueAgentSettlement?.outcome, 'completed');
+      assert.equal(run?.status, 'failed');
+      assert.equal(run?.deliveryStatus, 'failed');
+      assert.equal(run?.failureClass, rejection === 'ratelimited' ? 'slack_rate_limited' : 'channel_destination_unavailable');
+      assert.equal(routine?.state, rejection === 'ratelimited' ? 'active' : 'paused');
+      assert.equal(await store.getRecoveryDelivery(fixture.run.id), undefined);
+      assert.equal(await executeRoutineOccurrence(input, deps), 'superseded');
+      assert.equal(posts, 1);
+    } finally { store.close(); }
+  });
+}
+
+test('three exhausted Slack rate limits pause recurring work through the failure policy', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  let posts = 0;
+  let notices = 0;
+  const client = new WebClient('xoxb-test', {
+    retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, slackApiUrl: 'https://slack.invalid/api/',
+    fetch: async (_url, init) => {
+      const text = new URLSearchParams(String(init?.body ?? '')).get('text') ?? '';
+      if (text.includes('paused scheduled work')) {
+        notices += 1;
+        return Response.json({ ok: true, channel: 'C_TEST', ts: '1785153600.000002' });
+      }
+      posts += 1;
+      return Response.json({ ok: false, error: 'ratelimited' },
+        { status: 429, headers: { 'retry-after': '120' } });
+    },
+  });
+  try {
+    const fixture = await admittedFixture(store, 'repeated_rate_limit');
+    const base = dependencies();
+    const deps = { ...base,
+      resolveAccess: async (...args: Parameters<typeof base.resolveAccess>) => ({ ...await base.resolveAccess(...args), client }),
+      handle: fakeHandle({ reply: successfulReply() }),
+    };
+    for (let index = 0; index < 3; index += 1) {
+      const run = index === 0 ? fixture.run : await store.createOccurrence({
+        runId: `rrun_repeated_rate_limit_${index}`, idempotencyKey: `rate-limit:${index}`,
+        routineId: fixture.routine.id, routineVersion: fixture.routine.version,
+        scheduledFor: NOW + index, triggerSource: 'schedule', queuedAt: NOW, deadlineAt: NOW + 60_000,
+      });
+      const attempt = index === 0 ? fixture.attempt : await store.startAdmissionAttempt({
+        occurrenceId: run.id, owner: 'heartbeat', invokeStartedAt: NOW, leaseUntil: NOW + 30_000,
+      });
+      assert.equal(await executeRoutineOccurrence({ env: {}, store, occurrenceId: run.id, attempt: attempt.attempt }, deps), 'completed');
+      const saved = await store.getRun(run.id);
+      assert.equal(saved?.flueAgentSettlement?.outcome, 'completed');
+      assert.equal(saved?.failureClass, 'slack_rate_limited');
+      const routine = await store.getRoutine(fixture.routine.id);
+      assert.equal(routine?.consecutiveFailures, index + 1);
+      assert.equal(routine?.state, index === 2 ? 'paused' : 'active');
+      if (index === 2) {
+        assert.equal(routine?.pausedReason, 'consecutive_failures');
+        assert.equal((await store.getRecoveryDelivery(run.id))?.status, 'accepted');
+      }
+    }
+    assert.equal(posts, 3);
+    assert.equal(notices, 1);
+  } finally { store.close(); }
+});
+
+for (const outcome of ['delivered', 'failed', 'unknown', 'leased'] as const) {
+  test(`reentry uses durable ${outcome} delivery after a finalization interruption`, async () => {
+    const store = new SqliteRoutineStore(':memory:', () => NOW);
+    try {
+      const fixture = await admittedFixture(store, `receipt_${outcome}`);
+      const deps = dependencies();
+      // First persist a genuine execution envelope/settlement but stop at the
+      // delivery boundary, simulating a process interruption.
+      const claim = store.claimDelivery.bind(store);
+      store.claimDelivery = async () => { throw new Error('process interrupted'); };
+      await assert.rejects(executeRoutineOccurrence(
+        { env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt },
+        { ...deps, handle: fakeHandle({ reply: successfulReply() }) },
+      ), /process interrupted/);
+      store.claimDelivery = claim;
+      const saved = (await store.getRun(fixture.run.id))!.flueAgentSettlement;
+      assert.equal(saved?.outcome, 'completed');
+      await store.claimDelivery({ occurrenceId: fixture.run.id, at: NOW, leaseUntil: NOW + 10_000 });
+      if (outcome !== 'leased') await store.recordDelivery({
+        occurrenceId: fixture.run.id, outcome, at: NOW,
+        ...(outcome === 'delivered' ? { channelId: 'C_TEST', messageTs: '1785153600.000001' }
+          : { failureClass: outcome === 'failed' ? 'slack_rate_limited' : 'delivery_unknown' }),
+      });
+      let recoveryNotices = 0;
+      const client = new WebClient('xoxb-test', {
+        retryConfig: { retries: 0 },
+        fetch: async (_url, init) => {
+          const text = new URLSearchParams(String(init?.body ?? '')).get('text') ?? '';
+          assert.match(text, /paused scheduled work/);
+          recoveryNotices += 1;
+          return Response.json({ ok: true, channel: 'C_TEST', ts: '1785153600.000002' });
+        },
+      });
+      const result = await executeRoutineOccurrence(
+        { env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt },
+        { ...deps, resolveAccess: async (...args: Parameters<typeof deps.resolveAccess>) => ({ ...await deps.resolveAccess(...args), client }) },
+      );
+      assert.equal(result, outcome === 'leased' ? 'resumable' : 'completed');
+      const run = await store.getRun(fixture.run.id);
+      assert.deepEqual(run?.flueAgentSettlement, saved);
+      assert.equal(run?.status, outcome === 'leased' ? 'running' : outcome === 'delivered' ? 'succeeded' : 'failed');
+      if (outcome === 'failed') assert.equal(run?.failureClass, 'slack_rate_limited');
+      assert.equal(recoveryNotices, outcome === 'unknown' ? 1 : 0);
+    } finally { store.close(); }
+  });
+}
 
 const config = {
   workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: 'agent_default',

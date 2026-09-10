@@ -403,7 +403,7 @@ export type AgentThreadRouteInput = Omit<
 
 export type SlackPublicContextRole = 'human' | 'agent';
 
-/** Internal Slack-visible context used only when a thread transfers owners. */
+/** Bounded retained Slack-visible context; never private runtime state. */
 export interface SlackPublicContextEntry {
   workspaceId: string;
   channelId: string;
@@ -412,6 +412,8 @@ export interface SlackPublicContextEntry {
   role: SlackPublicContextRole;
   text: string;
   agentId?: string;
+  /** Slack timestamp of an edit; excludes later revisions from an earlier turn. */
+  contentVersionTs?: string;
   updatedAt: number;
 }
 

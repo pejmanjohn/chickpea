@@ -462,3 +462,18 @@ Before enabling a customer workspace, prove in staging:
 - A native Google account spanning several services is withheld from all of them when any managed connector duplicates one service and the request does not identify a unique account. Migrate Gmail, Calendar, and Drive together when practical; otherwise give the native account a distinctive label that users can name during the transition.
 
 References: [authentication and stable user IDs](https://docs.composio.dev/docs/authentication), [Connect Link SDK](https://docs.composio.dev/reference/sdk-reference/typescript/connected-accounts), [connected accounts and callback identity verification](https://docs.composio.dev/reference/v3/api-reference/connected-accounts), [deferred auth completion](https://docs.composio.dev/reference/api-reference/connected-accounts/postConnectedAccountsCompleteAuth), [receiving and verifying webhooks](https://docs.composio.dev/docs/setting-up-triggers/subscribing-to-events), [scoped project keys](https://docs.composio.dev/reference/authenticating-to-composio/project-api-key-permissions), [toolkit versioning](https://docs.composio.dev/docs/tools-direct/toolkit-versioning), [rate limits](https://docs.composio.dev/reference/v3/rate-limits), [pricing](https://composio.dev/pricing), [Gmail](https://docs.composio.dev/toolkits/gmail), [Google Calendar](https://docs.composio.dev/toolkits/googlecalendar), [Google Drive](https://docs.composio.dev/toolkits/googledrive), [Google Sheets](https://docs.composio.dev/toolkits/googlesheets), [Google Docs](https://docs.composio.dev/toolkits/googledocs), [Google Slides](https://docs.composio.dev/toolkits/googleslides), [Google Search Console](https://docs.composio.dev/toolkits/google_search_console), [Google Analytics](https://docs.composio.dev/toolkits/google_analytics), [HubSpot](https://docs.composio.dev/toolkits/hubspot), [HubSpot OAuth v1 deprecation](https://developers.hubspot.com/changelog/v1-oauth-api-deprecation), [HubSpot v4 end of support](https://developers.hubspot.com/changelog/deprecating-support-for-hubspot-v4-apis), [Gong](https://docs.composio.dev/toolkits/gong), [Google Ads](https://docs.composio.dev/toolkits/googleads), [Google Ads access levels and permissible use](https://developers.google.com/google-ads/api/docs/api-policy/access-levels), [Google Ads API sunsets](https://developers.google.com/google-ads/api/docs/sunset-dates), [YouTube](https://docs.composio.dev/toolkits/youtube), [YouTube quota costs](https://developers.google.com/youtube/v3/determine_quota_cost), [YouTube quota and compliance audits](https://developers.google.com/youtube/v3/guides/quota_and_compliance_audits), [Notion](https://docs.composio.dev/toolkits/notion), and [Notion OAuth authorization](https://developers.notion.com/guides/get-started/authorization).
+
+### Authorization while a request is waiting
+
+Managed invocations keep the admitted account, provider identity, capability and
+resource policy. Chickpea rechecks current actor and binding eligibility after
+quota reservation and before Composio preflight calls, file staging requests,
+file uploads and capability dispatch, including session-based execution.
+Changed resource constraints require a fresh invocation; an in-flight request
+never adopts additional resources or a replacement account. A local denial
+reports definite non-dispatch, counts completed preflight requests and releases
+only unused quota under the existing quota policy.
+
+These checks stop revocations observed before dispatch. They cannot atomically
+cancel a remote request already sent. Post-write verification continues against
+the admitted account so a completed write is not reported as a local denial.

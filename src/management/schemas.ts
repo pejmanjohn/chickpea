@@ -146,6 +146,7 @@ const zOperationBase = {
   dependsOn: z.array(zId).max(25).optional(),
 };
 const zRoutineSchedule = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('preserve') }),
   z.strictObject({ kind: z.literal('cron'), expression: zText(200) }),
   z.strictObject({ kind: z.literal('once'), localDateTime: zText(64) }),
   z.strictObject({
@@ -489,6 +490,7 @@ const vChannel = v.strictObject({
 });
 const vOperationBase = { itemId: vid, dependsOn: v.optional(va(vid, 25)) };
 const vRoutineSchedule = v.variant('kind', [
+  v.strictObject({ kind: v.literal('preserve') }),
   v.strictObject({ kind: v.literal('cron'), expression: vt(200) }),
   v.strictObject({ kind: v.literal('once'), localDateTime: vt(64) }),
   v.strictObject({

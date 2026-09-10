@@ -54,14 +54,23 @@ export interface PersonalConnectionAuthorizationOption {
 }
 
 export type ConnectionSelection =
-  | { kind: 'selected'; connection: EffectiveConnectionAccount; reason: 'only_eligible' | 'language' }
+  | { kind: 'selected'; connection: EffectiveConnectionAccount; reason: 'only_eligible' | 'language' | 'previous' }
   | { kind: 'missing'; providerId: string }
   | { kind: 'ambiguous'; providerId: string; choices: EffectiveConnectionAccount[] };
 
+/** Routing context only; every invocation still checks current authority. */
+export interface ConnectionAccountSelection {
+  group: string;
+  providerId: string;
+  accountId: string;
+}
+
 export interface ConnectionRequestResolution {
   selected: EffectiveConnectionAccount[];
+  selections: ConnectionAccountSelection[];
   ambiguous: Array<{
     providerId: string;
+    previousAccountUnavailable?: boolean;
     choices: Array<{ label: string; purpose?: string; scope: 'team' | 'personal' }>;
   }>;
 }

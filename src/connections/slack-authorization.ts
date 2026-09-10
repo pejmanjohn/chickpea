@@ -232,6 +232,19 @@ export async function startPersonalConnectionAuthorization(input: {
   };
 }
 
+export function connectionChoiceInstructions(choices: NonNullable<RuntimePlanV2['connectionChoices']>): string {
+  const availableChoices = choices.filter((choice) => choice.choices.length > 0);
+  const unavailableProviders = choices.filter((choice) => choice.choices.length === 0).map((choice) => choice.providerId);
+  return [
+    'Some connection credentials were withheld because the account choice is ambiguous or the previously selected account is no longer available.',
+    ...(availableChoices.length > 0
+      ? [`Ask the user to choose one of these labels before using that provider: ${JSON.stringify(availableChoices)}.`] : []),
+    ...(unavailableProviders.length > 0
+      ? [`No eligible account is available for ${unavailableProviders.join(', ')}. Explain that the previously selected account is unavailable and ask the user to reconnect it through the existing authorization flow or Agent connection settings. Do not offer an empty account list or silently select a replacement.`] : []),
+    'When previousAccountUnavailable is true, explain that the previously selected account needs reconnecting or an explicit switch; do not silently substitute another account. Otherwise do not claim the connected service is unavailable. Never guess or invoke a withheld account.',
+  ].join(' ');
+}
+
 /** Mount the one user-facing authorization tool only on verified Slack turns. */
 export function usePersonalConnectionAuthorizationSlackTool(
   plan: RuntimePlanV2,
@@ -240,11 +253,7 @@ export function usePersonalConnectionAuthorizationSlackTool(
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal || !plan.actorMembershipId) return;
   if (plan.connectionChoices?.length) {
-    useInstruction([
-      'Some connection credentials were withheld because the request did not identify one account uniquely.',
-      `Ask the user to choose one of these labels before using that provider: ${JSON.stringify(plan.connectionChoices)}.`,
-      'Do not guess, invoke a withheld account, or claim the connected service is unavailable.',
-    ].join(' '));
+    useInstruction(connectionChoiceInstructions(plan.connectionChoices));
   }
   if (!(plan.connectionAuthorizations?.length)) return;
   const providers = plan.connectionAuthorizations.map((option) => option.providerId);

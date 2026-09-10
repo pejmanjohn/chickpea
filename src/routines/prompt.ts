@@ -1,7 +1,8 @@
 import * as v from 'valibot';
 import type { WebClient } from '@slack/web-api';
 
-import type { PlatformEnv } from '../config/state-backend.ts';
+import { getConfigStore, type PlatformEnv } from '../config/state-backend.ts';
+import { assembleRetainedSlackContext } from '../slack/public-context.ts';
 import { resolvedAssignmentFromEffectiveConfig } from '../config/effective-config.ts';
 import { prepareMemoryTurn } from '../memory/runtime.ts';
 import { createSlackWebClient } from '../slack/run-turn.ts';
@@ -64,6 +65,7 @@ export function routineExecutionInstructions(
 interface RoutinePromptDependencies {
   hydrateContext?: typeof hydrateSlackContextViaWebClient;
   prepareMemory?: typeof prepareMemoryTurn;
+  contextStore?: NonNullable<Parameters<typeof assembleRetainedSlackContext>[2]>['store'];
 }
 
 /** Build bounded destination context with the saved task as current intent. */
@@ -98,7 +100,7 @@ export async function prepareRoutinePrompt(
   };
   const hydrateContext = dependencies.hydrateContext ?? hydrateSlackContextViaWebClient;
   const prepareMemory = dependencies.prepareMemory ?? prepareMemoryTurn;
-  const [context, memory] = await Promise.all([
+  const [hydratedContext, memory] = await Promise.all([
     hydrateContext(client, turn, { maxMessages: 20 }),
     prepareMemory({
       turn,
@@ -109,6 +111,12 @@ export async function prepareRoutinePrompt(
       botUserId: access.botUserId,
     }),
   ]);
+  const context = await assembleRetainedSlackContext(hydratedContext, turn, {
+    store: dependencies.contextStore ?? getConfigStore(env),
+    agentId: access.config.agentId,
+    visibilityBarrierAt: memory.visibilityBarrierAt,
+    maxMessages: 20,
+  });
   const ordinaryPrompt = assembleSlackPrompt(turn, context, {
     ...(memory.promptBlock ? { memoryBlock: memory.promptBlock } : {}),
     memorySelected: (memory.selection?.entries.length ?? 0) > 0,

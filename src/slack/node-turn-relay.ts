@@ -296,6 +296,7 @@ async function drainNodeTurnRelayOnce(
           ...(job.runId ? { runId: job.runId, runAttempt: attempt } : {}),
           ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
           onRuntimePlan: (candidate) => freezeRuntimePlan(job.id, candidate),
+          ...(state.getBoundRuntimePlan ? { getBoundRuntimePlan: state.getBoundRuntimePlan.bind(state) } : {}),
           flueDispatch,
           ...(presentationState
             ? { presentationState, progressiveAttributionProven: true }
@@ -543,6 +544,7 @@ async function drainLedgerRuns(input: {
       turns: {
         getPendingByRunId: state.getPendingTurnByRunId.bind(state),
         freezeRuntimePlan: state.freezeRuntimePlan.bind(state),
+        ...(state.getBoundRuntimePlan ? { getBoundRuntimePlan: state.getBoundRuntimePlan.bind(state) } : {}),
         prepareFlueDispatch: state.prepareFlueDispatch.bind(state),
         reconcileFlueExistingInstance: state.reconcileFlueExistingInstance.bind(state),
         recordFlueReceipt: state.recordFlueReceipt.bind(state),

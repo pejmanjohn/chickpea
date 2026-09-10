@@ -52,6 +52,7 @@ export type RoutineFailureClass =
   | 'result_invalid'
   | 'slack_rate_limited'
   | 'direct_thread_unavailable'
+  | 'channel_destination_unavailable'
   | 'delivery_unknown'
   | 'internal_error';
 
@@ -555,11 +556,14 @@ export interface RecordRoutineDeliveryInput {
   occurrenceId: string;
   outcome: 'delivered' | 'unknown' | 'failed';
   at: number;
-  failureClass?: Extract<RoutineFailureClass, 'direct_thread_unavailable'>;
+  failureClass?: RoutineDeliveryFailureClass;
   channelId?: string;
   messageTs?: string;
   changeKeyHash?: string | null;
 }
+
+export type RoutineDeliveryFailureClass = Extract<RoutineFailureClass,
+  'direct_thread_unavailable' | 'channel_destination_unavailable' | 'slack_rate_limited' | 'delivery_unknown'>;
 
 export interface RoutineRunFilter {
   routineId?: string;
@@ -592,7 +596,7 @@ export type RoutineScheduleActionResult =
       routineId: string;
       routineVersion?: number;
       deliveryDestination?: 'channel' | 'channel_thread' | 'direct_thread';
-      nextRunTime?: { isoUtc: string; local: string; timezone: string } | null;
+      nextRunTime?: { isoUtc: string; local: string; display: string; timezone: string } | null;
       safeState?: 'active' | 'paused' | 'disabled' | 'pending_authority';
     }
   | {

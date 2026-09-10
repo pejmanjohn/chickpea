@@ -22,7 +22,7 @@ import {
   projectEffectiveManagedConnections,
   projectEffectiveMcpConnections,
 } from '../connections/runtime.ts';
-import type { EffectiveConnectionAccount } from '../connections/types.ts';
+import type { ConnectionAccountSelection, EffectiveConnectionAccount } from '../connections/types.ts';
 import type { PersonalConnectionAuthorizationOption } from '../connections/types.ts';
 import {
   validateFrozenRuntimeModelRoute,
@@ -122,6 +122,7 @@ export interface RuntimePlanConnectionAuthorizationV2 {
 
 export interface RuntimePlanConnectionChoiceV2 {
   providerId: string;
+  previousAccountUnavailable?: boolean;
   choices: Array<{ label: string; purpose?: string; scope: 'team' | 'personal' }>;
 }
 
@@ -141,6 +142,8 @@ export interface RuntimePlanV2 {
   actorMembershipId?: string;
   /** Credential-free account references frozen for this task. */
   connectionAccountIds?: string[];
+  /** Same-actor thread routing context, including choices awaiting reconnect. */
+  connectionSelections?: ConnectionAccountSelection[];
   /** Actor-safe personal provider options available for inline authorization. */
   connectionAuthorizations?: RuntimePlanConnectionAuthorizationV2[];
   /** Providers withheld until the user identifies one plausible account. */
@@ -194,6 +197,7 @@ export interface CompileRuntimePlanV2Input {
   effectiveConnections?: readonly EffectiveConnectionAccount[];
   connectionAuthorizations?: readonly PersonalConnectionAuthorizationOption[];
   connectionChoices?: readonly RuntimePlanConnectionChoiceV2[];
+  connectionSelections?: readonly ConnectionAccountSelection[];
 }
 
 export interface RuntimePlanActivityContextOptions {
@@ -232,9 +236,13 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
       ? { actorMembershipId: input.turn.actorMembershipId }
       : {}),
     connectionAccountIds: effectiveConnections?.map(({ account }) => account.id) ?? [],
+    ...(input.connectionSelections
+      ? { connectionSelections: input.connectionSelections.map((selection) => ({ ...selection })) }
+      : {}),
     connectionAuthorizations: compileConnectionAuthorizations(input.connectionAuthorizations),
     connectionChoices: (input.connectionChoices ?? []).map((choice) => ({
       providerId: choice.providerId,
+      ...(choice.previousAccountUnavailable ? { previousAccountUnavailable: true } : {}),
       choices: choice.choices.map((candidate) => ({ ...candidate })),
     })),
     configurationRevision: {
@@ -455,6 +463,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'agentId',
     'actorMembershipId',
     'connectionAccountIds',
+    'connectionSelections',
     'connectionAuthorizations',
     'connectionChoices',
     'configurationRevision',
@@ -480,6 +489,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     'configurationRevision',
     'actorMembershipId',
     'connectionAccountIds',
+    'connectionSelections',
     'connectionAuthorizations',
     'connectionChoices',
     'managedConnections',
@@ -515,6 +525,15 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
       parseConnectionAuthorization,
       64,
     );
+  const connectionSelections = record.connectionSelections === undefined ? undefined
+    : arrayOf(record.connectionSelections, 'connectionSelections', (value) => {
+        const selection = exactRecord(value, 'connection selection', ['group', 'providerId', 'accountId']);
+        return {
+          group: boundedString(selection.group, 'connection group', 1, 160),
+          providerId: boundedString(selection.providerId, 'connection provider', 1, 128),
+          accountId: boundedString(selection.accountId, 'connection account', 1, 160),
+        };
+      }, 128);
   const connectionChoices = record.connectionChoices === undefined
     ? []
     : arrayOf(record.connectionChoices, 'connectionChoices', parseConnectionChoice, 64);
@@ -618,6 +637,7 @@ export function parseRuntimePlanV2(value: unknown): RuntimePlanV2 {
     agentId,
     ...(actorMembershipId ? { actorMembershipId } : {}),
     ...(record.connectionAccountIds === undefined ? {} : { connectionAccountIds }),
+    ...(connectionSelections ? { connectionSelections } : {}),
     ...(record.connectionAuthorizations === undefined ? {} : { connectionAuthorizations }),
     ...(record.connectionChoices === undefined ? {} : { connectionChoices }),
     ...(configurationRevision ? { configurationRevision } : {}),
@@ -797,6 +817,7 @@ function computeHarnessRevision(
       ...(plan.connectionAccountIds !== undefined
         ? { connectionAccountIds: plan.connectionAccountIds }
         : {}),
+      ...(plan.connectionSelections !== undefined ? { connectionSelections: plan.connectionSelections } : {}),
       ...(plan.connectionAuthorizations !== undefined
         ? { connectionAuthorizations: plan.connectionAuthorizations }
         : {}),
@@ -895,9 +916,13 @@ function parseConnectionAuthorization(value: unknown): RuntimePlanConnectionAuth
 }
 
 function parseConnectionChoice(value: unknown): RuntimePlanConnectionChoiceV2 {
-  const record = exactRecord(value, 'connection choice', ['providerId', 'choices']);
+  const record = exactRecord(value, 'connection choice', ['providerId', 'choices', 'previousAccountUnavailable'], ['previousAccountUnavailable']);
+  if (record.previousAccountUnavailable !== undefined && record.previousAccountUnavailable !== true) {
+    throw new Error('Connection choice availability is invalid.');
+  }
   return {
     providerId: boundedString(record.providerId, 'connection choice providerId', 1, 128),
+    ...(record.previousAccountUnavailable === true ? { previousAccountUnavailable: true } : {}),
     choices: arrayOf(record.choices, 'connection choices', (candidate) => {
       const choice = exactRecord(candidate, 'connection choice account', [
         'label',

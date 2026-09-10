@@ -120,6 +120,7 @@ import {
   hydrateSlackPublicHandoffFallback,
 } from '../slack/web-client-context.ts';
 import {
+  assembleRetainedSlackContext,
   reconcileSlackPublicContextMutation,
   recordAcceptedSlackHumanMessage,
   recordDeliveredSlackAgentMessage,
@@ -1371,6 +1372,7 @@ async function processSlackEvent(
         assignment,
         platformEnv,
         slackClient as ReturnType<typeof createSlackWebClient>,
+        { config: stores.config },
       );
       if (classification.intent.disposition === 'ignore') {
         await recordInteractionClassifierUsage({
@@ -1782,22 +1784,32 @@ async function recordInteractionClassifierUsage(input: {
   await recorder.repairAfterTerminal();
 }
 
-async function classifyCandidateTurn(
+export async function classifyCandidateTurn(
   turn: NormalizedSlackTurn,
   assignment: ResolvedAssignment,
   platformEnv: PlatformEnv | undefined,
   client: ReturnType<typeof createSlackWebClient>,
+  dependencies: {
+    config?: NonNullable<Parameters<typeof assembleRetainedSlackContext>[2]>['store'];
+    classify?: typeof classifySlackInteraction;
+  } = {},
 ): Promise<{
   classification: Awaited<ReturnType<typeof classifySlackInteraction>>;
   requestedModel: string | null;
 }> {
   const requestedModel = assignment.model ?? null;
-  const context = await hydrateSlackContextViaWebClient(
+  const hydrated = await hydrateSlackContextViaWebClient(
     client,
     turn,
     { maxMessages: 12, maxPages: 2 },
   );
-  const classification = await classifySlackInteraction({
+  const context = await assembleRetainedSlackContext(hydrated, turn, {
+    ...(assignment.runtimeContract === 'chickpea-v1' && dependencies.config
+      ? { store: dependencies.config, agentId: assignment.agentId }
+      : {}),
+    maxMessages: 12,
+  });
+  const classification = await (dependencies.classify ?? classifySlackInteraction)({
     workspaceId: turn.workspaceId,
     channelId: turn.channelId,
     eventId: turn.eventId,
@@ -1812,7 +1824,12 @@ async function classifyCandidateTurn(
         ? assignment.instructions
         : assignment.agent.instructions,
     requestedModel,
-    recentContext: context.messages.map((message) => `${message.userId}: ${message.text}`),
+    recentContext: [
+      ...context.messages.map((message) => `${message.userId}: ${message.text}`),
+      ...(context.truncated || context.degradations.length > 0
+        ? ['Slack context is incomplete; missing history is not evidence that this request is unrelated.']
+        : []),
+    ],
     ...(turn.reactionTargetText
       ? { reactionTargetText: turn.reactionTargetText }
       : {}),

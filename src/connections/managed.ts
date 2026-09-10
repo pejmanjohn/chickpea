@@ -26,6 +26,7 @@ import type {
 import { MANAGED_CONNECTOR_CATALOG } from './catalog/index.ts';
 import {
   ManagedAuthorizationExpiredError,
+  ManagedAuthorityDeniedError,
   ManagedProviderRequestError,
   type ManagedProviderFailureMetadata,
 } from './managed-errors.ts';
@@ -46,6 +47,8 @@ export interface ManagedConnectionExecutionInput {
   capability: string;
   arguments: Record<string, unknown>;
   signal?: AbortSignal;
+  /** Recheck the admitted invocation before external work; never changes its policy. */
+  revalidateAuthority?: () => Promise<void>;
 }
 
 export interface ManagedConnectionExecutionResult {
@@ -399,6 +402,7 @@ export async function invokeManagedConnectionCapability(input: {
   now?: () => number;
   createAttemptId?: () => string;
 }): Promise<ManagedConnectionInvocationResult> {
+  input = { ...input, arguments: structuredClone(input.arguments) };
   const now = input.now ?? Date.now;
   const startedAt = now();
   const attemptId = input.createAttemptId?.() ?? `connector:${crypto.randomUUID()}`;
@@ -452,15 +456,45 @@ export async function invokeManagedConnectionCapability(input: {
         });
       }
     }
-    const executionPolicy: ConnectionAccountManagedPolicy = activeConfiguration &&
+    const executionPolicy: ConnectionAccountManagedPolicy = structuredClone(activeConfiguration &&
         !hasProviderGeneration && !hasProviderLineage
       ? {
           ...selected.policy,
           providerGeneration: activeConfiguration.generation,
           providerLineage: activeConfiguration.lineage,
         }
-      : selected.policy;
+      : selected.policy);
     selectedPolicy = executionPolicy;
+    // Capture the admission ceiling independently of mutable store objects.
+    const admittedPolicy = structuredClone(selected.policy);
+    const admittedAccount = structuredClone(selected.account);
+    const revalidateAuthority = async (): Promise<void> => {
+      try {
+        const current = await resolveManagedConnectionForInvocation({
+          config: input.config, identity: input.identity,
+          workspaceId: input.workspaceId, agentId: input.agentId,
+          actorMembershipId: input.actorMembershipId,
+          connectionAccountId: input.connectionAccountId,
+        });
+        const policy = current.policy;
+        if (current.account.providerId !== admittedAccount.providerId ||
+            current.account.ownerKind !== admittedAccount.ownerKind ||
+            current.account.ownerMembershipId !== admittedAccount.ownerMembershipId ||
+            ['adapterId', 'toolkit', 'principalRef', 'accountRef', 'oauthAttemptId']
+          .some((key) => policy[key as keyof typeof policy] !== admittedPolicy[key as keyof typeof policy]) ||
+            !policy.allowedCapabilities.includes(input.capability) ||
+            JSON.stringify(policy.resourceConstraints) !== JSON.stringify(admittedPolicy.resourceConstraints) ||
+            (policy.providerGeneration !== admittedPolicy.providerGeneration &&
+              policy.providerGeneration !== executionPolicy.providerGeneration) ||
+            (policy.providerLineage !== admittedPolicy.providerLineage &&
+              policy.providerLineage !== executionPolicy.providerLineage)) {
+          throw new Error('Managed connection authority changed during this request');
+        }
+      } catch (error) {
+        throw new ManagedAuthorityDeniedError(error instanceof Error ? error.message :
+          'Managed connection authority could not be checked');
+      }
+    };
     let quotaRemaining: number | undefined;
     if (capabilityDefinition.quota) {
       if (!input.usage) {
@@ -519,14 +553,16 @@ export async function invokeManagedConnectionCapability(input: {
         }
       }
     }
+    await revalidateAuthority();
     dispatched = true;
     result = await provider.execute({
+      revalidateAuthority,
       policy: executionPolicy,
       capability: input.capability,
       arguments: input.arguments,
       ...(input.signal ? { signal: input.signal } : {}),
     });
-    if (executionPolicy !== selected.policy && selected.account.policy.kind === 'managed') {
+    if (activeConfiguration && !hasProviderGeneration && !hasProviderLineage && selected.account.policy.kind === 'managed') {
       try {
         await input.config.putConnectionAccount({
           ...selected.account,

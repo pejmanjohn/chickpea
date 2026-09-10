@@ -205,6 +205,12 @@ export class TurnJobStoreLogic {
     }
     db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_instance_id_idx ON turn_jobs(agent_instance_id)');
     db.exec('CREATE INDEX IF NOT EXISTS turn_jobs_submission_id_idx ON turn_jobs(submission_id)');
+    db.exec(`CREATE INDEX IF NOT EXISTS turn_jobs_actor_context_idx ON turn_jobs(
+      json_extract(runtime_plan_json, '$.conversation.continuityKey'),
+      json_extract(runtime_plan_json, '$.actorMembershipId'),
+      json_extract(runtime_plan_json, '$.agentId'),
+      CAST(json_extract(turn_json, '$.messageTs') AS REAL) DESC
+    ) WHERE runtime_plan_json IS NOT NULL AND dispatch_receipt_json IS NOT NULL`);
     // Keep this predicate aligned with hasPending and listPending. Recovery
     // rows remain durable but must not participate in automatic dispatch.
     db.exec(
@@ -406,6 +412,26 @@ export class TurnJobStoreLogic {
       runtimePlan,
       instanceId,
     };
+  }
+
+  /** Read this actor's admitted context while the conversation binding is live. */
+  getBoundRuntimePlan(continuityKey: string, beforeMessageTs: string, actorMembershipId: string, agentId: string): RuntimePlanV2 | undefined {
+    const binding = this.getAgentBinding(continuityKey);
+    if (!binding) return undefined;
+    if (!/^\d+\.\d+$/.test(beforeMessageTs)) throw new Error('Invalid Slack message timestamp');
+    const row = this.db.get(
+      `SELECT runtime_plan_json FROM turn_jobs
+       WHERE runtime_plan_json IS NOT NULL AND dispatch_receipt_json IS NOT NULL
+         AND json_extract(runtime_plan_json, '$.conversation.continuityKey') = ?
+         AND json_extract(runtime_plan_json, '$.actorMembershipId') = ?
+         AND json_extract(runtime_plan_json, '$.agentId') = ?
+         AND CAST(json_extract(turn_json, '$.messageTs') AS REAL) < CAST(? AS REAL)
+       ORDER BY CAST(json_extract(turn_json, '$.messageTs') AS REAL) DESC LIMIT 1`,
+      continuityKey, actorMembershipId, agentId, beforeMessageTs,
+    );
+    if (!row?.runtime_plan_json) return undefined;
+    const plan = parseRuntimePlanV2(JSON.parse(String(row.runtime_plan_json)));
+    return plan.conversation.continuityKey === continuityKey ? plan : undefined;
   }
 
   /**
@@ -1061,14 +1087,30 @@ export class TurnJobStoreLogic {
       );
     }
     this.db.run(
-      `DELETE FROM turn_jobs
-       WHERE delivered = 1 AND enqueued_at < ?
-         AND progress_json NOT LIKE '%"cleanup":"pending"%'`,
-      now - TURN_JOB_TTL_MS,
-    );
-    this.db.run(
       'DELETE FROM slack_agent_bindings WHERE updated_at < ?',
       now - SLACK_AGENT_BINDING_TTL_MS,
+    );
+    // Keep each actor/Agent's latest dispatched context per live binding. Other completed
+    // turns retain the ordinary redelivery TTL; expired bindings retain none.
+    // Build the retained-ID list once, independently of the terminal-row scan.
+    this.db.run(
+      `DELETE FROM turn_jobs
+       WHERE delivered = 1 AND enqueued_at < ?
+         AND progress_json NOT LIKE '%"cleanup":"pending"%'
+         AND id NOT IN (
+           SELECT retained_id FROM (
+             SELECT prior.id AS retained_id, ROW_NUMBER() OVER (
+               PARTITION BY json_extract(prior.runtime_plan_json, '$.conversation.continuityKey'),
+                 json_extract(prior.runtime_plan_json, '$.actorMembershipId'),
+                 json_extract(prior.runtime_plan_json, '$.agentId')
+               ORDER BY CAST(json_extract(prior.turn_json, '$.messageTs') AS REAL) DESC
+             ) AS position
+             FROM slack_agent_bindings b JOIN turn_jobs prior
+               ON json_extract(prior.runtime_plan_json, '$.conversation.continuityKey') = b.continuity_key
+             WHERE prior.runtime_plan_json IS NOT NULL AND prior.dispatch_receipt_json IS NOT NULL
+           ) WHERE position = 1
+         )`,
+      now - TURN_JOB_TTL_MS,
     );
   }
 

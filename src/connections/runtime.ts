@@ -170,14 +170,11 @@ export function selectConnectionAccount(input: {
   connections: readonly EffectiveConnectionAccount[];
   providerId: string;
   requestText: string;
+  previousAccountId?: string;
 }): ConnectionSelection {
   const choices = input.connections.filter(
     ({ account }) => account.providerId.toLowerCase() === input.providerId.toLowerCase(),
   );
-  if (choices.length === 0) return { kind: 'missing', providerId: input.providerId };
-  if (choices.length === 1) {
-    return { kind: 'selected', connection: choices[0]!, reason: 'only_eligible' };
-  }
   const request = normalized(input.requestText);
   const matches = choices.filter(({ account }) => accountLanguageKeys(account).some(
     (candidate) => containsPhrase(request, candidate),
@@ -185,13 +182,25 @@ export function selectConnectionAccount(input: {
   if (matches.length === 1) {
     return { kind: 'selected', connection: matches[0]!, reason: 'language' };
   }
-  return { kind: 'ambiguous', providerId: input.providerId, choices: matches.length > 1 ? matches : choices };
+  if (matches.length > 1) return { kind: 'ambiguous', providerId: input.providerId, choices: matches };
+  if (input.previousAccountId) {
+    const previous = choices.find(({ account }) => account.id === input.previousAccountId);
+    return previous
+      ? { kind: 'selected', connection: previous, reason: 'previous' }
+      : { kind: 'ambiguous', providerId: input.providerId, choices };
+  }
+  if (choices.length === 0) return { kind: 'missing', providerId: input.providerId };
+  if (choices.length === 1) {
+    return { kind: 'selected', connection: choices[0]!, reason: 'only_eligible' };
+  }
+  return { kind: 'ambiguous', providerId: input.providerId, choices };
 }
 
 /** Fail closed when one provider has several plausible credentials. */
 export function selectConnectionsForRequest(input: {
   connections: readonly EffectiveConnectionAccount[];
   requestText: string;
+  previousSelections?: readonly ConnectionRequestResolution['selections'][number][];
 }): ConnectionRequestResolution {
   const byProvider = new Map<string, EffectiveConnectionAccount[]>();
   const managedGoogleServices = new Set(input.connections.flatMap((connection) => {
@@ -209,15 +218,38 @@ export function selectConnectionsForRequest(input: {
   const withheldAccountIds = new Set<string>();
   const ambiguous: ConnectionRequestResolution['ambiguous'] = [];
   const ambiguousKeys = new Set<string>();
-  for (const [, choices] of byProvider) {
-    const providerId = choices[0]!.account.providerId;
+  const previousSelections = new Map((input.previousSelections ?? []).map((selection) => [selection.group, selection]));
+  const selections = new Map(previousSelections);
+  const changedGroups = new Set<string>();
+  for (const group of previousSelections.keys()) {
+    if (byProvider.has(group)) continue;
+    changedGroups.add(group);
+    // Native/managed migrations can change service grouping. An unremembered
+    // replacement group must not bypass an unavailable prior account. Existing
+    // defaults for other services remain independent.
+    const previous = previousSelections.get(group)!;
+    const replacements = input.connections.filter((connection) => {
+      if (connection.account.providerId.toLowerCase() !== previous.providerId.toLowerCase()) return false;
+      const currentGroups = connectionSelectionGroupKeys(connection, managedGoogleServices);
+      if (currentGroups.every((key) => previousSelections.has(key))) return false;
+      return group === previous.providerId.toLowerCase() ||
+        connectionSelectionGroupKeys(connection, new Set([group.slice('google:'.length)])).includes(group);
+    });
+    byProvider.set(group, replacements);
+  }
+  for (const [group, choices] of byProvider) {
+    const previous = previousSelections.get(group);
+    const providerId = choices[0]?.account.providerId ?? previous!.providerId;
     const decision = selectConnectionAccount({
       connections: choices,
       providerId,
       requestText: input.requestText,
+      ...(previous ? { previousAccountId: previous.accountId } : {}),
     });
     if (decision.kind === 'selected') {
       selectedCandidates.push(decision.connection);
+      if (changedGroups.has(group)) selections.delete(group);
+      else selections.set(group, { group, providerId, accountId: decision.connection.account.id });
       continue;
     }
     if (decision.kind === 'ambiguous') {
@@ -232,6 +264,8 @@ export function selectConnectionsForRequest(input: {
         ambiguousKeys.add(ambiguityKey);
         ambiguous.push({
           providerId,
+          ...(previous && !choices.some(({ account }) => account.id === previous.accountId)
+            ? { previousAccountUnavailable: true } : {}),
           choices: decision.choices.map(({ account, scope }) => ({
             label: account.label,
             ...(account.purpose ? { purpose: account.purpose } : {}),
@@ -244,7 +278,14 @@ export function selectConnectionsForRequest(input: {
   const selected = [...new Map(selectedCandidates
     .filter(({ account }) => !withheldAccountIds.has(account.id))
     .map((connection) => [connection.account.id, connection])).values()];
-  return { selected, ambiguous };
+  // A broad account withheld by another service must not become a new default.
+  for (const [group, selection] of selections) {
+    if (!withheldAccountIds.has(selection.accountId)) continue;
+    const previous = previousSelections.get(group);
+    if (previous) selections.set(group, previous);
+    else selections.delete(group);
+  }
+  return { selected, ambiguous, selections: [...selections.values()] };
 }
 
 function connectionSelectionGroupKeys(

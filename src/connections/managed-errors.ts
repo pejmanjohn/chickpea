@@ -47,3 +47,13 @@ export class ManagedAuthorizationAllocatedError extends Error {
     super('Managed connection authorization allocated a remote account before failing');
   }
 }
+
+/** A local authority check denied work before its external dispatch. */
+export class ManagedAuthorityDeniedError extends ManagedProviderRequestError {
+  constructor(message: string) {
+    super('validation_failed', message, {
+      remoteCallCount: 0, providerToolCallCount: 0,
+      capabilityToolDispatched: false, definiteFailure: true,
+    });
+  }
+}

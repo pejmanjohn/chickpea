@@ -165,6 +165,8 @@ export type ManagementOperation =
       description: string;
       taskText: string;
       schedule:
+        /** Use canonical timing from routineId at expectedVersion; never a caller-supplied instant. */
+        | { kind: 'preserve' }
         | { kind: 'cron'; expression: string }
         | { kind: 'once'; localDateTime: string }
         /** Relative lead time; the service computes the future instant on its own clock. */
@@ -744,7 +746,7 @@ export interface ManagementRoutineSnapshot {
     timezone: string;
     outputPolicy: RoutineOutputPolicy;
     nextRunAt: number | null;
-    nextRunTime?: { isoUtc: string; local: string; timezone: string } | null;
+    nextRunTime?: { isoUtc: string; local: string; display: string; timezone: string } | null;
     contentAccess: 'public' | 'private' | 'authorization_unknown';
     owningAgentId: string;
     requiredConnectionAccountIds: string[];

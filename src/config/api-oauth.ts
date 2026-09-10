@@ -85,9 +85,12 @@ export interface ApiOAuthDependencies {
     authority: OAuthAuthorizationAuthority | undefined,
     ref: ApiOAuthRef,
   ) => boolean | Promise<boolean>;
+  // Capture before the refresh request so a late rejection cannot demote a reconnect.
+  getConnectionRevision?: (ref: ApiOAuthRef) => Promise<number | undefined>;
   onReauthorizationRequired?: (
     ref: ApiOAuthRef,
     provider: ApiOAuthProvider,
+    expectedConnectionRevision?: number,
   ) => void | Promise<void>;
 }
 
@@ -520,6 +523,7 @@ async function refreshAccessToken(
   leaseKey: string,
   dependencies: ApiOAuthDependencies,
 ): Promise<string> {
+  const connectionRevision = await dependencies.getConnectionRevision?.(ref);
   const client = await readClient(ref, dependencies.settings);
   if (client.provider !== selectedProvider || !bundle.refreshToken) throw invalidStorage();
   const response = await providerFetch(
@@ -554,7 +558,9 @@ async function refreshAccessToken(
           return winner.accessToken;
         }
       }
-      await notifyReauthorizationRequired(ref, selectedProvider, dependencies);
+      if (deleted) {
+        await notifyReauthorizationRequired(ref, selectedProvider, dependencies, connectionRevision);
+      }
       throw reauthorizationRequired();
     }
     throw new ApiOAuthError('oauth_unavailable', 'OAuth refresh failed');
@@ -589,12 +595,13 @@ async function notifyReauthorizationRequired(
   ref: ApiOAuthRef,
   selectedProvider: ApiOAuthProvider,
   dependencies: ApiOAuthDependencies,
+  expectedConnectionRevision?: number,
 ): Promise<void> {
   try {
-    await dependencies.onReauthorizationRequired?.(ref, selectedProvider);
+    await dependencies.onReauthorizationRequired?.(ref, selectedProvider, expectedConnectionRevision);
   } catch {
-    // Token deletion is authoritative. A cosmetic lifecycle update must never
-    // turn a rejected grant into a retry loop or preserve unusable credentials.
+    // Token deletion is authoritative even if account/schedule persistence fails.
+    // Never preserve or retry the rejected credential because cleanup failed.
     console.warn('[chickpea] Could not update API OAuth reconnection status');
   }
 }

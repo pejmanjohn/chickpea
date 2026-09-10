@@ -51,7 +51,7 @@ import type {
   MemoryStateStore,
 } from '../memory/types.ts';
 import { RoutineService } from '../routines/service.ts';
-import { routineNextRunTime } from '../routines/message-format.ts';
+import { formatRoutineLocalDateTime, routineNextRunTime } from '../routines/message-format.ts';
 import { skillImportSource } from '../config/skill-provenance.ts';
 import { reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
 import {
@@ -5456,7 +5456,7 @@ function routinePreview(
     description: routine.description,
     taskText: routine.taskText,
     schedule: routine.triggerKind === 'once'
-      ? `Once at ${routine.scheduleInput}`
+      ? `Once at ${formatRoutineLocalDateTime(routine.scheduleInput)}`
       : routine.scheduleInput,
     timezone: routine.timezone,
     destination: routine.destination.kind === 'direct_thread'
@@ -5478,8 +5478,10 @@ function routineOperationPreview(
     ...(agentName ? { ownerAgent: agentName } : {}),
     description: operation.description,
     taskText: operation.taskText,
-    schedule: operation.schedule.kind === 'once'
-      ? `Once at ${operation.schedule.localDateTime}`
+    schedule: operation.schedule.kind === 'preserve'
+      ? existing ? routinePreview(existing).schedule : 'Unchanged schedule'
+      : operation.schedule.kind === 'once'
+      ? `Once at ${formatRoutineLocalDateTime(operation.schedule.localDateTime)}`
       : operation.schedule.kind === 'in'
         ? `Once, ${operation.schedule.minutes} minute${operation.schedule.minutes === 1 ? '' : 's'} from now`
         : operation.schedule.expression,
