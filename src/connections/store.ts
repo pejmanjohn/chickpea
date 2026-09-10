@@ -958,6 +958,18 @@ async function managedResourceHandle(resourceKey: string, providerRef: string): 
   return `resource_${hex.slice(0, 32)}`;
 }
 
+/** A rejected native grant may only demote the account observed before refresh. */
+export async function markApiOAuthAccountExpired(
+  config: ConfigStore,
+  account: ConnectionAccount,
+): Promise<void> {
+  const index = await buildConnectionScheduleIndex(config);
+  if (!await putConnectionAccountIfCurrent(
+    config, { ...account, lifecycle: 'needs_attention' }, account.revision,
+  )) return;
+  await pauseDependentSchedules(config, account.id, index);
+}
+
 export async function markManagedAccountExpired(
   config: ConfigStore,
   input: { adapterId: string; accountRef: string },
