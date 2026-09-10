@@ -71,10 +71,6 @@ interface EgressPlan {
   // arbitrary hosts) go through this network at the baseline method set.
   baseNetwork: NetworkConfig;
   baseMethods: Set<string>;
-  // A single fail-closed network used only if just-bash stops exposing its
-  // secureFetch property: every prefix (credentials still inject) but read-only.
-  // Without the wrapper there is no per-submission admission seam for writes.
-  fallbackNetwork: NetworkConfig;
 }
 
 export interface ScopedDelegate {
@@ -114,7 +110,7 @@ export async function resolveEgressPolicy(env?: PlatformEnv): Promise<EgressPoli
 
 // The combined network: every allow-listed prefix (domains + all connector
 // transforms) under one global method set. Used for the descriptive whole-policy
-// view and, at the baseline method set, for the fail-closed fallback network.
+// view and the credential-free base delegate.
 function buildCombinedNetwork(
   entries: PrefixEntry[],
   policy: EgressPolicy,
@@ -185,23 +181,7 @@ export function buildEgressPlan(
     network: buildScopeNetwork(spec, opts),
   }));
 
-  // Guarded scopes (per-request URL predicates) cannot be represented in a
-  // flat prefix allow-list: including their entries would carry the credential
-  // transform onto URLs the guard exists to deny. They drop out of the
-  // fallback entirely — fail closed if just-bash ever loses secureFetch.
-  const fallbackNetwork = buildCombinedNetwork(
-    [
-      ...domainEntries,
-      ...connectorSpecs
-        .filter((spec) => spec.matchesRequest === undefined && spec.authorize === undefined)
-        .flatMap((spec) => spec.entries),
-    ],
-    policy,
-    opts,
-    ['GET', 'HEAD'],
-  );
-
-  return { scopes, baseNetwork, baseMethods, fallbackNetwork };
+  return { scopes, baseNetwork, baseMethods };
 }
 
 function buildScopeNetwork(spec: ConnectorScopeSpec, opts: { cloudflare: boolean }): NetworkConfig {
