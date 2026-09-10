@@ -664,7 +664,7 @@ async function resolveRuntimePlanApiConnections(plan: RuntimePlanV2, env?: Platf
       console.warn(`[chickpea] API connection unavailable under frozen policy (${declaration.id})`);
       return [];
     }
-    return [{ ...live, headerName: declaration.headerName, headerValuePrefix: declaration.headerValuePrefix }];
+    return [{ ...live, headerName: declaration.headerName, headerValuePrefix: declaration.headerValuePrefix ?? '' }];
   });
   return resolveApiConnectionsForTurn(plan.agentId, connections, env, { accountContext });
 }
