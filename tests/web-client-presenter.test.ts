@@ -445,7 +445,7 @@ test('clearStatus clears the thread without re-sending Agent display fields', as
   });
 });
 
-test('postArtifact sends bytes to files.uploadV2 in the requested thread', async () => {
+test('postArtifact sends only supported upload fields, without chat persona fields', async () => {
   const calls: unknown[] = [];
   const presenter = presenterWith({
     files: {
@@ -472,8 +472,6 @@ test('postArtifact sends bytes to files.uploadV2 in the requested thread', async
     file: Buffer.from([137, 80, 78, 71]),
     filename: 'proof.png',
     title: 'Browser proof',
-    username: 'Test agent',
-    icon_url: 'https://chickpea.example/assets/agents/test/avatar/1',
   });
 });
 
@@ -490,11 +488,13 @@ test('postArtifact reports the shared gateway file limit and omits an absent thr
 });
 
 test('postArtifact degrades missing Slack file-upload scope errors', async () => {
-  for (const error of ['missing_scope', 'not_allowed_token_type']) {
+  for (const error of ['missing_scope', 'not_allowed_token_type'].flatMap((code) => [
+    { data: { error: code } }, new SlackTransportError('files.uploadV2', code),
+  ])) {
     const presenter = presenterWith({
       files: {
         async uploadV2() {
-          throw { data: { error } };
+          throw error;
         },
       },
     });

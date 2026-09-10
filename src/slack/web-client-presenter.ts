@@ -586,14 +586,16 @@ export class WebClientPresenter {
    */
   async postArtifact(input: SlackArtifactInput): Promise<SlackArtifactResult> {
     try {
-      await this.client.files.uploadV2({
-        channel_id: input.channel,
-        ...(input.threadTs ? { thread_ts: input.threadTs } : {}),
+      const file = {
         file: Buffer.from(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength),
         filename: input.filename,
         ...(input.title === undefined ? {} : { title: input.title }),
-        ...this.persona(),
-      } as unknown as Parameters<WebClient['files']['uploadV2']>[0]);
+      };
+      // File uploads use the app identity; chat persona fields are not part of
+      // this API and are rejected by the shared gateway's upload contract.
+      await this.client.files.uploadV2(input.threadTs
+        ? { ...file, channel_id: input.channel, thread_ts: input.threadTs }
+        : { ...file, channel_id: input.channel });
       return { uploaded: true };
     } catch (err) {
       if (err instanceof SlackTransportError && err.code === 'gateway_request_too_large') {
@@ -1209,6 +1211,9 @@ function slackDeliveryRef(channelId: string, messageTs: unknown): string {
 }
 
 function isMissingFilesScopeError(err: unknown): boolean {
+  if (err instanceof SlackTransportError) {
+    return err.code === 'missing_scope' || err.code === 'not_allowed_token_type';
+  }
   if (!err || typeof err !== 'object') return false;
   const data = (err as { data?: unknown }).data;
   if (!data || typeof data !== 'object') return false;
