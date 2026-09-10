@@ -129,8 +129,6 @@ export async function deliverRoutineResult(
   return deliverRoutineSlackMessage(
     { ...input, approvedOutput: canonicalSlackReplyText(input.message, 'markdown') },
     renderRoutineDelivery(
-      input.routine,
-      input.run,
       input.message,
       routineReplyFooter(input.access, input.routine),
     ),
@@ -426,29 +424,15 @@ export async function deliverRoutineRecoveryNotice(
 }
 
 export function renderRoutineDelivery(
-  routine: Pick<RoutineDefinition, 'name' | 'id' | 'timezone' | 'destination'>,
-  run: Pick<RoutineRun, 'id' | 'scheduledFor'>,
   message: string,
-  footer?: SlackReplyFooter,
+  footer: SlackReplyFooter,
 ): RenderedSlackMessage {
-  // Successful Channel work is the Agent's result, not a status card. Keep
-  // schedule metadata in Admin while retaining the normal safe Slack renderer.
-  if (routine.destination.kind === 'channel') return renderSlackMessage(message, 'markdown');
-  const rendered = renderSlackMessage(
-    `✅ **Routine completed**\n**${escapeSlackControlCharacters(routine.name)}**\n\n${message}`,
-    'markdown',
-  );
-  const fallback = renderSlackMessage(`Routine completed: ${routine.name}\n\n${message}`, 'plain_text');
-  const withRunContext = appendRoutineRunContext(
-    rendered,
-    routine,
-    run,
-    footer?.publicUrl,
-    footer?.agentId,
-    routine.destination.kind === 'direct_thread',
-  );
-  const withFallback = { ...withRunContext, text: fallback.text };
-  return footer ? appendSlackReplyFooter(withFallback, footer) : withFallback;
+  const rendered = renderSlackMessage(message, 'markdown');
+  return appendSlackReplyFooter(rendered, {
+    ...footer,
+    includeConfigureLink: false,
+    scheduled: true,
+  });
 }
 
 function appendRoutineRunContext(

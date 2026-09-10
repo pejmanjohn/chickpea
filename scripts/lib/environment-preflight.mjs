@@ -1770,7 +1770,13 @@ async function readCloudflareDoGeneration({ view, workerName, runWrangler, provi
     const body = await readBoundedAuthorityJson(response);
     const script = body?.result?.default_environment?.script;
     if (body?.success !== true || body?.result?.id !== workerName
-      || script?.etag !== etag || !bounded(script?.migration_tag)) throw fail(code);
+      || !bounded(script?.migration_tag)) throw fail(code);
+    // Traffic rollback does not roll back namespace migrations. The service
+    // remains authoritative; a different upload etag is safe only when the
+    // active version independently reports the same provider migration tag.
+    const versionTag = view?.resources?.script_runtime?.migration_tag;
+    if (versionTag !== undefined && (!bounded(versionTag) || versionTag !== script.migration_tag)) throw fail(code);
+    if (script.etag !== etag && versionTag !== script.migration_tag) throw fail(code);
     return script.migration_tag;
   } catch {
     throw fail(code);

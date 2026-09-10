@@ -1955,16 +1955,37 @@ test('runTurn fails a lease-rejected turn closed instead of returning silently',
   );
 });
 
-test('a successful own-turn memory write acknowledges without releasing the stale model draft', async () => {
-  const { slackMemoryUpdateArguments } = await import('../src/management/slack-memory-actions.ts');
+for (const scenario of [
+  { name: 'descriptive save', before: '', body: 'Use human-friendly dates and times.',
+    summary: 'I updated my memory to use human-friendly dates and times going forward.',
+    expected: 'I updated my memory to use human-friendly dates and times going forward.' },
+  { name: 'legacy save', before: '', body: 'A durable fact.', summary: undefined, expected: 'I updated my memory.' },
+  { name: 'reattached save', before: '', body: 'Use human-friendly dates and times.', reattach: true,
+    summary: 'I updated my memory to use human-friendly dates and times going forward.',
+    expected: 'I updated my memory to use human-friendly dates and times going forward.' },
+  { name: 'replayed tool after commit', before: '', body: 'Use human-friendly dates and times.', replay: true,
+    summary: 'I updated my memory to use human-friendly dates and times going forward.',
+    expected: 'I updated my memory.' },
+  { name: 'forget one fact', before: 'Secret canary: BLUEBIRD.\nKeep links.', body: 'Keep links.',
+    summary: 'I forgot BLUEBIRD.', expected: 'I updated my memory.' },
+  { name: 'forget all', before: 'Secret canary: BLUEBIRD.', body: '',
+    summary: 'I forgot BLUEBIRD.', expected: 'I cleared my saved memory.' },
+  { name: 'concurrent forget then addition', before: 'Secret canary: BLUEBIRD.', body: 'Use readable dates.', concurrent: true,
+    summary: 'I remember BLUEBIRD and now use readable dates.', expected: 'I updated my memory.' },
+]) {
+test(`a successful own-turn memory write acknowledges ${scenario.name} without releasing the stale model draft`, async () => {
+  const { executeSlackMemoryUpdate } = await import('../src/management/slack-memory-actions.ts');
   const { resolveSlackManagementActor } = await import('../src/management/slack-tools.ts');
-  const { appliedMemoryReceipt } = await import('../src/slack/memory-update-terminal.ts');
   const f = await createManagementAdapterFixture('memory-delivery');
   try {
     const agent = await f.config.createAgent({
       ...assignment.agent, creatorMembershipId: f.admin.membership.id,
       editPolicy: 'creator_and_admins',
     });
+    if (scenario.before) {
+      await f.memory.putAgentMemory({ agentId: agent.id, expectedRevision: 0, body: scenario.before });
+    }
+    const expectedRevision = scenario.before ? 1 : 0;
     const workspaceId = f.admin.binding.slackTeamId;
     const installation = await f.config.ensureWorkspaceInstallation({
       workspaceId, teamId: workspaceId, transportMode: 'direct',
@@ -1982,6 +2003,17 @@ test('a successful own-turn memory write acknowledges without releasing the stal
       threadTs: turn.threadTs, conversationKind: 'im' as const,
       slackUserId: turn.userId, eventId: turn.eventId, messageTs: turn.messageTs, turnJobId,
     };
+    const performWrite = () => executeSlackMemoryUpdate({
+      signal, memoryEpoch: expectedRevision + 1,
+      data: { expectedRevision: expectedRevision + ('concurrent' in scenario ? 1 : 0), body: scenario.body, summary: scenario.summary },
+      inspect: async () => ({ ok: true, result: await f.memory.getAgentMemory(agent.id) }),
+      apply: async (args) => ({ ok: true, result: await f.service.applyWorkspaceChanges({
+        context: await resolveSlackManagementActor(signal, f.identity), ...args,
+      }) }),
+    });
+    // A reattached delivery prepares memory after the tool's write already committed.
+    const reattached = 'reattach' in scenario ? await performWrite() : undefined;
+    if ('replay' in scenario) await performWrite();
     const posts: string[] = [];
     let checkpointed = false;
     let delivered: string | undefined;
@@ -2005,11 +2037,10 @@ test('a successful own-turn memory write acknowledges without releasing the stal
       appStores: { config: f.config, memory: f.memory, identity: f.identity, management: f.management } as never,
       managementApproval: { identity: f.identity, config: f.config, management: f.management, service: f.service },
       async agentPrompt(): Promise<AgentDispatchResult> {
-        const result = await f.service.applyWorkspaceChanges({
-          context: await resolveSlackManagementActor(signal, f.identity),
-          ...slackMemoryUpdateArguments(signal, { expectedRevision: 0, body: 'A durable fact.' }),
-        });
-        const memoryUpdate = appliedMemoryReceipt(result, agent.id);
+        if ('concurrent' in scenario) {
+          await f.memory.putAgentMemory({ agentId: agent.id, expectedRevision, body: '' });
+        }
+        const { receipt: memoryUpdate } = reattached ?? await performWrite();
         assert.ok(memoryUpdate);
         return { text: 'Stale model draft must stay hidden.', memoryUpdate,
           requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
@@ -2017,8 +2048,10 @@ test('a successful own-turn memory write acknowledges without releasing the stal
     });
     assert.equal(checkpointed, true);
     assert.equal(delivered, 'succeeded', 'acknowledgement uses the common terminal outcome');
-    assert.ok(posts.some((text) => text.includes('Updated this Agent’s saved memory.')), JSON.stringify(posts));
+    assert.ok(posts.some((text) => text.includes(scenario.expected)), JSON.stringify(posts));
+    assert.ok(posts.every((text) => !text.includes('BLUEBIRD')), 'forgotten content must never reach Slack');
     assert.ok(posts.every((text) => !text.includes('Stale model draft') && !text.includes(AGENT_FAILURE_TEXT)));
-    assert.equal((await f.memory.getAgentMemory(agent.id)).body, 'A durable fact.');
+    assert.equal((await f.memory.getAgentMemory(agent.id)).body, scenario.body);
   } finally { f.close(); }
 });
+}

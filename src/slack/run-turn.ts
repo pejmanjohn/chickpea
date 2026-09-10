@@ -1323,10 +1323,11 @@ export async function runTurn(
         });
       } catch {
         // Unavailable receipts or revoked actors retain the ordinary lease check.
+        acknowledgeMemoryUpdate = false;
       }
     }
     if (acknowledgeMemoryUpdate) {
-      text = recoveredText ?? 'Updated this Agent’s saved memory.';
+      text = recoveredText ?? agentResult?.memoryUpdate?.summary ?? 'I updated my memory.';
       tablePresentation = undefined;
     }
     // Confirmation only prevents reinjecting the same selection into this

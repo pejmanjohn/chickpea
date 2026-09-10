@@ -99,22 +99,36 @@ test('routine delivery claims once, posts at top level, and records the Slack re
     'https://chickpea.example/assets/agents/agent_default/avatar/2',
   );
   assert.equal(requests[0]?.text, 'Completed the write.');
-  assert.doesNotMatch(requests[0]?.blocks ?? '', /Routine completed|Scheduled|View schedule|Configure|anthropic\/claude-sonnet-4/);
-  const rendered = renderRoutineDelivery(routine, run, 'Done.', {
+  assert.doesNotMatch(requests[0]?.blocks ?? '', /Routine completed|View schedule|Configure/);
+  assert.match(requests[0]?.blocks ?? '', /Default \| anthropic\/claude-sonnet-4 \| Scheduled/);
+  const rendered = renderRoutineDelivery('Done.', {
     agentName: 'Default', modelLabel: 'anthropic/claude-sonnet-4',
     agentId: 'agent_default', publicUrl: 'https://chickpea.example',
   });
   assert.equal(rendered.text, 'Done.');
-  assert.doesNotMatch(JSON.stringify(rendered.blocks), /Routine completed|Daily|Scheduled|Default|View schedule|Configure/);
+  assert.doesNotMatch(JSON.stringify(rendered.blocks), /Routine completed|Daily|View schedule|Configure/);
 });
 
-test('Channel scheduled results preserve the requested body without a routine wrapper or Agent footer', () => {
-  const rendered = renderRoutineDelivery(routine, run, 'DUE qa-unit-schedule', {
+test('scheduled results show content and one subtle footer', () => {
+  const rendered = renderRoutineDelivery('DUE qa-unit-schedule', {
     agentName: 'Default', modelLabel: 'anthropic/claude-sonnet-4',
     agentId: 'agent_default', publicUrl: 'https://chickpea.example',
   });
   assert.equal(rendered.text, 'DUE qa-unit-schedule');
-  assert.deepEqual(rendered.blocks, [{ type: 'markdown', text: 'DUE qa-unit-schedule' }]);
+  assert.deepEqual(rendered.blocks, [
+    { type: 'markdown', text: 'DUE qa-unit-schedule' },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: 'Default | anthropic/claude-sonnet-4 | Scheduled' }] },
+  ]);
+});
+
+test('scheduled content keeps its own heading and retains the footer after truncation', () => {
+  const rendered = renderRoutineDelivery(`**Weekly report**\n${'x'.repeat(13000)}`, {
+    agentName: 'Default', agentId: 'agent_default',
+  });
+  assert.match(rendered.text, /Weekly report/);
+  const blocks = rendered.blocks!;
+  assert.match(JSON.stringify(blocks[0]), /Weekly report.*\[truncated\]/);
+  assert.deepEqual(blocks.at(-1), { type: 'context', elements: [{ type: 'mrkdwn', text: 'Default | Scheduled' }] });
 });
 
 test('an explicitly thread-bound Channel result uses the saved thread and remains unwrapped', async () => {
@@ -143,7 +157,7 @@ test('an explicitly thread-bound Channel result uses the saved thread and remain
 
 test('routine delivery redacts credential-shaped content from blocks and fallback text', () => {
   const canary = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789';
-  const rendered = renderRoutineDelivery(routine, run, `Result: ${canary}`);
+  const rendered = renderRoutineDelivery(`Result: ${canary}`, { agentName: 'Default', agentId: 'agent_default' });
   const blocks = JSON.stringify(rendered.blocks);
 
   assert.doesNotMatch(blocks, new RegExp(canary));
@@ -216,7 +230,11 @@ test('private routine results and failure notices stay in the originating thread
     assert.doesNotMatch(request.blocks ?? '', /View schedule|Configure|\/admin\//);
     assert.match(request.blocks ?? '', /Default.*anthropic\/claude-sonnet-4/);
   }
-  assert.match(requests[0]?.text ?? '', /Private result/);
+  assert.equal(requests[0]?.text, 'Private result.');
+  const successBlocks = JSON.parse(requests[0]!.blocks!);
+  assert.equal(successBlocks.filter((block: { type: string }) => block.type === 'context').length, 1);
+  assert.doesNotMatch(requests[0]!.blocks!, /Routine completed|Daily|✅|2026|PDT/);
+  assert.match(requests[0]!.blocks!, /\| Scheduled/);
   assert.match(requests[1]?.text ?? '', /review and resume it in this DM/);
 });
 
