@@ -297,6 +297,7 @@ const ATTRIBUTABLE_FAILURES = new Set<RoutineRun['failureClass']>([
   'deadline_exceeded',
   'tool_failed',
   'result_invalid',
+  'slack_rate_limited',
 ]);
 const ACCESS_FAILURES = new Set<RoutineRun['failureClass']>([
   'creator_ineligible',

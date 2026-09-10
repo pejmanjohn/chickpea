@@ -68,6 +68,56 @@ for (const rejection of ['channel_not_found', 'is_archived', 'not_in_channel', '
   });
 }
 
+test('three exhausted Slack rate limits pause recurring work through the failure policy', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  let posts = 0;
+  let notices = 0;
+  const client = new WebClient('xoxb-test', {
+    retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, slackApiUrl: 'https://slack.invalid/api/',
+    fetch: async (_url, init) => {
+      const text = new URLSearchParams(String(init?.body ?? '')).get('text') ?? '';
+      if (text.includes('paused scheduled work')) {
+        notices += 1;
+        return Response.json({ ok: true, channel: 'C_TEST', ts: '1785153600.000002' });
+      }
+      posts += 1;
+      return Response.json({ ok: false, error: 'ratelimited' },
+        { status: 429, headers: { 'retry-after': '120' } });
+    },
+  });
+  try {
+    const fixture = await admittedFixture(store, 'repeated_rate_limit');
+    const base = dependencies();
+    const deps = { ...base,
+      resolveAccess: async (...args: Parameters<typeof base.resolveAccess>) => ({ ...await base.resolveAccess(...args), client }),
+      handle: fakeHandle({ reply: successfulReply() }),
+    };
+    for (let index = 0; index < 3; index += 1) {
+      const run = index === 0 ? fixture.run : await store.createOccurrence({
+        runId: `rrun_repeated_rate_limit_${index}`, idempotencyKey: `rate-limit:${index}`,
+        routineId: fixture.routine.id, routineVersion: fixture.routine.version,
+        scheduledFor: NOW + index, triggerSource: 'schedule', queuedAt: NOW, deadlineAt: NOW + 60_000,
+      });
+      const attempt = index === 0 ? fixture.attempt : await store.startAdmissionAttempt({
+        occurrenceId: run.id, owner: 'heartbeat', invokeStartedAt: NOW, leaseUntil: NOW + 30_000,
+      });
+      assert.equal(await executeRoutineOccurrence({ env: {}, store, occurrenceId: run.id, attempt: attempt.attempt }, deps), 'completed');
+      const saved = await store.getRun(run.id);
+      assert.equal(saved?.flueAgentSettlement?.outcome, 'completed');
+      assert.equal(saved?.failureClass, 'slack_rate_limited');
+      const routine = await store.getRoutine(fixture.routine.id);
+      assert.equal(routine?.consecutiveFailures, index + 1);
+      assert.equal(routine?.state, index === 2 ? 'paused' : 'active');
+      if (index === 2) {
+        assert.equal(routine?.pausedReason, 'consecutive_failures');
+        assert.equal((await store.getRecoveryDelivery(run.id))?.status, 'accepted');
+      }
+    }
+    assert.equal(posts, 3);
+    assert.equal(notices, 1);
+  } finally { store.close(); }
+});
+
 for (const outcome of ['delivered', 'failed', 'unknown', 'leased'] as const) {
   test(`reentry uses durable ${outcome} delivery after a finalization interruption`, async () => {
     const store = new SqliteRoutineStore(':memory:', () => NOW);
