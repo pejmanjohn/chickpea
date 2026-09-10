@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { WebClient } from '@slack/web-api';
+import { SqliteConfigStore } from '../src/config/store.ts';
 
 import { hashRoutineValue } from '../src/routines/ids.ts';
 import {
@@ -72,6 +73,7 @@ test('a private routine hydrates only its stored thread with the saved task as a
     undefined,
     client,
     {
+      contextStore: { listSlackPublicContext: () => [], listRecentSlackPublicContext: () => [] },
       prepareMemory: async () => ({
         conversationKey: 'routine-private', memoryEpoch: 1, selection: { entries: [] },
         footerItems: [], visibilityBarrierAt: null, ownerBound: true,
@@ -91,6 +93,43 @@ test('a private routine hydrates only its stored thread with the saved task as a
   assert.match(prepared.prompt, /Historical background only/);
   assert.match(prepared.prompt, /Slack history.*untrusted background/i);
   assert.match(prepared.prompt, /Current Slack request[\s\S]*Perform only the saved private check/);
+});
+
+test('scheduled thread prompts recover bounded admitted corrections and respect the visibility barrier', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  const threadTs = '1785000000.000100';
+  const scheduledFor = 1_785_001_000_000;
+  const scheduled = { id: 'routine_context', workspaceId: 'T_TEST', channelId: 'D_TEST',
+    creatorUserId: 'U_MEMBER', destination: { kind: 'direct_thread', conversationId: 'D_TEST', threadTs,
+      ownerMembershipId: 'member' } } as RoutineDefinition;
+  const occurrence = { id: 'run_context', scheduledFor, revision: { taskText: 'Report the corrected budget.' } } as RoutineRun;
+  const access = { config: { workspaceId: 'T_TEST', channelId: 'D_TEST', agentId: 'agent_test',
+    agent: { id: 'agent_test', enabled: true }, instructionLayers: [], instructions: '' },
+    actorSlackUserId: 'U_MEMBER', botUserId: 'U_BOT' } as never;
+  let calls = 0;
+  const client = { conversations: { replies: async () => {
+    calls += 1;
+    return { messages: [{ user: 'U_MEMBER', ts: threadTs, text: 'STALE_BUDGET: 99' }],
+      response_metadata: { next_cursor: `page${calls}` } };
+  } } } as unknown as WebClient;
+  try {
+    await store.putSlackPublicContext({ workspaceId: 'T_TEST', channelId: 'D_TEST', rootTs: threadTs,
+      messageTs: '1785000999.000000', role: 'human', text: 'CORRECTED_BUDGET: 42' });
+    for (const visibilityBarrierAt of [null, scheduledFor]) {
+      const prepared = await prepareRoutinePrompt(occurrence, scheduled, access, undefined, client, {
+        contextStore: store,
+        prepareMemory: async () => ({ conversationKey: 'context', memoryEpoch: 1, selection: { entries: [] },
+          footerItems: [], visibilityBarrierAt, ownerBound: true,
+          validateLease: async () => true, confirmInjection: async () => true }),
+      });
+      assert.doesNotMatch(prepared.prompt, /STALE_BUDGET/);
+      assert.match(prepared.prompt, /not a complete transcript/);
+      if (visibilityBarrierAt === null) assert.match(prepared.prompt, /CORRECTED_BUDGET: 42/);
+      else assert.doesNotMatch(prepared.prompt, /CORRECTED_BUDGET/);
+      assert.match(prepared.prompt, /Current Slack request[\s\S]*Report the corrected budget/);
+    }
+    assert.equal(calls, 6);
+  } finally { store.close(); }
 });
 
 test('post-on-change hashes raw keys and suppresses an unchanged result', () => {

@@ -17,6 +17,7 @@ import {
 } from '../src/memory/tool-policy.ts';
 import { slackPresentationIntentCapability } from '../src/slack/presentation-intent.ts';
 import {
+  assembleRetainedSlackContext,
   boundedSlackPublicHandoff,
   MAX_SLACK_PUBLIC_HANDOFF_CHARS,
   MAX_SLACK_PUBLIC_HANDOFF_MESSAGES,
@@ -72,6 +73,82 @@ function threadTurn(overrides: Partial<NormalizedSlackTurn> = {}): NormalizedSla
 function humanMsg(n: number, ts: string) {
   return { user: 'U_HUMAN', type: 'message', text: `msg ${n}`, ts };
 }
+
+test('a capped forward scan omits its stale segment and recovers retained recent corrections', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  const turn = threadTurn({ messageTs: '1201.000000' });
+  const pages = Array.from({ length: 4 }, (_, page) => ({
+    messages: Array.from({ length: 50 }, (_, row) => humanMsg(page * 50 + row + 1, `${1001 + page * 50 + row}.000000`)),
+    ...(page < 3 ? { next_cursor: `page${page + 1}` } : {}),
+  }));
+  const client = fakeClientWithReplyPages(pages);
+  try {
+    const hydrated = await hydrateSlackContextViaWebClient(client as never, turn);
+    assert.equal(client.calls(), 3);
+    const noLedger = assembleSlackPrompt(turn, await assembleRetainedSlackContext(hydrated, turn));
+    assert.doesNotMatch(noLedger, /msg 150|only the most recent messages/);
+    assert.match(noLedger, /incomplete.*bounded forward scan/s);
+    assert.match(noLedger, /ask for clarification/);
+    const base = { workspaceId: 'T1', channelId: 'C1', rootTs: turn.threadTs, role: 'human' as const };
+    await store.putSlackPublicContext({ ...base, messageTs: '1200.000000', text: 'CORRECTION: the final budget is 42.' });
+    await store.putSlackPublicContext({ ...base, messageTs: '1202.000000', text: 'FUTURE' });
+    await store.putSlackPublicContext({ ...base, rootTs: '900', messageTs: '1199', text: 'OTHER_ROOT' });
+    const assembled = await assembleRetainedSlackContext(hydrated, turn, { store, agentId: 'agent_support' });
+    const prompt = assembleSlackPrompt(turn, assembled);
+    assert.match(prompt, /CORRECTION: the final budget is 42/);
+    assert.doesNotMatch(prompt, /msg 150|FUTURE|OTHER_ROOT/);
+    assert.match(prompt, /not a complete transcript/);
+    for (const id of ['agent_support', 'agent_other']) await store.createAgent({ id, name: id, instructions: '', enabled: true, lifecycle: 'active', creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+    for (const agentId of ['agent_support', 'agent_other']) await store.putSlackPublicContext({
+      ...base, role: 'agent', agentId, messageTs: agentId === 'agent_support' ? '1198' : '1199', text: `REPLY_${agentId}`,
+    });
+    const withReplies = assembleSlackPrompt(turn, await assembleRetainedSlackContext(hydrated, turn, { store, agentId: 'agent_support' }));
+    assert.match(withReplies, /REPLY_agent_support/);
+    assert.doesNotMatch(withReplies, /REPLY_agent_other/);
+    const barrier = await assembleRetainedSlackContext(hydrated, turn, {
+      store, agentId: 'agent_support', visibilityBarrierAt: 1_200_001,
+    });
+    assert.doesNotMatch(assembleSlackPrompt(turn, barrier), /CORRECTION/);
+  } finally { store.close(); }
+});
+
+test('retained edits supersede stale copies, exclude future revisions, and deletion removes context', async () => {
+  const store = new SqliteConfigStore(':memory:');
+  const turn = threadTurn();
+  const base = { workspaceId: 'T1', channelId: 'C1', rootTs: turn.threadTs, role: 'human' as const, messageTs: '1900.000000' };
+  try {
+    await store.putSlackPublicContext({ ...base, text: 'ORIGINAL' });
+    const hydrated = await hydrateSlackContextViaWebClient(fakeClientWithReplyPages([
+      { messages: [{ user: 'U_HUMAN', text: 'ORIGINAL', ts: base.messageTs }] },
+    ]) as never, turn);
+    const prompt = async () => assembleSlackPrompt(turn, await assembleRetainedSlackContext(hydrated, turn, { store, agentId: 'agent_support' }));
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', channel: 'C1', ts: '1950', subtype: 'message_changed',
+      message: { type: 'message', channel: 'C1', ts: base.messageTs, thread_ts: turn.threadTs, text: 'CORRECTED', edited: { ts: '1950' } },
+    });
+    assert.match(await prompt(), /CORRECTED/);
+    assert.doesNotMatch(await prompt(), /ORIGINAL/);
+    await store.putSlackPublicContext({ ...base, text: 'ADMISSION_REPLAY' });
+    assert.doesNotMatch(await prompt(), /ADMISSION_REPLAY/);
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', channel: 'C1', ts: '1940', subtype: 'message_changed',
+      message: { type: 'message', channel: 'C1', ts: base.messageTs, thread_ts: turn.threadTs, text: 'OUT_OF_ORDER_EDIT', edited: { ts: '1940' } },
+    });
+    assert.doesNotMatch(await prompt(), /OUT_OF_ORDER_EDIT/);
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', channel: 'C1', ts: '2001', subtype: 'message_changed',
+      message: { type: 'message', channel: 'C1', ts: base.messageTs, thread_ts: turn.threadTs, text: 'FUTURE_EDIT', edited: { ts: '2001' } },
+    });
+    assert.doesNotMatch(await prompt(), /FUTURE_EDIT|ORIGINAL|CORRECTED/);
+    assert.match(await prompt(), /incomplete/);
+    await reconcileSlackPublicContextMutation(store, 'T1', {
+      type: 'message', channel: 'C1', ts: '2002', subtype: 'message_deleted', deleted_ts: base.messageTs,
+      previous_message: { type: 'message', channel: 'C1', ts: base.messageTs, thread_ts: turn.threadTs },
+    });
+    const empty = await hydrateSlackContextViaWebClient(fakeClientWithReplyPages([{ messages: [] }]) as never, turn);
+    assert.doesNotMatch(assembleSlackPrompt(turn, await assembleRetainedSlackContext(empty, turn, { store, agentId: 'agent_support' })), /FUTURE_EDIT|ORIGINAL|CORRECTED/);
+  } finally { store.close(); }
+});
 
 test('long thread keeps the NEWEST messages, not the oldest, within the window', async () => {
   // 60 messages across two pages (50 + 10), oldest-first. maxMessages 50.

@@ -121,6 +121,58 @@ function workTurn(eventId: string): NormalizedSlackTurn {
   };
 }
 
+test('runTurn retains the admitted latest correction across runtime rollover beyond the Slack page cap', async () => {
+  const f = await createManagementAdapterFixture('context-rollover');
+  try {
+    const agent = await f.config.createAgent({ ...assignment.agent,
+      creatorMembershipId: f.admin.membership.id, editPolicy: 'creator_and_admins' });
+    const workspaceId = f.admin.binding.slackTeamId;
+    const turn: NormalizedSlackTurn = {
+      ...workTurn('Ev_CONTEXT_ROLLOVER'), workspaceId, userId: f.admin.binding.slackUserId,
+      actorMembershipId: f.admin.membership.id, contextMode: 'thread',
+      threadTs: '1785509000.000100', messageTs: '1785509201.000100',
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    };
+    const bound: ResolvedAssignment = { ...assignment, workspaceId, agent, runtimeContract: 'chickpea-v1' };
+    await f.config.putSlackPublicContext({ workspaceId, channelId: turn.channelId,
+      rootTs: turn.threadTs, messageTs: '1785509200.000100', role: 'human', text: 'LATEST_CORRECTION: use 42.' });
+    let calls = 0;
+    const client = {
+      conversations: { replies: async () => {
+        calls += 1;
+        return { ok: true, messages: [{ user: turn.userId, ts: '1785509100.000100', text: 'OBSOLETE: use 99.' }],
+          response_metadata: { next_cursor: `page${calls}` } };
+      } },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: '1785509300.000100' }),
+        startStream: async () => ({ ok: true, ts: '1785509300.000100' }),
+        stopStream: async () => ({ ok: true }),
+      },
+    } as unknown as WebClient;
+    const prompts: string[] = [];
+    for (const epoch of [1, 2]) {
+      const runtimePlan = compileRuntimePlanV2({ turn, assignment: bound,
+        instructions: agent.instructions, memoryEpoch: epoch, sandboxMode: 'bash' });
+      await runTurn({ ...turn, eventId: `${turn.eventId}_${epoch}` }, bound, undefined, {
+        client, usageRecordingEnabled: false,
+        runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) },
+        appStores: { config: f.config, memory: f.memory, identity: f.identity, management: f.management } as never,
+        agentPrompt: async ({ message }) => {
+          prompts.push(message);
+          return { text: '42', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
+        },
+      });
+    }
+    assert.equal(calls, 6);
+    assert.equal(prompts.length, 2);
+    for (const prompt of prompts) {
+      assert.match(prompt, /LATEST_CORRECTION: use 42/);
+      assert.doesNotMatch(prompt, /OBSOLETE: use 99/);
+      assert.match(prompt, /not a complete transcript/);
+    }
+  } finally { f.close(); }
+});
+
 function v3PresentationHarness(
   turn: NormalizedSlackTurn,
   runId: string,
