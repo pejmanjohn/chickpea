@@ -7,7 +7,7 @@ import {
   buildSlackAdminUrl,
   canonicalSlackReplyText,
   escapeSlackControlCharacters,
-  renderSlackFileInitialComment,
+  renderSlackFileBlocks,
   renderSlackMessage,
   type RenderedSlackMessage,
   type SlackReplyFooter,
@@ -202,7 +202,7 @@ async function deliverRoutineFileShare(
     files: input.files.map((file) => ({ id: file.fileId, ...(file.title ? { title: file.title } : {}) })),
     channelId: input.routine.channelId,
     ...(input.routine.destination.threadTs ? { threadTs: input.routine.destination.threadTs } : {}),
-    initialComment: renderSlackFileInitialComment(input.approvedOutput, 'markdown', {
+    blocks: renderSlackFileBlocks(input.approvedOutput, 'markdown', {
       ...routineReplyFooter(input.access, input.routine),
       includeConfigureLink: false,
       scheduled: true,
@@ -235,7 +235,7 @@ async function deliverRoutineFileShare(
         files: completion.files,
         channel_id: completion.channelId,
         ...(completion.threadTs ? { thread_ts: completion.threadTs } : {}),
-        initial_comment: completion.initialComment,
+        blocks: completion.blocks,
         ...completion.persona,
       },
       share,

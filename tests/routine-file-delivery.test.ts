@@ -9,6 +9,11 @@ import type { SlackFileCompletionInput, SlackFileTransport } from '../src/slack/
 import type { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 
 const now = 1789063303000;
+
+function fileBody(input: SlackFileCompletionInput): string {
+  return (input.blocks as Array<{ type: string; text?: { text: string } }> ?? [])
+    .filter((block) => block.type === 'section').map((block) => block.text!.text).join('');
+}
 function setup(kind: 'root' | 'thread' | 'direct' = 'root', error?: unknown) {
   const channelId = kind === 'direct' ? 'D12345678' : 'C12345678';
   const threadTs = kind === 'root' ? undefined : '1789063300.000100';
@@ -46,27 +51,31 @@ for (const kind of ['root', 'thread', 'direct'] as const) {
     assert.equal(h.completions[0]!.channelId, h.channelId);
     assert.equal(h.completions[0]!.threadTs, h.threadTs);
     assert.equal(h.completions[0]!.persona?.username, 'Smoke Amber');
-    assert.equal(h.completions[0]!.blocks, undefined);
-    assert.equal(h.completions[0]!.initialComment, 'GRE: $2,400\n\nSmoke Amber | openai/test | Scheduled');
+    assert.equal(h.completions[0]!.initialComment, undefined);
+    assert.deepEqual(h.completions[0]!.blocks, [
+      { type: 'section', text: { type: 'mrkdwn', text: 'GRE: $2,400' } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: 'Smoke Amber | openai/test | Scheduled' }] },
+    ]);
     const envelope = JSON.parse(h.attempts[0]!.renderedPayload as string);
-    assert.equal(envelope.completion.initial_comment, h.completions[0]!.initialComment);
-    assert.equal(envelope.completion.blocks, undefined);
+    assert.equal(envelope.completion.initial_comment, undefined);
+    assert.deepEqual(envelope.completion.blocks, h.completions[0]!.blocks);
     assert.equal(h.records[0]!.outcome, 'delivered');
     await assert.rejects(deliverRoutineResult(h.input, h.client));
     assert.equal(h.completions.length, 1, 'claim prevents duplicate completion');
   });
 }
 
-test('scheduled file comments retain long answers, table figures, and one Scheduled footer', async () => {
+test('scheduled file sections retain long answers, table figures, and one Scheduled footer', async () => {
   const h = setup();
   const prefix = 'x'.repeat(8_000);
   h.input.message = `${prefix}\n\n| Exam | Bookings |\n| --- | ---: |\n| GRE | $2,400 |\n| TOEFL | $800 |`;
   await deliverRoutineResult(h.input, h.client);
-  const comment = h.completions[0]!.initialComment!;
+  const comment = fileBody(h.completions[0]!);
   assert.ok(comment.startsWith(prefix));
   assert.match(comment, /Exam — Bookings\nGRE — \$2,400\nTOEFL — \$800/);
-  assert.match(comment, /Smoke Amber \| openai\/test \| Scheduled$/);
-  assert.equal(comment.match(/Scheduled/g)?.length, 1);
+  const payload = JSON.stringify(h.completions[0]!.blocks);
+  assert.match(payload, /Smoke Amber \| openai\/test \| Scheduled/);
+  assert.equal(payload.match(/Scheduled/g)?.length, 1);
   assert.doesNotMatch(comment, /Configure|\[truncated\]/);
   assert.equal(h.posts.length, 0);
 });
@@ -76,7 +85,7 @@ test('scheduled file completion preserves exact filenames and code literals', as
   h.input.message = 'Attached `qa_artifacts_1531.csv`.\n\n```\nrow_total = x_i * y_j\n```';
   h.input.artifacts[0]!.filename = 'qa_artifacts_1531.csv';
   await deliverRoutineResult(h.input, h.client);
-  assert.equal(h.completions[0]!.initialComment, `${h.input.message}\n\nSmoke Amber | openai/test | Scheduled`);
+  assert.equal(fileBody(h.completions[0]!), h.input.message);
   assert.equal(h.posts.length, 0);
 });
 

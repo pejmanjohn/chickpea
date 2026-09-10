@@ -13,7 +13,7 @@ import {
   renderSlackActionLink,
   renderSlackMarkdownActionLink,
   renderSlackMessage,
-  renderSlackFileInitialComment,
+  renderSlackFileBlocks,
   sanitizeSlackMarkdownLinks,
   slackActionLink,
   slackMarkdownBlockTextLimit,
@@ -26,6 +26,14 @@ import {
 } from '../src/slack/replies.ts';
 import { activityStatus } from '../src/activity/status.ts';
 import { syntheticPem } from './helpers/credential-fixtures.ts';
+
+function fileBody(blocks: ReturnType<typeof renderSlackFileBlocks>): string {
+  return blocks.filter((block) => block.type === 'section').map((block) => block.text.text).join('');
+}
+
+function renderFileBody(...args: Parameters<typeof renderSlackFileBlocks>): string {
+  return fileBody(renderSlackFileBlocks(...args));
+}
 
 test('standard Markdown final replies render as Slack markdown blocks', () => {
   const markdown = [
@@ -150,20 +158,29 @@ test('fallback text is plain enough for notifications and accessibility', () => 
   assert.equal(fallback, 'Hello &lt;team&gt;\n\nShip docs (https://example.com)');
 });
 
-test('file comments retain the 12,000-character canonical answer without changing notification limits', () => {
+test('classic file sections retain all 12,000 canonical characters and one context footer', () => {
   const text = `${'x'.repeat(11_992)}TAIL_END`;
-  const comment = renderSlackFileInitialComment(text, 'markdown', {
+  const blocks = renderSlackFileBlocks(text, 'markdown', {
     agentName: 'Analyst', agentId: 'agent_analyst', publicUrl: 'https://example.com',
   });
-  assert.ok(comment.startsWith(text));
-  assert.match(comment, /TAIL_END\n\nAnalyst \| <https:\/\/example.com\/admin\/agents\/agent_analyst\|Configure>$/);
+  assert.equal(fileBody(blocks), text);
+  assert.equal(blocks.length, 5);
+  for (const block of blocks.slice(0, -1)) {
+    assert.equal(block.type, 'section');
+    if (block.type !== 'section') continue;
+    assert.equal(block.text.type, 'mrkdwn');
+    assert.equal(block.text.text.length, 3_000);
+  }
+  assert.deepEqual(blocks.at(-1), { type: 'context', elements: [{
+    type: 'mrkdwn', text: 'Analyst | <https://example.com/admin/agents/agent_analyst|Configure>',
+  }] });
   assert.equal(markdownFallbackText(text).length, 4_000);
   assert.match(markdownFallbackText(text), /\[truncated\]$/);
 });
 
-test('file comments preserve safe action labels while escaping malformed content and redacting credentials', () => {
+test('file sections preserve safe action labels while escaping malformed content and redacting credentials', () => {
   const canary = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789';
-  const comment = renderSlackFileInitialComment([
+  const comment = renderFileBody([
     '## Report <team>',
     '**GRE:** $2,400 & TOEFL: $800',
     '[View report](https://example.com/report?exam=gre&row=1)',
@@ -183,27 +200,27 @@ test('file comments preserve safe action labels while escaping malformed content
   assert.doesNotMatch(comment, new RegExp(`${canary}|javascript:|<!channel>`));
 });
 
-test('plain file comments escape Slack control syntax and retain readable table data', () => {
-  const comment = renderSlackFileInitialComment('Result for <@U123> & team', 'plain_text', {
+test('plain file sections escape Slack control syntax and retain readable table data', () => {
+  const comment = renderFileBody('Result for <@U123> & team', 'plain_text', {
     agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
   }, 'Exam: GRE | Bookings: 2400\nExam: TOEFL | Bookings: 800');
-  assert.equal(comment, 'Result for &lt;@U123&gt; &amp; team\n\nExam: GRE | Bookings: 2400\nExam: TOEFL | Bookings: 800\n\nAnalyst');
+  assert.equal(comment, 'Result for &lt;@U123&gt; &amp; team\n\nExam: GRE | Bookings: 2400\nExam: TOEFL | Bookings: 800');
 });
 
-test('file comments preserve exact inline and unformatted filenames and mathematical expressions', () => {
+test('file sections preserve exact inline and unformatted filenames and mathematical expressions', () => {
   const body = [
     'File: `qa_artifacts_1531.csv`',
     'Also attached: qa_artifacts_1531.csv and qa__artifacts__1531.png',
     'Compute `x_i * y_j + z_k ** 2` with $x_i + y_j$ and a*b*c.',
     'Example: `[literal_link](https://example.com/a_b)`',
   ].join('\n');
-  const comment = renderSlackFileInitialComment(body, 'markdown', {
+  const comment = renderFileBody(body, 'markdown', {
     agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
   });
-  assert.equal(comment, `${body}\n\nAnalyst`);
+  assert.equal(comment, body);
 });
 
-test('file comments preserve fenced code and table-like literals while still escaping Slack controls', () => {
+test('file sections preserve fenced code and table-like literals while still escaping Slack controls', () => {
   const body = [
     'Use this snippet:',
     '```python',
@@ -215,11 +232,107 @@ test('file comments preserve fenced code and table-like literals while still esc
     '```',
     'Inline: `x_i < y_j && y_j > z_k`',
   ].join('\n');
-  const comment = renderSlackFileInitialComment(body, 'markdown', {
+  const comment = renderFileBody(body, 'markdown', {
     agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
   });
-  assert.equal(comment, `${body.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}\n\nAnalyst`);
+  assert.equal(comment, body.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'));
 });
+
+test('file sections keep links and short code intact when they cross a section boundary', () => {
+  const prefix = 'x'.repeat(2_980);
+  const link = '<https://example.com/report?exam=gre&amp;row=1|View report>';
+  const blocks = renderSlackFileBlocks(`${prefix}[View report](https://example.com/report?exam=gre&row=1)\n\`qa_artifacts_1531.csv\``, 'markdown', {
+    agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+  });
+  const sections = blocks.filter((block) => block.type === 'section');
+  assert.equal(fileBody(blocks), `${prefix}${link}\n\`qa_artifacts_1531.csv\``);
+  assert.equal(sections[0]!.text.text, prefix);
+  assert.equal(sections[1]!.text.text, `${link}\n\`qa_artifacts_1531.csv\``);
+  assert.ok(sections.every((block) => block.text.text.length <= 3_000));
+});
+
+for (const fence of ['`', '```']) {
+  test(`file sections reopen long ${fence.length === 1 ? 'inline' : 'fenced'} code without losing literal content`, () => {
+    const code = 'qa_artifacts_1531.csv x_i * y_j ** 2 '.repeat(180);
+    const blocks = renderSlackFileBlocks(`${fence}${code}${fence}`, 'markdown', {
+      agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+    });
+    const sections = blocks.filter((block) => block.type === 'section');
+    assert.ok(sections.length > 1);
+    assert.ok(sections.every((block) => block.text.text.length <= 3_000 &&
+      block.text.text.startsWith(fence) && block.text.text.endsWith(fence)));
+    assert.equal(sections.map((block) => block.text.text.slice(fence.length, -fence.length)).join(''), code);
+    assert.equal(blocks.at(-1)!.type, 'context');
+  });
+}
+
+test('file sections preserve escaped controls and Unicode at every boundary', () => {
+  const body = `${'x'.repeat(2_998)}😀&<value>${'😀&'.repeat(1_000)}`;
+  const blocks = renderSlackFileBlocks(body, 'markdown', {
+    agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+  });
+  assert.equal(fileBody(blocks), body.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'));
+  for (const block of blocks) {
+    if (block.type !== 'section') continue;
+    assert.ok(block.text.text.length <= 3_000);
+    assert.doesNotMatch(block.text.text, /^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/);
+    assert.doesNotMatch(block.text.text, /&(?:a(?:m(?:p)?)?|l(?:t)?|g(?:t)?)?$/);
+  }
+});
+
+test('a link larger than a section retains its complete URL and label as a literal', () => {
+  const url = `https://example.com/${'a'.repeat(3_100)}?exam=gre&row=1`;
+  const blocks = renderSlackFileBlocks(`[View report](${url})`, 'markdown', {
+    agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+  });
+  const sections = blocks.filter((block) => block.type === 'section');
+  assert.ok(sections.every((block) => block.text.text.length <= 3_000 &&
+    block.text.text.startsWith('```') && block.text.text.endsWith('```')));
+  assert.equal(sections.map((block) => block.text.text.slice(3, -3)).join(''), `&lt;${url.replaceAll('&', '&amp;')}|View report&gt;`);
+});
+
+test('dense code plus a bounded table repacks into at most 50 blocks without losing content', () => {
+  const body = ('```\n' + '&'.repeat(300) + '\n```').repeat(38);
+  const table = '&'.repeat(12_000);
+  const blocks = renderSlackFileBlocks(body, 'markdown', {
+    agentName: 'Analyst', agentId: 'agent_analyst', modelLabel: 'openai/test',
+    includeConfigureLink: false, scheduled: true,
+  }, table);
+  assert.ok(blocks.length <= 50);
+  const sections = blocks.filter((block) => block.type === 'section');
+  assert.ok(sections.every((block) => block.text.type === 'plain_text' && block.text.text.length <= 3_000));
+  assert.equal(fileBody(blocks), `${body.replaceAll('&', '&amp;')}\n\n${table.replaceAll('&', '&amp;')}`);
+  assert.doesNotMatch(fileBody(blocks), /\[truncated\]/);
+  assert.deepEqual(blocks.at(-1), { type: 'context', elements: [{
+    type: 'mrkdwn', text: 'Analyst | openai/test | Scheduled',
+  }] });
+  assert.equal(blocks.filter((block) => block.type === 'context').length, 1);
+});
+
+test('aggregate fallback preserves a Unicode URL without percent-encoding expansion', () => {
+  const body = `[View report](https://example.com/${'日'.repeat(11_000)})`;
+  const table = '&'.repeat(12_000);
+  const blocks = renderSlackFileBlocks(body, 'markdown', {
+    agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+  }, table);
+  assert.ok(blocks.length <= 50);
+  assert.ok(blocks.filter((block) => block.type === 'section').every((block) =>
+    block.text.type === 'plain_text' && block.text.text.length <= 3_000));
+  assert.equal(fileBody(blocks), `${body}\n\n${table.replaceAll('&', '&amp;')}`);
+  assert.doesNotMatch(fileBody(blocks), /\[truncated\]/);
+});
+
+for (const format of ['plain_text', 'mrkdwn', 'markdown'] as const) {
+  test(`file block limits remain bounded for oversized ${format} inputs with explicit truncation`, () => {
+    const blocks = renderSlackFileBlocks('x'.repeat(150_000), format, {
+      agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+    }, '&'.repeat(150_000));
+    assert.ok(blocks.length <= 50);
+    assert.ok(blocks.filter((block) => block.type === 'section').every((block) => block.text.text.length <= 3_000));
+    assert.equal(fileBody(blocks).match(/\[truncated\]/g)?.length, 2);
+    assert.equal(blocks.at(-1)!.type, 'context');
+  });
+}
 
 test('product-owned action links use safe descriptive Slack labels', () => {
   const reusable = slackActionLink(

@@ -3,6 +3,8 @@ import type { SlackNativeTableBlock } from './table-presentation.ts';
 
 export const slackMarkdownBlockTextLimit = 12_000;
 const slackFallbackTextLimit = 4_000;
+const slackSectionTextLimit = 3_000;
+const slackFileContentBlockLimit = 49;
 
 export const SLACK_ACTION_LINK_INSTRUCTION = [
   'In Slack replies, never display a raw URL for an action link supplied by Chickpea or a tool.',
@@ -36,7 +38,7 @@ interface SlackPlainTextObject {
 
 interface SlackSectionBlock {
   type: 'section';
-  text: SlackPlainTextObject;
+  text: SlackPlainTextObject | SlackMrkdwnTextElement;
 }
 
 type SlackMessageBlock =
@@ -106,16 +108,16 @@ export function renderSlackMessage(text: string, format: SlackReplyFormat): Rend
   };
 }
 
-/** Render the full answer for native file completion without message blocks. */
-export function renderSlackFileInitialComment(
+/** Classic Block Kit content and footer for the native file-share message. */
+export function renderSlackFileBlocks(
   text: string,
   format: SlackReplyFormat,
   footer: SlackReplyFooter,
   tableText?: string,
-): string {
-  const displayText = canonicalSlackReplyText(text, format);
+): Array<SlackSectionBlock | SlackContextBlock> {
+  const displayText = truncateText(canonicalSlackReplyText(text, format), slackMarkdownBlockTextLimit);
   const body = format === 'markdown'
-    ? fileCommentMarkdownText(displayText)
+    ? fileReplyMrkdwnText(displayText)
     : format === 'plain_text' ? escapeSlackControlCharacters(displayText) : displayText;
   const sections = [body];
   if (tableText) {
@@ -124,8 +126,86 @@ export function renderSlackFileInitialComment(
       slackMarkdownBlockTextLimit,
     )));
   }
-  sections.push(renderSlackReplyFooterBlock(footer).elements[0]!.text);
-  return sections.join('\n\n');
+  const content = sections.join('\n\n');
+  let plainText = format === 'plain_text';
+  let chunks = plainText
+    ? splitSlackText(content, slackSectionTextLimit)
+    : splitSlackFileSections(content);
+  if (chunks.length > slackFileContentBlockLimit) {
+    // Protecting many separate code/link spans can exceed Slack's 50-block
+    // message limit. Repack the bounded canonical source without losing data
+    // or expanding a Unicode URL through percent encoding. The 12,000-character
+    // body and table fit after escaping, with one block left for the footer.
+    chunks = splitSlackText([
+      escapeSlackControlCharacters(displayText), ...sections.slice(1),
+    ].join('\n\n'), slackSectionTextLimit);
+    plainText = true;
+  }
+  return [
+    ...chunks.map((text): SlackSectionBlock => ({
+      type: 'section',
+      text: plainText
+        ? { type: 'plain_text', text, emoji: false }
+        : { type: 'mrkdwn', text },
+    })),
+    renderSlackReplyFooterBlock(footer),
+  ];
+}
+
+function splitSlackFileSections(text: string): string[] {
+  const sections: string[] = [];
+  let current = '';
+  const flush = () => {
+    if (current) sections.push(current);
+    current = '';
+  };
+  const append = (token: string) => {
+    if (current.length + token.length > slackSectionTextLimit) flush();
+    current += token;
+  };
+  for (const segment of text.split(/(```[\s\S]*?(?:```|$)|`[^`\n]+`|<https?:\/\/[^>\n]+>)/g)) {
+    if (!segment) continue;
+    const fence = segment.startsWith('```') ? '```'
+      : /^`[^`\n]+`$/.test(segment) ? '`' : '';
+    const link = /^<https?:\/\/[^>\n]+>$/.test(segment);
+    if (!fence && !link) {
+      for (const token of segment.match(/&(?:amp|lt|gt);|[\s\S]/gu) ?? []) append(token);
+      continue;
+    }
+    const closed = fence && segment.length >= fence.length * 2 && segment.endsWith(fence);
+    const token = fence && !closed ? `${segment}${fence}` : segment;
+    if (token.length <= slackSectionTextLimit) {
+      append(token);
+      continue;
+    }
+    // Reopen code in each section. An oversized link is shown in full as a
+    // literal instead of splitting its URL into misleading clickable pieces.
+    const delimiter = fence || '```';
+    const literal = fence
+      ? segment.slice(fence.length, closed ? -fence.length : undefined)
+      : segment.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    flush();
+    for (const chunk of splitSlackText(literal, slackSectionTextLimit - delimiter.length * 2)) {
+      append(`${delimiter}${chunk}${delimiter}`);
+    }
+  }
+  flush();
+  return sections;
+}
+
+/** Keep escaped Slack controls and Unicode code points intact at a boundary. */
+function splitSlackText(text: string, limit: number): string[] {
+  const chunks: string[] = [];
+  let current = '';
+  for (const token of text.match(/&(?:amp|lt|gt);|[\s\S]/gu) ?? []) {
+    if (current.length + token.length > limit) {
+      chunks.push(current);
+      current = '';
+    }
+    current += token;
+  }
+  if (current) chunks.push(current);
+  return chunks;
 }
 
 /** Canonical credential-safe text shared by every terminal Slack delivery path. */
@@ -426,18 +506,18 @@ function readableMarkdownText(markdown: string): string {
     .replace(/[ \t]+\n/g, '\n');
 }
 
-function fileCommentMarkdownText(markdown: string): string {
+function fileReplyMrkdwnText(markdown: string): string {
   // Native Slack mrkdwn understands code fences and inline backticks. Protect
   // those literals before converting prose so filenames, expressions, and
   // example links retain their exact characters. An unfinished fence can be
   // the result of the canonical answer limit and still needs literal handling.
   return markdown.split(/(```[\s\S]*?(?:```|$))/g).map((segment, index) => index % 2 === 1
     ? escapeSlackControlCharacters(segment)
-    : fileCommentProseText(segment)
+    : fileReplyProseText(segment)
   ).join('').trim() || '(empty reply)';
 }
 
-function fileCommentProseText(markdown: string): string {
+function fileReplyProseText(markdown: string): string {
   const content = linearizeMarkdownTables(markdown);
   // Convert only complete Markdown links. Escape all other text, including
   // malformed links and Slack control syntax, before adding the trusted footer.

@@ -34,6 +34,8 @@ test('direct staging preserves byte subviews and native completion keeps Agent p
   assert.equal(body.get('username'), 'Smoke Amber');
   assert.equal(body.get('icon_url'), input.persona.icon_url);
   assert.equal(body.get('channel_id'), channelId);
+  assert.deepEqual(JSON.parse(body.get('blocks')!), input.blocks);
+  assert.equal(body.has('initial_comment'), false);
   assert.deepEqual(JSON.parse(body.get('files')!), input.files);
   assert.deepEqual(await transport.resolveShare({ fileId, channelId, threadTs }), { shared: true, channelId, ts });
 });
@@ -46,6 +48,8 @@ test('gateway uses stage, native completion and exact-share readback without upl
     if (operation === 'files.completeUploadExternal') {
       assert.equal(value.username, 'Smoke Amber');
       assert.equal(value.channel_id, channelId);
+      assert.deepEqual(value.blocks, input.blocks);
+      assert.equal(value.initial_comment, undefined);
       return { files: [{ id: fileId }] };
     }
     assert.deepEqual(value, { file: fileId, channel: channelId, thread_ts: threadTs });

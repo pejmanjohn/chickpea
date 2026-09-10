@@ -11,7 +11,7 @@ import { isSafeTypedActivityStatus } from '../activity/status.ts';
 import {
   appendSlackReplyFooter,
   canonicalSlackReplyText,
-  renderSlackFileInitialComment,
+  renderSlackFileBlocks,
   renderSlackMessage,
   renderSlackReplyFooterBlock,
   type SlackReplyFormat,
@@ -834,7 +834,7 @@ export class WebClientPresenter {
       files: input.files.map((file) => ({ id: file.fileId, ...(file.title ? { title: file.title } : {}) })),
       channelId: this.target.channelId,
       threadTs: this.target.threadTs,
-      initialComment: renderSlackFileInitialComment(
+      blocks: renderSlackFileBlocks(
         input.displayText, input.format, input.footer, input.renderedTable?.fallbackText,
       ),
       persona: this.persona(),
@@ -857,7 +857,7 @@ export class WebClientPresenter {
         files: completion.files,
         channel_id: completion.channelId,
         thread_ts: completion.threadTs,
-        initial_comment: completion.initialComment,
+        blocks: completion.blocks,
         ...this.persona(),
       },
       share: {

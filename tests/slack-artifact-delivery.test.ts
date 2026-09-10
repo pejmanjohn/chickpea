@@ -15,6 +15,11 @@ const receipt: SlackArtifactReceipt = {
 };
 const ts = '1789063001.000200';
 
+function fileBody(input: SlackFileCompletionInput): string {
+  return (input.blocks as Array<{ type: string; text?: { text: string } }> ?? [])
+    .filter((block) => block.type === 'section').map((block) => block.text!.text).join('');
+}
+
 function setup(options: { error?: unknown; unresolved?: boolean; ledger?: boolean } = {}) {
   const completions: SlackFileCompletionInput[] = [];
   const posts: Record<string, unknown>[] = [];
@@ -44,16 +49,19 @@ test('PNG and final text publish together with the selected Agent identity and o
   assert.equal(h.posts.length, 0);
   assert.deepEqual(h.completions[0]!.persona, { username: 'Smoke Amber', icon_url: target.agentAvatarUrl });
   assert.deepEqual(h.completions[0]!.files, [{ id: receipt.fileId, title: 'Bookings' }]);
-  assert.equal(h.completions[0]!.blocks, undefined);
-  assert.equal(h.completions[0]!.initialComment, 'GRE: $2,400\n\nSmoke Amber | openai/test | <https://example.com/admin/agents/agent_smoke|Configure>');
+  assert.equal(h.completions[0]!.initialComment, undefined);
+  assert.deepEqual(h.completions[0]!.blocks, [
+    { type: 'section', text: { type: 'mrkdwn', text: 'GRE: $2,400' } },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: 'Smoke Amber | openai/test | <https://example.com/admin/agents/agent_smoke|Configure>' }] },
+  ]);
   const envelope = JSON.parse(h.observations[0]!.renderedPayload as string);
-  assert.equal(envelope.completion.initial_comment, h.completions[0]!.initialComment);
-  assert.equal(envelope.completion.blocks, undefined);
+  assert.equal(envelope.completion.initial_comment, undefined);
+  assert.deepEqual(envelope.completion.blocks, h.completions[0]!.blocks);
   assert.deepEqual(h.handoffs, [{ messageTs: ts, text: 'GRE: $2,400' }]);
   assert.equal(h.observations.at(-1)!.outcome, 'delivered');
 });
 
-test('a file comment preserves a full-length answer and readable native table rows', async () => {
+test('file sections preserve a full-length answer and readable native table rows', async () => {
   const h = setup();
   const lastFigure = '\nFinal figure: $2,400';
   const answer = `${'x'.repeat(12_000 - lastFigure.length)}${lastFigure}`;
@@ -63,11 +71,11 @@ test('a file comment preserves a full-length answer and readable native table ro
     columns: [{ header: 'Exam' }, { header: 'Bookings', type: 'number' }],
     rows: Array.from({ length: 7 }, (_, index) => [`Exam ${index + 1}`, 2400 - index * 100]),
   }, [receipt]);
-  const comment = h.completions[0]!.initialComment!;
+  const comment = fileBody(h.completions[0]!);
   assert.ok(comment.startsWith(answer));
   assert.match(comment, /Bookings by exam\nExam: Exam 1 \| Bookings: 2400/);
   assert.match(comment, /Exam: Exam 7 \| Bookings: 1800/);
-  assert.match(comment, /Smoke Amber \| openai\/test \| <https:\/\/example.com\/admin\/agents\/agent_smoke\|Configure>$/);
+  assert.match(JSON.stringify(h.completions[0]!.blocks!.at(-1)), /Smoke Amber \| openai\/test \| <https:\/\/example.com\/admin\/agents\/agent_smoke\|Configure>/);
   assert.equal(h.posts.length, 0);
 });
 
@@ -77,9 +85,9 @@ test('interactive file completion preserves the exact named file and code litera
   await h.presenter.deliverFinal(answer, 'markdown', 'complete', undefined, [{
     ...receipt, filename: 'qa_artifacts_1531.csv', kind: 'file',
   }]);
-  assert.ok(h.completions[0]!.initialComment!.startsWith(`${answer}\n\n`));
+  assert.equal(fileBody(h.completions[0]!), answer);
   const envelope = JSON.parse(h.observations[0]!.renderedPayload as string);
-  assert.equal(envelope.completion.initial_comment, h.completions[0]!.initialComment);
+  assert.deepEqual(envelope.completion.blocks, h.completions[0]!.blocks);
   assert.equal(h.posts.length, 0);
 });
 
