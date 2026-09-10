@@ -37,8 +37,8 @@ interface SlackPromptApp {
  * Policy parity (per contextMode):
  *   - channel_history / dm_history -> conversations.history, window-bounded,
  *     limit DEFAULT_MAX_MESSAGES (never conversations.replies for DMs).
- *   - thread -> conversations.replies, paginated (limit 50 first page, cursor +
- *     decremented limit on later pages, capped at DEFAULT_MAX_PAGES).
+ *   - thread -> conversations.replies, forward-paginated with a fixed per-page
+ *     limit, capped at DEFAULT_MAX_PAGES; incomplete old segments are omitted.
  * Any hydration failure degrades to current-message-only context so the turn
  * still completes.
  */
@@ -166,6 +166,8 @@ async function fetchThread(
       channel: turn.channelId,
       ts: turn.threadTs,
       limit: maxMessages,
+      latest: turn.messageTs,
+      inclusive: true,
       ...(cursor ? { cursor } : {}),
     });
 
@@ -186,8 +188,8 @@ async function fetchThread(
     }
   }
 
-  // Truncated when the thread had more pages than maxPages allowed us to walk —
-  // we then hold the most-recent window we could reach, not the whole thread.
+  // If the scan stopped early, these rows are an old segment, not the recent
+  // tail. Omit it rather than letting obsolete context compete with corrections.
   const truncated = Boolean(cursor);
   if (truncated) {
     degradations.push('slack_context.thread:truncated');
@@ -195,7 +197,7 @@ async function fetchThread(
 
   return {
     mode: 'thread',
-    messages: ensureTriggerMessage(orderMessages(collected), turn),
+    messages: ensureTriggerMessage(truncated ? [] : orderMessages(collected), turn),
     window: {
       mode: 'thread',
       oldest: turn.threadTs,
@@ -254,12 +256,14 @@ export function assembleSlackPrompt(
   if (options.handoffBlock) {
     parts.push('', options.handoffBlock);
   }
-  if (context.truncated && backgroundMessages.length > 0) {
+  if (context.truncated || context.degradations.length > 0) {
     // Tell the model the window is partial so a "summarize today" over a busy
     // channel can caveat what it covers instead of presenting the newest slice
     // as the whole story.
     parts.push(
-      '(Context truncated: only the most recent messages of this window are included; older messages were dropped.)',
+      context.mode === 'thread'
+        ? '(Thread context is incomplete. A bounded forward scan may miss recent messages; any capped old segment was omitted. Retained messages are not a complete transcript. If a referenced correction or decision is missing, ask for clarification rather than assuming older context is current.)'
+        : '(Slack context is incomplete. Some messages are unavailable or outside this bounded window. If a referenced correction or decision is missing, ask for clarification.)',
     );
   }
   if (options.memoryBlock) {

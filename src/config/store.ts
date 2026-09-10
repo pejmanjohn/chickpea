@@ -193,6 +193,7 @@ interface SlackPublicContextRow {
   role: string;
   text: string;
   agent_id: string | null;
+  content_version_ts: string | null;
   updated_at: number;
 }
 
@@ -419,6 +420,9 @@ export class ConfigStoreLogic {
       this.installConfigSchema();
       this.installAgentConnectionBindingMigrations();
       this.installAgentScheduleReferenceMigrations();
+      // Existing installs already carry the extension marker. Their column
+      // upgrades must run after the marker-guarded table creation path too.
+      addColumnIfMissing(this.db, 'config_slack_public_context', 'content_version_ts', 'TEXT');
     }
     // Column presence, read from the schema cache rather than by scanning
     // sqlite_master: this runs on every construction, including attach.
@@ -1256,13 +1260,17 @@ export class ConfigStoreLogic {
     const now = Date.now();
     this.db.run(
       `INSERT INTO config_slack_public_context (
-        workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        workspace_id, channel_id, root_ts, message_ts, role, text, agent_id, content_version_ts, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_id, channel_id, root_ts, message_ts) DO UPDATE SET
         role = excluded.role,
         text = excluded.text,
         agent_id = excluded.agent_id,
-        updated_at = excluded.updated_at`,
+        content_version_ts = excluded.content_version_ts,
+        updated_at = excluded.updated_at
+      WHERE config_slack_public_context.content_version_ts IS NULL OR
+        (excluded.content_version_ts IS NOT NULL AND
+         CAST(excluded.content_version_ts AS REAL) >= CAST(config_slack_public_context.content_version_ts AS REAL))`,
       input.workspaceId,
       input.channelId,
       input.rootTs,
@@ -1270,6 +1278,7 @@ export class ConfigStoreLogic {
       input.role,
       input.text,
       input.agentId ?? null,
+      input.contentVersionTs ?? null,
       now,
     );
     // Retention is root-scoped: one recent message keeps the bounded public
@@ -3126,6 +3135,7 @@ function rowToSlackPublicContext(row: SlackPublicContextRow): SlackPublicContext
     role: row.role === 'agent' ? 'agent' : 'human',
     text: row.text,
     ...(row.agent_id ? { agentId: row.agent_id } : {}),
+    ...(row.content_version_ts ? { contentVersionTs: row.content_version_ts } : {}),
     updatedAt: Number(row.updated_at),
   };
 }

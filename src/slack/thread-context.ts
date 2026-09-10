@@ -5,6 +5,7 @@ export interface SlackContextMessage {
   text: string;
   ts: string;
   isTrigger: boolean;
+  contentVersionTs?: string;
 }
 
 interface SlackContextWindow {
@@ -29,6 +30,7 @@ export interface SlackWebApiMessage {
   ts?: string;
   subtype?: string;
   bot_id?: string;
+  edited?: { ts: string };
 }
 
 export const DEFAULT_MAX_MESSAGES = 50;
@@ -144,6 +146,7 @@ export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextM
         text: message.text,
         ts: message.ts,
         isTrigger: false,
+        ...(message.edited?.ts ? { contentVersionTs: message.edited.ts } : {}),
       },
     ];
   });

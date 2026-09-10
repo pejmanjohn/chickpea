@@ -29,6 +29,7 @@ export interface SlackMessageEvent {
   channel_type?: string;
   subtype?: string;
   deleted_ts?: string;
+  edited?: { ts: string };
   message?: SlackMessageEvent;
   previous_message?: SlackMessageEvent;
   bot_id?: string;
