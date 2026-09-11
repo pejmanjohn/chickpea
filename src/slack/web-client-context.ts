@@ -15,6 +15,12 @@ import {
   type SlackTurnContext,
   type SlackWebApiMessage,
 } from './thread-context.ts';
+import {
+  collectThreadImageRecords,
+  MAX_THREAD_IMAGE_ENTRIES,
+  slackThreadImageConversationKey,
+  type ThreadImageRecord,
+} from './thread-images.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import { boundedSlackPublicHandoff, type SlackPublicHandoffMessage } from './public-context.ts';
 
@@ -126,6 +132,7 @@ async function fetchHistory(
   });
 
   const rawMessages = (response.messages ?? []) as unknown as SlackWebApiMessage[];
+  const images = collectThreadImages(rawMessages, turn);
   const hasCursor = Boolean(response.response_metadata?.next_cursor?.trim());
   const messages = ensureTriggerMessage(
     orderMessages(
@@ -143,6 +150,7 @@ async function fetchHistory(
     window,
     truncated: hasCursor,
     degradations,
+    ...(images.length > 0 ? { images } : {}),
   };
 }
 
@@ -158,6 +166,7 @@ async function fetchThread(
   // that kept the oldest 50 and dropped all recent context. Walk pages (bounded
   // by maxPages) and retain the NEWEST maxMessages as a rolling tail.
   const collected: SlackContextMessage[] = [];
+  const images: ThreadImageRecord[] = [];
   const degradations: string[] = [];
   let cursor: string | undefined;
 
@@ -172,6 +181,12 @@ async function fetchThread(
     });
 
     const rawMessages = (response.messages ?? []) as unknown as SlackWebApiMessage[];
+    // Collected from the raw rows, before the projection drops bot rows and
+    // text-less rows; bounded the same way the retained tail is.
+    images.push(...collectThreadImages(rawMessages, turn));
+    if (images.length > MAX_THREAD_IMAGE_ENTRIES) {
+      images.splice(0, images.length - MAX_THREAD_IMAGE_ENTRIES);
+    }
     collected.push(
       ...toContextMessages(rawMessages).filter((message) =>
         atOrBeforeSlackWatermark(message.ts, turn.messageTs)
@@ -206,7 +221,17 @@ async function fetchThread(
     },
     truncated,
     degradations,
+    ...(images.length > 0 ? { images } : {}),
   };
+}
+
+/** Raw-row image inventory for this turn's conversation, watermark-bounded. */
+function collectThreadImages(
+  rawMessages: readonly SlackWebApiMessage[],
+  turn: NormalizedSlackTurn,
+): ThreadImageRecord[] {
+  return collectThreadImageRecords(rawMessages, slackThreadImageConversationKey(turn))
+    .filter((record) => atOrBeforeSlackWatermark(record.messageTs, turn.messageTs));
 }
 
 /**

@@ -605,7 +605,8 @@ function replaceLiteral(value: string, target: string, replacement: string): str
   return target ? value.split(target).join(replacement) : value;
 }
 
-function safeFilename(value: string): string {
+/** Display-safe basename: no path, no control characters, bounded length. */
+export function safeFilename(value: string): string {
   const basename = value.split(/[\\/]/).at(-1)?.trim() ?? '';
   if (!basename || basename.includes('://')) return '[filename omitted]';
   return Array.from(basename

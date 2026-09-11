@@ -571,3 +571,31 @@ test('pre-scope V1 and V2 envelopes remain readable but lose coarse write author
   }
   assert.equal(currentRequestOffersProgressiveStreaming(parseCurrentRequestEnvelope(v2)), true);
 });
+
+test('image-bearing rows widen only the additive inventory, never the projection or the prompt', async () => {
+  const turn = threadTurn();
+  const rows = (files: boolean) => [
+    { user: 'U_HUMAN', type: 'message', text: 'here is the brief', ts: '1001.000000' },
+    {
+      type: 'message', subtype: 'file_share', user: 'U_HUMAN', text: '', ts: '1002.000000',
+      ...(files
+        ? { files: [{ id: 'F00000000AA', name: 'logo.png', mimetype: 'image/png', size: 1024 }] }
+        : {}),
+    },
+  ];
+  const withFiles = await hydrateSlackContextViaWebClient(
+    fakeClientWithReplyPages([{ messages: rows(true) }]) as never, turn,
+  );
+  const without = await hydrateSlackContextViaWebClient(
+    fakeClientWithReplyPages([{ messages: rows(false) }]) as never, turn,
+  );
+
+  assert.deepEqual(withFiles.messages, without.messages);
+  assert.equal(without.images, undefined);
+  assert.deepEqual(withFiles.images?.map((image) => [image.fileId, image.origin, image.messageTs]), [
+    ['F00000000AA', 'person', '1002.000000'],
+  ]);
+  // The inventory feeds tool handles only; no file identifier reaches the prompt.
+  assert.equal(assembleSlackPrompt(turn, withFiles), assembleSlackPrompt(turn, without));
+  assert.equal(assembleSlackPrompt(turn, withFiles).includes('F00000000AA'), false);
+});
