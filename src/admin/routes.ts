@@ -197,6 +197,7 @@ import {
   AgentStillAssignedError,
   AgentStillReferencedError,
   ModelResolutionError,
+  ModelRoleRevisionConflictError,
   NoAssignmentError,
   UnknownAgentError,
   WorkspaceModelDefaultRevisionConflictError,
@@ -335,12 +336,15 @@ import {
 } from '../config/state-backend.ts';
 import type { AgentSnapshotStore } from '../config/snapshot-store.ts';
 import type { RuntimeDrainStatus } from '../config/state-rpc.ts';
-import type { ConfigStore } from '../config/store.ts';
-import type {
-  AgentCreateInput,
-  AgentScheduleState,
-  WorkspaceModelDefault,
+import type { AgentModelRolePatch, ConfigStore } from '../config/store.ts';
+import {
+  isNonChatModelRole,
+  type AgentCreateInput,
+  type AgentScheduleState,
+  type NonChatModelRole,
+  type WorkspaceModelDefault,
 } from '../config/types.ts';
+import { findImageModel, listImageModels } from '../model-catalog/image-profiles.ts';
 import { MemoryStateError, type MemoryStateStore } from '../memory/types.ts';
 import {
   RoutineStateError,
@@ -878,6 +882,13 @@ const workspaceModelDefaultSchema = v.strictObject({
   modelId: modelSpecifier,
   expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
 });
+// Role model ids are checked against the image catalog server-side (KTD12):
+// `modelSpecifier` is shape-only and would happily accept a chat model in the
+// image role. The regex here only bounds the string before the catalog lookup.
+const workspaceModelRoleSchema = v.strictObject({
+  modelId: modelSpecifier,
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
+});
 const chickpeaCutoverPrepareSchema = v.strictObject({
   confirm: v.literal('prepare-stage-1'),
 });
@@ -1238,6 +1249,7 @@ const agentSchema = v.object({
   instructions: nonEmptyString,
   enabled: v.boolean(),
   model: v.optional(modelSpecifier),
+  imageModel: v.optional(modelSpecifier),
   skills: v.optional(skillsSchema, []),
   mcpServers: v.optional(mcpServersSchema, []),
   apiConnections: v.optional(apiConnectionsSchema, []),
@@ -1253,6 +1265,7 @@ const agentPatchSchema = v.object({
   instructions: v.optional(nonEmptyString),
   enabled: v.optional(v.boolean()),
   model: v.optional(v.nullable(modelSpecifier)),
+  imageModel: v.optional(v.nullable(modelSpecifier)),
   skills: v.optional(skillsSchema),
   mcpServers: v.optional(mcpServersSchema),
   apiConnections: v.optional(apiConnectionsSchema),
@@ -6094,6 +6107,81 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  app.get('/admin/api/workspace-model-roles/:role', async (c) => {
+    const role = c.req.param('role');
+    if (!isNonChatModelRole(role)) return c.json({ error: 'not_found' }, 404);
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) {
+      return c.json({ error: 'workspace_installation_required' }, 409);
+    }
+    return c.json({
+      workspaceModelRole: await workspaceModelRoleProjection({
+        configStore,
+        settingsStore: settings(c),
+        ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
+        installation,
+        role,
+      }),
+    });
+  });
+
+  app.put('/admin/api/workspace-model-roles/:role', async (c) => {
+    const role = c.req.param('role');
+    if (!isNonChatModelRole(role)) return c.json({ error: 'not_found' }, 404);
+    const parsed = v.safeParse(workspaceModelRoleSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const configStore = store(c);
+    const installation = await modelDefaultInstallation(configStore);
+    if (!installation) {
+      return c.json({ error: 'workspace_installation_required' }, 409);
+    }
+    const principal = principalByContext.get(c);
+    if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
+      return c.json({ error: 'forbidden' }, 403);
+    }
+    const rejection = await modelRoleChoiceError({
+      settingsStore: settings(c),
+      ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
+      role,
+      modelId: parsed.output.modelId,
+    });
+    if (rejection) return invalidRequest(c, rejection);
+    try {
+      await configStore.putWorkspaceModelRole({
+        workspaceId: installation.workspaceId,
+        role,
+        modelId: parsed.output.modelId,
+        lastChangedByMembershipId: principal.membershipId,
+      }, parsed.output.expectedRevision);
+      return c.json({
+        workspaceModelRole: await workspaceModelRoleProjection({
+          configStore,
+          settingsStore: settings(c),
+          ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
+          installation,
+          role,
+        }),
+      });
+    } catch (error) {
+      if (error instanceof ModelRoleRevisionConflictError) {
+        return c.json({
+          error: 'model_role_revision_conflict',
+          expectedRevision: error.expectedRevision,
+          actualRevision: error.actualRevision,
+          workspaceModelRole: await workspaceModelRoleProjection({
+            configStore,
+            settingsStore: settings(c),
+            ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
+            installation,
+            role,
+          }),
+        }, 409);
+      }
+      return internalError(c, error);
+    }
+  });
+
   app.get('/admin/api/chickpea-cutover/preflight', async (c) => {
     const principal = principalByContext.get(c);
     if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
@@ -6884,6 +6972,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (modelError) {
       return modelNotResolvable(c, modelError);
     }
+    if (parsed.output.imageModel !== undefined) {
+      const rejection = await modelRoleChoiceError({
+        settingsStore: settings(c),
+        ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
+        role: 'image',
+        modelId: parsed.output.imageModel,
+      });
+      if (rejection) return invalidRequest(c, rejection);
+    }
     try {
       const configStore = store(c);
       const existingGeneratedSeeds = (await configStore.listUserAgents()).flatMap((existing) => {
@@ -6911,6 +7008,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ),
       };
       const created = await configStore.createAgent(agent);
+      if (parsed.output.imageModel !== undefined) {
+        await configStore.putAgentModelRole({
+          agentId: created.id,
+          role: 'image',
+          modelId: parsed.output.imageModel,
+        });
+      }
       try {
         const actor = await agentActor(c);
         productTelemetry(c)?.capture({
@@ -8137,6 +8241,23 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (modelError) {
         return modelNotResolvable(c, modelError);
       }
+      // The system Agent follows the Workspace role default and can pin
+      // nothing, exactly as it cannot pin a chat model (R2, AE7).
+      if (parsed.output.imageModel && current.kind === 'system') {
+        return invalidRequest(c, 'Chickpea follows the Workspace image model.');
+      }
+      if (parsed.output.imageModel) {
+        const rejection = await modelRoleChoiceError({
+          settingsStore: settings(c),
+          ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
+          role: 'image',
+          modelId: parsed.output.imageModel,
+        });
+        if (rejection) return invalidRequest(c, rejection);
+      }
+      const roleUpdates: AgentModelRolePatch[] = parsed.output.imageModel === undefined
+        ? []
+        : [{ role: 'image', modelId: parsed.output.imageModel }];
       // Repointing a connection at a new origin must not carry the previous
       // origin's credential across. Secrets are keyed by connection id and this
       // route deliberately never writes them, so drop the stale ones instead.
@@ -8154,9 +8275,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(c.env ? { env: c.env as PlatformEnv } : {}),
         settings: settings(c),
       });
-      let updated = await configStore.updateAgent(
+      // One PATCH commits the Agent row and its role rows together: a failing
+      // role write must not leave a half-applied Agent behind.
+      let updated = await configStore.updateAgentWithModelRoles(
         agentId,
         patch,
+        roleUpdates,
         parsed.output.expectedRevision,
       );
       let presenceRecovery = null;
@@ -10801,6 +10925,90 @@ function modelNotResolvable(
   return c.json({ error: 'model_not_resolvable', message: err.message }, 422);
 }
 
+/**
+ * Owner-facing view of one non-chat model role: the stored choice, its
+ * revision, and the models an Owner may pick from right now (the role's
+ * catalog, narrowed to providers whose credential is present).
+ */
+async function workspaceModelRoleProjection(input: {
+  configStore: ConfigStore;
+  settingsStore: SettingsStore;
+  platformEnv?: PlatformEnv;
+  installation: WorkspaceInstallation;
+  role: NonChatModelRole;
+}): Promise<object> {
+  const stored = await input.configStore.getWorkspaceModelRole(
+    input.installation.workspaceId,
+    input.role,
+  );
+  return {
+    workspaceId: input.installation.workspaceId,
+    role: input.role,
+    modelId: stored?.modelId ?? null,
+    revision: stored?.revision ?? 0,
+    availableModels: await availableRoleModels(
+      input.role,
+      input.settingsStore,
+      input.platformEnv,
+    ),
+  };
+}
+
+/**
+ * KTD12: the shape-only `modelSpecifier` regex would accept a chat model in the
+ * image role, so a role choice is accepted only when the role's own catalog
+ * knows it and its provider already has a credential.
+ */
+async function modelRoleChoiceError(input: {
+  settingsStore: SettingsStore;
+  platformEnv?: PlatformEnv;
+  role: NonChatModelRole;
+  modelId: string;
+}): Promise<string | undefined> {
+  const available = await availableRoleModels(
+    input.role,
+    input.settingsStore,
+    input.platformEnv,
+  );
+  if (available.some(({ id }) => id === input.modelId)) return undefined;
+  return findImageModel(input.modelId)
+    ? `Connect the ${input.modelId.split('/')[0]} provider before choosing ${input.modelId}.`
+    : `${input.modelId} is not an image model.`;
+}
+
+async function availableRoleModels(
+  role: NonChatModelRole,
+  settingsStore: SettingsStore,
+  platformEnv?: PlatformEnv,
+): Promise<Array<{ id: string; name: string; providerId: string; acceptsImageInput: boolean }>> {
+  if (role !== 'image') return [];
+  const configured = new Map<string, boolean>();
+  const models = [];
+  for (const provider of IMAGE_ROLE_PROVIDER_IDS) {
+    let ready = configured.get(provider);
+    if (ready === undefined) {
+      ready = isProviderKeyId(provider)
+        ? Boolean((await resolveProviderApiKey(provider, platformEnv, settingsStore)).apiKey)
+        : false;
+      configured.set(provider, ready);
+    }
+    if (!ready) continue;
+    for (const profile of listImageModels(provider)) {
+      models.push({
+        id: profile.id,
+        name: profile.name,
+        providerId: provider,
+        acceptsImageInput: profile.input.includes('image'),
+      });
+    }
+  }
+  return models;
+}
+
+// The image catalog is provider-agnostic by shape; only OpenAI ships an
+// adapter in this release, so only its entries can be offered.
+const IMAGE_ROLE_PROVIDER_IDS = ['openai'] as const;
+
 async function modelDefaultInstallation(
   configStore: ConfigStore,
 ): Promise<WorkspaceInstallation | undefined> {
@@ -11277,6 +11485,12 @@ async function agentAdminProjection(
   const workspaceDefault = workspaceId
     ? await configStore.getWorkspaceModelDefault(workspaceId)
     : undefined;
+  const [agentImageRole, workspaceImageRole] = await Promise.all([
+    configStore.getAgentModelRole(agent.id, 'image'),
+    workspaceId
+      ? configStore.getWorkspaceModelRole(workspaceId, 'image')
+      : Promise.resolve(undefined),
+  ]);
   const legacyDefaultInstallations = installations.filter(
     ({ defaultAgentId, runtimeContract }) =>
       runtimeContract === 'legacy' && defaultAgentId === agent.id,
@@ -11289,6 +11503,11 @@ async function agentAdminProjection(
       effectiveModel: agent.model ?? workspaceDefault?.modelId ?? null,
       live: installation?.runtimeContract === 'chickpea-v1',
       ...(workspaceDefault ? { workspaceDefaultRevision: workspaceDefault.revision } : {}),
+    },
+    imageModel: agentImageRole?.modelId ?? null,
+    imageModelPolicy: {
+      source: agentImageRole?.modelId ? 'pinned' : 'workspace_default',
+      effectiveModel: agentImageRole?.modelId ?? workspaceImageRole?.modelId ?? null,
     },
     slackPresenceRecovery: agent.slackPresence?.health === 'needs_attention' &&
         agent.slackPresence.errorCode

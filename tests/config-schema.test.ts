@@ -5,11 +5,15 @@ import {
   CONFIG_CHICKPEA_CUTOVER_MIGRATION,
   CONFIG_CHICKPEA_EXTENSION_MIGRATION,
   CONFIG_CHICKPEA_ROUTING_MIGRATION,
+  CONFIG_MODEL_ROLE_MIGRATION,
   CONFIG_SCHEMA_MARKER,
   CONFIG_SCHEMA_VERSION,
   ConfigStoreLogic,
 } from '../src/config/store.ts';
-import { WorkspaceModelDefaultRevisionConflictError } from '../src/config/errors.ts';
+import {
+  ModelRoleRevisionConflictError,
+  WorkspaceModelDefaultRevisionConflictError,
+} from '../src/config/errors.ts';
 import { createDemoStarterAgent, createSeededAgents, seededWorkspaceModelDefault } from '../src/config/seed.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type { StateDb } from '../src/state/state-db.ts';
@@ -717,6 +721,160 @@ test('a private draft may hold only a pending publication grant until activation
       store.putAgentChannelGrant({ ...pending, status: 'active' }, pending.revision).status,
       'active',
     );
+  } finally {
+    db.close();
+  }
+});
+
+test('model role tables install additively on a fresh store and on schema 12', () => {
+  const fresh = openStateDb(':memory:');
+  try {
+    const store = new ConfigStoreLogic(fresh, { agents: createSeededAgents() });
+    store.ensureWorkspaceInstallation({ workspaceId: 'TROLE', transportMode: 'gateway' });
+
+    assert.equal(
+      fresh.get('SELECT value FROM config_meta WHERE key = ?', 'schema_version')?.value,
+      String(CONFIG_SCHEMA_VERSION),
+    );
+    assert.ok(fresh.get(
+      'SELECT 1 AS present FROM config_migrations WHERE id = ?',
+      CONFIG_MODEL_ROLE_MIGRATION,
+    ));
+    // Nothing is seeded: the image role starts empty by decision.
+    assert.equal(store.getWorkspaceModelRole('TROLE', 'image'), undefined);
+    assert.equal(store.getAgentModelRole('agent_chickpea', 'image'), undefined);
+  } finally {
+    fresh.close();
+  }
+
+  const legacy = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(legacy);
+    const store = new ConfigStoreLogic(legacy, { agents: [] });
+
+    assert.equal(
+      legacy.get('SELECT value FROM config_meta WHERE key = ?', 'schema_version')?.value,
+      String(CONFIG_SCHEMA_VERSION),
+      'the role tables are additive and must not bump the config schema version',
+    );
+    assert.equal(
+      legacy.get('SELECT value FROM config_meta WHERE key = ?', 'schema_marker')?.value,
+      CONFIG_SCHEMA_MARKER,
+    );
+    assert.ok(legacy.get(
+      'SELECT 1 AS present FROM config_migrations WHERE id = ?',
+      CONFIG_MODEL_ROLE_MIGRATION,
+    ));
+    const saved = store.putWorkspaceModelRole({
+      workspaceId: 'TACME',
+      role: 'image',
+      modelId: 'openai/gpt-image-2.5-flare',
+      lastChangedByMembershipId: 'membership_owner',
+    });
+    assert.deepEqual(saved, {
+      workspaceId: 'TACME',
+      role: 'image',
+      modelId: 'openai/gpt-image-2.5-flare',
+      revision: 1,
+      lastChangedByMembershipId: 'membership_owner',
+      createdAt: saved.createdAt,
+      updatedAt: saved.updatedAt,
+    });
+    // Reopening runs the installer again; CREATE TABLE IF NOT EXISTS keeps the row.
+    const reopened = new ConfigStoreLogic(legacy, { agents: [] });
+    assert.deepEqual(reopened.getWorkspaceModelRole('TACME', 'image'), saved);
+  } finally {
+    legacy.close();
+  }
+});
+
+test('model role writes carry their own revision and reject a stale one', () => {
+  const db = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(db);
+    const store = new ConfigStoreLogic(db, { agents: [] });
+
+    const first = store.putWorkspaceModelRole({
+      workspaceId: 'TACME',
+      role: 'image',
+      modelId: 'openai/gpt-image-2.5-flare',
+    }, 0);
+    assert.equal(first.revision, 1);
+    const second = store.putWorkspaceModelRole({
+      workspaceId: 'TACME',
+      role: 'image',
+      modelId: 'openai/gpt-image-2.5-sunburst',
+    }, 1);
+    assert.equal(second.revision, 2);
+    assert.throws(
+      () => store.putWorkspaceModelRole({
+        workspaceId: 'TACME',
+        role: 'image',
+        modelId: 'openai/gpt-image-2.5-flare',
+      }, 1),
+      (error: unknown) =>
+        error instanceof ModelRoleRevisionConflictError &&
+        error.scope === 'workspace' &&
+        error.role === 'image' &&
+        error.expectedRevision === 1 &&
+        error.actualRevision === 2,
+    );
+    assert.equal(
+      store.getWorkspaceModelRole('TACME', 'image')?.modelId,
+      'openai/gpt-image-2.5-sunburst',
+    );
+    // The chat default keeps its own revision line; role rows never touch it.
+    assert.equal(store.getWorkspaceModelDefault('TACME')?.revision, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('an Agent PATCH that fails on its role row leaves config_agents unchanged', () => {
+  const db = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(db);
+    const store = new ConfigStoreLogic(db, { agents: [] });
+    const agent = store.getAgent('agent_default');
+
+    assert.throws(
+      () => store.updateAgentWithModelRoles(
+        agent.id,
+        { name: 'Renamed' },
+        // 'chat' is not a role-table role: the role write throws after the
+        // Agent row was already written inside the same transaction.
+        [{ role: 'chat' as never, modelId: 'openai/gpt-image-2.5-flare' }],
+        agent.revision,
+      ),
+      /Unsupported model role chat/,
+    );
+    const after = store.getAgent(agent.id);
+    assert.equal(after.name, agent.name);
+    assert.equal(after.revision, agent.revision);
+    assert.equal(store.getAgentModelRole(agent.id, 'image'), undefined);
+
+    const updated = store.updateAgentWithModelRoles(
+      agent.id,
+      { name: 'Renamed' },
+      [{ role: 'image', modelId: 'openai/gpt-image-2.5-sunburst' }],
+      agent.revision,
+    );
+    assert.equal(updated.name, 'Renamed');
+    assert.equal(
+      store.getAgentModelRole(agent.id, 'image')?.modelId,
+      'openai/gpt-image-2.5-sunburst',
+    );
+
+    // Clearing the override keeps the row and advances only its own revision.
+    store.updateAgentWithModelRoles(
+      agent.id,
+      {},
+      [{ role: 'image', modelId: null }],
+      updated.revision,
+    );
+    const cleared = store.getAgentModelRole(agent.id, 'image');
+    assert.equal(cleared?.modelId, undefined);
+    assert.equal(cleared?.revision, 2);
   } finally {
     db.close();
   }

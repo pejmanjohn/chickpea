@@ -7,6 +7,7 @@ import {
   ConnectionAccountAlreadyBoundError,
   ConnectionAccountRevisionConflictError,
   ManagedRemoteAccountAlreadyUsedError,
+  ModelRoleRevisionConflictError,
   ReservedAgentIdentityError,
   UnknownAgentError,
   WorkspaceModelDefaultRevisionConflictError,
@@ -23,6 +24,7 @@ import type { AuditEvent, AuditEventFilter } from '../audit/types.ts';
 import type { StateRpcResult, TagStateRpc } from './state-rpc.ts';
 import type {
   AdoptionInventorySummary,
+  AgentModelRolePatch,
   ConfigAgentPatch,
   ConfigStore,
   OAuthReauthorizationTarget,
@@ -32,6 +34,8 @@ import type {
   AgentCreateInput,
   AgentChannelGrant,
   AgentChannelGrantInput,
+  AgentModelRole,
+  AgentModelRoleInput,
   AgentConnectionBinding,
   AgentConnectionBindingInput,
   AgentOwnedConnection,
@@ -55,8 +59,11 @@ import type {
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
   RecentSlackPublicContextInput,
+  NonChatModelRole,
   WorkspaceModelDefault,
   WorkspaceModelDefaultInput,
+  WorkspaceModelRole,
+  WorkspaceModelRoleInput,
   WorkspaceInstallation,
   WorkspaceInstallationPatch,
 } from './types.ts';
@@ -279,6 +286,14 @@ function unwrap<T>(result: StateRpcResult<T>): T {
     case 'workspace_model_default_revision_conflict':
       throw new WorkspaceModelDefaultRevisionConflictError(
         details?.workspaceId ?? 'unknown',
+        Number(details?.expectedRevision ?? 0),
+        Number(details?.actualRevision ?? 0),
+      );
+    case 'model_role_revision_conflict':
+      throw new ModelRoleRevisionConflictError(
+        (details?.scope === 'agent' ? 'agent' : 'workspace'),
+        details?.targetId ?? 'unknown',
+        details?.role ?? 'unknown',
         Number(details?.expectedRevision ?? 0),
         Number(details?.actualRevision ?? 0),
       );
@@ -1293,6 +1308,45 @@ export class CfConfigStore implements ConfigStore {
     expectedRevision?: number,
   ): Promise<WorkspaceModelDefault> {
     return unwrap(await this.stub.configPutWorkspaceModelDefault(input, expectedRevision));
+  }
+
+  async getWorkspaceModelRole(
+    workspaceId: string,
+    role: NonChatModelRole,
+  ): Promise<WorkspaceModelRole | undefined> {
+    return orUndefined(unwrap(await this.stub.configGetWorkspaceModelRole(workspaceId, role)));
+  }
+
+  async putWorkspaceModelRole(
+    input: WorkspaceModelRoleInput,
+    expectedRevision?: number,
+  ): Promise<WorkspaceModelRole> {
+    return unwrap(await this.stub.configPutWorkspaceModelRole(input, expectedRevision));
+  }
+
+  async getAgentModelRole(
+    agentId: string,
+    role: NonChatModelRole,
+  ): Promise<AgentModelRole | undefined> {
+    return orUndefined(unwrap(await this.stub.configGetAgentModelRole(agentId, role)));
+  }
+
+  async putAgentModelRole(
+    input: AgentModelRoleInput,
+    expectedRevision?: number,
+  ): Promise<AgentModelRole> {
+    return unwrap(await this.stub.configPutAgentModelRole(input, expectedRevision));
+  }
+
+  async updateAgentWithModelRoles(
+    agentId: string,
+    patch: ConfigAgentPatch,
+    roles: readonly AgentModelRolePatch[],
+    expectedRevision?: number,
+  ): Promise<CustomAgentConfig> {
+    return unwrap(
+      await this.stub.configUpdateAgentWithModelRoles(agentId, patch, roles, expectedRevision),
+    );
   }
 
   async prepareChickpeaCutover(

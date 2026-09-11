@@ -6,6 +6,7 @@ import {
   ConnectionAccountAlreadyBoundError,
   ConnectionAccountRevisionConflictError,
   ManagedRemoteAccountAlreadyUsedError,
+  ModelRoleRevisionConflictError,
   ReservedAgentIdentityError,
   UnknownAgentError,
   WorkspaceModelDefaultRevisionConflictError,
@@ -23,6 +24,8 @@ import {
   type ActivateChickpeaCutoverInput,
   type AgentChannelGrant,
   type AgentChannelGrantInput,
+  type AgentModelRole,
+  type AgentModelRoleInput,
   type AgentConnectionBinding,
   type AgentConnectionBindingInput,
   type AgentOwnedConnection,
@@ -48,8 +51,12 @@ import {
   type SlackPublicContextEntryInput,
   type RecentSlackPublicContextInput,
   MAX_SLACK_PUBLIC_HANDOFF_MESSAGES,
+  type NonChatModelRole,
   type WorkspaceModelDefault,
   type WorkspaceModelDefaultInput,
+  type WorkspaceModelRole,
+  type WorkspaceModelRoleInput,
+  isNonChatModelRole,
   type WorkspaceInstallation,
   type WorkspaceInstallationPatch,
   MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY,
@@ -94,6 +101,7 @@ export const CONFIG_SCHEMA_MARKER = 'agent-first-v1';
 export const CONFIG_CHICKPEA_EXTENSION_MIGRATION = '2026-08-23-chickpea-system-agent-v1';
 export const CONFIG_CHICKPEA_ROUTING_MIGRATION = '2026-08-24-chickpea-routing-retry-v1';
 export const CONFIG_CHICKPEA_CUTOVER_MIGRATION = '2026-08-24-chickpea-cutover-v1';
+export const CONFIG_MODEL_ROLE_MIGRATION = '2026-09-11-model-roles-v1';
 const MAX_STORED_SLACK_PUBLIC_CONTEXT_ROWS = 200;
 const SLACK_PUBLIC_CONTEXT_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
@@ -167,6 +175,25 @@ interface WorkspaceModelDefaultRow {
   revision: number;
   provenance: string;
   last_changed_by_membership_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface WorkspaceModelRoleRow {
+  workspace_id: string;
+  role: string;
+  model_id: string | null;
+  revision: number;
+  last_changed_by_membership_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface AgentModelRoleRow {
+  agent_id: string;
+  role: string;
+  model_id: string | null;
+  revision: number;
   created_at: number;
   updated_at: number;
 }
@@ -268,6 +295,12 @@ export type ConfigAgentPatch = Partial<
   model?: string | null;
 };
 
+/** One role override in an Agent PATCH. `modelId: null` clears the override. */
+export interface AgentModelRolePatch {
+  role: NonChatModelRole;
+  modelId: string | null;
+}
+
 export type OAuthReauthorizationTarget =
   | {
       lane: 'mcp';
@@ -326,6 +359,28 @@ export interface ConfigStore {
     input: WorkspaceModelDefaultInput,
     expectedRevision?: number,
   ): Promise<WorkspaceModelDefault>;
+  getWorkspaceModelRole(
+    workspaceId: string,
+    role: NonChatModelRole,
+  ): Promise<WorkspaceModelRole | undefined>;
+  putWorkspaceModelRole(
+    input: WorkspaceModelRoleInput,
+    expectedRevision?: number,
+  ): Promise<WorkspaceModelRole>;
+  getAgentModelRole(
+    agentId: string,
+    role: NonChatModelRole,
+  ): Promise<AgentModelRole | undefined>;
+  putAgentModelRole(
+    input: AgentModelRoleInput,
+    expectedRevision?: number,
+  ): Promise<AgentModelRole>;
+  updateAgentWithModelRoles(
+    agentId: string,
+    patch: ConfigAgentPatch,
+    roles: readonly AgentModelRolePatch[],
+    expectedRevision?: number,
+  ): Promise<CustomAgentConfig>;
   prepareChickpeaCutover(input: PrepareChickpeaCutoverInput): Promise<ChickpeaCutoverPreflight>;
   preflightChickpeaCutover(workspaceId: string): Promise<ChickpeaCutoverPreflight>;
   activateChickpeaCutover(input: ActivateChickpeaCutoverInput): Promise<ChickpeaCutoverActivation>;
@@ -607,6 +662,182 @@ export class ConfigStoreLogic {
       );
     }
     return this.getWorkspaceModelDefault(input.workspaceId)!;
+  }
+
+  getWorkspaceModelRole(
+    workspaceId: string,
+    role: NonChatModelRole,
+  ): WorkspaceModelRole | undefined {
+    const row = this.db.get(
+      'SELECT * FROM config_workspace_model_roles WHERE workspace_id = ? AND role = ?',
+      workspaceId,
+      role,
+    );
+    return row
+      ? rowToWorkspaceModelRole(row as unknown as WorkspaceModelRoleRow)
+      : undefined;
+  }
+
+  putWorkspaceModelRole(
+    input: WorkspaceModelRoleInput,
+    expectedRevision?: number,
+  ): WorkspaceModelRole {
+    requireNonChatModelRole(input.role);
+    const current = this.getWorkspaceModelRole(input.workspaceId, input.role);
+    const at = Date.now();
+    if (!current) {
+      if (expectedRevision !== undefined && expectedRevision !== 0) {
+        throw new ModelRoleRevisionConflictError(
+          'workspace',
+          input.workspaceId,
+          input.role,
+          expectedRevision,
+          0,
+        );
+      }
+      this.db.run(
+        `INSERT INTO config_workspace_model_roles (
+          workspace_id, role, model_id, revision,
+          last_changed_by_membership_id, created_at, updated_at
+        ) VALUES (?, ?, ?, 1, ?, ?, ?)`,
+        input.workspaceId,
+        input.role,
+        input.modelId ?? null,
+        input.lastChangedByMembershipId ?? null,
+        at,
+        at,
+      );
+      return this.getWorkspaceModelRole(input.workspaceId, input.role)!;
+    }
+    const requiredRevision = expectedRevision ?? current.revision;
+    if (requiredRevision !== current.revision) {
+      throw new ModelRoleRevisionConflictError(
+        'workspace',
+        input.workspaceId,
+        input.role,
+        requiredRevision,
+        current.revision,
+      );
+    }
+    const updated = this.db.run(
+      `UPDATE config_workspace_model_roles
+       SET model_id = ?, last_changed_by_membership_id = ?,
+           revision = revision + 1, updated_at = ?
+       WHERE workspace_id = ? AND role = ? AND revision = ?`,
+      input.modelId ?? null,
+      input.lastChangedByMembershipId ?? null,
+      at,
+      input.workspaceId,
+      input.role,
+      current.revision,
+    );
+    if (updated.changes !== 1) {
+      const actual = this.getWorkspaceModelRole(input.workspaceId, input.role)?.revision ?? 0;
+      throw new ModelRoleRevisionConflictError(
+        'workspace',
+        input.workspaceId,
+        input.role,
+        current.revision,
+        actual,
+      );
+    }
+    return this.getWorkspaceModelRole(input.workspaceId, input.role)!;
+  }
+
+  getAgentModelRole(agentId: string, role: NonChatModelRole): AgentModelRole | undefined {
+    const row = this.db.get(
+      'SELECT * FROM config_agent_model_roles WHERE agent_id = ? AND role = ?',
+      agentId,
+      role,
+    );
+    return row ? rowToAgentModelRole(row as unknown as AgentModelRoleRow) : undefined;
+  }
+
+  putAgentModelRole(
+    input: AgentModelRoleInput,
+    expectedRevision?: number,
+  ): AgentModelRole {
+    requireNonChatModelRole(input.role);
+    const current = this.getAgentModelRole(input.agentId, input.role);
+    const at = Date.now();
+    if (!current) {
+      if (expectedRevision !== undefined && expectedRevision !== 0) {
+        throw new ModelRoleRevisionConflictError(
+          'agent',
+          input.agentId,
+          input.role,
+          expectedRevision,
+          0,
+        );
+      }
+      this.db.run(
+        `INSERT INTO config_agent_model_roles (
+          agent_id, role, model_id, revision, created_at, updated_at
+        ) VALUES (?, ?, ?, 1, ?, ?)`,
+        input.agentId,
+        input.role,
+        input.modelId ?? null,
+        at,
+        at,
+      );
+      return this.getAgentModelRole(input.agentId, input.role)!;
+    }
+    const requiredRevision = expectedRevision ?? current.revision;
+    if (requiredRevision !== current.revision) {
+      throw new ModelRoleRevisionConflictError(
+        'agent',
+        input.agentId,
+        input.role,
+        requiredRevision,
+        current.revision,
+      );
+    }
+    const updated = this.db.run(
+      `UPDATE config_agent_model_roles
+       SET model_id = ?, revision = revision + 1, updated_at = ?
+       WHERE agent_id = ? AND role = ? AND revision = ?`,
+      input.modelId ?? null,
+      at,
+      input.agentId,
+      input.role,
+      current.revision,
+    );
+    if (updated.changes !== 1) {
+      const actual = this.getAgentModelRole(input.agentId, input.role)?.revision ?? 0;
+      throw new ModelRoleRevisionConflictError(
+        'agent',
+        input.agentId,
+        input.role,
+        current.revision,
+        actual,
+      );
+    }
+    return this.getAgentModelRole(input.agentId, input.role)!;
+  }
+
+  /**
+   * One Agent PATCH that touches both the Agent row and its role rows commits
+   * as a unit: a role-row failure (unknown role, revision conflict) must not
+   * leave `config_agents` already updated with a stale override beside it.
+   */
+  updateAgentWithModelRoles(
+    agentId: string,
+    patch: ConfigAgentPatch,
+    roles: readonly AgentModelRolePatch[],
+    expectedRevision?: number,
+  ): CustomAgentConfig {
+    if (roles.length === 0) return this.updateAgent(agentId, patch, expectedRevision);
+    return this.db.transaction(() => {
+      const updated = this.updateAgent(agentId, patch, expectedRevision);
+      for (const role of roles) {
+        this.putAgentModelRole({
+          agentId,
+          role: role.role,
+          ...(role.modelId ? { modelId: role.modelId } : {}),
+        });
+      }
+      return updated;
+    });
   }
 
   prepareChickpeaCutover(input: PrepareChickpeaCutoverInput): ChickpeaCutoverPreflight {
@@ -2675,6 +2906,7 @@ export class ConfigStoreLogic {
       )`,
     );
     this.installChickpeaRoutingExtensions();
+    this.installModelRoleExtensions();
     if (this.db.get(
       'SELECT 1 AS present FROM config_migrations WHERE id = ?',
       CONFIG_CHICKPEA_EXTENSION_MIGRATION,
@@ -2791,6 +3023,54 @@ export class ConfigStoreLogic {
     this.db.run(
       'INSERT INTO config_migrations (id, applied_at) VALUES (?, ?)',
       CONFIG_CHICKPEA_ROUTING_MIGRATION,
+      Date.now(),
+    );
+  }
+
+  /**
+   * Additive, migration-id-gated role tables. Non-chat model roles (image
+   * today) live here; the chat role keeps `config_workspace_model_defaults`
+   * and `config_agents.model`. No CONFIG_SCHEMA_VERSION bump: older code
+   * simply never reads these tables.
+   *
+   * `config_agent_model_roles` carries no foreign key on purpose. Deleting an
+   * Agent leaves its role row behind as an inert orphan, matching how thread
+   * routes and schedule references behave today; a later Agent cannot reuse
+   * the id, so the orphan is never resolved by accident.
+   *
+   * `role` is unconstrained in SQL so a later role is a code change only.
+   */
+  private installModelRoleExtensions(): void {
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS config_workspace_model_roles (
+        workspace_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        model_id TEXT,
+        revision INTEGER NOT NULL CHECK (revision > 0),
+        last_changed_by_membership_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id, role)
+      )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS config_agent_model_roles (
+        agent_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        model_id TEXT,
+        revision INTEGER NOT NULL CHECK (revision > 0),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (agent_id, role)
+      )`,
+    );
+    if (this.db.get(
+      'SELECT 1 AS present FROM config_migrations WHERE id = ?',
+      CONFIG_MODEL_ROLE_MIGRATION,
+    )) return;
+    this.db.run(
+      'INSERT INTO config_migrations (id, applied_at) VALUES (?, ?)',
+      CONFIG_MODEL_ROLE_MIGRATION,
       Date.now(),
     );
   }
@@ -3130,6 +3410,38 @@ function rowToWorkspaceModelDefault(row: WorkspaceModelDefaultRow): WorkspaceMod
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+function rowToWorkspaceModelRole(row: WorkspaceModelRoleRow): WorkspaceModelRole {
+  return {
+    workspaceId: row.workspace_id,
+    role: requireNonChatModelRole(row.role),
+    ...(row.model_id ? { modelId: row.model_id } : {}),
+    revision: Number(row.revision),
+    ...(row.last_changed_by_membership_id
+      ? { lastChangedByMembershipId: row.last_changed_by_membership_id }
+      : {}),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function rowToAgentModelRole(row: AgentModelRoleRow): AgentModelRole {
+  return {
+    agentId: row.agent_id,
+    role: requireNonChatModelRole(row.role),
+    ...(row.model_id ? { modelId: row.model_id } : {}),
+    revision: Number(row.revision),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function requireNonChatModelRole(role: string): NonChatModelRole {
+  if (!isNonChatModelRole(role)) {
+    throw new Error(`Unsupported model role ${role}`);
+  }
+  return role;
 }
 
 function rowToSlackPublicContext(row: SlackPublicContextRow): SlackPublicContextEntry {

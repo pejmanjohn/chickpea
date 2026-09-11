@@ -179,6 +179,8 @@ export interface WorkspaceManagementServiceInput {
     | 'getWorkspaceInstallation'
     | 'listWorkspaceInstallations'
     | 'getWorkspaceModelDefault'
+    | 'getWorkspaceModelRole'
+    | 'getAgentModelRole'
     | 'listChannels'
     | 'getChannel'
     | 'putChannel'

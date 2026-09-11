@@ -1,13 +1,22 @@
 import { DisabledAgentError, NoAssignmentError } from './errors.ts';
-import { resolveModelPolicyForAssignment } from './model-policy.ts';
+import {
+  resolveAgentModelRoleFromStore,
+  resolveModelPolicyForAssignment,
+  type ModelRoleResolution,
+} from './model-policy.ts';
 import {
   type AgentChannelGrant,
+  type AgentModelRole,
   type ChannelConfig,
   type CustomAgentConfig,
+  type NonChatModelRole,
   type ResolvedAssignment,
   type WorkspaceInstallation,
   type WorkspaceModelDefault,
+  type WorkspaceModelRole,
 } from './types.ts';
+import type { SettingsStore } from './settings-store.ts';
+import type { PlatformEnv } from './state-backend.ts';
 
 // Store readers are async — the Cloudflare backend answers over Durable
 // Object RPC — and the Node SQLite stores resolve immediately.
@@ -52,6 +61,14 @@ interface GrantReader {
   ): Promise<AgentChannelGrant[]>;
   getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined>;
   getWorkspaceModelDefault?(workspaceId: string): Promise<WorkspaceModelDefault | undefined>;
+  getWorkspaceModelRole?(
+    workspaceId: string,
+    role: NonChatModelRole,
+  ): Promise<WorkspaceModelRole | undefined>;
+  getAgentModelRole?(
+    agentId: string,
+    role: NonChatModelRole,
+  ): Promise<AgentModelRole | undefined>;
 }
 
 export interface ConfigStores {
@@ -114,4 +131,33 @@ export async function resolveAssignment(
 function channelReaderFromGrants(grants: GrantReader): ChannelReader | undefined {
   const candidate = grants as GrantReader & Partial<ChannelReader>;
   return typeof candidate.getChannel === 'function' ? candidate as ChannelReader : undefined;
+}
+
+/**
+ * Resolve one non-chat model role for an already-resolved assignment. Kept
+ * beside assignment resolution so the compile path and the tool's call-time
+ * lookup read the same rows through the same seam; a store that predates the
+ * role tables (a narrow test double) resolves to unset rather than throwing.
+ */
+export async function resolveAssignmentModelRole(
+  assignment: Pick<ResolvedAssignment, 'workspaceId' | 'agent'>,
+  stores: ConfigStores,
+  role: NonChatModelRole,
+  options: { env?: PlatformEnv; settings?: SettingsStore } = {},
+): Promise<ModelRoleResolution> {
+  const { getWorkspaceModelRole, getAgentModelRole } = stores.grants;
+  if (!getWorkspaceModelRole || !getAgentModelRole) {
+    return { unset: true, reason: 'role_unset' };
+  }
+  return resolveAgentModelRoleFromStore({
+    role,
+    workspaceId: assignment.workspaceId,
+    agent: assignment.agent,
+    reader: {
+      getWorkspaceModelRole: (id, wanted) => getWorkspaceModelRole.call(stores.grants, id, wanted),
+      getAgentModelRole: (id, wanted) => getAgentModelRole.call(stores.grants, id, wanted),
+    },
+    ...(options.env ? { env: options.env } : {}),
+    ...(options.settings ? { settings: options.settings } : {}),
+  });
 }

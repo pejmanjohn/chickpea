@@ -163,6 +163,13 @@ export interface RuntimePlanV2 {
   /** Safe hosted-catalog inputs needed to register that route in a cold isolate. */
   runtimeModelRoute?: FrozenRuntimeModelRoute;
   model: string;
+  /**
+   * Frozen shape of the image model role: whether the role resolved to a model
+   * at all and whether that model accepts image input. Deliberately carries no
+   * model id, so swapping two image models of equal capability rotates no live
+   * incarnation; the tool re-resolves the concrete id at call time.
+   */
+  imageCapability?: RuntimePlanImageCapabilityV3;
   /** Non-secret model policy facts frozen with the admitted turn. Required on V3. */
   modelAttribution?: AgentModelAttribution;
   /** Frozen credential epoch; values and labels never cross the boundary. */
@@ -189,6 +196,15 @@ export interface RuntimePlanV2 {
   harnessRevision: string;
 }
 
+/** Bounded capability record for the image model role (KTD2). */
+export interface RuntimePlanImageCapabilityV3 {
+  role: 'image';
+  /** A model resolved for this Agent's image role and its provider has a key. */
+  filled: boolean;
+  /** The resolved model accepts image input, so editing is offered (R8). */
+  acceptsImageInput: boolean;
+}
+
 export interface CompileRuntimePlanV2Input {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
@@ -199,6 +215,8 @@ export interface CompileRuntimePlanV2Input {
   /** Resolved internal Flue route; defaults to the canonical model for compatibility. */
   runtimeModel?: string;
   runtimeModelRoute?: FrozenRuntimeModelRoute;
+  /** Resolved image-role capability. Absent means no image capability is frozen. */
+  imageCapability?: RuntimePlanImageCapabilityV3;
   continuityPolicy?: string;
   effectiveConnections?: readonly EffectiveConnectionAccount[];
   connectionAuthorizations?: readonly PersonalConnectionAuthorizationOption[];
@@ -281,6 +299,15 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     runtimeModel: input.runtimeModel ?? requireFrozenModel(input.assignment),
     ...(input.runtimeModelRoute ? { runtimeModelRoute: input.runtimeModelRoute } : {}),
     model: requireFrozenModel(input.assignment),
+    ...(input.imageCapability
+      ? {
+          imageCapability: {
+            role: 'image' as const,
+            filled: input.imageCapability.filled,
+            acceptsImageInput: input.imageCapability.acceptsImageInput,
+          },
+        }
+      : {}),
     modelAttribution: frozenModelAttribution(input.assignment),
     ...(input.assignment.modelCredential
       ? {
@@ -502,6 +529,7 @@ export function parseRuntimePlanV2(
     'runtimeModel',
     'runtimeModelRoute',
     'model',
+    'imageCapability',
     'modelAttribution',
     'modelCredential',
     'instructions',
@@ -526,6 +554,7 @@ export function parseRuntimePlanV2(
     'handoffContext',
     'runtimeModel',
     'runtimeModelRoute',
+    'imageCapability',
     'modelAttribution',
     'modelCredential',
   ]);
@@ -617,6 +646,9 @@ export function parseRuntimePlanV2(
     ? undefined
     : parseFrozenRuntimeModelRoute(record.runtimeModelRoute);
   validateFrozenRuntimeModelRoute(model, runtimeModel ?? model, runtimeModelRoute);
+  const imageCapability = record.imageCapability === undefined
+    ? undefined
+    : parseImageCapability(record.imageCapability);
   const instructions = boundedString(record.instructions, 'instructions', 1, 200_000);
   const memoryEpoch = positiveInteger(record.memoryEpoch, 'memoryEpoch');
   const skills = arrayOf(record.skills, 'skills', parseSkill, 128);
@@ -682,6 +714,7 @@ export function parseRuntimePlanV2(
     ...(runtimeModel ? { runtimeModel } : {}),
     ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
     model,
+    ...(imageCapability ? { imageCapability } : {}),
     ...(modelAttribution ? { modelAttribution } : {}),
     ...(modelCredential ? { modelCredential } : {}),
     instructions,
@@ -867,6 +900,7 @@ function computeHarnessRevision(
       ...(plan.runtimeModel ? { runtimeModel: plan.runtimeModel } : {}),
       ...(plan.runtimeModelRoute ? { runtimeModelRoute: plan.runtimeModelRoute } : {}),
       model: plan.model,
+      ...(plan.imageCapability ? { imageCapability: plan.imageCapability } : {}),
       ...(plan.modelAttribution ? { modelAttribution: plan.modelAttribution } : {}),
       ...(plan.modelCredential ? { modelCredential: plan.modelCredential } : {}),
       instructions: plan.instructions,
@@ -882,6 +916,26 @@ function computeHarnessRevision(
       artifactDestinationKind: plan.artifactDestination.kind,
     }))
     .digest('hex');
+}
+
+function parseImageCapability(value: unknown): RuntimePlanImageCapabilityV3 {
+  const record = exactRecord(value, 'imageCapability', [
+    'role',
+    'filled',
+    'acceptsImageInput',
+  ]);
+  const role = oneOf(record.role, 'imageCapability.role', ['image'] as const);
+  const filled = booleanField(record.filled, 'imageCapability.filled');
+  const acceptsImageInput = booleanField(
+    record.acceptsImageInput,
+    'imageCapability.acceptsImageInput',
+  );
+  // An empty role can declare no input capability: the tool is not mounted at
+  // all, so a plan claiming otherwise is malformed rather than merely unused.
+  if (acceptsImageInput && !filled) {
+    throw new Error('Runtime plan imageCapability cannot accept image input while unfilled.');
+  }
+  return { role, filled, acceptsImageInput };
 }
 
 function parseHandoffContext(value: unknown): SlackPublicHandoffMessage[] {
@@ -1418,6 +1472,13 @@ function positiveInteger(value: unknown, label: string): number {
     throw new Error(`Runtime plan ${label} must be a positive integer.`);
   }
   return Number(value);
+}
+
+function booleanField(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new Error(`Runtime plan ${label} must be a boolean.`);
+  }
+  return value;
 }
 
 function sha256(value: unknown, label: string): string {

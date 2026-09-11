@@ -5,6 +5,7 @@ import type {
 } from './settings-store.ts';
 import type {
   AdoptionInventorySummary,
+  AgentModelRolePatch,
   ConfigAgentPatch,
   OAuthReauthorizationTarget,
 } from './store.ts';
@@ -36,8 +37,13 @@ import type {
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
   RecentSlackPublicContextInput,
+  AgentModelRole,
+  AgentModelRoleInput,
+  NonChatModelRole,
   WorkspaceModelDefault,
   WorkspaceModelDefaultInput,
+  WorkspaceModelRole,
+  WorkspaceModelRoleInput,
   WorkspaceInstallation,
   WorkspaceInstallationPatch,
 } from './types.ts';
@@ -116,6 +122,7 @@ export type StateRpcErrorCode =
   | 'agent_revision_conflict'
   | 'reserved_agent_identity'
   | 'workspace_model_default_revision_conflict'
+  | 'model_role_revision_conflict'
   | 'agent_still_assigned'
   | 'agent_still_referenced'
   | 'channel_revision_conflict'
@@ -300,6 +307,28 @@ export interface TagStateRpc {
     input: WorkspaceModelDefaultInput,
     expectedRevision?: number,
   ): Promise<StateRpcResult<WorkspaceModelDefault>>;
+  configGetWorkspaceModelRole(
+    workspaceId: string,
+    role: NonChatModelRole,
+  ): Promise<StateRpcResult<WorkspaceModelRole | null>>;
+  configPutWorkspaceModelRole(
+    input: WorkspaceModelRoleInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<WorkspaceModelRole>>;
+  configGetAgentModelRole(
+    agentId: string,
+    role: NonChatModelRole,
+  ): Promise<StateRpcResult<AgentModelRole | null>>;
+  configPutAgentModelRole(
+    input: AgentModelRoleInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<AgentModelRole>>;
+  configUpdateAgentWithModelRoles(
+    agentId: string,
+    patch: ConfigAgentPatch,
+    roles: readonly AgentModelRolePatch[],
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<CustomAgentConfig>>;
   configPrepareChickpeaCutover(
     input: PrepareChickpeaCutoverInput,
   ): Promise<StateRpcResult<ChickpeaCutoverPreflight>>;

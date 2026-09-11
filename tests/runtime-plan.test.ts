@@ -869,3 +869,85 @@ test('hook-mounted delivery tools bind the frozen artifact destination, not the 
   assert.match(body, /plan\.artifactDestination\.threadTs \? \{ threadTs: plan\.artifactDestination\.threadTs \} : \{\}/);
   assert.doesNotMatch(body, /threadTs: plan\.conversation\.threadTs/);
 });
+
+test('the image capability round-trips and only its shape rotates the harness', () => {
+  const filled = compile({
+    imageCapability: { role: 'image', filled: true, acceptsImageInput: true },
+  });
+  const generateOnly = compile({
+    imageCapability: { role: 'image', filled: true, acceptsImageInput: false },
+  });
+  const empty = compile({
+    imageCapability: { role: 'image', filled: false, acceptsImageInput: false },
+  });
+  const legacy = compile();
+
+  assert.deepEqual(filled.imageCapability, {
+    role: 'image',
+    filled: true,
+    acceptsImageInput: true,
+  });
+  assert.deepEqual(
+    parseRuntimePlanV2(structuredClone(filled)).imageCapability,
+    filled.imageCapability,
+  );
+  assert.equal(
+    parseRuntimePlanV2(structuredClone(filled)).harnessRevision,
+    filled.harnessRevision,
+  );
+
+  // A plan written before the field exists still parses, with no capability.
+  assert.equal(Object.hasOwn(legacy, 'imageCapability'), false);
+  assert.equal(parseRuntimePlanV2(structuredClone(legacy)).imageCapability, undefined);
+  assert.equal(parseRuntimePlanV2(structuredClone(legacy)).harnessRevision, legacy.harnessRevision);
+
+  // Filling or emptying the role, or losing edit capability, rotates the harness.
+  assert.notEqual(filled.harnessRevision, generateOnly.harnessRevision);
+  assert.notEqual(filled.harnessRevision, empty.harnessRevision);
+  assert.notEqual(empty.harnessRevision, legacy.harnessRevision);
+
+  // The plan never freezes which image model resolved, so swapping two models
+  // of equal capability (flare vs sunburst) rotates no live conversation.
+  assert.equal(JSON.stringify(filled).includes('gpt-image'), false);
+  assert.equal(
+    filled.harnessRevision,
+    compile({
+      imageCapability: { role: 'image', filled: true, acceptsImageInput: true },
+    }).harnessRevision,
+  );
+});
+
+test('an image capability that claims input without a filled role is rejected', () => {
+  const plan = compile({
+    imageCapability: { role: 'image', filled: true, acceptsImageInput: true },
+  });
+
+  assert.throws(
+    () => parseRuntimePlanV2({
+      ...structuredClone(plan),
+      imageCapability: { role: 'image', filled: false, acceptsImageInput: true },
+    }),
+    /imageCapability cannot accept image input while unfilled/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2({
+      ...structuredClone(plan),
+      imageCapability: { role: 'image', filled: true, acceptsImageInput: true, modelId: 'x' },
+    }),
+    /imageCapability has unknown field modelId/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2({
+      ...structuredClone(plan),
+      imageCapability: { role: 'video', filled: true, acceptsImageInput: false },
+    }),
+    /imageCapability.role is invalid/,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2({
+      ...structuredClone(plan),
+      imageCapability: { role: 'image', filled: 'yes', acceptsImageInput: false },
+    }),
+    /imageCapability.filled must be a boolean/,
+  );
+});

@@ -25,6 +25,7 @@ import {
   ManagedRemoteAccountAlreadyUsedError,
   ReservedAgentIdentityError,
   UnknownAgentError,
+  ModelRoleRevisionConflictError,
   WorkspaceModelDefaultRevisionConflictError,
 } from './config/errors.ts';
 import {
@@ -84,6 +85,7 @@ import {
 } from './connections/oauth-continuation.ts';
 import {
   ConfigStoreLogic,
+  type AgentModelRolePatch,
   type ConfigAgentPatch,
   type OAuthReauthorizationTarget,
 } from './config/store.ts';
@@ -92,6 +94,8 @@ import type {
   AgentCreateInput,
   AgentChannelGrant,
   AgentChannelGrantInput,
+  AgentModelRole,
+  AgentModelRoleInput,
   AgentConnectionBinding,
   AgentConnectionBindingInput,
   AgentOwnedConnection,
@@ -115,8 +119,11 @@ import type {
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
   RecentSlackPublicContextInput,
+  NonChatModelRole,
   WorkspaceModelDefault,
   WorkspaceModelDefaultInput,
+  WorkspaceModelRole,
+  WorkspaceModelRoleInput,
   WorkspaceInstallation,
   WorkspaceInstallationPatch,
 } from './config/types.ts';
@@ -907,6 +914,45 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     expectedRevision?: number,
   ): Promise<StateRpcResult<WorkspaceModelDefault>> {
     return this.call((stores) => stores.config.putWorkspaceModelDefault(input, expectedRevision));
+  }
+
+  async configGetWorkspaceModelRole(
+    workspaceId: string,
+    role: NonChatModelRole,
+  ): Promise<StateRpcResult<WorkspaceModelRole | null>> {
+    return this.call((stores) => stores.config.getWorkspaceModelRole(workspaceId, role) ?? null);
+  }
+
+  async configPutWorkspaceModelRole(
+    input: WorkspaceModelRoleInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<WorkspaceModelRole>> {
+    return this.call((stores) => stores.config.putWorkspaceModelRole(input, expectedRevision));
+  }
+
+  async configGetAgentModelRole(
+    agentId: string,
+    role: NonChatModelRole,
+  ): Promise<StateRpcResult<AgentModelRole | null>> {
+    return this.call((stores) => stores.config.getAgentModelRole(agentId, role) ?? null);
+  }
+
+  async configPutAgentModelRole(
+    input: AgentModelRoleInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<AgentModelRole>> {
+    return this.call((stores) => stores.config.putAgentModelRole(input, expectedRevision));
+  }
+
+  async configUpdateAgentWithModelRoles(
+    agentId: string,
+    patch: ConfigAgentPatch,
+    roles: readonly AgentModelRolePatch[],
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<CustomAgentConfig>> {
+    return this.call((stores) =>
+      stores.config.updateAgentWithModelRoles(agentId, patch, roles, expectedRevision),
+    );
   }
 
   async configPrepareChickpeaCutover(
@@ -2072,6 +2118,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (err instanceof WorkspaceModelDefaultRevisionConflictError) {
         return rpcError('workspace_model_default_revision_conflict', err.message, {
           workspaceId: err.workspaceId,
+          expectedRevision: String(err.expectedRevision),
+          actualRevision: String(err.actualRevision),
+        });
+      }
+      if (err instanceof ModelRoleRevisionConflictError) {
+        return rpcError('model_role_revision_conflict', err.message, {
+          scope: err.scope,
+          targetId: err.targetId,
+          role: err.role,
           expectedRevision: String(err.expectedRevision),
           actualRevision: String(err.actualRevision),
         });

@@ -236,6 +236,58 @@ export interface WorkspaceModelDefaultInput {
   lastChangedByMembershipId?: string;
 }
 
+/**
+ * Model roles. `chat` is the conversational model and keeps its existing
+ * storage (`config_workspace_model_defaults` and `config_agents.model`); every
+ * other role lives in the additive role tables. Adding a role here is a
+ * configuration change plus an adapter, never a new settings concept.
+ */
+export const MODEL_ROLES = ['chat', 'image'] as const;
+export type ModelRole = (typeof MODEL_ROLES)[number];
+
+/** Roles stored in the additive role tables. `chat` is deliberately excluded. */
+export const NON_CHAT_MODEL_ROLES = ['image'] as const;
+export type NonChatModelRole = (typeof NON_CHAT_MODEL_ROLES)[number];
+
+export function isNonChatModelRole(value: string): value is NonChatModelRole {
+  return (NON_CHAT_MODEL_ROLES as readonly string[]).includes(value);
+}
+
+/** One Workspace-wide default for a non-chat role. One revision per role row. */
+export interface WorkspaceModelRole {
+  workspaceId: string;
+  role: NonChatModelRole;
+  /** Absent means the role is unset; the Agent gets no capability for it. */
+  modelId?: string;
+  revision: number;
+  lastChangedByMembershipId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WorkspaceModelRoleInput {
+  workspaceId: string;
+  role: NonChatModelRole;
+  modelId?: string;
+  lastChangedByMembershipId?: string;
+}
+
+/** One Agent's override for a non-chat role. Absent `modelId` clears it. */
+export interface AgentModelRole {
+  agentId: string;
+  role: NonChatModelRole;
+  modelId?: string;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AgentModelRoleInput {
+  agentId: string;
+  role: NonChatModelRole;
+  modelId?: string;
+}
+
 export type ChickpeaCutoverModelClassification =
   | 'untouched_cloudflare_starter'
   | 'explicit_agent_pin'

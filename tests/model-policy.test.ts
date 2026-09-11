@@ -2,7 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { registerCloudflareBindingProvider } from '../src/cloudflare-provider.ts';
-import { resolveAgentModelPolicy } from '../src/config/model-policy.ts';
+import { ModelResolutionError } from '../src/config/errors.ts';
+import {
+  imageCapabilityForResolution,
+  resolveAgentModelForRole,
+  resolveAgentModelPolicy,
+  resolveAgentModelRoleFromStore,
+} from '../src/config/model-policy.ts';
 import type { CustomAgentConfig, WorkspaceModelDefault } from '../src/config/types.ts';
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
@@ -135,4 +141,158 @@ test('Cloudflare compaction warning uses registered metadata instead of the prov
   resolveAgentModelPolicy(unknown);
   assert.equal(warnings.mock.callCount(), 1);
   assert.match(String(warnings.mock.calls[0]?.arguments[0]), /no declared context window/);
+});
+
+const imageWorkspaceRole = { modelId: 'openai/gpt-image-2.5-flare' };
+const credentialPresent = async () => true;
+
+test('an Agent image pin wins over the Workspace image default', async () => {
+  const resolved = await resolveAgentModelForRole({
+    role: 'image',
+    agent: agent(),
+    agentRole: { modelId: 'openai/gpt-image-2.5-sunburst' },
+    workspaceRole: imageWorkspaceRole,
+    hasProviderCredential: credentialPresent,
+  });
+
+  assert.deepEqual(resolved, {
+    modelId: 'openai/gpt-image-2.5-sunburst',
+    providerId: 'openai',
+    source: 'pinned',
+  });
+});
+
+test('an Agent with no image pin follows the Workspace image default', async () => {
+  assert.deepEqual(
+    await resolveAgentModelForRole({
+      role: 'image',
+      agent: agent(),
+      workspaceRole: imageWorkspaceRole,
+      hasProviderCredential: credentialPresent,
+    }),
+    { modelId: 'openai/gpt-image-2.5-flare', providerId: 'openai', source: 'workspace_default' },
+  );
+  assert.deepEqual(
+    await resolveAgentModelForRole({
+      role: 'image',
+      agent: agent({ id: 'agent_chickpea', kind: 'system' }),
+      workspaceRole: imageWorkspaceRole,
+      hasProviderCredential: credentialPresent,
+    }),
+    { modelId: 'openai/gpt-image-2.5-flare', providerId: 'openai', source: 'workspace_default' },
+  );
+});
+
+test('an unfilled image role resolves to unset instead of throwing', async () => {
+  assert.deepEqual(
+    await resolveAgentModelForRole({
+      role: 'image',
+      agent: agent(),
+      hasProviderCredential: credentialPresent,
+    }),
+    { unset: true, reason: 'role_unset' },
+  );
+});
+
+test('an image model whose provider has no credential resolves to unset', async () => {
+  const asked: string[] = [];
+  assert.deepEqual(
+    await resolveAgentModelForRole({
+      role: 'image',
+      agent: agent(),
+      agentRole: { modelId: 'openai/gpt-image-2.5-sunburst' },
+      workspaceRole: imageWorkspaceRole,
+      hasProviderCredential: async (providerId) => {
+        asked.push(providerId);
+        return false;
+      },
+    }),
+    { unset: true, reason: 'credential_missing' },
+  );
+  assert.deepEqual(asked, ['openai']);
+});
+
+test('Chickpea cannot pin an image model, exactly as it cannot pin a chat model', async () => {
+  await assert.rejects(
+    () => resolveAgentModelForRole({
+      role: 'image',
+      agent: agent({ id: 'agent_chickpea', name: 'Chickpea', kind: 'system' }),
+      agentRole: { modelId: 'openai/gpt-image-2.5-sunburst' },
+      workspaceRole: imageWorkspaceRole,
+      hasProviderCredential: credentialPresent,
+    }),
+    (error: unknown) =>
+      error instanceof ModelResolutionError &&
+      /Chickpea cannot use a pinned image model/.test(error.message),
+  );
+});
+
+test('the frozen image capability carries the shape, never the model id', async () => {
+  const flare = await resolveAgentModelForRole({
+    role: 'image',
+    agent: agent(),
+    workspaceRole: imageWorkspaceRole,
+    hasProviderCredential: credentialPresent,
+  });
+  const sunburst = await resolveAgentModelForRole({
+    role: 'image',
+    agent: agent(),
+    workspaceRole: { modelId: 'openai/gpt-image-2.5-sunburst' },
+    hasProviderCredential: credentialPresent,
+  });
+
+  assert.deepEqual(imageCapabilityForResolution(flare), {
+    role: 'image',
+    filled: true,
+    acceptsImageInput: true,
+  });
+  assert.deepEqual(imageCapabilityForResolution(flare), imageCapabilityForResolution(sunburst));
+  assert.deepEqual(imageCapabilityForResolution({ unset: true, reason: 'role_unset' }), {
+    role: 'image',
+    filled: false,
+    acceptsImageInput: false,
+  });
+  // An unknown model declares nothing, and an undeclared capability is absent.
+  assert.deepEqual(
+    imageCapabilityForResolution({
+      modelId: 'openai/not-in-the-catalog',
+      providerId: 'openai',
+      source: 'pinned',
+    }),
+    { role: 'image', filled: true, acceptsImageInput: false },
+  );
+});
+
+test('role resolution reads both rows from the store for one Agent and Workspace', async () => {
+  const reads: string[] = [];
+  const resolved = await resolveAgentModelRoleFromStore({
+    role: 'image',
+    workspaceId: 'TACME',
+    agent: agent(),
+    reader: {
+      async getWorkspaceModelRole(workspaceId, role) {
+        reads.push(`workspace:${workspaceId}:${role}`);
+        return undefined;
+      },
+      async getAgentModelRole(agentId, role) {
+        reads.push(`agent:${agentId}:${role}`);
+        return {
+          agentId,
+          role,
+          modelId: 'openai/gpt-image-2.5-flare',
+          revision: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        };
+      },
+    },
+    hasProviderCredential: credentialPresent,
+  });
+
+  assert.deepEqual(resolved, {
+    modelId: 'openai/gpt-image-2.5-flare',
+    providerId: 'openai',
+    source: 'pinned',
+  });
+  assert.deepEqual(reads.sort(), ['agent:agent_support:image', 'workspace:TACME:image']);
 });
