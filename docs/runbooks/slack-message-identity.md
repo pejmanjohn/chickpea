@@ -153,6 +153,36 @@ An explicitly rejected action and an unknown outcome require different handling.
 Retain existing persisted receipts during migrations and bind new file receipts
 to the exact workspace, Agent, channel, and thread.
 
+## Intent belongs to the Agent; delivery constraints belong to the host
+
+Treat returning a file in the current reply like returning text. The Agent
+interprets the current request in conversation, including revisions, typos,
+other languages, and explicit requests to avoid attachments. Do not classify
+that intent with verb/noun lists or add a second model call just to authorize
+an attachment. A request such as "try generating a new ad" must not require
+the word "attach"; "create a PNG but do not attach it" must not become permission
+merely because it contains those words.
+
+The host validates the current signal and enforces the mounted capabilities,
+actor, destination, file limits, and durable delivery receipts. Quoted text,
+attachment contents, tool output, and historical requests are context rather
+than independent instructions. A legacy `explicitArtifactDeliveryIntent`
+boolean is accepted only when reading old envelopes and is discarded.
+
+Decide streaming from actual tool activity. A file-tool attempt excludes a
+later streaming declaration, including after durable resume. If a file tool
+starts while a declaration is pending, the declaration cannot acknowledge
+success. A completed answer-only declaration still prevents later tool work.
+When native progress is already visible, retire it before publishing the
+combined file reply; preserve uncertainty if that cleanup cannot be confirmed.
+
+Validate both layers: deterministic tests for protocol, concurrency, replay,
+and destination binding; real-model cases for contextual requests, prohibitions,
+and quoted instructions. A parser test that allows a tool does not prove the
+Agent chooses correctly. Upload support also does not prove image-generation
+or editing support: verify the actual renderer and source-asset access before
+claiming an image was generated or a logo was preserved.
+
 ## Related implementation and verification guidance
 
 Start with `src/slack/file-transport.ts`, `artifact-staging.ts`,

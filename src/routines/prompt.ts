@@ -123,15 +123,8 @@ export async function prepareRoutinePrompt(
     maxMessages: 20,
   });
   const ordinaryPrompt = assembleSlackPrompt(turn, context, {
-    artifactAddress: {
-      botUserId: access.botUserId,
-      agentUserGroupId: access.config.agent.slackPresence?.userGroupId,
-      agentHandle: access.config.agent.slackPresence?.normalizedHandle ?? access.config.agent.slackPresence?.requestedHandle,
-    },
     ...(memory.promptBlock ? { memoryBlock: memory.promptBlock } : {}),
     memorySelected: (memory.selection?.entries.length ?? 0) > 0,
-    // The saved task bytes stay verbatim; only admission reads them as a task.
-    currentRequestKind: 'saved_task',
   });
   return {
     prompt: [

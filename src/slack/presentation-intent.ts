@@ -13,7 +13,7 @@ export const SLACK_STREAM_ANSWER_TOOL_DESCRIPTION =
 
 export const SLACK_STREAM_ANSWER_INSTRUCTION = [
   'You may call stream_answer once, before writing any answer text, only for a direct answer whose stable early prose would be useful to read before the response is complete.',
-  'Do not call it for a short confirmation, a primarily structured response, a correction, or a response likely to need another tool.',
+  'Do not call it for a short confirmation, a primarily structured response, a correction, a response containing attached files, or a response likely to need another tool.',
   'This is only a delivery preference. Never claim that Slack is streaming, change the answer based on delivery, or mention this internal tool to the user.',
   'If uncertain, answer normally without calling it; terminal delivery is expected and is not an error.',
 ].join(' ');
@@ -30,9 +30,7 @@ export function createSlackStreamAnswerTool() {
 export function slackPresentationIntentCapability(
   envelope: CurrentRequestEnvelope | undefined,
 ) {
-  // A request that admits files publishes text and files in one completion
-  // call, which Slack cannot stream. Never offer the declaration for it.
-  if (!currentRequestOffersProgressiveStreaming(envelope) || envelope?.explicitArtifactDeliveryIntent) {
+  if (!currentRequestOffersProgressiveStreaming(envelope)) {
     return undefined;
   }
   return {

@@ -80,22 +80,21 @@ function humanMsg(n: number, ts: string) {
   return { user: 'U_HUMAN', type: 'message', text: `msg ${n}`, ts };
 }
 
-test('artifact admission uses the resolved recipient while preserving the original request', () => {
-  const artifactAddress = { botUserId: 'UBOT', agentUserGroupId: 'S123456', agentHandle: 'reports' };
-  for (const [text, allowed] of [
-    ['<!subteam^S123456|reports>, please attach the CSV file', true],
-    ['@reports: create a chart image', true],
-    ['<@UALICE> attach the CSV file', false],
-    ['<!subteam^SOTHER|reports> attach the CSV file', false],
-    ['@reports, do not attach the CSV file', false],
-  ] as const) {
+test('the host preserves request wording and provides identity without classifying artifact intent', () => {
+  for (const text of [
+    '<!subteam^S123456|reports>, please attach the CSV file',
+    '@reports: create a chart image',
+    '<@UALICE> attach the CSV file',
+    '@reports, do not attach the CSV file',
+    'ok try generating a new add with some of these ideas worked in',
+  ]) {
     const turn = threadTurn({ text });
-    const context = currentMessageOnlyContext(turn);
-    const prompt = assembleSlackPrompt(turn, context, { artifactAddress });
+    const prompt = assembleSlackPrompt(turn, currentMessageOnlyContext(turn));
     const envelope = parseCurrentRequestEnvelope(prompt);
-    assert.equal(envelope?.explicitArtifactDeliveryIntent, allowed, text);
+    assert.equal(envelope?.slackActorId, turn.userId);
+    assert.equal(envelope?.slackMessageTs, turn.messageTs);
+    assert.ok(envelope);
     assert.ok(prompt.includes(text));
-    assert.equal(parseCurrentRequestEnvelope(assembleSlackPrompt(turn, context))?.explicitArtifactDeliveryIntent, false);
   }
 });
 

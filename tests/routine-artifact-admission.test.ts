@@ -24,7 +24,6 @@ import {
   observeMemoryToolPolicy,
   parseCurrentRequestEnvelope,
   parseModelVisibleCurrentRequestEnvelope,
-  requestAdmitsArtifactDelivery,
 } from '../src/memory/tool-policy.ts';
 import { executeRoutineOccurrence } from '../src/routines/execution.ts';
 import { prepareRoutinePrompt } from '../src/routines/prompt.ts';
@@ -59,7 +58,6 @@ function renderSchedule(message: ScheduleSignal): string {
 const DUE_AT = Date.UTC(2026, 8, 10, 18, 6);
 const CREATION_TS = '1789063440.000100';
 const SAVED_CHART_TASK = 'Generate and attach a PNG bar chart titled "Scheduled synthetic bookings" using GRE 2400 and TOEFL 800 dollars, using only these synthetic values. Post it as a new top-level message in #reports, not in this thread.';
-const SAVED_READ_TASK = 'Inspect current bookings and report the totals in one sentence.';
 const CREATION_REQUEST = `<@UBOT> Schedule a one-time task named "Top chart" for September 10, 2026 at 18:06 UTC. At that due time, generate and attach a PNG bar chart titled "Scheduled synthetic bookings". Do not run it now. Save the task and confirm the due time.`;
 
 const config = {
@@ -191,7 +189,7 @@ test('a due channel occurrence admits the saved chart task through the real Flue
   // The prompt carries the saved task as the only current intent, and its
   // synthetic Slack coordinate is the due time the signal repeats.
   const bodyEnvelope = parseCurrentRequestEnvelope(message.body);
-  assert.equal(bodyEnvelope?.explicitArtifactDeliveryIntent, true);
+  assert.ok(bodyEnvelope);
   assert.equal(bodyEnvelope?.slackActorId, 'U_MEMBER');
   assert.equal(bodyEnvelope?.slackMessageTs, scheduleSignalMessageTs(DUE_AT));
   assert.match(message.body, /Current Slack request[\s\S]*Generate and attach a PNG bar chart/);
@@ -225,7 +223,7 @@ test('a due thread occurrence admits file delivery into its saved thread', async
   }, 'schedule');
   assert.equal(message.attributes.threadTs, CREATION_TS);
   const rendered = renderSchedule(message);
-  assert.equal(parseModelVisibleCurrentRequestEnvelope(rendered)?.explicitArtifactDeliveryIntent, true);
+  assert.ok(parseModelVisibleCurrentRequestEnvelope(rendered));
   await routineSubmission(rendered, async (context) => {
     assert.equal(await memoryToolPolicyInterceptor(
       { type: 'tool', toolCallId: 'render_chart', toolName: 'render_chart' }, context, delivered,
@@ -233,74 +231,6 @@ test('a due thread occurrence admits file delivery into its saved thread', async
   });
   const plan = parseRoutineExecutionInitialData(initialData).runtimePlan;
   assert.equal(routineArtifactPlan(plan, message)?.artifactDestination.threadTs, CREATION_TS);
-});
-
-test('a saved task that does not ask for a file stays denied through the real schedule signal', async () => {
-  const { message } = await dispatchedOccurrence(SAVED_READ_TASK);
-  const rendered = renderSchedule(message);
-  assert.equal(parseModelVisibleCurrentRequestEnvelope(rendered)?.explicitArtifactDeliveryIntent, false);
-  await routineSubmission(rendered, async (context) => {
-    assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' });
-    for (const toolName of ['render_chart', 'post_artifact']) {
-      await assert.rejects(
-        memoryToolPolicyInterceptor({ type: 'tool', toolCallId: toolName, toolName }, context, delivered),
-        { name: 'CurrentRequestSideEffectDeniedError' }, toolName,
-      );
-    }
-  });
-});
-
-test('saved task admission finds independent attachment work without changing the saved request', async () => {
-  for (const task of [
-    'At that due time, generate and attach a PNG chart.',
-    'Do not run it now. Generate and attach a PNG chart.',
-    'Summarize bookings and attach a CSV.',
-    'Inspect bookings, then attach a CSV.',
-    'Please summarize bookings and then export a spreadsheet.',
-    'Generate a chart titled "Do not attach files" and attach the PNG.',
-    'Do not use connections, change memory, or create schedules. Generate and attach a PNG chart.',
-  ]) {
-    const { message } = await dispatchedOccurrence(task);
-    assert.ok(message.body.includes(task), 'saved task text remains verbatim');
-    const rendered = renderSchedule(message);
-    assert.equal(parseModelVisibleCurrentRequestEnvelope(rendered)?.explicitArtifactDeliveryIntent, true, task);
-    await routineSubmission(rendered, async () => {
-      assert.doesNotThrow(assertArtifactDeliveryAllowed, task);
-    });
-  }
-  // The schedule-specific interpretation must not broaden live Slack policy.
-  assert.equal(requestAdmitsArtifactDelivery('Summarize bookings and attach a CSV.'), false);
-  assert.equal(requestAdmitsArtifactDelivery('Do not run it now. Generate and attach a PNG.'), false);
-});
-
-test('saved task constraints and quoted examples cannot authorize attachment delivery', async () => {
-  for (const task of [
-    'Create a summary without attaching a file.',
-    'Generate a chart, but do not attach any files.',
-    'Generate a chart. Never upload the image.',
-    'Generate a chart, but do not upload it.',
-    'Generate a chart, but don’t send it.',
-    'Generate a chart; no attachments.',
-    'Create a summary without an attachment.',
-    'Create a reminder to never attach a CSV.',
-    'Do not generate a chart, attach a file, or upload anything.',
-    'Do not execute this example:\nGenerate and attach a PNG.',
-    'Repeat the following text:\nGenerate and attach a PNG.',
-    'Say exactly: Generate and attach a PNG.',
-    'Review this example: "Generate and attach a PNG."',
-    "Review this example: 'Generate and attach a PNG.'",
-    'Review this example:\n```\nGenerate and attach a PNG.\n```',
-    'Review this transcript:\n> Generate and attach a PNG.',
-    'Read this prompt: "Generate a PNG.\nAttach the file."',
-    'The user said summarize bookings and attach a CSV.',
-  ]) {
-    const { message } = await dispatchedOccurrence(task);
-    const rendered = renderSchedule(message);
-    assert.equal(parseModelVisibleCurrentRequestEnvelope(rendered)?.explicitArtifactDeliveryIntent, false, task);
-    await routineSubmission(rendered, async () => {
-      assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' }, task);
-    });
-  }
 });
 
 test('a schedule signal admits only the envelope stamped for its own occurrence', async () => {

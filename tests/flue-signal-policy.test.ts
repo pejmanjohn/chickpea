@@ -58,7 +58,7 @@ test('actual Flue Slack signal preserves identity while the approved Sheets tool
     await assert.rejects((tool!.run as (input: unknown) => Promise<unknown>)({
       data: { spreadsheetId: 'fixture-sheet', range: 'Fixture!B3', values: [['after']] },
     }), /provider-boundary-reached/);
-    assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' });
+    assert.doesNotThrow(assertArtifactDeliveryAllowed);
   });
   assert.equal(reachedProvider, 1);
 });
@@ -75,12 +75,45 @@ test('signal decoding is one pass and requires matching host actor and message c
   ]) assert.equal(parseModelVisibleCurrentRequestEnvelope(invalid), undefined);
 });
 
-test('current read and malformed signals never borrow older artifact delivery authority', async () => {
-  for (const latest of [signal(body('Read the sheet.')), signal(body('Do not update spreadsheet values.')), signal('Approve the previous preview.'), signal().replace('</slack_message>', '</wrong>')]) {
+test('malformed current signals never borrow an older response context', async () => {
+  for (const latest of [signal('Approve the previous preview.'), signal().replace('</slack_message>', '</wrong>')]) {
     await memoryToolPolicyInterceptor(operation, context, async () => {
       observeMemoryToolPolicy(observation([signal(body('Create a report file.')), latest]), context as unknown as FlueEventContext);
       assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' });
     });
+  }
+});
+
+test('an invalid latest observation clears an earlier valid response context', async () => {
+  await memoryToolPolicyInterceptor(operation, context, async () => {
+    observeMemoryToolPolicy(observation([signal(body('Create a report file.'))]), context as unknown as FlueEventContext);
+    assert.doesNotThrow(assertArtifactDeliveryAllowed);
+    observeMemoryToolPolicy(observation([signal('missing host context')]), context as unknown as FlueEventContext);
+    assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' });
+  });
+});
+
+test('new envelopes omit intent classification; legacy booleans are type-checked and ignored', async () => {
+  for (const schemaVersion of [1, 2] as const) {
+    const fresh = serializeCurrentRequestEnvelope('Please revise it.', false,
+      'U_FIXTURE', '1788000000.000100', { schemaVersion });
+    assert.doesNotMatch(fresh, /explicitArtifactDeliveryIntent/);
+    const parsed = parseCurrentRequestEnvelope(fresh);
+    assert.ok(parsed);
+    for (const oldHint of [false, true, 'true', null]) {
+      const lines = fresh.split('\n');
+      lines[1] = JSON.stringify({ ...JSON.parse(lines[1]!), explicitArtifactDeliveryIntent: oldHint });
+      const legacy = lines.join('\n');
+      if (typeof oldHint !== 'boolean') {
+        assert.equal(parseCurrentRequestEnvelope(legacy), undefined);
+        continue;
+      }
+      assert.deepEqual(parseCurrentRequestEnvelope(legacy), parsed);
+      await memoryToolPolicyInterceptor(operation, context, async () => {
+        observeMemoryToolPolicy(observation([signal(legacy)]), context as unknown as FlueEventContext);
+        assert.doesNotThrow(assertArtifactDeliveryAllowed);
+      });
+    }
   }
 });
 
