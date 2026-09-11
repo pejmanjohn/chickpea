@@ -158,13 +158,11 @@ import {
 import { createChartArtifactTool, RENDER_CHART_TOOL_NAME } from '../sandbox/chart-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
-import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 import {
-  parseSlackAttachmentIntake,
-  slackAttachmentTurnIsReadOnly,
-  isSlackAttachmentContextDelivery,
-  useSlackAttachmentContext,
-} from '../slack/attachment-context.ts';
+  bindCurrentRequestConversation,
+  parseCurrentRequestEnvelope,
+} from '../memory/tool-policy.ts';
+import { useSlackAttachmentContext } from '../slack/attachment-context.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationIntentCapability } from '../slack/presentation-intent.ts';
 import {
@@ -1166,14 +1164,10 @@ export function ChickpeaSlack({ id }: AgentProps) {
     schema: SlackAgentCreationTerminalIntentSchema,
   });
   const writeMemoryUpdate = useDataWriter(SLACK_MEMORY_UPDATE_DATA_NAME, { schema: SlackMemoryUpdateSchema });
-  const attachmentReadOnly = isSlackAttachmentContextDelivery(delivery, plan) || slackAttachmentTurnIsReadOnly(
-    parseSlackAttachmentIntake(delivery, plan),
-  );
   const managementEnabled = !!parseSlackManagementSignal(delivery, plan);
   useChickpeaSlackRuntimeCapabilities(
     plan,
     id,
-    attachmentReadOnly,
     presentationIntent,
     writeTablePresentation,
     writeAgentCreationTerminal,
@@ -1188,11 +1182,14 @@ export function ChickpeaSlack({ id }: AgentProps) {
   return plan.instructions;
 }
 
-/** Register the exact main-turn capability set after trusted attachment intake is known. */
+/**
+ * Register the exact main-turn capability set. A file upload no longer narrows
+ * it: an upload turn runs with the same tools as any other message, on the
+ * initial render and on the attachment-analysis re-render alike.
+ */
 export function useChickpeaSlackRuntimeCapabilities(
   plan: RuntimePlanV2,
   id: string,
-  attachmentReadOnly: boolean,
   presentationIntent: ReturnType<typeof slackPresentationIntentCapability>,
   writeTablePresentation: (presentation: SlackTablePresentation) => void,
   writeAgentCreationTerminal: (intent: SlackAgentCreationTerminalIntent) => void,
@@ -1201,27 +1198,22 @@ export function useChickpeaSlackRuntimeCapabilities(
 ): void {
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
-    toolsDisabled: attachmentReadOnly,
-    includeAgentAuthoringSkill: !attachmentReadOnly,
+    includeAgentAuthoringSkill: true,
     additionalActivityToolDescriptors: slackActivityToolDescriptors({
       plan,
-      managementEnabled: managementEnabled && !attachmentReadOnly,
-      ...(!attachmentReadOnly && presentationIntent
-        ? { presentationToolName: presentationIntent.tool.name }
-        : {}),
-      ...(!attachmentReadOnly ? { tablePresentationToolName: SLACK_PRESENT_TABLE_TOOL_NAME } : {}),
+      managementEnabled,
+      ...(presentationIntent ? { presentationToolName: presentationIntent.tool.name } : {}),
+      tablePresentationToolName: SLACK_PRESENT_TABLE_TOOL_NAME,
     }),
   });
-  if (!attachmentReadOnly) {
-    useAgentAuthoring();
-    useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv, writeAgentCreationTerminal, writeMemoryUpdate);
-    usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
-    useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
-    useTool(createSlackPresentTableTool(writeTablePresentation));
-    if (presentationIntent) {
-      useInstruction(presentationIntent.instruction);
-      useTool(presentationIntent.tool);
-    }
+  useAgentAuthoring();
+  useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv, writeAgentCreationTerminal, writeMemoryUpdate);
+  usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
+  useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
+  useTool(createSlackPresentTableTool(writeTablePresentation));
+  if (presentationIntent) {
+    useInstruction(presentationIntent.instruction);
+    useTool(presentationIntent.tool);
   }
 }
 
@@ -1240,6 +1232,13 @@ export function useRuntimePlanAgent(
   } = {},
 ): void {
   const { accumulator: artifactAccumulator, writeReceipts: writeArtifactReceipts } = useSlackArtifactReceipts();
+  // The delivery gate compares a re-stamped attachment-context envelope against
+  // the host-owned conversation. Only the frozen plan can supply it.
+  bindCurrentRequestConversation({
+    workspaceId: plan.conversation.workspaceId,
+    channelId: plan.conversation.channelId,
+    threadTs: plan.conversation.threadTs,
+  });
   registerActivityContext(id, buildRuntimePlanActivityContext(plan, {
     ...(options.toolsDisabled === undefined ? {} : { toolsDisabled: options.toolsDisabled }),
     ...(options.includeAgentAuthoringSkill === undefined
@@ -1265,8 +1264,10 @@ export function useRuntimePlanAgent(
   useInstruction(SLACK_ACTION_LINK_INSTRUCTION);
   useInstruction('The final Slack answer must be self-contained. Earlier assistant steps are working narration. After an interrupted response, write the complete final answer again, not just the remaining words of the partial response.');
   if (options.toolsDisabled) {
+    // No Slack turn disables tools today; the option remains for a caller that
+    // needs an answer-only turn. File uploads are not such a caller (R17).
     useInstruction(
-      'This attachment-bearing Slack turn is read-only. No tools, connectors, sandboxes, or workspace-management actions are available. Answer only from the authoritative Slack request and the attachment evidence signal. If the request also asks for an external action, analyze the attachments, state the exact proposed action inputs separately, and ask the user to restate those exact inputs in a new text-only message. A vague follow-up such as "go ahead" is not authorization.',
+      'This turn is answer-only. No tools, connectors, sandboxes, or workspace-management actions are available. Answer only from the authoritative request and the context already supplied. If the request also asks for an external action, state the exact proposed action inputs separately, and ask the user to restate those exact inputs in a new message.',
     );
   } else {
     useManagedConnectionTools(

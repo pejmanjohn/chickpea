@@ -319,31 +319,46 @@ test('the hook refresh replaces stale managed descriptors for the same instance'
   );
 });
 
-test('the ChickpeaSlack attachment hook registers no connector or management descriptors', async () => {
+test('the ChickpeaSlack attachment hook registers the same connector and management descriptors as a text turn', async () => {
   const plan = hookRuntimePlan();
   const id = 'hook-activity-attachment';
 
   await renderChickpeaHook(plan, id, true);
 
-  for (const toolName of ['gmail_search_messages', 'inspect_workspace', 'stream_answer']) {
-    assert.deepEqual(
-      activityStatusForObservation({
-        type: 'tool_start',
-        instanceId: id,
-        toolName,
-        toolCallId: `call_${toolName}`,
-      }),
-      {
-        kind: 'running',
-        action: 'Working on',
-        object: 'the request',
-        family: 'unknown',
-        phase: 'working',
-        text: 'Working on the request…',
-      },
-      toolName,
-    );
-  }
+  assert.deepEqual(
+    activityStatusForObservation({
+      type: 'tool_start',
+      instanceId: id,
+      toolName: 'gmail_search_messages',
+      toolCallId: 'call_gmail_attachment',
+    }),
+    {
+      kind: 'checking',
+      action: 'Checking',
+      object: 'Gmail',
+      family: 'managed_connector',
+      phase: 'working',
+      text: 'Checking Gmail…',
+    },
+  );
+  assert.equal(
+    activityStatusForObservation({
+      type: 'tool_start',
+      instanceId: id,
+      toolName: 'stream_answer',
+      toolCallId: 'call_answer_attachment',
+    })?.text,
+    'Drafting the response…',
+  );
+  assert.equal(
+    activityStatusForObservation({
+      type: 'tool_start',
+      instanceId: id,
+      toolName: 'inspect_workspace',
+      toolCallId: 'call_management_attachment',
+    })?.text,
+    'Inspecting workspace settings…',
+  );
 });
 
 test('Flue 2 MCP validation works under restricted string-code generation', () => {
@@ -433,7 +448,7 @@ test('Flue 2 restores instance context before recovering unready submissions', a
   assert.equal(ready, true);
 });
 
-test('member Slack requests register custom MCP declarations and attachment turns omit them', async () => {
+test('member Slack requests register custom MCP declarations on text and attachment turns alike', async () => {
   const { mkdtempSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -455,7 +470,7 @@ test('member Slack requests register custom MCP declarations and attachment turn
         });
         // Stop at the empty fixture's live-Agent authority fence, before a provider call.
         await assert.rejects(context.initializeRootHarness(ChickpeaSlack, slackDelivery(plan, attachments), plan));
-        assert.deepEqual(registered, attachments ? [] : ['connection_sql']);
+        assert.deepEqual(registered, ['connection_sql'], `attachments=${attachments}`);
       }
     });
   } finally {

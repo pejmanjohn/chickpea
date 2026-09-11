@@ -91,6 +91,18 @@ const SIGNAL_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
   ...SIGNAL_ATTRIBUTE_KEYS,
   ...SIGNAL_OPTIONAL_ATTRIBUTE_KEYS,
 ]);
+/**
+ * The host appends one attachment-analysis signal to an upload turn, and it
+ * becomes the delivery the re-render reads. It carries the triggering
+ * message's own identity forward plus its own bounded evidence counters, so
+ * the same Slack request keeps the same management authority on both renders.
+ */
+const ATTACHMENT_CONTEXT_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
+  ...SIGNAL_ALLOWED_ATTRIBUTE_KEYS,
+  'attachmentStatus',
+  'attachmentSuccessCount',
+  'attachmentFailureCount',
+]);
 
 export const scheduleActionInputSchema = v.object({
   requiredConnectionAccountIds: v.optional(v.pipe(v.array(v.string()), v.maxLength(100), v.description('Exact accounts this future task requires. Required on create or task change: use [] for connection-free work. Get stable IDs from inspect_workspace for the owning Agent and choose only the accounts needed by the task, never all available accounts. Omit for metadata-only edits to preserve the saved set. Ask the requester if the service/account is ambiguous.'))),
@@ -793,10 +805,17 @@ export function parseSlackManagementSignal(
   delivery: DeliveredMessage,
   plan: RuntimePlanV2,
 ): SlackManagementSignal | undefined {
-  if (delivery.kind !== 'signal' || delivery.type !== 'slack.message' ||
-      delivery.tagName !== 'slack_message' || !delivery.attributes) return undefined;
-  if (Object.keys(delivery.attributes).some((key) =>
-    !SIGNAL_ALLOWED_ATTRIBUTE_KEYS.has(key))) return undefined;
+  if (delivery.kind !== 'signal' || !delivery.attributes) return undefined;
+  const attachmentContext = delivery.type === 'slack.attachment_context' &&
+    delivery.tagName === 'slack_attachment_context';
+  if (!attachmentContext &&
+      (delivery.type !== 'slack.message' || delivery.tagName !== 'slack_message')) {
+    return undefined;
+  }
+  const allowedKeys = attachmentContext
+    ? ATTACHMENT_CONTEXT_ALLOWED_ATTRIBUTE_KEYS
+    : SIGNAL_ALLOWED_ATTRIBUTE_KEYS;
+  if (Object.keys(delivery.attributes).some((key) => !allowedKeys.has(key))) return undefined;
   const values = Object.fromEntries(SIGNAL_ATTRIBUTE_KEYS.map((key) => [
     key,
     boundedAttribute(delivery.attributes?.[key], key, key.endsWith('Ts') ? 80 : 256),
