@@ -310,6 +310,8 @@ Bring your own: Anthropic, OpenAI, OpenRouter, or Cloudflare Workers AI. Cloudfl
 
 Every Agent can be pinned to its own model. A cheap fast model for triage, a strong one for the Agent that writes.
 
+Images are a second model role beside chat. Pick a **default image model** in **Settings → Model providers**, and override it on any Agent from its Model tab; Agents with the role filled can generate and edit images in a thread, and Agents without it cannot. Image models come from OpenAI in this release and reuse your OpenAI key. When an Agent makes an image, the prompt text it writes and any images people posted in that Slack thread are sent to that provider.
+
 ---
 
 ## Coding Sandbox

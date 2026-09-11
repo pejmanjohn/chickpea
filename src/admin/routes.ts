@@ -6036,6 +6036,29 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({ providers });
   });
 
+  // The image role's picker source, kept separate from the chat model list so a
+  // chat model can never reach an image field. Entries are the image catalog
+  // narrowed to providers whose credential is present, each flagged when it is
+  // the faster, cheaper choice (R16). `providers` lets Admin tell "no image
+  // model chosen" apart from "no image provider connected".
+  app.get('/admin/api/image-models', async (c) => {
+    const models = await availableRoleModels(
+      'image',
+      settings(c),
+      c.env as PlatformEnv | undefined,
+    );
+    return c.json({
+      models: models.map((model) => ({
+        ...model,
+        fasterAndCheaper: FASTER_CHEAPER_IMAGE_MODEL_IDS.has(model.id),
+      })),
+      providers: IMAGE_ROLE_PROVIDER_IDS.map((id) => ({
+        id,
+        configured: models.some((model) => model.providerId === id),
+      })),
+    });
+  });
+
   app.get('/admin/api/workspace-model-default', async (c) => {
     const configStore = store(c);
     const installation = await modelDefaultInstallation(configStore);
@@ -10575,6 +10598,9 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
     c.req.path.startsWith('/admin/api/agents/') ||
     (c.req.method === 'GET' && [
       '/admin/api/models',
+      // The per-Agent image field reads its options here, so an Agent editor
+      // needs the same access it has to the chat model list.
+      '/admin/api/image-models',
     ].includes(c.req.path))
   ) return 'agent.create';
   return 'admin.configure';
@@ -11008,6 +11034,11 @@ async function availableRoleModels(
 // The image catalog is provider-agnostic by shape; only OpenAI ships an
 // adapter in this release, so only its entries can be offered.
 const IMAGE_ROLE_PROVIDER_IDS = ['openai'] as const;
+
+// Model choice is the only cost lever in this release, so the Owner-facing
+// picker says which entry is the faster, cheaper one. Held here rather than on
+// the profile: it is a purchasing note for Admin, not a model capability.
+const FASTER_CHEAPER_IMAGE_MODEL_IDS = new Set<string>(['openai/gpt-image-2.5-flare']);
 
 async function modelDefaultInstallation(
   configStore: ConfigStore,

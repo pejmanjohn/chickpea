@@ -216,6 +216,17 @@
     workspaceDefaultError: "",
     workspaceDefaultNotice: "",
     workspaceDefaultRequestId: 0,
+    // The image model role: a second, additive model choice beside the chat
+    // default. Its readback (choice + revision) comes from the role endpoint;
+    // its options come from the image catalog, never from the chat model list.
+    imageModels: { loaded: false, models: [], providers: [] },
+    workspaceImageRole: null,
+    workspaceImageRoleLoaded: false,
+    workspaceImageRoleDraft: "",
+    workspaceImageRoleBusy: false,
+    workspaceImageRoleError: "",
+    workspaceImageRoleNotice: "",
+    workspaceImageRoleRequestId: 0,
     modelCatalog: null,
     modelCatalogLoaded: false,
     modelCatalogError: "",
@@ -270,6 +281,10 @@
     // the static suggestions for it (offline).
     modelPickerOpen: false,
     modelPickerFilter: "",
+    // The Agent image field reuses the combobox shape with its own open/filter
+    // state so the two pickers can never share or cross-populate options.
+    imageModelPickerOpen: false,
+    imageModelPickerFilter: "",
     providerModelsError: {},
     // Audit Logs has two live domains: Scheduled Work for routines and their
     // executions, and Memory for durable channel context. The selected domain
@@ -690,6 +705,8 @@
     resetRepositoryTransientState();
     state.modelPickerOpen = false;
     state.modelPickerFilter = "";
+    state.imageModelPickerOpen = false;
+    state.imageModelPickerFilter = "";
     state.agentScheduleDeleteConfirm = null;
   }
 
@@ -3955,7 +3972,14 @@
     var modelPart = '<span class="badge-src">' + source + '</span> <span class="mono">' + esc(policy.effectiveModel || agent.model || "Not selected") + '</span>';
     var usage = "used in " + channelCountLabel(concrete.length);
     var handle = (agent.slackPresence && agent.slackPresence.normalizedHandle) || handleFromAgentName(agent.name);
-    var meta = modelPart + " &middot; " + usage + " &middot; @" + esc(handle);
+    // The image role reads back beside the chat role, but only once one is
+    // resolved — an unset role is not a state worth a badge on every card.
+    var imagePolicy = agent.imageModelPolicy || {};
+    var imagePart = imagePolicy.effectiveModel
+      ? " &middot; Image <span class=\"badge-src\">" + (agent.imageModel ? "Pinned" : "Workspace default") +
+        "</span> <span class=\"mono\">" + esc(imagePolicy.effectiveModel) + "</span>"
+      : "";
+    var meta = modelPart + imagePart + " &middot; " + usage + " &middot; @" + esc(handle);
     return '<div class="pcard"><div class="pcard-head"><span class="pcard-name">' + esc(agent.name) + '</span>' + stateBadge + '</div>' +
       '<div class="pcard-foot"><span class="hint">' + meta + '</span><span class="spacer"></span>' +
       '<button type="button" class="btn btn-soft btn-sm" data-action="edit-profile" data-agent="' + esc(agent.id) + '">' + (agent.canEdit === false ? "View" : "Edit") + '</button></div></div>';
@@ -3988,6 +4012,63 @@
       '<p class="hint">' + (model ? 'This Agent stays on its pinned model until you <button type="button" class="link-btn" data-action="profile-model-reset">use the Workspace default</button>.' : 'This Agent follows live Workspace default changes.') + ' Manage choices in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button></p>' +
       (warning ? '<p class="field-error">' + esc(warning) + '</p>' : "") +
       '</div>';
+  }
+
+  // The image role's per-Agent override. Mirrors the Model field, including the
+  // reset to the Workspace value, but draws its options from the image catalog
+  // only. The system Agent always follows the Workspace value and therefore has
+  // no field at all (AE7).
+  function imageModelFieldHtml(draft) {
+    if (draft.kind === "system") return "";
+    var model = draft.imageModel || "";
+    var projected = draft.imageModelPolicy || {};
+    var workspaceModel = (state.workspaceImageRole && state.workspaceImageRole.modelId) ||
+      (projected.source === "workspace_default" ? projected.effectiveModel : "") || "";
+    var source = model ? "Pinned" : "Workspace default";
+    var effective = model || workspaceModel || "Not selected";
+    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="mono hint">' + esc(effective) + '</span></div>';
+    if (draft.canEdit === false) {
+      return '<div class="field"><span class="field-label">Image model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent image model">' + esc(effective) + '</div></div>';
+    }
+    var open = state.imageModelPickerOpen;
+    return '<div class="field"><label class="field-label" for="p-image-model">Image model</label>' + sourceSummary +
+      '<div class="model-combo">' +
+      '<input class="input mono model-combo-input" id="p-image-model" name="imageModel" type="text" value="' + esc(model) + '" autocomplete="off" role="combobox" aria-expanded="' + (open ? "true" : "false") + '" aria-haspopup="listbox" placeholder="' + esc(workspaceModel ? "Workspace default — " + workspaceModel : "Workspace default") + '" data-action="profile-image-model">' +
+      icon("chevron-down", "model-combo-caret") +
+      (open ? imageModelPickerHtml(model) : "") +
+      '</div>' +
+      '<p class="hint">' + (model ? 'This Agent stays on its pinned image model until you <button type="button" class="link-btn" data-action="profile-image-model-reset">use the Workspace default</button>.' : 'This Agent follows the Workspace default image model.') + ' Manage image models in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button></p>' +
+      '</div>';
+  }
+
+  // Same popover shape as the chat picker, fed only by the image catalog so a
+  // chat specifier can never be offered here.
+  function imageModelPickerHtml(current) {
+    var filter = (state.imageModelPickerFilter || "").toLowerCase();
+    var html = '<div class="combo-list" role="listbox">';
+    var settingsRow = '<div class="combo-settings"><button type="button" class="link-btn" data-action="open-settings">Manage image models in Settings &nearr;</button></div>';
+    var models = imageModelCatalog().filter(function (model) {
+      return !filter || model.id.toLowerCase().indexOf(filter) >= 0 ||
+        String(model.name || "").toLowerCase().indexOf(filter) >= 0;
+    });
+    if (!models.length) {
+      return html + '<div class="combo-group">no image models available</div>' +
+        '<div class="combo-foot">This Agent keeps following the Workspace default image model. Connect an image provider in Settings before pinning one.</div>' +
+        settingsRow + '</div>';
+    }
+    var groups = [];
+    models.forEach(function (model) {
+      if (groups.indexOf(model.providerId) < 0) groups.push(model.providerId);
+    });
+    groups.forEach(function (providerId) {
+      html += '<div class="combo-group">' + esc(providerId) + '</div>';
+      models.filter(function (model) { return model.providerId === providerId; })
+        .forEach(function (model) {
+          var note = model.fasterAndCheaper ? " · faster, cheaper" : "";
+          html += '<button type="button" class="combo-opt ' + (current === model.id ? "active" : "") + '" data-action="pick-image-model" data-model="' + esc(model.id) + '">' + esc(model.id + note) + '</button>';
+        });
+    });
+    return html + settingsRow + '</div>';
   }
 
   // Custom-skill rules mirror the server-side valibot schema so an inline error
@@ -4404,7 +4485,7 @@
       panel(tabs[3], repositoriesPanelHtml(draft)) +
       panel(tabs[4], ownerMemoryPanelHtml("agent", draft.id, draft.name)) +
       panel(tabs[5], agentSchedulesPanelHtml(draft)) +
-      panel(tabs[6], '<div class="agent-model-row agent-model-tab-row">' + modelFieldHtml(draft) + '</div>') +
+      panel(tabs[6], '<div class="agent-model-row agent-model-tab-row">' + modelFieldHtml(draft) + imageModelFieldHtml(draft) + '</div>') +
       '</div>' +
       '</section>';
   }
@@ -8004,7 +8085,7 @@
     return head +
       settingsPanelHtml("slack", slackWorkspaceSettingsHtml()) +
       settingsPanelHtml("connectors", connectorsSettingsHtml()) +
-      settingsPanelHtml("providers", workspaceDefaultSection + providerSection) +
+      settingsPanelHtml("providers", workspaceDefaultSection + workspaceImageRoleSectionHtml() + providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
       settingsPanelHtml("sandbox", sandboxSectionHtml()) +
       settingsPanelHtml("outbound", egressSectionHtml());
@@ -8189,6 +8270,96 @@
     return head + '<div class="workspace-default-card workspace-default-shelf"><div class="workspace-default-summary"><div class="workspace-default-title-row">' + title + healthBadge + (current.live ? '<span class="badge-src">Live</span>' : '<span class="badge-src">Pending activation</span>') + '</div><div class="workspace-default-copy"><p class="hint">The shared model for Chickpea and every Agent that is not pinned.</p><p class="hint">' + esc(inheritors) + '</p></div>' + repair + '</div>' +
       '<div><div class="workspace-default-control"><label class="field" for="workspace-default-model"><span class="sr-only">Model</span><span class="select-wrap"><select class="input mono" id="workspace-default-model" data-action="workspace-default-model"' + disabled + '>' + optionHtml + '</select>' + icon("chevron-down", "select-caret") + '</span></label><button type="button" class="btn btn-primary" data-action="workspace-default-save"' + (!changed || state.workspaceDefaultBusy || !state.workspaceDefaultDraft ? " disabled" : "") + '>' + (state.workspaceDefaultBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save default") + '</button></div>' +
       '<p class="hint workspace-default-timing">' + esc(timing) + '</p>' + status + '</div></div></section>';
+  }
+
+  function imageModelCatalog() {
+    return (state.imageModels && state.imageModels.models) || [];
+  }
+
+  function imageModelById(modelId) {
+    return imageModelCatalog().filter(function (model) { return model.id === modelId; })[0] || null;
+  }
+
+  function imageModelProviderId(modelId) {
+    var known = imageModelById(modelId);
+    if (known) return known.providerId;
+    return String(modelId || "").split("/")[0] || "model";
+  }
+
+  // R16: the disclosure and the cost lever live with the picker, in one place,
+  // because the model choice is the only cost control in this release.
+  function imageModelConsentNoteHtml() {
+    var faster = imageModelCatalog().filter(function (model) { return model.fasterAndCheaper; })[0];
+    var providers = [];
+    imageModelCatalog().forEach(function (model) {
+      if (providers.indexOf(model.providerId) < 0) providers.push(model.providerId);
+    });
+    var sentence = "When an Agent makes an image, the prompt text it writes and any images people post in that Slack thread are sent to " +
+      (providers.length ? providers.join(", ") : "the model provider") + ".";
+    var cost = faster ? " " + faster.name + " is the faster, cheaper option." : "";
+    return '<p class="hint">' + esc(sentence + cost) + '</p>';
+  }
+
+  function workspaceImageRoleSectionHtml() {
+    var head = '<section class="section workspace-default-section" aria-labelledby="workspace-image-model-heading">';
+    var title = '<h2 class="section-title" id="workspace-image-model-heading">Default image model</h2>';
+    function shelf(summary, control) {
+      return head + '<div class="workspace-default-card workspace-default-shelf"><div class="workspace-default-summary">' +
+        summary + '</div>' + (control || "") + '</div></section>';
+    }
+    if (!state.workspaceImageRoleLoaded || !state.imageModels.loaded) {
+      return shelf('<div class="workspace-default-title-row">' + title + '</div><p class="hint">Loading image model&hellip;</p>', "");
+    }
+    var role = state.workspaceImageRole;
+    if (!role) {
+      return shelf('<div class="workspace-default-title-row">' + title + '</div><p class="field-error" role="alert">' +
+        esc(state.workspaceImageRoleError || "Connect Slack before choosing a default image model.") + '</p>', "");
+    }
+    var models = imageModelCatalog();
+    var chosen = String(role.modelId || "");
+    var known = !chosen || models.some(function (model) { return model.id === chosen; });
+    if (!models.length && !chosen) {
+      return shelf('<div class="workspace-default-title-row">' + title + '<span class="badge badge-off"><span class="dot"></span>Not set</span></div>' +
+        '<div class="workspace-default-copy"><p class="hint">Agents can generate and edit images once an image model is chosen here.</p>' +
+        '<p class="hint">Connect OpenAI in Model providers below to enable this choice. Image models come from OpenAI in this release.</p></div>', "");
+    }
+    var healthBadge = !chosen
+      ? '<span class="badge badge-off"><span class="dot"></span>Not set</span>'
+      : known
+        ? '<span class="badge badge-on"><span class="dot"></span>Ready</span>'
+        : '<span class="badge badge-off"><span class="dot"></span>Repair required</span>';
+    var repair = known
+      ? ""
+      : '<a class="link-btn" href="/admin/settings/providers">Review ' + esc(imageModelProviderId(chosen)) + ' provider settings</a>';
+    var summary = '<div class="workspace-default-title-row">' + title + healthBadge + '</div>' +
+      '<div class="workspace-default-copy"><p class="hint">The image model for Chickpea and every Agent that is not pinned to its own.</p>' +
+      (known ? "" : '<p class="hint">' + esc(chosen + " is no longer available. Reconnect its provider to keep using it.") + '</p>') +
+      '</div>' + repair;
+    if (!models.length) return shelf(summary, "");
+    var draft = String(state.workspaceImageRoleDraft || "");
+    var values = models.map(function (model) { return model.id; });
+    if (chosen && values.indexOf(chosen) < 0) values.unshift(chosen);
+    var optionHtml = '<option value=""' + (draft ? "" : " selected") + '>Not set</option>' +
+      values.map(function (modelId) {
+        var model = imageModelById(modelId);
+        var label = model ? model.name + " · " + modelId : modelId;
+        return '<option value="' + esc(modelId) + '"' + (modelId === draft ? ' selected' : '') + '>' + esc(label) + '</option>';
+      }).join("");
+    var changed = draft !== chosen;
+    var disabled = state.workspaceImageRoleBusy ? " disabled" : "";
+    var status = state.workspaceImageRoleError
+      ? '<p class="field-error" role="alert" aria-live="assertive">' + esc(state.workspaceImageRoleError) + '</p>'
+      : state.workspaceImageRoleNotice
+        ? '<p class="inline-status ok" role="status" aria-live="polite">' + esc(state.workspaceImageRoleNotice) + '</p>'
+        : '<span class="sr-only" role="status" aria-live="polite"></span>';
+    var control = '<div><div class="workspace-default-control"><label class="field" for="workspace-image-model"><span class="sr-only">Image model</span>' +
+      '<span class="select-wrap"><select class="input mono" id="workspace-image-model" data-action="workspace-image-model"' + disabled + '>' + optionHtml + '</select>' +
+      icon("chevron-down", "select-caret") + '</span></label>' +
+      '<button type="button" class="btn btn-primary" data-action="workspace-image-model-save"' +
+      (!changed || state.workspaceImageRoleBusy || !draft ? " disabled" : "") + '>' +
+      (state.workspaceImageRoleBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save image model") + '</button></div>' +
+      imageModelConsentNoteHtml() + status + '</div>';
+    return shelf(summary, control);
   }
 
   function connectionInventoryHtml() {
@@ -8591,6 +8762,8 @@
     state.modelCatalogError = "";
     state.workspaceDefaultError = "";
     state.workspaceDefaultNotice = "";
+    state.workspaceImageRoleError = "";
+    state.workspaceImageRoleNotice = "";
     if (state.settingsSection === "updates") { loadInstallation(false); return; }
     if (state.settingsSection === "slack") {
       render();
@@ -8609,6 +8782,8 @@
     render();
     loadSettings(generation).then(function () { renderSettingsLoad(generation); });
     loadWorkspaceDefault(generation).then(function () { renderSettingsLoad(generation); });
+    loadWorkspaceImageRole(generation).then(function () { renderSettingsLoad(generation); });
+    loadImageModels().then(function () { renderSettingsLoad(generation); });
     loadModelCatalogStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadGithubStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadEgress(generation).then(function () { renderSettingsLoad(generation); });
@@ -9098,6 +9273,81 @@
     });
   }
 
+  function applyWorkspaceImageRole(value, preserveDraft) {
+    state.workspaceImageRole = value || null;
+    state.workspaceImageRoleLoaded = true;
+    if (!preserveDraft) state.workspaceImageRoleDraft = (value && value.modelId) || "";
+  }
+
+  function applyImageModels(body) {
+    state.imageModels = {
+      loaded: true,
+      models: (body && body.models) || [],
+      providers: (body && body.providers) || []
+    };
+  }
+
+  // The image catalog. Loaded with the rest of the page data because the Agent
+  // Model tab needs it without ever opening Settings.
+  function loadImageModels() {
+    return api("/admin/api/image-models")
+      .then(applyImageModels)
+      .catch(function () { applyImageModels(null); });
+  }
+
+  function loadWorkspaceImageRole(generation) {
+    var requestId = ++state.workspaceImageRoleRequestId;
+    state.workspaceImageRoleError = "";
+    return api("/admin/api/workspace-model-roles/image", { cache: "no-store" }).then(function (body) {
+      if (requestId !== state.workspaceImageRoleRequestId || !settingsLoadIsCurrent(generation)) return;
+      applyWorkspaceImageRole(body.workspaceModelRole, false);
+    }).catch(function (error) {
+      if (requestId !== state.workspaceImageRoleRequestId || !settingsLoadIsCurrent(generation)) return;
+      state.workspaceImageRoleLoaded = true;
+      state.workspaceImageRoleError = (error && (error.serverMessage || error.message)) ||
+        "Could not load the default image model.";
+    });
+  }
+
+  function saveWorkspaceImageRole() {
+    var current = state.workspaceImageRole;
+    var modelId = String(state.workspaceImageRoleDraft || "").trim();
+    if (state.workspaceImageRoleBusy || !current) return;
+    if (!modelId) {
+      state.workspaceImageRoleError = "Choose an image model.";
+      state.workspaceImageRoleNotice = "";
+      render();
+      focusAction("workspace-image-model");
+      return;
+    }
+    state.workspaceImageRoleBusy = true;
+    state.workspaceImageRoleError = "";
+    state.workspaceImageRoleNotice = "";
+    render();
+    postJson("/admin/api/workspace-model-roles/image", "PUT", {
+      modelId: modelId,
+      expectedRevision: current.revision
+    }).then(function (body) {
+      applyWorkspaceImageRole(body.workspaceModelRole, false);
+      state.workspaceImageRoleBusy = false;
+      state.workspaceImageRoleNotice = "Default image model saved. Agents use it on their next request.";
+      render();
+      focusAction("workspace-image-model");
+    }).catch(function (error) {
+      state.workspaceImageRoleBusy = false;
+      var conflict = error && error.payload && error.payload.error === "model_role_revision_conflict";
+      if (conflict && error.payload.workspaceModelRole) {
+        applyWorkspaceImageRole(error.payload.workspaceModelRole, true);
+        state.workspaceImageRoleError = "The default image model changed in another session. Your selection is preserved; save again to replace the current value.";
+      } else {
+        state.workspaceImageRoleError = (error && (error.serverMessage || error.message)) ||
+          "Could not save the default image model.";
+      }
+      render();
+      focusAction("workspace-image-model");
+    });
+  }
+
   function saveWorkspaceDefault() {
     var current = state.workspaceDefault;
     var modelId = String(state.workspaceDefaultDraft || "").trim();
@@ -9503,6 +9753,30 @@
     renderPreservingPagePosition();
   }
 
+  // The image picker's options are already in state (the catalog loads with the
+  // page), so opening it kicks no fetch of its own.
+  function openImageModelPicker() {
+    if (state.imageModelPickerOpen) return;
+    state.imageModelPickerOpen = true;
+    state.imageModelPickerFilter = "";
+    renderPreservingPagePosition();
+  }
+
+  function closeImageModelPicker() {
+    if (!state.imageModelPickerOpen) return;
+    state.imageModelPickerOpen = false;
+    state.imageModelPickerFilter = "";
+    renderPreservingPagePosition();
+  }
+
+  function filterImageModelPicker(target) {
+    state.profileDraft.imageModel = target.value;
+    state.imageModelPickerFilter = target.value;
+    markProfileDirty();
+    if (!state.imageModelPickerOpen) { openImageModelPicker(); return; }
+    renderPreservingPagePosition();
+  }
+
   // A keystroke in the Model input both pins the free-text value (draft) and
   // narrows the open picker to matching specifiers (F6 filter). Typing opens the
   // picker if it was closed. The shared in-place renderer preserves the input's
@@ -9701,6 +9975,8 @@
       instructions: "",
       enabled: true,
       model: "",
+      kind: "user",
+      imageModel: "",
       // New profiles carry no custom skills; the array is what the API persists.
       skills: [],
       // New profiles carry no Connections either; the array is what the API persists.
@@ -9732,6 +10008,11 @@
       enabled: agent.enabled,
       model: agent.model || "",
       modelPolicy: agent.modelPolicy ? JSON.parse(JSON.stringify(agent.modelPolicy)) : null,
+      // The image role travels with the draft so an unrelated save cannot clear
+      // a pin the editor never showed.
+      kind: agent.kind || "user",
+      imageModel: agent.imageModel || "",
+      imageModelPolicy: agent.imageModelPolicy ? JSON.parse(JSON.stringify(agent.imageModelPolicy)) : null,
       // Deep-copy each skill so the inline editor never mutates the shared
       // state.agents entry — a discard/reopen must show the persisted values.
       skills: (agent.skills || []).map(function (skill) {
@@ -9943,11 +10224,13 @@
     var handleInput = document.getElementById("p-handle");
     var descriptionInput = document.getElementById("p-description");
     var modelInput = document.getElementById("p-model");
+    var imageModelInput = document.getElementById("p-image-model");
     var instructionsInput = document.getElementById("p-instr");
     if (nameInput) draft.name = nameInput.value.trim();
     if (handleInput) draft.handle = handleInput.value.trim();
     if (descriptionInput) draft.description = descriptionInput.value.trim();
     if (modelInput) draft.model = modelInput.value.trim();
+    if (imageModelInput) draft.imageModel = imageModelInput.value.trim();
     if (instructionsInput) draft.instructions = instructionsInput.value.trim();
     state.profileDraft = draft;
     return draft;
@@ -10241,6 +10524,7 @@
     var workspaceDefaultRequest = WORKSPACE_ADMIN_UI
       ? api("/admin/api/workspace-model-default", { cache: "no-store" }).catch(function () { return null; })
       : Promise.resolve(null);
+    var imageModelsRequest = api("/admin/api/image-models").catch(function () { return null; });
     var environmentStatusRequest = WORKSPACE_ADMIN_UI
       ? api("/admin/api/environment/status", { cache: "no-store" }).catch(function () { return null; })
       : Promise.resolve(null);
@@ -10257,6 +10541,7 @@
         }).catch(function () {});
       }
       auxiliary(api("/admin/api/models"), function (body) { state.models = body; });
+      auxiliary(imageModelsRequest, function (body) { applyImageModels(body); });
       auxiliary(slackRequest, function (body) { state.slack = body; });
       auxiliary(onboardingRequest, function (result) { state.onboarding = result.body; state.onboardingError = result.error; });
       auxiliary(workspaceDefaultRequest, function (body) {
@@ -10293,7 +10578,8 @@
       onboardingRequest,
       channelsRequest,
       workspaceDefaultRequest,
-      environmentStatusRequest
+      environmentStatusRequest,
+      imageModelsRequest
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
       state.grants = [];
@@ -10314,6 +10600,7 @@
       state.channelIndexError = parts[4].error;
       if (parts[5] && parts[5].workspaceDefault) applyWorkspaceDefault(parts[5].workspaceDefault, false);
       state.environmentStatus = parts[6];
+      applyImageModels(parts[7]);
       syncChannelFormWorkspacePrefill();
       if (renderAfterRefresh) renderAfterRefresh();
       else render();
@@ -10377,6 +10664,10 @@
     if (state.modelPickerOpen && event.target && event.target.closest) {
       var insideCombo = event.target.closest(".model-combo");
       if (!insideCombo) closeModelPicker();
+    }
+    if (state.imageModelPickerOpen && event.target && event.target.closest) {
+      var insideImageCombo = event.target.closest(".model-combo");
+      if (!insideImageCombo) closeImageModelPicker();
     }
     if (state.teamActionMenuId && event.target && event.target.closest) {
       var insideTeamMenu = event.target.closest(".team-action-menu");
@@ -10990,6 +11281,7 @@
     if (action === "egress-save") { saveEgress(); }
     if (action === "model-catalog-refresh") { refreshModelCatalogFromSettings(); }
     if (action === "workspace-default-save") { saveWorkspaceDefault(); }
+    if (action === "workspace-image-model-save") { saveWorkspaceImageRole(); }
     if (action === "prov-add-key") { openProviderPaste(target.getAttribute("data-provider"), "add"); }
     if (action === "prov-change-key") { openProviderPaste(target.getAttribute("data-provider"), "change"); }
     if (action === "prov-cancel-key") { closeProviderPaste(target.getAttribute("data-provider")); }
@@ -11014,6 +11306,22 @@
     // the filter in the input listener below.
     if (action === "profile-model") { openModelPicker(); }
     if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); markProfileDirty(); closeModelPicker(); }
+    if (action === "profile-image-model") { openImageModelPicker(); }
+    if (action === "pick-image-model") {
+      var imagePickInput = document.getElementById("p-image-model");
+      if (imagePickInput) imagePickInput.value = target.getAttribute("data-model") || "";
+      collectProfileDraft();
+      markProfileDirty();
+      closeImageModelPicker();
+    }
+    if (action === "profile-image-model-reset" && state.profileDraft) {
+      state.profileDraft.imageModel = "";
+      state.imageModelPickerOpen = false;
+      state.imageModelPickerFilter = "";
+      markProfileDirty();
+      render();
+      focusAction("profile-image-model");
+    }
     if (action === "profile-model-reset" && state.profileDraft) {
       state.profileDraft.model = "";
       state.modelPickerOpen = false;
@@ -11478,6 +11786,7 @@
       // Mirror the typed model too: tab switches re-render from the draft, and
       // without this a half-typed specifier would be lost with the picker open.
       if (action === "profile-model") { state.profileDraft.model = target.value; markProfileDirty(); filterModelPicker(target); }
+      if (action === "profile-image-model") { state.profileDraft.imageModel = target.value; markProfileDirty(); filterImageModelPicker(target); }
       if (action === "profile-instructions") { state.profileDraft.instructions = target.value; markProfileDirty(); }
       // Skill editor fields mirror into state.skillEditor without a re-render so
       // the textarea keeps focus; validation/upsert happens on skill-save-row.
@@ -11615,6 +11924,13 @@
       state.workspaceDefaultNotice = "";
       render();
       focusAction("workspace-default-model");
+    }
+    if (action === "workspace-image-model" && !state.workspaceImageRoleBusy) {
+      state.workspaceImageRoleDraft = target.value;
+      state.workspaceImageRoleError = "";
+      state.workspaceImageRoleNotice = "";
+      render();
+      focusAction("workspace-image-model");
     }
     if (action === "team-member-status") {
       updateTeamMembership(target.getAttribute("data-membership") || "", "status", target.value);
@@ -12079,6 +12395,7 @@
       if (state.profileTab === "skills" && state.skillImport && state.skillImport.browse) { closeSkillImportBrowse(); return; }
       if (state.repositoryPicker || state.repositoryAddOpen) { closeRepositoryPicker(); return; }
       if (state.modelPickerOpen) { closeModelPicker(); }
+      if (state.imageModelPickerOpen) { closeImageModelPicker(); }
     }
     // ARIA tabs keyboard contract for the capability tab bar: Left/Right (and
     // Home/End) move focus AND activate; the roving tabindex in profileTabsHtml
@@ -13802,10 +14119,12 @@
     var secretsDraft = draft;
     if (isEdit) {
       body.model = draft.model || null;
+      if (draft.kind !== "system") body.imageModel = draft.imageModel || null;
       body.expectedRevision = Number.isInteger(draft.revision) ? draft.revision : 1;
     }
     else {
       if (draft.model) body.model = draft.model;
+      if (draft.imageModel) body.imageModel = draft.imageModel;
       body.id = slugId(draft.name);
     }
     var secretAgentId = isEdit ? draft.id : body.id;

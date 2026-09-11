@@ -146,6 +146,50 @@ test('the image role rejects a chat model and accepts a catalog model once OpenA
   }
 });
 
+test('the image model list is empty until its provider has a credential', async () => {
+  const fixture = harness();
+  try {
+    await installWorkspace(fixture);
+
+    const unconnected = await fixture.app.request('/admin/api/image-models', { headers: auth() });
+    assert.equal(unconnected.status, 200);
+    assert.deepEqual(await unconnected.json(), {
+      models: [],
+      providers: [{ id: 'openai', configured: false }],
+    });
+
+    await connectOpenAi(fixture);
+    const connected = await fixture.app.request('/admin/api/image-models', { headers: auth() });
+    assert.equal(connected.status, 200);
+    assert.deepEqual(await connected.json(), {
+      models: [
+        {
+          id: FLARE,
+          name: 'GPT Image 2.5 Flare',
+          providerId: 'openai',
+          acceptsImageInput: true,
+          fasterAndCheaper: true,
+        },
+        {
+          id: SUNBURST,
+          name: 'GPT Image 2.5 Sunburst',
+          providerId: 'openai',
+          acceptsImageInput: true,
+          fasterAndCheaper: false,
+        },
+      ],
+      providers: [{ id: 'openai', configured: true }],
+    });
+    // The chat model list and the image list never share entries.
+    const chatModels = await fixture.app.request('/admin/api/models', { headers: auth() });
+    assert.equal(chatModels.status, 200);
+    const chatBody = await chatModels.text();
+    assert.ok(!chatBody.includes('gpt-image-2.5'), 'chat model list must not carry image models');
+  } finally {
+    fixture.close();
+  }
+});
+
 test('a stale image role revision conflicts and returns the current value', async () => {
   const fixture = harness();
   try {
