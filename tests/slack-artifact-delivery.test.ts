@@ -9,6 +9,10 @@ import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { resultFromAgentReply } from '../src/slack/flue-dispatch.ts';
 import type { AgentReply } from '@flue/runtime';
+import { openStateDb } from '../src/state/node-state-db.ts';
+import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import type { ResolvedAssignment } from '../src/config/types.ts';
 
 const target = { workspaceId: 'T12345678', channelId: 'D12345678', threadTs: '1789063000.000100', userId: 'U12345678', agentId: 'agent_smoke', agentName: 'Smoke Amber', agentAvatarUrl: 'https://example.com/smoke.png', publicUrl: 'https://example.com', modelLabel: 'openai/test' };
 const legacyReceipt: SlackArtifactReceipt = {
@@ -239,3 +243,46 @@ test('file-only settled replies retain their host-authored receipts', () => {
   assert.deepEqual(result.artifacts, [receipt]);
   assert.equal(result.text, 'Requested files');
 });
+
+// A receipt kind only a newer host writes; older code must read past it.
+const futureReceipt = { ...legacyReceipt, fileId: 'F12345679', filename: 'sketch.png', kind: 'future' };
+
+test('a settled reply keeps its known receipts when a newer host wrote an unknown kind', () => {
+  const result = resultFromAgentReply({ submissionId: 'submission_future', text: '', data: {
+    slackArtifactReceipts: [{ schemaVersion: 1, receipts: [receipt, futureReceipt] }],
+  } } as unknown as AgentReply, null);
+  assert.deepEqual(result.artifacts, [receipt]);
+  assert.equal(result.text, 'Requested files');
+});
+
+test('a persisted turn row written by a newer host hydrates its known receipts', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => 1_940_000_000_000);
+    const id = 'turn_future_receipt';
+    turns.enqueue({ id, evtKey: id, msgKey: id, turn: futureTurn(), assignment: futureAssignment() });
+    // Written by a build that knows the newer kind; this build must still read it.
+    db.run('UPDATE turn_jobs SET flue_settlement_json = ? WHERE id = ?', JSON.stringify({
+      outcome: 'completed', settledAt: 1_940_000_000_000, result: {
+        text: 'Here it is', artifacts: [receipt, futureReceipt], requestedModel: null,
+        returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported',
+      },
+    }), id);
+    const restored = turns.getFlueSettlement(id);
+    assert.equal(restored?.outcome, 'completed');
+    assert.deepEqual(restored?.outcome === 'completed' ? restored.result.artifacts : undefined, [receipt]);
+  } finally { db.close(); }
+});
+
+function futureTurn(): NormalizedSlackTurn {
+  return { workspaceId: target.workspaceId, channelId: target.channelId, eventId: 'Ev_future',
+    text: 'Draw me a chart', userId: target.userId, messageTs: '100.001', threadTs: '100.001',
+    source: 'app_mention', contextMode: 'thread', channelType: 'im' };
+}
+
+function futureAssignment(): ResolvedAssignment {
+  return { workspaceId: target.workspaceId, channelId: target.channelId, agentId: target.agentId,
+    model: 'local-stub/canary',
+    agent: { id: target.agentId, kind: 'user', revision: 1, name: 'Smoke Amber', instructions: 'Help.',
+      enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [] } };
+}

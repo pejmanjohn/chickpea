@@ -205,3 +205,32 @@ test('private staging failures expose only static operational categories', async
   ]);
   assert.doesNotMatch(JSON.stringify(warnings), /private\.example|do-not-log|F12345671/);
 });
+
+test('an unknown receipt kind is ignored while structural damage still fails the list', () => {
+  const chart: SlackArtifactReceipt = { ...receipt(0), kind: 'chart' };
+  // A kind this version has never seen, as a newer host would write it.
+  const future = { ...receipt(1), kind: 'future' };
+  for (const source of [[{ schemaVersion: 1, receipts: [chart, future] }], [[chart, future]]]) {
+    assert.deepEqual(parseSlackArtifactReceipts(JSON.parse(JSON.stringify(source))), [chart],
+      'a newer receipt kind must not fail the whole list');
+  }
+  // Fields a newer kind carries are ignored with it, in either order.
+  assert.deepEqual(parseSlackArtifactReceipts([{ schemaVersion: 1, receipts: [
+    { ...future, revisedPrompt: 'a cat', appliedSize: '1024x1024' }, chart,
+  ] }]), [chart]);
+  assert.deepEqual(parseSlackArtifactReceipts([{ schemaVersion: 1, receipts: [future] }]), []);
+  // Known kinds keep failing closed on malformed structure.
+  for (const broken of [
+    { ...receipt(1), fileId: 'not-a-file-id' }, { ...receipt(1), byteLength: 0 },
+    { ...receipt(1), destination: undefined }, { ...receipt(1), kind: 7 },
+    { ...receipt(1), unknownField: true }, 'F12345671', null, [],
+  ]) {
+    assert.throws(() => parseSlackArtifactReceipts([{ schemaVersion: 1, receipts: [chart, broken] }]),
+      `malformed receipt ${JSON.stringify(broken)} must still fail`);
+  }
+  // The envelope itself, including the bounded list, is still validated.
+  assert.throws(() => parseSlackArtifactReceipts([{ schemaVersion: 2, receipts: [chart] }]));
+  assert.throws(() => parseSlackArtifactReceipts([{ schemaVersion: 1, receipts: [chart], extra: true }]));
+  assert.throws(() => parseSlackArtifactReceipts([{ schemaVersion: 1, receipts:
+    Array.from({ length: 11 }, (_, index) => ({ ...future, fileId: `F123456${index}0` })) }]));
+});

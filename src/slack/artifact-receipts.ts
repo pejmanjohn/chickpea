@@ -37,11 +37,18 @@ export function isSlackFilePermalink(value: unknown, fileId: string): value is s
   }
 }
 
+/**
+ * Kinds this build understands. A newer build may stage a kind absent here;
+ * the reader drops those entries rather than failing the whole list, so a
+ * rollback to older code still reads its own receipts.
+ */
+export const SLACK_ARTIFACT_RECEIPT_KINDS = ['file', 'chart'] as const;
+
 const receiptFields = {
   fileId: v.pipe(v.string(), v.regex(SLACK_FILE_ID)),
   filename: v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_FILENAME_CHARS)),
   title: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(MAX_TITLE_CHARS))),
-  kind: v.picklist(['file', 'chart']),
+  kind: v.picklist(SLACK_ARTIFACT_RECEIPT_KINDS),
   byteLength: v.pipe(v.number(), v.integer(), v.minValue(1)),
   stagedAt: v.pipe(v.number(), v.integer(), v.minValue(0)),
   destination: v.strictObject({
@@ -77,6 +84,23 @@ export const SlackArtifactReceiptsSchema = v.strictObject({
 
 export type SlackArtifactReceipts = v.InferOutput<typeof SlackArtifactReceiptsSchema>;
 
+/**
+ * The envelope, validated apart from its elements so one unreadable receipt
+ * cannot discard the readable ones. The bounded list still fails closed.
+ */
+const SlackArtifactReceiptListSchema = v.strictObject({
+  schemaVersion: v.literal(1),
+  receipts: v.pipe(v.array(v.unknown()), v.maxLength(MAX_SLACK_ARTIFACT_RECEIPTS)),
+});
+
+/** A receipt a newer build wrote: an object naming a kind this build lacks. */
+function hasUnknownReceiptKind(entry: unknown): boolean {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
+  const kind: unknown = (entry as { kind?: unknown }).kind;
+  return typeof kind === 'string' &&
+    !(SLACK_ARTIFACT_RECEIPT_KINDS as readonly string[]).includes(kind);
+}
+
 /** Root-Agent hook: one bounded durable receipt list per true response. */
 export function useSlackArtifactReceipts() {
   const writeReceipts = useDataWriter(SLACK_ARTIFACT_RECEIPTS_DATA_NAME, { schema: SlackArtifactReceiptsSchema });
@@ -98,7 +122,9 @@ export interface SlackArtifactDeliveryTarget {
  * Parse the receipts data part from a settled reply or a stored checkpoint.
  * Flue replaces a named data part in place, so the reply carries the latest
  * full list; a stored checkpoint carries the parsed list directly. Malformed
- * host data fails closed like the other host-authored parts.
+ * host data fails closed like the other host-authored parts, but a receipt
+ * whose kind this build does not know is dropped, not fatal, so a list written
+ * by a newer build stays readable after a rollback.
  */
 export function parseSlackArtifactReceipts(value: unknown): SlackArtifactReceipt[] {
   if (value === undefined || value === null) return [];
@@ -106,14 +132,21 @@ export function parseSlackArtifactReceipts(value: unknown): SlackArtifactReceipt
   const latest = value.at(-1);
   if (latest === undefined) return [];
   const list = Array.isArray(latest) ? { schemaVersion: 1, receipts: latest } : latest;
-  const parsed = v.safeParse(SlackArtifactReceiptsSchema, list);
+  const parsed = v.safeParse(SlackArtifactReceiptListSchema, list);
   if (!parsed.success) throw new Error('Slack artifact receipts are invalid.');
   const seen = new Set<string>();
-  return parsed.output.receipts.filter((receipt) => {
-    if (seen.has(receipt.fileId)) return false;
-    seen.add(receipt.fileId);
-    return true;
-  });
+  const receipts: SlackArtifactReceipt[] = [];
+  for (const entry of parsed.output.receipts) {
+    // A kind only a newer build writes is ignored with whatever fields it
+    // carries; anything else malformed still fails the read closed.
+    if (hasUnknownReceiptKind(entry)) continue;
+    const receipt = v.safeParse(SlackArtifactReceiptSchema, entry);
+    if (!receipt.success) throw new Error('Slack artifact receipts are invalid.');
+    if (seen.has(receipt.output.fileId)) continue;
+    seen.add(receipt.output.fileId);
+    receipts.push(receipt.output);
+  }
+  return receipts;
 }
 
 /** Only receipts frozen for exactly this destination may be published there. */

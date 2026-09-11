@@ -9,6 +9,9 @@ import type { CompletedSlackArtifactReceipt, SlackArtifactReceipt } from '../src
 import type { SlackFileTransport } from '../src/slack/file-transport.ts';
 import { ARTIFACT_UNDELIVERED_NOTE } from '../src/slack/web-client-presenter.ts';
 import type { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
+import { parseSlackArtifactReceipts, SLACK_ARTIFACT_RECEIPTS_DATA_NAME } from '../src/slack/artifact-receipts.ts';
+import { SqliteRoutineStore } from '../src/routines/store.ts';
+import type { RoutineConfirmationDraft, RoutineDefinitionContent } from '../src/routines/types.ts';
 
 const now = 1789063303000;
 const messageTs = '1789063305.000200';
@@ -226,4 +229,85 @@ for (const mismatch of ['workspaceId', 'agentId', 'channelId', 'threadTs'] as co
     assert.deepEqual(h.transportCalls, []);
     assert.equal(h.posts.length, 0);
   });
+}
+
+// A receipt kind only a newer host writes. Older code must read past it on both
+// the reply-reduction seam and the durable run settlement.
+function futureKindReceipt(base: SlackArtifactReceipt): Record<string, unknown> {
+  return { ...base, fileId: 'F12345679', filename: 'sketch.png', kind: 'future' };
+}
+
+test('a routine reply with a newer receipt kind still delivers its known files', async () => {
+  const h = setup();
+  // The same reduction `routineResult` performs in src/routines/execution.ts.
+  const reply = { data: { [SLACK_ARTIFACT_RECEIPTS_DATA_NAME]: [{ schemaVersion: 1, receipts: [
+    ...h.completedFiles, futureKindReceipt(h.completedFiles[0]!),
+  ] }] } };
+  const artifacts = parseSlackArtifactReceipts(reply.data[SLACK_ARTIFACT_RECEIPTS_DATA_NAME]);
+  assert.deepEqual(artifacts, h.completedFiles);
+  h.input.artifacts = artifacts;
+  assert.deepEqual(await deliverRoutineResult(h.input, h.client), { channelId: h.channelId, messageTs });
+  for (const file of h.completedFiles) {
+    assert.ok(String(h.posts[0]!.text).includes(`<${file.permalink}|${file.filename}>`));
+  }
+  assert.doesNotMatch(JSON.stringify(h.posts[0]!), /sketch\.png/);
+});
+
+test('a routine run settles when a newer host staged a receipt of an unknown kind', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => now);
+  try {
+    const routine = await store.save({
+      actorId: 'U_MEMBER', actorClass: 'member', workspaceId: 'T12345678', channelId: 'C12345678',
+      draft: futureDraft(), idempotencyKey: 'routine:future:save',
+    });
+    const run = await store.createOccurrence({
+      runId: 'rrun_future', idempotencyKey: 'routine:future:run', routineId: routine.id,
+      routineVersion: routine.version, scheduledFor: now, triggerSource: 'run_now',
+      requestedBy: 'U_MEMBER', queuedAt: now, deadlineAt: now + 15 * 60 * 1_000,
+    });
+    const admission = await store.startAdmissionAttempt({
+      occurrenceId: run.id, owner: 'heartbeat', leaseUntil: now + 120_000, invokeStartedAt: now + 1,
+    });
+    assert.equal(await store.prepareAgentDispatch({
+      occurrenceId: run.id, attempt: admission.attempt, startedAt: now + 2,
+      envelope: { schemaVersion: 1, attemptId: admission.attemptId, instanceId: 'inst_future',
+        idempotencyKey: admission.attemptId, message: 'Run the saved task.', initialData: null },
+      resolvedAccessHash: 'a'.repeat(64), resolvedAgentId: 'agent_smoke',
+      resolvedAuthorityReceiptId: 'receipt_future', resolvedRunsAsMembershipId: 'membership_owner',
+      model: 'openai/test', traceId: 'trace_future',
+    }), 'started');
+
+    const staged = setup().completedFiles;
+    const settled = await store.recordAgentSettlement({
+      occurrenceId: run.id,
+      settlement: { schemaVersion: 1, outcome: 'completed', settledAt: now + 3, result: {
+        status: 'succeeded', message: 'Attached.', changeKeyHash: null, suppressedAsNoOp: false,
+        toolCallCount: 1, usage: { requestedModel: 'openai/test', returnedModel: null,
+          inputTokens: 1, outputTokens: 1, totalTokens: 2, cacheReadTokens: 0,
+          cacheWriteTokens: 0, completeness: 'complete' },
+        artifacts: [...staged, futureKindReceipt(staged[0]!)] as SlackArtifactReceipt[],
+      } },
+    });
+    const stored = settled.flueAgentSettlement;
+    assert.equal(stored?.outcome, 'completed');
+    assert.deepEqual(
+      parseSlackArtifactReceipts([stored?.outcome === 'completed' ? stored.result.artifacts : []]),
+      staged, 'the known receipts survive the settled run');
+  } finally { store.close(); }
+});
+
+function futureDraft(): Exclude<RoutineConfirmationDraft, { action: 'delete' }> {
+  const definition: RoutineDefinitionContent = {
+    name: 'Daily chart steward',
+    description: 'Post the daily chart.',
+    taskText: 'Chart yesterday and post it to the channel.',
+    triggerKind: 'schedule',
+    scheduleInput: 'Every day at 9am',
+    scheduleJson: JSON.stringify({ version: 1, kind: 'cron', expression: '0 9 * * *' }),
+    timezone: 'America/Los_Angeles',
+    outputPolicy: 'post',
+    authorityMode: 'live_channel_v1',
+  };
+  return { action: 'create', routineId: 'routine_future', definition, nextRunAt: now + 60 * 60 * 1_000,
+    projectedDailyStarts: 1, reservations: [{ windowStart: now + 60 * 60 * 1_000, count: 1 }] };
 }
