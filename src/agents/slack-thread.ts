@@ -156,6 +156,12 @@ import {
   type SlackArtifactStageOutcome,
 } from '../sandbox/artifact-tool.ts';
 import { createChartArtifactTool, RENDER_CHART_TOOL_NAME } from '../sandbox/chart-tool.ts';
+import {
+  createImageArtifactTool,
+  useImageCallBudget,
+  type ImageClientResolution,
+  type ImageToolTransport,
+} from '../sandbox/image-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import {
@@ -186,6 +192,16 @@ import {
   type SlackArtifactReceipts,
 } from '../slack/artifact-receipts.ts';
 import { stageArtifactWithReceipt } from '../slack/artifact-staging.ts';
+import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
+import {
+  buildThreadImageInventory,
+  createThreadImageReader,
+  slackThreadImageConversationKey,
+  type ThreadImageInventory,
+  type ThreadImageRecord,
+} from '../slack/thread-images.ts';
+import { resolveAgentModelRoleFromStore } from '../config/model-policy.ts';
+import { resolveImageProvider } from '../images/provider.ts';
 import { createSlackFileTransport, type SlackFileTransport } from '../slack/file-transport.ts';
 import {
   parseSlackManagementSignal,
@@ -1229,9 +1245,12 @@ export function useRuntimePlanAgent(
     artifactToolsDisabled?: boolean;
     includeAgentAuthoringSkill?: boolean;
     additionalActivityToolDescriptors?: readonly ActivityToolDescriptor[];
+    /** Images already in this conversation, collected by the host fetch (U3). */
+    threadImages?: readonly ThreadImageRecord[];
   } = {},
 ): void {
   const { accumulator: artifactAccumulator, writeReceipts: writeArtifactReceipts } = useSlackArtifactReceipts();
+  const reserveImageCall = useImageCallBudget();
   // The delivery gate compares a re-stamped attachment-context envelope against
   // the host-owned conversation. Only the frozen plan can supply it.
   bindCurrentRequestConversation({
@@ -1322,7 +1341,16 @@ export function useRuntimePlanAgent(
   } else {
     useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
     if (!options.artifactToolsDisabled) {
-      for (const tool of createRuntimePlanArtifactTools(plan, artifactAccumulator, writeArtifactReceipts)) {
+      // Built once per render: the tool resolves `img:N` handles against this
+      // inventory, and `imageInventory.manifest` is the model-facing listing
+      // the artifact-tools instruction renders beside the tool description.
+      const imageInventory = runtimePlanThreadImageInventory(plan, options.threadImages);
+      for (const tool of createRuntimePlanArtifactTools(
+        plan,
+        artifactAccumulator,
+        writeArtifactReceipts,
+        { imageInventory, reserveImageCall },
+      )) {
         useTool(tool);
       }
       useInstruction(ARTIFACT_TOOLS_INSTRUCTION);
@@ -1553,10 +1581,11 @@ function runtimeRepositoryMatches(
  * uploads bytes only; the host completes the upload with the final reply so
  * the file carries the Agent's identity and text in one message.
  */
-function createRuntimePlanArtifactTools(
+export function createRuntimePlanArtifactTools(
   plan: RuntimePlanV2,
   accumulator: ReturnType<typeof createArtifactReceiptAccumulator>,
   writeArtifactReceipts: (receipts: SlackArtifactReceipts) => void,
+  options: RuntimePlanArtifactToolOptions = {},
 ) {
   let transport: Promise<SlackFileTransport> | undefined;
   const destination = {
@@ -1565,21 +1594,30 @@ function createRuntimePlanArtifactTools(
     channelId: plan.artifactDestination.channelId,
     ...(plan.artifactDestination.threadTs ? { threadTs: plan.artifactDestination.threadTs } : {}),
   };
+  const resolveFileTransport = (): Promise<SlackFileTransport> => {
+    transport ??= (async () => {
+      const env = await resolveAgentPlatformEnv();
+      const installation = await resolveSlackInstallationExecutionContext(
+        plan.conversation.workspaceId,
+        env,
+        { config: getConfigStore(env), settings: getSettingsStore(env) },
+      );
+      return createSlackFileTransport(installation.client);
+    })();
+    return transport;
+  };
   const binding = {
     channel: destination.channelId,
     ...(destination.threadTs ? { threadTs: destination.threadTs } : {}),
+    /**
+     * The installation's upload cap, memoized beside staging. The image tool
+     * awaits it before it can choose an output format (KTD8); nothing else
+     * distinguishes the direct and gateway transports up front.
+     */
+    resolveTransport: async (): Promise<ImageToolTransport> => resolveFileTransport(),
     async stageArtifact(artifact: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome> {
-      transport ??= (async () => {
-        const env = await resolveAgentPlatformEnv();
-        const installation = await resolveSlackInstallationExecutionContext(
-          plan.conversation.workspaceId,
-          env,
-          { config: getConfigStore(env), settings: getSettingsStore(env) },
-        );
-        return createSlackFileTransport(installation.client);
-      })();
       return stageArtifactWithReceipt({
-        transport: await transport,
+        transport: await resolveFileTransport(),
         artifact,
         destination,
         accumulator,
@@ -1587,10 +1625,99 @@ function createRuntimePlanArtifactTools(
       });
     },
   };
+  // Only a plan whose image role resolved to a credentialed model carries the
+  // image tool (R6). The legacy assembler posts with app identity and keeps no
+  // receipts, so it never mounts it.
+  const reserveImageCall = options.reserveImageCall;
+  const imageCapability = plan.imageCapability;
   return [
     createWorkspaceArtifactTool({ ...binding, sandboxKind: plan.sandbox.mode }),
     createChartArtifactTool(binding),
+    ...(imageCapability?.filled && reserveImageCall
+      ? [createImageArtifactTool({
+          acceptsImageInput: imageCapability.acceptsImageInput,
+          inventory: options.imageInventory ??
+            runtimePlanThreadImageInventory(plan, options.threadImages),
+          reserveImageCall,
+          resolveTransport: binding.resolveTransport,
+          resolveClient: options.resolveImageClient ?? (() => resolveRuntimePlanImageClient(plan)),
+          createImageReader: async (limits) => {
+            const env = await resolveAgentPlatformEnv();
+            return createThreadImageReader({
+              client: createSlackAttachmentClient(env),
+              perFileLimitBytes: limits.perFileLimitBytes,
+              totalLimitBytes: limits.totalLimitBytes,
+              ...(limits.signal ? { signal: limits.signal } : {}),
+            });
+          },
+          stageArtifact: binding.stageArtifact,
+        })]
+      : []),
   ];
+}
+
+export interface RuntimePlanArtifactToolOptions {
+  /** Thread image records for this turn, collected by the host fetch (U3). */
+  threadImages?: readonly ThreadImageRecord[] | undefined;
+  /** Prebuilt inventory; the render builds one so the instruction can read it. */
+  imageInventory?: ThreadImageInventory | undefined;
+  /** One image call per response; supplied by `useImageCallBudget` (KTD6). */
+  reserveImageCall?: ((toolCallId: string) => boolean) | undefined;
+  /** Focused seam; production resolves the role and provider at call time. */
+  resolveImageClient?: (() => Promise<ImageClientResolution>) | undefined;
+}
+
+/**
+ * The per-turn `img:N` inventory for a plan. Built once per render so the
+ * model-facing instruction and the tool address the same handles.
+ */
+export function runtimePlanThreadImageInventory(
+  plan: RuntimePlanV2,
+  threadImages?: readonly ThreadImageRecord[] | undefined,
+): ThreadImageInventory {
+  return buildThreadImageInventory({
+    // The same key `runtimePlanConversationKey` derives, without re-validating
+    // a plan the caller already parsed.
+    conversationKey: slackThreadImageConversationKey({
+      workspaceId: plan.conversation.workspaceId,
+      channelId: plan.conversation.channelId,
+      threadTs: plan.conversation.threadTs,
+    }),
+    ...(threadImages ? { threadRecords: threadImages } : {}),
+  });
+}
+
+/**
+ * Resolve the image role again inside the tool call, so a per-Agent override
+ * saved after the plan was compiled still decides which model runs (R4, AE4).
+ * Any unresolved role, missing credential, or unsupported provider is one
+ * `misconfigured` outcome: the tool never reports a model it did not call.
+ */
+async function resolveRuntimePlanImageClient(plan: RuntimePlanV2): Promise<ImageClientResolution> {
+  const env = await resolveAgentPlatformEnv();
+  const config = getConfigStore(env);
+  const settings = getSettingsStore(env);
+  let modelId: string;
+  try {
+    const agent = await config.getAgent(plan.agentId);
+    const resolution = await resolveAgentModelRoleFromStore({
+      role: 'image',
+      workspaceId: plan.conversation.workspaceId,
+      agent: { id: agent.id, kind: agent.kind },
+      reader: {
+        getWorkspaceModelRole: (workspaceId, role) => config.getWorkspaceModelRole(workspaceId, role),
+        getAgentModelRole: (agentId, role) => config.getAgentModelRole(agentId, role),
+      },
+      ...(env ? { env } : {}),
+      settings,
+    });
+    if ('unset' in resolution) return { ok: false, reason: 'misconfigured' };
+    modelId = resolution.modelId;
+  } catch {
+    return { ok: false, reason: 'misconfigured' };
+  }
+  const provider = await resolveImageProvider(modelId, env, settings);
+  return provider.ok ? { ok: true, client: provider.client } : { ok: false, reason: 'misconfigured' };
 }
 
 export function thinkingLevelForModel(model: string): 'off' | undefined {

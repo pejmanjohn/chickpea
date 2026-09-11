@@ -19,7 +19,7 @@ export interface SlackArtifactStageInput {
   bytes: Uint8Array;
   filename: string;
   title?: string;
-  kind: 'file' | 'chart';
+  kind: 'file' | 'chart' | 'image';
 }
 
 /**

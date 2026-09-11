@@ -17,6 +17,7 @@ import {
   SlackAnswerOnlyToolDeniedError,
   SlackPresentationToolUnavailableError,
 } from '../src/slack/presentation-tool-policy.ts';
+import { GENERATE_IMAGE_TOOL_NAME } from '../src/sandbox/image-tool.ts';
 import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../src/slack/presentation-intent.ts';
 import { SLACK_PRESENT_TABLE_TOOL_NAME } from '../src/slack/table-presentation.ts';
 
@@ -86,6 +87,7 @@ test('a successful declaration arms answer-only authority before later tools exe
       'bash',
       'post_artifact',
       'render_chart',
+      GENERATE_IMAGE_TOOL_NAME,
       'mcp__docs__search',
     ]) {
       let executed = false;
@@ -96,7 +98,8 @@ test('a successful declaration arms answer-only authority before later tools exe
         }),
         (error: unknown) => {
           assert.ok(error instanceof SlackAnswerOnlyToolDeniedError);
-          if (toolName === 'post_artifact' || toolName === 'render_chart') {
+          if (toolName === 'post_artifact' || toolName === 'render_chart' ||
+              toolName === GENERATE_IMAGE_TOOL_NAME) {
             assert.match(error.message, /Do not claim a denied tool ran or attached a file/);
           }
           return true;
@@ -122,7 +125,7 @@ test('an envelope without the frozen offer cannot execute the declaration tool',
   });
 });
 
-for (const toolName of ['post_artifact', 'render_chart']) {
+for (const toolName of ['post_artifact', 'render_chart', GENERATE_IMAGE_TOOL_NAME]) {
   test(`${toolName} blocks a declaration while the upload is still pending`, async () => {
     await withSubmission(async () => {
       observeTurn([{ role: 'user', content: currentPrompt() }]);

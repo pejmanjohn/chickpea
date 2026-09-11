@@ -66,7 +66,7 @@ export interface CurrentRequestConversationBinding {
 const submissionPolicy = new AsyncLocalStorage<SubmissionPolicyState>();
 
 /** Tools whose only side effect is delivering a file into the current thread. */
-export const ARTIFACT_DELIVERY_TOOL_NAMES: ReadonlySet<string> = new Set(['post_artifact', 'render_chart']);
+export const ARTIFACT_DELIVERY_TOOL_NAMES: ReadonlySet<string> = new Set(['post_artifact', 'render_chart', 'generate_image']);
 
 /**
  * Bind this submission's host-owned conversation from the render, where the

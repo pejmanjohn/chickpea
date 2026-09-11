@@ -19,6 +19,7 @@ import {
   slackAttachmentTurnContext,
 } from '../src/slack/attachment-context.ts';
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
+import { GENERATE_IMAGE_TOOL_NAME } from '../src/sandbox/image-tool.ts';
 
 async function submission<T>(agentName: string, request: string, run: (context: FlueExecutionContext) => Promise<T>) {
   const context = { agentName, submissionId: 'capability-permissions' };
@@ -162,7 +163,7 @@ test('both reply attachment tools use host context rather than word matching', a
     ]) {
       await submission(agentName, request, async (context) => {
         assert.doesNotThrow(assertArtifactDeliveryAllowed, request);
-        for (const toolName of ['post_artifact', 'render_chart']) {
+        for (const toolName of ['post_artifact', 'render_chart', GENERATE_IMAGE_TOOL_NAME]) {
           assert.equal(await memoryToolPolicyInterceptor(
             { type: 'tool', toolCallId: toolName, toolName }, context, delivered,
           ), 'delivered', `${toolName}: ${request}`);
@@ -188,7 +189,7 @@ test('both reply attachment tools use host context rather than word matching', a
         // Intent and prohibitions are interpreted by the Agent. A host wording
         // classifier must not invent a missing workspace permission.
         assert.doesNotThrow(assertArtifactDeliveryAllowed, request);
-        for (const toolName of ['post_artifact', 'render_chart']) {
+        for (const toolName of ['post_artifact', 'render_chart', GENERATE_IMAGE_TOOL_NAME]) {
           assert.equal(await memoryToolPolicyInterceptor(
             { type: 'tool', toolCallId: toolName, toolName }, context, delivered,
           ), 'delivered', `${toolName}: ${request}`);
@@ -290,10 +291,27 @@ async function uploadSubmission(
   );
 }
 
+test('an upload turn admits image delivery on both of its renders', async () => {
+  // The initial render carries the person's own envelope; the re-render carries
+  // the attachment signal that re-stamps it (AE11, KTD13).
+  const renders: Array<[string, string]> = [
+    ['initial upload render', uploadEnvelope()],
+    ['attachment-context rerender', attachmentContextSignal()],
+  ];
+  for (const [label, rendered] of renders) {
+    await uploadSubmission(rendered, async (context) => {
+      assert.doesNotThrow(assertArtifactDeliveryAllowed, label);
+      assert.equal(await memoryToolPolicyInterceptor(
+        { type: 'tool', toolCallId: 'image', toolName: GENERATE_IMAGE_TOOL_NAME }, context, delivered,
+      ), 'delivered', label);
+    });
+  }
+});
+
 test('the attachment-context rerender admits file delivery for its own turn', async () => {
   await uploadSubmission(attachmentContextSignal(), async (context) => {
     assert.doesNotThrow(assertArtifactDeliveryAllowed);
-    for (const toolName of ['render_chart', 'post_artifact']) {
+    for (const toolName of ['render_chart', 'post_artifact', GENERATE_IMAGE_TOOL_NAME]) {
       assert.equal(await memoryToolPolicyInterceptor(
         { type: 'tool', toolCallId: toolName, toolName }, context, delivered,
       ), 'delivered', toolName);

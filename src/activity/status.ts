@@ -337,6 +337,11 @@ export function toolActivityStatus(
   if (toolName === 'render_chart') {
     return activityStatus('finishing', 'Sharing', 'a chart');
   }
+  // Non-terminal: the provider call runs before anything is staged, and the
+  // status publishes once at tool start.
+  if (toolName === 'generate_image') {
+    return activityStatus('running', 'Creating', 'an image');
+  }
   return activityStatus('running', 'Working with', 'a tool');
 }
 

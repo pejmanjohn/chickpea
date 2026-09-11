@@ -42,7 +42,7 @@ export function isSlackFilePermalink(value: unknown, fileId: string): value is s
  * the reader drops those entries rather than failing the whole list, so a
  * rollback to older code still reads its own receipts.
  */
-export const SLACK_ARTIFACT_RECEIPT_KINDS = ['file', 'chart'] as const;
+export const SLACK_ARTIFACT_RECEIPT_KINDS = ['file', 'chart', 'image'] as const;
 
 const receiptFields = {
   fileId: v.pipe(v.string(), v.regex(SLACK_FILE_ID)),

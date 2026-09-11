@@ -1,6 +1,8 @@
 import type { WebClient } from '@slack/web-api';
 
+import { MAX_ARTIFACT_BYTES } from '../sandbox/artifact-tool.ts';
 import { isRecord } from '../security/content-validation.ts';
+import { MAX_GATEWAY_ARTIFACT_BYTES } from './gateway/protocol.ts';
 import { isGatewaySlackWebClient } from './gateway/web-client.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { slackPlatformErrorCode } from './errors.ts';
@@ -49,6 +51,13 @@ export interface SlackFileCompletionResult {
 }
 
 export interface SlackFileTransport {
+  /**
+   * The largest file this installation can upload: the direct artifact cap,
+   * or the shared gateway's much smaller request cap. Set at construction
+   * because nothing else distinguishes the two transports before an upload
+   * fails, and the image tool must choose its output format before the call.
+   */
+  maxBytes: number;
   /** Completes privately once. A missing method marks a legacy transport. */
   stagePrivate?(input: SlackFileStageInput): Promise<SlackFilePrivateStageResult>;
   /** Safe to retry: an uncompleted upload is discarded by Slack. */
@@ -94,6 +103,7 @@ export function createSlackFileTransport(
 
 function createGatewayFileTransport(client: WebClient): SlackPrivateFileTransport {
   return {
+    maxBytes: MAX_GATEWAY_ARTIFACT_BYTES,
     async stagePrivate(input) {
       const result = await client.files.uploadV2({
         filename: input.filename,
@@ -134,6 +144,7 @@ function createGatewayFileTransport(client: WebClient): SlackPrivateFileTranspor
 
 function createDirectFileTransport(client: WebClient, fetcher: typeof fetch): SlackPrivateFileTransport {
   const transport: SlackPrivateFileTransport = {
+    maxBytes: MAX_ARTIFACT_BYTES,
     async stagePrivate(input) {
       const staged = await transport.stage(input);
       const result = await client.files.completeUploadExternal({

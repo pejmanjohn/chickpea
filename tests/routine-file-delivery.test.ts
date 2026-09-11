@@ -9,7 +9,12 @@ import type { CompletedSlackArtifactReceipt, SlackArtifactReceipt } from '../src
 import type { SlackFileTransport } from '../src/slack/file-transport.ts';
 import { ARTIFACT_UNDELIVERED_NOTE } from '../src/slack/web-client-presenter.ts';
 import type { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
-import { parseSlackArtifactReceipts, SLACK_ARTIFACT_RECEIPTS_DATA_NAME } from '../src/slack/artifact-receipts.ts';
+import { createArtifactReceiptAccumulator, parseSlackArtifactReceipts, SLACK_ARTIFACT_RECEIPTS_DATA_NAME } from '../src/slack/artifact-receipts.ts';
+import type { DeliveredMessage } from '@flue/runtime';
+import { createRuntimePlanArtifactTools } from '../src/agents/slack-thread.ts';
+import { routineArtifactPlan } from '../src/agents/routine-execution.ts';
+import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { GENERATE_IMAGE_TOOL_NAME } from '../src/sandbox/image-tool.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineConfirmationDraft, RoutineDefinitionContent } from '../src/routines/types.ts';
 
@@ -31,9 +36,10 @@ function setup(kind: 'root' | 'thread' | 'direct' = 'root') {
   const run = { id: 'run_file', deadlineAt: now + 60_000 } as RoutineRun;
   const access = { config: { agentId: 'agent_smoke', agent: { id: 'agent_smoke', name: 'Smoke Amber',
     slackPresence: { avatar: { url: avatarUrl } } }, model: 'openai/test' }, publicUrl: 'https://example.com' } as RoutineRuntimeAccess;
-  const completedFiles: CompletedSlackArtifactReceipt[] = ['png', 'csv'].map((extension, index) => ({
+  const kinds = { png: 'chart', csv: 'file', webp: 'image' } as const;
+  const completedFiles: CompletedSlackArtifactReceipt[] = ['png', 'csv', 'webp'].map((extension, index) => ({
     schemaVersion: 2, fileId: `F1234567${index}`, filename: `scheduled.${extension}`,
-    kind: extension === 'png' ? 'chart' : 'file', byteLength: 100, stagedAt: now - 1, completedAt: now,
+    kind: kinds[extension as keyof typeof kinds], byteLength: 100, stagedAt: now - 1, completedAt: now,
     permalink: `https://example.slack.com/files/U12345678/F1234567${index}/scheduled.${extension}`,
     destination: { workspaceId: routine.workspaceId, agentId: 'agent_smoke', channelId, ...(threadTs ? { threadTs } : {}) },
   }));
@@ -311,3 +317,55 @@ function futureDraft(): Exclude<RoutineConfirmationDraft, { action: 'delete' }> 
   return { action: 'create', routineId: 'routine_future', definition, nextRunAt: now + 60 * 60 * 1_000,
     projectedDailyStarts: 1, reservations: [{ windowStart: now + 60 * 60 * 1_000, count: 1 }] };
 }
+
+test('a routine occurrence mounts the image tool bound to its saved destination', () => {
+  const savedThreadTs = '1789063300.000100';
+  const plan = {
+    schemaVersion: 2,
+    continuityPolicy: 'synthetic-test',
+    agentId: 'agent_smoke',
+    conversation: {
+      workspaceId: 'T12345678',
+      channelId: 'C12345678',
+      threadTs: '1789063303.000000',
+      surface: 'channel_thread',
+      continuityKey: `agent_${'a1b2c3d4'.repeat(5)}`,
+    },
+    model: 'openai/test',
+    instructions: 'Run the saved task.',
+    memoryEpoch: 1,
+    skills: [],
+    mcpConnections: [],
+    apiConnections: [],
+    repositories: [],
+    sandbox: { mode: 'bash' },
+    artifactDestination: { kind: 'slack_conversation', channelId: 'C12345678' },
+    harnessRevision: 'f'.repeat(64),
+    imageCapability: { role: 'image', filled: true, acceptsImageInput: true },
+  } as RuntimePlanV2;
+  const artifactPlan = routineArtifactPlan(plan, {
+    kind: 'signal',
+    type: 'schedule',
+    body: 'Make the weekly promo image.',
+    attributes: {
+      workspaceId: 'T12345678',
+      conversationId: 'C12345678',
+      ownerAgentId: 'agent_smoke',
+      destinationKind: 'direct_thread',
+      threadTs: savedThreadTs,
+    },
+  } as unknown as DeliveredMessage)!;
+
+  // The saved schedule signal, not the synthetic due-time conversation, is
+  // what the image tool delivers into (AE9, R13).
+  assert.deepEqual(artifactPlan.artifactDestination, {
+    kind: 'slack_conversation', channelId: 'C12345678', threadTs: savedThreadTs,
+  });
+  const tools = createRuntimePlanArtifactTools(
+    artifactPlan,
+    createArtifactReceiptAccumulator((update) => { update({ schemaVersion: 1, receipts: [] }); }),
+    () => {},
+    { reserveImageCall: () => true },
+  );
+  assert.deepEqual(tools.map((tool) => tool.name), ['post_artifact', 'render_chart', GENERATE_IMAGE_TOOL_NAME]);
+});

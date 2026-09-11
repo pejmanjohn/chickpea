@@ -6,6 +6,7 @@ import { start } from '@flue/runtime/node';
 import * as v from 'valibot';
 import { createArtifactReceiptAccumulator, isCompletedSlackArtifactReceipt, isSlackFilePermalink, parseSlackArtifactReceipts, selectDeliverableArtifacts, useSlackArtifactReceipts, type CompletedSlackArtifactReceipt, type SlackArtifactReceipt, type SlackArtifactReceipts } from '../src/slack/artifact-receipts.ts';
 import { stageArtifactWithReceipt } from '../src/slack/artifact-staging.ts';
+import { MAX_ARTIFACT_BYTES, type SlackArtifactStageInput } from '../src/sandbox/artifact-tool.ts';
 import type { SlackFileStageInput, SlackFileTransport } from '../src/slack/file-transport.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 
@@ -113,7 +114,12 @@ test('actual Flue hook retains files across tool renders and resets on the next 
   } finally { await flue.stop(); }
 });
 
-function stagingState(transport: SlackFileTransport) {
+function stagingState(
+  transport: SlackFileTransport,
+  artifact: SlackArtifactStageInput = {
+    filename: '  chart.png  ', title: '  Synthetic chart  ', bytes: new Uint8Array(3), kind: 'chart',
+  },
+) {
   let state: SlackArtifactReceipts = { schemaVersion: 1, receipts: [receipt(0)] };
   const writes: SlackArtifactReceipts[] = [];
   let tick = 1;
@@ -121,7 +127,7 @@ function stagingState(transport: SlackFileTransport) {
     writes,
     state: () => state,
     run: () => stageArtifactWithReceipt({ transport,
-      artifact: { filename: '  chart.png  ', title: '  Synthetic chart  ', bytes: new Uint8Array(3), kind: 'chart' },
+      artifact,
       destination, now: () => tick++,
       accumulator: createArtifactReceiptAccumulator((update) => { state = update(state); }),
       writeReceipts: (value) => { writes.push(value); },
@@ -130,6 +136,7 @@ function stagingState(transport: SlackFileTransport) {
 }
 
 const legacyTransport: SlackFileTransport = {
+  maxBytes: MAX_ARTIFACT_BYTES,
   async stage() { assert.fail('New artifact staging must not use legacy stage'); },
   async complete() { assert.fail('New artifact staging must not publish a native file message'); },
   async resolveShare() { assert.fail('Private staging must not read public shares'); },
@@ -204,6 +211,24 @@ test('private staging failures expose only static operational categories', async
     ['[chickpea] artifact staging failed', { code: 'private_receipt_invalid' }],
   ]);
   assert.doesNotMatch(JSON.stringify(warnings), /private\.example|do-not-log|F12345671/);
+});
+
+test('an image receipt round-trips through staging, parsing, and selection', async () => {
+  const completed = completedReceipt(1);
+  const state = stagingState(
+    { ...legacyTransport, async stagePrivate(input) {
+      return { fileId: completed.fileId, permalink: completed.permalink, byteLength: input.bytes.byteLength };
+    } },
+    { filename: 'launch-ad.png', bytes: new Uint8Array(3), kind: 'image' },
+  );
+  const outcome = await state.run();
+
+  assert.deepEqual(outcome, { attached: true, byteLength: 3 });
+  const written = state.writes[0]?.receipts.at(-1)!;
+  assert.equal(written.kind, 'image');
+  // The list survives the reader and stays deliverable to its own destination.
+  assert.deepEqual(parseSlackArtifactReceipts([{ schemaVersion: 1, receipts: [written] }]), [written]);
+  assert.deepEqual(selectDeliverableArtifacts([written], destination), [written]);
 });
 
 test('an unknown receipt kind is ignored while structural damage still fails the list', () => {
