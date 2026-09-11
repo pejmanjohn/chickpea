@@ -183,6 +183,22 @@ Agent chooses correctly. Upload support also does not prove image-generation
 or editing support: verify the actual renderer and source-asset access before
 claiming an image was generated or a logo was preserved.
 
+Image honesty follows the workspace's resolved image role, and the model-facing
+wording comes from one builder, `buildArtifactToolsInstruction` in
+`src/sandbox/artifact-tool.ts`, which every lane that mounts the artifact tools
+renders. With no image model configured, the Agent says so first, points Owners
+at Settings → Model providers (Default image model), offers only what it can
+actually produce — a chart PNG, an SVG mockup, or copy — and never calls an SVG
+a finished or edited image. With an image model configured, the Agent addresses
+images already in the conversation by their per-turn `img:N` handles and never
+by filename, link, or Slack file id; it calls the image tool at most once per
+response and before any streamed-answer declaration; it reports the model the
+result names rather than the model it assumed; and when the resolved model
+cannot take image input it says it can generate but not edit before offering
+generation. Every `attached: false` reason is stated as returned, an
+unreadable thread image asks for a re-upload, and no failure is ever described
+as an attached, generated, or edited image.
+
 ## Related implementation and verification guidance
 
 Start with `src/slack/file-transport.ts`, `artifact-staging.ts`,

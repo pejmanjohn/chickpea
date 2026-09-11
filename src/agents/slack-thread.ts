@@ -148,7 +148,7 @@ import {
   type SandboxTurnContext,
 } from '../sandbox/turn-context.ts';
 import {
-  ARTIFACT_TOOLS_INSTRUCTION,
+  buildArtifactToolsInstruction,
   createWorkspaceArtifactCapability,
   createWorkspaceArtifactTool,
   POST_ARTIFACT_TOOL_NAME,
@@ -1104,7 +1104,11 @@ export async function createSlackAgentRuntime(
     instructions: [
       config.instructions,
       ...(managedTools.length > 0 ? [MANAGED_CONNECTION_RESULT_INSTRUCTION] : []),
-      ...(tools.some(({ name }) => name === POST_ARTIFACT_TOOL_NAME) ? [ARTIFACT_TOOLS_INSTRUCTION] : []),
+      // The legacy assembler never mounts the image tool, so it always renders
+      // the no-image-model variant and its honesty rule (R14).
+      ...(tools.some(({ name }) => name === POST_ARTIFACT_TOOL_NAME)
+        ? [buildArtifactToolsInstruction({ imageTool: false, canEdit: false })]
+        : []),
     ].join('\n\n'),
     tools,
     sandbox,
@@ -1353,7 +1357,11 @@ export function useRuntimePlanAgent(
       )) {
         useTool(tool);
       }
-      useInstruction(ARTIFACT_TOOLS_INSTRUCTION);
+      useInstruction(buildArtifactToolsInstruction({
+        imageTool: plan.imageCapability?.filled === true,
+        canEdit: plan.imageCapability?.acceptsImageInput === true,
+        ...(imageInventory.manifest ? { imageManifest: imageInventory.manifest } : {}),
+      }));
     }
   }
 }

@@ -4,9 +4,12 @@ import { test } from 'node:test';
 import type { SandboxFactory, SessionEnv } from '@flue/runtime';
 
 import {
+  buildArtifactToolsInstruction,
   createWorkspaceArtifactCapability,
   MAX_ARTIFACT_BYTES,
 } from '../src/sandbox/artifact-tool.ts';
+import { GENERATE_IMAGE_TOOL_NAME } from '../src/sandbox/image-tool.ts';
+import { buildThreadImageInventory } from '../src/slack/thread-images.ts';
 
 const TOOL_RUN_CONTEXT = {
   toolCallId: 'artifact-test-call',
@@ -457,4 +460,115 @@ test('the hook-agent artifact tool reads the in-memory sandbox through the harne
   assert.deepEqual(result, { output: { attached: true, filename: 'summary.json', byteLength: 3 } });
   assert.deepEqual(readPaths, ['/home/user/summary.json']);
   assert.equal(uploads.length, 1);
+});
+
+
+const MANIFEST = buildThreadImageInventory({
+  conversationKey: 'T_TEST:C_TEST:1787000000.000100',
+  threadRecords: [{
+    conversationKey: 'T_TEST:C_TEST:1787000000.000100',
+    fileId: 'F0IMAGE1',
+    origin: 'person',
+    filename: 'logo.png',
+    mimeType: 'image/png',
+    messageTs: '1787000000.000200',
+  }],
+}).manifest;
+
+test('the image-capable instruction names the tool, handles, and the call rules', () => {
+  const instruction = buildArtifactToolsInstruction({ imageTool: true, canEdit: true });
+  assert.match(instruction, new RegExp(`\`${GENERATE_IMAGE_TOOL_NAME}\``));
+  assert.match(instruction, /`img:N` handle/);
+  assert.match(instruction, /at most once per response/);
+  assert.match(instruction, /before declaring a streamed answer/);
+  assert.match(instruction, /locks out every later tool call/);
+  assert.match(instruction, /names the model, size, and format the provider applied/);
+  assert.match(instruction, /set intent to edit/);
+  // The frozen denial is gone; the rest of the artifact contract is unchanged.
+  assert.doesNotMatch(instruction, /do not claim a general image-generation or SVG-to-PNG capability/);
+  assert.doesNotMatch(instruction, /PNG charts are built in/);
+  assert.match(instruction, /Use `render_chart` for charts, graphs, plots, or images of numbers/);
+  assert.match(instruction, /If the reason is too-large, explain the returned size limit/);
+  assert.match(instruction, /Never claim a file is attached without an attached: true tool result\./);
+});
+
+test('with no image model the instruction states the limit, Settings, and the substitutes', () => {
+  const instruction = buildArtifactToolsInstruction({ imageTool: false, canEdit: false });
+  assert.match(instruction, /no image model set up/);
+  assert.match(instruction, /say that first, before offering anything else/);
+  assert.match(instruction, /an Owner enables it in Settings → Model providers \(Default image model\)/);
+  assert.match(instruction, /a chart PNG with `render_chart`/);
+  assert.match(instruction, /an SVG mockup or diagram with `post_artifact`/);
+  assert.match(instruction, /written copy in the reply/);
+  assert.match(
+    instruction,
+    /Never describe an SVG mockup, diagram, or chart as a finished, generated, or edited image/,
+  );
+  assert.doesNotMatch(instruction, new RegExp(GENERATE_IMAGE_TOOL_NAME));
+  assert.doesNotMatch(instruction, /img:N/);
+  assert.doesNotMatch(instruction, /do not claim a general image-generation or SVG-to-PNG capability/);
+});
+
+test('a generate-only image model discloses that it cannot edit before offering generation', () => {
+  const instruction = buildArtifactToolsInstruction({ imageTool: true, canEdit: false });
+  assert.match(
+    instruction,
+    /can generate a new image but cannot edit, retouch, or combine an image that is already here/,
+  );
+  assert.match(instruction, /say that plainly first, then offer to generate a new image/);
+  assert.doesNotMatch(instruction, /set intent to edit/);
+  // The disclosure precedes the offer to generate instead of trailing it.
+  assert.ok(
+    instruction.indexOf('cannot edit, retouch, or combine') <
+      instruction.indexOf('offer to generate a new image'),
+  );
+});
+
+test('the image-capable instruction names every failure reason honestly', () => {
+  const instruction = buildArtifactToolsInstruction({ imageTool: true, canEdit: true });
+  for (const reason of [
+    'input-unavailable',
+    'too-large',
+    'rejected',
+    'timeout',
+    'misconfigured',
+    'limit',
+  ]) {
+    assert.match(instruction, new RegExp(`reason ${reason} means`), reason);
+  }
+  assert.match(instruction, /never say an image was generated, attached, or edited/);
+  assert.match(
+    instruction,
+    /ask the member who shared it to re-upload it in this conversation/,
+  );
+  assert.match(instruction, /do not retry that handle or describe the edit as done/);
+  assert.match(
+    instruction,
+    /exceeded this workspace’s upload limit even after compression: say so and offer a simpler image instead of claiming an attachment/,
+  );
+});
+
+test('the image instruction renders the turn manifest, or says the thread has none', () => {
+  const withImages = buildArtifactToolsInstruction({
+    imageTool: true,
+    canEdit: true,
+    imageManifest: MANIFEST,
+  });
+  assert.match(withImages, /Images already in this conversation:\n- handle=img:1 \| origin=person/);
+  assert.match(withImages, /filename="logo\.png" \| mime=image\/png/);
+  assert.doesNotMatch(withImages, /F0IMAGE1/);
+  assert.doesNotMatch(withImages, /No images are in this conversation yet/);
+
+  for (const empty of [undefined, '', '   ']) {
+    const withoutImages = buildArtifactToolsInstruction({
+      imageTool: true,
+      canEdit: true,
+      ...(empty === undefined ? {} : { imageManifest: empty }),
+    });
+    assert.match(
+      withoutImages,
+      /No images are in this conversation yet, so there is no handle to reference this turn\./,
+    );
+    assert.doesNotMatch(withoutImages, /Images already in this conversation:/);
+  }
 });

@@ -2,7 +2,16 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { WebClient } from '@slack/web-api';
+import { createFlueContext } from '@flue/runtime/internal';
 import { SqliteConfigStore } from '../src/config/store.ts';
+
+import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
+import { CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME } from '../src/agents/names.ts';
+import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { buildArtifactToolsInstruction } from '../src/sandbox/artifact-tool.ts';
+import { GENERATE_IMAGE_TOOL_NAME } from '../src/sandbox/image-tool.ts';
+import { getConfigStore } from '../src/config/state-backend.ts';
+import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 
 import { hashRoutineValue } from '../src/routines/ids.ts';
 import { parseCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
@@ -183,4 +192,126 @@ test('no-op is first-class and invalid/oversized output fails closed', () => {
       (error: unknown) => error instanceof RoutineRuntimeError && error.failureClass === 'result_invalid',
     );
   }
+});
+
+
+const ROUTINE_MODEL = 'local-stub/proof';
+
+const ROUTINE_AGENT: CustomAgentConfig = {
+  id: 'agent_routine_image',
+  kind: 'user',
+  revision: 1,
+  name: 'Routine Image',
+  instructions: 'Use only the mounted capabilities.',
+  enabled: true,
+  model: ROUTINE_MODEL,
+  skills: [],
+  mcpServers: [],
+  apiConnections: [],
+  repositories: [],
+};
+
+type RoutineImageCapability = { role: 'image'; filled: boolean; acceptsImageInput: boolean };
+
+function routineImagePlan(imageCapability?: RoutineImageCapability) {
+  const assignment: ResolvedAssignment = {
+    workspaceId: 'T_ROUTINE',
+    channelId: 'C_ROUTINE',
+    agentId: ROUTINE_AGENT.id,
+    agent: structuredClone(ROUTINE_AGENT),
+    model: ROUTINE_MODEL,
+    modelAttribution: {
+      source: 'workspace_default',
+      providerId: 'local-stub',
+      workspaceDefaultRevision: 1,
+    },
+  };
+  return compileRuntimePlanV2({
+    turn: {
+      workspaceId: 'T_ROUTINE',
+      channelId: 'C_ROUTINE',
+      eventId: 'E_ROUTINE',
+      text: 'Post the weekly poster.',
+      userId: 'U_ROUTINE',
+      actorMembershipId: 'membership_routine',
+      messageTs: '1787000000.000200',
+      threadTs: '1787000000.000100',
+      source: 'app_mention',
+      contextMode: 'thread',
+    },
+    assignment,
+    instructions: ROUTINE_AGENT.instructions,
+    memoryEpoch: 1,
+    sandboxMode: 'bash',
+    ...(imageCapability ? { imageCapability } : {}),
+  });
+}
+
+async function routineInstructions(
+  t: { mock: { method: (target: object, key: never, value: unknown) => unknown } },
+  imageCapability?: RoutineImageCapability,
+): Promise<string> {
+  t.mock.method(
+    getConfigStore() as object,
+    'getAgent' as never,
+    async () => structuredClone(ROUTINE_AGENT),
+  );
+  const plan = routineImagePlan(imageCapability);
+  const context = createFlueContext({
+    id: 'routine-instruction',
+    agentName: CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME,
+    env: {},
+    agentConfig: { resolveModel: () => ({}) },
+  } as never);
+  const harness = await (context as never as {
+    initializeRootHarness(
+      agent: unknown,
+      signal: unknown,
+      data: unknown,
+    ): Promise<{ config: { instructions: unknown } }>;
+  }).initializeRootHarness(
+    ChickpeaRoutineExecution,
+    {
+      kind: 'signal',
+      type: 'schedule',
+      body: 'Post the weekly poster.',
+      attributes: {
+        workspaceId: 'T_ROUTINE',
+        conversationId: 'C_ROUTINE',
+        ownerAgentId: ROUTINE_AGENT.id,
+        destinationKind: 'channel',
+        threadTs: '1786999999.000900',
+      },
+    },
+    { runtimePlan: plan, requestedModel: plan.model },
+  );
+  return String(harness.config.instructions);
+}
+
+// Routines mount the same artifact tools as a Slack turn, so the honesty
+// wording must come from the one builder rather than a routine-local copy.
+test('an unattended occurrence renders the shared artifact instruction for its image role', async (t) => {
+  const generateOnly = await routineInstructions(t, { role: 'image', filled: true, acceptsImageInput: false });
+  assert.ok(generateOnly.includes(
+    buildArtifactToolsInstruction({ imageTool: true, canEdit: false }),
+  ));
+  assert.match(generateOnly, new RegExp(GENERATE_IMAGE_TOOL_NAME));
+  assert.match(generateOnly, /No images are in this conversation yet/);
+
+  const editing = await routineInstructions(t, { role: 'image', filled: true, acceptsImageInput: true });
+  assert.ok(editing.includes(buildArtifactToolsInstruction({ imageTool: true, canEdit: true })));
+
+  const noImageModel = await routineInstructions(t);
+  assert.ok(noImageModel.includes(
+    buildArtifactToolsInstruction({ imageTool: false, canEdit: false }),
+  ));
+  assert.match(noImageModel, /an Owner enables it in Settings → Model providers/);
+  assert.doesNotMatch(noImageModel, new RegExp(GENERATE_IMAGE_TOOL_NAME));
+});
+
+// The routine prompt itself carries no artifact instruction; it would freeze a
+// second copy of the wording the builder owns.
+test('the unattended prompt does not restate the artifact instruction', () => {
+  const instructions = routineExecutionInstructions().join('\n');
+  assert.doesNotMatch(instructions, /img:N|generate_image|Model providers/);
 });
