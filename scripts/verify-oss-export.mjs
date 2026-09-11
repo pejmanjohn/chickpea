@@ -102,6 +102,7 @@ const forbiddenSourcePathRoots = [
 
 const allowedAgentSkillPaths = new Set([
   exportPath('.agents', 'skills', 'chickpea-live-verification', 'SKILL.md'),
+  exportPath('.claude', 'skills', 'chickpea-live-verification', 'SKILL.md'),
 ]);
 
 const liveVerifierExportPolicy = Object.freeze({
@@ -799,7 +800,8 @@ function verifyNpmPackManifest(entries, packageJson) {
   const forbidden = [...files].filter(
     (path) =>
       path === '.worktreeinclude' ||
-      path.startsWith('.claude/') ||
+      (path.startsWith('.claude/') &&
+        path !== '.claude/skills/chickpea-live-verification/SKILL.md') ||
       path.startsWith('.github/') ||
       path.startsWith('design/') ||
       (path.startsWith('config/environments/qa/') && ![

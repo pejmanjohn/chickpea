@@ -10,6 +10,7 @@
   },
   "files": [
     ".agents/skills/chickpea-live-verification",
+    ".claude/skills/chickpea-live-verification",
     ".dev.vars.example",
     ".env.example",
     ".nvmrc",

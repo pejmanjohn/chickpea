@@ -51,7 +51,11 @@
   workerd runtime, HTTP Slack transport, immutable app/workspace pair, provider
   model, persistent state, public endpoint, and owning worktree. Local passes do
   not satisfy shared-gateway or deployed Amber/Cobalt acceptance.
-- For Chickpea live Slack verification, invoke `$chickpea-live-verification`.
+- For Chickpea live Slack verification, invoke `$chickpea-live-verification`
+  (Codex) or `/chickpea-live-verification` (Claude Code). Both shims,
+  `.agents/skills/chickpea-live-verification/SKILL.md` and
+  `.claude/skills/chickpea-live-verification/SKILL.md`, point at
+  `qa/live/operator/SKILL.md`.
   A request to run it authorizes its declared QA actions and exact cleanup,
   including test messages, product approvals, and OAuth with registered test
   accounts. Do not request the same permission at every step. Use its mode and
