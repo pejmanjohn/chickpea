@@ -1135,6 +1135,9 @@ export async function runTurn(
           ...(runtimePlanDecision
             ? { runtimePlan: runtimePlanDecision.runtimePlan }
             : {}),
+          // The host fetch is the only place these records exist; the dispatch
+          // envelope is the only channel that reaches the Agent object.
+          ...(context.images?.length ? { threadImages: context.images } : {}),
           ...(platformEnv ? { env: platformEnv } : {}),
           ...(workLifecycle && options.runId
             ? {

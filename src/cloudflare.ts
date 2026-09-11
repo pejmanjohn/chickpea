@@ -177,6 +177,7 @@ import type {
   FlueSettlementCheckpointV1,
   FlueTurnObservationV1,
 } from './slack/turn-job-types.ts';
+import type { ThreadImageRecord } from './slack/thread-images.ts';
 import {
   MAX_POST_DISPATCH_ATTEMPTS,
   MAX_TURN_ATTEMPTS,
@@ -1258,8 +1259,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     id: string,
     message: string,
     observation: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[2],
+    threadImages?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[3],
   ) {
-    return this.call((stores) => stores.turnJobs.prepareFlueDispatch(id, message, observation));
+    return this.call((stores) =>
+      stores.turnJobs.prepareFlueDispatch(id, message, observation, threadImages),
+    );
   }
 
   async slackFlueExistingInstanceReconcile(id: string, uid: string) {
@@ -1753,8 +1757,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
         ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
         ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
-        prepare: (message: string, observation: FlueTurnObservationV1) =>
-          stores.turnJobs.prepareFlueDispatch(job.id, message, observation),
+        prepare: (
+          message: string,
+          observation: FlueTurnObservationV1,
+          threadImages?: readonly ThreadImageRecord[],
+        ) => stores.turnJobs.prepareFlueDispatch(job.id, message, observation, threadImages),
         reconcileExistingInstance: (uid: string) =>
           stores.turnJobs.reconcileFlueExistingInstance(job.id, uid),
         recordReceipt: (receipt: FlueDispatchReceiptV1) =>

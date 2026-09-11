@@ -33,6 +33,12 @@ import type { NormalizedSlackTurn } from './types.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import { slackConversationKind } from './thread-key.ts';
+import {
+  MAX_THREAD_IMAGES_ATTRIBUTE_CHARS,
+  parseThreadImageRecords,
+  serializeThreadImageRecords,
+  type ThreadImageRecord,
+} from './thread-images.ts';
 import { renderSlackMarkdownActionLink, slackActionLink } from './message-format.ts';
 
 /**
@@ -444,6 +450,7 @@ export class TurnJobStoreLogic {
     id: string,
     message: string,
     observation: FlueTurnObservationV1,
+    threadImages?: readonly ThreadImageRecord[],
   ): FlueDispatchEnvelopeV1 {
     if (typeof message !== 'string' || message.length === 0) {
       throw new Error('Flue dispatch message must be non-empty.');
@@ -477,6 +484,10 @@ export class TurnJobStoreLogic {
       ) {
         throw new Error('Slack signal coordinates do not match RuntimePlanV2.');
       }
+      // Host-collected images reach the Agent object only through this
+      // bounded attribute: on Cloudflare the turn and the Agent run in
+      // different Durable Objects.
+      const serializedThreadImages = serializeThreadImageRecords(threadImages);
       const envelope: FlueDispatchEnvelopeV1 = {
         schemaVersion: 2,
         agentName: 'chickpea-slack-v2',
@@ -501,6 +512,7 @@ export class TurnJobStoreLogic {
             ...(turn.attachments?.length
               ? { attachmentFileIds: turn.attachments.map(({ fileId }) => fileId).join(',') }
               : {}),
+            ...(serializedThreadImages ? { threadImages: serializedThreadImages } : {}),
             ...((turn.attachmentIntake || turn.attachments?.length)
               ? {
                   attachmentIntakeStatus: turn.attachmentIntake?.status ?? 'ok',
@@ -1251,6 +1263,7 @@ function parseSlackSignalMessage(
     'requesterTimezone',
     'attachmentFileIds',
     'attachmentIntakeStatus', 'attachmentCount',
+    'threadImages',
   ]);
   const parsed = {
     workspaceId: validateBoundedString(attributes.workspaceId, 'Slack workspace id', 128),
@@ -1280,6 +1293,9 @@ function parseSlackSignalMessage(
     ...(attributes.attachmentCount === undefined
       ? {}
       : { attachmentCount: validateAttachmentCount(attributes.attachmentCount) }),
+    ...(attributes.threadImages === undefined
+      ? {}
+      : { threadImages: validateThreadImages(attributes.threadImages) }),
   };
   if ((parsed.attachmentIntakeStatus === undefined) !== (parsed.attachmentCount === undefined)) {
     throw new Error('Flue Slack attachment intake metadata is incomplete.');
@@ -1324,6 +1340,25 @@ function validateAttachmentFileIds(value: unknown): string {
     throw new Error('Slack attachment file ids are invalid.');
   }
   return ids.join(',');
+}
+
+/**
+ * Any non-empty key re-validates the wire shape: the attribute carries no
+ * conversation of its own, and the Agent stamps its plan's key on arrival.
+ */
+const THREAD_IMAGE_VALIDATION_KEY = 'validation';
+
+/** The attribute must re-parse into the list the host serialized. */
+function validateThreadImages(value: unknown): string {
+  const encoded = validateBoundedString(
+    value,
+    'Slack thread images',
+    MAX_THREAD_IMAGES_ATTRIBUTE_CHARS,
+  );
+  if (parseThreadImageRecords(encoded, THREAD_IMAGE_VALIDATION_KEY).length === 0) {
+    throw new Error('Slack thread images are invalid.');
+  }
+  return encoded;
 }
 
 function validateAttachmentIntakeStatus(

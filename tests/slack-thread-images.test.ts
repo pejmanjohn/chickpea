@@ -8,6 +8,10 @@ import {
   createThreadImageReader,
   DEFAULT_THREAD_IMAGE_FILE_LIMIT_BYTES,
   DEFAULT_THREAD_IMAGE_TOTAL_LIMIT_BYTES,
+  MAX_THREAD_IMAGE_ENTRIES,
+  MAX_THREAD_IMAGES_ATTRIBUTE_CHARS,
+  parseThreadImageRecords,
+  serializeThreadImageRecords,
   slackThreadImageConversationKey,
   type ThreadImageRecord,
 } from '../src/slack/thread-images.ts';
@@ -320,4 +324,93 @@ test('raw row collection ignores rows and files that cannot be addressed', () =>
     ).map((entry) => entry.fileId),
     ['F00000000AA'],
   );
+});
+
+function wireRecord(overrides: Partial<ThreadImageRecord> = {}): ThreadImageRecord {
+  return {
+    conversationKey: CONVERSATION_KEY,
+    fileId: 'F00000000AA',
+    filename: 'logo.png',
+    mimeType: 'image/png',
+    origin: 'person',
+    messageTs: '1001.000000',
+    byteLength: 1_024,
+    ...overrides,
+  };
+}
+
+test('the dispatch wire form round-trips records without their conversation key', () => {
+  const records = [
+    wireRecord(),
+    wireRecord({ fileId: 'F00000000BB', filename: 'chart.png', origin: 'agent', messageTs: '1002.000000' }),
+  ];
+  const encoded = serializeThreadImageRecords(records);
+  assert.ok(encoded);
+  // The wire never names a conversation: the Agent stamps its own.
+  assert.equal(encoded.includes('conversationKey'), false);
+  assert.deepEqual(parseThreadImageRecords(encoded, CONVERSATION_KEY), records);
+  // A record parsed under another plan's key belongs to that conversation only.
+  assert.deepEqual(
+    parseThreadImageRecords(encoded, 'T9:C9:9.9').map((entry) => entry.conversationKey),
+    ['T9:C9:9.9', 'T9:C9:9.9'],
+  );
+});
+
+test('an empty or unserializable record list omits the attribute', () => {
+  assert.equal(serializeThreadImageRecords(undefined), undefined);
+  assert.equal(serializeThreadImageRecords([]), undefined);
+  // Staged receipts have no message of their own and never cross the wire.
+  assert.equal(serializeThreadImageRecords([wireRecord({ messageTs: '' })]), undefined);
+  assert.equal(serializeThreadImageRecords([wireRecord({ fileId: 'not-a-file-id' })]), undefined);
+});
+
+test('the wire parser is fail-closed on every malformed input', () => {
+  const cases: unknown[] = [
+    undefined,
+    '',
+    'not json',
+    '{"fileId":"F00000000AA"}',
+    JSON.stringify([{ ...wireRecord(), fileId: 'not-a-file-id' }]),
+    JSON.stringify([{ ...wireRecord(), mimeType: 'application/pdf' }]),
+    JSON.stringify([{ ...wireRecord(), origin: 'system' }]),
+    JSON.stringify([{ ...wireRecord(), messageTs: 'not-a-ts' }]),
+    JSON.stringify([{ ...wireRecord(), byteLength: -1 }]),
+    JSON.stringify([{ somethingElse: true }]),
+    JSON.stringify(['F00000000AA']),
+  ];
+  for (const value of cases) {
+    assert.deepEqual(parseThreadImageRecords(value, CONVERSATION_KEY), [], String(value).slice(0, 40));
+  }
+  // A single bad entry rejects the whole list rather than half-trusting it.
+  assert.deepEqual(
+    parseThreadImageRecords(
+      JSON.stringify([{ ...wireRecord(), conversationKey: undefined }, { fileId: 'nope' }]),
+      CONVERSATION_KEY,
+    ),
+    [],
+  );
+  assert.deepEqual(parseThreadImageRecords(JSON.stringify([wireRecord()]), ''), []);
+});
+
+test('the wire form is bounded by entry count and encoded size', () => {
+  const many = Array.from({ length: MAX_THREAD_IMAGE_ENTRIES + 10 }, (_value, index) =>
+    wireRecord({ fileId: `F0000000${String(index).padStart(3, '0')}`, messageTs: `${2000 + index}.000000` }));
+  const encoded = serializeThreadImageRecords(many);
+  assert.ok(encoded);
+  const parsed = parseThreadImageRecords(encoded, CONVERSATION_KEY);
+  assert.equal(parsed.length, MAX_THREAD_IMAGE_ENTRIES);
+  // The newest survive an overflowing thread.
+  assert.equal(parsed.at(-1)?.fileId, many.at(-1)?.fileId);
+
+  const wide = Array.from({ length: MAX_THREAD_IMAGE_ENTRIES }, (_value, index) =>
+    wireRecord({
+      fileId: `F0000000${String(index).padStart(3, '0')}`,
+      filename: `${'n'.repeat(250)}.png`,
+      messageTs: `${3000 + index}.000000`,
+    }));
+  const wideEncoded = serializeThreadImageRecords(wide);
+  assert.ok(wideEncoded);
+  assert.ok(wideEncoded.length <= MAX_THREAD_IMAGES_ATTRIBUTE_CHARS);
+  assert.equal(parseThreadImageRecords(wideEncoded, CONVERSATION_KEY).length, MAX_THREAD_IMAGE_ENTRIES);
+  assert.deepEqual(parseThreadImageRecords('x'.repeat(MAX_THREAD_IMAGES_ATTRIBUTE_CHARS + 1), CONVERSATION_KEY), []);
 });

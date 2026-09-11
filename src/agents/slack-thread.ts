@@ -196,6 +196,7 @@ import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
 import {
   buildThreadImageInventory,
   createThreadImageReader,
+  parseThreadImageRecords,
   slackThreadImageConversationKey,
   type ThreadImageInventory,
   type ThreadImageRecord,
@@ -1193,6 +1194,7 @@ export function ChickpeaSlack({ id }: AgentProps) {
     writeAgentCreationTerminal,
     managementEnabled,
     writeMemoryUpdate,
+    slackDeliveryThreadImages(plan, delivery),
   );
   useSlackAttachmentContext(
     plan,
@@ -1215,9 +1217,11 @@ export function useChickpeaSlackRuntimeCapabilities(
   writeAgentCreationTerminal: (intent: SlackAgentCreationTerminalIntent) => void,
   managementEnabled: boolean,
   writeMemoryUpdate?: (receipt: SlackMemoryUpdate) => void,
+  threadImages?: readonly ThreadImageRecord[],
 ): void {
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
+    ...(threadImages?.length ? { threadImages } : {}),
     includeAgentAuthoringSkill: true,
     additionalActivityToolDescriptors: slackActivityToolDescriptors({
       plan,
@@ -1235,6 +1239,26 @@ export function useChickpeaSlackRuntimeCapabilities(
     useInstruction(presentationIntent.instruction);
     useTool(presentationIntent.tool);
   }
+}
+
+/**
+ * This turn's thread images, recovered from the host-authored dispatch
+ * attribute. The wire carries no conversation of its own: the frozen plan is
+ * the only authority on which conversation these records belong to, and any
+ * malformed attribute yields no inventory rather than a failed turn.
+ */
+export function slackDeliveryThreadImages(
+  plan: RuntimePlanV2,
+  delivery: ReturnType<typeof useDelivery>,
+): ThreadImageRecord[] {
+  return parseThreadImageRecords(
+    delivery.kind === 'signal' ? delivery.attributes?.threadImages : undefined,
+    slackThreadImageConversationKey({
+      workspaceId: plan.conversation.workspaceId,
+      channelId: plan.conversation.channelId,
+      threadTs: plan.conversation.threadTs,
+    }),
+  );
 }
 
 /** Compose the declarations shared by Slack and fresh routine agents. */

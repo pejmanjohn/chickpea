@@ -19,6 +19,11 @@ import {
   isSlackAttachmentContextDelivery,
   type SlackAttachmentIntake,
 } from '../src/slack/attachment-context.ts';
+import {
+  parseThreadImageRecords,
+  serializeThreadImageRecords,
+  slackThreadImageConversationKey,
+} from '../src/slack/thread-images.ts';
 
 const plan = {
   agentId: 'agent_chickpea',
@@ -537,4 +542,33 @@ test('host analysis delivery remains read-only only for its bound Slack conversa
   assert.equal(isSlackAttachmentContextDelivery({ ...signal, attributes: { ...signal.attributes, threadTs: 'different' } }, plan), false);
   assert.equal(isSlackAttachmentContextDelivery({ ...signal, type: 'slack.message' }, plan), false);
   assert.equal(isSlackAttachmentContextDelivery({ kind: 'user', body: 'Ordinary next request' }, plan), false);
+});
+
+test('the thread image inventory survives the attachment re-render unchanged', () => {
+  const conversationKey = slackThreadImageConversationKey(plan.conversation);
+  const records = [{
+    conversationKey,
+    fileId: 'F00000000AA',
+    filename: 'logo.png',
+    mimeType: 'image/png',
+    origin: 'person' as const,
+    messageTs: '1782770401.000200',
+  }];
+  const threadImages = serializeThreadImageRecords(records);
+  assert.ok(threadImages);
+
+  const turn = slackAttachmentTurnContext(delivery({ threadImages }));
+  assert.equal(turn.attributes.threadImages, threadImages);
+  // The attachment file ids still stop at the first render; only the image
+  // inventory crosses, so the re-render addresses the same `img:N` handles.
+  assert.equal(turn.attributes.attachmentFileIds, undefined);
+
+  const signal = formatSlackAttachmentSignal(
+    { attachmentCount: 1, successCount: 1, failureCount: 0, manifest: [] },
+    turn,
+  );
+  assert.deepEqual(parseThreadImageRecords(signal.attributes.threadImages, conversationKey), records);
+
+  // A turn with no images appends no attribute at all.
+  assert.equal(slackAttachmentTurnContext(delivery()).attributes.threadImages, undefined);
 });

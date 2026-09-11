@@ -364,3 +364,109 @@ function compareSlackTs(left: string, right: string): number {
   const rightValue = Number(right);
   return (Number.isFinite(leftValue) ? leftValue : 0) - (Number.isFinite(rightValue) ? rightValue : 0);
 }
+
+/**
+ * Wire form of the per-turn image list, carried as one bounded dispatch
+ * attribute from the host turn to the Agent object.
+ *
+ * `conversationKey` is deliberately absent: the Agent re-derives it from its
+ * own frozen plan, so a record belonging to another conversation can never be
+ * constructed from the wire. Parsing is fail-closed — any malformed input
+ * yields an empty list rather than a throw, and a turn simply runs without an
+ * inventory.
+ */
+export const MAX_THREAD_IMAGES_ATTRIBUTE_CHARS = 40_000;
+
+interface ThreadImageWireRecord {
+  fileId: string;
+  filename: string;
+  mimeType: string;
+  origin: ThreadImageOrigin;
+  messageTs: string;
+  byteLength?: number;
+}
+
+/**
+ * Serialize the host's records for the dispatch signal. Returns undefined when
+ * nothing survives validation, so the attribute is omitted entirely. The
+ * newest records are kept when the list or the encoded size overflows.
+ */
+export function serializeThreadImageRecords(
+  records: readonly ThreadImageRecord[] | undefined,
+): string | undefined {
+  const wire: ThreadImageWireRecord[] = [];
+  for (const record of records ?? []) {
+    const entry = wireRecord(record);
+    if (entry) wire.push(entry);
+  }
+  let retained = wire.slice(-MAX_THREAD_IMAGE_ENTRIES);
+  while (retained.length > 0) {
+    const encoded = JSON.stringify(retained);
+    if (encoded.length <= MAX_THREAD_IMAGES_ATTRIBUTE_CHARS) return encoded;
+    // Drop the oldest until the bounded attribute fits.
+    retained = retained.slice(1);
+  }
+  return undefined;
+}
+
+/**
+ * Rebuild the records on the Agent side, stamping the caller's conversation
+ * key. Every field is re-validated with the same constants the host collection
+ * uses; one bad entry rejects the whole list.
+ */
+export function parseThreadImageRecords(
+  value: unknown,
+  conversationKey: string,
+): ThreadImageRecord[] {
+  if (typeof value !== 'string' || value.length === 0 ||
+      value.length > MAX_THREAD_IMAGES_ATTRIBUTE_CHARS ||
+      typeof conversationKey !== 'string' || conversationKey.length === 0) {
+    return [];
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(value);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(decoded)) return [];
+  const records: ThreadImageRecord[] = [];
+  for (const entry of decoded) {
+    const wire = wireRecord(entry);
+    if (!wire) return [];
+    records.push({ conversationKey, ...wire });
+  }
+  // Keep the newest when an over-long list arrives; handles are per-turn.
+  return records.slice(-MAX_THREAD_IMAGE_ENTRIES);
+}
+
+/** Validate one record in either direction; the wire form has no key. */
+function wireRecord(value: unknown): ThreadImageWireRecord | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const candidate = value as Partial<Record<keyof ThreadImageWireRecord, unknown>>;
+  const fileId = candidate.fileId;
+  const filename = candidate.filename;
+  const mimeType = candidate.mimeType;
+  const origin = candidate.origin;
+  const messageTs = candidate.messageTs;
+  const byteLength = candidate.byteLength;
+  if (typeof fileId !== 'string' || !SLACK_FILE_ID.test(fileId)) return undefined;
+  if (typeof mimeType !== 'string' || !THREAD_IMAGE_MIME_TYPES.has(mimeType)) return undefined;
+  if (origin !== 'person' && origin !== 'agent') return undefined;
+  if (typeof messageTs !== 'string' || !SLACK_TS.test(messageTs)) return undefined;
+  if (typeof filename !== 'string' || filename.trim().length === 0) return undefined;
+  if (byteLength !== undefined &&
+      !(typeof byteLength === 'number' && Number.isSafeInteger(byteLength) && byteLength >= 0)) {
+    return undefined;
+  }
+  const safe = safeFilename(filename);
+  if (!safe) return undefined;
+  return {
+    fileId,
+    filename: safe,
+    mimeType,
+    origin,
+    messageTs,
+    ...(byteLength === undefined ? {} : { byteLength }),
+  };
+}

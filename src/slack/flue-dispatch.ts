@@ -11,6 +11,7 @@ import {
 } from '@flue/runtime';
 
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
+import type { ThreadImageRecord } from './thread-images.ts';
 import {
   createCloudflareBoundedAgentReplyReader,
   type BoundedReplyReader,
@@ -129,6 +130,8 @@ export interface SlackFlueDispatchState {
   prepare(
     message: string,
     observation: FlueTurnObservationV1,
+    /** This turn's thread images; the envelope carries them as one attribute. */
+    threadImages?: readonly ThreadImageRecord[],
   ): FlueDispatchEnvelopeV1 | Promise<FlueDispatchEnvelopeV1>;
   recordReceipt(
     receipt: FlueDispatchReceiptV1,
@@ -151,6 +154,8 @@ interface PromptSlackAgentInput {
   requestedModel: string | null;
   /** Frozen, non-secret revision evidence retained by the adapter observation. */
   runtimePlan?: RuntimePlanV2;
+  /** Images already in this Slack conversation, collected by the host fetch. */
+  threadImages?: readonly ThreadImageRecord[];
   workCorrelation?: WorkTraceCorrelation;
   env?: PlatformEnv;
   now?: () => number;
@@ -218,7 +223,7 @@ export async function promptSlackThreadAgent(
   const observeReply = input.observeReply ??
     (isCloudflareTarget() ? createCloudflareBoundedAgentReplyReader(input.env) : undefined);
   let envelope = input.state.dispatchEnvelope ??
-    await input.state.prepare(input.message, observation);
+    await input.state.prepare(input.message, observation, input.threadImages);
   input.state.dispatchEnvelope = envelope;
   const agent = input.handle ? undefined : (await import('../agents/slack-thread.ts')).ChickpeaSlack;
   let handle = input.handle ?? init(agent!, { id: envelope.instanceId, uid: envelope.uid });

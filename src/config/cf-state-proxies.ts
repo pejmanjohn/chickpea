@@ -1617,8 +1617,11 @@ export class CfSlackStateStore implements SlackStateStore {
     id: string,
     message: string,
     observation: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[2],
+    threadImages?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[3],
   ) {
-    return unwrap(await this.stub.slackFlueDispatchPrepare(id, message, observation));
+    return unwrap(
+      await this.stub.slackFlueDispatchPrepare(id, message, observation, threadImages),
+    );
   }
 
   async reconcileFlueExistingInstance(id: string, uid: string) {

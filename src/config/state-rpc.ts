@@ -79,6 +79,7 @@ import type {
   TurnJob,
 } from '../slack/turn-job-types.ts';
 import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
+import type { ThreadImageRecord } from '../slack/thread-images.ts';
 import type {
   GatewayInboxAdmissionOutcome,
   GatewayInboxDrainCounts,
@@ -471,6 +472,8 @@ export interface TagStateRpc {
     id: string,
     message: string,
     observation: FlueTurnObservationV1,
+    /** Additive and optional: an older host simply omits the inventory. */
+    threadImages?: readonly ThreadImageRecord[],
   ): Promise<StateRpcResult<FlueDispatchEnvelopeV1>>;
   slackFlueExistingInstanceReconcile(
     id: string,

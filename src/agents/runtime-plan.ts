@@ -397,6 +397,7 @@ export function buildRuntimePlanActivityContext(
   descriptors.push(
     { toolName: 'post_artifact', descriptor: artifact },
     { toolName: 'render_chart', descriptor: artifact },
+    { toolName: 'generate_image', descriptor: artifact },
   );
   families.add('artifact');
 

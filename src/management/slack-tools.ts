@@ -86,6 +86,7 @@ const SIGNAL_OPTIONAL_ATTRIBUTE_KEYS = [
   'attachmentFileIds',
   'attachmentIntakeStatus',
   'attachmentCount',
+  'threadImages',
 ] as const;
 const SIGNAL_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
   ...SIGNAL_ATTRIBUTE_KEYS,

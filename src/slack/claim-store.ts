@@ -166,6 +166,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
     id: string,
     message: string,
     observation: FlueTurnObservationV1,
+    threadImages?: readonly import('./thread-images.ts').ThreadImageRecord[],
   ): Promise<import('./turn-job-types.ts').FlueDispatchEnvelopeV1>;
   reconcileFlueExistingInstance?(
     id: string,

@@ -122,6 +122,50 @@ function workTurn(eventId: string): NormalizedSlackTurn {
   };
 }
 
+test('runTurn carries the hydrated thread images into the agent dispatch', async () => {
+  const f = await createManagementAdapterFixture('thread-images');
+  try {
+    const agent = await f.config.createAgent({ ...assignment.agent,
+      creatorMembershipId: f.admin.membership.id, editPolicy: 'creator_and_admins' });
+    const workspaceId = f.admin.binding.slackTeamId;
+    await f.config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', defaultAgentId: agent.id });
+    const turn: NormalizedSlackTurn = {
+      ...workTurn('Ev_THREAD_IMAGES'), workspaceId, userId: f.admin.binding.slackUserId,
+      actorMembershipId: f.admin.membership.id, contextMode: 'thread',
+      threadTs: '1785509000.000100', messageTs: '1785509201.000100',
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    };
+    const bound: ResolvedAssignment = { ...assignment, workspaceId, agent, runtimeContract: 'chickpea-v1' };
+    const client = {
+      conversations: { replies: async () => ({ ok: true, messages: [{
+        user: turn.userId, ts: '1785509100.000100', text: 'Here is the logo.',
+        files: [{ id: 'F00000000AA', name: 'logo.png', mimetype: 'image/png', size: 2_048 }],
+      }] }) },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: '1785509300.000100' }),
+        startStream: async () => ({ ok: true, ts: '1785509300.000100' }),
+        stopStream: async () => ({ ok: true }),
+      },
+    } as unknown as WebClient;
+    const runtimePlan = compileRuntimePlanV2({ turn, assignment: bound,
+      instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash' });
+    let dispatched: readonly { fileId: string; conversationKey: string }[] | undefined;
+    await runTurn(turn, bound, undefined, {
+      client, usageRecordingEnabled: false,
+      runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) },
+      appStores: { config: f.config, memory: f.memory, identity: f.identity, management: f.management } as never,
+      agentPrompt: async ({ threadImages }) => {
+        dispatched = threadImages;
+        return { text: '42', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
+      },
+    });
+    assert.deepEqual(dispatched?.map(({ fileId }) => fileId), ['F00000000AA']);
+    assert.equal(dispatched?.[0]?.conversationKey, `${workspaceId}:${turn.channelId}:${turn.threadTs}`);
+  } finally {
+    await f.close();
+  }
+});
+
 test('runTurn retains the admitted latest correction across runtime rollover beyond the Slack page cap', async () => {
   const f = await createManagementAdapterFixture('context-rollover');
   try {

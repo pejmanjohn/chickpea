@@ -14,6 +14,7 @@ import {
 import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
 import { replayTextForTurnProgress, TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
+import { serializeThreadImageRecords } from '../src/slack/thread-images.ts';
 import {
   SlackRunPresentationStoreLogic,
   type SlackPresentationMutation,
@@ -152,6 +153,46 @@ test('Flue Slack signals retain trusted attachment file ids without durable byte
     assert.equal(envelope.message.attributes.attachmentIntakeStatus, 'ok');
     assert.equal(envelope.message.attributes.attachmentCount, '1');
     assert.doesNotMatch(JSON.stringify(envelope), /private-image|image\/png|url_private/i);
+  } finally {
+    db.close();
+  }
+});
+
+test('Flue Slack signals carry the turn thread image inventory, and omit it when empty', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const records = [{
+      conversationKey: 'ignored-by-the-wire',
+      fileId: 'F00000000AA',
+      filename: 'logo.png',
+      mimeType: 'image/png',
+      origin: 'person' as const,
+      messageTs: '100.001',
+      byteLength: 2_048,
+    }];
+    for (const [index, images] of [records, undefined].entries()) {
+      const id = `turn_thread-images-${index}`;
+      const imageTurn = turn();
+      const imageAssignment = assignment();
+      turns.enqueue({ id, evtKey: `evt_${id}`, msgKey: `msg_${id}`, turn: imageTurn, assignment: imageAssignment });
+      turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+        turn: imageTurn,
+        assignment: imageAssignment,
+        instructions: 'Frozen image instructions.',
+        memoryEpoch: 1,
+        sandboxMode: 'bash',
+      }));
+      const envelope = turns.prepareFlueDispatch(id, 'Use the logo.', { generation: id }, images);
+      assert.equal(envelope.schemaVersion, 2);
+      if (envelope.schemaVersion !== 2) throw new Error('expected a signal dispatch');
+      assert.equal(
+        envelope.message.attributes.threadImages,
+        images ? serializeThreadImageRecords(images) : undefined,
+      );
+      // The wire never names a conversation; the Agent stamps its own plan's.
+      assert.doesNotMatch(String(envelope.message.attributes.threadImages ?? ''), /conversationKey/);
+    }
   } finally {
     db.close();
   }
