@@ -251,7 +251,7 @@ test('a base URL that is not https or carries credentials is refused at construc
 });
 
 test('a provider error never echoes the prompt back into the outcome', async () => {
-  const prompt = 'a poster for the confidential Q4 launch of the Magoosh GRE bundle';
+  const prompt = 'a poster for the confidential Q4 launch of the Acme exam-prep bundle';
   const { fetchImpl } = recordingFetch(() =>
     jsonResponse(
       { error: { code: 'moderation_blocked', message: `Your prompt "${prompt}" was blocked` } },
@@ -263,7 +263,7 @@ test('a provider error never echoes the prompt back into the outcome', async () 
 
   assert.ok(!result.ok);
   assert.equal(result.reason, 'rejected');
-  assert.ok(!result.detail.includes('Magoosh'));
+  assert.ok(!result.detail.includes('Acme'));
   assert.ok(!result.detail.toLowerCase().includes(prompt.slice(0, 24).toLowerCase()));
 });
 
