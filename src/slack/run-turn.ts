@@ -95,7 +95,6 @@ import {
 } from './web-client-presenter.ts';
 import type { SlackTablePresentation } from './table-presentation.ts';
 import type { SlackArtifactReceipt } from './artifact-receipts.ts';
-import { requestAdmitsArtifactDelivery } from '../memory/tool-policy.ts';
 import {
   InteractiveUsageRecorder,
   InteractionUsageRecorder,
@@ -1040,13 +1039,6 @@ export async function runTurn(
         concurrentAttributionProven: options.progressiveAttributionProven === true,
         replacementCapable: options.beforeDelivery !== undefined &&
           runtimePlanDecision.runtimePlan.sandbox.mode === 'cloudflare',
-        // The same classification the envelope freezes for the model: a
-        // request that admits files must end in one file share, not a stream.
-        artifactDeliveryRequested: requestAdmitsArtifactDelivery(turn.text, {
-          ...commandAddress,
-          agentHandle: assignment.agent.slackPresence?.normalizedHandle ??
-            assignment.agent.slackPresence?.requestedHandle,
-        }),
       });
       if (agentViewPresentation) {
         const frozen = await agentViewPresentation.freezeProgressiveEligibility(candidate);
@@ -1060,10 +1052,6 @@ export async function runTurn(
       }
     }
     const prompt = assembleSlackPrompt(turn, context, {
-      artifactAddress: {
-        ...commandAddress,
-        agentHandle: assignment.agent.slackPresence?.normalizedHandle ?? assignment.agent.slackPresence?.requestedHandle,
-      },
       ...(handoffBlock ? { handoffBlock } : {}),
       ...(preparedMemory?.promptBlock ? { memoryBlock: preparedMemory.promptBlock } : {}),
       memorySelected: (preparedMemory?.selection?.entries.length ?? 0) > 0,

@@ -110,7 +110,7 @@ test('a private routine hydrates only its stored thread with the saved task as a
   assert.match(prepared.prompt, /Historical background only/);
   assert.match(prepared.prompt, /Slack history.*untrusted background/i);
   assert.match(prepared.prompt, /Current Slack request[\s\S]*<@UBOT>, attach the CSV report/);
-  assert.equal(parseCurrentRequestEnvelope(prepared.prompt)?.explicitArtifactDeliveryIntent, true);
+  assert.ok(parseCurrentRequestEnvelope(prepared.prompt));
 });
 
 test('scheduled thread prompts recover bounded admitted corrections', async () => {

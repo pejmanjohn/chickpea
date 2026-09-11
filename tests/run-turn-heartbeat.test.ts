@@ -1152,7 +1152,7 @@ test('activated turns never fall back to SLACK_TAG_MODEL when the frozen model i
   assert.doesNotMatch(delivered, /legacy-environment-fallback/);
 });
 
-test('runTurn forwards only the routed Agent address for artifact permission', async () => {
+test('runTurn preserves addressed requests without manufacturing artifact permissions', async () => {
   const client = {
     conversations: { history: async () => ({ ok: true, messages: [] }) },
     chat: {
@@ -1165,7 +1165,7 @@ test('runTurn forwards only the routed Agent address for artifact permission', a
     slackPresence: { userGroupId: 'S123456', normalizedHandle: 'reports', requestedHandle: 'reports',
       desiredState: 'active', health: 'healthy', avatar: { kind: 'generated', revision: 1 } },
   } };
-  for (const [group, allowed] of [['S123456', true], ['SOTHER', false]] as const) {
+  for (const group of ['S123456', 'SOTHER']) {
     let dispatched = false;
     await runTurn({ ...workTurn(`Ev_ARTIFACT_${group}`),
       text: `<!subteam^${group}|reports>, attach the CSV report.`,
@@ -1174,7 +1174,8 @@ test('runTurn forwards only the routed Agent address for artifact permission', a
       client, usageRecordingEnabled: false,
       agentPrompt: async ({ message }) => {
         dispatched = true;
-        assert.equal(parseCurrentRequestEnvelope(message)?.explicitArtifactDeliveryIntent, allowed);
+        assert.ok(parseCurrentRequestEnvelope(message));
+        assert.ok(message.includes(`<!subteam^${group}|reports>, attach the CSV report.`));
         return { text: 'Checked.', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
       },
     });

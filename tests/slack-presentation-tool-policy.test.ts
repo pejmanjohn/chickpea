@@ -85,6 +85,7 @@ test('a successful declaration arms answer-only authority before later tools exe
       'manage_slack_workspace',
       'bash',
       'post_artifact',
+      'render_chart',
       'mcp__docs__search',
     ]) {
       let executed = false;
@@ -93,7 +94,13 @@ test('a successful declaration arms answer-only authority before later tools exe
           executed = true;
           return 'must not execute';
         }),
-        SlackAnswerOnlyToolDeniedError,
+        (error: unknown) => {
+          assert.ok(error instanceof SlackAnswerOnlyToolDeniedError);
+          if (toolName === 'post_artifact' || toolName === 'render_chart') {
+            assert.match(error.message, /Do not claim a denied tool ran or attached a file/);
+          }
+          return true;
+        },
       );
       assert.equal(executed, false, toolName);
     }
@@ -114,6 +121,82 @@ test('an envelope without the frozen offer cannot execute the declaration tool',
     assert.equal(executed, false);
   });
 });
+
+for (const toolName of ['post_artifact', 'render_chart']) {
+  test(`${toolName} blocks a declaration while the upload is still pending`, async () => {
+    await withSubmission(async () => {
+      observeTurn([{ role: 'user', content: currentPrompt() }]);
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      const upload = executeTool(toolName, 'file', async () => {
+        await pending;
+        return 'staged';
+      });
+      try {
+        await assert.rejects(
+          executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'stream', async () => 'noted'),
+          SlackPresentationToolUnavailableError,
+        );
+      } finally {
+        release();
+        assert.equal(await upload, 'staged');
+      }
+    });
+  });
+
+  test(`${toolName} attempts prevent later streaming even without a successful upload`, async () => {
+    for (const failed of [false, true]) {
+      await withSubmission(async () => {
+        observeTurn([{ role: 'user', content: currentPrompt() }]);
+        const upload = executeTool(toolName, 'file', async () => {
+          if (failed) throw new Error('uncertain upload');
+          return 'staged';
+        });
+        if (failed) await assert.rejects(upload, /uncertain upload/);
+        else assert.equal(await upload, 'staged');
+        await assert.rejects(
+          executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'stream', async () => 'noted'),
+          SlackPresentationToolUnavailableError,
+        );
+        assert.equal(await executeTool('read', 'continue', async () => 'allowed'), 'allowed');
+      });
+    }
+  });
+
+  test(`${toolName} in a concurrent batch prevents a pending declaration from succeeding`, async () => {
+    await withSubmission(async () => {
+      observeTurn([{ role: 'user', content: currentPrompt() }]);
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      const declaration = executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'stream', async () => {
+        await pending;
+        return 'noted';
+      });
+      const rejected = assert.rejects(declaration, SlackPresentationToolUnavailableError);
+      assert.equal(await executeTool(toolName, 'file', async () => 'staged'), 'staged');
+      release();
+      await rejected;
+      assert.equal(await executeTool('read', 'continue', async () => 'allowed'), 'allowed');
+    });
+  });
+
+  test(`${toolName} attempts rehydrate only from the current response, including missing results`, async () => {
+    const history: LlmMessage[] = [
+      { role: 'user', content: currentPrompt() },
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'file', name: toolName, arguments: {} }] },
+    ];
+    for (const newerRequest of [false, true]) {
+      await withSubmission(async () => {
+        observeTurn([...history, ...(newerRequest
+          ? [{ role: 'user' as const, content: currentPrompt() }]
+          : [])]);
+        const declaration = executeTool(SLACK_STREAM_ANSWER_TOOL_NAME, 'stream', async () => 'noted');
+        if (newerRequest) assert.equal(await declaration, 'noted');
+        else await assert.rejects(declaration, SlackPresentationToolUnavailableError);
+      });
+    }
+  });
+}
 
 test('a failed declaration does not arm the answer-only lock', async () => {
   await withSubmission(async () => {

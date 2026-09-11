@@ -19,9 +19,7 @@ async function submission<T>(agentName: string, request: string, run: (context: 
     { type: 'agent', operationId: 'capability-permissions', operationKind: 'prompt' }, context,
     async () => {
       observeMemoryToolPolicy({ type: 'turn_request', purpose: 'agent', request: {
-        input: { messages: [{ role: 'user', content: serializeCurrentRequestEnvelope(request, false, undefined, undefined, {
-          artifactAddress: { botUserId: 'UBOT', agentUserGroupId: 'S123456', agentHandle: 'smoke-amber' },
-        }) }] },
+        input: { messages: [{ role: 'user', content: serializeCurrentRequestEnvelope(request, false) }] },
       } } as unknown as FlueObservation, context as unknown as FlueEventContext);
       return run(context);
     },
@@ -105,13 +103,17 @@ test('MCP mount retains the selected tool list and explicit argument restriction
   }), /approved value/);
 });
 
-test('connector permission does not bypass the separate artifact delivery contract', async () => {
+test('reply attachment availability does not depend on request vocabulary', async () => {
   for (const agentName of MANAGED_SUBMISSION_AGENT_NAMES) {
-    await submission(agentName, 'Read today’s bookings.', async () => {
-      assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' });
-    });
-    await submission(agentName, 'Create a report file.', async () => {
-      assert.doesNotThrow(assertArtifactDeliveryAllowed);
+    for (const request of [
+      'Read today’s bookings.',
+      'Create a report file.',
+      'ok try generating a new add with some of these ideas worked in while preserving the brand logo and colors',
+      'Attach the ad',
+      'Make those changes and show me the result.',
+      'Sí, hazlo con esos colores.',
+    ]) await submission(agentName, request, async () => {
+      assert.doesNotThrow(assertArtifactDeliveryAllowed, request);
     });
   }
 });
@@ -130,7 +132,7 @@ test('MCP outbound allowlist applies without argument constraints and rejects ba
   }
 });
 
-test('chart and file requests are explicit artifact delivery for both delivery tools', async () => {
+test('both reply attachment tools use host context rather than word matching', async () => {
   const delivered = async () => 'delivered';
   for (const agentName of MANAGED_SUBMISSION_AGENT_NAMES) {
     for (const request of [
@@ -176,13 +178,13 @@ test('chart and file requests are explicit artifact delivery for both delivery t
       '<@UBOT> <@UALICE> send me the CSV file',
     ]) {
       await submission(agentName, request, async (context) => {
-        assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' }, request);
+        // Intent and prohibitions are interpreted by the Agent. A host wording
+        // classifier must not invent a missing workspace permission.
+        assert.doesNotThrow(assertArtifactDeliveryAllowed, request);
         for (const toolName of ['post_artifact', 'render_chart']) {
-          await assert.rejects(
-            memoryToolPolicyInterceptor({ type: 'tool', toolCallId: toolName, toolName }, context, delivered),
-            { name: 'CurrentRequestSideEffectDeniedError' },
-            `${toolName}: ${request}`,
-          );
+          assert.equal(await memoryToolPolicyInterceptor(
+            { type: 'tool', toolCallId: toolName, toolName }, context, delivered,
+          ), 'delivered', `${toolName}: ${request}`);
         }
       });
     }

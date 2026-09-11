@@ -9,6 +9,7 @@ import type {
 
 import { CHICKPEA_SLACK_AGENT_NAME } from '../agents/names.ts';
 import {
+  ARTIFACT_DELIVERY_TOOL_NAMES,
   currentRequestOffersProgressiveStreaming,
   parseModelVisibleCurrentRequestEnvelope,
   type CurrentRequestEnvelope,
@@ -19,6 +20,7 @@ import { SLACK_PRESENT_TABLE_TOOL_NAME } from './table-presentation.ts';
 interface PresentationToolPolicyState {
   envelope?: CurrentRequestEnvelope;
   answerOnly: boolean;
+  artifactDeliveryAttempted: boolean;
 }
 
 const submissionPolicy = new AsyncLocalStorage<PresentationToolPolicyState>();
@@ -26,7 +28,7 @@ const submissionPolicy = new AsyncLocalStorage<PresentationToolPolicyState>();
 export class SlackAnswerOnlyToolDeniedError extends Error {
   constructor() {
     super(
-      'This response declared answer-only delivery. Finish the answer using facts already gathered; additional tools are unavailable.',
+      'This response declared answer-only delivery. Finish the answer using facts already gathered; additional tools are unavailable. Do not claim a denied tool ran or attached a file. Include useful information inline.',
     );
     this.name = 'SlackAnswerOnlyToolDeniedError';
   }
@@ -51,16 +53,26 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
     context.agentName === CHICKPEA_SLACK_AGENT_NAME &&
     active === undefined
   ) {
-    return submissionPolicy.run({ answerOnly: false }, next);
+    return submissionPolicy.run({
+      answerOnly: false,
+      artifactDeliveryAttempted: false,
+    }, next);
   }
 
   if (operation.type !== 'tool' || active === undefined) return next();
 
   if (operation.toolName === SLACK_STREAM_ANSWER_TOOL_NAME) {
-    if (!currentRequestOffersProgressiveStreaming(active.envelope)) {
+    if (!currentRequestOffersProgressiveStreaming(active.envelope) ||
+        active.artifactDeliveryAttempted) {
       throw new SlackPresentationToolUnavailableError();
     }
     const result = await next();
+    // Another tool in the same model batch may have begun an upload while
+    // the declaration was awaiting its result. File delivery wins until the
+    // answer-only lock is committed; never acknowledge both paths.
+    if (active.artifactDeliveryAttempted) {
+      throw new SlackPresentationToolUnavailableError();
+    }
     active.answerOnly = true;
     return result;
   }
@@ -73,6 +85,11 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
   }
 
   if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
+  // A failed/uncertain upload may already have staged a private file. Keep
+  // that response on terminal delivery too; never stream ahead of its result.
+  if (ARTIFACT_DELIVERY_TOOL_NAMES.has(operation.toolName)) {
+    active.artifactDeliveryAttempted = true;
+  }
   return next();
 };
 
@@ -93,11 +110,13 @@ export function observePresentationToolPolicy(
   if (current.envelope) active.envelope = current.envelope;
   else delete active.envelope;
   if (current.successfulDeclaration) active.answerOnly = true;
+  if (current.artifactDeliveryAttempted) active.artifactDeliveryAttempted = true;
 }
 
 function currentResponsePolicy(messages: readonly LlmMessage[]): {
   envelope?: CurrentRequestEnvelope;
   successfulDeclaration: boolean;
+  artifactDeliveryAttempted: boolean;
 } {
   let newestUserIndex = -1;
   let envelope: CurrentRequestEnvelope | undefined;
@@ -108,13 +127,17 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
     envelope = envelopeFromUserMessage(message);
     break;
   }
-  if (newestUserIndex < 0) return { successfulDeclaration: false };
+  if (newestUserIndex < 0) return { successfulDeclaration: false, artifactDeliveryAttempted: false };
 
   const declaredCalls = new Set<string>();
   let successfulDeclaration = false;
+  let artifactDeliveryAttempted = false;
   for (const message of messages.slice(newestUserIndex + 1)) {
     if (message.role === 'assistant') {
       for (const content of message.content) {
+        if (content.type === 'toolCall' && ARTIFACT_DELIVERY_TOOL_NAMES.has(content.name)) {
+          artifactDeliveryAttempted = true;
+        }
         if (content.type === 'toolCall' && (
           content.name === SLACK_STREAM_ANSWER_TOOL_NAME ||
           content.name === SLACK_PRESENT_TABLE_TOOL_NAME
@@ -137,6 +160,7 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
   return {
     ...(envelope ? { envelope } : {}),
     successfulDeclaration,
+    artifactDeliveryAttempted,
   };
 }
 
