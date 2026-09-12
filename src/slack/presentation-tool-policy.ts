@@ -21,9 +21,16 @@ interface PresentationToolPolicyState {
   envelope?: CurrentRequestEnvelope;
   answerOnly: boolean;
   artifactDeliveryAttempted: boolean;
+  fileDeliveryPending?: () => boolean;
 }
 
 const submissionPolicy = new AsyncLocalStorage<PresentationToolPolicyState>();
+
+/** Rebound from durable completion state on every agent render, including replay. */
+export function bindFileDeliveryCheck(pending: () => boolean): void {
+  const active = submissionPolicy.getStore();
+  if (active) active.fileDeliveryPending = pending;
+}
 
 export class SlackAnswerOnlyToolDeniedError extends Error {
   constructor() {
@@ -62,11 +69,13 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
   if (operation.type !== 'tool' || active === undefined) return next();
 
   if (operation.toolName === SLACK_STREAM_ANSWER_TOOL_NAME) {
+    assertFileDeliveryChecked(active);
     if (!currentRequestOffersProgressiveStreaming(active.envelope) ||
         active.artifactDeliveryAttempted) {
       throw new SlackPresentationToolUnavailableError();
     }
     const result = await next();
+    assertFileDeliveryChecked(active);
     // Another tool in the same model batch may have begun an upload while
     // the declaration was awaiting its result. File delivery wins until the
     // answer-only lock is committed; never acknowledge both paths.
@@ -78,8 +87,10 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
   }
 
   if (operation.toolName === SLACK_PRESENT_TABLE_TOOL_NAME) {
+    assertFileDeliveryChecked(active);
     if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
     const result = await next();
+    assertFileDeliveryChecked(active);
     active.answerOnly = true;
     return result;
   }
@@ -92,6 +103,12 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
   }
   return next();
 };
+
+function assertFileDeliveryChecked(state: PresentationToolPolicyState): void {
+  if (state.fileDeliveryPending?.()) {
+    throw new Error('Finish file delivery with complete_file_delivery before declaring the final presentation.');
+  }
+}
 
 /** Rehydrate declaration authority from durable current-response tool history. */
 export function observePresentationToolPolicy(

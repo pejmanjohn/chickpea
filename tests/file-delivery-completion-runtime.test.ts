@@ -1,0 +1,298 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai';
+import {
+  bash, init, instrument, useDataWriter, useDelivery, useInstruction, useModel,
+  useResponseStart, useSandbox, useTool,
+  type AgentReply, type DeliveredMessage, type LlmMessage,
+} from '@flue/runtime';
+import { start } from '@flue/runtime/node';
+import { Bash, InMemoryFs } from 'just-bash';
+import * as v from 'valibot';
+
+import { CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME, CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
+import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import type { CustomAgentConfig } from '../src/config/types.ts';
+import {
+  assertArtifactDeliveryAllowed, bindCurrentRequestConversation,
+  boundCurrentRequestConversation, memoryToolPolicyInterceptor, observeMemoryToolPolicy,
+  parseModelVisibleCurrentRequestEnvelope, serializeCurrentRequestEnvelope,
+} from '../src/memory/tool-policy.ts';
+import { scheduleSignalMessageTs } from '../src/routines/schedule-signal.ts';
+import { createWorkspaceArtifactTool, MAX_ARTIFACT_BYTES, type ArtifactDestinationBinding } from '../src/sandbox/artifact-tool.ts';
+import {
+  parseSlackArtifactReceipts, SLACK_ARTIFACT_RECEIPTS_DATA_NAME, useSlackArtifactReceipts,
+} from '../src/slack/artifact-receipts.ts';
+import { stageArtifactWithReceipt } from '../src/slack/artifact-staging.ts';
+import {
+  COMPLETE_FILE_DELIVERY_TOOL, FILE_COMPLETION_INSTRUCTION, FILE_DELIVERY_DATA_NAME,
+  FILE_DELIVERY_SIGNAL_TYPE, FileDeliveryResultSchema, useFileDeliveryCompletion,
+} from '../src/slack/file-delivery-completion.ts';
+import type { SlackFileStageInput, SlackFileTransport } from '../src/slack/file-transport.ts';
+import { promptSlackThreadAgent, type SlackFlueDispatchState } from '../src/slack/flue-dispatch.ts';
+import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
+
+const MODEL = 'faux/file-delivery';
+const CONVERSATION = { workspaceId: 'TPROBE', channelId: 'CPROBE', threadTs: '1789230000.000100' };
+const ACTOR = 'UPROBE';
+const MESSAGE_TS = '1789230000.000200';
+const REPORT = '# Install report\n\nThe installation checks passed.\n';
+const AGENT: CustomAgentConfig = {
+  id: 'file-delivery-probe', kind: 'user', revision: 1, name: 'File delivery probe',
+  instructions: 'Create the requested final deliverables.', enabled: true, model: MODEL,
+  skills: [], mcpServers: [], apiConnections: [], repositories: [],
+};
+const PLAN = compileRuntimePlanV2({
+  turn: { ...CONVERSATION, eventId: 'EPROBE', text: 'Create an install report.',
+    userId: ACTOR, messageTs: MESSAGE_TS, source: 'app_mention', contextMode: 'thread' },
+  assignment: { ...CONVERSATION, agentId: AGENT.id, agent: AGENT, model: MODEL,
+    modelAttribution: { source: 'workspace_default', providerId: 'faux', workspaceDefaultRevision: 1 } },
+  instructions: AGENT.instructions, memoryEpoch: 1, sandboxMode: 'bash', effectiveConnections: [],
+});
+
+interface ProbeState {
+  staged: SlackFileStageInput[];
+  responseStarts: number;
+  deliveries: DeliveredMessage[];
+  repairSignalCounts: number[];
+  repairAuthority: boolean[];
+}
+let probe: ProbeState;
+
+/** Real hooks, sandbox tools, admission, and receipts; only Slack transport is synthetic. */
+function useProbe() {
+  useModel(MODEL);
+  bindCurrentRequestConversation(CONVERSATION);
+  probe.deliveries.push(useDelivery());
+  useResponseStart(() => { probe.responseStarts++; });
+  const { accumulator, writeReceipts } = useSlackArtifactReceipts();
+  const completion = useFileDeliveryCompletion(PLAN, (ids) => {
+    writeReceipts({ schemaVersion: 1, receipts: accumulator.remove(ids) });
+  });
+  const transport: SlackFileTransport = {
+    maxBytes: MAX_ARTIFACT_BYTES,
+    async stagePrivate(input) {
+      assert.deepEqual(boundCurrentRequestConversation(), CONVERSATION);
+      assertArtifactDeliveryAllowed();
+      probe.staged.push({ ...input, bytes: input.bytes.slice() });
+      const fileId = `FPROBE${String(probe.staged.length).padStart(5, '0')}`;
+      return { fileId, byteLength: input.bytes.byteLength,
+        permalink: `https://example.slack.com/files/${ACTOR}/${fileId}/${input.filename}` };
+    },
+    async stage() { throw new Error('Legacy staging must not run.'); },
+    async complete() { throw new Error('Public delivery is outside this runtime test.'); },
+    async resolveShare() { throw new Error('No live Slack resource exists.'); },
+  };
+  const binding: ArtifactDestinationBinding = {
+    channel: CONVERSATION.channelId, threadTs: CONVERSATION.threadTs, sandboxKind: 'bash',
+    stageArtifact: (artifact) => stageArtifactWithReceipt({
+      artifact, transport, accumulator, writeReceipts,
+      destination: { ...CONVERSATION, agentId: AGENT.id },
+    }),
+  };
+  useSandbox(completion.wrapSandbox(bash(() => new Bash({ fs: new InMemoryFs() }))));
+  useTool(createWorkspaceArtifactTool(binding, completion.deliver));
+  useTool(completion.tool(binding));
+  useInstruction(FILE_COMPLETION_INSTRUCTION);
+}
+
+function SlackProbe() { useProbe(); }
+
+function RoutineProbe() {
+  useProbe();
+  const writeResult = useDataWriter('routineResult', { schema: v.object({ text: v.string() }) });
+  useTool({
+    name: 'submit_routine_result', description: 'Submit the final scheduled result.',
+    input: v.object({ text: v.string() }),
+    run({ data }) { writeResult(data); return { output: 'recorded', terminate: true }; },
+  });
+}
+
+function userText(message: LlmMessage): string | undefined {
+  if (message.role !== 'user') return undefined;
+  return typeof message.content === 'string' ? message.content : message.content
+    .flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n');
+}
+
+function slackEnvelope(id: string): FlueDispatchEnvelopeV1 {
+  return {
+    schemaVersion: 2, agentName: CHICKPEA_SLACK_AGENT_NAME, instanceId: id,
+    uid: null, idempotencyKey: `dispatch-${id}`,
+    message: {
+      kind: 'signal', type: 'slack.message', tagName: 'slack_message',
+      body: `Create an install report.\n\n${serializeCurrentRequestEnvelope('', false, ACTOR, MESSAGE_TS)}`,
+      attributes: { ...CONVERSATION, slackUserId: ACTOR, messageTs: MESSAGE_TS,
+        eventId: 'EPROBE', turnJobId: `turn-${id}` },
+    },
+  };
+}
+
+function dispatchState(envelope: FlueDispatchEnvelopeV1): SlackFlueDispatchState {
+  return {
+    prepare: () => envelope,
+    recordReceipt: (receipt) => receipt,
+    recordSettlement: (settlement) => settlement,
+    reconcileExistingInstance: () => { throw new Error('Unexpected incarnation conflict.'); },
+    markRecoveryRequired: (reason) => { throw new Error(`Unexpected recovery: ${reason}`); },
+  };
+}
+
+function completionResult(reply: AgentReply) {
+  return v.parse(FileDeliveryResultSchema, reply.data?.[FILE_DELIVERY_DATA_NAME]?.at(-1));
+}
+
+const call = (name: string, args: Record<string, unknown>) =>
+  fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
+const writeReport = (path = '/home/user/report.md') => call('write', { path, content: REPORT });
+const completeReport = (path = '/home/user/report.md') =>
+  call(COMPLETE_FILE_DELIVERY_TOOL, { files: [{ path, filename: 'report.md' }] });
+
+test('native file-delivery completion preserves authority, response state, and bounded recovery', { timeout: 30_000 }, async (t) => {
+  const faux = fauxProvider({ models: [{ id: 'file-delivery' }], tokensPerSecond: 100_000 });
+  const stopInstrumentation = instrument({
+    interceptor: memoryToolPolicyInterceptor,
+    observe(event, context) {
+      observeMemoryToolPolicy(event, context);
+      if (!probe || event.type !== 'turn_request' || event.purpose !== 'agent') return;
+      const repairMessages = event.request.input.messages.flatMap((message) => {
+        const text = userText(message);
+        return text?.startsWith('<slack_file_delivery_check ') ? [text] : [];
+      });
+      probe.repairSignalCounts.push(repairMessages.length);
+      for (const text of repairMessages) {
+        probe.repairAuthority.push(Boolean(parseModelVisibleCurrentRequestEnvelope(text)));
+      }
+    },
+    dispose() {},
+  });
+  const runtime = await start({
+    agents: [{ agent: SlackProbe, name: CHICKPEA_SLACK_AGENT_NAME },
+      { agent: RoutineProbe, name: CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME }],
+    providers: [faux.provider],
+  });
+  let sequence = 0;
+  function begin(responses: Parameters<typeof faux.setResponses>[0]) {
+    probe = { staged: [], responseStarts: 0, deliveries: [], repairSignalCounts: [], repairAuthority: [] };
+    faux.setResponses(responses);
+    return { id: `file-delivery-${++sequence}`, callsBefore: faux.state.callCount };
+  }
+  async function slackRun(id: string) {
+    const handle = init(SlackProbe, { id });
+    const state = dispatchState(slackEnvelope(id));
+    const input = { handle, state, message: 'Create an install report.', turnId: `turn-${id}`,
+      conversationKey: id, useCloudflareSandbox: false, requestedModel: MODEL };
+    const result = await promptSlackThreadAgent(input);
+    assert.ok(state.dispatchReceipt);
+    const reply = await handle.read(state.dispatchReceipt);
+    return { handle, state, input, result, reply };
+  }
+  function assertRepaired() {
+    assert.equal(probe.responseStarts, 1);
+    assert.equal(Math.max(...probe.repairSignalCounts), 1);
+    assert.ok(probe.repairAuthority.length > 0);
+    assert.ok(probe.repairAuthority.every(Boolean));
+    assert.ok(probe.deliveries.some((delivery) => delivery.kind === 'signal' && delivery.type === FILE_DELIVERY_SIGNAL_TYPE));
+  }
+  try {
+    for (const scenario of [
+      { name: 'absolute path', path: '/home/user/report.md', draft: 'Created /home/user/report.md.' },
+      { name: 'relative filename', path: 'report.md', draft: 'Created report.md.' },
+      { name: 'no filename after shell creation', path: 'report.md', draft: 'The install report is ready.', shell: true },
+    ]) {
+      await t.test(`repairs an omitted Markdown export with ${scenario.name}`, async () => {
+        const { id, callsBefore } = begin([
+          scenario.shell ? call('bash', { command: "printf '# Install report\\n\\nThe installation checks passed.\\n' > report.md" }) : writeReport(scenario.path),
+          fauxAssistantMessage(scenario.draft), completeReport(scenario.path),
+          fauxAssistantMessage('Attached the install report.'),
+        ]);
+        const { reply, result, handle, state, input } = await slackRun(id);
+        assertRepaired();
+        assert.equal(faux.state.callCount - callsBefore, 4);
+        assert.equal(probe.staged.length, 1);
+        assert.equal(probe.staged[0]!.filename, 'report.md');
+        assert.equal(new TextDecoder().decode(probe.staged[0]!.bytes), REPORT);
+        assert.equal(completionResult(reply).unresolved, false);
+        assert.equal(result.text, 'Attached the install report.');
+        assert.equal(result.artifacts?.length, 1);
+        assert.deepEqual(result.artifacts?.[0]?.destination, { ...CONVERSATION, agentId: AGENT.id });
+        const callsAfter = faux.state.callCount;
+        assert.deepEqual(await handle.read(state.dispatchReceipt!), reply);
+        delete state.flueSettlement;
+        assert.deepEqual(await promptSlackThreadAgent(input), result);
+        assert.equal(faux.state.callCount, callsAfter);
+        assert.equal(probe.staged.length, 1);
+      });
+    }
+
+    await t.test('an ignored correction becomes an honest incomplete result after one repair', async () => {
+      const { id, callsBefore } = begin([writeReport(), fauxAssistantMessage('Created /home/user/report.md.'),
+        fauxAssistantMessage('Everything is done. Read /home/user/report.md.')]);
+      const { result, reply } = await slackRun(id);
+      assertRepaired();
+      assert.equal(faux.state.callCount - callsBefore, 3);
+      assert.equal(probe.staged.length, 0);
+      assert.equal(completionResult(reply).unresolved, true);
+      assert.match(result.text, /couldn't finish checking/);
+      assert.doesNotMatch(result.text, /Everything is done|\/home\/user\/report\.md/);
+      assert.equal(result.artifacts, undefined);
+    });
+
+    await t.test('a proactively posted file needs no correction model call', async () => {
+      const { id, callsBefore } = begin([writeReport(),
+        call('post_artifact', { path: 'report.md', filename: 'report.md' }),
+        fauxAssistantMessage('Attached the install report.')]);
+      const { result, reply } = await slackRun(id);
+      assert.equal(faux.state.callCount - callsBefore, 3);
+      assert.equal(Math.max(...probe.repairSignalCounts), 0);
+      assert.equal(probe.responseStarts, 1);
+      assert.equal(probe.staged.length, 1);
+      assert.equal(completionResult(reply).unresolved, false);
+      assert.equal(result.artifacts?.length, 1);
+    });
+
+    await t.test('correction keeps an earlier CSV receipt and stages only the missing Markdown file', async () => {
+      const { id, callsBefore } = begin([
+        call('write', { path: 'summary.csv', content: 'check,status\ninstall,passed\n' }),
+        call('post_artifact', { path: 'summary.csv', filename: 'summary.csv' }),
+        writeReport(), fauxAssistantMessage('Both reports are ready.'),
+        call(COMPLETE_FILE_DELIVERY_TOOL, { files: [{ path: 'summary.csv', filename: 'summary.csv' },
+          { path: 'report.md', filename: 'report.md' }] }),
+        fauxAssistantMessage('Attached both reports.'),
+      ]);
+      const { result, reply } = await slackRun(id);
+      assertRepaired();
+      assert.equal(faux.state.callCount - callsBefore, 6);
+      assert.deepEqual(probe.staged.map((file) => file.filename), ['summary.csv', 'report.md']);
+      assert.deepEqual(parseSlackArtifactReceipts(reply.data?.[SLACK_ARTIFACT_RECEIPTS_DATA_NAME])
+        .map((receipt) => receipt.fileId), ['FPROBE00001', 'FPROBE00002']);
+      assert.equal(result.artifacts?.length, 2);
+      assert.equal(result.text, 'Attached both reports.');
+    });
+
+    await t.test('a terminating routine result still permits same-response file correction', async () => {
+      const { id, callsBefore } = begin([
+        writeReport(), call('submit_routine_result', { text: 'Created /home/user/report.md.' }),
+        completeReport(), call('submit_routine_result', { text: 'Attached the scheduled report.' }),
+      ]);
+      const scheduledFor = 1_789_230_000_000;
+      const handle = init(RoutineProbe, { id });
+      const receipt = await handle.dispatch({ message: {
+        kind: 'signal', type: 'schedule',
+        body: `Create an install report.\n\n${serializeCurrentRequestEnvelope('', false, ACTOR, scheduleSignalMessageTs(scheduledFor))}`,
+        attributes: { workspaceId: CONVERSATION.workspaceId, routineId: 'routine-probe', occurrenceId: 'occurrence-probe',
+          conversationId: 'conversation-probe', ownerAgentId: AGENT.id, actorSlackUserId: ACTOR, scheduledFor: String(scheduledFor) },
+      } });
+      const reply = await handle.read(receipt);
+      assertRepaired();
+      assert.equal(faux.state.callCount - callsBefore, 4);
+      assert.deepEqual(reply.data?.routineResult, [{ text: 'Attached the scheduled report.' }]);
+      assert.equal(completionResult(reply).unresolved, false);
+      assert.equal(parseSlackArtifactReceipts(reply.data?.[SLACK_ARTIFACT_RECEIPTS_DATA_NAME]).length, 1);
+      assert.equal(probe.staged.length, 1);
+    });
+  } finally {
+    await runtime.stop();
+    await stopInstrumentation();
+  }
+});

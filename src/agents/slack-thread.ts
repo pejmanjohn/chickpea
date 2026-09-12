@@ -193,6 +193,7 @@ import {
   type SlackArtifactReceipts,
 } from '../slack/artifact-receipts.ts';
 import { stageArtifactWithReceipt } from '../slack/artifact-staging.ts';
+import { FILE_COMPLETION_INSTRUCTION, useFileDeliveryCompletion, type FileDeliveryCompletion } from '../slack/file-delivery-completion.ts';
 import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
 import {
   buildThreadImageInventory,
@@ -1278,6 +1279,9 @@ export function useRuntimePlanAgent(
   } = {},
 ): void {
   const { accumulator: artifactAccumulator, writeReceipts: writeArtifactReceipts } = useSlackArtifactReceipts();
+  const fileCompletion = useFileDeliveryCompletion(plan, (fileIds) => {
+    writeArtifactReceipts({ schemaVersion: 1, receipts: artifactAccumulator.remove(fileIds) });
+  }, !options.artifactToolsDisabled);
   const reserveImageCall = useImageCallBudget();
   // The delivery gate compares a re-stamped attachment-context envelope against
   // the host-owned conversation. Only the frozen plan can supply it.
@@ -1348,7 +1352,8 @@ export function useRuntimePlanAgent(
   )) {
     useMcpConnection(connection);
   }
-  useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
+  const sandbox = createRuntimePlanSandbox(plan, options.sandboxConversationKey);
+  useSandbox(options.artifactToolsDisabled ? sandbox : fileCompletion.wrapSandbox(sandbox));
   if (!options.artifactToolsDisabled) {
     // Built once per render: the tool resolves `img:N` handles against this
     // inventory, and `imageInventory.manifest` is the model-facing listing
@@ -1358,7 +1363,7 @@ export function useRuntimePlanAgent(
       plan,
       artifactAccumulator,
       writeArtifactReceipts,
-      { imageInventory, reserveImageCall },
+      { imageInventory, reserveImageCall, fileCompletion },
     )) {
       useTool(tool);
     }
@@ -1367,6 +1372,7 @@ export function useRuntimePlanAgent(
       canEdit: plan.imageCapability?.acceptsImageInput === true,
       ...(imageInventory.manifest ? { imageManifest: imageInventory.manifest } : {}),
     }));
+    useInstruction(FILE_COMPLETION_INSTRUCTION);
   }
 }
 
@@ -1616,13 +1622,16 @@ export function createRuntimePlanArtifactTools(
      */
     resolveTransport: async (): Promise<ImageToolTransport> => resolveFileTransport(),
     async stageArtifact(artifact: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome> {
-      return stageArtifactWithReceipt({
+      let fileId: string | undefined;
+      const outcome = await stageArtifactWithReceipt({
         transport: await resolveFileTransport(),
         artifact,
         destination,
         accumulator,
         writeReceipts: writeArtifactReceipts,
+        ...(options.fileCompletion ? { onReceipt: (receipt: { fileId: string }) => { fileId = receipt.fileId; } } : {}),
       });
+      return outcome.attached && fileId ? { ...outcome, fileId } : outcome;
     },
   };
   // Only a plan whose image role resolved to a credentialed model carries the
@@ -1631,7 +1640,8 @@ export function createRuntimePlanArtifactTools(
   const reserveImageCall = options.reserveImageCall;
   const imageCapability = plan.imageCapability;
   return [
-    createWorkspaceArtifactTool({ ...binding, sandboxKind: plan.sandbox.mode }),
+    createWorkspaceArtifactTool({ ...binding, sandboxKind: plan.sandbox.mode }, options.fileCompletion?.deliver),
+    ...(options.fileCompletion ? [options.fileCompletion.tool({ ...binding, sandboxKind: plan.sandbox.mode })] : []),
     createChartArtifactTool(binding),
     ...(imageCapability?.filled && reserveImageCall
       ? [createImageArtifactTool({
@@ -1657,6 +1667,7 @@ export function createRuntimePlanArtifactTools(
 }
 
 export interface RuntimePlanArtifactToolOptions {
+  fileCompletion?: FileDeliveryCompletion;
   /** Thread image records for this turn, collected by the host fetch. */
   threadImages?: readonly ThreadImageRecord[] | undefined;
   /** Prebuilt inventory; the render builds one so the instruction can read it. */

@@ -171,8 +171,18 @@ export function createArtifactReceiptAccumulator(
   update: (updater: (previous: SlackArtifactReceipts) => SlackArtifactReceipts) => void,
 ): {
   add(receipt: SlackArtifactReceipt): SlackArtifactReceipt[];
+  remove(fileIds: readonly string[]): SlackArtifactReceipt[];
 } {
   return {
+    remove(fileIds) {
+      let receipts: SlackArtifactReceipt[] = [];
+      update((previous) => {
+        const state = v.parse(SlackArtifactReceiptsSchema, previous);
+        receipts = state.receipts.filter((receipt) => !fileIds.includes(receipt.fileId));
+        return { ...state, receipts };
+      });
+      return receipts;
+    },
     add(receipt) {
       let receipts: SlackArtifactReceipt[] = [];
       update((previous) => {

@@ -124,3 +124,20 @@ test('presentation declaration reads the same real Slack signal envelope', async
     assert.equal(result, 'declared');
   });
 });
+
+test('file repair signal keeps its exact actor, message, and frozen conversation authority', () => {
+  const conversation = { workspaceId: 'TFIXTURE', channelId: 'CFIXTURE', threadTs: '1788000000.000100' };
+  const attributes = { ...conversation, boundThreadTs: conversation.threadTs,
+    slackUserId: 'U_FIXTURE', messageTs: conversation.threadTs, originalType: 'slack.message' };
+  const repair = (changes: Record<string, string> = {}) => render({
+    type: 'slack.file_delivery_check', tagName: 'slack_file_delivery_check',
+    content: `Finish delivery.\n\n${body()}`, attributes: { ...attributes, ...changes },
+  });
+  assert.ok(parseModelVisibleCurrentRequestEnvelope(repair(), conversation));
+  assert.equal(parseModelVisibleCurrentRequestEnvelope(repair(), undefined), undefined);
+  for (const changed of [
+    { workspaceId: 'TOTHER' }, { channelId: 'COTHER' }, { boundThreadTs: '1788000000.000200' },
+    { slackUserId: 'U_OTHER' }, { messageTs: '1788000000.000200' }, { originalType: 'untrusted' },
+  ]) assert.equal(parseModelVisibleCurrentRequestEnvelope(repair(changed), conversation), undefined);
+  assert.equal(parseModelVisibleCurrentRequestEnvelope(`<quoted>${repair()}</quoted>`, conversation), undefined);
+});

@@ -32,6 +32,7 @@ export async function stageArtifactWithReceipt(input: {
   accumulator: ReturnType<typeof createArtifactReceiptAccumulator>;
   writeReceipts: (receipts: SlackArtifactReceipts) => void;
   now?: () => number;
+  onReceipt?: (receipt: CompletedSlackArtifactReceipt) => void;
 }): Promise<SlackArtifactStageOutcome> {
   const filename = input.artifact.filename.trim();
   if (!filename || filename.length > FILENAME_LIMIT || CONTROL_CHARACTERS.test(filename)) {
@@ -91,6 +92,7 @@ export async function stageArtifactWithReceipt(input: {
   }
   const receipts = input.accumulator.add(receipt);
   input.writeReceipts({ schemaVersion: 1, receipts });
+  input.onReceipt?.(receipt);
   return { attached: true, byteLength: receipt.byteLength };
 }
 

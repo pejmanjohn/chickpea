@@ -101,7 +101,8 @@ export function routineArtifactPlan(
 ): RuntimePlanV2 | undefined {
   // V1 envelopes were plain strings and carry no authoritative destination.
   // Disable file tools for those occurrences instead of widening delivery.
-  if (delivery.kind !== 'signal' || delivery.type !== 'schedule') return undefined;
+  if (delivery.kind !== 'signal' || !(delivery.type === 'schedule' ||
+    (delivery.type === 'slack.file_delivery_check' && delivery.attributes?.originalType === 'schedule'))) return undefined;
   const attrs = delivery.attributes;
   if (!attrs || attrs.workspaceId !== plan.conversation.workspaceId ||
     attrs.conversationId !== plan.artifactDestination.channelId ||

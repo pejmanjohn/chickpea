@@ -1018,6 +1018,7 @@ function routineResult(reply: AgentReply, run: RoutineRun, routine: RoutineDefin
   }
   return {
     ...normalized,
+    message: resolveFileDeliveryText(normalized.message, reply.data[FILE_DELIVERY_DATA_NAME]),
     ...(artifacts.length > 0 && normalized.status === 'succeeded' ? { artifacts } : {}),
   };
 }
@@ -1296,3 +1297,4 @@ function routineModelLabel(
 }
 
 class RoutineSupersededError extends Error {}
+import { FILE_DELIVERY_DATA_NAME, resolveFileDeliveryText } from '../slack/file-delivery-completion.ts';
