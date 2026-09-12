@@ -32,10 +32,9 @@ function fixture(config: Record<string, unknown> = {}) {
 }
 
 test('account preflight uses supported Wrangler auth and exactly the selected provider context', async () => {
-  const f = fixture();
+  const f = fixture({ account_id: ACCOUNT });
   assert.deepEqual(await preflightCloudflareAccount(f.options), { accountId: ACCOUNT, workersDev: true });
   assert.deepEqual(f.commands, [
-    ['whoami', '--json', '--profile', 'chosen', '--env', 'staging'],
     ['auth', 'token', '--json', '--profile', 'chosen', '--env', 'staging'],
   ]);
   assert.equal(f.requests[0]!.url, `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/subdomain`);
@@ -43,6 +42,23 @@ test('account preflight uses supported Wrangler auth and exactly the selected pr
   assert.equal(f.requests[0]!.init.redirect, 'error');
   assert.ok(f.requests[0]!.init.signal);
   assert.deepEqual(f.requests[0]!.init.headers, { Authorization: `Bearer ${SECRET}` });
+});
+
+test('a named profile requires an explicit account instead of unsupported whoami discovery', async () => {
+  const f = fixture();
+  await assert.rejects(preflightCloudflareAccount(f.options), /CLOUDFLARE_ACCOUNT_SELECTION_REQUIRED.*CLOUDFLARE_ACCOUNT_ID/);
+  assert.deepEqual(f.commands, []);
+  assert.deepEqual(f.requests, []);
+});
+
+test('the active profile can discover one account without a named-profile override', async () => {
+  const f = fixture();
+  f.options.providerContext = ['--env', 'staging'];
+  assert.equal((await preflightCloudflareAccount(f.options)).accountId, ACCOUNT);
+  assert.deepEqual(f.commands, [
+    ['whoami', '--json', '--env', 'staging'],
+    ['auth', 'token', '--json', '--env', 'staging'],
+  ]);
 });
 
 test('effective workers.dev disabled and custom-route defaults need no account authentication', async () => {
@@ -63,6 +79,7 @@ test('account selection refuses conflicting or ambiguous identities before netwo
   assert.deepEqual(f.commands, []);
   assert.deepEqual(f.requests, []);
   const g = fixture();
+  g.options.providerContext = [];
   await assert.rejects(preflightCloudflareAccount({ ...g.options,
     runWrangler: () => ({ status: 0, stdout: JSON.stringify({ accounts: [{ id: ACCOUNT }, { id: OTHER }] }) }),
   }), /CLOUDFLARE_ACCOUNT_SELECTION_REQUIRED/);

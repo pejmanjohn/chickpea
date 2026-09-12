@@ -78,6 +78,11 @@ export async function preflightCloudflareAccount(options) {
   let accountId = configuredAccount(config, env, options.expectedAccount);
   if (!usesWorkersDev(config)) return { workersDev: false, accountId };
   if (!accountId) {
+    // whoami only inspects the active profile and rejects --profile. Never
+    // infer a named profile's account from a different login's identity.
+    if ((options.providerContext ?? []).includes('--profile')) {
+      throw failure('CLOUDFLARE_ACCOUNT_SELECTION_REQUIRED', 'Choose the intended account in the Cloudflare dashboard and set CLOUDFLARE_ACCOUNT_ID (or account_id in the selected Wrangler configuration) before retrying with the same profile.');
+    }
     const identity = commandJson(options, ['whoami', '--json']);
     if (!Array.isArray(identity.accounts) || identity.accounts.length !== 1) {
       throw failure('CLOUDFLARE_ACCOUNT_SELECTION_REQUIRED', 'Choose the intended account from wrangler whoami and set CLOUDFLARE_ACCOUNT_ID before retrying.');
