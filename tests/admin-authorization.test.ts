@@ -309,7 +309,8 @@ test('Members can resolve public skills without gaining shared GitHub App access
     if (url.endsWith('/repos/acme/public-skills')) {
       return Response.json({ default_branch: 'main' });
     }
-    if (url.includes('/git/trees/main')) {
+    if (url.includes('/commits/main')) return Response.json({ sha: '1'.repeat(40) });
+    if (url.includes('/git/trees/' + '1'.repeat(40))) {
       return Response.json({ tree: [{ path: 'skills/example/SKILL.md', type: 'blob' }] });
     }
     if (url.includes('raw.githubusercontent.com/acme/public-skills/')) {
