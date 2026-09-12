@@ -10,6 +10,8 @@ const OPENAI_API_BASE = 'https://api.openai.com/v1';
 
 /** Edits accept at most 16 input images (OpenAI Images API reference). */
 export const IMAGE_EDIT_INPUT_CAP = 16;
+/** Generations and edits return at most 10 images per call (`n`, OpenAI Images API reference). */
+export const IMAGE_OUTPUT_CAP = 10;
 
 export const IMAGE_MODEL_IDS = [
   'openai/gpt-image-2.5-flare',
@@ -26,6 +28,7 @@ export interface ImageModelProfile extends ImagesModel<typeof OPENAI_IMAGES_API>
   input: ('text' | 'image')[];
   output: ['image'];
   maxEditInputs: typeof IMAGE_EDIT_INPUT_CAP;
+  maxOutputs: typeof IMAGE_OUTPUT_CAP;
 }
 
 function imageProfile(id: ImageModelId, name: string): ImageModelProfile {
@@ -39,6 +42,7 @@ function imageProfile(id: ImageModelId, name: string): ImageModelProfile {
     input: ['text', 'image'],
     output: ['image'],
     maxEditInputs: IMAGE_EDIT_INPUT_CAP,
+    maxOutputs: IMAGE_OUTPUT_CAP,
     // pi-ai's model type requires rates. Image calls are not metered in this
     // release (metering is deferred); the provider's own usage object is
     // returned by the client instead of being priced here.
