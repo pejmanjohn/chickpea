@@ -106,7 +106,10 @@ function fixture(t: any, wranglerProfile?: string, authoredPolicy = true) {
     if(args[0]==='config'){console.log(JSON.stringify({'ignore-scripts':false,'allow-scripts':[]}));process.exit(0);}
     appendFileSync(process.env.UPGRADE_FIXTURE_LOG,JSON.stringify(args)+'\\n');
     if(args[0]==='ci' && process.env.UPGRADE_FIXTURE_DIRTY_SOURCE==='1') writeFileSync('package.json',JSON.stringify({...JSON.parse(readFileSync('package.json','utf8')),changed:true}));
-    if(args[0]==='ci' && process.env.UPGRADE_FIXTURE_CI_FAIL==='1') process.exit(1);
+    if(args[0]==='ci' && process.env.UPGRADE_FIXTURE_CI_FAIL==='1') {
+      process.stderr.write('npm error code E401\\nprivate-registry-token-do-not-print\\nnpm error code PRIVATE_SECRET\\n');
+      process.exit(1);
+    }
     if(args.includes('verify:host')) throw new Error('Maintainer lock entered customer path');
     if(args[0]==='run'&&args[1]==='build'){
       const version=JSON.parse(readFileSync('package.json','utf8')).version;
@@ -204,6 +207,10 @@ for (const failure of ['UPGRADE_FIXTURE_DIRTY_SOURCE', 'UPGRADE_FIXTURE_CI_FAIL'
   const result = f.run(['--to', 'v0.1.1', '--preflight'], false, false, { [failure]: '1' });
   assert.equal(result.status, 1);
   if (failure === 'UPGRADE_FIXTURE_DIRTY_SOURCE') assert.match(result.stderr, /identity or clean-checkout/);
+  else {
+    assert.match(result.stderr, /NPM_INSTALL_FAILED.*E401/);
+    assert.doesNotMatch(result.stderr + result.stdout, /private-registry-token-do-not-print|PRIVATE_SECRET/);
+  }
   const commands = readFileSync(f.log, 'utf8');
   assert.match(commands, /"ci"/);
   assert.match(commands, /"--strict-allow-scripts"/);

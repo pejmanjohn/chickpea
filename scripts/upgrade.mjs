@@ -78,11 +78,34 @@ function targetEnvironment(target, { deploy = false, build = false } = {}) {
   return env;
 }
 
+const NPM_DIAGNOSTIC_CODES = new Set(['E401', 'E403', 'E404', 'EACCES', 'EPERM', 'ENOENT', 'ENOSPC',
+  'EINTEGRITY', 'ERESOLVE', 'EUSAGE', 'EBADENGINE', 'ELOCKVERIFY', 'ESTRICTALLOWSCRIPTS',
+  'EALLOWSCRIPTS', 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT',
+  'ERR_SOCKET_TIMEOUT', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN']);
+
 function subprocess(command, args, cwd, env, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, env, stdio: options.quiet ? 'ignore' : 'inherit', ...(options.signal ? { signal: options.signal } : {}) });
+    const child = spawn(command, args, { cwd, env,
+      stdio: options.npmDiagnostics ? ['ignore', 'ignore', 'pipe'] : options.quiet ? 'ignore' : 'inherit',
+      ...(options.signal ? { signal: options.signal } : {}) });
+    const codes = new Set();
+    let line = '';
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (chunk) => {
+      // Retain only recognized error codes. Paths, registry URLs, credentials
+      // and arbitrary hook output must not reach the terminal or receipt.
+      for (const character of chunk) {
+        if (character === '\n') {
+          const code = /^npm (?:error|ERR!) code ([A-Z0-9_]+)\r?$/.exec(line)?.[1];
+          if (NPM_DIAGNOSTIC_CODES.has(code)) codes.add(code);
+          line = '';
+        } else if (line.length <= 512) line += character;
+      }
+    });
     child.once('error', () => reject(new Error('Unable to start the required local command.')));
-    child.once('exit', (code) => code === 0 ? resolve() : reject(new Error('A local build or guarded deployment failed. Use the receipt to inspect and retry.')));
+    child.once('close', (code) => code === 0 ? resolve() : reject(new Error(options.npmDiagnostics
+      ? `NPM_INSTALL_FAILED: npm ci failed (exit ${code ?? 'interrupted'}${codes.size ? `; ${[...codes].join(', ')}` : ''}). Preserve the verified source and use the receipt to retry after checking npm configuration and registry access. Raw dependency output was withheld because it may contain credentials.`
+      : 'A local build or guarded deployment failed. Use the receipt to inspect and retry.')));
   });
 }
 function npm(args, cwd, env, options) {
@@ -212,7 +235,7 @@ async function main() {
         console.log(`Installing verified dependencies with npm ${policy.version} and the reviewed script policy...`);
         // npm configuration and hook output can contain credentials. Keep it
         // out of the public terminal and receipt; failures retain source for retry.
-        await npm(['ci', '--no-audit', '--no-fund', ...policy.args], checkout, policy.env, { quiet: true, signal: policy.signal });
+        await npm(['ci', '--no-audit', '--no-fund', ...policy.args], checkout, policy.env, { npmDiagnostics: true, signal: policy.signal });
       } finally { policy.dispose(); }
       verifyReleaseSource(checkout, source);
       await npm(['run', 'build'], checkout, buildEnvironment);

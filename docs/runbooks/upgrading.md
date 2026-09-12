@@ -40,6 +40,9 @@ private temporary directory; remove only the directory belonging to that run.
 
 Conflicting script overrides, script suppression, unsupported npm, and unknown
 historical source/digest combinations stop before dependency installation.
+An npm install failure reports `NPM_INSTALL_FAILED`, its exit status and any
+recognized npm error code, such as `E401` or `ESTRICTALLOWSCRIPTS`. Raw dependency
+output is withheld because it may contain credentials or private registry URLs.
 Record the release and Node/npm versions and the error code; preserve source
 and receipts. Use the [reviewed policy](releasing.md#dependency-install-policy)
 and resolve the indicated configuration issue before resuming. Never run an
