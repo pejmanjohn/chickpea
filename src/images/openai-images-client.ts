@@ -84,6 +84,10 @@ const SUPPORTED_INPUT_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/we
 const PROMPT_CHARACTER_CAP = 32_000;
 const MAX_RESPONSE_CHARACTERS = 48 * 1024 * 1024;
 const DETAIL_CHARACTER_CAP = 200;
+// A provider error code is echoed to the model as a diagnosis token, so it is
+// held to a short identifier shape rather than trusted as free text.
+const CODE_CHARACTER_CAP = 48;
+const CODE_TOKEN = /^[a-z0-9][a-z0-9_.-]*$/;
 // Shortest run of prompt text that must never reappear in a returned detail.
 const PROMPT_ECHO_WINDOW = 24;
 const CONTROL_CHARACTERS = /[\p{Cc}]/gu;
@@ -122,7 +126,14 @@ export function createOpenAiImagesClient(options: OpenAiImagesClientOptions): Op
             method: 'POST',
             headers: { authorization: `Bearer ${apiKey}`, ...prepared.headers },
             body: prepared.body,
-            redirect: 'error',
+            // workerd refuses `redirect: 'error'` outright ("won't be
+            // implemented since it does not make sense at the edge; use
+            // 'manual' and check the response status code"), and the throw
+            // happens before the request leaves, so on Cloudflare every image
+            // call failed as `unreachable` without ever reaching the provider.
+            // `manual` is what the direct Slack upload already uses; the
+            // off-host guard below refuses the redirect by status instead.
+            redirect: 'manual',
             signal,
           });
           const offHost = rejectOffHostResponse(response, base.host);
@@ -236,7 +247,10 @@ function validateRequest(
 }
 
 function rejectOffHostResponse(response: Response, expectedHost: string): ImageCallResult | undefined {
-  if (response.redirected || (response.status >= 300 && response.status < 400)) {
+  // Status 0 covers a runtime that answers a manual redirect opaquely instead
+  // of handing back the 3xx itself.
+  if (response.redirected || response.status === 0 ||
+    (response.status >= 300 && response.status < 400)) {
     return { ok: false, reason: 'unreachable', detail: 'redirect_rejected' };
   }
   const finalUrl = response.url;
@@ -307,7 +321,7 @@ function mapErrorResponse(
   prompt: string,
 ): ImageCallResult {
   const error = isRecord(payload?.error) ? payload.error : undefined;
-  const code = readString(error?.code) ?? readString(error?.type) ?? '';
+  const code = safeCode(readString(error?.code) ?? readString(error?.type));
   const message = safeDetail(readString(error?.message), prompt);
   if (status === 401 || status === 403) {
     return { ok: false, reason: 'misconfigured', detail: code || 'credential_rejected' };
@@ -345,6 +359,22 @@ function safeDetail(value: string | undefined, prompt: string): string {
     }
   }
   if (needle.length > 0 && needle.length < PROMPT_ECHO_WINDOW && haystack.includes(needle)) {
+    return '';
+  }
+  return cleaned;
+}
+
+/**
+ * Provider error codes travel into the tool result so the Agent can say which
+ * failure it met. Only an identifier-shaped token survives: anything longer or
+ * free-form is dropped rather than echoed.
+ */
+function safeCode(value: string | undefined): string {
+  if (!value) {
+    return '';
+  }
+  const cleaned = value.replace(CONTROL_CHARACTERS, '').trim().toLowerCase();
+  if (cleaned.length === 0 || cleaned.length > CODE_CHARACTER_CAP || !CODE_TOKEN.test(cleaned)) {
     return '';
   }
   return cleaned;

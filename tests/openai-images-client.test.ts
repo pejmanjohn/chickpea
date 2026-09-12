@@ -73,7 +73,9 @@ test('a generation request carries the wire model, prompt, and format policy (AE
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.url, `${BASE_URL}/images/generations`);
-  assert.equal(calls[0]?.init.redirect, 'error');
+  // workerd refuses `redirect: 'error'` at the init, so the request would
+  // never leave the Worker; `manual` plus the status check is portable.
+  assert.equal(calls[0]?.init.redirect, 'manual');
   const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>;
   assert.deepEqual(body, {
     model: 'gpt-image-2.5-sunburst',
@@ -279,6 +281,64 @@ test('a successful status served from another host is rejected too', async () =>
   });
 
   assert.deepEqual(result, { ok: false, reason: 'unreachable', detail: 'redirect_rejected' });
+});
+
+test('a redirect answered opaquely, with no status, is still refused', async () => {
+  const { fetchImpl } = recordingFetch(() => {
+    const response = new Response(null, { status: 200 });
+    Object.defineProperty(response, 'status', { value: 0 });
+    Object.defineProperty(response, 'url', { value: '' });
+    return response;
+  });
+
+  assert.deepEqual(
+    await client(fetchImpl).generate({
+      prompt: 'an opaque redirect',
+      format: PNG_POLICY,
+      deadlineMs: 5_000,
+    }),
+    { ok: false, reason: 'unreachable', detail: 'redirect_rejected' },
+  );
+});
+
+test('every request the client sends uses the manual redirect mode', async () => {
+  const { calls, fetchImpl } = recordingFetch(() =>
+    jsonResponse({ data: [{ b64_json: PIXEL_BASE64 }] }, 200, `${BASE_URL}/images/edits`),
+  );
+
+  await client(fetchImpl).edit({
+    prompt: 'an edit',
+    format: PNG_POLICY,
+    deadlineMs: 5_000,
+    inputs: [imageInput(1)],
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.init.redirect, 'manual');
+});
+
+test('a provider error code reaches the outcome only as a bounded identifier', async () => {
+  for (const [code, expected] of [
+    ['insufficient_quota', 'insufficient_quota'],
+    ['Billing_Hard_Limit_Reached', 'billing_hard_limit_reached'],
+    // Free-form prose, an over-long token, and a shape that is not an
+    // identifier all fall back to the status rather than being echoed.
+    ['your organisation has exceeded its quota for this month', 'http_400'],
+    ['x'.repeat(64), 'http_400'],
+    ['<script>alert(1)</script>', 'http_400'],
+  ] as const) {
+    const { fetchImpl } = recordingFetch(() =>
+      jsonResponse({ error: { code, message: 'nope' } }, 400),
+    );
+    const result = await client(fetchImpl).generate({
+      prompt: 'a bounded code',
+      format: PNG_POLICY,
+      deadlineMs: 5_000,
+    });
+    assert.ok(!result.ok);
+    assert.equal(result.reason, 'invalid-request');
+    assert.equal(result.detail, expected, code);
+  }
 });
 
 test('a base URL that is not https or carries credentials is refused at construction', () => {
