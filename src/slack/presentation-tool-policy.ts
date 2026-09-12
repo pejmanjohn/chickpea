@@ -22,14 +22,18 @@ interface PresentationToolPolicyState {
   answerOnly: boolean;
   artifactDeliveryAttempted: boolean;
   fileDeliveryPending?: () => boolean;
+  fileDeliveryAttempted?: () => boolean;
 }
 
 const submissionPolicy = new AsyncLocalStorage<PresentationToolPolicyState>();
 
 /** Rebound from durable completion state on every agent render, including replay. */
-export function bindFileDeliveryCheck(pending: () => boolean): void {
+export function bindFileDeliveryCheck(pending: () => boolean, attempted?: () => boolean): void {
   const active = submissionPolicy.getStore();
-  if (active) active.fileDeliveryPending = pending;
+  if (active) {
+    active.fileDeliveryPending = pending;
+    if (attempted) active.fileDeliveryAttempted = attempted;
+  }
 }
 
 export class SlackAnswerOnlyToolDeniedError extends Error {
@@ -71,7 +75,7 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
   if (operation.toolName === SLACK_STREAM_ANSWER_TOOL_NAME) {
     assertFileDeliveryChecked(active);
     if (!currentRequestOffersProgressiveStreaming(active.envelope) ||
-        active.artifactDeliveryAttempted) {
+        artifactDeliveryAttempted(active)) {
       throw new SlackPresentationToolUnavailableError();
     }
     const result = await next();
@@ -79,7 +83,7 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
     // Another tool in the same model batch may have begun an upload while
     // the declaration was awaiting its result. File delivery wins until the
     // answer-only lock is committed; never acknowledge both paths.
-    if (active.artifactDeliveryAttempted) {
+    if (artifactDeliveryAttempted(active)) {
       throw new SlackPresentationToolUnavailableError();
     }
     active.answerOnly = true;
@@ -98,11 +102,21 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
   if (active.answerOnly) throw new SlackAnswerOnlyToolDeniedError();
   // A failed/uncertain upload may already have staged a private file. Keep
   // that response on terminal delivery too; never stream ahead of its result.
-  if (ARTIFACT_DELIVERY_TOOL_NAMES.has(operation.toolName)) {
+  if (isArtifactUploadTool(operation.toolName)) {
     active.artifactDeliveryAttempted = true;
   }
   return next();
 };
+
+function isArtifactUploadTool(name: string): boolean {
+  // An empty completion is bookkeeping, not an upload attempt. Its actual
+  // staging is recorded by the durable callback bound above.
+  return ARTIFACT_DELIVERY_TOOL_NAMES.has(name) && name !== 'complete_file_delivery';
+}
+
+function artifactDeliveryAttempted(state: PresentationToolPolicyState): boolean {
+  return state.artifactDeliveryAttempted || state.fileDeliveryAttempted?.() === true;
+}
 
 function assertFileDeliveryChecked(state: PresentationToolPolicyState): void {
   if (state.fileDeliveryPending?.()) {
@@ -142,6 +156,7 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
     if (message?.role !== 'user') continue;
     newestUserIndex = index;
     envelope = envelopeFromUserMessage(message);
+    if (envelope && userMessageTexts(message).some((text) => text.startsWith('<slack_file_delivery_check '))) continue;
     break;
   }
   if (newestUserIndex < 0) return { successfulDeclaration: false, artifactDeliveryAttempted: false };
@@ -152,7 +167,7 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
   for (const message of messages.slice(newestUserIndex + 1)) {
     if (message.role === 'assistant') {
       for (const content of message.content) {
-        if (content.type === 'toolCall' && ARTIFACT_DELIVERY_TOOL_NAMES.has(content.name)) {
+        if (content.type === 'toolCall' && isArtifactUploadTool(content.name)) {
           artifactDeliveryAttempted = true;
         }
         if (content.type === 'toolCall' && (
@@ -184,12 +199,15 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
 function envelopeFromUserMessage(
   message: Extract<LlmMessage, { role: 'user' }>,
 ): CurrentRequestEnvelope | undefined {
-  const texts = typeof message.content === 'string'
-    ? [message.content]
-    : message.content.flatMap((content) => content.type === 'text' ? [content.text] : []);
+  const texts = userMessageTexts(message);
   for (let index = texts.length - 1; index >= 0; index -= 1) {
     const envelope = parseModelVisibleCurrentRequestEnvelope(texts[index]!);
     if (envelope) return envelope;
   }
   return undefined;
+}
+
+function userMessageTexts(message: Extract<LlmMessage, { role: 'user' }>): string[] {
+  return typeof message.content === 'string' ? [message.content]
+    : message.content.flatMap((content) => content.type === 'text' ? [content.text] : []);
 }

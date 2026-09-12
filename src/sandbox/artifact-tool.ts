@@ -126,7 +126,8 @@ export type SlackArtifactStageOutcome =
 export type SlackArtifactStagingDetail =
   | 'transport_unsupported'
   | 'private_receipt_invalid'
-  | 'private_stage_failed';
+  | 'private_stage_failed'
+  | 'source_unavailable';
 
 export interface ArtifactDestinationBinding {
   channel: string;
@@ -324,10 +325,15 @@ export async function freezeWorkspaceArtifact(
   }
 }
 
+export class ArtifactSizeError extends Error {
+  constructor(readonly maxBytes: number) {
+    super(maxBytes === MAX_ARTIFACT_BYTES ? 'artifact exceeds the 8 MB upload limit' : 'artifact exceeds its upload limit');
+    this.name = 'ArtifactSizeError';
+  }
+}
+
 function artifactSizeError(maxBytes: number): Error {
-  return new Error(maxBytes === MAX_ARTIFACT_BYTES
-    ? 'artifact exceeds the 8 MB upload limit'
-    : 'artifact exceeds its upload limit');
+  return new ArtifactSizeError(maxBytes);
 }
 
 function randomWorkspaceArtifactPath(): string {

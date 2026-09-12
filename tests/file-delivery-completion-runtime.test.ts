@@ -20,6 +20,7 @@ import {
   parseModelVisibleCurrentRequestEnvelope, serializeCurrentRequestEnvelope,
 } from '../src/memory/tool-policy.ts';
 import { scheduleSignalMessageTs } from '../src/routines/schedule-signal.ts';
+import { RoutineModelResultSchema } from '../src/routines/prompt.ts';
 import { createWorkspaceArtifactTool, MAX_ARTIFACT_BYTES, type ArtifactDestinationBinding } from '../src/sandbox/artifact-tool.ts';
 import {
   parseSlackArtifactReceipts, SLACK_ARTIFACT_RECEIPTS_DATA_NAME, useSlackArtifactReceipts,
@@ -101,10 +102,10 @@ function SlackProbe() { useProbe(); }
 
 function RoutineProbe() {
   useProbe();
-  const writeResult = useDataWriter('routineResult', { schema: v.object({ text: v.string() }) });
+  const writeResult = useDataWriter('routineResult', { schema: RoutineModelResultSchema });
   useTool({
     name: 'submit_routine_result', description: 'Submit the final scheduled result.',
-    input: v.object({ text: v.string() }),
+    input: RoutineModelResultSchema,
     run({ data }) { writeResult(data); return { output: 'recorded', terminate: true }; },
   });
 }
@@ -270,10 +271,34 @@ test('native file-delivery completion preserves authority, response state, and b
       assert.equal(result.text, 'Attached both reports.');
     });
 
+    for (const addMarkdown of [true, false]) {
+      await t.test(`completion preserves a prepared CSV when ${addMarkdown ? 'only a new Markdown file is listed' : 'an empty list confirms later scratch work'}`, async () => {
+        const files = addMarkdown ? [{ path: 'report.md', filename: 'report.md' }] : [];
+        const { id, callsBefore } = begin([
+          call('write', { path: 'summary.csv', content: 'check,status\ninstall,passed\n' }),
+          call('post_artifact', { path: 'summary.csv', filename: 'summary.csv' }),
+          call('bash', { command: "printf 'temporary calculation' > scratch.txt" }),
+          ...(addMarkdown ? [writeReport()] : []),
+          fauxAssistantMessage('The requested work is complete.'),
+          call(COMPLETE_FILE_DELIVERY_TOOL, { files }),
+          fauxAssistantMessage(addMarkdown ? 'Attached the CSV and Markdown report.' : 'Attached the CSV summary.'),
+        ]);
+        const { result, reply } = await slackRun(id);
+        assertRepaired();
+        assert.equal(faux.state.callCount - callsBefore, addMarkdown ? 7 : 6);
+        const expected = addMarkdown ? ['summary.csv', 'report.md'] : ['summary.csv'];
+        assert.deepEqual(probe.staged.map((file) => file.filename), expected);
+        assert.deepEqual(result.artifacts?.map((file) => file.filename), expected);
+        assert.deepEqual(completionResult(reply).files.map((file) => file.filename).sort(), [...expected].sort());
+        assert.equal(completionResult(reply).unresolved, false);
+        assert.ok(!probe.staged.some((file) => file.filename === 'scratch.txt'));
+      });
+    }
+
     await t.test('a terminating routine result still permits same-response file correction', async () => {
       const { id, callsBefore } = begin([
-        writeReport(), call('submit_routine_result', { text: 'Created /home/user/report.md.' }),
-        completeReport(), call('submit_routine_result', { text: 'Attached the scheduled report.' }),
+        writeReport(), call('submit_routine_result', { outcome: 'succeeded', message: 'Created /home/user/report.md.' }),
+        completeReport(), call('submit_routine_result', { outcome: 'succeeded', message: 'Attached the scheduled report.' }),
       ]);
       const scheduledFor = 1_789_230_000_000;
       const handle = init(RoutineProbe, { id });
@@ -286,7 +311,10 @@ test('native file-delivery completion preserves authority, response state, and b
       const reply = await handle.read(receipt);
       assertRepaired();
       assert.equal(faux.state.callCount - callsBefore, 4);
-      assert.deepEqual(reply.data?.routineResult, [{ text: 'Attached the scheduled report.' }]);
+      assert.deepEqual(reply.data?.routineResult, [{ outcome: 'succeeded', message: 'Attached the scheduled report.' }]);
+      const structured = v.parse(RoutineModelResultSchema, reply.data?.routineResult?.at(-1));
+      assert.equal(structured.message, 'Attached the scheduled report.');
+      assert.doesNotMatch(structured.message, /\/home\/user|Created/);
       assert.equal(completionResult(reply).unresolved, false);
       assert.equal(parseSlackArtifactReceipts(reply.data?.[SLACK_ARTIFACT_RECEIPTS_DATA_NAME]).length, 1);
       assert.equal(probe.staged.length, 1);

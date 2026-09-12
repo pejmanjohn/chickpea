@@ -6,11 +6,12 @@ import {
 } from '@flue/runtime';
 import * as v from 'valibot';
 import { bindFileDeliveryCheck } from './presentation-tool-policy.ts';
+import { validateArtifactPresentation } from './artifact-staging.ts';
 
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { assertArtifactDeliveryAllowed, currentRequestEnvelopeText } from '../memory/tool-policy.ts';
 import {
-  MAX_ARTIFACT_BYTES, readSandboxArtifact, sandboxArtifactPath, workspaceArtifactPath,
+  ArtifactSizeError, MAX_ARTIFACT_BYTES, readSandboxArtifact, sandboxArtifactPath, workspaceArtifactPath,
   type ArtifactDestinationBinding, type ArtifactToolResult,
 } from '../sandbox/artifact-tool.ts';
 
@@ -29,13 +30,13 @@ const FileOutcomeSchema = v.strictObject({
 type FileOutcome = v.InferOutput<typeof FileOutcomeSchema>;
 const CompletionStateSchema = v.strictObject({
   pending: v.array(v.string()), shellPending: v.boolean(), generation: v.number(),
-  outcomes: v.array(FileOutcomeSchema), repairRequested: v.boolean(),
+  outcomes: v.array(FileOutcomeSchema), repairRequested: v.boolean(), stagingAttempted: v.boolean(),
 });
 export type FileDeliveryState = v.InferOutput<typeof CompletionStateSchema>;
 export const FileDeliveryResultSchema = v.strictObject({
   unresolved: v.boolean(), files: v.array(FileOutcomeSchema),
 });
-const initialState = (): FileDeliveryState => ({ pending: [], shellPending: false, generation: 0, outcomes: [], repairRequested: false });
+const initialState = (): FileDeliveryState => ({ pending: [], shellPending: false, generation: 0, outcomes: [], repairRequested: false, stagingAttempted: false });
 const FileInputSchema = v.strictObject({
   path: v.pipe(v.string(), v.minLength(1), v.maxLength(2048)),
   filename: v.pipe(v.string(), v.minLength(1), v.maxLength(256)),
@@ -44,8 +45,8 @@ const FileInputSchema = v.strictObject({
 export type FileDeliveryInput = v.InferOutput<typeof FileInputSchema>;
 
 export const FILE_COMPLETION_INSTRUCTION = [
-  'After shell work, call complete_file_delivery before your final answer or submit_routine_result. List every final sandbox file for the user, including files already passed to post_artifact; it attaches missing files and reuses prepared files. Use an empty files list only when the work was scratch, a text-only answer, or the user explicitly asked for no attachment. Do not create or attach scratch scripts, temporary files, or repository source files as deliverables.',
-  'For a file written directly with write/edit, post_artifact accounts for that file. If other written files are scratch, complete_file_delivery confirms the final selection. Do all file work before completing delivery. Never declare stream_answer or present_table while file delivery is unchecked.',
+  'After shell work, call complete_file_delivery before your final answer or submit_routine_result. List all final sandbox files, including revised files and files already passed to post_artifact; it attaches missing files and reuses prepared files. An empty files list confirms no additional deliverables and preserves files already prepared. Keep scratch files, intermediate scripts and working repository files private unless the user requests them as final deliverables.',
+  'For a file written directly with write/edit, post_artifact accounts for that file. If other written files are scratch, complete_file_delivery confirms the final selection. Do all file work before completing delivery. Never declare stream_answer or present_table while file delivery is unchecked. Respect text-only or no-attachment requests. Use excludedPaths only to withdraw files previously prepared that the user no longer wants or that have become intermediate; omission alone never removes an attachment.',
   'A file-delivery check is internal continuation of the same request, not a new task. Complete only the omitted export, preserve already prepared files, and never repeat unrelated actions. Report individual attachment failures honestly.',
 ].join('\n');
 
@@ -100,42 +101,60 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
       },
     };
   }
+  function noteStagingAttempted() {
+    update((previous) => ({ ...previous, stagingAttempted: true }));
+  }
+  function removeKnown(path: string) {
+    const known = state().outcomes.find((file) => file.path === path);
+    if (known?.fileId) discard([known.fileId]);
+    update((previous) => ({ ...previous, outcomes: previous.outcomes.filter((file) => file.path !== path) }));
+  }
   async function deliverOnce(env: SessionEnv, input: FileDeliveryInput, binding: ArtifactDestinationBinding): Promise<ArtifactToolResult> {
     assertArtifactDeliveryAllowed();
     const generation = state().generation;
     let path = input.path;
-    let digest: string | undefined;
-    let bytes: Uint8Array | undefined;
+    let bytes: Uint8Array;
+    let presentation: ReturnType<typeof validateArtifactPresentation>;
     try {
-      path = binding.sandboxKind === 'cloudflare' ? workspaceArtifactPath(input.path) : sandboxArtifactPath(env, input.path);
+      path = resolveFilePath(env, input.path, binding);
+      presentation = validateArtifactPresentation(input);
       bytes = await readSandboxArtifact(env, path, binding.sandboxKind);
-      digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as BufferSource)),
-        (byte) => byte.toString(16).padStart(2, '0')).join('');
-      const previous = state().outcomes.find((known) => known.path === path && known.digest === digest &&
-        (!known.attached || known.filename === input.filename));
-      // Both success and uncertain failure are terminal for these exact bytes in this response.
-      if (previous) {
-        record(previous, generation);
-        return previous.attached
-          ? { attached: true, filename: previous.filename, byteLength: previous.byteLength! }
-          : previous.reason === 'too-large' ? { attached: false, reason: 'too-large', maxBytes: previous.maxBytes ?? MAX_ARTIFACT_BYTES }
-            : { attached: false, reason: previous.reason === 'missing-scope' ? 'missing-scope' : 'unavailable' };
+    } catch (error) {
+      removeKnown(path);
+      if (error instanceof ArtifactSizeError) {
+        record({ path, filename: input.filename, attached: false, reason: 'too-large', maxBytes: error.maxBytes }, generation);
+        return { attached: false, reason: 'too-large', maxBytes: error.maxBytes };
       }
-      const superseded = state().outcomes.find((known) => known.path === path);
-      if (superseded?.fileId) discard([superseded.fileId]);
-      const result = await binding.stageArtifact({ bytes, filename: input.filename,
-        ...(input.title ? { title: input.title } : {}), kind: 'file' });
-      record({ path, filename: input.filename, digest, attached: result.attached,
+      // No upload happened. Preserve actionable tool errors so the agent can
+      // correct a filename/path; final selection will account for unresolved ones.
+      update((previous) => ({ ...previous,
+        pending: [...new Set([...previous.pending, path])].slice(0, MAX_TRACKED_FILES) }));
+      throw error;
+    }
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as BufferSource)),
+      (byte) => byte.toString(16).padStart(2, '0')).join('');
+    const previous = state().outcomes.find((known) => known.path === path && known.digest === digest &&
+      (!known.attached || known.filename === presentation.filename));
+    // A known receipt or uncertain upload is terminal for these exact source bytes.
+    if (previous) {
+      record(previous, generation);
+      return previous.attached
+        ? { attached: true, filename: previous.filename, byteLength: previous.byteLength! }
+        : previous.reason === 'too-large' ? { attached: false, reason: 'too-large', maxBytes: previous.maxBytes ?? MAX_ARTIFACT_BYTES }
+          : { attached: false, reason: previous.reason === 'missing-scope' ? 'missing-scope' : 'unavailable' };
+    }
+    removeKnown(path);
+    noteStagingAttempted();
+    try {
+      const result = await binding.stageArtifact({ bytes, ...presentation, kind: 'file' });
+      record({ path, filename: presentation.filename, digest, attached: result.attached,
         ...(result.attached ? { byteLength: result.byteLength, ...(result.fileId ? { fileId: result.fileId } : {}) }
           : { reason: result.reason, ...(result.reason === 'too-large' ? { maxBytes: result.maxBytes } : {}), ...inlineOutcome(bytes) }) }, generation);
-      return result.attached ? { attached: true, filename: input.filename, byteLength: result.byteLength } : result;
-    } catch (error) {
-      const tooLarge = error instanceof Error && /size|limit/.test(error.message);
-      const superseded = state().outcomes.find((known) => known.path === path);
-      if (superseded?.fileId) discard([superseded.fileId]);
-      record({ path, filename: input.filename, ...(digest ? { digest } : {}), attached: false,
-        reason: tooLarge ? 'too-large' : 'unavailable', ...(tooLarge ? { maxBytes: MAX_ARTIFACT_BYTES } : {}), ...(bytes ? inlineOutcome(bytes) : {}) }, generation);
-      return tooLarge ? { attached: false, reason: 'too-large', maxBytes: MAX_ARTIFACT_BYTES } : { attached: false, reason: 'unavailable' };
+      return result.attached ? { attached: true, filename: presentation.filename, byteLength: result.byteLength } : result;
+    } catch {
+      record({ path, filename: presentation.filename, digest, attached: false,
+        reason: 'unavailable', ...inlineOutcome(bytes) }, generation);
+      return { attached: false, reason: 'unavailable' };
     }
   }
   function deliver(env: SessionEnv, input: FileDeliveryInput, binding: ArtifactDestinationBinding): Promise<ArtifactToolResult> {
@@ -143,34 +162,69 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
     deliveryTail = task.then(() => {}, () => {});
     return task;
   }
-  async function complete(env: SessionEnv, files: FileDeliveryInput[], binding: ArtifactDestinationBinding) {
+  async function complete(env: SessionEnv, files: FileDeliveryInput[], binding: ArtifactDestinationBinding, excludedPaths: string[] = []) {
     assertArtifactDeliveryAllowed();
-    const generation = state().generation;
+    // Validate exclusions before any side effect; absence from files is never removal.
+    const excluded = new Set(excludedPaths.map((path) => resolveFilePath(env, path, binding)));
+    for (const file of files) {
+      let path: string;
+      try { path = resolveFilePath(env, file.path, binding); } catch { continue; }
+      if (excluded.has(path)) throw new Error('A file cannot be both selected and excluded.');
+    }
+    const before = state();
+    const generation = before.generation;
     const outputs: ArtifactToolResult[] = [];
-    for (const file of files) outputs.push(await deliver(env, file, binding));
-    const selected = new Set(files.map((file) => binding.sandboxKind === 'cloudflare'
-      ? workspaceArtifactPath(file.path) : sandboxArtifactPath(env, file.path)));
+    const selected = new Set<string>();
+    const requested = new Set(files.flatMap((file) => {
+      try { return [resolveFilePath(env, file.path, binding)]; } catch { return []; }
+    }));
+    // Retaining a prepared deliverable means retaining its current contents.
+    // Shell work may have changed any prepared path, so re-read without uploading
+    // again when the digest is unchanged.
+    const retainedRechecks = before.outcomes.filter((file) => file.attached &&
+      !requested.has(file.path) && !excluded.has(file.path) &&
+      (before.shellPending || before.pending.includes(file.path)))
+      .map((file) => ({ path: file.path, filename: file.filename }));
+    for (const file of [...files, ...retainedRechecks]) {
+      let path = file.path;
+      try {
+        path = resolveFilePath(env, file.path, binding);
+        selected.add(path);
+        outputs.push(await deliver(env, file, binding));
+      } catch {
+        selected.add(path);
+        record({ path, filename: file.filename, attached: false, reason: 'source-unavailable' }, generation);
+        outputs.push({ attached: false, reason: 'unavailable', detail: 'source_unavailable' });
+      }
+    }
     const current = state();
     const checked = current.generation === generation && activeWrites === 0;
+    const removed = checked ? current.outcomes.filter((file) => excluded.has(file.path)) : [];
     if (checked) {
-      discard(current.outcomes.filter((known) => !selected.has(known.path)).flatMap((known) => known.fileId ? [known.fileId] : []));
+      const ids = removed.flatMap((file) => file.fileId ? [file.fileId] : []);
+      if (ids.length) discard(ids);
       update((previous) => ({ ...previous, pending: [], shellPending: false,
-        outcomes: previous.outcomes.filter((known) => selected.has(known.path)) }));
+        outcomes: previous.outcomes.filter((file) => !excluded.has(file.path) &&
+          (file.reason !== 'source-unavailable' || selected.has(file.path))) }));
     }
-    return { checked, files: outputs };
+    return { checked, files: outputs, retained: state().outcomes.filter((file) => file.attached).map((file) => file.filename),
+      discarded: removed.map((file) => file.filename) };
   }
   function tool(binding: ArtifactDestinationBinding) {
     return defineTool({
       name: COMPLETE_FILE_DELIVERY_TOOL,
-      description: 'Finish sandbox file delivery before answering. List final deliverables only. Missing files are attached; prepared files are reused. An empty list confirms scratch or text-only work. Never include intermediate scripts or private workspace files.',
-      input: v.strictObject({ files: v.pipe(v.array(FileInputSchema), v.maxLength(10)) }),
+      description: 'Finish sandbox file delivery before answering. List final or revised deliverables only. Prepared files are retained even with files=[]. Use excludedPaths only to explicitly withdraw a previous deliverable. Scratch and working files stay private unless requested as final deliverables. Check each returned outcome; source_unavailable means a selected file could not be read or named correctly.',
+      input: v.strictObject({
+        files: v.pipe(v.array(FileInputSchema), v.maxLength(10)),
+        excludedPaths: v.optional(v.pipe(v.array(v.pipe(v.string(), v.minLength(1), v.maxLength(2048))), v.maxLength(MAX_TRACKED_FILES))),
+      }),
       harness: true,
       async run({ data, harness }) {
-        return { output: await complete(harness.sandbox, data.files, binding) };
+        return { output: await complete(harness.sandbox, data.files, binding, data.excludedPaths) };
       },
     });
   }
-  return { state, mark, wrapSandbox, deliver, complete, tool, unresolved: () => {
+  return { state, mark, noteStagingAttempted, wrapSandbox, deliver, complete, tool, unresolved: () => {
     const current = state();
     return current.shellPending || current.pending.length > 0 || activeWrites > 0;
   } };
@@ -184,7 +238,7 @@ export function useFileDeliveryCompletion(plan: RuntimePlanV2, discard: (fileIds
   const write = useDataWriter(FILE_DELIVERY_DATA_NAME, { schema: FileDeliveryResultSchema });
   const delivery = useDelivery();
   const completion = createFileDeliveryCompletion(update, discard);
-  bindFileDeliveryCheck(completion.unresolved);
+  bindFileDeliveryCheck(completion.unresolved, () => completion.state().stagingAttempted);
   useResponseStart(() => { update(initialState()); });
   useAgentFinish(({ append }) => {
     const state = completion.state();
@@ -193,12 +247,13 @@ export function useFileDeliveryCompletion(plan: RuntimePlanV2, discard: (fileIds
     const envelope = currentRequestEnvelopeText(delivery.body);
     if (unresolved && !state.repairRequested && envelope && delivery.kind === 'signal') {
       update((previous) => ({ ...previous, repairRequested: true }));
+      const { requesterText: _requesterText, ...attributes } = delivery.attributes ?? {};
       append({ kind: 'signal', type: FILE_DELIVERY_SIGNAL_TYPE, tagName: FILE_DELIVERY_SIGNAL_TAG,
-        attributes: { ...delivery.attributes, workspaceId: plan.conversation.workspaceId,
+        attributes: { ...attributes, workspaceId: plan.conversation.workspaceId,
           channelId: plan.conversation.channelId, boundThreadTs: plan.conversation.threadTs,
           originalType: delivery.attributes?.originalType ?? delivery.type },
         body: [
-          'The response has unchecked sandbox file work. Before answering, call complete_file_delivery with all final files the user should receive. Use files=[] if every remaining file is scratch or the user requested text only. Do not merely repeat a sandbox path. Do not rerun the task or retry failed/uncertain uploads. Already prepared files will be reused.',
+          'The response has unchecked sandbox file work. Before answering, call complete_file_delivery with all final files the user should receive. Use files=[] if every remaining file is scratch or the user requested text only. Do not merely repeat a sandbox path. Do not rerun the task or retry failed/uncertain uploads. Already prepared files will be retained. If this is a scheduled occurrence, resubmit the complete corrected message with submit_routine_result after the check.',
           envelope,
         ].join('\n\n'),
       });
@@ -206,7 +261,8 @@ export function useFileDeliveryCompletion(plan: RuntimePlanV2, discard: (fileIds
     }
     // Never publish an earlier revision if unchecked work may have changed it.
     const invalidated = unresolved ? state.outcomes.filter((file) => state.shellPending || state.pending.includes(file.path)) : [];
-    discard(invalidated.flatMap((file) => file.fileId ? [file.fileId] : []));
+    const invalidIds = invalidated.flatMap((file) => file.fileId ? [file.fileId] : []);
+    if (invalidIds.length) discard(invalidIds);
     write({ unresolved, files: state.outcomes.filter((file) => !invalidated.includes(file)) });
   });
   return completion;
@@ -248,4 +304,9 @@ function inlineText(bytes: Uint8Array): string | undefined {
 function inlineOutcome(bytes: Uint8Array): { inline?: string } {
   const inline = inlineText(bytes);
   return inline === undefined ? {} : { inline };
+}
+
+function resolveFilePath(env: SessionEnv, path: string, binding: ArtifactDestinationBinding): string {
+  const resolved = sandboxArtifactPath(env, path);
+  return binding.sandboxKind === 'cloudflare' ? workspaceArtifactPath(resolved) : resolved;
 }

@@ -9,7 +9,7 @@ import { MAX_ARTIFACT_BYTES, type ArtifactDestinationBinding, type SlackArtifact
 import { createArtifactReceiptAccumulator, type SlackArtifactReceipts } from '../src/slack/artifact-receipts.ts';
 
 function setup(outcome?: SlackArtifactStageOutcome) {
-  let state: FileDeliveryState = { pending: [], shellPending: false, generation: 0, outcomes: [], repairRequested: false };
+  let state: FileDeliveryState = { pending: [], shellPending: false, generation: 0, outcomes: [], repairRequested: false, stagingAttempted: false };
   const discarded: string[] = [];
   const completion = createFileDeliveryCompletion((value) => {
     state = typeof value === 'function' ? value(state) : value;
@@ -72,15 +72,76 @@ test('same filename in different source paths never reuses another file receipt'
   assert.equal(h.uploads.length, 2); assert.deepEqual(h.discarded, []);
 });
 
-test('scratch and text-only selection never scans or uploads files, and excludes superseded selections', async () => {
+test('retained prepared files are refreshed after later file work even when omitted from the final selection', async () => {
+  const h = setup(); h.write('report.md', 'first');
+  await h.completion.deliver(h.env, { path: 'report.md', filename: 'report.md' }, h.binding);
+  h.write('report.md', 'revised');
+  await h.completion.complete(h.env, [], h.binding);
+  assert.equal(h.uploads.length, 2);
+  assert.deepEqual(h.discarded, ['F1']);
+  assert.equal(new TextDecoder().decode(h.uploads[1]!.bytes), 'revised');
+  h.completion.mark();
+  await h.completion.complete(h.env, [], h.binding);
+  assert.equal(h.uploads.length, 2);
+});
+
+test('scratch selection preserves prepared files; withdrawing a deliverable is explicit and reported', async () => {
   const h = setup(); h.write('private.txt', 'private'); h.completion.mark();
   await h.completion.complete(h.env, [], h.binding);
   assert.equal(h.completion.unresolved(), false); assert.equal(h.uploads.length, 0);
   h.write('report.md', 'draft');
   await h.completion.deliver(h.env, { path: 'report.md', filename: 'report.md' }, h.binding);
-  await h.completion.complete(h.env, [], h.binding);
+  const retained = await h.completion.complete(h.env, [], h.binding);
+  assert.deepEqual(retained.retained, ['report.md']);
+  assert.deepEqual(h.discarded, []);
+  const withdrawn = await h.completion.complete(h.env, [], h.binding, ['report.md']);
+  assert.deepEqual(withdrawn.discarded, ['report.md']);
   assert.deepEqual(h.discarded, ['F1']);
   assert.deepEqual(h.completion.state().outcomes, []);
+});
+
+test('correcting an unreadable path or invalid filename remains safe before any upload', async () => {
+  const h = setup(); h.write('report.md', 'report');
+  await assert.rejects(() => h.completion.deliver(h.env, { path: 'typo.md', filename: 'report.md' }, h.binding), /not found/);
+  await assert.rejects(() => h.completion.deliver(h.env, { path: 'report.md', filename: 'bad\nname.md' }, h.binding), /control characters/);
+  assert.equal(h.uploads.length, 0);
+  assert.equal(h.completion.state().stagingAttempted, false);
+  await h.completion.deliver(h.env, { path: 'report.md', filename: 'report.md' }, h.binding);
+  await h.completion.complete(h.env, [], h.binding);
+  assert.equal(h.uploads.length, 1);
+  assert.equal(resolveFileDeliveryText('The report is attached.', [{ unresolved: false, files: h.completion.state().outcomes }]), 'The report is attached.');
+});
+
+test('a bad path in final selection cannot prevent another file from being delivered', async () => {
+  const h = setup(); h.write('report.md', 'report');
+  const result = await h.completion.complete(h.env, [
+    { path: 'missing.md', filename: 'missing.md' }, { path: 'report.md', filename: 'report.md' },
+  ], h.binding);
+  assert.equal(result.checked, true); assert.equal(h.uploads.length, 1);
+  assert.deepEqual(result.files[0], { attached: false, reason: 'unavailable', detail: 'source_unavailable' });
+  assert.equal(result.files[1]!.attached, true);
+});
+
+test('relative Cloudflare filenames resolve to the same tracked workspace file', async () => {
+  const h = setup();
+  h.env.resolvePath = (path) => posix.resolve('/workspace', path);
+  h.env.exec = async () => ({ stdout: '', stderr: '', exitCode: 0 });
+  h.env.rm = async () => {};
+  h.env.stat = async () => ({ isFile: true, isDirectory: false, size: 3 });
+  h.env.readFileBuffer = async () => new Uint8Array([1, 2, 3]);
+  h.write('report.md', 'yes');
+  const result = await h.completion.complete(h.env, [{ path: 'report.md', filename: 'report.md' }], { ...h.binding, sandboxKind: 'cloudflare' });
+  assert.equal(result.checked, true); assert.equal(result.files[0]!.attached, true);
+  assert.equal(h.completion.state().outcomes[0]!.path, '/workspace/report.md');
+  assert.equal(h.completion.unresolved(), false);
+});
+
+test('unavailable file size is never misreported as an exceeded limit', async () => {
+  const h = setup(); h.write('report.md', 'yes');
+  h.env.stat = async () => ({ isFile: true, isDirectory: false, size: -1 });
+  const result = await h.completion.complete(h.env, [{ path: 'report.md', filename: 'report.md' }], h.binding);
+  assert.deepEqual(result.files[0], { attached: false, reason: 'unavailable', detail: 'source_unavailable' });
+  assert.equal(h.uploads.length, 0);
 });
 
 for (const outcome of [

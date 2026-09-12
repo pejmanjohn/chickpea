@@ -76,7 +76,7 @@ export function ChickpeaRoutineExecution({ id }: { id: string }) {
   }
   useChickpeaResponseMetadata(data.requestedModel);
   useInstruction(
-    'Finish by calling submit_routine_result exactly once. Ordinary assistant text and JSON are not a result.',
+    'Finish by calling submit_routine_result. If an internal file-delivery check continues this response, check the files and submit the complete corrected result again. Only the latest submitted result is delivered. Ordinary assistant text and JSON are not a result.',
   );
   const writeResultData = useDataWriter(ROUTINE_RESULT_DATA_NAME, {
     schema: RoutineModelResultSchema,

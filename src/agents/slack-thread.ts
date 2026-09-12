@@ -1622,6 +1622,7 @@ export function createRuntimePlanArtifactTools(
      */
     resolveTransport: async (): Promise<ImageToolTransport> => resolveFileTransport(),
     async stageArtifact(artifact: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome> {
+      options.fileCompletion?.noteStagingAttempted();
       let fileId: string | undefined;
       const outcome = await stageArtifactWithReceipt({
         transport: await resolveFileTransport(),

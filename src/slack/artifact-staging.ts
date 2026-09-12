@@ -20,6 +20,19 @@ import { isMissingFilesScopeError } from './web-client-presenter.ts';
 const FILENAME_LIMIT = 256;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
+/** Validate before an upload attempt so correcting a name is safe to retry. */
+export function validateArtifactPresentation(input: { filename: string; title?: string | undefined }): { filename: string; title?: string } {
+  const filename = input.filename.trim();
+  if (!filename || filename.length > FILENAME_LIMIT || CONTROL_CHARACTERS.test(filename)) {
+    throw new Error(`filename must be 1-${FILENAME_LIMIT} characters without control characters`);
+  }
+  const title = input.title?.trim();
+  if (title !== undefined && (title.length > FILENAME_LIMIT || CONTROL_CHARACTERS.test(title))) {
+    throw new Error(`title must be at most ${FILENAME_LIMIT} characters without control characters`);
+  }
+  return { filename, ...(title ? { title } : {}) };
+}
+
 /**
  * Stage one model-chosen file for the frozen destination and record the
  * host-owned receipt. The model receives only a bounded outcome; the file id
@@ -34,14 +47,7 @@ export async function stageArtifactWithReceipt(input: {
   now?: () => number;
   onReceipt?: (receipt: CompletedSlackArtifactReceipt) => void;
 }): Promise<SlackArtifactStageOutcome> {
-  const filename = input.artifact.filename.trim();
-  if (!filename || filename.length > FILENAME_LIMIT || CONTROL_CHARACTERS.test(filename)) {
-    throw new Error(`filename must be 1-${FILENAME_LIMIT} characters without control characters`);
-  }
-  const title = input.artifact.title?.trim();
-  if (title !== undefined && (title.length > FILENAME_LIMIT || CONTROL_CHARACTERS.test(title))) {
-    throw new Error(`title must be at most ${FILENAME_LIMIT} characters without control characters`);
-  }
+  const { filename, title } = validateArtifactPresentation(input.artifact);
   if (!input.transport.stagePrivate) return stagingUnavailable('transport_unsupported');
   const now = input.now ?? Date.now;
   const stagedAt = now();
