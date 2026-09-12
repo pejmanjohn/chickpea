@@ -1821,6 +1821,7 @@ function runAdminPageHarness(
               description: 'Turns merged PRs into a changelog.',
               instructions: '# Release notes\nWrite in launch voice.',
               hasScripts: false,
+              inspection: { complete: true, scriptPaths: [], auxiliaryPaths: ['agents/openai.yaml'], unknownPaths: [], warnings: ['Instructions that depend on omitted files may be incomplete.'] },
               path: 'release-notes',
               sourceUrl: 'https://github.com/acme/skills/tree/main/release-notes',
             },
@@ -6058,6 +6059,8 @@ test('importing skills from a URL resolves a picker, adds the selected skill, an
 
   // The picker renders both skills, the summary line, and the has-scripts badge.
   assert.match(harness.app.innerHTML, /Found 2 skills in acme\/skills/);
+  assert.match(harness.app.innerHTML, /Instructions only\. Omitted: agents\/openai.yaml/);
+  assert.match(harness.app.innerHTML, /Instructions that depend on omitted files may be incomplete/);
   assert.match(harness.app.innerHTML, /Public repository/);
   assert.match(harness.app.innerHTML, /release-notes/);
   assert.match(harness.app.innerHTML, /incident-scribe/);

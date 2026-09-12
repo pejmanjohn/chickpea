@@ -360,7 +360,8 @@ export class WorkspaceManagementService {
     return {
       ...publicProposal,
       presentation: {
-        slack: formatSlackSkillImportProposal(proposal.preview, skill.sourceUrl),
+        slack: formatSlackSkillImportProposal(proposal.preview, skill.sourceUrl) +
+          formatSkillImportDisclosures(skillImportMetadata(skill, existingIndex >= 0)),
       },
       import: skillImportMetadata(skill, existingIndex >= 0),
     };
@@ -379,12 +380,13 @@ export class WorkspaceManagementService {
     const metadata = skillImportMetadata(skill, existingIndex >= 0);
     const existing = existingIndex >= 0 ? agent.skills[existingIndex] : undefined;
     if (existing && canonicalJson(existing) === canonicalJson(importedSkill)) {
+      const partial = Boolean(metadata.omittedPaths?.length || metadata.warnings?.length);
       return {
         status: 'already_installed',
         presentation: {
-          slack: `Skill \`${escapeSlackControlCharacters(skill.name)}\` is already installed on ${
+          slack: `${partial ? 'Instructions for skill' : 'Skill'} \`${escapeSlackControlCharacters(skill.name)}\` ${partial ? 'are' : 'is'} already installed on ${
             escapeSlackControlCharacters(agent.name)
-          }. No changes were made.`,
+          }. No changes were made.${formatSkillImportDisclosures(metadata)}`,
         },
         import: { ...metadata, replacedExisting: false },
       };
@@ -786,6 +788,9 @@ export class WorkspaceManagementService {
     const agent = await this.requireEditableAgent(actor, agentId);
 
     const parsedSource = parseSkillSource(input.source);
+    if (parsedSource?.skillFilter && input.skillName && parsedSource.skillFilter !== input.skillName) {
+      throw new ManagementError('invalid_request', 'The skill name conflicts with the selector in the supplied source. No change was made.');
+    }
     const parsed = parsedSource && input.skillName ? { ...parsedSource, skillFilter: input.skillName } : parsedSource;
     if (!parsed) {
       throw new ManagementError(
@@ -5649,12 +5654,18 @@ function formatSkillImportReceipt(
 ): string {
   const partial = Boolean(metadata.omittedPaths?.length || metadata.warnings?.length);
   const headline = partial
-    ? `Instructions imported for skill \`${escapeSlackControlCharacters(metadata.name)}\``
+    ? `Instructions ${metadata.replacedExisting ? 'replaced' : 'imported'} for skill \`${escapeSlackControlCharacters(metadata.name)}\``
     : `${metadata.replacedExisting ? 'Replaced' : 'Installed'} skill \`${escapeSlackControlCharacters(metadata.name)}\``;
+  return `${headline} on ${escapeSlackControlCharacters(agentName)}. It’s active from the next message.${formatSkillImportDisclosures(metadata)}${undoAvailable ? ' You can undo this change.' : ''}`;
+}
+
+function formatSkillImportDisclosures(
+  metadata: { omittedPaths?: string[]; warnings?: string[] },
+): string {
   const omitted = metadata.omittedPaths?.length
     ? ` Supporting files omitted: ${escapeSlackControlCharacters(describeSkillPaths(metadata.omittedPaths))}.` : '';
   const warnings = metadata.warnings?.length ? ` ${escapeSlackControlCharacters(metadata.warnings.join(' '))}` : '';
-  return `${headline} on ${escapeSlackControlCharacters(agentName)}. It’s active from the next message.${omitted}${warnings}${undoAvailable ? ' You can undo this change.' : ''}`;
+  return `${omitted}${warnings}`;
 }
 
 function skillImportMetadata(

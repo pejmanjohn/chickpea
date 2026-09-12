@@ -276,7 +276,7 @@ export async function resolveSkillSource(
         skillPath: parsed.skillPath,
       }, fetchImpl);
     } catch (error) {
-      if (!(error instanceof SkillImportError) || error.code !== 'not_exact_skill_directory') {
+      if (!(error instanceof SkillImportError) || !['not_exact_skill_directory', 'github_page_unavailable'].includes(error.code)) {
         throw error;
       }
       if (error instanceof ParentSkillDirectoryError) {
@@ -294,11 +294,11 @@ export async function resolveSkillSource(
   }
   if (!/^[0-9a-f]{40,64}$/i.test(ref)) {
     const commitRes = await githubRequest(fetchImpl,
-      `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`, { headers });
+      `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`, { headers: { ...headers, accept: 'application/vnd.github.sha' } });
     assertRepositoryResponse(commitRes, authenticated, owner, repo);
-    const commit = await readJsonResponseBounded<{ sha?: string }>(commitRes, MAX_REPOSITORY_METADATA_BYTES, 'GitHub commit metadata is too large.');
-    if (!commit.sha || !/^[0-9a-f]{40,64}$/i.test(commit.sha)) throw new SkillImportError('github_error', 'GitHub did not resolve an immutable commit for this source.');
-    ref = commit.sha;
+    const commit = (await readResponseTextBounded(commitRes, 128, 'GitHub commit identifier is too large.')).trim();
+    if (!/^[0-9a-f]{40,64}$/i.test(commit)) throw new SkillImportError('github_error', 'GitHub did not resolve an immutable commit for this source.');
+    ref = commit;
   }
 
   const treeRes = await githubRequest(
@@ -360,21 +360,21 @@ export async function resolveSkillSource(
     let document: ReturnType<typeof readSkillDocument>;
     try { document = readSkillDocument(md, entry.dir); }
     catch (error) {
-      if (!(error instanceof SkillImportError) || total === 1 || parsed.skillFilter || parsed.exactDocument) throw error;
+      if (!(error instanceof SkillImportError) || total === 1 || (parsed.skillFilter && !searchingDeclaredNames) || parsed.exactDocument) throw error;
       issues.push({ path: entry.path, code: error.code, message: error.message });
       skipped += 1;
       continue;
     }
     const { name, description, instructions } = document;
+    if (parsed.skillFilter && name !== parsed.skillFilter) {
+      skipped += 1;
+      continue;
+    }
     const packageEntries = tree.tree.filter(({ path }) => !entry.dir || path.startsWith(`${entry.dir}/`));
     assertPackageBounds(entry.dir, packageEntries);
     const inspection = inspectSkillPackage(entry.dir, packageEntries);
     inspection.warnings.push(...document.warnings);
     const hasScripts = inspection.scriptPaths.length > 0;
-    if (parsed.skillFilter && name !== parsed.skillFilter) {
-      skipped += 1;
-      continue;
-    }
     const importSource = skillImportSource(`${owner}/${repo}`, ref, entry.dir, { name, description, instructions });
     skills.push({
       name,
@@ -438,29 +438,15 @@ async function resolveExactPublicSkillFromGithubPage(
     MAX_GITHUB_DIRECTORY_PAGE_BYTES,
     'GitHub skill directory is too large to import safely.',
   );
-  const embedded = html.match(
-    /<script\b[^>]*data-target=["']react-app\.embeddedData["'][^>]*>([\s\S]*?)<\/script>/i,
-  )?.[1];
-  let route: {
-    path?: string;
-    refInfo?: { name?: string; currentOid?: string };
-    tree?: { items?: GithubDirectoryItem[]; totalCount?: number };
-  } | undefined;
-  try {
-    route = embedded
-      ? JSON.parse(embedded)?.payload?.codeViewTreeRoute
-      : undefined;
-  } catch {
-    route = undefined;
-  }
+  const route = parseGithubDirectoryPage(html);
   const items = route?.tree?.items;
   const refMatches = route?.refInfo?.name === ref || (/^[0-9a-f]{7,64}$/i.test(ref) && route?.refInfo?.currentOid?.startsWith(ref));
   const boundaryMatches = parsed.refPath && route?.refInfo?.name && route.path !== undefined &&
     `${route.refInfo.name}/${route.path}` === parsed.refPath;
   if (!route || !(boundaryMatches || (route.path === skillPath && refMatches)) || !Array.isArray(items)) {
     throw new SkillImportError(
-      'incomplete_inspection',
-      'GitHub did not return a complete listing for the requested path and revision.',
+      'github_page_unavailable',
+      'GitHub did not return a readable listing for the requested path and revision.',
     );
   }
   if (route.tree?.totalCount !== undefined && route.tree.totalCount !== items.length) {
@@ -533,6 +519,18 @@ function exactPublicSkillResolution(
   };
 }
 
+interface GithubDirectoryRoute {
+  path?: string;
+  refInfo?: { name?: string; currentOid?: string };
+  tree?: { items?: GithubDirectoryItem[]; totalCount?: number };
+}
+
+function parseGithubDirectoryPage(html: string): GithubDirectoryRoute | undefined {
+  const embedded = html.match(/<script\b[^>]*data-target=["']react-app\.embeddedData["'][^>]*>([\s\S]*?)<\/script>/i)?.[1];
+  try { return embedded ? JSON.parse(embedded)?.payload?.codeViewTreeRoute : undefined; }
+  catch { return undefined; }
+}
+
 class ParentSkillDirectoryError extends SkillImportError {
   constructor(readonly source: ParsedSkillSource) {
     super('not_exact_skill_directory', 'The selected directory contains multiple possible skill directories.');
@@ -592,9 +590,7 @@ async function inspectPublicDirectories(
         `https://github.com/${parsed.owner}/${parsed.repo}/tree/${commit}/${encodeGithubPath(item.path)}`);
       assertDocumentResponse(response, false, parsed.owner, parsed.repo, item.path);
       const html = await readResponseTextBounded(response, MAX_GITHUB_DIRECTORY_PAGE_BYTES, 'GitHub skill directory is too large to inspect.');
-      const embedded = html.match(/<script\b[^>]*data-target=["']react-app\.embeddedData["'][^>]*>([\s\S]*?)<\/script>/i)?.[1];
-      let route;
-      try { route = embedded ? JSON.parse(embedded)?.payload?.codeViewTreeRoute : undefined; } catch { /* rejected below */ }
+      const route = parseGithubDirectoryPage(html);
       if (route?.path !== item.path || route?.refInfo?.currentOid !== commit || !Array.isArray(route?.tree?.items) ||
           (route.tree.totalCount !== undefined && route.tree.totalCount !== route.tree.items.length)) {
         throw new SkillImportError('incomplete_inspection', `Could not completely inspect ${item.path} at the selected commit.`);

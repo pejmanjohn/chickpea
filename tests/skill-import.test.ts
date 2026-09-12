@@ -75,7 +75,7 @@ function mockFetch(
   return (async (input: unknown, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : String((input as { url: string }).url);
     requests?.push({ url, ...(init ? { init } : {}) });
-    for (const [needle, res] of [...routes.filter(([needle]) => !/^https?:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(needle) && !/^api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(needle)), ['/commits/', { json: { sha: EXACT_OID } }] as const, ...routes]) {
+    for (const [needle, res] of [...routes.filter(([needle]) => !/^https?:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(needle) && !/^api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(needle)), ['/commits/', { text: EXACT_OID }] as const, ...routes]) {
       if (url.includes(needle)) {
         const status = res.status ?? 200;
         return {
@@ -530,7 +530,7 @@ test('named repository discovery pins the actual commit and finds a canonical ta
     { path: 'skills/foo/SKILL.md', type: 'blob' },
   ] };
   const result = await resolveSkillSource({ owner: 'acme', repo: 'skills', skillFilter: 'foo' }, mockFetch([
-    ['/commits/main', { json: { sha: EXACT_OID } }],
+    ['/commits/main', { text: EXACT_OID }],
     [`/git/trees/${EXACT_OID}`, { json: tree }],
     [`/${EXACT_OID}/skills/foo/SKILL.md`, { text: '---\nname: foo\ndescription: Foo.\n---\nExact snapshot.' }],
     ['api.github.com/repos/acme/skills', { json: { default_branch: 'main' } }],
@@ -582,22 +582,32 @@ test('an ambiguous authenticated URL ref is rejected rather than silently reinte
   ]), { token: 'test-token' }), (error: unknown) => error instanceof SkillImportError && error.code === 'ambiguous_ref');
 });
 
-for (const failure of ['deep', 'wide', 'malformed', 'incomplete']) {
+for (const failure of ['deep', 'wide', 'incomplete']) {
   test(`package inspection stops on ${failure} listings`, async () => {
-    const path = failure === 'deep' ? `foo/${'deep/'.repeat(9)}file.md` : 'foo/file.md';
     const items = failure === 'wide'
-      ? Array.from({ length: 14 }, (_, i) => ({ path: `foo/d-${i}`, contentType: 'directory' }))
-      : [{ path, contentType: 'file' }];
-    const page = failure === 'malformed' ? '<html>Missing embedded data</html>'
-      : directoryPage('foo', [{ path: 'foo/SKILL.md', contentType: 'file' }, ...items]);
+      ? Array.from({ length: 2001 }, (_, i) => ({ path: `foo/file-${i}.md`, type: 'blob' }))
+      : [{ path: failure === 'deep' ? `foo/${'deep/'.repeat(9)}file.md` : 'foo/file.md', type: 'blob' }];
     const fetchImpl = mockFetch([
-      ['/tree/', { text: failure === 'incomplete' ? page.replace('"totalCount":2', '"totalCount":3') : page }],
+      ['/tree/', { text: '<html>Changed layout</html>' }],
+      ['/git/trees/', { json: { truncated: failure === 'incomplete', tree: [{ path: 'foo/SKILL.md', type: 'blob' }, ...items] } }],
       ['/SKILL.md', { text: '---\nname: foo\ndescription: Foo.\n---\nBody.' }],
     ]);
     await assert.rejects(resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID, skillPath: 'foo' }, fetchImpl),
       (error: unknown) => error instanceof SkillImportError && ['incomplete_inspection', 'source_too_large'].includes(error.code));
   });
 }
+
+test('unreadable public HTML falls back to the bounded pinned API inventory', async () => {
+  const requests: Array<{ url: string }> = [];
+  const result = await resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID, skillPath: 'foo' }, mockFetch([
+    ['/tree/', { text: '<html>Changed GitHub layout</html>' }],
+    ['/git/trees/', { json: { tree: [{ path: 'foo/SKILL.md', type: 'blob' }] } }],
+    ['/SKILL.md', { text: '---\nname: foo\ndescription: Foo.\n---\nBody.' }],
+  ], requests));
+  assert.equal(result.skills[0]?.name, 'foo');
+  assert.equal(result.skills[0]?.importSource?.commit, EXACT_OID);
+  assert.equal(requests.length, 3);
+});
 
 test('saved real GitHub listings preserve nested metadata inspection', async () => {
   const { readFile } = await import('node:fs/promises');
@@ -653,3 +663,39 @@ for (const header of [
       (error: unknown) => error instanceof SkillImportError && error.code === 'invalid_document');
   });
 }
+
+test('commit resolution requests only the SHA even when the commit JSON has a large patch', async () => {
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes('/commits/')) return new Headers(init?.headers).get('accept') === 'application/vnd.github.sha'
+      ? new Response(EXACT_OID) : Response.json({ sha: EXACT_OID, files: [{ patch: 'x'.repeat(100_000) }] });
+    if (url.includes('/git/trees/')) return Response.json({ tree: [{ path: 'foo/SKILL.md', type: 'blob' }] });
+    if (url.endsWith('SKILL.md')) return new Response('---\nname: foo\ndescription: Foo.\n---\nBody.');
+    return Response.json({ default_branch: 'main' });
+  };
+  assert.equal((await resolveSkillSource({ owner: 'acme', repo: 'skills' }, fetchImpl)).ref, EXACT_OID);
+});
+
+test('declared-name search skips broken unrelated documents before checking package bounds', async () => {
+  const result = await resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID, skillFilter: 'foo' }, mockFetch([
+    ['/git/trees/', { json: { tree: [
+      { path: 'broken/SKILL.md', type: 'blob' }, { path: 'unrelated/SKILL.md', type: 'blob' },
+      ...Array.from({ length: 2001 }, (_, i) => ({ path: `unrelated/f-${i}.md`, type: 'blob' })),
+      { path: 'renamed/SKILL.md', type: 'blob' },
+    ] } }],
+    ['/broken/SKILL.md', { text: '---\nname: broken\n---\n' }],
+    ['/unrelated/SKILL.md', { text: '---\nname: unrelated\ndescription: Unrelated.\n---\nBody.' }],
+    ['/renamed/SKILL.md', { text: '---\nname: foo\ndescription: Foo.\n---\nBody.' }],
+  ]));
+  assert.equal(result.skills[0]?.name, 'foo');
+  assert.equal(result.issues?.[0]?.path, 'broken/SKILL.md');
+});
+
+test('executable bits on recognized document formats do not turn metadata into scripts', async () => {
+  const result = await resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID }, mockFetch([
+    ['/git/trees/', { json: { tree: ['foo/SKILL.md', 'foo/agents/openai.yaml', 'foo/.gitignore'].map((path) => ({ path, type: 'blob', mode: '100755' })) } }],
+    ['/SKILL.md', { text: '---\nname: foo\ndescription: Foo.\n---\nBody.' }],
+  ]));
+  assert.equal(result.skills[0]?.hasScripts, false);
+  assert.deepEqual(result.skills[0]?.inspection?.unknownPaths, []);
+});

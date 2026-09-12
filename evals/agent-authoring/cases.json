@@ -448,7 +448,8 @@
         "mutationAllowance": "direct_apply",
         "approvalPosture": "direct_allowed",
         "skillImport": {
-          "source": "https://github.com/mattpocock/skills/blob/main/skills/productivity/grilling/SKILL.md"
+          "source": "https://github.com/mattpocock/skills/blob/main/skills/productivity/grilling/SKILL.md",
+          "resolvedSkillName": "grilling"
         },
         "assertions": [
           "skill_import_arguments",
@@ -476,7 +477,8 @@
         "mutationAllowance": "direct_apply",
         "approvalPosture": "direct_allowed",
         "skillImport": {
-          "source": "https://github.com/mattpocock/skills/tree/main/skills/productivity/grilling"
+          "source": "https://github.com/mattpocock/skills/tree/main/skills/productivity/grilling",
+          "resolvedSkillName": "grilling"
         },
         "assertions": [
           "skill_import_arguments",

@@ -898,7 +898,7 @@ async function runDeterministicSmoke(corpus) {
     for (const entry of corpus.cases.filter(({ id }) => id.startsWith('skill-import-'))) {
       faux.setResponses([
         fauxAssistantMessage([fauxToolCall('import_skill', {
-          ...entry.expected.skillImport, guideVersion: AGENT_AUTHORING_GUIDE_VERSION, idempotencyKey: entry.id,
+          source: entry.expected.skillImport.source, ...(entry.expected.skillImport.skillName ? { skillName: entry.expected.skillImport.skillName } : {}), guideVersion: AGENT_AUTHORING_GUIDE_VERSION, idempotencyKey: entry.id,
         })], { stopReason: 'toolUse' }),
         fauxAssistantMessage([fauxToolCall('record_eval_assessment', {
           posture: 'commit', placements: ['skill'], approvalPosture: 'direct_allowed', capabilityClaimsGrounded: true,
@@ -1277,7 +1277,7 @@ function skillImportArgumentsCorrect(toolCalls, expected) {
   if (!expected) return false;
   const imports = toolCalls.filter(({ name }) => name === 'import_skill');
   return imports.length === 1 && imports[0].input.source === expected.source &&
-    (expected.skillName ? imports[0].input.skillName === expected.skillName : !imports[0].input.skillName || imports[0].input.skillName === 'grilling') &&
+    (expected.skillName ? imports[0].input.skillName === expected.skillName : !imports[0].input.skillName || imports[0].input.skillName === expected.resolvedSkillName) &&
     !toolCalls.some(({ name }) => ['propose_workspace_changes', 'apply_workspace_changes', 'propose_skill_import'].includes(name));
 }
 
