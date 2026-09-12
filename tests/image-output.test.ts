@@ -62,6 +62,18 @@ test('inspection composites alpha without changing retained PNG or WebP bytes', 
   }
 });
 
+test('large opaque reference photos bypass pixel decoding, while unresolved alpha stays bounded', async () => {
+  for (const format of ['jpeg', 'png', 'webp'] as const) {
+    const bytes = new Uint8Array(await sharp({ create: { width: 4032, height: 3024, channels: 3, background: '#123456' } }).toFormat(format).toBuffer());
+    assert.throws(() => decodeGeneratedImage(bytes), /image_pixel_limit/);
+    const preview = prepareImageInspection(bytes);
+    assert.equal(preview.bytes, bytes);
+    assert.equal(preview.mimeType, `image/${format}`);
+  }
+  const largeAlpha = new Uint8Array(await sharp({ create: { width: 4032, height: 3024, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 0 } } }).png().toBuffer());
+  assert.throws(() => prepareImageInspection(largeAlpha), /image_pixel_limit/, 'never bypass alpha compositing or allocate unbounded pixels');
+});
+
 test('retained bytes survive a new store instance, stay destination-bound, and are physically purged at TTL', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   let now = 100;

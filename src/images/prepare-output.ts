@@ -2,6 +2,7 @@ import { PngDecoder } from 'image-in-browser/lib/src/formats/png-decoder.js';
 import { JpegDecoder } from 'image-in-browser/lib/src/formats/jpeg-decoder.js';
 import { WebPDecoder } from 'image-in-browser/lib/src/formats/webp-decoder.js';
 import { PngEncoder } from 'image-in-browser/lib/src/formats/png-encoder.js';
+import { PngColorType } from 'image-in-browser/lib/src/formats/png/png-color-type.js';
 import { JpegEncoder } from 'image-in-browser/lib/src/formats/jpeg-encoder.js';
 import { Transform } from 'image-in-browser/lib/src/transform/transform.js';
 import { MemoryImage } from 'image-in-browser/lib/src/image/image.js';
@@ -66,6 +67,21 @@ export function prepareImageOutput(bytes: Uint8Array, maxBytes: number, preserve
  * retained or delivered to the user. Work on one bounded decoded image at a time.
  */
 export function prepareImageInspection(bytes: Uint8Array): { bytes: Uint8Array; mimeType: string } {
+  if (bytes.length > 16 * 1024 * 1024) throw new Error('image_byte_limit');
+  // Opaque references need no local pixel allocation. In particular, a phone
+  // photo may exceed generated-output geometry while fitting the provider's
+  // inspection byte limit. Do not send unresolved alpha through this shortcut.
+  if (bytes[0] === 255 && bytes[1] === 216) return { bytes, mimeType: 'image/jpeg' };
+  if (bytes[0] === 137 && bytes[1] === 80) {
+    const info = new PngDecoder().startDecode(bytes);
+    if (info && info.numFrames <= 1 && !info.transparency &&
+        (info.colorType === PngColorType.grayscale || info.colorType === PngColorType.rgb || info.colorType === PngColorType.indexed)) {
+      return { bytes, mimeType: 'image/png' };
+    }
+  } else if (String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF') {
+    const info = new WebPDecoder().startDecode(bytes);
+    if (info && info.numFrames <= 1 && !info.hasAlpha) return { bytes, mimeType: 'image/webp' };
+  }
   const { image, facts } = decodeGeneratedImage(bytes);
   if (!facts.transparent) return { bytes, mimeType: `image/${facts.format}` };
   const preview = new MemoryImage({ width: image.width, height: image.height, numChannels: 3 });
