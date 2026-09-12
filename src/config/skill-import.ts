@@ -89,7 +89,7 @@ const MAX_PACKAGE_ENTRIES = 2000;
 const MAX_PACKAGE_DEPTH = 8;
 const REPOSITORY_NOT_FOUND =
   'Repository not found or not accessible. Check the source and GitHub App access.';
-const GITHUB_RATE_LIMITED = 'GitHub rate limit reached. Try again after it resets.';
+const GITHUB_RATE_LIMITED = 'GitHub rate limit reached. For a public skill, try a direct link to its folder or SKILL.md file, or retry after the limit resets.';
 
 /**
  * Parse a pasted source into `{ owner, repo, ref?, skillFilter? }`, or null if

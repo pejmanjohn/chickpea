@@ -4115,7 +4115,7 @@
   // (which the api() helper surfaces as error.message).
   function skillImportFallback(code) {
     if (code === "not_found") return "Could not find that repo or skill. Check the link and try again.";
-    if (code === "rate_limited" || code === "github_rate_limited") return "GitHub rate limit hit. Try again in a little while.";
+    if (code === "rate_limited" || code === "github_rate_limited") return "GitHub rate limit reached. For a public skill, try a direct link to its folder or SKILL.md file, or retry after the limit resets.";
     if (code === "repository_not_found_or_inaccessible") return "Repository not found or not accessible. Check the source and GitHub App access.";
     if (code === "github_access_unavailable") return "GitHub App access could not be verified. Check GitHub settings and retry.";
     if (code === "github_error" || code === "github_unavailable") return "GitHub had trouble with that request. Try again in a moment.";
