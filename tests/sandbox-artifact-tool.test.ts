@@ -539,21 +539,37 @@ test('the image-capable instruction names every failure reason honestly', () => 
     'too-large',
     'rejected',
     'timeout',
-    'unavailable',
     'missing-scope',
     'misconfigured',
     'limit',
   ]) {
     assert.match(instruction, new RegExp(`reason ${reason} means`), reason);
   }
+  assert.match(instruction, /reason unavailable carries a source/);
   for (const detail of ['not_found', 'transport', 'missing_scope', 'unsupported_type', 'too_large']) {
     assert.match(instruction, new RegExp(`detail ${detail} means`), detail);
   }
+  // The live lane could not tell an unreachable provider from a file that
+  // would not attach; the instruction now forces the reply to say which.
   assert.match(
     instruction,
-    /reason unavailable means the image could not be generated or attached right now/,
+    /source provider means the image provider rejected the request or could not be reached/,
   );
+  assert.match(
+    instruction,
+    /source staging means the image was produced but the file could not be attached through this Slack connection/,
+  );
+  assert.match(
+    instruction,
+    /Never report an unavailable result without saying which of those two happened\./,
+  );
+  assert.match(instruction, /the result’s detail says why; say what the detail means in plain words/);
   assert.match(instruction, /never claim to include the image’s content in the reply/);
+  // The generic file wording must not claim a provider failure was a Slack one.
+  assert.match(
+    instruction,
+    /If `render_chart` or `post_artifact` reports reason unavailable, say file attachments are temporarily unavailable/,
+  );
   assert.match(
     instruction,
     /reason missing-scope means this workspace does not permit Slack file uploads: say an Owner needs to grant that permission and never claim an image was attached/,
@@ -568,6 +584,33 @@ test('the image-capable instruction names every failure reason honestly', () => 
   assert.match(
     instruction,
     /exceeded this workspace’s upload limit even after compression: say so and offer a simpler image instead of claiming an attachment/,
+  );
+});
+
+test('a listed handle survives a failed attachment analysis in the instruction', () => {
+  const instruction = buildArtifactToolsInstruction({
+    imageTool: true,
+    canEdit: true,
+    imageManifest: MANIFEST,
+  });
+  // The live lane stopped at "the attachment failed" while img:1 was listed
+  // and usable; the two rules have to compose.
+  assert.match(
+    instruction,
+    /stays usable even when the attachment manifest reports that same file’s analysis as failed/,
+  );
+  assert.match(
+    instruction,
+    /a failed analysis means its contents could not be read into this conversation, not that the file is missing/,
+  );
+  assert.match(
+    instruction,
+    new RegExp(`pass its handle to \`${GENERATE_IMAGE_TOOL_NAME}\` rather than saying the attachment failed or asking for a re-upload`),
+  );
+  // No such promise exists when there is no image tool to take the handle.
+  assert.doesNotMatch(
+    buildArtifactToolsInstruction({ imageTool: false, canEdit: false }),
+    /stays usable even when the attachment manifest/,
   );
 });
 

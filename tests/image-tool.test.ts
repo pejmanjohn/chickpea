@@ -429,7 +429,11 @@ test('a replay interrupted between the generate and stage steps reports honestly
 
   const replay = await runImageTool(state.options, { prompt: 'Interrupted.' }, { records });
 
-  assert.deepEqual(replay, { attached: false, reason: 'unavailable' });
+  // A replay that lost the bytes never reached staging or the provider; the
+  // detail says exactly that instead of blaming the Slack connection.
+  assert.deepEqual(replay, {
+    attached: false, reason: 'unavailable', source: 'staging', detail: 'bytes_unavailable',
+  });
   assert.equal(client.calls.length, 1, 'a lost image is never regenerated');
   assert.equal(state.staged.length, 0);
 });
@@ -489,18 +493,44 @@ test('the output format follows the transport and a transparency request', async
 
 test('provider failures are returned values and stage nothing', async () => {
   for (const [reason, expected] of [
-    ['rejected', 'rejected'],
-    ['timeout', 'timeout'],
-    ['misconfigured', 'misconfigured'],
-    ['unreachable', 'unavailable'],
-    ['invalid-request', 'unavailable'],
+    ['rejected', { attached: false, reason: 'rejected' }],
+    ['timeout', { attached: false, reason: 'timeout' }],
+    ['misconfigured', { attached: false, reason: 'misconfigured' }],
+    // An unavailable result has to say which half failed, or the Agent's reply
+    // blames the Slack connection for a provider that never answered.
+    ['unreachable', {
+      attached: false, reason: 'unavailable', source: 'provider', detail: 'network_error',
+    }],
+    ['invalid-request', {
+      attached: false, reason: 'unavailable', source: 'provider', detail: 'network_error',
+    }],
   ] as const) {
-    const client = fauxImagesClient(SUNBURST, { ok: false, reason, detail: 'provider_detail' });
+    const client = fauxImagesClient(SUNBURST, { ok: false, reason, detail: 'network_error' });
     const state = harness({ client: client.client });
     const result = await runImageTool(state.options, { prompt: 'Try this.' });
-    assert.deepEqual(result, { attached: false, reason: expected }, reason);
+    assert.deepEqual(result, expected, reason);
     assert.equal(state.staged.length, 0, reason);
-    assert.equal(JSON.stringify(result).includes('provider_detail'), false, reason);
+  }
+
+  // A reason that carries provider prose keeps carrying none of it.
+  const moderated = fauxImagesClient(SUNBURST, {
+    ok: false, reason: 'rejected', detail: 'the prompt was blocked for policy reasons',
+  });
+  const moderatedState = harness({ client: moderated.client });
+  assert.deepEqual(
+    await runImageTool(moderatedState.options, { prompt: 'Try this.' }),
+    { attached: false, reason: 'rejected' },
+  );
+
+  // An unbounded or empty client detail becomes a name, never free text.
+  for (const detail of ['', '   ', 'x'.repeat(200)]) {
+    const noisy = fauxImagesClient(SUNBURST, { ok: false, reason: 'unreachable', detail });
+    const noisyState = harness({ client: noisy.client });
+    assert.deepEqual(
+      await runImageTool(noisyState.options, { prompt: 'Try this.' }),
+      { attached: false, reason: 'unavailable', source: 'provider', detail: 'unknown' },
+      JSON.stringify(detail),
+    );
   }
 
   const unresolved = harness({ async resolveClient() { return { ok: false, reason: 'misconfigured' }; } });
@@ -720,12 +750,47 @@ test('an input image carrying injected instructions still yields one bound recei
 test('staging failures reach the model as the existing delivery reasons', async () => {
   for (const outcome of [
     { attached: false, reason: 'missing-scope' },
-    { attached: false, reason: 'unavailable' },
     { attached: false, reason: 'too-large', maxBytes: MAX_GATEWAY_ARTIFACT_BYTES },
   ] as const) {
     const state = harness({ async stage() { return outcome; } });
     assert.deepEqual(await runImageTool(state.options, { prompt: 'Stage me.' }), outcome);
   }
+});
+
+test('a staging unavailable names staging as its source and carries its category', async () => {
+  for (const detail of ['transport_unsupported', 'private_receipt_invalid', 'private_stage_failed'] as const) {
+    const state = harness({ async stage() { return { attached: false, reason: 'unavailable', detail }; } });
+    assert.deepEqual(
+      await runImageTool(state.options, { prompt: 'Stage me.' }),
+      { attached: false, reason: 'unavailable', source: 'staging', detail },
+      detail,
+    );
+  }
+  // A transport that names no category still says which half failed.
+  const bare = harness({ async stage() { return { attached: false, reason: 'unavailable' }; } });
+  assert.deepEqual(
+    await runImageTool(bare.options, { prompt: 'Stage me.' }),
+    { attached: false, reason: 'unavailable', source: 'staging', detail: 'unknown' },
+  );
+});
+
+test('a provider unavailable and a staging unavailable never read alike', async () => {
+  const unreachable = fauxImagesClient(SUNBURST, {
+    ok: false, reason: 'unreachable', detail: 'redirect_rejected',
+  });
+  const provider = await runImageTool(
+    harness({ client: unreachable.client }).options,
+    { prompt: 'Same wording, different half.' },
+  ) as { source: string; detail: string };
+  const staging = await runImageTool(
+    harness({ async stage() { return { attached: false, reason: 'unavailable', detail: 'private_stage_failed' }; } }).options,
+    { prompt: 'Same wording, different half.' },
+  ) as { source: string; detail: string };
+  assert.notDeepEqual(provider, staging);
+  assert.equal(provider.source, 'provider');
+  assert.equal(provider.detail, 'redirect_rejected');
+  assert.equal(staging.source, 'staging');
+  assert.equal(staging.detail, 'private_stage_failed');
 });
 
 test('the visible filename stays a safe basename matching the applied format', () => {

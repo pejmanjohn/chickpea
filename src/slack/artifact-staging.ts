@@ -1,4 +1,8 @@
-import type { SlackArtifactStageInput, SlackArtifactStageOutcome } from '../sandbox/artifact-tool.ts';
+import type {
+  SlackArtifactStageInput,
+  SlackArtifactStageOutcome,
+  SlackArtifactStagingDetail,
+} from '../sandbox/artifact-tool.ts';
 import * as v from 'valibot';
 import {
   createArtifactReceiptAccumulator,
@@ -37,7 +41,7 @@ export async function stageArtifactWithReceipt(input: {
   if (title !== undefined && (title.length > FILENAME_LIMIT || CONTROL_CHARACTERS.test(title))) {
     throw new Error(`title must be at most ${FILENAME_LIMIT} characters without control characters`);
   }
-  if (!input.transport.stagePrivate) return { attached: false, reason: 'unavailable' };
+  if (!input.transport.stagePrivate) return stagingUnavailable('transport_unsupported');
   const now = input.now ?? Date.now;
   const stagedAt = now();
   let receipt: CompletedSlackArtifactReceipt;
@@ -51,8 +55,7 @@ export async function stageArtifactWithReceipt(input: {
     });
     completed = true;
     if (staged.byteLength !== input.artifact.bytes.byteLength) {
-      reportStagingFailure('private_receipt_invalid');
-      return { attached: false, reason: 'unavailable' };
+      return stagingUnavailable('private_receipt_invalid');
     }
     const parsed = v.parse(SlackArtifactReceiptSchema, {
       schemaVersion: 2,
@@ -66,26 +69,41 @@ export async function stageArtifactWithReceipt(input: {
       completedAt: now(),
       destination: { ...input.destination },
     });
-    if (!isCompletedSlackArtifactReceipt(parsed)) return { attached: false, reason: 'unavailable' };
+    if (!isCompletedSlackArtifactReceipt(parsed)) return stagingUnavailable('private_receipt_invalid');
     receipt = parsed;
   } catch (error) {
     // Static categories only. Never log filenames, URLs, bytes, raw messages,
     // or an untrusted upstream error code. A rejected completion receipt can
     // leave a private orphan; the final message must not claim it was attached.
-    reportStagingFailure(completed || (error instanceof SlackTransportError &&
-      error.code === 'invalid_private_completion_receipt')
-      ? 'private_receipt_invalid' : 'private_stage_failed');
+    const detail: SlackArtifactStagingDetail = completed ||
+      (error instanceof SlackTransportError &&
+        error.code === 'invalid_private_completion_receipt')
+      ? 'private_receipt_invalid' : 'private_stage_failed';
     if (error instanceof SlackTransportError && error.code === 'gateway_request_too_large') {
+      reportStagingFailure(detail);
       return { attached: false, reason: 'too-large', maxBytes: MAX_GATEWAY_ARTIFACT_BYTES };
     }
-    if (isMissingFilesScopeError(error)) return { attached: false, reason: 'missing-scope' };
-    return { attached: false, reason: 'unavailable' };
+    if (isMissingFilesScopeError(error)) {
+      reportStagingFailure(detail);
+      return { attached: false, reason: 'missing-scope' };
+    }
+    return stagingUnavailable(detail);
   }
   const receipts = input.accumulator.add(receipt);
   input.writeReceipts({ schemaVersion: 1, receipts });
   return { attached: true, byteLength: receipt.byteLength };
 }
 
-function reportStagingFailure(code: 'private_receipt_invalid' | 'private_stage_failed'): void {
+/**
+ * One exit for every `unavailable`: the host-authored category is both logged
+ * and handed back, so the Agent can say whether the file failed to attach
+ * rather than leaving that indistinguishable from a provider failure upstream.
+ */
+function stagingUnavailable(detail: SlackArtifactStagingDetail): SlackArtifactStageOutcome {
+  reportStagingFailure(detail);
+  return { attached: false, reason: 'unavailable', detail };
+}
+
+function reportStagingFailure(code: SlackArtifactStagingDetail): void {
   console.warn('[chickpea] artifact staging failed', { code });
 }
