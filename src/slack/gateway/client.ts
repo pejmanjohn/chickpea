@@ -362,7 +362,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       const current = await this.dependencies.settings.getSetting(GATEWAY_CLAIM_SETTING);
       // A simultaneous authorized POST may already have made this exact update.
       // Any replacement, clearance or different setup fence remains a conflict.
-      if (current !== JSON.stringify({ ...claim, setupRevision: setup.setupRevision })) {
+      if (current !== JSON.stringify({ ...JSON.parse(raw), setupRevision: setup.setupRevision })) {
         throw new SlackTransportError('gateway.claim', 'gateway_setup_changed');
       }
     }
