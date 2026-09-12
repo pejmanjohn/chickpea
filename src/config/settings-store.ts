@@ -42,7 +42,7 @@ export interface SettingsStore {
   getSettings(keys: readonly string[]): Promise<(string | undefined)[]>;
   setSetting(key: string, value: string): Promise<void>;
   deleteSetting(key: string): Promise<void>;
-  /** Atomically compare one setting, then apply all writes/deletes on match. */
+  /** Atomically compare settings, then apply all writes/deletes on match. */
   applySettingsPatch(patch: SettingsPatch): Promise<boolean>;
   /** Atomically union string members into a JSON-array setting. */
   mergeSettingStringSet(key: string, values: readonly string[]): Promise<string[]>;
@@ -58,6 +58,8 @@ export interface SettingWrite {
 export interface SettingsPatch {
   /** `null` is the clone-safe sentinel for an absent setting. */
   expected?: { key: string; value: string | null };
+  /** Additional fences for operations whose authority spans related settings. */
+  expectedAll?: readonly { key: string; value: string | null }[];
   set?: readonly SettingWrite[];
   delete?: readonly string[];
 }
@@ -154,9 +156,9 @@ export class SettingsStoreLogic {
     }
 
     return this.db.transaction(() => {
-      if (patch.expected) {
-        const current = this.getSetting(patch.expected.key) ?? null;
-        if (current !== patch.expected.value) {
+      for (const expected of [...(patch.expected ? [patch.expected] : []), ...(patch.expectedAll ?? [])]) {
+        const current = this.getSetting(expected.key) ?? null;
+        if (current !== expected.value) {
           return false;
         }
       }

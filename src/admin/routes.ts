@@ -3412,6 +3412,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
     const installStatus = safeSlackInstallStatus(c.req.query('slack_install'));
+    let gatewayNotice = c.req.query('gateway_status') === 'expired' ? 'gateway_claim_expired' : undefined;
     let gatewayState: 'disconnected' | 'pending' | 'connected' | 'error' = 'disconnected';
     try {
       if (await settings(c).getSetting(GATEWAY_BINDING_SETTING)) {
@@ -3422,12 +3423,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             c.env as PlatformEnv | undefined,
             { productTelemetry: productTelemetry(c) },
           ).refreshClaim();
-          gatewayState = result.state === 'bound' ? 'connected' : 'pending';
+          gatewayState = result.state === 'bound' ? 'connected'
+            : result.state === 'pending' ? 'pending'
+            : result.state === 'unknown' ? 'error' : 'disconnected';
+          if (result.state === 'expired' || result.state === 'cancelled') gatewayNotice = 'gateway_claim_expired';
           if (gatewayState === 'connected') {
             startNodeGatewaySession(c.env as PlatformEnv | undefined);
           }
         } else {
-          gatewayState = 'pending';
+          gatewayState = c.req.query('gateway_status') === 'unknown' ? 'error' : 'pending';
         }
       }
     } catch {
@@ -3443,6 +3447,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         safeSetupDestination(c.req.query('destination') ?? '/admin/onboarding'),
       manifest,
       gatewayState,
+      ...(gatewayNotice ? { notice: gatewayNotice } : {}),
       ...(installStatus ? { notice: installStatus } : {}),
     }));
   });
@@ -3485,12 +3490,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
       });
       const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
-      if (action === 'gateway_begin') {
+      if (action === 'gateway_begin' || action === 'gateway_resume') {
         const claim = await createGatewayDeploymentClient(
           c.env as PlatformEnv | undefined,
         ).beginClaim(
           `${requestOrigin(c)}/admin/setup?gateway_return=1`,
           { setupId: setup.id, setupRevision: setup.revision },
+          { resumeOnly: action === 'gateway_resume' },
         );
         await Promise.all([
           limiter.recordSuccess('slack_setup_source', source),
@@ -3507,7 +3513,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           { productTelemetry: productTelemetry(c) },
         ).refreshClaim();
         if (result.state === 'bound') startNodeGatewaySession(c.env as PlatformEnv | undefined);
-        return c.redirect('/admin/setup', 303);
+        return c.redirect(result.state === 'unknown' ? '/admin/setup?gateway_status=unknown'
+          : result.state === 'expired' || result.state === 'cancelled' ? '/admin/setup?gateway_status=expired'
+            : '/admin/setup', 303);
       } else if (action === 'create') {
         setup = await service.create({
           setupId: setup.id, expectedRevision: setup.revision,
@@ -3540,7 +3548,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(notice ? { notice } : {}),
       }));
     } catch (error) {
-      if (action === 'gateway_begin' || action === 'gateway_refresh') {
+      if (setup && (action === 'gateway_begin' || action === 'gateway_resume') && error instanceof SlackTransportError) {
+        if (error.code === 'gateway_already_connected') {
+          startNodeGatewaySession(c.env as PlatformEnv | undefined);
+          return c.redirect('/admin/setup', 303);
+        }
+        if (error.code === 'gateway_claim_retry') return c.redirect('/admin/setup', 303);
+        if (error.code === 'gateway_claim_expired') return c.redirect('/admin/setup?gateway_status=expired', 303);
+        if (error.code === 'gateway_claim_unknown') return c.redirect('/admin/setup?gateway_status=unknown', 303);
+      }
+      if (action === 'gateway_begin' || action === 'gateway_resume' || action === 'gateway_refresh') {
         const detail = error instanceof SlackTransportError
           ? `${error.operation}:${error.code}`
           : error instanceof Error
@@ -3563,7 +3580,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         limiter.recordFailure(`slack_setup_operation_${action}`, setup.id),
         limiter.recordFailure('slack_setup_deployment', 'deployment'),
       ]);
-      const code = (action === 'gateway_begin' || action === 'gateway_refresh')
+      const code = (action === 'gateway_begin' || action === 'gateway_resume' || action === 'gateway_refresh')
         && error instanceof SlackTransportError
         ? slackGatewaySetupPageError(error.code)
         : error instanceof SlackAppCreationError ? error.code : 'setup_invalid';

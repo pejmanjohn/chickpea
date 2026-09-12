@@ -39,7 +39,14 @@ test('Add to Slack completes its same-origin POST before navigating to the gatew
   const gatewayOrigin = 'https://gateway.chickpea.test';
   const authorizationUrl = `${gatewayOrigin}/install/claim_test`;
   let claims = 0;
+  let checks = 0;
+  let status: 'pending' | 'unknown' = 'pending';
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === `${gatewayOrigin}/v1/claims/claim_test`) {
+      checks += 1;
+      return status === 'unknown' ? Response.json({ error: 'rate_limited' }, { status: 429 })
+        : Response.json({ protocolVersion: 1, claimId: 'claim_test', state: 'pending', expiresAt: NOW + 60_000 });
+    }
     assert.equal(String(input), `${gatewayOrigin}/v1/claims`);
     assert.equal(init?.method, 'POST');
     claims += 1;
@@ -72,6 +79,32 @@ test('Add to Slack completes its same-origin POST before navigating to the gatew
       location: { origin: ORIGIN, replace: (url: string) => { navigated = url; } },
     });
     assert.equal(navigated, authorizationUrl);
+    const pending = await (await app.request(`${ORIGIN}/admin/setup`, {}, env)).text();
+    assert.match(pending, /Open Slack authorization again/);
+    assert.doesNotMatch(pending, /https:\/\/gateway\.chickpea\.test\/install|claim_test/);
+    assert.equal(checks, 0, 'ordinary GET must not query or create a claim');
+    for (const action of ['gateway_resume', 'gateway_begin']) {
+      const reopened = await postSetup(app, env, { action, capability: authority.capability });
+      assert.equal(reopened.status, 200);
+      assert.equal(slackAuthorizationUrlFromHandoff(await reopened.text()).href, authorizationUrl);
+    }
+    assert.equal(checks, 2);
+    assert.equal(claims, 1);
+    const invalidResume = await postSetup(app, env, { action: 'gateway_resume', capability: 'invalid' });
+    assert.equal(invalidResume.status, 400);
+    const crossOrigin = await app.request(`${ORIGIN}/admin/setup`, {
+      method: 'POST', headers: { origin: 'https://attacker.test', 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ action: 'gateway_resume', capability: authority.capability }),
+    }, env);
+    assert.equal(crossOrigin.status, 400);
+    assert.equal(checks, 2, 'unauthorized recovery must not contact the gateway');
+    status = 'unknown';
+    const unknown = await postSetup(app, env, { action: 'gateway_refresh', capability: authority.capability });
+    assert.equal(unknown.status, 303);
+    const retry = await (await app.request(`${ORIGIN}${unknown.headers.get('location')}`, {}, env)).text();
+    assert.match(retry, /Your authorization is saved/);
+    assert.match(retry, /Open Slack authorization again/);
+    assert.equal(claims, 1);
   } finally {
     identity.close();
     closeNodeStateStores();

@@ -1,3 +1,6 @@
+import { IdentityStoreLogic } from '../identity/store.ts';
+import { SettingsStoreLogic } from './settings-store.ts';
+import type { GatewayWorkspaceBinding } from '../slack/gateway/protocol.ts';
 import {
   AgentRevisionConflictError,
   AgentExistsError,
@@ -342,6 +345,7 @@ export interface ConfigStore {
   ): Promise<CustomAgentConfig>;
   restoreAgent(agentId: string, expectedRevision?: number): Promise<CustomAgentConfig>;
   ensureWorkspaceInstallation(input: EnsureWorkspaceInstallationInput): Promise<WorkspaceInstallation>;
+  retainGatewayInstallation(input: RetainGatewayInstallationInput): Promise<boolean>;
   getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined>;
   listWorkspaceInstallations(): Promise<WorkspaceInstallation[]>;
   updateWorkspaceInstallation(
@@ -464,6 +468,13 @@ export interface AdoptionInventorySummary {
  * same class over `ctx.storage.sql`. Methods are synchronous — both backends
  * execute SQL synchronously — and the async public interface wraps them.
  */
+export interface RetainGatewayInstallationInput {
+  expectedClaim: string;
+  binding: GatewayWorkspaceBinding;
+  setup?: { setupId: string; setupRevision: number };
+  now: number;
+}
+
 export class ConfigStoreLogic {
   private readonly legacyChannelBehaviorColumns: boolean;
 
@@ -491,6 +502,51 @@ export class ConfigStoreLogic {
       this.seedOnce(seed);
       this.migrateLegacyAgentAvatars();
     }
+  }
+
+  /** All three stores live in TAG_STATE. Keep the claim fence and the Owner /
+   * workspace writes in one synchronous transaction, including rollback. */
+  retainGatewayInstallation(input: RetainGatewayInstallationInput): boolean {
+    return this.db.transaction(() => {
+      // These stores are already installed on this database. Nested operations
+      // join this transaction; errors escape to its sole rollback boundary.
+      const db: StateDb = {
+        schema: 'attach',
+        run: this.db.run.bind(this.db), get: this.db.get.bind(this.db),
+        all: this.db.all.bind(this.db), exec: this.db.exec.bind(this.db),
+        transaction: (fn) => fn(),
+      };
+      const settings = new SettingsStoreLogic(db, () => input.now);
+      if (settings.getSetting('slack.gateway.claim.v1') !== input.expectedClaim) return false;
+      const deployment = settings.getSetting('slack.gateway.deploymentIdentity.v1');
+      if (!deployment || JSON.parse(deployment).deploymentId !== input.binding.deploymentId) {
+        throw new Error('Gateway binding belongs to another deployment.');
+      }
+      const config = new ConfigStoreLogic(db);
+      const { binding, setup } = input;
+      const different = config.listWorkspaceInstallations().find((row) => row.workspaceId !== binding.workspaceId);
+      if (different) throw new Error(`This Chickpea deployment is already connected to Slack workspace ${different.workspaceId}.`);
+      if (setup) new IdentityStoreLogic(db, { now: () => input.now }).recordSharedSlackInstallation({
+        setupId: setup.setupId, expectedRevision: setup.setupRevision,
+        appId: binding.appId, clientId: binding.clientId, bindingId: binding.bindingId,
+        slackTeamId: binding.workspaceId, installerSlackUserId: binding.installerSlackUserId,
+        botUserId: binding.botUserId,
+      });
+      const current = config.ensureWorkspaceInstallation({
+        workspaceId: binding.workspaceId, transportMode: 'gateway', teamId: binding.workspaceId,
+        appId: binding.appId, botUserId: binding.botUserId, gatewayBindingId: binding.bindingId,
+      });
+      config.updateWorkspaceInstallation(binding.workspaceId, {
+        transportMode: 'gateway', teamId: binding.workspaceId, appId: binding.appId,
+        botUserId: binding.botUserId, gatewayBindingId: binding.bindingId, health: 'healthy', healthDetail: null,
+      }, current.revision);
+      settings.applySettingsPatch({
+        expected: { key: 'slack.gateway.claim.v1', value: input.expectedClaim },
+        set: [{ key: 'slack.gateway.binding.v1', value: JSON.stringify(binding) }],
+        delete: ['slack.gateway.claim.v1'],
+      });
+      return true;
+    });
   }
 
   ensureWorkspaceInstallation(input: EnsureWorkspaceInstallationInput): WorkspaceInstallation {

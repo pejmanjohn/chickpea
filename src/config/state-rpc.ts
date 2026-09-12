@@ -5,6 +5,7 @@ import type {
 } from './settings-store.ts';
 import type {
   AdoptionInventorySummary,
+  RetainGatewayInstallationInput,
   AgentModelRolePatch,
   ConfigAgentPatch,
   OAuthReauthorizationTarget,
@@ -287,6 +288,7 @@ export interface TagStateRpc {
   configEnsureWorkspaceInstallation(
     input: EnsureWorkspaceInstallationInput,
   ): Promise<StateRpcResult<WorkspaceInstallation>>;
+  configRetainGatewayInstallation(input: RetainGatewayInstallationInput): Promise<StateRpcResult<boolean>>;
   configGetWorkspaceInstallation(
     workspaceId: string,
   ): Promise<StateRpcResult<WorkspaceInstallation | null>>;

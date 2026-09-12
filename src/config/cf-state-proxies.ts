@@ -1269,6 +1269,10 @@ export class CfConfigStore implements ConfigStore {
     return unwrap(await this.stub.configEnsureWorkspaceInstallation(input));
   }
 
+  async retainGatewayInstallation(input: import('./store.ts').RetainGatewayInstallationInput): Promise<boolean> {
+    return unwrap(await this.stub.configRetainGatewayInstallation(input));
+  }
+
   async getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined> {
     return orUndefined(unwrap(await this.stub.configGetWorkspaceInstallation(workspaceId)));
   }

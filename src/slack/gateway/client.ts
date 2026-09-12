@@ -66,6 +66,9 @@ export interface GatewayClaimState {
   setupRevision?: number;
 }
 
+export type GatewayClaimResolution = GatewayClaimStatusResponse
+  | { state: 'unknown' | 'none' };
+
 export interface GatewayClientDependencies {
   deliveryOwner?: DeliveryOwner;
   settings: SettingsStore;
@@ -343,7 +346,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
   async beginClaim(
     returnUrl?: string,
     setup?: { setupId: string; setupRevision: number },
-    options?: { reconnect: boolean },
+    options?: { reconnect?: boolean; resumeOnly?: boolean },
   ): Promise<GatewayClaimCreateResponse> {
     return this.beginClaimWithIdentityRecovery(returnUrl, setup, options, 0);
   }
@@ -351,9 +354,32 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
   private async beginClaimWithIdentityRecovery(
     returnUrl: string | undefined,
     setup: { setupId: string; setupRevision: number } | undefined,
-    options: { reconnect: boolean } | undefined,
+    options: { reconnect?: boolean; resumeOnly?: boolean } | undefined,
     contentionCount: number,
   ): Promise<GatewayClaimCreateResponse> {
+    let rawClaim = await this.dependencies.settings.getSetting(GATEWAY_CLAIM_SETTING);
+    let rawBinding = await this.dependencies.settings.getSetting(GATEWAY_BINDING_SETTING);
+    if (rawClaim && !options?.reconnect) {
+      const claim = parseClaimState(rawClaim);
+      if (setup && (claim.setupId !== setup.setupId || claim.setupRevision !== setup.setupRevision)) {
+        throw new SlackTransportError('gateway.claim', 'gateway_setup_changed');
+      }
+      const result = await this.refreshClaim();
+      if (result.state === 'pending' &&
+          await this.dependencies.settings.getSetting(GATEWAY_CLAIM_SETTING) === rawClaim) {
+        return { protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+          claimId: claim.claimId, expiresAt: claim.expiresAt, authorizationUrl: claim.authorizationUrl };
+      }
+      throw new SlackTransportError('gateway.claim',
+        result.state === 'bound' ? 'gateway_already_connected'
+          : result.state === 'unknown' ? 'gateway_claim_unknown'
+            : result.state === 'expired' || result.state === 'cancelled' ? 'gateway_claim_expired'
+              : 'gateway_claim_retry', { retryable: true });
+    }
+    if (!options?.reconnect && rawBinding) {
+      throw new SlackTransportError('gateway.claim', 'gateway_already_connected');
+    }
+    if (options?.resumeOnly) throw new SlackTransportError('gateway.claim', 'gateway_claim_retry', { retryable: true });
     const reconnectBindingId = options?.reconnect
       ? await this.reconnectBindingId()
       : undefined;
@@ -399,6 +425,12 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
         );
       }
       identity = await this.identity();
+      rawClaim = undefined;
+      rawBinding = undefined;
+    }
+    const rawIdentity = await this.dependencies.settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING);
+    if (!rawIdentity || JSON.parse(rawIdentity).deploymentId !== identity.deploymentId) {
+      throw new SlackTransportError('gateway.claim', 'gateway_identity_contended', { retryable: true });
     }
     const safeReturnUrl = returnUrl ? requireReturnUrl(returnUrl) : undefined;
     const unsigned = {
@@ -424,30 +456,50 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       ...(setup ? setup : {}),
     } satisfies GatewayClaimState);
     const publicOrigin = safeReturnUrl ? new URL(safeReturnUrl).origin : undefined;
-    await this.dependencies.settings.applySettingsPatch({
+    const retained = await this.dependencies.settings.applySettingsPatch({
+      expected: { key: GATEWAY_CLAIM_SETTING, value: rawClaim ?? null },
+      expectedAll: [
+        { key: GATEWAY_BINDING_SETTING, value: rawBinding ?? null },
+        { key: GATEWAY_DEPLOYMENT_IDENTITY_SETTING, value: rawIdentity },
+      ],
       set: [
         { key: GATEWAY_CLAIM_SETTING, value: claimState },
         ...(publicOrigin ? [{ key: SLACK_SETTING_KEYS.publicUrl, value: publicOrigin }] : []),
       ],
     });
+    if (!retained) {
+      if (contentionCount >= GATEWAY_IDENTITY_RECOVERY_CONTENTION_LIMIT) {
+        throw new SlackTransportError('gateway.claim', 'gateway_claim_retry', { retryable: true });
+      }
+      return this.beginClaimWithIdentityRecovery(returnUrl, setup, undefined, contentionCount + 1);
+    }
     if (publicOrigin) primeStoredSlackPublicUrl(publicOrigin);
     return response;
   }
 
-  async refreshClaim(): Promise<GatewayClaimStatusResponse> {
-    const claim = await this.claim();
-    if (!claim) throw new Error('No gateway installation claim is pending.');
-    if (claim.expiresAt <= this.now()) throw new Error('Gateway installation claim expired.');
-    const response = parseGatewayClaimStatusResponse(await this.signedJson(
-      `/v1/claims/${encodeURIComponent(claim.claimId)}`,
-      'claim.status',
-      { claimId: claim.claimId },
-    ));
-    if (response.claimId !== claim.claimId) throw new Error('Gateway claim response mismatch.');
+  async refreshClaim(): Promise<GatewayClaimResolution> {
+    const raw = await this.dependencies.settings.getSetting(GATEWAY_CLAIM_SETTING);
+    if (!raw) return { state: 'none' };
+    const claim = parseClaimState(raw);
+    let response: GatewayClaimStatusResponse;
+    try {
+      response = parseGatewayClaimStatusResponse(await this.signedJson(
+        `/v1/claims/${encodeURIComponent(claim.claimId)}`, 'claim.status', { claimId: claim.claimId },
+      ));
+      if (response.claimId !== claim.claimId) return { state: 'unknown' };
+    } catch {
+      // A local deadline or an unavailable status cannot disprove a completed
+      // Slack authorization. Retain the claim byte-for-byte for another check.
+      return { state: 'unknown' };
+    }
     if (response.state === 'bound' && response.binding) {
-      await this.retainBinding(response.binding, claim);
+      if (!await this.retainBinding(response.binding, claim, raw)) return { state: 'unknown' };
     } else if (response.state === 'expired' || response.state === 'cancelled') {
-      await this.dependencies.settings.deleteSetting(GATEWAY_CLAIM_SETTING);
+      if (!await this.dependencies.settings.applySettingsPatch({
+        expected: { key: GATEWAY_CLAIM_SETTING, value: raw }, delete: [GATEWAY_CLAIM_SETTING],
+      })) return { state: 'unknown' };
+    } else if (await this.dependencies.settings.getSetting(GATEWAY_CLAIM_SETTING) !== raw) {
+      return { state: 'unknown' };
     }
     return response;
   }
@@ -730,53 +782,19 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
   private async retainBinding(
     binding: GatewayWorkspaceBinding,
     claim: GatewayClaimState,
-  ): Promise<void> {
+    rawClaim: string,
+  ): Promise<boolean> {
     const identity = await this.identity();
     if (binding.deploymentId !== identity.deploymentId) {
       throw new Error('Gateway binding belongs to another deployment.');
     }
-    const installations = await this.dependencies.config.listWorkspaceInstallations();
-    const differentWorkspace = installations.find(({ workspaceId }) =>
-      workspaceId !== binding.workspaceId);
-    if (differentWorkspace) {
-      throw new Error(
-        `This Chickpea deployment is already connected to Slack workspace ${differentWorkspace.workspaceId}.`,
-      );
-    }
-    if (this.dependencies.identity && claim.setupId && claim.setupRevision) {
-      await this.dependencies.identity.recordSharedSlackInstallation({
-        setupId: claim.setupId,
-        expectedRevision: claim.setupRevision,
-        appId: binding.appId,
-        clientId: binding.clientId,
-        bindingId: binding.bindingId,
-        slackTeamId: binding.workspaceId,
-        installerSlackUserId: binding.installerSlackUserId,
-        botUserId: binding.botUserId,
-      });
-    }
     const current = await this.dependencies.config.getWorkspaceInstallation(binding.workspaceId);
-    const retained = current ?? await this.dependencies.config.ensureWorkspaceInstallation({
-        workspaceId: binding.workspaceId,
-        transportMode: 'gateway',
-        teamId: binding.workspaceId,
-        appId: binding.appId,
-        botUserId: binding.botUserId,
-        gatewayBindingId: binding.bindingId,
-      });
-    await this.dependencies.config.updateWorkspaceInstallation(binding.workspaceId, {
-      transportMode: 'gateway',
-      teamId: binding.workspaceId,
-      appId: binding.appId,
-      botUserId: binding.botUserId,
-      gatewayBindingId: binding.bindingId,
-      health: 'healthy',
-      healthDetail: null,
-    }, retained.revision);
-    await this.dependencies.settings.applySettingsPatch({
-      set: [{ key: GATEWAY_BINDING_SETTING, value: JSON.stringify(binding) }],
-      delete: [GATEWAY_CLAIM_SETTING],
+    const retained = await this.dependencies.config.retainGatewayInstallation({
+      expectedClaim: rawClaim, binding, now: this.now(),
+      ...(this.dependencies.identity && claim.setupId && claim.setupRevision
+        ? { setup: { setupId: claim.setupId, setupRevision: claim.setupRevision } } : {}),
     });
+    if (!retained) return false;
     this.binding = binding;
     if (current?.health !== 'healthy') {
       this.dependencies.productTelemetry?.capture({
@@ -785,6 +803,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
         transportMode: 'gateway',
       });
     }
+    return true;
   }
 
   private async signedJson(
@@ -957,11 +976,6 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     const binding = await this.loadBinding();
     if (!binding) throw new Error('Gateway workspace binding is unavailable.');
     return binding;
-  }
-
-  private async claim(): Promise<GatewayClaimState | undefined> {
-    const raw = await this.dependencies.settings.getSetting(GATEWAY_CLAIM_SETTING);
-    return raw ? parseClaimState(raw) : undefined;
   }
 
   private async reconnectBindingId(): Promise<string | undefined> {

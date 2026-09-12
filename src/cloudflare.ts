@@ -875,6 +875,12 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.ensureWorkspaceInstallation(input));
   }
 
+  async configRetainGatewayInstallation(
+    input: import('./config/store.ts').RetainGatewayInstallationInput,
+  ): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) => stores.config.retainGatewayInstallation(input));
+  }
+
   async configGetWorkspaceInstallation(
     workspaceId: string,
   ): Promise<StateRpcResult<WorkspaceInstallation | null>> {
