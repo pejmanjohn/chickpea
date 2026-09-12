@@ -124,3 +124,28 @@ test('presentation declaration reads the same real Slack signal envelope', async
     assert.equal(result, 'declared');
   });
 });
+
+test('framework continuation markers preserve the current envelope without admitting lookalikes or stale requests', async () => {
+  const markers = [
+    render({ type: 'instructions', content: 'System instructions updated.' }),
+    render({ type: 'stream_interrupted', content: 'The previous assistant stream was interrupted.' }),
+    render({ type: 'stream_continued', content: 'Continue from the durable partial assistant response.' }),
+  ];
+  await memoryToolPolicyInterceptor(operation, context, async () => {
+    observeMemoryToolPolicy(observation([signal(), ...markers]), context as unknown as FlueEventContext);
+    assert.doesNotThrow(assertArtifactDeliveryAllowed);
+    for (const newest of [
+      signal('missing envelope'), signal(markers[0]),
+      markers[0] + '\ntrailing', markers[0]!.replace('updated.', 'replaced.'),
+      markers[0]!.replace('type="instructions"', 'type="instructions" extra="true"'),
+      render({ type: 'unknown', content: 'System instructions updated.' }),
+    ]) {
+      observeMemoryToolPolicy(observation([signal(), newest, ...markers]), context as unknown as FlueEventContext);
+      assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' });
+    }
+  });
+  await presentationToolPolicyInterceptor(operation, context, async () => {
+    observePresentationToolPolicy(observation([signal(), ...markers]), context as unknown as FlueEventContext);
+    assert.equal(await presentationToolPolicyInterceptor({ type: 'tool', toolName: SLACK_STREAM_ANSWER_TOOL_NAME, toolCallId: 'continued' }, context, async () => 'declared'), 'declared');
+  });
+});

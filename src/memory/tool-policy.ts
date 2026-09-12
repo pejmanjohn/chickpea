@@ -419,6 +419,23 @@ function isManagedCurrentRequestAgent(agentName: string | undefined): boolean {
     (MANAGED_SUBMISSION_AGENT_NAMES as readonly string[]).includes(agentName);
 }
 
+/**
+ * Flue appends these fixed framework markers inside the active submission.
+ * They do not advance its delivery cursor. Dispatch/append reserve their types,
+ * and Slack user text is escaped inside slack_message, so a lookalike in user
+ * content cannot become a top-level marker. Skip only the exact single-text
+ * projection; any other newest user message still has to carry its own policy.
+ */
+export function isCurrentRequestContinuationMarker(message: LlmMessage): boolean {
+  if (message.role !== 'user') return false;
+  const text = typeof message.content === 'string' ? message.content
+    : message.content.length === 1 && message.content[0]?.type === 'text'
+      ? message.content[0].text : undefined;
+  return text === '<signal type="instructions">\nSystem instructions updated.\n</signal>' ||
+    text === '<signal type="stream_interrupted">\nThe previous assistant stream was interrupted.\n</signal>' ||
+    text === '<signal type="stream_continued">\nContinue from the durable partial assistant response.\n</signal>';
+}
+
 function envelopeFromMessages(
   messages: readonly LlmMessage[],
   conversation: CurrentRequestConversationBinding | undefined,
@@ -426,6 +443,7 @@ function envelopeFromMessages(
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role !== 'user') continue;
+    if (isCurrentRequestContinuationMarker(message)) continue;
     const texts = typeof message.content === 'string'
       ? [message.content]
       : message.content.flatMap((content) =>
@@ -435,8 +453,8 @@ function envelopeFromMessages(
       const policy = parseModelVisibleCurrentRequestEnvelope(texts[textIndex]!, conversation);
       if (policy) return policy;
     }
-    // The newest user message is the current submission. Never fall back to an
-    // older envelope when the newest one is missing or malformed.
+    // The newest non-bookkeeping user message is the current submission. Never
+    // borrow an older envelope when that request is missing or malformed.
     return undefined;
   }
   return undefined;
