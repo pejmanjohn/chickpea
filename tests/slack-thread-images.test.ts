@@ -70,6 +70,21 @@ function record(overrides: Partial<ThreadImageRecord> = {}): ThreadImageRecord {
   };
 }
 
+test('only a validated canonical file permalink survives collection, dispatch, and recovery inventory', () => {
+  const permalink = 'https://example.slack.com/files/U1/F00000000AA/logo.png';
+  const collected = collectThreadImageRecords([personUpload('1001.000000', [imageFile('F00000000AA', 'logo.png', { permalink })])], CONVERSATION_KEY);
+  const parsed = parseThreadImageRecords(serializeThreadImageRecords(collected), CONVERSATION_KEY);
+  assert.equal(parsed[0]?.permalink, permalink);
+  const inventory = buildThreadImageInventory({ conversationKey: CONVERSATION_KEY, threadRecords: parsed });
+  const resolved = inventory.resolveHandle('img:1');
+  assert.ok(resolved.ok); assert.equal(resolved.record.permalink, permalink);
+  assert.equal(inventory.manifest.includes(permalink), false);
+  for (const bad of [permalink.replace('F00000000AA', 'F_OTHER'), permalink + '?token=secret', permalink.replace('example.slack.com', 'attacker.invalid')]) {
+    assert.equal(collectThreadImageRecords([personUpload('1001.000000', [imageFile('F00000000AA', 'logo.png', { permalink: bad })])], CONVERSATION_KEY)[0]?.permalink, undefined);
+    assert.deepEqual(parseThreadImageRecords(JSON.stringify([{ ...record(), permalink: bad }]), CONVERSATION_KEY), []);
+  }
+});
+
 function fakeAttachmentClient(
   handler: (fileId: string, maxBytes: number) => Promise<GatewayAttachmentRead>,
 ): GatewayAttachmentClient & { calls: () => number } {

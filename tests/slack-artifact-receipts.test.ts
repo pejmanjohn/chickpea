@@ -5,7 +5,8 @@ import { init, useModel, useTool } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import * as v from 'valibot';
 import { createArtifactReceiptAccumulator, isCompletedSlackArtifactReceipt, isSlackFilePermalink, parseSlackArtifactReceipts, selectDeliverableArtifacts, useSlackArtifactReceipts, type CompletedSlackArtifactReceipt, type SlackArtifactReceipt, type SlackArtifactReceipts } from '../src/slack/artifact-receipts.ts';
-import { stageArtifactWithReceipt } from '../src/slack/artifact-staging.ts';
+import { stageArtifactWithReceipt, reuseImageWithReceipt } from '../src/slack/artifact-staging.ts';
+import { slackThreadImageConversationKey, type ThreadImageRecord } from '../src/slack/thread-images.ts';
 import { MAX_ARTIFACT_BYTES, type SlackArtifactStageInput } from '../src/sandbox/artifact-tool.ts';
 import type { SlackFileStageInput, SlackFileTransport } from '../src/slack/file-transport.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
@@ -141,6 +142,25 @@ const legacyTransport: SlackFileTransport = {
   async complete() { assert.fail('New artifact staging must not publish a native file message'); },
   async resolveShare() { assert.fail('Private staging must not read public shares'); },
 };
+
+test('reuse stages the original file id and freezes its destination without an upload', () => {
+  let state: SlackArtifactReceipts = { schemaVersion: 1, receipts: [] };
+  const record: ThreadImageRecord = { conversationKey: slackThreadImageConversationKey(destination),
+    fileId: 'F12345671', filename: 'original.jpg', mimeType: 'image/jpeg', origin: 'agent',
+    messageTs: destination.threadTs, permalink: 'https://example.slack.com/files/U1/F12345671/original.jpg' };
+  const input = { record, filename: 'resend.jpg', byteLength: 123, destination, now: () => 5,
+    accumulator: createArtifactReceiptAccumulator(fn => { state = fn(state); }), writeReceipts: () => {} };
+  assert.deepEqual(reuseImageWithReceipt(input), { attached: true, byteLength: 123 });
+  assert.equal(state.receipts[0]?.fileId, record.fileId);
+  assert.equal(state.receipts[0]?.filename, 'resend.jpg', 'the link label can differ without renaming the original Slack file');
+  assert.equal(selectDeliverableArtifacts(state.receipts, destination).length, 1);
+  for (const patch of [{ channelId: 'COTHER' }, { workspaceId: 'TOTHER' }, { threadTs: '1789000001.000100' }, { threadTs: undefined }]) {
+    assert.equal(reuseImageWithReceipt({ ...input, destination: { ...destination, ...patch } }).attached, false);
+  }
+  assert.equal(state.receipts.length, 1);
+  const { permalink: _permalink, ...withoutLink } = record;
+  assert.equal(reuseImageWithReceipt({ ...input, record: withoutLink }).attached, false);
+});
 
 test('artifact staging writes a v2 receipt only after valid private completion', async () => {
   let finish!: () => void;

@@ -162,6 +162,7 @@ function harness(input: {
   reads?: Map<string, ThreadImageReadResult>;
   stage?: (artifact: SlackArtifactStageInput) => Promise<SlackArtifactStageOutcome>;
 } = {}): Harness {
+  let appliedFormat: 'png' | 'jpeg' | 'webp' = 'png';
   const staged: SlackArtifactStageInput[] = [];
   const readerLimits: Harness['readerLimits'] = [];
   const reservations: string[] = [];
@@ -173,6 +174,12 @@ function harness(input: {
     reservations,
     clientCalls: 0,
     options: {
+      // Legacy transport/budget fixtures use five opaque bytes. Codec and
+      // actual-pixel acceptance have dedicated real-image tests.
+      prepareOutput(bytes) {
+        return { bytes, format: appliedFormat, width: 1024, height: 1024,
+          transparent: appliedFormat === 'webp', compressed: false, resized: false };
+      },
       acceptsImageInput: input.acceptsImageInput ?? true,
       inventory: inventoryOf(input.records ?? []),
       reserveImageCall: Object.assign(
@@ -196,7 +203,12 @@ function harness(input: {
       async resolveClient() {
         state.clientCalls += 1;
         if (input.resolveClient) return input.resolveClient();
-        return { ok: true, client: input.client ?? fauxImagesClient(SUNBURST).client };
+        const client = input.client ?? fauxImagesClient(SUNBURST).client;
+        return { ok: true, client: {
+          profile: client.profile,
+          async generate(request) { const result = await client.generate(request); if (result.ok) appliedFormat = result.appliedFormat; return result; },
+          async edit(request) { const result = await client.edit(request); if (result.ok) appliedFormat = result.appliedFormat; return result; },
+        } };
       },
       async createImageReader(limits) {
         readerLimits.push({
@@ -234,7 +246,7 @@ function stepRecorder(records: Map<string, unknown> = new Map()) {
 async function runImageTool(
   options: ImageArtifactToolOptions,
   data: Record<string, unknown>,
-  context: { toolCallId?: string; records?: Map<string, unknown> } = {},
+  context: { toolCallId?: string; records?: Map<string, unknown>; includeDetails?: boolean } = {},
 ): Promise<ImageArtifactResult> {
   const tool = createImageArtifactTool(options);
   const recorder = stepRecorder(context.records ?? new Map());
@@ -245,7 +257,14 @@ async function runImageTool(
     step: recorder.step,
     log: { info() {}, warn() {}, error() {}, debug() {} },
   });
-  return result.output;
+  if (context.includeDetails) return result.output;
+  // These established tests assert the original delivery contract. Tests
+  // below exercise the full inspection/recovery result without projection.
+  const output = JSON.parse(JSON.stringify(result.output));
+  delete output.requestedQuality;
+  delete output.requestedBackground;
+  if (output.files) output.files = output.files.map((file: { filename: string; byteLength: number }) => ({ filename: file.filename, byteLength: file.byteLength }));
+  return output;
 }
 
 test('the hook path registers the image tool only for a filled image capability', () => {
@@ -260,7 +279,7 @@ test('the hook path registers the image tool only for a filled image capability'
 
   assert.deepEqual(
     names({ role: 'image', filled: true, acceptsImageInput: true }),
-    ['post_artifact', 'render_chart', GENERATE_IMAGE_TOOL_NAME],
+    ['post_artifact', 'render_chart', GENERATE_IMAGE_TOOL_NAME, 'recover_image'],
   );
   assert.deepEqual(
     names({ role: 'image', filled: false, acceptsImageInput: false }),
@@ -476,7 +495,7 @@ test('the output format follows the transport and a transparency request', async
   const direct = fauxImagesClient(SUNBURST);
   const directState = harness({ client: direct.client });
   await runImageTool(directState.options, { prompt: 'A plain poster.' });
-  assert.deepEqual(direct.calls[0]?.request.format, { format: 'png' });
+  assert.deepEqual(direct.calls[0]?.request.format, { format: 'png', background: 'auto' });
 
   const webp = fauxImagesClient(SUNBURST, {
     ok: true,
@@ -492,7 +511,7 @@ test('the output format follows the transport and a transparency request', async
 
   assert.equal(webp.calls[0]?.request.format.format, 'webp');
   // The container carries alpha; the provider still decides the background.
-  assert.equal(webp.calls[0]?.request.format.background, undefined);
+  assert.equal(webp.calls[0]?.request.format.background, 'auto');
   assert.equal((result as { filename: string }).filename, 'image.webp');
 });
 
@@ -879,7 +898,7 @@ test('a replayed variation call neither regenerates nor stages any file twice', 
 
   const first = await runImageTool(state.options, { prompt: 'Two.', count: 2 }, { records });
   assert.equal((first as { attached: boolean }).attached, true);
-  assert.deepEqual([...records.keys()], ['generate', 'stage', 'stage:2']);
+  assert.deepEqual([...records.keys()], ['generate', 'prepare:1', 'inspect:1', 'correction-choice:1', 'finalize:1', 'stage', 'prepare:2', 'inspect:2', 'correction-choice:2', 'finalize:2', 'stage:2']);
 
   const replay = await runImageTool(state.options, { prompt: 'Two.', count: 2 }, { records });
   assert.deepEqual(replay, first);

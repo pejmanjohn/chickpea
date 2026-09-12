@@ -55,6 +55,24 @@ function emptyStore(): SettingsStore {
   return { getSetting: async () => undefined } as unknown as SettingsStore;
 }
 
+test('explicit dimensions, quality and background reach both image endpoints', async () => {
+  const { calls, fetchImpl } = recordingFetch(() => jsonResponse({ data: [{ b64_json: PIXEL_BASE64 }] }));
+  const images = client(fetchImpl);
+  const request = { prompt: 'A transparent square logo', size: '1024x1024', quality: 'low' as const,
+    format: { format: 'png' as const, background: 'transparent' as const }, deadlineMs: 1000 };
+  assert.equal((await images.generate(request)).ok, true);
+  assert.equal((await images.edit({ ...request, inputs: [imageInput(1)] })).ok, true);
+  const json = JSON.parse(String(calls[0]!.init.body));
+  const form = calls[1]!.init.body as FormData;
+  for (const [key, value] of Object.entries({ size: '1024x1024', quality: 'low', background: 'transparent' })) {
+    assert.equal(json[key], value);
+    assert.equal(form.get(key), value);
+  }
+  assert.equal((await images.generate({ ...request, size: '1080x1080' })).ok, false);
+  assert.equal((await images.generate({ ...request, quality: 'invalid' as 'low' })).ok, false);
+  assert.equal(calls.length, 2);
+});
+
 test('a generation request carries the wire model, prompt, and format policy (AE6)', async () => {
   const { calls, fetchImpl } = recordingFetch(() =>
     jsonResponse({
@@ -81,6 +99,8 @@ test('a generation request carries the wire model, prompt, and format policy (AE
     model: 'gpt-image-2.5-sunburst',
     prompt: 'a chart of quarterly revenue',
     n: 1,
+    size: 'auto',
+    quality: 'auto',
     output_format: 'jpeg',
     output_compression: 70,
     background: 'opaque',

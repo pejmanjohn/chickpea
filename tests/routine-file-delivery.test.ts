@@ -367,5 +367,5 @@ test('a routine occurrence mounts the image tool bound to its saved destination'
     () => {},
     { reserveImageCall: () => ({ ok: true, remaining: 0 }) },
   );
-  assert.deepEqual(tools.map((tool) => tool.name), ['post_artifact', 'render_chart', GENERATE_IMAGE_TOOL_NAME]);
+  assert.deepEqual(tools.map((tool) => tool.name), ['post_artifact', 'render_chart', GENERATE_IMAGE_TOOL_NAME, 'recover_image']);
 });

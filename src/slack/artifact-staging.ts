@@ -7,6 +7,7 @@ import * as v from 'valibot';
 import {
   createArtifactReceiptAccumulator,
   isCompletedSlackArtifactReceipt,
+  isSlackFilePermalink,
   SlackArtifactReceiptSchema,
   type CompletedSlackArtifactReceipt,
   type SlackArtifactReceipt,
@@ -16,9 +17,40 @@ import type { SlackFileTransport } from './file-transport.ts';
 import { MAX_GATEWAY_ARTIFACT_BYTES } from './gateway/protocol.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { isMissingFilesScopeError } from './web-client-presenter.ts';
+import { slackThreadImageConversationKey, type ThreadImageRecord } from './thread-images.ts';
 
 const FILENAME_LIMIT = 256;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
+/** Reuse an accessible conversation file instead of creating an upload that
+ * Slack may re-encode. The filename is a link label; the existing Slack file
+ * and its download name remain unchanged. The caller verifies current access.
+ */
+export function reuseImageWithReceipt(input: {
+  record: ThreadImageRecord;
+  filename: string;
+  byteLength: number;
+  destination: SlackArtifactReceipt['destination'];
+  accumulator: ReturnType<typeof createArtifactReceiptAccumulator>;
+  writeReceipts: (receipts: SlackArtifactReceipts) => void;
+  now?: () => number;
+}): SlackArtifactStageOutcome {
+  const { record, destination } = input;
+  const key = slackThreadImageConversationKey({ ...destination, threadTs: destination.threadTs ?? 'dm' });
+  const filename = input.filename.trim();
+  if (record.conversationKey !== key || !isSlackFilePermalink(record.permalink, record.fileId) ||
+      !filename || filename.length > FILENAME_LIMIT || CONTROL_CHARACTERS.test(filename)) {
+    return stagingUnavailable('private_receipt_invalid');
+  }
+  const now = (input.now ?? Date.now)();
+  const receipt = v.parse(SlackArtifactReceiptSchema, {
+    schemaVersion: 2, fileId: record.fileId, permalink: record.permalink,
+    filename, kind: 'image', byteLength: input.byteLength,
+    stagedAt: now, completedAt: now, destination: { ...destination },
+  });
+  input.writeReceipts({ schemaVersion: 1, receipts: input.accumulator.add(receipt) });
+  return { attached: true, byteLength: receipt.byteLength };
+}
 
 /**
  * Stage one model-chosen file for the frozen destination and record the
