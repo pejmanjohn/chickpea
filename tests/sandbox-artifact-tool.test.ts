@@ -483,7 +483,13 @@ test('the image-capable instruction names the tool, handles, and the call rules'
   assert.match(instruction, /before declaring a streamed answer/);
   assert.match(instruction, /locks out every later tool call/);
   assert.match(instruction, /names the model, size, and format the provider applied/);
-  assert.match(instruction, /set intent to edit/);
+  // The result promises no handle for the new image; the next turn lists it.
+  assert.match(
+    instruction,
+    /appears in the next turn’s listing with origin=agent under the filename you chose/,
+  );
+  assert.doesNotMatch(instruction, /its own `img:N` handle/);
+  assert.doesNotMatch(instruction, /intent/);
   // The frozen denial is gone; the rest of the artifact contract is unchanged.
   assert.doesNotMatch(instruction, /do not claim a general image-generation or SVG-to-PNG capability/);
   assert.doesNotMatch(instruction, /PNG charts are built in/);
@@ -516,7 +522,7 @@ test('a generate-only image model discloses that it cannot edit before offering 
     /can generate a new image but cannot edit, retouch, or combine an image that is already here/,
   );
   assert.match(instruction, /say that plainly first, then offer to generate a new image/);
-  assert.doesNotMatch(instruction, /set intent to edit/);
+  assert.doesNotMatch(instruction, /intent/);
   // The disclosure precedes the offer to generate instead of trailing it.
   assert.ok(
     instruction.indexOf('cannot edit, retouch, or combine') <
@@ -526,16 +532,33 @@ test('a generate-only image model discloses that it cannot edit before offering 
 
 test('the image-capable instruction names every failure reason honestly', () => {
   const instruction = buildArtifactToolsInstruction({ imageTool: true, canEdit: true });
+  // Every reason `generate_image` can return, including the two an image can
+  // never satisfy through the file wording that follows this paragraph.
   for (const reason of [
     'input-unavailable',
     'too-large',
     'rejected',
     'timeout',
+    'unavailable',
+    'missing-scope',
     'misconfigured',
     'limit',
   ]) {
     assert.match(instruction, new RegExp(`reason ${reason} means`), reason);
   }
+  for (const detail of ['not_found', 'transport', 'missing_scope', 'unsupported_type', 'too_large']) {
+    assert.match(instruction, new RegExp(`detail ${detail} means`), detail);
+  }
+  assert.match(
+    instruction,
+    /reason unavailable means the image could not be generated or attached right now/,
+  );
+  assert.match(instruction, /never claim to include the image’s content in the reply/);
+  assert.match(
+    instruction,
+    /reason missing-scope means this workspace does not permit Slack file uploads: say an Owner needs to grant that permission and never claim an image was attached/,
+  );
+  assert.match(instruction, /detail unsupported_type means that file type cannot be used as an image input: ask for a PNG, JPEG, or WebP instead/);
   assert.match(instruction, /never say an image was generated, attached, or edited/);
   assert.match(
     instruction,
@@ -554,8 +577,12 @@ test('the image instruction renders the turn manifest, or says the thread has no
     canEdit: true,
     imageManifest: MANIFEST,
   });
-  assert.match(withImages, /Images already in this conversation:\n- handle=img:1 \| origin=person/);
-  assert.match(withImages, /filename="logo\.png" \| mime=image\/png/);
+  // The inventory owns the listing's own header lines; the instruction only
+  // introduces it and must keep the entries verbatim.
+  assert.match(withImages, /Images already in this conversation:\n/);
+  assert.ok(withImages.includes(MANIFEST));
+  assert.match(withImages, /- handle=img:1 \| origin=person/);
+  assert.match(withImages, /filename=.?logo\.png.? \| mime=image\/png/);
   assert.doesNotMatch(withImages, /F0IMAGE1/);
   assert.doesNotMatch(withImages, /No images are in this conversation yet/);
 

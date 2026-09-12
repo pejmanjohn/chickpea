@@ -27,6 +27,24 @@ export interface ImageEditRequest extends ImageGenerateRequest {
   inputs: ImageInput[];
 }
 
+/**
+ * The usage fields the images endpoint documents. The provider's object is
+ * projected onto this shape rather than forwarded, so an unexpected or
+ * oversized payload never reaches the model through a tool result.
+ */
+export interface ImageCallUsageDetails {
+  image_tokens?: number;
+  text_tokens?: number;
+}
+
+export interface ImageCallUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  input_tokens_details?: ImageCallUsageDetails;
+  output_tokens_details?: ImageCallUsageDetails;
+}
+
 export type ImageCallFailureReason =
   | 'rejected'
   | 'misconfigured'
@@ -41,7 +59,7 @@ export type ImageCallResult =
       appliedModel: string;
       appliedSize: string;
       appliedFormat: ImageOutputFormat;
-      usage?: Record<string, unknown>;
+      usage?: ImageCallUsage;
     }
   | { ok: false; reason: ImageCallFailureReason; detail: string };
 
@@ -272,7 +290,7 @@ async function readImageResponse(
   } catch {
     return { ok: false, reason: 'unreachable', detail: 'invalid_response' };
   }
-  const usage = isRecord(payload.usage) ? payload.usage : undefined;
+  const usage = projectUsage(payload.usage);
   return {
     ok: true,
     bytes,
@@ -400,6 +418,41 @@ function parseJsonRecord(text: string): Record<string, unknown> | undefined {
   }
 }
 
+
+/** Keep the documented numeric fields; drop everything else the provider sends. */
+function projectUsage(value: unknown): ImageCallUsage | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const usage: ImageCallUsage = {};
+  for (const field of ['input_tokens', 'output_tokens', 'total_tokens'] as const) {
+    const count = value[field];
+    if (typeof count === 'number' && Number.isFinite(count)) {
+      usage[field] = count;
+    }
+  }
+  for (const field of ['input_tokens_details', 'output_tokens_details'] as const) {
+    const details = projectUsageDetails(value[field]);
+    if (details) {
+      usage[field] = details;
+    }
+  }
+  return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
+function projectUsageDetails(value: unknown): ImageCallUsageDetails | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const details: ImageCallUsageDetails = {};
+  for (const field of ['image_tokens', 'text_tokens'] as const) {
+    const count = value[field];
+    if (typeof count === 'number' && Number.isFinite(count)) {
+      details[field] = count;
+    }
+  }
+  return Object.keys(details).length > 0 ? details : undefined;
+}
 
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined;

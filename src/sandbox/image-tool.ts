@@ -2,6 +2,7 @@ import { defineTool, usePersistentState, useResponseStart, type JsonValue } from
 import * as v from 'valibot';
 
 import type {
+  ImageCallUsage,
   ImageFormatPolicy,
   ImageInput,
   ImageOutputFormat,
@@ -9,6 +10,7 @@ import type {
 } from '../images/openai-images-client.ts';
 import { assertArtifactDeliveryAllowed } from '../memory/tool-policy.ts';
 import {
+  DEFAULT_THREAD_IMAGE_FILE_LIMIT_BYTES,
   THREAD_IMAGE_HANDLE_PREFIX,
   type ThreadImageInventory,
   type ThreadImageReader,
@@ -51,6 +53,16 @@ export interface ImageToolTransport {
   maxBytes: number;
 }
 
+/**
+ * The response's one image slot. `release` is present when the Root Agent's
+ * budget hook supplied it, so a call that fails before the provider hands the
+ * slot back instead of burning the response's only image call.
+ */
+export interface ImageCallReservation {
+  (toolCallId: string): boolean;
+  release?(toolCallId: string): void;
+}
+
 export type ImageClientResolution =
   | { ok: true; client: OpenAiImagesClient }
   | { ok: false; reason: 'misconfigured' };
@@ -61,7 +73,7 @@ export interface ImageArtifactToolOptions {
   /** Per-turn handles for images already in this conversation. */
   inventory: ThreadImageInventory;
   /** Keyed by tool call id so a durable replay keeps the slot it already took. */
-  reserveImageCall(toolCallId: string): boolean;
+  reserveImageCall: ImageCallReservation;
   /** The installation's upload cap, known only after transport resolution. */
   resolveTransport(): Promise<ImageToolTransport>;
   /** Resolves the model id and provider credential at call time. */
@@ -84,8 +96,7 @@ export type ImageArtifactResult =
       appliedModel: string;
       appliedSize: string;
       appliedFormat: ImageOutputFormat;
-      handle: string;
-      usage?: Record<string, unknown>;
+      usage?: ImageCallUsage;
     }
   | Extract<SlackArtifactStageOutcome, { attached: false }>
   | { attached: false; reason: 'timeout' }
@@ -107,7 +118,7 @@ type ImageGenerationStep =
       appliedModel: string;
       appliedSize: string;
       appliedFormat: ImageOutputFormat;
-      usage?: Record<string, unknown>;
+      usage?: ImageCallUsage;
     }
   | { ok: false; failure: Extract<ImageArtifactResult, { attached: false }> };
 
@@ -131,7 +142,6 @@ const IMAGE_EDIT_INPUT = v.object({
       v.maxLength(MAX_IMAGE_TOOL_INPUTS),
     ),
   ),
-  intent: v.optional(v.picklist(['generate', 'edit'])),
 });
 
 type ImageToolData = v.InferOutput<typeof IMAGE_EDIT_INPUT>;
@@ -141,7 +151,7 @@ function imageToolDescription(acceptsImageInput: boolean): string {
     'Generate an image and attach it to your final reply in the bound Slack destination.',
     'Write the whole prompt yourself from the conversation; the workspace owns the model, so pass no model, size, or quality.',
     acceptsImageInput
-      ? `To edit or combine images already in this conversation, list their img:N handles in inputs (at most ${MAX_IMAGE_TOOL_INPUTS}) and set intent to edit; with no inputs the model generates from the prompt alone.`
+      ? `To edit or combine images already in this conversation, list their img:N handles in inputs (at most ${MAX_IMAGE_TOOL_INPUTS}); with no inputs the model generates from the prompt alone.`
       : 'This model generates from the prompt alone and cannot take an existing image as input.',
     'One image per reply. The result reports the model and settings the provider applied.',
     'If the result reports attached: false, explain the returned reason and never say an image was attached or edited.',
@@ -174,7 +184,7 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
       const generated = await step.do('generate', async (): Promise<ImageGenerationStep> => {
         const transport = await options.resolveTransport();
         const format = imageFormatPolicyForTransport(transport.maxBytes, data.prompt);
-        const inputs = await resolveImageInputs(options, data, signal, transport.maxBytes);
+        const inputs = await resolveImageInputs(options, data, signal);
         if ('failure' in inputs) return { ok: false, failure: inputs.failure };
         const resolved = await options.resolveClient();
         if (!resolved.ok) return { ok: false, failure: { attached: false, reason: 'misconfigured' } };
@@ -206,7 +216,14 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
           ...(result.usage ? { usage: result.usage } : {}),
         };
       });
-      if (!generated.ok) return imageToolOutput(generated.failure);
+      if (!generated.ok) {
+        // Nothing was spent yet, so a corrective retry in this response should
+        // not meet `limit`. Provider-side outcomes keep the slot reserved.
+        if (isPreProviderFailure(generated.failure)) {
+          options.reserveImageCall.release?.(toolCallId);
+        }
+        return imageToolOutput(generated.failure);
+      }
 
       const filename = imageFilename(data.filename, generated.appliedFormat);
       const staged = await step.do('stage', async (): Promise<SlackArtifactStageOutcome> => {
@@ -223,7 +240,6 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
         appliedModel: generated.appliedModel,
         appliedSize: generated.appliedSize,
         appliedFormat: generated.appliedFormat,
-        handle: nextThreadImageHandle(options.inventory),
         ...(generated.usage ? { usage: generated.usage } : {}),
       });
     },
@@ -231,9 +247,9 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
 }
 
 /**
- * The result the model sees. `usage` is the provider's own object, passed
- * through unchanged, so the bounded contract is asserted here rather than
- * re-typed field by field.
+ * The result the model sees. Every field is host-shaped — the client already
+ * projected the provider's usage onto known numeric fields — so the JSON
+ * contract is asserted here rather than re-validated field by field.
  */
 function imageToolOutput(result: ImageArtifactResult): { output: JsonValue } {
   return { output: result as unknown as JsonValue };
@@ -243,12 +259,13 @@ async function resolveImageInputs(
   options: ImageArtifactToolOptions,
   data: ImageToolData,
   signal: AbortSignal | undefined,
-  perFileLimitBytes: number,
 ): Promise<{ images: ImageInput[] } | { failure: Extract<ImageArtifactResult, { attached: false }> }> {
   const handles = options.acceptsImageInput ? data.inputs ?? [] : [];
   if (handles.length === 0) return { images: [] };
   const reader = await options.createImageReader({
-    perFileLimitBytes,
+    // The transport cap bounds the image this call sends back to Slack, not
+    // the inputs it reads: the same gateway reads attachments to the Slack cap.
+    perFileLimitBytes: DEFAULT_THREAD_IMAGE_FILE_LIMIT_BYTES,
     totalLimitBytes: MAX_ARTIFACT_BYTES,
     ...(signal ? { signal } : {}),
   });
@@ -311,9 +328,11 @@ function providerFailureReason(
   return 'unavailable';
 }
 
-/** The handle the staged image takes in the next turn's inventory. */
-function nextThreadImageHandle(inventory: ThreadImageInventory): string {
-  return `img:${inventory.entries.length + 1}`;
+/** Failures raised before the provider ran: no image was paid for. */
+function isPreProviderFailure(
+  failure: Extract<ImageArtifactResult, { attached: false }>,
+): boolean {
+  return failure.reason === 'input-unavailable' || failure.reason === 'misconfigured';
 }
 
 /** Keep the Slack-visible filename a safe basename matching the applied format. */
@@ -335,13 +354,13 @@ interface ImageCallBudgetState {
  * keyed by tool call id, so a durable replay of the same call keeps the slot
  * it already took and a second call in the same response is refused.
  */
-export function useImageCallBudget(): (toolCallId: string) => boolean {
+export function useImageCallBudget(): ImageCallReservation {
   const [, update] = usePersistentState<ImageCallBudgetState>(
     SLACK_IMAGE_CALL_BUDGET_NAME,
     { schemaVersion: 1, toolCallId: null },
   );
   useResponseStart(() => { update({ schemaVersion: 1, toolCallId: null }); });
-  return (toolCallId: string) => {
+  const reserve = (toolCallId: string) => {
     let allowed = false;
     update((previous) => {
       const owner = previous?.toolCallId ?? null;
@@ -350,4 +369,14 @@ export function useImageCallBudget(): (toolCallId: string) => boolean {
     });
     return allowed;
   };
+  return Object.assign(reserve, {
+    // Only the owner may hand the slot back, so a losing second call cannot
+    // free the reservation the first call is still using.
+    release(toolCallId: string) {
+      update((previous) => {
+        const owner = previous?.toolCallId ?? null;
+        return { schemaVersion: 1, toolCallId: owner === toolCallId ? null : owner };
+      });
+    },
+  });
 }

@@ -471,20 +471,6 @@ test('activity context projects only exact mounted declarations and closed gener
   );
 });
 
-test('attachment activity context withholds every RuntimePlan work descriptor', () => {
-  const context = buildRuntimePlanActivityContext(compile(), {
-    toolsDisabled: true,
-    includeAgentAuthoringSkill: true,
-    additionalToolDescriptors: [{
-      toolName: 'inspect_workspace',
-      descriptor: genericSemanticDescriptor('workspace'),
-    }],
-  });
-
-  assert.deepEqual(context.toolDescriptors, []);
-  assert.deepEqual(context.enabledFamilies, []);
-});
-
 test('personal authorization choices freeze labels and lifecycle without credential policy', () => {
   const plan = compile({
     turn: turn({ actorMembershipId: 'membership_alice' }),

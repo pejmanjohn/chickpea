@@ -232,8 +232,6 @@ export interface CompileRuntimePlanV2Input {
 }
 
 export interface RuntimePlanActivityContextOptions {
-  /** Attachment-bearing Slack turns mount no model-callable work capabilities. */
-  toolsDisabled?: boolean;
   /** Product-owned declarations mounted by a caller outside the base plan hook. */
   additionalToolDescriptors?: readonly ActivityToolDescriptor[];
   /** The interactive authoring skill is mounted outside RuntimePlan.skills. */
@@ -352,8 +350,6 @@ export function buildRuntimePlanActivityContext(
   plan: RuntimePlanV2,
   options: RuntimePlanActivityContextOptions = {},
 ): ActivityContext {
-  if (options.toolsDisabled) return buildSemanticActivityContext([]);
-
   const descriptors: ActivityToolDescriptor[] = [];
   const families = new Set<SemanticTargetFamily>();
   const reservedToolNames = new Set([

@@ -132,7 +132,10 @@ async function fetchHistory(
   });
 
   const rawMessages = (response.messages ?? []) as unknown as SlackWebApiMessage[];
-  const images = collectThreadImages(rawMessages, turn);
+  const images = mergeThreadImages(
+    collectThreadImages(rawMessages, turn),
+    await fetchTriggerImages(client, turn),
+  );
   const hasCursor = Boolean(response.response_metadata?.next_cursor?.trim());
   const messages = ensureTriggerMessage(
     orderMessages(
@@ -223,6 +226,49 @@ async function fetchThread(
     degradations,
     ...(images.length > 0 ? { images } : {}),
   };
+}
+
+/**
+ * The history window is read with `inclusive: false`, so the triggering row is
+ * never in it: a member who uploads a logo and asks for the ad in the SAME
+ * message would otherwise have no handle for that logo. One bounded extra read
+ * adds that row's own images. It runs only when the trigger actually carried
+ * files, and a failure yields no images rather than degrading the whole turn
+ * to current-message-only context.
+ */
+async function fetchTriggerImages(
+  client: WebClient,
+  turn: NormalizedSlackTurn,
+): Promise<ThreadImageRecord[]> {
+  if (!(turn.attachments?.length || turn.attachmentIntake)) return [];
+  let response;
+  try {
+    response = await client.conversations.history({
+      channel: turn.channelId,
+      latest: turn.messageTs,
+      inclusive: true,
+      limit: 1,
+    });
+  } catch {
+    return [];
+  }
+  const rows = ((response.messages ?? []) as unknown as SlackWebApiMessage[])
+    .filter((row) => row.ts === turn.messageTs);
+  return collectThreadImages(rows, turn);
+}
+
+/** The trigger's own records win the duplicate; the list stays bounded. */
+function mergeThreadImages(
+  windowImages: readonly ThreadImageRecord[],
+  triggerImages: readonly ThreadImageRecord[],
+): ThreadImageRecord[] {
+  if (triggerImages.length === 0) return [...windowImages];
+  const triggerIds = new Set(triggerImages.map((record) => record.fileId));
+  const merged = [
+    ...windowImages.filter((record) => !triggerIds.has(record.fileId)),
+    ...triggerImages,
+  ];
+  return merged.slice(-MAX_THREAD_IMAGE_ENTRIES);
 }
 
 /** Raw-row image inventory for this turn's conversation, watermark-bounded. */

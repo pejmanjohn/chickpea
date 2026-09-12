@@ -490,10 +490,11 @@ test('the Slack Agent mounts every tool registration seam on an attachment turn'
   // No attachment-derived flag narrows the turn's capabilities any more (R17).
   assert.doesNotMatch(source, /attachmentReadOnly|slackAttachmentTurnIsReadOnly/);
   assert.match(source, /useAgentAuthoring\(\);[\s\S]*useWorkspaceManagementSlackTools[\s\S]*usePersonalConnectionAuthorizationSlackTool[\s\S]*useTool\(presentationIntent\.tool\)/);
-  assert.match(source, /if \(!options\.toolsDisabled\) \{[\s\S]*resolveProfileSkills\([\s\S]*useSkill\(skill\)/);
-  assert.match(source, /if \(options\.toolsDisabled\) \{[\s\S]*useSandbox\(createRuntimePlanPreparationSandbox\(plan\)\)/);
-  assert.match(source, /function createRuntimePlanPreparationSandbox[\s\S]*prepareRuntimePlanModel\(plan, env\)[\s\S]*tools: \(\) => \[\]/);
-  assert.match(source, /\} else \{[\s\S]*useSandbox\(createRuntimePlanSandbox[\s\S]*createRuntimePlanArtifactTool/);
+  assert.match(source, /resolveProfileSkills\([\s\S]*useSkill\(skill\)/);
+  // No option narrows the mounted tool set any more: the sandbox and artifact
+  // tools mount unconditionally for every turn, attachment-bearing or not.
+  assert.doesNotMatch(source, /options\.toolsDisabled/);
+  assert.match(source, /useSandbox\(createRuntimePlanSandbox[\s\S]*createRuntimePlanArtifactTool/);
   assert.match(source, /useModel\(plan\.runtimeModel \?\? plan\.model/);
   assert.match(source, /plan\.runtimeModel \?\? \(await prepareRuntimePlanModel\(plan, env\)\)\.model/);
 });

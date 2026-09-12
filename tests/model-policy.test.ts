@@ -9,7 +9,10 @@ import {
   resolveAgentModelPolicy,
   resolveAgentModelRoleFromStore,
 } from '../src/config/model-policy.ts';
+import { PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { CustomAgentConfig, WorkspaceModelDefault } from '../src/config/types.ts';
+import { withEnv } from './helpers/env.ts';
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
@@ -295,4 +298,102 @@ test('role resolution reads both rows from the store for one Agent and Workspace
     source: 'pinned',
   });
   assert.deepEqual(reads.sort(), ['agent:agent_support:image', 'workspace:TACME:image']);
+});
+
+// The tests below exercise the production credential gate,
+// `defaultProviderCredentialCheck`, by omitting `hasProviderCredential` so
+// resolution falls through to the real `isProviderKeyId` +
+// `resolveProviderApiKey` path production actually runs (see
+// src/agents/slack-thread.ts and the run-turn compile path, neither of which
+// supplies a stub). Every other test in this file injects
+// `hasProviderCredential`, which bypasses this gate entirely.
+
+test('a stored OpenAI key fills the image role via the real credential gate', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(PROVIDER_KEY_SETTING_KEYS.openai, 'sk-stored-image-role-key');
+
+    await withEnv({ OPENAI_API_KEY: undefined }, async () => {
+      const resolved = await resolveAgentModelForRole({
+        role: 'image',
+        agent: agent(),
+        workspaceRole: imageWorkspaceRole,
+        settings,
+      });
+
+      assert.deepEqual(resolved, {
+        modelId: 'openai/gpt-image-2.5-flare',
+        providerId: 'openai',
+        source: 'workspace_default',
+      });
+    });
+  } finally {
+    settings.close();
+  }
+});
+
+test('a missing OpenAI key resolves the image role to credential_missing via the real credential gate', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await withEnv({ OPENAI_API_KEY: undefined }, async () => {
+      const resolved = await resolveAgentModelForRole({
+        role: 'image',
+        agent: agent(),
+        workspaceRole: imageWorkspaceRole,
+        settings,
+      });
+
+      assert.deepEqual(resolved, { unset: true, reason: 'credential_missing' });
+    });
+  } finally {
+    settings.close();
+  }
+});
+
+test('an env OpenAI key fills the image role via the real credential gate, ahead of a stored key', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    // Deliberately leave no stored key: the env var alone must satisfy the
+    // gate, proving the check is not silently reading only the settings row.
+    await withEnv({ OPENAI_API_KEY: 'sk-env-image-role-key' }, async () => {
+      const resolved = await resolveAgentModelForRole({
+        role: 'image',
+        agent: agent(),
+        workspaceRole: imageWorkspaceRole,
+        settings,
+      });
+
+      assert.deepEqual(resolved, {
+        modelId: 'openai/gpt-image-2.5-flare',
+        providerId: 'openai',
+        source: 'workspace_default',
+      });
+    });
+  } finally {
+    settings.close();
+  }
+});
+
+test('a provider id with no key lane resolves credential_missing via the real credential gate, even with unrelated credentials present', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(PROVIDER_KEY_SETTING_KEYS.openai, 'sk-unrelated-provider-key');
+
+    await withEnv({ OPENAI_API_KEY: 'sk-unrelated-env-key' }, async () => {
+      const resolved = await resolveAgentModelForRole({
+        role: 'image',
+        agent: agent(),
+        // workers-ai is a real, known provider id but has no key-bearing
+        // lane (no PROVIDER_KEY_SETTING_KEYS / PROVIDER_KEY_ENV_VARS entry),
+        // so the gate must short-circuit via `isProviderKeyId` rather than
+        // ever calling `resolveProviderApiKey('workers-ai', ...)`.
+        workspaceRole: { modelId: 'workers-ai/@cf/black-forest-labs/flux-2-schnell' },
+        settings,
+      });
+
+      assert.deepEqual(resolved, { unset: true, reason: 'credential_missing' });
+    });
+  } finally {
+    settings.close();
+  }
 });

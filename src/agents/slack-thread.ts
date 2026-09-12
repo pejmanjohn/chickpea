@@ -1269,7 +1269,6 @@ export function useRuntimePlanAgent(
     responseMetadataModel?: string;
     sandboxConversationKey?: string;
     connectorUsageCorrelation?: import('../connections/managed-tools.ts').ManagedToolUsageCorrelation;
-    toolsDisabled?: boolean;
     artifactToolsDisabled?: boolean;
     includeAgentAuthoringSkill?: boolean;
     additionalActivityToolDescriptors?: readonly ActivityToolDescriptor[];
@@ -1287,7 +1286,6 @@ export function useRuntimePlanAgent(
     threadTs: plan.conversation.threadTs,
   });
   registerActivityContext(id, buildRuntimePlanActivityContext(plan, {
-    ...(options.toolsDisabled === undefined ? {} : { toolsDisabled: options.toolsDisabled }),
     ...(options.includeAgentAuthoringSkill === undefined
       ? {}
       : { includeAgentAuthoringSkill: options.includeAgentAuthoringSkill }),
@@ -1310,83 +1308,64 @@ export function useRuntimePlanAgent(
   useInstruction('Sandbox files are temporary working data, not durable Agent memory. They do not follow this Agent into a fresh conversation. A successful file or shell write cannot establish that a fact was remembered. Never promise future recall from a sandbox file.');
   useInstruction(SLACK_ACTION_LINK_INSTRUCTION);
   useInstruction('The final Slack answer must be self-contained. Earlier assistant steps are working narration. After an interrupted response, write the complete final answer again, not just the remaining words of the partial response.');
-  if (options.toolsDisabled) {
-    // No Slack turn disables tools today; the option remains for a caller that
-    // needs an answer-only turn. File uploads are not such a caller.
-    useInstruction(
-      'This turn is answer-only. No tools, connectors, sandboxes, or workspace-management actions are available. Answer only from the authoritative request and the context already supplied. If the request also asks for an external action, state the exact proposed action inputs separately, and ask the user to restate those exact inputs in a new message.',
-    );
-  } else {
-    useManagedConnectionTools(
-      plan,
-      resolveAgentPlatformEnv,
-      options.connectorUsageCorrelation,
-      [AGENT_AUTHORING_SKILL_NAME],
-    );
-  }
-  if (!options.toolsDisabled && plan.sandbox.mode === 'bash' && plan.apiConnections.length > 0) {
+  useManagedConnectionTools(
+    plan,
+    resolveAgentPlatformEnv,
+    options.connectorUsageCorrelation,
+    [AGENT_AUTHORING_SKILL_NAME],
+  );
+  if (plan.sandbox.mode === 'bash' && plan.apiConnections.length > 0) {
     useInstruction([
       'REST connections are declared for this turn. Use the bash tool with curl -sS to perform requested HTTP operations within the listed hosts, path prefixes, and methods, preserving error messages. Credentials are injected automatically by the connection transport; do not supply, retrieve, or print authentication headers or credential values.',
       'These declarations describe the frozen permission ceiling, not a guarantee of availability. The runtime rechecks current account authority on every request; if access is denied or unavailable, report that result without bypassing it or claiming success.',
       JSON.stringify(plan.apiConnections.map(({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }) => ({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }))),
     ].join('\n'));
   }
-  if (!options.toolsDisabled) {
-    for (const skill of resolveProfileSkills(
-      [
-        ...suppressProfileNamedConnectorSkills(connectorSkillsForConnections(plan.apiConnections), plan.skills.map((entry) => ({ ...entry, enabled: true }))),
-        ...plan.skills.map((entry) => ({ ...entry, enabled: true })),
-      ],
-      { reservedNames: [AGENT_AUTHORING_SKILL_NAME] },
-    )) {
-      useSkill(skill);
-    }
+  for (const skill of resolveProfileSkills(
+    [
+      ...suppressProfileNamedConnectorSkills(connectorSkillsForConnections(plan.apiConnections), plan.skills.map((entry) => ({ ...entry, enabled: true }))),
+      ...plan.skills.map((entry) => ({ ...entry, enabled: true })),
+    ],
+    { reservedNames: [AGENT_AUTHORING_SKILL_NAME] },
+  )) {
+    useSkill(skill);
   }
-  if (!options.toolsDisabled) {
-    const restrictions = plan.mcpConnections.filter((connection) =>
-      Object.keys(connection.toolArgumentConstraints ?? {}).length > 0);
-    if (restrictions.length > 0) {
-      useInstruction(`The owner restricts these connection tool inputs. Use only the listed values; do not retry disallowed inputs: ${JSON.stringify(restrictions.map((connection) => ({
-        connection: connection.id, tools: connection.toolArgumentConstraints,
-      })))}`);
-    }
-    for (const connection of resolveRuntimePlanMcpConnections(
-      plan.agentId,
-      plan.mcpConnections,
-      () => {
-        publishActivityStatus(id, connectingActivityStatus('a connected service'));
-      },
-      plan.actorMembershipId ? { workspaceId: plan.conversation.workspaceId, actorMembershipId: plan.actorMembershipId } : undefined,
-    )) {
-      useMcpConnection(connection);
-    }
+  const restrictions = plan.mcpConnections.filter((connection) =>
+    Object.keys(connection.toolArgumentConstraints ?? {}).length > 0);
+  if (restrictions.length > 0) {
+    useInstruction(`The owner restricts these connection tool inputs. Use only the listed values; do not retry disallowed inputs: ${JSON.stringify(restrictions.map((connection) => ({
+      connection: connection.id, tools: connection.toolArgumentConstraints,
+    })))}`);
   }
-  if (options.toolsDisabled) {
-    // Attachment turns expose no sandbox tools, but still initialize a tiny
-    // environment so provider authority is rebound on every Flue recovery
-    // attempt, including one whose durable start hook already committed.
-    useSandbox(createRuntimePlanPreparationSandbox(plan));
-  } else {
-    useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
-    if (!options.artifactToolsDisabled) {
-      // Built once per render: the tool resolves `img:N` handles against this
-      // inventory, and `imageInventory.manifest` is the model-facing listing
-      // the artifact-tools instruction renders beside the tool description.
-      const imageInventory = runtimePlanThreadImageInventory(plan, options.threadImages);
-      for (const tool of createRuntimePlanArtifactTools(
-        plan,
-        artifactAccumulator,
-        writeArtifactReceipts,
-        { imageInventory, reserveImageCall },
-      )) {
-        useTool(tool);
-      }
-      useInstruction(buildArtifactToolsInstruction({
-        imageTool: plan.imageCapability?.filled === true,
-        canEdit: plan.imageCapability?.acceptsImageInput === true,
-        ...(imageInventory.manifest ? { imageManifest: imageInventory.manifest } : {}),
-      }));
+  for (const connection of resolveRuntimePlanMcpConnections(
+    plan.agentId,
+    plan.mcpConnections,
+    () => {
+      publishActivityStatus(id, connectingActivityStatus('a connected service'));
+    },
+    plan.actorMembershipId ? { workspaceId: plan.conversation.workspaceId, actorMembershipId: plan.actorMembershipId } : undefined,
+  )) {
+    useMcpConnection(connection);
+  }
+  useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
+  if (!options.artifactToolsDisabled) {
+    // Built once per render: the tool resolves `img:N` handles against this
+    // inventory, and `imageInventory.manifest` is the model-facing listing
+    // the artifact-tools instruction renders beside the tool description.
+    const imageInventory = runtimePlanThreadImageInventory(plan, options.threadImages);
+    for (const tool of createRuntimePlanArtifactTools(
+      plan,
+      artifactAccumulator,
+      writeArtifactReceipts,
+      { imageInventory, reserveImageCall },
+    )) {
+      useTool(tool);
     }
+    useInstruction(buildArtifactToolsInstruction({
+      imageTool: plan.imageCapability?.filled === true,
+      canEdit: plan.imageCapability?.acceptsImageInput === true,
+      ...(imageInventory.manifest ? { imageManifest: imageInventory.manifest } : {}),
+    }));
   }
 }
 
@@ -1508,19 +1487,7 @@ function createRuntimePlanSandbox(
   };
 }
 
-function createRuntimePlanPreparationSandbox(plan: RuntimePlanV2): SandboxFactory {
-  const localSandbox = bash(() => new Bash({ fs: new InMemoryFs() }));
-  return {
-    async createSessionEnv(options) {
-      const env = await resolveAgentPlatformEnv();
-      await prepareRuntimePlanModel(plan, env);
-      return localSandbox.createSessionEnv(options);
-    },
-    tools: () => [],
-  };
-}
-
-/** Bind the frozen model lane before any model call, including tool-free attachment turns. */
+/** Bind the frozen model lane before any model call. */
 async function prepareRuntimePlanModel(
   plan: RuntimePlanV2,
   env: PlatformEnv | undefined,

@@ -39,6 +39,7 @@ import type { SlackFileTransport } from '../src/slack/file-transport.ts';
 import { MAX_GATEWAY_ARTIFACT_BYTES } from '../src/slack/gateway/protocol.ts';
 import {
   buildThreadImageInventory,
+  DEFAULT_THREAD_IMAGE_FILE_LIMIT_BYTES,
   type ThreadImageReadResult,
   type ThreadImageReader,
   type ThreadImageRecord,
@@ -170,14 +171,21 @@ function harness(input: {
     options: {
       acceptsImageInput: input.acceptsImageInput ?? true,
       inventory: inventoryOf(input.records ?? []),
-      reserveImageCall(toolCallId) {
-        reservations.push(toolCallId);
-        if (owner.toolCallId === undefined || owner.toolCallId === toolCallId) {
-          owner.toolCallId = toolCallId;
-          return true;
-        }
-        return false;
-      },
+      reserveImageCall: Object.assign(
+        (toolCallId: string) => {
+          reservations.push(toolCallId);
+          if (owner.toolCallId === undefined || owner.toolCallId === toolCallId) {
+            owner.toolCallId = toolCallId;
+            return true;
+          }
+          return false;
+        },
+        {
+          release(toolCallId: string) {
+            if (owner.toolCallId === toolCallId) owner.toolCallId = undefined;
+          },
+        },
+      ),
       async resolveTransport() {
         return { maxBytes: input.maxBytes ?? MAX_ARTIFACT_BYTES };
       },
@@ -274,9 +282,11 @@ test('the schema exposes image inputs only when the resolved model accepts them'
   const generateOnly = createImageArtifactTool(harness({ acceptsImageInput: false }).options);
 
   assert.equal(Object.hasOwn(generateOnly.input.entries, 'inputs'), false);
-  assert.equal(Object.hasOwn(generateOnly.input.entries, 'intent'), false);
   assert.equal(Object.hasOwn(editing.input.entries, 'inputs'), true);
-  assert.equal(Object.hasOwn(editing.input.entries, 'intent'), true);
+  // `inputs` alone selects the edit path; no unread intent field is accepted.
+  assert.equal(Object.hasOwn(generateOnly.input.entries, 'intent'), false);
+  assert.equal(Object.hasOwn(editing.input.entries, 'intent'), false);
+  assert.doesNotMatch(editing.description, /intent/);
   assert.match(generateOnly.description, /cannot take an existing image as input/);
 
   const handles = (count: number) =>
@@ -316,10 +326,11 @@ test('a successful generate stages one image and reports what the provider appli
     appliedModel: SUNBURST.id,
     appliedSize: '1024x1024',
     appliedFormat: 'png',
-    // The staged image takes the next handle in the thread inventory.
-    handle: 'img:2',
     usage: { input_tokens: 12, output_tokens: 400, total_tokens: 412 },
   });
+  // No `img:N` is promised: the next turn renumbers by message ts, so a handle
+  // computed from this turn's inventory could name a different image.
+  assert.equal(Object.hasOwn(result, 'handle'), false);
   assert.equal(state.staged.length, 1);
   assert.equal(state.staged[0]?.kind, 'image');
   assert.equal(state.staged[0]?.filename, 'image.png');
@@ -513,7 +524,7 @@ test('a second image call in one response is refused without a provider request'
   assert.equal(state.staged.length, 1);
 });
 
-test('thread images are read under the transport cap and failures name the handle', async () => {
+test('thread images are read under the attachment cap and failures name the handle', async () => {
   const client = fauxImagesClient(SUNBURST);
   const state = harness({
     client: client.client,
@@ -524,14 +535,14 @@ test('thread images are read under the transport cap and failures name the handl
   const edited = await runImageTool(state.options, {
     prompt: 'Keep the logo, change the headline.',
     inputs: ['img:1'],
-    intent: 'edit',
   });
 
   assert.equal((edited as { attached: boolean }).attached, true);
   assert.equal(client.calls[0]?.endpoint, 'edit');
   assert.equal((client.calls[0]?.request as ImageEditRequest).inputs.length, 1);
+  // The gateway's small upload cap bounds the generated image, not the inputs.
   assert.deepEqual(state.readerLimits, [{
-    perFileLimitBytes: MAX_GATEWAY_ARTIFACT_BYTES,
+    perFileLimitBytes: DEFAULT_THREAD_IMAGE_FILE_LIMIT_BYTES,
     totalLimitBytes: MAX_ARTIFACT_BYTES,
   }]);
 
@@ -558,6 +569,80 @@ test('thread images are read under the transport cap and failures name the handl
     { attached: false, reason: 'input-unavailable', detail: 'not_found', handle: 'img:9' },
   );
   assert.equal(outside.clientCalls, 0);
+});
+
+test('a gateway install still reads an input larger than its own upload cap', async () => {
+  const client = fauxImagesClient(SUNBURST, {
+    ok: true,
+    bytes: IMAGE_BYTES,
+    appliedModel: SUNBURST.id,
+    appliedSize: '1024x1024',
+    appliedFormat: 'jpeg',
+  });
+  const megabyte = new Uint8Array(1024 * 1024);
+  const state = harness({
+    client: client.client,
+    maxBytes: MAX_GATEWAY_ARTIFACT_BYTES,
+    records: [threadRecord(1)],
+    reads: new Map([
+      ['F12345671', { ok: true, bytes: megabyte, mimeType: 'image/png', filename: 'logo-1.png' }],
+    ]),
+  });
+
+  const result = await runImageTool(state.options, {
+    prompt: 'Refresh the headline on this poster.',
+    inputs: ['img:1'],
+  });
+
+  assert.ok(state.readerLimits[0]!.perFileLimitBytes > MAX_GATEWAY_ARTIFACT_BYTES);
+  assert.equal(client.calls.length, 1, 'the input is read and sent to the provider');
+  assert.equal((client.calls[0]?.request as ImageEditRequest).inputs[0]?.bytes.byteLength, megabyte.byteLength);
+  assert.equal((result as { attached: boolean }).attached, true);
+});
+
+test('a failure before the provider ran gives this response its image slot back', async () => {
+  const client = fauxImagesClient(SUNBURST);
+  const state = harness({ client: client.client, records: [threadRecord(1)] });
+
+  const mistyped = await runImageTool(
+    state.options,
+    { prompt: 'Edit an image that is not here.', inputs: ['img:9'] },
+    { toolCallId: 'call_image_1' },
+  );
+  assert.equal((mistyped as { reason: string }).reason, 'input-unavailable');
+
+  const corrected = await runImageTool(
+    state.options,
+    { prompt: 'Edit the image that is here.', inputs: ['img:1'] },
+    { toolCallId: 'call_image_2' },
+  );
+  assert.equal((corrected as { attached: boolean }).attached, true, 'the corrective retry proceeds');
+
+  // A credential rejected at call time is also pre-provider work.
+  const unresolved = harness({ async resolveClient() { return { ok: false, reason: 'misconfigured' }; } });
+  assert.deepEqual(
+    await runImageTool(unresolved.options, { prompt: 'No model.' }, { toolCallId: 'call_image_1' }),
+    { attached: false, reason: 'misconfigured' },
+  );
+  const retried = await runImageTool(
+    unresolved.options,
+    { prompt: 'No model, again.' },
+    { toolCallId: 'call_image_2' },
+  );
+  assert.deepEqual(retried, { attached: false, reason: 'misconfigured' });
+
+  // A provider-side refusal keeps the slot: the image call was already spent.
+  const refused = harness({
+    client: fauxImagesClient(SUNBURST, { ok: false, reason: 'rejected', detail: 'moderation_blocked' }).client,
+  });
+  assert.deepEqual(
+    await runImageTool(refused.options, { prompt: 'Refused.' }, { toolCallId: 'call_image_1' }),
+    { attached: false, reason: 'rejected' },
+  );
+  assert.deepEqual(
+    await runImageTool(refused.options, { prompt: 'Refused again.' }, { toolCallId: 'call_image_2' }),
+    { attached: false, reason: 'limit' },
+  );
 });
 
 test('a thread image the provider cannot take is refused as unsupported', async () => {
@@ -667,6 +752,16 @@ function BudgetProbe() {
       return { output: outcome };
     },
   });
+  useTool({
+    name: 'release_image',
+    description: 'Hand back the slot when this call owns it.',
+    input: v.object({ call: v.string() }),
+    output: v.string(),
+    run: ({ data }) => {
+      reserve.release?.(data.call);
+      return { output: 'released' };
+    },
+  });
   return 'Follow the scripted tool calls.';
 }
 
@@ -678,6 +773,11 @@ test('the persistent budget allows one image call per response and resets on the
       fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_a' })], { stopReason: 'toolUse' }),
       fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_a' })], { stopReason: 'toolUse' }),
       fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_b' })], { stopReason: 'toolUse' }),
+      // A call that does not own the slot cannot free it for itself.
+      fauxAssistantMessage([fauxToolCall('release_image', { call: 'call_b' })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_b' })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([fauxToolCall('release_image', { call: 'call_a' })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_b' })], { stopReason: 'toolUse' }),
       fauxAssistantMessage('One image for this reply.'),
       fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_c' })], { stopReason: 'toolUse' }),
       fauxAssistantMessage('One image for the next reply too.'),
@@ -687,7 +787,11 @@ test('the persistent budget allows one image call per response and resets on the
     await agent.read(await agent.dispatch('Make another image.'));
   } finally { await flue.stop(); }
 
-  // The same call id keeps its slot on a replay; a different call is refused,
-  // and the next response starts with the slot free again.
-  assert.deepEqual(budgetOutcomes, ['reserved', 'reserved', 'limit', 'reserved']);
+  // The same call id keeps its slot on a replay; a different call is refused
+  // until the owner releases it, a non-owner's release changes nothing, and
+  // the next response starts with the slot free again.
+  assert.deepEqual(
+    budgetOutcomes,
+    ['reserved', 'reserved', 'limit', 'limit', 'reserved', 'reserved'],
+  );
 });
