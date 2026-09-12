@@ -996,6 +996,7 @@ export class ManagementError extends Error {
     readonly code:
       | 'forbidden'
       | 'invalid_request'
+      | 'incomplete_search'
       | 'invalid_state'
       | 'idempotency_conflict'
       | 'operation_not_found'

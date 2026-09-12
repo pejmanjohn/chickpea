@@ -29,6 +29,8 @@ function resolution(
 
 for (const withSupportingFiles of [false, true]) {
 test(`Slack imports an exact public skill with an undoable receipt (supporting files: ${withSupportingFiles})`, async () => {
+  const requestSource = withSupportingFiles ? 'https://github.com/cursor/plugins' : 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop';
+  const selector = withSupportingFiles ? { skillName: 'unslop' } : {};
   let resolvedSource: ParsedSkillSource | undefined;
   const f = await createManagementAdapterFixture('slack-skill-import', {
     resolveSkillImport: async (source) => {
@@ -77,7 +79,7 @@ test(`Slack imports an exact public skill with an undoable receipt (supporting f
       eventId: 'Ev_SKILL_IMPORT',
       messageTs: '100.2',
       turnJobId: 'turn_SKILL_IMPORT',
-      requesterText: 'Install this skill <https://github.com/cursor/plugins/tree/main/pstack/skills/unslop|unslop>',
+      requesterText: `Install unslop skill from ${requestSource}`,
     },
   } as Parameters<typeof parseSlackManagementSignal>[0], {
     agentId: agent.id,
@@ -97,7 +99,8 @@ test(`Slack imports an exact public skill with an undoable receipt (supporting f
         origin: { kind: 'mcp', clientId: 'skill-import-test' },
       },
       agentId: agent.id,
-      source: 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop',
+      source: requestSource,
+        ...selector,
       idempotencyKey: 'mcp-import-unslop',
       guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
     }), (error: unknown) =>
@@ -109,17 +112,19 @@ test(`Slack imports an exact public skill with an undoable receipt (supporting f
       service: f.service,
       name: 'import_skill',
       args: {
-        source: 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop',
+        source: requestSource,
+        ...selector,
         idempotencyKey: 'import-unslop',
         guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
       },
     });
     assert.equal(installed.ok, true);
-    assert.deepEqual(resolvedSource, {
+    assert.deepEqual(resolvedSource, withSupportingFiles ? { owner: 'cursor', repo: 'plugins', skillFilter: 'unslop' } : {
       owner: 'cursor',
       repo: 'plugins',
       ref: 'main',
       skillPath: 'pstack/skills/unslop',
+      refPath: 'main/pstack/skills/unslop',
     });
     const result = (installed as { ok: true; result: {
       operationId: string;
@@ -152,7 +157,8 @@ test(`Slack imports an exact public skill with an undoable receipt (supporting f
       service: f.service,
       name: 'import_skill',
       args: {
-        source: 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop',
+        source: requestSource,
+        ...selector,
         idempotencyKey: 'import-unslop',
         guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
       },
@@ -166,7 +172,8 @@ test(`Slack imports an exact public skill with an undoable receipt (supporting f
       service: f.service,
       name: 'import_skill',
       args: {
-        source: 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop',
+        source: requestSource,
+        ...selector,
         idempotencyKey: 'import-unslop-again',
         guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
       },
@@ -211,7 +218,8 @@ test(`Slack imports an exact public skill with an undoable receipt (supporting f
       service: f.service,
       name: 'import_skill',
       args: {
-        source: 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop',
+        source: requestSource,
+        ...selector,
         idempotencyKey: 'forged-import-unslop',
         guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
       },
@@ -397,14 +405,8 @@ test('skill import requires selection for a multi-skill source and rejects packa
         guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
       },
     });
-    assert.equal(singleMutableCandidate.ok, true);
-    assert.equal((singleMutableCandidate as { ok: true; result: {
-      status: string;
-      candidates: Array<{ name: string }>;
-    } }).result.status, 'selection_required');
-    assert.deepEqual((singleMutableCandidate as { ok: true; result: {
-      candidates: Array<{ name: string }>;
-    } }).result.candidates.map(({ name }) => name), ['alpha']);
+    assert.equal(singleMutableCandidate.ok, false);
+    assert.equal((singleMutableCandidate as { ok: false; error: { code: string } }).error.code, 'invalid_state');
     assert.deepEqual((await f.config.getAgent(agent.id)).skills, []);
 
     const selected = await invokeSlackWorkspaceManagementTool({
@@ -436,6 +438,8 @@ test('skill import requires selection for a multi-skill source and rejects packa
       repo: 'skills',
       ref: 'main',
       skillPath: 'skills/Writing_Helper',
+      refPath: 'main/skills/Writing_Helper',
+      skillFilter: 'beta',
     });
     assert.deepEqual((await f.config.getAgent(agent.id)).skills.map(({ name }) => name), ['beta']);
 

@@ -29,6 +29,7 @@ test('parseSkillSource accepts shorthand, GitHub URLs, and skills.sh links', () 
     repo: 'skills',
     ref: 'dev',
     skillPath: 'skills/foo',
+    refPath: 'dev/skills/foo',
   });
   assert.deepEqual(parseSkillSource('https://www.skills.sh/acme/skills/triage'), {
     owner: 'acme',
@@ -74,7 +75,7 @@ function mockFetch(
   return (async (input: unknown, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : String((input as { url: string }).url);
     requests?.push({ url, ...(init ? { init } : {}) });
-    for (const [needle, res] of routes) {
+    for (const [needle, res] of [...routes.filter(([needle]) => !/^https?:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(needle) && !/^api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(needle)), ['/commits/', { json: { sha: EXACT_OID } }] as const, ...routes]) {
       if (url.includes(needle)) {
         const status = res.status ?? 200;
         return {
@@ -109,18 +110,18 @@ test('resolveSkillSource resolves candidates, flags scripts, and skips test fixt
   const requests: Array<{ url: string; init?: RequestInit }> = [];
   const fetchImpl = mockFetch([
     ['/git/trees/', { json: TREE }],
-    ['/main/skills/foo/SKILL.md', { text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo body' }],
-    ['/main/skills/bar/SKILL.md', { text: '---\nname: bar\ndescription: The bar skill.\n---\n# Bar body' }],
+    [`/${EXACT_OID}/skills/foo/SKILL.md`, { text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo body' }],
+    [`/${EXACT_OID}/skills/bar/SKILL.md`, { text: '---\nname: bar\ndescription: The bar skill.\n---\n# Bar body' }],
     ['api.github.com/repos/acme/skills', { json: { default_branch: 'main' } }],
   ], requests);
 
   const result = await resolveSkillSource({ owner: 'acme', repo: 'skills' }, fetchImpl);
 
-  assert.equal(requests.length, 4);
+  assert.equal(requests.length, 5);
   for (const request of requests) {
     assert.equal(new Headers(request.init?.headers).has('authorization'), false, request.url);
   }
-  assert.equal(result.ref, 'main');
+  assert.equal(result.ref, EXACT_OID);
   assert.deepEqual(result.source, { visibility: 'public', access: 'anonymous' });
   assert.equal(result.total, 2); // tests/fixtures/x is excluded from the count
   assert.equal(result.capped, false);
@@ -133,14 +134,14 @@ test('resolveSkillSource resolves candidates, flags scripts, and skips test fixt
   assert.match(String(foo?.instructions), /# Foo body/);
   assert.equal(foo?.hasScripts, true); // has scripts/run.sh sibling
   assert.equal(result.skills.find((skill) => skill.name === 'bar')?.hasScripts, false);
-  assert.match(String(foo?.sourceUrl), /github\.com\/acme\/skills\/tree\/main\/skills\/foo/);
-  assert.equal(foo?.importSource, undefined, 'a mutable branch must not be presented as pinned provenance');
+  assert.match(String(foo?.sourceUrl), new RegExp(`github.com/acme/skills/tree/${EXACT_OID}/skills/foo`));
+  assert.equal(foo?.importSource?.commit, EXACT_OID, 'branch content is fetched only after resolving its commit');
 });
 
 test('resolveSkillSource honors an @skill filter', async () => {
   const fetchImpl = mockFetch([
     ['/git/trees/', { json: TREE }],
-    ['/main/skills/bar/SKILL.md', { text: '---\nname: bar\ndescription: The bar skill.\n---\n# Bar' }],
+    [`/${EXACT_OID}/skills/bar/SKILL.md`, { text: '---\nname: bar\ndescription: The bar skill.\n---\n# Bar' }],
     ['api.github.com/repos/acme/skills', { json: { default_branch: 'main' } }],
   ]);
   const result = await resolveSkillSource({ owner: 'acme', repo: 'skills', skillFilter: 'bar' }, fetchImpl);
@@ -277,10 +278,10 @@ test('an exact-path parent directory falls back to bounded candidate discovery',
       text: `<script data-target="react-app.embeddedData">${parentDirectory}</script>`,
     }],
     ['/git/trees/', { json: TREE }],
-    ['/main/skills/foo/SKILL.md', {
+    [`/${EXACT_OID}/skills/foo/SKILL.md`, {
       text: '---\nname: foo\ndescription: The foo skill.\n---\n# Foo',
     }],
-    ['/main/skills/bar/SKILL.md', {
+    [`/${EXACT_OID}/skills/bar/SKILL.md`, {
       text: '---\nname: bar\ndescription: The bar skill.\n---\n# Bar',
     }],
   ]);
@@ -350,7 +351,7 @@ test('resolveSkillSource rejects oversized GitHub responses before buffering the
     headers: { 'content-length': String(32 * 1024 * 1024) },
   })) as typeof fetch;
   await assert.rejects(
-    () => resolveSkillSource({ owner: 'acme', repo: 'skills', ref: 'main' }, oversizedTreeFetch),
+    () => resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID }, oversizedTreeFetch),
     (error: unknown) => error instanceof SkillImportError && error.code === 'source_too_large',
   );
 
@@ -364,7 +365,7 @@ test('resolveSkillSource rejects oversized GitHub responses before buffering the
         });
   }) as typeof fetch;
   await assert.rejects(
-    () => resolveSkillSource({ owner: 'acme', repo: 'skills', ref: 'main' }, oversizedSkillFetch),
+    () => resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID }, oversizedSkillFetch),
     (error: unknown) => error instanceof SkillImportError && error.code === 'source_too_large',
   );
 });
@@ -372,7 +373,7 @@ test('resolveSkillSource rejects oversized GitHub responses before buffering the
 test('resolveSkillSource skips a skill missing a description', async () => {
   const fetchImpl = mockFetch([
     ['/git/trees/', { json: { tree: [{ path: 'skills/foo/SKILL.md', type: 'blob' }] } }],
-    ['/main/skills/foo/SKILL.md', { text: '---\nname: foo\n---\n# Body only, no description' }],
+    [`/${EXACT_OID}/skills/foo/SKILL.md`, { text: '---\nname: foo\n---\n# Body only, no description' }],
     ['api.github.com/repos/acme/skills', { json: { default_branch: 'main' } }],
   ]);
   const result = await resolveSkillSource({ owner: 'acme', repo: 'skills' }, fetchImpl);
@@ -513,3 +514,103 @@ for (const [status, code] of [[404, 'document_not_found'], [429, 'rate_limited']
     ])), (error: unknown) => error instanceof SkillImportError && error.code === code);
   });
 }
+
+test('file and raw URLs preserve the directory and immutable revision', () => {
+  for (const source of [
+    `https://github.com/acme/skills/blob/${EXACT_OID}/skills/foo/SKILL.md`,
+    `https://raw.githubusercontent.com/acme/skills/${EXACT_OID}/skills/foo/SKILL.md`,
+  ]) {
+    const parsed = parseSkillSource(source);
+    assert.equal(parsed?.ref, EXACT_OID);
+    assert.equal(parsed?.skillPath, 'skills/foo');
+  }
+  assert.equal(parseSkillSource('https://github.com/acme/skills/issues/1'), null);
+});
+
+test('named repository discovery pins the actual commit and finds a canonical target after 40 unrelated skills', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const tree = { sha: 'b'.repeat(40), tree: [
+    ...Array.from({ length: 41 }, (_, i) => ({ path: `skills/unrelated-${i}/SKILL.md`, type: 'blob' })),
+    { path: 'skills/foo/SKILL.md', type: 'blob' },
+  ] };
+  const result = await resolveSkillSource({ owner: 'acme', repo: 'skills', skillFilter: 'foo' }, mockFetch([
+    ['/commits/main', { json: { sha: EXACT_OID } }],
+    [`/git/trees/${EXACT_OID}`, { json: tree }],
+    [`/${EXACT_OID}/skills/foo/SKILL.md`, { text: '---\nname: foo\ndescription: Foo.\n---\nExact snapshot.' }],
+    ['api.github.com/repos/acme/skills', { json: { default_branch: 'main' } }],
+  ], requests));
+  assert.equal(result.skills[0]?.importSource?.commit, EXACT_OID);
+  assert.equal(result.ref, EXACT_OID);
+  assert.equal(requests.length, 4);
+  assert.equal(requests.some(({ url }) => url.includes('unrelated-')), false);
+});
+
+test('duplicate canonical names remain candidates and an incomplete declared-name search is explicit', async () => {
+  const tree = { tree: ['a/foo', 'b/foo'].map((dir) => ({ path: `${dir}/SKILL.md`, type: 'blob' })) };
+  const result = await resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID, skillFilter: 'foo' }, mockFetch([
+    ['/git/trees/', { json: tree }], ['/SKILL.md', { text: '---\nname: foo\ndescription: Foo.\n---\nBody.' }],
+  ]));
+  assert.deepEqual(result.skills.map(({ path }) => path), ['a/foo', 'b/foo']);
+  await assert.rejects(resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID, skillFilter: 'other-name' }, mockFetch([
+    ['/git/trees/', { json: { tree: Array.from({ length: 41 }, (_, i) => ({ path: `a-${i}/SKILL.md`, type: 'blob' })) } }],
+    ['/SKILL.md', { text: '---\nname: unrelated\ndescription: Unrelated.\n---\nBody.' }],
+  ])), (error: unknown) => error instanceof SkillImportError && error.code === 'incomplete_search');
+});
+
+test('an exact root document does not select nested skills and stores the root provenance path', async () => {
+  const parsed = parseSkillSource(`https://github.com/acme/skills/blob/${EXACT_OID}/SKILL.md`)!;
+  const result = await resolveSkillSource(parsed, mockFetch([
+    ['/git/trees/', { json: { tree: [{ path: 'SKILL.md', type: 'blob' }, { path: 'nested/SKILL.md', type: 'blob' }] } }],
+    ['/SKILL.md', { text: '---\nname: root-skill\ndescription: Root.\n---\nBody.' }],
+  ]));
+  assert.equal(result.skills.length, 1);
+  assert.equal(result.skills[0]?.importSource?.path, '');
+});
+
+test('the public directory listing resolves slash-containing refs without changing the source', async () => {
+  const parsed = parseSkillSource('https://github.com/acme/skills/tree/release/v1/foo')!;
+  const page = directoryPage('foo', [{ path: 'foo/SKILL.md', contentType: 'file' }]).replace(`"name":"${EXACT_OID}"`, '"name":"release/v1"');
+  const result = await resolveSkillSource(parsed, mockFetch([
+    ['/tree/release/v1/foo', { text: page }],
+    [`/${EXACT_OID}/foo/SKILL.md`, { text: '---\nname: foo\ndescription: Foo.\n---\nBody.' }],
+  ]));
+  assert.equal(result.skills[0]?.path, 'foo');
+  assert.equal(result.skills[0]?.importSource?.commit, EXACT_OID);
+});
+
+test('an ambiguous authenticated URL ref is rejected rather than silently reinterpreted', async () => {
+  await assert.rejects(resolveSkillSource(parseSkillSource('https://github.com/acme/skills/tree/release/v1/foo')!, mockFetch([
+    ['/matching-refs/heads/', { json: [{ ref: 'refs/heads/release' }, { ref: 'refs/heads/release/v1' }] }],
+    ['/matching-refs/tags/', { json: [] }],
+    ['api.github.com/repos/acme/skills', { json: { default_branch: 'main', private: true } }],
+  ]), { token: 'test-token' }), (error: unknown) => error instanceof SkillImportError && error.code === 'ambiguous_ref');
+});
+
+for (const failure of ['deep', 'wide', 'malformed', 'incomplete']) {
+  test(`package inspection stops on ${failure} listings`, async () => {
+    const path = failure === 'deep' ? `foo/${'deep/'.repeat(9)}file.md` : 'foo/file.md';
+    const items = failure === 'wide'
+      ? Array.from({ length: 14 }, (_, i) => ({ path: `foo/d-${i}`, contentType: 'directory' }))
+      : [{ path, contentType: 'file' }];
+    const page = failure === 'malformed' ? '<html>Missing embedded data</html>'
+      : directoryPage('foo', [{ path: 'foo/SKILL.md', contentType: 'file' }, ...items]);
+    const fetchImpl = mockFetch([
+      ['/tree/', { text: failure === 'incomplete' ? page.replace('"totalCount":2', '"totalCount":3') : page }],
+      ['/SKILL.md', { text: '---\nname: foo\ndescription: Foo.\n---\nBody.' }],
+    ]);
+    await assert.rejects(resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID, skillPath: 'foo' }, fetchImpl),
+      (error: unknown) => error instanceof SkillImportError && ['incomplete_inspection', 'source_too_large'].includes(error.code));
+  });
+}
+
+test('saved real GitHub listings preserve nested metadata inspection', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const [root, agents] = await Promise.all(['github-skill-directory.html', 'github-agents-directory.html'].map((name) =>
+    readFile(new URL(`./fixtures/skill-import/${name}`, import.meta.url), 'utf8')));
+  const result = await resolveSkillSource(parseSkillSource('https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me')!, mockFetch([
+    ['/agents', { text: agents! }], ['/tree/', { text: root! }],
+    ['/SKILL.md', { text: '---\nname: grill-me\ndescription: Alias.\n---\nCall the Skill tool with "grilling".' }],
+  ]));
+  assert.equal(result.skills[0]?.hasScripts, false);
+  assert.deepEqual(result.skills[0]?.inspection?.auxiliaryPaths, ['agents/openai.yaml']);
+});

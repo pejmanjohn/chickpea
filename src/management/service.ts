@@ -785,11 +785,12 @@ export class WorkspaceManagementService {
     });
     const agent = await this.requireEditableAgent(actor, agentId);
 
-    const parsed = parseSkillSource(input.source);
+    const parsedSource = parseSkillSource(input.source);
+    const parsed = parsedSource && input.skillName ? { ...parsedSource, skillFilter: input.skillName } : parsedSource;
     if (!parsed) {
       throw new ManagementError(
         'invalid_request',
-        'Use a public GitHub repository, GitHub tree URL, skills.sh link, or owner/repo reference.',
+        'Use a public GitHub repository, SKILL.md or directory URL, raw GitHub URL, skills.sh link, or owner/repo reference.',
       );
     }
     if (!isValidRepositoryFullName(`${parsed.owner}/${parsed.repo}`)) {
@@ -805,7 +806,7 @@ export class WorkspaceManagementService {
       const message = error.code === 'access_candidate' || error.code === 'repository_inaccessible'
         ? 'Slack skill import currently supports public GitHub repositories. Use Admin for a private repository connected through the GitHub App.'
         : error.message;
-      throw new ManagementError('invalid_request', message);
+      throw new ManagementError(error.code === 'incomplete_search' ? 'incomplete_search' : 'invalid_request', message);
     }
 
     const matchingSkills = input.skillName
@@ -847,22 +848,7 @@ export class WorkspaceManagementService {
       );
     }
     if (!immutableResolution) {
-      return {
-        status: 'selection_required',
-        source: {
-          owner: resolution.owner,
-          repo: resolution.repo,
-          ref: resolution.ref,
-        },
-        candidates: [{
-          name: skill.name,
-          description: skill.description,
-          path: skill.path,
-          sourceUrl: skill.sourceUrl,
-          hasScripts: skill.hasScripts,
-        }],
-        instruction: `Ask the requester to post this candidate’s sourceUrl in a new message, then call ${continuationTool} again with that exact source. The service will pin the inspected commit before any write.`,
-      };
+      throw new ManagementError('invalid_state', 'The skill source was not resolved to an immutable commit. No change was made.');
     }
     const importedSkill: SkillConfig = {
       name: skill.name,

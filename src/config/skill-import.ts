@@ -19,6 +19,9 @@ export interface ParsedSkillSource {
   skillPath?: string;
   /** A single skill slug to keep (e.g. `owner/repo@triage` or a skills.sh link). */
   skillFilter?: string;
+  /** Unescaped URL tail, retained until GitHub resolves the ref/path boundary. */
+  refPath?: string;
+  exactDocument?: boolean;
 }
 
 /** One importable skill discovered in a source. */
@@ -110,25 +113,31 @@ export function parseSkillSource(input: string): ParsedSkillSource | null {
     return null;
   }
   const host = url.hostname.replace(/^www\./, '');
-  const segments = url.pathname.split('/').filter(Boolean);
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return null;
+  let segments: string[];
+  try { segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent); } catch { return null; }
+  if (segments.some((part) => part === '.' || part === '..' || part.includes('\\'))) return null;
 
-  if (host === 'github.com') {
+  if (host === 'github.com' || host === 'raw.githubusercontent.com') {
     if (segments.length < 2) return null;
     const owner = segments[0]!;
     const repo = stripGitSuffix(segments[1]!);
-    // .../tree/<ref>/<path...> pins a branch/tag and narrows discovery to
-    // that directory. A parent directory may still contain multiple skills;
-    // the resolver reports each one so the caller can require a selection.
-    if (segments[2] === 'tree' && segments[3]) {
-      const skillPath = segments.slice(4).join('/').replace(/\/+$/, '');
-      return {
-        owner,
-        repo,
-        ref: segments[3],
-        ...(skillPath ? { skillPath } : {}),
-      };
-    }
-    return { owner, repo };
+    const raw = host === 'raw.githubusercontent.com';
+    if (!raw && segments.length === 2) return { owner, repo };
+    const kind = raw ? 'blob' : segments[2];
+    const refIndex = raw ? 2 : 3;
+    const ref = segments[refIndex];
+    if (!ref || (kind !== 'tree' && kind !== 'blob')) return null;
+    const pathParts = segments.slice(refIndex + 1);
+    if (kind === 'blob' && pathParts.pop() !== 'SKILL.md') return null;
+    const skillPath = pathParts.join('/');
+    return {
+      owner, repo, ref,
+      ...(kind === 'blob' ? { exactDocument: true } : {}),
+      ...(skillPath ? { skillPath } : {}),
+      ...(!/^[0-9a-f]{40,64}$/i.test(ref) && !ref.includes('/') && skillPath
+        ? { refPath: `${ref}/${skillPath}` } : {}),
+    };
   }
 
   if (host === 'skills.sh') {
@@ -232,7 +241,7 @@ export async function resolveSkillSource(
   const metadata = !parsed.ref || access
     ? await fetchRepositoryMetadata(owner, repo, fetchImpl, headers, authenticated)
     : undefined;
-  const ref = parsed.ref ?? metadata?.defaultBranch ?? 'main';
+  let ref = parsed.ref ?? metadata?.defaultBranch ?? 'main';
   const visibility = metadata?.private ? 'private' : 'public';
 
   // A public tree URL already identifies one directory. Inspect that bounded
@@ -250,9 +259,26 @@ export async function resolveSkillSource(
       if (!(error instanceof SkillImportError) || error.code !== 'not_exact_skill_directory') {
         throw error;
       }
+      if (error instanceof ParentSkillDirectoryError) {
+        parsed = error.source;
+        ref = parsed.ref!;
+      }
       // A parent directory still honors the documented multi-candidate path.
       // Continue to the bounded recursive tree scan below.
     }
+  }
+
+  if (parsed.refPath && !/^[0-9a-f]{40,64}$/i.test(ref)) {
+    parsed = await resolveUrlRefBoundary(parsed, fetchImpl, headers, authenticated);
+    ref = parsed.ref!;
+  }
+  if (!/^[0-9a-f]{40,64}$/i.test(ref)) {
+    const commitRes = await githubRequest(fetchImpl,
+      `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`, { headers });
+    assertRepositoryResponse(commitRes, authenticated, owner, repo);
+    const commit = await readJsonResponseBounded<{ sha?: string }>(commitRes, MAX_REPOSITORY_METADATA_BYTES, 'GitHub commit metadata is too large.');
+    if (!commit.sha || !/^[0-9a-f]{40,64}$/i.test(commit.sha)) throw new SkillImportError('github_error', 'GitHub did not resolve an immutable commit for this source.');
+    ref = commit.sha;
   }
 
   const treeRes = await githubRequest(
@@ -271,16 +297,17 @@ export async function resolveSkillSource(
   }
   const blobs = tree.tree.filter((entry) => entry.type === 'blob');
 
-  const skillDirs = blobs
+  const scopedDirs = blobs
     .filter((entry) => entry.path === 'SKILL.md' || entry.path.endsWith('/SKILL.md'))
     .map((entry) => ({ path: entry.path, dir: entry.path.replace(/\/?SKILL\.md$/, '') }))
     .filter((entry) => !SKIP_DIR_RE.test(entry.path))
-    .filter((entry) => parsed.skillPath
+    .filter((entry) => parsed.exactDocument ? entry.dir === (parsed.skillPath ?? '') : parsed.skillPath
       ? entry.dir === parsed.skillPath || entry.dir.startsWith(`${parsed.skillPath}/`)
       : true)
-    .filter((entry) =>
-      parsed.skillFilter ? basename(entry.dir) === parsed.skillFilter : true,
-    );
+    ;
+  const canonicalDirs = parsed.skillFilter ? scopedDirs.filter((entry) => basename(entry.dir) === parsed.skillFilter) : scopedDirs;
+  const searchingDeclaredNames = Boolean(parsed.skillFilter && canonicalDirs.length === 0);
+  const skillDirs = searchingDeclaredNames ? scopedDirs : canonicalDirs;
 
   const total = skillDirs.length;
   const scan = skillDirs.slice(0, MAX_SCANNED_SKILLS);
@@ -321,6 +348,10 @@ export async function resolveSkillSource(
     assertPackageBounds(entry.dir, packageEntries);
     const inspection = inspectSkillPackage(entry.dir, packageEntries);
     const hasScripts = inspection.scriptPaths.length > 0;
+    if (parsed.skillFilter && name !== parsed.skillFilter) {
+      skipped += 1;
+      continue;
+    }
     const importSource = skillImportSource(`${owner}/${repo}`, ref, entry.dir, { name, description, instructions });
     skills.push({
       name,
@@ -328,12 +359,15 @@ export async function resolveSkillSource(
       instructions,
       hasScripts,
       inspection,
-      path: entry.dir || '(root)',
+      path: entry.dir,
       sourceUrl: `https://github.com/${owner}/${repo}/tree/${ref}/${entry.dir}`,
       ...(importSource ? { importSource } : {}),
     });
   }
 
+  if (parsed.skillFilter && total > scan.length) {
+    throw new SkillImportError('incomplete_search', 'The skill-name search reached its 40-document limit. Use the exact skill-directory URL; matching or duplicate skills may remain uninspected.');
+  }
   return {
     owner,
     repo,
@@ -368,7 +402,8 @@ async function resolveExactPublicSkillFromGithubPage(
   parsed: ParsedSkillSource & { ref: string; skillPath: string },
   fetchImpl: typeof fetch,
 ): Promise<SkillResolution> {
-  const { owner, repo, ref, skillPath } = parsed;
+  const { owner, repo, ref } = parsed;
+  let skillPath = parsed.skillPath;
   const requestedSourceUrl = `https://github.com/${owner}/${repo}/tree/${encodeURIComponent(ref)}/${encodeGithubPath(skillPath)}`;
   const pageRes = await githubRequest(fetchImpl, requestedSourceUrl, {
     headers: { 'user-agent': 'chickpea-skill-import' },
@@ -395,8 +430,10 @@ async function resolveExactPublicSkillFromGithubPage(
     route = undefined;
   }
   const items = route?.tree?.items;
-  const refMatches = route?.refInfo?.name === ref || route?.refInfo?.currentOid?.startsWith(ref);
-  if (!route || route.path !== skillPath || !refMatches || !Array.isArray(items)) {
+  const refMatches = route?.refInfo?.name === ref || (/^[0-9a-f]{7,64}$/i.test(ref) && route?.refInfo?.currentOid?.startsWith(ref));
+  const boundaryMatches = parsed.refPath && route?.refInfo?.name && route.path !== undefined &&
+    `${route.refInfo.name}/${route.path}` === parsed.refPath;
+  if (!route || !(boundaryMatches || (route.path === skillPath && refMatches)) || !Array.isArray(items)) {
     throw new SkillImportError(
       'incomplete_inspection',
       'GitHub did not return a complete listing for the requested path and revision.',
@@ -409,15 +446,15 @@ async function resolveExactPublicSkillFromGithubPage(
     );
   }
 
+  skillPath = route.path!;
+  parsed = { ...parsed, skillPath };
   const skillDocumentPath = `${skillPath}/SKILL.md`;
   const hasSkillDocument = items.some(
     (item) => item.path === skillDocumentPath && item.contentType === 'file',
   );
   if (!hasSkillDocument) {
-    throw new SkillImportError(
-      'not_exact_skill_directory',
-      'That GitHub directory does not contain SKILL.md. Use the skill directory URL or repository source.',
-    );
+    if (parsed.exactDocument) throw new SkillImportError('document_not_found', `GitHub could not find ${skillDocumentPath} at the selected revision.`);
+    throw new ParentSkillDirectoryError({ ...parsed, ref: route.refInfo?.currentOid ?? ref, skillPath });
   }
   const resolvedRef = route.refInfo?.currentOid;
   if (!resolvedRef || !/^[0-9a-f]{40,64}$/i.test(resolvedRef)) {
@@ -475,6 +512,30 @@ function exactPublicSkillResolution(
     capped: false,
     skipped,
   };
+}
+
+class ParentSkillDirectoryError extends SkillImportError {
+  constructor(readonly source: ParsedSkillSource) {
+    super('not_exact_skill_directory', 'The selected directory contains multiple possible skill directories.');
+  }
+}
+
+async function resolveUrlRefBoundary(parsed: ParsedSkillSource, fetchImpl: typeof fetch,
+  headers: Record<string, string>, authenticated: boolean): Promise<ParsedSkillSource> {
+  const names: string[] = [];
+  for (const namespace of ['heads', 'tags']) {
+    const response = await githubRequest(fetchImpl,
+      `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/matching-refs/${namespace}/${encodeURIComponent(parsed.ref!)}`, { headers });
+    assertRepositoryResponse(response, authenticated, parsed.owner, parsed.repo);
+    const refs = await readJsonResponseBounded<Array<{ ref?: string }>>(response, MAX_REPOSITORY_METADATA_BYTES, 'GitHub ref listing is too large. Use an immutable commit URL.');
+    if (!Array.isArray(refs)) throw new SkillImportError('ambiguous_ref', 'GitHub could not resolve the URL revision and path. Use an immutable commit URL.');
+    for (const entry of refs) {
+      const name = entry.ref?.startsWith(`refs/${namespace}/`) ? entry.ref.slice(`refs/${namespace}/`.length) : undefined;
+      if (name && (parsed.refPath === name || parsed.refPath?.startsWith(`${name}/`))) names.push(name);
+    }
+  }
+  if (names.length !== 1) throw new SkillImportError('ambiguous_ref', 'The URL revision/path is missing or ambiguous. Use an immutable commit URL or an explicitly encoded branch name.');
+  return { ...parsed, ref: names[0]!, skillPath: parsed.refPath!.slice(names[0]!.length + 1) };
 }
 
 function assertPackageBounds(directory: string, entries: GitTreeEntry[]): void {
@@ -586,7 +647,7 @@ function assertRepositoryResponse(
   if (isRateLimited(response)) {
     throw new SkillImportError('rate_limited', GITHUB_RATE_LIMITED);
   }
-  if (response.status === 403 || response.status === 404) {
+  if (response.status === 401 || response.status === 403 || response.status === 404) {
     throw new SkillImportError(
       authenticated ? 'repository_inaccessible' : 'access_candidate',
       REPOSITORY_NOT_FOUND,
