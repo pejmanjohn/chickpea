@@ -167,7 +167,16 @@ export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextM
 }
 
 export function orderMessages(messages: SlackContextMessage[]): SlackContextMessage[] {
-  return [...messages].sort((left, right) => parseSlackTs(left.ts) - parseSlackTs(right.ts));
+  return [...messages].sort((left, right) => compareSlackTs(left.ts, right.ts));
+}
+
+/**
+ * Thread order for a Slack `ts`. A value that is not a number sorts as 0 —
+ * every caller validates the shape upstream, so this is the fail-quiet floor
+ * rather than a second ordering rule.
+ */
+export function compareSlackTs(left: string, right: string): number {
+  return parseSlackTs(left) - parseSlackTs(right);
 }
 
 /** Reject rows newer than the admitted trigger even if Slack returns them. */

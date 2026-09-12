@@ -196,12 +196,12 @@ export interface RuntimePlanV2 {
   harnessRevision: string;
 }
 
-/** Bounded capability record for the image model role (KTD2). */
+/** Bounded capability record for the image model role. */
 export interface RuntimePlanImageCapabilityV3 {
   role: 'image';
   /** A model resolved for this Agent's image role and its provider has a key. */
   filled: boolean;
-  /** The resolved model accepts image input, so editing is offered (R8). */
+  /** The resolved model accepts image input, so editing is offered. */
   acceptsImageInput: boolean;
 }
 

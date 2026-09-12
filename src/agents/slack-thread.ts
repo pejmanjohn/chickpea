@@ -1106,7 +1106,7 @@ export async function createSlackAgentRuntime(
       config.instructions,
       ...(managedTools.length > 0 ? [MANAGED_CONNECTION_RESULT_INSTRUCTION] : []),
       // The legacy assembler never mounts the image tool, so it always renders
-      // the no-image-model variant and its honesty rule (R14).
+      // the no-image-model variant and its honesty rule.
       ...(tools.some(({ name }) => name === POST_ARTIFACT_TOOL_NAME)
         ? [buildArtifactToolsInstruction({ imageTool: false, canEdit: false })]
         : []),
@@ -1273,7 +1273,7 @@ export function useRuntimePlanAgent(
     artifactToolsDisabled?: boolean;
     includeAgentAuthoringSkill?: boolean;
     additionalActivityToolDescriptors?: readonly ActivityToolDescriptor[];
-    /** Images already in this conversation, collected by the host fetch (U3). */
+    /** Images already in this conversation, collected by the host fetch. */
     threadImages?: readonly ThreadImageRecord[];
   } = {},
 ): void {
@@ -1312,7 +1312,7 @@ export function useRuntimePlanAgent(
   useInstruction('The final Slack answer must be self-contained. Earlier assistant steps are working narration. After an interrupted response, write the complete final answer again, not just the remaining words of the partial response.');
   if (options.toolsDisabled) {
     // No Slack turn disables tools today; the option remains for a caller that
-    // needs an answer-only turn. File uploads are not such a caller (R17).
+    // needs an answer-only turn. File uploads are not such a caller.
     useInstruction(
       'This turn is answer-only. No tools, connectors, sandboxes, or workspace-management actions are available. Answer only from the authoritative request and the context already supplied. If the request also asks for an external action, state the exact proposed action inputs separately, and ask the user to restate those exact inputs in a new message.',
     );
@@ -1643,7 +1643,7 @@ export function createRuntimePlanArtifactTools(
     ...(destination.threadTs ? { threadTs: destination.threadTs } : {}),
     /**
      * The installation's upload cap, memoized beside staging. The image tool
-     * awaits it before it can choose an output format (KTD8); nothing else
+     * awaits it before it can choose an output format; nothing else
      * distinguishes the direct and gateway transports up front.
      */
     resolveTransport: async (): Promise<ImageToolTransport> => resolveFileTransport(),
@@ -1658,7 +1658,7 @@ export function createRuntimePlanArtifactTools(
     },
   };
   // Only a plan whose image role resolved to a credentialed model carries the
-  // image tool (R6). The legacy assembler posts with app identity and keeps no
+  // image tool. The legacy assembler posts with app identity and keeps no
   // receipts, so it never mounts it.
   const reserveImageCall = options.reserveImageCall;
   const imageCapability = plan.imageCapability;
@@ -1689,11 +1689,11 @@ export function createRuntimePlanArtifactTools(
 }
 
 export interface RuntimePlanArtifactToolOptions {
-  /** Thread image records for this turn, collected by the host fetch (U3). */
+  /** Thread image records for this turn, collected by the host fetch. */
   threadImages?: readonly ThreadImageRecord[] | undefined;
   /** Prebuilt inventory; the render builds one so the instruction can read it. */
   imageInventory?: ThreadImageInventory | undefined;
-  /** One image call per response; supplied by `useImageCallBudget` (KTD6). */
+  /** One image call per response; supplied by `useImageCallBudget`. */
   reserveImageCall?: ((toolCallId: string) => boolean) | undefined;
   /** Focused seam; production resolves the role and provider at call time. */
   resolveImageClient?: (() => Promise<ImageClientResolution>) | undefined;
@@ -1721,7 +1721,7 @@ export function runtimePlanThreadImageInventory(
 
 /**
  * Resolve the image role again inside the tool call, so a per-Agent override
- * saved after the plan was compiled still decides which model runs (R4, AE4).
+ * saved after the plan was compiled still decides which model runs.
  * Any unresolved role, missing credential, or unsupported provider is one
  * `misconfigured` outcome: the tool never reports a model it did not call.
  */

@@ -6,13 +6,37 @@ import type { SandboxSelection } from './select.ts';
 
 export const MAX_ARTIFACT_BYTES = 8 * 1024 * 1024;
 export const POST_ARTIFACT_TOOL_NAME = 'post_artifact';
+/** Filename ceiling shared by the generating tools' schemas and sanitizer. */
+export const MAX_ARTIFACT_FILENAME_CHARS = 64;
+
+/**
+ * Keep a Slack-visible filename a safe basename carrying `extension`: the
+ * basename only, every disallowed character folded to `-`, no leading dot or
+ * dash, bounded length, and `defaultBase` when nothing survives. Shared by the
+ * tools that name a file they generate, so one rule covers every artifact.
+ */
+export function artifactFilename(
+  requested: string | undefined,
+  defaultBase: string,
+  extension: string,
+): string {
+  const base = (requested ?? defaultBase)
+    .split(/[\\/]/)
+    .pop()!
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[.-]+/, '')
+    .slice(0, MAX_ARTIFACT_FILENAME_CHARS);
+  const name = base.length === 0 ? defaultBase : base;
+  return new RegExp(`\\.${extension}$`, 'i').test(name)
+    ? name
+    : `${name.replace(/\.[A-Za-z0-9]{1,5}$/, '')}.${extension}`;
+}
 
 /**
  * Model-facing guidance shared by every lane that mounts the artifact tools.
  * It is deliberately short: the tool descriptions carry the mechanics. The
  * image paragraphs vary with the workspace's resolved image role, so the
- * Agent is told what it can actually do and what to say when it cannot
- * (R14, R15, KTD9).
+ * Agent is told what it can actually do and what to say when it cannot.
  */
 export interface ArtifactToolsInstructionOptions {
   /** The image role resolved to a credentialed model, so `generate_image` is mounted. */

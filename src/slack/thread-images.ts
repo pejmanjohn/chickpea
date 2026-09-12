@@ -1,6 +1,7 @@
 import type { GatewayAttachmentClient } from './gateway/client.ts';
-import { DEFAULT_MAX_MESSAGES, type SlackWebApiMessage } from './thread-context.ts';
+import { compareSlackTs, DEFAULT_MAX_MESSAGES, type SlackWebApiMessage } from './thread-context.ts';
 import type { SlackArtifactReceipt } from './artifact-receipts.ts';
+import { SLACK_FILE_ID, SLACK_TS } from './ids.ts';
 import { safeFilename } from './attachment-context.ts';
 import { MAX_SLACK_ATTACHMENT_BYTES } from './attachment-normalization.ts';
 import { MAX_ARTIFACT_BYTES } from '../sandbox/artifact-tool.ts';
@@ -25,8 +26,6 @@ export const DEFAULT_THREAD_IMAGE_FILE_LIMIT_BYTES = MAX_SLACK_ATTACHMENT_BYTES;
 export const DEFAULT_THREAD_IMAGE_TOTAL_LIMIT_BYTES = MAX_ARTIFACT_BYTES;
 
 const HANDLE_PATTERN = /^img:([1-9][0-9]{0,2})$/;
-const SLACK_FILE_ID = /^F[A-Z0-9]{6,40}$/;
-const SLACK_TS = /^\d{1,20}\.\d{1,10}$/;
 const ERROR_CODE = /^[a-z0-9_]{1,80}$/;
 
 const THREAD_IMAGE_MIME_TYPES = new Set([
@@ -46,7 +45,7 @@ const FILENAME_MIME_TYPES = new Map<string, string>([
 
 export type ThreadImageOrigin = 'person' | 'agent';
 
-/** Why a referenced image could not become bytes for the provider (KTD7). */
+/** Why a referenced image could not become bytes for the provider. */
 export type ThreadImageUnavailableDetail =
   | 'not_found'
   | 'missing_scope'
@@ -248,7 +247,7 @@ export function createThreadImageReader(input: {
   };
 }
 
-/** Slack and gateway failures, mapped to the KTD7 detail vocabulary. */
+/** Slack and gateway failures, mapped to the `ThreadImageUnavailableDetail` vocabulary. */
 export function unavailableDetail(error: unknown): ThreadImageUnavailableDetail {
   const code = errorCode(error);
   switch (code) {
@@ -357,12 +356,6 @@ function boundedLimit(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
     ? Math.min(value, fallback)
     : fallback;
-}
-
-function compareSlackTs(left: string, right: string): number {
-  const leftValue = Number(left);
-  const rightValue = Number(right);
-  return (Number.isFinite(leftValue) ? leftValue : 0) - (Number.isFinite(rightValue) ? rightValue : 0);
 }
 
 /**

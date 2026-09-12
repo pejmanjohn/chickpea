@@ -140,6 +140,8 @@ interface HarnessOptions {
   imageModels?: ImageCatalogFixture;
   imageRole?: ImageRoleFixture | null;
   imageRolePutError?: { status: number; body: Record<string, unknown> };
+  /** Number of leading /admin/api/image-models GETs answered with a failure. */
+  imageModelsFailures?: number;
   deferImageRolePut?: boolean;
   agents?: Array<Record<string, unknown>>;
 }
@@ -164,6 +166,7 @@ function runHarness(options: HarnessOptions = {}) {
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const fetchCalls: Array<{ path: string; method: string }> = [];
   let imageRolePutResolver: ((response: FakeResponse) => void) | null = null;
+  let imageModelCalls = 0;
   let focusedAction: string | null = null;
 
   const imageModels = options.imageModels ?? imageCatalog(true);
@@ -265,6 +268,10 @@ function runHarness(options: HarnessOptions = {}) {
       }));
     }
     if (path === '/admin/api/image-models') {
+      imageModelCalls += 1;
+      if (imageModelCalls <= (options.imageModelsFailures ?? 0)) {
+        return Promise.resolve(jsonResponse({ error: 'image_catalog_unavailable' }, 503));
+      }
       return Promise.resolve(jsonResponse({ ...imageModels }));
     }
     if (path === '/admin/api/channels') {
@@ -572,4 +579,50 @@ test('an Agent image override is saved and reads back as Pinned on its card', as
   const card = harness.app.innerHTML;
   assert.match(card, /Image <span class="badge-src">Pinned<\/span>/);
   assert.match(card, new RegExp(SUNBURST.replace('/', '\\/')));
+});
+
+/**
+ * The image catalog loads once with the page data so the Agent Model tab has it
+ * without ever opening Settings; Settings must not re-fetch what is already in
+ * state, but it must still retry a catalog whose boot fetch failed.
+ */
+function imageCatalogCalls(harness: { fetchCalls: Array<{ path: string; method: string }> }): number {
+  return harness.fetchCalls.filter((call) => call.path === '/admin/api/image-models').length;
+}
+
+function openSettingsProviders(click: Listener): void {
+  click({
+    target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'providers' }),
+  });
+}
+
+test('opening Settings reuses the image catalog the page already loaded', async () => {
+  const harness = runHarness();
+  await flushAsync();
+  assert.equal(imageCatalogCalls(harness), 1, 'the page data load owns the only catalog fetch');
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  openSettingsProviders(click);
+  await flushAsync();
+
+  assert.equal(imageCatalogCalls(harness), 1, 'Settings renders the catalog already in state');
+  assert.match(harness.app.innerHTML, /data-action="workspace-image-model"/);
+});
+
+test('opening Settings retries the image catalog when the page load failed', async () => {
+  const harness = runHarness({ imageModelsFailures: 1 });
+  await flushAsync();
+  assert.equal(imageCatalogCalls(harness), 1);
+  // The failed load left the empty state, not the select.
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="workspace-image-model"/);
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  openSettingsProviders(click);
+  await flushAsync();
+
+  assert.equal(imageCatalogCalls(harness), 2, 'a failed catalog is refetched on Settings open');
+  assert.match(harness.app.innerHTML, /data-action="workspace-image-model"/);
+  assert.match(harness.app.innerHTML, new RegExp(`<option value="${FLARE.replace('/', '\\/')}"`));
 });

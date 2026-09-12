@@ -404,6 +404,7 @@ import type {
   McpConnectionConfig,
   McpConnectionIdentity,
   WorkspaceInstallation,
+  WorkspaceModelRole,
 } from '../config/types.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import {
@@ -882,7 +883,7 @@ const workspaceModelDefaultSchema = v.strictObject({
   modelId: modelSpecifier,
   expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
 });
-// Role model ids are checked against the image catalog server-side (KTD12):
+// Role model ids are checked against the image catalog server-side:
 // `modelSpecifier` is shape-only and would happily accept a chat model in the
 // image role. The regex here only bounds the string before the catalog lookup.
 const workspaceModelRoleSchema = v.strictObject({
@@ -5922,6 +5923,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const roots = await Promise.all(
       agents.map((agent) => snapshots(c).listLiveRootsByAgent(agent.id)),
     );
+    // Every Agent in a workspace resolves the same image-role row, so read it
+    // once per workspace rather than once per Agent in the projection below.
+    const listedWorkspaceIds = [...new Set(agents.flatMap((agent) => {
+      const workspaceId = grants.find(({ agentId }) => agentId === agent.id)?.workspaceId ??
+        installations[0]?.workspaceId;
+      return workspaceId ? [workspaceId] : [];
+    }))];
+    const workspaceImageRoles = new Map(await Promise.all(
+      listedWorkspaceIds.map(async (workspaceId) =>
+        [workspaceId, await configStore.getWorkspaceModelRole(workspaceId, 'image')] as const),
+    ));
     return c.json({
       agents: await Promise.all(agents.map((agent, index) =>
         agentAdminProjection(agent, configStore, snapshots(c), {
@@ -5943,7 +5955,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }, {
           canEdit: principal ? canEditAgent(principal, agent) : true,
           ...(visibleMemberChannels ? { visibleMemberChannels } : {}),
-        })
+        }, workspaceImageRoles)
       )),
     });
   });
@@ -6039,7 +6051,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // The image role's picker source, kept separate from the chat model list so a
   // chat model can never reach an image field. Entries are the image catalog
   // narrowed to providers whose credential is present, each flagged when it is
-  // the faster, cheaper choice (R16). `providers` lets Admin tell "no image
+  // the faster, cheaper choice. `providers` lets Admin tell "no image
   // model chosen" apart from "no image provider connected".
   app.get('/admin/api/image-models', async (c) => {
     const models = await availableRoleModels(
@@ -6163,11 +6175,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
       return c.json({ error: 'forbidden' }, 403);
     }
+    // The choice check and the projection below read the same picker list, and
+    // this write cannot change it: build it once for the whole request.
+    const availableModels = await availableRoleModels(
+      role,
+      settings(c),
+      c.env as PlatformEnv | undefined,
+    );
     const rejection = await modelRoleChoiceError({
       settingsStore: settings(c),
       ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
       role,
       modelId: parsed.output.modelId,
+      availableModels,
     });
     if (rejection) return invalidRequest(c, rejection);
     try {
@@ -6184,6 +6204,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
           installation,
           role,
+          availableModels,
         }),
       });
     } catch (error) {
@@ -6198,6 +6219,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
             installation,
             role,
+            availableModels,
           }),
         }, 409);
       }
@@ -8265,7 +8287,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return modelNotResolvable(c, modelError);
       }
       // The system Agent follows the Workspace role default and can pin
-      // nothing, exactly as it cannot pin a chat model (R2, AE7).
+      // nothing, exactly as it cannot pin a chat model.
       if (parsed.output.imageModel && current.kind === 'system') {
         return invalidRequest(c, 'Chickpea follows the Workspace image model.');
       }
@@ -10962,6 +10984,8 @@ async function workspaceModelRoleProjection(input: {
   platformEnv?: PlatformEnv;
   installation: WorkspaceInstallation;
   role: NonChatModelRole;
+  /** The role's picker list when the caller already built it for this request. */
+  availableModels?: readonly RoleModelChoice[];
 }): Promise<object> {
   const stored = await input.configStore.getWorkspaceModelRole(
     input.installation.workspaceId,
@@ -10972,7 +10996,7 @@ async function workspaceModelRoleProjection(input: {
     role: input.role,
     modelId: stored?.modelId ?? null,
     revision: stored?.revision ?? 0,
-    availableModels: await availableRoleModels(
+    availableModels: input.availableModels ?? await availableRoleModels(
       input.role,
       input.settingsStore,
       input.platformEnv,
@@ -10981,7 +11005,7 @@ async function workspaceModelRoleProjection(input: {
 }
 
 /**
- * KTD12: the shape-only `modelSpecifier` regex would accept a chat model in the
+ * the shape-only `modelSpecifier` regex would accept a chat model in the
  * image role, so a role choice is accepted only when the role's own catalog
  * knows it and its provider already has a credential.
  */
@@ -10990,8 +11014,10 @@ async function modelRoleChoiceError(input: {
   platformEnv?: PlatformEnv;
   role: NonChatModelRole;
   modelId: string;
+  /** The role's picker list when the caller already built it for this request. */
+  availableModels?: readonly RoleModelChoice[];
 }): Promise<string | undefined> {
-  const available = await availableRoleModels(
+  const available = input.availableModels ?? await availableRoleModels(
     input.role,
     input.settingsStore,
     input.platformEnv,
@@ -11002,11 +11028,19 @@ async function modelRoleChoiceError(input: {
     : `${input.modelId} is not an image model.`;
 }
 
+/** One entry of a role's picker list: a catalog model an Owner may choose now. */
+interface RoleModelChoice {
+  id: string;
+  name: string;
+  providerId: string;
+  acceptsImageInput: boolean;
+}
+
 async function availableRoleModels(
   role: NonChatModelRole,
   settingsStore: SettingsStore,
   platformEnv?: PlatformEnv,
-): Promise<Array<{ id: string; name: string; providerId: string; acceptsImageInput: boolean }>> {
+): Promise<RoleModelChoice[]> {
   if (role !== 'image') return [];
   const configured = new Map<string, boolean>();
   const models = [];
@@ -11473,6 +11507,13 @@ async function agentAdminProjection(
     privateUseAudience?: PrivateAgentAudience;
     visibleMemberChannels?: ReadonlyMap<string, SlackChannel>;
   } = { canEdit: true },
+  /**
+   * Workspace image-role rows already read for this request, keyed by
+   * workspace id. The agents list hoists that read out of its per-agent loop —
+   * every Agent in one workspace shares the row — and a caller that projects a
+   * single Agent omits the map and reads the one row here.
+   */
+  workspaceImageRoles?: ReadonlyMap<string, WorkspaceModelRole | undefined>,
 ): Promise<object> {
   const projectionData = preloaded ?? await (async () => {
     const [references, grants, installations, snapshotRoots] = await Promise.all([
@@ -11518,9 +11559,11 @@ async function agentAdminProjection(
     : undefined;
   const [agentImageRole, workspaceImageRole] = await Promise.all([
     configStore.getAgentModelRole(agent.id, 'image'),
-    workspaceId
-      ? configStore.getWorkspaceModelRole(workspaceId, 'image')
-      : Promise.resolve(undefined),
+    !workspaceId
+      ? Promise.resolve(undefined)
+      : workspaceImageRoles?.has(workspaceId)
+        ? Promise.resolve(workspaceImageRoles.get(workspaceId))
+        : configStore.getWorkspaceModelRole(workspaceId, 'image'),
   ]);
   const legacyDefaultInstallations = installations.filter(
     ({ defaultAgentId, runtimeContract }) =>

@@ -1,4 +1,5 @@
 import type { ImageModelProfile } from '../model-catalog/image-profiles.ts';
+import { isRecord } from '../security/content-validation.ts';
 
 export type ImageOutputFormat = 'png' | 'jpeg' | 'webp';
 
@@ -258,18 +259,20 @@ async function readImageResponse(
   if (!payload) {
     return { ok: false, reason: 'unreachable', detail: 'invalid_response' };
   }
-  const first = Array.isArray(payload.data) ? asRecord(payload.data[0]) : undefined;
+  const first = Array.isArray(payload.data) && isRecord(payload.data[0]) ? payload.data[0] : undefined;
   const encoded = typeof first?.b64_json === 'string' ? first.b64_json : undefined;
   if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0) {
     return { ok: false, reason: 'unreachable', detail: 'invalid_response' };
   }
   let bytes: Uint8Array;
   try {
-    bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
+    const binary = atob(encoded);
+    bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   } catch {
     return { ok: false, reason: 'unreachable', detail: 'invalid_response' };
   }
-  const usage = asRecord(payload.usage);
+  const usage = isRecord(payload.usage) ? payload.usage : undefined;
   return {
     ok: true,
     bytes,
@@ -285,7 +288,7 @@ function mapErrorResponse(
   payload: Record<string, unknown> | undefined,
   prompt: string,
 ): ImageCallResult {
-  const error = asRecord(payload?.error);
+  const error = isRecord(payload?.error) ? payload.error : undefined;
   const code = readString(error?.code) ?? readString(error?.type) ?? '';
   const message = safeDetail(readString(error?.message), prompt);
   if (status === 401 || status === 403) {
@@ -390,17 +393,13 @@ function extensionFor(mimeType: string): string {
 
 function parseJsonRecord(text: string): Record<string, unknown> | undefined {
   try {
-    return asRecord(JSON.parse(text));
+    const parsed: unknown = JSON.parse(text);
+    return isRecord(parsed) ? parsed : undefined;
   } catch {
     return undefined;
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
 
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined;

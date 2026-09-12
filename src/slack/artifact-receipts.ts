@@ -1,6 +1,8 @@
 import * as v from 'valibot';
 import { useDataWriter, usePersistentState, useResponseStart } from '@flue/runtime';
 
+import { SLACK_FILE_ID, SLACK_TS } from './ids.ts';
+
 /**
  * Host-authored receipts for files an Agent staged during one response.
  *
@@ -15,9 +17,7 @@ export const MAX_SLACK_ARTIFACT_RECEIPTS = 10;
 const MAX_FILENAME_CHARS = 256;
 const MAX_TITLE_CHARS = 256;
 
-const SLACK_FILE_ID = /^F[A-Z0-9]{6,40}$/;
 const SLACK_ID = /^[A-Z0-9]{1,40}$/;
-const SLACK_TS = /^\d{1,20}\.\d{1,10}$/;
 const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 const MAX_PERMALINK_CHARS = 2_048;
 

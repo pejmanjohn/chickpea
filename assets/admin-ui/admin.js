@@ -219,7 +219,7 @@
     // The image model role: a second, additive model choice beside the chat
     // default. Its readback (choice + revision) comes from the role endpoint;
     // its options come from the image catalog, never from the chat model list.
-    imageModels: { loaded: false, models: [], providers: [] },
+    imageModels: { loaded: false, error: false, models: [], providers: [] },
     workspaceImageRole: null,
     workspaceImageRoleLoaded: false,
     workspaceImageRoleDraft: "",
@@ -8783,7 +8783,12 @@
     loadSettings(generation).then(function () { renderSettingsLoad(generation); });
     loadWorkspaceDefault(generation).then(function () { renderSettingsLoad(generation); });
     loadWorkspaceImageRole(generation).then(function () { renderSettingsLoad(generation); });
-    loadImageModels().then(function () { renderSettingsLoad(generation); });
+    // The image catalog already loaded with the page data; re-render from state
+    // instead of re-fetching it, the same guard the picker's lazy lists use.
+    // A boot fetch that failed is still retried here.
+    if (!state.imageModels.loaded || state.imageModels.error) {
+      loadImageModels().then(function () { renderSettingsLoad(generation); });
+    }
     loadModelCatalogStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadGithubStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadEgress(generation).then(function () { renderSettingsLoad(generation); });
@@ -9254,34 +9259,142 @@
     });
   }
 
+  // The Workspace chat default and the workspace default image model are the
+  // same section twice over: one value carrying one revision, a staleness-
+  // guarded load, and an optimistic save that re-applies the server's value on a
+  // revision conflict while preserving the operator's draft. Both triplets come
+  // from this factory; only the state prefix, the endpoint, the response key,
+  // the client-side validation and the copy differ.
+  function createWorkspaceModelSection(options) {
+    var stateKey = options.stateKey;
+    var loadedKey = stateKey + "Loaded";
+    var draftKey = stateKey + "Draft";
+    var busyKey = stateKey + "Busy";
+    var errorKey = stateKey + "Error";
+    var noticeKey = stateKey + "Notice";
+    var requestIdKey = stateKey + "RequestId";
+    var responseKey = options.responseKey;
+
+    function apply(value, preserveDraft) {
+      state[stateKey] = value || null;
+      state[loadedKey] = true;
+      if (!preserveDraft) state[draftKey] = (value && value.modelId) || "";
+    }
+
+    function load(generation) {
+      var requestId = ++state[requestIdKey];
+      state[errorKey] = "";
+      return api(options.endpoint, { cache: "no-store" }).then(function (body) {
+        if (requestId !== state[requestIdKey] || !settingsLoadIsCurrent(generation)) return;
+        apply(body[responseKey], false);
+      }).catch(function (error) {
+        if (requestId !== state[requestIdKey] || !settingsLoadIsCurrent(generation)) return;
+        state[loadedKey] = true;
+        state[errorKey] = (error && (error.serverMessage || error.message)) || options.loadErrorText;
+      });
+    }
+
+    function save() {
+      var current = state[stateKey];
+      var modelId = String(state[draftKey] || "").trim();
+      if (state[busyKey] || !current) return;
+      var invalid = options.validate(modelId);
+      if (invalid) {
+        state[errorKey] = invalid;
+        state[noticeKey] = "";
+        render();
+        focusAction(options.actionId);
+        return;
+      }
+      state[busyKey] = true;
+      state[errorKey] = "";
+      state[noticeKey] = "";
+      render();
+      postJson(options.endpoint, "PUT", {
+        modelId: modelId,
+        expectedRevision: current.revision
+      }).then(function (body) {
+        apply(body[responseKey], false);
+        state[busyKey] = false;
+        state[noticeKey] = options.savedNotice(body[responseKey]);
+        render();
+        focusAction(options.actionId);
+      }).catch(function (error) {
+        state[busyKey] = false;
+        var conflict = error && error.payload && error.payload.error === options.conflictCode;
+        if (conflict && error.payload[responseKey]) {
+          apply(error.payload[responseKey], true);
+          state[errorKey] = options.conflictText;
+        } else {
+          state[errorKey] = (error && (error.serverMessage || error.message)) || options.saveErrorText;
+        }
+        render();
+        focusAction(options.actionId);
+      });
+    }
+
+    return { apply: apply, load: load, save: save };
+  }
+
+  var workspaceDefaultControls = createWorkspaceModelSection({
+    stateKey: "workspaceDefault",
+    endpoint: "/admin/api/workspace-model-default",
+    responseKey: "workspaceDefault",
+    conflictCode: "workspace_model_default_revision_conflict",
+    actionId: "workspace-default-model",
+    // The chat default is free text, so the provider/model shape is checked here
+    // before the request; the image field only offers catalog entries and leans
+    // on the server's catalog check instead.
+    validate: function (modelId) {
+      return /^[^/]+[/].+$/.test(modelId) ? "" : "Choose a provider/model value.";
+    },
+    savedNotice: function (value) {
+      return value.live
+        ? "Workspace default saved. New messages use it when their turn is admitted."
+        : "Provisional Workspace default saved. It becomes live when this workspace is activated.";
+    },
+    loadErrorText: "Could not load the Workspace default.",
+    saveErrorText: "Could not save the Workspace default.",
+    conflictText: "The Workspace default changed in another session. Your selection is preserved; save again to replace the current value."
+  });
+
+  var workspaceImageRoleControls = createWorkspaceModelSection({
+    stateKey: "workspaceImageRole",
+    endpoint: "/admin/api/workspace-model-roles/image",
+    responseKey: "workspaceModelRole",
+    conflictCode: "model_role_revision_conflict",
+    actionId: "workspace-image-model",
+    validate: function (modelId) {
+      return modelId ? "" : "Choose an image model.";
+    },
+    savedNotice: function () {
+      return "Default image model saved. Agents use it on their next request.";
+    },
+    loadErrorText: "Could not load the default image model.",
+    saveErrorText: "Could not save the default image model.",
+    conflictText: "The default image model changed in another session. Your selection is preserved; save again to replace the current value."
+  });
+
   function applyWorkspaceDefault(value, preserveDraft) {
-    state.workspaceDefault = value || null;
-    state.workspaceDefaultLoaded = true;
-    if (!preserveDraft) state.workspaceDefaultDraft = (value && value.modelId) || "";
+    workspaceDefaultControls.apply(value, preserveDraft);
   }
 
   function loadWorkspaceDefault(generation) {
-    var requestId = ++state.workspaceDefaultRequestId;
-    state.workspaceDefaultError = "";
-    return api("/admin/api/workspace-model-default", { cache: "no-store" }).then(function (body) {
-      if (requestId !== state.workspaceDefaultRequestId || !settingsLoadIsCurrent(generation)) return;
-      applyWorkspaceDefault(body.workspaceDefault, false);
-    }).catch(function (error) {
-      if (requestId !== state.workspaceDefaultRequestId || !settingsLoadIsCurrent(generation)) return;
-      state.workspaceDefaultLoaded = true;
-      state.workspaceDefaultError = (error && (error.serverMessage || error.message)) || "Could not load the Workspace default.";
-    });
+    return workspaceDefaultControls.load(generation);
   }
 
   function applyWorkspaceImageRole(value, preserveDraft) {
-    state.workspaceImageRole = value || null;
-    state.workspaceImageRoleLoaded = true;
-    if (!preserveDraft) state.workspaceImageRoleDraft = (value && value.modelId) || "";
+    workspaceImageRoleControls.apply(value, preserveDraft);
   }
 
+  // Every caller funnels a failed request in here as a null body, so a falsy
+  // body records the failure: `loaded` still flips (the section renders its
+  // empty state rather than a spinner) but `error` lets a later Settings open
+  // retry the catalog instead of trusting the empty lists.
   function applyImageModels(body) {
     state.imageModels = {
       loaded: true,
+      error: !body,
       models: (body && body.models) || [],
       providers: (body && body.providers) || []
     };
@@ -9296,96 +9409,15 @@
   }
 
   function loadWorkspaceImageRole(generation) {
-    var requestId = ++state.workspaceImageRoleRequestId;
-    state.workspaceImageRoleError = "";
-    return api("/admin/api/workspace-model-roles/image", { cache: "no-store" }).then(function (body) {
-      if (requestId !== state.workspaceImageRoleRequestId || !settingsLoadIsCurrent(generation)) return;
-      applyWorkspaceImageRole(body.workspaceModelRole, false);
-    }).catch(function (error) {
-      if (requestId !== state.workspaceImageRoleRequestId || !settingsLoadIsCurrent(generation)) return;
-      state.workspaceImageRoleLoaded = true;
-      state.workspaceImageRoleError = (error && (error.serverMessage || error.message)) ||
-        "Could not load the default image model.";
-    });
+    return workspaceImageRoleControls.load(generation);
   }
 
   function saveWorkspaceImageRole() {
-    var current = state.workspaceImageRole;
-    var modelId = String(state.workspaceImageRoleDraft || "").trim();
-    if (state.workspaceImageRoleBusy || !current) return;
-    if (!modelId) {
-      state.workspaceImageRoleError = "Choose an image model.";
-      state.workspaceImageRoleNotice = "";
-      render();
-      focusAction("workspace-image-model");
-      return;
-    }
-    state.workspaceImageRoleBusy = true;
-    state.workspaceImageRoleError = "";
-    state.workspaceImageRoleNotice = "";
-    render();
-    postJson("/admin/api/workspace-model-roles/image", "PUT", {
-      modelId: modelId,
-      expectedRevision: current.revision
-    }).then(function (body) {
-      applyWorkspaceImageRole(body.workspaceModelRole, false);
-      state.workspaceImageRoleBusy = false;
-      state.workspaceImageRoleNotice = "Default image model saved. Agents use it on their next request.";
-      render();
-      focusAction("workspace-image-model");
-    }).catch(function (error) {
-      state.workspaceImageRoleBusy = false;
-      var conflict = error && error.payload && error.payload.error === "model_role_revision_conflict";
-      if (conflict && error.payload.workspaceModelRole) {
-        applyWorkspaceImageRole(error.payload.workspaceModelRole, true);
-        state.workspaceImageRoleError = "The default image model changed in another session. Your selection is preserved; save again to replace the current value.";
-      } else {
-        state.workspaceImageRoleError = (error && (error.serverMessage || error.message)) ||
-          "Could not save the default image model.";
-      }
-      render();
-      focusAction("workspace-image-model");
-    });
+    workspaceImageRoleControls.save();
   }
 
   function saveWorkspaceDefault() {
-    var current = state.workspaceDefault;
-    var modelId = String(state.workspaceDefaultDraft || "").trim();
-    if (state.workspaceDefaultBusy || !current) return;
-    if (!/^[^/]+[/].+$/.test(modelId)) {
-      state.workspaceDefaultError = "Choose a provider/model value.";
-      state.workspaceDefaultNotice = "";
-      render();
-      focusAction("workspace-default-model");
-      return;
-    }
-    state.workspaceDefaultBusy = true;
-    state.workspaceDefaultError = "";
-    state.workspaceDefaultNotice = "";
-    render();
-    postJson("/admin/api/workspace-model-default", "PUT", {
-      modelId: modelId,
-      expectedRevision: current.revision
-    }).then(function (body) {
-      applyWorkspaceDefault(body.workspaceDefault, false);
-      state.workspaceDefaultBusy = false;
-      state.workspaceDefaultNotice = body.workspaceDefault.live
-        ? "Workspace default saved. New messages use it when their turn is admitted."
-        : "Provisional Workspace default saved. It becomes live when this workspace is activated.";
-      render();
-      focusAction("workspace-default-model");
-    }).catch(function (error) {
-      state.workspaceDefaultBusy = false;
-      var conflict = error && error.payload && error.payload.error === "workspace_model_default_revision_conflict";
-      if (conflict && error.payload.workspaceDefault) {
-        applyWorkspaceDefault(error.payload.workspaceDefault, true);
-        state.workspaceDefaultError = "The Workspace default changed in another session. Your selection is preserved; save again to replace the current value.";
-      } else {
-        state.workspaceDefaultError = (error && (error.serverMessage || error.message)) || "Could not save the Workspace default.";
-      }
-      render();
-      focusAction("workspace-default-model");
-    });
+    workspaceDefaultControls.save();
   }
 
   function loadModelCatalogStatus(generation) {
@@ -9721,73 +9753,89 @@
     });
   }
 
-  // Open the profile Model combobox (F6) and lazily fetch the dynamic lists it
-  // renders (F5): the FULL model list for anthropic/openai and the starred
-  // favorites for openrouter/workers-ai. The picker can open without ever
-  // visiting Settings, so it kicks its own loads here, guarded so nothing
-  // re-fetches. loadProviderModels/loadFavorites re-render while the picker is
-  // open (state.modelPickerOpen).
-  function openModelPicker() {
-    if (state.modelPickerOpen) return;
-    state.modelPickerOpen = true;
-    state.modelPickerFilter = "";
-    (state.models && state.models.providers ? state.models.providers : []).forEach(function (provider) {
-      if (!provider.configured) return;
-      var adminId = pickerAdminIdFor(provider.id);
-      if (adminId == null) return;
-      if (adminId === "anthropic" || adminId === "openai") {
-        if (state.providerModels[adminId] == null) loadProviderModels(adminId);
-      } else if (adminId === "openrouter" || adminId === "workers-ai") {
-        // Favorites drive these groups; the model list is only needed by the
-        // Settings favorites manager, not the picker, so load favorites only.
-        if (state.favorites[adminId] == null) loadFavorites(adminId);
-      }
-    });
-    renderPreservingPagePosition();
-  }
-
-  function closeModelPicker() {
-    if (!state.modelPickerOpen) return;
-    state.modelPickerOpen = false;
-    state.modelPickerFilter = "";
-    renderPreservingPagePosition();
-  }
-
-  // The image picker's options are already in state (the catalog loads with the
-  // page), so opening it kicks no fetch of its own.
-  function openImageModelPicker() {
-    if (state.imageModelPickerOpen) return;
-    state.imageModelPickerOpen = true;
-    state.imageModelPickerFilter = "";
-    renderPreservingPagePosition();
-  }
-
-  function closeImageModelPicker() {
-    if (!state.imageModelPickerOpen) return;
-    state.imageModelPickerOpen = false;
-    state.imageModelPickerFilter = "";
-    renderPreservingPagePosition();
-  }
-
-  function filterImageModelPicker(target) {
-    state.profileDraft.imageModel = target.value;
-    state.imageModelPickerFilter = target.value;
-    markProfileDirty();
-    if (!state.imageModelPickerOpen) { openImageModelPicker(); return; }
-    renderPreservingPagePosition();
-  }
-
-  // A keystroke in the Model input both pins the free-text value (draft) and
+  // Open/close/filter plumbing shared by the two profile comboboxes. Only the
+  // open+filter state prefix, the profile draft field and an optional on-open
+  // hook differ. The pickers keep their OWN option sources and renderers on
+  // purpose, so a chat model can never reach the image field.
+  //
+  // A keystroke in either input both pins the free-text value (draft) and
   // narrows the open picker to matching specifiers (F6 filter). Typing opens the
   // picker if it was closed. The shared in-place renderer preserves the input's
   // focus and caret across both this render and later async model-list renders.
-  function filterModelPicker(target) {
-    state.profileDraft.model = target.value;
-    state.modelPickerFilter = target.value;
-    markProfileDirty();
-    if (!state.modelPickerOpen) { openModelPicker(); return; }
-    renderPreservingPagePosition();
+  function createModelPickerControls(options) {
+    var openKey = options.stateKey + "Open";
+    var filterKey = options.stateKey + "Filter";
+    var draftKey = options.draftKey;
+
+    function open() {
+      if (state[openKey]) return;
+      state[openKey] = true;
+      state[filterKey] = "";
+      if (options.onOpen) options.onOpen();
+      renderPreservingPagePosition();
+    }
+
+    function close() {
+      if (!state[openKey]) return;
+      state[openKey] = false;
+      state[filterKey] = "";
+      renderPreservingPagePosition();
+    }
+
+    function filter(target) {
+      state.profileDraft[draftKey] = target.value;
+      state[filterKey] = target.value;
+      markProfileDirty();
+      if (!state[openKey]) { open(); return; }
+      renderPreservingPagePosition();
+    }
+
+    return { open: open, close: close, filter: filter };
   }
+
+  var modelPickerControls = createModelPickerControls({
+    stateKey: "modelPicker",
+    draftKey: "model",
+    // Lazily fetch the dynamic lists the chat picker renders (F5): the FULL
+    // model list for anthropic/openai and the starred favorites for
+    // openrouter/workers-ai. The picker can open without ever visiting
+    // Settings, so it kicks its own loads here, guarded so nothing re-fetches.
+    // loadProviderModels/loadFavorites re-render while the picker is open
+    // (state.modelPickerOpen).
+    onOpen: function () {
+      (state.models && state.models.providers ? state.models.providers : []).forEach(function (provider) {
+        if (!provider.configured) return;
+        var adminId = pickerAdminIdFor(provider.id);
+        if (adminId == null) return;
+        if (adminId === "anthropic" || adminId === "openai") {
+          if (state.providerModels[adminId] == null) loadProviderModels(adminId);
+        } else if (adminId === "openrouter" || adminId === "workers-ai") {
+          // Favorites drive these groups; the model list is only needed by the
+          // Settings favorites manager, not the picker, so load favorites only.
+          if (state.favorites[adminId] == null) loadFavorites(adminId);
+        }
+      });
+    }
+  });
+
+  // The image picker's options are already in state (the catalog loads with the
+  // page), so opening it kicks no fetch of its own.
+  var imageModelPickerControls = createModelPickerControls({
+    stateKey: "imageModelPicker",
+    draftKey: "imageModel"
+  });
+
+  function openModelPicker() { modelPickerControls.open(); }
+
+  function closeModelPicker() { modelPickerControls.close(); }
+
+  function filterModelPicker(target) { modelPickerControls.filter(target); }
+
+  function openImageModelPicker() { imageModelPickerControls.open(); }
+
+  function closeImageModelPicker() { imageModelPickerControls.close(); }
+
+  function filterImageModelPicker(target) { imageModelPickerControls.filter(target); }
 
   function openProviderPaste(id, mode) {
     var ui = provUiFor(id);

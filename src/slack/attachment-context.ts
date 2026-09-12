@@ -39,7 +39,7 @@ const CARRIED_SLACK_TURN_ATTRIBUTE_KEYS = [
   'requesterText',
   'requesterTimezone',
   // The per-turn `img:N` inventory: both renders must address the same
-  // handles, so a referenced image still resolves after the analysis (AE1).
+  // handles, so a referenced image still resolves after the analysis.
   'threadImages',
 ] as const;
 

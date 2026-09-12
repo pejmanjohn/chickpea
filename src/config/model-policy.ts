@@ -235,7 +235,7 @@ export async function resolveAgentModelForRole(
   const hasCredential = input.hasProviderCredential ??
     ((id: string) => defaultProviderCredentialCheck(id, input.env, input.settings));
   // A model whose provider has no credential resolves to unset on purpose: the
-  // Agent then states the limit (R14) instead of failing inside the adapter.
+  // Agent then states the limit instead of failing inside the adapter.
   if (!await hasCredential(providerId)) return { unset: true, reason: 'credential_missing' };
   return { modelId: resolved.modelId, providerId, source: resolved.source };
 }
@@ -271,7 +271,7 @@ export async function resolveAgentModelRoleFromStore(input: {
  * The bounded capability shape frozen on the runtime plan. It carries whether
  * the role is filled and whether the resolved model accepts image input, never
  * which model resolved: swapping two models of equal capability must not
- * rotate a live conversation's incarnation (KTD2).
+ * rotate a live conversation's incarnation.
  */
 export function imageCapabilityForResolution(
   resolution: ModelRoleResolution,
@@ -283,7 +283,7 @@ export function imageCapabilityForResolution(
   return {
     role: 'image',
     filled: true,
-    // An undeclared capability is an absent capability (R8).
+    // An undeclared capability is an absent capability.
     acceptsImageInput: profile?.input.includes('image') === true,
   };
 }

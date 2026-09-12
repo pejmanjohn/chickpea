@@ -8,33 +8,35 @@ import type {
   OpenAiImagesClient,
 } from '../images/openai-images-client.ts';
 import { assertArtifactDeliveryAllowed } from '../memory/tool-policy.ts';
-import type {
-  ThreadImageInventory,
-  ThreadImageReader,
-  ThreadImageUnavailableDetail,
+import {
+  THREAD_IMAGE_HANDLE_PREFIX,
+  type ThreadImageInventory,
+  type ThreadImageReader,
+  type ThreadImageUnavailableDetail,
 } from '../slack/thread-images.ts';
 import {
+  artifactFilename,
   MAX_ARTIFACT_BYTES,
+  MAX_ARTIFACT_FILENAME_CHARS,
   type SlackArtifactStageInput,
   type SlackArtifactStageOutcome,
 } from './artifact-tool.ts';
 
 export const GENERATE_IMAGE_TOOL_NAME = 'generate_image';
-/** The Agent composes the prompt; the cap keeps one tool call bounded (KTD4). */
+/** The Agent composes the prompt; the cap keeps one tool call bounded. */
 export const MAX_IMAGE_PROMPT_CHARS = 4_000;
-/** Thread image handles one call may reference (KTD4). */
+/** Thread image handles one call may reference. */
 export const MAX_IMAGE_TOOL_INPUTS = 4;
 /**
- * Stall guard, not a budget cap (KTD6): above the provider's documented
+ * Stall guard, not a budget cap: above the provider's documented
  * two-minute worst case, so only a network-level stall releases the lane.
  */
 export const IMAGE_CALL_DEADLINE_MS = 180_000;
 /** One image per response; the state records which tool call owns the slot. */
 export const SLACK_IMAGE_CALL_BUDGET_NAME = 'slackImageCallBudget';
 
-const MAX_FILENAME_CHARS = 64;
 const DEFAULT_IMAGE_BASENAME = 'image';
-const IMAGE_HANDLE = /^img:[1-9][0-9]{0,2}$/;
+const IMAGE_HANDLE = new RegExp(`^${THREAD_IMAGE_HANDLE_PREFIX}[1-9][0-9]{0,2}$`);
 // The provider's edit endpoint takes these; a thread GIF is an image the
 // inventory can address but not an input this adapter may send.
 const PROVIDER_INPUT_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -44,7 +46,7 @@ const FORMAT_EXTENSIONS: Record<ImageOutputFormat, string> = {
   webp: 'webp',
 };
 
-/** The transport facts the format policy needs; resolved lazily (KTD8). */
+/** The transport facts the format policy needs; resolved lazily. */
 export interface ImageToolTransport {
   maxBytes: number;
 }
@@ -54,17 +56,17 @@ export type ImageClientResolution =
   | { ok: false; reason: 'misconfigured' };
 
 export interface ImageArtifactToolOptions {
-  /** From the frozen plan's capability: image input fields exist only here (R8). */
+  /** From the frozen plan's capability: image input fields exist only here. */
   acceptsImageInput: boolean;
-  /** Per-turn handles for images already in this conversation (U3, KTD5). */
+  /** Per-turn handles for images already in this conversation. */
   inventory: ThreadImageInventory;
   /** Keyed by tool call id so a durable replay keeps the slot it already took. */
   reserveImageCall(toolCallId: string): boolean;
   /** The installation's upload cap, known only after transport resolution. */
   resolveTransport(): Promise<ImageToolTransport>;
-  /** Resolves the model id and provider credential at call time (KTD2, AE4). */
+  /** Resolves the model id and provider credential at call time. */
   resolveClient(): Promise<ImageClientResolution>;
-  /** Bounded reads through the existing attachment path (KTD5). */
+  /** Bounded reads through the existing attachment path. */
   createImageReader(limits: {
     perFileLimitBytes: number;
     totalLimitBytes: number;
@@ -73,7 +75,7 @@ export interface ImageArtifactToolOptions {
   stageArtifact(input: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome>;
 }
 
-/** Every outcome is a returned value; only the delivery gate throws (KTD7, KTD13). */
+/** Every outcome is a returned value; only the delivery gate throws. */
 export type ImageArtifactResult =
   | {
       attached: true;
@@ -97,7 +99,7 @@ export type ImageArtifactResult =
       handle: string;
     };
 
-/** Recorded by `step.do('generate')`: metadata and never bytes (KTD6). */
+/** Recorded by `step.do('generate')`: metadata and never bytes. */
 type ImageGenerationStep =
   | {
       ok: true;
@@ -116,7 +118,7 @@ const PROMPT_FIELD = v.pipe(
   v.maxLength(MAX_IMAGE_PROMPT_CHARS),
 );
 const FILENAME_FIELD = v.optional(
-  v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(MAX_FILENAME_CHARS)),
+  v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(MAX_ARTIFACT_FILENAME_CHARS)),
 );
 
 const IMAGE_GENERATE_INPUT = v.object({ prompt: PROMPT_FIELD, filename: FILENAME_FIELD });
@@ -274,7 +276,7 @@ function inputUnavailable(
 /**
  * Direct installations take the provider default as PNG. A shared gateway
  * caps uploads far lower, so it asks for a compressed format: WebP when the
- * request wants transparency, JPEG otherwise (KTD8).
+ * request wants transparency, JPEG otherwise.
  */
 export function imageFormatPolicyForTransport(maxBytes: number, prompt: string): ImageFormatPolicy {
   if (maxBytes >= MAX_ARTIFACT_BYTES) return { format: 'png' };
@@ -319,17 +321,7 @@ export function imageFilename(
   requested: string | undefined,
   format: ImageOutputFormat,
 ): string {
-  const extension = FORMAT_EXTENSIONS[format];
-  const base = (requested ?? DEFAULT_IMAGE_BASENAME)
-    .split(/[\\/]/)
-    .pop()!
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/^[.-]+/, '')
-    .slice(0, MAX_FILENAME_CHARS);
-  const name = base.length === 0 ? DEFAULT_IMAGE_BASENAME : base;
-  return new RegExp(`\\.${extension}$`, 'i').test(name)
-    ? name
-    : `${name.replace(/\.[A-Za-z0-9]{1,5}$/, '')}.${extension}`;
+  return artifactFilename(requested, DEFAULT_IMAGE_BASENAME, FORMAT_EXTENSIONS[format]);
 }
 
 interface ImageCallBudgetState {
@@ -339,7 +331,7 @@ interface ImageCallBudgetState {
 }
 
 /**
- * Root-Agent hook: one image call per response (KTD6). The reservation is
+ * Root-Agent hook: one image call per response. The reservation is
  * keyed by tool call id, so a durable replay of the same call keeps the slot
  * it already took and a second call in the same response is refused.
  */

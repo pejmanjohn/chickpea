@@ -7,6 +7,7 @@ import { isGatewaySlackWebClient } from './gateway/web-client.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { slackPlatformErrorCode } from './errors.ts';
 import { isSlackFilePermalink } from './artifact-receipts.ts';
+import { SLACK_FILE_ID, SLACK_TS } from './ids.ts';
 
 /**
  * Private staging uploads and completes a file without a destination. Final
@@ -76,8 +77,6 @@ export const SLACK_FILE_STAGE_OPERATION = 'chickpea.files.stage' as const;
 export const SLACK_FILE_GET_SHARE_OPERATION = 'chickpea.files.getShare' as const;
 export const SLACK_FILE_COMPLETE_OPERATION = 'files.completeUploadExternal' as const;
 
-const SLACK_FILE_ID = /^F[A-Z0-9]{6,40}$/;
-const SLACK_TS = /^\d{1,20}\.\d{1,10}$/;
 const UNSUPPORTED_TRANSPORT_CODES = new Set([
   'operation_not_allowed',
   'unknown_operation',
