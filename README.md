@@ -10,6 +10,26 @@
   <strong>AI teammates in Slack that answer questions, take on tasks, and use the accounts you give them, all on infrastructure you own.</strong>
 </p>
 
+## Install with your coding agent
+
+Copy this prompt into a coding agent with terminal and browser access:
+
+```text
+Install Chickpea for my Slack workspace on my Cloudflare account using this guide:
+https://github.com/pejmanjohn/chickpea/blob/main/INSTALL_CHICKPEA_CLOUDFLARE.md
+
+Select the latest stable Chickpea application release and follow the setup
+instructions matching that release. Walk me through the Cloudflare account,
+Slack workspace, and model-provider choices, and handle the installation.
+Help me complete any sign-in steps that need my input. Before calling setup
+complete, send a test message in Slack and verify Chickpea's reply, then confirm
+I can sign in to Admin. Tell me which release was installed and where the local
+project lives.
+```
+
+The [installation guide](INSTALL_CHICKPEA_CLOUDFLARE.md) stays current on `main`;
+the installation uses a stable application release.
+
 <div align="center">
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-555555.svg?labelColor=333333&color=2EA44F)](./LICENSE)
