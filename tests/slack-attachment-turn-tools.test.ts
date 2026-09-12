@@ -9,6 +9,7 @@ import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { parseSlackManagementSignal, useWorkspaceManagementSlackTools } from '../src/management/slack-tools.ts';
 import { parseCurrentRequestEnvelope, serializeCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import { parseSlackAttachmentIntake, useSlackAttachmentContext } from '../src/slack/attachment-context.ts';
+import { decorateAttachmentProvider } from '../src/slack/attachment-model-context.ts';
 import { slackPresentationIntentCapability } from '../src/slack/presentation-intent.ts';
 import { createSlackPresentTableTool } from '../src/slack/table-presentation.ts';
 import { runtimePlanThreadImageInventory, slackDeliveryThreadImages } from '../src/agents/slack-thread.ts';
@@ -90,9 +91,12 @@ interface RenderRecord {
   intake: string;
   tools: string[];
   imageHandles: string[];
+  attachmentStatus: string | undefined;
 }
 
 const renders: RenderRecord[] = [];
+/** When set, the probe's attachment client returns this text file instead of failing. */
+let readableFile: { filename: string; text: string } | undefined;
 
 /** Mirror ChickpeaSlack's delivery-derived tool seams without its live stores. */
 function UploadTurnProbe() {
@@ -108,6 +112,7 @@ function UploadTurnProbe() {
     // plan's own conversation, never one named on the wire.
     imageHandles: runtimePlanThreadImageInventory(PLAN, slackDeliveryThreadImages(PLAN, delivery))
       .entries.map((entry) => entry.handle),
+    attachmentStatus: delivery.kind === 'signal' ? delivery.attributes?.attachmentStatus : undefined,
   };
   renders.push(record);
 
@@ -116,7 +121,16 @@ function UploadTurnProbe() {
   const presentationIntent = slackPresentationIntentCapability(parseCurrentRequestEnvelope(delivery.body));
   if (presentationIntent) useTool(presentationIntent.tool);
   useSlackAttachmentContext(PLAN, async () => undefined, async () => MODEL, () => ({
-    readAttachment: async () => { throw new Error('Synthetic file unavailable'); },
+    readAttachment: async (fileId) => {
+      if (!readableFile) throw new Error('Synthetic file unavailable');
+      return {
+        fileId,
+        filename: readableFile.filename,
+        representation: 'text_original',
+        contentType: 'text/plain',
+        bytes: new TextEncoder().encode(readableFile.text),
+      };
+    },
   }));
   return 'Answer the request.';
 }
@@ -132,7 +146,10 @@ async function turnRenders(
   faux.setResponses([capture, capture, capture, capture]);
   const flue = await start({
     agents: [{ agent: UploadTurnProbe, name: 'upload-turn-probe' }],
-    providers: [faux.provider],
+    // The production provider seam: every Chickpea provider is wrapped in the
+    // attachment decorator, so the test must be too or the analysis call's
+    // tool handling is never exercised.
+    providers: [decorateAttachmentProvider(faux.provider)],
   });
   try {
     const handle = init(UploadTurnProbe, { id: `upload-turn-probe-${probeRun += 1}` });
@@ -214,4 +231,22 @@ test('the thread image inventory reaches both renders of an upload turn', async 
   const withoutImages = await turnRenders(true, false);
   assert.deepEqual(withoutImages.renders.map((render) => render.imageHandles), [[], []]);
   assert.deepEqual(withoutImages.renders.map((render) => render.management), [true, true]);
+});
+
+test('the attachment analysis call reaches the provider tool-free while the upload turn keeps its tools', async () => {
+  readableFile = { filename: 'brief.txt', text: 'Headline: Try Free for 7 Days. Audience: ACT students.' };
+  try {
+    const upload = await turnRenders(true);
+    // Two provider calls: the tool-free analysis, then the post-analysis
+    // render's answer (the first render is superseded before it answers).
+    assert.equal(upload.captures.length, 2);
+    assert.deepEqual(toolNames(upload.captures[0]!), []);
+    assert.match(JSON.stringify(upload.captures[0]!.messages), /BEGIN UNTRUSTED ATTACHMENT DATA/);
+    // The analysis succeeded, so the re-render carries complete evidence
+    // instead of a retry request, and the answer render still has its tools.
+    assert.equal(upload.renders[1]?.attachmentStatus, 'complete');
+    assert.ok(toolNames(upload.captures.at(-1)!).includes('present_table'));
+  } finally {
+    readableFile = undefined;
+  }
 });

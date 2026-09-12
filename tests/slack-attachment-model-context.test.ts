@@ -307,19 +307,28 @@ test('request-local preflight failure survives Flue OperationFailedError wrappin
   );
 });
 
-test('active attachment analysis refuses tool-bearing provider contexts', async () => {
+test('active attachment analysis strips every tool from a tool-bearing provider context', async () => {
+  // An upload turn keeps the Agent's normal tool set, and Flue's per-call
+  // `tools` option adds to that set rather than replacing it, so the analysis
+  // request reaches the provider seam carrying real tools. The call must still
+  // go out, and it must go out tool-free.
   const captures: Array<{ context: Context; options: unknown }> = [];
   const streams = decorateAttachmentProviderStreams(captureStreams(captures));
   const context = requestContext();
-  context.tools = [{ name: 'dangerous', description: 'must not run', parameters: {} as never }];
+  context.tools = [
+    { name: 'dangerous', description: 'must not run', parameters: {} as never },
+    { name: 'task', description: 'Run a detached child.', parameters: {} as never },
+  ];
 
-  await assert.rejects(
-    () => runWithAttachmentModelContext([textAttachment(1, 'safe.txt', 'data')], async () => {
-      await streams.stream(model(), context).result();
-    }),
-    /tool-free/i,
-  );
-  assert.equal(captures.length, 0);
+  await runWithAttachmentModelContext([textAttachment(1, 'safe.txt', 'data')], async () => {
+    await streams.stream(model(), context).result();
+  });
+
+  assert.equal(captures.length, 1);
+  assert.deepEqual(captures[0]?.context.tools, []);
+  // The caller's context is untouched: the Agent loop keeps its tools for the
+  // main answer.
+  assert.deepEqual(context.tools.map((tool) => tool.name), ['dangerous', 'task']);
 });
 
 test('active attachment analysis strips Flue task only when its subagent roster is empty', async () => {
