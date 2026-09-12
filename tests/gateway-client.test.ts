@@ -187,6 +187,28 @@ test('concurrent Add requests return only the winning retained claim', async () 
   } finally { stores.settings.close(); }
 });
 
+test('claim write contention preserves the explicit reconnect intent', async (t) => {
+  const f = await recoveryFixture();
+  try {
+    await f.client.refreshClaim();
+    const apply = f.settings.applySettingsPatch.bind(f.settings);
+    let contended = false;
+    t.mock.method(f.settings, 'applySettingsPatch', async (patch) => {
+      if (!contended && patch.set?.some(({ key }) => key === GATEWAY_CLAIM_SETTING)) {
+        contended = true;
+        return false;
+      }
+      return apply(patch);
+    });
+    await f.client.beginClaim(undefined, undefined, { reconnect: true });
+    const creates = f.gateway.requests.filter(({ path }) => path === '/v1/claims');
+    assert.equal(creates.length, 3);
+    assert.equal(creates[1]!.body.reconnectBindingId, 'binding_test');
+    assert.equal(creates[2]!.body.reconnectBindingId, 'binding_test');
+    assert.ok(await f.settings.getSetting(GATEWAY_CLAIM_SETTING));
+  } finally { f.settings.close(); }
+});
+
 test('gateway uploads reject oversized encoded requests before sending any file bytes', async () => {
   const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();

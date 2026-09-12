@@ -470,7 +470,7 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
       if (contentionCount >= GATEWAY_IDENTITY_RECOVERY_CONTENTION_LIMIT) {
         throw new SlackTransportError('gateway.claim', 'gateway_claim_retry', { retryable: true });
       }
-      return this.beginClaimWithIdentityRecovery(returnUrl, setup, undefined, contentionCount + 1);
+      return this.beginClaimWithIdentityRecovery(returnUrl, setup, options, contentionCount + 1);
     }
     if (publicOrigin) primeStoredSlackPublicUrl(publicOrigin);
     return response;
