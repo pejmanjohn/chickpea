@@ -4,6 +4,7 @@ import { test } from 'node:test';
 
 import {
   type SettingsStore,
+  type SettingsPatch,
 } from '../src/config/settings-store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
@@ -162,6 +163,42 @@ test('binding rejects a stale setup revision without partial state', async () =>
   } finally { f.settings.close(); }
 });
 
+test('protected resume preserves a bound claim after a rejected own-app detour', async () => {
+  const f = await recoveryFixture();
+  try {
+    const pending = await f.identity.beginSlackAppCreation({ setupId: f.setup.id,
+      expectedRevision: f.setup.revision, manifestFingerprint: 'f'.repeat(64) });
+    const current = await f.identity.failSlackAppCreation({ setupId: f.setup.id,
+      expectedRevision: pending.revision, state: 'awaiting_app_creation', errorCode: 'invalid_auth' });
+    await assert.rejects(f.client.refreshClaim(), /changed|transition|concurrent/i);
+    assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), f.raw);
+    await f.client.resumeClaimSetup({ setupId: current.id, setupRevision: current.revision });
+    const resumed = JSON.parse((await f.settings.getSetting(GATEWAY_CLAIM_SETTING))!);
+    assert.deepEqual(resumed, { ...JSON.parse(f.raw), setupRevision: current.revision });
+    assert.equal((await f.client.refreshClaim()).state, 'bound');
+    assert.equal((await f.identity.getSlackSetupTransaction(f.setup.id))?.state, 'bot_installed');
+    assert.equal(f.gateway.requests.filter(({ path }) => path === '/v1/claims').length, 1);
+  } finally { f.settings.close(); }
+});
+
+test('claim authority refresh refuses a changed claim, old setup, advanced stage or expired link', async () => {
+  const f = await recoveryFixture();
+  try {
+    const input = { expectedClaim: f.raw, setupId: f.setup.id, setupRevision: f.setup.revision, now: NOW };
+    for (const invalid of [
+      { ...input, expectedClaim: JSON.stringify({ ...JSON.parse(f.raw), claimId: 'older_claim' }) },
+      { ...input, setupRevision: f.setup.revision - 1 },
+      { ...input, setupId: 'different_setup' },
+      { ...input, now: f.setup.expiresAt },
+    ]) assert.equal(await f.config.refreshGatewayClaimSetup(invalid), false);
+    const advanced = await f.identity.beginSlackAppCreation({ setupId: f.setup.id,
+      expectedRevision: f.setup.revision, manifestFingerprint: 'f'.repeat(64) });
+    assert.equal(await f.config.refreshGatewayClaimSetup({ ...input, setupRevision: advanced.revision }), false);
+    assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), f.raw);
+    assert.deepEqual(await f.config.listWorkspaceInstallations(), []);
+  } finally { f.settings.close(); }
+});
+
 test('concurrent Add requests return only the winning retained claim', async () => {
   const stores = gatewayStores(() => NOW);
   const keyring = generateCredentialKeyring('key_gateway');
@@ -193,7 +230,7 @@ test('claim write contention preserves the explicit reconnect intent', async (t)
     await f.client.refreshClaim();
     const apply = f.settings.applySettingsPatch.bind(f.settings);
     let contended = false;
-    t.mock.method(f.settings, 'applySettingsPatch', async (patch) => {
+    t.mock.method(f.settings, 'applySettingsPatch', async (patch: SettingsPatch) => {
       if (!contended && patch.set?.some(({ key }) => key === GATEWAY_CLAIM_SETTING)) {
         contended = true;
         return false;

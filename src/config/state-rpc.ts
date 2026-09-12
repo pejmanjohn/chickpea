@@ -6,6 +6,7 @@ import type {
 import type {
   AdoptionInventorySummary,
   RetainGatewayInstallationInput,
+  RefreshGatewayClaimSetupInput,
   AgentModelRolePatch,
   ConfigAgentPatch,
   OAuthReauthorizationTarget,
@@ -289,6 +290,7 @@ export interface TagStateRpc {
     input: EnsureWorkspaceInstallationInput,
   ): Promise<StateRpcResult<WorkspaceInstallation>>;
   configRetainGatewayInstallation(input: RetainGatewayInstallationInput): Promise<StateRpcResult<boolean>>;
+  configRefreshGatewayClaimSetup(input: RefreshGatewayClaimSetupInput): Promise<StateRpcResult<boolean>>;
   configGetWorkspaceInstallation(
     workspaceId: string,
   ): Promise<StateRpcResult<WorkspaceInstallation | null>>;

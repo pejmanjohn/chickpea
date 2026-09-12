@@ -350,6 +350,17 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     return this.beginClaimWithIdentityRecovery(returnUrl, setup, options, 0);
   }
 
+  /** Protected setup POST only; GET/status reconciliation cannot renew authority. */
+  async resumeClaimSetup(setup: { setupId: string; setupRevision: number }): Promise<void> {
+    const raw = await this.dependencies.settings.getSetting(GATEWAY_CLAIM_SETTING);
+    if (!raw) return;
+    const claim = parseClaimState(raw);
+    if (claim.setupId === setup.setupId && claim.setupRevision === setup.setupRevision) return;
+    if (!await this.dependencies.config.refreshGatewayClaimSetup({
+      expectedClaim: raw, ...setup, now: this.now(),
+    })) throw new SlackTransportError('gateway.claim', 'gateway_setup_changed');
+  }
+
   private async beginClaimWithIdentityRecovery(
     returnUrl: string | undefined,
     setup: { setupId: string; setupRevision: number } | undefined,

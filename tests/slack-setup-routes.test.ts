@@ -29,12 +29,15 @@ const ORIGIN = 'https://chickpea.example';
 const CONFIG_TOKEN = 'xoxe.xoxp-route-configuration-token';
 
 test('Add to Slack completes its same-origin POST before navigating to the gateway', async (t) => {
+  t.mock.method(Date, 'now', () => NOW);
   const directory = mkdtempSync(path.join(tmpdir(), 'chickpea-gateway-handoff-'));
   const priorDbPath = process.env.TAG_DB_PATH;
+  const priorStatePath = process.env.SLACK_STATE_DB_PATH;
   const priorKeyringPath = process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH;
   process.env.TAG_DB_PATH = path.join(directory, 'state.sqlite');
+  process.env.SLACK_STATE_DB_PATH = path.join(directory, 'state.sqlite');
   process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH = path.join(directory, 'keyring.json');
-  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const identity = new SqliteIdentityStore(process.env.TAG_DB_PATH, { now: () => NOW });
   const authority = await mintSetupCapability({ now: () => NOW });
   const gatewayOrigin = 'https://gateway.chickpea.test';
   const authorizationUrl = `${gatewayOrigin}/install/claim_test`;
@@ -57,6 +60,7 @@ test('Add to Slack completes its same-origin POST before navigating to the gatew
       identity,
       slackCredentials: { state: identity, keyring: generateCredentialKeyring('key_v1') },
       slackAppCreationNow: () => NOW,
+      slackAppCreationFetch: (async () => Response.json({ ok: false, error: 'invalid_auth' })) as typeof fetch,
     });
     const env = { ...setupEnv(authority), CHICKPEA_GATEWAY_URL: gatewayOrigin };
     const denied = await postSetup(app, env, { action: 'gateway_begin', capability: 'invalid' });
@@ -105,11 +109,22 @@ test('Add to Slack completes its same-origin POST before navigating to the gatew
     assert.match(retry, /Your authorization is saved/);
     assert.match(retry, /Open Slack authorization again/);
     assert.equal(claims, 1);
+    status = 'pending';
+    const failedDetour = await postSetup(app, env, {
+      action: 'create', capability: authority.capability, configurationToken: CONFIG_TOKEN,
+    });
+    assert.equal(failedDetour.status, 400);
+    const resumedAfterDetour = await postSetup(app, env, { action: 'gateway_resume', capability: authority.capability });
+    assert.equal(resumedAfterDetour.status, 200);
+    assert.equal(slackAuthorizationUrlFromHandoff(await resumedAfterDetour.text()).href, authorizationUrl);
+    assert.equal(claims, 1, 'a rejected own-app detour must preserve the shared-app claim');
   } finally {
     identity.close();
     closeNodeStateStores();
     if (priorDbPath === undefined) delete process.env.TAG_DB_PATH;
     else process.env.TAG_DB_PATH = priorDbPath;
+    if (priorStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;
+    else process.env.SLACK_STATE_DB_PATH = priorStatePath;
     if (priorKeyringPath === undefined) delete process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH;
     else process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH = priorKeyringPath;
     rmSync(directory, { recursive: true, force: true });

@@ -348,6 +348,7 @@ export interface ConfigStore {
   restoreAgent(agentId: string, expectedRevision?: number): Promise<CustomAgentConfig>;
   ensureWorkspaceInstallation(input: EnsureWorkspaceInstallationInput): Promise<WorkspaceInstallation>;
   retainGatewayInstallation(input: RetainGatewayInstallationInput): Promise<boolean>;
+  refreshGatewayClaimSetup(input: RefreshGatewayClaimSetupInput): Promise<boolean>;
   getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined>;
   listWorkspaceInstallations(): Promise<WorkspaceInstallation[]>;
   updateWorkspaceInstallation(
@@ -477,6 +478,13 @@ export interface RetainGatewayInstallationInput {
   now: number;
 }
 
+export interface RefreshGatewayClaimSetupInput {
+  expectedClaim: string;
+  setupId: string;
+  setupRevision: number;
+  now: number;
+}
+
 export class ConfigStoreLogic {
   private readonly legacyChannelBehaviorColumns: boolean;
 
@@ -506,18 +514,43 @@ export class ConfigStoreLogic {
     }
   }
 
+  private sharedTransactionDb(): StateDb {
+    return {
+      schema: 'attach',
+      run: this.db.run.bind(this.db), get: this.db.get.bind(this.db),
+      all: this.db.all.bind(this.db), exec: this.db.exec.bind(this.db),
+      transaction: (fn) => fn(),
+    };
+  }
+
+  /** Called only after a setup POST validates the current capability. Preserve
+   * the claim while renewing its fence after a failed own-app attempt or a new
+   * setup link. Both the claim and the still-uninstalled setup must be current. */
+  refreshGatewayClaimSetup(input: RefreshGatewayClaimSetupInput): boolean {
+    return this.db.transaction(() => {
+      const db = this.sharedTransactionDb();
+      const settings = new SettingsStoreLogic(db, () => input.now);
+      if (settings.getSetting(GATEWAY_CLAIM_SETTING) !== input.expectedClaim ||
+          settings.getSetting(GATEWAY_BINDING_SETTING)) return false;
+      const claim = JSON.parse(input.expectedClaim);
+      const setup = new IdentityStoreLogic(db, { now: () => input.now }).getSlackSetupTransaction(input.setupId);
+      if (!setup || setup.state !== 'awaiting_app_creation' || setup.expiresAt <= input.now ||
+          setup.revision !== input.setupRevision || claim.setupId !== setup.id ||
+          !Number.isSafeInteger(claim.setupRevision) || claim.setupRevision > setup.revision) return false;
+      return settings.applySettingsPatch({
+        expected: { key: GATEWAY_CLAIM_SETTING, value: input.expectedClaim },
+        set: [{ key: GATEWAY_CLAIM_SETTING, value: JSON.stringify({ ...claim, setupRevision: setup.revision }) }],
+      });
+    });
+  }
+
   /** All three stores live in TAG_STATE. Keep the claim fence and the Owner /
    * workspace writes in one synchronous transaction, including rollback. */
   retainGatewayInstallation(input: RetainGatewayInstallationInput): boolean {
     return this.db.transaction(() => {
       // These stores are already installed on this database. Nested operations
       // join this transaction; errors escape to its sole rollback boundary.
-      const db: StateDb = {
-        schema: 'attach',
-        run: this.db.run.bind(this.db), get: this.db.get.bind(this.db),
-        all: this.db.all.bind(this.db), exec: this.db.exec.bind(this.db),
-        transaction: (fn) => fn(),
-      };
+      const db = this.sharedTransactionDb();
       const settings = new SettingsStoreLogic(db, () => input.now);
       if (settings.getSetting(GATEWAY_CLAIM_SETTING) !== input.expectedClaim) return false;
       const deployment = settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING);

@@ -3491,9 +3491,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       });
       const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
       if (action === 'gateway_begin' || action === 'gateway_resume') {
-        const claim = await createGatewayDeploymentClient(
+        const gateway = createGatewayDeploymentClient(
           c.env as PlatformEnv | undefined,
-        ).beginClaim(
+        );
+        await gateway.resumeClaimSetup({ setupId: setup.id, setupRevision: setup.revision });
+        const claim = await gateway.beginClaim(
           `${requestOrigin(c)}/admin/setup?gateway_return=1`,
           { setupId: setup.id, setupRevision: setup.revision },
           { resumeOnly: action === 'gateway_resume' },
@@ -3508,10 +3510,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           new URL(resolveChickpeaGatewayUrl(c.env as PlatformEnv | undefined)).origin,
         ));
       } else if (action === 'gateway_refresh') {
-        const result = await createGatewayDeploymentClient(
+        const gateway = createGatewayDeploymentClient(
           c.env as PlatformEnv | undefined,
           { productTelemetry: productTelemetry(c) },
-        ).refreshClaim();
+        );
+        await gateway.resumeClaimSetup({ setupId: setup.id, setupRevision: setup.revision });
+        const result = await gateway.refreshClaim();
         if (result.state === 'bound') startNodeGatewaySession(c.env as PlatformEnv | undefined);
         return c.redirect(result.state === 'unknown' ? '/admin/setup?gateway_status=unknown'
           : result.state === 'expired' || result.state === 'cancelled' ? '/admin/setup?gateway_status=expired'
@@ -9744,6 +9748,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
 function slackGatewaySetupPageError(code: string): string {
   switch (code) {
+    case 'gateway_setup_changed':
+      return 'setup_conflict';
     case 'gateway_not_configured':
     case 'gateway_unreachable':
     case 'gateway_redirect_rejected':
