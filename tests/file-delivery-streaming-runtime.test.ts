@@ -50,6 +50,7 @@ test('file reconciliation preserves the distinction between scratch work and an 
   const faux = fauxProvider({ models: [{ id: 'file-streaming' }], tokensPerSecond: 100_000 });
   let stages = 0;
   let streamRuns = 0;
+  let connectedMutationRuns = 0;
   let finalState: FileDeliveryState | undefined;
   let repairRequest: { event: FlueObservation; context: FlueEventContext } | undefined;
   function Probe() {
@@ -79,6 +80,8 @@ test('file reconciliation preserves the distinction between scratch work and an 
     useTool(completion.tool(binding));
     const stream = createSlackStreamAnswerTool();
     useTool({ ...stream, run() { streamRuns++; return stream.run(); } });
+    useTool({ name: 'connected_mutation', description: 'Perform a synthetic connected-service mutation.',
+      run() { connectedMutationRuns++; return { output: 'Synthetic mutation completed.' }; } });
   }
   const dispose = instrument({
     interceptor: (operation, context, next) => memoryToolPolicyInterceptor(operation, context,
@@ -99,6 +102,7 @@ test('file reconciliation preserves the distinction between scratch work and an 
   async function run(responses: Parameters<typeof faux.setResponses>[0]) {
     stages = 0;
     streamRuns = 0;
+    connectedMutationRuns = 0;
     finalState = undefined;
     repairRequest = undefined;
     faux.setResponses(responses);
@@ -140,12 +144,17 @@ test('file reconciliation preserves the distinction between scratch work and an 
         call('post_artifact', { path: 'summary.csv', filename: 'summary.csv' }),
         call('bash', { command: "printf 'temporary calculation' > scratch.txt" }),
         fauxAssistantMessage('The summary is ready.'),
+        call('connected_mutation'),
         call(COMPLETE_FILE_DELIVERY_TOOL, { files: [] }),
         call(SLACK_STREAM_ANSWER_TOOL_NAME), fauxAssistantMessage('Attached the completed summary.'),
       ]);
-      assert.equal(calls, 7);
+      assert.equal(calls, 8);
       assert.equal(stages, 1);
       assert.equal(streamRuns, 0);
+      assert.equal(connectedMutationRuns, 0);
+      const mutation = events.find((event) => event.type === 'tool-input' && event.toolName === 'connected_mutation');
+      assert.ok(mutation?.type === 'tool-input');
+      assert.ok(events.some((event) => event.type === 'tool-output-error' && event.toolCallId === mutation.toolCallId));
       assert.equal(streamErrors(events).length, 1);
       assert.equal(finalState?.stagingAttempted, true);
       assert.equal(finalState?.repairRequested, true);

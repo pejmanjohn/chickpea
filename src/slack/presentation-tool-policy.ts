@@ -7,7 +7,7 @@ import type {
   LlmMessage,
 } from '@flue/runtime';
 
-import { CHICKPEA_SLACK_AGENT_NAME } from '../agents/names.ts';
+import { MANAGED_SUBMISSION_AGENT_NAMES } from '../agents/names.ts';
 import {
   ARTIFACT_DELIVERY_TOOL_NAMES,
   currentRequestOffersProgressiveStreaming,
@@ -23,16 +23,23 @@ interface PresentationToolPolicyState {
   artifactDeliveryAttempted: boolean;
   fileDeliveryPending?: () => boolean;
   fileDeliveryAttempted?: () => boolean;
+  fileDeliveryRepairing?: () => boolean;
 }
+
+const FILE_REPAIR_TOOLS = new Set([
+  'read', 'glob', 'grep', 'post_artifact', 'complete_file_delivery', 'submit_routine_result',
+  SLACK_STREAM_ANSWER_TOOL_NAME, SLACK_PRESENT_TABLE_TOOL_NAME,
+]);
 
 const submissionPolicy = new AsyncLocalStorage<PresentationToolPolicyState>();
 
 /** Rebound from durable completion state on every agent render, including replay. */
-export function bindFileDeliveryCheck(pending: () => boolean, attempted?: () => boolean): void {
+export function bindFileDeliveryCheck(pending: () => boolean, attempted?: () => boolean, repairing?: () => boolean): void {
   const active = submissionPolicy.getStore();
   if (active) {
     active.fileDeliveryPending = pending;
     if (attempted) active.fileDeliveryAttempted = attempted;
+    if (repairing) active.fileDeliveryRepairing = repairing;
   }
 }
 
@@ -61,7 +68,7 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
   const active = submissionPolicy.getStore();
   if (
     operation.type === 'agent' &&
-    context.agentName === CHICKPEA_SLACK_AGENT_NAME &&
+    MANAGED_SUBMISSION_AGENT_NAMES.some((name) => name === context.agentName) &&
     active === undefined
   ) {
     return submissionPolicy.run({
@@ -71,6 +78,10 @@ export const presentationToolPolicyInterceptor: FlueExecutionInterceptor = async
   }
 
   if (operation.type !== 'tool' || active === undefined) return next();
+
+  if (active.fileDeliveryRepairing?.() && !FILE_REPAIR_TOOLS.has(operation.toolName)) {
+    throw new Error('File delivery repair can only read and export existing files. Call complete_file_delivery; do not recreate files or repeat earlier actions.');
+  }
 
   if (operation.toolName === SLACK_STREAM_ANSWER_TOOL_NAME) {
     assertFileDeliveryChecked(active);
@@ -132,7 +143,7 @@ export function observePresentationToolPolicy(
   if (
     observation.type !== 'turn_request' ||
     observation.purpose !== 'agent' ||
-    context.agentName !== CHICKPEA_SLACK_AGENT_NAME
+    !MANAGED_SUBMISSION_AGENT_NAMES.some((name) => name === context.agentName)
   ) return;
   const active = submissionPolicy.getStore();
   if (!active) return;

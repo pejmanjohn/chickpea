@@ -51,7 +51,7 @@ export const FILE_COMPLETION_INSTRUCTION = [
 ].join('\n');
 
 /** Durable bookkeeping lives beside upload receipts; it never scans or publishes the filesystem. */
-export function createFileDeliveryCompletion(update: StateSetter<FileDeliveryState>, discard: (fileIds: string[]) => void = () => {}) {
+export function createFileDeliveryCompletion(update: StateSetter<FileDeliveryState>, discard: (fileIds: string[]) => void = () => {}, repairing = false) {
   // Runtime tools execute serially, but protect overlapping calls as well.
   let deliveryTail = Promise.resolve();
   // An in-flight counter must not survive an interrupted process. Durable
@@ -84,6 +84,9 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
         return tools.map((tool) => !['write', 'edit', 'bash'].includes(tool.name) ? tool : {
           ...tool,
           async execute(...args: Parameters<typeof tool.execute>) {
+            if (state().repairRequested) {
+              throw new Error('File delivery repair can only read and export existing files. Call complete_file_delivery; do not recreate files or repeat earlier actions.');
+            }
             // Mark before execution: a failing shell can still have written files.
             const data: unknown = args[1];
             const path = tool.name !== 'bash' && typeof data === 'object' && data !== null &&
@@ -224,7 +227,7 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
       },
     });
   }
-  return { state, mark, noteStagingAttempted, wrapSandbox, deliver, complete, tool, unresolved: () => {
+  return { repairing, state, mark, noteStagingAttempted, wrapSandbox, deliver, complete, tool, unresolved: () => {
     const current = state();
     return current.shellPending || current.pending.length > 0 || activeWrites > 0;
   } };
@@ -234,11 +237,11 @@ export type FileDeliveryCompletion = ReturnType<typeof createFileDeliveryComplet
 
 /** The supported would-stop hook continues the same response and retains its sandbox and receipts. */
 export function useFileDeliveryCompletion(plan: RuntimePlanV2, discard: (fileIds: string[]) => void, enabled = true): FileDeliveryCompletion {
-  const [, update] = usePersistentState<FileDeliveryState>(FILE_DELIVERY_DATA_NAME, initialState());
+  const [renderState, update] = usePersistentState<FileDeliveryState>(FILE_DELIVERY_DATA_NAME, initialState());
   const write = useDataWriter(FILE_DELIVERY_DATA_NAME, { schema: FileDeliveryResultSchema });
   const delivery = useDelivery();
-  const completion = createFileDeliveryCompletion(update, discard);
-  bindFileDeliveryCheck(completion.unresolved, () => completion.state().stagingAttempted);
+  const completion = createFileDeliveryCompletion(update, discard, renderState.repairRequested);
+  bindFileDeliveryCheck(completion.unresolved, () => completion.state().stagingAttempted, () => completion.state().repairRequested);
   useResponseStart(() => { update(initialState()); });
   useAgentFinish(({ append }) => {
     const state = completion.state();
@@ -253,7 +256,7 @@ export function useFileDeliveryCompletion(plan: RuntimePlanV2, discard: (fileIds
           channelId: plan.conversation.channelId, boundThreadTs: plan.conversation.threadTs,
           originalType: delivery.attributes?.originalType ?? delivery.type },
         body: [
-          'The response has unchecked sandbox file work. Before answering, call complete_file_delivery with all final files the user should receive. Use files=[] if every remaining file is scratch or the user requested text only. Do not merely repeat a sandbox path. Do not rerun the task or retry failed/uncertain uploads. Already prepared files will be retained. If this is a scheduled occurrence, resubmit the complete corrected message with submit_routine_result after the check.',
+          'The response has unchecked sandbox file work. Before answering, call complete_file_delivery with all existing final files the user should receive. Use files=[] if every remaining file is scratch or the user requested text only. This continuation can only read and export existing files: do not recreate files, generate images or charts, run shell commands, rerun the task, or retry failed/uncertain uploads. Do not merely repeat a sandbox path. Already prepared files will be retained. If this is a scheduled occurrence, resubmit the complete corrected message with submit_routine_result after the check.',
           envelope,
         ].join('\n\n'),
       });

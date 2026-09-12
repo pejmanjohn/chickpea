@@ -1367,12 +1367,17 @@ export function useRuntimePlanAgent(
     )) {
       useTool(tool);
     }
-    useInstruction(buildArtifactToolsInstruction({
-      imageTool: plan.imageCapability?.filled === true,
-      canEdit: plan.imageCapability?.acceptsImageInput === true,
-      ...(imageInventory.manifest ? { imageManifest: imageInventory.manifest } : {}),
-    }));
+    if (!fileCompletion.repairing) {
+      useInstruction(buildArtifactToolsInstruction({
+        imageTool: plan.imageCapability?.filled === true,
+        canEdit: plan.imageCapability?.acceptsImageInput === true,
+        ...(imageInventory.manifest ? { imageManifest: imageInventory.manifest } : {}),
+      }));
+    }
     useInstruction(FILE_COMPLETION_INSTRUCTION);
+    if (fileCompletion.repairing) {
+      useInstruction('This is an export-only file delivery repair. Only read, glob, grep, post_artifact, complete_file_delivery and final presentation tools can execute. Do not run shell commands, change files, use connections, or generate anything again.');
+    }
   }
 }
 
@@ -1643,8 +1648,8 @@ export function createRuntimePlanArtifactTools(
   return [
     createWorkspaceArtifactTool({ ...binding, sandboxKind: plan.sandbox.mode }, options.fileCompletion?.deliver),
     ...(options.fileCompletion ? [options.fileCompletion.tool({ ...binding, sandboxKind: plan.sandbox.mode })] : []),
-    createChartArtifactTool(binding),
-    ...(imageCapability?.filled && reserveImageCall
+    ...(options.fileCompletion?.repairing ? [] : [createChartArtifactTool(binding)]),
+    ...(!options.fileCompletion?.repairing && imageCapability?.filled && reserveImageCall
       ? [createImageArtifactTool({
           acceptsImageInput: imageCapability.acceptsImageInput,
           inventory: options.imageInventory ??

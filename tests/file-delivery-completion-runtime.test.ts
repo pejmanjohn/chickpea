@@ -13,6 +13,7 @@ import * as v from 'valibot';
 
 import { CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME, CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { createRuntimePlanArtifactTools } from '../src/agents/slack-thread.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
   assertArtifactDeliveryAllowed, bindCurrentRequestConversation,
@@ -23,12 +24,14 @@ import { scheduleSignalMessageTs } from '../src/routines/schedule-signal.ts';
 import { RoutineModelResultSchema } from '../src/routines/prompt.ts';
 import { createWorkspaceArtifactTool, MAX_ARTIFACT_BYTES, type ArtifactDestinationBinding } from '../src/sandbox/artifact-tool.ts';
 import {
-  parseSlackArtifactReceipts, SLACK_ARTIFACT_RECEIPTS_DATA_NAME, useSlackArtifactReceipts,
+  createArtifactReceiptAccumulator, parseSlackArtifactReceipts, SLACK_ARTIFACT_RECEIPTS_DATA_NAME,
+  useSlackArtifactReceipts, type SlackArtifactReceipts,
 } from '../src/slack/artifact-receipts.ts';
 import { stageArtifactWithReceipt } from '../src/slack/artifact-staging.ts';
 import {
   COMPLETE_FILE_DELIVERY_TOOL, FILE_COMPLETION_INSTRUCTION, FILE_DELIVERY_DATA_NAME,
   FILE_DELIVERY_SIGNAL_TYPE, FileDeliveryResultSchema, useFileDeliveryCompletion,
+  createFileDeliveryCompletion, type FileDeliveryState,
 } from '../src/slack/file-delivery-completion.ts';
 import type { SlackFileStageInput, SlackFileTransport } from '../src/slack/file-transport.ts';
 import { promptSlackThreadAgent, type SlackFlueDispatchState } from '../src/slack/flue-dispatch.ts';
@@ -58,6 +61,7 @@ interface ProbeState {
   deliveries: DeliveredMessage[];
   repairSignalCounts: number[];
   repairAuthority: boolean[];
+  toolOutcomes: { tool: string; isError: boolean }[];
 }
 let probe: ProbeState;
 
@@ -149,12 +153,36 @@ const writeReport = (path = '/home/user/report.md') => call('write', { path, con
 const completeReport = (path = '/home/user/report.md') =>
   call(COMPLETE_FILE_DELIVERY_TOOL, { files: [{ path, filename: 'report.md' }] });
 
+test('artifact declarations expose only export tools during file-delivery repair', () => {
+  let receipts: SlackArtifactReceipts = { schemaVersion: 1, receipts: [] };
+  const accumulator = createArtifactReceiptAccumulator((update) => { receipts = update(receipts); });
+  for (const repairing of [false, true]) {
+    let state: FileDeliveryState = { pending: [], shellPending: false, generation: 0,
+      outcomes: [], repairRequested: repairing, stagingAttempted: false };
+    const completion = createFileDeliveryCompletion((update) => {
+      state = typeof update === 'function' ? update(state) : update;
+    }, () => {}, repairing);
+    const tools = createRuntimePlanArtifactTools({ ...PLAN,
+      imageCapability: { role: 'image', filled: true, acceptsImageInput: true },
+    }, accumulator, () => {}, {
+      fileCompletion: completion,
+      reserveImageCall: () => { throw new Error('Declaring tools must not generate images.'); },
+    });
+    assert.deepEqual(tools.map((tool) => tool.name), repairing
+      ? ['post_artifact', COMPLETE_FILE_DELIVERY_TOOL]
+      : ['post_artifact', COMPLETE_FILE_DELIVERY_TOOL, 'render_chart', 'generate_image']);
+  }
+});
+
 test('native file-delivery completion preserves authority, response state, and bounded recovery', { timeout: 30_000 }, async (t) => {
   const faux = fauxProvider({ models: [{ id: 'file-delivery' }], tokensPerSecond: 100_000 });
   const stopInstrumentation = instrument({
     interceptor: memoryToolPolicyInterceptor,
     observe(event, context) {
       observeMemoryToolPolicy(event, context);
+      if (probe && event.type === 'tool') {
+        probe.toolOutcomes.push({ tool: event.toolName, isError: event.isError });
+      }
       if (!probe || event.type !== 'turn_request' || event.purpose !== 'agent') return;
       const repairMessages = event.request.input.messages.flatMap((message) => {
         const text = userText(message);
@@ -174,7 +202,7 @@ test('native file-delivery completion preserves authority, response state, and b
   });
   let sequence = 0;
   function begin(responses: Parameters<typeof faux.setResponses>[0]) {
-    probe = { staged: [], responseStarts: 0, deliveries: [], repairSignalCounts: [], repairAuthority: [] };
+    probe = { staged: [], responseStarts: 0, deliveries: [], repairSignalCounts: [], repairAuthority: [], toolOutcomes: [] };
     faux.setResponses(responses);
     return { id: `file-delivery-${++sequence}`, callsBefore: faux.state.callCount };
   }
@@ -237,6 +265,60 @@ test('native file-delivery completion preserves authority, response state, and b
       assert.match(result.text, /couldn't finish checking/);
       assert.doesNotMatch(result.text, /Everything is done|\/home\/user\/report\.md/);
       assert.equal(result.artifacts, undefined);
+    });
+
+    for (const mutation of [
+      { tool: 'bash', args: { command: "printf 'replacement from a rerun' > report.md" } },
+      { tool: 'write', args: { path: 'report.md', content: 'replacement from a rerun' } },
+      { tool: 'edit', args: { path: 'report.md', oldText: 'installation checks passed', newText: 'rerun overwrote the result' } },
+    ]) {
+      await t.test(`repair denies ${mutation.tool} work while preserving the original file for export`, async () => {
+        const { id, callsBefore } = begin([
+          writeReport(), fauxAssistantMessage('Created /home/user/report.md.'),
+          call(mutation.tool, mutation.args), completeReport(),
+          fauxAssistantMessage('Attached the original completed report.'),
+        ]);
+        const { result, reply } = await slackRun(id);
+        assertRepaired();
+        assert.equal(faux.state.callCount - callsBefore, 5);
+        assert.ok(probe.toolOutcomes.some((outcome) => outcome.tool === mutation.tool && outcome.isError));
+        assert.equal(probe.staged.length, 1);
+        assert.equal(new TextDecoder().decode(probe.staged[0]!.bytes), REPORT);
+        assert.equal(completionResult(reply).unresolved, false);
+        assert.equal(result.artifacts?.length, 1);
+        assert.equal(result.text, 'Attached the original completed report.');
+      });
+    }
+
+    await t.test('a later ordinary request can write after the previous response needed repair', async () => {
+      const { id } = begin([writeReport(), fauxAssistantMessage('The report is ready.'),
+        completeReport(), fauxAssistantMessage('Attached the report.')]);
+      const first = await slackRun(id);
+      assertRepaired();
+      const callsBefore = faux.state.callCount;
+      const revised = '# New request\n\nA later request may create or revise files.\n';
+      faux.setResponses([
+        call('write', { path: 'report.md', content: revised }),
+        call('post_artifact', { path: 'report.md', filename: 'report.md' }),
+        fauxAssistantMessage('Attached the report from your new request.'),
+      ]);
+      const messageTs = '1789230000.000300';
+      const envelope = slackEnvelope(id);
+      assert.equal(envelope.schemaVersion, 2);
+      if (envelope.schemaVersion !== 2) throw new Error('Signal envelope expected.');
+      const followupState = dispatchState({ ...envelope, uid: first.state.dispatchReceipt!.uid,
+        idempotencyKey: `followup-${id}`, message: { ...envelope.message,
+          body: `Create a new report.\n\n${serializeCurrentRequestEnvelope('', false, ACTOR, messageTs)}`,
+          attributes: { ...envelope.message.attributes, messageTs, turnJobId: `followup-${id}` },
+        } });
+      const result = await promptSlackThreadAgent({ ...first.input, state: followupState,
+        message: 'Create a new report.', turnId: `followup-${id}` });
+      assert.equal(faux.state.callCount - callsBefore, 3);
+      assert.equal(probe.responseStarts, 2);
+      assert.equal(probe.staged.length, 2);
+      assert.equal(new TextDecoder().decode(probe.staged[1]!.bytes), revised);
+      assert.deepEqual(result.artifacts?.map((file) => file.fileId), ['FPROBE00002']);
+      assert.equal(result.text, 'Attached the report from your new request.');
     });
 
     await t.test('a proactively posted file needs no correction model call', async () => {
