@@ -32,17 +32,23 @@ export const MAX_IMAGE_PROMPT_CHARS = 4_000;
 /** Thread image handles one call may reference. */
 export const MAX_IMAGE_TOOL_INPUTS = 4;
 /**
- * Variations one call may ask for. The response still gets one image call;
- * this bounds how many files that call can attach and how long it can hold
- * the lane, since the provider renders variations in one round trip.
+ * Images one response may attach across every image call it makes. One call
+ * asking for variations and several calls with different prompts draw on the
+ * same quota, which bounds provider spend and how long the turn holds the
+ * lane, since separate calls render sequentially.
  */
-export const MAX_IMAGE_TOOL_OUTPUTS = 4;
+export const MAX_IMAGES_PER_RESPONSE = 4;
+/**
+ * Variations one call may ask for; the provider renders them in one round
+ * trip. Equal to the response quota, so a single call can spend all of it.
+ */
+export const MAX_IMAGE_TOOL_OUTPUTS = MAX_IMAGES_PER_RESPONSE;
 /**
  * Stall guard, not a budget cap: above the provider's documented
  * two-minute worst case, so only a network-level stall releases the lane.
  */
 export const IMAGE_CALL_DEADLINE_MS = 180_000;
-/** One image per response; the state records which tool call owns the slot. */
+/** The response's image quota; the state records how many images each tool call reserved. */
 export const SLACK_IMAGE_CALL_BUDGET_NAME = 'slackImageCallBudget';
 
 const DEFAULT_IMAGE_BASENAME = 'image';
@@ -63,13 +69,21 @@ export interface ImageToolTransport {
   maxBytes: number;
 }
 
+/** Whether the call may render `count` images; `remaining` is what the response still has. */
+export interface ImageReservationOutcome {
+  ok: boolean;
+  remaining: number;
+}
+
 /**
- * The response's one image slot. `release` is present when the Root Agent's
- * budget hook supplied it, so a call that fails before the provider hands the
- * slot back instead of burning the response's only image call.
+ * The response's image quota. A call reserves the images it will render
+ * before the provider runs; a replay of the same call keeps what it already
+ * reserved. `release` is present when the Root Agent's budget hook supplied
+ * it, so a call that fails before the provider hands its images back instead
+ * of burning part of the response's quota.
  */
 export interface ImageCallReservation {
-  (toolCallId: string): boolean;
+  (toolCallId: string, count: number): ImageReservationOutcome;
   release?(toolCallId: string): void;
 }
 
@@ -82,7 +96,7 @@ export interface ImageArtifactToolOptions {
   acceptsImageInput: boolean;
   /** Per-turn handles for images already in this conversation. */
   inventory: ThreadImageInventory;
-  /** Keyed by tool call id so a durable replay keeps the slot it already took. */
+  /** Keyed by tool call id so a durable replay keeps the images it already reserved. */
   reserveImageCall: ImageCallReservation;
   /** The installation's upload cap, known only after transport resolution. */
   resolveTransport(): Promise<ImageToolTransport>;
@@ -157,7 +171,7 @@ export type ImageArtifactResult =
   | { attached: false; reason: 'timeout' }
   | { attached: false; reason: 'rejected' }
   | { attached: false; reason: 'misconfigured' }
-  | { attached: false; reason: 'limit' }
+  | { attached: false; reason: 'limit'; remaining: number }
   | {
       attached: false;
       reason: 'input-unavailable';
@@ -231,7 +245,7 @@ function imageToolDescription(acceptsImageInput: boolean): string {
     acceptsImageInput
       ? `To edit or combine images already in this conversation, list their img:N handles in inputs (at most ${MAX_IMAGE_TOOL_INPUTS}); with no inputs the model generates from the prompt alone.`
       : 'This model generates from the prompt alone and cannot take an existing image as input.',
-    `One image call per reply. To offer variations of the same prompt, pass count (1-${MAX_IMAGE_TOOL_OUTPUTS}) in that one call; each variation attaches as its own file, and the result lists them under files.`,
+    `At most ${MAX_IMAGES_PER_RESPONSE} images per reply across every call. For variations of one prompt, make one call with count (1-${MAX_IMAGE_TOOL_OUTPUTS}); for different subjects, make separate calls with their own prompts. Each image attaches as its own file, and the result lists a call's files under files.`,
     'The result reports the model and settings the provider applied.',
     'If the result reports attached: false, explain the returned reason and never say an image was attached or edited. A result may attach some variations and list the rest under unattached; say how many attached and why the others did not.',
   ].join(' ');
@@ -254,8 +268,10 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
     durable: true,
     async run({ data, toolCallId, step, signal }) {
       assertArtifactDeliveryAllowed();
-      if (!options.reserveImageCall(toolCallId)) {
-        return imageToolOutput({ attached: false, reason: 'limit' });
+      const count = data.count ?? 1;
+      const reservation = options.reserveImageCall(toolCallId, count);
+      if (!reservation.ok) {
+        return imageToolOutput({ attached: false, reason: 'limit', remaining: reservation.remaining });
       }
       // Held only for this execution: a replay resumes with the recorded
       // metadata and no bytes, and reports honestly instead of regenerating.
@@ -271,7 +287,7 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
           prompt: data.prompt,
           format,
           deadlineMs: IMAGE_CALL_DEADLINE_MS,
-          count: data.count ?? 1,
+          count,
           ...(signal ? { signal } : {}),
         };
         const result = inputs.images.length > 0
@@ -307,7 +323,7 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
       });
       if (!generated.ok) {
         // Nothing was spent yet, so a corrective retry in this response should
-        // not meet `limit`. Provider-side outcomes keep the slot reserved.
+        // not meet `limit`. Provider-side outcomes keep the images reserved.
         if (isPreProviderFailure(generated.failure)) {
           options.reserveImageCall.release?.(toolCallId);
         }
@@ -548,39 +564,68 @@ export function imageFilenames(
   ));
 }
 
-interface ImageCallBudgetState {
-  schemaVersion: 1;
-  /** The tool call that owns this response's one image call. */
-  toolCallId: string | null;
+/**
+ * The quota state. Version 1 recorded the single call that owned the
+ * response's one image; a response interrupted on that build resumes here
+ * with that call holding one image.
+ */
+type ImageCallBudgetState =
+  | { schemaVersion: 1; toolCallId: string | null }
+  | { schemaVersion: 2; reservations: Record<string, number> };
+
+const EMPTY_BUDGET: ImageCallBudgetState = { schemaVersion: 2, reservations: {} };
+
+function budgetReservations(state: ImageCallBudgetState | undefined): Record<string, number> {
+  if (!state) return {};
+  if (state.schemaVersion === 2) return { ...state.reservations };
+  return state.toolCallId === null ? {} : { [state.toolCallId]: 1 };
+}
+
+function reservedTotal(reservations: Record<string, number>): number {
+  return Object.values(reservations).reduce((sum, count) => sum + count, 0);
 }
 
 /**
- * Root-Agent hook: one image call per response. The reservation is
- * keyed by tool call id, so a durable replay of the same call keeps the slot
- * it already took and a second call in the same response is refused.
+ * Root-Agent hook: a quota of `MAX_IMAGES_PER_RESPONSE` images per response.
+ * Reservations are keyed by tool call id, so a durable replay of the same
+ * call keeps the images it already reserved, and another call is refused
+ * once the quota would be exceeded.
  */
 export function useImageCallBudget(): ImageCallReservation {
   const [, update] = usePersistentState<ImageCallBudgetState>(
     SLACK_IMAGE_CALL_BUDGET_NAME,
-    { schemaVersion: 1, toolCallId: null },
+    EMPTY_BUDGET,
   );
-  useResponseStart(() => { update({ schemaVersion: 1, toolCallId: null }); });
-  const reserve = (toolCallId: string) => {
-    let allowed = false;
+  useResponseStart(() => { update(EMPTY_BUDGET); });
+  const reserve = (toolCallId: string, count: number): ImageReservationOutcome => {
+    let outcome: ImageReservationOutcome = { ok: false, remaining: 0 };
     update((previous) => {
-      const owner = previous?.toolCallId ?? null;
-      allowed = owner === null || owner === toolCallId;
-      return allowed ? { schemaVersion: 1, toolCallId } : { schemaVersion: 1, toolCallId: owner };
+      const reservations = budgetReservations(previous);
+      const owned = reservations[toolCallId];
+      if (owned !== undefined) {
+        // A replay keeps what it reserved, whatever the quota looks like now.
+        outcome = { ok: true, remaining: MAX_IMAGES_PER_RESPONSE - reservedTotal(reservations) };
+        return { schemaVersion: 2, reservations };
+      }
+      const remaining = MAX_IMAGES_PER_RESPONSE - reservedTotal(reservations);
+      if (count < 1 || count > remaining) {
+        outcome = { ok: false, remaining };
+        return { schemaVersion: 2, reservations };
+      }
+      reservations[toolCallId] = count;
+      outcome = { ok: true, remaining: remaining - count };
+      return { schemaVersion: 2, reservations };
     });
-    return allowed;
+    return outcome;
   };
   return Object.assign(reserve, {
-    // Only the owner may hand the slot back, so a losing second call cannot
-    // free the reservation the first call is still using.
+    // Only the owner's images are handed back, so a refused call cannot free
+    // what another call is still using.
     release(toolCallId: string) {
       update((previous) => {
-        const owner = previous?.toolCallId ?? null;
-        return { schemaVersion: 1, toolCallId: owner === toolCallId ? null : owner };
+        const reservations = budgetReservations(previous);
+        delete reservations[toolCallId];
+        return { schemaVersion: 2, reservations };
       });
     },
   });

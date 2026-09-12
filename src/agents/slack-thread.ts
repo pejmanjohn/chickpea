@@ -159,6 +159,7 @@ import { createChartArtifactTool, RENDER_CHART_TOOL_NAME } from '../sandbox/char
 import {
   createImageArtifactTool,
   useImageCallBudget,
+  type ImageCallReservation,
   type ImageClientResolution,
   type ImageToolTransport,
 } from '../sandbox/image-tool.ts';
@@ -1660,8 +1661,8 @@ export interface RuntimePlanArtifactToolOptions {
   threadImages?: readonly ThreadImageRecord[] | undefined;
   /** Prebuilt inventory; the render builds one so the instruction can read it. */
   imageInventory?: ThreadImageInventory | undefined;
-  /** One image call per response; supplied by `useImageCallBudget`. */
-  reserveImageCall?: ((toolCallId: string) => boolean) | undefined;
+  /** The response's image quota; supplied by `useImageCallBudget`. */
+  reserveImageCall?: ImageCallReservation | undefined;
   /** Focused seam; production resolves the role and provider at call time. */
   resolveImageClient?: (() => Promise<ImageClientResolution>) | undefined;
 }

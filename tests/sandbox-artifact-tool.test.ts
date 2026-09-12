@@ -479,7 +479,9 @@ test('the image-capable instruction names the tool, handles, and the call rules'
   const instruction = buildArtifactToolsInstruction({ imageTool: true, canEdit: true });
   assert.match(instruction, new RegExp(`\`${GENERATE_IMAGE_TOOL_NAME}\``));
   assert.match(instruction, /`img:N` handle/);
-  assert.match(instruction, /at most once per response/);
+  assert.match(instruction, /at most 4 images across every `generate_image` call/);
+  assert.match(instruction, /make one call with count/);
+  assert.match(instruction, /one call per subject/);
   assert.match(instruction, /before declaring a streamed answer/);
   assert.match(instruction, /locks out every later tool call/);
   assert.match(instruction, /names the model, size, and format the provider applied/);

@@ -25,6 +25,7 @@ import {
   MAX_IMAGE_PROMPT_CHARS,
   MAX_IMAGE_TOOL_INPUTS,
   MAX_IMAGE_TOOL_OUTPUTS,
+  MAX_IMAGES_PER_RESPONSE,
   useImageCallBudget,
   type ImageArtifactResult,
   type ImageArtifactToolOptions,
@@ -164,7 +165,8 @@ function harness(input: {
   const staged: SlackArtifactStageInput[] = [];
   const readerLimits: Harness['readerLimits'] = [];
   const reservations: string[] = [];
-  const owner = { toolCallId: undefined as string | undefined };
+  const owned = new Map<string, number>();
+  const reservedTotal = () => [...owned.values()].reduce((sum, count) => sum + count, 0);
   const state: Harness = {
     staged,
     readerLimits,
@@ -174,17 +176,17 @@ function harness(input: {
       acceptsImageInput: input.acceptsImageInput ?? true,
       inventory: inventoryOf(input.records ?? []),
       reserveImageCall: Object.assign(
-        (toolCallId: string) => {
+        (toolCallId: string, count: number) => {
           reservations.push(toolCallId);
-          if (owner.toolCallId === undefined || owner.toolCallId === toolCallId) {
-            owner.toolCallId = toolCallId;
-            return true;
-          }
-          return false;
+          if (owned.has(toolCallId)) return { ok: true, remaining: MAX_IMAGES_PER_RESPONSE - reservedTotal() };
+          const remaining = MAX_IMAGES_PER_RESPONSE - reservedTotal();
+          if (count > remaining) return { ok: false, remaining };
+          owned.set(toolCallId, count);
+          return { ok: true, remaining: remaining - count };
         },
         {
           release(toolCallId: string) {
-            if (owner.toolCallId === toolCallId) owner.toolCallId = undefined;
+            owned.delete(toolCallId);
           },
         },
       ),
@@ -253,7 +255,7 @@ test('the hook path registers the image tool only for a filled image capability'
   const write = (_receipts: SlackArtifactReceipts) => {};
   const names = (capability: RuntimePlanV2['imageCapability']) =>
     createRuntimePlanArtifactTools(plan(capability), accumulator, write, {
-      reserveImageCall: () => true,
+      reserveImageCall: () => ({ ok: true, remaining: 0 }),
     }).map((tool) => tool.name);
 
   assert.deepEqual(
@@ -544,17 +546,33 @@ test('provider failures are returned values and stage nothing', async () => {
   assert.equal(unresolved.staged.length, 0);
 });
 
-test('a second image call in one response is refused without a provider request', async () => {
+test('separate calls with different prompts share one response quota and the overflow is refused', async () => {
   const client = fauxImagesClient(SUNBURST);
   const state = harness({ client: client.client });
 
-  const first = await runImageTool(state.options, { prompt: 'One.' }, { toolCallId: 'call_image_1' });
-  const second = await runImageTool(state.options, { prompt: 'Two.' }, { toolCallId: 'call_image_2' });
+  const first = await runImageTool(state.options, { prompt: 'A GRE ad.' }, { toolCallId: 'call_image_1' });
+  const second = await runImageTool(state.options, { prompt: 'An ACT ad.' }, { toolCallId: 'call_image_2' });
+  // Two images are left; asking for three is refused without a provider call.
+  const overflow = await runImageTool(
+    state.options,
+    { prompt: 'Three more.', count: 3 },
+    { toolCallId: 'call_image_3' },
+  );
+  const fits = await runImageTool(
+    state.options,
+    { prompt: 'Two more.', count: 2 },
+    { toolCallId: 'call_image_4' },
+  );
+  const exhausted = await runImageTool(state.options, { prompt: 'One more.' }, { toolCallId: 'call_image_5' });
 
   assert.equal((first as { attached: boolean }).attached, true);
-  assert.deepEqual(second, { attached: false, reason: 'limit' });
-  assert.equal(client.calls.length, 1);
-  assert.equal(state.staged.length, 1);
+  assert.equal((second as { attached: boolean }).attached, true);
+  assert.deepEqual(overflow, { attached: false, reason: 'limit', remaining: MAX_IMAGES_PER_RESPONSE - 2 });
+  assert.equal((fits as { attached: boolean }).attached, true);
+  assert.deepEqual(exhausted, { attached: false, reason: 'limit', remaining: 0 });
+  assert.equal(client.calls.length, 3, 'a refused call never reaches the provider');
+  // The faux client renders one image per call whatever the count asked for.
+  assert.equal(state.staged.length, 3);
 });
 
 test('thread images are read under the attachment cap and failures name the handle', async () => {
@@ -633,7 +651,7 @@ test('a gateway install still reads an input larger than its own upload cap', as
   assert.equal((result as { attached: boolean }).attached, true);
 });
 
-test('a failure before the provider ran gives this response its image slot back', async () => {
+test('a failure before the provider ran gives this response its images back', async () => {
   const client = fauxImagesClient(SUNBURST);
   const state = harness({ client: client.client, records: [threadRecord(1)] });
 
@@ -664,17 +682,21 @@ test('a failure before the provider ran gives this response its image slot back'
   );
   assert.deepEqual(retried, { attached: false, reason: 'misconfigured' });
 
-  // A provider-side refusal keeps the slot: the image call was already spent.
+  // A provider-side refusal keeps its images reserved: the call was already spent.
   const refused = harness({
     client: fauxImagesClient(SUNBURST, { ok: false, reason: 'rejected', detail: 'moderation_blocked' }).client,
   });
   assert.deepEqual(
-    await runImageTool(refused.options, { prompt: 'Refused.' }, { toolCallId: 'call_image_1' }),
+    await runImageTool(
+      refused.options,
+      { prompt: 'Refused.', count: MAX_IMAGES_PER_RESPONSE },
+      { toolCallId: 'call_image_1' },
+    ),
     { attached: false, reason: 'rejected' },
   );
   assert.deepEqual(
     await runImageTool(refused.options, { prompt: 'Refused again.' }, { toolCallId: 'call_image_2' }),
-    { attached: false, reason: 'limit' },
+    { attached: false, reason: 'limit', remaining: 0 },
   );
 });
 
@@ -968,11 +990,12 @@ function BudgetProbe() {
   const reserve = useImageCallBudget();
   useTool({
     name: 'reserve_image',
-    description: 'Reserve this response\u2019s one image call.',
-    input: v.object({ call: v.string() }),
+    description: 'Reserve images from this response\u2019s quota.',
+    input: v.object({ call: v.string(), count: v.optional(v.number()) }),
     output: v.string(),
     run: ({ data }) => {
-      const outcome = reserve(data.call) ? 'reserved' : 'limit';
+      const reservation = reserve(data.call, data.count ?? 1);
+      const outcome = `${reservation.ok ? 'reserved' : 'limit'}:${reservation.remaining}`;
       budgetOutcomes.push(outcome);
       return { output: outcome };
     },
@@ -990,33 +1013,37 @@ function BudgetProbe() {
   return 'Follow the scripted tool calls.';
 }
 
-test('the persistent budget allows one image call per response and resets on the next', async () => {
+test('the persistent quota spans calls in one response, keeps replays, and resets on the next', async () => {
   const faux = fauxProvider({ models: [{ id: 'image-budget', reasoning: false }], tokensPerSecond: 10000 });
   const flue = await start({ agents: [{ agent: BudgetProbe, name: 'image-budget' }], providers: [faux.provider] });
   try {
     faux.setResponses([
-      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_a' })], { stopReason: 'toolUse' }),
-      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_a' })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_a', count: 2 })], { stopReason: 'toolUse' }),
+      // A replay of the same call keeps its images instead of reserving more.
+      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_a', count: 2 })], { stopReason: 'toolUse' }),
+      // Three would exceed the two left; one fits.
+      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_b', count: 3 })], { stopReason: 'toolUse' }),
       fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_b' })], { stopReason: 'toolUse' }),
-      // A call that does not own the slot cannot free it for itself.
-      fauxAssistantMessage([fauxToolCall('release_image', { call: 'call_b' })], { stopReason: 'toolUse' }),
-      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_b' })], { stopReason: 'toolUse' }),
+      // A call that holds nothing frees nothing for itself.
+      fauxAssistantMessage([fauxToolCall('release_image', { call: 'call_c' })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_c', count: 2 })], { stopReason: 'toolUse' }),
+      // The owner hands its two back, and the same request then fits.
       fauxAssistantMessage([fauxToolCall('release_image', { call: 'call_a' })], { stopReason: 'toolUse' }),
-      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_b' })], { stopReason: 'toolUse' }),
-      fauxAssistantMessage('One image for this reply.'),
-      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_c' })], { stopReason: 'toolUse' }),
-      fauxAssistantMessage('One image for the next reply too.'),
+      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_c', count: 2 })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage('Images for this reply.'),
+      fauxAssistantMessage([fauxToolCall('reserve_image', { call: 'call_d', count: 4 })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage('The next reply starts with the full quota.'),
     ]);
     const agent = init(BudgetProbe, { id: 'image-budget' });
-    await agent.read(await agent.dispatch('Make an image.'));
-    await agent.read(await agent.dispatch('Make another image.'));
+    await agent.read(await agent.dispatch('Make images.'));
+    await agent.read(await agent.dispatch('Make more images.'));
   } finally { await flue.stop(); }
 
-  // The same call id keeps its slot on a replay; a different call is refused
-  // until the owner releases it, a non-owner's release changes nothing, and
-  // the next response starts with the slot free again.
   assert.deepEqual(
     budgetOutcomes,
-    ['reserved', 'reserved', 'limit', 'limit', 'reserved', 'reserved'],
+    // call_a holds two, its replay keeps them, three do not fit but one does,
+    // a non-owner's release changes nothing, the owner's release makes room
+    // for two with one left, and the next response starts with all four.
+    ['reserved:2', 'reserved:2', 'limit:2', 'reserved:1', 'limit:1', 'reserved:1', 'reserved:0'],
   );
 });
