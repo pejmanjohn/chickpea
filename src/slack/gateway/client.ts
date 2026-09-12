@@ -358,7 +358,14 @@ export class GatewayDeploymentClient implements GatewayOperationClient {
     if (claim.setupId === setup.setupId && claim.setupRevision === setup.setupRevision) return;
     if (!await this.dependencies.config.refreshGatewayClaimSetup({
       expectedClaim: raw, ...setup, now: this.now(),
-    })) throw new SlackTransportError('gateway.claim', 'gateway_setup_changed');
+    })) {
+      const current = await this.dependencies.settings.getSetting(GATEWAY_CLAIM_SETTING);
+      // A simultaneous authorized POST may already have made this exact update.
+      // Any replacement, clearance or different setup fence remains a conflict.
+      if (current !== JSON.stringify({ ...claim, setupRevision: setup.setupRevision })) {
+        throw new SlackTransportError('gateway.claim', 'gateway_setup_changed');
+      }
+    }
   }
 
   private async beginClaimWithIdentityRecovery(

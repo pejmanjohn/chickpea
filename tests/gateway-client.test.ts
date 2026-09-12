@@ -1,4 +1,5 @@
 import { gatewayStores } from './helpers/gateway-stores.ts';
+import type { RefreshGatewayClaimSetupInput } from '../src/config/store.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -191,11 +192,45 @@ test('claim authority refresh refuses a changed claim, old setup, advanced stage
       { ...input, setupId: 'different_setup' },
       { ...input, now: f.setup.expiresAt },
     ]) assert.equal(await f.config.refreshGatewayClaimSetup(invalid), false);
+    await f.settings.setSetting(GATEWAY_BINDING_SETTING, '{}');
+    assert.equal(await f.config.refreshGatewayClaimSetup(input), false);
+    assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), f.raw);
+    await f.settings.deleteSetting(GATEWAY_BINDING_SETTING);
+    const ahead = JSON.stringify({ ...JSON.parse(f.raw), setupRevision: f.setup.revision + 1 });
+    await f.settings.setSetting(GATEWAY_CLAIM_SETTING, ahead);
+    assert.equal(await f.config.refreshGatewayClaimSetup({ ...input, expectedClaim: ahead }), false);
+    assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), ahead);
+    await f.settings.setSetting(GATEWAY_CLAIM_SETTING, f.raw);
     const advanced = await f.identity.beginSlackAppCreation({ setupId: f.setup.id,
       expectedRevision: f.setup.revision, manifestFingerprint: 'f'.repeat(64) });
     assert.equal(await f.config.refreshGatewayClaimSetup({ ...input, setupRevision: advanced.revision }), false);
     assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), f.raw);
     assert.deepEqual(await f.config.listWorkspaceInstallations(), []);
+  } finally { f.settings.close(); }
+});
+
+test('concurrent protected resumes recognize the same renewed setup claim', async (t) => {
+  const f = await recoveryFixture();
+  try {
+    const current = await f.identity.reserveSlackSetupTransaction({
+      locatorHash: 'c'.repeat(64), issuedAt: NOW, expiresAt: NOW + 600_000,
+      destination: '/admin/onboarding', canonicalAdminOrigin: 'https://self-hosted.example',
+    });
+    const refresh = f.config.refreshGatewayClaimSetup.bind(f.config);
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    t.mock.method(f.config, 'refreshGatewayClaimSetup', async (input: RefreshGatewayClaimSetupInput) => {
+      if (++calls === 2) release();
+      await gate;
+      return refresh(input);
+    });
+    const setup = { setupId: current.id, setupRevision: current.revision };
+    await Promise.all([f.client.resumeClaimSetup(setup), f.client.resumeClaimSetup(setup)]);
+    assert.equal(calls, 2);
+    assert.deepEqual(JSON.parse((await f.settings.getSetting(GATEWAY_CLAIM_SETTING))!),
+      { ...JSON.parse(f.raw), setupRevision: current.revision });
+    assert.equal(f.gateway.requests.filter(({ path }) => path === '/v1/claims').length, 1);
   } finally { f.settings.close(); }
 });
 
