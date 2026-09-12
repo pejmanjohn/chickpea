@@ -13,6 +13,7 @@ import { fetchReleaseSource, releaseTag, resolveOfficialRelease, verifyReleaseSo
 import { executePreparedUpgrade, requestDeliveryRecovery } from './lib/upgrade-execution.mjs';
 import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from './lib/auth-schema.mjs';
 import { builtWorkerConfigPath } from './lib/built-worker-config.mjs';
+import { prepareNpmInstallPolicy } from './lib/npm-install-policy.mjs';
 
 import { TRANSPORT_RECOVERY } from './lib/release-manifest.mjs';
 
@@ -77,16 +78,16 @@ function targetEnvironment(target, { deploy = false, build = false } = {}) {
   return env;
 }
 
-function subprocess(command, args, cwd, env) {
+function subprocess(command, args, cwd, env, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, env, stdio: 'inherit' });
+    const child = spawn(command, args, { cwd, env, stdio: options.quiet ? 'ignore' : 'inherit', ...(options.signal ? { signal: options.signal } : {}) });
     child.once('error', () => reject(new Error('Unable to start the required local command.')));
     child.once('exit', (code) => code === 0 ? resolve() : reject(new Error('A local build or guarded deployment failed. Use the receipt to inspect and retry.')));
   });
 }
-function npm(args, cwd, env) {
+function npm(args, cwd, env, options) {
   const executable = process.env.npm_execpath;
-  return executable ? subprocess(process.execPath, [executable, ...args], cwd, env) : subprocess('npm', args, cwd, env);
+  return executable ? subprocess(process.execPath, [executable, ...args], cwd, env, options) : subprocess('npm', args, cwd, env, options);
 }
 
 function readEvent(directory) {
@@ -206,7 +207,14 @@ async function main() {
       // assumes that output directory. Retarget only generated configuration,
       // leaving verified source, compiled app identity, and DO classes intact.
       const buildEnvironment = targetEnvironment(target, { build: true });
-      await npm(['ci', '--no-audit', '--no-fund'], checkout, buildEnvironment);
+      const policy = prepareNpmInstallPolicy({ checkout, source, receiptRoot: directory, env: buildEnvironment });
+      try {
+        console.log(`Installing verified dependencies with npm ${policy.version} and the reviewed script policy...`);
+        // npm configuration and hook output can contain credentials. Keep it
+        // out of the public terminal and receipt; failures retain source for retry.
+        await npm(['ci', '--no-audit', '--no-fund', ...policy.args], checkout, policy.env, { quiet: true, signal: policy.signal });
+      } finally { policy.dispose(); }
+      verifyReleaseSource(checkout, source);
       await npm(['run', 'build'], checkout, buildEnvironment);
       const configPath = builtWorkerConfigPath(checkout);
       const config = JSON.parse(readFileSync(configPath, 'utf8'));

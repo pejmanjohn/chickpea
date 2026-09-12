@@ -8,25 +8,44 @@ Nothing updates automatically. The CLI makes the final compatibility decision.
 ## First-time command setup
 
 Use Node 24.20.0 from `.nvmrc`, Git, and your normal Cloudflare account access.
-Download or clone the official `v0.1.8` source release into a dedicated tooling
-directory, then run:
+Select an official tooling release whose notes support the intended transition.
+Replace `<tooling-release-tag>` below with its exact published tag, then follow
+that release's setup instructions:
 
 ```sh
-git clone --branch v0.1.8 --single-branch https://github.com/pejmanjohn/chickpea.git chickpea-upgrades
+git clone --branch <tooling-release-tag> --single-branch https://github.com/pejmanjohn/chickpea.git chickpea-upgrades
 cd chickpea-upgrades
 nvm install && nvm use
-npm ci
-npx wrangler login
+npm ci --strict-allow-scripts
+npx --no-install wrangler login
 npm run upgrade -- --configure --account YOUR_ACCOUNT_ID --worker YOUR_EXISTING_WORKER --profile core --url https://YOUR_CHICKPEA_HOST
 ```
 
-v0.1.8 supports guided upgrades from v0.1.7. For older installations, use
-current tooling to apply each intermediate release in order:
-v0.1.0 → v0.1.1 → v0.1.2 → v0.1.3 → v0.1.4 → v0.1.5 → v0.1.6 → v0.1.7 → v0.1.8. Only the reviewed incoming version is accepted.
-The v0.1.0 launcher predates fixes for custom Worker build paths and deployment
-inspection. Keep the older tooling directory and its receipts for reference;
-run upgrades and recovery from the current tooling directory. This changes the
-launcher only; configuring it does not change the running installation.
+An existing compatible Node manager or shell-scoped Homebrew `node@24` also
+works. Keep the older tooling directory and its receipts for reference; run
+upgrades and recovery from the selected tooling directory. Configuring the
+launcher does not change the running installation. Do not assume an old chain
+of intermediate releases is supported by current tooling: both the destination's
+`supportedOrigins` and reviewed dependency policy must cover the exact sources.
+
+The current runner uses npm 11.19.0 or compatible newer npm 11. It verifies
+source before and after installing dependencies with strict script policy.
+Releases with authored `allowScripts` use that policy. For the exact reviewed
+v0.1.16 source without it, the runner creates a private temporary userconfig
+outside source and receipts, preserving selected registry credentials, proxy,
+certificate settings and environment substitutions. Global and project config
+layers remain in place. The temporary file is removed after success, failure,
+or handled interruption and recreated for a retry. A forced kill may leave a
+private temporary directory; remove only the directory belonging to that run.
+
+Conflicting script overrides, script suppression, unsupported npm, and unknown
+historical source/digest combinations stop before dependency installation.
+Record the release and Node/npm versions and the error code; preserve source
+and receipts. Use the [reviewed policy](releasing.md#dependency-install-policy)
+and resolve the indicated configuration issue before resuming. Never run an
+approval command that changes retained `package.json` or print credential-bearing
+npm config. Dependency output is suppressed by the updater to keep credentials
+out of terminal logs and receipts.
 
 For a named Wrangler login, add `--wrangler-profile NAME` to the configure
 command. This is distinct from `--profile core`. The chosen login is retained
