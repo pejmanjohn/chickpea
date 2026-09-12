@@ -182,13 +182,24 @@ test('ambiguous, rejected or malformed private completion emits no receipt and n
       if (failure instanceof Error) throw failure;
       return failure as Awaited<ReturnType<NonNullable<SlackFileTransport['stagePrivate']>>>;
     } });
-    assert.deepEqual(await state.run(), { attached: false, reason: 'unavailable' });
+    // The category travels with the outcome so a caller can say the file
+    // failed to attach rather than leaving that indistinguishable upstream.
+    const outcome = await state.run();
+    assert.equal(outcome.attached, false);
+    assert.equal(outcome.attached === false && outcome.reason, 'unavailable');
+    assert.match(
+      String((outcome as { detail?: string }).detail),
+      /^private_(receipt_invalid|stage_failed)$/,
+    );
     assert.equal(calls, 1);
     assert.equal(state.writes.length, 0);
     assert.deepEqual(state.state().receipts, [receipt(0)]);
   }
   const legacy = stagingState(legacyTransport);
-  assert.deepEqual(await legacy.run(), { attached: false, reason: 'unavailable' });
+  assert.deepEqual(
+    await legacy.run(),
+    { attached: false, reason: 'unavailable', detail: 'transport_unsupported' },
+  );
   assert.equal(legacy.writes.length, 0);
 });
 
@@ -196,14 +207,20 @@ test('private staging failures expose only static operational categories', async
   const warnings: unknown[][] = [];
   t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args); });
   const canary = 'https://private.example/file?token=do-not-log';
-  for (const failure of [new TypeError(canary),
-    new SlackTransportError('files.uploadV2', 'invalid_private_completion_receipt'),
-    { fileId: 'F12345671', byteLength: 4, permalink: completedReceipt(1).permalink }]) {
+  for (const [failure, detail] of [
+    [new TypeError(canary), 'private_stage_failed'],
+    [new SlackTransportError('files.uploadV2', 'invalid_private_completion_receipt'),
+      'private_receipt_invalid'],
+    [{ fileId: 'F12345671', byteLength: 4, permalink: completedReceipt(1).permalink },
+      'private_receipt_invalid'],
+  ] as const) {
     const state = stagingState({ ...legacyTransport, async stagePrivate() {
       if (failure instanceof Error) throw failure;
       return failure;
     } });
-    assert.deepEqual(await state.run(), { attached: false, reason: 'unavailable' });
+    // The outcome carries exactly the category that was logged, and nothing
+    // the logging rule already refuses.
+    assert.deepEqual(await state.run(), { attached: false, reason: 'unavailable', detail });
   }
   assert.deepEqual(warnings, [
     ['[chickpea] artifact staging failed', { code: 'private_stage_failed' }],
