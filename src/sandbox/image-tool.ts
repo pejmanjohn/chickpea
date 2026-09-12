@@ -246,6 +246,7 @@ function imageToolDescription(acceptsImageInput: boolean): string {
       ? `To edit or combine images already in this conversation, list their img:N handles in inputs (at most ${MAX_IMAGE_TOOL_INPUTS}); with no inputs the model generates from the prompt alone.`
       : 'This model generates from the prompt alone and cannot take an existing image as input.',
     `At most ${MAX_IMAGES_PER_RESPONSE} images per reply across every call. For variations of one prompt, make one call with count (1-${MAX_IMAGE_TOOL_OUTPUTS}); for different subjects, make separate calls with their own prompts. Each image attaches as its own file, and the result lists a call's files under files.`,
+    'With count above 1, the provider renders count separate images from the prompt, so write the prompt as one single image: never say "variations", "versions", "options", or a number of images in the prompt, or each rendered image becomes a collage of several.',
     'The result reports the model and settings the provider applied.',
     'If the result reports attached: false, explain the returned reason and never say an image was attached or edited. A result may attach some variations and list the rest under unattached; say how many attached and why the others did not.',
   ].join(' ');

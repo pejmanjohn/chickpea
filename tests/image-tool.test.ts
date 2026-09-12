@@ -854,6 +854,13 @@ test('one call with a count stages every variation as its own numbered file', as
   assert.ok(state.staged.every((artifact) => artifact.kind === 'image'));
 });
 
+test('the tool description tells the model to describe one image when asking for variations', () => {
+  const tool = createImageArtifactTool(harness().options);
+  assert.match(tool.description, /one call with count \(1-4\)/);
+  assert.match(tool.description, /write the prompt as one single image/);
+  assert.match(tool.description, /never say "variations"/);
+});
+
 test('a count above the cap or below one is rejected by the schema before any provider call', () => {
   const tool = createImageArtifactTool(harness().options);
   for (const count of [0, MAX_IMAGE_TOOL_OUTPUTS + 1, 1.5, -1]) {

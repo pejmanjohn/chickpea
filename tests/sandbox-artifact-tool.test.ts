@@ -482,6 +482,8 @@ test('the image-capable instruction names the tool, handles, and the call rules'
   assert.match(instruction, /at most 4 images across every `generate_image` call/);
   assert.match(instruction, /make one call with count/);
   assert.match(instruction, /one call per subject/);
+  // Live QA: "3 variations" wording carried into the image prompt made each file a collage.
+  assert.match(instruction, /describe one single image in the prompt and never mention variations/);
   assert.match(instruction, /before declaring a streamed answer/);
   assert.match(instruction, /locks out every later tool call/);
   assert.match(instruction, /names the model, size, and format the provider applied/);
