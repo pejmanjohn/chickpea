@@ -4,6 +4,7 @@
 // with an injected fetch so it runs identically on the Node and Cloudflare
 // lanes and is unit-testable offline.
 
+import { parseDocument } from 'yaml';
 import { declaredContentLength, readBoundedText } from '../http/bounded-body.ts';
 import { inspectSkillPackage, type SkillPackageInspection } from './skill-package.ts';
 import { skillImportSource } from './skill-provenance.ts';
@@ -54,6 +55,7 @@ export interface SkillResolution {
   capped: boolean;
   /** Skills found but skipped because a required field was missing/invalid. */
   skipped: number;
+  issues?: Array<{ path: string; code: string; message: string }>;
 }
 
 interface SkillResolutionAccess {
@@ -165,35 +167,53 @@ function stripGitSuffix(repo: string): string {
   return repo.replace(/\.git$/, '');
 }
 
-/**
- * Parse SKILL.md frontmatter. Returns the recognized `name`/`description` plus
- * the markdown body (everything after the closing `---`). A minimal `key: value`
- * scan — sufficient for the Agent Skills frontmatter shape, no YAML dependency.
- */
+/** Parse only the YAML header; preserve the markdown procedure byte for byte. */
 export function parseFrontmatter(markdown: string): {
   name?: string;
   description?: string;
   body: string;
+  warnings?: string[];
 } {
-  const match = markdown.match(/^﻿?---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  if (!match) return { body: markdown };
-  const fields: Record<string, string> = {};
-  for (const line of match[1]!.split(/\r?\n/)) {
-    const kv = line.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/);
-    if (kv) fields[kv[1]!.toLowerCase()] = unquote(kv[2]!.trim());
+  const match = markdown.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/);
+  if (!match) {
+    if (/^\uFEFF?---(?:\r?\n|$)/.test(markdown)) throw new SkillImportError('invalid_document', 'SKILL.md has an unterminated YAML header.');
+    return { body: markdown };
   }
+  if (match[1]!.length > 16_384) throw new SkillImportError('document_too_large', 'SKILL.md frontmatter exceeds 16384 characters.');
+  let fields: unknown;
+  try {
+    const document = parseDocument(match[1]!, { schema: 'core', uniqueKeys: true, strict: true });
+    if (document.errors.length || document.warnings.length) throw new Error('Unsupported YAML');
+    fields = document.toJS({ maxAliasCount: 0 });
+  } catch {
+    throw new SkillImportError('invalid_document', 'SKILL.md has invalid or unsupported YAML frontmatter (aliases and custom tags are not supported).');
+  }
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) throw new SkillImportError('invalid_document', 'SKILL.md frontmatter must be a mapping.');
+  const header = fields as Record<string, unknown>;
+  if ((header.name !== undefined && typeof header.name !== 'string') ||
+      (header.description !== undefined && typeof header.description !== 'string')) {
+    throw new SkillImportError('invalid_document', 'SKILL.md name and description must be text.');
+  }
+  const unsupported = ['disable-model-invocation', 'user-invocable', 'allowed-tools', 'hooks', 'context', 'agent', 'model', 'compatibility']
+    .filter((key) => Object.hasOwn(header, key));
   return {
-    ...(fields.name ? { name: fields.name } : {}),
-    ...(fields.description ? { description: fields.description } : {}),
+    ...(typeof header.name === 'string' ? { name: header.name } : {}),
+    ...(typeof header.description === 'string' ? { description: header.description } : {}),
     body: match[2] ?? '',
+    ...(unsupported.length ? { warnings: [`Chickpea does not apply these source controls or runtime requirements: ${unsupported.join(', ')}.`] } : {}),
   };
 }
 
-function unquote(value: string): string {
-  if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value[value.length - 1] === value[0]) {
-    return value.slice(1, -1);
+function readSkillDocument(markdown: string, directory: string) {
+  const front = parseFrontmatter(markdown);
+  const name = sanitizeSkillName(front.name || basename(directory));
+  const description = (front.description || '').trim();
+  const instructions = front.body;
+  if (!name || !description || !instructions.trim()) throw new SkillImportError('invalid_document', 'SKILL.md needs a valid name, description and nonempty instruction body.');
+  if (description.length > MAX_DESCRIPTION || instructions.length > MAX_INSTRUCTIONS) {
+    throw new SkillImportError('document_too_large', `SKILL.md has ${description.length} description characters (limit ${MAX_DESCRIPTION}) and ${instructions.length} instruction characters (limit ${MAX_INSTRUCTIONS}). No content was shortened.`);
   }
-  return value;
+  return { name, description, instructions, warnings: front.warnings ?? [] };
 }
 
 /**
@@ -314,6 +334,7 @@ export async function resolveSkillSource(
 
   const skills: ResolvedSkillCandidate[] = [];
   let skipped = 0;
+  const issues: Array<{ path: string; code: string; message: string }> = [];
   for (const entry of scan) {
     const rawRes = access
       ? await githubRequest(
@@ -336,17 +357,19 @@ export async function resolveSkillSource(
       MAX_SKILL_DOCUMENT_BYTES,
       'GitHub skill document is too large to import safely.',
     );
-    const front = parseFrontmatter(md);
-    const name = sanitizeSkillName(front.name || basename(entry.dir));
-    const description = (front.description || '').trim().slice(0, MAX_DESCRIPTION);
-    const instructions = (front.body || md).trim().slice(0, MAX_INSTRUCTIONS);
-    if (!name || !description || !instructions) {
+    let document: ReturnType<typeof readSkillDocument>;
+    try { document = readSkillDocument(md, entry.dir); }
+    catch (error) {
+      if (!(error instanceof SkillImportError) || total === 1 || parsed.skillFilter || parsed.exactDocument) throw error;
+      issues.push({ path: entry.path, code: error.code, message: error.message });
       skipped += 1;
       continue;
     }
+    const { name, description, instructions } = document;
     const packageEntries = tree.tree.filter(({ path }) => !entry.dir || path.startsWith(`${entry.dir}/`));
     assertPackageBounds(entry.dir, packageEntries);
     const inspection = inspectSkillPackage(entry.dir, packageEntries);
+    inspection.warnings.push(...document.warnings);
     const hasScripts = inspection.scriptPaths.length > 0;
     if (parsed.skillFilter && name !== parsed.skillFilter) {
       skipped += 1;
@@ -380,6 +403,7 @@ export async function resolveSkillSource(
     total,
     capped: total > scan.length,
     skipped,
+    ...(issues.length ? { issues } : {}),
   };
 }
 
@@ -477,13 +501,8 @@ async function resolveExactPublicSkillFromGithubPage(
     MAX_SKILL_DOCUMENT_BYTES,
     'GitHub skill document is too large to import safely.',
   );
-  const front = parseFrontmatter(markdown);
-  const name = sanitizeSkillName(front.name || basename(skillPath));
-  const description = (front.description || '').trim().slice(0, MAX_DESCRIPTION);
-  const instructions = (front.body || markdown).trim().slice(0, MAX_INSTRUCTIONS);
-  if (!name || !description || !instructions) {
-    return exactPublicSkillResolution({ ...parsed, ref: resolvedRef }, [], 1, 1);
-  }
+  const { name, description, instructions, warnings } = readSkillDocument(markdown, skillPath);
+  inspection.warnings.push(...warnings);
   return exactPublicSkillResolution({ ...parsed, ref: resolvedRef }, [{
     name,
     description,

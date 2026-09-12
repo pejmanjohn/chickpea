@@ -4239,7 +4239,10 @@
       notes += ' <span class="import-note">showing the first ' + count + " &mdash; narrow with owner/repo@skill</span>";
     }
     if (resolution.skipped > 0) {
-      notes += ' <span class="import-note">(' + resolution.skipped + " skipped &mdash; missing a name or description)</span>";
+      notes += ' <span class="import-note">(' + resolution.skipped + " skipped &mdash; invalid or unsupported documents)</span>";
+    }
+    if (resolution.issues && resolution.issues.length) {
+      notes += '<span class="import-note">' + resolution.issues.slice(0, 6).map(function (issue) { return esc(issue.path + ': ' + issue.message); }).join(' ') + '</span>';
     }
     var allSelected = count > 0 && selected.every(function (on) { return on; });
     var rows = skills.map(function (skill, index) {

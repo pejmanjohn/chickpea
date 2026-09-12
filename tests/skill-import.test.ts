@@ -370,15 +370,11 @@ test('resolveSkillSource rejects oversized GitHub responses before buffering the
   );
 });
 
-test('resolveSkillSource skips a skill missing a description', async () => {
-  const fetchImpl = mockFetch([
-    ['/git/trees/', { json: { tree: [{ path: 'skills/foo/SKILL.md', type: 'blob' }] } }],
-    [`/${EXACT_OID}/skills/foo/SKILL.md`, { text: '---\nname: foo\n---\n# Body only, no description' }],
-    ['api.github.com/repos/acme/skills', { json: { default_branch: 'main' } }],
-  ]);
-  const result = await resolveSkillSource({ owner: 'acme', repo: 'skills' }, fetchImpl);
-  assert.equal(result.skills.length, 0);
-  assert.equal(result.skipped, 1);
+test('resolveSkillSource reports a selected skill missing a description', async () => {
+  await assert.rejects(resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID }, mockFetch([
+    ['/git/trees/', { json: { tree: [{ path: 'foo/SKILL.md', type: 'blob' }] } }],
+    ['/SKILL.md', { text: '---\nname: foo\n---\nBody.' }],
+  ])), (error: unknown) => error instanceof SkillImportError && error.code === 'invalid_document');
 });
 
 test('resolveSkillSource marks an anonymous 404 as an authenticated-access candidate', async () => {
@@ -614,3 +610,46 @@ test('saved real GitHub listings preserve nested metadata inspection', async () 
   assert.equal(result.skills[0]?.hasScripts, false);
   assert.deepEqual(result.skills[0]?.inspection?.auxiliaryPaths, ['agents/openai.yaml']);
 });
+
+for (const [style, expected] of [['|', 'First line.\nSecond line.\n'], ['>-', 'First line. Second line.']] as const) {
+  test(`YAML ${style} descriptions preserve their meaning`, () => {
+    const front = parseFrontmatter(`\uFEFF---\r\nname: foo\r\ndescription: ${style}\r\n  First line.\r\n  Second line.\r\nmetadata:\r\n  author: example\r\n---\r\n\r\nBody.\r\n`);
+    assert.equal(front.description, expected);
+    assert.equal(front.body, '\r\nBody.\r\n');
+  });
+}
+
+for (const [description, body, code] of [
+  ['Foo.', '  \n', 'invalid_document'],
+  ['Foo.', 'x'.repeat(100_001), 'document_too_large'],
+  ['x'.repeat(1025), 'Body.', 'document_too_large'],
+] as const) {
+  test(`invalid or oversized document is rejected (${description.length}/${body.length})`, async () => {
+    await assert.rejects(resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID }, mockFetch([
+      ['/git/trees/', { json: { tree: [{ path: 'foo/SKILL.md', type: 'blob' }] } }],
+      ['/SKILL.md', { text: `---\nname: foo\ndescription: ${description}\n---\n${body}` }],
+    ])), (error: unknown) => error instanceof SkillImportError && error.code === code);
+  });
+}
+
+test('imported body bytes are preserved and unsupported invocation metadata is disclosed', async () => {
+  const body = '\nKeep these spaces.  \r\n\n';
+  const result = await resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID }, mockFetch([
+    ['/git/trees/', { json: { tree: [{ path: 'foo/SKILL.md', type: 'blob' }] } }],
+    ['/SKILL.md', { text: `---\nname: foo\ndescription: Foo.\ndisable-model-invocation: true\nallowed-tools: [Skill]\n---\n${body}` }],
+  ]));
+  assert.equal(result.skills[0]?.instructions, body);
+  assert.match(result.skills[0]?.inspection?.warnings.join(' ') ?? '', /disable-model-invocation.*allowed-tools|allowed-tools.*disable-model-invocation/);
+});
+
+for (const header of [
+  'name: foo\nname: bar\ndescription: Test.',
+  'name: foo\ndescription: &a Test.\nmetadata: *a',
+  'name: foo\ndescription: !unsafe Test.',
+  'name: foo\ndescription: [not, text]',
+]) {
+  test(`unsupported YAML is rejected: ${header.split('\n')[1]}`, () => {
+    assert.throws(() => parseFrontmatter(`---\n${header}\n---\nBody.`),
+      (error: unknown) => error instanceof SkillImportError && error.code === 'invalid_document');
+  });
+}
