@@ -80,7 +80,7 @@ test('the images client and its fetch primitives behave under workerd', {
     const multipart = seen.find((entry) => entry.path === '/multipart-echo');
     assert.ok(multipart, 'the edit call must reach the stub');
     assert.match(multipart.contentType, /^multipart\/form-data; boundary=/);
-    for (const field of ['model', 'prompt', 'input_fidelity', 'output_format', 'image[]']) {
+    for (const field of ['model', 'prompt', 'output_format', 'image[]']) {
       assert.ok(multipart.body.includes(`name="${field}"`), field);
     }
     assert.ok(multipart.body.includes('filename="image-1.png"'));

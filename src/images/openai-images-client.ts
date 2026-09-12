@@ -194,8 +194,9 @@ function editForm(request: ImageEditRequest, profile: ImageModelProfile): FormDa
   for (const [field, value] of Object.entries(formatFields(request.format))) {
     form.append(field, String(value));
   }
-  // Preserving an uploaded logo is the point of the edit path.
-  form.append('input_fidelity', 'high');
+  // gpt-image-2.5 models reject `input_fidelity` (the live endpoint answers
+  // `invalid_input_fidelity_model`), so logo preservation is carried by the
+  // prompt and the input image alone.
   for (const [index, input] of request.inputs.entries()) {
     const blob = new Blob([input.bytes as unknown as BlobPart], { type: input.mimeType });
     // Part names are synthesized: a Slack filename never reaches the provider.

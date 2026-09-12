@@ -164,7 +164,7 @@ test('an edit sends one multipart part per input image with high input fidelity'
   assert.equal(form.get('prompt'), 'place the logo in the corner');
   assert.equal(form.get('n'), '1');
   assert.equal(form.get('output_format'), 'png');
-  assert.equal(form.get('input_fidelity'), 'high');
+  assert.equal(form.has('input_fidelity'), false);
   const parts = form.getAll('image[]') as File[];
   assert.equal(parts.length, 2);
   assert.deepEqual(parts.map((part) => part.name), ['image-1.png', 'image-2.png']);
