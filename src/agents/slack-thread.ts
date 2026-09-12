@@ -1315,6 +1315,9 @@ export function useRuntimePlanAgent(
   }
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
   useInstruction('Sandbox files are temporary working data, not durable Agent memory. They do not follow this Agent into a fresh conversation. A successful file or shell write cannot establish that a fact was remembered. Never promise future recall from a sandbox file.');
+  if (plan.sandbox.mode === 'bash') {
+    useInstruction('This virtual sandbox starts with a fresh filesystem for each new request, including a follow-up in the same Slack thread. Files from an earlier request are gone. When the current user asks to return or revise those files, recreate them from the available contents in this request before attaching them; do not assume an earlier path still exists. The internal file-delivery check continues the current request and may only read and export existing files.');
+  }
   useInstruction(SLACK_ACTION_LINK_INSTRUCTION);
   useInstruction('The final Slack answer must be self-contained. Earlier assistant steps are working narration. After an interrupted response, write the complete final answer again, not just the remaining words of the partial response.');
   useManagedConnectionTools(

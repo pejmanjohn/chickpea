@@ -117,9 +117,47 @@ test('a bad path in final selection cannot prevent another file from being deliv
   const result = await h.completion.complete(h.env, [
     { path: 'missing.md', filename: 'missing.md' }, { path: 'report.md', filename: 'report.md' },
   ], h.binding);
-  assert.equal(result.checked, true); assert.equal(h.uploads.length, 1);
+  assert.equal(result.checked, false); assert.equal(h.completion.unresolved(), true); assert.equal(h.uploads.length, 1);
+  assert.deepEqual(result.needsCorrection, [{ path: '/home/user/missing.md', filename: 'missing.md', detail: 'source_unavailable' }]);
   assert.deepEqual(result.files[0], { attached: false, reason: 'unavailable', detail: 'source_unavailable' });
   assert.equal(result.files[1]!.attached, true);
+});
+
+test('a missing selected source stays pending through an empty completion, then a corrected path retains good files', async () => {
+  const h = setup(); h.write('actual.md', 'small'); h.write('other.csv', 'value\n1');
+  const good = { path: 'other.csv', filename: 'other.csv' };
+  await h.completion.complete(h.env, [{ path: 'typo.md', filename: 'small.md' }, good], h.binding);
+  const omitted = await h.completion.complete(h.env, [], h.binding);
+  assert.equal(omitted.checked, false);
+  assert.deepEqual(omitted.retained, ['other.csv']);
+  assert.equal(h.uploads.length, 1);
+  const corrected = await h.completion.complete(h.env, [{ path: 'actual.md', filename: 'small.md' }], h.binding, ['typo.md']);
+  assert.equal(corrected.checked, true);
+  assert.deepEqual(corrected.needsCorrection, []);
+  assert.deepEqual(corrected.retained, ['other.csv', 'small.md']);
+  assert.equal(h.uploads.length, 2);
+  assert.deepEqual(h.discarded, []);
+});
+
+test('an empty unavailable file has an honest fallback instead of an empty content block', async () => {
+  const h = setup({ attached: false, reason: 'unavailable' }); h.write('empty.txt', '');
+  await h.completion.complete(h.env, [{ path: 'empty.txt', filename: 'empty.txt' }], h.binding);
+  const text = resolveFileDeliveryText('done', [{ unresolved: false, files: h.completion.state().outcomes }]);
+  assert.match(text, /The file is empty/);
+  assert.doesNotMatch(text, /```/);
+});
+
+test('an invalid source can be explicitly withdrawn without reading outside the workspace', async () => {
+  const h = setup();
+  const binding = { ...h.binding, sandboxKind: 'cloudflare' as const };
+  const file = { path: '/tmp/mistaken.md', filename: 'report.md' };
+  const failed = await h.completion.complete(h.env, [file], binding);
+  assert.equal(failed.checked, false);
+  await assert.rejects(() => h.completion.complete(h.env, [file], binding, [file.path]), /both selected and excluded/);
+  const withdrawn = await h.completion.complete(h.env, [], binding, [file.path]);
+  assert.equal(withdrawn.checked, true);
+  assert.deepEqual(withdrawn.discarded, ['report.md']);
+  assert.equal(h.uploads.length, 0);
 });
 
 test('relative Cloudflare filenames resolve to the same tracked workspace file', async () => {

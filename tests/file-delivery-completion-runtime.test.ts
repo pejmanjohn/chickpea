@@ -28,6 +28,7 @@ import {
   useSlackArtifactReceipts, type SlackArtifactReceipts,
 } from '../src/slack/artifact-receipts.ts';
 import { stageArtifactWithReceipt } from '../src/slack/artifact-staging.ts';
+import { SlackTransportError } from '../src/slack/transport/types.ts';
 import {
   COMPLETE_FILE_DELIVERY_TOOL, FILE_COMPLETION_INSTRUCTION, FILE_DELIVERY_DATA_NAME,
   FILE_DELIVERY_SIGNAL_TYPE, FileDeliveryResultSchema, useFileDeliveryCompletion,
@@ -62,6 +63,7 @@ interface ProbeState {
   repairSignalCounts: number[];
   repairAuthority: boolean[];
   toolOutcomes: { tool: string; isError: boolean }[];
+  oversizeAttempts: number;
 }
 let probe: ProbeState;
 
@@ -80,6 +82,10 @@ function useProbe() {
     async stagePrivate(input) {
       assert.deepEqual(boundCurrentRequestConversation(), CONVERSATION);
       assertArtifactDeliveryAllowed();
+      if (input.bytes.byteLength > 700 * 1024) {
+        probe.oversizeAttempts++;
+        throw new SlackTransportError('files.stage', 'gateway_request_too_large');
+      }
       probe.staged.push({ ...input, bytes: input.bytes.slice() });
       const fileId = `FPROBE${String(probe.staged.length).padStart(5, '0')}`;
       return { fileId, byteLength: input.bytes.byteLength,
@@ -202,7 +208,7 @@ test('native file-delivery completion preserves authority, response state, and b
   });
   let sequence = 0;
   function begin(responses: Parameters<typeof faux.setResponses>[0]) {
-    probe = { staged: [], responseStarts: 0, deliveries: [], repairSignalCounts: [], repairAuthority: [], toolOutcomes: [] };
+    probe = { staged: [], responseStarts: 0, deliveries: [], repairSignalCounts: [], repairAuthority: [], toolOutcomes: [], oversizeAttempts: 0 };
     faux.setResponses(responses);
     return { id: `file-delivery-${++sequence}`, callsBefore: faux.state.callCount };
   }
@@ -253,6 +259,47 @@ test('native file-delivery completion preserves authority, response state, and b
         assert.equal(probe.staged.length, 1);
       });
     }
+
+    await t.test('an unreadable selected path gets one export repair beside a terminal oversized file', async () => {
+      const { id, callsBefore } = begin([
+        call('bash', { command: "printf 'AE6F-SMALL: ready\\n' > small.md; printf '%1000000s' '' | tr ' ' X > large.txt" }),
+        call(COMPLETE_FILE_DELIVERY_TOOL, { files: [
+          { path: 'large.txt', filename: 'large.txt' }, { path: 'mistaken.md', filename: 'small.md' },
+        ] }),
+        fauxAssistantMessage('The large file is too large and the small file could not attach.'),
+        call('glob', { pattern: '*.md' }),
+        call(COMPLETE_FILE_DELIVERY_TOOL, { files: [{ path: 'small.md', filename: 'small.md' }], excludedPaths: ['mistaken.md'] }),
+        fauxAssistantMessage('Attached everything.'),
+      ]);
+      const { result, reply } = await slackRun(id);
+      assertRepaired();
+      assert.equal(faux.state.callCount - callsBefore, 6);
+      assert.equal(probe.oversizeAttempts, 1);
+      assert.deepEqual(probe.staged.map((file) => file.filename), ['small.md']);
+      assert.equal(new TextDecoder().decode(probe.staged[0]!.bytes), 'AE6F-SMALL: ready\n');
+      assert.equal(completionResult(reply).unresolved, false);
+      assert.equal(result.artifacts?.length, 1);
+      assert.match(result.text, /large.txt because it exceeds the upload limit/);
+      assert.doesNotMatch(result.text, /couldn't attach small|Attached everything|mistaken/);
+    });
+
+    await t.test('a missing source after the repair stays honest and cannot suppress a good attachment', async () => {
+      const files = [{ path: 'report.md', filename: 'report.md' }, { path: 'missing.md', filename: 'missing.md' }];
+      const { id, callsBefore } = begin([
+        writeReport(), call(COMPLETE_FILE_DELIVERY_TOOL, { files }),
+        fauxAssistantMessage('Everything attached.'),
+        call(COMPLETE_FILE_DELIVERY_TOOL, { files: [] }),
+        fauxAssistantMessage('Everything attached.'),
+      ]);
+      const { result, reply } = await slackRun(id);
+      assertRepaired();
+      assert.equal(faux.state.callCount - callsBefore, 5);
+      assert.equal(completionResult(reply).unresolved, true);
+      assert.equal(probe.staged.length, 1);
+      assert.equal(result.artifacts?.length, 1);
+      assert.match(result.text, /missing.md because the selected file could not be read/);
+      assert.doesNotMatch(result.text, /Everything attached/);
+    });
 
     await t.test('an ignored correction becomes an honest incomplete result after one repair', async () => {
       const { id, callsBefore } = begin([writeReport(), fauxAssistantMessage('Created /home/user/report.md.'),
@@ -332,6 +379,39 @@ test('native file-delivery completion preserves authority, response state, and b
       assert.equal(probe.staged.length, 1);
       assert.equal(completionResult(reply).unresolved, false);
       assert.equal(result.artifacts?.length, 1);
+    });
+
+    await t.test('a follow-up starts without earlier sandbox files and delivers its recreated small file beside a size rejection', async () => {
+      const { id } = begin([
+        call('write', { path: 'small.md', content: 'earlier contents' }),
+        call('post_artifact', { path: 'small.md', filename: 'small.md' }),
+        fauxAssistantMessage('Attached the earlier file.'),
+      ]);
+      const first = await slackRun(id);
+      const messageTs = '1789230000.000400';
+      const envelope = slackEnvelope(id);
+      if (envelope.schemaVersion !== 2) throw new Error('Signal envelope expected.');
+      const followup = dispatchState({ ...envelope, uid: first.state.dispatchReceipt!.uid,
+        idempotencyKey: `partial-followup-${id}`, message: { ...envelope.message,
+          body: `Recreate small.md and large.txt and return both.\n\n${serializeCurrentRequestEnvelope('', false, ACTOR, messageTs)}`,
+          attributes: { ...envelope.message.attributes, messageTs, turnJobId: `partial-followup-${id}` },
+        } });
+      faux.setResponses([
+        call('read', { path: 'small.md' }),
+        call('bash', { command: "printf 'AE6F-SMALL: ready\\n' > small.md; printf '%1000000s' '' | tr ' ' X > large.txt" }),
+        call('post_artifact', { path: 'large.txt', filename: 'large.txt' }),
+        call(COMPLETE_FILE_DELIVERY_TOOL, { files: [{ path: 'large.txt', filename: 'large.txt' }, { path: 'small.md', filename: 'small.md' }] }),
+        fauxAssistantMessage('Both files attached.'),
+      ]);
+      const result = await promptSlackThreadAgent({ ...first.input, state: followup,
+        message: 'Recreate both files.', turnId: `partial-followup-${id}` });
+      assert.ok(probe.toolOutcomes.some((outcome) => outcome.tool === 'read' && outcome.isError));
+      assert.equal(probe.oversizeAttempts, 1);
+      assert.equal(probe.staged.length, 2);
+      assert.equal(new TextDecoder().decode(probe.staged[1]!.bytes), 'AE6F-SMALL: ready\n');
+      assert.deepEqual(result.artifacts?.map((file) => file.fileId), ['FPROBE00002']);
+      assert.match(result.text, /large.txt because it exceeds the upload limit/);
+      assert.doesNotMatch(result.text, /couldn't attach small|Both files attached/);
     });
 
     await t.test('correction keeps an earlier CSV receipt and stages only the missing Markdown file', async () => {

@@ -46,8 +46,9 @@ export type FileDeliveryInput = v.InferOutput<typeof FileInputSchema>;
 
 export const FILE_COMPLETION_INSTRUCTION = [
   'After shell work, call complete_file_delivery before your final answer or submit_routine_result. List all final sandbox files, including revised files and files already passed to post_artifact; it attaches missing files and reuses prepared files. An empty files list confirms no additional deliverables and preserves files already prepared. Keep scratch files, intermediate scripts and working repository files private unless the user requests them as final deliverables.',
-  'For a file written directly with write/edit, post_artifact accounts for that file. If other written files are scratch, complete_file_delivery confirms the final selection. Do all file work before completing delivery. Never declare stream_answer or present_table while file delivery is unchecked. Respect text-only or no-attachment requests. Use excludedPaths only to withdraw files previously prepared that the user no longer wants or that have become intermediate; omission alone never removes an attachment.',
+  'For a file written directly with write/edit, post_artifact accounts for that file. If other written files are scratch, complete_file_delivery confirms the final selection. Do all file work before completing delivery. Never declare stream_answer or present_table while file delivery is unchecked. Respect text-only or no-attachment requests. Use excludedPaths to withdraw a mistaken source path or files the user no longer wants or that have become intermediate; omission alone never removes an attachment.',
   'A file-delivery check is internal continuation of the same request, not a new task. Complete only the omitted export, preserve already prepared files, and never repeat unrelated actions. Report individual attachment failures honestly.',
+  'Verify that every requested file was actually created with the intended contents before completing delivery, including on follow-ups: earlier sandbox paths are not proof that a file still exists. Check shell errors and file sizes; an empty file is not a substitute for failed generation. If complete_file_delivery returns needsCorrection, no upload occurred for those paths. Correct their source paths or names and complete delivery again; when replacing a mistaken path, put that old path in excludedPaths. Keep other successfully prepared files; do not retry failed or uncertain uploads.',
 ].join('\n');
 
 /** Durable bookkeeping lives beside upload receipts; it never scans or publishes the filesystem. */
@@ -168,55 +169,66 @@ export function createFileDeliveryCompletion(update: StateSetter<FileDeliverySta
   async function complete(env: SessionEnv, files: FileDeliveryInput[], binding: ArtifactDestinationBinding, excludedPaths: string[] = []) {
     assertArtifactDeliveryAllowed();
     // Validate exclusions before any side effect; absence from files is never removal.
-    const excluded = new Set(excludedPaths.map((path) => resolveFilePath(env, path, binding)));
+    const before = state();
+    const excluded = new Set(excludedPaths.map((path) => {
+      try { return resolveFilePath(env, path, binding); }
+      catch (error) {
+        // An invalid source path can itself be the mistake being corrected.
+        // Withdrawing its exact failed record performs no filesystem operation.
+        if (before.outcomes.some((file) => file.path === path && file.reason === 'source-unavailable')) return path;
+        throw error;
+      }
+    }));
     for (const file of files) {
-      let path: string;
-      try { path = resolveFilePath(env, file.path, binding); } catch { continue; }
+      let path = file.path;
+      try { path = resolveFilePath(env, file.path, binding); } catch { /* Keep the exact failed source path. */ }
       if (excluded.has(path)) throw new Error('A file cannot be both selected and excluded.');
     }
-    const before = state();
     const generation = before.generation;
     const outputs: ArtifactToolResult[] = [];
-    const selected = new Set<string>();
+    const needsCorrection: { path: string; filename: string; detail: 'source_unavailable' }[] = [];
     const requested = new Set(files.flatMap((file) => {
       try { return [resolveFilePath(env, file.path, binding)]; } catch { return []; }
     }));
     // Retaining a prepared deliverable means retaining its current contents.
     // Shell work may have changed any prepared path, so re-read without uploading
     // again when the digest is unchanged.
-    const retainedRechecks = before.outcomes.filter((file) => file.attached &&
+    const retainedRechecks = before.outcomes.filter((file) =>
       !requested.has(file.path) && !excluded.has(file.path) &&
-      (before.shellPending || before.pending.includes(file.path)))
+      (file.reason === 'source-unavailable' ||
+        (file.attached && (before.shellPending || before.pending.includes(file.path)))))
       .map((file) => ({ path: file.path, filename: file.filename }));
     for (const file of [...files, ...retainedRechecks]) {
       let path = file.path;
       try {
         path = resolveFilePath(env, file.path, binding);
-        selected.add(path);
         outputs.push(await deliver(env, file, binding));
       } catch {
-        selected.add(path);
+        needsCorrection.push({ path, filename: file.filename, detail: 'source_unavailable' });
         record({ path, filename: file.filename, attached: false, reason: 'source-unavailable' }, generation);
         outputs.push({ attached: false, reason: 'unavailable', detail: 'source_unavailable' });
       }
     }
     const current = state();
-    const checked = current.generation === generation && activeWrites === 0;
-    const removed = checked ? current.outcomes.filter((file) => excluded.has(file.path)) : [];
-    if (checked) {
+    const stable = current.generation === generation && activeWrites === 0;
+    const checked = stable && needsCorrection.length === 0;
+    const removed = stable ? current.outcomes.filter((file) => excluded.has(file.path)) : [];
+    if (stable) {
       const ids = removed.flatMap((file) => file.fileId ? [file.fileId] : []);
       if (ids.length) discard(ids);
-      update((previous) => ({ ...previous, pending: [], shellPending: false,
-        outcomes: previous.outcomes.filter((file) => !excluded.has(file.path) &&
-          (file.reason !== 'source-unavailable' || selected.has(file.path))) }));
+      // The selection accounts for shell/scratch work, but unreadable selected
+      // files still need the bounded export repair. Keeping only their paths
+      // pending also prevents a failed source from invalidating good receipts.
+      update((previous) => ({ ...previous, pending: needsCorrection.map((file) => file.path), shellPending: false,
+        outcomes: previous.outcomes.filter((file) => !excluded.has(file.path)) }));
     }
-    return { checked, files: outputs, retained: state().outcomes.filter((file) => file.attached).map((file) => file.filename),
+    return { checked, files: outputs, needsCorrection, retained: state().outcomes.filter((file) => file.attached).map((file) => file.filename),
       discarded: removed.map((file) => file.filename) };
   }
   function tool(binding: ArtifactDestinationBinding) {
     return defineTool({
       name: COMPLETE_FILE_DELIVERY_TOOL,
-      description: 'Finish sandbox file delivery before answering. List final or revised deliverables only. Prepared files are retained even with files=[]. Use excludedPaths only to explicitly withdraw a previous deliverable. Scratch and working files stay private unless requested as final deliverables. Check each returned outcome; source_unavailable means a selected file could not be read or named correctly.',
+      description: 'Finish sandbox file delivery before answering. List final or revised deliverables only. Prepared files are retained even with files=[]. Use excludedPaths to explicitly withdraw a previous deliverable or replace a mistaken source path. Scratch and working files stay private unless requested as final deliverables. Check each returned outcome. needsCorrection lists sources that were not uploaded because they could not be read or named correctly: use read/glob to find the existing file and correct its path or filename. Failed or uncertain uploads are terminal for those bytes; do not retry them.',
       input: v.strictObject({
         files: v.pipe(v.array(FileInputSchema), v.maxLength(10)),
         excludedPaths: v.optional(v.pipe(v.array(v.pipe(v.string(), v.minLength(1), v.maxLength(2048))), v.maxLength(MAX_TRACKED_FILES))),
@@ -263,7 +275,7 @@ export function useFileDeliveryCompletion(plan: RuntimePlanV2, discard: (fileIds
       return;
     }
     // Never publish an earlier revision if unchecked work may have changed it.
-    const invalidated = unresolved ? state.outcomes.filter((file) => state.shellPending || state.pending.includes(file.path)) : [];
+    const invalidated = unresolved ? state.outcomes.filter((file) => file.attached && (state.shellPending || state.pending.includes(file.path))) : [];
     const invalidIds = invalidated.flatMap((file) => file.fileId ? [file.fileId] : []);
     if (invalidIds.length) discard(invalidIds);
     write({ unresolved, files: state.outcomes.filter((file) => !invalidated.includes(file)) });
@@ -285,7 +297,7 @@ export function resolveFileDeliveryText(text: string, data: unknown): string {
   let inlineBudget = 6_000;
   for (const file of failures) {
     const name = file.filename.replace(/[\r\n`<>]/g, '-').slice(0, 256);
-    lines.push(`I couldn't attach ${name}${file.reason === 'too-large' ? ' because it exceeds the upload limit' : file.reason === 'missing-scope' ? ' because this workspace does not permit uploads' : ''}.`);
+    lines.push(`I couldn't attach ${name}${file.reason === 'too-large' ? ' because it exceeds the upload limit' : file.reason === 'missing-scope' ? ' because this workspace does not permit uploads' : file.reason === 'source-unavailable' ? ' because the selected file could not be read from the workspace' : ''}.`);
     if (file.inline && file.inline.length <= inlineBudget) {
       inlineBudget -= file.inline.length;
       lines.push(`Contents of ${name}:\n${file.inline}`);
@@ -295,6 +307,7 @@ export function resolveFileDeliveryText(text: string, data: unknown): string {
 }
 
 function inlineText(bytes: Uint8Array): string | undefined {
+  if (bytes.byteLength === 0) return 'The file is empty.';
   if (bytes.byteLength > 1_500) return undefined;
   try {
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
