@@ -8356,7 +8356,7 @@
       '<span class="select-wrap"><select class="input mono" id="workspace-image-model" data-action="workspace-image-model"' + disabled + '>' + optionHtml + '</select>' +
       icon("chevron-down", "select-caret") + '</span></label>' +
       '<button type="button" class="btn btn-primary" data-action="workspace-image-model-save"' +
-      (!changed || state.workspaceImageRoleBusy || !draft ? " disabled" : "") + '>' +
+      (!changed || state.workspaceImageRoleBusy ? " disabled" : "") + '>' +
       (state.workspaceImageRoleBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save image model") + '</button></div>' +
       imageModelConsentNoteHtml() + status + '</div>';
     return shelf(summary, control);
@@ -9311,7 +9311,9 @@
       state[noticeKey] = "";
       render();
       postJson(options.endpoint, "PUT", {
-        modelId: modelId,
+        // A section that can be cleared sends an explicit null for the empty
+        // draft; the chat default never gets here empty (its validate refuses).
+        modelId: modelId || (options.clearable ? null : modelId),
         expectedRevision: current.revision
       }).then(function (body) {
         apply(body[responseKey], false);
@@ -9364,11 +9366,16 @@
     responseKey: "workspaceModelRole",
     conflictCode: "model_role_revision_conflict",
     actionId: "workspace-image-model",
-    validate: function (modelId) {
-      return modelId ? "" : "Choose an image model.";
+    // Every option comes from the server's catalog, and the empty option is
+    // the deliberate clear, so there is nothing left for the client to refuse.
+    clearable: true,
+    validate: function () {
+      return "";
     },
-    savedNotice: function () {
-      return "Default image model saved. Agents use it on their next request.";
+    savedNotice: function (value) {
+      return value && value.modelId
+        ? "Default image model saved. Agents use it on their next request."
+        : "Default image model cleared. Agents lose the image tool on their next request.";
     },
     loadErrorText: "Could not load the default image model.",
     saveErrorText: "Could not save the default image model.",

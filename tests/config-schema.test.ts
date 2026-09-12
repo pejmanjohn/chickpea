@@ -830,6 +830,52 @@ test('model role writes carry their own revision and reject a stale one', () => 
   }
 });
 
+test('clearing a workspace model role keeps the revision monotonic and reads back unset', () => {
+  const db = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(db);
+    const store = new ConfigStoreLogic(db, { agents: [] });
+
+    const set = store.putWorkspaceModelRole({
+      workspaceId: 'TACME',
+      role: 'image',
+      modelId: 'openai/gpt-image-2.5-flare',
+    }, 0);
+    assert.equal(set.revision, 1);
+
+    // Omitting `modelId` clears the row: the role reads back unset, and the
+    // revision still climbs so the next write from the cleared state is guarded.
+    const cleared = store.putWorkspaceModelRole({ workspaceId: 'TACME', role: 'image' }, 1);
+    assert.equal(cleared.modelId, undefined);
+    assert.equal(cleared.revision, 2);
+    const readback = store.getWorkspaceModelRole('TACME', 'image');
+    assert.equal(readback?.modelId, undefined);
+    assert.equal(readback?.revision, 2);
+
+    // The cleared row is a real row, so the pre-clear revision is now stale.
+    assert.throws(
+      () => store.putWorkspaceModelRole({
+        workspaceId: 'TACME',
+        role: 'image',
+        modelId: 'openai/gpt-image-2.5-sunburst',
+      }, 1),
+      (error: unknown) =>
+        error instanceof ModelRoleRevisionConflictError &&
+        error.expectedRevision === 1 &&
+        error.actualRevision === 2,
+    );
+    const reset = store.putWorkspaceModelRole({
+      workspaceId: 'TACME',
+      role: 'image',
+      modelId: 'openai/gpt-image-2.5-sunburst',
+    }, 2);
+    assert.equal(reset.modelId, 'openai/gpt-image-2.5-sunburst');
+    assert.equal(reset.revision, 3);
+  } finally {
+    db.close();
+  }
+});
+
 test('an Agent PATCH that fails on its role row leaves config_agents unchanged', () => {
   const db = openStateDb(':memory:');
   try {

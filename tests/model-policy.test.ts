@@ -266,6 +266,38 @@ test('the frozen image capability carries the shape, never the model id', async 
   );
 });
 
+test('a cleared Workspace role row resolves unset, not to a stale model', async () => {
+  // Clearing the Workspace default leaves the row in place with its revision
+  // bumped and no model. Resolution must read that as unset so the compile path
+  // freezes an unfilled capability instead of reaching for an adapter.
+  const resolved = await resolveAgentModelRoleFromStore({
+    role: 'image',
+    workspaceId: 'TACME',
+    agent: agent(),
+    reader: {
+      async getWorkspaceModelRole(workspaceId, role) {
+        return {
+          workspaceId,
+          role,
+          revision: 2,
+          createdAt: 1,
+          updatedAt: 2,
+        };
+      },
+      async getAgentModelRole() {
+        return undefined;
+      },
+    },
+    hasProviderCredential: credentialPresent,
+  });
+
+  assert.deepEqual(resolved, { unset: true, reason: 'role_unset' });
+  assert.deepEqual(
+    imageCapabilityForResolution(resolved),
+    { role: 'image', filled: false, acceptsImageInput: false },
+  );
+});
+
 test('role resolution reads both rows from the store for one Agent and Workspace', async () => {
   const reads: string[] = [];
   const resolved = await resolveAgentModelRoleFromStore({

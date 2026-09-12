@@ -253,6 +253,116 @@ test('a workspace member cannot write the image role through Admin', async () =>
   }
 });
 
+test('the image role clears back to unset and can be set again from cleared', async () => {
+  const fixture = harness();
+  try {
+    await installWorkspace(fixture);
+    await connectOpenAi(fixture);
+    const set = await fixture.app.request('/admin/api/workspace-model-roles/image', {
+      method: 'PUT',
+      headers: auth(),
+      body: JSON.stringify({ modelId: FLARE, expectedRevision: 0 }),
+    });
+    assert.equal(set.status, 200);
+
+    // A stale revision conflicts before anything is cleared.
+    const stale = await fixture.app.request('/admin/api/workspace-model-roles/image', {
+      method: 'PUT',
+      headers: auth(),
+      body: JSON.stringify({ modelId: null, expectedRevision: 0 }),
+    });
+    assert.equal(stale.status, 409);
+    const staleBody = await stale.json() as {
+      error: string;
+      expectedRevision: number;
+      actualRevision: number;
+      workspaceModelRole: { modelId: string | null; revision: number };
+    };
+    assert.equal(staleBody.error, 'model_role_revision_conflict');
+    assert.equal(staleBody.expectedRevision, 0);
+    assert.equal(staleBody.actualRevision, 1);
+    assert.equal(staleBody.workspaceModelRole.modelId, FLARE);
+
+    const cleared = await fixture.app.request('/admin/api/workspace-model-roles/image', {
+      method: 'PUT',
+      headers: auth(),
+      body: JSON.stringify({ modelId: null, expectedRevision: 1 }),
+    });
+    assert.equal(cleared.status, 200);
+    const clearedBody = await cleared.json() as {
+      workspaceModelRole: {
+        workspaceId: string;
+        role: string;
+        modelId: string | null;
+        revision: number;
+        availableModels: unknown[];
+      };
+    };
+    assert.equal(clearedBody.workspaceModelRole.workspaceId, 'T_TEST');
+    assert.equal(clearedBody.workspaceModelRole.role, 'image');
+    assert.equal(clearedBody.workspaceModelRole.modelId, null);
+    assert.equal(clearedBody.workspaceModelRole.revision, 2);
+    // The picker list still ships with the cleared projection.
+    assert.equal(clearedBody.workspaceModelRole.availableModels.length, 2);
+    assert.equal(
+      (await fixture.config.getWorkspaceModelRole('T_TEST', 'image'))?.modelId,
+      undefined,
+    );
+
+    const read = await fixture.app.request('/admin/api/workspace-model-roles/image', {
+      headers: auth(),
+    });
+    assert.equal(read.status, 200);
+    assert.deepEqual(
+      (await read.json() as { workspaceModelRole: { modelId: string | null; revision: number } })
+        .workspaceModelRole.modelId,
+      null,
+    );
+
+    // Setting again from the cleared state uses the bumped revision.
+    const reset = await fixture.app.request('/admin/api/workspace-model-roles/image', {
+      method: 'PUT',
+      headers: auth(),
+      body: JSON.stringify({ modelId: SUNBURST, expectedRevision: 2 }),
+    });
+    assert.equal(reset.status, 200);
+    const resetBody = await reset.json() as {
+      workspaceModelRole: { modelId: string; revision: number };
+    };
+    assert.equal(resetBody.workspaceModelRole.modelId, SUNBURST);
+    assert.equal(resetBody.workspaceModelRole.revision, 3);
+  } finally {
+    fixture.close();
+  }
+});
+
+test('clearing the image role still requires an Owner or Admin', async () => {
+  const member: AuthPrincipal = {
+    userId: 'user_member',
+    membershipId: 'membership_member',
+    organizationId: 'org_oss',
+    role: 'member',
+    authenticatorKind: 'test_slack_session',
+    credentialId: 'member_session',
+    correlationId: 'member_request',
+    machine: false,
+  };
+  const fixture = harness(member);
+  try {
+    await installWorkspace(fixture);
+    await connectOpenAi(fixture);
+    const response = await fixture.app.request('/admin/api/workspace-model-roles/image', {
+      method: 'PUT',
+      headers: auth(),
+      body: JSON.stringify({ modelId: null, expectedRevision: 0 }),
+    });
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: 'forbidden' });
+  } finally {
+    fixture.close();
+  }
+});
+
 test('an Agent PATCH sets and clears its image override', async () => {
   const fixture = harness();
   try {

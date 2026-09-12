@@ -886,8 +886,10 @@ const workspaceModelDefaultSchema = v.strictObject({
 // Role model ids are checked against the image catalog server-side:
 // `modelSpecifier` is shape-only and would happily accept a chat model in the
 // image role. The regex here only bounds the string before the catalog lookup.
+// `null` is the clear: it skips the catalog check and writes an unset row,
+// mirroring how an Agent clears its own override with `imageModel: null`.
 const workspaceModelRoleSchema = v.strictObject({
-  modelId: modelSpecifier,
+  modelId: v.nullable(modelSpecifier),
   expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
 });
 const chickpeaCutoverPrepareSchema = v.strictObject({
@@ -6182,19 +6184,24 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       settings(c),
       c.env as PlatformEnv | undefined,
     );
-    const rejection = await modelRoleChoiceError({
-      settingsStore: settings(c),
-      ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
-      role,
-      modelId: parsed.output.modelId,
-      availableModels,
-    });
-    if (rejection) return invalidRequest(c, rejection);
+    // A clear has no model to validate; only a chosen model meets the catalog.
+    if (parsed.output.modelId !== null) {
+      const rejection = await modelRoleChoiceError({
+        settingsStore: settings(c),
+        ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
+        role,
+        modelId: parsed.output.modelId,
+        availableModels,
+      });
+      if (rejection) return invalidRequest(c, rejection);
+    }
     try {
       await configStore.putWorkspaceModelRole({
         workspaceId: installation.workspaceId,
         role,
-        modelId: parsed.output.modelId,
+        // Omitting the key is the store's clear; the row stays and its
+        // revision still climbs, so the next write is guarded from here.
+        ...(parsed.output.modelId === null ? {} : { modelId: parsed.output.modelId }),
         lastChangedByMembershipId: principal.membershipId,
       }, parsed.output.expectedRevision);
       return c.json({

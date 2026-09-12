@@ -162,7 +162,7 @@ function runHarness(options: HarnessOptions = {}) {
   };
   const listeners: Record<string, Listener> = {};
   const windowListeners: Record<string, Listener> = {};
-  const imageRolePuts: Array<{ modelId: string; expectedRevision: number }> = [];
+  const imageRolePuts: Array<{ modelId: string | null; expectedRevision: number }> = [];
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const fetchCalls: Array<{ path: string; method: string }> = [];
   let imageRolePutResolver: ((response: FakeResponse) => void) | null = null;
@@ -283,7 +283,7 @@ function runHarness(options: HarnessOptions = {}) {
     if (path.startsWith('/admin/api/workspace-model-roles/image')) {
       if (method === 'PUT') {
         const body = JSON.parse(init?.body ?? '{}') as {
-          modelId: string;
+          modelId: string | null;
           expectedRevision: number;
         };
         imageRolePuts.push(body);
@@ -422,6 +422,53 @@ test('Settings offers the default image model with the consent and cost note', a
   assert.match(note, /GPT Image 2\.5 Flare/);
   // Nothing changed yet, so Save cannot be pressed.
   assert.match(html, /data-action="workspace-image-model-save" disabled/);
+});
+
+test('an Owner can clear the default image model back to Not set', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/settings/providers',
+    imageRole: { workspaceId: 'T_DESIGN', role: 'image', modelId: FLARE, revision: 4 },
+  });
+  await flushAsync();
+
+  // A set role renders Ready and offers Not set as a real choice.
+  assert.match(harness.app.innerHTML, /badge badge-on"><span class="dot"><\/span>Ready/);
+  assert.match(harness.app.innerHTML, /<option value="">Not set<\/option>/);
+
+  const change = harness.listeners.change;
+  const click = harness.listeners.click;
+  assert.ok(change && click);
+
+  change({ target: valueTarget({ 'data-action': 'workspace-image-model' }, '') });
+  await flushAsync();
+  // Not set differs from the stored model, so Save is live.
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="workspace-image-model-save" disabled/);
+
+  click({ target: actionTarget({ 'data-action': 'workspace-image-model-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.imageRolePuts, [{ modelId: null, expectedRevision: 4 }]);
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /<option value="" selected>Not set<\/option>/);
+  assert.match(html, /badge badge-off"><span class="dot"><\/span>Not set/);
+  assert.match(html, /Default image model cleared/);
+  assert.match(html, /lose the image tool/);
+  // Nothing left to change, so Save is disabled again.
+  assert.match(html, /data-action="workspace-image-model-save" disabled/);
+  assert.equal(harness.focusedAction(), 'workspace-image-model');
+});
+
+test('an already unset default image model offers Not set with Save disabled', async () => {
+  const harness = runHarness({ initialPath: '/admin/settings/providers' });
+  await flushAsync();
+
+  // The role starts unset: Not set is the selected option, the badge reads off,
+  // and Save stays disabled because the draft already matches the stored value.
+  const html = harness.app.innerHTML;
+  assert.match(html, /badge badge-off"><span class="dot"><\/span>Not set/);
+  assert.match(html, /<option value="" selected>Not set<\/option>/);
+  assert.match(html, /data-action="workspace-image-model-save" disabled/);
+  assert.deepEqual(harness.imageRolePuts, []);
 });
 
 test('Settings hints at connecting OpenAI instead of rendering an empty image select', async () => {
