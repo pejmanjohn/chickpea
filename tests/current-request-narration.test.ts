@@ -17,8 +17,9 @@ test('image inventory changes preserve current-request delivery authority throug
     interceptor: memoryToolPolicyInterceptor,
     observe(event, context) {
       if (event.type === 'turn_request' && event.purpose === 'agent') {
-        const latest = event.request.input.messages.findLast(message => message.role === 'user');
-        newestUsers.push(JSON.stringify(latest?.content));
+        for (const message of event.request.input.messages) {
+          if (message.role === 'user') newestUsers.push(JSON.stringify(message.content));
+        }
       }
       observeMemoryToolPolicy(event, context);
     },
@@ -31,6 +32,10 @@ test('image inventory changes preserve current-request delivery authority throug
     useTool(defineTool({ name: 'recover_image', description: 'Deliver retained fixture bytes.',
       input: v.object({}), output: v.object({ attached: v.boolean() }),
       async run() { delivered += 1; return { output: { attached: true } }; } }));
+    if (delivery.kind === 'signal' && delivery.attributes?.inventory !== 'img:1') {
+      useTool(defineTool({ name: 'available_after_first_turn', description: 'Synthetic changed tool roster.',
+        input: v.object({}), output: v.string(), async run() { return { output: 'unused' }; } }));
+    }
     return 'Use recover_image once, then finish.';
   }
   const faux = fauxProvider({ models: [{ id: 'current-request-narration' }] });
@@ -50,6 +55,7 @@ test('image inventory changes preserve current-request delivery authority throug
       assert.equal(delivered, Math.min(turn, 2), JSON.stringify(newestUsers));
     }
     assert.ok(newestUsers.some(text => text.includes('System instructions updated.')), 'actual runtime emitted the instruction-change marker');
+    assert.ok(newestUsers.some(text => text.includes('resource=\\"tool\\"')), 'actual runtime emitted the tool-change marker');
   } finally {
     await flue.stop();
     await registration();

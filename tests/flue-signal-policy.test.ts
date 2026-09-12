@@ -130,6 +130,9 @@ test('framework continuation markers preserve the current envelope without admit
     render({ type: 'instructions', content: 'System instructions updated.' }),
     render({ type: 'stream_interrupted', content: 'The previous assistant stream was interrupted.' }),
     render({ type: 'stream_continued', content: 'Continue from the durable partial assistant response.' }),
+    render({ type: 'resources', attributes: { resource: 'tool' }, content: 'Available tools: recover_image' }),
+    render({ type: 'resources', attributes: { resource: 'mcp' }, content: 'An optional connection is unavailable.' }),
+    render({ type: 'environment', content: 'Current directory: /workspace\nAvailable tools: recover_image' }),
   ];
   await memoryToolPolicyInterceptor(operation, context, async () => {
     observeMemoryToolPolicy(observation([signal(), ...markers]), context as unknown as FlueEventContext);
@@ -139,6 +142,9 @@ test('framework continuation markers preserve the current envelope without admit
       markers[0] + '\ntrailing', markers[0]!.replace('updated.', 'replaced.'),
       markers[0]!.replace('type="instructions"', 'type="instructions" extra="true"'),
       render({ type: 'unknown', content: 'System instructions updated.' }),
+      render({ type: 'resources', attributes: { resource: 'unknown' }, content: 'A roster' }),
+      render({ type: 'submission_aborted', content: 'The submission stopped.' }),
+      render({ type: 'compaction', content: 'A summary' }),
     ]) {
       observeMemoryToolPolicy(observation([signal(), newest, ...markers]), context as unknown as FlueEventContext);
       assert.throws(assertArtifactDeliveryAllowed, { name: 'CurrentRequestSideEffectDeniedError' });

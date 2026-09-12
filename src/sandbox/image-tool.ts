@@ -618,7 +618,7 @@ function imageToolOutput(result: ImageArtifactResult): { output: JsonValue } {
 
 async function resolveImageInputs(
   options: ImageArtifactToolOptions,
-  data: ImageToolData,
+  data: Pick<ImageToolData, 'inputs'>,
   signal: AbortSignal | undefined,
 ): Promise<{ images: ImageInput[] } | { failure: Extract<ImageArtifactResult, { attached: false }> }> {
   const handles = options.acceptsImageInput ? data.inputs ?? [] : [];
@@ -663,18 +663,33 @@ async function resolveImageInputs(
 export function createRecoverImageTool(options: ImageArtifactToolOptions) {
   return defineTool({
     name: 'recover_image',
-    description: 'Attach an image retained from a generate_image result in this same conversation, using its savedImage handle. Use after an upload failure or when asked to resend, without generating or paying for another image. Saved images expire after 24 hours and may be evicted earlier by the bounded cache. Never call generate_image just to retry delivery. Optional allowResize permits a smaller delivery when compression alone cannot fit; get this preference from the user request.',
+    description: 'Reattach an existing image without generating or paying for another image. Use a savedImage handle from generate_image for a failed upload, or an img:N handle from the current conversation image inventory for an image already visible in Slack. Prefer the matching img:N handle when earlier tool results are unavailable. Saved images expire after 24 hours and may be evicted earlier by the bounded cache; conversation images depend on Slack access. Never call generate_image just to retry delivery. Optional allowResize permits a smaller delivery when compression alone cannot fit; get this preference from the user request.',
     input: v.object({
-      image: v.pipe(v.string(), v.regex(SAVED_IMAGE_ID)),
+      image: v.pipe(v.string(), v.check((value) => IMAGE_HANDLE.test(value) || SAVED_IMAGE_ID.test(value))),
       filename: FILENAME_FIELD,
       allowResize: v.optional(v.boolean()),
     }),
     durable: true,
-    async run({ data, step }) {
+    async run({ data, step, signal }) {
       assertArtifactDeliveryAllowed();
       return { output: await step.do('recover', async () => {
-        const saved = await options.outputStore?.read(data.image).catch(() => undefined);
+        let saved: { bytes: Uint8Array; metadata: Record<string, unknown>; expiresAt?: number } | undefined;
+        const retained = SAVED_IMAGE_ID.test(data.image);
+        if (retained) {
+          saved = await options.outputStore?.read(data.image).catch(() => undefined);
+        } else {
+          // Reading an already delivered image does not require provider edit
+          // support. The same host inventory and authenticated reader used by
+          // editing enforce conversation scope, access, MIME and byte limits.
+          const resolved = await resolveImageInputs({ ...options, acceptsImageInput: true }, { inputs: [data.image] }, signal);
+          if ('failure' in resolved) return resolved.failure as unknown as JsonValue;
+          const original = resolved.images[0];
+          if (original) saved = { bytes: original.bytes, metadata: {} };
+        }
         if (!saved) return { attached: false, reason: 'expired_or_unavailable' };
+        const source: Record<string, JsonValue> = retained
+          ? { savedImage: data.image, ...(saved.expiresAt === undefined ? {} : { expiresAt: saved.expiresAt }) }
+          : { sourceImage: data.image };
         const { maxBytes } = await options.resolveTransport();
         let image: PreparedImage;
         try {
@@ -685,15 +700,15 @@ export function createRecoverImageTool(options: ImageArtifactToolOptions) {
             ? { ...facts, bytes: saved.bytes, compressed: false, resized: false }
             : (options.prepareOutput ?? prepareImageOutput)(saved.bytes, maxBytes, !data.allowResize);
         }
-        catch { return { attached: false, reason: 'invalid_image', savedImage: data.image }; }
+        catch { return { attached: false, reason: 'invalid_image', ...source }; }
         if ((!data.allowResize && saved.metadata.size && saved.metadata.size !== 'auto' && saved.metadata.size !== `${image.width}x${image.height}`) ||
             backgroundMismatch(saved.metadata.background, image.transparent)) {
-          return { attached: false, reason: 'output_requirements_not_met', savedImage: data.image };
+          return { attached: false, reason: 'output_requirements_not_met', ...source };
         }
         const filename = imageFilename(data.filename, image.format);
-        if (image.bytes.length > maxBytes) return { attached: false, reason: 'too-large', maxBytes, savedImage: data.image };
+        if (image.bytes.length > maxBytes) return { attached: false, reason: 'too-large', maxBytes, ...source };
         const outcome = await options.stageArtifact({ bytes: image.bytes, filename, kind: 'image' });
-        return { ...outcome, filename, savedImage: data.image, expiresAt: saved.expiresAt,
+        return { ...outcome, filename, ...source,
           width: image.width, height: image.height, transparent: image.transparent, format: image.format,
           ...(saved.metadata.inspection ? { inspection: saved.metadata.inspection as unknown as JsonValue } : {}),
           compressed: image.compressed, resized: image.resized };

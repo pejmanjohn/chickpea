@@ -420,11 +420,12 @@ function isManagedCurrentRequestAgent(agentName: string | undefined): boolean {
 }
 
 /**
- * Flue appends these fixed framework markers inside the active submission.
+ * Flue appends these framework continuation markers inside the active submission.
  * They do not advance its delivery cursor. Dispatch/append reserve their types,
  * and Slack user text is escaped inside slack_message, so a lookalike in user
- * content cannot become a top-level marker. Skip only the exact single-text
- * projection; any other newest user message still has to carry its own policy.
+ * content cannot become a top-level marker. Fixed markers match byte for byte;
+ * resource/environment rosters use Flue's exact escaped single-text framing.
+ * Terminal/compaction signals are not continuations and are never skipped.
  */
 export function isCurrentRequestContinuationMarker(message: LlmMessage): boolean {
   if (message.role !== 'user') return false;
@@ -433,7 +434,11 @@ export function isCurrentRequestContinuationMarker(message: LlmMessage): boolean
       ? message.content[0].text : undefined;
   return text === '<signal type="instructions">\nSystem instructions updated.\n</signal>' ||
     text === '<signal type="stream_interrupted">\nThe previous assistant stream was interrupted.\n</signal>' ||
-    text === '<signal type="stream_continued">\nContinue from the durable partial assistant response.\n</signal>';
+    text === '<signal type="stream_continued">\nContinue from the durable partial assistant response.\n</signal>' ||
+    (typeof text === 'string' && (
+      /^<signal type="resources" resource="(?:tool|skill|subagent|mcp)">\n[^<>]*\n<\/signal>$/.test(text) ||
+      /^<signal type="environment">\n[^<>]*\n<\/signal>$/.test(text)
+    ));
 }
 
 function envelopeFromMessages(

@@ -107,6 +107,41 @@ async function invoke(tool: ReturnType<typeof createImageArtifactTool> | ReturnT
   return (tool.run as (context: unknown) => Promise<{ output: any }>)({ data: v.parse(tool.input, data), toolCallId: 'call_test', step });
 }
 
+test('conversation image recovery survives missing tool history and preserves original bytes without a provider', async () => {
+  const bytes = await fixture('webp', true);
+  const { options, state, settings } = await setup(bytes);
+  try {
+    delete options.outputStore;
+    options.acceptsImageInput = false;
+    options.resolveClient = async () => { throw new Error('must not resolve image provider'); };
+    options.reserveImageCall = () => { throw new Error('must not reserve a generation'); };
+    options.inventory = buildThreadImageInventory({ conversationKey: 'test', threadRecords: [
+      { conversationKey: 'test', fileId: 'F_EDITED', filename: 'edited.webp', mimeType: 'image/webp', origin: 'agent', messageTs: '1789000000.000100' },
+      { conversationKey: 'other', fileId: 'F_OTHER', filename: 'other.webp', mimeType: 'image/webp', origin: 'agent', messageTs: '1789000000.000200' },
+    ] });
+    let reads = 0;
+    options.createImageReader = async () => ({ usedBytes: () => bytes.length, read: async record => {
+      reads += 1; assert.equal(record.fileId, 'F_EDITED');
+      return { ok: true, bytes, mimeType: 'image/webp', filename: 'edited.webp' };
+    } });
+    const tool = createRecoverImageTool(options), checkpoint = steps();
+    const result = await invoke(tool, { image: 'img:1', filename: 'resent' }, checkpoint);
+    assert.equal(result.output.attached, true);
+    assert.equal(result.output.sourceImage, 'img:1');
+    assert.equal(result.output.savedImage, undefined);
+    assert.equal(result.output.width, 1024);
+    assert.equal(result.output.transparent, true);
+    assert.equal(result.output.resized, false);
+    assert.deepEqual(state.stages, [bytes]);
+    await invoke(tool, { image: 'img:1', filename: 'resent' }, steps(checkpoint.records));
+    assert.equal(reads, 1); assert.equal(state.stages.length, 1, 'completed recovery does not upload twice');
+    assert.equal((await invoke(tool, { image: 'img:2' })).output.detail, 'not_found');
+    options.createImageReader = async () => ({ usedBytes: () => 0, read: async () => ({ ok: false, reason: 'input-unavailable', detail: 'missing_scope' }) });
+    assert.equal((await invoke(tool, { image: 'img:1' })).output.detail, 'missing_scope');
+    assert.equal(state.stages.length, 1);
+  } finally { settings.close(); }
+});
+
 test('an interrupted generation reattaches retained bytes without another provider call', async () => {
   const { options, state, settings } = await setup(await fixture());
   try {
