@@ -11838,7 +11838,7 @@ test('onboarding skips channel publication, validates a provider, requires a mod
   assert.match(harness.app.innerHTML, /<span>Workers AI<\/span><span class="onboarding-provider-tab-status">Ready, no key<\/span>/);
   assert.match(harness.app.innerHTML, /<span>OpenAI<\/span><span class="onboarding-provider-tab-sub">Needs API key<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /aria-pressed="true"|Use Cloudflare Workers AI instead/);
-  assert.match(harness.app.innerHTML, /Most teams pick OpenAI or Anthropic\. Workers AI needs no key but gives simpler replies\./);
+  assert.match(harness.app.innerHTML, /Choose the provider you want Chickpea to use\. Each option shows the setup it needs\./);
   assert.match(harness.app.innerHTML, /data-action="onboarding-provider-continue" disabled>Validate and Continue<\/button>/);
   assert.equal((harness.app.innerHTML.match(/class="onboarding-provider-logo"/g) ?? []).length, 4);
 

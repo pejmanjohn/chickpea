@@ -385,7 +385,7 @@ Uses Cloudflare Workers, Durable Objects, D1, and Workers AI.
 
 ### Node
 
-Requires Node **24.x, minimum 24.20.0**. Use `nvm install && nvm use` to select the pinned development and verification baseline.
+Requires Node **24.x, minimum 24.20.0**. Use an existing Node manager to select the `.nvmrc` baseline (`nvm install && nvm use` with nvm), or a compatible Homebrew `node@24` scoped to the current shell; do not replace an unrelated global runtime.
 
 ```bash
 git clone https://github.com/pejmanjohn/chickpea && cd chickpea
