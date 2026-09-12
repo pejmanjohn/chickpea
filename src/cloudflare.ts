@@ -55,6 +55,7 @@ import type {
   SettingsStore,
 } from './config/settings-store.ts';
 import { SettingsStoreLogic } from './config/settings-store.ts';
+import { purgeExpiredImageOutputs } from './images/output-store.ts';
 import { SnapshotStoreLogic } from './config/snapshot-store.ts';
 import { settlementFailureFacts } from './slack/agent-failure-diagnostics.ts';
 import type {
@@ -2583,6 +2584,7 @@ async function runWorkMaintenance(
       throw new Error(`Work maintenance failed: ${result.error.message}`);
     }
     const platformEnv = rawEnv as PlatformEnv;
+    await purgeExpiredImageOutputs(getSettingsStore(platformEnv), scheduledTime);
     await repairPendingOAuthContinuationResumes({
       settings: getSettingsStore(platformEnv),
       onReady: async (continuation) => {

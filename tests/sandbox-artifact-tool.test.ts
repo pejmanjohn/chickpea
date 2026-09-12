@@ -486,11 +486,11 @@ test('the image-capable instruction names the tool, handles, and the call rules'
   assert.match(instruction, /describe one single image in the prompt and never mention variations/);
   assert.match(instruction, /before declaring a streamed answer/);
   assert.match(instruction, /locks out every later tool call/);
-  assert.match(instruction, /names the model, size, and format the provider applied/);
+  assert.match(instruction, /Dimensions and transparency come from the actual file/);
   // The result promises no handle for the new image; the next turn lists it.
   assert.match(
     instruction,
-    /appears in the next turn’s listing with origin=agent under the filename you chose/,
+    /next turn’s img:N listing with origin=agent/,
   );
   assert.doesNotMatch(instruction, /its own `img:N` handle/);
   assert.doesNotMatch(instruction, /intent/);
@@ -561,7 +561,7 @@ test('the image-capable instruction names every failure reason honestly', () => 
   );
   assert.match(
     instruction,
-    /source staging means the image was produced but the file could not be attached through this Slack connection/,
+    /source staging means image generation returned bytes but preparation or attachment failed/,
   );
   assert.match(
     instruction,
@@ -579,7 +579,7 @@ test('the image-capable instruction names every failure reason honestly', () => 
     /reason missing-scope means this workspace does not permit Slack file uploads: say an Owner needs to grant that permission and never claim an image was attached/,
   );
   assert.match(instruction, /detail unsupported_type means that file type cannot be used as an image input: ask for a PNG, JPEG, or WebP instead/);
-  assert.match(instruction, /never say an image was generated, attached, or edited/);
+  assert.match(instruction, /never say an image was attached or the requested edit was completed/);
   assert.match(
     instruction,
     /ask the member who shared it to re-upload it in this conversation/,
@@ -587,7 +587,7 @@ test('the image-capable instruction names every failure reason honestly', () => 
   assert.match(instruction, /do not retry that handle or describe the edit as done/);
   assert.match(
     instruction,
-    /exceeded this workspace’s upload limit even after compression: say so and offer a simpler image instead of claiming an attachment/,
+    /exceeded this workspace’s upload limit even after compression: say so and offer to resend a smaller copy if the user accepts reduced dimensions/,
   );
 });
 

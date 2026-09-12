@@ -1,5 +1,6 @@
 import type { ImageModelProfile } from '../model-catalog/image-profiles.ts';
 import { isRecord } from '../security/content-validation.ts';
+import { IMAGE_QUALITIES, validImageSize, type ImageQuality } from './output-controls.ts';
 
 export type ImageOutputFormat = 'png' | 'jpeg' | 'webp';
 
@@ -18,6 +19,8 @@ export interface ImageInput {
 
 export interface ImageGenerateRequest {
   prompt: string;
+  size?: string;
+  quality?: ImageQuality;
   format: ImageFormatPolicy;
   deadlineMs: number;
   /**
@@ -177,6 +180,8 @@ export function createOpenAiImagesClient(options: OpenAiImagesClientOptions): Op
             model: profile.model,
             prompt: request.prompt,
             n: requestedCount(request),
+            size: request.size ?? 'auto',
+            quality: request.quality ?? 'auto',
             ...formatFields(request.format),
           }),
         }),
@@ -198,6 +203,8 @@ function editForm(request: ImageEditRequest, profile: ImageModelProfile): FormDa
   form.append('model', profile.model);
   form.append('prompt', request.prompt);
   form.append('n', String(requestedCount(request)));
+  form.append('size', request.size ?? 'auto');
+  form.append('quality', request.quality ?? 'auto');
   for (const [field, value] of Object.entries(formatFields(request.format))) {
     form.append(field, String(value));
   }
@@ -235,6 +242,15 @@ function validateRequest(
 ): ImageCallResult | undefined {
   if (!request.prompt.trim()) {
     return { ok: false, reason: 'invalid-request', detail: 'empty_prompt' };
+  }
+  if (!validImageSize(request.size ?? 'auto')) {
+    return { ok: false, reason: 'invalid-request', detail: 'invalid_size' };
+  }
+  if (!IMAGE_QUALITIES.includes(request.quality ?? 'auto')) {
+    return { ok: false, reason: 'invalid-request', detail: 'invalid_quality' };
+  }
+  if (request.format.background === 'transparent' && request.format.format === 'jpeg') {
+    return { ok: false, reason: 'invalid-request', detail: 'transparent_jpeg' };
   }
   if (Array.from(request.prompt).length > PROMPT_CHARACTER_CAP) {
     return { ok: false, reason: 'invalid-request', detail: 'prompt_too_long' };

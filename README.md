@@ -332,6 +332,10 @@ Every Agent can be pinned to its own model. A cheap fast model for triage, a str
 
 Images are a second model role beside chat. Pick a **default image model** in **Settings → Model providers**, and override it on any Agent from its Model tab; Agents with the role filled can generate and edit images in a thread, and Agents without it cannot. Image models come from OpenAI in this release and reuse your OpenAI key. When an Agent makes an image, the prompt text it writes and any images people posted in that Slack thread are sent to that provider.
 
+Ask for square, portrait, or landscape output, a quick draft, or a transparent background. The Agent passes explicit output controls and checks the returned file's dimensions and transparency. A visual check uses the Agent's configured chat model and may make one correction within the four-image response budget. Visual inspection can miss defects; it does not establish pixel-identical logos or typography, and unavailable checks are reported.
+
+Chickpea attempts to retain generated files up to 8 MiB privately for up to 24 hours. The installation shares a 64 MiB cache; each file is accessible only in its workspace, Agent, channel, and thread. Cache pressure may remove files earlier. Ask to resend a retained image to retry its delivery without generating it again. Oversized files are compressed; explicitly requested dimensions are preserved unless you accept a smaller resend. Generated outputs and their references are also sent to the configured chat provider for the visual check. Image generation and inspection costs are not yet included in Usage.
+
 ---
 
 ## Coding Sandbox

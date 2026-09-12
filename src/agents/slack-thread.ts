@@ -158,11 +158,15 @@ import {
 import { createChartArtifactTool, RENDER_CHART_TOOL_NAME } from '../sandbox/chart-tool.ts';
 import {
   createImageArtifactTool,
+  createRecoverImageTool,
   useImageCallBudget,
   type ImageCallReservation,
   type ImageClientResolution,
   type ImageToolTransport,
 } from '../sandbox/image-tool.ts';
+import { createImageOutputStore } from '../images/output-store.ts';
+import { inspectImageOutput, type ImageInspectionInput } from '../images/inspect-output.ts';
+import { isProviderKeyId, resolveProviderApiKey } from '../config/provider-keys.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import {
@@ -1630,29 +1634,44 @@ export function createRuntimePlanArtifactTools(
   // receipts, so it never mounts it.
   const reserveImageCall = options.reserveImageCall;
   const imageCapability = plan.imageCapability;
+  let outputStore: ReturnType<typeof createImageOutputStore> | undefined;
+  const resolveOutputStore = async () => outputStore ??= createImageOutputStore(
+    getSettingsStore(await resolveAgentPlatformEnv()), destination,
+  );
+  const imageOptions = imageCapability?.filled && reserveImageCall ? {
+    acceptsImageInput: imageCapability.acceptsImageInput,
+    inventory: options.imageInventory ?? runtimePlanThreadImageInventory(plan, options.threadImages),
+    reserveImageCall,
+    resolveTransport: binding.resolveTransport,
+    resolveClient: options.resolveImageClient ?? (() => resolveRuntimePlanImageClient(plan)),
+    inspectOutput: async (input: ImageInspectionInput) => {
+      try {
+        const env = await resolveAgentPlatformEnv();
+        const model = await prepareRuntimePlanModel(plan, env);
+        const provider = plan.model.split('/', 1)[0] ?? '';
+        const apiKey = isProviderKeyId(provider)
+          ? (await resolveProviderApiKey(provider, env, getSettingsStore(env))).apiKey
+          : provider === 'cloudflare-workers-ai' ? process.env.CLOUDFLARE_API_TOKEN : undefined;
+        return await inspectImageOutput(model.model, input, apiKey);
+      } catch {
+        return { status: 'unavailable' as const, observations: 'Visual inspection is unavailable with the configured chat model.' };
+      }
+    },
+    outputStore: {
+      save: async (bytes: Uint8Array, metadata: Record<string, unknown>) => (await resolveOutputStore()).save(bytes, metadata),
+      read: async (id: string) => (await resolveOutputStore()).read(id),
+      remove: async (id: string) => (await resolveOutputStore()).remove(id),
+    },
+    createImageReader: async (limits: { perFileLimitBytes: number; totalLimitBytes: number; signal?: AbortSignal }) => {
+      const env = await resolveAgentPlatformEnv();
+      return createThreadImageReader({ client: createSlackAttachmentClient(env), ...limits });
+    },
+    stageArtifact: binding.stageArtifact,
+  } : undefined;
   return [
     createWorkspaceArtifactTool({ ...binding, sandboxKind: plan.sandbox.mode }),
     createChartArtifactTool(binding),
-    ...(imageCapability?.filled && reserveImageCall
-      ? [createImageArtifactTool({
-          acceptsImageInput: imageCapability.acceptsImageInput,
-          inventory: options.imageInventory ??
-            runtimePlanThreadImageInventory(plan, options.threadImages),
-          reserveImageCall,
-          resolveTransport: binding.resolveTransport,
-          resolveClient: options.resolveImageClient ?? (() => resolveRuntimePlanImageClient(plan)),
-          createImageReader: async (limits) => {
-            const env = await resolveAgentPlatformEnv();
-            return createThreadImageReader({
-              client: createSlackAttachmentClient(env),
-              perFileLimitBytes: limits.perFileLimitBytes,
-              totalLimitBytes: limits.totalLimitBytes,
-              ...(limits.signal ? { signal: limits.signal } : {}),
-            });
-          },
-          stageArtifact: binding.stageArtifact,
-        })]
-      : []),
+    ...(imageOptions ? [createImageArtifactTool(imageOptions), createRecoverImageTool(imageOptions)] : []),
   ];
 }
 
