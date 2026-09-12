@@ -11,6 +11,7 @@ import { MANAGED_SUBMISSION_AGENT_NAMES } from '../agents/names.ts';
 import {
   ARTIFACT_DELIVERY_TOOL_NAMES,
   currentRequestOffersProgressiveStreaming,
+  isCurrentRequestContinuationMarker,
   parseModelVisibleCurrentRequestEnvelope,
   type CurrentRequestEnvelope,
 } from '../memory/tool-policy.ts';
@@ -165,6 +166,7 @@ function currentResponsePolicy(messages: readonly LlmMessage[]): {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role !== 'user') continue;
+    if (isCurrentRequestContinuationMarker(message)) continue;
     newestUserIndex = index;
     envelope = envelopeFromUserMessage(message);
     if (envelope && userMessageTexts(message).some((text) => text.startsWith('<slack_file_delivery_check '))) continue;

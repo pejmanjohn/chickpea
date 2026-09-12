@@ -170,7 +170,7 @@ test('artifact declarations expose only export tools during file-delivery repair
     });
     assert.deepEqual(tools.map((tool) => tool.name), repairing
       ? ['post_artifact', COMPLETE_FILE_DELIVERY_TOOL]
-      : ['post_artifact', COMPLETE_FILE_DELIVERY_TOOL, 'render_chart', 'generate_image']);
+      : ['post_artifact', COMPLETE_FILE_DELIVERY_TOOL, 'render_chart', 'generate_image', 'recover_image']);
   }
 });
 

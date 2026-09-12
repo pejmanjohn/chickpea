@@ -1,6 +1,6 @@
 import type { GatewayAttachmentClient } from './gateway/client.ts';
 import { compareSlackTs, DEFAULT_MAX_MESSAGES, type SlackWebApiMessage } from './thread-context.ts';
-import type { SlackArtifactReceipt } from './artifact-receipts.ts';
+import { isSlackFilePermalink, type SlackArtifactReceipt } from './artifact-receipts.ts';
 import { SLACK_FILE_ID, SLACK_TS } from './ids.ts';
 import { safeFilename } from './attachment-context.ts';
 import { MAX_SLACK_ATTACHMENT_BYTES } from './attachment-normalization.ts';
@@ -82,6 +82,8 @@ export interface ThreadImageRecord {
   messageTs: string;
   /** Slack's declared size, when the row carried one. */
   byteLength?: number;
+  /** Host-observed canonical link; never accepted as a tool argument. */
+  permalink?: string;
 }
 
 /** Model-facing entry: a handle plus labels, never something a tool accepts. */
@@ -330,7 +332,7 @@ function fileRecord(
   context: { conversationKey: string; origin: ThreadImageOrigin; messageTs: string },
 ): ThreadImageRecord | undefined {
   if (typeof file !== 'object' || file === null || Array.isArray(file)) return undefined;
-  const candidate = file as { id?: unknown; name?: unknown; mimetype?: unknown; size?: unknown };
+  const candidate = file as { id?: unknown; name?: unknown; mimetype?: unknown; size?: unknown; permalink?: unknown };
   const fileId = typeof candidate.id === 'string' && SLACK_FILE_ID.test(candidate.id)
     ? candidate.id
     : undefined;
@@ -350,6 +352,7 @@ function fileRecord(
     mimeType,
     origin: context.origin,
     messageTs: context.messageTs,
+    ...(isSlackFilePermalink(candidate.permalink, fileId) ? { permalink: candidate.permalink } : {}),
     ...(typeof size === 'number' && Number.isSafeInteger(size) && size >= 0
       ? { byteLength: size }
       : {}),
@@ -377,6 +380,7 @@ function receiptRecord(
     origin: 'agent',
     // The staged file has no message of its own until the reply is delivered.
     messageTs: '',
+    ...(receipt.schemaVersion === 2 ? { permalink: receipt.permalink } : {}),
     ...(receipt.byteLength > 0 ? { byteLength: receipt.byteLength } : {}),
   };
 }
@@ -424,6 +428,7 @@ interface ThreadImageWireRecord {
   origin: ThreadImageOrigin;
   messageTs: string;
   byteLength?: number;
+  permalink?: string;
 }
 
 /**
@@ -490,6 +495,7 @@ function wireRecord(value: unknown): ThreadImageWireRecord | undefined {
   const origin = candidate.origin;
   const messageTs = candidate.messageTs;
   const byteLength = candidate.byteLength;
+  if (candidate.permalink !== undefined && !isSlackFilePermalink(candidate.permalink, String(fileId))) return undefined;
   if (typeof fileId !== 'string' || !SLACK_FILE_ID.test(fileId)) return undefined;
   if (typeof mimeType !== 'string' || !THREAD_IMAGE_MIME_TYPES.has(mimeType)) return undefined;
   if (origin !== 'person' && origin !== 'agent') return undefined;
@@ -508,5 +514,6 @@ function wireRecord(value: unknown): ThreadImageWireRecord | undefined {
     origin,
     messageTs,
     ...(byteLength === undefined ? {} : { byteLength }),
+    ...(typeof candidate.permalink === 'string' ? { permalink: candidate.permalink } : {}),
   };
 }

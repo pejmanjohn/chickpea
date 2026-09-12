@@ -33,6 +33,8 @@ export interface EncryptedCredentialStore {
  * Operator settings persisted by the app itself. Customer Slack credential
  * bundles are deliberately excluded: they live only as encrypted revisions in
  * TAG_STATE, while this store retains public presentation/configuration data.
+ * Exception: generated_images:v1:* is a private, bounded, expiring image
+ * cache. Never expose arbitrary settings or that prefix through Admin/export.
  */
 export interface SettingsStore {
   getSetting(key: string): Promise<string | undefined>;

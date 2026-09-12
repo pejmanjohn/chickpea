@@ -342,6 +342,9 @@ export function toolActivityStatus(
   if (toolName === 'generate_image') {
     return activityStatus('running', 'Creating', 'an image');
   }
+  if (toolName === 'recover_image') {
+    return activityStatus('finishing', 'Attaching', 'a saved image');
+  }
   return activityStatus('running', 'Working with', 'a tool');
 }
 

@@ -395,6 +395,7 @@ export function buildRuntimePlanActivityContext(
     { toolName: 'complete_file_delivery', descriptor: artifact },
     { toolName: 'render_chart', descriptor: artifact },
     { toolName: 'generate_image', descriptor: artifact },
+    { toolName: 'recover_image', descriptor: artifact },
   );
   families.add('artifact');
 
