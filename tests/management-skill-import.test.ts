@@ -27,7 +27,8 @@ function resolution(
   };
 }
 
-test('Slack installs one exact public GitHub skill immediately with an undoable receipt', async () => {
+for (const withSupportingFiles of [false, true]) {
+test(`Slack imports an exact public skill with an undoable receipt (supporting files: ${withSupportingFiles})`, async () => {
   let resolvedSource: ParsedSkillSource | undefined;
   const f = await createManagementAdapterFixture('slack-skill-import', {
     resolveSkillImport: async (source) => {
@@ -37,6 +38,7 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
         description: 'Remove AI writing tells from prose.',
         instructions: 'Rewrite the draft plainly and preserve its meaning.',
         hasScripts: false,
+        ...(withSupportingFiles ? { inspection: { complete: true, scriptPaths: [], auxiliaryPaths: ['references/guide.md'], unknownPaths: [], warnings: ['Supporting files are omitted; instructions that depend on them may be incomplete.'] } } : {}),
         path: 'pstack/skills/unslop',
         sourceUrl: 'https://github.com/cursor/plugins/tree/1111111111111111111111111111111111111111/pstack/skills/unslop',
       }]);
@@ -140,7 +142,9 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
     assert.equal(result.import.replacedExisting, false);
     assert.equal(result.undoAvailable, true);
     assert.equal(result.presentation.slack,
-      'Installed skill `unslop` on Sprout. It’s active from the next message. You can undo this change.');
+      withSupportingFiles
+        ? 'Instructions imported for skill `unslop` on Sprout. It’s active from the next message. Supporting files omitted: references/guide.md. Supporting files are omitted; instructions that depend on them may be incomplete. You can undo this change.'
+        : 'Installed skill `unslop` on Sprout. It’s active from the next message. You can undo this change.');
 
     const replayed = await invokeSlackWorkspaceManagementTool({
       signal: { ...signal, eventId: 'Ev_SKILL_REPLAY', turnJobId: 'turn_SKILL_REPLAY' },
@@ -289,6 +293,8 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
     f.close();
   }
 });
+
+}
 
 test('skill import requires selection for a multi-skill source and rejects packaged scripts', async () => {
   let resolutionCalls = 0;

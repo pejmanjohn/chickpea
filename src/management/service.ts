@@ -1,3 +1,4 @@
+import { describeSkillPaths } from '../config/skill-package.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import { canEditAgent } from '../auth/permissions.ts';
@@ -426,16 +427,13 @@ export class WorkspaceManagementService {
       );
     }
     const undoAvailable = outcome.undoAvailable === true;
-    const verb = existing ? 'Replaced' : 'Installed';
     return {
       status: 'installed',
       operationId: applied.operationId,
       activation: applied.activation,
       undoAvailable,
       presentation: {
-        slack: `${verb} skill \`${escapeSlackControlCharacters(skill.name)}\` on ${
-          escapeSlackControlCharacters(agent.name)
-        }. It’s active from the next message.${undoAvailable ? ' You can undo this change.' : ''}`,
+        slack: formatSkillImportReceipt(metadata, agent.name, undoAvailable),
       },
       import: metadata,
     };
@@ -741,16 +739,13 @@ export class WorkspaceManagementService {
       );
     }
     const undoAvailable = outcome.undoAvailable === true && undo?.status === 'available';
-    const verb = replacedExisting ? 'Replaced' : 'Installed';
     return {
       status: 'installed',
       operationId: result.operationId,
       activation: result.activation,
       undoAvailable,
       presentation: {
-        slack: `${verb} skill \`${escapeSlackControlCharacters(changedSkill.name)}\` on ${
-          escapeSlackControlCharacters(agent.name)
-        }. It’s active from the next message.${undoAvailable ? ' You can undo this change.' : ''}`,
+        slack: formatSkillImportReceipt(metadata, agent.name, undoAvailable),
       },
       import: metadata,
     };
@@ -842,10 +837,13 @@ export class WorkspaceManagementService {
     }
 
     const skill = matchingSkills[0]!;
+    if (skill.inspection?.complete === false || skill.inspection?.unknownPaths.length) {
+      throw new ManagementError('invalid_request', `Skill ${skill.name} contains unsupported or incompletely inspected files: ${describeSkillPaths(skill.inspection.unknownPaths)}. No change was made.`);
+    }
     if (skill.hasScripts) {
       throw new ManagementError(
         'invalid_request',
-        `Skill ${skill.name} includes executable scripts, which Chickpea Agent skills do not package. No change was made.`,
+        `Skill ${skill.name} includes executable scripts${skill.inspection ? ` (${describeSkillPaths(skill.inspection.scriptPaths)})` : ''}, which Chickpea Agent skills do not package. No change was made.`,
       );
     }
     if (!immutableResolution) {
@@ -5658,6 +5656,21 @@ async function routineContentAccess(
   }
 }
 
+function formatSkillImportReceipt(
+  metadata: { name: string; replacedExisting: boolean; omittedPaths?: string[]; warnings?: string[] },
+  agentName: string,
+  undoAvailable: boolean,
+): string {
+  const partial = Boolean(metadata.omittedPaths?.length || metadata.warnings?.length);
+  const headline = partial
+    ? `Instructions imported for skill \`${escapeSlackControlCharacters(metadata.name)}\``
+    : `${metadata.replacedExisting ? 'Replaced' : 'Installed'} skill \`${escapeSlackControlCharacters(metadata.name)}\``;
+  const omitted = metadata.omittedPaths?.length
+    ? ` Supporting files omitted: ${escapeSlackControlCharacters(describeSkillPaths(metadata.omittedPaths))}.` : '';
+  const warnings = metadata.warnings?.length ? ` ${escapeSlackControlCharacters(metadata.warnings.join(' '))}` : '';
+  return `${headline} on ${escapeSlackControlCharacters(agentName)}. It’s active from the next message.${omitted}${warnings}${undoAvailable ? ' You can undo this change.' : ''}`;
+}
+
 function skillImportMetadata(
   skill: SkillResolution['skills'][number],
   replacedExisting: boolean,
@@ -5668,6 +5681,7 @@ function skillImportMetadata(
     name: skill.name,
     description: skill.description,
     replacedExisting,
+    ...(skill.inspection ? { omittedPaths: skill.inspection.auxiliaryPaths, warnings: skill.inspection.warnings } : {}),
   };
 }
 

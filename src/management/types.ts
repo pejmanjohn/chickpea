@@ -572,6 +572,8 @@ export type ApplyWorkspaceChangesResult =
   | ManagementDuplicateIdentityResult;
 
 interface SkillImportReceiptMetadata {
+  omittedPaths?: string[];
+  warnings?: string[];
   sourceUrl: string;
   path: string;
   name: string;

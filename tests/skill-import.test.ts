@@ -223,7 +223,7 @@ test('resolveSkillSource resolves an exact public directory without scanning the
   assert.match(result.skills[0]!.sourceUrl, new RegExp(EXACT_OID));
 });
 
-test('exact-path rate-limit fallback conservatively flags packaged directories', async () => {
+test('exact-path inspection flags actual scripts in nested directories', async () => {
   const embedded = JSON.stringify({
     payload: {
       codeViewTreeRoute: {
@@ -241,6 +241,7 @@ test('exact-path rate-limit fallback conservatively flags packaged directories',
   });
   const fetchImpl = mockFetch([
     ['/git/trees/', { status: 429 }],
+    [`/tree/${EXACT_OID}/skills/foo/scripts`, { text: directoryPage('skills/foo/scripts', [{ path: 'skills/foo/scripts/run.sh', contentType: 'file' }]) }],
     ['https://github.com/acme/skills/tree/main/skills/foo', {
       text: `<script data-target="react-app.embeddedData">${embedded}</script>`,
     }],
@@ -463,3 +464,52 @@ test('resolveSkillSource preserves rate-limit recovery during authenticated reso
     (err: unknown) => err instanceof SkillImportError && err.code === 'rate_limited',
   );
 });
+
+function directoryPage(path: string, items: Array<{ path: string; contentType: string }>, oid = EXACT_OID) {
+  return `<script data-target="react-app.embeddedData">${JSON.stringify({ payload: { codeViewTreeRoute: {
+    path, refInfo: { name: oid, currentOid: oid }, tree: { items, totalCount: items.length },
+  } } })}</script>`;
+}
+
+test('metadata and references are inspected recursively and disclosed without script misclassification', async () => {
+  const result = await resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID, skillPath: 'foo' }, mockFetch([
+    [`/tree/${EXACT_OID}/foo/agents`, { text: directoryPage('foo/agents', [{ path: 'foo/agents/openai.yaml', contentType: 'file' }]) }],
+    [`/tree/${EXACT_OID}/foo/references`, { text: directoryPage('foo/references', [{ path: 'foo/references/guide.md', contentType: 'file' }]) }],
+    [`/tree/${EXACT_OID}/foo`, { text: directoryPage('foo', [
+      { path: 'foo/SKILL.md', contentType: 'file' }, { path: 'foo/agents', contentType: 'directory' },
+      { path: 'foo/references', contentType: 'directory' },
+    ]) }],
+    [`/${EXACT_OID}/foo/SKILL.md`, { text: '---\nname: foo\ndescription: Foo.\n---\nRead references/guide.md.' }],
+  ]));
+  assert.equal(result.skills[0]?.hasScripts, false);
+  assert.deepEqual(result.skills[0]?.inspection?.auxiliaryPaths, ['agents/openai.yaml', 'references/guide.md']);
+});
+
+test('root packages classify scripts, executable modes and unknown files', async () => {
+  const result = await resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID }, mockFetch([
+    ['/git/trees/', { json: { tree: [
+      { path: 'SKILL.md', type: 'blob' }, { path: 'scripts/run.ps1', type: 'blob' },
+      { path: 'run', type: 'blob', mode: '100755' }, { path: 'mystery.bin', type: 'blob' },
+    ] } }],
+    ['/SKILL.md', { text: '---\nname: foo\ndescription: Foo.\n---\nDo it.' }],
+  ]));
+  assert.equal(result.skills[0]?.hasScripts, true);
+  assert.deepEqual(result.skills[0]?.inspection?.scriptPaths, ['run', 'scripts/run.ps1']);
+  assert.deepEqual(result.skills[0]?.inspection?.unknownPaths, ['mystery.bin']);
+});
+
+test('truncated trees fail closed', async () => {
+  await assert.rejects(resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID }, mockFetch([
+    ['/git/trees/', { json: { ...TREE, truncated: true } }],
+    ['/SKILL.md', { text: '---\nname: foo\ndescription: Foo.\n---\nDo it.' }],
+  ])), (error: unknown) => error instanceof SkillImportError && error.code === 'incomplete_inspection');
+});
+
+for (const [status, code] of [[404, 'document_not_found'], [429, 'rate_limited'], [500, 'github_error']] as const) {
+  test(`raw document ${status} retains its actual failure`, async () => {
+    await assert.rejects(resolveSkillSource({ owner: 'acme', repo: 'skills', ref: EXACT_OID, skillPath: 'foo' }, mockFetch([
+      ['/tree/', { text: directoryPage('foo', [{ path: 'foo/SKILL.md', contentType: 'file' }]) }],
+      ['/SKILL.md', { status }],
+    ])), (error: unknown) => error instanceof SkillImportError && error.code === code);
+  });
+}

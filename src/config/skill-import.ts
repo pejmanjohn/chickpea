@@ -5,6 +5,7 @@
 // lanes and is unit-testable offline.
 
 import { declaredContentLength, readBoundedText } from '../http/bounded-body.ts';
+import { inspectSkillPackage, type SkillPackageInspection } from './skill-package.ts';
 import { skillImportSource } from './skill-provenance.ts';
 import type { SkillConfig } from './types.ts';
 
@@ -27,6 +28,7 @@ interface ResolvedSkillCandidate {
   instructions: string;
   /** The skill directory carries executable scripts that will not run here. */
   hasScripts: boolean;
+  inspection?: SkillPackageInspection;
   /** Directory path within the repo (for display + de-duplication). */
   path: string;
   /** Provenance link back to the skill's directory on GitHub. */
@@ -78,7 +80,8 @@ const MAX_GITHUB_DIRECTORY_PAGE_BYTES = 4 * 1024 * 1024;
 const MAX_SKILL_DOCUMENT_BYTES = 512 * 1024;
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SKIP_DIR_RE = /(^|\/)(tests?|node_modules|\.git|dist|build|__pycache__|fixtures)(\/|$)/;
-const SCRIPT_EXT_RE = /\.(sh|py|js|mjs|cjs|ts|rb|bash|zsh)$/i;
+const MAX_PACKAGE_ENTRIES = 2000;
+const MAX_PACKAGE_DEPTH = 8;
 const REPOSITORY_NOT_FOUND =
   'Repository not found or not accessible. Check the source and GitHub App access.';
 const GITHUB_RATE_LIMITED = 'GitHub rate limit reached. Try again after it resets.';
@@ -204,6 +207,7 @@ export function sanitizeSkillName(raw: string): string {
 interface GitTreeEntry {
   path: string;
   type: string;
+  mode?: string;
 }
 
 /**
@@ -216,6 +220,7 @@ export async function resolveSkillSource(
   fetchImpl: typeof fetch,
   access?: SkillResolutionAccess,
 ): Promise<SkillResolution> {
+  fetchImpl = budgetedFetch(fetchImpl);
   const { owner, repo } = parsed;
   const authenticated = access !== undefined;
   const headers: Record<string, string> = {
@@ -256,12 +261,15 @@ export async function resolveSkillSource(
     { headers },
   );
   assertRepositoryResponse(treeRes, authenticated, owner, repo);
-  const tree = await readJsonResponseBounded<{ tree?: GitTreeEntry[] }>(
+  const tree = await readJsonResponseBounded<{ tree?: GitTreeEntry[]; truncated?: boolean }>(
     treeRes,
     MAX_REPOSITORY_TREE_BYTES,
     'GitHub repository tree is too large to import safely. Use a direct skill-directory URL.',
   );
-  const blobs = (tree.tree ?? []).filter((entry) => entry.type === 'blob');
+  if (tree.truncated || !Array.isArray(tree.tree)) {
+    throw new SkillImportError('incomplete_inspection', 'GitHub returned an incomplete repository tree. Use an exact skill-directory URL.');
+  }
+  const blobs = tree.tree.filter((entry) => entry.type === 'blob');
 
   const skillDirs = blobs
     .filter((entry) => entry.path === 'SKILL.md' || entry.path.endsWith('/SKILL.md'))
@@ -295,13 +303,7 @@ export async function resolveSkillSource(
           fetchImpl,
           `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(ref)}/${entry.path}`,
         );
-    if (!rawRes.ok) {
-      if (access && (rawRes.status === 401 || rawRes.status === 403 || rawRes.status === 404 || rawRes.status === 429)) {
-        assertRepositoryResponse(rawRes, true, owner, repo);
-      }
-      skipped += 1;
-      continue;
-    }
+    assertDocumentResponse(rawRes, authenticated, owner, repo, entry.path);
     const md = await readResponseTextBounded(
       rawRes,
       MAX_SKILL_DOCUMENT_BYTES,
@@ -315,15 +317,17 @@ export async function resolveSkillSource(
       skipped += 1;
       continue;
     }
-    const hasScripts = blobs.some(
-      (blob) => blob.path.startsWith(entry.dir + '/') && blob.path !== entry.path && SCRIPT_EXT_RE.test(blob.path),
-    );
+    const packageEntries = tree.tree.filter(({ path }) => !entry.dir || path.startsWith(`${entry.dir}/`));
+    assertPackageBounds(entry.dir, packageEntries);
+    const inspection = inspectSkillPackage(entry.dir, packageEntries);
+    const hasScripts = inspection.scriptPaths.length > 0;
     const importSource = skillImportSource(`${owner}/${repo}`, ref, entry.dir, { name, description, instructions });
     skills.push({
       name,
       description,
       instructions,
       hasScripts,
+      inspection,
       path: entry.dir || '(root)',
       sourceUrl: `https://github.com/${owner}/${repo}/tree/${ref}/${entry.dir}`,
       ...(importSource ? { importSource } : {}),
@@ -349,6 +353,7 @@ interface GithubDirectoryItem {
   name?: string;
   path?: string;
   contentType?: string;
+  mode?: string;
 }
 
 /**
@@ -393,8 +398,8 @@ async function resolveExactPublicSkillFromGithubPage(
   const refMatches = route?.refInfo?.name === ref || route?.refInfo?.currentOid?.startsWith(ref);
   if (!route || route.path !== skillPath || !refMatches || !Array.isArray(items)) {
     throw new SkillImportError(
-      'not_exact_skill_directory',
-      'That GitHub path is not one exact skill directory. Use the skill directory URL or repository source.',
+      'incomplete_inspection',
+      'GitHub did not return a complete listing for the requested path and revision.',
     );
   }
   if (route.tree?.totalCount !== undefined && route.tree.totalCount !== items.length) {
@@ -422,17 +427,14 @@ async function resolveExactPublicSkillFromGithubPage(
     );
   }
   const sourceUrl = `https://github.com/${owner}/${repo}/tree/${resolvedRef}/${encodeGithubPath(skillPath)}`;
-  const hasScripts = items.some((item) =>
-    item.path !== skillDocumentPath &&
-    (item.contentType === 'directory' || SCRIPT_EXT_RE.test(item.path ?? item.name ?? '')),
-  );
+  const entries = await inspectPublicDirectories(parsed, resolvedRef, items, fetchImpl);
+  const inspection = inspectSkillPackage(skillPath, entries);
+  const hasScripts = inspection.scriptPaths.length > 0;
   const rawRes = await githubRequest(
     fetchImpl,
     `https://raw.githubusercontent.com/${owner}/${repo}/${resolvedRef}/${encodeGithubPath(skillDocumentPath)}`,
   );
-  if (!rawRes.ok) {
-    throw new SkillImportError('rate_limited', GITHUB_RATE_LIMITED);
-  }
+  assertDocumentResponse(rawRes, false, owner, repo, skillDocumentPath);
   const markdown = await readResponseTextBounded(
     rawRes,
     MAX_SKILL_DOCUMENT_BYTES,
@@ -450,6 +452,7 @@ async function resolveExactPublicSkillFromGithubPage(
     description,
     instructions,
     hasScripts,
+    inspection,
     path: skillPath,
     sourceUrl,
     importSource: skillImportSource(`${owner}/${repo}`, resolvedRef, skillPath, { name, description, instructions })!,
@@ -472,6 +475,81 @@ function exactPublicSkillResolution(
     capped: false,
     skipped,
   };
+}
+
+function assertPackageBounds(directory: string, entries: GitTreeEntry[]): void {
+  if (entries.length > MAX_PACKAGE_ENTRIES || entries.some(({ path }) =>
+    path.slice(directory ? directory.length + 1 : 0).split('/').length > MAX_PACKAGE_DEPTH + 1)) {
+    throw new SkillImportError('incomplete_inspection', 'Skill package exceeds the inspection limit (2000 entries or 8 directory levels).');
+  }
+}
+
+async function inspectPublicDirectories(
+  parsed: ParsedSkillSource & { skillPath: string },
+  commit: string,
+  initial: GithubDirectoryItem[],
+  fetchImpl: typeof fetch,
+): Promise<GitTreeEntry[]> {
+  const entries: GitTreeEntry[] = [];
+  const queue = [{ path: parsed.skillPath, items: initial }];
+  for (let index = 0; index < queue.length; index++) {
+    if (index >= 12) throw new SkillImportError('incomplete_inspection', 'Skill package exceeds the 12-directory inspection limit.');
+    const directory = queue[index]!;
+    const seen = new Set<string>();
+    for (const item of directory.items) {
+      const prefix = directory.path ? `${directory.path}/` : '';
+      if (!item.path?.startsWith(prefix) || item.path.slice(prefix.length).includes('/') ||
+          !item.path.slice(prefix.length) || /(?:^|\/)(?:\.|\.\.)(?:\/|$)/.test(item.path) || seen.has(item.path)) {
+        throw new SkillImportError('incomplete_inspection', 'GitHub returned an invalid skill directory listing.');
+      }
+      seen.add(item.path);
+      entries.push({ path: item.path, type: item.contentType === 'directory' ? 'tree' : item.contentType === 'file' ? 'blob' : 'unknown',
+        ...(item.mode ? { mode: item.mode } : {}) });
+      assertPackageBounds(parsed.skillPath, entries);
+      if (item.contentType !== 'directory') continue;
+      if (queue.length >= 12) throw new SkillImportError('incomplete_inspection', 'Skill package exceeds the 12-directory inspection limit.');
+      const response = await githubRequest(fetchImpl,
+        `https://github.com/${parsed.owner}/${parsed.repo}/tree/${commit}/${encodeGithubPath(item.path)}`);
+      assertDocumentResponse(response, false, parsed.owner, parsed.repo, item.path);
+      const html = await readResponseTextBounded(response, MAX_GITHUB_DIRECTORY_PAGE_BYTES, 'GitHub skill directory is too large to inspect.');
+      const embedded = html.match(/<script\b[^>]*data-target=["']react-app\.embeddedData["'][^>]*>([\s\S]*?)<\/script>/i)?.[1];
+      let route;
+      try { route = embedded ? JSON.parse(embedded)?.payload?.codeViewTreeRoute : undefined; } catch { /* rejected below */ }
+      if (route?.path !== item.path || route?.refInfo?.currentOid !== commit || !Array.isArray(route?.tree?.items) ||
+          (route.tree.totalCount !== undefined && route.tree.totalCount !== route.tree.items.length)) {
+        throw new SkillImportError('incomplete_inspection', `Could not completely inspect ${item.path} at the selected commit.`);
+      }
+      queue.push({ path: item.path, items: route.tree.items });
+    }
+  }
+  return entries;
+}
+
+function assertDocumentResponse(response: Response, authenticated: boolean, owner: string, repo: string, path: string): void {
+  if (response.status === 404 && !authenticated) {
+    throw new SkillImportError('document_not_found', `GitHub could not find ${path} at the selected revision.`);
+  }
+  assertRepositoryResponse(response, authenticated, owner, repo);
+}
+
+/** One budget covers discovery, parent fallback and every package read. */
+function budgetedFetch(fetchImpl: typeof fetch): typeof fetch {
+  let requests = 0;
+  let bytes = 0;
+  return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (++requests > 46) throw new SkillImportError('incomplete_inspection', 'Skill import reached its 46-request inspection limit. Use an exact skill-directory URL.');
+    const response = await fetchImpl(input, init);
+    // Count actual streamed bytes across all responses, not only Content-Length.
+    if (!response.body) return response;
+    const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        bytes += chunk.byteLength;
+        if (bytes > 24 * 1024 * 1024) throw new SkillImportError('incomplete_inspection', 'Skill import reached its total inspection byte limit.');
+        controller.enqueue(chunk);
+      },
+    }));
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  }) as typeof fetch;
 }
 
 async function fetchRepositoryMetadata(
@@ -519,8 +597,8 @@ function assertRepositoryResponse(
 
 function isRateLimited(response: Response): boolean {
   return response.status === 429 ||
-    response.headers.get('retry-after') !== null ||
-    response.headers.get('x-ratelimit-remaining') === '0';
+    Boolean(response.headers?.get('retry-after')) ||
+    response.headers?.get('x-ratelimit-remaining') === '0';
 }
 
 async function githubRequest(

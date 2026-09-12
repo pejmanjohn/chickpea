@@ -7124,10 +7124,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (error.code === 'access_candidate' || error.code === 'repository_inaccessible') {
         return repositoryUnavailable();
       }
-      return c.json({
-        error: 'github_unavailable',
-        message: 'GitHub could not resolve that skill source. Try again.',
-      }, 502);
+      return c.json({ error: error.code, message: error.message },
+        error.code === 'document_not_found' ? 404 : error.code === 'github_error' ? 502 : 400);
     };
     try {
       try {
