@@ -185,17 +185,17 @@ function prepareAttachmentRequest(
 } {
   const active = attachmentModelState.getStore();
   if (!active) return { context, options };
-  if (!hasOnlyNoActionTools(context)) {
-    throw new Error('Attachment analysis provider context must be tool-free.');
-  }
 
   if (!model.input.includes('image') && active.attachments.some((attachment) => attachment.kind === 'image')) {
     throw new AttachmentImageModelUnsupportedError();
   }
   const cloned = cloneContext(context);
-  // Flue always injects its static `task` tool, even with an empty subagent
-  // roster. The exact empty-roster form is inert; remove it before the model
-  // call so attachment analysis is actually tool-free at the provider seam.
+  // The analysis call is made tool-free here, at the provider seam, whatever
+  // the Agent loop carries. Flue's per-call `tools` option adds to the Agent's
+  // declared tools rather than replacing them, and it always injects its static
+  // `task` tool, so an upload turn that keeps its normal tool set would
+  // otherwise hand every tool to the analysis model. File content must never
+  // be able to trigger a tool, so the request goes out with none.
   if (cloned.tools) cloned.tools = [];
   injectAttachmentBaseline(cloned, active.attachments);
   assertAttachmentModelInputFits(model, cloned);
@@ -228,18 +228,6 @@ function prepareAttachmentRequest(
     fallback,
   });
   return { context: cloned, options: nativeOptions };
-}
-
-function hasOnlyNoActionTools(context: Context): boolean {
-  if (!context.tools || context.tools.length === 0) return true;
-  if (context.tools.length !== 1 || context.tools[0]?.name !== 'task') return false;
-  const marker = '## Available Agents\n\n';
-  const rosterIndex = context.systemPrompt?.lastIndexOf(marker) ?? -1;
-  if (rosterIndex < 0) return false;
-  const roster = context.systemPrompt!.slice(rosterIndex + marker.length);
-  return roster.startsWith(
-    'None. No subagents are currently declared, so the `task` tool has no valid `agent` value',
-  );
 }
 
 function cloneContext(context: Context): Context {
