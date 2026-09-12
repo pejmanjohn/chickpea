@@ -87,7 +87,7 @@ test('a generation request carries the wire model, prompt, and format policy (AE
   });
   assert.equal(result.ok, true);
   assert.ok(result.ok);
-  assert.deepEqual(Array.from(result.bytes.slice(0, 4)), [0x89, 0x50, 0x4e, 0x47]);
+  assert.deepEqual(Array.from(result.images[0]!.slice(0, 4)), [0x89, 0x50, 0x4e, 0x47]);
   assert.equal(result.appliedModel, 'openai/gpt-image-2.5-sunburst');
   assert.equal(result.appliedSize, '1024x1024');
   assert.equal(result.appliedFormat, 'png');
@@ -142,6 +142,59 @@ test('a usage object with no known numeric field is dropped entirely', async () 
 
   assert.ok(result.ok);
   assert.equal(result.usage, undefined);
+});
+
+test('a count travels as n and every returned image is decoded in order', async () => {
+  const { calls, fetchImpl } = recordingFetch(() =>
+    jsonResponse({ data: [{ b64_json: PIXEL_BASE64 }, { b64_json: PIXEL_BASE64 }, { b64_json: PIXEL_BASE64 }] }),
+  );
+
+  const result = await client(fetchImpl).generate({ prompt: 'three ads', format: PNG_POLICY, deadlineMs: 5_000, count: 3 });
+
+  const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>;
+  assert.equal(body.n, 3);
+  assert.ok(result.ok);
+  assert.equal(result.images.length, 3);
+  for (const image of result.images) {
+    assert.deepEqual(Array.from(image.slice(0, 4)), [0x89, 0x50, 0x4e, 0x47]);
+  }
+});
+
+test('an edit count travels as the multipart n field', async () => {
+  const { calls, fetchImpl } = recordingFetch(() =>
+    jsonResponse({ data: [{ b64_json: PIXEL_BASE64 }, { b64_json: PIXEL_BASE64 }] }, 200, `${BASE_URL}/images/edits`),
+  );
+
+  const result = await client(fetchImpl).edit({
+    prompt: 'two takes', format: PNG_POLICY, deadlineMs: 5_000, inputs: [imageInput(1)], count: 2,
+  });
+
+  assert.ok(result.ok);
+  assert.equal(result.images.length, 2);
+  assert.equal((calls[0]?.init.body as FormData).get('n'), '2');
+});
+
+test('a count outside the profile cap is refused before any request', async () => {
+  const { calls, fetchImpl } = recordingFetch(() => jsonResponse({ data: [{ b64_json: PIXEL_BASE64 }] }));
+  for (const count of [0, PROFILE.maxOutputs + 1, 2.5]) {
+    const result = await client(fetchImpl).generate({ prompt: 'ads', format: PNG_POLICY, deadlineMs: 5_000, count });
+    assert.deepEqual(result, { ok: false, reason: 'invalid-request', detail: 'invalid_count' }, String(count));
+  }
+  assert.equal(calls.length, 0);
+});
+
+test('a list with one undecodable image is one invalid response, not a partial set', async () => {
+  const { fetchImpl } = recordingFetch(() =>
+    jsonResponse({ data: [{ b64_json: PIXEL_BASE64 }, { b64_json: 'not base64!' }] }),
+  );
+  const result = await client(fetchImpl).generate({ prompt: 'ads', format: PNG_POLICY, deadlineMs: 5_000, count: 2 });
+  assert.deepEqual(result, { ok: false, reason: 'unreachable', detail: 'invalid_response' });
+
+  const empty = recordingFetch(() => jsonResponse({ data: [] }));
+  assert.deepEqual(
+    await client(empty.fetchImpl).generate({ prompt: 'ads', format: PNG_POLICY, deadlineMs: 5_000 }),
+    { ok: false, reason: 'unreachable', detail: 'invalid_response' },
+  );
 });
 
 test('an edit sends one multipart part per input image with high input fidelity', async () => {

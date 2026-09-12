@@ -32,11 +32,23 @@ export const MAX_IMAGE_PROMPT_CHARS = 4_000;
 /** Thread image handles one call may reference. */
 export const MAX_IMAGE_TOOL_INPUTS = 4;
 /**
+ * Images one response may attach across every image call it makes. One call
+ * asking for variations and several calls with different prompts draw on the
+ * same quota, which bounds provider spend and how long the turn holds the
+ * lane, since separate calls render sequentially.
+ */
+export const MAX_IMAGES_PER_RESPONSE = 4;
+/**
+ * Variations one call may ask for; the provider renders them in one round
+ * trip. Equal to the response quota, so a single call can spend all of it.
+ */
+export const MAX_IMAGE_TOOL_OUTPUTS = MAX_IMAGES_PER_RESPONSE;
+/**
  * Stall guard, not a budget cap: above the provider's documented
  * two-minute worst case, so only a network-level stall releases the lane.
  */
 export const IMAGE_CALL_DEADLINE_MS = 180_000;
-/** One image per response; the state records which tool call owns the slot. */
+/** The response's image quota; the state records how many images each tool call reserved. */
 export const SLACK_IMAGE_CALL_BUDGET_NAME = 'slackImageCallBudget';
 
 const DEFAULT_IMAGE_BASENAME = 'image';
@@ -57,13 +69,21 @@ export interface ImageToolTransport {
   maxBytes: number;
 }
 
+/** Whether the call may render `count` images; `remaining` is what the response still has. */
+export interface ImageReservationOutcome {
+  ok: boolean;
+  remaining: number;
+}
+
 /**
- * The response's one image slot. `release` is present when the Root Agent's
- * budget hook supplied it, so a call that fails before the provider hands the
- * slot back instead of burning the response's only image call.
+ * The response's image quota. A call reserves the images it will render
+ * before the provider runs; a replay of the same call keeps what it already
+ * reserved. `release` is present when the Root Agent's budget hook supplied
+ * it, so a call that fails before the provider hands its images back instead
+ * of burning part of the response's quota.
  */
 export interface ImageCallReservation {
-  (toolCallId: string): boolean;
+  (toolCallId: string, count: number): ImageReservationOutcome;
   release?(toolCallId: string): void;
 }
 
@@ -76,7 +96,7 @@ export interface ImageArtifactToolOptions {
   acceptsImageInput: boolean;
   /** Per-turn handles for images already in this conversation. */
   inventory: ThreadImageInventory;
-  /** Keyed by tool call id so a durable replay keeps the slot it already took. */
+  /** Keyed by tool call id so a durable replay keeps the images it already reserved. */
   reserveImageCall: ImageCallReservation;
   /** The installation's upload cap, known only after transport resolution. */
   resolveTransport(): Promise<ImageToolTransport>;
@@ -109,7 +129,26 @@ export type ImageUnavailableSource = 'provider' | 'staging';
  */
 export type ImageUnavailableDetail = string;
 
-/** Every outcome is a returned value; only the delivery gate throws. */
+/** One attached variation, in the order the provider returned them. */
+export interface ImageArtifactFile {
+  filename: string;
+  byteLength: number;
+}
+
+/** Why one generated variation could not be attached while the rest still may be. */
+export type ImageUnattachedFailure =
+  | Extract<SlackArtifactStageOutcome, { attached: false; reason: 'missing-scope' | 'too-large' }>
+  | { attached: false; reason: 'unavailable'; source: ImageUnavailableSource; detail: ImageUnavailableDetail };
+
+/** A variation that was generated but could not be attached, named by its file. */
+export type ImageArtifactUnattachedFile = { filename: string } & ImageUnattachedFailure;
+
+/**
+ * Every outcome is a returned value; only the delivery gate throws. An
+ * attached result names its first file at the top level, as it always has,
+ * and lists every attached variation under `files`; variations that failed
+ * to attach are listed under `unattached` so the reply can say which.
+ */
 export type ImageArtifactResult =
   | {
       attached: true;
@@ -119,6 +158,8 @@ export type ImageArtifactResult =
       appliedSize: string;
       appliedFormat: ImageOutputFormat;
       usage?: ImageCallUsage;
+      files: ImageArtifactFile[];
+      unattached?: ImageArtifactUnattachedFile[];
     }
   | Extract<SlackArtifactStageOutcome, { attached: false; reason: 'missing-scope' | 'too-large' }>
   | {
@@ -130,7 +171,7 @@ export type ImageArtifactResult =
   | { attached: false; reason: 'timeout' }
   | { attached: false; reason: 'rejected' }
   | { attached: false; reason: 'misconfigured' }
-  | { attached: false; reason: 'limit' }
+  | { attached: false; reason: 'limit'; remaining: number }
   | {
       attached: false;
       reason: 'input-unavailable';
@@ -138,16 +179,26 @@ export type ImageArtifactResult =
       handle: string;
     };
 
-/** Recorded by `step.do('generate')`: metadata and never bytes. */
-/** Recorded by `step.do('stage')`: the mapped outcome and never bytes. */
+/** Recorded by each staging step: the mapped outcome and never bytes. */
 type ImageStagingStep =
   | { ok: true; byteLength: number }
   | { ok: false; failure: Extract<ImageArtifactResult, { attached: false }> };
 
+/** One generated variation as the generate step records it: size only, never bytes. */
+type ImageGeneratedOutput = { byteLength: number; tooLarge?: true };
+
+/**
+ * Recorded by `step.do('generate')`: metadata and never bytes. `outputs`
+ * arrived with variations; a record written before it carries the single
+ * image's `byteLength` at the top level and replays as one output.
+ */
 type ImageGenerationStep =
   | {
       ok: true;
       byteLength: number;
+      outputs?: ImageGeneratedOutput[];
+      /** The upload cap the outputs were judged against; recorded so a replay reports the same limit. */
+      maxBytes?: number;
       appliedModel: string;
       appliedSize: string;
       appliedFormat: ImageOutputFormat;
@@ -164,11 +215,19 @@ const PROMPT_FIELD = v.pipe(
 const FILENAME_FIELD = v.optional(
   v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(MAX_ARTIFACT_FILENAME_CHARS)),
 );
+const COUNT_FIELD = v.optional(
+  v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(MAX_IMAGE_TOOL_OUTPUTS)),
+);
 
-const IMAGE_GENERATE_INPUT = v.object({ prompt: PROMPT_FIELD, filename: FILENAME_FIELD });
+const IMAGE_GENERATE_INPUT = v.object({
+  prompt: PROMPT_FIELD,
+  filename: FILENAME_FIELD,
+  count: COUNT_FIELD,
+});
 const IMAGE_EDIT_INPUT = v.object({
   prompt: PROMPT_FIELD,
   filename: FILENAME_FIELD,
+  count: COUNT_FIELD,
   inputs: v.optional(
     v.pipe(
       v.array(v.pipe(v.string(), v.regex(IMAGE_HANDLE))),
@@ -186,17 +245,19 @@ function imageToolDescription(acceptsImageInput: boolean): string {
     acceptsImageInput
       ? `To edit or combine images already in this conversation, list their img:N handles in inputs (at most ${MAX_IMAGE_TOOL_INPUTS}); with no inputs the model generates from the prompt alone.`
       : 'This model generates from the prompt alone and cannot take an existing image as input.',
-    'One image per reply. The result reports the model and settings the provider applied.',
-    'If the result reports attached: false, explain the returned reason and never say an image was attached or edited.',
+    `At most ${MAX_IMAGES_PER_RESPONSE} images per reply across every call. For variations of one prompt, make one call with count (1-${MAX_IMAGE_TOOL_OUTPUTS}); for different subjects, make separate calls with their own prompts. Each image attaches as its own file, and the result lists a call's files under files.`,
+    'With count above 1, the provider renders count separate images from the prompt, so write the prompt as one single image: never say "variations", "versions", "options", or a number of images in the prompt, or each rendered image becomes a collage of several.',
+    'The result reports the model and settings the provider applied.',
+    'If the result reports attached: false, explain the returned reason and never say an image was attached or edited. A result may attach some variations and list the rest under unattached; say how many attached and why the others did not.',
   ].join(' ');
 }
 
 /**
  * The one image tool. The host owns the destination, the model, and the
  * output format; the model chooses only the prompt, optional thread image
- * handles, and a filename. Generation and staging each run inside a durable
- * step, so a replayed tool call neither pays for a second image nor stages a
- * second file.
+ * handles, a filename, and how many variations to render. Generation runs in
+ * one durable step and each variation stages in its own, so a replayed tool
+ * call neither pays for a second render nor stages any file twice.
  */
 export function createImageArtifactTool(options: ImageArtifactToolOptions) {
   return defineTool({
@@ -208,12 +269,14 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
     durable: true,
     async run({ data, toolCallId, step, signal }) {
       assertArtifactDeliveryAllowed();
-      if (!options.reserveImageCall(toolCallId)) {
-        return imageToolOutput({ attached: false, reason: 'limit' });
+      const count = data.count ?? 1;
+      const reservation = options.reserveImageCall(toolCallId, count);
+      if (!reservation.ok) {
+        return imageToolOutput({ attached: false, reason: 'limit', remaining: reservation.remaining });
       }
       // Held only for this execution: a replay resumes with the recorded
       // metadata and no bytes, and reports honestly instead of regenerating.
-      let generatedBytes: Uint8Array | undefined;
+      let generatedImages: Uint8Array[] | undefined;
       const generated = await step.do('generate', async (): Promise<ImageGenerationStep> => {
         const transport = await options.resolveTransport();
         const format = imageFormatPolicyForTransport(transport.maxBytes, data.prompt);
@@ -225,6 +288,7 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
           prompt: data.prompt,
           format,
           deadlineMs: IMAGE_CALL_DEADLINE_MS,
+          count,
           ...(signal ? { signal } : {}),
         };
         const result = inputs.images.length > 0
@@ -233,16 +297,25 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
         if (!result.ok) {
           return { ok: false, failure: providerFailure(result) };
         }
-        if (result.bytes.byteLength > transport.maxBytes) {
+        // An oversized variation is dropped on its own; the call fails only
+        // when nothing it rendered can be attached.
+        const outputs: ImageGeneratedOutput[] = result.images.map((image) => (
+          image.byteLength > transport.maxBytes
+            ? { byteLength: image.byteLength, tooLarge: true }
+            : { byteLength: image.byteLength }
+        ));
+        if (outputs.every((output) => output.tooLarge)) {
           return {
             ok: false,
             failure: { attached: false, reason: 'too-large', maxBytes: transport.maxBytes },
           };
         }
-        generatedBytes = result.bytes;
+        generatedImages = result.images;
         return {
           ok: true,
-          byteLength: result.bytes.byteLength,
+          byteLength: outputs[0]!.byteLength,
+          outputs,
+          maxBytes: transport.maxBytes,
           appliedModel: result.appliedModel,
           appliedSize: result.appliedSize,
           appliedFormat: result.appliedFormat,
@@ -251,44 +324,81 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
       });
       if (!generated.ok) {
         // Nothing was spent yet, so a corrective retry in this response should
-        // not meet `limit`. Provider-side outcomes keep the slot reserved.
+        // not meet `limit`. Provider-side outcomes keep the images reserved.
         if (isPreProviderFailure(generated.failure)) {
           options.reserveImageCall.release?.(toolCallId);
         }
         return imageToolOutput(generated.failure);
       }
 
-      const filename = imageFilename(data.filename, generated.appliedFormat);
-      // The mapped outcome is what the step records, so a replay reports the
-      // same source and detail the first execution actually met.
-      const staged = await step.do('stage', async (): Promise<ImageStagingStep> => {
-        // Reached only when this execution generated the bytes. A replay that
-        // lost them never stages a second file for the same tool call.
-        if (!generatedBytes) {
-          return {
-            ok: false,
-            failure: {
-              attached: false, reason: 'unavailable', source: 'staging', detail: 'bytes_unavailable',
-            },
-          };
+      const outputs = generated.outputs ?? [{ byteLength: generated.byteLength }];
+      const filenames = imageFilenames(data.filename, generated.appliedFormat, outputs.length);
+      const files: ImageArtifactFile[] = [];
+      const unattached: ImageArtifactUnattachedFile[] = [];
+      let firstFailure: Extract<ImageArtifactResult, { attached: false }> | undefined;
+      for (const [index, output] of outputs.entries()) {
+        const filename = filenames[index]!;
+        if (output.tooLarge) {
+          const maxBytes = generated.maxBytes ?? (await options.resolveTransport()).maxBytes;
+          const failure = { attached: false, reason: 'too-large', maxBytes } as const;
+          unattached.push({ filename, ...failure });
+          firstFailure ??= failure;
+          continue;
         }
-        const outcome = await options.stageArtifact({ bytes: generatedBytes, filename, kind: 'image' });
-        return outcome.attached
-          ? { ok: true, byteLength: outcome.byteLength }
-          : { ok: false, failure: stagingFailure(outcome) };
-      });
-      if (!staged.ok) return imageToolOutput(staged.failure);
+        // The mapped outcome is what the step records, so a replay reports the
+        // same source and detail the first execution actually met. The first
+        // variation keeps the step name a single-image record already used.
+        const staged = await step.do(stagingStepName(index), async (): Promise<ImageStagingStep> => {
+          // Reached only when this execution generated the bytes. A replay that
+          // lost them never stages a second file for the same tool call.
+          const bytes = generatedImages?.[index];
+          if (!bytes) {
+            return {
+              ok: false,
+              failure: {
+                attached: false, reason: 'unavailable', source: 'staging', detail: 'bytes_unavailable',
+              },
+            };
+          }
+          const outcome = await options.stageArtifact({ bytes, filename, kind: 'image' });
+          return outcome.attached
+            ? { ok: true, byteLength: outcome.byteLength }
+            : { ok: false, failure: stagingFailure(outcome) };
+        });
+        if (staged.ok) {
+          files.push({ filename, byteLength: output.byteLength });
+        } else {
+          firstFailure ??= staged.failure;
+          if (isUnattachedFileFailure(staged.failure)) unattached.push({ filename, ...staged.failure });
+        }
+      }
+      if (files.length === 0) return imageToolOutput(firstFailure!);
       return imageToolOutput({
         attached: true,
-        filename,
-        byteLength: generated.byteLength,
+        filename: files[0]!.filename,
+        byteLength: files[0]!.byteLength,
         appliedModel: generated.appliedModel,
         appliedSize: generated.appliedSize,
         appliedFormat: generated.appliedFormat,
         ...(generated.usage ? { usage: generated.usage } : {}),
+        files,
+        ...(unattached.length > 0 ? { unattached } : {}),
       });
     },
   });
+}
+
+/** The first variation keeps the `stage` name earlier records used; the rest are numbered. */
+function stagingStepName(index: number): string {
+  return index === 0 ? 'stage' : `stage:${index + 1}`;
+}
+
+/** Staging outcomes that describe one file rather than the whole call. */
+function isUnattachedFileFailure(
+  failure: Extract<ImageArtifactResult, { attached: false }>,
+): failure is ImageUnattachedFailure {
+  return failure.reason === 'missing-scope' || failure.reason === 'too-large' ||
+    failure.reason === 'unavailable';
 }
 
 /**
@@ -429,39 +539,94 @@ export function imageFilename(
   return artifactFilename(requested, DEFAULT_IMAGE_BASENAME, FORMAT_EXTENSIONS[format]);
 }
 
-interface ImageCallBudgetState {
-  schemaVersion: 1;
-  /** The tool call that owns this response's one image call. */
-  toolCallId: string | null;
+/**
+ * One safe filename per variation. A single image keeps the requested name;
+ * variations share its basename with a 1-based suffix (`ad-1.jpg`, `ad-2.jpg`)
+ * so the files stay distinguishable in Slack and in the next turn's listing.
+ */
+export function imageFilenames(
+  requested: string | undefined,
+  format: ImageOutputFormat,
+  count: number,
+): string[] {
+  const single = imageFilename(requested, format);
+  if (count <= 1) return [single];
+  const extension = `.${FORMAT_EXTENSIONS[format]}`;
+  const suffixLength = `-${count}`.length;
+  // Trim separators the sanitizer left at the end and leave room for the
+  // suffix, so `weird-name-` becomes `weird-name-1` and a basename at the
+  // length cap still yields distinct names.
+  const base = single
+    .slice(0, single.length - extension.length)
+    .slice(0, MAX_ARTIFACT_FILENAME_CHARS - suffixLength)
+    .replace(/[-.]+$/, '');
+  return Array.from({ length: count }, (_, index) => (
+    imageFilename(`${base || DEFAULT_IMAGE_BASENAME}-${index + 1}`, format)
+  ));
 }
 
 /**
- * Root-Agent hook: one image call per response. The reservation is
- * keyed by tool call id, so a durable replay of the same call keeps the slot
- * it already took and a second call in the same response is refused.
+ * The quota state. Version 1 recorded the single call that owned the
+ * response's one image; a response interrupted on that build resumes here
+ * with that call holding one image.
+ */
+type ImageCallBudgetState =
+  | { schemaVersion: 1; toolCallId: string | null }
+  | { schemaVersion: 2; reservations: Record<string, number> };
+
+const EMPTY_BUDGET: ImageCallBudgetState = { schemaVersion: 2, reservations: {} };
+
+function budgetReservations(state: ImageCallBudgetState | undefined): Record<string, number> {
+  if (!state) return {};
+  if (state.schemaVersion === 2) return { ...state.reservations };
+  return state.toolCallId === null ? {} : { [state.toolCallId]: 1 };
+}
+
+function reservedTotal(reservations: Record<string, number>): number {
+  return Object.values(reservations).reduce((sum, count) => sum + count, 0);
+}
+
+/**
+ * Root-Agent hook: a quota of `MAX_IMAGES_PER_RESPONSE` images per response.
+ * Reservations are keyed by tool call id, so a durable replay of the same
+ * call keeps the images it already reserved, and another call is refused
+ * once the quota would be exceeded.
  */
 export function useImageCallBudget(): ImageCallReservation {
   const [, update] = usePersistentState<ImageCallBudgetState>(
     SLACK_IMAGE_CALL_BUDGET_NAME,
-    { schemaVersion: 1, toolCallId: null },
+    EMPTY_BUDGET,
   );
-  useResponseStart(() => { update({ schemaVersion: 1, toolCallId: null }); });
-  const reserve = (toolCallId: string) => {
-    let allowed = false;
+  useResponseStart(() => { update(EMPTY_BUDGET); });
+  const reserve = (toolCallId: string, count: number): ImageReservationOutcome => {
+    let outcome: ImageReservationOutcome = { ok: false, remaining: 0 };
     update((previous) => {
-      const owner = previous?.toolCallId ?? null;
-      allowed = owner === null || owner === toolCallId;
-      return allowed ? { schemaVersion: 1, toolCallId } : { schemaVersion: 1, toolCallId: owner };
+      const reservations = budgetReservations(previous);
+      const owned = reservations[toolCallId];
+      if (owned !== undefined) {
+        // A replay keeps what it reserved, whatever the quota looks like now.
+        outcome = { ok: true, remaining: MAX_IMAGES_PER_RESPONSE - reservedTotal(reservations) };
+        return { schemaVersion: 2, reservations };
+      }
+      const remaining = MAX_IMAGES_PER_RESPONSE - reservedTotal(reservations);
+      if (count < 1 || count > remaining) {
+        outcome = { ok: false, remaining };
+        return { schemaVersion: 2, reservations };
+      }
+      reservations[toolCallId] = count;
+      outcome = { ok: true, remaining: remaining - count };
+      return { schemaVersion: 2, reservations };
     });
-    return allowed;
+    return outcome;
   };
   return Object.assign(reserve, {
-    // Only the owner may hand the slot back, so a losing second call cannot
-    // free the reservation the first call is still using.
+    // Only the owner's images are handed back, so a refused call cannot free
+    // what another call is still using.
     release(toolCallId: string) {
       update((previous) => {
-        const owner = previous?.toolCallId ?? null;
-        return { schemaVersion: 1, toolCallId: owner === toolCallId ? null : owner };
+        const reservations = budgetReservations(previous);
+        delete reservations[toolCallId];
+        return { schemaVersion: 2, reservations };
       });
     },
   });

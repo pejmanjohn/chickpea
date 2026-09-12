@@ -20,6 +20,12 @@ export interface ImageGenerateRequest {
   prompt: string;
   format: ImageFormatPolicy;
   deadlineMs: number;
+  /**
+   * Images to produce from this one prompt (the endpoint's `n`); defaults to
+   * one and is capped by the profile. Every returned image is a variation of
+   * the same prompt and settings.
+   */
+  count?: number;
   signal?: AbortSignal;
 }
 
@@ -55,7 +61,8 @@ export type ImageCallFailureReason =
 export type ImageCallResult =
   | {
       ok: true;
-      bytes: Uint8Array;
+      /** One entry per image the provider returned, in the provider's order; never empty. */
+      images: Uint8Array[];
       appliedModel: string;
       appliedSize: string;
       appliedFormat: ImageOutputFormat;
@@ -169,7 +176,7 @@ export function createOpenAiImagesClient(options: OpenAiImagesClientOptions): Op
           body: JSON.stringify({
             model: profile.model,
             prompt: request.prompt,
-            n: 1,
+            n: requestedCount(request),
             ...formatFields(request.format),
           }),
         }),
@@ -190,7 +197,7 @@ function editForm(request: ImageEditRequest, profile: ImageModelProfile): FormDa
   const form = new FormData();
   form.append('model', profile.model);
   form.append('prompt', request.prompt);
-  form.append('n', '1');
+  form.append('n', String(requestedCount(request)));
   for (const [field, value] of Object.entries(formatFields(request.format))) {
     form.append(field, String(value));
   }
@@ -203,6 +210,11 @@ function editForm(request: ImageEditRequest, profile: ImageModelProfile): FormDa
     form.append('image[]', blob, `image-${index + 1}.${extensionFor(input.mimeType)}`);
   }
   return form;
+}
+
+/** The validated `count`, defaulting to one image. */
+function requestedCount(request: ImageGenerateRequest): number {
+  return request.count ?? 1;
 }
 
 function formatFields(policy: ImageFormatPolicy): Record<string, string | number> {
@@ -229,6 +241,10 @@ function validateRequest(
   }
   if (!Number.isFinite(request.deadlineMs) || request.deadlineMs <= 0) {
     return { ok: false, reason: 'invalid-request', detail: 'invalid_deadline' };
+  }
+  if (request.count !== undefined &&
+      (!Number.isInteger(request.count) || request.count < 1 || request.count > profile.maxOutputs)) {
+    return { ok: false, reason: 'invalid-request', detail: 'invalid_count' };
   }
   if (inputs.length > profile.maxEditInputs) {
     return { ok: false, reason: 'invalid-request', detail: 'too_many_input_images' };
@@ -292,28 +308,44 @@ async function readImageResponse(
   if (!payload) {
     return { ok: false, reason: 'unreachable', detail: 'invalid_response' };
   }
-  const first = Array.isArray(payload.data) && isRecord(payload.data[0]) ? payload.data[0] : undefined;
-  const encoded = typeof first?.b64_json === 'string' ? first.b64_json : undefined;
-  if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0) {
-    return { ok: false, reason: 'unreachable', detail: 'invalid_response' };
+  const entries = Array.isArray(payload.data) ? payload.data : [];
+  const first = isRecord(entries[0]) ? entries[0] : undefined;
+  // Every entry must decode: a list that is short, empty, or carries one bad
+  // image is one invalid response, so the caller never attaches a partial set
+  // it cannot account for.
+  const images: Uint8Array[] = [];
+  for (const entry of entries) {
+    const bytes = decodeImageEntry(entry);
+    if (!bytes) return { ok: false, reason: 'unreachable', detail: 'invalid_response' };
+    images.push(bytes);
   }
-  let bytes: Uint8Array;
-  try {
-    const binary = atob(encoded);
-    bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  } catch {
+  if (images.length === 0) {
     return { ok: false, reason: 'unreachable', detail: 'invalid_response' };
   }
   const usage = projectUsage(payload.usage);
   return {
     ok: true,
-    bytes,
+    images,
     appliedModel: profile.id,
     appliedSize: readString(payload.size) ?? readString(first?.size) ?? 'auto',
     appliedFormat: readFormat(payload.output_format) ?? readFormat(first?.output_format) ?? policy.format,
     ...(usage ? { usage } : {}),
   };
+}
+
+function decodeImageEntry(entry: unknown): Uint8Array | undefined {
+  const encoded = isRecord(entry) && typeof entry.b64_json === 'string' ? entry.b64_json : undefined;
+  if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0) {
+    return undefined;
+  }
+  try {
+    const binary = atob(encoded);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  } catch {
+    return undefined;
+  }
 }
 
 function mapErrorResponse(

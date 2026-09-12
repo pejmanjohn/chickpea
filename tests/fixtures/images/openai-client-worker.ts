@@ -134,7 +134,7 @@ function summarize(result: ImageCallResult): unknown {
   return result.ok
     ? {
         ok: true,
-        byteLength: result.bytes.byteLength,
+        byteLength: result.images[0]!.byteLength,
         appliedFormat: result.appliedFormat,
         appliedSize: result.appliedSize,
       }

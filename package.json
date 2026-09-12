@@ -1,6 +1,6 @@
 {
   "name": "chickpea",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "private": true,
   "description": "Self-hosted, model-agnostic AI agent for Slack.",
   "license": "Apache-2.0",
