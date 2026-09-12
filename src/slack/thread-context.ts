@@ -1,3 +1,4 @@
+import type { ThreadImageRecord } from './thread-images.ts';
 import type { NormalizedSlackTurn, SlackContextMode } from './types.ts';
 
 export interface SlackContextMessage {
@@ -21,8 +22,20 @@ export interface SlackTurnContext {
   window?: SlackContextWindow;
   truncated: boolean;
   degradations: string[];
+  /**
+   * Additive: images found in the raw fetch rows, collected before the
+   * projection above filters them. Consumers of `messages` are unchanged and
+   * no prompt text is derived from this field.
+   */
+  images?: ThreadImageRecord[];
 }
 
+/**
+ * One raw Slack row. `files` is read only by the thread image inventory in
+ * thread-images.ts, from the raw rows: the projection below drops bot rows and
+ * text-less rows, which is exactly where an Agent's own file share and a bare
+ * upload live.
+ */
 export interface SlackWebApiMessage {
   type?: string;
   user?: string;
@@ -31,6 +44,7 @@ export interface SlackWebApiMessage {
   subtype?: string;
   bot_id?: string;
   edited?: { ts: string };
+  files?: unknown[];
 }
 
 export const DEFAULT_MAX_MESSAGES = 50;
@@ -153,7 +167,16 @@ export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextM
 }
 
 export function orderMessages(messages: SlackContextMessage[]): SlackContextMessage[] {
-  return [...messages].sort((left, right) => parseSlackTs(left.ts) - parseSlackTs(right.ts));
+  return [...messages].sort((left, right) => compareSlackTs(left.ts, right.ts));
+}
+
+/**
+ * Thread order for a Slack `ts`. A value that is not a number sorts as 0 —
+ * every caller validates the shape upstream, so this is the fail-quiet floor
+ * rather than a second ordering rule.
+ */
+export function compareSlackTs(left: string, right: string): number {
+  return parseSlackTs(left) - parseSlackTs(right);
 }
 
 /** Reject rows newer than the admitted trigger even if Slack returns them. */

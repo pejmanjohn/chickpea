@@ -21,7 +21,11 @@ import type {
 } from '../src/slack/turn-job-types.ts';
 import { runTurn, WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT } from '../src/slack/run-turn.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
-import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
+import {
+  compileRuntimePlanV2,
+  deriveRuntimePlanInstanceId,
+  type RuntimePlanV2,
+} from '../src/agents/runtime-plan.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import {
@@ -36,6 +40,7 @@ import { completeAgentWelcomeDelivery } from '../src/management/receipts.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
+import { withEnv } from './helpers/env.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -121,6 +126,157 @@ function workTurn(eventId: string): NormalizedSlackTurn {
     },
   };
 }
+
+test('runTurn carries the hydrated thread images into the agent dispatch', async () => {
+  const f = await createManagementAdapterFixture('thread-images');
+  try {
+    const agent = await f.config.createAgent({ ...assignment.agent,
+      creatorMembershipId: f.admin.membership.id, editPolicy: 'creator_and_admins' });
+    const workspaceId = f.admin.binding.slackTeamId;
+    await f.config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', defaultAgentId: agent.id });
+    const turn: NormalizedSlackTurn = {
+      ...workTurn('Ev_THREAD_IMAGES'), workspaceId, userId: f.admin.binding.slackUserId,
+      actorMembershipId: f.admin.membership.id, contextMode: 'thread',
+      threadTs: '1785509000.000100', messageTs: '1785509201.000100',
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    };
+    const bound: ResolvedAssignment = { ...assignment, workspaceId, agent, runtimeContract: 'chickpea-v1' };
+    const client = {
+      conversations: { replies: async () => ({ ok: true, messages: [{
+        user: turn.userId, ts: '1785509100.000100', text: 'Here is the logo.',
+        files: [{ id: 'F00000000AA', name: 'logo.png', mimetype: 'image/png', size: 2_048 }],
+      }] }) },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: '1785509300.000100' }),
+        startStream: async () => ({ ok: true, ts: '1785509300.000100' }),
+        stopStream: async () => ({ ok: true }),
+      },
+    } as unknown as WebClient;
+    const runtimePlan = compileRuntimePlanV2({ turn, assignment: bound,
+      instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash',
+      imageCapability: { role: 'image', filled: true, acceptsImageInput: true } });
+    let dispatched: readonly { fileId: string; conversationKey: string }[] | undefined;
+    await runTurn(turn, bound, undefined, {
+      client, usageRecordingEnabled: false,
+      runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) },
+      appStores: { config: f.config, memory: f.memory, identity: f.identity, management: f.management } as never,
+      agentPrompt: async ({ threadImages }) => {
+        dispatched = threadImages;
+        return { text: '42', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
+      },
+    });
+    assert.deepEqual(dispatched?.map(({ fileId }) => fileId), ['F00000000AA']);
+    assert.equal(dispatched?.[0]?.conversationKey, `${workspaceId}:${turn.channelId}:${turn.threadTs}`);
+  } finally {
+    await f.close();
+  }
+});
+
+test('runTurn withholds the thread images when the frozen plan has no image capability', async () => {
+  const f = await createManagementAdapterFixture('thread-images-unfilled');
+  try {
+    const agent = await f.config.createAgent({ ...assignment.agent,
+      creatorMembershipId: f.admin.membership.id, editPolicy: 'creator_and_admins' });
+    const workspaceId = f.admin.binding.slackTeamId;
+    await f.config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', defaultAgentId: agent.id });
+    const turn: NormalizedSlackTurn = {
+      ...workTurn('Ev_THREAD_IMAGES_UNFILLED'), workspaceId, userId: f.admin.binding.slackUserId,
+      actorMembershipId: f.admin.membership.id, contextMode: 'thread',
+      threadTs: '1785509000.000100', messageTs: '1785509201.000100',
+      interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    };
+    const bound: ResolvedAssignment = { ...assignment, workspaceId, agent, runtimeContract: 'chickpea-v1' };
+    const client = {
+      conversations: { replies: async () => ({ ok: true, messages: [{
+        user: turn.userId, ts: '1785509100.000100', text: 'Here is the logo.',
+        files: [{ id: 'F00000000AA', name: 'logo.png', mimetype: 'image/png', size: 2_048 }],
+      }] }) },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: '1785509300.000100' }),
+        startStream: async () => ({ ok: true, ts: '1785509300.000100' }),
+        stopStream: async () => ({ ok: true }),
+      },
+    } as unknown as WebClient;
+    // No image role resolved, so the tool never mounts and the attribute the
+    // previous release's strict envelope parser rejects is never written.
+    const runtimePlan = compileRuntimePlanV2({ turn, assignment: bound,
+      instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash',
+      imageCapability: { role: 'image', filled: false, acceptsImageInput: false } });
+    let dispatched: readonly { fileId: string }[] | undefined = [];
+    await runTurn(turn, bound, undefined, {
+      client, usageRecordingEnabled: false,
+      runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) },
+      appStores: { config: f.config, memory: f.memory, identity: f.identity, management: f.management } as never,
+      agentPrompt: async ({ threadImages }) => {
+        dispatched = threadImages;
+        return { text: '42', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
+      },
+    });
+    assert.equal(dispatched, undefined);
+  } finally {
+    await f.close();
+  }
+});
+
+test('the production compile path freezes the image capability the store resolves', async () => {
+  const f = await createManagementAdapterFixture('image-capability');
+  try {
+    const agent = await f.config.createAgent({ ...assignment.agent,
+      creatorMembershipId: f.admin.membership.id, editPolicy: 'creator_and_admins' });
+    const workspaceId = f.admin.binding.slackTeamId;
+    await f.config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', defaultAgentId: agent.id });
+    const bound: ResolvedAssignment = { ...assignment, workspaceId, agent, runtimeContract: 'chickpea-v1' };
+    const client = {
+      conversations: { replies: async () => ({ ok: true, messages: [] }) },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: '1785509300.000100' }),
+        startStream: async () => ({ ok: true, ts: '1785509300.000100' }),
+        stopStream: async () => ({ ok: true }),
+      },
+    } as unknown as WebClient;
+    // `runTurn` freezes the plan itself here: no `runtimePlanDecision` is
+    // supplied, so this drives the same compile call production runs.
+    const freeze = async (eventId: string): Promise<RuntimePlanV2 | undefined> => {
+      const turn: NormalizedSlackTurn = {
+        ...workTurn(eventId), workspaceId, userId: f.admin.binding.slackUserId,
+        actorMembershipId: f.admin.membership.id, contextMode: 'thread',
+        threadTs: '1785509000.000100', messageTs: '1785509201.000100',
+        interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+      };
+      let frozen: RuntimePlanV2 | undefined;
+      await runTurn(turn, bound, undefined, {
+        client, usageRecordingEnabled: false,
+        appStores: { config: f.config, memory: f.memory, identity: f.identity, management: f.management } as never,
+        onRuntimePlan: (candidate) => {
+          frozen = candidate;
+          return { runtimePlan: candidate, instanceId: deriveRuntimePlanInstanceId(candidate) };
+        },
+        agentPrompt: async () => ({ text: '42', requestedModel: null, returnedModel: null,
+          reportedUsage: null, usageCompleteness: 'not_reported' }),
+      });
+      return frozen;
+    };
+
+    await withEnv({ OPENAI_API_KEY: 'sk-image-role-run-turn' }, async () => {
+      const unset = await freeze('Ev_IMAGE_ROLE_UNSET');
+      assert.deepEqual(unset?.imageCapability, {
+        role: 'image', filled: false, acceptsImageInput: false,
+      });
+
+      await f.config.putWorkspaceModelRole({
+        workspaceId, role: 'image', modelId: 'openai/gpt-image-2.5-flare',
+      });
+      const filled = await freeze('Ev_IMAGE_ROLE_FILLED');
+      assert.deepEqual(filled?.imageCapability, {
+        role: 'image', filled: true, acceptsImageInput: true,
+      });
+      // The capability is part of the frozen harness identity.
+      assert.notEqual(filled?.harnessRevision, unset?.harnessRevision);
+    });
+  } finally {
+    await f.close();
+  }
+});
 
 test('runTurn retains the admitted latest correction across runtime rollover beyond the Slack page cap', async () => {
   const f = await createManagementAdapterFixture('context-rollover');

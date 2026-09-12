@@ -148,7 +148,7 @@ import {
   type SandboxTurnContext,
 } from '../sandbox/turn-context.ts';
 import {
-  ARTIFACT_TOOLS_INSTRUCTION,
+  buildArtifactToolsInstruction,
   createWorkspaceArtifactCapability,
   createWorkspaceArtifactTool,
   POST_ARTIFACT_TOOL_NAME,
@@ -156,15 +156,19 @@ import {
   type SlackArtifactStageOutcome,
 } from '../sandbox/artifact-tool.ts';
 import { createChartArtifactTool, RENDER_CHART_TOOL_NAME } from '../sandbox/chart-tool.ts';
+import {
+  createImageArtifactTool,
+  useImageCallBudget,
+  type ImageClientResolution,
+  type ImageToolTransport,
+} from '../sandbox/image-tool.ts';
 import { workspaceSkillForSandbox } from '../sandbox/workspace-skill.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
-import { parseCurrentRequestEnvelope } from '../memory/tool-policy.ts';
 import {
-  parseSlackAttachmentIntake,
-  slackAttachmentTurnIsReadOnly,
-  isSlackAttachmentContextDelivery,
-  useSlackAttachmentContext,
-} from '../slack/attachment-context.ts';
+  bindCurrentRequestConversation,
+  parseCurrentRequestEnvelope,
+} from '../memory/tool-policy.ts';
+import { useSlackAttachmentContext } from '../slack/attachment-context.ts';
 import { resolveSlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import { slackPresentationIntentCapability } from '../slack/presentation-intent.ts';
 import {
@@ -188,6 +192,17 @@ import {
   type SlackArtifactReceipts,
 } from '../slack/artifact-receipts.ts';
 import { stageArtifactWithReceipt } from '../slack/artifact-staging.ts';
+import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
+import {
+  buildThreadImageInventory,
+  createThreadImageReader,
+  parseThreadImageRecords,
+  slackThreadImageConversationKey,
+  type ThreadImageInventory,
+  type ThreadImageRecord,
+} from '../slack/thread-images.ts';
+import { resolveAgentModelRoleFromStore } from '../config/model-policy.ts';
+import { resolveImageProvider } from '../images/provider.ts';
 import { createSlackFileTransport, type SlackFileTransport } from '../slack/file-transport.ts';
 import {
   parseSlackManagementSignal,
@@ -1090,7 +1105,11 @@ export async function createSlackAgentRuntime(
     instructions: [
       config.instructions,
       ...(managedTools.length > 0 ? [MANAGED_CONNECTION_RESULT_INSTRUCTION] : []),
-      ...(tools.some(({ name }) => name === POST_ARTIFACT_TOOL_NAME) ? [ARTIFACT_TOOLS_INSTRUCTION] : []),
+      // The legacy assembler never mounts the image tool, so it always renders
+      // the no-image-model variant and its honesty rule.
+      ...(tools.some(({ name }) => name === POST_ARTIFACT_TOOL_NAME)
+        ? [buildArtifactToolsInstruction({ imageTool: false, canEdit: false })]
+        : []),
     ].join('\n\n'),
     tools,
     sandbox,
@@ -1166,19 +1185,16 @@ export function ChickpeaSlack({ id }: AgentProps) {
     schema: SlackAgentCreationTerminalIntentSchema,
   });
   const writeMemoryUpdate = useDataWriter(SLACK_MEMORY_UPDATE_DATA_NAME, { schema: SlackMemoryUpdateSchema });
-  const attachmentReadOnly = isSlackAttachmentContextDelivery(delivery, plan) || slackAttachmentTurnIsReadOnly(
-    parseSlackAttachmentIntake(delivery, plan),
-  );
   const managementEnabled = !!parseSlackManagementSignal(delivery, plan);
   useChickpeaSlackRuntimeCapabilities(
     plan,
     id,
-    attachmentReadOnly,
     presentationIntent,
     writeTablePresentation,
     writeAgentCreationTerminal,
     managementEnabled,
     writeMemoryUpdate,
+    slackDeliveryThreadImages(plan, delivery),
   );
   useSlackAttachmentContext(
     plan,
@@ -1188,41 +1204,61 @@ export function ChickpeaSlack({ id }: AgentProps) {
   return plan.instructions;
 }
 
-/** Register the exact main-turn capability set after trusted attachment intake is known. */
+/**
+ * Register the exact main-turn capability set. A file upload no longer narrows
+ * it: an upload turn runs with the same tools as any other message, on the
+ * initial render and on the attachment-analysis re-render alike.
+ */
 export function useChickpeaSlackRuntimeCapabilities(
   plan: RuntimePlanV2,
   id: string,
-  attachmentReadOnly: boolean,
   presentationIntent: ReturnType<typeof slackPresentationIntentCapability>,
   writeTablePresentation: (presentation: SlackTablePresentation) => void,
   writeAgentCreationTerminal: (intent: SlackAgentCreationTerminalIntent) => void,
   managementEnabled: boolean,
   writeMemoryUpdate?: (receipt: SlackMemoryUpdate) => void,
+  threadImages?: readonly ThreadImageRecord[],
 ): void {
   useRuntimePlanAgent(plan, id, {
     responseMetadataModel: plan.model,
-    toolsDisabled: attachmentReadOnly,
-    includeAgentAuthoringSkill: !attachmentReadOnly,
+    ...(threadImages?.length ? { threadImages } : {}),
+    includeAgentAuthoringSkill: true,
     additionalActivityToolDescriptors: slackActivityToolDescriptors({
       plan,
-      managementEnabled: managementEnabled && !attachmentReadOnly,
-      ...(!attachmentReadOnly && presentationIntent
-        ? { presentationToolName: presentationIntent.tool.name }
-        : {}),
-      ...(!attachmentReadOnly ? { tablePresentationToolName: SLACK_PRESENT_TABLE_TOOL_NAME } : {}),
+      managementEnabled,
+      ...(presentationIntent ? { presentationToolName: presentationIntent.tool.name } : {}),
+      tablePresentationToolName: SLACK_PRESENT_TABLE_TOOL_NAME,
     }),
   });
-  if (!attachmentReadOnly) {
-    useAgentAuthoring();
-    useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv, writeAgentCreationTerminal, writeMemoryUpdate);
-    usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
-    useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
-    useTool(createSlackPresentTableTool(writeTablePresentation));
-    if (presentationIntent) {
-      useInstruction(presentationIntent.instruction);
-      useTool(presentationIntent.tool);
-    }
+  useAgentAuthoring();
+  useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv, writeAgentCreationTerminal, writeMemoryUpdate);
+  usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
+  useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
+  useTool(createSlackPresentTableTool(writeTablePresentation));
+  if (presentationIntent) {
+    useInstruction(presentationIntent.instruction);
+    useTool(presentationIntent.tool);
   }
+}
+
+/**
+ * This turn's thread images, recovered from the host-authored dispatch
+ * attribute. The wire carries no conversation of its own: the frozen plan is
+ * the only authority on which conversation these records belong to, and any
+ * malformed attribute yields no inventory rather than a failed turn.
+ */
+export function slackDeliveryThreadImages(
+  plan: RuntimePlanV2,
+  delivery: ReturnType<typeof useDelivery>,
+): ThreadImageRecord[] {
+  return parseThreadImageRecords(
+    delivery.kind === 'signal' ? delivery.attributes?.threadImages : undefined,
+    slackThreadImageConversationKey({
+      workspaceId: plan.conversation.workspaceId,
+      channelId: plan.conversation.channelId,
+      threadTs: plan.conversation.threadTs,
+    }),
+  );
 }
 
 /** Compose the declarations shared by Slack and fresh routine agents. */
@@ -1233,15 +1269,23 @@ export function useRuntimePlanAgent(
     responseMetadataModel?: string;
     sandboxConversationKey?: string;
     connectorUsageCorrelation?: import('../connections/managed-tools.ts').ManagedToolUsageCorrelation;
-    toolsDisabled?: boolean;
     artifactToolsDisabled?: boolean;
     includeAgentAuthoringSkill?: boolean;
     additionalActivityToolDescriptors?: readonly ActivityToolDescriptor[];
+    /** Images already in this conversation, collected by the host fetch. */
+    threadImages?: readonly ThreadImageRecord[];
   } = {},
 ): void {
   const { accumulator: artifactAccumulator, writeReceipts: writeArtifactReceipts } = useSlackArtifactReceipts();
+  const reserveImageCall = useImageCallBudget();
+  // The delivery gate compares a re-stamped attachment-context envelope against
+  // the host-owned conversation. Only the frozen plan can supply it.
+  bindCurrentRequestConversation({
+    workspaceId: plan.conversation.workspaceId,
+    channelId: plan.conversation.channelId,
+    threadTs: plan.conversation.threadTs,
+  });
   registerActivityContext(id, buildRuntimePlanActivityContext(plan, {
-    ...(options.toolsDisabled === undefined ? {} : { toolsDisabled: options.toolsDisabled }),
     ...(options.includeAgentAuthoringSkill === undefined
       ? {}
       : { includeAgentAuthoringSkill: options.includeAgentAuthoringSkill }),
@@ -1264,68 +1308,64 @@ export function useRuntimePlanAgent(
   useInstruction('Sandbox files are temporary working data, not durable Agent memory. They do not follow this Agent into a fresh conversation. A successful file or shell write cannot establish that a fact was remembered. Never promise future recall from a sandbox file.');
   useInstruction(SLACK_ACTION_LINK_INSTRUCTION);
   useInstruction('The final Slack answer must be self-contained. Earlier assistant steps are working narration. After an interrupted response, write the complete final answer again, not just the remaining words of the partial response.');
-  if (options.toolsDisabled) {
-    useInstruction(
-      'This attachment-bearing Slack turn is read-only. No tools, connectors, sandboxes, or workspace-management actions are available. Answer only from the authoritative Slack request and the attachment evidence signal. If the request also asks for an external action, analyze the attachments, state the exact proposed action inputs separately, and ask the user to restate those exact inputs in a new text-only message. A vague follow-up such as "go ahead" is not authorization.',
-    );
-  } else {
-    useManagedConnectionTools(
-      plan,
-      resolveAgentPlatformEnv,
-      options.connectorUsageCorrelation,
-      [AGENT_AUTHORING_SKILL_NAME],
-    );
-  }
-  if (!options.toolsDisabled && plan.sandbox.mode === 'bash' && plan.apiConnections.length > 0) {
+  useManagedConnectionTools(
+    plan,
+    resolveAgentPlatformEnv,
+    options.connectorUsageCorrelation,
+    [AGENT_AUTHORING_SKILL_NAME],
+  );
+  if (plan.sandbox.mode === 'bash' && plan.apiConnections.length > 0) {
     useInstruction([
       'REST connections are declared for this turn. Use the bash tool with curl -sS to perform requested HTTP operations within the listed hosts, path prefixes, and methods, preserving error messages. Credentials are injected automatically by the connection transport; do not supply, retrieve, or print authentication headers or credential values.',
       'These declarations describe the frozen permission ceiling, not a guarantee of availability. The runtime rechecks current account authority on every request; if access is denied or unavailable, report that result without bypassing it or claiming success.',
       JSON.stringify(plan.apiConnections.map(({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }) => ({ id, displayName, allowedHosts, pathPrefixes, allowedMethods }))),
     ].join('\n'));
   }
-  if (!options.toolsDisabled) {
-    for (const skill of resolveProfileSkills(
-      [
-        ...suppressProfileNamedConnectorSkills(connectorSkillsForConnections(plan.apiConnections), plan.skills.map((entry) => ({ ...entry, enabled: true }))),
-        ...plan.skills.map((entry) => ({ ...entry, enabled: true })),
-      ],
-      { reservedNames: [AGENT_AUTHORING_SKILL_NAME] },
-    )) {
-      useSkill(skill);
-    }
+  for (const skill of resolveProfileSkills(
+    [
+      ...suppressProfileNamedConnectorSkills(connectorSkillsForConnections(plan.apiConnections), plan.skills.map((entry) => ({ ...entry, enabled: true }))),
+      ...plan.skills.map((entry) => ({ ...entry, enabled: true })),
+    ],
+    { reservedNames: [AGENT_AUTHORING_SKILL_NAME] },
+  )) {
+    useSkill(skill);
   }
-  if (!options.toolsDisabled) {
-    const restrictions = plan.mcpConnections.filter((connection) =>
-      Object.keys(connection.toolArgumentConstraints ?? {}).length > 0);
-    if (restrictions.length > 0) {
-      useInstruction(`The owner restricts these connection tool inputs. Use only the listed values; do not retry disallowed inputs: ${JSON.stringify(restrictions.map((connection) => ({
-        connection: connection.id, tools: connection.toolArgumentConstraints,
-      })))}`);
-    }
-    for (const connection of resolveRuntimePlanMcpConnections(
-      plan.agentId,
-      plan.mcpConnections,
-      () => {
-        publishActivityStatus(id, connectingActivityStatus('a connected service'));
-      },
-      plan.actorMembershipId ? { workspaceId: plan.conversation.workspaceId, actorMembershipId: plan.actorMembershipId } : undefined,
-    )) {
-      useMcpConnection(connection);
-    }
+  const restrictions = plan.mcpConnections.filter((connection) =>
+    Object.keys(connection.toolArgumentConstraints ?? {}).length > 0);
+  if (restrictions.length > 0) {
+    useInstruction(`The owner restricts these connection tool inputs. Use only the listed values; do not retry disallowed inputs: ${JSON.stringify(restrictions.map((connection) => ({
+      connection: connection.id, tools: connection.toolArgumentConstraints,
+    })))}`);
   }
-  if (options.toolsDisabled) {
-    // Attachment turns expose no sandbox tools, but still initialize a tiny
-    // environment so provider authority is rebound on every Flue recovery
-    // attempt, including one whose durable start hook already committed.
-    useSandbox(createRuntimePlanPreparationSandbox(plan));
-  } else {
-    useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
-    if (!options.artifactToolsDisabled) {
-      for (const tool of createRuntimePlanArtifactTools(plan, artifactAccumulator, writeArtifactReceipts)) {
-        useTool(tool);
-      }
-      useInstruction(ARTIFACT_TOOLS_INSTRUCTION);
+  for (const connection of resolveRuntimePlanMcpConnections(
+    plan.agentId,
+    plan.mcpConnections,
+    () => {
+      publishActivityStatus(id, connectingActivityStatus('a connected service'));
+    },
+    plan.actorMembershipId ? { workspaceId: plan.conversation.workspaceId, actorMembershipId: plan.actorMembershipId } : undefined,
+  )) {
+    useMcpConnection(connection);
+  }
+  useSandbox(createRuntimePlanSandbox(plan, options.sandboxConversationKey));
+  if (!options.artifactToolsDisabled) {
+    // Built once per render: the tool resolves `img:N` handles against this
+    // inventory, and `imageInventory.manifest` is the model-facing listing
+    // the artifact-tools instruction renders beside the tool description.
+    const imageInventory = runtimePlanThreadImageInventory(plan, options.threadImages);
+    for (const tool of createRuntimePlanArtifactTools(
+      plan,
+      artifactAccumulator,
+      writeArtifactReceipts,
+      { imageInventory, reserveImageCall },
+    )) {
+      useTool(tool);
     }
+    useInstruction(buildArtifactToolsInstruction({
+      imageTool: plan.imageCapability?.filled === true,
+      canEdit: plan.imageCapability?.acceptsImageInput === true,
+      ...(imageInventory.manifest ? { imageManifest: imageInventory.manifest } : {}),
+    }));
   }
 }
 
@@ -1447,19 +1487,7 @@ function createRuntimePlanSandbox(
   };
 }
 
-function createRuntimePlanPreparationSandbox(plan: RuntimePlanV2): SandboxFactory {
-  const localSandbox = bash(() => new Bash({ fs: new InMemoryFs() }));
-  return {
-    async createSessionEnv(options) {
-      const env = await resolveAgentPlatformEnv();
-      await prepareRuntimePlanModel(plan, env);
-      return localSandbox.createSessionEnv(options);
-    },
-    tools: () => [],
-  };
-}
-
-/** Bind the frozen model lane before any model call, including tool-free attachment turns. */
+/** Bind the frozen model lane before any model call. */
 async function prepareRuntimePlanModel(
   plan: RuntimePlanV2,
   env: PlatformEnv | undefined,
@@ -1552,10 +1580,11 @@ function runtimeRepositoryMatches(
  * uploads bytes only; the host completes the upload with the final reply so
  * the file carries the Agent's identity and text in one message.
  */
-function createRuntimePlanArtifactTools(
+export function createRuntimePlanArtifactTools(
   plan: RuntimePlanV2,
   accumulator: ReturnType<typeof createArtifactReceiptAccumulator>,
   writeArtifactReceipts: (receipts: SlackArtifactReceipts) => void,
+  options: RuntimePlanArtifactToolOptions = {},
 ) {
   let transport: Promise<SlackFileTransport> | undefined;
   const destination = {
@@ -1564,21 +1593,30 @@ function createRuntimePlanArtifactTools(
     channelId: plan.artifactDestination.channelId,
     ...(plan.artifactDestination.threadTs ? { threadTs: plan.artifactDestination.threadTs } : {}),
   };
+  const resolveFileTransport = (): Promise<SlackFileTransport> => {
+    transport ??= (async () => {
+      const env = await resolveAgentPlatformEnv();
+      const installation = await resolveSlackInstallationExecutionContext(
+        plan.conversation.workspaceId,
+        env,
+        { config: getConfigStore(env), settings: getSettingsStore(env) },
+      );
+      return createSlackFileTransport(installation.client);
+    })();
+    return transport;
+  };
   const binding = {
     channel: destination.channelId,
     ...(destination.threadTs ? { threadTs: destination.threadTs } : {}),
+    /**
+     * The installation's upload cap, memoized beside staging. The image tool
+     * awaits it before it can choose an output format; nothing else
+     * distinguishes the direct and gateway transports up front.
+     */
+    resolveTransport: async (): Promise<ImageToolTransport> => resolveFileTransport(),
     async stageArtifact(artifact: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome> {
-      transport ??= (async () => {
-        const env = await resolveAgentPlatformEnv();
-        const installation = await resolveSlackInstallationExecutionContext(
-          plan.conversation.workspaceId,
-          env,
-          { config: getConfigStore(env), settings: getSettingsStore(env) },
-        );
-        return createSlackFileTransport(installation.client);
-      })();
       return stageArtifactWithReceipt({
-        transport: await transport,
+        transport: await resolveFileTransport(),
         artifact,
         destination,
         accumulator,
@@ -1586,10 +1624,99 @@ function createRuntimePlanArtifactTools(
       });
     },
   };
+  // Only a plan whose image role resolved to a credentialed model carries the
+  // image tool. The legacy assembler posts with app identity and keeps no
+  // receipts, so it never mounts it.
+  const reserveImageCall = options.reserveImageCall;
+  const imageCapability = plan.imageCapability;
   return [
     createWorkspaceArtifactTool({ ...binding, sandboxKind: plan.sandbox.mode }),
     createChartArtifactTool(binding),
+    ...(imageCapability?.filled && reserveImageCall
+      ? [createImageArtifactTool({
+          acceptsImageInput: imageCapability.acceptsImageInput,
+          inventory: options.imageInventory ??
+            runtimePlanThreadImageInventory(plan, options.threadImages),
+          reserveImageCall,
+          resolveTransport: binding.resolveTransport,
+          resolveClient: options.resolveImageClient ?? (() => resolveRuntimePlanImageClient(plan)),
+          createImageReader: async (limits) => {
+            const env = await resolveAgentPlatformEnv();
+            return createThreadImageReader({
+              client: createSlackAttachmentClient(env),
+              perFileLimitBytes: limits.perFileLimitBytes,
+              totalLimitBytes: limits.totalLimitBytes,
+              ...(limits.signal ? { signal: limits.signal } : {}),
+            });
+          },
+          stageArtifact: binding.stageArtifact,
+        })]
+      : []),
   ];
+}
+
+export interface RuntimePlanArtifactToolOptions {
+  /** Thread image records for this turn, collected by the host fetch. */
+  threadImages?: readonly ThreadImageRecord[] | undefined;
+  /** Prebuilt inventory; the render builds one so the instruction can read it. */
+  imageInventory?: ThreadImageInventory | undefined;
+  /** One image call per response; supplied by `useImageCallBudget`. */
+  reserveImageCall?: ((toolCallId: string) => boolean) | undefined;
+  /** Focused seam; production resolves the role and provider at call time. */
+  resolveImageClient?: (() => Promise<ImageClientResolution>) | undefined;
+}
+
+/**
+ * The per-turn `img:N` inventory for a plan. Built once per render so the
+ * model-facing instruction and the tool address the same handles.
+ */
+export function runtimePlanThreadImageInventory(
+  plan: RuntimePlanV2,
+  threadImages?: readonly ThreadImageRecord[] | undefined,
+): ThreadImageInventory {
+  return buildThreadImageInventory({
+    // The same key `runtimePlanConversationKey` derives, without re-validating
+    // a plan the caller already parsed.
+    conversationKey: slackThreadImageConversationKey({
+      workspaceId: plan.conversation.workspaceId,
+      channelId: plan.conversation.channelId,
+      threadTs: plan.conversation.threadTs,
+    }),
+    ...(threadImages ? { threadRecords: threadImages } : {}),
+  });
+}
+
+/**
+ * Resolve the image role again inside the tool call, so a per-Agent override
+ * saved after the plan was compiled still decides which model runs.
+ * Any unresolved role, missing credential, or unsupported provider is one
+ * `misconfigured` outcome: the tool never reports a model it did not call.
+ */
+async function resolveRuntimePlanImageClient(plan: RuntimePlanV2): Promise<ImageClientResolution> {
+  const env = await resolveAgentPlatformEnv();
+  const config = getConfigStore(env);
+  const settings = getSettingsStore(env);
+  let modelId: string;
+  try {
+    const agent = await config.getAgent(plan.agentId);
+    const resolution = await resolveAgentModelRoleFromStore({
+      role: 'image',
+      workspaceId: plan.conversation.workspaceId,
+      agent: { id: agent.id, kind: agent.kind },
+      reader: {
+        getWorkspaceModelRole: (workspaceId, role) => config.getWorkspaceModelRole(workspaceId, role),
+        getAgentModelRole: (agentId, role) => config.getAgentModelRole(agentId, role),
+      },
+      ...(env ? { env } : {}),
+      settings,
+    });
+    if ('unset' in resolution) return { ok: false, reason: 'misconfigured' };
+    modelId = resolution.modelId;
+  } catch {
+    return { ok: false, reason: 'misconfigured' };
+  }
+  const provider = await resolveImageProvider(modelId, env, settings);
+  return provider.ok ? { ok: true, client: provider.client } : { ok: false, reason: 'misconfigured' };
 }
 
 export function thinkingLevelForModel(model: string): 'off' | undefined {

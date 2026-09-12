@@ -86,10 +86,23 @@ const SIGNAL_OPTIONAL_ATTRIBUTE_KEYS = [
   'attachmentFileIds',
   'attachmentIntakeStatus',
   'attachmentCount',
+  'threadImages',
 ] as const;
 const SIGNAL_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
   ...SIGNAL_ATTRIBUTE_KEYS,
   ...SIGNAL_OPTIONAL_ATTRIBUTE_KEYS,
+]);
+/**
+ * The host appends one attachment-analysis signal to an upload turn, and it
+ * becomes the delivery the re-render reads. It carries the triggering
+ * message's own identity forward plus its own bounded evidence counters, so
+ * the same Slack request keeps the same management authority on both renders.
+ */
+const ATTACHMENT_CONTEXT_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
+  ...SIGNAL_ALLOWED_ATTRIBUTE_KEYS,
+  'attachmentStatus',
+  'attachmentSuccessCount',
+  'attachmentFailureCount',
 ]);
 
 export const scheduleActionInputSchema = v.object({
@@ -793,10 +806,17 @@ export function parseSlackManagementSignal(
   delivery: DeliveredMessage,
   plan: RuntimePlanV2,
 ): SlackManagementSignal | undefined {
-  if (delivery.kind !== 'signal' || delivery.type !== 'slack.message' ||
-      delivery.tagName !== 'slack_message' || !delivery.attributes) return undefined;
-  if (Object.keys(delivery.attributes).some((key) =>
-    !SIGNAL_ALLOWED_ATTRIBUTE_KEYS.has(key))) return undefined;
+  if (delivery.kind !== 'signal' || !delivery.attributes) return undefined;
+  const attachmentContext = delivery.type === 'slack.attachment_context' &&
+    delivery.tagName === 'slack_attachment_context';
+  if (!attachmentContext &&
+      (delivery.type !== 'slack.message' || delivery.tagName !== 'slack_message')) {
+    return undefined;
+  }
+  const allowedKeys = attachmentContext
+    ? ATTACHMENT_CONTEXT_ALLOWED_ATTRIBUTE_KEYS
+    : SIGNAL_ALLOWED_ATTRIBUTE_KEYS;
+  if (Object.keys(delivery.attributes).some((key) => !allowedKeys.has(key))) return undefined;
   const values = Object.fromEntries(SIGNAL_ATTRIBUTE_KEYS.map((key) => [
     key,
     boundedAttribute(delivery.attributes?.[key], key, key.endsWith('Ts') ? 80 : 256),

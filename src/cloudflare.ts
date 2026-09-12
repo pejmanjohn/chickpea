@@ -25,6 +25,7 @@ import {
   ManagedRemoteAccountAlreadyUsedError,
   ReservedAgentIdentityError,
   UnknownAgentError,
+  ModelRoleRevisionConflictError,
   WorkspaceModelDefaultRevisionConflictError,
 } from './config/errors.ts';
 import {
@@ -84,6 +85,7 @@ import {
 } from './connections/oauth-continuation.ts';
 import {
   ConfigStoreLogic,
+  type AgentModelRolePatch,
   type ConfigAgentPatch,
   type OAuthReauthorizationTarget,
 } from './config/store.ts';
@@ -92,6 +94,8 @@ import type {
   AgentCreateInput,
   AgentChannelGrant,
   AgentChannelGrantInput,
+  AgentModelRole,
+  AgentModelRoleInput,
   AgentConnectionBinding,
   AgentConnectionBindingInput,
   AgentOwnedConnection,
@@ -115,8 +119,11 @@ import type {
   SlackPublicContextEntry,
   SlackPublicContextEntryInput,
   RecentSlackPublicContextInput,
+  NonChatModelRole,
   WorkspaceModelDefault,
   WorkspaceModelDefaultInput,
+  WorkspaceModelRole,
+  WorkspaceModelRoleInput,
   WorkspaceInstallation,
   WorkspaceInstallationPatch,
 } from './config/types.ts';
@@ -170,6 +177,7 @@ import type {
   FlueSettlementCheckpointV1,
   FlueTurnObservationV1,
 } from './slack/turn-job-types.ts';
+import type { ThreadImageRecord } from './slack/thread-images.ts';
 import {
   MAX_POST_DISPATCH_ATTEMPTS,
   MAX_TURN_ATTEMPTS,
@@ -909,6 +917,45 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     return this.call((stores) => stores.config.putWorkspaceModelDefault(input, expectedRevision));
   }
 
+  async configGetWorkspaceModelRole(
+    workspaceId: string,
+    role: NonChatModelRole,
+  ): Promise<StateRpcResult<WorkspaceModelRole | null>> {
+    return this.call((stores) => stores.config.getWorkspaceModelRole(workspaceId, role) ?? null);
+  }
+
+  async configPutWorkspaceModelRole(
+    input: WorkspaceModelRoleInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<WorkspaceModelRole>> {
+    return this.call((stores) => stores.config.putWorkspaceModelRole(input, expectedRevision));
+  }
+
+  async configGetAgentModelRole(
+    agentId: string,
+    role: NonChatModelRole,
+  ): Promise<StateRpcResult<AgentModelRole | null>> {
+    return this.call((stores) => stores.config.getAgentModelRole(agentId, role) ?? null);
+  }
+
+  async configPutAgentModelRole(
+    input: AgentModelRoleInput,
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<AgentModelRole>> {
+    return this.call((stores) => stores.config.putAgentModelRole(input, expectedRevision));
+  }
+
+  async configUpdateAgentWithModelRoles(
+    agentId: string,
+    patch: ConfigAgentPatch,
+    roles: readonly AgentModelRolePatch[],
+    expectedRevision?: number,
+  ): Promise<StateRpcResult<CustomAgentConfig>> {
+    return this.call((stores) =>
+      stores.config.updateAgentWithModelRoles(agentId, patch, roles, expectedRevision),
+    );
+  }
+
   async configPrepareChickpeaCutover(
     input: PrepareChickpeaCutoverInput,
   ): Promise<StateRpcResult<ChickpeaCutoverPreflight>> {
@@ -1212,8 +1259,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     id: string,
     message: string,
     observation: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[2],
+    threadImages?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[3],
   ) {
-    return this.call((stores) => stores.turnJobs.prepareFlueDispatch(id, message, observation));
+    return this.call((stores) =>
+      stores.turnJobs.prepareFlueDispatch(id, message, observation, threadImages),
+    );
   }
 
   async slackFlueExistingInstanceReconcile(id: string, uid: string) {
@@ -1707,8 +1757,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
         ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
         ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
-        prepare: (message: string, observation: FlueTurnObservationV1) =>
-          stores.turnJobs.prepareFlueDispatch(job.id, message, observation),
+        prepare: (
+          message: string,
+          observation: FlueTurnObservationV1,
+          threadImages?: readonly ThreadImageRecord[],
+        ) => stores.turnJobs.prepareFlueDispatch(job.id, message, observation, threadImages),
         reconcileExistingInstance: (uid: string) =>
           stores.turnJobs.reconcileFlueExistingInstance(job.id, uid),
         recordReceipt: (receipt: FlueDispatchReceiptV1) =>
@@ -2072,6 +2125,15 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       if (err instanceof WorkspaceModelDefaultRevisionConflictError) {
         return rpcError('workspace_model_default_revision_conflict', err.message, {
           workspaceId: err.workspaceId,
+          expectedRevision: String(err.expectedRevision),
+          actualRevision: String(err.actualRevision),
+        });
+      }
+      if (err instanceof ModelRoleRevisionConflictError) {
+        return rpcError('model_role_revision_conflict', err.message, {
+          scope: err.scope,
+          targetId: err.targetId,
+          role: err.role,
           expectedRevision: String(err.expectedRevision),
           actualRevision: String(err.actualRevision),
         });

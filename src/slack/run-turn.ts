@@ -8,7 +8,11 @@ import {
 } from '../agents/runtime-plan.ts';
 import { effectiveSlackInstructions } from '../config/effective-config.ts';
 import { CHICKPEA_AGENT_NAME } from '../config/agent-id.ts';
-import { resolveAgentModel } from '../config/model-policy.ts';
+import {
+  imageCapabilityForResolution,
+  resolveAgentModel,
+  resolveAgentModelRoleFromStore,
+} from '../config/model-policy.ts';
 import { getGithubConnection } from '../config/github-app.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
@@ -1135,6 +1139,14 @@ export async function runTurn(
           ...(runtimePlanDecision
             ? { runtimePlan: runtimePlanDecision.runtimePlan }
             : {}),
+          // The host fetch is the only place these records exist; the dispatch
+          // envelope is the only channel that reaches the Agent object. Only a
+          // plan whose image role resolved can use them, so a workspace that
+          // never enabled an image model never writes the attribute.
+          ...(context.images?.length &&
+          runtimePlanDecision?.runtimePlan.imageCapability?.filled === true
+            ? { threadImages: context.images }
+            : {}),
           ...(platformEnv ? { env: platformEnv } : {}),
           ...(workLifecycle && options.runId
             ? {
@@ -1681,9 +1693,10 @@ async function freezeRuntimePlanForTurn(input: {
     baseInstructions,
     externalActionAuthorityInstructions(input.assignment.agent.instructions),
   ].join('\n');
+  const configStore = input.configStore ?? getConfigStore(input.platformEnv);
   const actorConnectionContext = input.turn.actorMembershipId
     ? {
-        config: input.configStore ?? getConfigStore(input.platformEnv),
+        config: configStore,
         workspaceId: input.turn.workspaceId,
         agentId: input.assignment.agentId,
         actorMembershipId: input.turn.actorMembershipId,
@@ -1714,13 +1727,31 @@ async function freezeRuntimePlanForTurn(input: {
   if (!canonicalModel) {
     throw new Error('Runtime plan compilation requires a frozen model.');
   }
+  const settingsStore = input.settingsStore ?? getSettingsStore(input.platformEnv);
   const runtimeModel = await resolveRuntimeModel(
     input.assignment.agentId,
     canonicalModel,
     {
-      settings: input.settingsStore ?? getSettingsStore(input.platformEnv),
+      settings: settingsStore,
       ...(input.platformEnv ? { env: input.platformEnv } : {}),
     },
+  );
+  // The image role is the store's alone. Freezing its bounded capability here
+  // is what mounts `generate_image` on the Agent; an unresolved or
+  // uncredentialed role freezes an unfilled capability instead.
+  const imageCapability = imageCapabilityForResolution(
+    await resolveAgentModelRoleFromStore({
+      role: 'image',
+      workspaceId: input.turn.workspaceId,
+      agent: { id: input.assignment.agent.id, kind: input.assignment.agent.kind },
+      reader: {
+        getWorkspaceModelRole: (workspaceId, role) =>
+          configStore.getWorkspaceModelRole(workspaceId, role),
+        getAgentModelRole: (agentId, role) => configStore.getAgentModelRole(agentId, role),
+      },
+      ...(input.platformEnv ? { env: input.platformEnv } : {}),
+      settings: settingsStore,
+    }),
   );
   const runtimeModelRoute = freezeRuntimeModelRoute(
     canonicalModel,
@@ -1731,6 +1762,7 @@ async function freezeRuntimePlanForTurn(input: {
     assignment: input.assignment,
     runtimeModel: runtimeModel.model,
     ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
+    imageCapability,
     instructions,
     memoryEpoch: input.memoryEpoch,
     sandboxMode: sandboxDecision.selection,

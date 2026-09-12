@@ -53,6 +53,12 @@ interface FlueDispatchEnvelopeV2 extends FlueDispatchEnvelopeBase {
       attachmentFileIds?: string;
       attachmentIntakeStatus?: 'ok' | 'too_many' | 'invalid_metadata';
       attachmentCount?: string;
+      /**
+       * Bounded JSON list of this turn's thread images, without any
+       * conversation key: the Agent re-derives that from its frozen plan.
+       * Slack file ids only — no bytes and no private URLs.
+       */
+      threadImages?: string;
     };
   };
 }

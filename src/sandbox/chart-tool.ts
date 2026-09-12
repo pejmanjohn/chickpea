@@ -11,11 +11,16 @@ import {
   validateChartSpec,
 } from '../charts/render-chart.ts';
 import { assertArtifactDeliveryAllowed } from '../memory/tool-policy.ts';
-import type { SlackArtifactStageInput, SlackArtifactStageOutcome } from './artifact-tool.ts';
+import {
+  artifactFilename,
+  MAX_ARTIFACT_FILENAME_CHARS,
+  type SlackArtifactStageInput,
+  type SlackArtifactStageOutcome,
+} from './artifact-tool.ts';
 
 export const RENDER_CHART_TOOL_NAME = 'render_chart';
 const DEFAULT_CHART_FILENAME = 'chart.png';
-const MAX_FILENAME_CHARS = 64;
+const CHART_EXTENSION = 'png';
 
 export interface ChartArtifactToolOptions {
   channel: string;
@@ -29,7 +34,9 @@ export type ChartArtifactResult =
 
 const CHART_TOOL_INPUT = v.object({
   ...chartSpecSchema.entries,
-  filename: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(MAX_FILENAME_CHARS))),
+  filename: v.optional(
+    v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(MAX_ARTIFACT_FILENAME_CHARS)),
+  ),
 });
 
 /**
@@ -78,12 +85,5 @@ export function createChartArtifactTool(options: ChartArtifactToolOptions) {
 
 /** Keep the Slack-visible filename to a safe basename with a `.png` suffix. */
 export function chartFilename(requested: string | undefined): string {
-  const base = (requested ?? DEFAULT_CHART_FILENAME)
-    .split(/[\\/]/)
-    .pop()!
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/^[.-]+/, '')
-    .slice(0, MAX_FILENAME_CHARS);
-  if (base.length === 0) return DEFAULT_CHART_FILENAME;
-  return /\.png$/i.test(base) ? base : `${base.replace(/\.[A-Za-z0-9]{1,5}$/, '')}.png`;
+  return artifactFilename(requested, DEFAULT_CHART_FILENAME, CHART_EXTENSION);
 }

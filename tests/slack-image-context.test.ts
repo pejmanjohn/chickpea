@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import {
+  parseCurrentRequestEnvelope,
+  serializeCurrentRequestEnvelope,
+} from '../src/memory/tool-policy.ts';
 import type {
   NormalizedSlackAttachment,
   SlackAttachmentNormalizationResult,
@@ -11,10 +15,15 @@ import {
   createSlackAttachmentAnalysis,
   formatSlackAttachmentSignal,
   parseSlackAttachmentIntake,
-  slackAttachmentTurnIsReadOnly,
+  slackAttachmentTurnContext,
   isSlackAttachmentContextDelivery,
   type SlackAttachmentIntake,
 } from '../src/slack/attachment-context.ts';
+import {
+  parseThreadImageRecords,
+  serializeThreadImageRecords,
+  slackThreadImageConversationKey,
+} from '../src/slack/thread-images.ts';
 
 const plan = {
   agentId: 'agent_chickpea',
@@ -152,14 +161,48 @@ test('no attachments are a no-op while explicit intake failures remain actionabl
   }), plan), { kind: 'rejected', status: 'invalid_metadata', count: 2 });
 });
 
-test('every attachment-bearing turn is read-only while ordinary Slack turns retain tools', () => {
-  assert.equal(slackAttachmentTurnIsReadOnly({ kind: 'none' }), false);
-  assert.equal(slackAttachmentTurnIsReadOnly(requiredIntake()), true);
-  assert.equal(slackAttachmentTurnIsReadOnly({
-    kind: 'rejected',
-    status: 'invalid_metadata',
-    count: 1,
-  }), true);
+test('an attachment turn carries the triggering message identity and its envelope forward', () => {
+  const envelope = serializeCurrentRequestEnvelope(
+    'What does the ROAS report say?', false, 'U_HUMAN', '1782770401.000200',
+    { schemaVersion: 2, progressiveStreamingOffered: true },
+  );
+  const turn = slackAttachmentTurnContext({
+    ...delivery({ requesterText: 'What does the ROAS report say?' }),
+    body: `What does the ROAS report say?\n${envelope}`,
+  });
+
+  // Only trusted routing identity crosses; the file ids and intake status do
+  // not, so the rerender cannot re-enter attachment retrieval.
+  assert.deepEqual(turn.attributes, {
+    slackUserId: 'U_HUMAN',
+    eventId: 'Ev_ATTACHMENT',
+    messageTs: '1782770401.000200',
+    turnJobId: 'turn_attachment',
+    requesterText: 'What does the ROAS report say?',
+  });
+  assert.equal(turn.currentRequestEnvelope, envelope);
+
+  const signal = formatSlackAttachmentSignal(
+    { attachmentCount: 1, successCount: 1, failureCount: 0, manifest: [], observations: 'ROAS is 2.4.' },
+    turn,
+  );
+  assert.equal(signal.attributes.slackUserId, 'U_HUMAN');
+  assert.equal(signal.attributes.messageTs, '1782770401.000200');
+  assert.equal(signal.attributes.attachmentStatus, 'complete');
+  assert.equal(signal.attributes.attachmentFileIds, undefined);
+  assert.equal(signal.attributes.attachmentIntakeStatus, undefined);
+  // The envelope is terminal: after the evidence end marker, nothing else.
+  assert.ok(signal.body.endsWith(`\n${envelope}`));
+  assert.ok(signal.body.indexOf('===== END UNTRUSTED DERIVED ATTACHMENT EVIDENCE =====') <
+    signal.body.lastIndexOf(envelope));
+  assert.deepEqual(parseCurrentRequestEnvelope(signal.body)?.slackMessageTs, '1782770401.000200');
+
+  // A turn with no envelope stamps none rather than inventing one.
+  const bare = slackAttachmentTurnContext(delivery());
+  assert.equal(bare.currentRequestEnvelope, undefined);
+  assert.ok(formatSlackAttachmentSignal(
+    { attachmentCount: 1, successCount: 1, failureCount: 0, manifest: [] }, bare,
+  ).body.endsWith('===== END UNTRUSTED DERIVED ATTACHMENT EVIDENCE ====='));
 });
 
 test('one tool-free analysis handles text, PDF, image, and mixed normalization failures', async () => {
@@ -440,16 +483,18 @@ test('legacy image-only operation is absent from the unified attachment path', a
   assert.doesNotMatch(source, /chickpea\.files\.getImage|useSlackImageContext/);
 });
 
-test('the Slack Agent wires read-only attachment intake through every tool registration seam', async () => {
+test('the Slack Agent mounts every tool registration seam on an attachment turn', async () => {
   const source = await import('node:fs/promises').then(({ readFile }) =>
     readFile(new URL('../src/agents/slack-thread.ts', import.meta.url), 'utf8')
   );
-  assert.match(source, /toolsDisabled:\s*attachmentReadOnly/);
-  assert.match(source, /if \(!attachmentReadOnly\) \{[\s\S]*useAgentAuthoring\(\)[\s\S]*useWorkspaceManagementSlackTools[\s\S]*usePersonalConnectionAuthorizationSlackTool[\s\S]*useTool\(presentationIntent\.tool\)/);
-  assert.match(source, /if \(!options\.toolsDisabled\) \{[\s\S]*resolveProfileSkills\([\s\S]*useSkill\(skill\)/);
-  assert.match(source, /if \(options\.toolsDisabled\) \{[\s\S]*useSandbox\(createRuntimePlanPreparationSandbox\(plan\)\)/);
-  assert.match(source, /function createRuntimePlanPreparationSandbox[\s\S]*prepareRuntimePlanModel\(plan, env\)[\s\S]*tools: \(\) => \[\]/);
-  assert.match(source, /\} else \{[\s\S]*useSandbox\(createRuntimePlanSandbox[\s\S]*createRuntimePlanArtifactTool/);
+  // No attachment-derived flag narrows the turn's capabilities any more (R17).
+  assert.doesNotMatch(source, /attachmentReadOnly|slackAttachmentTurnIsReadOnly/);
+  assert.match(source, /useAgentAuthoring\(\);[\s\S]*useWorkspaceManagementSlackTools[\s\S]*usePersonalConnectionAuthorizationSlackTool[\s\S]*useTool\(presentationIntent\.tool\)/);
+  assert.match(source, /resolveProfileSkills\([\s\S]*useSkill\(skill\)/);
+  // No option narrows the mounted tool set any more: the sandbox and artifact
+  // tools mount unconditionally for every turn, attachment-bearing or not.
+  assert.doesNotMatch(source, /options\.toolsDisabled/);
+  assert.match(source, /useSandbox\(createRuntimePlanSandbox[\s\S]*createRuntimePlanArtifactTool/);
   assert.match(source, /useModel\(plan\.runtimeModel \?\? plan\.model/);
   assert.match(source, /plan\.runtimeModel \?\? \(await prepareRuntimePlanModel\(plan, env\)\)\.model/);
 });
@@ -498,4 +543,33 @@ test('host analysis delivery remains read-only only for its bound Slack conversa
   assert.equal(isSlackAttachmentContextDelivery({ ...signal, attributes: { ...signal.attributes, threadTs: 'different' } }, plan), false);
   assert.equal(isSlackAttachmentContextDelivery({ ...signal, type: 'slack.message' }, plan), false);
   assert.equal(isSlackAttachmentContextDelivery({ kind: 'user', body: 'Ordinary next request' }, plan), false);
+});
+
+test('the thread image inventory survives the attachment re-render unchanged', () => {
+  const conversationKey = slackThreadImageConversationKey(plan.conversation);
+  const records = [{
+    conversationKey,
+    fileId: 'F00000000AA',
+    filename: 'logo.png',
+    mimeType: 'image/png',
+    origin: 'person' as const,
+    messageTs: '1782770401.000200',
+  }];
+  const threadImages = serializeThreadImageRecords(records);
+  assert.ok(threadImages);
+
+  const turn = slackAttachmentTurnContext(delivery({ threadImages }));
+  assert.equal(turn.attributes.threadImages, threadImages);
+  // The attachment file ids still stop at the first render; only the image
+  // inventory crosses, so the re-render addresses the same `img:N` handles.
+  assert.equal(turn.attributes.attachmentFileIds, undefined);
+
+  const signal = formatSlackAttachmentSignal(
+    { attachmentCount: 1, successCount: 1, failureCount: 0, manifest: [] },
+    turn,
+  );
+  assert.deepEqual(parseThreadImageRecords(signal.attributes.threadImages, conversationKey), records);
+
+  // A turn with no images appends no attribute at all.
+  assert.equal(slackAttachmentTurnContext(delivery()).attributes.threadImages, undefined);
 });

@@ -49,12 +49,63 @@ export type CurrentRequestEnvelope = CurrentRequestEnvelopeV1 | CurrentRequestEn
 
 interface SubmissionPolicyState {
   policy?: CurrentRequestEnvelope;
+  conversation?: CurrentRequestConversationBinding;
+}
+
+/**
+ * The host-owned Slack coordinates of the submission being rendered. Only the
+ * host can supply these: they come from the frozen runtime plan, never from
+ * model-visible text.
+ */
+export interface CurrentRequestConversationBinding {
+  workspaceId: string;
+  channelId: string;
+  threadTs: string;
 }
 
 const submissionPolicy = new AsyncLocalStorage<SubmissionPolicyState>();
 
 /** Tools whose only side effect is delivering a file into the current thread. */
-export const ARTIFACT_DELIVERY_TOOL_NAMES: ReadonlySet<string> = new Set(['post_artifact', 'render_chart']);
+export const ARTIFACT_DELIVERY_TOOL_NAMES: ReadonlySet<string> = new Set(['post_artifact', 'render_chart', 'generate_image']);
+
+/**
+ * Bind this submission's host-owned conversation from the render, where the
+ * frozen runtime plan is in hand. The attachment-context signal re-stamps the
+ * turn's envelope and must prove it belongs to this conversation; no other
+ * signal consults the binding.
+ */
+export function bindCurrentRequestConversation(
+  conversation: CurrentRequestConversationBinding,
+): void {
+  const state = submissionPolicy.getStore();
+  if (state) state.conversation = conversation;
+}
+
+/** The conversation the caller bound for this submission, if any. */
+export function boundCurrentRequestConversation(): CurrentRequestConversationBinding | undefined {
+  return submissionPolicy.getStore()?.conversation;
+}
+
+/**
+ * Return the verbatim terminal current-request envelope of `prompt`, so a host
+ * signal can re-stamp exactly the bytes the host wrote rather than a
+ * re-serialization of them.
+ */
+export function currentRequestEnvelopeText(prompt: string): string | undefined {
+  for (const [startValue, endValue] of [
+    [CURRENT_REQUEST_ENVELOPE_V2_START, CURRENT_REQUEST_ENVELOPE_V2_END],
+    [MEMORY_CURRENT_REQUEST_ENVELOPE_START, MEMORY_CURRENT_REQUEST_ENVELOPE_END],
+  ] as const) {
+    const end = `\n${endValue}`;
+    if (!prompt.endsWith(end)) continue;
+    const startMarker = `${startValue}\n`;
+    const start = prompt.lastIndexOf(startMarker, prompt.length - end.length);
+    if (start < 0) continue;
+    const text = prompt.slice(start);
+    if (parseCurrentRequestEnvelope(text)) return text;
+  }
+  return undefined;
+}
 
 /**
  * A terminal app-generated envelope is the only source of admission state.
@@ -106,18 +157,22 @@ export function parseCurrentRequestEnvelope(
 }
 
 /**
- * Flue renders host signals as escaped XML in model observations. Two host
- * signals carry a current-request envelope: the Slack turn (`slack_message`)
- * and the due routine occurrence (`signal type="schedule"`). Each must prove
- * the terminal envelope in its body belongs to the signal's own host-owned
- * coordinates; an envelope from any other message never admits delivery.
+ * Flue renders host signals as escaped XML in model observations. Three host
+ * signals carry a current-request envelope: the Slack turn (`slack_message`),
+ * the attachment-analysis context the host appends to an upload turn
+ * (`slack_attachment_context`), and the due routine occurrence
+ * (`signal type="schedule"`). Each must prove the terminal envelope in its
+ * body belongs to the signal's own host-owned coordinates; an envelope from
+ * any other message never admits delivery.
  */
 export function parseModelVisibleCurrentRequestEnvelope(
   text: string,
+  conversation: CurrentRequestConversationBinding | undefined =
+    boundCurrentRequestConversation(),
 ): CurrentRequestEnvelope | undefined {
   const plain = parseCurrentRequestEnvelope(text);
   if (plain) return plain;
-  const signal = /^<(slack_message|signal)((?: [A-Za-z][A-Za-z0-9]*="[^"<>]*")+)>\n([^<>]*)\n<\/\1>$/.exec(text);
+  const signal = /^<(slack_message|slack_attachment_context|signal)((?: [A-Za-z][A-Za-z0-9]*="[^"<>]*")+)>\n([^<>]*)\n<\/\1>$/.exec(text);
   if (!signal) return undefined;
   const attributes = new Map<string, string>();
   for (const match of signal[2]!.matchAll(/ ([A-Za-z][A-Za-z0-9]*)="([^"]*)"/g)) {
@@ -127,11 +182,22 @@ export function parseModelVisibleCurrentRequestEnvelope(
   const envelope = parseCurrentRequestEnvelope(decodeSignalText(signal[3]!));
   if (!envelope || !envelope.slackActorId || !envelope.slackMessageTs) return undefined;
   const type = attributes.get('type');
-  if (signal[1] === 'slack_message' && type === 'slack.message') {
-    return envelope.slackActorId === attributes.get('slackUserId') &&
-      envelope.slackMessageTs === attributes.get('messageTs')
-      ? envelope
-      : undefined;
+  const slackTurn = signal[1] === 'slack_message' && type === 'slack.message';
+  // An upload turn's attachment analysis becomes the newest user message, so
+  // the host re-stamps the same envelope as its final lines. The gate resolves
+  // by the last marker, which is why file-derived observations sit above it.
+  const attachmentContext = signal[1] === 'slack_attachment_context' &&
+    type === 'slack.attachment_context';
+  if (slackTurn || attachmentContext) {
+    if (envelope.slackActorId !== attributes.get('slackUserId') ||
+        envelope.slackMessageTs !== attributes.get('messageTs')) {
+      return undefined;
+    }
+    // The envelope record carries no channel or thread, so the re-stamped
+    // signal is bound to the turn by the host-owned conversation the caller
+    // supplies. Without one, an attachment-context envelope admits nothing.
+    if (attachmentContext && !conversationMatches(attributes, conversation)) return undefined;
+    return envelope;
   }
   if (signal[1] === 'signal' && type === ROUTINE_SCHEDULE_SIGNAL_TYPE) {
     // A due occurrence has no Slack message. The host stamps its due time as
@@ -148,6 +214,21 @@ export function parseModelVisibleCurrentRequestEnvelope(
       : undefined;
   }
   return undefined;
+}
+
+function conversationMatches(
+  attributes: ReadonlyMap<string, string>,
+  conversation: CurrentRequestConversationBinding | undefined,
+): boolean {
+  if (!conversation) return false;
+  return ([
+    ['workspaceId', conversation.workspaceId],
+    ['channelId', conversation.channelId],
+    ['threadTs', conversation.threadTs],
+  ] as const).every(([name, expected]) => {
+    const value = attributes.get(name);
+    return Boolean(value) && Boolean(expected) && value === expected;
+  });
 }
 
 function decodeSignalText(text: string): string {
@@ -319,7 +400,7 @@ export function observeMemoryToolPolicy(
   }
   const state = submissionPolicy.getStore();
   if (!state) return;
-  const policy = envelopeFromMessages(observation.request.input.messages);
+  const policy = envelopeFromMessages(observation.request.input.messages, state.conversation);
   if (policy) state.policy = policy;
   else delete state.policy;
 }
@@ -340,6 +421,7 @@ function isManagedCurrentRequestAgent(agentName: string | undefined): boolean {
 
 function envelopeFromMessages(
   messages: readonly LlmMessage[],
+  conversation: CurrentRequestConversationBinding | undefined,
 ): CurrentRequestEnvelope | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -350,7 +432,7 @@ function envelopeFromMessages(
           content.type === 'text' ? [content.text] : [],
         );
     for (let textIndex = texts.length - 1; textIndex >= 0; textIndex -= 1) {
-      const policy = parseModelVisibleCurrentRequestEnvelope(texts[textIndex]!);
+      const policy = parseModelVisibleCurrentRequestEnvelope(texts[textIndex]!, conversation);
       if (policy) return policy;
     }
     // The newest user message is the current submission. Never fall back to an

@@ -225,8 +225,11 @@ async function drainNodeTurnRelayOnce(
         ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
         ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
         ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
-        prepare: (message: string, observation: Parameters<typeof prepareFlueDispatch>[2]) =>
-          prepareFlueDispatch(job.id, message, observation),
+        prepare: (
+          message: string,
+          observation: Parameters<typeof prepareFlueDispatch>[2],
+          threadImages: Parameters<typeof prepareFlueDispatch>[3],
+        ) => prepareFlueDispatch(job.id, message, observation, threadImages),
         reconcileExistingInstance: (uid: string) =>
           reconcileFlueExistingInstance(job.id, uid),
         recordReceipt: (receipt: Parameters<typeof recordFlueReceipt>[1]) =>

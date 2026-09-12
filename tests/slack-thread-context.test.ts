@@ -571,3 +571,139 @@ test('pre-scope V1 and V2 envelopes remain readable but lose coarse write author
   }
   assert.equal(currentRequestOffersProgressiveStreaming(parseCurrentRequestEnvelope(v2)), true);
 });
+
+test('image-bearing rows widen only the additive inventory, never the projection or the prompt', async () => {
+  const turn = threadTurn();
+  const rows = (files: boolean) => [
+    { user: 'U_HUMAN', type: 'message', text: 'here is the brief', ts: '1001.000000' },
+    {
+      type: 'message', subtype: 'file_share', user: 'U_HUMAN', text: '', ts: '1002.000000',
+      ...(files
+        ? { files: [{ id: 'F00000000AA', name: 'logo.png', mimetype: 'image/png', size: 1024 }] }
+        : {}),
+    },
+  ];
+  const withFiles = await hydrateSlackContextViaWebClient(
+    fakeClientWithReplyPages([{ messages: rows(true) }]) as never, turn,
+  );
+  const without = await hydrateSlackContextViaWebClient(
+    fakeClientWithReplyPages([{ messages: rows(false) }]) as never, turn,
+  );
+
+  assert.deepEqual(withFiles.messages, without.messages);
+  assert.equal(without.images, undefined);
+  assert.deepEqual(withFiles.images?.map((image) => [image.fileId, image.origin, image.messageTs]), [
+    ['F00000000AA', 'person', '1002.000000'],
+  ]);
+  // The inventory feeds tool handles only; no file identifier reaches the prompt.
+  assert.equal(assembleSlackPrompt(turn, withFiles), assembleSlackPrompt(turn, without));
+  assert.equal(assembleSlackPrompt(turn, withFiles).includes('F00000000AA'), false);
+});
+
+// dm_history and channel_history read the window with `inclusive: false`, so
+// the trigger row is fetched separately when it carried files.
+function fakeHistoryClient(window: unknown[], triggerRow: unknown[]) {
+  const calls: Array<Record<string, unknown>> = [];
+  return {
+    calls,
+    conversations: {
+      async history(args: Record<string, unknown>) {
+        calls.push(args);
+        return args.inclusive === true
+          ? { ok: true, messages: triggerRow }
+          : { ok: true, messages: window };
+      },
+      async replies() {
+        assert.fail('a history-mode turn must never call conversations.replies');
+      },
+    },
+  };
+}
+
+test('a DM turn whose own message carries an image still yields a handle for it', async () => {
+  const turn = threadTurn({
+    contextMode: 'dm_history',
+    channelType: 'im',
+    text: 'make an ad from this logo',
+    messageTs: '2000.000000',
+    threadTs: '2000.000000',
+    attachments: [{ fileId: 'F00000000TR' }],
+    attachmentIntake: { status: 'ok', count: 1 },
+  });
+  const client = fakeHistoryClient(
+    [{ user: 'U_HUMAN', type: 'message', text: 'here is the brief', ts: '1900.000000' }],
+    [{
+      type: 'message', subtype: 'file_share', user: 'U_HUMAN', ts: turn.messageTs,
+      text: 'make an ad from this logo',
+      files: [{ id: 'F00000000TR', name: 'logo.png', mimetype: 'image/png', size: 1024 }],
+    }],
+  );
+
+  const context = await hydrateSlackContextViaWebClient(client as never, turn);
+
+  assert.deepEqual(
+    context.images?.map((image) => [image.fileId, image.origin, image.messageTs]),
+    [['F00000000TR', 'person', turn.messageTs]],
+  );
+  // The window read is unchanged; the trigger read is one bounded extra row.
+  assert.equal(client.calls.length, 2);
+  assert.equal(client.calls[0]?.inclusive, false);
+  assert.deepEqual(
+    [client.calls[1]?.inclusive, client.calls[1]?.latest, client.calls[1]?.limit],
+    [true, turn.messageTs, 1],
+  );
+  // The projection is untouched: the trigger is still the only current input.
+  assert.deepEqual(context.messages.filter((message) => message.isTrigger).length, 1);
+  assert.equal(context.messages.at(-1)?.ts, turn.messageTs);
+});
+
+test('the trigger read is skipped when the triggering message carried no file', async () => {
+  const turn = threadTurn({ contextMode: 'dm_history', channelType: 'im', messageTs: '2000.000000' });
+  const client = fakeHistoryClient(
+    [{ user: 'U_HUMAN', type: 'message', text: 'here is the brief', ts: '1900.000000' }],
+    [],
+  );
+
+  const context = await hydrateSlackContextViaWebClient(client as never, turn);
+
+  assert.equal(client.calls.length, 1);
+  assert.equal(context.images, undefined);
+});
+
+test('a failed trigger read leaves the window context intact', async () => {
+  const turn = threadTurn({
+    contextMode: 'dm_history', channelType: 'im', messageTs: '2000.000000',
+    attachments: [{ fileId: 'F00000000TR' }],
+  });
+  const client = {
+    conversations: {
+      async history(args: Record<string, unknown>) {
+        if (args.inclusive === true) throw Object.assign(new Error('ratelimited'), { code: 'ratelimited' });
+        return { ok: true, messages: [{ user: 'U_HUMAN', type: 'message', text: 'the brief', ts: '1900.000000' }] };
+      },
+    },
+  };
+
+  const context = await hydrateSlackContextViaWebClient(client as never, turn);
+
+  assert.equal(context.images, undefined);
+  assert.equal(context.degradations.length, 0);
+  assert.ok(context.messages.some((message) => message.text === 'the brief'));
+});
+
+test('the thread path collects the trigger row without a second read', async () => {
+  const turn = threadTurn({ messageTs: '2000.000000', threadTs: '1000.000000',
+    attachments: [{ fileId: 'F00000000TR' }] });
+  const client = fakeClientWithReplyPages([{ messages: [
+    { user: 'U_HUMAN', type: 'message', text: 'here is the brief', ts: '1000.000000' },
+    {
+      type: 'message', subtype: 'file_share', user: 'U_HUMAN', ts: turn.messageTs, text: 'and the logo',
+      files: [{ id: 'F00000000TR', name: 'logo.png', mimetype: 'image/png', size: 1024 }],
+    },
+  ] }]);
+
+  const context = await hydrateSlackContextViaWebClient(client as never, turn);
+
+  assert.equal(client.calls(), 1);
+  assert.deepEqual(context.images?.map((image) => image.fileId), ['F00000000TR']);
+});

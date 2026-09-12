@@ -380,6 +380,17 @@ test('the presentation declaration uses user-facing activity copy', () => {
   );
 });
 
+test('image generation narrates a non-terminal creation step', () => {
+  const status = toolActivityStatus('generate_image', {
+    prompt: 'a poster that must never reach the status line',
+  });
+  assert.deepEqual(status, activityStatus('running', 'Creating', 'an image'));
+  assert.equal(status.text, 'Creating an image…');
+  // Sharing is the chart tool's terminal phrasing; generation precedes staging.
+  assert.notDeepEqual(status, toolActivityStatus('render_chart'));
+  assert.doesNotMatch(status.text, /poster/);
+});
+
 test('sandbox primitives use fixed statuses without exposing their arguments', () => {
   const secret = 'credential-do-not-leak';
   const expected = new Map([

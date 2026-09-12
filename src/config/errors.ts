@@ -57,6 +57,27 @@ export class WorkspaceModelDefaultRevisionConflictError extends Error {
   }
 }
 
+/**
+ * Optimistic-concurrency failure on one model-role row. Role rows carry their
+ * own revision (one per role), so a Workspace image-role write never conflicts
+ * with a chat-default write.
+ */
+export class ModelRoleRevisionConflictError extends Error {
+  constructor(
+    readonly scope: 'workspace' | 'agent',
+    readonly targetId: string,
+    readonly role: string,
+    readonly expectedRevision: number,
+    readonly actualRevision: number,
+  ) {
+    super(
+      `${scope === 'workspace' ? 'Workspace' : 'Agent'} ${targetId} ${role} model role changed ` +
+      `(expected revision ${expectedRevision}, actual ${actualRevision})`,
+    );
+    this.name = 'ModelRoleRevisionConflictError';
+  }
+}
+
 export class AgentStillAssignedError extends Error {
   constructor(
     readonly agentId: string,

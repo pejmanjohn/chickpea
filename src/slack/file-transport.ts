@@ -1,10 +1,13 @@
 import type { WebClient } from '@slack/web-api';
 
+import { MAX_ARTIFACT_BYTES } from '../sandbox/artifact-tool.ts';
 import { isRecord } from '../security/content-validation.ts';
+import { MAX_GATEWAY_ARTIFACT_BYTES } from './gateway/protocol.ts';
 import { isGatewaySlackWebClient } from './gateway/web-client.ts';
 import { SlackTransportError } from './transport/types.ts';
 import { slackPlatformErrorCode } from './errors.ts';
 import { isSlackFilePermalink } from './artifact-receipts.ts';
+import { SLACK_FILE_ID, SLACK_TS } from './ids.ts';
 
 /**
  * Private staging uploads and completes a file without a destination. Final
@@ -49,6 +52,13 @@ export interface SlackFileCompletionResult {
 }
 
 export interface SlackFileTransport {
+  /**
+   * The largest file this installation can upload: the direct artifact cap,
+   * or the shared gateway's much smaller request cap. Set at construction
+   * because nothing else distinguishes the two transports before an upload
+   * fails, and the image tool must choose its output format before the call.
+   */
+  maxBytes: number;
   /** Completes privately once. A missing method marks a legacy transport. */
   stagePrivate?(input: SlackFileStageInput): Promise<SlackFilePrivateStageResult>;
   /** Safe to retry: an uncompleted upload is discarded by Slack. */
@@ -67,8 +77,6 @@ export const SLACK_FILE_STAGE_OPERATION = 'chickpea.files.stage' as const;
 export const SLACK_FILE_GET_SHARE_OPERATION = 'chickpea.files.getShare' as const;
 export const SLACK_FILE_COMPLETE_OPERATION = 'files.completeUploadExternal' as const;
 
-const SLACK_FILE_ID = /^F[A-Z0-9]{6,40}$/;
-const SLACK_TS = /^\d{1,20}\.\d{1,10}$/;
 const UNSUPPORTED_TRANSPORT_CODES = new Set([
   'operation_not_allowed',
   'unknown_operation',
@@ -94,6 +102,7 @@ export function createSlackFileTransport(
 
 function createGatewayFileTransport(client: WebClient): SlackPrivateFileTransport {
   return {
+    maxBytes: MAX_GATEWAY_ARTIFACT_BYTES,
     async stagePrivate(input) {
       const result = await client.files.uploadV2({
         filename: input.filename,
@@ -134,6 +143,7 @@ function createGatewayFileTransport(client: WebClient): SlackPrivateFileTranspor
 
 function createDirectFileTransport(client: WebClient, fetcher: typeof fetch): SlackPrivateFileTransport {
   const transport: SlackPrivateFileTransport = {
+    maxBytes: MAX_ARTIFACT_BYTES,
     async stagePrivate(input) {
       const staged = await transport.stage(input);
       const result = await client.files.completeUploadExternal({

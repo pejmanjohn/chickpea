@@ -8,6 +8,7 @@ import type { AgentInstanceHandle, AgentReply, DispatchReceipt } from '@flue/run
 import { WebClient } from '@slack/web-api';
 
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
+import type { NonChatModelRole } from '../src/config/types.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import {
@@ -32,6 +33,7 @@ import type { UsageStore } from '../src/usage/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import type { RunExecutionId, WorkStore } from '../src/work/types.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
+import { withEnv } from './helpers/env.ts';
 
 const NOW = Date.UTC(2026, 6, 27, 12);
 
@@ -378,6 +380,44 @@ test('routine settlement persists measured cached tokens in the occurrence row',
     assert.equal(completed?.cacheReadTokens, 4482);
     assert.equal(completed?.cacheWriteTokens, 10);
   } finally { store.close(); }
+});
+
+test('the routine envelope freezes the image capability its Agent role resolves', async () => {
+  const roleReader = (modelId?: string) => ({
+    async getWorkspaceModelRole(workspaceId: string, role: NonChatModelRole) {
+      return modelId
+        ? { workspaceId, role, modelId, revision: 1, createdAt: NOW, updatedAt: NOW }
+        : undefined;
+    },
+    async getAgentModelRole() {
+      return undefined;
+    },
+  });
+  const freeze = async (suffix: string, modelId?: string) => {
+    const store = new SqliteRoutineStore(':memory:', () => NOW);
+    try {
+      const fixture = await admittedFixture(store, suffix);
+      await executeRoutineOccurrence(
+        { env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt },
+        { ...dependencies([]), handle: fakeHandle({}), modelRoleReader: roleReader(modelId) },
+      );
+      const envelope = (await store.getRun(fixture.run.id))?.flueAgentEnvelope;
+      return parseRoutineExecutionInitialData(envelope?.initialData).runtimePlan;
+    } finally { store.close(); }
+  };
+
+  await withEnv({ OPENAI_API_KEY: 'sk-image-role-routine' }, async () => {
+    const unset = await freeze('image_role_unset');
+    assert.deepEqual(unset.imageCapability, {
+      role: 'image', filled: false, acceptsImageInput: false,
+    });
+
+    const filled = await freeze('image_role_filled', 'openai/gpt-image-2.5-flare');
+    assert.deepEqual(filled.imageCapability, {
+      role: 'image', filled: true, acceptsImageInput: true,
+    });
+    assert.notEqual(filled.harnessRevision, unset.harnessRevision);
+  });
 });
 
 test('live access and a frozen app checkpoint precede Flue dispatch', async () => {

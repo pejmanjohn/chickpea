@@ -15,6 +15,12 @@ import {
   type SlackTurnContext,
   type SlackWebApiMessage,
 } from './thread-context.ts';
+import {
+  collectThreadImageRecords,
+  MAX_THREAD_IMAGE_ENTRIES,
+  slackThreadImageConversationKey,
+  type ThreadImageRecord,
+} from './thread-images.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 import { boundedSlackPublicHandoff, type SlackPublicHandoffMessage } from './public-context.ts';
 
@@ -126,6 +132,10 @@ async function fetchHistory(
   });
 
   const rawMessages = (response.messages ?? []) as unknown as SlackWebApiMessage[];
+  const images = mergeThreadImages(
+    collectThreadImages(rawMessages, turn),
+    await fetchTriggerImages(client, turn),
+  );
   const hasCursor = Boolean(response.response_metadata?.next_cursor?.trim());
   const messages = ensureTriggerMessage(
     orderMessages(
@@ -143,6 +153,7 @@ async function fetchHistory(
     window,
     truncated: hasCursor,
     degradations,
+    ...(images.length > 0 ? { images } : {}),
   };
 }
 
@@ -158,6 +169,7 @@ async function fetchThread(
   // that kept the oldest 50 and dropped all recent context. Walk pages (bounded
   // by maxPages) and retain the NEWEST maxMessages as a rolling tail.
   const collected: SlackContextMessage[] = [];
+  const images: ThreadImageRecord[] = [];
   const degradations: string[] = [];
   let cursor: string | undefined;
 
@@ -172,6 +184,12 @@ async function fetchThread(
     });
 
     const rawMessages = (response.messages ?? []) as unknown as SlackWebApiMessage[];
+    // Collected from the raw rows, before the projection drops bot rows and
+    // text-less rows; bounded the same way the retained tail is.
+    images.push(...collectThreadImages(rawMessages, turn));
+    if (images.length > MAX_THREAD_IMAGE_ENTRIES) {
+      images.splice(0, images.length - MAX_THREAD_IMAGE_ENTRIES);
+    }
     collected.push(
       ...toContextMessages(rawMessages).filter((message) =>
         atOrBeforeSlackWatermark(message.ts, turn.messageTs)
@@ -206,7 +224,60 @@ async function fetchThread(
     },
     truncated,
     degradations,
+    ...(images.length > 0 ? { images } : {}),
   };
+}
+
+/**
+ * The history window is read with `inclusive: false`, so the triggering row is
+ * never in it: a member who uploads a logo and asks for the ad in the SAME
+ * message would otherwise have no handle for that logo. One bounded extra read
+ * adds that row's own images. It runs only when the trigger actually carried
+ * files, and a failure yields no images rather than degrading the whole turn
+ * to current-message-only context.
+ */
+async function fetchTriggerImages(
+  client: WebClient,
+  turn: NormalizedSlackTurn,
+): Promise<ThreadImageRecord[]> {
+  if (!(turn.attachments?.length || turn.attachmentIntake)) return [];
+  let response;
+  try {
+    response = await client.conversations.history({
+      channel: turn.channelId,
+      latest: turn.messageTs,
+      inclusive: true,
+      limit: 1,
+    });
+  } catch {
+    return [];
+  }
+  const rows = ((response.messages ?? []) as unknown as SlackWebApiMessage[])
+    .filter((row) => row.ts === turn.messageTs);
+  return collectThreadImages(rows, turn);
+}
+
+/** The trigger's own records win the duplicate; the list stays bounded. */
+function mergeThreadImages(
+  windowImages: readonly ThreadImageRecord[],
+  triggerImages: readonly ThreadImageRecord[],
+): ThreadImageRecord[] {
+  if (triggerImages.length === 0) return [...windowImages];
+  const triggerIds = new Set(triggerImages.map((record) => record.fileId));
+  const merged = [
+    ...windowImages.filter((record) => !triggerIds.has(record.fileId)),
+    ...triggerImages,
+  ];
+  return merged.slice(-MAX_THREAD_IMAGE_ENTRIES);
+}
+
+/** Raw-row image inventory for this turn's conversation, watermark-bounded. */
+function collectThreadImages(
+  rawMessages: readonly SlackWebApiMessage[],
+  turn: NormalizedSlackTurn,
+): ThreadImageRecord[] {
+  return collectThreadImageRecords(rawMessages, slackThreadImageConversationKey(turn))
+    .filter((record) => atOrBeforeSlackWatermark(record.messageTs, turn.messageTs));
 }
 
 /**

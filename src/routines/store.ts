@@ -3957,10 +3957,15 @@ function validateAgentSettlement(settlement: RecordRoutineAgentSettlementInput['
   }
 }
 
+/**
+ * The reader drops receipts whose kind this build does not know and duplicates
+ * of a file already listed, so a shorter parsed list is expected; anything
+ * structurally malformed still throws and fails the settlement closed.
+ */
 function validArtifactReceipts(value: unknown): boolean {
   if (value === undefined) return true;
   try {
-    return Array.isArray(value) && parseSlackArtifactReceipts([value]).length === value.length;
+    return Array.isArray(value) && parseSlackArtifactReceipts([value]).length <= value.length;
   } catch {
     return false;
   }

@@ -17,6 +17,7 @@ import {
 import {
   compileRuntimePlanV2,
   runtimePlanSandboxConversationKey,
+  type RuntimePlanImageCapabilityV3,
 } from '../agents/runtime-plan.ts';
 import {
   canonicalRuntimeModel,
@@ -27,9 +28,15 @@ import {
   type ProviderAuthRoute,
 } from '../config/runtime-model.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
+import {
+  imageCapabilityForResolution,
+  resolveAgentModelRoleFromStore,
+  type ModelRoleReader,
+} from '../config/model-policy.ts';
 import type { EffectiveSlackConfig } from '../config/effective-config.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
+  getConfigStore,
   getSettingsStore,
   getUsageStore,
   getWorkStore,
@@ -123,6 +130,8 @@ interface RoutineExecutionDependencies {
   usageRecordingEnabled?: boolean;
   usageStore?: UsageStore;
   settingsStore?: SettingsStore;
+  /** Role authority for the image capability; production reads the config store. */
+  modelRoleReader?: ModelRoleReader;
   workStore?: WorkStore;
   persistenceTelemetrySink?: RoutinePersistenceTelemetrySink;
   productTelemetry?: ProductTelemetryCapture;
@@ -454,6 +463,23 @@ async function prepareExecution(
           input.env,
           settingsStore,
         );
+    const reader = dependencies.modelRoleReader ?? getConfigStore(input.env);
+    // Same store authority as a Slack turn: a routine's Agent keeps whatever
+    // image role its workspace or per-Agent override resolves to.
+    const imageCapability = imageCapabilityForResolution(
+      await resolveAgentModelRoleFromStore({
+        role: 'image',
+        workspaceId: input.routine.workspaceId,
+        agent: { id: access.config.agent.id, kind: access.config.agent.kind },
+        reader: {
+          getWorkspaceModelRole: (workspaceId, role) =>
+            reader.getWorkspaceModelRole(workspaceId, role),
+          getAgentModelRole: (agentId, role) => reader.getAgentModelRole(agentId, role),
+        },
+        ...(input.env ? { env: input.env } : {}),
+        settings: settingsStore,
+      }),
+    );
     envelope = createEnvelope({
       routine: input.routine,
       run: input.run,
@@ -463,6 +489,7 @@ async function prepareExecution(
       canonicalModel: access.config.model,
       runtimeModel: runtimeModel.model,
       ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
+      imageCapability,
       modelCredential,
       sandboxMode: sandboxDecision.selection,
     });
@@ -597,6 +624,7 @@ function createEnvelope(input: {
   canonicalModel: string;
   runtimeModel: string;
   runtimeModelRoute?: FrozenRuntimeModelRoute;
+  imageCapability?: RuntimePlanImageCapabilityV3;
   modelCredential: EffectiveSlackConfig['modelCredential'] | null;
   sandboxMode: 'bash' | 'cloudflare';
 }): RoutineAgentDispatchEnvelopeV2 {
@@ -616,6 +644,7 @@ function createEnvelope(input: {
     },
     runtimeModel: input.runtimeModel,
     ...(input.runtimeModelRoute ? { runtimeModelRoute: input.runtimeModelRoute } : {}),
+    ...(input.imageCapability ? { imageCapability: input.imageCapability } : {}),
     instructions: [
       input.access.config.instructions,
       externalActionAuthorityInstructions(input.access.config.agent.instructions),
