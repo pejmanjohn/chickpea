@@ -20,6 +20,7 @@ import {
   THREAD_IMAGE_HANDLE_PREFIX,
   type ThreadImageInventory,
   type ThreadImageReader,
+  type ThreadImageRecord,
   type ThreadImageUnavailableDetail,
 } from '../slack/thread-images.ts';
 import {
@@ -116,6 +117,7 @@ export interface ImageArtifactToolOptions {
     signal?: AbortSignal;
   }): Promise<ThreadImageReader>;
   stageArtifact(input: SlackArtifactStageInput): Promise<SlackArtifactStageOutcome>;
+  reuseImage?(input: { record: ThreadImageRecord; filename: string; byteLength: number }): Promise<SlackArtifactStageOutcome>;
 }
 
 /**
@@ -663,7 +665,7 @@ async function resolveImageInputs(
 export function createRecoverImageTool(options: ImageArtifactToolOptions) {
   return defineTool({
     name: 'recover_image',
-    description: 'Reattach an existing image without generating or paying for another image. Use a savedImage handle from generate_image for a failed upload, or an img:N handle from the current conversation image inventory for an image already visible in Slack. Prefer the matching img:N handle when earlier tool results are unavailable. Saved images expire after 24 hours and may be evicted earlier by the bounded cache; conversation images depend on Slack access. Never call generate_image just to retry delivery. Optional allowResize permits a smaller delivery when compression alone cannot fit; get this preference from the user request.',
+    description: 'Reattach an existing image without generating or paying for another image. For an image already visible in Slack, prefer its matching img:N handle: this shares the original Slack file exactly, without downloading and reuploading it for delivery. An optional filename is only the link label; the original download filename stays unchanged. Explain this distinction when a different filename was requested. Use a savedImage handle from generate_image for a failed upload; this retries an upload, whose downloaded bytes may be changed by Slack. Saved images expire after 24 hours and may be evicted earlier by the bounded cache; conversation images depend on Slack access. Never call generate_image just to retry delivery. Optional allowResize applies only to saved-image uploads and permits a smaller delivery when compression alone cannot fit; get this preference from the user request.',
     input: v.object({
       image: v.pipe(v.string(), v.check((value) => IMAGE_HANDLE.test(value) || SAVED_IMAGE_ID.test(value))),
       filename: FILENAME_FIELD,
@@ -678,13 +680,22 @@ export function createRecoverImageTool(options: ImageArtifactToolOptions) {
         if (retained) {
           saved = await options.outputStore?.read(data.image).catch(() => undefined);
         } else {
-          // Reading an already delivered image does not require provider edit
-          // support. The same host inventory and authenticated reader used by
-          // editing enforce conversation scope, access, MIME and byte limits.
-          const resolved = await resolveImageInputs({ ...options, acceptsImageInput: true }, { inputs: [data.image] }, signal);
-          if ('failure' in resolved) return resolved.failure as unknown as JsonValue;
-          const original = resolved.images[0];
-          if (original) saved = { bytes: original.bytes, metadata: {} };
+          const resolved = options.inventory.resolveHandle(data.image);
+          if (!resolved.ok) return inputUnavailable(data.image, resolved.detail) as unknown as JsonValue;
+          if (!resolved.record.permalink || !options.reuseImage) {
+            return { attached: false, reason: 'original_file_unavailable', sourceImage: data.image };
+          }
+          // Verify current access through the authenticated, bounded reader,
+          // then share the original id. Do not decode, compress, or re-upload.
+          const reader = await options.createImageReader({ perFileLimitBytes: DEFAULT_THREAD_IMAGE_FILE_LIMIT_BYTES,
+            totalLimitBytes: MAX_ARTIFACT_BYTES, ...(signal ? { signal } : {}) });
+          const read = await reader.read(resolved.record);
+          if (!read.ok) return inputUnavailable(data.image, read.detail) as unknown as JsonValue;
+          const extension = resolved.record.mimeType === 'image/jpeg' ? 'jpg' : resolved.record.mimeType.slice('image/'.length);
+          const filename = data.filename ? artifactFilename(data.filename, DEFAULT_IMAGE_BASENAME, extension) : resolved.record.filename;
+          const outcome = await options.reuseImage({ record: resolved.record, filename, byteLength: read.bytes.length });
+          return { ...outcome, sourceImage: data.image, filename, originalFilename: resolved.record.filename,
+            reusedExistingFile: true, renamed: false, compressed: false, resized: false };
         }
         if (!saved) return { attached: false, reason: 'expired_or_unavailable' };
         const source: Record<string, JsonValue> = retained

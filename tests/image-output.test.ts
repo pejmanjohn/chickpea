@@ -4,7 +4,7 @@ import sharp from 'sharp';
 import * as v from 'valibot';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { createImageOutputStore, IMAGE_RETENTION_MS, purgeExpiredImageOutputs } from '../src/images/output-store.ts';
-import { decodeGeneratedImage, prepareImageOutput } from '../src/images/prepare-output.ts';
+import { decodeGeneratedImage, prepareImageOutput, prepareImageInspection } from '../src/images/prepare-output.ts';
 import { validImageSize } from '../src/images/output-controls.ts';
 import { createImageArtifactTool, createRecoverImageTool, type ImageArtifactToolOptions } from '../src/sandbox/image-tool.ts';
 import { buildThreadImageInventory } from '../src/slack/thread-images.ts';
@@ -47,6 +47,19 @@ test('compression fits noisy PNG output without changing requested dimensions', 
   const decoded = await sharp(result.bytes).metadata();
   assert.equal(decoded.width, 1024);
   assert.equal(decoded.format, 'jpeg');
+});
+
+test('inspection composites alpha without changing retained PNG or WebP bytes', async () => {
+  for (const format of ['png', 'webp'] as const) {
+    const bytes = await fixture(format, true), original = bytes.slice();
+    const preview = prepareImageInspection(bytes);
+    const facts = decodeGeneratedImage(preview.bytes).facts;
+    assert.deepEqual(bytes, original);
+    assert.deepEqual(facts, { width: 1024, height: 1024, transparent: false, format: 'png' });
+    const { data, info } = await sharp(preview.bytes).raw().toBuffer({ resolveWithObject: true });
+    assert.equal(info.channels, 3);
+    assert.notDeepEqual([...data.subarray(0, 3)], [...data.subarray(32 * 3, 32 * 3 + 3)], 'checkerboard remains visible through alpha');
+  }
 });
 
 test('retained bytes survive a new store instance, stay destination-bound, and are physically purged at TTL', async () => {
@@ -107,7 +120,7 @@ async function invoke(tool: ReturnType<typeof createImageArtifactTool> | ReturnT
   return (tool.run as (context: unknown) => Promise<{ output: any }>)({ data: v.parse(tool.input, data), toolCallId: 'call_test', step });
 }
 
-test('conversation image recovery survives missing tool history and preserves original bytes without a provider', async () => {
+test('conversation recovery shares the original file without a new upload, decoding, or a provider', async () => {
   const bytes = await fixture('webp', true);
   const { options, state, settings } = await setup(bytes);
   try {
@@ -116,10 +129,17 @@ test('conversation image recovery survives missing tool history and preserves or
     options.resolveClient = async () => { throw new Error('must not resolve image provider'); };
     options.reserveImageCall = () => { throw new Error('must not reserve a generation'); };
     options.inventory = buildThreadImageInventory({ conversationKey: 'test', threadRecords: [
-      { conversationKey: 'test', fileId: 'F_EDITED', filename: 'edited.webp', mimeType: 'image/webp', origin: 'agent', messageTs: '1789000000.000100' },
+      { conversationKey: 'test', fileId: 'F_EDITED', filename: 'edited.webp', mimeType: 'image/webp', origin: 'agent', messageTs: '1789000000.000100', permalink: 'https://example.slack.com/files/U1/F_EDITED/edited.webp' },
       { conversationKey: 'other', fileId: 'F_OTHER', filename: 'other.webp', mimeType: 'image/webp', origin: 'agent', messageTs: '1789000000.000200' },
     ] });
     let reads = 0;
+    let shares = 0;
+    options.prepareOutput = () => { throw new Error('must not decode or compress an exact resend'); };
+    options.resolveTransport = async () => { throw new Error('must not upload an exact resend'); };
+    options.reuseImage = async input => {
+      shares++; assert.equal(input.record.fileId, 'F_EDITED'); assert.equal(input.filename, 'resent.webp');
+      return { attached: true, byteLength: input.byteLength };
+    };
     options.createImageReader = async () => ({ usedBytes: () => bytes.length, read: async record => {
       reads += 1; assert.equal(record.fileId, 'F_EDITED');
       return { ok: true, bytes, mimeType: 'image/webp', filename: 'edited.webp' };
@@ -129,16 +149,19 @@ test('conversation image recovery survives missing tool history and preserves or
     assert.equal(result.output.attached, true);
     assert.equal(result.output.sourceImage, 'img:1');
     assert.equal(result.output.savedImage, undefined);
-    assert.equal(result.output.width, 1024);
-    assert.equal(result.output.transparent, true);
+    assert.equal(result.output.reusedExistingFile, true);
+    assert.equal(result.output.originalFilename, 'edited.webp');
+    assert.equal(result.output.renamed, false);
     assert.equal(result.output.resized, false);
-    assert.deepEqual(state.stages, [bytes]);
+    assert.deepEqual(state.stages, []);
     await invoke(tool, { image: 'img:1', filename: 'resent' }, steps(checkpoint.records));
-    assert.equal(reads, 1); assert.equal(state.stages.length, 1, 'completed recovery does not upload twice');
+    assert.equal(reads, 1); assert.equal(shares, 1, 'completed recovery does not repeat access or staging');
     assert.equal((await invoke(tool, { image: 'img:2' })).output.detail, 'not_found');
     options.createImageReader = async () => ({ usedBytes: () => 0, read: async () => ({ ok: false, reason: 'input-unavailable', detail: 'missing_scope' }) });
     assert.equal((await invoke(tool, { image: 'img:1' })).output.detail, 'missing_scope');
-    assert.equal(state.stages.length, 1);
+    assert.equal(state.stages.length, 0);
+    delete options.reuseImage;
+    assert.equal((await invoke(tool, { image: 'img:1' })).output.reason, 'original_file_unavailable', 'never silently falls back to a new upload');
   } finally { settings.close(); }
 });
 

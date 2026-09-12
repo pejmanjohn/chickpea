@@ -196,7 +196,7 @@ import {
   useSlackArtifactReceipts,
   type SlackArtifactReceipts,
 } from '../slack/artifact-receipts.ts';
-import { stageArtifactWithReceipt } from '../slack/artifact-staging.ts';
+import { stageArtifactWithReceipt, reuseImageWithReceipt } from '../slack/artifact-staging.ts';
 import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
 import {
   buildThreadImageInventory,
@@ -1667,6 +1667,8 @@ export function createRuntimePlanArtifactTools(
       return createThreadImageReader({ client: createSlackAttachmentClient(env), ...limits });
     },
     stageArtifact: binding.stageArtifact,
+    reuseImage: async (input: { record: ThreadImageRecord; filename: string; byteLength: number }) =>
+      reuseImageWithReceipt({ ...input, destination, accumulator, writeReceipts: writeArtifactReceipts }),
   } : undefined;
   return [
     createWorkspaceArtifactTool({ ...binding, sandboxKind: plan.sandbox.mode }),

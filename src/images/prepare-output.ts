@@ -4,7 +4,7 @@ import { WebPDecoder } from 'image-in-browser/lib/src/formats/webp-decoder.js';
 import { PngEncoder } from 'image-in-browser/lib/src/formats/png-encoder.js';
 import { JpegEncoder } from 'image-in-browser/lib/src/formats/jpeg-encoder.js';
 import { Transform } from 'image-in-browser/lib/src/transform/transform.js';
-import type { MemoryImage } from 'image-in-browser/lib/src/image/image.js';
+import { MemoryImage } from 'image-in-browser/lib/src/image/image.js';
 import type { ImageOutputFormat } from './openai-images-client.ts';
 
 export interface ImageFacts {
@@ -59,4 +59,21 @@ export function prepareImageOutput(bytes: Uint8Array, maxBytes: number, preserve
     }
   }
   return best;
+}
+
+/** Vision adapters may discard alpha instead of compositing it. Show only
+ * visible pixels against a neutral checkerboard, without changing the file
+ * retained or delivered to the user. Work on one bounded decoded image at a time.
+ */
+export function prepareImageInspection(bytes: Uint8Array): { bytes: Uint8Array; mimeType: string } {
+  const { image, facts } = decodeGeneratedImage(bytes);
+  if (!facts.transparent) return { bytes, mimeType: `image/${facts.format}` };
+  const preview = new MemoryImage({ width: image.width, height: image.height, numChannels: 3 });
+  for (const pixel of image) {
+    const alpha = pixel.a / pixel.maxChannelValue;
+    const matte = (Math.floor(pixel.x / 32) + Math.floor(pixel.y / 32)) % 2 ? 224 : 248;
+    const blend = (channel: number) => Math.round(channel / pixel.maxChannelValue * 255 * alpha + matte * (1 - alpha));
+    preview.setPixelRgb(pixel.x, pixel.y, blend(pixel.r), blend(pixel.g), blend(pixel.b));
+  }
+  return { bytes: new PngEncoder({ level: 6 }).encode({ image: preview, singleFrame: true, skipExif: true }), mimeType: 'image/png' };
 }

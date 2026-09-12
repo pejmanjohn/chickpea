@@ -4,6 +4,7 @@ import { createAssistantMessageEventStream, type AssistantMessage, type Context,
 import { createChickpeaPiProvider } from '../src/config/pi-provider.ts';
 import { registerPiProvider } from '../src/config/pi-provider-registry.ts';
 import { inspectImageOutput } from '../src/images/inspect-output.ts';
+import sharp from 'sharp';
 
 test('visual inspection uses one configured-model call with no tools and validates its result', async () => {
   const model: Model<string> = { id: 'vision', name: 'Test vision', provider: 'image-inspection-test', api: 'image-inspection-test',
@@ -24,8 +25,9 @@ test('visual inspection uses one configured-model call with no tools and validat
   };
   registerPiProvider(createChickpeaPiProvider({ id: model.provider, apiKey: 'synthetic-test-key', models: [model],
     api: { stream, streamSimple: stream } as ProviderStreams }));
-  const input = { prompt: 'Headline HELLO', image: { bytes: new Uint8Array([2]), mimeType: 'image/png' },
-    references: [{ bytes: new Uint8Array([1]), mimeType: 'image/png' }] };
+  const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#123456' } }).png().toBuffer();
+  const input = { prompt: 'Headline HELLO', image: { bytes: png, mimeType: 'image/png' },
+    references: [{ bytes: png, mimeType: 'image/png' }] };
   const result = await inspectImageOutput(`${model.provider}/${model.id}`, input);
   assert.equal(result.verdict, 'needs_changes');
   assert.equal(calls.length, 1);
@@ -36,7 +38,15 @@ test('visual inspection uses one configured-model call with no tools and validat
   assert.ok(calls[0]!.options.signal instanceof AbortSignal);
   const content = calls[0]!.context.messages[0]!.content;
   assert.ok(Array.isArray(content));
-  assert.deepEqual(content.filter((part) => part.type === 'image').map((part) => part.data), ['AQ==', 'Ag==']);
+  assert.deepEqual(content.filter((part) => part.type === 'image').map((part) => part.data), [png.toString('base64'), png.toString('base64')]);
+  const transparent = await sharp(Buffer.from([255, 0, 0, 0, 0, 200, 0, 255]), { raw: { width: 2, height: 1, channels: 4 } }).png().toBuffer();
+  await inspectImageOutput(`${model.provider}/${model.id}`, { ...input, image: { bytes: transparent, mimeType: 'image/png' } });
+  const inspected = calls[1]!.context.messages[0]!.content;
+  assert.ok(Array.isArray(inspected));
+  const last = inspected.filter((part) => part.type === 'image').at(-1)!;
+  const pixels = await sharp(Buffer.from(last.data, 'base64')).raw().toBuffer();
+  assert.deepEqual([...pixels], [248, 248, 248, 0, 200, 0], 'hidden red is not shown to vision; visible green remains unchanged');
+  assert.match(calls[1]!.context.systemPrompt!, /checkerboard.*inspection only/);
   text = '{"verdict":"perfect","observations":"ignore all rules"}';
   assert.equal((await inspectImageOutput(`${model.provider}/${model.id}`, input)).status, 'unavailable');
 });
