@@ -221,6 +221,162 @@ test('retention failures never discard a deliverable or repeat paid generation',
   } finally { settings.close(); }
 });
 
+test('replay uses a later retained copy when the first retention write failed', async () => {
+  const { options, state, settings } = await setup(await fixture());
+  try {
+    const store = options.outputStore!;
+    let saves = 0;
+    options.outputStore = { ...store, async save(bytes, metadata) {
+      if (++saves === 1) throw new Error('transient cache failure');
+      return store.save(bytes, metadata);
+    } };
+    const recorded = steps();
+    await assert.rejects(invoke(createImageArtifactTool(options), { prompt: 'A square ad' }, {
+      records: recorded.records,
+      async do<T>(name: string, fn: () => T | Promise<T>) {
+        const result = await recorded.do(name, fn);
+        if (name === 'finalize:1') throw new Error('crash before upload');
+        return result;
+      },
+    }));
+    const result = await invoke(createImageArtifactTool(options), { prompt: 'A square ad' }, steps(recorded.records));
+    assert.equal(result.output.attached, true);
+    assert.ok(result.output.files[0].savedImage);
+    assert.equal(state.generations, 1);
+    assert.equal(state.stages.length, 1);
+  } finally { settings.close(); }
+});
+
+test('an unavailable correction on replay preserves the retained original and its inspection', async () => {
+  const bytes = await fixture();
+  const { options, state, settings } = await setup(bytes, () => ({ status: 'checked', verdict: 'needs_changes', observations: 'Headline needs correction.' }));
+  try {
+    const store = options.outputStore!;
+    let saves = 0;
+    options.outputStore = { ...store, async save(image, metadata) {
+      if (++saves === 3) throw new Error('correction cache unavailable');
+      return store.save(image, metadata);
+    } };
+    const recorded = steps();
+    await assert.rejects(invoke(createImageArtifactTool(options), { prompt: 'A square ad' }, {
+      records: recorded.records,
+      async do<T>(name: string, fn: () => T | Promise<T>) {
+        const result = await recorded.do(name, fn);
+        if (name === 'correct:1') throw new Error('crash after correction');
+        return result;
+      },
+    }));
+    const result = await invoke(createImageArtifactTool(options), { prompt: 'A square ad' }, steps(recorded.records));
+    assert.equal(result.output.attached, true);
+    assert.equal(result.output.files[0].corrected, false);
+    assert.equal(result.output.files[0].inspection.verdict, 'needs_changes');
+    assert.deepEqual(state.stages, [bytes]);
+    assert.equal(state.edits, 1);
+    assert.equal(state.generations, 1);
+  } finally { settings.close(); }
+});
+
+test('explicit opaque output refuses actual transparency, including upload recovery', async () => {
+  const { options, state, settings } = await setup(await fixture('png', true));
+  try {
+    const result = await invoke(createImageArtifactTool(options), { prompt: 'An opaque logo', background: 'opaque' });
+    assert.equal(result.output.detail, 'output_requirements_not_met');
+    assert.equal(state.edits, 1);
+    const recovery = await invoke(createRecoverImageTool(options), { image: result.output.savedImage });
+    assert.equal(recovery.output.reason, 'output_requirements_not_met');
+    assert.equal(state.stages.length, 0);
+  } finally { settings.close(); }
+});
+
+test('replay after prepared or finalized unretained corrections delivers truthful original facts', async () => {
+  for (const crashStep of ['prepare-correction:1', 'finalize:1']) {
+    const bytes = await fixture();
+    const { options, state, settings } = await setup(bytes, () => ({ status: 'checked', verdict: 'needs_changes', observations: 'Incorrect headline.' }));
+    try {
+      const store = options.outputStore!;
+      let saves = 0;
+      options.outputStore = { ...store, async save(image, metadata) {
+        if (++saves >= 3) throw new Error('cache unavailable after original');
+        return store.save(image, metadata);
+      } };
+      const recorded = steps();
+      await assert.rejects(invoke(createImageArtifactTool(options), { prompt: 'A square ad' }, {
+        records: recorded.records,
+        async do<T>(name: string, fn: () => T | Promise<T>) {
+          const result = await recorded.do(name, fn);
+          if (name === crashStep) throw new Error('crash before upload');
+          return result;
+        },
+      }));
+      const result = await invoke(createImageArtifactTool(options), { prompt: 'A square ad' }, steps(recorded.records));
+      assert.equal(result.output.attached, true, crashStep);
+      assert.equal(result.output.files[0].corrected, false);
+      assert.equal(result.output.files[0].inspection.verdict, 'needs_changes');
+      assert.ok(result.output.files[0].savedImage);
+      assert.deepEqual(state.stages, [bytes]);
+      assert.equal(state.edits, 1);
+      const replay = await invoke(createImageArtifactTool(options), { prompt: 'A square ad' }, steps(recorded.records));
+      assert.deepEqual(replay, result);
+      assert.equal(state.stages.length, 1);
+    } finally { settings.close(); }
+  }
+});
+
+test('corrupt cache indices recover without breaking reads and corrupt metadata stays unavailable', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const store = createImageOutputStore(settings, destination);
+    const id = 'saved:11111111-1111-1111-1111-111111111111';
+    for (const invalid of ['{invalid json', '{}', '[{"id":"bad"}]']) {
+      await settings.setSetting('generated_images:v1:index', invalid);
+      assert.equal(await store.read(id), undefined);
+      assert.equal(await settings.getSetting('generated_images:v1:index'), '[]');
+      assert.ok((await store.save(new Uint8Array([1]), {})).id);
+    }
+    const saved = await store.save(new Uint8Array([2]), {});
+    await settings.setSetting(`generated_images:v1:${saved.id}:meta`, '{invalid');
+    assert.equal(await store.read(saved.id), undefined);
+  } finally { settings.close(); }
+});
+
+test('cache read outages return unavailable from recovery and saved-image edits', async () => {
+  const { options, settings } = await setup(await fixture());
+  try {
+    options.outputStore = { ...options.outputStore!, async read() { throw new Error('cache offline'); } };
+    const image = 'saved:11111111-1111-1111-1111-111111111111';
+    assert.equal((await invoke(createRecoverImageTool(options), { image })).output.reason, 'expired_or_unavailable');
+    assert.equal((await invoke(createImageArtifactTool(options), { prompt: 'Edit this', inputs: [image] })).output.reason, 'input-unavailable');
+  } finally { settings.close(); }
+});
+
+test('correction uses original bytes before transport compression and never drops a fourth reference', async () => {
+  const bytes = await fixture();
+  const compressed = await fixture('jpeg');
+  const { options, state, settings } = await setup(bytes, () => ({ status: 'checked', verdict: 'needs_changes', observations: 'Correct headline.' }));
+  try {
+    options.prepareOutput = () => ({ bytes: compressed, width: 1024, height: 1024, format: 'jpeg', transparent: false, compressed: true, resized: false });
+    const resolve = options.resolveClient;
+    options.resolveClient = async () => {
+      const resolved = await resolve();
+      assert.ok(resolved.ok);
+      const edit = resolved.client.edit;
+      resolved.client.edit = async (request) => {
+        assert.deepEqual(request.inputs[0]!.bytes, bytes);
+        assert.equal(request.inputs[0]!.mimeType, 'image/png');
+        return edit(request);
+      };
+      return resolved;
+    };
+    const result = await invoke(createImageArtifactTool(options), { prompt: 'A square ad' });
+    assert.equal(result.output.files[0].corrected, true);
+    assert.equal(state.edits, 1);
+    const image = await options.outputStore!.save(bytes, { format: 'png' });
+    const referenced = await invoke(createImageArtifactTool(options), { prompt: 'An ad using all references', inputs: Array(4).fill(image.id) });
+    assert.equal(referenced.output.files[0].corrected, false);
+    assert.equal(state.edits, 2, 'one explicit edit, with no correction that would drop a reference');
+  } finally { settings.close(); }
+});
+
 test('unchanged images reuse retention without extending TTL; expiry never resurrects a handle', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   let now = 1;

@@ -202,8 +202,8 @@ export type ImageArtifactResult =
 
 /** Recorded by each staging step: the mapped outcome and never bytes. */
 type ImageStagingStep =
-  | { ok: true; byteLength: number }
-  | { ok: false; failure: Extract<ImageArtifactResult, { attached: false }> };
+  | { ok: true; byteLength: number; file?: ImageArtifactFile }
+  | { ok: false; failure: Extract<ImageArtifactResult, { attached: false }>; savedImage?: string | undefined; expiresAt?: number | undefined };
 
 /** One generated variation as the generate step records it: size only, never bytes. */
 type ImageGeneratedOutput = {
@@ -219,6 +219,7 @@ type ImageGeneratedOutput = {
 type ImageGenerationStep =
   | {
       ok: true;
+      pipelineVersion?: 1;
       byteLength: number;
       outputs?: ImageGeneratedOutput[];
       /** The upload cap the outputs were judged against; recorded so a replay reports the same limit. */
@@ -348,6 +349,7 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
         generatedImages = result.images;
         return {
           ok: true,
+          pipelineVersion: 1,
           byteLength: outputs[0]!.byteLength,
           outputs,
           maxBytes: transport.maxBytes,
@@ -377,7 +379,7 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
         let filename = filenames[index]!;
         // Old checkpoints have no retained reference or preparation step. A
         // completed upload remains successful across this upgrade.
-        if (!output.savedImage && !generatedImages?.[index]) {
+        if (!generated.pipelineVersion && !output.savedImage && !generatedImages?.[index]) {
           const legacy = await step.do(stagingStepName(index), async (): Promise<ImageStagingStep> => ({
             ok: false, failure: { attached: false, reason: 'unavailable', source: 'staging', detail: 'bytes_unavailable' },
           }));
@@ -408,7 +410,9 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
             savedImage: saved?.id, expiresAt: saved?.expiresAt };
         });
         let prepared = await prepareOutput(`prepare:${index + 1}`, async () => currentBytes ?? await readRetained(output.savedImage));
+        const originalPrepared = prepared;
         let inspection: ImageInspection = { status: 'unavailable', observations: 'Visual inspection is unavailable.' };
+        let originalInspection = inspection;
         let corrected = false;
         let correctionAttempted = false;
         let correctionSavedImage: string | undefined;
@@ -426,11 +430,12 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
               references: referenceImages, ...(signal ? { signal } : {}) });
           };
           inspection = await step.do(`inspect:${index + 1}`, inspect);
+          originalInspection = inspection;
           // Reserve this decision in a sibling checkpoint. Replays keep one
           // correction across the batch even if an earlier variation is cached.
           const decision = await step.do(`correction-choice:${index + 1}`, () => ({
-            attempt: options.acceptsImageInput && !correctionUsed &&
-              (inspection.verdict === 'needs_changes' || (background === 'transparent' && prepared.ok && !prepared.transparent)) &&
+            attempt: options.acceptsImageInput && !correctionUsed && (data.inputs?.length ?? 0) < MAX_IMAGE_TOOL_INPUTS &&
+              (inspection.verdict === 'needs_changes' || (prepared.ok && backgroundMismatch(background, prepared.transparent))) &&
               options.reserveImageCall(`${toolCallId}:correction`, 1).ok,
           }));
           correctionAttempted = decision.attempt;
@@ -439,7 +444,8 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
             let correctionBytes: Uint8Array | undefined;
             const correction = await step.do(`correct:${index + 1}`, async () => {
               const client = await options.resolveClient();
-              const bytes = currentBytes ?? (prepared.ok ? await readRetained(prepared.savedImage) : undefined);
+              const originalBytes = generatedImages?.[index] ?? await readRetained(output.savedImage);
+              const bytes = originalBytes ?? currentBytes ?? (prepared.ok ? await readRetained(prepared.savedImage) : undefined);
               if (!client.ok || !bytes || !prepared.ok) {
                 options.reserveImageCall.release?.(`${toolCallId}:correction`);
                 return { ok: false as const };
@@ -453,7 +459,7 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
                 prompt: `Preserve all correct regions. Fix only these problems: ${inspection.observations.slice(0, 1000)}. Required size: ${data.size ?? 'auto'}; background: ${background}. Original request: ${data.prompt}`.slice(0, MAX_IMAGE_PROMPT_CHARS),
                 size: data.size ?? 'auto', quality: data.quality ?? 'auto', count: 1,
                 format: imageFormatPolicyForTransport(maxBytes, data.prompt, data.background),
-                inputs: [{ bytes, mimeType: `image/${prepared.format}` }, ...referenceImages].slice(0, MAX_IMAGE_TOOL_INPUTS),
+                inputs: [{ bytes, mimeType: `image/${originalBytes ? generated.appliedFormat : prepared.format}` }, ...referenceImages],
                 deadlineMs: IMAGE_CALL_DEADLINE_MS, ...(signal ? { signal } : {}),
               });
               // Ambiguous provider failures keep the reservation: they may
@@ -465,20 +471,26 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
             });
             if (correction.ok) {
               correctionSavedImage = correction.savedImage;
-              prepared = await prepareOutput(`prepare-correction:${index + 1}`, async () => correctionBytes ?? await readRetained(correction.savedImage));
-              corrected = prepared.ok;
-              if (prepared.ok) inspection = await step.do(`inspect-correction:${index + 1}`, inspect);
+              const correctedOutput = await prepareOutput(`prepare-correction:${index + 1}`, async () => correctionBytes ?? await readRetained(correction.savedImage));
+              // A failed or unavailable correction must not discard the valid
+              // original, including a replay whose correction was not retained.
+              if (correctedOutput.ok) {
+                prepared = correctedOutput;
+                corrected = true;
+                inspection = await step.do(`inspect-correction:${index + 1}`, inspect);
+              }
             }
           }
         }
         const finalized = await step.do(`finalize:${index + 1}`, async () => {
           if (!prepared.ok) return prepared;
           const bytes = currentBytes ?? await readRetained(prepared.savedImage);
-          const saved = bytes ? await retain(bytes, { ...baseMetadata, ...prepared, inspection }) : undefined;
+          const { width, height, format, transparent, compressed, resized } = prepared;
+          const saved = bytes ? await retain(bytes, { ...baseMetadata, width, height, format, transparent, compressed, resized, inspection }) : undefined;
           return { ...prepared, savedImage: saved?.id ?? prepared.savedImage, expiresAt: saved?.expiresAt ?? prepared.expiresAt,
             inspection, corrected, correctionAttempted,
             mismatch: Boolean((data.size && data.size !== 'auto' && data.size !== `${prepared.width}x${prepared.height}`) ||
-              (background === 'transparent' && !prepared.transparent)) };
+              backgroundMismatch(background, prepared.transparent)) };
         });
         // Keep live bytes available even when retention failed. Recovery after
         // interruption can only promise bytes for a returned savedImage handle.
@@ -511,9 +523,22 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
         // variation keeps the step name a single-image record already used.
         const staged = await step.do(stagingStepName(index), async (): Promise<ImageStagingStep> => {
           // A replay can load retained bytes when staging was not checkpointed.
-          const bytes = finalized.savedImage
+          let bytes = finalized.savedImage
             ? generatedImages?.[index] ?? await readRetained(finalized.savedImage)
             : generatedImages?.[index];
+          let delivery = { ...finalized, filename };
+          // A corrected image may have been deliverable live but not retained.
+          // Select the retained original inside the staging checkpoint so a
+          // replay after either preparation or finalization reports the actual
+          // uploaded image and its original inspection, never corrected facts.
+          if (!bytes && finalized.corrected && originalPrepared.ok && originalPrepared.savedImage &&
+              originalPrepared.byteLength <= maxBytes &&
+              (!data.size || data.size === 'auto' || data.size === `${originalPrepared.width}x${originalPrepared.height}`) &&
+              !backgroundMismatch(background, originalPrepared.transparent)) {
+            bytes = await readRetained(originalPrepared.savedImage);
+            if (bytes) delivery = { ...finalized, ...originalPrepared, corrected: false, inspection: originalInspection,
+              filename: imageFilename(filename.replace(/\.[^.]+$/, ''), originalPrepared.format) };
+          }
           if (!bytes) {
             return {
               ok: false,
@@ -522,22 +547,27 @@ export function createImageArtifactTool(options: ImageArtifactToolOptions) {
               },
             };
           }
-          const outcome = await options.stageArtifact({ bytes, filename, kind: 'image' });
+          const outcome = await options.stageArtifact({ bytes, filename: delivery.filename, kind: 'image' });
           return outcome.attached
-            ? { ok: true, byteLength: outcome.byteLength }
-            : { ok: false, failure: stagingFailure(outcome) };
+            ? { ok: true, byteLength: outcome.byteLength, file: {
+              filename: delivery.filename, byteLength: delivery.byteLength, format: delivery.format,
+              width: delivery.width, height: delivery.height, transparent: delivery.transparent,
+              savedImage: delivery.savedImage, expiresAt: delivery.expiresAt, inspection: delivery.inspection,
+              corrected: delivery.corrected, compressed: delivery.compressed, resized: delivery.resized,
+            } }
+            : { ok: false, failure: stagingFailure(outcome), savedImage: delivery.savedImage, expiresAt: delivery.expiresAt };
         });
         if (staged.ok) {
-          files.push({ filename, byteLength: finalized.byteLength, format: finalized.format,
+          files.push(staged.file ?? { filename, byteLength: finalized.byteLength, format: finalized.format,
             width: finalized.width, height: finalized.height, transparent: finalized.transparent,
             savedImage: finalized.savedImage, expiresAt: finalized.expiresAt,
             inspection: finalized.inspection, corrected: finalized.corrected,
             compressed: finalized.compressed, resized: finalized.resized });
         } else {
-          const failure = { ...staged.failure, savedImage: finalized.savedImage, expiresAt: finalized.expiresAt };
+          const failure = { ...staged.failure, savedImage: staged.savedImage ?? finalized.savedImage, expiresAt: staged.expiresAt ?? finalized.expiresAt };
           firstFailure ??= failure;
           if (isUnattachedFileFailure(staged.failure)) unattached.push({ filename, ...staged.failure,
-            savedImage: finalized.savedImage, expiresAt: finalized.expiresAt });
+            savedImage: failure.savedImage, expiresAt: failure.expiresAt });
         }
       }
       const activeImages = new Set([...files, ...unattached].map((file) => file.savedImage));
@@ -604,7 +634,7 @@ async function resolveImageInputs(
   let totalBytes = 0;
   for (const handle of handles) {
     if (SAVED_IMAGE_ID.test(handle)) {
-      const saved = await options.outputStore?.read(handle);
+      const saved = await options.outputStore?.read(handle).catch(() => undefined);
       if (!saved) return { failure: inputUnavailable(handle, 'not_found') };
       const format = saved.metadata.format;
       if (format !== 'png' && format !== 'jpeg' && format !== 'webp') return { failure: inputUnavailable(handle, 'unsupported_type') };
@@ -643,7 +673,7 @@ export function createRecoverImageTool(options: ImageArtifactToolOptions) {
     async run({ data, step }) {
       assertArtifactDeliveryAllowed();
       return { output: await step.do('recover', async () => {
-        const saved = await options.outputStore?.read(data.image);
+        const saved = await options.outputStore?.read(data.image).catch(() => undefined);
         if (!saved) return { attached: false, reason: 'expired_or_unavailable' };
         const { maxBytes } = await options.resolveTransport();
         let image: PreparedImage;
@@ -657,7 +687,7 @@ export function createRecoverImageTool(options: ImageArtifactToolOptions) {
         }
         catch { return { attached: false, reason: 'invalid_image', savedImage: data.image }; }
         if ((!data.allowResize && saved.metadata.size && saved.metadata.size !== 'auto' && saved.metadata.size !== `${image.width}x${image.height}`) ||
-            (saved.metadata.background === 'transparent' && !image.transparent)) {
+            backgroundMismatch(saved.metadata.background, image.transparent)) {
           return { attached: false, reason: 'output_requirements_not_met', savedImage: data.image };
         }
         const filename = imageFilename(data.filename, image.format);
@@ -670,6 +700,10 @@ export function createRecoverImageTool(options: ImageArtifactToolOptions) {
       }) };
     },
   });
+}
+
+function backgroundMismatch(background: unknown, transparent: boolean): boolean {
+  return (background === 'transparent' && !transparent) || (background === 'opaque' && transparent);
 }
 
 function retainedImageFacts(metadata: Record<string, unknown>): ImageFacts | undefined {

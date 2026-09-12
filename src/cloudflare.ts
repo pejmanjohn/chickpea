@@ -2584,7 +2584,8 @@ async function runWorkMaintenance(
       throw new Error(`Work maintenance failed: ${result.error.message}`);
     }
     const platformEnv = rawEnv as PlatformEnv;
-    await purgeExpiredImageOutputs(getSettingsStore(platformEnv), scheduledTime);
+    try { await purgeExpiredImageOutputs(getSettingsStore(platformEnv), scheduledTime); }
+    catch { console.warn('[chickpea] Image cache maintenance did not complete'); }
     await repairPendingOAuthContinuationResumes({
       settings: getSettingsStore(platformEnv),
       onReady: async (continuation) => {

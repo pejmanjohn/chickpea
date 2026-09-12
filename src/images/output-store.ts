@@ -38,7 +38,7 @@ export function createImageOutputStore(settings: SettingsStore, destination: obj
       let set: { key: string; value: string }[] | undefined;
       for (let attempt = 0; attempt < 8; attempt++) {
         const raw = await settings.getSetting(INDEX);
-        const entries = indexEntries(raw);
+        const entries = indexEntries(raw) ?? [];
         const existing = entries.find((item) => item.scope === scope && item.digest === hash && item.expiresAt > now());
         if (existing) {
           if (await settings.applySettingsPatch({ expected: { key: INDEX, value: raw ?? null },
@@ -70,19 +70,23 @@ export function createImageOutputStore(settings: SettingsStore, destination: obj
     async read(id) {
       if (!SAVED_IMAGE_ID.test(id)) return undefined;
       await purgeExpiredImageOutputs(settings, now());
-      const entry = indexEntries(await settings.getSetting(INDEX))
+      const entry = (indexEntries(await settings.getSetting(INDEX)) ?? [])
         .find((item) => item.id === id && item.scope === scope && item.expiresAt > now());
       if (!entry) return undefined;
       const values = await settings.getSettings(entryKeys(entry));
       if (values.some((value) => value === undefined)) return undefined;
       const bytes = new Uint8Array(Buffer.from(values.slice(1).join(''), 'base64'));
       if (bytes.length !== entry.bytes) return undefined;
-      return { bytes, metadata: JSON.parse(values[0]!), expiresAt: entry.expiresAt };
+      try {
+        const metadata: unknown = JSON.parse(values[0]!);
+        if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined;
+        return { bytes, metadata: metadata as Record<string, unknown>, expiresAt: entry.expiresAt };
+      } catch { return undefined; }
     },
     async remove(id) {
       for (let attempt = 0; attempt < 8; attempt++) {
         const raw = await settings.getSetting(INDEX);
-        const entries = indexEntries(raw);
+        const entries = indexEntries(raw) ?? [];
         const entry = entries.find((item) => item.id === id && item.scope === scope);
         if (!entry) return;
         if (await settings.applySettingsPatch({ expected: { key: INDEX, value: raw ?? null },
@@ -96,9 +100,12 @@ export function createImageOutputStore(settings: SettingsStore, destination: obj
 export async function purgeExpiredImageOutputs(settings: Pick<SettingsStore, 'getSetting' | 'applySettingsPatch'>, at = Date.now()): Promise<void> {
   for (let attempt = 0; attempt < 8; attempt++) {
     const raw = await settings.getSetting(INDEX);
-    const entries = indexEntries(raw);
+    const parsed = indexEntries(raw);
+    // A corrupt index cannot safely name deletions. Reset its lookup to recover
+    // service; any unaddressable chunk rows need an operator storage repair.
+    const entries = parsed ?? [];
     const expired = entries.filter((item) => item.expiresAt <= at);
-    if (!expired.length) return;
+    if (parsed && !expired.length) return;
     if (await settings.applySettingsPatch({
       expected: { key: INDEX, value: raw ?? null },
       set: [{ key: INDEX, value: JSON.stringify(entries.filter((item) => item.expiresAt > at)) }],
@@ -110,15 +117,16 @@ export async function purgeExpiredImageOutputs(settings: Pick<SettingsStore, 'ge
 function entryKeys(entry: Entry): string[] {
   return [`${PREFIX}${entry.id}:meta`, ...Array.from({ length: entry.chunks }, (_, i) => `${PREFIX}${entry.id}:${i}`)];
 }
-function indexEntries(raw: string | undefined): Entry[] {
+function indexEntries(raw: string | undefined): Entry[] | undefined {
   if (!raw) return [];
-  const parsed: unknown = JSON.parse(raw);
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return undefined; }
   if (!Array.isArray(parsed) || parsed.length > 128 || parsed.some((entry) =>
     !entry || !SAVED_IMAGE_ID.test(entry.id) || !/^[a-f0-9]{64}$/.test(entry.scope) ||
     !Number.isSafeInteger(entry.expiresAt) || !Number.isSafeInteger(entry.bytes) ||
     entry.bytes < 1 || entry.bytes > MAX_RETAINED_IMAGE_BYTES ||
     !Number.isSafeInteger(entry.chunks) || entry.chunks < 1 || entry.chunks > 86)) {
-    throw new Error('image_retention_index_invalid');
+    return undefined;
   }
   return parsed as Entry[];
 }
