@@ -1,6 +1,8 @@
 import { IdentityStoreLogic } from '../identity/store.ts';
 import { SettingsStoreLogic } from './settings-store.ts';
 import type { GatewayWorkspaceBinding } from '../slack/gateway/protocol.ts';
+import { GATEWAY_CLAIM_SETTING, GATEWAY_BINDING_SETTING } from '../slack/gateway/settings.ts';
+import { GATEWAY_DEPLOYMENT_IDENTITY_SETTING } from '../slack/gateway/identity.ts';
 import {
   AgentRevisionConflictError,
   AgentExistsError,
@@ -517,8 +519,8 @@ export class ConfigStoreLogic {
         transaction: (fn) => fn(),
       };
       const settings = new SettingsStoreLogic(db, () => input.now);
-      if (settings.getSetting('slack.gateway.claim.v1') !== input.expectedClaim) return false;
-      const deployment = settings.getSetting('slack.gateway.deploymentIdentity.v1');
+      if (settings.getSetting(GATEWAY_CLAIM_SETTING) !== input.expectedClaim) return false;
+      const deployment = settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING);
       if (!deployment || JSON.parse(deployment).deploymentId !== input.binding.deploymentId) {
         throw new Error('Gateway binding belongs to another deployment.');
       }
@@ -541,9 +543,9 @@ export class ConfigStoreLogic {
         botUserId: binding.botUserId, gatewayBindingId: binding.bindingId, health: 'healthy', healthDetail: null,
       }, current.revision);
       settings.applySettingsPatch({
-        expected: { key: 'slack.gateway.claim.v1', value: input.expectedClaim },
-        set: [{ key: 'slack.gateway.binding.v1', value: JSON.stringify(binding) }],
-        delete: ['slack.gateway.claim.v1'],
+        expected: { key: GATEWAY_CLAIM_SETTING, value: input.expectedClaim },
+        set: [{ key: GATEWAY_BINDING_SETTING, value: JSON.stringify(binding) }],
+        delete: [GATEWAY_CLAIM_SETTING],
       });
       return true;
     });

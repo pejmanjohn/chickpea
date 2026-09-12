@@ -47,9 +47,8 @@ import {
 } from './session.ts';
 import { parseGatewayInstallationAuthority, type GatewayInstallationAuthority } from './installation-authority.ts';
 
-export const GATEWAY_CLAIM_SETTING = 'slack.gateway.claim.v1';
-export const GATEWAY_BINDING_SETTING = 'slack.gateway.binding.v1';
-export const GATEWAY_SESSION_SETTING = 'slack.gateway.session.v1';
+import { GATEWAY_CLAIM_SETTING, GATEWAY_BINDING_SETTING, GATEWAY_SESSION_SETTING } from './settings.ts';
+export { GATEWAY_CLAIM_SETTING, GATEWAY_BINDING_SETTING, GATEWAY_SESSION_SETTING } from './settings.ts';
 const GATEWAY_REQUEST_TIMEOUT_MS = 15_000;
 const GATEWAY_IDENTITY_RECOVERY_CONTENTION_LIMIT = 3;
 const MAX_GATEWAY_ATTACHMENT_BYTES = 8 * 1_024 * 1_024;
