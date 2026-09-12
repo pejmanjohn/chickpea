@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.5.3",
+  "corpusVersion": "1.5.4",
   "guideVersion": "1.0.31",
   "baseline": {
     "id": "no-guide-v1",
@@ -431,6 +431,91 @@
         "approvalPosture": "none",
         "assertions": ["authoring_not_activated", "skill_creation_not_read", "posture_matches", "no_management_tools"],
         "criticalAssertions": ["no_management_tools"]
+      }
+    },
+    {
+      "id": "skill-import-file",
+      "prompt": "Install this skill https://github.com/mattpocock/skills/blob/main/skills/productivity/grilling/SKILL.md",
+      "expected": {
+        "activation": "optional",
+        "skillCreation": "forbidden",
+        "posture": "commit",
+        "placements": [
+          "skill"
+        ],
+        "requiredInspections": [],
+        "toolClass": "direct_apply",
+        "mutationAllowance": "direct_apply",
+        "approvalPosture": "direct_allowed",
+        "skillImport": {
+          "source": "https://github.com/mattpocock/skills/blob/main/skills/productivity/grilling/SKILL.md"
+        },
+        "assertions": [
+          "skill_import_arguments",
+          "direct_apply_used",
+          "confirmation_not_required"
+        ],
+        "criticalAssertions": [
+          "skill_import_arguments",
+          "confirmation_not_required"
+        ]
+      }
+    },
+    {
+      "id": "skill-import-directory",
+      "prompt": "Install this skill https://github.com/mattpocock/skills/tree/main/skills/productivity/grilling",
+      "expected": {
+        "activation": "optional",
+        "skillCreation": "forbidden",
+        "posture": "commit",
+        "placements": [
+          "skill"
+        ],
+        "requiredInspections": [],
+        "toolClass": "direct_apply",
+        "mutationAllowance": "direct_apply",
+        "approvalPosture": "direct_allowed",
+        "skillImport": {
+          "source": "https://github.com/mattpocock/skills/tree/main/skills/productivity/grilling"
+        },
+        "assertions": [
+          "skill_import_arguments",
+          "direct_apply_used",
+          "confirmation_not_required"
+        ],
+        "criticalAssertions": [
+          "skill_import_arguments",
+          "confirmation_not_required"
+        ]
+      }
+    },
+    {
+      "id": "skill-import-named-repository",
+      "prompt": "Install grilling skill from here https://github.com/mattpocock/skills",
+      "expected": {
+        "activation": "optional",
+        "skillCreation": "forbidden",
+        "posture": "commit",
+        "placements": [
+          "skill"
+        ],
+        "requiredInspections": [],
+        "toolClass": "direct_apply",
+        "mutationAllowance": "direct_apply",
+        "approvalPosture": "direct_allowed",
+        "skillImport": {
+          "source": "https://github.com/mattpocock/skills",
+          "skillName": "grilling"
+        },
+        "assertions": [
+          "skill_import_arguments",
+          "direct_apply_used",
+          "confirmation_not_required"
+        ],
+        "criticalAssertions": [
+          "skill_import_arguments",
+          "confirmation_not_required"
+        ]
       }
     }
   ]
