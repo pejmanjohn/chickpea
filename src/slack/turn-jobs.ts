@@ -76,6 +76,25 @@ export const TURN_JOB_TTL_MS = CLAIM_TTL_MS;
 const SLACK_AGENT_BINDING_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const TURN_JOB_RECOVERY_BACKSTOP_MS = SLACK_AGENT_BINDING_TTL_MS;
 
+// Recovery reasons are operator telemetry, so keep this roster closed. Callers
+// may supply a bounded string through an RPC, but logs must never echo an
+// unreviewed value that could contain request or tenant data.
+const LOGGABLE_TURN_RECOVERY_REASONS = new Set([
+  'flue_binding_reconciliation_required',
+  'flue_dispatch_payload_conflict',
+  'flue_dispatch_reconciliation_required',
+  'flue_existing_instance_reconciliation_conflict',
+  'flue_expected_instance_missing',
+  'flue_receipt_conflict',
+  'flue_settlement_conflict',
+  'flue_unexpected_existing_instance',
+  'post_dispatch_attempts_exhausted',
+  'post_dispatch_redrive_required',
+  'slack_file_fallback_unavailable',
+  'slack_installation_unavailable',
+  'slack_presentation_effect_unresolved',
+]);
+
 /** A pending job the alarm should run, decoded from its row. */
 export interface PendingTurnJob {
   id: string;
@@ -730,12 +749,17 @@ export class TurnJobStoreLogic {
 
   markRecoveryRequired(id: string, reason: string): void {
     validateBoundedString(reason, 'recovery reason', 120);
-    this.db.run(
+    const updated = this.db.run(
       `UPDATE turn_jobs SET status = 'recovery_required', recovery_reason = ?
        WHERE id = ? AND delivered = 0`,
       reason,
       id,
     );
+    if (updated.changes === 1) {
+      console.error('[chickpea] TurnJob requires operator reconciliation', JSON.stringify({
+        reason: LOGGABLE_TURN_RECOVERY_REASONS.has(reason) ? reason : 'unclassified',
+      }));
+    }
   }
 
   /**
