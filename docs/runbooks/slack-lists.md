@@ -22,6 +22,9 @@ An ordinary instruction or memory can supply a default. Be explicit about scope:
 
 A saved List identity alone is not a default. Chickpea asks for the destination
 or link when it is missing; a message being in Slack does not select Slack Lists.
+Links remain usable for follow-ups in the same Slack thread. For a new task in
+another thread or top-level DM, supply the link again unless a saved default
+applies. An earlier task's success message does not establish a default.
 Remembering a default does not itself create a task.
 
 Task assignment names the human responsible for the work. It does not ask the
