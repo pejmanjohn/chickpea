@@ -44,6 +44,7 @@ import {
 import { isValidRepositoryFullName } from '../config/github-app.ts';
 import {
   applyConnectionCapabilityCeiling,
+  projectEffectiveConnectionAccounts,
   projectRecoverableConnectionAccounts,
 } from '../connections/runtime.ts';
 import type { IdentityStore, Membership } from '../identity/types.ts';
@@ -2864,7 +2865,7 @@ export class WorkspaceManagementService {
 
   private async snapshot(actor: LiveManagementActor): Promise<ManagementWorkspaceSnapshot> {
     const userAgentScoped = isUserAgentScoped(actor);
-    const [allAgents, channels, allGrants, organization, providerSources] = await Promise.all([
+    const [allAgents, channels, allGrants, organization, providerSources, currentAgent] = await Promise.all([
       this.stores.config.listUserAgents(),
       this.stores.config.listChannels(),
       this.stores.config.listAgentChannelGrants(),
@@ -2875,6 +2876,9 @@ export class WorkspaceManagementService {
             id,
             await this.stores.providerCredentialSource?.(id) ?? 'missing',
           ] as const)),
+      actor.origin.kind === 'slack' && actor.origin.agentId
+        ? optionalAgent(this.stores.config, actor.origin.agentId)
+        : Promise.resolve(undefined),
     ]);
     const providerImpacts = await resolveProviderRuntimeImpacts(
       this.stores.config,
@@ -2891,10 +2895,13 @@ export class WorkspaceManagementService {
       : organization?.id === actor.organizationId && organization.slackTeamId
         ? [organization.slackTeamId]
         : [];
+    const connectionAgents = currentAgent && !agents.some(({ id }) => id === currentAgent.id)
+      ? [...agents, currentAgent]
+      : agents;
     const [allConnectionAccounts, agentBindingEntries] = await Promise.all([
       Promise.all(workspaceIds.map((workspaceId) =>
         this.stores.config.listConnectionAccounts(workspaceId))).then((groups) => groups.flat()),
-      Promise.all(agents.map(async (agent) => [
+      Promise.all(connectionAgents.map(async (agent) => [
         agent.id,
         await this.stores.config.listAgentConnectionBindings(agent.id),
       ] as const)),
@@ -2933,6 +2940,28 @@ export class WorkspaceManagementService {
       return [agentId, [...projected.values()].sort((left, right) =>
         left.id.localeCompare(right.id))] as const;
     }));
+    const bindingsByAgent = new Map(agentBindingEntries);
+    const effectiveCurrentConnections = currentAgent
+      ? projectEffectiveConnectionAccounts(
+          allConnectionAccounts,
+          bindingsByAgent.get(currentAgent.id) ?? [],
+          actor.membershipId,
+        ).filter(({ policy }) => policy.kind === 'managed'
+          ? policy.allowedCapabilities.length > 0
+          : policy.kind === 'mcp'
+            ? policy.allowedTools.length > 0
+            : policy.allowedMethods.length > 0)
+        .map(({ account, binding, policy }) => {
+          const {
+            accountRevision: _accountRevision,
+            bindingAccountId: _bindingAccountId,
+            bindingRevision: _bindingRevision,
+            ...connection
+          } = managementConnectionProjection(account, binding, policy);
+          return connection;
+        })
+        .sort((left, right) => left.id.localeCompare(right.id))
+      : [];
     const visibleAgentIds = new Set(agents.map(({ id }) => id));
     const grants = allGrants.filter((grant) => visibleAgentIds.has(grant.agentId));
     const grantsByChannel = new Map<string, Array<{
@@ -3025,7 +3054,17 @@ export class WorkspaceManagementService {
         id,
         name,
         description,
+        kind: 'setup_catalog_entry' as const,
       })),
+      ...(currentAgent
+        ? {
+            currentAgent: {
+              id: currentAgent.id,
+              name: currentAgent.name,
+              effectiveConnections: effectiveCurrentConnections,
+            },
+          }
+        : {}),
       agents: agents.map(({
         id,
         revision,

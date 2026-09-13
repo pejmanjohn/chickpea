@@ -88,6 +88,21 @@ test('shared creation tool descriptions agree on immediate standalone apply', ()
   assert.match(apply, /do not propose it or ask for confirmation/i);
 });
 
+test('workspace proposal guidance stays inside the typed configuration schema', () => {
+  const proposal = workspaceManagementToolDescription('propose_workspace_changes');
+  const inspection = workspaceManagementToolDescription('inspect_workspace');
+  const slack = slackManagementInstruction('agent_synthetic');
+
+  for (const instruction of [AGENT_AUTHORING_GUIDE, proposal, slack]) {
+    assert.match(instruction, /typed (?:Chickpea )?workspace configuration operation/i);
+    assert.match(instruction, /cannot (?:grant or )?execute native or connected-service actions/i);
+    assert.doesNotMatch(instruction, /destructive actions, external writes/i);
+  }
+  assert.match(inspection, /connectors.*setup catalog/i);
+  assert.match(inspection, /currentAgent\.effectiveConnections/i);
+  assert.match(inspection, /empty array means none/i);
+});
+
 test('instruction-update tool example survives both runtime schema validators', () => {
   const description = workspaceManagementToolDescription('propose_workspace_changes');
   const example = description.split('Instruction-update example: ')[1]?.split('. Replace the example')[0];

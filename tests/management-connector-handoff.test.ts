@@ -216,11 +216,24 @@ test('connector setup handoff and snapshot stay locked to the current Slack Agen
     }, 'inspect_workspace', {});
     assert.equal(inspected.ok, true);
     assert.ok((inspected as { ok: true; result: {
-      connectors: Array<{ id: string; name: string; description: string }>;
+      connectors: Array<{
+        id: string;
+        name: string;
+        description: string;
+        kind: string;
+      }>;
     } }).result.connectors.some(({ id, name, description }) =>
       id === 'gmail' && name === 'Gmail' && description.length > 0));
     const snapshot = (inspected as { ok: true; result: {
       effectiveRevision: string;
+      currentAgent: {
+        id: string;
+        effectiveConnections: Array<{
+          id: string;
+          label: string;
+          allowedCapabilities: string[];
+        }>;
+      };
       agents: Array<{ id: string; connections?: Array<{
         id: string;
         label: string;
@@ -230,6 +243,23 @@ test('connector setup handoff and snapshot stay locked to the current Slack Agen
         allowedCapabilities: string[];
       }> }>;
     } }).result;
+    assert.equal(snapshot.currentAgent.id, agent.id);
+    assert.deepEqual(snapshot.currentAgent.effectiveConnections, [{
+      id: personalDrive.id,
+      providerId: personalDrive.providerId,
+      label: personalDrive.label,
+      purpose: personalDrive.purpose,
+      ownerKind: 'member',
+      lifecycle: 'ready',
+      enabled: true,
+      allowedCapabilities: ['drive.files.search'],
+    }]);
+    assert.equal(
+      (inspected as { ok: true; result: {
+        connectors: Array<{ id: string; kind: string }>;
+      } }).result.connectors.find(({ id }) => id === 'linear')?.kind,
+      'setup_catalog_entry',
+    );
     assert.deepEqual(snapshot.agents.find(({ id }) => id === agent.id)?.connections, [
       {
         id: legacyPersonalCalendar.id,
@@ -917,8 +947,9 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
     assert.equal(scoped.ok, true);
     const snapshot = (scoped as { ok: true; result: {
       currentAgentId: string;
+      currentAgent: { id: string; name: string; effectiveConnections: unknown[] };
       agents: Array<{ id: string }>;
-      connectors: Array<{ id: string }>;
+      connectors: Array<{ id: string; kind: string }>;
       channels: unknown[];
       providers: unknown[];
       selfManagement: {
@@ -932,8 +963,14 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       team?: unknown;
     } }).result;
     assert.equal(snapshot.currentAgentId, support.id);
+    assert.deepEqual(snapshot.currentAgent, {
+      id: support.id,
+      name: support.name,
+      effectiveConnections: [],
+    });
     assert.deepEqual(snapshot.agents.map(({ id }) => id), [support.id]);
-    assert.ok(snapshot.connectors.some(({ id }) => id === 'zendesk'));
+    assert.ok(snapshot.connectors.some(({ id, kind }) =>
+      id === 'zendesk' && kind === 'setup_catalog_entry'));
     assert.deepEqual(snapshot.channels, []);
     assert.deepEqual(snapshot.providers, []);
     assert.ok(snapshot.selfManagement.availableModels.some(
@@ -951,6 +988,32 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       needsAttention: 0,
     });
     assert.equal(snapshot.team, undefined);
+
+    const rootInspection = await invokeSlackWorkspaceManagementTool({
+      signal: signal(CHICKPEA_AGENT_ID),
+      identity: f.identity,
+      service: f.service,
+      name: 'inspect_workspace',
+      args: {},
+    });
+    assert.equal(rootInspection.ok, true);
+    const rootSnapshot = (rootInspection as { ok: true; result: {
+      currentAgentId: string;
+      currentAgent: { id: string; name: string; effectiveConnections: unknown[] };
+      agents: Array<{ id: string }>;
+      connectors: Array<{ id: string; kind: string }>;
+    } }).result;
+    assert.equal(rootSnapshot.currentAgentId, CHICKPEA_AGENT_ID);
+    assert.deepEqual(rootSnapshot.currentAgent, {
+      id: CHICKPEA_AGENT_ID,
+      name: 'Chickpea',
+      effectiveConnections: [],
+    });
+    assert.deepEqual(rootSnapshot.agents.map(({ id }) => id), [support.id]);
+    assert.equal(
+      rootSnapshot.connectors.find(({ id }) => id === 'linear')?.kind,
+      'setup_catalog_entry',
+    );
 
     const selfEdit = await invokeSlackWorkspaceManagementTool({
       signal: signal(support.id),
