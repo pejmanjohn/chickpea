@@ -122,7 +122,12 @@ export class SlackListsService {
     if (!admitted.has(listId)) {
       throw new SlackListError(
         'list_reference_required',
-        'Provide the exact Slack List link again in this current task conversation, or use an ordinary saved default. Nothing was written.',
+        'This write has no matching Slack List destination admitted from the current task conversation or a saved Agent default. Nothing was written. Ask the requester for the exact native Slack List link. Do not retry a Lists tool in this turn, guess or reuse a URL from older history, read a List to authorize the write, or suggest changing Slack permissions. This is a destination-reference requirement, not a Slack access or sharing-permission failure.',
+        {
+          reason: 'missing_current_list_destination',
+          retryable: false,
+          nextAction: 'ask_for_exact_list_link',
+        },
       );
     }
   }

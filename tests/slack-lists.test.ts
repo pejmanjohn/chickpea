@@ -122,11 +122,45 @@ test('stale history and readback do not grant List write admission', async t => 
     contextMessages: [{ userId: 'U_HUMAN', text: LIST_URL, ts: '1900.000000', rootTs: '1800.000000', role: 'human', isTrigger: false }],
   });
   const service = f.service('stale-turn', staleOnly);
-  await assert.rejects(service.createItem('blocked', LIST_URL, { title: 'Budget summary' }), /exact Slack List link again.*Nothing was written/);
+  await assert.rejects(service.createItem('blocked', LIST_URL, { title: 'Budget summary' }), /no matching Slack List destination.+Nothing was written/);
   assert.equal(f.fake.calls.length, 0);
   assert.equal((await service.readList(LIST_URL)).status, 'read');
   await assert.rejects(service.createItem('still-blocked', LIST_URL, { title: 'Budget summary' }), /Nothing was written/);
   assert.equal(f.fake.calls.filter(call => isWrite(call.method)).length, 0);
+});
+
+test('missing destination admission returns one terminal no-write action distinct from Slack access', async t => {
+  const f = fixture(t);
+  const create = createSlackListTools(async () => f.service('missing-destination', []))
+    .find(tool => tool.name === 'create_slack_list_item')!;
+  const run = create.run as (context: {
+    toolCallId: string;
+    data: { listUrl: string; title: string };
+    log: { info(): void; warn(): void; error(): void };
+  }) => Promise<string>;
+  const result = JSON.parse(await run({
+    toolCallId: 'guessed-old-list',
+    data: { listUrl: LIST_URL, title: 'Budget summary' },
+    log: { info() {}, warn() {}, error() {} },
+  }));
+
+  assert.deepEqual({
+    status: result.status,
+    code: result.code,
+    reason: result.reason,
+    retryable: result.retryable,
+    nextAction: result.nextAction,
+  }, {
+    status: 'not_written',
+    code: 'list_reference_required',
+    reason: 'missing_current_list_destination',
+    retryable: false,
+    nextAction: 'ask_for_exact_list_link',
+  });
+  assert.match(result.message, /Do not retry a Lists tool in this turn/);
+  assert.match(result.message, /not a Slack access or sharing-permission failure/);
+  assert.doesNotMatch(result.message, /check.+permissions|adjust.+permissions/i);
+  assert.equal(f.fake.calls.length, 0, 'reference admission fails before any Slack read or write');
 });
 
 test('a confirmed same-turn List creation admits follow-up task and sharing writes', async t => {
