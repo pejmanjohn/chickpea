@@ -1230,6 +1230,12 @@ export function useChickpeaSlackRuntimeCapabilities(
     responseMetadataModel: plan.model,
     ...(threadImages?.length ? { threadImages } : {}),
     includeAgentAuthoringSkill: true,
+    slackCapabilities: {
+      slackListToolNames: managementEnabled && plan.actorMembershipId
+        ? SLACK_LIST_TOOL_NAMES
+        : [],
+      workspaceManagementMounted: managementEnabled,
+    },
     additionalActivityToolDescriptors: slackActivityToolDescriptors({
       plan,
       managementEnabled,
@@ -1317,6 +1323,27 @@ export function runtimePlanConnectedServicesInstruction(
     'service health; use only the connected tools or REST declarations actually mounted.';
 }
 
+/** Declare the closed native Lists surface from the exact Slack mount decision. */
+export function runtimePlanSlackCapabilitiesInstruction(input: {
+  slackListToolNames: readonly (typeof SLACK_LIST_TOOL_NAMES)[number][];
+  workspaceManagementMounted: boolean;
+}): string {
+  const listTools = input.slackListToolNames.length > 0
+    ? JSON.stringify(input.slackListToolNames)
+    : 'none';
+  const listScope = input.slackListToolNames.length > 0
+    ? 'This closed set has no action to delete a Slack task or whole List.'
+    : 'No native Slack Lists action is available in this turn, including task or List deletion.';
+  const managementScope = input.workspaceManagementMounted
+    ? 'Workspace-management tools are also mounted, but they operate only within their typed ' +
+      'Chickpea workspace-configuration and scheduled-routine scopes. Any deletion operation in ' +
+      'those schemas applies only to the named Agent configuration or routine, never a Slack task ' +
+      'or List. A proposal or approval cannot execute or unlock a native Slack Lists action.'
+    : 'Workspace-management tools are not mounted for this turn.';
+  return `Native Slack Lists action tools mounted for this turn (closed set): ${listTools}. ` +
+    `${listScope} ${managementScope}`;
+}
+
 /** Compose the declarations shared by Slack and fresh routine agents. */
 export function useRuntimePlanAgent(
   plan: RuntimePlanV2,
@@ -1327,6 +1354,10 @@ export function useRuntimePlanAgent(
     connectorUsageCorrelation?: import('../connections/managed-tools.ts').ManagedToolUsageCorrelation;
     artifactToolsDisabled?: boolean;
     includeAgentAuthoringSkill?: boolean;
+    slackCapabilities?: {
+      slackListToolNames: readonly (typeof SLACK_LIST_TOOL_NAMES)[number][];
+      workspaceManagementMounted: boolean;
+    };
     additionalActivityToolDescriptors?: readonly ActivityToolDescriptor[];
     /** Images already in this conversation, collected by the host fetch. */
     threadImages?: readonly ThreadImageRecord[];
@@ -1365,6 +1396,9 @@ export function useRuntimePlanAgent(
   }
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
   useInstruction(runtimePlanConnectedServicesInstruction(plan));
+  if (options.slackCapabilities) {
+    useInstruction(runtimePlanSlackCapabilitiesInstruction(options.slackCapabilities));
+  }
   useInstruction('Sandbox files are temporary working data, not durable Agent memory. They do not follow this Agent into a fresh conversation. A successful file or shell write cannot establish that a fact was remembered. Never promise future recall from a sandbox file.');
   if (plan.sandbox.mode === 'bash') {
     useInstruction('This virtual sandbox starts with a fresh filesystem for each new request, including a follow-up in the same Slack thread. Files from an earlier request are gone. When the current user asks to return or revise those files, recreate them from the available contents in this request before attaching them; do not assume an earlier path still exists. The internal file-delivery check continues the current request and may only read and export existing files.');

@@ -7,6 +7,7 @@ import {
   runtimeApiDeclarationStillAllowed,
   runtimePlanConnectedServicesInstruction,
 } from '../src/agents/slack-thread.ts';
+import { SLACK_LIST_TOOL_NAMES } from '../src/slack/lists/tools.ts';
 import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { getConfigStore, getIdentityStore, getSettingsStore } from '../src/config/state-backend.ts';
@@ -64,9 +65,26 @@ test(`native REST session: ${scenario}`, async (t) => {
     : await context.initializeRootHarness(ChickpeaSlack, signal, plan);
   try {
     const instructions = String((harness as any).config.instructions);
+    const mountedToolNames = (harness as any).agentTools.map((tool: any) => tool.name);
     const connectedServices = runtimePlanConnectedServicesInstruction(plan);
     assert.match(instructions, /Active connected-service access selected and configured for this turn:/);
     assert.match(instructions, /not a guarantee of remote service health/);
+    if (scenario.startsWith('routine')) {
+      assert.doesNotMatch(instructions, /Native Slack Lists action tools mounted for this turn/);
+    } else {
+      const declaredListTools = instructions.match(
+        /Native Slack Lists action tools mounted for this turn \(closed set\): (\[[^\n]+?\])\./,
+      );
+      assert.ok(declaredListTools);
+      assert.deepEqual(
+        JSON.parse(declaredListTools[1]!),
+        SLACK_LIST_TOOL_NAMES.filter((toolName) => mountedToolNames.includes(toolName)),
+      );
+      assert.deepEqual(JSON.parse(declaredListTools[1]!), SLACK_LIST_TOOL_NAMES);
+      assert.match(instructions, /no action to delete a Slack task or whole List/i);
+      assert.match(instructions, /deletion operation in those schemas applies only to the named Agent configuration or routine/i);
+      assert.match(instructions, /proposal or approval cannot execute or unlock a native Slack Lists action/i);
+    }
     if (scenario === 'empty') {
       assert.doesNotMatch(instructions, /REST connections are declared/);
       assert.match(connectedServices, /Active connected-service access selected and configured for this turn: none\./);
@@ -99,9 +117,8 @@ test(`native REST session: ${scenario}`, async (t) => {
       return;
     }
     if (scenario.startsWith('routine')) {
-      const names = (harness as any).agentTools.map((tool: any) => tool.name);
-      assert.ok(names.includes('submit_routine_result'));
-      for (const name of ['post_artifact', 'render_chart']) assert.equal(names.includes(name), scheduled);
+      assert.ok(mountedToolNames.includes('submit_routine_result'));
+      for (const name of ['post_artifact', 'render_chart']) assert.equal(mountedToolNames.includes(name), scheduled);
       if (scheduled) assert.doesNotMatch(instructions, /old queued occurrence has no verified file destination/);
       else assert.match(instructions, /old queued occurrence has no verified file destination/);
     }
@@ -141,6 +158,64 @@ test(`native REST session: ${scenario}`, async (t) => {
   } finally { await harness.close(); }
 });
 }
+
+test('native Slack capability declaration follows an actor-less Lists mount', async (t) => {
+  const agent = {
+    id: 'agent_no_actor', kind: 'user', revision: 1, name: 'No actor', instructions: 'Help.',
+    enabled: true, model: 'local-stub/proof', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  };
+  const plan = compileRuntimePlanV2({
+    turn: {
+      workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'E_NO_ACTOR', text: 'What can you do?',
+      userId: 'U_TEST', messageTs: '1787000000.000200', threadTs: '1787000000.000100',
+      source: 'app_mention', contextMode: 'thread',
+    },
+    assignment: {
+      workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id, agent,
+      model: agent.model, modelAttribution: {
+        source: 'workspace_default', providerId: 'local-stub', workspaceDefaultRevision: 1,
+      },
+    },
+    instructions: agent.instructions,
+    memoryEpoch: 1,
+    sandboxMode: 'bash',
+    effectiveConnections: [],
+  } as any);
+  t.mock.method(getConfigStore(), 'getAgent', async () => agent);
+  const signal = {
+    kind: 'signal', type: 'slack.message', tagName: 'slack_message',
+    body: serializeCurrentRequestEnvelope(
+      'What can you do?', false, 'U_TEST', '1787000000.000200',
+      { schemaVersion: 2, progressiveStreamingOffered: true },
+    ),
+    attributes: {
+      workspaceId: 'T_TEST', channelId: 'C_TEST', threadTs: plan.conversation.threadTs,
+      slackUserId: 'U_TEST', eventId: 'E_NO_ACTOR', messageTs: '1787000000.000200',
+      turnJobId: 'no_actor',
+    },
+  } as any;
+  const context = createFlueContext({
+    id: 'no-actor-test', agentName: 'chickpea-slack-v2', env: {},
+    agentConfig: { resolveModel: () => ({}) } as any,
+  });
+  const harness = await context.initializeRootHarness(ChickpeaSlack, signal, plan);
+  try {
+    const instructions = String((harness as any).config.instructions);
+    const mountedToolNames = (harness as any).agentTools.map((tool: any) => tool.name);
+    assert.match(
+      instructions,
+      /Native Slack Lists action tools mounted for this turn \(closed set\): none\./,
+    );
+    assert.match(instructions, /No native Slack Lists action is available in this turn/i);
+    assert.match(instructions, /Workspace-management tools are also mounted/);
+    for (const toolName of SLACK_LIST_TOOL_NAMES) {
+      assert.equal(mountedToolNames.includes(toolName), false, toolName);
+    }
+    assert.ok(mountedToolNames.includes('propose_workspace_changes'));
+  } finally {
+    await harness.close();
+  }
+});
 
 test('connected-service declaration names each frozen connection family without copying action policy', () => {
   const instruction = runtimePlanConnectedServicesInstruction({
