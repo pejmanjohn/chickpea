@@ -11,6 +11,7 @@ import {
   reconcileEnvironment,
   releaseEnvironment,
 } from './lib/environment-registry.mjs';
+import { EnvironmentWaitError, waitForEnvironmentClaim } from './lib/environment-wait.mjs';
 import { targetEnvironment } from './lib/environment-target.mjs';
 import {
   reconcileEnvironmentDeployment,
@@ -48,6 +49,38 @@ export async function runEnvironmentCli(argv, io = {}) {
       result = migrateEnvironmentProviderAuthConfigsFromFile(parsed.flags.bindings, options);
     } else if (parsed.command === 'claim') {
       result = claimEnvironment(parsed.target, options);
+    } else if (parsed.command === 'wait-claim') {
+      if (!parsed.target || !['any', 'amber', 'cobalt'].includes(parsed.target)
+        || parsed.flags.timeoutMs === undefined || parsed.flags.pollMs === undefined
+        || Object.keys(parsed.flags).some((flag) => ![
+          'root', 'worktree', 'leaseMs', 'timeoutMs', 'pollMs',
+        ].includes(flag))) {
+        throw new EnvironmentRegistryError('INVALID_ARGUMENT');
+      }
+      const controller = new AbortController();
+      const signal = io.signal ?? controller.signal;
+      const interrupt = () => controller.abort();
+      if (!io.signal) {
+        process.once('SIGINT', interrupt);
+        process.once('SIGTERM', interrupt);
+      }
+      try {
+        result = await waitForEnvironmentClaim(parsed.target, {
+          ...options,
+          timeoutMs: numberFlag(parsed.flags.timeoutMs),
+          pollMs: numberFlag(parsed.flags.pollMs),
+          signal,
+          ...(io.waitOptions ?? {}),
+          onStatusChange: (status) => stderr(
+            `wait-claim: ${status.map((lane) => `${lane.target}=${lane.claimed ? 'claimed' : lane.verifierLock === 'live' ? 'locked' : lane.health}`).join(' ')}\n`,
+          ),
+        });
+      } finally {
+        if (!io.signal) {
+          process.removeListener('SIGINT', interrupt);
+          process.removeListener('SIGTERM', interrupt);
+        }
+      }
     } else if (parsed.command === 'status') {
       result = readEnvironmentStatus({
         ...options,
@@ -97,24 +130,26 @@ export async function runEnvironmentCli(argv, io = {}) {
       throw new EnvironmentRegistryError('INVALID_COMMAND');
     }
     stdout(`${JSON.stringify(result, null, 2)}\n`);
-    return 0;
+    return result?.kind === 'timeout' ? 3 : 0;
   } catch (error) {
-    const code = error instanceof EnvironmentRegistryError ? error.code : 'ENVIRONMENT_COMMAND_FAILED';
+    const code = error instanceof EnvironmentRegistryError || error instanceof EnvironmentWaitError
+      ? error.code
+      : 'ENVIRONMENT_COMMAND_FAILED';
     // A non-registry failure used to surface as a bare code, which hid the
     // actual cause (a missing host variable, an unreachable Worker, a parse
     // error). Name it, bounded and without any token-shaped content.
-    const message = error instanceof EnvironmentRegistryError
+    const message = error instanceof EnvironmentRegistryError || error instanceof EnvironmentWaitError
       ? undefined
       : redactCommandFailure(error instanceof Error ? error.message : String(error));
     const body = {
       error: code,
-      ...(error instanceof EnvironmentRegistryError && error.details
+      ...((error instanceof EnvironmentRegistryError || error instanceof EnvironmentWaitError) && error.details
         ? { details: error.details }
         : {}),
       ...(message ? { message } : {}),
     };
     stderr(`${JSON.stringify(body)}\n`);
-    return 2;
+    return error instanceof EnvironmentWaitError && error.code === 'WAIT_CANCELLED' ? 130 : 2;
   }
 }
 
@@ -144,6 +179,8 @@ function parseArgs(argv) {
       '--root': 'root',
       '--worktree': 'worktree',
       '--lease-ms': 'leaseMs',
+      '--timeout-ms': 'timeoutMs',
+      '--poll-ms': 'pollMs',
       '--observation': 'observation',
       '--bindings': 'bindings',
       '--profile': 'profile',
@@ -163,6 +200,10 @@ function parseArgs(argv) {
     throw new EnvironmentRegistryError('INVALID_COMMAND');
   }
   if (flags.bindings && positional[0] !== 'migrate-provider-auth') {
+    throw new EnvironmentRegistryError('INVALID_ARGUMENT');
+  }
+  if (positional[0] !== 'wait-claim'
+    && (flags.timeoutMs !== undefined || flags.pollMs !== undefined)) {
     throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   }
   return { command: positional[0], target: positional[1], flags };

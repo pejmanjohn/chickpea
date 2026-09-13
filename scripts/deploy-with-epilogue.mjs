@@ -246,8 +246,16 @@ let environmentPreflightApi;
 let initialEnvironmentPreflight;
 let resumedEnvironmentDeployment;
 let environmentMutationLease;
+let qaCandidateApi;
+let qaSourceAdmission;
 if (selectedEnvironmentTarget) {
   try {
+    // Admission is deliberately outside the nonce-bound intent/receipt schema.
+    // Every upload, including a resumed upload, needs it. The separate env
+    // reconciliation command can finish old intents without changing source.
+    qaCandidateApi = await import('./lib/qa-candidate.mjs');
+    qaSourceAdmission = qaCandidateApi.admitQaCandidate(projectRoot);
+    process.stdout.write(`QA source includes remote main ${qaSourceAdmission.approvedTip}; tracking ref ${qaSourceAdmission.trackingMatchesRemote ? 'matches' : 'differs (use the admitted tip as --base)'}.\n`);
     environmentPreflightApi = await import('./lib/environment-preflight.mjs');
     resumedEnvironmentDeployment = await environmentPreflightApi.resumeEnvironmentDeployment(
       selectedEnvironmentTarget,
@@ -1018,6 +1026,7 @@ let expectedActiveDeploymentFingerprint;
 let finalEnvironmentPreflight;
 if (!deployArgs.includes('--dry-run')) {
   try {
+    if (qaSourceAdmission) qaCandidateApi.recheckQaCandidate(qaSourceAdmission);
     if (upgradeContext) {
       const current = validateInstallation(inspector(builtArtifact).inspect());
       assertSameInstallation(upgradeContext.installation, current);
@@ -1107,6 +1116,7 @@ if (!deployArgs.includes('--dry-run')) {
 
 if (selectedEnvironmentTarget) {
   try {
+    if (qaSourceAdmission) qaCandidateApi.recheckQaCandidate(qaSourceAdmission);
     environmentMutationLease ??= environmentPreflightApi.beginEnvironmentDeployment(
       finalEnvironmentPreflight,
       { projectRoot, providerContext: deploymentResourceArgs() },
@@ -1123,6 +1133,13 @@ if (selectedEnvironmentTarget) {
 if (!deployArgs.includes('--dry-run') && !upgradeContext) {
   process.stdout.write('Applying reviewed Better Auth migrations to AUTH_DB...\n');
   const environmentArgs = deploymentResourceArgs();
+  // Authority preparation above can await provider reads. Fence the actual
+  // migration inputs again at the irreversible D1 boundary, including resumes.
+  try { if (qaSourceAdmission) qaCandidateApi.recheckQaCandidate(qaSourceAdmission); }
+  catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
   const migration = spawnSync(
     process.execPath,
     [
@@ -1210,6 +1227,14 @@ if (upgradeContext) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
+}
+
+try {
+  if (qaSourceAdmission) qaCandidateApi.recheckQaCandidate(qaSourceAdmission);
+} catch (error) {
+  removeSecretsFile(preparedSecrets);
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
 }
 
 const child = spawn(

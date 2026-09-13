@@ -107,6 +107,7 @@ const allowedAgentSkillPaths = new Set([
 
 const liveVerifierExportPolicy = Object.freeze({
   requiredPaths: new Set([
+    exportPath('.claude', 'skills', 'chickpea-live-verification', 'SKILL.md'),
     exportPath('.agents', 'skills', 'chickpea-live-verification', 'SKILL.md'),
     exportPath('AGENTS.md'),
     exportPath('docs', 'runbooks', 'live-contract-verification.md'),
@@ -151,6 +152,8 @@ const liveVerifierExportPolicy = Object.freeze({
     exportPath('qa', 'live', 'operator', 'records.md'),
     exportPath('qa', 'live', 'operator', 'recovery.md'),
     exportPath('qa', 'live', 'operator', 'host-checks.md'),
+    exportPath('qa', 'live', 'operator', 'hosts.md'),
+    exportPath('qa', 'live', 'operator', 'fixtures.md'),
     exportPath('qa', 'live', 'operator', 'model-diagnosis.md'),
     exportPath('qa', 'live', 'operator', 'rest-probe.md'),
     exportPath('qa', 'live', 'privacy.ts'),

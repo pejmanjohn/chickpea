@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
 
 // @ts-expect-error Shared executable JavaScript helpers.
-import { appendEvent, createRun, evidenceRefs, offlineEvent, preflight, readRun, renderReport, reusableOffline, status, updateRun } from '../scripts/lib/verification-record.mjs';
+import { appendEvent, createRun, evidenceRefs, offlineEvent, preflight, readPrivateJson, readRun, renderReport, reusableOffline, status, updateRun } from '../scripts/lib/verification-record.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
 import { digest, sourceInputs } from '../scripts/lib/verification-inputs.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
@@ -15,6 +15,10 @@ import { templateSpec } from '../scripts/lib/verification-spec.mjs';
 import { contextScope } from '../scripts/lib/verification-scope.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
 import { runRecordCli } from '../scripts/verification-record.mjs';
+// @ts-expect-error Shared executable JavaScript helpers.
+import { buildCleanup, buildOutcome, buildResource, proofMap } from '../scripts/lib/verification-record-builders.mjs';
+// @ts-expect-error Shared executable JavaScript helpers.
+import { familyStatus, readRunFamily } from '../scripts/lib/verification-record-family.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
 import { REGRESSION_AREAS } from '../scripts/lib/regression-plan.mjs';
 
@@ -500,6 +504,16 @@ test('actual CLI init, resume, refresh, finish and generated report use the same
   assert.equal(cli('record', '--event', event, '--run', runFile), 0, error);
   assert.equal(cli('report', '--run', runFile), 0, error);
   assert.match(output, /Variant group parent .*pass.*pending: \./);
+
+  actual.cases.push({ ...actual.cases[0], id: 'linked-later' });
+  writeFileSync(specFile, JSON.stringify(actual));
+  assert.equal(cli('refresh', '--spec', specFile, '--reason', 'Added bounded follow-up coverage.', '--run', runFile), 0, error);
+  const childSpec = structuredClone(actual); childSpec.cases.push({ ...actual.cases[0], id: 'child-follow-up' });
+  const childSpecFile = join(f.directory, 'child-spec.json'), childRunFile = join(f.directory, 'child-run.json');
+  writeFileSync(childSpecFile, JSON.stringify(childSpec));
+  assert.equal(cli('init', '--spec', childSpecFile, '--run', childRunFile, '--parent-run', runFile, '--original-case', 'child-follow-up=linked-later'), 0, error);
+  assert.equal(readRun(childRunFile).lineage.originalCases['child-follow-up'].caseId, 'linked-later');
+
   assert.equal(cli('report', '--run', runFile, '--output', runFile), 2);
   assert.ok(readRun(runFile).events.length > 0);
 });
@@ -703,4 +717,102 @@ test('urgent fixture recovery needs no code commit but keeps dependents blocked 
   assert.equal(view.repairs[0].state, 'verified');
   assert.equal(view.complete, true);
   assert.equal(view.cases[0].firstFailure.id, failure.id);
+});
+
+test('typed builders derive targets and preserve proof and exact cleanup guards', (t) => {
+  const f = fixture(t);
+  const expected = join(f.directory, 'expected.json'); writeFileSync(expected, '{"present":false}');
+  assert.throws(() => buildResource(f.run, { case: 'schedule', provider: 'chickpea', kind: 'sheet', resourceId: 'restored', ownership: 'restore', cleanupPreset: 'absent', evidence: [f.evidence] }, readPrivateJson), /exact --expected-file/);
+  assert.throws(() => buildResource(f.run, { case: 'schedule', provider: 'chickpea', kind: 'sheet', resourceId: 'owned', ownership: 'owned', cleanupPreset: 'absent', expectedFile: expected, evidence: [f.evidence] }, readPrivateJson), /either/);
+  assert.throws(() => buildResource(f.run, { case: 'schedule', provider: 'chickpea', kind: 'sheet', resourceId: 'owned', ownership: 'owned', cleanupPreset: 'archived-agent', evidence: [f.evidence] }, readPrivateJson), /only applies/);
+  const resource = buildResource(f.run, { case: 'schedule', provider: 'chickpea', kind: 'agent', resourceId: 'owned-agent', ownership: 'owned', cleanupPreset: 'archived-agent', evidence: [f.evidence] }, readPrivateJson);
+  assert.equal(resource.target, 'synthetic-local');
+  assert.deepEqual(resource.expected, { lifecycle: 'archived', channelCount: 0, dmAccess: 'unavailable' });
+  const saved = f.append(resource);
+  const observed = join(f.directory, 'observed.json'); writeFileSync(observed, JSON.stringify(resource.expected));
+  f.append(buildCleanup({ resource: saved.id, outcome: 'verified', observedFile: observed, evidence: [f.evidence] }, readPrivateJson));
+  const attempt = f.append({ type: 'begin', caseId: 'schedule' });
+  assert.throws(() => f.append(buildOutcome('finish', { attempt: attempt.id, result: 'pass', summary: 'Missing Admin proof.', evidence: [f.evidence], proof: [`slack=${f.evidence}`] })), /required.*readback/);
+  assert.deepEqual(proofMap([`slack=${f.evidence}`, `slack=${observed}`]).slack, [f.evidence, observed]);
+  assert.throws(() => proofMap(['slack']), /SURFACE=/);
+  assert.throws(() => proofMap([`__proto__=${f.evidence}`]), /Unknown proof surface/);
+});
+
+test('completion timestamps are advisory and phase intervals measure overlap without changing proof', (t) => {
+  const f = fixture(t), attempt = f.append({ type: 'begin', caseId: 'schedule' }, NOW);
+  const completedAt = new Date(NOW + 130_000).toISOString();
+  const observedAt = new Date(NOW + 140_000).toISOString();
+  const outcome = f.append(f.finish(attempt.id, { completedAt, observedAt, timing: { browserMs: 140_000 } }), NOW + 150_000);
+  assert.equal(outcome.elapsedMs, 150_000);
+  assert.equal(outcome.completionLatencyMs, 130_000);
+  assert.equal(outcome.recordingDelayMs, 10_000);
+  assert.equal(outcome.completionBeyondObservationDeadline, true);
+  assert.equal(outcome.result, 'pass');
+  const first = f.append({ type: 'phase_start', phase: 'browser-wait', attemptId: attempt.id }, NOW + 1_000);
+  const second = f.append({ type: 'phase_start', phase: 'observation', caseId: 'schedule' }, NOW + 2_000);
+  f.append({ type: 'phase_finish', phaseId: first.id }, NOW + 5_000);
+  f.append({ type: 'phase_finish', phaseId: second.id }, NOW + 7_000);
+  assert.throws(() => f.append({ type: 'phase_finish', phaseId: first.id }, NOW + 8_000), /already finished/);
+  const view = status(f.run, source(), NOW + 9_000);
+  assert.equal(view.phases.measuredIntervalUnionMs, 6_000);
+  assert.equal(view.phases.totals['browser-wait'], 4_000);
+  assert.equal(view.phases.totals.observation, 5_000);
+  assert.match(renderReport(view), /not a measured critical path/);
+  const typed = buildOutcome('finish', { attempt: attempt.id, result: 'pass', summary: 'Measured observation.', evidence: [f.evidence], proof: [`slack=${f.evidence}`, `admin=${f.evidence}`], timingObservationMs: '30000' });
+  assert.deepEqual(typed.timing, { observationMs: 30000 });
+});
+
+test('case contracts survive refresh and family status preserves incomplete ancestor failures', (t) => {
+  const parent = fixture(t);
+  parent.run.spec.cases[0].originalRequest = 'Deliver the requested schedule.';
+  parent.run.spec.cases[0].expectedOutcome = 'One attributable due message.';
+  parent.run.spec.cases[0].variant = 'Denied actor receives no delivery.';
+  parent.run.spec.cases[0].cleanup = 'Remove the schedule by immutable ID.';
+  const failed = parent.append({ type: 'begin', caseId: 'schedule' });
+  parent.append(parent.finish(failed.id, { result: 'fail', category: 'product' }));
+  writeFileSync(parent.file, `${JSON.stringify(parent.run)}\n`);
+  const changed = structuredClone(parent.run.spec); changed.cases[0].originalRequest = 'Different request.';
+  assert.throws(() => parent.append({ type: 'refresh', spec: changed, reason: 'Attempted rewrite.' }), /cannot drop or weaken/);
+
+  const childFile = join(parent.directory, 'child.json');
+  const child = createRun(childFile, parent.run.spec, source(), NOW, { parent: { path: parent.file, runId: parent.run.id }, originalCases: { schedule: { runId: parent.run.id, caseId: 'schedule' } } });
+  const passed = appendEvent(child, { type: 'begin', caseId: 'schedule', reason: 'Bounded follow-up.' }, source(), NOW + 2_000);
+  appendEvent(child, parent.finish(passed.id), source(), NOW + 3_000); writeFileSync(childFile, `${JSON.stringify(child)}\n`);
+  const view = familyStatus(readRunFamily(childFile, source()));
+  assert.equal(view.current.complete, true);
+  assert.equal(view.complete, false);
+  assert.equal(view.ancestors[0].firstFailures[0].caseId, 'schedule');
+  assert.match(view.ancestors[0].path, /run\.json$/);
+  assert.throws(() => readRunFamily(childFile, source(), 0), /integer from 1 to 128/);
+
+  child.lineage.parent = { path: join(parent.directory, 'missing-parent.json'), runId: parent.run.id };
+  writeFileSync(childFile, `${JSON.stringify(child)}\n`);
+  const missing = familyStatus(readRunFamily(childFile, source()));
+  assert.equal(missing.complete, false);
+  assert.match(missing.missingAncestor.path, /missing-parent\.json$/);
+});
+
+test('family grades a completed parent against its recorded source while the child uses current source', (t) => {
+  const parent = fixture(t), parentAttempt = parent.append({ type: 'begin', caseId: 'schedule' }, NOW);
+  parent.append(parent.finish(parentAttempt.id), NOW + 1_000); writeFileSync(parent.file, `${JSON.stringify(parent.run)}\n`);
+
+  const childSource = source(); childSource.areas.routines = 'child-routines'; childSource.tree = 'child-tree';
+  const childFile = join(parent.directory, 'passed-child.json');
+  const child = createRun(childFile, parent.spec, childSource, NOW + 2_000,
+    { parent: { path: parent.file, runId: parent.run.id }, originalCases: { schedule: { runId: parent.run.id, caseId: 'schedule' } } });
+  const childAttempt = appendEvent(child, { type: 'begin', caseId: 'schedule' }, childSource, NOW + 3_000);
+  appendEvent(child, parent.finish(childAttempt.id), childSource, NOW + 4_000); writeFileSync(childFile, `${JSON.stringify(child)}\n`);
+
+  const view = familyStatus(readRunFamily(childFile, childSource));
+  assert.equal(view.current.complete, true);
+  assert.equal(view.ancestors[0].complete, true);
+  assert.equal(view.ancestors[0].statusSource, 'historical-recorded');
+  assert.equal(view.ancestors[0].asOf, new Date(NOW + 1_000).toISOString());
+  assert.equal(view.complete, true);
+
+  const drifted = structuredClone(childSource); drifted.areas.routines = 'later-child-change';
+  const staleChild = familyStatus(readRunFamily(childFile, drifted));
+  assert.equal(staleChild.current.complete, false);
+  assert.equal(staleChild.ancestors[0].complete, true);
+  assert.equal(staleChild.complete, false);
 });

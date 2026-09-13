@@ -136,6 +136,20 @@ function createHarness() {
       if (process.env.DEPLOY_TEST_ENV_RECEIPT) writeFileSync(process.env.DEPLOY_TEST_ENV_RECEIPT, 'receipt\\n');
     }
   `);
+  writeFileSync(path.join(scriptsLibDir, 'qa-candidate.mjs'), `
+    import { appendFileSync } from 'node:fs';
+    let rechecks = 0;
+    export function admitQaCandidate() {
+      if (process.env.DEPLOY_TEST_SOURCE_LOG === '1') appendFileSync(process.env.DEPLOY_TEST_LOG, 'source-admission\\n');
+      if (process.env.DEPLOY_TEST_SOURCE_REFUSED === '1') throw new Error('QA_SOURCE_BEHIND_MAIN');
+      return { approvedTip: 'a'.repeat(40), trackingMatchesRemote: true };
+    }
+    export function recheckQaCandidate() {
+      rechecks += 1;
+      if (process.env.DEPLOY_TEST_SOURCE_LOG === '1') appendFileSync(process.env.DEPLOY_TEST_LOG, 'source-recheck:' + rechecks + '\\n');
+      if (Number(process.env.DEPLOY_TEST_SOURCE_CHANGE_AT) === rechecks) throw new Error('QA_SOURCE_CHANGED');
+    }
+  `);
   for (const migrationPath of AUTH_MIGRATIONS) {
     copyFileSync(migrationPath, path.join(authMigrationsDir, path.basename(migrationPath)));
   }
@@ -1548,6 +1562,41 @@ test('a matching QA target still reaches the existing claim fence before buildin
   });
   assert.equal(result.status, 1);
   assert.deepEqual(commands(harness.logPath), ['environment-preflight:1:amber']);
+});
+
+test('QA source admission refuses stale new and resumed uploads before any build or lane access', (context) => {
+  for (const resumed of [false, true]) {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    const result = runHarness(harness, [], {
+      CHICKPEA_DEPLOY_TARGET: 'amber', DEPLOY_TEST_SOURCE_REFUSED: '1',
+      DEPLOY_TEST_SOURCE_LOG: '1', DEPLOY_TEST_ENV_RESUME: resumed ? '1' : '0',
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /QA_SOURCE_BEHIND_MAIN/);
+    assert.deepEqual(commands(harness.logPath), ['source-admission']);
+  }
+});
+
+test('QA contents are rechecked after awaited preparation, before D1 and before upload', (context) => {
+  for (const resumed of [false, true]) for (const changedAt of [1, 2, 3, 4]) {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    writeCutoverArtifact(harness, { target: 'amber', databaseId: 'test-database-id' });
+    const result = runHarness(harness, ['--skip-build'], {
+      CHICKPEA_DEPLOY_TARGET: 'amber', CHICKPEA_DEPLOY_AUTH_DB_ID: 'test-database-id',
+      CHICKPEA_DEPLOY_SCHEMA_GENERATION: 'd1:0002_mcp_oauth;do:v9', DEPLOY_TEST_WORKER_EXISTS: '1',
+      DEPLOY_TEST_SECRET_LIST: JSON.stringify([{ name: 'CHICKPEA_AUTH_SECRET' }, { name: 'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID' }, { name: 'CHICKPEA_CREDENTIAL_KEY_KEY_V1' }]),
+      DEPLOY_TEST_SOURCE_CHANGE_AT: String(changedAt), DEPLOY_TEST_SOURCE_LOG: '1',
+      DEPLOY_TEST_ENV_RESUME: resumed ? '1' : '0',
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /QA_SOURCE_CHANGED/);
+    const invoked = commands(harness.logPath);
+    assert.ok(invoked.includes(`source-recheck:${changedAt}`));
+    assert.equal(invoked.some((line) => line.startsWith('wrangler:["deploy"')), false);
+    if (changedAt <= 3) assert.equal(invoked.some((line) => line.includes('"migrations","apply"')), false);
+  }
 });
 
 test('Phase 1 deploy fences claim authority before build and again before D1 or upload', (context) => {

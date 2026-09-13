@@ -16,6 +16,8 @@ const SCHEMA = 'chickpea-attended-run/v1';
 const GRADES = ['local', 'deployed', 'model'];
 const RESULTS = ['pass', 'fail', 'blocked', 'ambiguous'];
 const CATEGORIES = ['product', 'model', 'tool', 'infrastructure', 'unknown'];
+const PHASES = ['lane-wait', 'host-wait', 'browser-wait', 'setup', 'deployment', 'request', 'observation', 'repair', 'review-wait', 'human-input', 'cleanup'];
+const CASE_CONTRACT = ['originalRequest', 'expectedOutcome', 'variant', 'cleanup'];
 const text = (v) => typeof v === 'string' && v.trim().length > 0;
 const need = (v, message) => { if (!v) throw new Error(message); };
 const list = (v) => Array.isArray(v) && v.every(text);
@@ -77,7 +79,7 @@ export function validateSpec(spec) {
   need(Array.isArray(spec.cases), 'Selected cases must be a list.');
   const ids = new Set();
   for (const selected of spec.cases) {
-    keys(selected, ['id', 'title', 'context', 'areas', 'requires', 'proof', 'maxAttempts', 'maxWaitMs', 'minObservationMs']);
+    keys(selected, ['id', 'title', 'context', 'areas', 'requires', 'proof', 'maxAttempts', 'maxWaitMs', 'minObservationMs', ...CASE_CONTRACT]);
     need(isExactId(selected.id) && !ids.has(selected.id), 'Case IDs must be unique exact IDs.'); ids.add(selected.id);
     need(text(selected.title) && spec.contexts[selected.context], 'Case needs a title and a known context.');
     need(list(selected.areas) && selected.areas.length > 0 && selected.areas.every((area) => Object.hasOwn(REGRESSION_AREAS, area)), 'Case needs known dependency areas.');
@@ -87,6 +89,7 @@ export function validateSpec(spec) {
     need(Number.isSafeInteger(selected.maxAttempts) && selected.maxAttempts > 0 && selected.maxAttempts <= (spec.purpose === 'reliability' ? 100 : 3), 'Attempt budget must be 1..3, or 1..100 for reliability.');
     need(number(selected.maxWaitMs) && selected.maxWaitMs > 0 && selected.maxWaitMs <= 120_000, 'Each observation wait must be bounded to 120 seconds.');
     need(number(selected.minObservationMs ?? 0) && (selected.minObservationMs ?? 0) <= selected.maxWaitMs, 'Invalid minimum observation duration.');
+    for (const field of CASE_CONTRACT) need(selected[field] === undefined || text(selected[field]), `Case ${field} must be nonempty text.`);
   }
   validateGroups(spec);
   if (spec.mode === 'release') need(spec.cases.some((c) => spec.contexts[c.context].grade === 'deployed' && !optionalCases(spec).has(c.id)), 'Release scope needs required deployed acceptance cases.');
@@ -115,11 +118,12 @@ function atomicWrite(file, value) {
   renameSync(temporary, file);
 }
 
-export function createRun(file, spec, source, now = Date.now()) {
+export function createRun(file, spec, source, now = Date.now(), lineage) {
   const path = outsideGit(file);
   validateSpec(spec);
+  if (lineage !== undefined) validateLineage(lineage, spec);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const run = { schema: SCHEMA, id: randomUUID(), createdAt: new Date(now).toISOString(), spec, source, events: [] };
+  const run = { schema: SCHEMA, id: randomUUID(), createdAt: new Date(now).toISOString(), spec, source, events: [], ...(lineage ? { lineage } : {}) };
   // Capture the initial capability receipts, so later changes to evidence are visible.
   run.capabilityEvidence = captureCapabilities(spec);
   writeFileSync(path, `${JSON.stringify(run, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
@@ -128,10 +132,20 @@ export function createRun(file, spec, source, now = Date.now()) {
 function captureCapabilities(spec) {
   return Object.fromEntries(Object.entries(spec.capabilities).map(([id, cap]) => [id, cap.evidence.length ? evidenceRefs(cap.evidence) : []]));
 }
+function validateLineage(lineage, spec) {
+  keys(lineage, ['parent', 'originalCases']); keys(lineage.parent, ['path', 'runId']);
+  need(text(lineage.parent.path) && text(lineage.parent.runId), 'Run lineage needs an exact parent path and run ID.'); outsideGit(lineage.parent.path);
+  need(lineage.originalCases && typeof lineage.originalCases === 'object' && !Array.isArray(lineage.originalCases), 'Original cases must be a mapping.');
+  for (const [child, original] of Object.entries(lineage.originalCases)) {
+    need(isExactId(child) && spec.cases.some((entry) => entry.id === child), 'Original-case child ID is invalid or unselected.'); keys(original, ['runId', 'caseId']);
+    need(original.runId === lineage.parent.runId && isExactId(original.caseId), 'Original case must reference the direct parent run and an exact case ID.');
+  }
+}
 export function readRun(file) {
   const run = readPrivateJson(file);
   need(run.schema === SCHEMA && text(run.id) && Array.isArray(run.events), 'Not an attended run record. Do not migrate an active legacy journal.');
   validateSpec(run.spec);
+  if (run.lineage !== undefined) validateLineage(run.lineage, run.spec);
   noSecrets(run);
   need(run.events.every((event, index) => event.sequence === index + 1 && event.runId === run.id), 'Run event sequence is invalid.');
   return run;
@@ -247,6 +261,7 @@ export function appendEvent(run, input, source, now = Date.now()) {
       // A resume cannot silently shrink selected acceptance or change its mode.
       need(input.spec.mode === spec.mode && input.spec.purpose === spec.purpose && spec.cases.every((c) => input.spec.cases.some((next) => next.id === c.id
         && ['areas', 'requires', 'proof'].every((field) => c[field].every((item) => next[field].includes(item)))
+        && CASE_CONTRACT.every((field) => c[field] === undefined || next[field] === c[field])
         && (next.minObservationMs ?? 0) >= (c.minObservationMs ?? 0) && next.maxAttempts <= c.maxAttempts)), 'Refresh cannot drop or weaken selected coverage or expand its attempt budget.');
       need(spec.cases.every((c) => {
         const next = input.spec.cases.find((item) => item.id === c.id);
@@ -287,7 +302,7 @@ export function appendEvent(run, input, source, now = Date.now()) {
     }
     case 'finish':
     case 'resolve': {
-      keys(input, ['type', 'attemptId', 'result', 'category', 'summary', 'evidence', 'proof', 'timing', 'costUsd']);
+      keys(input, ['type', 'attemptId', 'result', 'category', 'summary', 'evidence', 'proof', 'timing', 'costUsd', 'completedAt', 'observedAt']);
       need(attempt, 'Attempt not found.');
       const prior = resultFor(run, attempt.id);
       if (input.type === 'finish') need(!prior, 'Attempt already finished; its first outcome is immutable.');
@@ -313,6 +328,37 @@ export function appendEvent(run, input, source, now = Date.now()) {
       }
       need(input.costUsd === undefined || input.costUsd === null || number(input.costUsd), 'Cost must be measured or null.');
       event.elapsedMs = now - Date.parse(attempt.at);
+      event.recordedAfterDeadline = now > Date.parse(attempt.deadline);
+      let completed, observed;
+      if (input.completedAt !== undefined) {
+        need(date(input.completedAt), 'Completion needs an ISO timestamp.');
+        completed = Date.parse(input.completedAt);
+        need(completed >= Date.parse(attempt.at) && completed <= now, 'Completion must fall between attempt start and record time.');
+        event.completionLatencyMs = completed - Date.parse(attempt.at);
+        event.completionBeyondObservationDeadline = completed > Date.parse(attempt.deadline);
+      }
+      if (input.observedAt !== undefined) {
+        need(date(input.observedAt), 'Observation needs an ISO timestamp.'); observed = Date.parse(input.observedAt);
+        need(observed >= Date.parse(attempt.at) && observed <= now, 'Observation must fall between attempt start and record time.');
+        need(completed === undefined || observed >= completed, 'Observation cannot precede product completion.');
+        event.recordingDelayMs = now - observed;
+      }
+      break;
+    }
+    case 'phase_start':
+      keys(input, ['type', 'phase', 'caseId', 'attemptId']);
+      need(PHASES.includes(input.phase), 'Unknown verification phase.');
+      need(input.caseId === undefined || selected, 'Phase case is not selected.');
+      need(input.attemptId === undefined || attempt, 'Phase attempt was not found.');
+      if (selected && attempt) need(attempt.caseId === selected.id, 'Phase case and attempt do not match.');
+      break;
+    case 'phase_finish': {
+      keys(input, ['type', 'phaseId']);
+      const started = run.events.find((item) => item.type === 'phase_start' && item.id === input.phaseId);
+      need(started, 'Phase start was not found.');
+      need(!run.events.some((item) => item.type === 'phase_finish' && item.phaseId === started.id), 'Phase is already finished.');
+      event.phase = started.phase; event.caseId = started.caseId; event.attemptId = started.attemptId;
+      event.durationMs = now - Date.parse(started.at);
       break;
     }
     case 'reconcile':
@@ -383,7 +429,8 @@ export function status(run, source, now = Date.now()) {
   const spec = currentSpec(run), readiness = preflight(run, now);
   const cases = spec.cases.map((selected) => {
     const history = attempts(run, selected.id), last = history.at(-1);
-    const outcome = last && resultFor(run, last.id);
+    const storedOutcome = last && resultFor(run, last.id);
+    const outcome = storedOutcome && { ...storedOutcome, recordedAfterDeadline: storedOutcome.recordedAfterDeadline ?? Date.parse(storedOutcome.at) > Date.parse(last.deadline) };
     const currentInputs = attendedInputs(run, spec, selected, source);
     const projection = last ? transitionInputs(run, last, outcome, currentInputs, intact) : undefined;
     const invalidation = last ? changedInputs(projection.inputs, currentInputs) : [];
@@ -411,6 +458,20 @@ export function status(run, source, now = Date.now()) {
   const releasePending = spec.mode === 'release' && !checkpoints.some((e) => e.node === `v${NODE_BASELINE}`);
   const openOffline = run.events.filter((e) => e.type === 'offline_begin' && !offline.some((end) => end.attemptId === e.id));
   const cleanupPending = resources.filter((r) => r.cleanup !== 'verified');
+  const phaseStarts = run.events.filter((e) => e.type === 'phase_start');
+  const phaseFinishes = run.events.filter((e) => e.type === 'phase_finish');
+  const phaseIntervals = phaseFinishes.map((end) => {
+    const start = phaseStarts.find((entry) => entry.id === end.phaseId);
+    return { phase: end.phase, startAt: start.at, endAt: end.at, durationMs: end.durationMs, phaseId: start.id };
+  });
+  const merged = phaseIntervals.map((item) => [Date.parse(item.startAt), Date.parse(item.endAt)]).sort((a, b) => a[0] - b[0]);
+  let unionMs = 0, cursorStart, cursorEnd;
+  for (const [startAt, endAt] of merged) {
+    if (cursorStart === undefined) { cursorStart = startAt; cursorEnd = endAt; }
+    else if (startAt <= cursorEnd) cursorEnd = Math.max(cursorEnd, endAt);
+    else { unionMs += cursorEnd - cursorStart; cursorStart = startAt; cursorEnd = endAt; }
+  }
+  if (cursorStart !== undefined) unionMs += cursorEnd - cursorStart;
   const totals = { automatedMs: offline.reduce((sum, e) => sum + e.durationMs, 0), browserMs: 0, modelMs: 0, humanWaitMs: 0, observationMs: 0 };
   // A resolution's measurements are cumulative for the same attempt. Count
   // the latest receipt once, while retaining its first outcome in the journal.
@@ -422,6 +483,9 @@ export function status(run, source, now = Date.now()) {
     releasePending, openOffline, offline, offlinePlans, offlineObligations,
     reused: run.events.filter((e) => e.type === 'offline_reuse'),
     complete: (cases.length > 0 || offlinePlans.some((p) => p.required)) && cases.every((c) => c.result === 'pass' || optionalCases(spec).has(c.id) && !['in_progress', 'observe_overdue', 'ambiguous'].includes(c.result)) && cleanupPending.length === 0 && !releasePending && openOffline.length === 0 && offlinePlans.filter((p) => p.required).every((p) => p.result === 'pass') && coordination.repairs.every((r) => r.state === 'verified'),
+    phases: { intervals: phaseIntervals, open: phaseStarts.filter((start) => !phaseFinishes.some((end) => end.phaseId === start.id)),
+      measuredIntervalUnionMs: phaseIntervals.length ? unionMs : null,
+      totals: Object.fromEntries(PHASES.map((phase) => [phase, phaseIntervals.filter((item) => item.phase === phase).reduce((sum, item) => sum + item.durationMs, 0)]).filter(([, value]) => value > 0)) },
     timing: { wallMs: now - Date.parse(run.createdAt), measured: totals,
       unmeasuredAttempts: outcomes.filter((e) => !e.timing).length,
       unknownByCategory: Object.fromEntries(Object.keys(totals).map((key) => [key,
@@ -442,6 +506,7 @@ export function renderReport(view) {
   for (const c of view.cases) {
     if (c.firstFailure) lines.push(`- ${cell(c.id)} first outcome: ${cell(c.firstFailure.result)} / ${cell(c.firstFailure.category)}. ${cell(c.firstFailure.summary)} Evidence: ${cell(c.firstFailure.evidence.map((e) => e.path).join(', '))}`);
     if (c.outcome) lines.push(`- ${cell(c.id)} latest: ${cell(c.outcome.summary)} Evidence: ${cell(c.outcome.evidence.map((e) => e.path).join(', '))}`);
+    if (c.outcome) lines.push(`- ${cell(c.id)} timing: completion ${c.outcome.completedAt ?? 'unknown'}; readback ${c.outcome.observedAt ?? 'unknown'}; attempt-start-to-completion ${c.outcome.completionLatencyMs ?? 'unknown'} ms; recording delay ${c.outcome.recordingDelayMs ?? 'unknown'} ms; recorded after observation deadline: ${c.outcome.recordedAfterDeadline}; completion beyond observation deadline: ${c.outcome.completedAt ? c.outcome.completionBeyondObservationDeadline : 'unknown'}.`);
     if (c.transitionIds.length) lines.push(`- ${cell(c.id)} evidence originally observed on ${cell(c.originalServingVersion)}; carried to ${cell(c.effectiveServingVersion)} by transitions ${cell(c.transitionIds.join(', '))}.`);
     for (const warning of c.warnings) lines.push(`- ${cell(c.id)} warning: ${cell(warning)}`);
   }
@@ -461,8 +526,11 @@ export function renderReport(view) {
     ...view.offlinePlans.map((e) => `- ${e.required ? 'Required' : 'Historical, unsupported'} ${cell(e.node)} coverage across plans: ${e.result}`),
     ...view.offlineObligations.filter((e) => e.required && e.result !== 'pass').map((e) => `- Outstanding ${cell(e.node)} ${cell(e.id)}: ${cell(e.result)}`),
     `Open offline attempts: ${view.openOffline.length}. Final Node ${NODE_BASELINE} release checkpoint ${view.releasePending ? 'pending' : view.mode === 'release' ? 'present for current source' : 'not requested'}.`, '',
-    '## Measured time and cost', '', `Wall time: ${view.timing.wallMs} ms. Categories can overlap; do not add them to infer wall time.`,
-    ...Object.entries(view.timing.measured).map(([key, value]) => `- ${key}: ${value}; unmeasured attended attempts: ${view.timing.unknownByCategory[key]}`),
+    '## Measured phases', '', `Measured interval union: ${view.phases.measuredIntervalUnionMs ?? 'unknown'} ms. This is not a measured critical path.`,
+    ...Object.entries(view.phases.totals).map(([key, value]) => `- ${key}: ${value} ms`),
+    `Open phases: ${view.phases.open.length ? view.phases.open.map((phase) => `${phase.phase}/${phase.id}`).join(', ') : 'none'}.`, '',
+    '## Manually measured time and cost', '', `Wall time: ${view.timing.wallMs} ms. Categories can overlap; do not add them to infer wall time.`,
+    ...Object.entries(view.timing.measured).map(([key, value]) => `- ${key}: measured subtotal ${value}; unmeasured attended attempts: ${view.timing.unknownByCategory[key]}`),
     `Unmeasured attended attempts: ${view.timing.unmeasuredAttempts}. Known cost: USD ${view.timing.knownCostUsd}. Unknown-cost attempts: ${view.timing.unknownCostAttempts}.`, '');
   return lines.join('\n');
 }

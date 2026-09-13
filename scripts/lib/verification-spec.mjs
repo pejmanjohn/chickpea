@@ -21,14 +21,15 @@ const journeys = [
   ['fresh-install', ['auth'], ['slack', 'admin'], ['disposable-install-target', 'public-source-artifact', 'oauth-account'], 'release'],
 ];
 
-export function templateSpec(mode = 'changed', areas = [], now = Date.now()) {
+export function templateSpec(mode = 'changed', areas = [], now = Date.now(), purpose = 'verification') {
   if (!['changed', 'regression', 'release'].includes(mode) || areas.some((a) => !Object.hasOwn(REGRESSION_AREAS, a))) throw new Error('Choose a known mode and areas.');
+  if (!['verification', 'reliability'].includes(purpose)) throw new Error('Choose verification or intentional reliability testing.');
   if (mode === 'changed' && areas.length === 0) throw new Error('Changed template needs --area. Inspect verify:regression --plan first.');
   const chosen = journeys.filter(([, affected, , , minimum]) => mode === 'release'
     || mode === 'regression' && minimum === 'regression'
     || mode === 'changed' && affected.some((area) => areas.includes(area)));
   const context = (grade) => ({ grade, target: 'unresolved', servingVersion: 'unresolved', model: 'unresolved', actor: 'unresolved', fixtures: 'unresolved', state: 'unresolved', config: 'unresolved' });
-  const spec = { mode, purpose: 'verification', contexts: { candidate: context(mode === 'changed' ? 'local' : 'deployed') }, capabilities: {}, cases: [] };
+  const spec = { mode, purpose, contexts: { candidate: context(mode === 'changed' ? 'local' : 'deployed') }, capabilities: {}, cases: [] };
   for (const [id, affected, proof, fixtures] of chosen) {
     const ctx = id === 'fresh-install' ? 'installation' : 'candidate';
     spec.contexts[ctx] ??= context('deployed');

@@ -5,6 +5,14 @@ import { join } from 'node:path';
 
 export const HOST_CHECK_LOCK = join(homedir(), '.chickpea', 'verification-host', 'owner.json');
 
+export class HostChecksBusyError extends Error {
+  constructor(file, owner) {
+    super(`Expensive checks are reserved: ${file}; owner PID ${owner?.pid ?? 'inspect file'}, checkout ${owner?.cwd ?? 'inspect file'}. Continue lightweight work. Never steal the slot; after interruption reconcile the owner and descendants before removing its exact lock.`);
+    this.code = 'HOST_CHECKS_BUSY';
+    this.owner = owner ? { pid: owner.pid, cwd: owner.cwd, startedAt: owner.startedAt } : null;
+  }
+}
+
 /** One local host slot, no waiting, stealing, process killing, or scheduler. */
 export function acquireHostChecks({ file = HOST_CHECK_LOCK, env = process.env, cwd = process.cwd() } = {}) {
   mkdirSync(join(file, '..'), { recursive: true, mode: 0o700 });
@@ -18,7 +26,8 @@ export function acquireHostChecks({ file = HOST_CHECK_LOCK, env = process.env, c
   try { writeFileSync(file, JSON.stringify({ pid: process.pid, cwd, startedAt: new Date().toISOString(), token }), { flag: 'wx', mode: 0o600 }); }
   catch (error) {
     if (error.code !== 'EEXIST') throw error;
-    throw new Error(`Expensive checks are reserved: ${file}; owner PID ${prior?.pid ?? 'inspect file'}, checkout ${prior?.cwd ?? 'inspect file'}. Continue lightweight work. Never steal the slot; after interruption reconcile the owner and descendants before removing its exact lock.`);
+    if (!prior) prior = JSON.parse(readFileSync(file, 'utf8'));
+    throw new HostChecksBusyError(file, prior);
   }
   return { env: { CHICKPEA_CHECK_OWNER: token }, release() {
     if (JSON.parse(readFileSync(file, 'utf8')).token !== token) throw new Error('Host check ownership changed; lock retained.');
