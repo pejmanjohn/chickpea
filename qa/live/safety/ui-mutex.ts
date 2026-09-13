@@ -38,7 +38,7 @@ export interface PortableUiReceipt {
 }
 
 export class UiMutexError extends Error {
-  constructor(readonly code: 'UI_BUSY' | 'BROWSER_RESERVED' | 'UI_OWNER_CHANGED' | 'UNSAFE_UI_LOCK') {
+  constructor(readonly code: 'UI_BUSY' | 'BROWSER_RESERVED' | 'UI_OWNER_CHANGED' | 'UI_RESUME_NOT_OWNED' | 'UNSAFE_UI_LOCK') {
     super(code);
     this.name = 'UiMutexError';
   }
@@ -89,10 +89,14 @@ export class HostUiMutex {
       token, owner: Object.freeze(owner) });
   }
 
-  resumePortable(receipt: PortableUiReceipt): void {
+  resumePortable(receipt: PortableUiReceipt): 'already_held' | 'resumed' {
     const owner = validatePortableReceipt(receipt, this.root);
-    assertPortableReservation(browserReservationPath(this.root, owner.browserAlias), owner, true);
-    publishOwner(join(this.root, 'interaction.lock'), owner, 'UI_BUSY');
+    const lockPath = join(this.root, 'interaction.lock');
+    if (samePortableOwner(readOwner(lockPath), owner)) return 'already_held';
+    const reservation = readOwner(browserReservationPath(this.root, owner.browserAlias));
+    if (!samePortableOwner(reservation, owner)) throw new UiMutexError('UI_RESUME_NOT_OWNED');
+    publishOwner(lockPath, owner, 'UI_BUSY');
+    return 'resumed';
   }
 
   pausePortable(receipt: PortableUiReceipt): void {
@@ -245,7 +249,7 @@ function isPortableOwner(owner: unknown): owner is PortableUiOwner {
   return !!owner && typeof owner === 'object' && 'ownership' in owner && owner.ownership === 'receipt';
 }
 
-function samePortableOwner(left: AnyUiOwner, right: PortableUiOwner): boolean {
+function samePortableOwner(left: AnyUiOwner | undefined, right: PortableUiOwner): boolean {
   return isPortableOwner(left) && JSON.stringify(left) === JSON.stringify(right);
 }
 

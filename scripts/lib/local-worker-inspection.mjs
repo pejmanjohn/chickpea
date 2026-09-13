@@ -24,7 +24,7 @@ export function assertRunnerRootReadOnly(command, runnerRoot) {
 
 export function inspectLocalWorkerRunner(input, options = {}) {
   const runner = inspectGitWorktree(input.runnerRoot, options);
-  const candidate = inspectGitWorktree(input.candidateRoot, options);
+  const candidate = inspectGitWorktree(canonicalCandidateRoot(input.candidateRoot), options);
   if (runner.gitCommonDirectory !== candidate.gitCommonDirectory) {
     throw new Error('Local Worker runner and calling candidate must be worktrees of the same Git repository.');
   }
@@ -72,6 +72,15 @@ export function inspectLocalWorkerRunner(input, options = {}) {
     }),
     process: lock ?? 'stopped',
   });
+}
+
+function canonicalCandidateRoot(rootValue) {
+  if (typeof rootValue !== 'string') throw new Error('Local Worker calling candidate is unavailable.');
+  try {
+    return realpathSync(path.resolve(rootValue));
+  } catch {
+    throw new Error('Local Worker calling candidate is unavailable.');
+  }
 }
 
 export function inspectGitWorktree(rootValue, options = {}) {

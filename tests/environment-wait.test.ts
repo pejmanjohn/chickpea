@@ -112,18 +112,18 @@ test('wait-claim acquires a healthy free lane and reuses only its exact matching
   const f = fixture();
   t.after(() => rmSync(f.parent, { recursive: true, force: true }));
   const acquired = await waitForEnvironmentClaim('any', {
-    ...options(f.root, f.first), timeoutMs: 100, pollMs: 5,
+    ...options(f.root, f.first), timeoutMs: 100, pollMs: 250,
   });
   assert.equal(acquired.kind, 'acquired');
   assert.equal(acquired.target, 'amber');
   assert.equal(acquired.reused, false);
   const reused = await waitForEnvironmentClaim('amber', {
-    ...options(f.root, f.first), timeoutMs: 0, pollMs: 5,
+    ...options(f.root, f.first), timeoutMs: 0, pollMs: 250,
   });
   assert.equal(reused.kind, 'acquired');
   assert.equal(reused.reused, true);
   await assert.rejects(waitForEnvironmentClaim('cobalt', {
-    ...options(f.root, f.first), timeoutMs: 0, pollMs: 5,
+    ...options(f.root, f.first), timeoutMs: 0, pollMs: 250,
   }), rejectsWaitCode('WAIT_WORKTREE_ALREADY_CLAIMED'));
 });
 
@@ -134,7 +134,7 @@ test('wait-claim observes contention changes and acquires after the holder relea
   const changes: unknown[] = [];
   setTimeout(() => releaseEnvironment('amber', options(f.root, f.first)), 15);
   const result = await waitForEnvironmentClaim('amber', {
-    ...options(f.root, f.second), timeoutMs: 500, pollMs: 5,
+    ...options(f.root, f.second), timeoutMs: 500, pollMs: 250,
     onStatusChange: (status: unknown) => changes.push(status),
   });
   assert.equal(result.kind, 'acquired');
@@ -153,7 +153,7 @@ test('wait-claim timeout has its own CLI exit and never changes held claims', as
   let stderr = '';
   const code = await runEnvironmentCli([
     'wait-claim', 'any', '--root', f.root, '--worktree', f.third,
-    '--timeout-ms', '10', '--poll-ms', '2',
+    '--timeout-ms', '10', '--poll-ms', '250',
   ], {
     hostFingerprint: 'wait-test-host',
     stdout: (value: string) => { stdout += value; },
@@ -177,7 +177,7 @@ test('wait-claim treats a live verifier lock as contention without claiming the 
     startedAt: '2026-09-13T12:00:00.000Z',
   })}\n`, { mode: 0o600 });
   const result = await waitForEnvironmentClaim('amber', {
-    ...options(f.root, f.first), timeoutMs: 10, pollMs: 2,
+    ...options(f.root, f.first), timeoutMs: 10, pollMs: 250,
     lockHost: 'fixture-host',
     isPidActive: () => true,
   });
@@ -192,14 +192,14 @@ test('wait-claim stops on cancellation and source drift without leaking a claim'
   const controller = new AbortController();
   setTimeout(() => controller.abort(), 10);
   await assert.rejects(waitForEnvironmentClaim('amber', {
-    ...options(f.root, f.second), timeoutMs: 500, pollMs: 5, signal: controller.signal,
+    ...options(f.root, f.second), timeoutMs: 500, pollMs: 250, signal: controller.signal,
   }), rejectsWaitCode('WAIT_CANCELLED'));
   assert.equal(readEnvironmentRegistry(options(f.root, f.second)).targets.amber.claim
     .canonicalWorktreePath, f.first);
 
   let reads = 0;
   await assert.rejects(waitForEnvironmentClaim('amber', {
-    ...options(f.root, f.second), timeoutMs: 500, pollMs: 1,
+    ...options(f.root, f.second), timeoutMs: 500, pollMs: 250,
     readHead: () => (++reads < 3 ? 'a'.repeat(40) : 'b'.repeat(40)),
   }), rejectsWaitCode('WAIT_SOURCE_HEAD_CHANGED'));
   assert.equal(readEnvironmentRegistry(options(f.root, f.second)).targets.amber.claim
@@ -211,7 +211,7 @@ test('wait-claim releases a claim when cancellation lands during its atomic acqu
   t.after(() => rmSync(f.parent, { recursive: true, force: true }));
   const controller = new AbortController();
   await assert.rejects(waitForEnvironmentClaim('amber', {
-    ...options(f.root, f.first), timeoutMs: 100, pollMs: 5,
+    ...options(f.root, f.first), timeoutMs: 100, pollMs: 250,
     signal: controller.signal,
     beforeRegistryCurrentWrite: () => controller.abort(),
   }), rejectsWaitCode('WAIT_CANCELLED'));
@@ -225,7 +225,7 @@ test('wait-claim does not acquire on a later poll after its deadline', async (t)
   claimEnvironment('amber', options(f.root, f.first));
   let monotonicMs = 0;
   const result = await waitForEnvironmentClaim('amber', {
-    ...options(f.root, f.second), timeoutMs: 10, pollMs: 5,
+    ...options(f.root, f.second), timeoutMs: 10, pollMs: 250,
     monotonicNow: () => monotonicMs,
     sleep: async () => {
       releaseEnvironment('amber', options(f.root, f.first));
@@ -241,7 +241,7 @@ test('wait-claim does not retry an unhealthy free lane', async (t) => {
   const f = fixture((targets) => { targets[0].reachable = false; });
   t.after(() => rmSync(f.parent, { recursive: true, force: true }));
   await assert.rejects(waitForEnvironmentClaim('amber', {
-    ...options(f.root, f.first), timeoutMs: 100, pollMs: 5,
+    ...options(f.root, f.first), timeoutMs: 100, pollMs: 250,
   }), rejectsWaitCode('WAIT_ENVIRONMENT_NOT_RETRYABLE'));
   assert.equal(readEnvironmentRegistry(options(f.root, f.first)).targets.amber.claim, null);
 });
@@ -252,9 +252,21 @@ test('wait-claim leaves orphan marker evidence for explicit reconciliation', asy
   const marker = join(f.first, '.chickpea-environment');
   writeFileSync(marker, '{"orphaned":true}\n', { mode: 0o600 });
   await assert.rejects(waitForEnvironmentClaim('amber', {
-    ...options(f.root, f.first), timeoutMs: 100, pollMs: 5,
+    ...options(f.root, f.first), timeoutMs: 100, pollMs: 250,
   }), rejectsWaitCode('WAIT_ORPHAN_MARKER_REQUIRES_RECONCILIATION'));
   assert.equal(readFileSync(marker, 'utf8'), '{"orphaned":true}\n');
+  assert.equal(readEnvironmentRegistry(options(f.root, f.first)).targets.amber.claim, null);
+});
+
+test('wait-claim enforces production timeout and polling bounds', async (t) => {
+  const f = fixture();
+  t.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  await assert.rejects(waitForEnvironmentClaim('amber', {
+    ...options(f.root, f.first), timeoutMs: 100, pollMs: 249,
+  }), rejectsWaitCode('INVALID_WAIT_POLL'));
+  await assert.rejects(waitForEnvironmentClaim('amber', {
+    ...options(f.root, f.first), timeoutMs: 7_200_001, pollMs: 250,
+  }), rejectsWaitCode('INVALID_WAIT_TIMEOUT'));
   assert.equal(readEnvironmentRegistry(options(f.root, f.first)).targets.amber.claim, null);
 });
 
@@ -263,10 +275,10 @@ test('two waiters cannot both acquire the same free lane', async (t) => {
   t.after(() => rmSync(f.parent, { recursive: true, force: true }));
   const results = await Promise.all([
     waitForEnvironmentClaim('amber', {
-      ...options(f.root, f.first), timeoutMs: 40, pollMs: 2,
+      ...options(f.root, f.first), timeoutMs: 40, pollMs: 250,
     }),
     waitForEnvironmentClaim('amber', {
-      ...options(f.root, f.second), timeoutMs: 40, pollMs: 2,
+      ...options(f.root, f.second), timeoutMs: 40, pollMs: 250,
     }),
   ]);
   assert.deepEqual(results.map(({ kind }: { kind: string }) => kind).sort(), ['acquired', 'timeout']);

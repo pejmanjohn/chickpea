@@ -55,8 +55,13 @@ npm run verify:live:ui -- finish --receipt /private/path/ui-step.json
 
 `finish` removes both the exact browser reservation and global interaction lock.
 Use it after any pause/resume cycle; ordinary `release` only releases interaction.
+`release` refuses while a browser reservation remains and retains its receipt.
 An interrupted owner retains its receipt and reservations. Inspect the actual
 action state using [recovery.md](recovery.md), then resume/finish with that receipt.
+Resume is idempotent for an already-held exact receipt, including interruption
+before a pause. `UI_RESUME_NOT_OWNED` is an immediate ownership error, not ordinary
+contention. Resume only restores ownership: inspect and reconcile the visible
+state before deciding whether any browser action is still needed.
 Receipt ownership is not a live PID: a stopped CLI or changed hostname cannot
 clear it. Missing or mismatched receipts require deliberate owner reconciliation;
 never delete another task's lock or fabricate a replacement receipt.

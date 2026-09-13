@@ -302,7 +302,7 @@ test('runner-root status inspects a fixed lane from a candidate in the same repo
   assert.equal(changed.runner.workingContentFingerprint, status.runner.workingContentFingerprint);
 });
 
-test('runner-root status rejects a different repository and noncanonical owner paths', async (t) => {
+test('runner-root status canonicalizes the caller but rejects a noncanonical runner', async (t) => {
   const fixture = localRunnerFixture();
   const other = localRunnerFixture();
   t.after(() => {
@@ -321,6 +321,15 @@ test('runner-root status rejects a different repository and noncanonical owner p
     candidateRoot: other.candidate,
     lane: 'local-a',
   }), /same Git repository/u);
+
+  const linkedCandidate = path.join(fixture.parent, 'linked-candidate');
+  symlinkSync(fixture.candidate, linkedCandidate);
+  const status = inspectLocalWorkerRunner({
+    runnerRoot: fixture.runner,
+    candidateRoot: linkedCandidate,
+    lane: 'local-a',
+  }, { pidIsLive: () => false });
+  assert.equal(status.candidate.root, fixture.candidate);
 
   const linkedRunner = path.join(fixture.parent, 'linked-runner');
   symlinkSync(fixture.runner, linkedRunner);

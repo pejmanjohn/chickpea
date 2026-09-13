@@ -114,3 +114,14 @@ test('portable ownership requires the exact receipt token', (context) => {
   assert.throws(() => mutex.releasePortable({ ...receipt, token: '00000000-0000-4000-8000-000000000000' }), /UNSAFE_UI_LOCK/u);
   mutex.releasePortable(receipt);
 });
+
+test('portable resume without its own state leaves a foreign owner untouched', (context) => {
+  const { mutex } = fixture(context);
+  const receipt = mutex.acquirePortable({ runId: 'portable-run', browserAlias: 'chrome',
+    caseId: 'routing', stepId: 'act-1', actionDigest: `sha256:${'a'.repeat(64)}` });
+  mutex.releasePortable(receipt);
+  const foreign = mutex.acquire('legacy-run', 'other-browser');
+  assert.throws(() => mutex.resumePortable(receipt), /UI_RESUME_NOT_OWNED/u);
+  foreign.assertOwned();
+  foreign.release();
+});

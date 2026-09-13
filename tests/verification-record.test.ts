@@ -791,3 +791,28 @@ test('case contracts survive refresh and family status preserves incomplete ance
   assert.equal(missing.complete, false);
   assert.match(missing.missingAncestor.path, /missing-parent\.json$/);
 });
+
+test('family grades a completed parent against its recorded source while the child uses current source', (t) => {
+  const parent = fixture(t), parentAttempt = parent.append({ type: 'begin', caseId: 'schedule' }, NOW);
+  parent.append(parent.finish(parentAttempt.id), NOW + 1_000); writeFileSync(parent.file, `${JSON.stringify(parent.run)}\n`);
+
+  const childSource = source(); childSource.areas.routines = 'child-routines'; childSource.tree = 'child-tree';
+  const childFile = join(parent.directory, 'passed-child.json');
+  const child = createRun(childFile, parent.spec, childSource, NOW + 2_000,
+    { parent: { path: parent.file, runId: parent.run.id }, originalCases: { schedule: { runId: parent.run.id, caseId: 'schedule' } } });
+  const childAttempt = appendEvent(child, { type: 'begin', caseId: 'schedule' }, childSource, NOW + 3_000);
+  appendEvent(child, parent.finish(childAttempt.id), childSource, NOW + 4_000); writeFileSync(childFile, `${JSON.stringify(child)}\n`);
+
+  const view = familyStatus(readRunFamily(childFile, childSource));
+  assert.equal(view.current.complete, true);
+  assert.equal(view.ancestors[0].complete, true);
+  assert.equal(view.ancestors[0].statusSource, 'historical-recorded');
+  assert.equal(view.ancestors[0].asOf, new Date(NOW + 1_000).toISOString());
+  assert.equal(view.complete, true);
+
+  const drifted = structuredClone(childSource); drifted.areas.routines = 'later-child-change';
+  const staleChild = familyStatus(readRunFamily(childFile, drifted));
+  assert.equal(staleChild.current.complete, false);
+  assert.equal(staleChild.ancestors[0].complete, true);
+  assert.equal(staleChild.complete, false);
+});

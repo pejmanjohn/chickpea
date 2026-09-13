@@ -58,13 +58,14 @@ test('pause and resume retain only the browser reservation until finish', async 
   assert.equal(existsSync(paths.receipt), false);
 });
 
-test('repeated resume and mistaken release cannot strand a paused browser reservation', async (context) => {
+test('repeated resume recovers exact ownership and mistaken release cannot strand a paused browser reservation', async (context) => {
   const paths = setup(context);
   assert.equal((await acquire(paths)).code, 0);
   assert.equal((await run(['pause', '--receipt', paths.receipt], paths.root)).code, 0);
   assert.equal((await run(['resume', '--receipt', paths.receipt, '--wait-ms', '0'], paths.root)).code, 0);
   const repeated = await run(['resume', '--receipt', paths.receipt, '--wait-ms', '0'], paths.root);
-  assert.equal(repeated.code, 3);
+  assert.equal(repeated.code, 0);
+  assert.equal(JSON.parse(repeated.stdout).ownership, 'already_held');
   assert.equal(JSON.parse(repeated.stdout).actionPerformed, false);
   const refused = await run(['release', '--receipt', paths.receipt], paths.root);
   assert.equal(refused.code, 2);
@@ -74,6 +75,32 @@ test('repeated resume and mistaken release cannot strand a paused browser reserv
   assert.equal(readdirSync(paths.root).filter((name) => name.startsWith('browser-')).length, 1);
   assert.equal((await run(['finish', '--receipt', paths.receipt], paths.root)).code, 0);
   assert.equal(readdirSync(paths.root).filter((name) => name.endsWith('.lock')).length, 0);
+});
+
+test('resume after interruption during an unpaused action is idempotent ownership recovery', async (context) => {
+  const paths = setup(context);
+  assert.equal((await acquire(paths)).code, 0);
+  const resumed = await run(['resume', '--receipt', paths.receipt, '--wait-ms', '120000'], paths.root);
+  assert.equal(resumed.code, 0, resumed.stderr);
+  assert.equal(JSON.parse(resumed.stdout).ownership, 'already_held');
+  assert.equal(JSON.parse(resumed.stdout).actionPerformed, false);
+  assert.equal(existsSync(join(paths.root, 'interaction.lock')), true);
+  assert.equal((await run(['release', '--receipt', paths.receipt], paths.root)).code, 0);
+});
+
+test('resume without exact held ownership or its browser reservation fails immediately', async (context) => {
+  const paths = setup(context);
+  assert.equal((await acquire(paths)).code, 0);
+  const receiptBytes = readFileSync(paths.receipt);
+  assert.equal((await run(['release', '--receipt', paths.receipt], paths.root)).code, 0);
+  writeFileSync(paths.receipt, receiptBytes, { mode: 0o600 });
+  const started = performance.now();
+  const resumed = await run(['resume', '--receipt', paths.receipt, '--wait-ms', '120000'], paths.root);
+  assert.equal(resumed.code, 2);
+  assert.match(resumed.stderr, /UI_RESUME_NOT_OWNED/u);
+  assert.ok(performance.now() - started < 1_000);
+  assert.equal(existsSync(join(paths.root, 'interaction.lock')), false);
+  assert.equal(existsSync(paths.receipt), true);
 });
 
 test('receipt publication failure rolls back the acquired host lock', async (context) => {

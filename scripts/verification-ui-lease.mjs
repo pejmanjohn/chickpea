@@ -88,6 +88,7 @@ export async function runUiLeaseCli(argv, io = {}) {
   verification-ui-lease.mjs release --receipt /private/lease.json
   verification-ui-lease.mjs pause --receipt /private/lease.json
   verification-ui-lease.mjs resume --receipt /private/lease.json [--wait-ms MS] [--poll-ms MS]
+  # Resume recovers UI ownership only. Inspect and reconcile the visible state before any action.
   verification-ui-lease.mjs finish --receipt /private/lease.json
 `);
       return 0;
@@ -140,7 +141,8 @@ export async function runUiLeaseCli(argv, io = {}) {
           actionPerformed: false })}\n`);
         return 3;
       }
-      stdout(`${JSON.stringify({ status: 'resumed', receipt: path, waitedMs: result.waitedMs, actionPerformed: false })}\n`);
+      stdout(`${JSON.stringify({ status: 'resumed', ownership: result.value, receipt: path,
+        waitedMs: result.waitedMs, actionPerformed: false })}\n`);
       return 0;
     }
     if (command === 'pause') receiptMutex.pausePortable(receipt);

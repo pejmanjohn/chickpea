@@ -27,8 +27,8 @@ export class EnvironmentWaitError extends Error {
 
 export async function waitForEnvironmentClaim(selector, options = {}) {
   if (![...TARGETS, 'any'].includes(selector)) throw new EnvironmentWaitError('INVALID_WAIT_TARGET');
-  const timeoutMs = boundedDuration(options.timeoutMs, 'INVALID_WAIT_TIMEOUT', 0, 24 * 60 * 60 * 1_000);
-  const pollMs = boundedDuration(options.pollMs, 'INVALID_WAIT_POLL', 1, 60_000);
+  const timeoutMs = boundedDuration(options.timeoutMs, 'INVALID_WAIT_TIMEOUT', 0, 2 * 60 * 60 * 1_000);
+  const pollMs = boundedDuration(options.pollMs, 'INVALID_WAIT_POLL', 250, 60_000);
   const worktreePath = options.worktreePath ?? process.cwd();
   const registryOptions = { ...options, worktreePath };
   delete registryOptions.timeoutMs;
@@ -203,7 +203,7 @@ function readWorktreeHead(worktreePath) {
 
 function boundedDuration(value, code, minimum, maximum) {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
-    throw new EnvironmentWaitError(code);
+    throw new EnvironmentWaitError(code, { minimumMs: minimum, maximumMs: maximum });
   }
   return value;
 }

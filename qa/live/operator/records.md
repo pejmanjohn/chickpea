@@ -182,6 +182,10 @@ bookkeeping span and show unknown product completion.
 
 Attempt-start-to-completion includes any operator work between `begin` and the
 product outcome. It is not pure model, provider, or product execution latency.
+Keep raw provider timestamps in evidence when its clock differs from the local
+clock. Only record comparable completion times supported by a measured offset;
+otherwise leave completion unknown. Do not clamp a timestamp or relax the
+observation window to turn uncertain timing into a pass.
 
 Measure attended work with explicit phases. Start immediately before the phase
 and stop the returned ID afterward.
@@ -481,10 +485,19 @@ npm run verify:live:record -- report --family \
   --run "$run_dir/follow-up-run.json" --output "$run_dir/family-report.md"
 ```
 
-The current run appears first. Parent results are labeled historical and include
-their private paths, first failures, unresolved cases, and pending cleanup. A
-child pass cannot complete an incomplete parent. A parent that disappears after
-linking is reported as missing and keeps family completion false.
+The current run appears first and is graded against the caller's current source.
+Parent results are labeled historical and graded against each parent's latest
+recorded refresh source, or its initial recorded source when it has no refresh,
+as of that parent's final recorded event time. They include private paths, the
+historical `asOf`, first failures, unresolved cases, and pending cleanup.
+This preserves a completed parent's result on its recorded candidate without
+letting a child repair prior failures or cleanup. A child pass cannot complete an
+incomplete parent. A parent that disappears after linking is reported as missing
+and keeps family completion false.
+
+Family completion means every linked run was complete in its own recorded context.
+It is not current-source release acceptance and does not combine historical proof
+into a new release checkpoint.
 
 Cleanup belongs to the record that registered the resource. Update that parent
 record with the exact cleanup readback even when a child retest supplied it;

@@ -11,8 +11,10 @@
    --poll-ms <milliseconds> --worktree <absolute-worktree>`. It reuses only the
    current worktree's matching live claim. Otherwise it polls read-only status
    and attempts the normal atomic claim only for a healthy free lane with no
-   verifier lock. Only expected contention is retried. A timeout returns a
-   structured timeout result with a distinct exit status; a signal cancels the
+   verifier lock. Set the timeout from 0 through 7,200,000 milliseconds and the
+   poll interval from 250 through 60,000 milliseconds. Only expected contention
+   is retried. A timeout returns a structured timeout result with a distinct
+   exit status; a signal cancels the
    wait and releases any claim created during cancellation. Source HEAD drift,
    mismatched ownership, orphan markers, expired claims, unhealthy lanes and
    other errors stop the command for explicit repair. It never deploys,
