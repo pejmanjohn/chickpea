@@ -48,7 +48,7 @@ export class SlackListsService {
     if (!Number.isInteger(limit) || limit < 1 || limit > 50 || (cursor?.length ?? 0) > 2_048) throw new SlackListError('invalid_page', 'Use a page size from 1 to 50 and a cursor returned by this List.');
     const { listId } = parseSlackListUrl(listUrl, this.options.workspaceId);
     const snapshot = await this.snapshot(listId, cursor, limit);
-    return this.bounded({ status: 'read', list: { id: listId, name: snapshot.name, url: snapshot.url, columns: snapshot.columns }, items: snapshot.items.map(item => presentItem(item, snapshot)), nextCursor: snapshot.nextCursor, contentIsUntrusted: true });
+    return this.bounded({ status: 'read', list: { id: listId, name: snapshot.name, url: snapshot.url, columns: snapshot.columns }, items: snapshot.items.map(item => presentItem(item, snapshot, false)), nextCursor: snapshot.nextCursor, contentIsUntrusted: true });
   }
 
   async readItem(listUrl: string, itemId?: string): Promise<JsonObject> {

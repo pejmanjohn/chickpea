@@ -155,6 +155,31 @@ test('task readback distinguishes an unset deadline from unsupported or ambiguou
   assert.deepEqual((read.item as JsonObject).task, { title: 'Budget summary', completed: null });
 });
 
+test('semantic task readback omits malformed values and reports an empty title as unconfirmed', async t => {
+  const f = fixture(t);
+  await f.service().createItem('create', LIST_URL, { title: 'Report' });
+  const originalFields = structuredClone(task(f.fake).fields);
+  const malformed: [string, JsonObject, string][] = [
+    ['ColTITLE', { rich_text: 'Not rich text' }, 'title'],
+    ['ColASSIGNEE', { user: 'UPEJ' }, 'assignees'],
+    ['ColASSIGNEE', { user: ['UPEJ', 7] }, 'assignees'],
+    ['ColASSIGNEE', { user: null }, 'assignees'],
+    ['ColDUE', { date: '2026-09-15' }, 'due'],
+    ['ColDUE', { date: [false] }, 'due'],
+    ['ColDUE', { date: ['2026-09-15'], timestamp: ['1789495200'] }, 'due'],
+    ['ColDUE', { timestamp: [Number.NaN] }, 'due'],
+    ['ColDONE', { checkbox: 'false' }, 'completed'],
+  ];
+  for (const [columnId, value, name] of malformed) {
+    task(f.fake).fields = [...originalFields.filter(field => field.column_id !== columnId), { column_id: columnId, ...value }];
+    const read = await f.service('read').readItem(LIST_URL, task(f.fake).id);
+    assert.equal(Object.hasOwn((read.item as JsonObject).task as JsonObject, name), false, `Malformed ${name} must not be a semantic claim`);
+  }
+  task(f.fake).fields = [textCell('ColTITLE', ''), { column_id: 'ColDONE', checkbox: false }];
+  const empty = await f.service('empty').readItem(LIST_URL, task(f.fake).id);
+  assert.deepEqual((empty.item as JsonObject).task, { title: null, assignees: [], due: { dates: [], timestamps: [] }, completed: false });
+});
+
 test('creates a private task List with context column and shares only an explicit recipient', async t => {
   const f = fixture(t);
   const created = await f.service().createList('list1', 'Client tasks');
@@ -212,15 +237,20 @@ test('invalid dates, DST gaps/folds and conflicting clears cause no writes', asy
 });
 
 test('silent partial updates return actual mismatches and prohibit further writes', async t => {
-  const f = fixture(t);
-  await f.service().createItem('create', LIST_URL, { title: 'Report', assignees: ['UPEJ'] });
-  f.fake.ignoreColumn = 'ColASSIGNEE';
-  const result = await f.service().updateItem('partial', LIST_URL, task(f.fake).id, { completed: true, assignees: ['UNEW'] });
-  assert.equal(result.status, 'unverified');
-  assert.deepEqual(result.mismatchedColumns, ['ColASSIGNEE']);
-  assert.equal(field(f.fake, 'ColDONE')?.checkbox, true);
-  assert.equal((await f.service().createItem('different-call', LIST_URL, { title: 'Different report' })).status, 'already_attempted');
-  assert.equal(f.fake.lists.get('FEXISTING')!.items.length, 1);
+  for (const ignored of ['ColASSIGNEE', 'ColDUE']) {
+    const f = fixture(t);
+    await f.service().createItem('create', LIST_URL, { title: 'Report', assignees: ['UPEJ'] });
+    f.fake.ignoreColumn = ignored;
+    const result = await f.service().updateItem('partial', LIST_URL, task(f.fake).id, {
+      completed: true, ...(ignored === 'ColASSIGNEE' ? { assignees: ['UNEW'] } : { due: { date: '2026-09-15' } }),
+    });
+    assert.equal(result.status, 'unverified');
+    assert.deepEqual(result.mismatchedColumns, [ignored]);
+    assert.deepEqual((result.item as JsonObject).task, { title: 'Report', assignees: ['UPEJ'], due: { dates: [], timestamps: [] }, completed: true });
+    assert.equal(field(f.fake, 'ColDONE')?.checkbox, true);
+    assert.equal((await f.service().createItem('different-call', LIST_URL, { title: 'Different report' })).status, 'already_attempted');
+    assert.equal(f.fake.lists.get('FEXISTING')!.items.length, 1);
+  }
 });
 
 test('lost response after Slack commits cannot duplicate a task, even with a new call ID or changed arguments', async t => {
@@ -337,12 +367,18 @@ test('bounded pages return cursors, preserve unsupported fields, and reject outp
   data.items = Array.from({ length: 3 }, (_, n) => ({ id: `RecPAGE${n}`, list_id: 'FEXISTING', fields: [textCell('ColTITLE', `Task ${n}`), { column_id: 'ColCUSTOM', value: 'In progress' }] }));
   const page = await f.service().readList(LIST_URL, undefined, 2);
   assert.equal((page.items as unknown[]).length, 2);
+  assert.equal((page.items as JsonObject[]).every(item => !Object.hasOwn(item, 'task')), true, 'Pages carry one schema instead of duplicating a semantic summary on every row');
   const next = await f.service().readList(LIST_URL, String(page.nextCursor), 2);
   assert.equal((next.items as unknown[]).length, 1);
   assert.equal(next.nextCursor, '');
   await assert.rejects(f.service().readList(LIST_URL, undefined, 51), /page size/);
   data.items[0]!.fields[0] = textCell('ColTITLE', '漢'.repeat(12_000));
   await assert.rejects(f.service().readList(LIST_URL), /too large/);
+  data.items = Array.from({ length: 50 }, (_, n) => ({ id: `RecLONG${n}`, list_id: 'FEXISTING', fields: [textCell('ColTITLE', 'x'.repeat(300))] }));
+  const fullPage = await f.service().readList(LIST_URL, undefined, 50);
+  assert.equal((fullPage.items as unknown[]).length, 50);
+  assert.deepEqual((fullPage.list as JsonObject).columns, data.columns);
+  assert.ok(Buffer.byteLength(JSON.stringify(fullPage)) < 32_768);
 });
 
 test('native URLs enforce workspace and item identity; gateway supports only the six reviewed Lists methods', async () => {

@@ -44,11 +44,19 @@ export function readListItem(raw: unknown, listId: string, expectedItemId?: stri
   return { id: item.id, list_id: listId, fields };
 }
 
-export function semanticColumn(columns: ListColumn[], field: 'title' | 'assignees' | 'due' | 'completed'): ListColumn {
-  const type = { title: 'text', assignees: 'todo_assignee', due: 'todo_due_date', completed: 'todo_completed' }[field];
+const TASK_COLUMN_TYPES = { title: 'text', assignees: 'todo_assignee', due: 'todo_due_date', completed: 'todo_completed' } as const;
+type TaskColumnField = keyof typeof TASK_COLUMN_TYPES;
+
+function findSemanticColumn(columns: ListColumn[], field: TaskColumnField): ListColumn | undefined {
+  const type = TASK_COLUMN_TYPES[field];
   const matches = columns.filter(c => c.type === type && (field !== 'title' || c.is_primary_column));
-  if (matches.length !== 1) throw new SlackListError('field_unavailable', `This List does not have one unambiguous native ${field} field. Nothing was written.`, { field, columns });
-  return matches[0]!;
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+export function semanticColumn(columns: ListColumn[], field: TaskColumnField): ListColumn {
+  const column = findSemanticColumn(columns, field);
+  if (!column) throw new SlackListError('field_unavailable', `This List does not have one unambiguous native ${field} field. Nothing was written.`, { field, columns });
+  return column;
 }
 
 export function detailsColumn(columns: ListColumn[], id?: string): ListColumn {
@@ -83,10 +91,10 @@ export function sameCell(actual: ListCell | undefined, expected: ListCell): bool
   return true;
 }
 
-export function presentItem(item: ListItem, snapshot: ListSnapshot): JsonObject {
+export function presentItem(item: ListItem, snapshot: ListSnapshot, includeTaskSummary = true): JsonObject {
   return {
     id: item.id, url: slackListItemUrl(snapshot.url, item.id),
-    task: presentTaskFields(item, snapshot.columns),
+    ...(includeTaskSummary ? { task: presentTaskFields(item, snapshot.columns) } : {}),
     fields: item.fields.map(field => ({
       columnId: field.column_id,
       ...(field.rich_text ? { text: richTextContent(field.rich_text) } :
@@ -99,15 +107,29 @@ export function presentItem(item: ListItem, snapshot: ListSnapshot): JsonObject 
 /** Native types give the model a readable readback even when write results lack the schema. */
 function presentTaskFields(item: ListItem, columns: ListColumn[]): JsonObject {
   const task: JsonObject = {};
-  for (const [name, type] of Object.entries({ title: 'text', assignees: 'todo_assignee', due: 'todo_due_date', completed: 'todo_completed' })) {
-    const matches = columns.filter(column => column.type === type && (name !== 'title' || column.is_primary_column));
+  for (const name of Object.keys(TASK_COLUMN_TYPES) as TaskColumnField[]) {
+    const column = findSemanticColumn(columns, name);
     // An unavailable or ambiguous column cannot support a semantic claim.
-    if (matches.length !== 1) continue;
-    const cell = item.fields.find(field => field.column_id === matches[0]!.id);
-    if (name === 'title') task.title = cell?.rich_text ? richTextContent(cell.rich_text) : null;
-    if (name === 'assignees') task.assignees = cell?.user ?? [];
-    if (name === 'due') task.due = { dates: cell?.date ?? [], timestamps: cell?.timestamp ?? [] };
-    if (name === 'completed') task.completed = typeof cell?.checkbox === 'boolean' ? cell.checkbox : null;
+    if (!column) continue;
+    const cell = item.fields.find(field => field.column_id === column.id);
+    if (name === 'title' && (cell?.rich_text === undefined || Array.isArray(cell.rich_text))) {
+      task.title = richTextContent(cell?.rich_text) || null;
+    }
+    if (name === 'assignees') {
+      const users = cell?.user === undefined ? [] : cell.user;
+      if (Array.isArray(users) && users.every(value => typeof value === 'string')) task.assignees = users;
+    }
+    if (name === 'due') {
+      const dates = cell?.date === undefined ? [] : cell.date;
+      const timestamps = cell?.timestamp === undefined ? [] : cell.timestamp;
+      if (Array.isArray(dates) && dates.every(value => typeof value === 'string') &&
+          Array.isArray(timestamps) && timestamps.every(value => typeof value === 'number' && Number.isFinite(value))) {
+        task.due = { dates, timestamps };
+      }
+    }
+    if (name === 'completed' && (cell?.checkbox === undefined || typeof cell.checkbox === 'boolean')) {
+      task.completed = cell?.checkbox ?? null;
+    }
   }
   return task;
 }
