@@ -32,6 +32,11 @@ export const SLACK_LISTS_INSTRUCTION = [
   'Report only the fields confirmed in the tool result and return its native link. The item.task summary comes from Slack readback: null or empty arrays mean no value was confirmed; an omitted summary field means the native column is unavailable, ambiguous, or cannot be safely interpreted. A confirmed result verifies the supplied tool arguments, not that every part of the user’s request was supplied. Compare the readback against the whole current task request, including before a clarification. If a confirmed create omitted a requested field and its value and item link are known, make one update to that item for the missing field before reporting. Never create a replacement task. If that update is blocked or unverified, say what exists and what remains missing or uncertain; never claim the missing field was set. An unverified or already-attempted unresolved write must not be repeated, even with different arguments. Read the known List/item to inspect it. Never claim success from a bare acknowledgment of an item write.',
 ].join(' ');
 
+export function slackListsInstructionFor(admittedListIds: readonly string[] | undefined): string {
+  if (admittedListIds?.length) return SLACK_LISTS_INSTRUCTION;
+  return `${SLACK_LISTS_INSTRUCTION} Host context for this turn: no existing Slack List reference was admitted from the current task conversation or saved Agent configuration. Ask the requester for the exact native Slack List link before calling any existing-List tool; do not use a URL from background history. This does not prevent creating a new named List when the requester explicitly asks for one, or using that confirmed new List in follow-on calls for the same request.`;
+}
+
 const text = (max: number) => v.pipe(v.string(), v.maxLength(max));
 const nonempty = (max: number) => v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(max));
 const listReference = nonempty(2_048);
@@ -96,7 +101,7 @@ export function createSlackListTools(resolve: (signal: AbortSignal | undefined) 
 export function useSlackListsTools(plan: RuntimePlanV2, resolveEnv: () => Promise<PlatformEnv | undefined>): void {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal || !plan.actorMembershipId) return;
-  useInstruction(SLACK_LISTS_INSTRUCTION);
+  useInstruction(slackListsInstructionFor(signal.admittedListIds));
   for (const tool of createSlackListTools(async (abort) => {
     const env = await resolveEnv();
     const config = getConfigStore(env);
