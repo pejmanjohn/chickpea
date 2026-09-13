@@ -4,7 +4,7 @@ import { suitableCapability } from './verification-scope.mjs';
 import { validateSpec } from './verification-record.mjs';
 
 const ALIAS = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
-const MODEL_SELECTOR = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
+const MODEL_SELECTOR = /^[A-Za-z0-9@][A-Za-z0-9._:@/-]{0,255}$/u;
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const LIFECYCLES = ['reusable', 'reserved_user_trial', 'disposable', 'unavailable'];
 const RESET_RIGHTS = ['none', 'restore', 'dispose'];

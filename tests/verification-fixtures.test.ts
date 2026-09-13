@@ -68,9 +68,15 @@ test('inventory validation rejects secrets, filesystem coordinates and malformed
 });
 
 test('registered model keeps the exact provider selector for matching', () => {
-  const result = fixtureReadiness(spec, inventory({ 'candidate.channel': entry(), 'candidate.oauth': entry() }), {}, NOW);
-  assert.equal(result.cases[0].ready, true);
-  assert.equal(result.cases[0].fixtures[0].registeredModel, 'anthropic/claude-sonnet-4:20250514');
+  for (const model of ['anthropic/claude-sonnet-4:20250514', 'cloudflare/@cf/zai-org/glm-4.7-flash', '@cf/zai-org/glm-4.7-flash']) {
+    const selected = structuredClone(spec);
+    selected.contexts.candidate.model = model;
+    for (const capability of Object.values(selected.capabilities)) capability.scope = contextScope('candidate', selected.contexts.candidate);
+    const fixture = entry({ registeredModel: model });
+    const result = fixtureReadiness(selected, inventory({ 'candidate.channel': fixture, 'candidate.oauth': fixture }), {}, NOW);
+    assert.equal(result.cases[0].ready, true);
+    assert.equal(result.cases[0].fixtures[0].registeredModel, model);
+  }
   assert.throws(() => validateFixtureInventory(inventory({ 'candidate.channel': entry({ registeredModel: 'anthropic model' }) })), /Invalid fixture/u);
 });
 
