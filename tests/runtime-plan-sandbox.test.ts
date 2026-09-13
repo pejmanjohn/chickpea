@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { createFlueContext } from '@flue/runtime/internal';
-import { ChickpeaSlack, runtimeApiDeclarationStillAllowed } from '../src/agents/slack-thread.ts';
+import {
+  ChickpeaSlack,
+  runtimeApiDeclarationStillAllowed,
+  runtimePlanConnectedServicesInstruction,
+} from '../src/agents/slack-thread.ts';
 import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { getConfigStore, getIdentityStore, getSettingsStore } from '../src/config/state-backend.ts';
@@ -41,7 +45,7 @@ test(`native REST session: ${scenario}`, async (t) => {
       ? new Response(null, { status: 302, headers: { location: 'https://93.184.216.35/v1/data' } })
       : Response.json({ nonce });
   });
-  const plan = compileRuntimePlanV2({ turn: { workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'E_TEST', text: 'Read', userId: 'U_TEST', actorMembershipId: 'member', messageTs: '1787000000.000200', threadTs: '1787000000.000100', source: 'app_mention', contextMode: 'thread' }, assignment: { workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id, agent, model: agent.model, modelAttribution: { source: 'workspace_default', providerId: 'local-stub', workspaceDefaultRevision: 1 } }, instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash', effectiveConnections: scenario === 'empty' ? [] : [{ account, binding, policy, scope: 'team' }] } as any);
+  const plan = compileRuntimePlanV2({ turn: { workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'E_TEST', text: 'Read', userId: 'U_TEST', actorMembershipId: 'member', messageTs: '1787000000.000200', threadTs: '1787000000.000100', source: 'app_mention', contextMode: 'thread' }, assignment: { workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id, agent, model: agent.model, modelAttribution: { source: 'workspace_default', providerId: 'local-stub', workspaceDefaultRevision: 1 } }, instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash', effectiveConnections: scenario === 'empty' ? [] : [{ account, binding, policy, scope: 'team' }], ...(scenario === 'empty' ? { connectionChoices: [{ providerId: 'linear', choices: [{ label: 'Linear workspace', scope: 'team' }] }] } : {}) } as any);
   if (scenario === 'wider') account.policy = { ...policy, allowedHosts: [...policy.allowedHosts, '93.184.216.35'] };
   const warnings = t.mock.method(console, 'warn', () => {});
   assert.doesNotMatch(JSON.stringify(plan), /fixture-secret/);
@@ -60,8 +64,16 @@ test(`native REST session: ${scenario}`, async (t) => {
     : await context.initializeRootHarness(ChickpeaSlack, signal, plan);
   try {
     const instructions = String((harness as any).config.instructions);
-    if (scenario === 'empty') assert.doesNotMatch(instructions, /REST connections are declared/);
+    const connectedServices = runtimePlanConnectedServicesInstruction(plan);
+    assert.match(instructions, /Connected-service access selected and configured for this turn:/);
+    assert.match(instructions, /not a guarantee of remote service health/);
+    if (scenario === 'empty') {
+      assert.doesNotMatch(instructions, /REST connections are declared/);
+      assert.match(connectedServices, /configured for this turn: none\./);
+      assert.doesNotMatch(connectedServices, /Linear workspace|linear/);
+    }
     else {
+      assert.match(connectedServices, /\{"kind":"api","id":"connection_rest","name":"REST"\}/);
       assert.match(instructions, /REST connections are declared/);
       assert.match(instructions, /bash tool with curl/);
       assert.match(instructions, /curl -sS/);
@@ -126,6 +138,30 @@ test(`native REST session: ${scenario}`, async (t) => {
   } finally { await harness.close(); }
 });
 }
+
+test('connected-service declaration names each frozen connection family without copying action policy', () => {
+  const instruction = runtimePlanConnectedServicesInstruction({
+    apiConnections: [{
+      id: 'connection_asana', displayName: 'Asana', allowedHosts: ['app.asana.com'],
+      pathPrefixes: ['/api/1.0'], allowedMethods: ['GET'], headerName: 'authorization',
+      authMode: 'credential',
+    }],
+    mcpConnections: [{
+      id: 'connection_docs', displayName: 'Docs MCP', url: 'https://mcp.example.com',
+      transport: 'streamable-http', authMode: 'bearer', headerNames: ['authorization'],
+      allowedTools: ['search_docs'], optional: true,
+    }],
+    managedConnections: [{
+      id: 'connection_linear', providerId: 'linear', adapterId: 'composio', toolkit: 'linear',
+      allowedCapabilities: ['linear.issues.create'],
+    }],
+  });
+
+  assert.match(instruction, /\{"kind":"api","id":"connection_asana","name":"Asana"\}/);
+  assert.match(instruction, /\{"kind":"managed","id":"connection_linear","name":"linear"\}/);
+  assert.match(instruction, /\{"kind":"mcp","id":"connection_docs","name":"Docs MCP"\}/);
+  assert.doesNotMatch(instruction, /app\.asana\.com|search_docs|linear\.issues\.create|mcp\.example\.com/);
+});
 
 for (const oauthState of ['ready', 'invalid_grant', 'temporarily_unavailable'] as const) {
 test(`native Google session: ${oauthState}`, async (t) => {

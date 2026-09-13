@@ -95,7 +95,8 @@ test('workspace proposal guidance stays inside the typed configuration schema', 
 
   for (const instruction of [AGENT_AUTHORING_GUIDE, proposal, slack]) {
     assert.match(instruction, /typed (?:Chickpea )?workspace configuration operation/i);
-    assert.match(instruction, /cannot (?:grant or )?execute native or connected-service actions/i);
+    assert.match(instruction, /does not execute actions in Slack Lists or connected services/i);
+    assert.match(instruction, /Approval cannot make an unsupported operation available/i);
     assert.doesNotMatch(instruction, /destructive actions, external writes/i);
   }
   assert.match(inspection, /connectors.*setup catalog/i);

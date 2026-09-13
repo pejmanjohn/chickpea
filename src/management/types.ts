@@ -698,11 +698,11 @@ export interface ManagementWorkspaceSnapshot {
     /** Classifies this row as a setup catalog entry rather than current Agent access. */
     kind: 'setup_catalog_entry';
   }>;
-  /** Executable connections for the trusted Agent route that requested inspection. */
+  /** Ready connections eligible for the trusted Agent route that requested inspection. */
   currentAgent?: {
     id: string;
     name: string;
-    /** Empty means the current Agent has no executable connected-service access. */
+    /** Empty means the current Agent has no ready eligible connected-service access. */
     effectiveConnections: ManagementConnectionSnapshot[];
   };
   agents: Array<{

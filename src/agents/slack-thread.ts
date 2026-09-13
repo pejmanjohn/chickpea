@@ -1269,6 +1269,34 @@ export function slackDeliveryThreadImages(
   );
 }
 
+/** Declare only the connected-service accounts frozen into this execution plan. */
+export function runtimePlanConnectedServicesInstruction(
+  plan: Pick<RuntimePlanV2, 'apiConnections' | 'mcpConnections' | 'managedConnections'>,
+): string {
+  const selected = [
+    ...plan.apiConnections.map(({ id, displayName }) => ({
+      kind: 'api' as const,
+      id,
+      name: displayName ?? id,
+    })),
+    ...plan.mcpConnections.map(({ id, displayName }) => ({
+      kind: 'mcp' as const,
+      id,
+      name: displayName ?? id,
+    })),
+    ...(plan.managedConnections ?? []).map(({ id, toolkit }) => ({
+      kind: 'managed' as const,
+      id,
+      name: toolkit,
+    })),
+  ].sort((left, right) => `${left.kind}:${left.id}`.localeCompare(`${right.kind}:${right.id}`));
+  const declaration = selected.length > 0 ? JSON.stringify(selected) : 'none';
+  return `Connected-service access selected and configured for this turn: ${declaration}. ` +
+    'Named setup or authorization choices are not connected actions. This frozen selection is ' +
+    'the permission ceiling for this turn, not a guarantee of remote service health; use only ' +
+    'the connected tools or REST declarations actually mounted.';
+}
+
 /** Compose the declarations shared by Slack and fresh routine agents. */
 export function useRuntimePlanAgent(
   plan: RuntimePlanV2,
@@ -1316,6 +1344,7 @@ export function useRuntimePlanAgent(
     useChickpeaResponseMetadata(options.responseMetadataModel);
   }
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
+  useInstruction(runtimePlanConnectedServicesInstruction(plan));
   useInstruction('Sandbox files are temporary working data, not durable Agent memory. They do not follow this Agent into a fresh conversation. A successful file or shell write cannot establish that a fact was remembered. Never promise future recall from a sandbox file.');
   if (plan.sandbox.mode === 'bash') {
     useInstruction('This virtual sandbox starts with a fresh filesystem for each new request, including a follow-up in the same Slack thread. Files from an earlier request are gone. When the current user asks to return or revise those files, recreate them from the available contents in this request before attaching them; do not assume an earlier path still exists. The internal file-delivery check continues the current request and may only read and export existing files.');
