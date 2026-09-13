@@ -116,15 +116,31 @@ With an existing nvm installation:
 nvm install
 nvm use
 node --version
-npm ci
+npm --version
+npm ci --strict-allow-scripts
 ```
 
-Use an existing compatible Node manager when nvm is unavailable. If Node or
+Use an existing compatible Node manager when nvm is unavailable. On macOS,
+an existing Homebrew `node@24` is also suitable if its version meets the minimum;
+select it only for this shell with `export PATH="$(brew --prefix node@24)/bin:$PATH"`
+and check `node --version` and `npm --version` again. Do not install nvm merely
+because the example uses it, or replace the user's global Node. If Node or
 Git is missing, use the platform's normal installation method and official
 instructions; involve the user only if an installer requires their approval.
 Do not change an unrelated project's runtime. The local tools currently require
 Node 24.x with a minimum of 24.20.0; `.nvmrc` is the source for the exact build
 pin. No Node application server is needed for this installation.
+
+The pinned Node baseline includes npm 11.19.0. This release records exact
+reviewed dependency hooks in `package.json` under `allowScripts`; strict mode
+rejects any uncovered hook before running it. npm 11.19 otherwise warns and
+can still run uncovered hooks. Do not run an approval command that edits the
+release manifest, approve every dependency, or disable all scripts. If install
+fails on script policy, preserve the selected release/commit, `node --version`,
+`npm --version`, and the named package/version from the error. Check this
+release's [dependency policy](docs/runbooks/releasing.md#dependency-install-policy)
+and selected npm configuration before retrying. Keep credentials out of the
+report; do not print the full npm config or credential files.
 
 Create a private installation receipt outside the repository, for example
 `~/.chickpea/installs/<account-id>/<worker-name>/INSTALLATION.md`, once the
@@ -241,6 +257,14 @@ Cloudflare Access, R2, Alchemy, Docker, and the optional coding sandbox are
 not prerequisites for this path. If Cloudflare asks for new billing or a plan
 change, explain why and ask before accepting it.
 
+In the selected account's **Workers & Pages** dashboard, check whether a
+`workers.dev` subdomain is registered. Keep an existing subdomain. If none is
+registered, have the user choose the account-wide name and complete that
+registration in the dashboard. The guarded deploy command also checks this
+before building or provisioning D1; it never registers or renames the subdomain.
+A missing subdomain and insufficient API access are different errors: resolve
+the reported cause, then rerun the same guarded deploy command.
+
 ## 3. Deploy and open setup
 
 For a fresh installation, or a retry of that same release's unfinished setup,
@@ -261,7 +285,8 @@ Replace placeholders with observed values and shell-quote them correctly.
 Do not pass `--name` or `--config` to this wrapper; it rejects overrides that
 could separate its checks from the actual target.
 
-This command builds Chickpea, provisions or preserves `AUTH_DB`, applies the
+This command first checks account readiness, then builds Chickpea, provisions
+or preserves `AUTH_DB`, applies the
 reviewed migrations, provisions the required internal secrets, uploads the
 Worker, and waits for the current deployment to become ready. Let it finish.
 Do not separately launch another build or deploy while it is running.
@@ -309,6 +334,16 @@ link opens a desktop app your tools cannot control. Do not reinstall the app
 because a desktop-app redirect failed. Check the callback and current setup
 state first.
 
+If Slack sign-in loses the installation page or does not return to Chickpea,
+return to the preserved setup tab and choose **Check Slack installation**.
+If still pending, choose **Open Slack authorization again** to reopen the same
+saved installation. Finish Slack login and consent, then check again. A status
+error preserves the saved installation and offers the same retry controls;
+it is not evidence that authorization expired. A confirmed expired or cancelled
+installation returns to **Add to Slack** so you can start again. Use these
+visible controls; do not edit hidden form actions, inspect credential files,
+or repeatedly create installations to recover.
+
 If the user requested a **customer-owned Slack app**, choose **Use your own
 Slack app instead** and follow [SETUP_AGENT.md](SETUP_AGENT.md). Perform its
 browser actions too: create or adopt the exact app, install it, verify and save
@@ -343,6 +378,12 @@ everything independent of that decision and report the exact remaining choice.
 Do not enable an unrelated paid capability to get past the screen.
 
 ## 6. Complete the first conversation in Slack
+
+First check whether the intended human user has already sent a test DM and
+you have observed Chickpea's substantive reply in this app and workspace.
+That conversation counts; preserve its evidence and continue to signed-in
+Admin verification without sending a duplicate test. If no such reply has
+been observed, continue below.
 
 Choose **Message Chickpea in Slack** on the Try screen. Use its generated link
 to reach the exact app in the installed workspace. In Slack, open the app's
@@ -454,6 +495,8 @@ verified Slack installation available.
 | --- | --- |
 | The task stopped halfway through | Read the private receipt, inspect the exact deployment, and resume the current screen. Do not automatically clone, deploy, or install again. |
 | Wrangler authorization expired or the callback timed out | Inspect the terminal result. If authorization completed, activate the named profile if applicable and verify access with `whoami`. Otherwise restart the same `login` or `auth create <selected-profile>` command and use its fresh authorization URL. Preserve the chosen account and requested scopes. Wait for terminal confirmation, then activate the named profile if needed and verify with `whoami`. Do not replace an unrelated login or broaden access to recover. |
+| The account has no `workers.dev` subdomain | Open the selected account dashboard, obtain the user's choice of account-wide name, register it, and rerun the same guarded deploy command. Do not rename an existing subdomain. An access or network error needs its own diagnosis. |
+| npm reports an uncovered or conflicting script policy | Record release/commit, Node/npm versions and the named package/version. Use the release-matched policy and npm config; do not edit retained source or use blanket approvals. |
 | Build or deploy failed | Keep the first error and private logs. Check Node, dependencies, account, and target. Correct the diagnosed problem and rerun the guarded command against the same resources. |
 | A new `workers.dev` address temporarily returns a TLS or HTTPS connection error | Let the guarded deployment's bounded readiness wait finish; a newly provisioned address may not be reachable immediately. Do not start another deployment or disable TLS verification while it waits. If it still fails, preserve the error and use the serving-version and readiness checks below. |
 | Upload succeeded but readiness failed | Inspect the existing Worker's serving version and the readiness error. Preserve the original evidence before any retry; do not create another Worker or call this a successful install. |
@@ -461,7 +504,7 @@ verified Slack installation available.
 | A D1 migration or database identity check failed | Preserve the database. Read [the AUTH_DB contract](docs/runbooks/auth-db-deployment.md). Do not delete data, clear IDs, or rewrite migration history to bypass the failure. |
 | The private setup link expired or was lost | First try the preserved setup tab. If an Owner already exists, use normal Slack sign-in. For an unfinished install with no Owner and no usable capability, verify the exact account/Worker/database and rerun the unchanged guarded deployment to mint a new link, preserving data and secrets. |
 | Slack asks for workspace admin approval | Leave the installation pending and report the requested app/workspace. Resume after approval. Do not install into a different workspace to bypass it. |
-| Slack returns to the wrong place or sign-in fails | Check app installation versus Owner sign-in, exact workspace, signed-in user, and the original setup tab. Use [Slack auth recovery](docs/runbooks/slack-auth-recovery.md) only for the credential failures it covers. |
+| Slack returns to the wrong place or sign-in fails | Return to the original setup tab, use **Check Slack installation**, then **Open Slack authorization again** if pending. Check app installation versus Owner sign-in, exact workspace and signed-in user. Use [Slack auth recovery](docs/runbooks/slack-auth-recovery.md) only for the credential failures it covers. |
 | Chickpea does not answer or reports a provider error | Read [runtime observability](docs/runbooks/runtime-observability.md), resolve the exact deployed target, and investigate the first request. If live logs are needed, attach Wrangler tail before the next authorized DM and stop it afterward. Missing telemetry alone does not prove that no request ran. |
 | Custom Agent handle creation is blocked | Keep the working built-in Chickpea DM. Consult [the handle prerequisite](SETUP_AGENT.md#agent-handle-prerequisite-for-a-customer-owned-app). Explain any paid Slack requirement or workspace-wide permission change and get the user's decision; do not silently change workspace policy. |
 

@@ -2121,7 +2121,7 @@
     var canContinue = !!selected && (configured || (selected.id !== "cloudflare" && !!String(state.onboardingProviderKey || "").trim()));
     var panel = selected
       ? '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(selected.description) + '</p>' + onboardingProviderConfigurationHtml(selected, configured) + '</div>'
-      : '<div class="onboarding-provider-config onboarding-provider-config-empty"><p class="hint">Most teams pick OpenAI or Anthropic. Workers AI needs no key but gives simpler replies.</p></div>';
+      : '<div class="onboarding-provider-config onboarding-provider-config-empty"><p class="hint">Choose the provider you want Chickpea to use. Each option shows the setup it needs.</p></div>';
     return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of 4</p>' +
       '<h1 class="onboarding-title">Choose your model provider</h1>' +
       '<p class="onboarding-lede">Choose a provider, then finish the setup it needs.</p>' +
