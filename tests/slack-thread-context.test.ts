@@ -149,6 +149,31 @@ test('channel history shares the prompt budget, keeps the newest rows, and discl
   assert.ok(context.messages.some((row) => row.isTrigger && row.text === turn.text));
 });
 
+test('hydrated Slack rich-text destinations remain available to prompt assembly', async () => {
+  const url = 'https://acme.example.slack.com/lists/T1/F0LIST123';
+  const turn = threadTurn({ messageTs: '2001.000000' });
+  const client = fakeClientWithReplyPages([{ messages: [{
+    user: 'U_HUMAN',
+    ts: '1000.0000',
+    text: 'Use QA destination retest0913.',
+    blocks: [{
+      type: 'rich_text',
+      elements: [{
+        type: 'rich_text_section',
+        elements: [{ type: 'list_record', file_id: 'F0LIST123', text: 'QA destination retest0913', url }],
+      }],
+    }],
+  }] }]);
+
+  const hydrated = await hydrateSlackContextViaWebClient(client as never, turn);
+  const historical = hydrated.messages.find((message) => !message.isTrigger);
+  assert.ok(historical);
+  assert.equal(historical.text.includes(url), true);
+
+  const prompt = assembleSlackPrompt(turn, await assembleRetainedSlackContext(hydrated, turn));
+  assert.equal(prompt.includes(url), true);
+});
+
 test('a capped forward scan omits its stale segment and recovers retained recent corrections', async () => {
   const store = new SqliteConfigStore(':memory:');
   const turn = threadTurn({ messageTs: '1201.000000' });

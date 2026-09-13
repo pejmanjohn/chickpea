@@ -12,6 +12,7 @@ import {
   type SlackTurnSource,
 } from './types.ts';
 import type { SlackInboundEnvelope } from './transport/types.ts';
+import { preserveSlackRichTextLinks } from './rich-text-links.ts';
 
 interface SlackTurnNormalizationOptions {
   botUserId?: string;
@@ -89,7 +90,7 @@ export function normalizeSlackTurn(
     return runnableTurn({
       payload,
       channelId: payload.event.channel,
-      text: payload.event.text,
+      text: preserveSlackRichTextLinks(payload.event.text, payload.event.blocks),
       userId: payload.event.user,
       messageTs: payload.event.ts,
       threadTs: payload.event.thread_ts ?? payload.event.ts,
@@ -150,7 +151,7 @@ export function normalizeSlackTurn(
   }
   const attachmentSet = normalizeSlackAttachments(event);
   const attachments = attachmentSet.references;
-  const text = event.text?.trim() ||
+  const text = preserveSlackRichTextLinks(event.text, event.blocks) ||
     (attachmentSet.intake ? 'Please inspect the attached file.' : '');
   if (!text) {
     return { status: 'ignored', reason: 'empty_text' };

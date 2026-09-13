@@ -136,6 +136,43 @@ test('a suggested prompt click remains an ordinary user-rooted DM turn', () => {
   assert.equal(normalized.turn.sessionThreadTs, 'dm');
 });
 
+test('native rich-text destinations survive Slack fallback text normalization', () => {
+  const url = 'https://acme.example.slack.com/lists/TDEMO/F0LIST123';
+  const payload = dmMessage({
+    event: { text: 'Remember QA destination retest0913 for this channel.' },
+  });
+  Object.assign(payload.event, {
+    blocks: [{
+      type: 'rich_text',
+      elements: [{
+        type: 'rich_text_section',
+        elements: [
+          { type: 'text', text: 'Remember ' },
+          { type: 'list_record', file_id: 'F0LIST123', text: 'QA destination retest0913', url },
+          { type: 'text', text: ' for this channel.' },
+        ],
+      }],
+    }],
+  });
+
+  const normalized = normalizeSlackTurn(payload, { botUserId: 'UBOT' });
+
+  assert.equal(normalized.status, 'runnable');
+  if (normalized.status !== 'runnable') return;
+  assert.equal(normalized.turn.text, [
+    'Remember QA destination retest0913 for this channel.',
+    '',
+    'Links in this Slack message:',
+    `- ${url}`,
+  ].join('\n'));
+
+  const duplicatePayload = dmMessage({ event: { text: `Remember ${url}` } });
+  Object.assign(duplicatePayload.event, payload.event.blocks ? { blocks: payload.event.blocks } : {});
+  const alreadyVisible = normalizeSlackTurn(duplicatePayload, { botUserId: 'UBOT' });
+  assert.equal(alreadyVisible.status, 'runnable');
+  if (alreadyVisible.status === 'runnable') assert.equal(alreadyVisible.turn.text, `Remember ${url}`);
+});
+
 test('a human Slack file share remains runnable and retains bounded attachment references', () => {
   const payload = channelThreadMessage({
     event_id: 'Ev_MSG_IMAGE_SHARE',

@@ -1,5 +1,6 @@
 import type { ThreadImageRecord } from './thread-images.ts';
 import type { NormalizedSlackTurn, SlackContextMode } from './types.ts';
+import { preserveSlackRichTextLinks } from './rich-text-links.ts';
 
 export interface SlackContextMessage {
   userId: string;
@@ -61,6 +62,7 @@ export interface SlackWebApiMessage {
   bot_id?: string;
   edited?: { ts: string };
   files?: unknown[];
+  blocks?: unknown[];
 }
 
 export const DEFAULT_MAX_MESSAGES = 50;
@@ -164,7 +166,8 @@ export function computeHistoryWindow(
 
 export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextMessage[] {
   return messages.flatMap((message) => {
-    if (!message.user || !message.text || !message.text.trim() || !message.ts) {
+    const text = preserveSlackRichTextLinks(message.text, message.blocks);
+    if (!message.user || !text || !message.ts) {
       return [];
     }
     if (message.bot_id || (message.subtype && message.subtype !== 'file_share')) {
@@ -173,7 +176,7 @@ export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextM
     return [
       {
         userId: message.user,
-        text: message.text,
+        text,
         ts: message.ts,
         isTrigger: false,
         role: 'human',

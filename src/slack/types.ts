@@ -16,6 +16,7 @@ export interface SlackAppMentionEvent {
   app_id?: string;
   bot_profile?: { app_id?: string };
   files?: SlackFileEvent[];
+  blocks?: unknown[];
 }
 
 export interface SlackMessageEvent {
@@ -39,6 +40,7 @@ export interface SlackMessageEvent {
     id?: string;
   };
   files?: SlackFileEvent[];
+  blocks?: unknown[];
   /** Agent View context is deliberately discarded before turn normalization. */
   app_context?: unknown;
 }
