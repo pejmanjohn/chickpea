@@ -146,27 +146,21 @@ function schemaInspection(sourceRoot, configPath, target) {
   }
 }
 
-const OFFICIAL_DESTINATION_PROVENANCE = 'official-release';
-const SOURCE_COMMIT = /^[a-f0-9]{40}$/;
-
-/**
- * Run the guided updater. Production callers use the immutable official
- * destination below. A private attended rehearsal may inject only destination
- * resolution and materialization; installed-origin verification and every
- * deployment/recovery guard remain fixed here.
- */
-export async function runUpgrade(args = process.argv.slice(2), injected = {}) {
-  const privateDestinationSource = injected.destinationSource;
-  const destinationSource = privateDestinationSource ?? {
-    provenance: OFFICIAL_DESTINATION_PROVENANCE,
-    resolve: resolveOfficialRelease,
-    fetch: fetchReleaseSource,
-  };
-  if ((privateDestinationSource && destinationSource.provenance !== 'review-candidate') ||
-      (!privateDestinationSource && destinationSource.provenance !== OFFICIAL_DESTINATION_PROVENANCE) ||
-      typeof destinationSource.resolve !== 'function' || typeof destinationSource.fetch !== 'function') {
-    throw new Error('Invalid upgrade destination source.');
+async function assertOfficialReceiptRelease(release, role) {
+  if (!release || typeof release !== 'object' || Array.isArray(release) ||
+      typeof release.tag !== 'string' || typeof release.version !== 'string' ||
+      typeof release.commit !== 'string') {
+    throw new Error(`Stored ${role} release identity is invalid. Preserve the receipt and investigate before retrying.`);
   }
+  const official = await resolveOfficialRelease(release.tag);
+  if (release.tag !== official.tag || release.version !== official.version || release.commit !== official.commit) {
+    throw new Error(`Stored ${role} release identity does not match its immutable official release. Preserve the receipt and investigate before retrying.`);
+  }
+  return official;
+}
+
+/** Run the guided updater with immutable official releases. */
+export async function runUpgrade(args = process.argv.slice(2)) {
   const options = parseArgs(args);
   if (options.help) { console.log(HELP); return; }
   assertNodeVersion();
@@ -183,10 +177,11 @@ export async function runUpgrade(args = process.argv.slice(2), injected = {}) {
     if (path.dirname(realpathSync(directory)) !== receipts) throw new Error('Receipt belongs to a different upgrade-state directory.');
     receipt = readPrivateJson(file);
     if (receipt.schema !== 1 || receipt.id !== path.basename(directory)) throw new Error('Unknown or malformed upgrade receipt.');
-    const receiptProvenance = receipt.destination?.provenance ?? OFFICIAL_DESTINATION_PROVENANCE;
-    if (receiptProvenance !== destinationSource.provenance) {
-      throw new Error('Resume this receipt with the same reviewed upgrade runner that created it.');
-    }
+    // A retained checkout proves only what was downloaded earlier. Re-resolve
+    // both tags on every continuation so edited or legacy receipts cannot turn
+    // a different commit into executable upgrade or recovery source.
+    await assertOfficialReceiptRelease(receipt.previous, 'previous');
+    await assertOfficialReceiptRelease(receipt.destination, 'destination');
   }
   const stored = receipt ? undefined : options.configure ? undefined : readPrivateJson(installationFile);
   const target = validateTarget(receipt?.target ?? (options.configure ? { ...options, wranglerProfile: options['wrangler-profile'] } : stored?.target));
@@ -210,13 +205,7 @@ export async function runUpgrade(args = process.argv.slice(2), injected = {}) {
       return;
     }
     if (!receipt) {
-      const resolvedDestination = await destinationSource.resolve(options.to);
-      if (resolvedDestination?.tag !== options.to ||
-          resolvedDestination.version !== options.to.slice(1) ||
-          !SOURCE_COMMIT.test(resolvedDestination.commit ?? '')) {
-        throw new Error('Resolved upgrade destination identity is invalid.');
-      }
-      const destination = { ...resolvedDestination, provenance: destinationSource.provenance };
+      const destination = await resolveOfficialRelease(options.to);
       const previous = await resolveOfficialRelease(`v${current.version}`);
       if (current.commit !== previous.commit) throw new Error('Installed source does not match its official release tag. Follow the adoption guide.');
       directory = mkdtempSync(path.join(receipts, 'upgrade-'));
@@ -225,7 +214,7 @@ export async function runUpgrade(args = process.argv.slice(2), injected = {}) {
       writePrivateJson(path.join(directory, 'receipt.json'), receipt);
       writePrivateJson(path.join(directory, 'installation.json'), current);
       fetchReleaseSource(path.join(directory, 'previous'), previous);
-      await destinationSource.fetch(path.join(directory, 'destination'), destination);
+      fetchReleaseSource(path.join(directory, 'destination'), destination);
     }
     const initial = readPrivateJson(path.join(directory, 'installation.json'));
     const previousRoot = path.join(directory, 'previous');
