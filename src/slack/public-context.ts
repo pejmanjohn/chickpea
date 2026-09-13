@@ -172,6 +172,8 @@ export async function assembleRetainedSlackContext(
     rows.set(entry.messageTs, {
       ts: entry.messageTs, text: entry.text, isTrigger: false,
       userId: entry.role === 'human' ? 'Human (retained)' : `Agent ${entry.agentId}`,
+      role: entry.role,
+      rootTs: entry.rootTs,
       ...(entry.contentVersionTs ? { contentVersionTs: entry.contentVersionTs } : {}),
     });
   }

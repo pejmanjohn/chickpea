@@ -6,7 +6,23 @@ export interface SlackContextMessage {
   text: string;
   ts: string;
   isTrigger: boolean;
+  /** Host-derived Slack-visible provenance; absent only on legacy fixtures. */
+  role?: 'human' | 'agent';
+  /** Slack root that owns this message. Top-level DM roots equal their message ts. */
+  rootTs?: string;
   contentVersionTs?: string;
+}
+
+export interface SlackContextExchange {
+  rootTs: string;
+  messages: SlackContextMessage[];
+  incomplete: boolean;
+}
+
+export interface SlackContextPartition {
+  activeThread?: SlackContextExchange;
+  continuationCandidate?: SlackContextExchange;
+  olderBackground: SlackContextMessage[];
 }
 
 interface SlackContextWindow {
@@ -41,6 +57,7 @@ export interface SlackWebApiMessage {
   user?: string;
   text?: string;
   ts?: string;
+  thread_ts?: string;
   subtype?: string;
   bot_id?: string;
   edited?: { ts: string };
@@ -160,10 +177,60 @@ export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextM
         text: message.text,
         ts: message.ts,
         isTrigger: false,
+        role: 'human',
+        rootTs: message.thread_ts ?? message.ts,
         ...(message.edited?.ts ? { contentVersionTs: message.edited.ts } : {}),
       },
     ];
   });
+}
+
+/**
+ * Preserve one same-root exchange for threaded replies. A new top-level DM may
+ * conditionally continue the immediately preceding Agent exchange, but that
+ * different root never becomes active merely because it is recent.
+ */
+export function partitionSlackContext(
+  turn: NormalizedSlackTurn,
+  context: SlackTurnContext,
+): SlackContextPartition {
+  const background = context.messages.filter((message) => !message.isTrigger);
+  const degraded = context.truncated || context.degradations.length > 0;
+  const direct = turn.channelType === 'im' ||
+    (!turn.channelType && turn.channelId.startsWith('D'));
+  const hasOrigin = (messages: SlackContextMessage[], rootTs: string) =>
+    messages.some((message) => message.role === 'human' && message.ts === rootTs);
+  const exchange = (rootTs: string, messages: SlackContextMessage[]): SlackContextExchange => ({
+    rootTs,
+    messages,
+    incomplete: degraded || !hasOrigin(messages, rootTs),
+  });
+
+  if (direct && context.mode === 'thread' && turn.messageTs !== turn.threadTs) {
+    const messages = background.filter((message) => message.rootTs === turn.threadTs);
+    const selected = new Set(messages);
+    return {
+      activeThread: exchange(turn.threadTs, messages),
+      olderBackground: background.filter((message) => !selected.has(message)),
+    };
+  }
+
+  const topLevelDm = direct && context.mode === 'dm_history' &&
+    turn.messageTs === turn.threadTs;
+  if (topLevelDm) {
+    const latestAgent = orderMessages(background).reverse().find((message) =>
+      message.role === 'agent' && typeof message.rootTs === 'string');
+    if (latestAgent?.rootTs) {
+      const messages = background.filter((message) => message.rootTs === latestAgent.rootTs);
+      const selected = new Set(messages);
+      return {
+        continuationCandidate: exchange(latestAgent.rootTs, messages),
+        olderBackground: background.filter((message) => !selected.has(message)),
+      };
+    }
+  }
+
+  return { olderBackground: background };
 }
 
 export function orderMessages(messages: SlackContextMessage[]): SlackContextMessage[] {
@@ -207,6 +274,8 @@ function triggerMessage(turn: NormalizedSlackTurn): SlackContextMessage {
     text: turn.text,
     ts: turn.messageTs,
     isTrigger: true,
+    role: 'human',
+    rootTs: turn.threadTs,
   };
 }
 

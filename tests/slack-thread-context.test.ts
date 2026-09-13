@@ -27,7 +27,12 @@ import {
 import type { SlackPublicContextEntry } from '../src/config/types.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
-import { currentMessageOnlyContext } from '../src/slack/thread-context.ts';
+import {
+  currentMessageOnlyContext,
+  partitionSlackContext,
+  type SlackContextMessage,
+} from '../src/slack/thread-context.ts';
+import { slackLocalContextTime } from '../src/slack/context-format.ts';
 import { classifyCandidateTurn } from '../src/channels/slack.ts';
 
 async function retainedPrompt(store: SqliteConfigStore, turn: NormalizedSlackTurn, agentId: string) {
@@ -311,6 +316,81 @@ test('top-level DMs retain this Agent replies across roots with filters before t
     assert.equal(await retainedPrompt(store, { ...second, contextMode: 'channel_history' }, 'agent_support'), undefined);
     assert.equal(await retainedPrompt(store, { ...second, channelId: 'D_EMPTY' }, 'agent_support'), undefined);
   } finally { store.close(); }
+});
+
+test('a threaded DM clarification keeps its active root separate from older task noise', () => {
+  const turn = threadTurn({
+    channelId: 'D1', channelType: 'im', contextMode: 'thread',
+    threadTs: '1789310926.893969', messageTs: '1789310957.154909',
+    text: 'U0BETE2ECK1', requesterTimezone: 'America/Los_Angeles',
+  });
+  const messages: SlackContextMessage[] = [
+    { userId: 'U_HUMAN', role: 'human', rootTs: '1789300000.000100', ts: '1789300000.000100', text: 'Use the old task List.', isTrigger: false },
+    { userId: 'Agent agent_support', role: 'agent', rootTs: '1789300000.000100', ts: '1789300001.000100', text: 'I created the old task.', isTrigger: false },
+    { userId: 'U_HUMAN', role: 'human', rootTs: turn.threadTs, ts: turn.threadTs, text: 'Create a task for Pejman to draft the budget summary by Friday.', isTrigger: false },
+    { userId: 'Agent agent_support', role: 'agent', rootTs: turn.threadTs, ts: '1789310940.000100', text: 'Which List and Slack user ID should I use?', isTrigger: false },
+    { userId: turn.userId, role: 'human', rootTs: turn.threadTs, ts: turn.messageTs, text: turn.text, isTrigger: true },
+  ];
+  const partition = partitionSlackContext(turn, {
+    mode: 'thread', messages, truncated: false, degradations: [],
+  });
+  assert.deepEqual(partition.activeThread?.messages.map((message) => message.text), [
+    'Create a task for Pejman to draft the budget summary by Friday.',
+    'Which List and Slack user ID should I use?',
+  ]);
+  assert.equal(partition.activeThread?.incomplete, false);
+  assert.deepEqual(partition.olderBackground.map((message) => message.text), [
+    'Use the old task List.', 'I created the old task.',
+  ]);
+  assert.equal(partition.continuationCandidate, undefined);
+});
+
+test('a new DM root keeps only the latest complete exchange as a conditional candidate', () => {
+  const turn = threadTurn({
+    channelId: 'D1', channelType: 'im', contextMode: 'dm_history',
+    threadTs: '1789311066.438579', messageTs: '1789311066.438579',
+    text: 'Can Chickpea delete this List?',
+  });
+  const messages: SlackContextMessage[] = [
+    { userId: 'U_HUMAN', role: 'human', rootTs: '1789300000.000100', ts: '1789300000.000100', text: 'Older request', isTrigger: false },
+    { userId: 'Agent agent_support', role: 'agent', rootTs: '1789300000.000100', ts: '1789300001.000100', text: 'Older answer', isTrigger: false },
+    { userId: 'U_HUMAN', role: 'human', rootTs: '1789310926.893969', ts: '1789310926.893969', text: 'Draft the budget summary.', isTrigger: false },
+    { userId: 'Agent agent_support', role: 'agent', rootTs: '1789310926.893969', ts: '1789310987.085599', text: 'The task exists but has no deadline.', isTrigger: false },
+    { userId: turn.userId, role: 'human', rootTs: turn.threadTs, ts: turn.messageTs, text: turn.text, isTrigger: true },
+  ];
+  const partition = partitionSlackContext(turn, {
+    mode: 'dm_history', messages, truncated: false, degradations: [],
+  });
+  assert.deepEqual(partition.continuationCandidate, {
+    rootTs: '1789310926.893969',
+    messages: messages.slice(2, 4),
+    incomplete: false,
+  });
+  assert.deepEqual(partition.olderBackground, messages.slice(0, 2));
+  assert.equal(partition.activeThread, undefined);
+});
+
+test('request time is local and a missing candidate origin is explicitly incomplete', () => {
+  assert.deepEqual(
+    slackLocalContextTime('1789310926.893969', 'America/Los_Angeles'),
+    { date: '2026-09-13', weekday: 'Sunday', time: '07:48', timezone: 'America/Los_Angeles' },
+  );
+  const turn = threadTurn({
+    channelId: 'D1', channelType: 'im', contextMode: 'dm_history',
+    threadTs: '1789311066.438579', messageTs: '1789311066.438579',
+  });
+  const orphan: SlackContextMessage = {
+    userId: 'Agent agent_support', role: 'agent', rootTs: '1789310926.893969',
+    ts: '1789310987.085599', text: 'A reply whose request was unavailable.', isTrigger: false,
+  };
+  const partition = partitionSlackContext(turn, {
+    mode: 'dm_history', messages: [orphan, {
+      userId: turn.userId, role: 'human', rootTs: turn.threadTs,
+      ts: turn.messageTs, text: turn.text, isTrigger: true,
+    }], truncated: false, degradations: ['slack_context.dm_history:truncated'],
+  });
+  assert.equal(partition.continuationCandidate?.incomplete, true);
+  assert.deepEqual(partition.continuationCandidate?.messages, [orphan]);
 });
 
 test('recent DM replies are bounded by message count and public text budget', async () => {
