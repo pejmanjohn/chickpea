@@ -46,9 +46,10 @@ test('memory tool contract carries exact actionable references and their qualifi
 
   assert.equal(args.operations[0]?.kind, 'update_agent_memory');
   assert.equal(args.operations[0]?.kind === 'update_agent_memory' ? args.operations[0].body : undefined, body);
-  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /copy exact URLs unchanged/i);
-  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /scope, exceptions, override conditions, and negative constraints/i);
-  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /another tool or destination should take precedence/i);
+  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /copy that wording verbatim/i);
+  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /do not paraphrase, compress, generalize, or change its exceptions/i);
+  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /include the exact URL with the label while preserving every other word/i);
+  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /ordinary conversational facts.+may still be restated concisely/i);
 });
 
 test('memory tool delegates scoped, idempotent writes and forget to existing management authority', async () => {
