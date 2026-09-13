@@ -6,7 +6,12 @@ import * as v from 'valibot';
 import { toJsonSchema } from '@valibot/to-json-schema';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 
-import { executeSlackMemoryUpdate, slackMemoryUpdateArguments, slackUpdateAgentMemoryInputSchema } from '../src/management/slack-memory-actions.ts';
+import {
+  executeSlackMemoryUpdate,
+  slackMemoryUpdateArguments,
+  slackUpdateAgentMemoryInputSchema,
+  SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION,
+} from '../src/management/slack-memory-actions.ts';
 import { createSlackManagementTurnGuard, invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
@@ -29,6 +34,21 @@ test('memory tool has a portable optional summary and rejects model-selected aut
     assert.doesNotThrow(() => v.parse(slackUpdateAgentMemoryInputSchema, { ...input, summary }));
     assert.equal(parseSlackMemoryUpdate([{ operationId: 'op', revision: 1, summary }]), undefined);
   }
+});
+
+test('memory tool contract carries exact actionable references and their qualifiers', () => {
+  const url = 'https://app.slack.com/client/T_WORKSPACE/unified-files/list/F_LIST';
+  const body = `For channel C_CHANNEL, use ${url} unless another tool or List is explicitly named. Do not use it in DMs or other channels.`;
+  const args = slackMemoryUpdateArguments({ agentId: 'a', turnJobId: 't' }, {
+    expectedRevision: 3,
+    body,
+  });
+
+  assert.equal(args.operations[0]?.kind, 'update_agent_memory');
+  assert.equal(args.operations[0]?.kind === 'update_agent_memory' ? args.operations[0].body : undefined, body);
+  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /copy exact URLs unchanged/i);
+  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /scope, exceptions, override conditions, and negative constraints/i);
+  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /another tool or destination should take precedence/i);
 });
 
 test('memory tool delegates scoped, idempotent writes and forget to existing management authority', async () => {

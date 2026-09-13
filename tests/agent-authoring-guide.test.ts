@@ -164,6 +164,8 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     '`reassign_routine_agent`', 'Group DMs cannot contain scheduled work',
     'All requests to remember or edit durable Agent memory are Agent authoring',
     '`update_agent_memory`', 'exact `expectedRevision`',
+    'copy exact URLs unchanged', 'scope, exceptions, override conditions, and negative constraints',
+    'another tool or destination should take precedence',
     'Sandbox files are temporary working data',
     'only after the management service returns an applied memory receipt',
     'proposal, denial, or failure',
