@@ -277,9 +277,13 @@ test('new runtime prompts retain only this Agent public replies in the admitted 
     const turn = threadTurn();
     const hydrated = await hydrateSlackContextViaWebClient(fakeClientWithReplyPages([{ messages: [humanMsg(1, '1001.0000')] }]) as never, turn);
     const context = await assembleRetainedSlackContext(hydrated, turn, { store, agentId: 'agent_support' });
+    assert.deepEqual(partitionSlackContext(turn, context).historicalBackground
+      .map(({ role, rootTs }) => ({ role, rootTs })), [
+      { role: 'human', rootTs: '1001.0000' },
+      { role: 'agent', rootTs: '1000.0000' },
+    ]);
     const prompt = assembleSlackPrompt(turn, context);
     assert.match(prompt, /CEDAR-410/);
-    assert.match(prompt, /Historical background only/);
     assert.doesNotMatch(prompt, /OTHER_AGENT|FUTURE_REPLY|OTHER_THREAD/);
     await store.deleteSlackPublicContextMessage('T1', 'C1', '1000.0000', '1002.0000');
     assert.equal(await retainedPrompt(store, turn, 'agent_support'), undefined);
@@ -311,7 +315,6 @@ test('top-level DMs retain this Agent replies across roots with filters before t
     const background = await retainedPrompt(store, second, 'agent_support');
     assert.ok(background);
     assert.match(background, /CEDAR-410/);
-    assert.match(background, /Historical background only/);
     assert.doesNotMatch(background, /OTHER_AGENT|OTHER_WORKSPACE|OTHER_DM|HUMAN_ROW|FUTURE_REPLY|TRIGGER_ROW/);
     assert.equal(await retainedPrompt(store, { ...second, contextMode: 'channel_history' }, 'agent_support'), undefined);
     assert.equal(await retainedPrompt(store, { ...second, channelId: 'D_EMPTY' }, 'agent_support'), undefined);
@@ -339,58 +342,100 @@ test('a threaded DM clarification keeps its active root separate from older task
     'Which List and Slack user ID should I use?',
   ]);
   assert.equal(partition.activeThread?.incomplete, false);
-  assert.deepEqual(partition.olderBackground.map((message) => message.text), [
+  assert.deepEqual(partition.historicalBackground.map((message) => message.text), [
     'Use the old task List.', 'I created the old task.',
   ]);
-  assert.equal(partition.continuationCandidate, undefined);
 });
 
-test('a new DM root keeps only the latest complete exchange as a conditional candidate', () => {
+test('an admitted v1 top-level DM preserves only permitted other-root history through the prompt', async () => {
   const turn = threadTurn({
-    channelId: 'D1', channelType: 'im', contextMode: 'dm_history',
+    // chickpea-v1 admission re-tags a direct top-level root to thread mode.
+    channelId: 'D1', channelType: 'im', contextMode: 'thread',
     threadTs: '1789311066.438579', messageTs: '1789311066.438579',
     text: 'Can Chickpea delete this List?',
   });
-  const messages: SlackContextMessage[] = [
-    { userId: 'U_HUMAN', role: 'human', rootTs: '1789300000.000100', ts: '1789300000.000100', text: 'Older request', isTrigger: false },
-    { userId: 'Agent agent_support', role: 'agent', rootTs: '1789300000.000100', ts: '1789300001.000100', text: 'Older answer', isTrigger: false },
-    { userId: 'U_HUMAN', role: 'human', rootTs: '1789310926.893969', ts: '1789310926.893969', text: 'Draft the budget summary.', isTrigger: false },
-    { userId: 'Agent agent_support', role: 'agent', rootTs: '1789310926.893969', ts: '1789310987.085599', text: 'The task exists but has no deadline.', isTrigger: false },
-    { userId: turn.userId, role: 'human', rootTs: turn.threadTs, ts: turn.messageTs, text: turn.text, isTrigger: true },
-  ];
-  const partition = partitionSlackContext(turn, {
-    mode: 'dm_history', messages, truncated: false, degradations: [],
-  });
-  assert.deepEqual(partition.continuationCandidate, {
-    rootTs: '1789310926.893969',
-    messages: messages.slice(2, 4),
-    incomplete: false,
-  });
-  assert.deepEqual(partition.olderBackground, messages.slice(0, 2));
-  assert.equal(partition.activeThread, undefined);
+  const hydrated = await hydrateSlackContextViaWebClient(fakeClientWithReplyPages([{
+    messages: [{ user: turn.userId, type: 'message', text: turn.text, ts: turn.messageTs }],
+  }]) as never, turn);
+  const store = new SqliteConfigStore(':memory:');
+  try {
+    await store.createAgent({ id: 'agent_support', name: 'Support', instructions: '', enabled: true, lifecycle: 'active', creatorMembershipId: 'owner', editPolicy: 'creator_and_admins', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+    await store.putSlackPublicContext({ workspaceId: 'T1', channelId: 'D1', rootTs: '1789300000.000100', messageTs: '1789300000.000100', role: 'human', text: 'PRIVATE_OTHER_ROOT_REQUEST' });
+    await store.putSlackPublicContext({ workspaceId: 'T1', channelId: 'D1', rootTs: '1789300000.000100', messageTs: '1789300001.000100', role: 'agent', agentId: 'agent_support', text: 'Earlier answer' });
+    await store.putSlackPublicContext({ workspaceId: 'T1', channelId: 'D1', rootTs: '1789310926.893969', messageTs: '1789310987.085599', role: 'agent', agentId: 'agent_support', text: 'Latest answer' });
+    const retained = await assembleRetainedSlackContext(hydrated, turn, { store, agentId: 'agent_support' });
+    const partition = partitionSlackContext(turn, retained);
+    assert.equal(partition.activeThread, undefined);
+    assert.deepEqual(partition.historicalBackground.map(({ role, rootTs, text }) =>
+      ({ role, rootTs, text })), [
+      { role: 'agent', rootTs: '1789300000.000100', text: 'Earlier answer' },
+      { role: 'agent', rootTs: '1789310926.893969', text: 'Latest answer' },
+    ]);
+    const prompt = assembleSlackPrompt(turn, retained);
+    assert.equal(prompt.includes('PRIVATE_OTHER_ROOT_REQUEST'), false);
+    assert.ok(prompt.indexOf('Earlier answer') < prompt.indexOf('Latest answer'));
+    assert.match(prompt, /role=agent root=1789300000\.000100/);
+    assert.match(prompt, /Sunday 2026-09-13 14:51 UTC/);
+  } finally {
+    store.close();
+  }
 });
 
-test('request time is local and a missing candidate origin is explicitly incomplete', () => {
+test('an agent-authored direct-thread root is complete without a human root row', () => {
+  const turn = threadTurn({
+    channelId: 'D1', channelType: 'im', contextMode: 'thread',
+    threadTs: '1789300000.000100', messageTs: '1789311066.438579',
+    text: 'Run the saved task now.',
+  });
+  const context = {
+    mode: 'thread' as const,
+    messages: [
+      { userId: 'Agent agent_support', role: 'agent' as const, rootTs: turn.threadTs,
+        ts: turn.threadTs, text: 'Scheduled reports appear here.', isTrigger: false },
+      { userId: turn.userId, role: 'human' as const, rootTs: turn.threadTs,
+        ts: turn.messageTs, text: turn.text, isTrigger: true },
+    ],
+    truncated: false,
+    degradations: [],
+  };
+  const partition = partitionSlackContext(turn, context);
+  assert.deepEqual(partition.activeThread, {
+    rootTs: turn.threadTs,
+    messages: [context.messages[0]],
+    incomplete: false,
+  });
+  assert.deepEqual(partition.historicalBackground, []);
+  assert.equal(assembleSlackPrompt(turn, context).includes('same-root exchange is incomplete'), false);
+});
+
+test('a same-root reply without its root row is marked incomplete', () => {
+  const turn = threadTurn({
+    channelId: 'D1', channelType: 'im', contextMode: 'thread',
+    threadTs: '1789300000.000100', messageTs: '1789311066.438579',
+  });
+  const context = {
+    mode: 'thread' as const,
+    messages: [
+      { userId: 'Agent agent_support', role: 'agent' as const, rootTs: turn.threadTs,
+        ts: '1789300100.000100', text: 'Which List?', isTrigger: false },
+      { userId: turn.userId, role: 'human' as const, rootTs: turn.threadTs,
+        ts: turn.messageTs, text: turn.text, isTrigger: true },
+    ],
+    truncated: false,
+    degradations: [],
+  };
+  assert.equal(partitionSlackContext(turn, context).activeThread?.incomplete, true);
+});
+
+test('request time uses a validated profile zone or an explicit UTC fallback', () => {
   assert.deepEqual(
     slackLocalContextTime('1789310926.893969', 'America/Los_Angeles'),
     { date: '2026-09-13', weekday: 'Sunday', time: '07:48', timezone: 'America/Los_Angeles' },
   );
-  const turn = threadTurn({
-    channelId: 'D1', channelType: 'im', contextMode: 'dm_history',
-    threadTs: '1789311066.438579', messageTs: '1789311066.438579',
-  });
-  const orphan: SlackContextMessage = {
-    userId: 'Agent agent_support', role: 'agent', rootTs: '1789310926.893969',
-    ts: '1789310987.085599', text: 'A reply whose request was unavailable.', isTrigger: false,
-  };
-  const partition = partitionSlackContext(turn, {
-    mode: 'dm_history', messages: [orphan, {
-      userId: turn.userId, role: 'human', rootTs: turn.threadTs,
-      ts: turn.messageTs, text: turn.text, isTrigger: true,
-    }], truncated: false, degradations: ['slack_context.dm_history:truncated'],
-  });
-  assert.equal(partition.continuationCandidate?.incomplete, true);
-  assert.deepEqual(partition.continuationCandidate?.messages, [orphan]);
+  assert.deepEqual(
+    slackLocalContextTime('1789310926.893969', 'UTC'),
+    { date: '2026-09-13', weekday: 'Sunday', time: '14:48', timezone: 'UTC' },
+  );
 });
 
 test('recent DM replies are bounded by message count and public text budget', async () => {

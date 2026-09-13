@@ -21,8 +21,7 @@ export interface SlackContextExchange {
 
 export interface SlackContextPartition {
   activeThread?: SlackContextExchange;
-  continuationCandidate?: SlackContextExchange;
-  olderBackground: SlackContextMessage[];
+  historicalBackground: SlackContextMessage[];
 }
 
 interface SlackContextWindow {
@@ -186,9 +185,10 @@ export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextM
 }
 
 /**
- * Preserve one same-root exchange for threaded replies. A new top-level DM may
- * conditionally continue the immediately preceding Agent exchange, but that
- * different root never becomes active merely because it is recent.
+ * Preserve the current same-root exchange for direct threaded replies. Other
+ * visible rows remain one chronological background stream: admission and the
+ * retained-context privacy filter decide which rows are visible, while this
+ * projection does not guess that one different root continues another.
  */
 export function partitionSlackContext(
   turn: NormalizedSlackTurn,
@@ -198,12 +198,12 @@ export function partitionSlackContext(
   const degraded = context.truncated || context.degradations.length > 0;
   const direct = turn.channelType === 'im' ||
     (!turn.channelType && turn.channelId.startsWith('D'));
-  const hasOrigin = (messages: SlackContextMessage[], rootTs: string) =>
-    messages.some((message) => message.role === 'human' && message.ts === rootTs);
+  const hasRoot = (messages: SlackContextMessage[], rootTs: string) =>
+    messages.some((message) => message.ts === rootTs);
   const exchange = (rootTs: string, messages: SlackContextMessage[]): SlackContextExchange => ({
     rootTs,
     messages,
-    incomplete: degraded || !hasOrigin(messages, rootTs),
+    incomplete: degraded || !hasRoot(messages, rootTs),
   });
 
   if (direct && context.mode === 'thread' && turn.messageTs !== turn.threadTs) {
@@ -211,26 +211,10 @@ export function partitionSlackContext(
     const selected = new Set(messages);
     return {
       activeThread: exchange(turn.threadTs, messages),
-      olderBackground: background.filter((message) => !selected.has(message)),
+      historicalBackground: background.filter((message) => !selected.has(message)),
     };
   }
-
-  const topLevelDm = direct && context.mode === 'dm_history' &&
-    turn.messageTs === turn.threadTs;
-  if (topLevelDm) {
-    const latestAgent = orderMessages(background).reverse().find((message) =>
-      message.role === 'agent' && typeof message.rootTs === 'string');
-    if (latestAgent?.rootTs) {
-      const messages = background.filter((message) => message.rootTs === latestAgent.rootTs);
-      const selected = new Set(messages);
-      return {
-        continuationCandidate: exchange(latestAgent.rootTs, messages),
-        olderBackground: background.filter((message) => !selected.has(message)),
-      };
-    }
-  }
-
-  return { olderBackground: background };
+  return { historicalBackground: background };
 }
 
 export function orderMessages(messages: SlackContextMessage[]): SlackContextMessage[] {

@@ -4,7 +4,7 @@ import { processGatewaySlackEnvelope } from '../src/channels/slack.ts';
 import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
 import { recordDeliveredSlackAgentMessage, assembleRetainedSlackContext } from '../src/slack/public-context.ts';
 import { WebClientPresenter } from '../src/slack/web-client-presenter.ts';
-import { currentMessageOnlyContext } from '../src/slack/thread-context.ts';
+import { currentMessageOnlyContext, partitionSlackContext } from '../src/slack/thread-context.ts';
 import { assembleSlackPrompt, hydrateSlackContextViaWebClient } from '../src/slack/web-client-context.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
@@ -71,9 +71,12 @@ test('gateway-admitted Agent DM roots retain only their own delivered public rep
       async history() { assert.fail('shared DM history must remain inaccessible'); },
     } } as unknown as WebClient, second.turn);
     const retained = await assembleRetainedSlackContext(context, second.turn, { store: stores.config, agentId: second.assignment.agentId });
+    assert.deepEqual(partitionSlackContext(second.turn, retained).historicalBackground
+      .map(({ role, rootTs, text }) => ({ role, rootTs, text })), [
+      { role: 'agent', rootTs: '1000', text: 'The code is CEDARX.' },
+    ]);
     const prompt = assembleSlackPrompt(second.turn, retained);
     assert.match(prompt, /CEDARX/);
-    assert.match(prompt, /Historical background only/);
     assert.doesNotMatch(prompt, /OTHER_AGENT_PRIVATE_ROOT/);
     for (const isolatedTurn of [{ ...second.turn, channelType: 'mpim' as const }, { ...second.turn, messageTs: '2001' }]) {
       const isolated = await assembleRetainedSlackContext(currentMessageOnlyContext(isolatedTurn), isolatedTurn,

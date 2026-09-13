@@ -20,7 +20,11 @@ export function formatSlackContextRows(
       const timestamp = local
         ? `${local.weekday} ${local.date} ${local.time} ${local.timezone}; ${message.ts}`
         : message.ts;
-      return `${options.prefix ?? ''}[${timestamp}${triggerMarker}] ${message.userId}: ${message.text}`;
+      const provenance = [
+        message.role ? `role=${message.role}` : undefined,
+        message.rootTs ? `root=${message.rootTs}` : undefined,
+      ].filter(Boolean).join(' ');
+      return `${options.prefix ?? ''}[${timestamp}${triggerMarker}${provenance ? ` ${provenance}` : ''}] ${message.userId}: ${message.text}`;
     })
     .join(options.separator);
 }
@@ -33,6 +37,8 @@ export interface SlackLocalContextTime {
 }
 
 /** Format a trusted Slack timestamp in an already validated profile timezone. */
+const slackContextTimeFormatters = new Map<string, Intl.DateTimeFormat>();
+
 export function slackLocalContextTime(
   timestamp: string,
   timezone: string,
@@ -40,11 +46,17 @@ export function slackLocalContextTime(
   const seconds = Number(timestamp);
   if (!Number.isFinite(seconds)) return undefined;
   try {
-    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US-u-ca-iso8601', {
-      timeZone: timezone,
-      year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long',
-      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-    }).formatToParts(seconds * 1_000).map((part) => [part.type, part.value]));
+    let formatter = slackContextTimeFormatters.get(timezone);
+    if (!formatter) {
+      formatter = new Intl.DateTimeFormat('en-US-u-ca-iso8601', {
+        timeZone: timezone,
+        year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long',
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+      });
+      slackContextTimeFormatters.set(timezone, formatter);
+    }
+    const parts = Object.fromEntries(formatter.formatToParts(seconds * 1_000)
+      .map((part) => [part.type, part.value]));
     if (!parts.year || !parts.month || !parts.day || !parts.weekday ||
         !parts.hour || !parts.minute) return undefined;
     return {
