@@ -146,8 +146,28 @@ function schemaInspection(sourceRoot, configPath, target) {
   }
 }
 
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
+const OFFICIAL_DESTINATION_PROVENANCE = 'official-release';
+const SOURCE_COMMIT = /^[a-f0-9]{40}$/;
+
+/**
+ * Run the guided updater. Production callers use the immutable official
+ * destination below. A private attended rehearsal may inject only destination
+ * resolution and materialization; installed-origin verification and every
+ * deployment/recovery guard remain fixed here.
+ */
+export async function runUpgrade(args = process.argv.slice(2), injected = {}) {
+  const privateDestinationSource = injected.destinationSource;
+  const destinationSource = privateDestinationSource ?? {
+    provenance: OFFICIAL_DESTINATION_PROVENANCE,
+    resolve: resolveOfficialRelease,
+    fetch: fetchReleaseSource,
+  };
+  if ((privateDestinationSource && destinationSource.provenance !== 'review-candidate') ||
+      (!privateDestinationSource && destinationSource.provenance !== OFFICIAL_DESTINATION_PROVENANCE) ||
+      typeof destinationSource.resolve !== 'function' || typeof destinationSource.fetch !== 'function') {
+    throw new Error('Invalid upgrade destination source.');
+  }
+  const options = parseArgs(args);
   if (options.help) { console.log(HELP); return; }
   assertNodeVersion();
   const stateRoot = privateDirectory(path.join(homedir(), '.chickpea', 'upgrades'));
@@ -163,6 +183,10 @@ async function main() {
     if (path.dirname(realpathSync(directory)) !== receipts) throw new Error('Receipt belongs to a different upgrade-state directory.');
     receipt = readPrivateJson(file);
     if (receipt.schema !== 1 || receipt.id !== path.basename(directory)) throw new Error('Unknown or malformed upgrade receipt.');
+    const receiptProvenance = receipt.destination?.provenance ?? OFFICIAL_DESTINATION_PROVENANCE;
+    if (receiptProvenance !== destinationSource.provenance) {
+      throw new Error('Resume this receipt with the same reviewed upgrade runner that created it.');
+    }
   }
   const stored = receipt ? undefined : options.configure ? undefined : readPrivateJson(installationFile);
   const target = validateTarget(receipt?.target ?? (options.configure ? { ...options, wranglerProfile: options['wrangler-profile'] } : stored?.target));
@@ -186,7 +210,13 @@ async function main() {
       return;
     }
     if (!receipt) {
-      const destination = await resolveOfficialRelease(options.to);
+      const resolvedDestination = await destinationSource.resolve(options.to);
+      if (resolvedDestination?.tag !== options.to ||
+          resolvedDestination.version !== options.to.slice(1) ||
+          !SOURCE_COMMIT.test(resolvedDestination.commit ?? '')) {
+        throw new Error('Resolved upgrade destination identity is invalid.');
+      }
+      const destination = { ...resolvedDestination, provenance: destinationSource.provenance };
       const previous = await resolveOfficialRelease(`v${current.version}`);
       if (current.commit !== previous.commit) throw new Error('Installed source does not match its official release tag. Follow the adoption guide.');
       directory = mkdtempSync(path.join(receipts, 'upgrade-'));
@@ -195,7 +225,7 @@ async function main() {
       writePrivateJson(path.join(directory, 'receipt.json'), receipt);
       writePrivateJson(path.join(directory, 'installation.json'), current);
       fetchReleaseSource(path.join(directory, 'previous'), previous);
-      fetchReleaseSource(path.join(directory, 'destination'), destination);
+      await destinationSource.fetch(path.join(directory, 'destination'), destination);
     }
     const initial = readPrivateJson(path.join(directory, 'installation.json'));
     const previousRoot = path.join(directory, 'previous');
@@ -252,7 +282,7 @@ async function main() {
     if (options.preflight) {
       await prepare(receipt.destination, current);
       save({ ...receipt, stage: 'prepared' });
-      console.log(`Preflight passed for ${target.worker}: v${current.version} → ${receipt.destination.tag}. No deployment was attempted.\nReceipt: ${receiptPath}`);
+      console.log(`Preflight passed for ${target.worker}: v${current.version} → ${receipt.destination.tag}. No deployment was attempted.\nReceipt: ${receiptPath}\nTooling directory: ${root}\nRetained destination source: ${destinationRoot}`);
       return;
     }
     const result = await executePreparedUpgrade({ receipt, initial, direction: options.recover ? 'recover' : receipt.direction ?? 'upgrade', inspect,
@@ -271,11 +301,14 @@ async function main() {
         await subprocess(process.execPath, [path.join(root, 'scripts/deploy-with-epilogue.mjs'), '--skip-build', ...wranglerProfileArgs(target)], sourceRoot(source), deployEnvironment());
       },
     });
-    console.log(`Upgrade ${result}. Receipt: ${receiptPath}`);
+    const servingSource = result === 'recovered' ? previousRoot : result === 'succeeded' ? destinationRoot : undefined;
+    console.log(`Upgrade ${result}. Receipt: ${receiptPath}\nTooling directory: ${root}${servingSource ? `\nRetained serving source: ${servingSource}` : ''}`);
   } finally {
     rmSync(inspectionDirectory, { recursive: true, force: true });
     unlock();
   }
 }
 
-main().catch((error) => { console.error(error instanceof Error ? error.message : 'Upgrade failed. Preserve its private receipt.'); process.exitCode = 1; });
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  runUpgrade().catch((error) => { console.error(error instanceof Error ? error.message : 'Upgrade failed. Preserve its private receipt.'); process.exitCode = 1; });
+}

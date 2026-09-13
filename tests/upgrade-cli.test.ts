@@ -17,6 +17,7 @@ function fixture(t: any, wranglerProfile?: string, authoredPolicy = true) {
   for (const dir of [launcher, origin, home]) mkdirSync(dir);
   cpSync('scripts/lib', join(launcher, 'scripts/lib'), { recursive: true });
   cpSync('scripts/upgrade.mjs', join(launcher, 'scripts/upgrade.mjs'));
+  cpSync('src/release/upgrade-compatibility.mjs', join(launcher, 'src/release/upgrade-compatibility.mjs'));
   cpSync('.nvmrc', join(launcher, '.nvmrc'));
   const git = (args: string[]) => {
     const result = spawnSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Upgrade Test', '-c', 'user.email=test@example.invalid', ...args], { cwd: origin, encoding: 'utf8' });
@@ -82,6 +83,20 @@ function fixture(t: any, wranglerProfile?: string, authoredPolicy = true) {
     };
     if (process.env.UPGRADE_FIXTURE_CONFIRM==='1') Object.defineProperty(process.stdin,'isTTY',{value:true});
   `);
+  const candidateRunner = join(launcher, 'candidate-runner.mjs');
+  put(candidateRunner, `
+    import {mkdirSync} from 'node:fs';
+    import {spawnSync} from 'node:child_process';
+    import {runUpgrade} from './scripts/upgrade.mjs';
+    const commits=JSON.parse(process.env.UPGRADE_FIXTURE_COMMITS);
+    const destinationSource={provenance:'review-candidate',resolve:async(tag)=>({tag,version:tag.slice(1),commit:commits[tag.slice(1)]}),fetch:(root,release)=>{
+      mkdirSync(root,{mode:0o700});
+      for(const args of [['init','--quiet'],['-c','protocol.file.allow=always','fetch','--quiet','--depth=1',process.env.UPGRADE_FIXTURE_ORIGIN,'refs/tags/'+release.tag],['checkout','--quiet','--detach',release.commit]]){
+        const result=spawnSync('git',args,{cwd:root,encoding:'utf8'});if(result.status!==0)throw new Error('candidate fixture fetch failed');
+      }
+    }};
+    runUpgrade(process.argv.slice(2),{destinationSource}).catch((error)=>{console.error(error.message);process.exitCode=1;});
+  `);
   const remote = join(base, 'remote.json'); const log = join(base, 'commands.log');
   put(remote, JSON.stringify({ version: '0.1.0', commit: commits['0.1.0'], id: 'original' })); put(log, '');
   put(join(launcher, 'node_modules/wrangler/bin/wrangler.js'), `
@@ -131,8 +146,15 @@ function fixture(t: any, wranglerProfile?: string, authoredPolicy = true) {
     env: { ...process.env, HOME: home, PATH: `${join(base, 'bin')}:${process.env.PATH}`, npm_execpath: npm, WRANGLER_HOME: 'fixture-oauth-home',
       ...(wranglerProfile ? { UPGRADE_FIXTURE_PROFILE: wranglerProfile } : {}), UPGRADE_FIXTURE_LOG: log, UPGRADE_FIXTURE_REMOTE: remote, UPGRADE_FIXTURE_CONFIRM: confirm ? '1' : '0', UPGRADE_FIXTURE_AFTER_UPLOAD: afterUpload ? '1' : '0', ...extraEnv },
   });
+  const runCandidate = (args: string[], confirm = false, afterUpload = false) => spawnSync(process.execPath, ['--import', preload, candidateRunner, ...args], {
+    cwd: launcher, encoding: 'utf8', input: confirm ? 'customer-test-worker\n' : undefined, timeout: 30_000,
+    env: { ...process.env, HOME: home, PATH: `${join(base, 'bin')}:${process.env.PATH}`, npm_execpath: npm, WRANGLER_HOME: 'fixture-oauth-home',
+      ...(wranglerProfile ? { UPGRADE_FIXTURE_PROFILE: wranglerProfile } : {}), UPGRADE_FIXTURE_LOG: log, UPGRADE_FIXTURE_REMOTE: remote,
+      UPGRADE_FIXTURE_CONFIRM: confirm ? '1' : '0', UPGRADE_FIXTURE_AFTER_UPLOAD: afterUpload ? '1' : '0',
+      UPGRADE_FIXTURE_COMMITS: JSON.stringify(commits), UPGRADE_FIXTURE_ORIGIN: origin },
+  });
   const configure = () => { const result = run(['--configure', '--account', 'a'.repeat(32), '--worker', 'customer-test-worker', '--profile', 'core', '--url', 'https://customer.example', ...(wranglerProfile ? ['--wrangler-profile', wranglerProfile] : [])]); assert.equal(result.status, 0, result.stderr); };
-  return { base, home, remote, log, run, configure, receipts: () => join(home, '.chickpea/upgrades/receipts') };
+  return { base, home, remote, log, run, runCandidate, configure, receipts: () => join(home, '.chickpea/upgrades/receipts') };
 }
 
 for (const profile of [undefined, 'customer-login']) test(`current runner upgrades and recovers immutable source with ${profile ?? 'default'} login`, (t) => {
@@ -164,6 +186,40 @@ test('current runner recovers source after a recorded post-upload interruption',
   assert.equal(recover.status, 0, recover.stderr);
   assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
   assert.equal(JSON.parse(readFileSync(receipt, 'utf8')).stage, 'recovered');
+});
+
+test('private rehearsal can inject only a pinned destination and public resume refuses its receipt', (t) => {
+  const f = fixture(t); f.configure();
+  const preflight = f.runCandidate(['--to', 'v0.1.1', '--preflight']);
+  assert.equal(preflight.status, 0, preflight.stderr);
+  assert.match(preflight.stdout, /Tooling directory:/);
+  assert.match(preflight.stdout, /Retained destination source:/);
+  const directory = join(f.receipts(), readdirSync(f.receipts())[0]!);
+  const receipt = join(directory, 'receipt.json');
+  assert.equal(JSON.parse(readFileSync(receipt, 'utf8')).destination.provenance, 'review-candidate');
+  const publicResume = f.run(['--resume', receipt], true);
+  assert.equal(publicResume.status, 1);
+  assert.match(publicResume.stderr, /same reviewed upgrade runner/);
+  assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
+  const resumed = f.runCandidate(['--resume', receipt], true);
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.match(resumed.stdout, /Retained serving source:/);
+  assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.1');
+});
+
+test('private candidate rehearsal recovers through the same receipt after a recorded interruption', (t) => {
+  const f = fixture(t); f.configure();
+  const failed = f.runCandidate(['--to', 'v0.1.1'], true, true);
+  assert.equal(failed.status, 1);
+  const directory = join(f.receipts(), readdirSync(f.receipts())[0]!);
+  const receipt = join(directory, 'receipt.json');
+  assert.equal(JSON.parse(readFileSync(receipt, 'utf8')).destination.provenance, 'review-candidate');
+  assert.equal(JSON.parse(readFileSync(join(directory, 'deployment.json'), 'utf8')).stage, 'uploaded');
+  assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.1');
+  const recovered = f.runCandidate(['--recover', receipt], true);
+  assert.equal(recovered.status, 0, recovered.stderr);
+  assert.equal(JSON.parse(readFileSync(receipt, 'utf8')).stage, 'recovered');
+  assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
 });
 
 test('CLI refuses altered retained source before dependency scripts or deployment', (t) => {
