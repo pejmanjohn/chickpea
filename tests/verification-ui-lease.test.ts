@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -56,6 +56,24 @@ test('pause and resume retain only the browser reservation until finish', async 
   assert.equal((await run(['resume', '--receipt', paths.receipt, '--wait-ms', '0'], paths.root)).code, 0);
   assert.equal((await run(['finish', '--receipt', paths.receipt], paths.root)).code, 0);
   assert.equal(existsSync(paths.receipt), false);
+});
+
+test('repeated resume and mistaken release cannot strand a paused browser reservation', async (context) => {
+  const paths = setup(context);
+  assert.equal((await acquire(paths)).code, 0);
+  assert.equal((await run(['pause', '--receipt', paths.receipt], paths.root)).code, 0);
+  assert.equal((await run(['resume', '--receipt', paths.receipt, '--wait-ms', '0'], paths.root)).code, 0);
+  const repeated = await run(['resume', '--receipt', paths.receipt, '--wait-ms', '0'], paths.root);
+  assert.equal(repeated.code, 3);
+  assert.equal(JSON.parse(repeated.stdout).actionPerformed, false);
+  const refused = await run(['release', '--receipt', paths.receipt], paths.root);
+  assert.equal(refused.code, 2);
+  assert.match(refused.stderr, /BROWSER_RESERVED/u);
+  assert.equal(existsSync(paths.receipt), true);
+  assert.equal(existsSync(join(paths.root, 'interaction.lock')), true);
+  assert.equal(readdirSync(paths.root).filter((name) => name.startsWith('browser-')).length, 1);
+  assert.equal((await run(['finish', '--receipt', paths.receipt], paths.root)).code, 0);
+  assert.equal(readdirSync(paths.root).filter((name) => name.endsWith('.lock')).length, 0);
 });
 
 test('receipt publication failure rolls back the acquired host lock', async (context) => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -63,7 +63,7 @@ test('readiness reports expiry, model, operation, reset and release-pair blocker
 
 test('inventory validation rejects secrets, filesystem coordinates and malformed credential handles', () => {
   assert.throws(() => validateFixtureInventory(inventory({ 'candidate.channel': entry({ credentialHandle: 'sk-secretvalue123456789' }) })), /Secret-like/u);
-  assert.throws(() => validateFixtureInventory(inventory({ 'candidate.channel': entry({ owner: '/Users/person/private' }) })), /Absolute fixture/u);
+  assert.throws(() => validateFixtureInventory(inventory({ 'candidate.channel': entry({ owner: join(homedir(), 'private-fixture') }) })), /Absolute fixture/u);
   assert.throws(() => validateFixtureInventory(inventory({ 'candidate.channel': entry({ credentialHandle: 'keychain/provider' }) })), /Invalid fixture/u);
 });
 

@@ -108,8 +108,16 @@ export class HostUiMutex {
 
   releasePortable(receipt: PortableUiReceipt): void {
     const owner = validatePortableReceipt(receipt, this.root);
-    assertOwnedByReceipt(join(this.root, 'interaction.lock'), owner);
-    removeOwned(join(this.root, 'interaction.lock'), owner);
+    const lockPath = join(this.root, 'interaction.lock');
+    const reservationPath = browserReservationPath(this.root, owner.browserAlias);
+    assertOwnedByReceipt(lockPath, owner);
+    // A resumed human gate must finish its browser reservation explicitly. Keep
+    // the receipt and both ownership records intact when release is used by mistake.
+    if (readOwner(reservationPath)) throw new UiMutexError('BROWSER_RESERVED');
+    removeOwned(lockPath, owner);
+    // Fail closed if a concurrent pause established a reservation while release
+    // removed the interaction window. The caller retains the receipt for resume.
+    if (readOwner(reservationPath)) throw new UiMutexError('BROWSER_RESERVED');
   }
 
   finishPortable(receipt: PortableUiReceipt): void {
