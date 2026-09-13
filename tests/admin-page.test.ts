@@ -475,7 +475,6 @@ function runAdminPageHarness(
     usageAgentLabel?: string | null;
     usageClassifierOnly?: boolean;
     usageNextCursor?: string | null;
-    now?: () => number;
     resetDocumentScrollOnRender?: boolean;
     modelFocusScrollTop?: number;
     initialSessionStorage?: Record<string, string>;
@@ -2673,12 +2672,6 @@ function runAdminPageHarness(
     }
     return Promise.resolve(jsonResponse({ error: 'not_found' }, 404));
   };
-  const HarnessDate = class extends Date {
-    static now() {
-      return options.now ? options.now() : Date.now();
-    }
-  };
-
   vm.runInNewContext(
     inlineScriptFor(
       options.cloudflare ?? false,
@@ -2690,7 +2683,6 @@ function runAdminPageHarness(
       document,
       fetch,
       console,
-      Date: HarnessDate,
       FormData: class {
         private readonly fields: Record<string, string>;
 
@@ -4054,6 +4046,97 @@ test('an open attach picker refreshes on return without losing its Agent draft, 
   assert.deepEqual(harness.modelSelectionRanges.at(-1), [6, 6]);
 });
 
+test('a real hide and return refreshes an open attach picker after a recent refresh', async () => {
+  let refreshes = 0;
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannelsFetch(path) {
+      if (!path.includes('refresh=1')) {
+        return Promise.resolve(jsonResponse({
+          ...channelsFixture([{ id: 'C_KEEP', name: 'keep-selected' }]),
+        }));
+      }
+      refreshes += 1;
+      return Promise.resolve(jsonResponse({
+        ...channelsFixture(refreshes === 1
+          ? [{ id: 'C_KEEP', name: 'keep-selected' }]
+          : [
+              { id: 'C_KEEP', name: 'keep-selected' },
+              { id: 'C_DISCOVERED', name: 'new-private-channel', isPrivate: true },
+            ]),
+      }));
+    },
+    attachSelectionValue: 'C_KEEP',
+  });
+  await openReleaseAttachPicker(harness);
+  harness.listeners.change?.({
+    target: inputTarget({ 'data-action': 'attach-channel-option' }, 'C_KEEP'),
+  });
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'profile-instructions' }, 'Keep this rapid-return draft.'),
+  });
+  harness.focusModelInput(6);
+
+  harness.focusWindow();
+  await flushAsync();
+  harness.setVisibility('hidden');
+  harness.setVisibility('visible');
+  await flushAsync();
+
+  assert.deepEqual(harness.channelListCalls, [
+    '/admin/api/slack-channels',
+    '/admin/api/slack-channels?refresh=1',
+    '/admin/api/slack-channels?refresh=1',
+  ]);
+  assert.match(harness.app.innerHTML, /Keep this rapid-return draft\./);
+  assert.match(harness.app.innerHTML, /<option value="C_KEEP" selected>/);
+  assert.match(harness.app.innerHTML, /<option value="C_DISCOVERED">#new-private-channel<\/option>/);
+  assert.equal(harness.focusedAction(), 'p-model');
+  assert.deepEqual(harness.modelSelectionRanges.at(-1), [6, 6]);
+});
+
+test('a return during the initial attach catalog load queues one forced refresh', async () => {
+  let resolveInitial: ((response: FakeResponse) => void) | undefined;
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannelsFetch(path) {
+      if (!path.includes('refresh=1')) {
+        return new Promise((resolve) => { resolveInitial = resolve; });
+      }
+      return Promise.resolve(jsonResponse({
+        ...channelsFixture([
+          { id: 'C_KEEP', name: 'keep-selected' },
+          { id: 'C_DISCOVERED', name: 'new-private-channel', isPrivate: true },
+        ]),
+      }));
+    },
+  });
+  await openReleaseAttachPicker(harness);
+  harness.listeners.input?.({
+    target: inputTarget({ 'data-action': 'profile-instructions' }, 'Keep this loading-return draft.'),
+  });
+  harness.focusModelInput(6);
+
+  harness.setVisibility('hidden');
+  harness.setVisibility('visible');
+  harness.focusWindow();
+  assert.deepEqual(harness.channelListCalls, ['/admin/api/slack-channels']);
+  assert.ok(resolveInitial);
+  resolveInitial(jsonResponse({
+    ...channelsFixture([{ id: 'C_KEEP', name: 'keep-selected' }]),
+  }));
+  await flushAsync();
+
+  assert.deepEqual(harness.channelListCalls, [
+    '/admin/api/slack-channels',
+    '/admin/api/slack-channels?refresh=1',
+  ]);
+  assert.match(harness.app.innerHTML, /Keep this loading-return draft\./);
+  assert.match(harness.app.innerHTML, /<option value="C_DISCOVERED">#new-private-channel<\/option>/);
+  assert.equal(harness.focusedAction(), 'p-model');
+  assert.deepEqual(harness.modelSelectionRanges.at(-1), [6, 6]);
+});
+
 test('attach picker return refresh runs only while the picker is open and visible', async () => {
   const harness = runAdminPageHarness({
     slackConnection: connectedSlackFixture(),
@@ -4077,44 +4160,6 @@ test('attach picker return refresh runs only while the picker is open and visibl
     '/admin/api/slack-channels',
     '/admin/api/slack-channels?refresh=1',
   ]);
-});
-
-test('automatic attach picker refresh waits 15 seconds while manual Refresh remains immediate', async () => {
-  let now = 1_800_000_000_000;
-  const harness = runAdminPageHarness({
-    slackConnection: connectedSlackFixture(),
-    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
-    now: () => now,
-  });
-  const click = await openReleaseAttachPicker(harness);
-
-  harness.focusWindow();
-  await flushAsync();
-  assert.deepEqual(harness.channelListCalls, [
-    '/admin/api/slack-channels',
-    '/admin/api/slack-channels?refresh=1',
-  ]);
-
-  now += 5_000;
-  harness.focusWindow();
-  await flushAsync();
-  assert.equal(harness.channelListCalls.length, 2);
-
-  click({ target: actionTarget({ 'data-action': 'refresh-channels' }) });
-  await flushAsync();
-  assert.equal(harness.channelListCalls.length, 3);
-  assert.equal(harness.channelListCalls.at(-1), '/admin/api/slack-channels?refresh=1');
-
-  now += 9_999;
-  harness.focusWindow();
-  await flushAsync();
-  assert.equal(harness.channelListCalls.length, 3);
-
-  now += 1;
-  harness.focusWindow();
-  await flushAsync();
-  assert.equal(harness.channelListCalls.length, 4);
-  assert.equal(harness.channelListCalls.at(-1), '/admin/api/slack-channels?refresh=1');
 });
 
 test('Add to channels explains the disconnected state without requesting a catalog', async () => {

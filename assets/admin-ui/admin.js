@@ -56,7 +56,8 @@
     slackChannelsLoading: false,
     slackChannelsRequestId: 0,
     slackChannelsRequest: null,
-    slackChannelsAutoRefreshAt: null,
+    slackChannelsRequestRefresh: false,
+    slackChannelsQueuedRefresh: null,
     channelIndex: [],
     channelIndexError: "",
     channelIndexQuery: "",
@@ -12756,6 +12757,8 @@
       state.slackTestStatus = null;
       state.slackChannelsRequestId += 1;
       state.slackChannelsRequest = null;
+      state.slackChannelsRequestRefresh = false;
+      state.slackChannelsQueuedRefresh = null;
       state.slackChannels = null;
       state.active = null;
       state.channelScreen = "overview";
@@ -12787,10 +12790,24 @@
   }
 
   function loadSlackChannelsOnReturn() {
-    var now = Date.now();
-    var elapsed = state.slackChannelsAutoRefreshAt == null ? null : now - state.slackChannelsAutoRefreshAt;
-    if (elapsed != null && elapsed >= 0 && elapsed < 15000) return Promise.resolve();
-    state.slackChannelsAutoRefreshAt = now;
+    // Focus and visibility can report the same browser return. Share an active
+    // forced request, or queue exactly one forced refresh behind the initial load.
+    if (state.slackChannelsLoading && state.slackChannelsRequest) {
+      if (state.slackChannelsRequestRefresh) return state.slackChannelsRequest;
+      if (state.slackChannelsQueuedRefresh) return state.slackChannelsQueuedRefresh;
+      var queuedRefresh = state.slackChannelsRequest.then(function () {
+        if (state.slackChannelsQueuedRefresh !== queuedRefresh) return null;
+        state.slackChannelsQueuedRefresh = null;
+        if (
+          state.view !== "profiles" || state.profileScreen !== "edit" ||
+          !state.profileDraft || !state.attachPicker ||
+          (typeof document !== "undefined" && document.visibilityState && document.visibilityState !== "visible")
+        ) return null;
+        return loadSlackChannels(true);
+      });
+      state.slackChannelsQueuedRefresh = queuedRefresh;
+      return queuedRefresh;
+    }
     return loadSlackChannels(true);
   }
 
@@ -12802,6 +12819,7 @@
       : "";
     var requestId = ++state.slackChannelsRequestId;
     state.slackChannelsLoading = true;
+    state.slackChannelsRequestRefresh = refresh === true;
     state.slackChannelsError = null;
     renderSlackChannelCatalogState(preserveAgentId);
     var request = api("/admin/api/slack-channels" + (refresh ? "?refresh=1" : "")).then(function (body) {
@@ -12827,7 +12845,10 @@
     });
     state.slackChannelsRequest = request;
     return request.finally(function () {
-      if (state.slackChannelsRequest === request) state.slackChannelsRequest = null;
+      if (state.slackChannelsRequest === request) {
+        state.slackChannelsRequest = null;
+        state.slackChannelsRequestRefresh = false;
+      }
     });
   }
 
