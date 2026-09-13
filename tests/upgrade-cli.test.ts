@@ -9,7 +9,7 @@ import { migrationDigests } from '../scripts/lib/release-manifest.mjs';
 
 // Run the real command and Git/source/schema/journal code. Only GitHub, the
 // Cloudflare CLI, dependency installation, build, and deploy are offline doubles.
-function fixture(t: any, wranglerProfile?: string) {
+function fixture(t: any, wranglerProfile?: string, authoredPolicy = true) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'chickpea-upgrade-cli-')));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const launcher = join(base, 'launcher'); const origin = join(base, 'origin'); const home = join(base, 'home');
@@ -58,7 +58,7 @@ function fixture(t: any, wranglerProfile?: string) {
   `);
   const commits: Record<string, string> = {};
   for (const version of ['0.1.0', '0.1.1']) {
-    put(join(origin, 'package.json'), JSON.stringify({ type: 'module', version }));
+    put(join(origin, 'package.json'), JSON.stringify({ type: 'module', version, ...(authoredPolicy ? { allowScripts: { 'fixture-unused@1.0.0': false } } : {}) }));
     put(join(origin, 'package-lock.json'), JSON.stringify({ version, packages: { '': { version } } }));
     put(join(origin, 'release.json'), JSON.stringify({ formatVersion: 1, version, storageGeneration: 1, recovery: 'previous-code-only', supportedOrigins: version === '0.1.0' ? [] : ['0.1.0'], migrations: migrationDigests(origin) }));
     git(['add', '.']); git(['commit', '--quiet', '-m', version]);
@@ -101,7 +101,15 @@ function fixture(t: any, wranglerProfile?: string) {
   put(npm, `
     import {readFileSync,writeFileSync,mkdirSync,appendFileSync} from 'node:fs';
     import {execFileSync} from 'node:child_process';
-    const args=process.argv.slice(2);appendFileSync(process.env.UPGRADE_FIXTURE_LOG,JSON.stringify(args)+'\\n');
+    const args=process.argv.slice(2);
+    if(args[0]==='--version'){console.log('11.19.0');process.exit(0);}
+    if(args[0]==='config'){console.log(JSON.stringify({'ignore-scripts':false,'allow-scripts':[]}));process.exit(0);}
+    appendFileSync(process.env.UPGRADE_FIXTURE_LOG,JSON.stringify(args)+'\\n');
+    if(args[0]==='ci' && process.env.UPGRADE_FIXTURE_DIRTY_SOURCE==='1') writeFileSync('package.json',JSON.stringify({...JSON.parse(readFileSync('package.json','utf8')),changed:true}));
+    if(args[0]==='ci' && process.env.UPGRADE_FIXTURE_CI_FAIL==='1') {
+      process.stderr.write('npm error code E401\\nprivate-registry-token-do-not-print\\nnpm error code PRIVATE_SECRET\\n');
+      process.exit(1);
+    }
     if(args.includes('verify:host')) throw new Error('Maintainer lock entered customer path');
     if(args[0]==='run'&&args[1]==='build'){
       const version=JSON.parse(readFileSync('package.json','utf8')).version;
@@ -118,16 +126,16 @@ function fixture(t: any, wranglerProfile?: string) {
   `);
   // A stale maintainer reservation must not stop a customer build or recovery.
   put(join(home, '.chickpea/verification-host/owner.json'), JSON.stringify({ pid: 99999999, token: 'stale-fixture' }));
-  const run = (args: string[], confirm = false, afterUpload = false) => spawnSync(process.execPath, ['--import', preload, join(launcher, 'scripts/upgrade.mjs'), ...args], {
+  const run = (args: string[], confirm = false, afterUpload = false, extraEnv: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, ['--import', preload, join(launcher, 'scripts/upgrade.mjs'), ...args], {
     cwd: launcher, encoding: 'utf8', input: confirm ? 'customer-test-worker\n' : undefined, timeout: 30_000,
     env: { ...process.env, HOME: home, PATH: `${join(base, 'bin')}:${process.env.PATH}`, npm_execpath: npm, WRANGLER_HOME: 'fixture-oauth-home',
-      ...(wranglerProfile ? { UPGRADE_FIXTURE_PROFILE: wranglerProfile } : {}), UPGRADE_FIXTURE_LOG: log, UPGRADE_FIXTURE_REMOTE: remote, UPGRADE_FIXTURE_CONFIRM: confirm ? '1' : '0', UPGRADE_FIXTURE_AFTER_UPLOAD: afterUpload ? '1' : '0' },
+      ...(wranglerProfile ? { UPGRADE_FIXTURE_PROFILE: wranglerProfile } : {}), UPGRADE_FIXTURE_LOG: log, UPGRADE_FIXTURE_REMOTE: remote, UPGRADE_FIXTURE_CONFIRM: confirm ? '1' : '0', UPGRADE_FIXTURE_AFTER_UPLOAD: afterUpload ? '1' : '0', ...extraEnv },
   });
   const configure = () => { const result = run(['--configure', '--account', 'a'.repeat(32), '--worker', 'customer-test-worker', '--profile', 'core', '--url', 'https://customer.example', ...(wranglerProfile ? ['--wrangler-profile', wranglerProfile] : [])]); assert.equal(result.status, 0, result.stderr); };
   return { base, home, remote, log, run, configure, receipts: () => join(home, '.chickpea/upgrades/receipts') };
 }
 
-for (const profile of [undefined, 'customer-login']) test(`current runner upgrades and recovers immutable legacy source with ${profile ?? 'default'} login`, (t) => {
+for (const profile of [undefined, 'customer-login']) test(`current runner upgrades and recovers immutable source with ${profile ?? 'default'} login`, (t) => {
   const f = fixture(t, profile); f.configure();
   const initial = readFileSync(f.remote, 'utf8');
   const preflight = f.run(['--to', 'v0.1.1', '--preflight']);
@@ -143,7 +151,7 @@ for (const profile of [undefined, 'customer-login']) test(`current runner upgrad
   const again = f.run(['--resume', receipt]); assert.equal(again.status, 0, again.stderr); assert.match(again.stdout, /recovered/);
 });
 
-test('current runner recovers legacy source after a recorded post-upload interruption', (t) => {
+test('current runner recovers source after a recorded post-upload interruption', (t) => {
   const f = fixture(t, 'customer-login'); f.configure();
   const failed = f.run(['--to', 'v0.1.1'], true, true);
   assert.equal(failed.status, 1);
@@ -182,4 +190,30 @@ test('CLI rejects conflicting arguments and receipts outside its private directo
   writeFileSync(join(outside, 'receipt.json'), '{}', { mode: 0o600 });
   assert.match(f.run(['--resume', join(outside, 'receipt.json')]).stderr, /different upgrade-state/);
   assert.equal(existsSync(join(f.home, '.chickpea/upgrades/installations/default.json')), false);
+});
+
+
+test('CLI refuses unknown historical policy before dependency commands', (t) => {
+  const f = fixture(t, undefined, false); f.configure();
+  const result = f.run(['--to', 'v0.1.1', '--preflight']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /NPM_POLICY_UNKNOWN/);
+  assert.doesNotMatch(readFileSync(f.log, 'utf8'), /"ci"|"build"|"--skip-build"/);
+  assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
+});
+
+for (const failure of ['UPGRADE_FIXTURE_DIRTY_SOURCE', 'UPGRADE_FIXTURE_CI_FAIL']) test(`CLI stops before build when dependency preparation fails: ${failure}`, (t) => {
+  const f = fixture(t); f.configure();
+  const result = f.run(['--to', 'v0.1.1', '--preflight'], false, false, { [failure]: '1' });
+  assert.equal(result.status, 1);
+  if (failure === 'UPGRADE_FIXTURE_DIRTY_SOURCE') assert.match(result.stderr, /identity or clean-checkout/);
+  else {
+    assert.match(result.stderr, /NPM_INSTALL_FAILED.*E401/);
+    assert.doesNotMatch(result.stderr + result.stdout, /private-registry-token-do-not-print|PRIVATE_SECRET/);
+  }
+  const commands = readFileSync(f.log, 'utf8');
+  assert.match(commands, /"ci"/);
+  assert.match(commands, /"--strict-allow-scripts"/);
+  assert.doesNotMatch(commands, /"build"|"--skip-build"/);
+  assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
 });

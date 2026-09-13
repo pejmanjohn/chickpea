@@ -28,7 +28,7 @@ environment files. Use the lockfile and run checks serially per checkout:
 
 ```sh
 nvm install && nvm use
-npm ci
+npm ci --strict-allow-scripts
 npm audit --omit=dev
 npm run verify:regression -- --mode release
 ```
@@ -56,6 +56,46 @@ the repository or `node_modules`. Keep headroom below the advertised plan's
 Worker limit. A dynamic import still contributes its uploaded chunk to that
 limit. Do not advertise Free compatibility unless the actual release artifact
 fits its limits and the relevant runtime checks pass.
+
+## Dependency install policy
+
+The pinned Node 24.20.0 baseline includes npm 11.19.0. Install with
+`npm ci --strict-allow-scripts`. In npm 11.19, an uncovered dependency hook runs
+with a warning unless strict mode is enabled. Root `allowScripts` records exact
+package/version approvals and denials; the source export exercises strict mode.
+When changing the lockfile, review the actual published hooks and update their
+exact entries together. Keep the root Node version guard enabled separately.
+
+| Locked hook | Decision | Reason |
+| --- | --- | --- |
+| esbuild 0.28.1 | Allow | Installs and validates the platform build binary. |
+| workerd 1.20260815.1 | Allow | Installs and validates the local Worker runtime binary. |
+| @google/genai 1.52.0 | Deny | Published preinstall only prints a no-op message. |
+| core-js-pure 3.49.0 | Deny | Sponsorship banner and its temporary throttle file are not needed by the polyfills. |
+| protobufjs 7.6.5 | Deny | Postinstall only warns about dependency version notation. |
+| @mongodb-js/zstd 7.0.0 | Deny | just-bash 3.0.2 leaves native codecs disabled; avoid an unnecessary binary download and broken source-build fallback. |
+| node-liblzma 2.2.0 | Deny | The same codec guard makes the native compiler/system-library setup unnecessary. |
+
+Verify a clean install without saved approvals: required binary versions, a
+build/local workerd run, protobuf serialization and polyfill imports, and
+just-bash gzip tar behavior. XZ/Zstandard should retain their existing disabled
+codec response rather than reaching a missing native addon. Do not infer that
+a warning means a hook was skipped.
+
+The current updater preserves immutable older source with a private npmrc
+policy only for the exact reviewed v0.1.16 commit and manifest/lockfile digests.
+That config format supports approvals but not denials, so all seven historical
+hooks are explicitly reviewed and allowed there. The native hooks may fail as
+optional dependencies; their codecs remain disabled. This retains the older
+release's install behavior and is not a reason to enable those hooks in new
+source. The historical liblzma source downloader can use ambient `GITHUB_TOKEN`
+for GitHub API access. The updater preserves environment substitutions because
+the selected registry configuration may also need those credentials.
+
+An additional historical release needs its own source/digest and hook review.
+Unknown identities fail before npm; do not add a runtime trust flag, edit the
+retained source, or weaken clean-source verification. Policy coverage alone
+never establishes upgrade compatibility or changes `supportedOrigins`.
 
 ## Attended acceptance
 

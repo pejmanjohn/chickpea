@@ -932,7 +932,7 @@ try {
 
   verifyNpmPackManifest(entries, packageJson);
 
-  run('npm', ['ci'], { cwd: scratch });
+  run('npm', ['ci', '--strict-allow-scripts'], { cwd: scratch });
   // Artifact contracts must inspect a build of this archive, not skip because
   // dist-cf is absent in a fresh source checkout.
   run('npm', ['run', 'build'], { cwd: scratch });
