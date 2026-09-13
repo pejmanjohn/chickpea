@@ -1,16 +1,17 @@
+import { gatewayStores } from './helpers/gateway-stores.ts';
+import type { RefreshGatewayClaimSetupInput } from '../src/config/store.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  SqliteSettingsStore,
   type SettingsStore,
+  type SettingsPatch,
 } from '../src/config/settings-store.ts';
-import { SqliteConfigStore } from '../src/config/store.ts';
-import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
 import {
   GATEWAY_BINDING_SETTING,
+  GATEWAY_CLAIM_SETTING,
   GATEWAY_SESSION_SETTING,
   GatewayDeploymentClient,
 } from '../src/slack/gateway/client.ts';
@@ -44,9 +45,244 @@ import {
 
 const NOW = Date.UTC(2026, 7, 20, 12);
 
+test('setup resumes the same pending claim and accepts a binding after its local deadline', async () => {
+  const { settings, config } = gatewayStores(() => NOW);
+  const gateway = new FakeGateway();
+  let clock = NOW;
+  let pending = true;
+  const client = new GatewayDeploymentClient({
+    settings, config, keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test', now: () => clock,
+    fetch: async (url, init) => {
+      if (String(url).endsWith('/v1/claims/claim_test') && pending) {
+        return json({ protocolVersion: 1, claimId: 'claim_test', state: 'pending', expiresAt: NOW + 300_000 });
+      }
+      return gateway.fetch(url, init);
+    },
+  });
+  try {
+    const first = await client.beginClaim();
+    const raw = await settings.getSetting(GATEWAY_CLAIM_SETTING);
+    assert.deepEqual(await client.beginClaim(), first);
+    assert.equal(gateway.requests.filter(({ path }) => path === '/v1/claims').length, 1);
+    assert.equal(await settings.getSetting(GATEWAY_CLAIM_SETTING), raw);
+    pending = false;
+    clock += 300_001;
+    assert.equal((await client.refreshClaim()).state, 'bound');
+    assert.equal((await config.getWorkspaceInstallation('TGATEWAY'))?.health, 'healthy');
+  } finally { settings.close(); config.close(); }
+});
+
+async function recoveryFixture() {
+  const stores = gatewayStores(() => NOW);
+  const gateway = new FakeGateway();
+  const client = new GatewayDeploymentClient({
+    ...stores, keyring: generateCredentialKeyring('key_gateway'),
+    gatewayBaseUrl: 'https://gateway.chickpea.test', fetch: gateway.fetch, now: () => NOW,
+  });
+  const setup = await stores.identity.reserveSlackSetupTransaction({
+    locatorHash: 'b'.repeat(64), issuedAt: NOW, expiresAt: NOW + 600_000,
+    destination: '/admin/onboarding', canonicalAdminOrigin: 'https://self-hosted.example',
+  });
+  await client.beginClaim(undefined, { setupId: setup.id, setupRevision: setup.revision });
+  const raw = (await stores.settings.getSetting(GATEWAY_CLAIM_SETTING))!;
+  return { ...stores, gateway, client, setup, raw };
+}
+
+test('unknown claim status preserves the original claim and never creates another', async () => {
+  const f = await recoveryFixture();
+  try {
+    for (const projection of [() => { throw new Error('network unavailable'); }, () => ({}),
+      (value: Record<string, unknown>) => ({ ...value, claimId: 'wrong' })]) {
+      f.gateway.claimProjection = projection;
+      assert.equal((await f.client.refreshClaim()).state, 'unknown');
+      await assert.rejects(f.client.beginClaim(), /gateway_claim_unknown/);
+      assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), f.raw);
+    }
+    assert.equal(f.gateway.requests.filter(({ path }) => path === '/v1/claims').length, 1);
+  } finally { f.settings.close(); }
+});
+
+for (const state of ['expired', 'cancelled'] as const) {
+  test(`remote ${state} clears only its claim; the next explicit Add creates anew`, async () => {
+    const f = await recoveryFixture();
+    try {
+      f.gateway.claimProjection = ({ binding, ...value }) => ({ ...value, state });
+      assert.equal((await f.client.refreshClaim()).state, state);
+      assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), undefined);
+      await assert.rejects(f.client.beginClaim(undefined, undefined, { resumeOnly: true }), /gateway_claim_retry/);
+      assert.equal(f.gateway.requests.filter(({ path }) => path === '/v1/claims').length, 1);
+      await f.client.beginClaim();
+      assert.equal(f.gateway.requests.filter(({ path }) => path === '/v1/claims').length, 2);
+    } finally { f.settings.close(); }
+  });
+}
+
+for (const state of ['bound', 'expired', 'cancelled'] as const) {
+  test(`a late ${state} response cannot alter a newer claim or any installation state`, async () => {
+    const f = await recoveryFixture();
+    const newer = JSON.stringify({ ...JSON.parse(f.raw), claimId: 'new_claim', authorizationUrl: 'https://gateway.chickpea.test/install/new_claim' });
+    try {
+      f.gateway.claimProjection = async (value) => {
+        await f.settings.setSetting(GATEWAY_CLAIM_SETTING, newer);
+        const { binding, ...status } = value;
+        return { ...status, state, ...(state === 'bound' ? { binding } : {}) };
+      };
+      assert.equal((await f.client.refreshClaim()).state, 'unknown');
+      assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), newer);
+      assert.equal(await f.settings.getSetting(GATEWAY_BINDING_SETTING), undefined);
+      assert.deepEqual(await f.config.listWorkspaceInstallations(), []);
+      assert.equal((await f.identity.getSlackSetupTransaction(f.setup.id))?.state, 'awaiting_app_creation');
+    } finally { f.settings.close(); }
+  });
+}
+
+test('binding failure rolls back Owner setup, workspace changes and claim deletion together', async (t) => {
+  const f = await recoveryFixture();
+  const run = f.db.run.bind(f.db);
+  t.mock.method(f.db, 'run', (sql: string, ...args: (string | number | null)[]) => {
+    if (/UPDATE config_workspace_installations/.test(sql)) throw new Error('simulated workspace write failure');
+    return run(sql, ...args);
+  });
+  try {
+    await assert.rejects(f.client.refreshClaim(), /simulated workspace write failure/);
+    assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), f.raw);
+    assert.equal(await f.settings.getSetting(GATEWAY_BINDING_SETTING), undefined);
+    assert.deepEqual(await f.config.listWorkspaceInstallations(), []);
+    assert.equal((await f.identity.getSlackSetupTransaction(f.setup.id))?.state, 'awaiting_app_creation');
+  } finally { f.settings.close(); }
+});
+
+test('binding rejects a stale setup revision without partial state', async () => {
+  const f = await recoveryFixture();
+  try {
+    await f.identity.beginSlackAppCreation({ setupId: f.setup.id, expectedRevision: f.setup.revision, manifestFingerprint: 'f'.repeat(64) });
+    await assert.rejects(f.client.refreshClaim(), /changed|transition|concurrent/i);
+    assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), f.raw);
+    assert.deepEqual(await f.config.listWorkspaceInstallations(), []);
+    assert.equal(await f.settings.getSetting(GATEWAY_BINDING_SETTING), undefined);
+  } finally { f.settings.close(); }
+});
+
+test('protected resume preserves a bound claim after a rejected own-app detour', async () => {
+  const f = await recoveryFixture();
+  try {
+    const pending = await f.identity.beginSlackAppCreation({ setupId: f.setup.id,
+      expectedRevision: f.setup.revision, manifestFingerprint: 'f'.repeat(64) });
+    const current = await f.identity.failSlackAppCreation({ setupId: f.setup.id,
+      expectedRevision: pending.revision, state: 'awaiting_app_creation', errorCode: 'invalid_auth' });
+    await assert.rejects(f.client.refreshClaim(), /changed|transition|concurrent/i);
+    assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), f.raw);
+    await f.client.resumeClaimSetup({ setupId: current.id, setupRevision: current.revision });
+    const resumed = JSON.parse((await f.settings.getSetting(GATEWAY_CLAIM_SETTING))!);
+    assert.deepEqual(resumed, { ...JSON.parse(f.raw), setupRevision: current.revision });
+    assert.equal((await f.client.refreshClaim()).state, 'bound');
+    assert.equal((await f.identity.getSlackSetupTransaction(f.setup.id))?.state, 'bot_installed');
+    assert.equal(f.gateway.requests.filter(({ path }) => path === '/v1/claims').length, 1);
+  } finally { f.settings.close(); }
+});
+
+test('claim authority refresh refuses a changed claim, old setup, advanced stage or expired link', async () => {
+  const f = await recoveryFixture();
+  try {
+    const input = { expectedClaim: f.raw, setupId: f.setup.id, setupRevision: f.setup.revision, now: NOW };
+    for (const invalid of [
+      { ...input, expectedClaim: JSON.stringify({ ...JSON.parse(f.raw), claimId: 'older_claim' }) },
+      { ...input, setupRevision: f.setup.revision - 1 },
+      { ...input, setupId: 'different_setup' },
+      { ...input, now: f.setup.expiresAt },
+    ]) assert.equal(await f.config.refreshGatewayClaimSetup(invalid), false);
+    await f.settings.setSetting(GATEWAY_BINDING_SETTING, '{}');
+    assert.equal(await f.config.refreshGatewayClaimSetup(input), false);
+    assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), f.raw);
+    await f.settings.deleteSetting(GATEWAY_BINDING_SETTING);
+    const ahead = JSON.stringify({ ...JSON.parse(f.raw), setupRevision: f.setup.revision + 1 });
+    await f.settings.setSetting(GATEWAY_CLAIM_SETTING, ahead);
+    assert.equal(await f.config.refreshGatewayClaimSetup({ ...input, expectedClaim: ahead }), false);
+    assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), ahead);
+    await f.settings.setSetting(GATEWAY_CLAIM_SETTING, f.raw);
+    const advanced = await f.identity.beginSlackAppCreation({ setupId: f.setup.id,
+      expectedRevision: f.setup.revision, manifestFingerprint: 'f'.repeat(64) });
+    assert.equal(await f.config.refreshGatewayClaimSetup({ ...input, setupRevision: advanced.revision }), false);
+    assert.equal(await f.settings.getSetting(GATEWAY_CLAIM_SETTING), f.raw);
+    assert.deepEqual(await f.config.listWorkspaceInstallations(), []);
+  } finally { f.settings.close(); }
+});
+
+test('concurrent protected resumes recognize the same renewed setup claim', async (t) => {
+  const f = await recoveryFixture();
+  try {
+    const current = await f.identity.reserveSlackSetupTransaction({
+      locatorHash: 'c'.repeat(64), issuedAt: NOW, expiresAt: NOW + 600_000,
+      destination: '/admin/onboarding', canonicalAdminOrigin: 'https://self-hosted.example',
+    });
+    const refresh = f.config.refreshGatewayClaimSetup.bind(f.config);
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    t.mock.method(f.config, 'refreshGatewayClaimSetup', async (input: RefreshGatewayClaimSetupInput) => {
+      if (++calls === 2) release();
+      await gate;
+      return refresh(input);
+    });
+    const setup = { setupId: current.id, setupRevision: current.revision };
+    await Promise.all([f.client.resumeClaimSetup(setup), f.client.resumeClaimSetup(setup)]);
+    assert.equal(calls, 2);
+    assert.deepEqual(JSON.parse((await f.settings.getSetting(GATEWAY_CLAIM_SETTING))!),
+      { ...JSON.parse(f.raw), setupRevision: current.revision });
+    assert.equal(f.gateway.requests.filter(({ path }) => path === '/v1/claims').length, 1);
+  } finally { f.settings.close(); }
+});
+
+test('concurrent Add requests return only the winning retained claim', async () => {
+  const stores = gatewayStores(() => NOW);
+  const keyring = generateCredentialKeyring('key_gateway');
+  let creates = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const fetcher: typeof fetch = async (url) => {
+    if (String(url).endsWith('/v1/claims')) {
+      const id = `claim_${++creates}`;
+      if (creates === 2) release();
+      await gate;
+      return json({ protocolVersion: 1, claimId: id, authorizationUrl: `https://gateway.chickpea.test/install/${id}`, expiresAt: NOW + 600_000 });
+    }
+    return json({ protocolVersion: 1, claimId: new URL(String(url)).pathname.split('/').at(-1), state: 'pending', expiresAt: NOW + 600_000 });
+  };
+  const makeClient = () => new GatewayDeploymentClient({ ...stores, keyring, gatewayBaseUrl: 'https://gateway.chickpea.test', fetch: fetcher, now: () => NOW });
+  try {
+    const results = await Promise.all([makeClient().beginClaim(), makeClient().beginClaim()]);
+    const retained = JSON.parse((await stores.settings.getSetting(GATEWAY_CLAIM_SETTING))!);
+    assert.equal(creates, 2);
+    assert.equal(results[0].claimId, retained.claimId);
+    assert.equal(results[1].authorizationUrl, retained.authorizationUrl);
+  } finally { stores.settings.close(); }
+});
+
+test('claim write contention preserves the explicit reconnect intent', async (t) => {
+  const f = await recoveryFixture();
+  try {
+    await f.client.refreshClaim();
+    const apply = f.settings.applySettingsPatch.bind(f.settings);
+    let contended = false;
+    t.mock.method(f.settings, 'applySettingsPatch', async (patch: SettingsPatch) => {
+      if (!contended && patch.set?.some(({ key }) => key === GATEWAY_CLAIM_SETTING)) {
+        contended = true;
+        return false;
+      }
+      return apply(patch);
+    });
+    await f.client.beginClaim(undefined, undefined, { reconnect: true });
+    const creates = f.gateway.requests.filter(({ path }) => path === '/v1/claims');
+    assert.equal(creates.length, 3);
+    assert.equal(creates[1]!.body.reconnectBindingId, 'binding_test');
+    assert.equal(creates[2]!.body.reconnectBindingId, 'binding_test');
+    assert.ok(await f.settings.getSetting(GATEWAY_CLAIM_SETTING));
+  } finally { f.settings.close(); }
+});
+
 test('gateway uploads reject oversized encoded requests before sending any file bytes', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings, config, keyring: generateCredentialKeyring('key_gateway'),
@@ -73,6 +309,33 @@ test('gateway uploads reject oversized encoded requests before sending any file 
   }
 });
 
+test('a delayed create cannot replace an installation that bound while it was in flight', async () => {
+  const stores = gatewayStores(() => NOW);
+  const gateway = new FakeGateway();
+  const keyring = generateCredentialKeyring('key_gateway');
+  let creates = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const fetcher: typeof fetch = async (url, init) => {
+    if (String(url).endsWith('/v1/claims') && ++creates === 2) {
+      await gate;
+      return json({ protocolVersion: 1, claimId: 'claim_late', authorizationUrl: 'https://gateway.chickpea.test/install/claim_late', expiresAt: NOW + 600_000 });
+    }
+    return gateway.fetch(url, init);
+  };
+  const makeClient = () => new GatewayDeploymentClient({ ...stores, keyring, gatewayBaseUrl: 'https://gateway.chickpea.test', fetch: fetcher, now: () => NOW });
+  const clients = [makeClient(), makeClient()];
+  try {
+    const attempts = clients.map((client) => client.beginClaim());
+    const winner = await Promise.race(attempts.map((attempt, index) => attempt.then(() => index)));
+    assert.equal((await clients[winner]!.refreshClaim()).state, 'bound');
+    release();
+    await assert.rejects(attempts[1 - winner]!, /gateway_already_connected/);
+    assert.equal(await stores.settings.getSetting(GATEWAY_CLAIM_SETTING), undefined);
+    assert.equal((await stores.config.getWorkspaceInstallation('TGATEWAY'))?.gatewayBindingId, 'binding_test');
+  } finally { release(); stores.settings.close(); }
+});
+
 test('gateway client survives async resolver and Promise assimilation without a Slack call', async () => {
   const calls: string[] = [];
   const client = createGatewaySlackWebClient({
@@ -88,8 +351,7 @@ test('gateway client survives async resolver and Promise assimilation without a 
 });
 
 test('gateway installation authority authenticates the exact binding and rejects stale or expanded responses', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings, config, keyring: generateCredentialKeyring('key_gateway'),
@@ -160,8 +422,7 @@ test('fresh deployments default to the live shared gateway origin', () => {
 });
 
 test('gateway deployment identity retries after a transient settings failure', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   let failIdentityRead = true;
   const flakySettings = new Proxy(settings, {
@@ -198,8 +459,7 @@ test('gateway deployment identity retries after a transient settings failure', a
 });
 
 test('gateway reconnect replaces only an unreadable deployment identity', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const first = new GatewayDeploymentClient({
     settings,
@@ -250,8 +510,7 @@ test('gateway reconnect replaces only an unreadable deployment identity', async 
 });
 
 test('gateway reconnect retains a concurrently replaced deployment identity', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const firstKeyring = generateCredentialKeyring('key_gateway');
   const replacementKeyring = generateCredentialKeyring('key_gateway');
@@ -265,8 +524,7 @@ test('gateway reconnect retains a concurrently replaced deployment identity', as
   });
   try {
     await first.beginClaim();
-    const replacementSettings = new SqliteSettingsStore(':memory:', () => NOW);
-    const replacementConfig = configStore();
+    const { settings: replacementSettings, config: replacementConfig } = gatewayStores(() => NOW);
     const replacementClient = new GatewayDeploymentClient({
       settings: replacementSettings,
       config: replacementConfig,
@@ -307,7 +565,7 @@ test('gateway reconnect retains a concurrently replaced deployment identity', as
       now: () => NOW,
     });
 
-    const claim = await client.beginClaim();
+    const claim = await client.beginClaim(undefined, undefined, { reconnect: true });
     assert.equal(claim.claimId, 'claim_test');
     assert.equal(
       await settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING),
@@ -320,8 +578,7 @@ test('gateway reconnect retains a concurrently replaced deployment identity', as
 });
 
 test('gateway identity recovery bounds repeated compare-and-set contention', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const first = new GatewayDeploymentClient({
     settings,
@@ -359,7 +616,7 @@ test('gateway identity recovery bounds repeated compare-and-set contention', asy
     });
 
     await assert.rejects(
-      replacement.beginClaim(),
+      replacement.beginClaim(undefined, undefined, { reconnect: true }),
       (error: unknown) => error instanceof SlackTransportError &&
         error.operation === 'gateway.claim' &&
         error.code === 'gateway_identity_contended' &&
@@ -373,8 +630,7 @@ test('gateway identity recovery bounds repeated compare-and-set contention', asy
 });
 
 test('gateway client preserves the Cloudflare global fetch receiver', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const originalFetch = globalThis.fetch;
   let receiverWasGlobal = false;
   globalThis.fetch = function (this: unknown, _input: string | URL | Request) {
@@ -404,8 +660,7 @@ test('gateway client preserves the Cloudflare global fetch receiver', async () =
 });
 
 test('gateway client uses Cloudflare-safe manual redirects and rejects them', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   let observedRedirect: RequestRedirect | undefined;
   const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
     observedRedirect = init?.redirect;
@@ -436,9 +691,7 @@ test('gateway client uses Cloudflare-safe manual redirects and rejects them', as
 });
 
 test('shared-app claim binds one workspace without storing Slack credentials', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
-  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const { settings, config, identity } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const productEvents: ProductTelemetryEventInput[] = [];
   const client = new GatewayDeploymentClient({
@@ -507,8 +760,7 @@ test('shared-app claim binds one workspace without storing Slack credentials', a
 });
 
 test('a gateway reconnect cannot silently rebind a deployment to another workspace', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -536,8 +788,7 @@ test('a gateway reconnect cannot silently rebind a deployment to another workspa
 });
 
 test('gateway transport failures preserve the exact Slack operation for ambiguity handling', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const keyring = generateCredentialKeyring('key_gateway');
   try {
@@ -573,8 +824,7 @@ test('gateway transport failures preserve the exact Slack operation for ambiguit
 });
 
 test('gateway client marks an explicit operation rejection as a confirmed failed effect', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -606,8 +856,7 @@ test('gateway client marks an explicit operation rejection as a confirmed failed
 });
 
 test('gateway attachment read signs the exact binary contract and returns only validated metadata and bytes', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const bytes = new TextEncoder().encode('one page');
   let attachmentRequest: Record<string, unknown> | undefined;
@@ -666,8 +915,7 @@ test('gateway attachment read signs the exact binary contract and returns only v
 });
 
 test('gateway attachment read preserves bounded conversion and reconnect error envelopes', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const errors = [
     { code: 'conversion_pending', retryable: true, status: 409 },
@@ -714,8 +962,7 @@ test('gateway attachment read preserves bounded conversion and reconnect error e
 });
 
 test('an older gateway route-level 404 reports missing attachment support', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({ settings, config,
     keyring: generateCredentialKeyring('key_gateway'), gatewayBaseUrl: 'https://gateway.chickpea.test',
@@ -730,8 +977,7 @@ test('an older gateway route-level 404 reports missing attachment support', asyn
 });
 
 test('gateway attachment headers and per-file ceiling accept exact values and reject one over', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   let attachmentFetches = 0;
   const client = new GatewayDeploymentClient({
@@ -790,8 +1036,7 @@ test('gateway attachment headers and per-file ceiling accept exact values and re
 });
 
 test('gateway transport maps only allowlisted tenant-bound Slack operations', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -843,8 +1088,7 @@ test('gateway transport maps only allowlisted tenant-bound Slack operations', as
 });
 
 test('gateway client publishes an immutable Agent avatar without exposing Slack credentials', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -883,8 +1127,7 @@ test('gateway client publishes an immutable Agent avatar without exposing Slack 
 });
 
 test('gateway client requests a fixed generated avatar without sending SVG', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -917,8 +1160,7 @@ test('gateway client requests a fixed generated avatar without sending SVG', asy
 });
 
 test('gateway execution uses the shared app without resolving or storing a bot token', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const fake = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -1018,8 +1260,7 @@ test('Agent Session status uses one apiCall bridge for direct and gateway client
 });
 
 test('shared-app Slack OIDC returns a bounded identity proof without exposing provider tokens', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -1070,8 +1311,7 @@ test('shared-app Slack OIDC returns a bounded identity proof without exposing pr
 });
 
 test('logical sessions authenticate before delivery, ack once, and fence tenant coordinates', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -1167,6 +1407,7 @@ class FakeGateway {
   publicKey: GatewayPublicKey | undefined;
   deploymentId = '';
   statusProjection = (value: Record<string, unknown>): Record<string, unknown> => value;
+  claimProjection: (value: Record<string, unknown>) => unknown | Promise<unknown> = (value) => value;
 
   readonly fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
@@ -1183,7 +1424,7 @@ class FakeGateway {
       });
     }
     if (url.pathname === '/v1/claims/claim_test') {
-      return json({
+      return json(await this.claimProjection({
         protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
         claimId: 'claim_test', state: 'bound', expiresAt: NOW + 300_000,
         binding: {
@@ -1193,7 +1434,7 @@ class FakeGateway {
           sessionUrl: 'wss://gateway.chickpea.test/v1/sessions/binding_test',
           installedAt: NOW,
         },
-      });
+      }));
     }
     if (url.pathname === '/v1/installations/status') {
       return json(this.statusProjection({
@@ -1291,14 +1532,6 @@ function operationResult(operation: string, input: Record<string, unknown>): Rec
   return { ok: true };
 }
 
-function configStore(): SqliteConfigStore {
-  return new SqliteConfigStore(':memory:', {
-    agents: [{
-      id: 'agent_default', name: 'Chickpea', instructions: 'Help.', enabled: true,
-      lifecycle: 'active', skills: [], mcpServers: [], apiConnections: [], repositories: [],
-    }],
-  });
-}
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {

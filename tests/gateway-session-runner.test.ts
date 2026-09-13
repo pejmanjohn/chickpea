@@ -1,11 +1,10 @@
+import { gatewayStores } from './helpers/gateway-stores.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import vm from 'node:vm';
 import ts from 'typescript';
 
-import { SqliteSettingsStore } from '../src/config/settings-store.ts';
-import { SqliteConfigStore } from '../src/config/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
   GATEWAY_SESSION_SETTING,
@@ -163,8 +162,7 @@ test('concurrent Durable Object wakes share one supervisor and leave no orphan s
 });
 
 test('session runner reconnects and rotates a renewable logical session', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -235,8 +233,7 @@ test('session runner reconnects and rotates a renewable logical session', async 
 
 test('Durable Object reconnect recreates a client whose state RPC stub has failed', async () => {
   let clock = NOW;
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const keyring = generateCredentialKeyring('key_gateway');
   const makeClient = () => new GatewayDeploymentClient({
@@ -324,8 +321,7 @@ test('Durable Object reconnect recreates a client whose state RPC stub has faile
 });
 
 test('session rotation keeps the predecessor live until its successor is ready', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -383,8 +379,7 @@ test('session rotation keeps the predecessor live until its successor is ready',
 });
 
 test('a stalled rotation becomes replaceable and late completion cannot reopen the old generation', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   let clock = NOW;
   const client = new GatewayDeploymentClient({
@@ -451,8 +446,7 @@ test('a stalled rotation becomes replaceable and late completion cannot reopen t
 });
 
 test('failed rotation leaves a healthy predecessor active and retries the handoff', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -507,8 +501,7 @@ test('failed rotation leaves a healthy predecessor active and retries the handof
 });
 
 test('checkpoint failure during promotion closes both handoff sockets before reconnecting', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -571,8 +564,7 @@ test('checkpoint failure during promotion closes both handoff sockets before rec
 });
 
 test('predecessor loss during a failed-rotation retry resumes ordinary reconnect', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -630,8 +622,7 @@ test('predecessor loss during a failed-rotation retry resumes ordinary reconnect
 });
 
 test('failed successor after predecessor loss resumes one ordinary reconnect', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -685,8 +676,7 @@ test('failed successor after predecessor loss resumes one ordinary reconnect', a
 });
 
 test('session runner stop and restart supersede an in-flight start without orphaning a socket', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -916,8 +906,7 @@ test('live runner health wins over a stale persisted healthy checkpoint', () => 
 });
 
 test('session runner reconnects a half-open socket after heartbeat timeout', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -970,8 +959,7 @@ test('session runner reconnects a half-open socket after heartbeat timeout', asy
 });
 
 test('session runner reconnects when the gateway never sends session.ready', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -1018,8 +1006,7 @@ test('session runner reconnects when the gateway never sends session.ready', asy
 });
 
 test('session runner handles and acknowledges deliveries in socket order', async () => {
-  const settings = new SqliteSettingsStore(':memory:', () => NOW);
-  const config = configStore();
+  const { settings, config } = gatewayStores(() => NOW);
   const gateway = new FakeGateway();
   const client = new GatewayDeploymentClient({
     settings,
@@ -1195,21 +1182,6 @@ async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<voi
   assert.fail('timed out waiting for asynchronous gateway work');
 }
 
-function configStore(): SqliteConfigStore {
-  return new SqliteConfigStore(':memory:', {
-    agents: [{
-      id: 'agent_default',
-      name: 'Chickpea',
-      instructions: 'Help.',
-      enabled: true,
-      lifecycle: 'active',
-      skills: [],
-      mcpServers: [],
-      apiConnections: [],
-      repositories: [],
-    }],
-  });
-}
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {

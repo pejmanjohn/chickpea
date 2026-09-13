@@ -93,6 +93,13 @@ test('setup leads with Add to Slack and keeps the customer-owned app as a fallba
   assert.match(creation, /\.auth-intro\+form\{margin-top:28px\}/);
 
   const connected = render('awaiting_app_creation', 'connected');
+  for (const state of ['pending', 'error'] as const) {
+    const pending = render('awaiting_app_creation', state);
+    assert.match(pending, /Check Slack installation/);
+    assert.match(pending, /Open Slack authorization again/);
+    assert.match(pending, /name="action" value="gateway_resume"/);
+    assert.doesNotMatch(pending, /data-primary-action="gateway-install"/);
+  }
   assert.match(connected, /Slack is connected/);
   assert.match(connected, /<p class="auth-eyebrow">Slack setup<\/p>/);
   assert.match(connected, /class="auth-title-success"[^>]*aria-hidden="true"/);

@@ -1,3 +1,8 @@
+import { IdentityStoreLogic } from '../identity/store.ts';
+import { SettingsStoreLogic } from './settings-store.ts';
+import type { GatewayWorkspaceBinding } from '../slack/gateway/protocol.ts';
+import { GATEWAY_CLAIM_SETTING, GATEWAY_BINDING_SETTING } from '../slack/gateway/settings.ts';
+import { GATEWAY_DEPLOYMENT_IDENTITY_SETTING } from '../slack/gateway/identity.ts';
 import {
   AgentRevisionConflictError,
   AgentExistsError,
@@ -342,6 +347,8 @@ export interface ConfigStore {
   ): Promise<CustomAgentConfig>;
   restoreAgent(agentId: string, expectedRevision?: number): Promise<CustomAgentConfig>;
   ensureWorkspaceInstallation(input: EnsureWorkspaceInstallationInput): Promise<WorkspaceInstallation>;
+  retainGatewayInstallation(input: RetainGatewayInstallationInput): Promise<boolean>;
+  refreshGatewayClaimSetup(input: RefreshGatewayClaimSetupInput): Promise<boolean>;
   getWorkspaceInstallation(workspaceId: string): Promise<WorkspaceInstallation | undefined>;
   listWorkspaceInstallations(): Promise<WorkspaceInstallation[]>;
   updateWorkspaceInstallation(
@@ -464,6 +471,20 @@ export interface AdoptionInventorySummary {
  * same class over `ctx.storage.sql`. Methods are synchronous — both backends
  * execute SQL synchronously — and the async public interface wraps them.
  */
+export interface RetainGatewayInstallationInput {
+  expectedClaim: string;
+  binding: GatewayWorkspaceBinding;
+  setup?: { setupId: string; setupRevision: number };
+  now: number;
+}
+
+export interface RefreshGatewayClaimSetupInput {
+  expectedClaim: string;
+  setupId: string;
+  setupRevision: number;
+  now: number;
+}
+
 export class ConfigStoreLogic {
   private readonly legacyChannelBehaviorColumns: boolean;
 
@@ -491,6 +512,76 @@ export class ConfigStoreLogic {
       this.seedOnce(seed);
       this.migrateLegacyAgentAvatars();
     }
+  }
+
+  private sharedTransactionDb(): StateDb {
+    return {
+      schema: 'attach',
+      run: this.db.run.bind(this.db), get: this.db.get.bind(this.db),
+      all: this.db.all.bind(this.db), exec: this.db.exec.bind(this.db),
+      transaction: (fn) => fn(),
+    };
+  }
+
+  /** Called only after a setup POST validates the current capability. Preserve
+   * the claim while renewing its fence after a failed own-app attempt or a new
+   * setup link. Both the claim and the still-uninstalled setup must be current. */
+  refreshGatewayClaimSetup(input: RefreshGatewayClaimSetupInput): boolean {
+    return this.db.transaction(() => {
+      const db = this.sharedTransactionDb();
+      const settings = new SettingsStoreLogic(db, () => input.now);
+      if (settings.getSetting(GATEWAY_CLAIM_SETTING) !== input.expectedClaim ||
+          settings.getSetting(GATEWAY_BINDING_SETTING)) return false;
+      const claim = JSON.parse(input.expectedClaim);
+      const setup = new IdentityStoreLogic(db, { now: () => input.now }).getSlackSetupTransaction(input.setupId);
+      if (!setup || setup.state !== 'awaiting_app_creation' || setup.expiresAt <= input.now ||
+          setup.revision !== input.setupRevision || claim.setupId !== setup.id ||
+          !Number.isSafeInteger(claim.setupRevision) || claim.setupRevision > setup.revision) return false;
+      return settings.applySettingsPatch({
+        expected: { key: GATEWAY_CLAIM_SETTING, value: input.expectedClaim },
+        set: [{ key: GATEWAY_CLAIM_SETTING, value: JSON.stringify({ ...claim, setupRevision: setup.revision }) }],
+      });
+    });
+  }
+
+  /** All three stores live in TAG_STATE. Keep the claim fence and the Owner /
+   * workspace writes in one synchronous transaction, including rollback. */
+  retainGatewayInstallation(input: RetainGatewayInstallationInput): boolean {
+    return this.db.transaction(() => {
+      // These stores are already installed on this database. Nested operations
+      // join this transaction; errors escape to its sole rollback boundary.
+      const db = this.sharedTransactionDb();
+      const settings = new SettingsStoreLogic(db, () => input.now);
+      if (settings.getSetting(GATEWAY_CLAIM_SETTING) !== input.expectedClaim) return false;
+      const deployment = settings.getSetting(GATEWAY_DEPLOYMENT_IDENTITY_SETTING);
+      if (!deployment || JSON.parse(deployment).deploymentId !== input.binding.deploymentId) {
+        throw new Error('Gateway binding belongs to another deployment.');
+      }
+      const config = new ConfigStoreLogic(db);
+      const { binding, setup } = input;
+      const different = config.listWorkspaceInstallations().find((row) => row.workspaceId !== binding.workspaceId);
+      if (different) throw new Error(`This Chickpea deployment is already connected to Slack workspace ${different.workspaceId}.`);
+      if (setup) new IdentityStoreLogic(db, { now: () => input.now }).recordSharedSlackInstallation({
+        setupId: setup.setupId, expectedRevision: setup.setupRevision,
+        appId: binding.appId, clientId: binding.clientId, bindingId: binding.bindingId,
+        slackTeamId: binding.workspaceId, installerSlackUserId: binding.installerSlackUserId,
+        botUserId: binding.botUserId,
+      });
+      const current = config.ensureWorkspaceInstallation({
+        workspaceId: binding.workspaceId, transportMode: 'gateway', teamId: binding.workspaceId,
+        appId: binding.appId, botUserId: binding.botUserId, gatewayBindingId: binding.bindingId,
+      });
+      config.updateWorkspaceInstallation(binding.workspaceId, {
+        transportMode: 'gateway', teamId: binding.workspaceId, appId: binding.appId,
+        botUserId: binding.botUserId, gatewayBindingId: binding.bindingId, health: 'healthy', healthDetail: null,
+      }, current.revision);
+      settings.applySettingsPatch({
+        expected: { key: GATEWAY_CLAIM_SETTING, value: input.expectedClaim },
+        set: [{ key: GATEWAY_BINDING_SETTING, value: JSON.stringify(binding) }],
+        delete: [GATEWAY_CLAIM_SETTING],
+      });
+      return true;
+    });
   }
 
   ensureWorkspaceInstallation(input: EnsureWorkspaceInstallationInput): WorkspaceInstallation {
