@@ -214,6 +214,7 @@ import { resolveChickpeaGatewayUrl } from './slack/gateway/runtime.ts';
 import { loadCredentialKeyring } from './slack/credential-keyring.ts';
 import {
   processGatewayAgentSelection,
+  processGatewayPrivateChannelSetup,
   processGatewaySlackEnvelope,
 } from './channels/slack.ts';
 import {
@@ -2438,7 +2439,14 @@ async function drainGatewayInbox(
               },
             },
           )
-        : await processGatewayAgentSelection(
+        : item.delivery.kind === 'interaction.agent_selected'
+        ? await processGatewayAgentSelection(
+            item.delivery,
+            platformEnv,
+            client,
+            appStores,
+          )
+        : await processGatewayPrivateChannelSetup(
             item.delivery,
             platformEnv,
             client,

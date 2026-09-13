@@ -9,7 +9,10 @@ import {
   GatewayInboxStoreLogic,
 } from '../src/slack/gateway/inbox.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
-import type { GatewayEventDelivery } from '../src/slack/gateway/protocol.ts';
+import type {
+  GatewayEventDelivery,
+  GatewayPrivateChannelSetupDelivery,
+} from '../src/slack/gateway/protocol.ts';
 
 const NOW = 1_777_000_000_000;
 
@@ -66,6 +69,26 @@ test('gateway inbox enforces row capacity before accepting another body', () => 
       GatewayInboxCapacityError,
     );
     assert.equal(db.get('SELECT COUNT(*) AS count FROM gateway_inbox')?.count, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('gateway inbox durably carries setup coordinates and scrubs them on completion', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const inbox = new GatewayInboxStoreLogic(db, () => NOW);
+    const delivery = setupDelivery('setup_delivery');
+    assert.equal(inbox.admit(delivery), 'accepted');
+    assert.equal(inbox.admit({ ...delivery, agentId: null }), 'duplicate');
+    const [claimed] = inbox.claimPending(1);
+    assert.equal(claimed?.delivery.kind, 'interaction.channel_agent_add');
+    assert.deepEqual(claimed?.delivery, delivery);
+    assert.equal(inbox.complete(delivery.deliveryId), true);
+    assert.equal(db.get(
+      'SELECT payload_json FROM gateway_inbox WHERE id = ?',
+      delivery.deliveryId,
+    )?.payload_json, null);
   } finally {
     db.close();
   }
@@ -294,5 +317,19 @@ function eventDelivery(deliveryId: string, text: string): GatewayEventDelivery {
         text,
       },
     },
+  };
+}
+
+function setupDelivery(deliveryId: string): GatewayPrivateChannelSetupDelivery {
+  return {
+    protocolVersion: 1,
+    kind: 'interaction.channel_agent_add',
+    deliveryId,
+    bindingId: 'binding_test',
+    workspaceId: 'T_TEST',
+    userId: 'U_TEST',
+    channelId: 'C_PRIVATE',
+    setupId: '019f12cc-87e1-7000-8123-123456789abc',
+    agentId: 'agent_support',
   };
 }

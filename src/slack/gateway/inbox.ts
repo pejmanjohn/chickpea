@@ -319,7 +319,8 @@ function parseStoredDelivery(payload: string): GatewayInboundDelivery {
   const value = JSON.parse(payload) as GatewayInboundDelivery;
   if (
     !value || typeof value !== 'object' ||
-    (value.kind !== 'event.deliver' && value.kind !== 'interaction.agent_selected')
+    (value.kind !== 'event.deliver' && value.kind !== 'interaction.agent_selected' &&
+      value.kind !== 'interaction.channel_agent_add')
   ) {
     throw new Error('Stored gateway delivery is invalid.');
   }

@@ -23,6 +23,7 @@ import {
   CHICKPEA_GATEWAY_PROTOCOL_VERSION,
   GATEWAY_DURABLE_ADMISSION_CAPABILITY,
   canonicalGatewayPayload,
+  parseGatewayFrameText,
   type GatewayClientFrame,
   type GatewayPublicKey,
 } from '../src/slack/gateway/protocol.ts';
@@ -1374,10 +1375,23 @@ test('logical sessions authenticate before delivery, ack once, and fence tenant 
       userId: 'U_MEMBER',
       agentId: 'agent_default',
     }));
-    assert.deepEqual(deliveries, ['delivery_test', 'delivery_retry', 'delivery_selection']);
-    assert.deepEqual(sent.slice(-3).map((frame) =>
+    await session.handle(JSON.stringify({
+      protocolVersion: 1,
+      kind: 'interaction.channel_agent_add',
+      deliveryId: 'delivery_setup',
+      bindingId: 'binding_test',
+      workspaceId: 'TGATEWAY',
+      userId: 'U_MEMBER',
+      channelId: 'C_PRIVATE',
+      setupId: '019f12cc-87e1-7000-8123-123456789abc',
+      agentId: null,
+    }));
+    assert.deepEqual(deliveries, [
+      'delivery_test', 'delivery_retry', 'delivery_selection', 'delivery_setup',
+    ]);
+    assert.deepEqual(sent.slice(-4).map((frame) =>
       frame.kind === 'event.ack' ? frame.outcome : undefined
-    ), ['accepted', 'duplicate', 'duplicate']);
+    ), ['accepted', 'duplicate', 'duplicate', 'duplicate']);
     await session.handle(JSON.stringify({ ...delivery, deliveryId: 'delivery_failure' }));
     const failureAck = sent.at(-1);
     assert.equal(failureAck?.kind, 'event.ack');
@@ -1398,6 +1412,32 @@ test('logical sessions authenticate before delivery, ack once, and fence tenant 
   } finally {
     settings.close();
     config.close();
+  }
+});
+
+test('gateway setup frames require every bounded coordinate and preserve a null choice', () => {
+  const frame = {
+    protocolVersion: 1,
+    kind: 'interaction.channel_agent_add',
+    deliveryId: 'setup_delivery',
+    bindingId: 'binding_test',
+    workspaceId: 'TGATEWAY',
+    userId: 'U_MEMBER',
+    channelId: 'C_PRIVATE',
+    setupId: '019f12cc-87e1-7000-8123-123456789abc',
+    agentId: null,
+  };
+  assert.deepEqual(parseGatewayFrameText(JSON.stringify(frame)), frame);
+  const selected = parseGatewayFrameText(JSON.stringify({ ...frame, agentId: 'agent_support' }));
+  assert.equal(selected.kind, 'interaction.channel_agent_add');
+  if (selected.kind !== 'interaction.channel_agent_add') assert.fail('expected setup delivery');
+  assert.equal(selected.agentId, 'agent_support');
+  for (const malformed of [
+    { ...frame, channelId: undefined },
+    { ...frame, setupId: 'contains whitespace' },
+    { ...frame, agentId: 42 },
+  ]) {
+    assert.throws(() => parseGatewayFrameText(JSON.stringify(malformed)));
   }
 });
 

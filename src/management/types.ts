@@ -470,6 +470,91 @@ export interface ManagementSetupPublicStatus {
   };
 }
 
+export interface PrivateChannelSetupInstallationSnapshot {
+  revision: number;
+  transportMode: 'direct' | 'gateway';
+  teamId?: string;
+  appId?: string;
+  botUserId?: string;
+  gatewayBindingId?: string;
+}
+
+export interface PrivateChannelSetupAgentSnapshot {
+  agentId: string;
+  name: string;
+  handle: string;
+  agentRevision: number;
+  /** Zero means the Agent had no grant for the Channel when the card was issued. */
+  grantRevision: number;
+}
+
+export interface PrivateChannelSetupResult {
+  agentId: string;
+  handle: string;
+}
+
+/** Durable, inviter-bound authority behind one private Slack setup card. */
+export interface PrivateChannelSetupIntent {
+  setupId: string;
+  origin: 'private_channel_invitation';
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  inviterSlackUserId: string;
+  workspaceId: string;
+  channelId: string;
+  installation: PrivateChannelSetupInstallationSnapshot;
+  /** Zero means Channel inventory was absent when the card was issued. */
+  channelRevision: number;
+  eligibleAgents: PrivateChannelSetupAgentSnapshot[];
+  choicesTruncated: boolean;
+  status: 'open' | 'claimed' | 'completed' | 'recovery_required';
+  selectedAgentId?: string;
+  result?: PrivateChannelSetupResult;
+  failureCode?: string;
+  expiresAt: number;
+  claimedAt?: number;
+  completedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PutPrivateChannelSetupIntentInput {
+  record: PrivateChannelSetupIntent;
+}
+
+export interface ClaimPrivateChannelSetupIntentInput {
+  setupId: string;
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  inviterSlackUserId: string;
+  workspaceId: string;
+  channelId: string;
+  agentId: string;
+  at: number;
+}
+
+export interface ClaimPrivateChannelSetupIntentResult {
+  intent: PrivateChannelSetupIntent;
+  claimedByThisCall: boolean;
+}
+
+export interface SettlePrivateChannelSetupIntentInput {
+  setupId: string;
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  inviterSlackUserId: string;
+  agentId: string;
+  at: number;
+}
+
+export interface CompletePrivateChannelSetupIntentInput
+  extends SettlePrivateChannelSetupIntentInput {
+  result: PrivateChannelSetupResult;
+}
+
 export type ManagementReceiptDestination =
   | {
       kind: 'thread';
@@ -1213,6 +1298,14 @@ export type ManagementRpcRequest =
     }
   | { kind: 'complete_setup'; input: CompleteManagementSetupInput }
   | { kind: 'revoke_setup'; input: RevokeManagementSetupInput }
+  | { kind: 'put_private_channel_setup'; input: PutPrivateChannelSetupIntentInput }
+  | { kind: 'get_private_channel_setup'; setupId: string }
+  | { kind: 'claim_private_channel_setup'; input: ClaimPrivateChannelSetupIntentInput }
+  | { kind: 'complete_private_channel_setup'; input: CompletePrivateChannelSetupIntentInput }
+  | {
+      kind: 'require_private_channel_setup_recovery';
+      input: SettlePrivateChannelSetupIntentInput & { failureCode: string };
+    }
   | { kind: 'put_outbox'; record: ManagementReceiptOutboxRecord }
   | { kind: 'claim_introduction'; input: ClaimManagementIntroductionInput }
   | { kind: 'get_outbox_for_operation'; operationId: string }
@@ -1237,6 +1330,8 @@ export type ManagementRpcResponse =
   | { kind: 'change_set_proposals'; proposals: ManagementChangeSetProposalRecord[] }
   | { kind: 'undo'; undo: ManagementUndoRecord | null }
   | { kind: 'setup'; setup: ManagementSetupRecord | null }
+  | { kind: 'private_channel_setup'; intent: PrivateChannelSetupIntent | null }
+  | { kind: 'private_channel_setup_claim'; result: ClaimPrivateChannelSetupIntentResult }
   | { kind: 'outbox'; outbox: ManagementReceiptOutboxRecord | null }
   | { kind: 'outbox_batch'; outbox: ManagementReceiptOutboxRecord[] }
   | { kind: 'introduction_claim'; result: ClaimManagementIntroductionResult }

@@ -1173,6 +1173,50 @@ export class CfManagementStore implements ManagementStore {
     return response.setup;
   }
 
+  async putPrivateChannelSetupIntent(
+    input: Parameters<ManagementStore['putPrivateChannelSetupIntent']>[0],
+  ) {
+    const response = await this.execute({ kind: 'put_private_channel_setup', input });
+    if (response.kind !== 'private_channel_setup' || !response.intent) {
+      throw unexpectedManagementResponse();
+    }
+    return response.intent;
+  }
+
+  async getPrivateChannelSetupIntent(setupId: string) {
+    const response = await this.execute({ kind: 'get_private_channel_setup', setupId });
+    if (response.kind !== 'private_channel_setup') throw unexpectedManagementResponse();
+    return orUndefined(response.intent);
+  }
+
+  async claimPrivateChannelSetupIntent(
+    input: Parameters<ManagementStore['claimPrivateChannelSetupIntent']>[0],
+  ) {
+    const response = await this.execute({ kind: 'claim_private_channel_setup', input });
+    if (response.kind !== 'private_channel_setup_claim') throw unexpectedManagementResponse();
+    return response.result;
+  }
+
+  async completePrivateChannelSetupIntent(
+    input: Parameters<ManagementStore['completePrivateChannelSetupIntent']>[0],
+  ) {
+    const response = await this.execute({ kind: 'complete_private_channel_setup', input });
+    if (response.kind !== 'private_channel_setup' || !response.intent) {
+      throw unexpectedManagementResponse();
+    }
+    return response.intent;
+  }
+
+  async requirePrivateChannelSetupRecovery(
+    input: Parameters<ManagementStore['requirePrivateChannelSetupRecovery']>[0],
+  ) {
+    const response = await this.execute({ kind: 'require_private_channel_setup_recovery', input });
+    if (response.kind !== 'private_channel_setup' || !response.intent) {
+      throw unexpectedManagementResponse();
+    }
+    return response.intent;
+  }
+
   async putOutbox(record: Parameters<ManagementStore['putOutbox']>[0]) {
     const response = await this.execute({ kind: 'put_outbox', record });
     if (response.kind !== 'outbox' || !response.outbox) throw unexpectedManagementResponse();

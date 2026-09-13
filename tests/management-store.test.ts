@@ -68,6 +68,78 @@ test('Chickpea introduction claim queues exactly one durable DM across triggers'
   }
 });
 
+test('private Channel setup claims one Agent once and preserves its terminal replay', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  const record = {
+    setupId: 'setup_private_1',
+    origin: 'private_channel_invitation' as const,
+    organizationId: 'org_1',
+    actorUserId: 'user_1',
+    actorMembershipId: 'membership_1',
+    inviterSlackUserId: 'U1',
+    workspaceId: 'T1',
+    channelId: 'C1',
+    installation: { revision: 1, transportMode: 'direct' as const },
+    channelRevision: 0,
+    eligibleAgents: [
+      { agentId: 'agent_a', name: 'A', handle: 'a', agentRevision: 1, grantRevision: 0 },
+      { agentId: 'agent_b', name: 'B', handle: 'b', agentRevision: 1, grantRevision: 0 },
+    ],
+    choicesTruncated: false,
+    status: 'open' as const,
+    expiresAt: NOW + 30 * 60_000,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const claimInput = {
+    setupId: record.setupId,
+    organizationId: record.organizationId,
+    actorUserId: record.actorUserId,
+    actorMembershipId: record.actorMembershipId,
+    inviterSlackUserId: record.inviterSlackUserId,
+    workspaceId: record.workspaceId,
+    channelId: record.channelId,
+    agentId: 'agent_a',
+    at: NOW + 1,
+  };
+  try {
+    await store.putPrivateChannelSetupIntent({ record });
+    const claimed = await store.claimPrivateChannelSetupIntent(claimInput);
+    assert.equal(claimed.claimedByThisCall, true);
+    assert.equal(claimed.intent.selectedAgentId, 'agent_a');
+    assert.equal(
+      (await store.claimPrivateChannelSetupIntent({ ...claimInput, at: NOW + 2 }))
+        .claimedByThisCall,
+      false,
+    );
+    await assert.rejects(
+      () => store.claimPrivateChannelSetupIntent({
+        ...claimInput,
+        agentId: 'agent_b',
+        at: NOW + 2,
+      }),
+      (error: unknown) => error instanceof ManagementError && error.code === 'setup_unavailable',
+    );
+    const completed = await store.completePrivateChannelSetupIntent({
+      setupId: record.setupId,
+      organizationId: record.organizationId,
+      actorUserId: record.actorUserId,
+      actorMembershipId: record.actorMembershipId,
+      inviterSlackUserId: record.inviterSlackUserId,
+      agentId: 'agent_a',
+      result: { agentId: 'agent_a', handle: 'a' },
+      at: NOW + 3,
+    });
+    assert.equal(completed.status, 'completed');
+    assert.deepEqual(
+      (await store.claimPrivateChannelSetupIntent({ ...claimInput, at: NOW + 4 })).intent.result,
+      { agentId: 'agent_a', handle: 'a' },
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test('proposal schema migration reactivates legacy rows and adds provenance columns', () => {
   const db = openStateDb(':memory:');
   try {

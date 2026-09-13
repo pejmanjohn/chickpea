@@ -456,8 +456,7 @@ import {
   uploadAgentAvatar,
 } from '../slack/agent-presence/avatar-assets.ts';
 import {
-  publishGeneratedAgentAvatar,
-  type GeneratedAgentAvatarPublishInput,
+  prepareGeneratedGatewayAgentAvatar,
 } from '../slack/agent-presence/gateway-avatar.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import {
@@ -1976,41 +1975,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     current: CustomAgentConfig,
     workspaceId: string,
   ): Promise<CustomAgentConfig> => {
-    const avatar = current.slackPresence?.avatar;
-    if (avatar?.kind !== 'generated') return current;
     const installation = await store(c).getWorkspaceInstallation(workspaceId);
-    if (installation?.transportMode !== 'gateway') return current;
     const injectedPublish = options.gatewayAvatarPublish;
-    let publish: (input: GeneratedAgentAvatarPublishInput) => Promise<string>;
-    if (injectedPublish) {
-      publish = (candidate) => injectedPublish({
-        workspaceId: installation.workspaceId,
-        ...candidate,
-      });
-    } else {
-      const gateway = createGatewayDeploymentClient(c.env as PlatformEnv | undefined);
-      publish = (candidate) => gateway.publishAvatar({
-        workspaceId: installation.workspaceId,
-        ...candidate,
-      });
-    }
-    const published = await publishGeneratedAgentAvatar({
-      agentId: current.id,
-      revision: avatar.revision,
-      seed: avatar.seed ?? current.id,
-      publish,
+    return prepareGeneratedGatewayAgentAvatar({
+      workspaceId,
+      installation,
+      agent: current,
+      publish: (candidate) => injectedPublish
+        ? injectedPublish(candidate)
+        : createGatewayDeploymentClient(c.env as PlatformEnv | undefined)
+            .publishAvatar(candidate),
+      updateAgent: (agentId, patch, expectedRevision) =>
+        store(c).updateAgent(agentId, patch, expectedRevision),
     });
-    if (avatar.revision === published.revision && avatar.url === published.url) return current;
-    return store(c).updateAgent(current.id, {
-      slackPresence: {
-        ...current.slackPresence!,
-        avatar: {
-          ...avatar,
-          revision: published.revision,
-          url: published.url,
-        },
-      },
-    }, current.revision);
   };
   const slackWorkspaceDescriptor = async (c: Context): Promise<{
     teamId: string;

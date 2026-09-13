@@ -845,6 +845,8 @@ button, input, textarea, select { font: inherit; }
 .bundle-row .b-name { align-items: center; color: var(--text); display: inline-flex; flex-shrink: 0; font-size: 0.8125rem; font-weight: 700; gap: 6px; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bundle-row .b-meta { color: var(--text-3); font-family: var(--mono); font-size: 0.6875rem; min-width: 0; overflow-wrap: anywhere; }
 .bundle-row .spacer { flex: 1; }
+.attach-picker { display: flex; flex-direction: column; gap: 8px; }
+.attach-picker-guidance { line-height: 1.5; margin: 0 2px; }
 .channel-audit-rows { display: flex; flex-direction: column; gap: 10px; }
 .channel-memory-summary { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
 .channel-memory-total { color: var(--text); font-size: 0.8125rem; font-variant-numeric: tabular-nums; font-weight: 700; }

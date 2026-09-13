@@ -55,6 +55,9 @@
     slackChannelsError: null,
     slackChannelsLoading: false,
     slackChannelsRequestId: 0,
+    slackChannelsRequest: null,
+    slackChannelsRequestRefresh: false,
+    slackChannelsQueuedRefresh: null,
     channelIndex: [],
     channelIndexError: "",
     channelIndexQuery: "",
@@ -6818,11 +6821,14 @@
         '<span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Cancel</button></div>';
     }
     var candidates = attachCandidates(draft.id);
+    var privateChannelGuidance = '<p class="hint attach-picker-guidance" role="note">For a private channel, first invite the Chickpea app in Slack: Channel details &rarr; Agents &amp; apps &rarr; Add Agent or App &rarr; Chickpea. Then return here and refresh. That invitation makes the channel available; Attach adds this Agent.</p>';
     if (!candidates.length) {
-      return '<div class="bundle-row"><span class="hint">All available Slack Channels already use this Agent.</span>' +
+      return '<div class="attach-picker">' + privateChannelGuidance +
+        '<div class="bundle-row"><span class="hint">All available Slack Channels already use this Agent.</span>' +
         '<span class="spacer"></span>' +
+        '<button type="button" class="btn btn-soft btn-sm i-lead" data-action="refresh-channels" title="Refresh channel list">' + icon("arrow-path") + 'Refresh</button>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="attach-new-channel" data-agent="' + esc(draft.id) + '">Add a new Channel with this Agent</button>' +
-        '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div></div>';
     }
     var options = candidates.map(function (candidate) {
       return '<option value="' + esc(candidate.channelId) + '"' +
@@ -6832,11 +6838,12 @@
       ? '<span class="hint">Showing the first workspace channels.</span>' +
         '<button type="button" class="btn btn-soft btn-sm" data-action="attach-new-channel" data-agent="' + esc(draft.id) + '">Add a new channel</button>'
       : "";
-    return '<div class="bundle-row"><span class="select-wrap"><select class="input" data-role="attach-channel" data-action="attach-channel-option" aria-label="Channel to attach">' + options + '</select>' + icon("chevron-down", "select-caret") + '</span>' +
+    return '<div class="attach-picker">' + privateChannelGuidance +
+      '<div class="bundle-row"><span class="select-wrap"><select class="input" data-role="attach-channel" data-action="attach-channel-option" aria-label="Channel to attach">' + options + '</select>' + icon("chevron-down", "select-caret") + '</span>' +
       '<button type="button" class="btn btn-soft btn-sm i-lead" data-action="refresh-channels" title="Refresh channel list">' + icon("arrow-path") + 'Refresh</button>' +
       '<button type="button" class="btn btn-primary btn-sm" data-action="attach-channel-confirm">Attach</button>' +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Cancel</button>' + truncated +
-      (state.attachError ? '<span class="field-error">' + esc(state.attachError) + '</span>' : "") + '</div>';
+      (state.attachError ? '<span class="field-error">' + esc(state.attachError) + '</span>' : "") + '</div></div>';
   }
 
   function disableConfirmHtml(draft) {
@@ -12670,6 +12677,7 @@
         loads.push(loadVisibleAgentDetail(state.profileDraft.id));
         loads.push(revalidateProfileTab(state.profileTab));
       }
+      if (state.attachPicker) loads.push(loadSlackChannelsOnReturn());
       if (WORKSPACE_ADMIN_UI) loads.push(loadVisibleSlackStatus());
     } else if (state.view === "channels") {
       loads.push(loadVisibleSlackStatus());
@@ -12748,6 +12756,9 @@
       state.slackDisconnectError = "";
       state.slackTestStatus = null;
       state.slackChannelsRequestId += 1;
+      state.slackChannelsRequest = null;
+      state.slackChannelsRequestRefresh = false;
+      state.slackChannelsQueuedRefresh = null;
       state.slackChannels = null;
       state.active = null;
       state.channelScreen = "overview";
@@ -12778,16 +12789,40 @@
     return false;
   }
 
+  function loadSlackChannelsOnReturn() {
+    // Focus and visibility can report the same browser return. Share an active
+    // forced request, or queue exactly one forced refresh behind the initial load.
+    if (state.slackChannelsLoading && state.slackChannelsRequest) {
+      if (state.slackChannelsRequestRefresh) return state.slackChannelsRequest;
+      if (state.slackChannelsQueuedRefresh) return state.slackChannelsQueuedRefresh;
+      var queuedRefresh = state.slackChannelsRequest.then(function () {
+        if (state.slackChannelsQueuedRefresh !== queuedRefresh) return null;
+        state.slackChannelsQueuedRefresh = null;
+        if (
+          state.view !== "profiles" || state.profileScreen !== "edit" ||
+          !state.profileDraft || !state.attachPicker ||
+          (typeof document !== "undefined" && document.visibilityState && document.visibilityState !== "visible")
+        ) return null;
+        return loadSlackChannels(true);
+      });
+      state.slackChannelsQueuedRefresh = queuedRefresh;
+      return queuedRefresh;
+    }
+    return loadSlackChannels(true);
+  }
+
   function loadSlackChannels(refresh) {
     if (!isSlackConnected()) return Promise.resolve();
+    if (state.slackChannelsLoading && state.slackChannelsRequest) return state.slackChannelsRequest;
     var preserveAgentId = state.view === "profiles" && state.profileScreen === "edit" && state.attachPicker && state.profileDraft
       ? state.profileDraft.id
       : "";
     var requestId = ++state.slackChannelsRequestId;
     state.slackChannelsLoading = true;
+    state.slackChannelsRequestRefresh = refresh === true;
     state.slackChannelsError = null;
     renderSlackChannelCatalogState(preserveAgentId);
-    return api("/admin/api/slack-channels" + (refresh ? "?refresh=1" : "")).then(function (body) {
+    var request = api("/admin/api/slack-channels" + (refresh ? "?refresh=1" : "")).then(function (body) {
       if (requestId !== state.slackChannelsRequestId) return null;
       state.slackChannels = body;
       state.slackChannelsLoading = false;
@@ -12807,6 +12842,13 @@
         code: error && error.message === "slack_list_failed" ? (error.detail || "") : ((error && error.message) || "")
       };
       renderSlackChannelCatalogState(preserveAgentId);
+    });
+    state.slackChannelsRequest = request;
+    return request.finally(function () {
+      if (state.slackChannelsRequest === request) {
+        state.slackChannelsRequest = null;
+        state.slackChannelsRequestRefresh = false;
+      }
     });
   }
 

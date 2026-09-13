@@ -2,6 +2,7 @@ import { getSettingsStore, type PlatformEnv } from '../../config/state-backend.t
 import { isCloudflareTarget } from '../../config/runtime-target.ts';
 import {
   processGatewayAgentSelection,
+  processGatewayPrivateChannelSetup,
   processGatewaySlackEnvelope,
 } from '../../channels/slack.ts';
 import { createGatewayDeploymentClient } from './runtime.ts';
@@ -61,7 +62,9 @@ export function startNodeGatewaySession(
         client,
         onEvent: (delivery) => delivery.kind === 'event.deliver'
           ? processGatewaySlackEnvelope(delivery.envelope, runtimeEnv, client)
-          : processGatewayAgentSelection(delivery, runtimeEnv, client),
+          : delivery.kind === 'interaction.agent_selected'
+          ? processGatewayAgentSelection(delivery, runtimeEnv, client)
+          : processGatewayPrivateChannelSetup(delivery, runtimeEnv, client),
       });
     }))(env);
     return runner.start().then((started) => {

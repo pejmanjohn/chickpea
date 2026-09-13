@@ -18,6 +18,7 @@ import {
   readAgentAvatarAsset,
   refreshLegacyAgentAvatar,
 } from '../src/slack/agent-presence/avatar-assets.ts';
+import { prepareGeneratedGatewayAgentAvatar } from '../src/slack/agent-presence/gateway-avatar.ts';
 import { ConfigStoreLogic } from '../src/config/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
@@ -78,6 +79,39 @@ test('direct creation and seed fixtures persist approved defaults before the fir
       indexes.add(defaultAgentAvatarIndex(agent.slackPresence!.avatar.seed!));
     }
     assert.equal(indexes.size, 12);
+  } finally { db.close(); }
+});
+
+test('generated gateway avatar preparation publishes and persists the immutable URL once', async () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new ConfigStoreLogic(db, { agents: [createDemoStarterAgent()] });
+    const current = store.getAgent('agent_default');
+    let publications = 0;
+    const prepared = await prepareGeneratedGatewayAgentAvatar({
+      workspaceId: 'T1',
+      installation: { workspaceId: 'T1', transportMode: 'gateway' },
+      agent: current,
+      publish: async ({ workspaceId, revision, bytes }) => {
+        publications += 1;
+        assert.equal(workspaceId, 'T1');
+        assert.ok(bytes.length > 0);
+        return 'https://gateway.test/avatars/agent_default/rev_' + revision + '.png';
+      },
+      updateAgent: async (...args) => store.updateAgent(...args),
+    });
+    assert.equal(publications, 1);
+    assert.equal(prepared.slackPresence?.avatar.url,
+      'https://gateway.test/avatars/agent_default/rev_1.png');
+    assert.equal(store.getAgent('agent_default').slackPresence?.avatar.url,
+      prepared.slackPresence?.avatar.url);
+    assert.equal(await prepareGeneratedGatewayAgentAvatar({
+      workspaceId: 'T1',
+      installation: { workspaceId: 'T1', transportMode: 'direct' },
+      agent: prepared,
+      publish: async () => { throw new Error('must not publish'); },
+      updateAgent: async (...args) => store.updateAgent(...args),
+    }), prepared);
   } finally { db.close(); }
 });
 
