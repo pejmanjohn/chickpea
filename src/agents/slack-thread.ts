@@ -210,6 +210,7 @@ import {
 import { resolveAgentModelRoleFromStore } from '../config/model-policy.ts';
 import { resolveImageProvider } from '../images/provider.ts';
 import { createSlackFileTransport, type SlackFileTransport } from '../slack/file-transport.ts';
+import { SLACK_LIST_TOOL_NAMES, useSlackListsTools } from '../slack/lists/tools.ts';
 import {
   parseSlackManagementSignal,
   useWorkspaceManagementSlackTools,
@@ -1239,6 +1240,7 @@ export function useChickpeaSlackRuntimeCapabilities(
   useAgentAuthoring();
   useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv, writeAgentCreationTerminal, writeMemoryUpdate);
   usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
+  useSlackListsTools(plan, resolveAgentPlatformEnv);
   useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
   useTool(createSlackPresentTableTool(writeTablePresentation));
   if (presentationIntent) {
@@ -1396,6 +1398,7 @@ function slackActivityToolDescriptors(input: {
 }): ActivityToolDescriptor[] {
   const descriptors: ActivityToolDescriptor[] = [];
   if (input.managementEnabled) {
+    descriptors.push(...SLACK_LIST_TOOL_NAMES.map(toolName => ({ toolName, descriptor: semanticDescriptorForCoreTool(toolName) })));
     descriptors.push({
       toolName: 'update_agent_memory',
       descriptor: workspaceManagementSemanticDescriptor('apply_workspace_changes'),

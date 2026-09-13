@@ -1106,9 +1106,7 @@ export class TurnJobStoreLogic {
     // Keep each actor/Agent's latest dispatched context per live binding. Other completed
     // turns retain the ordinary redelivery TTL; expired bindings retain none.
     // Build the retained-ID list once, independently of the terminal-row scan.
-    this.db.run(
-      `DELETE FROM turn_jobs
-       WHERE delivered = 1 AND enqueued_at < ?
+    const expiredTerminalPredicate = `WHERE delivered = 1 AND enqueued_at < ?
          AND progress_json NOT LIKE '%"cleanup":"pending"%'
          AND id NOT IN (
            SELECT retained_id FROM (
@@ -1122,9 +1120,18 @@ export class TurnJobStoreLogic {
                ON json_extract(prior.runtime_plan_json, '$.conversation.continuityKey') = b.continuity_key
              WHERE prior.runtime_plan_json IS NOT NULL AND prior.dispatch_receipt_json IS NOT NULL
            ) WHERE position = 1
-         )`,
-      now - TURN_JOB_TTL_MS,
-    );
+         )`;
+    this.db.transaction(() => {
+      // Content-free Lists write receipts live exactly as long as their turn.
+      // Isolated TurnJob stores may not have installed SettingsStore yet.
+      if (this.db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'")) {
+        this.db.run(
+          `DELETE FROM app_settings WHERE key IN (SELECT 'slack_lists.writes.v1:' || id FROM turn_jobs ${expiredTerminalPredicate})`,
+          now - TURN_JOB_TTL_MS,
+        );
+      }
+      this.db.run(`DELETE FROM turn_jobs ${expiredTerminalPredicate}`, now - TURN_JOB_TTL_MS);
+    });
   }
 
   private recordTerminalStatus(id: string, terminal: 'success' | 'error'): void {

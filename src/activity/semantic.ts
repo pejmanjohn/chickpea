@@ -334,6 +334,10 @@ export function unknownSemanticDescriptor(): SemanticActivityDescriptor {
 }
 
 export function semanticDescriptorForCoreTool(toolName: string): SemanticActivityDescriptor {
+  if (['read_slack_list', 'read_slack_list_item'].includes(toolName)) return descriptor('read', 'workspace', 'tasks', 'read', 'built_in');
+  if (['create_slack_list_item', 'create_slack_task_list'].includes(toolName)) return descriptor('create', 'workspace', 'tasks', 'reversible_write', 'built_in');
+  if (toolName === 'update_slack_list_item') return descriptor('update', 'workspace', 'tasks', 'reversible_write', 'built_in');
+  if (toolName === 'share_slack_list') return descriptor('share', 'workspace', 'tasks', 'reversible_write', 'built_in');
   if (toolName === 'stream_answer' || toolName === 'present_table') {
     return {
       ...descriptor('draft', 'response', 'the response', 'none', 'built_in'),

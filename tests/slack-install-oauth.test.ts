@@ -23,7 +23,7 @@ import {
   SlackInstallOAuthError,
   SlackInstallOAuthService,
 } from '../src/slack/install-oauth.ts';
-import { REQUIRED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
+import { REQUIRED_SLACK_BOT_SCOPES, REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -47,7 +47,7 @@ test('bot OAuth start stores only hashed short state bound to the browser and ex
     assert.equal(url.pathname, '/oauth/v2/authorize');
     assert.equal(url.searchParams.get('client_id'), '123.456');
     assert.equal(url.searchParams.get('redirect_uri'), REDIRECT_URI);
-    assert.equal(url.searchParams.get('scope'), REQUIRED_SLACK_BOT_SCOPES.join(','));
+    assert.equal(url.searchParams.get('scope'), REQUESTED_SLACK_BOT_SCOPES.join(','));
     assert.equal(url.searchParams.has('user_scope'), false);
     assert.equal(url.searchParams.has('code_challenge'), false);
     assert.equal(url.searchParams.get('state'), started.state);

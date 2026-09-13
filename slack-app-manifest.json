@@ -63,7 +63,9 @@
         "users:read",
         "usergroups:read",
         "usergroups:write",
-        "users:read.email"
+        "users:read.email",
+        "lists:read",
+        "lists:write"
       ]
     }
   },

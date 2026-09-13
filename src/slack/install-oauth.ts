@@ -24,7 +24,7 @@ import {
 import { purgePendingSlackChallenge, verifyPendingSlackChallenge } from './installation-handshake.ts';
 import {
   missingRequiredSlackBotScopes,
-  REQUIRED_SLACK_BOT_SCOPES,
+  REQUESTED_SLACK_BOT_SCOPES,
   unexpectedSlackBotScopes,
 } from './scopes.ts';
 
@@ -152,7 +152,7 @@ export class SlackInstallOAuthService {
     });
     const authorizationUrl = new URL(SLACK_BOT_AUTHORIZE_URL);
     authorizationUrl.searchParams.set('client_id', appCredentials.clientId);
-    authorizationUrl.searchParams.set('scope', REQUIRED_SLACK_BOT_SCOPES.join(','));
+    authorizationUrl.searchParams.set('scope', REQUESTED_SLACK_BOT_SCOPES.join(','));
     authorizationUrl.searchParams.set('redirect_uri', redirectUri);
     authorizationUrl.searchParams.set('state', state);
     return { attemptId, state, expiresAt, authorizationUrl: authorizationUrl.toString() };

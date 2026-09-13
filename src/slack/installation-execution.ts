@@ -104,6 +104,7 @@ export async function resolveSlackInstallationExecutionContext(
     settings?: SettingsStore;
     credentialDependencies?: SlackCredentialResolutionDependencies;
     gatewayClient?: GatewayDeploymentClient;
+    rejectRateLimitedCalls?: boolean;
   } = {},
 ): Promise<SlackInstallationExecutionContext> {
   const config = options.config ?? getConfigStore(env);
@@ -160,7 +161,7 @@ export async function resolveSlackInstallationExecutionContext(
     botToken: credentials.botToken,
     botUserId: auth.botUserId,
     ...(auth.botName ? { displayName: auth.botName } : {}),
-    client: createSlackWebClient(credentials.botToken),
+    client: createSlackWebClient(credentials.botToken, { rejectRateLimitedCalls: options.rejectRateLimitedCalls === true }),
   };
 }
 

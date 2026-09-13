@@ -5,10 +5,13 @@ import slackAppManifest from '../../slack-app-manifest.json' with { type: 'json'
  * Keeping scope validation here prevents the onboarding wizard and dedicated
  * identity flow from drifting away from what Slack is asked to grant.
  */
-export const REQUIRED_SLACK_BOT_SCOPES = Object.freeze([
+export const REQUESTED_SLACK_BOT_SCOPES = Object.freeze([
   ...slackAppManifest.oauth_config.scopes.bot,
 ]);
-const REQUIRED_SLACK_BOT_SCOPE_SET = new Set(REQUIRED_SLACK_BOT_SCOPES);
+export const SLACK_LIST_FEATURE_SCOPES = Object.freeze(['lists:read', 'lists:write']);
+/** Lists are additive: a core-only installation must keep serving ordinary chat. */
+export const REQUIRED_SLACK_BOT_SCOPES = Object.freeze(REQUESTED_SLACK_BOT_SCOPES.filter(scope => !SLACK_LIST_FEATURE_SCOPES.includes(scope)));
+const ALLOWED_SLACK_BOT_SCOPE_SET = new Set(REQUESTED_SLACK_BOT_SCOPES);
 
 /** Parse Slack's comma-delimited `x-oauth-scopes` response header. */
 export function parseSlackGrantedScopes(value: string | null): string[] | undefined {
@@ -34,5 +37,5 @@ export function unexpectedSlackBotScopes(
   grantedScopes: readonly string[] | undefined,
 ): string[] | undefined {
   if (grantedScopes === undefined) return undefined;
-  return grantedScopes.filter((scope) => !REQUIRED_SLACK_BOT_SCOPE_SET.has(scope));
+  return grantedScopes.filter((scope) => !ALLOWED_SLACK_BOT_SCOPE_SET.has(scope));
 }

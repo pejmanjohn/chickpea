@@ -1,4 +1,5 @@
 import type { SlackInboundEnvelope } from '../transport/types.ts';
+import { SLACK_LIST_OPERATIONS } from '../lists/types.ts';
 
 export const CHICKPEA_GATEWAY_PROTOCOL_VERSION = 1 as const;
 export const MAX_GATEWAY_FRAME_BYTES = 1_048_576;
@@ -8,6 +9,7 @@ export const GATEWAY_DURABLE_ADMISSION_CAPABILITY = 'durable_admission_v1' as co
 export type GatewaySessionCapability = typeof GATEWAY_DURABLE_ADMISSION_CAPABILITY;
 
 const GATEWAY_SLACK_OPERATIONS = [
+  ...SLACK_LIST_OPERATIONS,
   'auth.test',
   'users.info',
   'users.list',
