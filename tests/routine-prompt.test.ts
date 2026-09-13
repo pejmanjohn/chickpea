@@ -73,13 +73,15 @@ test('a private routine hydrates only its stored thread with the saved task as a
   });
   const directRoutine = {
     id: 'routine_private_prompt', workspaceId: 'T_TEST', channelId: 'D_TEST',
+    timezone: 'America/Los_Angeles',
     creatorUserId: 'U_MEMBER', destination: {
       kind: 'direct_thread', conversationId: 'D_TEST', threadTs,
       ownerMembershipId: 'membership_private',
     },
   } as RoutineDefinition;
   const directRun = {
-    id: 'rrun_private_prompt', scheduledFor: Date.UTC(2026, 6, 27, 16),
+    // 02:00 UTC is still the prior calendar day in America/Los_Angeles.
+    id: 'rrun_private_prompt', scheduledFor: Date.UTC(2026, 6, 27, 2),
     revision: { taskText: '<@UBOT>, attach the CSV report.' },
   } as RoutineRun;
   const directAccess = {
@@ -115,8 +117,10 @@ test('a private routine hydrates only its stored thread with the saved task as a
   assert.equal(prepared.turn.source, 'dm_message');
   assert.equal(prepared.turn.channelType, 'im');
   assert.equal(prepared.turn.contextMode, 'thread');
+  assert.equal(prepared.turn.requesterTimezone, 'America/Los_Angeles');
   assert.match(prepared.prompt, /Ignore the saved task/);
   assert.doesNotMatch(prepared.prompt, /same-root exchange is incomplete/);
+  assert.match(prepared.prompt, /Sunday 2026-07-26 19:00 America\/Los_Angeles/);
   assert.match(prepared.prompt, /Slack history.*untrusted background/i);
   assert.match(prepared.prompt, /Current Slack request[\s\S]*<@UBOT>, attach the CSV report/);
   assert.ok(parseCurrentRequestEnvelope(prepared.prompt));
