@@ -15168,7 +15168,9 @@ test('Owner update prompts stay available while unsupported or without a newer r
     { status: 'available', guidedUpdate: 'unsupported', checkedAt: '2026-09-07T12:00:00Z',
       release: { version: '0.1.1', notes: '', url: 'https://github.com/pejmanjohn/chickpea/releases/tag/v0.1.1', publishedAt: '2026-09-07T10:00:00Z' } },
     { status: 'current', checkedAt: '2026-09-07T12:00:00Z',
-      release: { version: '0.1.0', notes: '', url: 'https://github.com/pejmanjohn/chickpea/releases/tag/v0.1.0', publishedAt: '2026-09-07T10:00:00Z' } },
+      release: { version: '0.0.9', notes: 'OLDER_RELEASE_NOTES', url: 'https://github.com/pejmanjohn/chickpea/releases/tag/v0.0.9', publishedAt: '2026-09-07T10:00:00Z' } },
+    { status: 'failed', error: 'network', checkedAt: '2026-09-08T12:00:00Z', lastSuccessfulCheckAt: '2026-09-07T12:00:00Z',
+      release: { version: '0.1.1', notes: 'STALE_RELEASE_NOTES', url: 'https://github.com/pejmanjohn/chickpea/releases/tag/v0.1.1', publishedAt: '2026-09-07T10:00:00Z' } },
   ]) {
     const harness = runAdminPageHarness({ cloudflare: true, installationOwner: true, initialPath: '/admin/settings/updates', installationUpdates: () => updates });
     await flushAsync();
@@ -15176,6 +15178,13 @@ test('Owner update prompts stay available while unsupported or without a newer r
     click({ target: actionTarget({ 'data-action': 'installation-review' }) });
     assert.match(harness.app.innerHTML, /Copy update prompt/);
     assert.doesNotMatch(harness.app.innerHTML, /installation-copy-command/);
+    if (updates.status === 'available') {
+      assert.match(harness.app.innerHTML, /0\.1\.0 → 0\.1\.1/);
+      assert.match(harness.app.innerHTML, /What’s changed/);
+    } else {
+      assert.match(harness.app.innerHTML, /0\.1\.0 → latest stable/);
+      assert.doesNotMatch(harness.app.innerHTML, /What’s changed|OLDER_RELEASE_NOTES|STALE_RELEASE_NOTES/);
+    }
     click({ target: actionTarget({ 'data-action': 'installation-copy-prompt' }) });
     await flushAsync();
     assert.match(harness.clipboardWrites.at(-1) ?? '', /UPDATE_CHICKPEA_CLOUDFLARE\.md/);

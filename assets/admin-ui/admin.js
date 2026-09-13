@@ -8037,7 +8037,7 @@
     var current = state.installation;
     if (!current.dialog) return "";
     var report = current.dialog === "report";
-    var release = current.updates && current.updates.release;
+    var release = current.updates && current.updates.status === "available" && current.updates.release;
     var command = installationCommand();
     var updatePrompt = installationUpdatePrompt();
     var compatibility = current.updates && current.updates.guidedUpdate;
