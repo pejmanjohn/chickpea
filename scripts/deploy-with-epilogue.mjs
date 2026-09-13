@@ -36,6 +36,7 @@ import { AUTH_SCHEMA_QUERY, expectedAuthSchema, normalizeAuthSchemaRows } from '
 import { validateInstallation, validateTarget, assertSameInstallation, overlayInstallation, wranglerProfileArgs } from './lib/upgrade-installation.mjs';
 import { readPrivateJson, writePrivateJson, writeDeploymentEvent } from './lib/upgrade-receipt.mjs';
 import { verifyRetainedBuildRoot } from './lib/upgrade-source.mjs';
+import { preflightCloudflareAccount, assertCloudflareAccountConfig } from './lib/cloudflare-account-preflight.mjs';
 
 import {
   classifyCloudflareDeploymentProfile,
@@ -302,6 +303,27 @@ function buildCloudflareArtifact() {
   }
 }
 
+const checkAccount = !preflightOnly && !deployArgs.some((arg) => ['--dry-run', '--help', '-h'].includes(arg));
+let checkedAccount;
+function accountCheckOptions(configPath) {
+  return { runnerRoot, projectRoot, configPath, providerContext: deploymentResourceArgs(),
+    ...(upgradeContext ? { expectedAccount: upgradeContext.target?.account } : {}) };
+}
+async function checkDeploymentAccount(configPath) {
+  const result = await preflightCloudflareAccount(accountCheckOptions(configPath));
+  // Pin an unambiguous whoami selection so later Wrangler calls cannot choose
+  // another account. This affects only the current guarded deploy process.
+  if (result.accountId) process.env.CLOUDFLARE_ACCOUNT_ID = result.accountId;
+  return result;
+}
+try {
+  if (checkAccount && !skipBuild && !reuseWorkersBuildArtifact) {
+    checkedAccount = await checkDeploymentAccount(path.join(projectRoot, 'wrangler.jsonc'));
+  }
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
 if (!skipBuild && !reuseWorkersBuildArtifact) buildCloudflareArtifact();
 
 function sortedUnique(values) {
@@ -635,6 +657,16 @@ if (selectedEnvironmentTarget && deploymentTargetTuple?.stateMode !== 'permanent
 if (preflightOnly) {
   process.stdout.write('Permanent Cloudflare capability preflight passed. No deployment was attempted.\n');
   process.exit(0);
+}
+
+try {
+  if (checkAccount) {
+    if (checkedAccount) assertCloudflareAccountConfig(accountCheckOptions(builtArtifact.configPath), checkedAccount);
+    else checkedAccount = await checkDeploymentAccount(builtArtifact.configPath);
+  }
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
 }
 
 const AUTH_SECRET = 'CHICKPEA_AUTH_SECRET';

@@ -63,6 +63,16 @@ function createHarness() {
   symlinkSync(path.join(PROJECT_ROOT, 'node_modules', 'typescript'), path.join(root, 'node_modules', 'typescript'), 'dir');
   copyFileSync(CAPABILITY_SCRIPT, path.join(authDir, 'setup-capability.mjs'));
   copyFileSync(ACTIVATION_SCRIPT, path.join(authDir, 'deployment-activation.mjs'));
+  writeFileSync(path.join(scriptsLibDir, 'cloudflare-account-preflight.mjs'), `
+    import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+    export async function preflightCloudflareAccount(options) {
+      if (process.env.DEPLOY_TEST_ACCOUNT_LOG === '1') appendFileSync(process.env.DEPLOY_TEST_LOG, 'account-preflight:' + options.configPath + '\\n');
+      if (process.env.DEPLOY_TEST_SUBDOMAIN_MISSING === '1') throw new Error('Workers.dev registration is missing for the selected account.');
+      const config = existsSync(options.configPath) ? JSON.parse(readFileSync(options.configPath, 'utf8')) : {};
+      return { workersDev: config.workers_dev !== false, accountId: process.env.CLOUDFLARE_ACCOUNT_ID || 'a'.repeat(32) };
+    }
+    export function assertCloudflareAccountConfig() {}
+  `);
   writeFileSync(path.join(scriptsLibDir, 'environment-preflight.mjs'), `
     import { appendFileSync, writeFileSync } from 'node:fs';
     let calls = 0;
@@ -311,6 +321,54 @@ function createHarness() {
   writeCutoverArtifact(harness);
   return harness;
 }
+
+test('missing workers.dev registration stops before the app build and all resource work', (context) => {
+  const harness = createHarness();
+  context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+  const result = runHarness(harness, [], { DEPLOY_TEST_SUBDOMAIN_MISSING: '1', DEPLOY_TEST_ACCOUNT_LOG: '1' });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Workers.dev registration/);
+  const invoked = commands(harness.logPath);
+  assert.equal(invoked.length, 1);
+  assert.match(invoked[0]!, /^account-preflight:/);
+});
+
+test('account readiness preserves offline dry-run and artifact-only preflight', (context) => {
+  for (const mode of ['--dry-run', '--preflight-only']) {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    const result = runHarness(harness, ['--skip-build', mode], { DEPLOY_TEST_SUBDOMAIN_MISSING: '1', DEPLOY_TEST_ACCOUNT_LOG: '1' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal((existsSync(harness.logPath) ? commands(harness.logPath) : []).some((line) => line.startsWith('account-preflight:')), false);
+  }
+});
+
+test('live build checks account readiness first; reused artifacts check their verified config', (context) => {
+  for (const reuse of [false, true]) {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    const result = runHarness(harness, reuse ? ['--skip-build'] : [], { DEPLOY_TEST_ACCOUNT_LOG: '1' });
+    assert.equal(result.status, 0, result.stderr);
+    const invoked = commands(harness.logPath);
+    assert.equal(invoked.filter((line) => line.startsWith('account-preflight:')).length, 1);
+    assert.equal(invoked[0], `account-preflight:${path.join(realpathSync(harness.root), reuse ? 'dist-cf/chickpea/wrangler.json' : 'wrangler.jsonc')}`);
+    assert.equal(invoked.some((line) => line.startsWith('npm:')), !reuse);
+  }
+});
+
+test('Workers Builds and customer upgrades cannot bypass missing account registration', (context) => {
+  for (const mode of ['workers-builds', 'upgrade']) {
+    const harness = createHarness();
+    context.after(() => rmSync(harness.root, { recursive: true, force: true }));
+    const extra = mode === 'upgrade' ? prepareUpgrade(harness) : { WORKERS_CI: '1', WORKERS_CI_BUILD_UUID: 'test-build' };
+    const result = runHarness(harness, mode === 'upgrade' ? ['--skip-build'] : [], {
+      ...extra, DEPLOY_TEST_SUBDOMAIN_MISSING: '1', DEPLOY_TEST_ACCOUNT_LOG: '1',
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.deepEqual(commands(harness.logPath), [`account-preflight:${path.join(realpathSync(harness.root), 'dist-cf/chickpea/wrangler.json')}`]);
+    assert.equal(existsSync(harness.secretCapturePath), false);
+  }
+});
 
 function runHarness(
   harness: ReturnType<typeof createHarness>,
