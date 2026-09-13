@@ -17,7 +17,8 @@ An ordinary instruction or memory can supply a default. Be explicit about scope:
 > In #client-work (channel C123EXAMPLE), when I ask you to create or manage a
 > task without naming another destination, use this Slack List: <List link>.
 > This default applies only in #client-work. If I name Asana, Linear, another
-> tool, or another List, use that destination instead.
+> tool, or another List, use that destination instead. Keep the full List URL
+> in this instruction so you can use it in a new conversation.
 
 A saved List identity alone is not a default. Chickpea asks for the destination
 or link when it is missing; a message being in Slack does not select Slack Lists.
@@ -39,6 +40,11 @@ permissions. Sharing a List with a channel where the bot is a member can provide
 Can view or Can edit access. A denied operation never automatically joins a
 channel or changes sharing. Sharing with a human is separate from assigning them
 a task, and assignment does not guarantee they can open the List.
+
+Slack's own link-sharing flow can grant view access when a List link is posted
+in a conversation. Inspect Slack's sharing notice when testing private access;
+posting a link and then successfully reading it does not by itself show a
+permission bypass.
 
 The Agent reads actual column IDs and types. Renamed task columns work. Context
 and source links need an existing nonprimary text column; if there are several,
