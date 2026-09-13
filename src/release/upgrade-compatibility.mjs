@@ -7,25 +7,9 @@ const MIGRATION_KEYS = Object.freeze([
   'configuration',
   'work',
 ]);
-const UNCHANGED_MIGRATION_KEYS = MIGRATION_KEYS.filter(
-  (key) => key !== 'configuration',
-);
 const RECOVERY_POLICIES = new Set([
   'previous-code-only',
   'gateway-transport-then-previous-code',
-]);
-
-// v0.1.17 moved the existing gateway-installation writes into one transaction.
-// It added no schema, migration, or stored-data shape. Keep the exception tied
-// to both immutable release identities and both exact conservative source
-// digests; any further edit fails closed and needs its own review.
-const REVIEWED_CONFIGURATION_TRANSITIONS = new Set([
-  [
-    '0.1.16',
-    'fa8728169c93d0a8ce86dad166d2779b0e8debcfdaaa4c791f96055e1db7b365',
-    '0.1.18',
-    '8ebfe7655eab0d28792642d317162a4c5ef96f1c43f7cc389e32977c17084dc2',
-  ].join(':'),
 ]);
 
 function record(value) {
@@ -82,21 +66,10 @@ export function evaluateUpgradeCompatibility(beforeValue, afterValue) {
   if (before.storageGeneration !== after.storageGeneration) {
     return { status: 'unsupported', reason: 'storage-generation-changed' };
   }
-  if (UNCHANGED_MIGRATION_KEYS.some(
+  if (MIGRATION_KEYS.some(
     (key) => before.migrations[key] !== after.migrations[key],
   )) {
     return { status: 'unsupported', reason: 'migration-content-changed' };
   }
-  if (before.migrations.configuration === after.migrations.configuration) {
-    return { status: 'supported', reason: 'unchanged-storage' };
-  }
-  const reviewed = [
-    before.version,
-    before.migrations.configuration,
-    after.version,
-    after.migrations.configuration,
-  ].join(':');
-  return REVIEWED_CONFIGURATION_TRANSITIONS.has(reviewed)
-    ? { status: 'supported', reason: 'reviewed-configuration-transition' }
-    : { status: 'unsupported', reason: 'migration-content-changed' };
+  return { status: 'supported', reason: 'unchanged-storage' };
 }

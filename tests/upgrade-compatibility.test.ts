@@ -41,23 +41,14 @@ test('unchanged storage is supported only for a declared older origin', () => {
   });
 });
 
-test('only the exact reviewed v0.1.16 configuration transition is accepted', () => {
+test('v0.1.16 configuration transition stays unsupported pending continuity review', () => {
   const oldConfiguration = 'fa8728169c93d0a8ce86dad166d2779b0e8debcfdaaa4c791f96055e1db7b365';
   const newConfiguration = '8ebfe7655eab0d28792642d317162a4c5ef96f1c43f7cc389e32977c17084dc2';
   const before = manifest('0.1.16', oldConfiguration);
   const after = { ...manifest('0.1.18', newConfiguration), supportedOrigins: ['0.1.16'] };
   assert.deepEqual(evaluateUpgradeCompatibility(before, after), {
-    status: 'supported', reason: 'reviewed-configuration-transition',
+    status: 'unsupported', reason: 'migration-content-changed',
   });
-  for (const [origin, destination] of [
-    [{ ...before, version: '0.1.15' }, { ...after, supportedOrigins: ['0.1.15'] }],
-    [before, { ...after, version: '0.1.19', supportedOrigins: ['0.1.16'] }],
-    [before, { ...after, migrations: migrations(digest('f')) }],
-  ]) {
-    assert.deepEqual(evaluateUpgradeCompatibility(origin, destination), {
-      status: 'unsupported', reason: 'migration-content-changed',
-    });
-  }
 });
 
 test('every other storage and migration change fails closed', () => {
@@ -66,7 +57,7 @@ test('every other storage and migration change fails closed', () => {
   assert.deepEqual(evaluateUpgradeCompatibility(before, {
     ...after, storageGeneration: 2,
   }), { status: 'unsupported', reason: 'storage-generation-changed' });
-  for (const key of ['d1', 'workerConfiguration', 'identity', 'work'] as const) {
+  for (const key of ['d1', 'workerConfiguration', 'identity', 'configuration', 'work'] as const) {
     assert.deepEqual(evaluateUpgradeCompatibility(before, {
       ...after, migrations: { ...after.migrations, [key]: digest('f') },
     }), { status: 'unsupported', reason: 'migration-content-changed' });

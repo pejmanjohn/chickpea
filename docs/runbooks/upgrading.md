@@ -176,6 +176,10 @@ recovery authority and deployment evidence, not a data backup. A transition
 that changes state needs a separately reviewed migration and recovery procedure
 before it can appear in `supportedOrigins`.
 
+The v0.1.18 release contract supports v0.1.17 only. The v0.1.16 path remains
+undeclared pending cross-version thread-continuity review; use a documented
+intermediate release rather than bypassing the compatibility check.
+
 ## Acceptance and handoff
 
 After success, verify the destination release and full source commit in

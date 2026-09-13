@@ -123,7 +123,7 @@ export function assertCompatibleRelease(before, after) {
     throw new Error('This release has not declared the installed version as a supported upgrade origin.');
   }
   if (result.reason === 'storage-generation-changed' || result.reason === 'migration-content-changed') {
-    throw new Error('Storage generation or migration content changed. This updater supports only specifically reviewed transitions.');
+    throw new Error('Storage generation or migration content changed. This updater supports only transitions with unchanged storage.');
   }
   throw new Error('Invalid release upgrade contract.');
 }

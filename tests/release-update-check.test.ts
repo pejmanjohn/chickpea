@@ -174,6 +174,12 @@ test('guided updates require immutable installed provenance and compatible pinne
   assert.equal(unsupported.status, 'available');
   assert.equal(unsupported.guidedUpdate, 'unsupported');
 
+  const changedConfiguration = await createUpdateChecker({ identity, fetch: officialFetch({
+    after: { ...destinationManifest, migrations: { ...migrations, configuration: 'f'.repeat(64) } },
+  }) })();
+  assert.equal(changedConfiguration.status, 'available');
+  assert.equal(changedConfiguration.guidedUpdate, 'unsupported');
+
   const customCommit = await createUpdateChecker({ identity,
     fetch: officialFetch({ installedCommit: 'c'.repeat(40) }) })();
   assert.equal(customCommit.status, 'available');

@@ -18,7 +18,7 @@ export interface UpgradeManifest {
 export type UpgradeCompatibility =
   | {
       status: 'supported';
-      reason: 'unchanged-storage' | 'reviewed-configuration-transition';
+      reason: 'unchanged-storage';
     }
   | {
       status: 'unsupported';
