@@ -180,6 +180,35 @@ test('semantic task readback omits malformed values and reports an empty title a
   assert.deepEqual((empty.item as JsonObject).task, { title: null, assignees: [], due: { dates: [], timestamps: [] }, completed: false });
 });
 
+test('native emoji and channel titles remain visible when reading and updating a task', async t => {
+  const f = fixture(t);
+  await f.service().createItem('create', LIST_URL, { title: 'Placeholder' });
+  for (const [node, expected] of [
+    [{ type: 'emoji', name: 'rocket' }, ':rocket:'],
+    [{ type: 'channel', channel_id: 'CPROJECT' }, '<#CPROJECT>'],
+  ] as const) {
+    task(f.fake).fields = [{ column_id: 'ColTITLE', rich_text: [{ type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [node] }] }] }];
+    const read = await f.service('read').readItem(LIST_URL, task(f.fake).id);
+    assert.equal(((read.item as JsonObject).task as JsonObject).title, expected);
+    const updated = await f.service(`update-${expected}`).updateItem('complete', LIST_URL, task(f.fake).id, { completed: true });
+    assert.equal(((updated.item as JsonObject).task as JsonObject).title, expected);
+  }
+  task(f.fake).fields = [{ column_id: 'ColTITLE', rich_text: [{ type: 'future_slack_node', value: 'Visible elsewhere' }] }];
+  const unknown = await f.service('unknown').readItem(LIST_URL, task(f.fake).id);
+  assert.equal(Object.hasOwn((unknown.item as JsonObject).task as JsonObject, 'title'), false, 'An uninterpreted nonempty title is not an empty title');
+});
+
+test('a confirmed task can receive an omitted deadline without creating a replacement', async t => {
+  const f = fixture(t);
+  const created = await f.service().createItem('create', LIST_URL, { title: 'Budget summary' });
+  assert.equal(created.status, 'confirmed');
+  const corrected = await f.service().updateItem('set-omitted-due', String((created.item as JsonObject).url), undefined, { due: { date: '2026-09-18' } });
+  assert.equal(corrected.status, 'confirmed');
+  assert.deepEqual((corrected.item as JsonObject).task, { title: 'Budget summary', assignees: [], due: { dates: ['2026-09-18'], timestamps: [] }, completed: null });
+  assert.equal(f.fake.lists.get('FEXISTING')!.items.length, 1);
+  assert.equal(f.fake.calls.filter(call => call.method === 'slackLists.items.create').length, 1);
+});
+
 test('creates a private task List with context column and shares only an explicit recipient', async t => {
   const f = fixture(t);
   const created = await f.service().createList('list1', 'Client tasks');

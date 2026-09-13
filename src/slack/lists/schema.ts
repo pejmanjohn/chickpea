@@ -74,6 +74,8 @@ export function richTextContent(value: unknown): string {
   if (node.type === 'text' && typeof node.text === 'string') return node.text;
   if (node.type === 'link' && typeof node.url === 'string') return typeof node.text === 'string' && node.text !== node.url ? `${node.text} (${node.url})` : node.url;
   if (node.type === 'user' && typeof node.user_id === 'string') return `<@${node.user_id}>`;
+  if (node.type === 'channel' && typeof node.channel_id === 'string') return `<#${node.channel_id}>`;
+  if (node.type === 'emoji' && typeof node.name === 'string') return `:${node.name}:`;
   return richTextContent(node.elements);
 }
 
@@ -113,7 +115,9 @@ function presentTaskFields(item: ListItem, columns: ListColumn[]): JsonObject {
     if (!column) continue;
     const cell = item.fields.find(field => field.column_id === column.id);
     if (name === 'title' && (cell?.rich_text === undefined || Array.isArray(cell.rich_text))) {
-      task.title = richTextContent(cell?.rich_text) || null;
+      const title = richTextContent(cell?.rich_text);
+      if (title) task.title = title;
+      else if (cell?.rich_text === undefined || cell.rich_text.length === 0) task.title = null;
     }
     if (name === 'assignees') {
       const users = cell?.user === undefined ? [] : cell.user;
