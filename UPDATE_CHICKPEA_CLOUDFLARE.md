@@ -77,10 +77,11 @@ release, source commit, and database identity. Preserve an unknown, unversioned,
 or customized installation for investigation. Do not assign it a release label
 or overwrite it with official source.
 
-Before deployment, record a safe baseline in the private receipt for the
-existing Agent, known memory, representative connection, and schedule that the
-user wants checked afterward. Record the schedule's definition, destination,
-enabled state, and next run without copying private content into public notes.
+Before deployment, record a safe baseline in the private receipt for an
+existing Agent. If memory, connections, or schedules are configured, choose
+harmless meaningful examples with your best judgment. Record the schedule's
+definition, destination, enabled state, and next run without copying private
+content into public notes. Do not stop for another routine choice.
 
 ## 2. Select clean update tooling
 
@@ -136,8 +137,13 @@ npx --no-install wrangler whoami
 ```
 
 Create or activate a named login only when needed. Do not infer account access
-from another checkout. Use a short private installation name that identifies
-this one deployment. Configure it with the verified live coordinates:
+from another checkout. Inspect the saved installation targets under
+`~/.chickpea/upgrades/installations/` without editing them. Reuse an existing
+installation name only when every saved coordinate and its live resource digest
+match the resolved deployment.
+
+If no saved target matches, choose an unused short private installation name
+and configure it once with the verified live coordinates:
 
 ```sh
 npm run upgrade -- --configure --installation <installation-name> --account <account-id> --worker <existing-worker-name> --profile core --url https://<existing-origin> --wrangler-profile <wrangler-login>
@@ -145,8 +151,10 @@ npm run upgrade -- --configure --installation <installation-name> --account <acc
 
 Omit `--wrangler-profile` when Wrangler uses the intended default login.
 `--profile core` is Chickpea's deployment profile, not a Wrangler login. The
-configure command inspects the existing Worker and records its target privately
-under `~/.chickpea/upgrades/`. It does not deploy or create resources.
+configure command inspects the existing Worker and records its target privately.
+It does not deploy or create resources. It refuses an installation name that
+already exists. If the saved target does not match live state, stop and
+investigate. Do not overwrite, edit, or reconfigure that alias for convenience.
 
 If Cloudflare Builds or another system can deploy the old fork or branch,
 identify that competing writer before updating. Disable its automatic deploy
@@ -159,27 +167,34 @@ Run preflight for one supported destination at a time:
 npm run upgrade -- --installation <installation-name> --to <destination-release-tag> --preflight
 ```
 
-Preflight must show the intended account, Worker, profile, installed release,
-destination release, and an absolute private receipt path. It downloads and
-builds verified release source without deploying. Keep the exact receipt and
-neighboring `previous` and `destination` directories. If preflight reports
-unknown source, customization, changed resources, unsupported configuration,
-storage mismatch, dependency policy failure, or an unsupported origin, stop.
-Preserve the first failure and do not weaken the check.
+Before running, verify the saved target and live inspection contain the intended
+account, Worker, profile, Wrangler login, and origin. Preflight prints the Worker,
+installed-to-destination version transition, and absolute private receipt path.
+Confirm those values match. It downloads and builds verified release source
+without deploying. Keep the exact receipt and neighboring `previous` and
+`destination` directories. If preflight reports unknown source, customization,
+changed resources, unsupported configuration, storage mismatch, dependency
+policy failure, or an unsupported origin, stop. Preserve the first failure and
+do not weaken the check.
 
 ## 4. Run the guarded update
 
-Use an interactive terminal so the ordinary confirmation prompt can read your
-input:
+Continue the successful preflight as the same operation. Use an interactive
+terminal and the exact receipt path it printed:
 
 ```sh
-npm run upgrade -- --installation <installation-name> --to <destination-release-tag>
+npm run upgrade -- --resume /absolute/path/printed/by/preflight/receipt.json
 ```
 
 Review the displayed account, Worker, profile, Wrangler login, origin, serving
 release and commit, destination release and commit, and private receipt. If they
 match the user's requested installation, type the exact displayed Worker name.
 If any value differs, decline the prompt and investigate.
+
+A fresh `--installation <installation-name> --to <destination-release-tag>`
+command is a secondary shorthand that starts a new receipt and performs its own
+preparation before confirmation. Do not use it after a successful preflight;
+resume that preflight receipt instead.
 
 The updater must retain the existing supported resources, credentials, setup
 authority, configuration, and data. Let it refuse anything outside its reviewed
@@ -214,16 +229,19 @@ Then reload signed-in **Settings -> About & updates** and verify the application
 release and full source commit. An upload ID, traffic percentage, readiness
 response, or unsigned Admin page does not prove the complete update.
 
-Use the existing Slack installation and its existing data. Agree on a harmless
-representative when several Agents, connections, or schedules exist, then check:
+Use the existing Slack installation and its existing data. Choose harmless,
+meaningful existing examples with your best judgment, then check:
 
 - Send a real request to an existing Agent in a channel or DM where it already
   works. Verify the reply arrives from the expected Chickpea app and Agent.
-- In signed-in Admin, confirm the existing Agent and a known memory item remain.
-- Exercise one existing connection with a read-only request and verify its result.
-- Confirm an existing schedule remains enabled with the same destination and
-  next run. When practical, observe its next normal delivery or run the user's
-  approved test without changing the schedule definition.
+- In signed-in Admin, confirm the existing Agent remains. If it has known memory,
+  confirm that memory remains. Otherwise report that no memory is configured.
+- If a connection exists, exercise one with a read-only request and verify its
+  result. Otherwise report that no connection is configured.
+- If a schedule exists, confirm it remains enabled with the same destination and
+  next run. When practical, observe its next normal delivery or run a harmless
+  test without changing the schedule definition. Otherwise report that no
+  schedule is configured.
 
 Investigate any mismatch against the live target and exact request. Do not
 create replacement Agents, memory, connections, or schedules to make acceptance

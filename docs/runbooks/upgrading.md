@@ -34,7 +34,13 @@ Resolve the live account, Worker, HTTPS origin, installed release and commit,
 receipt, and live Cloudflare inspection. A local checkout is not proof of the
 serving target.
 
-Configure one private installation name from the clean tooling checkout:
+Inspect the saved targets under `~/.chickpea/upgrades/installations/` and reuse
+an existing installation name only when its account, Worker, profile, Wrangler
+login, origin, and live resource digest match the resolved deployment. Do not
+edit a saved target.
+
+When no saved target matches, configure an unused private installation name
+once from the clean tooling checkout:
 
 ```sh
 npm run upgrade -- --configure --installation <installation-name> --account <account-id> --worker <worker-name> --profile core --url https://<existing-origin>
@@ -46,9 +52,11 @@ updater retains it for inspection, deployment, resume, and recovery from its
 private temporary directories.
 
 Configuration inspects the existing deployment and records its target and
-resource digest under `~/.chickpea/upgrades/`. It creates no Worker, database,
-route, or deployment. Use distinct installation names for distinct Workers.
-There is no safe target fallback.
+resource digest. It creates no Worker, database, route, or deployment. The
+updater refuses an installation name that already exists. A saved target that
+does not match live state needs investigation, not editing or reconfiguration.
+Use distinct installation names for distinct Workers. There is no safe target
+fallback.
 
 Keep the original installation receipt under `~/.chickpea/installs/`. It should
 record the live coordinates, the source that was originally installed, and
@@ -67,8 +75,10 @@ The updater resolves immutable official release metadata, fetches clean origin
 and destination source into a new private receipt directory, verifies both
 checkouts, inspects the live Worker and `AUTH_DB` schema, checks configuration
 and resources, installs dependencies under the reviewed script policy, and
-builds the destination. It displays the account, Worker, profile, installed
-release, destination, and absolute receipt path. Preflight does not deploy.
+builds the destination. The command prints the Worker, installed-to-destination
+version transition, and absolute receipt path. Verify the saved target and live
+inspection separately for the account, profile, Wrangler login, and origin.
+Preflight does not deploy.
 
 The release's `.nvmrc` is the exact Node build baseline. Use its supported npm
 major. The runner rejects script suppression, conflicting script overrides,
@@ -85,15 +95,21 @@ deployment.
 
 ## Deployment contract
 
-Run the update in an interactive terminal:
+Continue the successful preflight in an interactive terminal with its exact
+receipt:
 
 ```sh
-npm run upgrade -- --installation <installation-name> --to <destination-release-tag>
+npm run upgrade -- --resume /absolute/path/printed/by/preflight/receipt.json
 ```
 
 Review every displayed coordinate. Type the exact displayed Worker name only
 when the account, Worker, profile, Wrangler login, origin, installed source,
 destination source, and receipt match the requested installation.
+
+Starting with `--installation <installation-name> --to
+<destination-release-tag>` is a secondary shorthand. It creates a new receipt
+and performs preparation before confirmation. Do not use it after a successful
+preflight; resume the receipt already created by preflight.
 
 Immediately before upload, the updater re-inspects the Worker and refuses
 resource or identity drift. It preserves the existing `AUTH_DB`, Durable Object
@@ -164,11 +180,13 @@ before it can appear in `supportedOrigins`.
 
 After success, verify the destination release and full source commit in
 signed-in Admin. Send a real Slack request to an existing Agent and verify the
-expected reply. Confirm a known memory item, exercise an existing connection
-with a read-only request, and check that an existing schedule still has the same
-definition, destination, enabled state, and next run. Observe its normal delivery
-or an approved test when practical. Readiness and a Worker upload ID do not
-establish these product behaviors.
+expected reply. Confirm known memory when it exists. If a connection exists,
+exercise a harmless example with a read-only request. If a schedule exists,
+check that it still has the same definition, destination, enabled state, and
+next run, then observe its normal delivery or a harmless test when practical.
+Report memory, connection, or schedule as not configured when none exists. An
+optional item's absence does not fail an otherwise valid update. Readiness and
+a Worker upload ID do not establish these product behaviors.
 
 Update the private installation receipt with the serving application release
 and commit, Cloudflare Worker version ID, exact update receipt, clean tooling

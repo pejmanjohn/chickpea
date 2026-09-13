@@ -44,9 +44,10 @@ Cloudflare Worker before deciding which source or target to use. Select the
 latest stable supported Chickpea application release, run the guarded preflight,
 and update the existing installation without recreating setup or resources.
 Help me with any sign-in step that needs my input. Afterward, verify the release
-in signed-in Admin and test a real Slack reply plus the existing Agent, memory,
-connection, and schedule behavior I rely on. Tell me where the source matching
-the installed release and the private update receipt were retained.
+in signed-in Admin and test a real Slack reply. Check the existing Agent and any
+memory, connection, and schedule behavior already configured. Report when an
+optional item is not configured. Tell me where the source matching the installed
+release and the private update receipt were retained.
 ```
 
 The [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md) stays current on `main`. The
