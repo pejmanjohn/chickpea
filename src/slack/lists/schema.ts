@@ -85,6 +85,7 @@ export function textCell(columnId: string, text: string): ListCell {
 
 export function sameCell(actual: ListCell | undefined, expected: ListCell): boolean {
   if ('rich_text' in expected) return richTextContent(actual?.rich_text) === richTextContent(expected.rich_text);
+  if (isDateOnlyWrite(expected) && !isDateOnlyTimestamp(actual?.timestamp)) return false;
   for (const key of ['user', 'date', 'timestamp', 'checkbox']) {
     if (!(key in expected)) continue;
     const observed = actual?.[key] ?? (Array.isArray(expected[key]) ? [] : undefined);
@@ -124,16 +125,39 @@ function presentTaskFields(item: ListItem, columns: ListColumn[]): JsonObject {
       if (Array.isArray(users) && users.every(value => typeof value === 'string')) task.assignees = users;
     }
     if (name === 'due') {
-      const dates = cell?.date === undefined ? [] : cell.date;
-      const timestamps = cell?.timestamp === undefined ? [] : cell.timestamp;
-      if (Array.isArray(dates) && dates.every(value => typeof value === 'string') &&
-          Array.isArray(timestamps) && timestamps.every(value => typeof value === 'number' && Number.isFinite(value))) {
-        task.due = { dates, timestamps };
-      }
+      const due = semanticDue(cell);
+      if (due) task.due = due;
     }
     if (name === 'completed' && (cell?.checkbox === undefined || typeof cell.checkbox === 'boolean')) {
       task.completed = cell?.checkbox ?? null;
     }
   }
   return task;
+}
+
+function semanticDue(cell: ListCell | undefined): { dates: string[]; timestamps: number[] } | undefined {
+  const dates = cell?.date === undefined ? [] : cell.date;
+  if (!Array.isArray(dates) || !dates.every(value => typeof value === 'string' && value.length > 0)) {
+    return undefined;
+  }
+  const timestamps = cell?.timestamp === undefined ? [] : cell.timestamp;
+  if (!Array.isArray(timestamps)) return undefined;
+  if (dates.length === 0) return timestamps.length === 0 ? { dates, timestamps: [] } : undefined;
+  if (timestamps.length === 0) return { dates, timestamps: [] };
+  if (timestamps.length === 1 && timestamps[0] === -1) {
+    return { dates, timestamps: [] };
+  }
+  if (timestamps.every(value => typeof value === 'number' && Number.isInteger(value) && value > 0)) {
+    return { dates, timestamps };
+  }
+  return undefined;
+}
+
+function isDateOnlyWrite(cell: ListCell): boolean {
+  return Array.isArray(cell.date) && cell.date.length > 0 && !Object.hasOwn(cell, 'timestamp');
+}
+
+function isDateOnlyTimestamp(value: unknown): boolean {
+  return value === undefined ||
+    (Array.isArray(value) && (value.length === 0 || (value.length === 1 && value[0] === -1)));
 }

@@ -168,6 +168,10 @@ test('semantic task readback omits malformed values and reports an empty title a
     ['ColDUE', { date: [false] }, 'due'],
     ['ColDUE', { date: ['2026-09-15'], timestamp: ['1789495200'] }, 'due'],
     ['ColDUE', { timestamp: [Number.NaN] }, 'due'],
+    ['ColDUE', { date: ['2026-09-15'], timestamp: [-2] }, 'due'],
+    ['ColDUE', { date: ['2026-09-15'], timestamp: [-1, 1789495200] }, 'due'],
+    ['ColDUE', { date: [''], timestamp: [-1] }, 'due'],
+    ['ColDUE', { date: [], timestamp: [-1] }, 'due'],
     ['ColDONE', { checkbox: 'false' }, 'completed'],
   ];
   for (const [columnId, value, name] of malformed) {
@@ -243,6 +247,67 @@ test('date-only due payloads omit timestamp while exact deadlines and clears sta
   await f.service().updateItem('clear-due', itemUrl, undefined, {}, ['due']);
   assert.deepEqual(duePayload(), {
     column_id: 'ColDUE', date: [], timestamp: [], row_id: itemId,
+  });
+});
+
+test('Slack date-only sentinel readback confirms creates and updates without exposing a fake time', async t => {
+  const f = fixture(t);
+  f.fake.after = (method, response) => {
+    if (method === 'slackLists.items.create' || method === 'slackLists.items.update') {
+      const due = field(f.fake, 'ColDUE');
+      if (Array.isArray(due?.date) && due.date.length > 0 && due.timestamp === undefined) {
+        due.timestamp = [-1];
+      }
+    }
+    return response;
+  };
+
+  const created = await f.service().createItem('sentinel-create', LIST_URL, {
+    title: 'Budget summary', due: { date: '2026-09-18' },
+  });
+  assert.equal(created.status, 'confirmed');
+  assert.deepEqual(((created.item as JsonObject).task as JsonObject).due, {
+    dates: ['2026-09-18'], timestamps: [],
+  });
+  assert.deepEqual(
+    ((created.item as JsonObject).fields as JsonObject[]).find(value => value.columnId === 'ColDUE')?.timestamp,
+    [-1],
+  );
+  assert.deepEqual(field(f.fake, 'ColDUE')?.timestamp, [-1]);
+
+  const updated = await f.service().updateItem(
+    'sentinel-update', String((created.item as JsonObject).url), undefined,
+    { due: { date: '2026-09-19' } },
+  );
+  assert.equal(updated.status, 'confirmed');
+  assert.deepEqual(((updated.item as JsonObject).task as JsonObject).due, {
+    dates: ['2026-09-19'], timestamps: [],
+  });
+  assert.deepEqual(field(f.fake, 'ColDUE')?.timestamp, [-1]);
+});
+
+test('a date-only update stays unverified when Slack retains the prior exact timestamp', async t => {
+  const f = fixture(t);
+  const created = await f.service().createItem('timed-create', LIST_URL, {
+    title: 'Budget summary', due: { date: '2026-09-18', time: '11:00' },
+  });
+  assert.equal(created.status, 'confirmed');
+  const priorTimestamp = field(f.fake, 'ColDUE')?.timestamp;
+  assert.deepEqual(priorTimestamp, [1789754400]);
+  f.fake.after = (method, response) => {
+    if (method === 'slackLists.items.update') field(f.fake, 'ColDUE')!.timestamp = priorTimestamp;
+    return response;
+  };
+
+  const result = await f.service().updateItem(
+    'date-only-update', String((created.item as JsonObject).url), undefined,
+    { due: { date: '2026-09-19' } },
+  );
+
+  assert.equal(result.status, 'unverified');
+  assert.deepEqual(result.mismatchedColumns, ['ColDUE']);
+  assert.deepEqual(((result.item as JsonObject).task as JsonObject).due, {
+    dates: ['2026-09-19'], timestamps: [1789754400],
   });
 });
 
