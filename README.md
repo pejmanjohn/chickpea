@@ -30,6 +30,28 @@ project lives.
 The [installation guide](INSTALL_CHICKPEA_CLOUDFLARE.md) stays current on `main`;
 the installation uses a stable application release.
 
+## Update with your coding agent
+
+Open your cloned Chickpea folder and copy this prompt into a coding agent with
+terminal and browser access:
+
+```text
+Update my existing Chickpea Cloudflare installation using this guide:
+https://github.com/pejmanjohn/chickpea/blob/main/UPDATE_CHICKPEA_CLOUDFLARE.md
+
+Start from this folder, but inspect my private installation receipt and the live
+Cloudflare Worker before deciding which source or target to use. Select the
+latest stable supported Chickpea application release, run the guarded preflight,
+and update the existing installation without recreating setup or resources.
+Help me with any sign-in step that needs my input. Afterward, verify the release
+in signed-in Admin and test a real Slack reply plus the existing Agent, memory,
+connection, and schedule behavior I rely on. Tell me where the source matching
+the installed release and the private update receipt were retained.
+```
+
+The [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md) stays current on `main`. The
+guarded updater decides whether the installed release has a supported path.
+
 <div align="center">
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-555555.svg?labelColor=333333&color=2EA44F)](./LICENSE)
@@ -521,6 +543,6 @@ Copyright (c) 2026 Pejman Pour-Moezzi. See [NOTICE](NOTICE).
 
 Installation Owners can open **Settings → About & updates** to review the current
 version, check releases, and copy an exact upgrade command. Updates are manual.
-See the [upgrade guide](docs/runbooks/upgrading.md) for first-time command setup,
-compatibility checks, and receipt-based recovery. Node deployments follow the
-[operations guide](docs/runbooks/operations.md).
+Start with the [Cloudflare update guide](UPDATE_CHICKPEA_CLOUDFLARE.md). The
+[updater runbook](docs/runbooks/upgrading.md) documents its compatibility and
+recovery boundaries. Node deployments follow the [operations guide](docs/runbooks/operations.md).
