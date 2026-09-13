@@ -209,6 +209,43 @@ test('a confirmed task can receive an omitted deadline without creating a replac
   assert.equal(f.fake.calls.filter(call => call.method === 'slackLists.items.create').length, 1);
 });
 
+test('date-only due payloads omit timestamp while exact deadlines and clears stay explicit', async t => {
+  const f = fixture(t);
+  const created = await f.service().createItem('create', LIST_URL, {
+    title: 'Budget summary', due: { date: '2026-09-18' },
+  });
+  const itemUrl = String((created.item as JsonObject).url);
+  const itemId = String((created.item as JsonObject).id);
+  const createCall = f.fake.calls.find(({ method }) => method === 'slackLists.items.create')!;
+  assert.deepEqual(
+    (createCall.input.initial_fields as JsonObject[]).find(cell => cell.column_id === 'ColDUE'),
+    { column_id: 'ColDUE', date: ['2026-09-18'] },
+  );
+  const duePayload = () => {
+    const call = f.fake.calls.filter(({ method }) => method === 'slackLists.items.update').at(-1)!;
+    return (call.input.cells as JsonObject[]).find(cell => cell.column_id === 'ColDUE');
+  };
+
+  await f.service().updateItem('exact-time', itemUrl, undefined, {
+    due: { date: '2026-09-18', time: '11:00' },
+  });
+  assert.deepEqual(duePayload(), {
+    column_id: 'ColDUE', date: ['2026-09-18'], timestamp: [1789754400], row_id: itemId,
+  });
+
+  await f.service().updateItem('back-to-date-only', itemUrl, undefined, {
+    due: { date: '2026-09-19' },
+  });
+  assert.deepEqual(duePayload(), {
+    column_id: 'ColDUE', date: ['2026-09-19'], row_id: itemId,
+  });
+
+  await f.service().updateItem('clear-due', itemUrl, undefined, {}, ['due']);
+  assert.deepEqual(duePayload(), {
+    column_id: 'ColDUE', date: [], timestamp: [], row_id: itemId,
+  });
+});
+
 test('creates a private task List with context column and shares only an explicit recipient', async t => {
   const f = fixture(t);
   const created = await f.service().createList('list1', 'Client tasks');

@@ -27,7 +27,11 @@ export function taskCells(snapshot: ListSnapshot, fields: TaskFields, clear: Cle
         timestamp = localDeadline(fields.due.date, fields.due.time, zone);
         deadline = `Deadline: ${fields.due.date} ${fields.due.time} (${zone})`;
       }
-      cells.push({ column_id: column.id, date: [fields.due.date], timestamp: timestamp === undefined ? [] : [timestamp] });
+      cells.push({
+        column_id: column.id,
+        date: [fields.due.date],
+        ...(timestamp === undefined ? {} : { timestamp: [timestamp] }),
+      });
     } else cells.push({ column_id: column.id, date: [], timestamp: [] });
   }
   const existing = snapshot.items[0];
