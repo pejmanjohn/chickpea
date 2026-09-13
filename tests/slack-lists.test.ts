@@ -134,7 +134,25 @@ test('creates and verifies a human task with renamed native columns, Unicode, co
   assert.match(context, /https:\/\/example.slack.com\/archives/);
   assert.match(context, /Deadline: 2026-09-15 11:00 \(America\/Los_Angeles\)/);
   assert.match(String((result.item as JsonObject).url), /record_id=RecTASK/);
+  assert.deepEqual((result.item as JsonObject).task, {
+    title: 'Client report — café 🍋', assignees: ['UPEJ'],
+    due: { dates: ['2026-09-15'], timestamps: [1789495200] }, completed: null,
+  });
   assert.deepEqual(f.fake.calls.map(c => c.method), ['slackLists.items.list', 'slackLists.items.create', 'slackLists.items.info']);
+});
+
+test('task readback distinguishes an unset deadline from unsupported or ambiguous native columns', async t => {
+  const f = fixture(t);
+  const created = await f.service().createItem('title-only', LIST_URL, { title: 'Budget summary' });
+  assert.deepEqual((created.item as JsonObject).task, {
+    title: 'Budget summary', assignees: [], due: { dates: [], timestamps: [] }, completed: null,
+  });
+  assert.deepEqual((created.item as JsonObject).fields, [{ columnId: 'ColTITLE', text: 'Budget summary' }]);
+  const list = f.fake.lists.get('FEXISTING')!;
+  list.columns = list.columns.filter(column => column.id !== 'ColDUE');
+  list.columns.push({ id: 'ColSECOND', name: 'Other owner', type: 'todo_assignee', is_primary_column: false });
+  const read = await f.service('read').readItem(LIST_URL, task(f.fake).id);
+  assert.deepEqual((read.item as JsonObject).task, { title: 'Budget summary', completed: null });
 });
 
 test('creates a private task List with context column and shares only an explicit recipient', async t => {

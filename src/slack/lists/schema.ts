@@ -86,6 +86,7 @@ export function sameCell(actual: ListCell | undefined, expected: ListCell): bool
 export function presentItem(item: ListItem, snapshot: ListSnapshot): JsonObject {
   return {
     id: item.id, url: slackListItemUrl(snapshot.url, item.id),
+    task: presentTaskFields(item, snapshot.columns),
     fields: item.fields.map(field => ({
       columnId: field.column_id,
       ...(field.rich_text ? { text: richTextContent(field.rich_text) } :
@@ -93,4 +94,20 @@ export function presentItem(item: ListItem, snapshot: ListSnapshot): JsonObject 
       ...(field.timestamp ? { timestamp: field.timestamp } : {}),
     })),
   };
+}
+
+/** Native types give the model a readable readback even when write results lack the schema. */
+function presentTaskFields(item: ListItem, columns: ListColumn[]): JsonObject {
+  const task: JsonObject = {};
+  for (const [name, type] of Object.entries({ title: 'text', assignees: 'todo_assignee', due: 'todo_due_date', completed: 'todo_completed' })) {
+    const matches = columns.filter(column => column.type === type && (name !== 'title' || column.is_primary_column));
+    // An unavailable or ambiguous column cannot support a semantic claim.
+    if (matches.length !== 1) continue;
+    const cell = item.fields.find(field => field.column_id === matches[0]!.id);
+    if (name === 'title') task.title = cell?.rich_text ? richTextContent(cell.rich_text) : null;
+    if (name === 'assignees') task.assignees = cell?.user ?? [];
+    if (name === 'due') task.due = { dates: cell?.date ?? [], timestamps: cell?.timestamp ?? [] };
+    if (name === 'completed') task.completed = typeof cell?.checkbox === 'boolean' ? cell.checkbox : null;
+  }
+  return task;
 }
