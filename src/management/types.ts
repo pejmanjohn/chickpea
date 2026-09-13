@@ -675,6 +675,17 @@ export interface SkillActionReceiptMetadata {
   outcome: 'updated' | 'missing' | 'already_set';
 }
 
+export interface ManagementConnectionSnapshot {
+  id: string;
+  providerId: string;
+  label: string;
+  purpose?: string;
+  ownerKind: ConnectionAccountOwnerKind;
+  lifecycle: 'pending' | 'ready' | 'needs_attention';
+  enabled: boolean;
+  allowedCapabilities: string[];
+}
+
 export interface ManagementWorkspaceSnapshot {
   organizationId: string;
   /** Present only when inspection is scoped by a trusted Slack Agent route. */
@@ -684,7 +695,16 @@ export interface ManagementWorkspaceSnapshot {
     id: string;
     name: string;
     description: string;
+    /** Classifies this row as a setup catalog entry rather than current Agent access. */
+    kind: 'setup_catalog_entry';
   }>;
+  /** Ready connections eligible for the trusted Agent route that requested inspection. */
+  currentAgent?: {
+    id: string;
+    name: string;
+    /** Empty means the current Agent has no ready eligible connected-service access. */
+    effectiveConnections: ManagementConnectionSnapshot[];
+  };
   agents: Array<{
     id: string;
     revision: number;
@@ -709,16 +729,7 @@ export interface ManagementWorkspaceSnapshot {
     mcpServers: AgentCreateInput['mcpServers'];
     apiConnections: AgentCreateInput['apiConnections'];
     /** Secret-free accounts owned by this Agent and visible to the requester. */
-    connections?: Array<{
-      id: string;
-      providerId: string;
-      label: string;
-      purpose?: string;
-      ownerKind: ConnectionAccountOwnerKind;
-      lifecycle: 'pending' | 'ready' | 'needs_attention';
-      enabled: boolean;
-      allowedCapabilities: string[];
-    }>;
+    connections?: ManagementConnectionSnapshot[];
     repositories: AgentCreateInput['repositories'];
   }>;
   channels: Array<{

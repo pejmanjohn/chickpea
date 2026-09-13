@@ -127,7 +127,7 @@ function workTurn(eventId: string): NormalizedSlackTurn {
   };
 }
 
-test('runTurn carries the hydrated thread images into the agent dispatch', async () => {
+test('runTurn carries hydrated same-root references and thread images into agent dispatch', async () => {
   const f = await createManagementAdapterFixture('thread-images');
   try {
     const agent = await f.config.createAgent({ ...assignment.agent,
@@ -143,7 +143,8 @@ test('runTurn carries the hydrated thread images into the agent dispatch', async
     const bound: ResolvedAssignment = { ...assignment, workspaceId, agent, runtimeContract: 'chickpea-v1' };
     const client = {
       conversations: { replies: async () => ({ ok: true, messages: [{
-        user: turn.userId, ts: '1785509100.000100', text: 'Here is the logo.',
+        user: turn.userId, ts: '1785509100.000100', thread_ts: turn.threadTs,
+        text: `Here is the logo and List https://example.slack.com/lists/${workspaceId}/FEXISTING.`,
         files: [{ id: 'F00000000AA', name: 'logo.png', mimetype: 'image/png', size: 2_048 }],
       }] }) },
       chat: {
@@ -156,17 +157,20 @@ test('runTurn carries the hydrated thread images into the agent dispatch', async
       instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash',
       imageCapability: { role: 'image', filled: true, acceptsImageInput: true } });
     let dispatched: readonly { fileId: string; conversationKey: string }[] | undefined;
+    let admittedListIds: readonly string[] | undefined;
     await runTurn(turn, bound, undefined, {
       client, usageRecordingEnabled: false,
       runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) },
       appStores: { config: f.config, memory: f.memory, identity: f.identity, management: f.management } as never,
-      agentPrompt: async ({ threadImages }) => {
+      agentPrompt: async ({ threadImages, admittedListIds: admitted }) => {
         dispatched = threadImages;
+        admittedListIds = admitted;
         return { text: '42', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported' };
       },
     });
     assert.deepEqual(dispatched?.map(({ fileId }) => fileId), ['F00000000AA']);
     assert.equal(dispatched?.[0]?.conversationKey, `${workspaceId}:${turn.channelId}:${turn.threadTs}`);
+    assert.deepEqual(admittedListIds, ['FEXISTING']);
   } finally {
     await f.close();
   }

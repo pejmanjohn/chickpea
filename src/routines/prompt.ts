@@ -101,6 +101,7 @@ export async function prepareRoutinePrompt(
     threadTs: routine.destination.threadTs ?? scheduleSignalMessageTs(run.scheduledFor),
     source: direct ? 'dm_message' : 'app_mention',
     ...(direct ? { channelType: 'im' } : {}),
+    requesterTimezone: routine.timezone,
     contextMode: routine.destination.threadTs ? 'thread' : 'channel_history',
   };
   const hydrateContext = dependencies.hydrateContext ?? hydrateSlackContextViaWebClient;

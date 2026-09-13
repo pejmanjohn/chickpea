@@ -478,6 +478,8 @@ export interface TagStateRpc {
     observation: FlueTurnObservationV1,
     /** Additive and optional: an older host simply omits the inventory. */
     threadImages?: readonly ThreadImageRecord[],
+    /** Additive and optional: host-admitted List ids for this exact turn. */
+    admittedListIds?: readonly string[],
   ): Promise<StateRpcResult<FlueDispatchEnvelopeV1>>;
   slackFlueExistingInstanceReconcile(
     id: string,

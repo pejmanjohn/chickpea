@@ -39,6 +39,7 @@ import {
   serializeThreadImageRecords,
   type ThreadImageRecord,
 } from './thread-images.ts';
+import { parseAdmittedSlackListIds, serializeAdmittedSlackListIds } from './lists/admission.ts';
 import { renderSlackMarkdownActionLink, slackActionLink } from './message-format.ts';
 
 /**
@@ -451,6 +452,7 @@ export class TurnJobStoreLogic {
     message: string,
     observation: FlueTurnObservationV1,
     threadImages?: readonly ThreadImageRecord[],
+    admittedListIds?: readonly string[],
   ): FlueDispatchEnvelopeV1 {
     if (typeof message !== 'string' || message.length === 0) {
       throw new Error('Flue dispatch message must be non-empty.');
@@ -488,6 +490,7 @@ export class TurnJobStoreLogic {
       // bounded attribute: on Cloudflare the turn and the Agent run in
       // different Durable Objects.
       const serializedThreadImages = serializeThreadImageRecords(threadImages);
+      const serializedAdmittedListIds = serializeAdmittedSlackListIds(admittedListIds);
       const envelope: FlueDispatchEnvelopeV1 = {
         schemaVersion: 2,
         agentName: 'chickpea-slack-v2',
@@ -513,6 +516,7 @@ export class TurnJobStoreLogic {
               ? { attachmentFileIds: turn.attachments.map(({ fileId }) => fileId).join(',') }
               : {}),
             ...(serializedThreadImages ? { threadImages: serializedThreadImages } : {}),
+            ...(serializedAdmittedListIds ? { admittedListIds: serializedAdmittedListIds } : {}),
             ...((turn.attachmentIntake || turn.attachments?.length)
               ? {
                   attachmentIntakeStatus: turn.attachmentIntake?.status ?? 'ok',
@@ -1106,9 +1110,7 @@ export class TurnJobStoreLogic {
     // Keep each actor/Agent's latest dispatched context per live binding. Other completed
     // turns retain the ordinary redelivery TTL; expired bindings retain none.
     // Build the retained-ID list once, independently of the terminal-row scan.
-    this.db.run(
-      `DELETE FROM turn_jobs
-       WHERE delivered = 1 AND enqueued_at < ?
+    const expiredTerminalPredicate = `WHERE delivered = 1 AND enqueued_at < ?
          AND progress_json NOT LIKE '%"cleanup":"pending"%'
          AND id NOT IN (
            SELECT retained_id FROM (
@@ -1122,9 +1124,18 @@ export class TurnJobStoreLogic {
                ON json_extract(prior.runtime_plan_json, '$.conversation.continuityKey') = b.continuity_key
              WHERE prior.runtime_plan_json IS NOT NULL AND prior.dispatch_receipt_json IS NOT NULL
            ) WHERE position = 1
-         )`,
-      now - TURN_JOB_TTL_MS,
-    );
+         )`;
+    this.db.transaction(() => {
+      // Content-free Lists write receipts live exactly as long as their turn.
+      // Isolated TurnJob stores may not have installed SettingsStore yet.
+      if (this.db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'")) {
+        this.db.run(
+          `DELETE FROM app_settings WHERE key IN (SELECT 'slack_lists.writes.v1:' || id FROM turn_jobs ${expiredTerminalPredicate})`,
+          now - TURN_JOB_TTL_MS,
+        );
+      }
+      this.db.run(`DELETE FROM turn_jobs ${expiredTerminalPredicate}`, now - TURN_JOB_TTL_MS);
+    });
   }
 
   private recordTerminalStatus(id: string, terminal: 'success' | 'error'): void {
@@ -1264,6 +1275,7 @@ function parseSlackSignalMessage(
     'attachmentFileIds',
     'attachmentIntakeStatus', 'attachmentCount',
     'threadImages',
+    'admittedListIds',
   ]);
   const parsed = {
     workspaceId: validateBoundedString(attributes.workspaceId, 'Slack workspace id', 128),
@@ -1296,6 +1308,9 @@ function parseSlackSignalMessage(
     ...(attributes.threadImages === undefined
       ? {}
       : { threadImages: validateThreadImages(attributes.threadImages) }),
+    ...(attributes.admittedListIds === undefined
+      ? {}
+      : { admittedListIds: validateAdmittedListIds(attributes.admittedListIds) }),
   };
   if ((parsed.attachmentIntakeStatus === undefined) !== (parsed.attachmentCount === undefined)) {
     throw new Error('Flue Slack attachment intake metadata is incomplete.');
@@ -1325,6 +1340,12 @@ function parseSlackSignalMessage(
     tagName: 'slack_message',
     attributes: parsed,
   };
+}
+
+function validateAdmittedListIds(value: unknown): string {
+  const parsed = parseAdmittedSlackListIds(value);
+  if (!parsed) throw new Error('Flue Slack List admission metadata is invalid.');
+  return serializeAdmittedSlackListIds(parsed)!;
 }
 
 function validateConversationKind(value: unknown): 'channel' | 'im' | 'mpim' {

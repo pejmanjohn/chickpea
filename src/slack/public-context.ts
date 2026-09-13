@@ -6,6 +6,7 @@ import type {
 } from '../config/types.ts';
 import { MAX_SLACK_PUBLIC_HANDOFF_MESSAGES } from '../config/types.ts';
 import type { NormalizedSlackTurn, SlackMessageEvent } from './types.ts';
+import { preserveSlackRichTextLinks } from './rich-text-links.ts';
 import {
   atOrBeforeSlackWatermark, DEFAULT_MAX_MESSAGES, ensureTriggerMessage, orderMessages,
   slackTimestampUnits, type SlackTurnContext,
@@ -96,7 +97,7 @@ export async function reconcileSlackPublicContextMutation(
     await store.deleteSlackPublicContextMessage(workspaceId, event.channel, rootTs, messageTs);
     return true;
   }
-  const text = message?.text?.trim();
+  const text = preserveSlackRichTextLinks(message?.text, message?.blocks);
   if (!text) {
     await store.deleteSlackPublicContextMessage(workspaceId, event.channel, rootTs, messageTs);
     return true;
@@ -172,6 +173,8 @@ export async function assembleRetainedSlackContext(
     rows.set(entry.messageTs, {
       ts: entry.messageTs, text: entry.text, isTrigger: false,
       userId: entry.role === 'human' ? 'Human (retained)' : `Agent ${entry.agentId}`,
+      role: entry.role,
+      rootTs: entry.rootTs,
       ...(entry.contentVersionTs ? { contentVersionTs: entry.contentVersionTs } : {}),
     });
   }

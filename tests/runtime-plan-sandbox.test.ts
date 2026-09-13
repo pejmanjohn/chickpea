@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { createFlueContext } from '@flue/runtime/internal';
-import { ChickpeaSlack, runtimeApiDeclarationStillAllowed } from '../src/agents/slack-thread.ts';
+import {
+  ChickpeaSlack,
+  runtimeApiDeclarationStillAllowed,
+  runtimePlanConnectedServicesInstruction,
+} from '../src/agents/slack-thread.ts';
+import { SLACK_LIST_TOOL_NAMES } from '../src/slack/lists/tools.ts';
 import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { getConfigStore, getIdentityStore, getSettingsStore } from '../src/config/state-backend.ts';
@@ -41,7 +46,7 @@ test(`native REST session: ${scenario}`, async (t) => {
       ? new Response(null, { status: 302, headers: { location: 'https://93.184.216.35/v1/data' } })
       : Response.json({ nonce });
   });
-  const plan = compileRuntimePlanV2({ turn: { workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'E_TEST', text: 'Read', userId: 'U_TEST', actorMembershipId: 'member', messageTs: '1787000000.000200', threadTs: '1787000000.000100', source: 'app_mention', contextMode: 'thread' }, assignment: { workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id, agent, model: agent.model, modelAttribution: { source: 'workspace_default', providerId: 'local-stub', workspaceDefaultRevision: 1 } }, instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash', effectiveConnections: scenario === 'empty' ? [] : [{ account, binding, policy, scope: 'team' }] } as any);
+  const plan = compileRuntimePlanV2({ turn: { workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'E_TEST', text: 'Read', userId: 'U_TEST', actorMembershipId: 'member', messageTs: '1787000000.000200', threadTs: '1787000000.000100', source: 'app_mention', contextMode: 'thread' }, assignment: { workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id, agent, model: agent.model, modelAttribution: { source: 'workspace_default', providerId: 'local-stub', workspaceDefaultRevision: 1 } }, instructions: agent.instructions, memoryEpoch: 1, sandboxMode: 'bash', effectiveConnections: scenario === 'empty' ? [] : [{ account, binding, policy, scope: 'team' }], ...(scenario === 'empty' ? { connectionChoices: [{ providerId: 'linear', choices: [{ label: 'Linear workspace', scope: 'team' }] }] } : {}) } as any);
   if (scenario === 'wider') account.policy = { ...policy, allowedHosts: [...policy.allowedHosts, '93.184.216.35'] };
   const warnings = t.mock.method(console, 'warn', () => {});
   assert.doesNotMatch(JSON.stringify(plan), /fixture-secret/);
@@ -60,8 +65,36 @@ test(`native REST session: ${scenario}`, async (t) => {
     : await context.initializeRootHarness(ChickpeaSlack, signal, plan);
   try {
     const instructions = String((harness as any).config.instructions);
-    if (scenario === 'empty') assert.doesNotMatch(instructions, /REST connections are declared/);
+    const mountedToolNames = (harness as any).agentTools.map((tool: any) => tool.name);
+    const connectedServices = runtimePlanConnectedServicesInstruction(plan);
+    assert.match(instructions, /Active connected-service access selected and configured for this turn:/);
+    assert.match(instructions, /not a guarantee of remote service health/);
+    if (scenario.startsWith('routine')) {
+      assert.doesNotMatch(instructions, /Native Slack Lists action tools mounted for this turn/);
+    } else {
+      const declaredListTools = instructions.match(
+        /Native Slack Lists action tools mounted for this turn \(closed set\): (\[[^\n]+?\])\./,
+      );
+      assert.ok(declaredListTools);
+      assert.deepEqual(
+        JSON.parse(declaredListTools[1]!),
+        SLACK_LIST_TOOL_NAMES.filter((toolName) => mountedToolNames.includes(toolName)),
+      );
+      assert.deepEqual(JSON.parse(declaredListTools[1]!), SLACK_LIST_TOOL_NAMES);
+      assert.match(instructions, /no action to delete a Slack task or whole List/i);
+      assert.match(instructions, /deletion operation in those schemas applies only to the named Agent configuration or routine/i);
+      assert.match(instructions, /proposal or approval cannot execute or unlock a native Slack Lists action/i);
+    }
+    if (scenario === 'empty') {
+      assert.doesNotMatch(instructions, /REST connections are declared/);
+      assert.match(connectedServices, /Active connected-service access selected and configured for this turn: none\./);
+      assert.match(connectedServices, /"providerId":"linear","status":"account_selection_required"/);
+      assert.match(connectedServices, /"label":"Linear workspace","scope":"team"/);
+      assert.match(connectedServices, /pending selection, not unavailable/);
+      assert.match(instructions, /Ask the user to choose one of these labels before using that provider/);
+    }
     else {
+      assert.match(connectedServices, /\{"kind":"api","id":"connection_rest","name":"REST"\}/);
       assert.match(instructions, /REST connections are declared/);
       assert.match(instructions, /bash tool with curl/);
       assert.match(instructions, /curl -sS/);
@@ -84,9 +117,8 @@ test(`native REST session: ${scenario}`, async (t) => {
       return;
     }
     if (scenario.startsWith('routine')) {
-      const names = (harness as any).agentTools.map((tool: any) => tool.name);
-      assert.ok(names.includes('submit_routine_result'));
-      for (const name of ['post_artifact', 'render_chart']) assert.equal(names.includes(name), scheduled);
+      assert.ok(mountedToolNames.includes('submit_routine_result'));
+      for (const name of ['post_artifact', 'render_chart']) assert.equal(mountedToolNames.includes(name), scheduled);
       if (scheduled) assert.doesNotMatch(instructions, /old queued occurrence has no verified file destination/);
       else assert.match(instructions, /old queued occurrence has no verified file destination/);
     }
@@ -126,6 +158,98 @@ test(`native REST session: ${scenario}`, async (t) => {
   } finally { await harness.close(); }
 });
 }
+
+test('native Slack capability declaration follows an actor-less Lists mount', async (t) => {
+  const agent = {
+    id: 'agent_no_actor', kind: 'user', revision: 1, name: 'No actor', instructions: 'Help.',
+    enabled: true, model: 'local-stub/proof', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  };
+  const plan = compileRuntimePlanV2({
+    turn: {
+      workspaceId: 'T_TEST', channelId: 'C_TEST', eventId: 'E_NO_ACTOR', text: 'What can you do?',
+      userId: 'U_TEST', messageTs: '1787000000.000200', threadTs: '1787000000.000100',
+      source: 'app_mention', contextMode: 'thread',
+    },
+    assignment: {
+      workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id, agent,
+      model: agent.model, modelAttribution: {
+        source: 'workspace_default', providerId: 'local-stub', workspaceDefaultRevision: 1,
+      },
+    },
+    instructions: agent.instructions,
+    memoryEpoch: 1,
+    sandboxMode: 'bash',
+    effectiveConnections: [],
+  } as any);
+  t.mock.method(getConfigStore(), 'getAgent', async () => agent);
+  const signal = {
+    kind: 'signal', type: 'slack.message', tagName: 'slack_message',
+    body: serializeCurrentRequestEnvelope(
+      'What can you do?', false, 'U_TEST', '1787000000.000200',
+      { schemaVersion: 2, progressiveStreamingOffered: true },
+    ),
+    attributes: {
+      workspaceId: 'T_TEST', channelId: 'C_TEST', threadTs: plan.conversation.threadTs,
+      slackUserId: 'U_TEST', eventId: 'E_NO_ACTOR', messageTs: '1787000000.000200',
+      turnJobId: 'no_actor',
+    },
+  } as any;
+  const context = createFlueContext({
+    id: 'no-actor-test', agentName: 'chickpea-slack-v2', env: {},
+    agentConfig: { resolveModel: () => ({}) } as any,
+  });
+  const harness = await context.initializeRootHarness(ChickpeaSlack, signal, plan);
+  try {
+    const instructions = String((harness as any).config.instructions);
+    const mountedToolNames = (harness as any).agentTools.map((tool: any) => tool.name);
+    assert.match(
+      instructions,
+      /Native Slack Lists action tools mounted for this turn \(closed set\): none\./,
+    );
+    assert.match(instructions, /No native Slack Lists action is available in this turn/i);
+    assert.match(instructions, /Workspace-management tools are also mounted/);
+    for (const toolName of SLACK_LIST_TOOL_NAMES) {
+      assert.equal(mountedToolNames.includes(toolName), false, toolName);
+    }
+    assert.ok(mountedToolNames.includes('propose_workspace_changes'));
+  } finally {
+    await harness.close();
+  }
+});
+
+test('connected-service declaration names each frozen connection family without copying action policy', () => {
+  const instruction = runtimePlanConnectedServicesInstruction({
+    apiConnections: [{
+      id: 'connection_asana', displayName: 'Asana', allowedHosts: ['app.asana.com'],
+      pathPrefixes: ['/api/1.0'], allowedMethods: ['GET'], headerName: 'authorization',
+      authMode: 'credential',
+    }],
+    mcpConnections: [{
+      id: 'connection_docs', displayName: 'Docs MCP', url: 'https://mcp.example.com',
+      transport: 'streamable-http', authMode: 'bearer', headerNames: ['authorization'],
+      allowedTools: ['search_docs'], optional: true,
+    }],
+    managedConnections: [{
+      id: 'connection_linear', providerId: 'linear', adapterId: 'composio', toolkit: 'linear',
+      allowedCapabilities: ['linear.issues.create'],
+    }],
+  });
+
+  assert.match(instruction, /\{"kind":"api","id":"connection_asana","name":"Asana"\}/);
+  assert.match(instruction, /\{"kind":"managed","id":"connection_linear","name":"linear"\}/);
+  assert.match(instruction, /\{"kind":"mcp","id":"connection_docs","name":"Docs MCP"\}/);
+  assert.match(instruction, /Pending connected-service account selections: none\./);
+  assert.doesNotMatch(instruction, /app\.asana\.com|search_docs|linear\.issues\.create|mcp\.example\.com/);
+
+  const unavailable = runtimePlanConnectedServicesInstruction({
+    apiConnections: [],
+    mcpConnections: [],
+    managedConnections: [],
+    connectionChoices: [{ providerId: 'google', previousAccountUnavailable: true, choices: [] }],
+  });
+  assert.match(unavailable, /"providerId":"google","status":"no_eligible_account"/);
+  assert.match(unavailable, /"previousAccountUnavailable":true/);
+});
 
 for (const oauthState of ['ready', 'invalid_grant', 'temporarily_unavailable'] as const) {
 test(`native Google session: ${oauthState}`, async (t) => {

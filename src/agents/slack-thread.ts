@@ -210,6 +210,7 @@ import {
 import { resolveAgentModelRoleFromStore } from '../config/model-policy.ts';
 import { resolveImageProvider } from '../images/provider.ts';
 import { createSlackFileTransport, type SlackFileTransport } from '../slack/file-transport.ts';
+import { SLACK_LIST_TOOL_NAMES, useSlackListsTools } from '../slack/lists/tools.ts';
 import {
   parseSlackManagementSignal,
   useWorkspaceManagementSlackTools,
@@ -1229,6 +1230,12 @@ export function useChickpeaSlackRuntimeCapabilities(
     responseMetadataModel: plan.model,
     ...(threadImages?.length ? { threadImages } : {}),
     includeAgentAuthoringSkill: true,
+    slackCapabilities: {
+      slackListToolNames: managementEnabled && plan.actorMembershipId
+        ? SLACK_LIST_TOOL_NAMES
+        : [],
+      workspaceManagementMounted: managementEnabled,
+    },
     additionalActivityToolDescriptors: slackActivityToolDescriptors({
       plan,
       managementEnabled,
@@ -1239,6 +1246,7 @@ export function useChickpeaSlackRuntimeCapabilities(
   useAgentAuthoring();
   useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv, writeAgentCreationTerminal, writeMemoryUpdate);
   usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
+  useSlackListsTools(plan, resolveAgentPlatformEnv);
   useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
   useTool(createSlackPresentTableTool(writeTablePresentation));
   if (presentationIntent) {
@@ -1267,6 +1275,75 @@ export function slackDeliveryThreadImages(
   );
 }
 
+/** Declare only the connected-service accounts frozen into this execution plan. */
+export function runtimePlanConnectedServicesInstruction(
+  plan: Pick<
+    RuntimePlanV2,
+    'apiConnections' | 'mcpConnections' | 'managedConnections' | 'connectionChoices'
+  >,
+): string {
+  const selected = [
+    ...plan.apiConnections.map(({ id, displayName }) => ({
+      kind: 'api' as const,
+      id,
+      name: displayName ?? id,
+    })),
+    ...plan.mcpConnections.map(({ id, displayName }) => ({
+      kind: 'mcp' as const,
+      id,
+      name: displayName ?? id,
+    })),
+    ...(plan.managedConnections ?? []).map(({ id, toolkit }) => ({
+      kind: 'managed' as const,
+      id,
+      name: toolkit,
+    })),
+  ].sort((left, right) => `${left.kind}:${left.id}`.localeCompare(`${right.kind}:${right.id}`));
+  const pendingSelections = (plan.connectionChoices ?? []).map((choice) => ({
+    providerId: choice.providerId,
+    status: choice.choices.length > 0
+      ? 'account_selection_required' as const
+      : 'no_eligible_account' as const,
+    ...(choice.previousAccountUnavailable ? { previousAccountUnavailable: true } : {}),
+    choices: choice.choices.map(({ label, purpose, scope }) => ({
+      label,
+      ...(purpose ? { purpose } : {}),
+      scope,
+    })),
+  })).sort((left, right) => left.providerId.localeCompare(right.providerId));
+  const activeDeclaration = selected.length > 0 ? JSON.stringify(selected) : 'none';
+  const pendingDeclaration = pendingSelections.length > 0
+    ? JSON.stringify(pendingSelections)
+    : 'none';
+  return `Active connected-service access selected and configured for this turn: ${activeDeclaration}. ` +
+    `Pending connected-service account selections: ${pendingDeclaration}. ` +
+    'Providers marked account_selection_required are pending selection, not unavailable; ask the user to choose. ' +
+    'Pending selections and setup or authorization options are not active tools or permissions. The active ' +
+    'selection is the permission ceiling for connected-service actions in this turn, not a guarantee of remote ' +
+    'service health; use only the connected tools or REST declarations actually mounted.';
+}
+
+/** Declare the closed native Lists surface from the exact Slack mount decision. */
+export function runtimePlanSlackCapabilitiesInstruction(input: {
+  slackListToolNames: readonly (typeof SLACK_LIST_TOOL_NAMES)[number][];
+  workspaceManagementMounted: boolean;
+}): string {
+  const listTools = input.slackListToolNames.length > 0
+    ? JSON.stringify(input.slackListToolNames)
+    : 'none';
+  const listScope = input.slackListToolNames.length > 0
+    ? 'This closed set has no action to delete a Slack task or whole List.'
+    : 'No native Slack Lists action is available in this turn, including task or List deletion.';
+  const managementScope = input.workspaceManagementMounted
+    ? 'Workspace-management tools are also mounted, but they operate only within their typed ' +
+      'Chickpea workspace-configuration and scheduled-routine scopes. Any deletion operation in ' +
+      'those schemas applies only to the named Agent configuration or routine, never a Slack task ' +
+      'or List. A proposal or approval cannot execute or unlock a native Slack Lists action.'
+    : 'Workspace-management tools are not mounted for this turn.';
+  return `Native Slack Lists action tools mounted for this turn (closed set): ${listTools}. ` +
+    `${listScope} ${managementScope}`;
+}
+
 /** Compose the declarations shared by Slack and fresh routine agents. */
 export function useRuntimePlanAgent(
   plan: RuntimePlanV2,
@@ -1277,6 +1354,10 @@ export function useRuntimePlanAgent(
     connectorUsageCorrelation?: import('../connections/managed-tools.ts').ManagedToolUsageCorrelation;
     artifactToolsDisabled?: boolean;
     includeAgentAuthoringSkill?: boolean;
+    slackCapabilities?: {
+      slackListToolNames: readonly (typeof SLACK_LIST_TOOL_NAMES)[number][];
+      workspaceManagementMounted: boolean;
+    };
     additionalActivityToolDescriptors?: readonly ActivityToolDescriptor[];
     /** Images already in this conversation, collected by the host fetch. */
     threadImages?: readonly ThreadImageRecord[];
@@ -1314,6 +1395,10 @@ export function useRuntimePlanAgent(
     useChickpeaResponseMetadata(options.responseMetadataModel);
   }
   useInstruction('Never invent facts or claim access to context and tools you do not have.');
+  useInstruction(runtimePlanConnectedServicesInstruction(plan));
+  if (options.slackCapabilities) {
+    useInstruction(runtimePlanSlackCapabilitiesInstruction(options.slackCapabilities));
+  }
   useInstruction('Sandbox files are temporary working data, not durable Agent memory. They do not follow this Agent into a fresh conversation. A successful file or shell write cannot establish that a fact was remembered. Never promise future recall from a sandbox file.');
   if (plan.sandbox.mode === 'bash') {
     useInstruction('This virtual sandbox starts with a fresh filesystem for each new request, including a follow-up in the same Slack thread. Files from an earlier request are gone. When the current user asks to return or revise those files, recreate them from the available contents in this request before attaching them; do not assume an earlier path still exists. The internal file-delivery check continues the current request and may only read and export existing files.');
@@ -1396,6 +1481,7 @@ function slackActivityToolDescriptors(input: {
 }): ActivityToolDescriptor[] {
   const descriptors: ActivityToolDescriptor[] = [];
   if (input.managementEnabled) {
+    descriptors.push(...SLACK_LIST_TOOL_NAMES.map(toolName => ({ toolName, descriptor: semanticDescriptorForCoreTool(toolName) })));
     descriptors.push({
       toolName: 'update_agent_memory',
       descriptor: workspaceManagementSemanticDescriptor('apply_workspace_changes'),

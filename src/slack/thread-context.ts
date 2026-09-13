@@ -1,12 +1,28 @@
 import type { ThreadImageRecord } from './thread-images.ts';
 import type { NormalizedSlackTurn, SlackContextMode } from './types.ts';
+import { preserveSlackRichTextLinks } from './rich-text-links.ts';
 
 export interface SlackContextMessage {
   userId: string;
   text: string;
   ts: string;
   isTrigger: boolean;
+  /** Host-derived Slack-visible provenance; absent only on legacy fixtures. */
+  role?: 'human' | 'agent';
+  /** Slack root that owns this message. Top-level DM roots equal their message ts. */
+  rootTs?: string;
   contentVersionTs?: string;
+}
+
+export interface SlackContextExchange {
+  rootTs: string;
+  messages: SlackContextMessage[];
+  incomplete: boolean;
+}
+
+export interface SlackContextPartition {
+  activeThread?: SlackContextExchange;
+  historicalBackground: SlackContextMessage[];
 }
 
 interface SlackContextWindow {
@@ -41,10 +57,12 @@ export interface SlackWebApiMessage {
   user?: string;
   text?: string;
   ts?: string;
+  thread_ts?: string;
   subtype?: string;
   bot_id?: string;
   edited?: { ts: string };
   files?: unknown[];
+  blocks?: unknown[];
 }
 
 export const DEFAULT_MAX_MESSAGES = 50;
@@ -148,7 +166,8 @@ export function computeHistoryWindow(
 
 export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextMessage[] {
   return messages.flatMap((message) => {
-    if (!message.user || !message.text || !message.text.trim() || !message.ts) {
+    const text = preserveSlackRichTextLinks(message.text, message.blocks);
+    if (!message.user || !text || !message.ts) {
       return [];
     }
     if (message.bot_id || (message.subtype && message.subtype !== 'file_share')) {
@@ -157,13 +176,48 @@ export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextM
     return [
       {
         userId: message.user,
-        text: message.text,
+        text,
         ts: message.ts,
         isTrigger: false,
+        role: 'human',
+        rootTs: message.thread_ts ?? message.ts,
         ...(message.edited?.ts ? { contentVersionTs: message.edited.ts } : {}),
       },
     ];
   });
+}
+
+/**
+ * Preserve the current same-root exchange for direct threaded replies. Other
+ * visible rows remain one chronological background stream: admission and the
+ * retained-context privacy filter decide which rows are visible, while this
+ * projection does not guess that one different root continues another.
+ */
+export function partitionSlackContext(
+  turn: NormalizedSlackTurn,
+  context: SlackTurnContext,
+): SlackContextPartition {
+  const background = context.messages.filter((message) => !message.isTrigger);
+  const degraded = context.truncated || context.degradations.length > 0;
+  const direct = turn.channelType === 'im' ||
+    (!turn.channelType && turn.channelId.startsWith('D'));
+  const hasRoot = (messages: SlackContextMessage[], rootTs: string) =>
+    messages.some((message) => message.ts === rootTs);
+  const exchange = (rootTs: string, messages: SlackContextMessage[]): SlackContextExchange => ({
+    rootTs,
+    messages,
+    incomplete: degraded || !hasRoot(messages, rootTs),
+  });
+
+  if (direct && context.mode === 'thread' && turn.messageTs !== turn.threadTs) {
+    const messages = background.filter((message) => message.rootTs === turn.threadTs);
+    const selected = new Set(messages);
+    return {
+      activeThread: exchange(turn.threadTs, messages),
+      historicalBackground: background.filter((message) => !selected.has(message)),
+    };
+  }
+  return { historicalBackground: background };
 }
 
 export function orderMessages(messages: SlackContextMessage[]): SlackContextMessage[] {
@@ -207,6 +261,8 @@ function triggerMessage(turn: NormalizedSlackTurn): SlackContextMessage {
     text: turn.text,
     ts: turn.messageTs,
     isTrigger: true,
+    role: 'human',
+    rootTs: turn.threadTs,
   };
 }
 

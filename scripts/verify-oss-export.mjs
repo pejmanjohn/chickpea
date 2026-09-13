@@ -158,6 +158,7 @@ const liveVerifierExportPolicy = Object.freeze({
     exportPath('qa', 'live', 'operator', 'rest-probe.md'),
     exportPath('qa', 'live', 'privacy.ts'),
     exportPath('qa', 'live', 'private-config.ts'),
+    exportPath('qa', 'live', 'probes', 'slack-lists.ts'),
     exportPath('qa', 'live', 'public-sources.ts'),
     exportPath('qa', 'live', 'report.ts'),
     exportPath('qa', 'live', 'runner.ts'),
@@ -218,6 +219,7 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'runbooks', 'slack-interaction-operations.md'),
   exportPath('docs', 'runbooks', 'semantic-activity-status.md'),
   exportPath('docs', 'runbooks', 'workspace-management-mcp.md'),
+  exportPath('docs', 'runbooks', 'slack-lists.md'),
 ]);
 
 const forbiddenSourcePaths = new Set([

@@ -26,7 +26,7 @@ import {
   validateSlackAppManifestUrlRepair,
   type SlackAppManifest,
 } from '../slack/app-manifest.ts';
-import { missingRequiredSlackBotScopes, REQUIRED_SLACK_BOT_SCOPES } from '../slack/scopes.ts';
+import { missingRequiredSlackBotScopes, REQUESTED_SLACK_BOT_SCOPES, SLACK_LIST_FEATURE_SCOPES } from '../slack/scopes.ts';
 import {
   decryptSlackSecretEnvelope,
   encryptSlackSecretEnvelope,
@@ -166,7 +166,11 @@ export class SlackCredentialRecoveryService {
     } catch {
       throw new SlackCredentialRecoveryError('manifest_mismatch');
     }
-    if (slackManifestFingerprint(input.manifest) !== session.manifestFingerprint) {
+    // The UI builds today's manifest. Accept only an exact stored fingerprint,
+    // including variants that predate the additive Lists permissions.
+    const matchesStored = [[], ['lists:read'], ['lists:write'], ['lists:read', 'lists:write']].some(scopes =>
+      slackManifestFingerprint(recoveryManifestScopes(input.manifest, scopes)) === session.manifestFingerprint);
+    if (!matchesStored) {
       throw new SlackCredentialRecoveryError('manifest_mismatch');
     }
     const revision = `recoveryapp_${randomSecret(this.randomBytes, 18)}`;
@@ -201,15 +205,20 @@ export class SlackCredentialRecoveryService {
       new URLSearchParams({ app_id: session.expectedAppId }).toString(),
       'application/x-www-form-urlencoded',
     );
+    let expected: SlackAppManifest;
     try {
-      validateSlackAppManifestUrlRepair(exported.manifest, input.expectedManifest);
+      // Preserve the exported feature grant exactly. URL repair is not a scope upgrade.
+      const scopes = record(record(record(exported.manifest).oauth_config).scopes).bot;
+      if (!Array.isArray(scopes) || !scopes.every(scope => typeof scope === 'string')) throw new Error();
+      expected = recoveryManifestScopes(input.expectedManifest, scopes);
+      validateSlackAppManifestUrlRepair(exported.manifest, expected);
     } catch {
       throw new SlackCredentialRecoveryError('manifest_mismatch');
     }
     const updated = await this.manifestRequest(
       SLACK_MANIFEST_UPDATE_URL,
       token,
-      JSON.stringify({ app_id: session.expectedAppId, manifest: input.expectedManifest }),
+      JSON.stringify({ app_id: session.expectedAppId, manifest: expected }),
       'application/json; charset=utf-8',
     );
     if (updated.app_id !== undefined && updated.app_id !== session.expectedAppId) {
@@ -222,7 +231,7 @@ export class SlackCredentialRecoveryService {
       'application/x-www-form-urlencoded',
     );
     try {
-      validateSlackAppManifest(verified.manifest, input.expectedManifest);
+      validateSlackAppManifest(verified.manifest, expected);
     } catch {
       throw new SlackCredentialRecoveryError('manifest_mismatch');
     }
@@ -230,7 +239,7 @@ export class SlackCredentialRecoveryService {
       recoveryId: session.id,
       sessionHash: sha256HexNode(input.sessionSecret),
       browserHash: sha256HexNode(input.browserBinding),
-      manifestFingerprint: slackManifestFingerprint(input.expectedManifest),
+      manifestFingerprint: slackManifestFingerprint(expected),
     }).catch((error) => { throw mapStateError(error); });
     await this.audit('slack_recovery.urls_repaired', session.id, 'success', 'same_app_urls_only');
   }
@@ -241,6 +250,8 @@ export class SlackCredentialRecoveryService {
       throw terminalCode(session);
     }
     const redirectUri = exactHttpsRedirect(input.redirectUri);
+    const active = await this.dependencies.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
+    if (!active || active.revision !== session.baseRevision) throw new SlackCredentialRecoveryError('stale_revision');
     const state = randomSecret(this.randomBytes, 32);
     await this.dependencies.identity.startSlackRecoveryOAuth({
       recoveryId: session.id,
@@ -251,7 +262,8 @@ export class SlackCredentialRecoveryService {
     }).catch((error) => { throw mapStateError(error); });
     const authorization = new URL(SLACK_BOT_AUTHORIZE_URL);
     authorization.searchParams.set('client_id', session.appCredentialClientId);
-    authorization.searchParams.set('scope', REQUIRED_SLACK_BOT_SCOPES.join(','));
+    authorization.searchParams.set('scope', REQUESTED_SLACK_BOT_SCOPES.filter(scope =>
+      !SLACK_LIST_FEATURE_SCOPES.includes(scope) || active.grantedScopes.includes(scope)).join(','));
     authorization.searchParams.set('redirect_uri', redirectUri);
     authorization.searchParams.set('state', state);
     return { state, expiresAt: session.expiresAt, authorizationUrl: authorization.toString() };
@@ -493,6 +505,13 @@ function recoveryEnvelopeContext(
     purpose: 'app_credentials',
     revision,
   };
+}
+
+function recoveryManifestScopes(manifest: SlackAppManifest, granted: readonly string[]): SlackAppManifest {
+  const result = structuredClone(manifest);
+  result.oauth_config.scopes.bot = result.oauth_config.scopes.bot.filter(scope =>
+    !SLACK_LIST_FEATURE_SCOPES.includes(scope) || granted.includes(scope));
+  return result;
 }
 
 function tokenGrant(value: unknown, session: SlackRecoverySession) {

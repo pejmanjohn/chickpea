@@ -6,11 +6,12 @@ import { isCloudflareTarget } from '../config/runtime-target.ts';
  * fetch wrapper avoids workerd's receiver check, and `manual` replaces the
  * SDK's unsupported `redirect: error` edge value. Slack calls never redirect.
  * Retries stay adapter-owned and every request has a fixed timeout. */
-export function createSlackWebClient(botToken: string | undefined): WebClient {
+export function createSlackWebClient(botToken: string | undefined, options: { rejectRateLimitedCalls?: boolean } = {}): WebClient {
   const slackApiUrl = process.env.SLACK_API_URL;
   return new WebClient(botToken, {
     retryConfig: { retries: 0 },
     timeout: 10_000,
+    ...(options.rejectRateLimitedCalls ? { rejectRateLimitedCalls: true } : {}),
     fetch: (input, init) => {
       const patchedInit =
         isCloudflareTarget() && init?.redirect === 'error'

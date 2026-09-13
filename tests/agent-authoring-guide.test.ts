@@ -26,6 +26,9 @@ test('canonical Agent-authoring package is versioned, complete, and digest-bound
   assert.equal(AGENT_AUTHORING_GUIDE_URI, 'chickpea://guide/agent-authoring/v1');
   assert.ok(AGENT_AUTHORING_PACKAGE.skill.description.length > 80);
   assert.match(AGENT_AUTHORING_PACKAGE.skill.description, /Explore, create, onboard, or edit/i);
+  assert.match(AGENT_AUTHORING_PACKAGE.skill.description, /Agent configuration or design capabilities/i);
+  assert.match(AGENT_AUTHORING_PACKAGE.skill.description, /Do not activate for questions limited to native or connected-service actions/i);
+  assert.doesNotMatch(AGENT_AUTHORING_PACKAGE.skill.description, /answer Agent capability questions/i);
   assert.match(AGENT_AUTHORING_PACKAGE.skill.description, /compound Agent-configuration request/i);
   assert.ok(AGENT_AUTHORING_GUIDE.length > 4_000);
   assert.ok(AGENT_SKILL_CREATION_GUIDE.length > 2_000);
@@ -55,6 +58,9 @@ test('router covers all authoring postures while leaving detailed judgment lazy'
     'explore',
     'capability',
     'create or revise a skill',
+    'capability question about Agent configuration or design',
+    'Do not activate it merely to answer which native or connected-service actions are mounted',
+    'mounted runtime declarations and tool descriptions',
     'scheduled work',
     'without asking for separate permission',
     'inspect_workspace',
@@ -78,6 +84,15 @@ test('router covers all authoring postures while leaving detailed judgment lazy'
   assert.doesNotMatch(AGENT_AUTHORING_ROUTER_INSTRUCTION, /chief of staff|Sentry|bug-to-PR/i);
 });
 
+test('authoring scope leaves current mounted-action questions to runtime declarations', () => {
+  const opening = AGENT_AUTHORING_GUIDE.split('\n\n## Start with posture')[0]!;
+  assert.match(opening, /configuration or design could support/i);
+  assert.match(opening, /Do not use it merely to answer which native or connected-service actions are mounted/i);
+  assert.match(opening, /mounted runtime declarations and tool descriptions/i);
+  assert.doesNotMatch(opening, /asks what an Agent could do/i);
+  assert.match(AGENT_AUTHORING_GUIDE, /what an Agent's configuration or design could support or what to connect/i);
+});
+
 test('shared creation tool descriptions agree on immediate standalone apply', () => {
   const proposal = workspaceManagementToolDescription('propose_workspace_changes');
   const apply = workspaceManagementToolDescription('apply_workspace_changes');
@@ -86,6 +101,30 @@ test('shared creation tool descriptions agree on immediate standalone apply', ()
   assert.match(proposal, /standalone base Agent immediately with apply_workspace_changes/i);
   assert.match(apply, /created immediately as a standalone create_agent operation/i);
   assert.match(apply, /do not propose it or ask for confirmation/i);
+});
+
+test('workspace proposal guidance stays inside the typed configuration schema', () => {
+  const proposal = workspaceManagementToolDescription('propose_workspace_changes');
+  const apply = workspaceManagementToolDescription('apply_workspace_changes');
+  const confirm = workspaceManagementToolDescription('confirm_workspace_change');
+  const inspection = workspaceManagementToolDescription('inspect_workspace');
+  const slack = slackManagementInstruction('agent_synthetic');
+
+  for (const instruction of [AGENT_AUTHORING_GUIDE, proposal, slack]) {
+    assert.match(instruction, /typed (?:Chickpea )?workspace configuration operation/i);
+    assert.match(instruction, /does not execute actions in Slack Lists or connected services/i);
+    assert.match(instruction, /Approval cannot make an unsupported operation available/i);
+    assert.doesNotMatch(instruction, /destructive actions, external writes/i);
+  }
+  assert.match(inspection, /connectors.*setup catalog/i);
+  assert.match(inspection, /currentAgent\.effectiveConnections/i);
+  assert.match(inspection, /empty array means none/i);
+  assert.match(apply, /typed Chickpea workspace configuration changes/i);
+  assert.match(apply, /does not execute actions in Slack Lists or connected services/i);
+  assert.match(apply, /confirmation-required configuration operations/i);
+  assert.match(confirm, /Chickpea workspace configuration proposal returned by propose_workspace_changes/i);
+  assert.match(confirm, /does not confirm actions in Slack Lists or connected services/i);
+  assert.match(confirm, /approval cannot make an unsupported operation available/i);
 });
 
 test('instruction-update tool example survives both runtime schema validators', () => {
@@ -117,9 +156,10 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     'Relative timing stays relative',
     'same `save_routine` operation used by the shared command',
     'Never use the compound path to add an approval round trip',
-    'Deletion is deliberately outside `manage_scheduled_work`',
+    'Deleting scheduled work is deliberately outside `manage_scheduled_work`',
+    'clear request to delete a routine',
     'call `inspect_routines`', 'one `delete_routine` operation',
-    'wait for explicit confirmation', 'Never delete through `apply_workspace_changes`',
+    'wait for explicit confirmation', 'Never delete a routine through `apply_workspace_changes`',
     'Slack presence', 'Channel reach', 'editing authority',
     'inspect_workspace', 'propose_workspace_changes', 'confirm_workspace_change',
     'call `import_skill`', 'applies one bounded new skill immediately',
@@ -148,6 +188,13 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     '`reassign_routine_agent`', 'Group DMs cannot contain scheduled work',
     'All requests to remember or edit durable Agent memory are Agent authoring',
     '`update_agent_memory`', 'exact `expectedRevision`',
+    'requester-supplied scoped standing notes or preferences',
+    "scope, exceptions, and precedence stay in the requester's words",
+    'not a repeatable procedure that belongs in a skill',
+    'copy that wording verbatim', 'do not paraphrase, compress, generalize, or change its exceptions',
+    'text following "Remember:" and a quoted note',
+    'only permitted change to that supplied wording is to include the exact URL with the label',
+    'Ordinary conversational facts that were not supplied as memory wording may still be restated concisely',
     'Sandbox files are temporary working data',
     'only after the management service returns an applied memory receipt',
     'proposal, denial, or failure',
@@ -171,13 +218,16 @@ test('Slack tool selection routes destructive schedule deletion through confirma
   assert.match(source, /useInstruction\(slackManagementInstruction\(plan\.agentId\)\)/);
   assert.match(scheduleTool, /description: scheduleActionDescription/);
   assert.match(scheduleTool, /input: scheduleActionInputSchema/);
-  assert.match(selectionInstruction, /Deletion is deliberately excluded from manage_scheduled_work/i);
+  assert.match(selectionInstruction, /Deleting scheduled work is deliberately excluded from manage_scheduled_work/i);
+  assert.match(selectionInstruction, /clear request to delete a routine/i);
   assert.match(selectionInstruction, /first call inspect_routines/i);
   assert.match(selectionInstruction, /delete_routine operation to propose_workspace_changes/i);
   assert.match(selectionInstruction, /show presentation\.slack/i);
   assert.match(selectionInstruction, /wait for explicit requester approval before calling confirm_workspace_change/i);
-  assert.match(selectionInstruction, /Never use apply_workspace_changes for deletion/i);
+  assert.match(selectionInstruction, /Never use apply_workspace_changes for routine deletion/i);
   assert.match(scheduleActionDescription, /Do not use this tool to delete scheduled work/i);
+  assert.match(scheduleActionDescription, /deleting a routine uses the existing proposal/i);
+  assert.doesNotMatch(scheduleActionDescription, /(?:^|[.!?]\s+)deletion uses/i);
 });
 
 test('Slack connector setup skips broad workspace inspection for a named service', () => {

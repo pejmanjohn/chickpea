@@ -19,7 +19,7 @@ import {
 } from '../src/slack/installation-credentials.ts';
 import { recordPendingSlackChallenge } from '../src/slack/installation-handshake.ts';
 import { buildSlackAppManifest, slackManifestFingerprint } from '../src/slack/app-manifest.ts';
-import { REQUIRED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
+import { REQUIRED_SLACK_BOT_SCOPES, REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 
 const NOW = 1_786_000_000_000;
 const ORIGIN = 'https://chickpea.example';
@@ -87,7 +87,7 @@ test('repair stages only the unchanged app/team and promotes after confidential 
 
     const started = await fixture.service.startBotOAuth({ ...authority, redirectUri: REDIRECT });
     const authorization = new URL(started.authorizationUrl);
-    assert.equal(authorization.searchParams.get('scope'), REQUIRED_SLACK_BOT_SCOPES.join(','));
+    assert.equal(authorization.searchParams.get('scope'), REQUESTED_SLACK_BOT_SCOPES.join(','));
     assert.equal(authorization.searchParams.has('user_scope'), false);
     assert.equal(authorization.searchParams.has('code_challenge'), false);
     const waiting = await fixture.service.callback({
@@ -217,10 +217,37 @@ test('URL repair accepts only the unchanged app contract and never persists its 
   } finally { fixture.close(); }
 });
 
+for (const repairUrls of [false, true]) test(`core-only installation recovers without adding Lists permissions (URL repair: ${repairUrls})`, async () => {
+  const fixture = await recoveryFixture({ coreOnly: true, manifestFlow: repairUrls, initialOrigin: repairUrls ? 'https://old-chickpea.example' : ORIGIN });
+  try {
+    const authority = { ...await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER }), browserBinding: BROWSER };
+    const current = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
+    if (repairUrls) {
+      await fixture.service.repairUrls({ ...authority, configurationToken: 'xoxe.configuration-token-secret', expectedManifest: current });
+      assert.deepEqual(fixture.updatedManifest?.oauth_config.scopes.bot, REQUIRED_SLACK_BOT_SCOPES);
+      assert.equal(fixture.updatedManifest?.settings.event_subscriptions.request_url, `${ORIGIN}/channels/slack/events`);
+    }
+    const hostile = structuredClone(current);
+    hostile.oauth_config.scopes.bot.push('commands');
+    await assert.rejects(fixture.service.stageAppCredentials({ ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456', clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret', manifest: hostile }), (e: unknown) => e instanceof SlackCredentialRecoveryError && e.code === 'manifest_mismatch');
+    await fixture.service.stageAppCredentials({ ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456', clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret', manifest: current });
+    const started = await fixture.service.startBotOAuth({ ...authority, redirectUri: REDIRECT });
+    assert.equal(new URL(started.authorizationUrl).searchParams.get('scope'), REQUIRED_SLACK_BOT_SCOPES.join(','));
+    await fixture.service.callback({ ...authority, state: started.state, redirectUri: REDIRECT, code: 'core-recovery-code' });
+    await fixture.recordChallenge('replacement-signing-secret');
+    assert.deepEqual(await fixture.service.finalize(authority), { status: 'repaired' });
+    const active = await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
+    assert.deepEqual(active?.grantedScopes, [...REQUIRED_SLACK_BOT_SCOPES].sort());
+    current.oauth_config.scopes.bot = [...REQUIRED_SLACK_BOT_SCOPES];
+    assert.equal(active?.manifestFingerprint, slackManifestFingerprint(current));
+  } finally { fixture.close(); }
+});
+
 async function recoveryFixture(options: {
   serviceKeyring?: ReturnType<typeof generateCredentialKeyring>;
   initialOrigin?: string;
   manifestFlow?: boolean;
+  coreOnly?: boolean;
 } = {}) {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const config = new SqliteConfigStore(':memory:');
@@ -229,6 +256,8 @@ async function recoveryFixture(options: {
   const manifest = buildSlackAppManifest({
     kind: 'workspace_app', origin: options.initialOrigin ?? ORIGIN,
   });
+  if (options.coreOnly) manifest.oauth_config.scopes.bot = manifest.oauth_config.scopes.bot.filter(scope => !scope.startsWith('lists:'));
+  const grantedScopes = [...manifest.oauth_config.scopes.bot];
   const app = await stageSlackCredentialBundle(credentials, {
     identityId: WORKSPACE_SLACK_INSTALLATION_ID,
     identityClass: 'workspace_installation', purpose: 'app_credentials', expectedActiveRevision: null,
@@ -243,7 +272,7 @@ async function recoveryFixture(options: {
     identityId: WORKSPACE_SLACK_INSTALLATION_ID,
     identityClass: 'workspace_installation', purpose: 'connected_credentials',
     expectedActiveRevision: app.revision, appId: 'A12345678', teamId: 'TACME', botUserId: 'UBOT',
-    grantedScopes: [...REQUIRED_SLACK_BOT_SCOPES], validatedAt: NOW,
+    grantedScopes, validatedAt: NOW,
     manifestFingerprint: slackManifestFingerprint(manifest),
     secrets: {
       clientId: '123.456', clientSecret: 'old-client-secret', signingSecret: 'old-signing-secret',
@@ -258,7 +287,7 @@ async function recoveryFixture(options: {
   let exchangeCalls = 0;
   let exchangeForm: URLSearchParams | undefined;
   const manifestCalls: Array<{ method: string; authorization: string | null }> = [];
-  let manifestUpdated = false;
+  let updatedManifest: typeof manifest | undefined;
   const serviceCredentials = {
     state: identity,
     keyring: options.serviceKeyring ?? credentials.keyring,
@@ -269,9 +298,7 @@ async function recoveryFixture(options: {
     fetch: async (url, init) => {
       if (options.manifestFlow && String(url).endsWith('/apps.manifest.export')) {
         manifestCalls.push({ method: 'export', authorization: new Headers(init?.headers).get('authorization') });
-        const exported = manifestUpdated
-          ? buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN })
-          : manifest;
+        const exported = updatedManifest ?? manifest;
         return Response.json({
           ok: true,
           manifest: {
@@ -282,14 +309,14 @@ async function recoveryFixture(options: {
       }
       if (options.manifestFlow && String(url).endsWith('/apps.manifest.update')) {
         manifestCalls.push({ method: 'update', authorization: new Headers(init?.headers).get('authorization') });
-        manifestUpdated = true;
+        updatedManifest = JSON.parse(String(init?.body)).manifest;
         return Response.json({ ok: true, app_id: 'A12345678' });
       }
       exchangeCalls += 1;
       exchangeForm = new URLSearchParams(String(init?.body ?? ''));
       return Response.json({
         ok: true, access_token: 'xoxb-replacement-token', token_type: 'bot',
-        scope: REQUIRED_SLACK_BOT_SCOPES.join(','), bot_user_id: 'UBOT', app_id: 'A12345678',
+        scope: grantedScopes.join(','), bot_user_id: 'UBOT', app_id: 'A12345678',
         team: { id: 'TACME' }, authed_user: { id: 'UINSTALLER' },
       });
     },
@@ -298,7 +325,7 @@ async function recoveryFixture(options: {
       authTest: async () => ({
         ok: true, error: undefined, teamId: 'TACME', teamName: 'Acme', appId: 'A12345678',
         botId: 'BBOT', botName: 'Chickpea', botUserId: 'UBOT',
-        grantedScopes: [...REQUIRED_SLACK_BOT_SCOPES],
+        grantedScopes,
       }),
       botIdentityInfo: async () => ({
         ok: true, error: undefined, appId: 'A12345678', displayName: 'Chickpea', avatarUrl: undefined,
@@ -316,6 +343,7 @@ async function recoveryFixture(options: {
     activeRevision: connected.revision,
     get exchangeCalls() { return exchangeCalls; },
     get exchangeForm() { return exchangeForm; },
+    get updatedManifest() { return updatedManifest; },
     async recordChallenge(signingSecret: string) {
       const rawBody = JSON.stringify({
         type: 'url_verification', challenge: 'recovery-proof', api_app_id: 'A12345678', team_id: 'TACME',

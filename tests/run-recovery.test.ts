@@ -15,6 +15,7 @@ import { AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
 import { replayTextForTurnProgress, TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import { serializeThreadImageRecords } from '../src/slack/thread-images.ts';
+import { serializeAdmittedSlackListIds } from '../src/slack/lists/admission.ts';
 import {
   SlackRunPresentationStoreLogic,
   type SlackPresentationMutation,
@@ -193,6 +194,29 @@ test('Flue Slack signals carry the turn thread image inventory, and omit it when
       // The wire never names a conversation; the Agent stamps its own plan's.
       assert.doesNotMatch(String(envelope.message.attributes.threadImages ?? ''), /conversationKey/);
     }
+  } finally {
+    db.close();
+  }
+});
+
+test('Flue Slack signals checkpoint the admitted List set across replay', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const id = 'turn_list-admission';
+    const admittedTurn = turn();
+    const admittedAssignment = assignment();
+    turns.enqueue({ id, evtKey: `evt_${id}`, msgKey: `msg_${id}`, turn: admittedTurn, assignment: admittedAssignment });
+    turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+      turn: admittedTurn, assignment: admittedAssignment,
+      instructions: 'Frozen List instructions.', memoryEpoch: 1, sandboxMode: 'bash',
+    }));
+    const first = turns.prepareFlueDispatch(id, 'Use the admitted List.', { generation: id }, undefined, ['FSECOND', 'FFIRST']);
+    const replay = turns.prepareFlueDispatch(id, 'Use the admitted List.', { generation: id }, undefined, ['FCHANGED']);
+    assert.deepEqual(replay, first);
+    assert.equal(first.schemaVersion, 2);
+    if (first.schemaVersion !== 2) throw new Error('expected a signal dispatch');
+    assert.equal(first.message.attributes.admittedListIds, serializeAdmittedSlackListIds(['FFIRST', 'FSECOND']));
   } finally {
     db.close();
   }
