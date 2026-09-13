@@ -66,7 +66,7 @@ export interface CurrentRequestConversationBinding {
 const submissionPolicy = new AsyncLocalStorage<SubmissionPolicyState>();
 
 /** Tools whose only side effect is delivering a file into the current thread. */
-export const ARTIFACT_DELIVERY_TOOL_NAMES: ReadonlySet<string> = new Set(['post_artifact', 'render_chart', 'generate_image', 'recover_image']);
+export const ARTIFACT_DELIVERY_TOOL_NAMES: ReadonlySet<string> = new Set(['post_artifact', 'render_chart', 'generate_image', 'recover_image', 'complete_file_delivery']);
 
 /**
  * Bind this submission's host-owned conversation from the render, where the
@@ -172,7 +172,7 @@ export function parseModelVisibleCurrentRequestEnvelope(
 ): CurrentRequestEnvelope | undefined {
   const plain = parseCurrentRequestEnvelope(text);
   if (plain) return plain;
-  const signal = /^<(slack_message|slack_attachment_context|signal)((?: [A-Za-z][A-Za-z0-9]*="[^"<>]*")+)>\n([^<>]*)\n<\/\1>$/.exec(text);
+  const signal = /^<(slack_message|slack_attachment_context|slack_file_delivery_check|signal)((?: [A-Za-z][A-Za-z0-9]*="[^"<>]*")+)>\n([^<>]*)\n<\/\1>$/.exec(text);
   if (!signal) return undefined;
   const attributes = new Map<string, string>();
   for (const match of signal[2]!.matchAll(/ ([A-Za-z][A-Za-z0-9]*)="([^"]*)"/g)) {
@@ -182,6 +182,18 @@ export function parseModelVisibleCurrentRequestEnvelope(
   const envelope = parseCurrentRequestEnvelope(decodeSignalText(signal[3]!));
   if (!envelope || !envelope.slackActorId || !envelope.slackMessageTs) return undefined;
   const type = attributes.get('type');
+  const fileCheck = signal[1] === 'slack_file_delivery_check' && type === 'slack.file_delivery_check';
+  if (fileCheck) {
+    const bound = new Map(attributes);
+    bound.set('threadTs', attributes.get('boundThreadTs') ?? '');
+    if (!conversationMatches(bound, conversation)) return undefined;
+    const originalType = attributes.get('originalType');
+    if (originalType === 'slack.message' || originalType === 'slack.attachment_context') {
+      return envelope.slackActorId === attributes.get('slackUserId') &&
+        envelope.slackMessageTs === attributes.get('messageTs') ? envelope : undefined;
+    }
+    if (originalType !== ROUTINE_SCHEDULE_SIGNAL_TYPE) return undefined;
+  }
   const slackTurn = signal[1] === 'slack_message' && type === 'slack.message';
   // An upload turn's attachment analysis becomes the newest user message, so
   // the host re-stamps the same envelope as its final lines. The gate resolves
@@ -199,7 +211,7 @@ export function parseModelVisibleCurrentRequestEnvelope(
     if (attachmentContext && !conversationMatches(attributes, conversation)) return undefined;
     return envelope;
   }
-  if (signal[1] === 'signal' && type === ROUTINE_SCHEDULE_SIGNAL_TYPE) {
+  if ((signal[1] === 'signal' && type === ROUTINE_SCHEDULE_SIGNAL_TYPE) || fileCheck) {
     // A due occurrence has no Slack message. The host stamps its due time as
     // the synthetic message coordinate when it assembles the saved task, and
     // repeats that due time as a signal attribute, so the envelope must match

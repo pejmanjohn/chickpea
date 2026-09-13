@@ -494,7 +494,7 @@ test('the Slack Agent mounts every tool registration seam on an attachment turn'
   // No option narrows the mounted tool set any more: the sandbox and artifact
   // tools mount unconditionally for every turn, attachment-bearing or not.
   assert.doesNotMatch(source, /options\.toolsDisabled/);
-  assert.match(source, /useSandbox\(createRuntimePlanSandbox[\s\S]*createRuntimePlanArtifactTool/);
+  assert.match(source, /const sandbox = createRuntimePlanSandbox[\s\S]*useSandbox\(options\.artifactToolsDisabled \? sandbox : fileCompletion\.wrapSandbox\(sandbox\)\)[\s\S]*createRuntimePlanArtifactTool/);
   assert.match(source, /useModel\(plan\.runtimeModel \?\? plan\.model/);
   assert.match(source, /plan\.runtimeModel \?\? \(await prepareRuntimePlanModel\(plan, env\)\)\.model/);
 });

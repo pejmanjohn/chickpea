@@ -331,7 +331,7 @@ export function toolActivityStatus(
   if (toolName === 'lookup_thread_history') {
     return activityStatus('checking', 'Checking', 'thread history');
   }
-  if (toolName === 'post_artifact') {
+  if (toolName === 'post_artifact' || toolName === 'complete_file_delivery') {
     return activityStatus('finishing', 'Sharing', 'a workspace artifact');
   }
   if (toolName === 'render_chart') {

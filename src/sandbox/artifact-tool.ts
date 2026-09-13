@@ -114,7 +114,7 @@ export interface SlackArtifactStageInput {
  * Slack file id or upload coordinates.
  */
 export type SlackArtifactStageOutcome =
-  | { attached: true; byteLength: number }
+  | { attached: true; byteLength: number; fileId?: string }
   | { attached: false; reason: 'missing-scope' }
   | { attached: false; reason: 'too-large'; maxBytes: number }
   | { attached: false; reason: 'unavailable'; detail?: SlackArtifactStagingDetail };
@@ -127,7 +127,8 @@ export type SlackArtifactStageOutcome =
 export type SlackArtifactStagingDetail =
   | 'transport_unsupported'
   | 'private_receipt_invalid'
-  | 'private_stage_failed';
+  | 'private_stage_failed'
+  | 'source_unavailable';
 
 export interface ArtifactDestinationBinding {
   channel: string;
@@ -144,6 +145,12 @@ export interface ArtifactDestinationBinding {
 interface WorkspaceArtifactCapabilityOptions extends ArtifactDestinationBinding {
   sandbox: SandboxFactory;
 }
+
+type WorkspaceArtifactDelivery = (
+  env: SessionEnv,
+  input: { path: string; filename: string; title?: string | undefined },
+  binding: ArtifactDestinationBinding,
+) => Promise<ArtifactToolResult>;
 
 const ARTIFACT_INPUT = v.object({
   path: v.pipe(v.string(), v.minLength(1)),
@@ -162,14 +169,14 @@ export type ArtifactToolResult =
   | Extract<SlackArtifactStageOutcome, { attached: false }>;
 
 /** Flue 2 hook-agent variant: the harness supplies the initialized sandbox. */
-export function createWorkspaceArtifactTool(options: ArtifactDestinationBinding) {
+export function createWorkspaceArtifactTool(options: ArtifactDestinationBinding, deliver: WorkspaceArtifactDelivery = deliverArtifact) {
   return defineTool({
     name: POST_ARTIFACT_TOOL_NAME,
     description: artifactToolDescription(options.sandboxKind),
     input: ARTIFACT_INPUT,
     harness: true,
     async run({ data, harness }) {
-      return { output: await deliverArtifact(harness.sandbox, data, options) };
+      return { output: await deliver(harness.sandbox, data, options) };
     },
   });
 }
@@ -319,10 +326,15 @@ export async function freezeWorkspaceArtifact(
   }
 }
 
+export class ArtifactSizeError extends Error {
+  constructor(readonly maxBytes: number) {
+    super(maxBytes === MAX_ARTIFACT_BYTES ? 'artifact exceeds the 8 MB upload limit' : 'artifact exceeds its upload limit');
+    this.name = 'ArtifactSizeError';
+  }
+}
+
 function artifactSizeError(maxBytes: number): Error {
-  return new Error(maxBytes === MAX_ARTIFACT_BYTES
-    ? 'artifact exceeds the 8 MB upload limit'
-    : 'artifact exceeds its upload limit');
+  return new ArtifactSizeError(maxBytes);
 }
 
 function randomWorkspaceArtifactPath(): string {

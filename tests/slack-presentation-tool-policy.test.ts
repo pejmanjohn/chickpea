@@ -12,6 +12,7 @@ import type {
 import { CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
 import { serializeCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import {
+  bindFileDeliveryCheck,
   observePresentationToolPolicy,
   presentationToolPolicyInterceptor,
   SlackAnswerOnlyToolDeniedError,
@@ -324,3 +325,19 @@ test('resumed turns rehydrate only a successful declaration after the newest use
     );
   });
 });
+
+for (const declaration of [SLACK_STREAM_ANSWER_TOOL_NAME, SLACK_PRESENT_TABLE_TOOL_NAME]) {
+  test(`${declaration} cannot lock tools while sandbox delivery is unchecked`, async () => {
+    await withSubmission(async () => {
+      observeTurn([{ role: 'user', content: currentPrompt(true) }]);
+      let pending = true;
+      bindFileDeliveryCheck(() => pending);
+      let executed = false;
+      await assert.rejects(() => executeTool(declaration, 'call_pending', async () => { executed = true; }), /complete_file_delivery/);
+      assert.equal(executed, false);
+      pending = false;
+      await executeTool(declaration, 'call_checked', async () => { executed = true; });
+      assert.equal(executed, true);
+    });
+  });
+}

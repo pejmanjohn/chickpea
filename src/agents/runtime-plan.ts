@@ -392,6 +392,7 @@ export function buildRuntimePlanActivityContext(
   const artifact = genericSemanticDescriptor('artifact');
   descriptors.push(
     { toolName: 'post_artifact', descriptor: artifact },
+    { toolName: 'complete_file_delivery', descriptor: artifact },
     { toolName: 'render_chart', descriptor: artifact },
     { toolName: 'generate_image', descriptor: artifact },
     { toolName: 'recover_image', descriptor: artifact },

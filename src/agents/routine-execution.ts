@@ -76,7 +76,7 @@ export function ChickpeaRoutineExecution({ id }: { id: string }) {
   }
   useChickpeaResponseMetadata(data.requestedModel);
   useInstruction(
-    'Finish by calling submit_routine_result exactly once. Ordinary assistant text and JSON are not a result.',
+    'Finish by calling submit_routine_result. If an internal file-delivery check continues this response, check the files and submit the complete corrected result again. Only the latest submitted result is delivered. Ordinary assistant text and JSON are not a result.',
   );
   const writeResultData = useDataWriter(ROUTINE_RESULT_DATA_NAME, {
     schema: RoutineModelResultSchema,
@@ -101,7 +101,8 @@ export function routineArtifactPlan(
 ): RuntimePlanV2 | undefined {
   // V1 envelopes were plain strings and carry no authoritative destination.
   // Disable file tools for those occurrences instead of widening delivery.
-  if (delivery.kind !== 'signal' || delivery.type !== 'schedule') return undefined;
+  if (delivery.kind !== 'signal' || !(delivery.type === 'schedule' ||
+    (delivery.type === 'slack.file_delivery_check' && delivery.attributes?.originalType === 'schedule'))) return undefined;
   const attrs = delivery.attributes;
   if (!attrs || attrs.workspaceId !== plan.conversation.workspaceId ||
     attrs.conversationId !== plan.artifactDestination.channelId ||

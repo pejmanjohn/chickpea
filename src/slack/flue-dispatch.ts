@@ -1,4 +1,5 @@
 import { SLACK_MEMORY_UPDATE_DATA_NAME, parseSlackMemoryUpdate, type SlackMemoryUpdate } from './memory-update-terminal.ts';
+import { FILE_DELIVERY_DATA_NAME, resolveFileDeliveryText } from './file-delivery-completion.ts';
 import {
   AgentInstanceExistsError,
   AgentInstanceNotFoundError,
@@ -463,7 +464,7 @@ export function resultFromAgentReply(
   const artifacts = parseSlackArtifactReceipts(reply.data?.[SLACK_ARTIFACT_RECEIPTS_DATA_NAME]);
   // Checkpoints and the Work ledger require nonempty approved text. A file-only
   // model result still has a useful host caption for its combined Slack reply.
-  const text = reply.text || (artifacts.length > 0 ? 'Requested files' : '');
+  const text = resolveFileDeliveryText(reply.text || (artifacts.length > 0 ? 'Requested files' : ''), reply.data?.[FILE_DELIVERY_DATA_NAME]);
   if (!text && artifacts.length === 0) throw new Error('agent prompt returned no result text');
   // Reject only extreme single-punctuation degeneration, not code, JSON,
   // Markdown separators, short emphatic answers, or mixed punctuation.
