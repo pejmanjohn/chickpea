@@ -86,6 +86,35 @@ test('List admission uses only current, same-root, and saved exact links', () =>
   }
 });
 
+test('current and configured List references survive a saturated same-root history', () => {
+  const currentId = 'FCURRENT';
+  const instructionId = 'FDEFAULT';
+  const memoryId = 'FMEMORY';
+  const history = Array.from({ length: 20 }, (_, index) => ({
+    userId: 'U_HUMAN',
+    text: `Earlier List https://example.slack.com/lists/TWORK/FHISTORY${String(index).padStart(2, '0')}`,
+    ts: `19${String(index).padStart(2, '0')}.000000`,
+    rootTs: '2000.000000',
+    role: 'human' as const,
+    isTrigger: false,
+  }));
+
+  const admitted = collectAdmittedSlackListIds({
+    workspaceId: 'TWORK',
+    currentText: `Use https://example.slack.com/lists/TWORK/${currentId}`,
+    activeRootTs: '2000.000000',
+    contextMessages: history,
+    instructions: `Default: https://example.slack.com/lists/TWORK/${instructionId}`,
+    memoryPromptBlock: `Saved default: https://example.slack.com/lists/TWORK/${memoryId}`,
+  });
+
+  assert.equal(admitted.length, 16);
+  assert.equal(admitted.includes(currentId), true);
+  assert.equal(admitted.includes(instructionId), true);
+  assert.equal(admitted.includes(memoryId), true);
+  assert.equal(admitted.filter(id => id.startsWith('FHISTORY')).length, 13);
+});
+
 test('stale history and readback do not grant List write admission', async t => {
   const f = fixture(t);
   const staleOnly = collectAdmittedSlackListIds({

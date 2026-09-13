@@ -16,7 +16,9 @@ export function collectAdmittedSlackListIds(input: {
   const sameRoot = input.contextMessages
     .filter(message => !message.isTrigger && message.rootTs === input.activeRootTs)
     .map(message => message.text);
-  const sources = [input.currentText, ...sameRoot, input.instructions, input.memoryPromptBlock];
+  // Current intent wins, followed by configured defaults. Same-root history
+  // provides continuity only within the remaining bounded capacity.
+  const sources = [input.currentText, input.instructions, input.memoryPromptBlock, ...sameRoot];
   const ids = new Set<string>();
   for (const source of sources) {
     for (const url of source?.match(/https:\/\/[^\s<>"'|]+/g) ?? []) {
