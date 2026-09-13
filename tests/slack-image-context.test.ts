@@ -558,8 +558,10 @@ test('the thread image inventory survives the attachment re-render unchanged', (
   const threadImages = serializeThreadImageRecords(records);
   assert.ok(threadImages);
 
-  const turn = slackAttachmentTurnContext(delivery({ threadImages }));
+  const admittedListIds = '["FEXISTING"]';
+  const turn = slackAttachmentTurnContext(delivery({ threadImages, admittedListIds }));
   assert.equal(turn.attributes.threadImages, threadImages);
+  assert.equal(turn.attributes.admittedListIds, admittedListIds);
   // The attachment file ids still stop at the first render; only the image
   // inventory crosses, so the re-render addresses the same `img:N` handles.
   assert.equal(turn.attributes.attachmentFileIds, undefined);

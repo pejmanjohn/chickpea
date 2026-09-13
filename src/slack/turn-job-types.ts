@@ -59,6 +59,8 @@ interface FlueDispatchEnvelopeV2 extends FlueDispatchEnvelopeBase {
        * Slack file ids only — no bytes and no private URLs.
        */
       threadImages?: string;
+      /** Sorted bounded List ids admitted from host-visible current-task sources. */
+      admittedListIds?: string;
     };
   };
 }

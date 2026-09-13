@@ -69,6 +69,7 @@ import {
   executeSlackMemoryUpdate,
   slackUpdateAgentMemoryInputSchema,
 } from './slack-memory-actions.ts';
+import { parseAdmittedSlackListIds } from '../slack/lists/admission.ts';
 
 const SIGNAL_ATTRIBUTE_KEYS = [
   'workspaceId',
@@ -87,6 +88,7 @@ const SIGNAL_OPTIONAL_ATTRIBUTE_KEYS = [
   'attachmentIntakeStatus',
   'attachmentCount',
   'threadImages',
+  'admittedListIds',
 ] as const;
 const SIGNAL_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
   ...SIGNAL_ATTRIBUTE_KEYS,
@@ -137,6 +139,8 @@ export interface SlackManagementSignal {
   eventId: string;
   messageTs: string;
   turnJobId: string;
+  /** Host-admitted List references for this exact request. */
+  admittedListIds?: readonly string[];
   /** Trusted current Slack message body, carried outside model-selected tool input. */
   requesterText?: string;
   /** Verified Slack profile timezone, supplied by the host. */
@@ -832,6 +836,8 @@ export function parseSlackManagementSignal(
     values.channelId !== plan.conversation.channelId ||
     values.threadTs !== plan.conversation.threadTs
   ) return undefined;
+  const admittedListIds = parseAdmittedSlackListIds(delivery.attributes.admittedListIds);
+  if (delivery.attributes.admittedListIds !== undefined && !admittedListIds) return undefined;
   return {
     ...values,
     ...(conversationKind ? { conversationKind } : {}),
@@ -841,6 +847,7 @@ export function parseSlackManagementSignal(
     ...(delivery.attributes.requesterTimezone
       ? { requesterTimezone: boundedAttribute(delivery.attributes.requesterTimezone, 'requesterTimezone', 64) }
       : {}),
+    ...(admittedListIds ? { admittedListIds } : {}),
     agentId: plan.agentId,
   };
 }

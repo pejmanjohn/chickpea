@@ -1274,9 +1274,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     message: string,
     observation: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[2],
     threadImages?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[3],
+    admittedListIds?: Parameters<TagStateRpc['slackFlueDispatchPrepare']>[4],
   ) {
     return this.call((stores) =>
-      stores.turnJobs.prepareFlueDispatch(id, message, observation, threadImages),
+      stores.turnJobs.prepareFlueDispatch(id, message, observation, threadImages, admittedListIds),
     );
   }
 
@@ -1775,7 +1776,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
           message: string,
           observation: FlueTurnObservationV1,
           threadImages?: readonly ThreadImageRecord[],
-        ) => stores.turnJobs.prepareFlueDispatch(job.id, message, observation, threadImages),
+          admittedListIds?: readonly string[],
+        ) => stores.turnJobs.prepareFlueDispatch(job.id, message, observation, threadImages, admittedListIds),
         reconcileExistingInstance: (uid: string) =>
           stores.turnJobs.reconcileFlueExistingInstance(job.id, uid),
         recordReceipt: (receipt: FlueDispatchReceiptV1) =>

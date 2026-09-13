@@ -40,6 +40,7 @@ export class SlackListsService {
     workspaceId: string;
     call: SlackListsCall;
     ledger: ListWriteLedger;
+    admittedListIds?: readonly string[] | undefined;
     timezone?: string | undefined;
     signal?: AbortSignal | undefined;
   }) {}
@@ -61,6 +62,7 @@ export class SlackListsService {
   async createItem(toolCallId: string, listUrl: string, fields: TaskFields): Promise<JsonObject> {
     if (!fields.title?.trim()) throw new SlackListError('title_required', 'A task title is required.');
     const { listId } = parseSlackListUrl(listUrl, this.options.workspaceId);
+    await this.assertWriteAdmission(listId);
     const snapshot = await this.snapshot(listId, undefined, 1);
     const cells = taskCells({ ...snapshot, items: [] }, fields, [], this.options.timezone);
     return this.mutate(toolCallId, 'slackLists.items.create', { list_id: listId, initial_fields: cells }, async (response, ids) => {
@@ -72,6 +74,7 @@ export class SlackListsService {
 
   async updateItem(toolCallId: string, listUrl: string, itemId: string | undefined, fields: TaskFields, clear: ClearTaskField[] = []): Promise<JsonObject> {
     const ref = parseSlackListUrl(listUrl, this.options.workspaceId);
+    await this.assertWriteAdmission(ref.listId);
     const id = requireListItemId(itemId, ref.itemId);
     const snapshot = await this.itemSnapshot(ref.listId, id);
     const cells = taskCells(snapshot, fields, clear, this.options.timezone);
@@ -97,6 +100,7 @@ export class SlackListsService {
 
   async shareList(toolCallId: string, listUrl: string, access: 'view' | 'edit', target: { channelId?: string | undefined; userId?: string | undefined }): Promise<JsonObject> {
     const { listId } = parseSlackListUrl(listUrl, this.options.workspaceId);
+    await this.assertWriteAdmission(listId);
     if (Boolean(target.channelId) === Boolean(target.userId) || !['view', 'edit'].includes(access)) throw new SlackListError('share_target_required', 'Choose one explicit channel or person and Can view or Can edit.');
     const snapshot = await this.snapshot(listId, undefined, 1);
     const input = { list_id: listId, access_level: access === 'edit' ? 'write' : 'read', ...(target.channelId ? { channel_ids: [target.channelId] } : { user_ids: [target.userId] }) };
@@ -108,6 +112,19 @@ export class SlackListsService {
 
   private async snapshot(listId: string, cursor?: string, limit = 20): Promise<ListSnapshot> {
     return readListSnapshot(await this.call('slackLists.items.list', { list_id: listId, include_list: true, limit, ...(cursor ? { cursor } : {}) }), this.options.workspaceId, listId);
+  }
+
+  private async assertWriteAdmission(listId: string): Promise<void> {
+    // This proves only that the host saw a usable source reference. The current
+    // request, actor, Slack access, and write receipt gates remain independent.
+    const admitted = new Set(this.options.admittedListIds ?? []);
+    for (const created of await this.options.ledger.confirmedCreatedListIds()) admitted.add(created);
+    if (!admitted.has(listId)) {
+      throw new SlackListError(
+        'list_reference_required',
+        'Provide the exact Slack List link again in this current task conversation, or use an ordinary saved default. Nothing was written.',
+      );
+    }
   }
 
   private async itemSnapshot(listId: string, itemId: string): Promise<ListSnapshot> {

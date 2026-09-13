@@ -63,6 +63,15 @@ export class ListWriteLedger {
     throw new SlackListError('write_receipt_unconfirmed', 'The List action could not be durably verified. Do not repeat it.');
   }
 
+  async confirmedCreatedListIds(): Promise<string[]> {
+    const ledger = this.parse(await this.store.getSetting(this.key));
+    return ledger.entries.flatMap(entry =>
+      entry.operation === 'slackLists.create' && entry.status === 'confirmed' && entry.listId
+        && /^F[A-Z0-9]+$/.test(entry.listId) ? [entry.listId]
+        : []
+    );
+  }
+
   private parse(raw: string | undefined): Ledger {
     if (raw === undefined) return { schemaVersion: 1, workspaceId: this.workspaceId, entries: [] };
     try {

@@ -77,6 +77,7 @@ function slackMessage(attachments: boolean, images = true) {
       turnJobId: 'turn_upload',
       conversationKind: 'channel',
       requesterText: REQUEST,
+      admittedListIds: '["FEXISTING"]',
       ...(attachments
         ? { attachmentFileIds: 'F_LOGO', attachmentIntakeStatus: 'ok', attachmentCount: '1' }
         : {}),
@@ -98,6 +99,14 @@ interface RenderRecord {
 const renders: RenderRecord[] = [];
 /** When set, the probe's attachment client returns this text file instead of failing. */
 let readableFile: { filename: string; text: string } | undefined;
+
+test('Slack management signal rejects malformed List admission metadata', () => {
+  const malformed = slackMessage(false);
+  Object.assign(malformed.attributes, { admittedListIds: '["FZ","FA"]' });
+  assert.equal(parseSlackManagementSignal(malformed, PLAN), undefined);
+  Object.assign(malformed.attributes, { admittedListIds: '["FA","FZ"]' });
+  assert.deepEqual(parseSlackManagementSignal(malformed, PLAN)?.admittedListIds, ['FA', 'FZ']);
+});
 
 /** Mirror ChickpeaSlack's delivery-derived tool seams without its live stores. */
 function UploadTurnProbe() {

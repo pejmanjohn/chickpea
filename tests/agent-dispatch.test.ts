@@ -185,7 +185,7 @@ function promptInput(dispatchState: SlackFlueDispatchState, agent: AgentInstance
 
 
 test('the host turn hands its thread images to the durable dispatch preparation', async () => {
-  const prepared: unknown[] = [];
+  const prepared: unknown[][] = [];
   const records = [{
     conversationKey: 'T1:C1:1.0',
     fileId: 'F00000000AA',
@@ -195,23 +195,24 @@ test('the host turn hands its thread images to the durable dispatch preparation'
     messageTs: '1.0',
   }];
   const dispatchState = state({
-    prepare: async (_message, _observation, threadImages) => {
-      prepared.push(threadImages);
+    prepare: async (_message, _observation, threadImages, admittedListIds) => {
+      prepared.push([threadImages, admittedListIds]);
       return ENVELOPE;
     },
   });
   await promptSlackThreadAgent({
     ...promptInput(dispatchState, handle({})),
     threadImages: records,
+    admittedListIds: ['FEXISTING'],
   });
   // Omitting the images is the no-image turn, not a different contract.
   await promptSlackThreadAgent({ ...promptInput(state({
-    prepare: async (_message, _observation, threadImages) => {
-      prepared.push(threadImages);
+    prepare: async (_message, _observation, threadImages, admittedListIds) => {
+      prepared.push([threadImages, admittedListIds]);
       return ENVELOPE;
     },
   }), handle({})) });
-  assert.deepEqual(prepared, [records, undefined]);
+  assert.deepEqual(prepared, [[records, ['FEXISTING']], [undefined, undefined]]);
 });
 
 test('dispatch persists only the completed assistant step after an interrupted prefix', async () => {

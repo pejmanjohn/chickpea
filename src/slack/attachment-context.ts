@@ -41,6 +41,7 @@ const CARRIED_SLACK_TURN_ATTRIBUTE_KEYS = [
   // The per-turn `img:N` inventory: both renders must address the same
   // handles, so a referenced image still resolves after the analysis.
   'threadImages',
+  'admittedListIds',
 ] as const;
 
 const MAX_ATTACHMENT_SIGNAL_CHARS = 12_000;

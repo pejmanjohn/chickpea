@@ -17,13 +17,18 @@ import type { SlackManagementSignal } from '../src/management/slack-tools.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { createGatewaySlackWebClient } from '../src/slack/gateway/web-client.ts';
 import { LIST_URL, StrictListsFake, TASK_COLUMNS } from './helpers/slack-lists.ts';
+import {
+  collectAdmittedSlackListIds,
+  parseAdmittedSlackListIds,
+  serializeAdmittedSlackListIds,
+} from '../src/slack/lists/admission.ts';
 
 function fixture(t: { after(fn: () => void): void }) {
   const store = new SqliteSettingsStore(':memory:');
   t.after(() => store.close());
   const fake = new StrictListsFake();
   const ledger = new ListWriteLedger(store, 'TWORK', 'turn-one');
-  const service = (turn = 'turn-one') => new SlackListsService({ workspaceId: 'TWORK', call: fake.call, ledger: turn === 'turn-one' ? ledger : new ListWriteLedger(store, 'TWORK', turn), timezone: 'America/Los_Angeles' });
+  const service = (turn = 'turn-one', admittedListIds: readonly string[] = ['FEXISTING']) => new SlackListsService({ workspaceId: 'TWORK', call: fake.call, ledger: turn === 'turn-one' ? ledger : new ListWriteLedger(store, 'TWORK', turn), admittedListIds, timezone: 'America/Los_Angeles' });
   return { store, fake, ledger, service };
 }
 function task(fake: StrictListsFake) { return fake.lists.get('FEXISTING')!.items[0]!; }
@@ -57,6 +62,51 @@ test('additive Lists scopes preserve core-only chat health and reject unknown gr
   assert.equal(missingRequiredSlackBotScopes(undefined), undefined);
   assert.ok(REQUESTED_SLACK_BOT_SCOPES.includes('lists:write'));
   assert.ok(!REQUIRED_SLACK_BOT_SCOPES.includes('lists:write'));
+});
+
+test('List admission uses only current, same-root, and saved exact links', () => {
+  const current = 'https://example.slack.com/lists/TWORK/FCURRENT';
+  const sameRoot = 'https://example.slack.com/lists/TWORK/FSAMEROOT';
+  const stale = 'https://example.slack.com/lists/TWORK/FSTALE';
+  const instructions = 'Default: https://example.slack.com/lists/TWORK/FINSTRUCTIONS';
+  const memory = 'Saved: https://example.slack.com/lists/TWORK/FMEMORY';
+  const admitted = collectAdmittedSlackListIds({
+    workspaceId: 'TWORK', currentText: `Assign UPEJ in ${current}`, activeRootTs: '2000.000000',
+    contextMessages: [
+      { userId: 'U_HUMAN', text: sameRoot, ts: '1999.000000', rootTs: '2000.000000', role: 'human', isTrigger: false },
+      { userId: 'U_HUMAN', text: stale, ts: '1900.000000', rootTs: '1800.000000', role: 'human', isTrigger: false },
+    ],
+    instructions, memoryPromptBlock: memory,
+  });
+  assert.deepEqual(admitted, ['FCURRENT', 'FINSTRUCTIONS', 'FMEMORY', 'FSAMEROOT']);
+  assert.equal(admitted.includes('FSTALE'), false);
+  assert.deepEqual(parseAdmittedSlackListIds(serializeAdmittedSlackListIds(admitted)), admitted);
+  for (const malformed of ['not-json', '[]', '["FGOOD","FGOOD"]', '["FBAD-lower"]', '["FZ","FA"]']) {
+    assert.equal(parseAdmittedSlackListIds(malformed), undefined);
+  }
+});
+
+test('stale history and readback do not grant List write admission', async t => {
+  const f = fixture(t);
+  const staleOnly = collectAdmittedSlackListIds({
+    workspaceId: 'TWORK', currentText: 'Assign UPEJ.', activeRootTs: '2000.000000',
+    contextMessages: [{ userId: 'U_HUMAN', text: LIST_URL, ts: '1900.000000', rootTs: '1800.000000', role: 'human', isTrigger: false }],
+  });
+  const service = f.service('stale-turn', staleOnly);
+  await assert.rejects(service.createItem('blocked', LIST_URL, { title: 'Budget summary' }), /exact Slack List link again.*Nothing was written/);
+  assert.equal(f.fake.calls.length, 0);
+  assert.equal((await service.readList(LIST_URL)).status, 'read');
+  await assert.rejects(service.createItem('still-blocked', LIST_URL, { title: 'Budget summary' }), /Nothing was written/);
+  assert.equal(f.fake.calls.filter(call => isWrite(call.method)).length, 0);
+});
+
+test('a confirmed same-turn List creation admits follow-up task and sharing writes', async t => {
+  const f = fixture(t);
+  const created = await f.service('new-list-turn', []).createList('create-list', 'Launch tasks');
+  assert.equal(created.status, 'confirmed');
+  const url = String((created.list as JsonObject).url);
+  assert.equal((await f.service('new-list-turn', []).createItem('add-task', url, { title: 'Draft launch' })).status, 'confirmed');
+  assert.equal((await f.service('new-list-turn', []).shareList('share-list', url, 'view', { channelId: 'CWORK' })).status, 'confirmed');
 });
 
 test('write reservations serialize concurrent calls and fail closed on corrupt or future receipts', async t => {
@@ -391,7 +441,7 @@ test('lost response after Slack commits cannot duplicate a task, even with a new
   assert.equal(result.status, 'unverified');
   assert.equal(JSON.stringify(result).includes('private token'), false);
   f.fake.after = undefined;
-  const restarted = () => new SlackListsService({ workspaceId: 'TWORK', call: f.fake.call, ledger: new ListWriteLedger(f.store, 'TWORK', 'turn-one') });
+  const restarted = () => new SlackListsService({ workspaceId: 'TWORK', call: f.fake.call, ledger: new ListWriteLedger(f.store, 'TWORK', 'turn-one'), admittedListIds: ['FEXISTING'] });
   assert.equal((await restarted().createItem('new-call', LIST_URL, { title: 'Report' })).status, 'already_attempted');
   assert.equal((await restarted().createItem('rephrased', LIST_URL, { title: 'Client report' })).status, 'already_attempted');
   assert.equal(f.fake.lists.get('FEXISTING')!.items.length, 1);

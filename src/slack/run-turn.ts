@@ -61,6 +61,7 @@ import type { SlackStatusUpdate } from './replies.ts';
 import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { registerSlackStatusTurn } from './status-registry.ts';
 import { currentMessageOnlyContext } from './thread-context.ts';
+import { collectAdmittedSlackListIds } from './lists/admission.ts';
 import { slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
 import { assembleRetainedSlackContext, formatSlackPublicHandoff } from './public-context.ts';
@@ -1021,6 +1022,16 @@ export async function runTurn(
         ? { store: options.appStores?.config ?? getConfigStore(platformEnv), agentId: assignment.agentId }
         : {}),
     });
+    const admittedListIds = runtimePlanDecision
+      ? collectAdmittedSlackListIds({
+          workspaceId: turn.workspaceId,
+          currentText: turn.text,
+          activeRootTs: turn.threadTs,
+          contextMessages: context.messages,
+          instructions: runtimePlanDecision.runtimePlan.instructions,
+          memoryPromptBlock: preparedMemory?.promptBlock,
+        })
+      : [];
     const handoffBlock = formatSlackPublicHandoff(frozenHandoff);
     const progressiveRelayFactory = options.prepareProgressiveRelay ??
       (agentViewPresentation
@@ -1147,6 +1158,7 @@ export async function runTurn(
           runtimePlanDecision?.runtimePlan.imageCapability?.filled === true
             ? { threadImages: context.images }
             : {}),
+          ...(admittedListIds.length ? { admittedListIds } : {}),
           ...(platformEnv ? { env: platformEnv } : {}),
           ...(workLifecycle && options.runId
             ? {
