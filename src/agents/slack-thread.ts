@@ -1271,7 +1271,10 @@ export function slackDeliveryThreadImages(
 
 /** Declare only the connected-service accounts frozen into this execution plan. */
 export function runtimePlanConnectedServicesInstruction(
-  plan: Pick<RuntimePlanV2, 'apiConnections' | 'mcpConnections' | 'managedConnections'>,
+  plan: Pick<
+    RuntimePlanV2,
+    'apiConnections' | 'mcpConnections' | 'managedConnections' | 'connectionChoices'
+  >,
 ): string {
   const selected = [
     ...plan.apiConnections.map(({ id, displayName }) => ({
@@ -1290,11 +1293,28 @@ export function runtimePlanConnectedServicesInstruction(
       name: toolkit,
     })),
   ].sort((left, right) => `${left.kind}:${left.id}`.localeCompare(`${right.kind}:${right.id}`));
-  const declaration = selected.length > 0 ? JSON.stringify(selected) : 'none';
-  return `Connected-service access selected and configured for this turn: ${declaration}. ` +
-    'Named setup or authorization choices are not connected actions. This frozen selection is ' +
-    'the permission ceiling for this turn, not a guarantee of remote service health; use only ' +
-    'the connected tools or REST declarations actually mounted.';
+  const pendingSelections = (plan.connectionChoices ?? []).map((choice) => ({
+    providerId: choice.providerId,
+    status: choice.choices.length > 0
+      ? 'account_selection_required' as const
+      : 'no_eligible_account' as const,
+    ...(choice.previousAccountUnavailable ? { previousAccountUnavailable: true } : {}),
+    choices: choice.choices.map(({ label, purpose, scope }) => ({
+      label,
+      ...(purpose ? { purpose } : {}),
+      scope,
+    })),
+  })).sort((left, right) => left.providerId.localeCompare(right.providerId));
+  const activeDeclaration = selected.length > 0 ? JSON.stringify(selected) : 'none';
+  const pendingDeclaration = pendingSelections.length > 0
+    ? JSON.stringify(pendingSelections)
+    : 'none';
+  return `Active connected-service access selected and configured for this turn: ${activeDeclaration}. ` +
+    `Pending connected-service account selections: ${pendingDeclaration}. ` +
+    'Providers marked account_selection_required are pending selection, not unavailable; ask the user to choose. ' +
+    'Pending selections and setup or authorization options are not active tools or permissions. The active ' +
+    'selection is the permission ceiling for connected-service actions in this turn, not a guarantee of remote ' +
+    'service health; use only the connected tools or REST declarations actually mounted.';
 }
 
 /** Compose the declarations shared by Slack and fresh routine agents. */

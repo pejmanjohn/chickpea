@@ -65,12 +65,15 @@ test(`native REST session: ${scenario}`, async (t) => {
   try {
     const instructions = String((harness as any).config.instructions);
     const connectedServices = runtimePlanConnectedServicesInstruction(plan);
-    assert.match(instructions, /Connected-service access selected and configured for this turn:/);
+    assert.match(instructions, /Active connected-service access selected and configured for this turn:/);
     assert.match(instructions, /not a guarantee of remote service health/);
     if (scenario === 'empty') {
       assert.doesNotMatch(instructions, /REST connections are declared/);
-      assert.match(connectedServices, /configured for this turn: none\./);
-      assert.doesNotMatch(connectedServices, /Linear workspace|linear/);
+      assert.match(connectedServices, /Active connected-service access selected and configured for this turn: none\./);
+      assert.match(connectedServices, /"providerId":"linear","status":"account_selection_required"/);
+      assert.match(connectedServices, /"label":"Linear workspace","scope":"team"/);
+      assert.match(connectedServices, /pending selection, not unavailable/);
+      assert.match(instructions, /Ask the user to choose one of these labels before using that provider/);
     }
     else {
       assert.match(connectedServices, /\{"kind":"api","id":"connection_rest","name":"REST"\}/);
@@ -160,7 +163,17 @@ test('connected-service declaration names each frozen connection family without 
   assert.match(instruction, /\{"kind":"api","id":"connection_asana","name":"Asana"\}/);
   assert.match(instruction, /\{"kind":"managed","id":"connection_linear","name":"linear"\}/);
   assert.match(instruction, /\{"kind":"mcp","id":"connection_docs","name":"Docs MCP"\}/);
+  assert.match(instruction, /Pending connected-service account selections: none\./);
   assert.doesNotMatch(instruction, /app\.asana\.com|search_docs|linear\.issues\.create|mcp\.example\.com/);
+
+  const unavailable = runtimePlanConnectedServicesInstruction({
+    apiConnections: [],
+    mcpConnections: [],
+    managedConnections: [],
+    connectionChoices: [{ providerId: 'google', previousAccountUnavailable: true, choices: [] }],
+  });
+  assert.match(unavailable, /"providerId":"google","status":"no_eligible_account"/);
+  assert.match(unavailable, /"previousAccountUnavailable":true/);
 });
 
 for (const oauthState of ['ready', 'invalid_grant', 'temporarily_unavailable'] as const) {
