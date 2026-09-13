@@ -553,6 +553,7 @@ test('public handoff keeps the newest 20 visible messages within 12,000 characte
 
 test('Slack edits and deletes reconcile only already-recorded public messages', async () => {
   const store = new SqliteConfigStore(':memory:');
+  const listUrl = 'https://acme.example.slack.com/lists/T1/F0LIST123';
   try {
     await store.putSlackPublicContext({
       workspaceId: 'T1', channelId: 'C1', rootTs: '1000.0000',
@@ -562,12 +563,19 @@ test('Slack edits and deletes reconcile only already-recorded public messages', 
       type: 'message', subtype: 'message_changed', channel: 'C1', ts: '1002.0000',
       message: {
         type: 'message', channel: 'C1', ts: '1001.0000', thread_ts: '1000.0000',
-        text: 'After edit',
+        text: 'After edit: QA destination',
+        blocks: [{
+          type: 'rich_text',
+          elements: [{
+            type: 'rich_text_section',
+            elements: [{ type: 'list_record', file_id: 'F0LIST123', text: 'QA destination', url: listUrl }],
+          }],
+        }],
       },
     }), true);
     assert.equal(
       (await store.listSlackPublicContext('T1', 'C1', '1000.0000'))[0]?.text,
-      'After edit',
+      `After edit: QA destination\n\nLinks in this Slack message:\n- ${listUrl}`,
     );
 
     await reconcileSlackPublicContextMutation(store, 'T1', {
