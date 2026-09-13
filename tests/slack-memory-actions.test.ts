@@ -52,6 +52,7 @@ test('memory tool contract carries exact actionable references and their qualifi
   assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /only permitted change.+include the exact URL with the label/i);
   assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /summary may paraphrase.+applies only to summary.+body remains verbatim/i);
   assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /ordinary conversational facts.+may still be restated concisely/i);
+  assert.match(SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION, /exclude directions about the act of remembering or this turn only/i);
 });
 
 test('memory tool delegates scoped, idempotent writes and forget to existing management authority', async () => {
