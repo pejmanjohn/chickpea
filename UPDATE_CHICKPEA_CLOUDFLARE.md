@@ -92,6 +92,11 @@ destination release notes and its `release.json`. The installed version must
 appear in `supportedOrigins`. Follow documented intermediate releases in order
 when the newest release does not support a direct transition.
 
+Verify that GitHub marks the selected release immutable, then resolve its exact
+tag commit and read the manifest at that commit. Verify the installed release
+against its own immutable official tag too. Do this before running dependency
+or build commands from the selected source.
+
 Do not claim that a release supports this installation until its published
 metadata says so. An empty `supportedOrigins`, an absent origin, or unknown
 source means there is no guarded update path from that source. Report this and
