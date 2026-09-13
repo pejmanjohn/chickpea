@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.33' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.34' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
