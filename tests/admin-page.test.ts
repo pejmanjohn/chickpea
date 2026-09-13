@@ -15130,6 +15130,7 @@ test('Owner updates page reviews escaped notes, copies exact commands and previe
   const harness = runAdminPageHarness({ cloudflare: true, installationOwner: true, initialPath: '/admin/settings/updates', installationUpdates: () => ({
     status: failed ? 'failed' : 'available', checkedAt: '2026-09-07T12:00:00Z',
     ...(failed ? { error: 'network', lastSuccessfulCheckAt: '2026-09-06T12:00:00Z' } : {}),
+    ...(!failed ? { guidedUpdate: 'supported' } : {}),
     release: { version: '0.1.1', notes: '<script>alert(1)</script>', url: 'https://github.com/pejmanjohn/chickpea/releases/tag/v0.1.1', publishedAt: '2026-09-07T10:00:00Z' },
   }) });
   await flushAsync();
@@ -15139,6 +15140,9 @@ test('Owner updates page reviews escaped notes, copies exact commands and previe
   click({ target: actionTarget({ 'data-action': 'installation-review' }) });
   assert.match(harness.app.innerHTML, /&lt;script&gt;alert/);
   assert.doesNotMatch(harness.app.innerHTML, /<script>alert/);
+  click({ target: actionTarget({ 'data-action': 'installation-copy-prompt' }) });
+  await flushAsync();
+  assert.equal(harness.clipboardWrites.at(-1), 'Review and update this Chickpea Cloudflare installation from v0.1.0 to v0.1.1. Follow https://github.com/pejmanjohn/chickpea/blob/main/UPDATE_CHICKPEA_CLOUDFLARE.md. Before making changes, verify that the target release supports this installed version and storage manifest. If the transition is unsupported or cannot be verified, stop and explain what needs review.');
   click({ target: actionTarget({ 'data-action': 'installation-copy-command' }) });
   await flushAsync();
   assert.equal(harness.clipboardWrites.at(-1), 'npm run upgrade -- --to v0.1.1');
@@ -15156,6 +15160,28 @@ test('Owner updates page reviews escaped notes, copies exact commands and previe
   assert.match(harness.app.innerHTML, /Couldn.t check for updates/);
   assert.doesNotMatch(harness.app.innerHTML, /Up to date/);
   assert.match(harness.app.innerHTML, /Last successful check/);
+  assert.match(harness.app.innerHTML, /Get update prompt/);
+});
+
+test('Owner update prompts stay available while unsupported or without a newer release', async () => {
+  for (const updates of [
+    { status: 'available', guidedUpdate: 'unsupported', checkedAt: '2026-09-07T12:00:00Z',
+      release: { version: '0.1.1', notes: '', url: 'https://github.com/pejmanjohn/chickpea/releases/tag/v0.1.1', publishedAt: '2026-09-07T10:00:00Z' } },
+    { status: 'current', checkedAt: '2026-09-07T12:00:00Z',
+      release: { version: '0.1.0', notes: '', url: 'https://github.com/pejmanjohn/chickpea/releases/tag/v0.1.0', publishedAt: '2026-09-07T10:00:00Z' } },
+  ]) {
+    const harness = runAdminPageHarness({ cloudflare: true, installationOwner: true, initialPath: '/admin/settings/updates', installationUpdates: () => updates });
+    await flushAsync();
+    const click = harness.listeners.click!;
+    click({ target: actionTarget({ 'data-action': 'installation-review' }) });
+    assert.match(harness.app.innerHTML, /Copy update prompt/);
+    assert.doesNotMatch(harness.app.innerHTML, /installation-copy-command/);
+    click({ target: actionTarget({ 'data-action': 'installation-copy-prompt' }) });
+    await flushAsync();
+    assert.match(harness.clipboardWrites.at(-1) ?? '', /UPDATE_CHICKPEA_CLOUDFLARE\.md/);
+    assert.match(harness.clipboardWrites.at(-1) ?? '', updates.status === 'available' ? /from v0\.1\.0 to v0\.1\.1/ : /from v0\.1\.0 to the latest stable release/);
+    assert.match(harness.clipboardWrites.at(-1) ?? '', /unsupported or cannot be verified, stop/);
+  }
 });
 
 test('non-Owners have no update controls or installation fetches', async () => {
