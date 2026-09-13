@@ -135,6 +135,18 @@ import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import { GatewayDeploymentClient } from '../slack/gateway/client.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
 import { createGatewaySlackWebClient } from '../slack/gateway/web-client.ts';
+import type { GatewayPrivateChannelSetupDelivery } from '../slack/gateway/protocol.ts';
+import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
+import { prepareGeneratedGatewayAgentAvatar } from '../slack/agent-presence/gateway-avatar.ts';
+import { requireAgentChannelPublication } from '../auth/permissions.ts';
+import { PrivateChannelSetupError, PrivateChannelSetupService } from '../slack/private-channel-setup-service.ts';
+import {
+  parsePrivateChannelSetupAction,
+  privateChannelSetupCard,
+  privateChannelSetupRecoveryText,
+  privateChannelSetupUnavailableText,
+  type PrivateChannelSetupAction,
+} from '../slack/private-channel-setup.ts';
 import { selectSlackExecutionAuthority } from '../work/authority.ts';
 import { opaqueId } from '../work/admission.ts';
 import { EGRESS_SETTING_KEY, parseEgressPolicy } from '../config/egress.ts';
@@ -490,6 +502,15 @@ function handleDirectSlackEvents(
 
 function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['interactions']> {
   return async ({ c, payload }) => {
+    const setupAction = parsePrivateChannelSetupAction(payload);
+    if (setupAction) {
+      detach(c, processDirectPrivateChannelSetup(
+        setupAction, payload.api_app_id, c.env as PlatformEnv | undefined,
+      ).catch((error) => {
+        console.error('[chickpea] private Channel setup action failed:', sanitizeError(error));
+      }));
+      return;
+    }
     const selection = parseAgentAppHomeSelection(payload);
     if (!selection) return;
     const platformEnv = c.env as PlatformEnv | undefined;
@@ -975,6 +996,186 @@ export async function processGatewayAgentSelection(
   return 'accepted';
 }
 
+/** The normalized action still needs the Worker's current installation binding. */
+export async function processGatewayPrivateChannelSetup(
+  action: GatewayPrivateChannelSetupDelivery,
+  platformEnv?: PlatformEnv,
+  providedClient?: GatewayDeploymentClient,
+  providedStores?: AppStores,
+): Promise<'accepted' | 'rejected'> {
+  const stores = providedStores ?? resolveStores(platformEnv);
+  const installation = await stores.config.getWorkspaceInstallation(action.workspaceId);
+  if (!installation || installation.transportMode !== 'gateway' ||
+      installation.health === 'revoked' || !installation.botUserId || !installation.appId ||
+      !installation.gatewayBindingId || installation.gatewayBindingId !== action.bindingId) {
+    return 'rejected';
+  }
+  const gateway = providedClient ?? createGatewayDeploymentClient(platformEnv);
+  const binding = await gateway.loadBinding();
+  if (!binding || binding.bindingId !== action.bindingId ||
+      binding.workspaceId !== action.workspaceId || binding.appId !== installation.appId ||
+      binding.botUserId !== installation.botUserId) return 'rejected';
+  await completePrivateChannelSetupAction(action, {
+    stores,
+    transport: createGatewaySlackTransport(gateway),
+    client: createGatewaySlackWebClient(gateway),
+    botUserId: installation.botUserId,
+    ...(platformEnv ? { platformEnv } : {}),
+    gateway,
+  });
+  return 'accepted';
+}
+
+async function processDirectPrivateChannelSetup(
+  action: PrivateChannelSetupAction,
+  apiAppId: string | undefined,
+  platformEnv?: PlatformEnv,
+): Promise<void> {
+  const stores = resolveStores(platformEnv);
+  const installation = await stores.config.getWorkspaceInstallation(action.workspaceId);
+  if (!installation || installation.transportMode !== 'direct' ||
+      installation.health === 'revoked' || !installation.appId ||
+      installation.appId !== apiAppId) return;
+  const credentials = await resolveSlackInstallationCredentials(
+    WORKSPACE_SLACK_INSTALLATION_ID, platformEnv,
+  );
+  const botUserId = await resolveInstallationBotUserId(
+    installation.botUserId, credentials, platformEnv,
+  );
+  if (!credentials.botToken || !botUserId) return;
+  await completePrivateChannelSetupAction(action, {
+    stores,
+    transport: createDirectSlackTransport(credentials.botToken),
+    client: createSlackWebClient(credentials.botToken),
+    botUserId,
+    ...(platformEnv ? { platformEnv } : {}),
+  });
+}
+
+interface PrivateChannelSetupExecution {
+  stores: AppStores;
+  transport: SlackTransport;
+  client: ReturnType<typeof createSlackWebClient>;
+  botUserId: string;
+  platformEnv?: PlatformEnv;
+  gateway?: GatewayDeploymentClient;
+}
+
+function privateChannelSetupService(execution: PrivateChannelSetupExecution): PrivateChannelSetupService {
+  const { stores, transport, botUserId } = execution;
+  return new PrivateChannelSetupService({
+    config: stores.config,
+    management: stores.management,
+    resolveActor: (input) => resolveAgentRoutingActor({
+      workspaceId: input.workspaceId,
+      userId: input.inviterSlackUserId,
+      channelId: input.channelId,
+      botUserId, transport, stores,
+    }),
+    lookupChannel: (_workspaceId, channelId) => transport.lookupChannel(channelId),
+    prepareGeneratedAvatar: async ({ workspaceId, agent }) => prepareGeneratedGatewayAgentAvatar({
+      workspaceId,
+      installation: await stores.config.getWorkspaceInstallation(workspaceId),
+      agent,
+      publish: (candidate) => (execution.gateway ??
+        createGatewayDeploymentClient(execution.platformEnv)).publishAvatar(candidate),
+      updateAgent: (agentId, patch, revision) => stores.config.updateAgent(agentId, patch, revision),
+    }),
+    publishAgentChannel: async ({ actor, workspaceId, channelId, agentId }) => {
+      const user = await stores.identity.getUser(actor.userId);
+      if (!user || user.slackTeamId !== workspaceId || !user.slackUserId) {
+        throw new Error('The acting Slack member is no longer available.');
+      }
+      // Avatar preparation can involve remote work. Recheck authority before
+      // the reconciler imports the Channel or writes the pending grant.
+      const current = await resolveAgentRoutingActor({
+        workspaceId, userId: user.slackUserId, channelId, botUserId, transport, stores,
+      });
+      const channel = await transport.lookupChannel(channelId);
+      if (!current.principal || !current.routing.fullMember ||
+          current.principal.membershipId !== actor.membershipId ||
+          channel.id !== channelId || !channel.private || !channel.member || channel.archived) {
+        throw new Error('Private Channel setup is no longer available.');
+      }
+      requireAgentChannelPublication(
+        current.principal, await stores.config.getAgent(agentId), current.routing.channelMember,
+      );
+      return new AgentPresenceReconciler({ config: stores.config, transport }).publish({
+        workspaceId, channelId, agentId,
+        actorMembershipId: current.principal.membershipId,
+        actorSlackUserId: user.slackUserId,
+      });
+    },
+  });
+}
+
+async function privateChannelSetupAdminUrl(execution: PrivateChannelSetupExecution): Promise<string | undefined> {
+  const origin = await resolveSlackPublicUrl(execution.platformEnv, execution.stores.settings);
+  return origin ? new URL('/admin/agents', origin).toString() : undefined;
+}
+
+async function completePrivateChannelSetupAction(
+  action: PrivateChannelSetupAction,
+  execution: PrivateChannelSetupExecution,
+): Promise<void> {
+  // Never send even private feedback to somebody other than this card's inviter.
+  const intent = await execution.stores.management.getPrivateChannelSetupIntent(action.setupId);
+  if (!intent || intent.inviterSlackUserId !== action.userId ||
+      intent.workspaceId !== action.workspaceId || intent.channelId !== action.channelId) return;
+  if (!await execution.stores.slackState.claim(`private-setup:${action.deliveryId}`)) return;
+  let text: string;
+  try {
+    // An already-completed card can report current truth with its bound choice,
+    // even if Slack has since cleared the selector. It cannot publish again.
+    const agentId = action.agentId ?? (intent.status === 'completed' ? intent.selectedAgentId : undefined);
+    if (!agentId) {
+      const actor = await resolveAgentRoutingActor({
+        workspaceId: action.workspaceId, userId: action.userId, channelId: action.channelId,
+        botUserId: execution.botUserId, transport: execution.transport, stores: execution.stores,
+      });
+      const channel = await execution.transport.lookupChannel(action.channelId);
+      if (!actor.principal || !actor.routing.fullMember || !actor.routing.channelMember ||
+          actor.principal.userId !== intent.actorUserId ||
+          actor.principal.membershipId !== intent.actorMembershipId ||
+          actor.principal.organizationId !== intent.organizationId ||
+          channel.id !== action.channelId || !channel.private || !channel.member || channel.archived) return;
+      text = intent.status === 'open' && intent.expiresAt > Date.now()
+        ? 'Choose an Agent in the setup card, then click Add.'
+        : privateChannelSetupUnavailableText(
+          intent.status === 'open' ? 'expired' : 'used', await privateChannelSetupAdminUrl(execution),
+        );
+    } else {
+      const result = await privateChannelSetupService(execution).add({
+        workspaceId: action.workspaceId, channelId: action.channelId,
+        inviterSlackUserId: action.userId, setupId: action.setupId, agentId,
+      });
+      text = result.kind === 'completed'
+        ? `@${result.handle} is ready in this private channel. Mention @${result.handle} to start a conversation.`
+        : result.kind === 'in_progress'
+          ? 'This Agent is being added. Click Add again in a moment to check.'
+          : result.kind === 'no_longer_added'
+            ? privateChannelSetupUnavailableText('removed', await privateChannelSetupAdminUrl(execution))
+            : privateChannelSetupRecoveryText(await privateChannelSetupAdminUrl(execution));
+    }
+  } catch (error) {
+    if (error instanceof PrivateChannelSetupError) {
+      if (error.code === 'forbidden') return;
+      text = error.code === 'unverifiable'
+        ? 'I couldn’t check this Agent right now. Click Add again in a moment.'
+        : privateChannelSetupUnavailableText(
+        error.code === 'expired' ? 'expired' : error.code === 'stale' ? 'stale' : 'used',
+        await privateChannelSetupAdminUrl(execution),
+      );
+    } else {
+      console.warn('[chickpea] private Channel setup could not finish:', sanitizeError(error));
+      text = privateChannelSetupRecoveryText(await privateChannelSetupAdminUrl(execution));
+    }
+  }
+  // Ephemeral messages cannot be updated with chat.update. Results are another
+  // private message; failed delivery never falls back to a public post.
+  await execution.client.chat.postEphemeral({ channel: action.channelId, user: action.userId, text });
+}
+
 async function processSlackEvent(
   payload: SlackEventFixture,
   platformEnv: PlatformEnv | undefined,
@@ -1000,13 +1201,13 @@ async function processSlackEvent(
     : await resolveSlackInstallationCredentials(WORKSPACE_SLACK_INSTALLATION_ID, platformEnv);
 
   if (payload.event.type === 'member_joined_channel') {
-    if (!behavior.welcomeOnJoin.value) return;
     await handleMemberJoinedChannel(
       payload,
       stores,
       platformEnv,
       installation.botUserId,
       credentials,
+      behavior.welcomeOnJoin.value,
       execution,
     );
     return;
@@ -1670,6 +1871,7 @@ async function handleMemberJoinedChannel(
   platformEnv: PlatformEnv | undefined,
   installedBotUserId: string | undefined,
   credentials: ResolvedSlackInstallationCredentials,
+  publicWelcomeEnabled: boolean,
   execution?: SlackEventExecution,
 ): Promise<void> {
   const event = payload.event;
@@ -1677,26 +1879,58 @@ async function handleMemberJoinedChannel(
     return;
   }
 
-  // Fail-closed, exactly like every turn: only greet in a channel that has an
-  // enabled assignment. The direct-message wildcard must never cause an
-  // unsolicited onboarding message in a channel the bot was never configured for.
   const workspaceId = payload.team_id ?? event.team;
-  if (!workspaceId) {
-    return;
-  }
-  try {
-    const grants = await stores.config.listAgentChannelGrants(workspaceId, event.channel);
-    if (!grants.some((grant) => grant.status === 'active')) return;
-  } catch {
-    return;
-  }
-
+  if (!workspaceId) return;
   const resolvedBotUserId = execution?.botUserId ??
     await resolveInstallationBotUserId(installedBotUserId, credentials, platformEnv);
   const client = execution?.client ?? (
     credentials.botToken ? createSlackWebClient(credentials.botToken) : undefined
   );
   if (!resolvedBotUserId || event.user !== resolvedBotUserId || !client) return;
+  const transport = execution?.transport ?? createDirectSlackTransport(credentials.botToken!);
+  let channel;
+  try {
+    channel = await transport.lookupChannel(event.channel);
+  } catch {
+    // Unknown privacy must never become a public welcome.
+    return;
+  }
+  if (channel.id !== event.channel || channel.archived || !channel.member) return;
+
+  if (channel.private) {
+    if (!event.inviter || event.inviter === resolvedBotUserId) return;
+    if (!await stores.slackState.claim(`evt:${payload.event_id}`)) return;
+    const setupExecution: PrivateChannelSetupExecution = {
+      stores, transport, client, botUserId: resolvedBotUserId,
+      ...(platformEnv ? { platformEnv } : {}),
+    };
+    try {
+      const setup = await privateChannelSetupService(setupExecution).begin({
+        workspaceId, channelId: event.channel, inviterSlackUserId: event.inviter,
+      });
+      if (setup.agents.length === 0) return;
+      const adminUrl = await privateChannelSetupAdminUrl(setupExecution);
+      const card = privateChannelSetupCard({
+        setupId: setup.setupId,
+        agents: setup.agents.map((agent) => ({ ...agent, id: agent.agentId })),
+        truncated: setup.choicesTruncated,
+        ...(adminUrl ? { adminUrl } : {}),
+      });
+      await client.chat.postEphemeral({ channel: event.channel, user: event.inviter, ...card });
+    } catch (error) {
+      console.warn('[chickpea] private Channel setup card unavailable:', sanitizeError(error));
+    }
+    return;
+  }
+
+  // Public courtesy messages retain the existing enabled-grant and setting gates.
+  if (!publicWelcomeEnabled) return;
+  try {
+    const grants = await stores.config.listAgentChannelGrants(workspaceId, event.channel);
+    if (!grants.some((grant) => grant.status === 'active')) return;
+  } catch {
+    return;
+  }
 
   const state = stores.slackState;
   const evtKey = `evt:${payload.event_id}`;

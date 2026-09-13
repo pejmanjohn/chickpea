@@ -13,6 +13,7 @@ import {
   type ClaimAgentCreationWelcomeResult,
   type AuthorizeManagementSetupInput,
   type CompleteManagementSetupInput,
+  type CompletePrivateChannelSetupIntentInput,
   type ExchangeManagementSetupInput,
   type ManagementApplyResult,
   type ManagementChangeSetProposalRecord,
@@ -26,13 +27,18 @@ import {
   type ManagementRpcRequest,
   type ManagementRpcResponse,
   type ManagementSetupRecord,
+  type PrivateChannelSetupIntent,
+  type ClaimPrivateChannelSetupIntentInput,
+  type ClaimPrivateChannelSetupIntentResult,
   type ManagementUndoRecord,
   type PutManagementSetupInput,
+  type PutPrivateChannelSetupIntentInput,
   type PutManagementProposalInput,
   type PutManagementChangeSetProposalInput,
   type ReclaimManagementChangeSetProposalInput,
   type RevokeManagementSetupInput,
   type ReserveManagementRequestInput,
+  type SettlePrivateChannelSetupIntentInput,
 } from './types.ts';
 
 function actingAgentIdFromOriginKey(originKey: string): string | undefined {
@@ -178,6 +184,21 @@ interface ManagementIntroductionClaimRow {
   created_at: number;
 }
 
+interface PrivateChannelSetupRow {
+  setup_id: string;
+  record_json: string;
+  status: PrivateChannelSetupIntent['status'];
+  organization_id: string;
+  actor_user_id: string;
+  actor_membership_id: string;
+  inviter_slack_user_id: string;
+  workspace_id: string;
+  channel_id: string;
+  selected_agent_id: string | null;
+  expires_at: number;
+  updated_at: number;
+}
+
 export interface ManagementStore {
   execute(request: ManagementRpcRequest): Promise<ManagementRpcResponse>;
   reserveRequest(
@@ -252,6 +273,19 @@ export interface ManagementStore {
   ): Promise<ManagementSetupRecord>;
   completeSetup(input: CompleteManagementSetupInput): Promise<ManagementSetupRecord>;
   revokeSetup(input: RevokeManagementSetupInput): Promise<ManagementSetupRecord>;
+  putPrivateChannelSetupIntent(
+    input: PutPrivateChannelSetupIntentInput,
+  ): Promise<PrivateChannelSetupIntent>;
+  getPrivateChannelSetupIntent(setupId: string): Promise<PrivateChannelSetupIntent | undefined>;
+  claimPrivateChannelSetupIntent(
+    input: ClaimPrivateChannelSetupIntentInput,
+  ): Promise<ClaimPrivateChannelSetupIntentResult>;
+  completePrivateChannelSetupIntent(
+    input: CompletePrivateChannelSetupIntentInput,
+  ): Promise<PrivateChannelSetupIntent>;
+  requirePrivateChannelSetupRecovery(
+    input: SettlePrivateChannelSetupIntentInput & { failureCode: string },
+  ): Promise<PrivateChannelSetupIntent>;
   putOutbox(record: ManagementReceiptOutboxRecord): Promise<ManagementReceiptOutboxRecord>;
   claimIntroduction(
     input: ClaimManagementIntroductionInput,
@@ -427,6 +461,31 @@ export class ManagementStoreLogic {
         return { kind: 'setup', setup: this.completeSetup(request.input) };
       case 'revoke_setup':
         return { kind: 'setup', setup: this.revokeSetup(request.input) };
+      case 'put_private_channel_setup':
+        return {
+          kind: 'private_channel_setup',
+          intent: this.putPrivateChannelSetupIntent(request.input),
+        };
+      case 'get_private_channel_setup':
+        return {
+          kind: 'private_channel_setup',
+          intent: this.getPrivateChannelSetupIntent(request.setupId) ?? null,
+        };
+      case 'claim_private_channel_setup':
+        return {
+          kind: 'private_channel_setup_claim',
+          result: this.claimPrivateChannelSetupIntent(request.input),
+        };
+      case 'complete_private_channel_setup':
+        return {
+          kind: 'private_channel_setup',
+          intent: this.completePrivateChannelSetupIntent(request.input),
+        };
+      case 'require_private_channel_setup_recovery':
+        return {
+          kind: 'private_channel_setup',
+          intent: this.requirePrivateChannelSetupRecovery(request.input),
+        };
       case 'put_outbox':
         return { kind: 'outbox', outbox: this.putOutbox(request.record) };
       case 'claim_introduction':
@@ -1325,6 +1384,151 @@ export class ManagementStoreLogic {
     });
   }
 
+  putPrivateChannelSetupIntent(
+    input: PutPrivateChannelSetupIntentInput,
+  ): PrivateChannelSetupIntent {
+    const record = input.record;
+    if (!record.setupId || record.setupId.length > 200 ||
+        record.origin !== 'private_channel_invitation' || record.status !== 'open' ||
+        record.selectedAgentId || record.result || record.claimedAt || record.completedAt ||
+        record.expiresAt <= record.createdAt || record.eligibleAgents.length > 100 ||
+        new Set(record.eligibleAgents.map(({ agentId }) => agentId)).size !==
+          record.eligibleAgents.length) {
+      throw new ManagementError('invalid_request', 'The private Channel setup is invalid.');
+    }
+    this.db.run(
+      `INSERT INTO management_private_channel_setups (
+        setup_id, record_json, status, organization_id, actor_user_id,
+        actor_membership_id, inviter_slack_user_id, workspace_id, channel_id,
+        selected_agent_id, expires_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      record.setupId,
+      JSON.stringify(record),
+      record.status,
+      record.organizationId,
+      record.actorUserId,
+      record.actorMembershipId,
+      record.inviterSlackUserId,
+      record.workspaceId,
+      record.channelId,
+      record.expiresAt,
+      record.updatedAt,
+    );
+    return this.requirePrivateChannelSetupIntent(record.setupId);
+  }
+
+  getPrivateChannelSetupIntent(setupId: string): PrivateChannelSetupIntent | undefined {
+    const row = this.db.get(
+      'SELECT * FROM management_private_channel_setups WHERE setup_id = ?',
+      setupId,
+    ) as unknown as PrivateChannelSetupRow | undefined;
+    return row ? privateChannelSetupFromRow(row) : undefined;
+  }
+
+  claimPrivateChannelSetupIntent(
+    input: ClaimPrivateChannelSetupIntentInput,
+  ): ClaimPrivateChannelSetupIntentResult {
+    return this.db.transaction(() => {
+      const current = this.requirePrivateChannelSetupIntent(input.setupId);
+      assertPrivateChannelSetupBinding(current, input);
+      if (!current.eligibleAgents.some(({ agentId }) => agentId === input.agentId)) {
+        throw setupError('setup_unavailable');
+      }
+      if (current.status !== 'open') {
+        if (current.selectedAgentId !== input.agentId) throw setupError('setup_unavailable');
+        return { intent: current, claimedByThisCall: false };
+      }
+      if (input.at >= current.expiresAt) throw setupError('setup_expired');
+      const next: PrivateChannelSetupIntent = {
+        ...current,
+        status: 'claimed',
+        selectedAgentId: input.agentId,
+        claimedAt: input.at,
+        updatedAt: input.at,
+      };
+      const updated = this.db.run(
+        `UPDATE management_private_channel_setups
+         SET record_json = ?, status = 'claimed', selected_agent_id = ?, updated_at = ?
+         WHERE setup_id = ? AND status = 'open'`,
+        JSON.stringify(next),
+        input.agentId,
+        input.at,
+        input.setupId,
+      );
+      if (updated.changes !== 1) throw setupError('setup_unavailable');
+      return {
+        intent: this.requirePrivateChannelSetupIntent(input.setupId),
+        claimedByThisCall: true,
+      };
+    });
+  }
+
+  completePrivateChannelSetupIntent(
+    input: CompletePrivateChannelSetupIntentInput,
+  ): PrivateChannelSetupIntent {
+    return this.db.transaction(() => {
+      const current = this.requirePrivateChannelSetupIntent(input.setupId);
+      assertPrivateChannelSetupSettlement(current, input);
+      if (input.result.agentId !== input.agentId || !input.result.handle ||
+          input.result.handle.length > 100) throw setupError('setup_unavailable');
+      if (current.status === 'completed') {
+        if (current.result?.agentId !== input.result.agentId ||
+            current.result.handle !== input.result.handle) throw setupError('setup_unavailable');
+        return current;
+      }
+      if (current.status !== 'claimed' && current.status !== 'recovery_required') {
+        throw setupError('setup_unavailable');
+      }
+      const next: PrivateChannelSetupIntent = {
+        ...current,
+        status: 'completed',
+        result: input.result,
+        completedAt: input.at,
+        updatedAt: input.at,
+      };
+      delete next.failureCode;
+      this.writePrivateChannelSetupIntent(next, current.status);
+      return this.requirePrivateChannelSetupIntent(input.setupId);
+    });
+  }
+
+  requirePrivateChannelSetupRecovery(
+    input: SettlePrivateChannelSetupIntentInput & { failureCode: string },
+  ): PrivateChannelSetupIntent {
+    return this.db.transaction(() => {
+      const current = this.requirePrivateChannelSetupIntent(input.setupId);
+      assertPrivateChannelSetupSettlement(current, input);
+      if (current.status === 'completed' || current.status === 'recovery_required') return current;
+      if (current.status !== 'claimed') throw setupError('setup_unavailable');
+      const next: PrivateChannelSetupIntent = {
+        ...current,
+        status: 'recovery_required',
+        failureCode: boundedFailureCode(input.failureCode),
+        updatedAt: input.at,
+      };
+      this.writePrivateChannelSetupIntent(next, 'claimed');
+      return this.requirePrivateChannelSetupIntent(input.setupId);
+    });
+  }
+
+  private writePrivateChannelSetupIntent(
+    intent: PrivateChannelSetupIntent,
+    expectedStatus: PrivateChannelSetupIntent['status'],
+  ): void {
+    const updated = this.db.run(
+      `UPDATE management_private_channel_setups
+       SET record_json = ?, status = ?, selected_agent_id = ?, updated_at = ?
+       WHERE setup_id = ? AND status = ?`,
+      JSON.stringify(intent),
+      intent.status,
+      intent.selectedAgentId ?? null,
+      intent.updatedAt,
+      intent.setupId,
+      expectedStatus,
+    );
+    if (updated.changes !== 1) throw setupError('setup_unavailable');
+  }
+
   getOutboxForOperation(operationId: string): ManagementReceiptOutboxRecord | undefined {
     const row = this.db.get(
       `SELECT * FROM management_receipt_outbox
@@ -1449,6 +1653,17 @@ export class ManagementStoreLogic {
            WHERE status IN ('completed', 'revoked', 'expired', 'failed') AND updated_at < ?
            ORDER BY updated_at LIMIT ?
          )`,
+        cutoff,
+        boundedLimit,
+      );
+      remove(
+        `DELETE FROM management_private_channel_setups WHERE setup_id IN (
+           SELECT setup_id FROM management_private_channel_setups
+           WHERE (status IN ('completed', 'recovery_required') AND updated_at < ?)
+              OR (status IN ('open', 'claimed') AND expires_at < ?)
+           ORDER BY updated_at LIMIT ?
+         )`,
+        cutoff,
         cutoff,
         boundedLimit,
       );
@@ -1611,6 +1826,26 @@ export class ManagementStoreLogic {
        ON management_setup_operations (status, updated_at)`,
     );
     this.db.exec(
+      `CREATE TABLE IF NOT EXISTS management_private_channel_setups (
+        setup_id TEXT PRIMARY KEY,
+        record_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('open', 'claimed', 'completed', 'recovery_required')),
+        organization_id TEXT NOT NULL,
+        actor_user_id TEXT NOT NULL,
+        actor_membership_id TEXT NOT NULL,
+        inviter_slack_user_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        selected_agent_id TEXT,
+        expires_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS management_private_channel_setups_retention_idx
+       ON management_private_channel_setups (status, expires_at, updated_at)`,
+    );
+    this.db.exec(
       `CREATE TABLE IF NOT EXISTS management_receipt_outbox (
         outbox_id TEXT PRIMARY KEY,
         operation_id TEXT NOT NULL,
@@ -1745,6 +1980,12 @@ export class ManagementStoreLogic {
     const setup = this.getSetup(setupOperationId, at);
     if (!setup) throw setupError('setup_not_found');
     return setup;
+  }
+
+  private requirePrivateChannelSetupIntent(setupId: string): PrivateChannelSetupIntent {
+    const intent = this.getPrivateChannelSetupIntent(setupId);
+    if (!intent) throw setupError('setup_not_found');
+    return intent;
   }
 
   private requireBrowserSetup(
@@ -1935,6 +2176,44 @@ function setupFromRow(row: ManagementSetupRow): ManagementSetupRecord {
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+function privateChannelSetupFromRow(row: PrivateChannelSetupRow): PrivateChannelSetupIntent {
+  const record = JSON.parse(row.record_json) as PrivateChannelSetupIntent;
+  return {
+    ...record,
+    status: row.status,
+    ...(row.selected_agent_id ? { selectedAgentId: row.selected_agent_id } : {}),
+    expiresAt: Number(row.expires_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function assertPrivateChannelSetupBinding(
+  intent: PrivateChannelSetupIntent,
+  input: ClaimPrivateChannelSetupIntentInput,
+): void {
+  if (intent.organizationId !== input.organizationId ||
+      intent.actorUserId !== input.actorUserId ||
+      intent.actorMembershipId !== input.actorMembershipId ||
+      intent.inviterSlackUserId !== input.inviterSlackUserId ||
+      intent.workspaceId !== input.workspaceId ||
+      intent.channelId !== input.channelId) {
+    throw setupError('setup_not_found');
+  }
+}
+
+function assertPrivateChannelSetupSettlement(
+  intent: PrivateChannelSetupIntent,
+  input: SettlePrivateChannelSetupIntentInput,
+): void {
+  if (intent.organizationId !== input.organizationId ||
+      intent.actorUserId !== input.actorUserId ||
+      intent.actorMembershipId !== input.actorMembershipId ||
+      intent.inviterSlackUserId !== input.inviterSlackUserId ||
+      intent.selectedAgentId !== input.agentId) {
+    throw setupError('setup_not_found');
+  }
 }
 
 function outboxFromRow(row: ManagementOutboxRow): ManagementReceiptOutboxRecord {

@@ -86,7 +86,8 @@ export async function verifyHttpDelivery(input: {
     value.proof = btoa(String.fromCharCode(...proofBytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
   } else {
     const delivery = parseGatewayFrameText(JSON.stringify(value.delivery));
-    if ((delivery.kind !== 'event.deliver' && delivery.kind !== 'interaction.agent_selected') ||
+    if ((delivery.kind !== 'event.deliver' && delivery.kind !== 'interaction.agent_selected' &&
+        delivery.kind !== 'interaction.channel_agent_add') ||
         delivery.bindingId !== value.bindingId || delivery.workspaceId !== value.workspaceId ||
         (delivery.kind === 'event.deliver' && delivery.envelope.workspaceId !== value.workspaceId)) fail();
     value.delivery = delivery as GatewayInboundDelivery;

@@ -1080,7 +1080,8 @@ export class GatewayLogicalSession {
       return;
     }
     if (!this.ready) throw new Error('Gateway delivered an event before session authentication.');
-    if (frame.kind !== 'event.deliver' && frame.kind !== 'interaction.agent_selected') {
+    if (frame.kind !== 'event.deliver' && frame.kind !== 'interaction.agent_selected' &&
+        frame.kind !== 'interaction.channel_agent_add') {
       throw new Error('Unsupported gateway session frame.');
     }
     let outcome: GatewayEventAck['outcome'];

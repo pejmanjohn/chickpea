@@ -35,6 +35,14 @@ test('HTTP gateway rejects nested delivery identity mismatch even with a valid s
  const {state,envelope}=await fixture();const body=JSON.stringify({...envelope,delivery:{...delivery,workspaceId:'T_OTHER'}});
  await assert.rejects(verifyHttpDelivery({body,signature:await sign(body),url:endpointUrl,binding,state,keyring,now:1000}));
 });
+test('HTTP gateway accepts a bounded private-channel setup delivery without raw Slack state',async()=>{
+ const {state,envelope}=await fixture();
+ const setup={protocolVersion:1,kind:'interaction.channel_agent_add',deliveryId:'setup_delivery',bindingId:binding.bindingId,workspaceId:binding.workspaceId,userId:'U_MEMBER',channelId:'C_PRIVATE',setupId:'019f12cc-87e1-7000-8123-123456789abc',agentId:null};
+ const body=JSON.stringify({...envelope,delivery:setup});
+ const value=await verifyHttpDelivery({body,signature:await sign(body),url:endpointUrl,binding,state,keyring,now:1000});
+ assert.deepEqual(value.delivery,setup);
+ assert.doesNotMatch(JSON.stringify(value.delivery),/response_url|selected_option|token/);
+});
 test('HTTP endpoint challenge proves possession of the staged key',async()=>{
  const {state,envelope}=await fixture();const body=JSON.stringify({...envelope,kind:'gateway.challenge',challengeId:'challenge1',delivery:undefined});
  const value=await verifyHttpDelivery({body,signature:await sign(body),url:endpointUrl,binding,state,keyring,now:1000});

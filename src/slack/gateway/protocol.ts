@@ -133,7 +133,22 @@ interface GatewayAgentSelectionDelivery {
   agentId: string;
 }
 
-export type GatewayInboundDelivery = GatewayEventDelivery | GatewayAgentSelectionDelivery;
+export interface GatewayPrivateChannelSetupDelivery {
+  protocolVersion: typeof CHICKPEA_GATEWAY_PROTOCOL_VERSION;
+  kind: 'interaction.channel_agent_add';
+  deliveryId: string;
+  bindingId: string;
+  workspaceId: string;
+  userId: string;
+  channelId: string;
+  setupId: string;
+  agentId: string | null;
+}
+
+export type GatewayInboundDelivery =
+  | GatewayEventDelivery
+  | GatewayAgentSelectionDelivery
+  | GatewayPrivateChannelSetupDelivery;
 
 export interface GatewayEventAck {
   protocolVersion: typeof CHICKPEA_GATEWAY_PROTOCOL_VERSION;
@@ -194,6 +209,7 @@ export type GatewayServerFrame =
   | GatewaySessionReady
   | GatewayEventDelivery
   | GatewayAgentSelectionDelivery
+  | GatewayPrivateChannelSetupDelivery
   | GatewayHeartbeat;
 
 export type GatewayClientFrame = GatewaySessionHello | GatewayEventAck | GatewayHeartbeat;
@@ -245,6 +261,18 @@ function parseGatewayServerFrame(value: unknown): GatewayServerFrame {
         workspaceId: requireId(record.workspaceId),
         userId: requireId(record.userId),
         agentId: requireId(record.agentId),
+      };
+    case 'interaction.channel_agent_add':
+      return {
+        protocolVersion: CHICKPEA_GATEWAY_PROTOCOL_VERSION,
+        kind: 'interaction.channel_agent_add',
+        deliveryId: requireId(record.deliveryId),
+        bindingId: requireId(record.bindingId),
+        workspaceId: requireId(record.workspaceId),
+        userId: requireId(record.userId),
+        channelId: requireId(record.channelId),
+        setupId: requireId(record.setupId, 128),
+        agentId: record.agentId === null ? null : requireId(record.agentId, 128),
       };
     case 'session.ping':
     case 'session.pong':
@@ -403,8 +431,8 @@ function requireProtocolVersion(value: unknown): void {
   }
 }
 
-function requireId(value: unknown): string {
-  if (typeof value !== 'string' || !ID_PATTERN.test(value)) {
+function requireId(value: unknown, maximum = 256): string {
+  if (typeof value !== 'string' || value.length > maximum || !ID_PATTERN.test(value)) {
     throw new GatewayProtocolError('invalid_id');
   }
   return value;

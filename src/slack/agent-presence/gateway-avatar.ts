@@ -1,3 +1,5 @@
+import type { ConfigAgentPatch } from '../../config/store.ts';
+import type { CustomAgentConfig, WorkspaceInstallation } from '../../config/types.ts';
 import { generatedAgentAvatarPng } from './avatar-assets.ts';
 import { SlackTransportError } from '../transport/types.ts';
 
@@ -50,4 +52,38 @@ export async function publishGeneratedAgentAvatar(input: {
       revision += 1;
     }
   }
+}
+
+/** Publish and persist generated avatar bytes only for a gateway installation. */
+export async function prepareGeneratedGatewayAgentAvatar(input: {
+  workspaceId: string;
+  installation: Pick<WorkspaceInstallation, 'workspaceId' | 'transportMode'> | undefined;
+  agent: CustomAgentConfig;
+  publish: (input: GeneratedAgentAvatarPublishInput & { workspaceId: string }) => Promise<string>;
+  updateAgent: (
+    agentId: string,
+    patch: ConfigAgentPatch,
+    expectedRevision: number,
+  ) => Promise<CustomAgentConfig>;
+}): Promise<CustomAgentConfig> {
+  const avatar = input.agent.slackPresence?.avatar;
+  if (avatar?.kind !== 'generated' || input.installation?.transportMode !== 'gateway' ||
+      input.installation.workspaceId !== input.workspaceId) return input.agent;
+  const published = await publishGeneratedAgentAvatar({
+    agentId: input.agent.id,
+    revision: avatar.revision,
+    seed: avatar.seed ?? input.agent.id,
+    publish: (candidate) => input.publish({ workspaceId: input.workspaceId, ...candidate }),
+  });
+  if (avatar.revision === published.revision && avatar.url === published.url) return input.agent;
+  return input.updateAgent(input.agent.id, {
+    slackPresence: {
+      ...input.agent.slackPresence!,
+      avatar: {
+        ...avatar,
+        revision: published.revision,
+        url: published.url,
+      },
+    },
+  }, input.agent.revision);
 }
