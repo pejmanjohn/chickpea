@@ -116,6 +116,7 @@ test('public verifier files are not ignored and private artifact shapes are not 
 
 test('operator skill stays discoverable and separate from contract assertions', () => {
   const entrypoint = read('.agents/skills/chickpea-live-verification/SKILL.md');
+  assert.equal(read('.claude/skills/chickpea-live-verification/SKILL.md'), entrypoint, 'Host wrappers must share exactly one canonical workflow');
   const skill = read('qa/live/operator/SKILL.md');
   const agents = read('AGENTS.md');
   const readme = read('README.md');
@@ -132,16 +133,13 @@ test('operator skill stays discoverable and separate from contract assertions', 
 test('skill relative references resolve from their owning files to the canonical workflow', () => {
   for (const path of [
     '.agents/skills/chickpea-live-verification/SKILL.md',
-    'qa/live/operator/SKILL.md',
-    'qa/live/operator/modes.md',
-    'qa/live/operator/environments.md',
-    'qa/live/operator/records.md',
-    'qa/live/operator/recovery.md',
+    '.claude/skills/chickpea-live-verification/SKILL.md',
+    ...filesBelow('qa/live/operator').filter((path) => path.endsWith('.md')),
   ]) {
     // Both inline-code references in the discovery wrapper and actual Markdown
     // links in the operator instructions must survive source publication.
-    const references = [...read(path).matchAll(/(?:`|\]\()([^\s`()]+\.md)(?:`|\))/g)];
-    assert.ok(references.length > 0, `${path} has no workflow references`);
+    const references = [...read(path).matchAll(/(?:`|\]\()([^\s`()]+\.md)(?:#[^\s`()]*)?(?:`|\))/g)];
+    if (path.endsWith('SKILL.md')) assert.ok(references.length > 0, `${path} has no workflow references`);
     for (const [, reference] of references) {
       const resolved = resolve(ROOT, dirname(path), reference!);
       assert.ok(!relative(ROOT, resolved).startsWith('..'), `${path} references outside the repository`);

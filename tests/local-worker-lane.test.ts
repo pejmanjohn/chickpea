@@ -1,11 +1,23 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readlinkSync, symlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
 // @ts-expect-error The cross-platform executable .mjs intentionally has no declaration file.
 import * as localWorkerLaneModule from '../scripts/lib/local-worker-lane.mjs';
+// @ts-expect-error The cross-platform executable .mjs intentionally has no declaration file.
+import * as localWorkerInspectionModule from '../scripts/lib/local-worker-inspection.mjs';
 
 const {
   DEFAULT_LOCAL_WORKER_MODEL,
@@ -22,6 +34,32 @@ const {
   resolveLocalLanePaths,
   validateLocalPublicUrl,
 } = localWorkerLaneModule;
+const {
+  assertRunnerRootReadOnly,
+  inspectLocalWorkerRunner,
+} = localWorkerInspectionModule;
+
+function git(directory: string, ...args: string[]) {
+  const result = spawnSync('git', args, { cwd: directory, encoding: 'utf8' });
+  assert.equal(result.status, 0, `${args.join(' ')}: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+function localRunnerFixture() {
+  const parent = realpathSync(mkdtempSync(path.join(tmpdir(), 'chickpea-runner-status-')));
+  const runner = path.join(parent, 'runner');
+  const candidate = path.join(parent, 'candidate');
+  mkdirSync(runner, { mode: 0o700 });
+  git(runner, 'init', '-b', 'main');
+  git(runner, 'config', 'user.email', 'fixture@example.test');
+  git(runner, 'config', 'user.name', 'Fixture');
+  writeFileSync(path.join(runner, '.gitignore'), '.chickpea-local-worker/\n.dev.vars\n');
+  writeFileSync(path.join(runner, 'fixture.txt'), 'initial\n');
+  git(runner, 'add', '.');
+  git(runner, 'commit', '-m', 'fixture');
+  git(runner, 'worktree', 'add', '-b', 'feature/candidate', candidate);
+  return { parent, runner: realpathSync(runner), candidate: realpathSync(candidate) };
+}
 
 test('local Worker lane records an explicit workerd, HTTP Events, state, and model tuple', () => {
   const root = path.join(tmpdir(), 'chickpea-local-lane-test');
@@ -210,4 +248,102 @@ test('Cloudflare smoke cleanup cannot erase persistent local lane state', () => 
   const smoke = readFileSync(path.resolve(process.cwd(), 'scripts/verify-cf-smoke.mjs'), 'utf8');
   assert.match(smoke, /const PERSIST_DIR = mkdtempSync\(join\(tmpdir\(\), 'chickpea-cf-smoke-'\)\);/);
   assert.doesNotMatch(smoke, /const PERSIST_DIR = join\(REPO_ROOT,/);
+});
+
+test('runner-root status inspects a fixed lane from a candidate in the same repository', async (t) => {
+  const fixture = localRunnerFixture();
+  t.after(() => rmSync(fixture.parent, { recursive: true, force: true }));
+  await initializeLocalLane({
+    projectRoot: fixture.runner,
+    lane: 'local-a',
+    publicUrl: 'https://local-a.example.com',
+    tunnelName: 'local-a-tunnel',
+    port: 8787,
+  });
+
+  const capturedAt = '2026-09-13T12:00:00.000Z';
+  const status = inspectLocalWorkerRunner({
+    runnerRoot: fixture.runner,
+    candidateRoot: fixture.candidate,
+    lane: 'local-a',
+  }, {
+    now: () => Date.parse(capturedAt),
+    pidIsLive: () => false,
+  });
+  assert.equal(status.schemaVersion, 'chickpea-local-worker-runner-status/v1');
+  assert.equal(status.capturedAt, capturedAt);
+  assert.equal(status.runner.observedAt, capturedAt);
+  assert.equal(status.candidate.observedAt, capturedAt);
+  assert.equal(status.runner.root, fixture.runner);
+  assert.equal(status.candidate.root, fixture.candidate);
+  assert.equal(status.runner.branch, 'main');
+  assert.equal(status.candidate.branch, 'feature/candidate');
+  assert.equal(status.runner.statePath,
+    path.join(fixture.runner, '.chickpea-local-worker', 'local-a', 'state'));
+  assert.equal(status.runner.model.configuredDefault, DEFAULT_LOCAL_WORKER_MODEL);
+  assert.equal(status.runner.model.effective, 'unverified');
+  assert.equal(status.readiness.stateSchemaGeneration, 'unrecorded');
+  assert.equal(status.readiness.crossWorktreeStart, 'blocked');
+  assert.match(status.runner.workingContentFingerprint, /^sha256:[0-9a-f]{64}$/u);
+  assert.match(status.candidate.workingContentFingerprint, /^sha256:[0-9a-f]{64}$/u);
+  assert.equal(status.process, 'stopped');
+  assert.doesNotMatch(JSON.stringify(status), /CHICKPEA_AUTH_SECRET|SETUP_CAPABILITY/u);
+
+  writeFileSync(path.join(fixture.candidate, 'fixture.txt'), 'candidate edit\n');
+  const changed = inspectLocalWorkerRunner({
+    runnerRoot: fixture.runner,
+    candidateRoot: fixture.candidate,
+    lane: 'local-a',
+  }, { now: () => Date.parse(capturedAt), pidIsLive: () => false });
+  assert.equal(changed.candidate.headRevision, status.candidate.headRevision);
+  assert.equal(changed.candidate.dirty, true);
+  assert.notEqual(changed.candidate.workingContentFingerprint,
+    status.candidate.workingContentFingerprint);
+  assert.equal(changed.runner.workingContentFingerprint, status.runner.workingContentFingerprint);
+});
+
+test('runner-root status rejects a different repository and noncanonical owner paths', async (t) => {
+  const fixture = localRunnerFixture();
+  const other = localRunnerFixture();
+  t.after(() => {
+    rmSync(fixture.parent, { recursive: true, force: true });
+    rmSync(other.parent, { recursive: true, force: true });
+  });
+  await initializeLocalLane({
+    projectRoot: fixture.runner,
+    lane: 'local-a',
+    publicUrl: 'https://local-a.example.com',
+    tunnelName: 'local-a-tunnel',
+    port: 8787,
+  });
+  assert.throws(() => inspectLocalWorkerRunner({
+    runnerRoot: fixture.runner,
+    candidateRoot: other.candidate,
+    lane: 'local-a',
+  }), /same Git repository/u);
+
+  const linkedRunner = path.join(fixture.parent, 'linked-runner');
+  symlinkSync(fixture.runner, linkedRunner);
+  assert.throws(() => inspectLocalWorkerRunner({
+    runnerRoot: linkedRunner,
+    candidateRoot: fixture.candidate,
+    lane: 'local-a',
+  }), /canonical directory/u);
+});
+
+test('runner-root is rejected for every mutating local Worker command', () => {
+  for (const command of [
+    'init',
+    'bind-slack',
+    'renew-setup',
+    'relocate-unbound',
+    'setup-link',
+    'start',
+    'schedule',
+  ]) {
+    assert.throws(() => assertRunnerRootReadOnly(command, '/tmp/runner'),
+      /read-only and may be used only with status/u);
+  }
+  assert.doesNotThrow(() => assertRunnerRootReadOnly('status', '/tmp/runner'));
+  assert.doesNotThrow(() => assertRunnerRootReadOnly('start', undefined));
 });

@@ -9,6 +9,8 @@ Run the requested verification and return its results. Default to `changed` mode
 Choose the scope and environment from the request, diff, and existing claims;
 state that choice briefly and continue. Read [modes.md](modes.md) for the selected
 mode's checks. A request to review or edit the skill alone does not start a live run.
+Codex and Claude use the same workflow and commands. Read [hosts.md](hosts.md)
+once for browser ownership, evidence access, and the host's available tools.
 
 ## Invocation authorizes the test
 
@@ -69,19 +71,30 @@ separate requirements.
 1. Inspect the diff with `npm run verify:regression -- --plan`. Select `changed`,
    `regression`, or `release` in [modes.md](modes.md). For a first release, review
    the advertised use-case matrix as well. The template is a starting inventory.
-2. Resolve one suitable QA target using [environments.md](environments.md).
+   Capture the original request, expected outcome, independent variants, and
+   cleanup in the private case contract. A convenient adjacent happy path does
+   not replace the reported failure. Read [records.md](records.md) for builders.
+   Create the unresolved private template now, so fixture preflight has a spec.
+2. Check candidate freshness and fixture declarations before occupying a lane.
+   `npm run verify:live:candidate` observes canonical remote main without fetching;
+   handle its exact refusal using [environments.md](environments.md). This does
+   not synchronize a checkout, prove deployment, or grant deployment authority.
+   Check [fixtures.md](fixtures.md) for selected operations and missing accounts.
+   Resolve one suitable QA target using [environments.md](environments.md).
    Reuse its claim. Prefer an owned local workerd/HTTP lane for repair cycles;
    deployed due-time, gateway, bindings, and release proof require a deployed lane.
-3. Create a private spec and run record using [records.md](records.md). Run
+3. Resolve that spec and initialize its run record using [records.md](records.md). Run
    `npm run verify:live:record -- preflight --run <private-run.json>` before
    browser work. Resolve actual signed-in actors, required fixtures, available
    browser tools, and disposable installation targets. A missing fixture blocks
    only dependent cases. Keep that gap in the selected scope; finish other cases.
    Bind each capability to that case's exact context and select independently
    graded required variants. See the [fixture inventory](environments.md#fixture-inventory).
+   Start phase receipts for setup, lane/host/browser/human waits, diagnosis,
+   observation, and cleanup. Missing measurements stay unknown.
 4. Run the selected offline checks serially with `verify:regression --record
    <private-run.json>`. For each attended case, record `begin`, act once, then
-   record `finish` with real readbacks. Register exact owned resources and fixture
+   use the typed `finish` command with real readbacks. Register exact owned resources and fixture
    before-values immediately. Follow [recovery.md](recovery.md) for an ambiguous
    action, stalled reply, lost tab, or tool failure.
    Share the [host check reservation](host-checks.md) with other repair worktrees.
@@ -97,6 +110,14 @@ separate requirements.
 7. Clean exact run-owned IDs, restore exact before-values, and record authoritative
    cleanup readbacks. Generate `report` from the record; do not maintain a second
    handwritten status table. Hold the environment claim through cleanup.
+   Link a separately scoped follow-up with `--parent-run` and `--original-case`;
+   generate `report --family` so earlier coverage and cleanup remain visible.
+
+Ordinary contention should continue automatically with the bounded lane, host,
+and browser wait commands. No user recheck is needed when the existing owner
+releases normally. A deadline, unsafe ownership, stale source, orphan marker,
+unavailable account, or unreconciled action needs its specific recovery; waiting
+longer does not resolve it. Continue independent work and preserve the blocker.
 
 ## Delegation and live ownership
 

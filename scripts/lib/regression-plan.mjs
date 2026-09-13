@@ -17,7 +17,7 @@ export const REGRESSION_AREAS = Object.freeze({
   auth: ['slack-install-oauth', 'slack-oidc', 'auth-principal', 'admin-authorization'],
   admin: ['admin-page', 'agent-admin-routes', 'admin-authorization'],
   providers: ['provider-runtime-models', 'cloudflare-provider', 'runtime-model-route-evidence'],
-  verification: ['node-version', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'verification-host', 'schedule-contract-evaluation', 'deploy-with-epilogue', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
+  verification: ['node-version', 'verification-record', 'verification-regression', 'verification-offline', 'verification-transition', 'verification-host', 'verification-fixtures', 'verification-ui-lease', 'environment-wait', 'qa-candidate', 'live-contract-ui-mutex', 'schedule-contract-evaluation', 'deploy-with-epilogue', 'local-worker-lane', 'live-contract-schema', 'live-contract-runner', 'oss-export'],
 });
 
 const rules = [
@@ -35,7 +35,7 @@ const rules = [
   [/^src\/(?:auth|identity)\//, ['auth']],
   [/^(?:src\/admin\/|assets\/admin-ui\/)/, ['admin']],
   [/^src\/(?:cloudflare-provider\.ts|model-compat\/|model-catalog\/)/, ['providers']],
-  [/^(?:qa\/live\/|\.agents\/skills\/chickpea-live-verification\/|scripts\/(?:verify-regression\.mjs|verification-record\.mjs|live-test-resource-ledger\.mjs|deploy-with-epilogue\.mjs|chickpea-(?:environment|local-worker)\.mjs|lib\/(?:verification-(?:record|inputs|spec|repairs|offline|transition)|private-evidence|regression-plan|environment-[^/]+|local-worker-lane)\.mjs))/, ['verification']],
+  [/^(?:qa\/live\/|\.(?:agents|claude)\/skills\/chickpea-live-verification\/|scripts\/(?:verify-regression\.mjs|verification-(?:record|fixtures|ui-lease)\.mjs|verify-qa-candidate\.mjs|live-test-resource-ledger\.mjs|deploy-with-epilogue\.mjs|chickpea-(?:environment|local-worker)\.mjs|lib\/(?:verification-[a-z-]+|qa-candidate|private-evidence|regression-plan|environment-[^/]+|local-worker-(?:lane|inspection))\.mjs))/, ['verification']],
 ];
 
 export function createRegressionPlan({ mode = 'changed', areas = [], files = [], testFiles = [] } = {}) {

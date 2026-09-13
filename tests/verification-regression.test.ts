@@ -37,6 +37,23 @@ test('documentation changes skip runtime checks while an unspecified scope runs 
   assert.ok(createRegressionPlan({ files: ['qa/live/operator/SKILL.md'], testFiles }).areas.includes('verification'));
 });
 
+test('both skill hosts and shared operator helpers select workflow checks without broadening product scope', () => {
+  for (const file of [
+    '.agents/skills/chickpea-live-verification/SKILL.md', '.claude/skills/chickpea-live-verification/SKILL.md',
+    'scripts/verification-ui-lease.mjs', 'scripts/verification-fixtures.mjs', 'scripts/verify-qa-candidate.mjs',
+    'scripts/lib/verification-record-family.mjs', 'scripts/lib/verification-host-wait.mjs',
+    'scripts/lib/environment-wait.mjs', 'scripts/lib/local-worker-inspection.mjs', 'scripts/lib/qa-candidate.mjs',
+  ]) {
+    const plan = createRegressionPlan({ files: [file], testFiles });
+    assert.deepEqual(plan.areas, ['verification'], file);
+    assert.equal(plan.fullTests, false, file);
+    const selected = plan.steps.find((step: { kind: string }) => step.kind === 'tests').files;
+    for (const required of ['qa-candidate', 'verification-ui-lease', 'verification-fixtures', 'oss-export']) {
+      assert.ok(selected.includes(`tests/${required}.test.ts`), `${file}: ${required}`);
+    }
+  }
+});
+
 test('regression and release preserve distinct inventories and reject stale selection', () => {
   const regression = createRegressionPlan({ mode: 'regression', testFiles });
   const release = createRegressionPlan({ mode: 'release', testFiles });

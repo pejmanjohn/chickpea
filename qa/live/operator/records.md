@@ -17,7 +17,7 @@ This example uses a shell variable for that directory, not a target alias.
 ```sh
 run_dir=$(mktemp -d /private/tmp/chickpea-verification.XXXXXX)
 npm run verify:regression -- --area routines --plan
-npm run verify:live:record -- template --mode changed --area routines --output "$run_dir/spec.json"
+npm run verify:live:record -- template --mode changed --purpose verification --area routines --output "$run_dir/spec.json"
 # Read/edit spec.json using observed target, actor, capability and fixture evidence.
 npm run verify:live:record -- init --spec "$run_dir/spec.json" --run "$run_dir/run.json"
 npm run verify:live:record -- preflight --run "$run_dir/run.json"
@@ -30,6 +30,29 @@ fixtures. Review it against the advertised release matrix and add missing varian
 hosting paths, upgrade journeys, and relevant permission/failure cases. For a
 documentation/workflow-only task, `cases: []` with empty contexts/capabilities
 records offline checks without implying live coverage.
+
+Use `case-add` when the selected journey is not already in the template. It
+writes a distinct spec so the reviewed input is never replaced in place. Repeat
+`--area`, `--require`, and `--proof` as needed. For an existing template case,
+add the intent fields to that private case before initialization; do not add a
+duplicate journey just to attach the contract. Private spec preparation is part
+of the authorized run and needs no additional approval.
+
+```sh
+npm run verify:live:record -- case-add \
+  --spec "$run_dir/spec.json" --output "$run_dir/spec-with-case.json" \
+  --case requested-schedule --title "Requested schedule" --context candidate \
+  --area routines --require candidate.owner --require candidate.channel \
+  --proof slack --proof admin \
+  --original-request "Post the requested report on the chosen schedule." \
+  --expected-outcome "One attributable Slack message contains the requested report." \
+  --variant "A denied actor receives no delivery and an actionable error." \
+  --cleanup-contract "Remove the temporary schedule and verify absence by immutable ID."
+```
+
+These four contract fields become immutable once present. A refresh may add a
+missing field, but cannot change or remove recorded product intent. Resolve the
+new spec's contexts and capabilities, then pass that file to `init`.
 
 Each context records `grade`, exact `target`, `servingVersion`, actual `model`,
 actor identity, fixture revision/digest, lane `state`, and relevant `config` digest.
@@ -116,7 +139,14 @@ not every historical retrospective row by default.
 npm run verify:regression -- --area routines --record "$run_dir/run.json"
 npm run verify:live:record -- begin --case channel-schedule --run "$run_dir/run.json"
 # Record the returned attempt ID before acting. Perform the authorized journey once.
-npm run verify:live:record -- record --event "$run_dir/outcome.json" --run "$run_dir/run.json"
+# Save the product result and each required readback before finishing.
+npm run verify:live:record -- finish --run "$run_dir/run.json" \
+  --attempt "$attempt_id" --result pass \
+  --summary "Expected the saved destination; observed it in Admin and the due Slack message." \
+  --evidence "$run_dir/attempt.json" \
+  --proof "slack=$run_dir/slack.json" --proof "admin=$run_dir/admin.json" \
+  --completed-at 2026-10-01T12:00:19Z --observed-at 2026-10-01T12:00:31Z \
+  --timing-observation-ms 30000 --cost-usd unknown
 # After interruption, inspect the same record. Do not create a replacement.
 npm run verify:live:record -- status --run "$run_dir/run.json"
 # Refresh observed contexts/capabilities after a fix, restart, actor or browser change.
@@ -125,22 +155,10 @@ npm run verify:regression -- --area routines --record "$run_dir/run.json" --reus
 npm run verify:live:record -- begin --case channel-schedule --reason "Fixed persisted destination; new conversation and due occurrence" --run "$run_dir/run.json"
 ```
 
-A finish event looks like this. Paths refer to files you actually saved. Required
-proof surfaces each reference their own readbacks, which may be in the same file.
-The helper verifies receipt presence/integrity, not the assertions inside them.
-
-```json
-{
-  "type": "finish",
-  "attemptId": "ID_FROM_BEGIN",
-  "result": "pass",
-  "summary": "Expected the exact saved destination; observed it in Admin and the due Slack message, with no duplicate in the declared window.",
-  "evidence": ["/private/path/attempt.json"],
-  "proof": {"slack": ["/private/path/slack.json"], "admin": ["/private/path/admin.json"]},
-  "timing": {"browserMs": 12000, "modelMs": 19000, "humanWaitMs": 0, "observationMs": 30000},
-  "costUsd": null
-}
-```
+Paths refer to files you actually saved. Repeat `--evidence` or
+`--proof surface=path` when a surface has multiple receipts. The helper verifies
+receipt presence and integrity, not the assertions inside them. It still rejects
+a pass that lacks any proof surface required by the selected case.
 
 Non-passes require `category: product|model|tool|infrastructure|unknown`. Keep the
 expected/observed difference in `summary`. `ambiguous` prevents a new attempt
@@ -148,8 +166,39 @@ until an event with `type: reconcile`, `attemptId`, `outcome: not_applied`, summ
 and evidence proves absence. `outcome: applied` instead permits a `resolve` event
 with the same fields as finish to grade the original action. `unknown` permits
 neither replay nor a pass. See [recovery.md](recovery.md).
-Timing and cost on `resolve` are cumulative for that attempt; the report uses
-the latest receipt once. Missing timing categories stay explicitly unmeasured.
+`resolve` accepts the same builder options as `finish`. Timing and cost on a
+resolution are cumulative for that attempt; the report uses the latest receipt
+once. Use raw `record --event` for the less common manual timing categories.
+Missing timing categories stay explicitly unmeasured.
+
+`completedAt` is when the product produced the outcome. `observedAt` is when the
+operator obtained its authoritative readback. The event `at` remains the later
+record-write time. Neither timestamp is inferred when omitted. Reports show
+attempt-start-to-completion time, readback-to-record delay, recording after the observation
+deadline, and completion beyond that deadline separately. `maxWaitMs` remains an
+observation deadline, not a universal product SLA, so lateness is advisory and
+does not rewrite the recorded result. Legacy events keep their original elapsed
+bookkeeping span and show unknown product completion.
+
+Attempt-start-to-completion includes any operator work between `begin` and the
+product outcome. It is not pure model, provider, or product execution latency.
+
+Measure attended work with explicit phases. Start immediately before the phase
+and stop the returned ID afterward.
+
+```sh
+npm run verify:live:record -- phase-start --run "$run_dir/run.json" \
+  --phase browser-wait --attempt "$attempt_id"
+npm run verify:live:record -- phase-stop --run "$run_dir/run.json" \
+  --phase-id "$phase_id"
+```
+
+Supported phases are `lane-wait`, `host-wait`, `browser-wait`, `setup`,
+`deployment`, `request`, `observation`, `repair`, `review-wait`, `human-input`,
+and `cleanup`. A phase may also name `--case`. Overlap is allowed. Status and
+reports show open phases, sums by phase, and the union of measured intervals so
+overlap counts once. That union is not a measured critical path. Phase receipts
+never satisfy minimum observation duration or proof requirements.
 
 Case status becomes stale when its declared source areas, contract, context, or
 evidence changes. Unknown/shared runtime paths invalidate all areas. Workflow-only
@@ -287,18 +336,17 @@ offline runner or final release checkpoint.
 
 ## Exact cleanup and schedule limits
 
-Register resources immediately after reading their exact returned ID. Preserve
-before-values before modifying a reusable fixture. This event registers an owned
-schedule with a stop condition. Use an actual future UTC deadline within two hours.
+Register resources immediately after reading their exact returned ID. The
+builder derives the target from the selected case and context. This command
+registers an owned schedule with an absence cleanup contract and a bounded stop
+condition. Use an actual future UTC deadline within two hours.
 
-```json
-{
-  "type": "resource", "caseId": "channel-schedule", "target": "RESOLVED_TARGET",
-  "provider": "chickpea", "kind": "schedule", "immutableId": "EXACT_RETURNED_ID",
-  "ownership": "owned", "expected": {"present": false},
-  "evidence": ["/private/path/saved-schedule.json"],
-  "stopAt": "2026-10-01T12:30:00Z", "maxOccurrences": 2
-}
+```sh
+npm run verify:live:record -- resource --run "$run_dir/run.json" \
+  --case channel-schedule --provider chickpea --kind schedule \
+  --resource-id "$schedule_id" --ownership owned --cleanup-preset absent \
+  --evidence "$run_dir/saved-schedule.json" \
+  --stop-at 2026-10-01T12:30:00Z --max-occurrences 2
 ```
 
 The event returns a registration `id`. Record actual occurrences with
@@ -309,15 +357,24 @@ does not poll or stop remote schedules. Arrange an independent stop before leavi
 an intentional reliability run unattended. `purpose: reliability` permits up to
 100 attempts/occurrences and a 24-hour schedule deadline; it does not start them.
 
-After product cleanup, record `type: cleanup`, `resourceId`, `outcome: verified`,
-`observed: {"present": false}`, and fresh `evidence`. A mismatch cannot verify
-cleanup. `outcome: failed` preserves the attempt; a later verified readback resolves
-current cleanup without erasing that failure. Re-registering the same immutable ID
-after cleanup creates a new registration and new cleanup obligation.
+After product cleanup, save the independently observed state and record it:
 
-For reusable fixtures use `ownership: restore`, with identical `before` and
-`expected` objects containing the exact values. For attributed Slack output or
-archived residue use `ownership: retain` and the recorded exact retained state.
+```sh
+npm run verify:live:record -- cleanup --run "$run_dir/run.json" \
+  --resource "$registration_id" --outcome verified \
+  --observed-file "$run_dir/cleanup-state.json" \
+  --evidence "$run_dir/cleanup-readback.json"
+```
+
+A mismatch cannot verify cleanup. `--outcome failed` preserves the attempt; a
+later verified readback resolves current cleanup without erasing that failure.
+Re-registering the same immutable ID after cleanup creates a new registration
+and new cleanup obligation.
+
+For reusable fixtures use `--ownership restore --expected-file BEFORE.json`.
+For attributed Slack output or archived residue use `--ownership retain` and an
+exact retained-state file. Restore and retain do not accept cleanup presets; the
+builder copies the exact supplied state into both the before and expected fields.
 Never infer ownership from names or clean a baseline credential/connection.
 
 Successful exact-command cleanup does not pass a failed natural-language deletion
@@ -327,8 +384,9 @@ may instead have an expected archived state; archiving it need not undo every
 temporary avatar/name/model change. Verify archival and removed grants, including
 after Retry, without reactivating intentionally disabled reach.
 
-Register new run-owned Agents with `expected: {"lifecycle":"archived",
-"channelCount":0,"dmAccess":"unavailable"}`. If an older record incorrectly
+Register new run-owned Agents with `--kind agent --ownership owned
+--cleanup-preset archived-agent`. This records `expected:
+{"lifecycle":"archived","channelCount":0,"dmAccess":"unavailable"}`. If an older record incorrectly
 required permanent absence, append `type: resource_contract_correction` with its
 `resourceId`, exact `previousExpected: {"present":false}`, the archived `expected`
 above, a `reason` explaining the product contract, and supporting `evidence`.
@@ -397,3 +455,37 @@ report filename after updates; the command refuses to overwrite evidence. Report
 include first failures, current invalidation, open attempts, exact cleanup, measured
 time and known/unknown cost. Original command duration on a reused receipt is an
 avoided check duration, not a measured end-to-end speedup.
+
+## Follow-up run history
+
+Prefer resuming one record. If a bounded follow-up needs a new spec,
+link it to the direct parent during initialization. Each mapping uses the new
+child case ID on the left and the parent case ID on the right.
+
+```sh
+npm run verify:live:record -- init \
+  --spec "$run_dir/follow-up-spec.json" --run "$run_dir/follow-up-run.json" \
+  --parent-run "$prior_run_dir/run.json" \
+  --original-case attachment-retest=attachment-original
+```
+
+The helper stores the canonical private parent path and actual run ID. It rejects
+missing parents, mismatched IDs, missing current-spec cases, mapping mismatches,
+cycles, and family depth beyond 32 records. It does not rewrite or hash-lock a
+mutable parent. Keep every linked record and its evidence at the recorded path.
+
+Generate a read-only family report with `--family`:
+
+```sh
+npm run verify:live:record -- report --family \
+  --run "$run_dir/follow-up-run.json" --output "$run_dir/family-report.md"
+```
+
+The current run appears first. Parent results are labeled historical and include
+their private paths, first failures, unresolved cases, and pending cleanup. A
+child pass cannot complete an incomplete parent. A parent that disappears after
+linking is reported as missing and keeps family completion false.
+
+Cleanup belongs to the record that registered the resource. Update that parent
+record with the exact cleanup readback even when a child retest supplied it;
+linking a child neither transfers ownership nor satisfies the original obligation.

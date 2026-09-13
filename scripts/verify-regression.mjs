@@ -9,17 +9,17 @@ import { digest, sourceInputs } from './lib/verification-inputs.mjs';
 import { evidenceRefs, offlineEvent, readRun, reusableOffline, updateRun } from './lib/verification-record.mjs';
 import { offlineStepLabel } from './lib/verification-offline.mjs';
 import { assertNodeVersion } from './lib/node-version.mjs';
-import { acquireHostChecks } from './lib/verification-host.mjs';
+import { waitForHostChecks } from './lib/verification-host-wait.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export function parseRegressionArgs(argv) {
-  const options = { mode: 'changed', areas: [], planOnly: false, base: undefined, record: undefined, reuse: false, timeoutMs: 1_200_000 };
+  const options = { mode: 'changed', areas: [], planOnly: false, base: undefined, record: undefined, reuse: false, timeoutMs: 1_200_000, waitMs: 0 };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--plan') { options.planOnly = true; continue; }
     if (arg === '--reuse') { options.reuse = true; continue; }
-    if (!['--mode', '--area', '--base', '--record', '--timeout-ms'].includes(arg)) throw new Error(`Unknown argument: ${arg}`);
+    if (!['--mode', '--area', '--base', '--record', '--timeout-ms', '--wait-ms'].includes(arg)) throw new Error(`Unknown argument: ${arg}`);
     const value = argv[++index];
     if (!value || value.startsWith('-')) throw new Error(`${arg} requires a value`);
     if (arg === '--mode') options.mode = value;
@@ -27,9 +27,11 @@ export function parseRegressionArgs(argv) {
     if (arg === '--base') options.base = value;
     if (arg === '--record') options.record = value;
     if (arg === '--timeout-ms') options.timeoutMs = Number(value);
+    if (arg === '--wait-ms') options.waitMs = Number(value);
   }
   if (options.reuse && (!options.record || options.mode === 'release')) throw new Error('--reuse needs --record and is unavailable at the full release checkpoint.');
   if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1_000 || options.timeoutMs > 3_600_000) throw new Error('--timeout-ms must be 1000..3600000.');
+  if (!Number.isSafeInteger(options.waitMs) || options.waitMs < 0 || options.waitMs > 7_200_000) throw new Error('--wait-ms must be 0..7200000.');
   return options;
 }
 
@@ -86,11 +88,11 @@ export function runRegressionSteps(steps, run) {
   return results;
 }
 
-export function main(argv) {
+export async function main(argv) {
   let lease, interrupted = false;
   try {
     if (argv.includes('--help')) {
-      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--reuse] [--timeout-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\n--record saves private logs, durations, failures and final release receipts. --reuse accepts only unchanged successful inputs and retained logs; build always runs. Release never reuses steps.`);
+      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--reuse] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\n--record saves private logs, durations, failures and final release receipts. --reuse accepts only unchanged successful inputs and retained logs; build always runs. Release never reuses steps.`);
       return 0;
     }
     const options = parseRegressionArgs(argv);
@@ -114,7 +116,21 @@ export function main(argv) {
         throw new Error('An offline attempt is still open. Inspect the owning process and log; record offline_interrupted only after its processes have stopped.');
       }
     }
-    if (plan.steps.length) lease = acquireHostChecks({ cwd: ROOT });
+    if (plan.steps.length) {
+      const waitingSource = options.waitMs ? sourceInputs(ROOT) : null;
+      const controller = new AbortController();
+      const cancel = () => controller.abort();
+      process.once('SIGINT', cancel); process.once('SIGTERM', cancel);
+      try {
+        lease = await waitForHostChecks({ cwd: ROOT, waitMs: options.waitMs, signal: controller.signal,
+          onWait: (event) => console.error(JSON.stringify(event)) });
+      } finally { process.removeListener('SIGINT', cancel); process.removeListener('SIGTERM', cancel); }
+      if (waitingSource) {
+        const afterWait = sourceInputs(ROOT);
+        if (afterWait.head !== waitingSource.head || afterWait.tree !== waitingSource.tree) throw new Error('Source changed while waiting for host checks. Rerun the affected plan before executing it.');
+      }
+      if (options.waitMs) console.error(JSON.stringify({ status: 'host_acquired', waitedMs: lease.waitedMs }));
+    }
     const scratch = mkdtempSync(path.join(tmpdir(), 'chickpea-regression-'));
     const env = {
       ...regressionEnvironment(),
@@ -187,7 +203,7 @@ export function main(argv) {
     return passed ? 0 : 1;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
-    return 2;
+    return error.code === 'HOST_CHECKS_TIMEOUT' ? 3 : error.code === 'HOST_CHECKS_CANCELLED' ? 130 : 2;
   } finally {
     if (!interrupted) lease?.release();
     else console.error('Interrupted check: host reservation retained. Inspect the owner and child processes before releasing it.');
@@ -195,5 +211,5 @@ export function main(argv) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.exitCode = main(process.argv.slice(2));
+  process.exitCode = await main(process.argv.slice(2));
 }

@@ -9,6 +9,8 @@ does not depend on a checkout's temporary directory. For standalone commands:
 npm run verify:host -- npm test
 npm run verify:host -- npm run build
 npm run verify:host -- npm run verify:cf-smoke
+npm run verify:host -- --wait-ms 300000 npm run build
+npm run verify:regression -- --area verification --wait-ms 300000
 ```
 
 For a deliberate multi-command group, pass a shell explicitly and set isolated
@@ -21,7 +23,14 @@ the owner finishes; do not kill, suspend or change that task's processes.
 The wrapper does not discover older unwrapped tests. Before the first group in
 a session, inspect known active test/build processes and coordinate with their
 owner. All operators must use the same wrapper for expensive standalone groups.
-This is one local reservation, not a queue or a general scheduler.
+This is one local reservation, not a fair queue or a general scheduler. The
+default remains fail-fast. `--wait-ms` adds bounded caller-side polling, at most
+two hours; `verify:host` also accepts `--poll-ms` (10..30000). Only a live owner's
+ordinary contention retries. Status prints when the owner changes, not every
+poll. On normal release the pending command acquires and continues automatically.
+Exit 3 is timeout and 130 is cancellation; neither runs the pending command nor
+changes the owner. Invalid, stopped, or inaccessible owners require reconciliation.
+The regression runner also refuses source changes made during its wait.
 
 After interruption, the reservation stays in place. Inspect its PID, descendants,
 checkout and partial logs. Only after proving that its entire group has stopped

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { HostUiMutex } from '../qa/live/safety/ui-mutex.ts';
+import { createHash } from 'node:crypto';
 
 function fixture(context: test.TestContext) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'chickpea-ui-mutex-')));
@@ -90,4 +91,26 @@ test('explicit recovery refuses a live paused gate and clears a dead interaction
   const live = mutex.acquire('active-run', 'paused-browser');
   live.finishReservation();
   live.release();
+});
+
+test('portable receipt owners interoperate with legacy clients and refuse PID recovery', (context) => {
+  const { mutex } = fixture(context);
+  const receipt = mutex.acquirePortable({ runId: 'portable-run', browserAlias: 'chrome-lanes',
+    caseId: 'routing', stepId: 'observe-1', actionDigest: `sha256:${createHash('sha256').update('read reply').digest('hex')}` });
+  assert.throws(() => mutex.acquire('legacy-run', 'chrome-lanes'), /UI_BUSY/u);
+  assert.throws(() => mutex.clearStoppedOwner('portable-run', 'chrome-lanes'), /UI_BUSY/u);
+  mutex.pausePortable(receipt);
+  assert.throws(() => mutex.acquire('legacy-run', 'chrome-lanes'), /BROWSER_RESERVED/u);
+  mutex.acquire('legacy-run', 'another-browser').release();
+  mutex.resumePortable(receipt);
+  mutex.finishPortable(receipt);
+  mutex.acquire('legacy-run', 'chrome-lanes').release();
+});
+
+test('portable ownership requires the exact receipt token', (context) => {
+  const { mutex } = fixture(context);
+  const receipt = mutex.acquirePortable({ runId: 'portable-run', browserAlias: 'chrome',
+    caseId: 'routing', stepId: 'act-1', actionDigest: `sha256:${'a'.repeat(64)}` });
+  assert.throws(() => mutex.releasePortable({ ...receipt, token: '00000000-0000-4000-8000-000000000000' }), /UNSAFE_UI_LOCK/u);
+  mutex.releasePortable(receipt);
 });

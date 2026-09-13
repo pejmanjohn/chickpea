@@ -28,6 +28,10 @@ import {
   validateLocalLaneName,
   worktreeDevVarsLinkStatus,
 } from './lib/local-worker-lane.mjs';
+import {
+  assertRunnerRootReadOnly,
+  inspectLocalWorkerRunner,
+} from './lib/local-worker-inspection.mjs';
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WRANGLER = join(PROJECT_ROOT, 'node_modules', '.bin', 'wrangler');
@@ -38,6 +42,7 @@ let args;
 
 try {
   args = parseArgs(rawArgs);
+  assertRunnerRootReadOnly(command, args.get('runner-root'));
   if (command === 'init') await init();
   else if (command === 'bind-slack') bindSlack();
   else if (command === 'status') status();
@@ -79,6 +84,15 @@ function bindSlack() {
 }
 
 function status() {
+  const runnerRoot = args.get('runner-root');
+  if (runnerRoot) {
+    console.log(JSON.stringify(inspectLocalWorkerRunner({
+      runnerRoot,
+      candidateRoot: PROJECT_ROOT,
+      lane: option('lane'),
+    }), null, 2));
+    return;
+  }
   const manifest = laneManifest();
   const paths = resolveLocalLanePaths(PROJECT_ROOT, manifest.lane);
   const lock = readLock(localLaneLockPath(manifest.publicUrl));
@@ -328,6 +342,7 @@ function usage(exitCode) {
   npm run dev:cf -- init --lane local-a --public-url https://HOST --tunnel TUNNEL [--port 8787]
   npm run dev:cf -- bind-slack --lane local-a --workspace-id T... --workspace-label "Chickpea Local A" --app-id A... [--app-label Chickpea]
   npm run dev:cf -- status --lane local-a
+  npm run dev:cf -- status --lane local-a --runner-root /absolute/runner
   npm run dev:cf -- renew-setup --lane local-a
   npm run dev:cf -- relocate-unbound --lane local-a --public-url https://HOST [--tunnel TUNNEL]
   npm run dev:cf -- setup-link --lane local-a

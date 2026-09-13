@@ -5,6 +5,11 @@ or Run ID, UTC window, build, model, and retained evidence before changing state
 Use the existing [request diagnosis](../../../docs/runbooks/runtime-observability.md)
 helper. Start with message serialization, current authority, tool admission and
 execution, persistence, and delivery boundaries before changing prompt wording.
+When a disposable upstream service blocks transport or method-policy evidence,
+use the bounded [REST probe](rest-probe.md). It proves only its declared transport
+and policy cases; it cannot substitute for real OAuth, account identity, or the
+original provider operation. Keep the original case pending and grade the probe
+as separate diagnostic evidence.
 For example, exercise actual text-array serialization and database query limits
 when those boundaries failed. A mock that bypasses the boundary is insufficient.
 
@@ -82,6 +87,9 @@ Use read-only observations with an explicit deadline. Wait in intervals of at
 most 30 seconds and capture only the relevant thread/control. A reply that stays
 in Thinking for about two minutes needs diagnosis, not another request. Record
 an open/overdue attempt or ambiguous finish and preserve evidence.
+The attempt's `maxWaitMs` is an observation deadline, not a product latency SLA.
+Separate action completion, first authoritative observation, and notebook entry
+time. An operator's delayed recording cannot establish a slow model response.
 
 Use the owning terminal and Local Explorer for local workerd. On the resolved
 deployed Worker, use a bounded historical query or attach a 30–60 second tail
@@ -99,3 +107,6 @@ Record measured `automatedMs`, `browserMs`, `modelMs`, `humanWaitMs`, and
 `observationMs` when available. They may overlap and are not added to wall time.
 Record actual model cost when available; leave unknown cost as null. Preserve
 the difference between process time, model latency, browser work, and human waits.
+Use [phase receipts](records.md) to measure setup, contention and recovery overhead
+without estimating it afterward. A phase union is covered wall time, not a causal
+critical path. See [host ownership](hosts.md) before pausing or resuming a browser.
