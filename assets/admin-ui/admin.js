@@ -4115,7 +4115,7 @@
   // (which the api() helper surfaces as error.message).
   function skillImportFallback(code) {
     if (code === "not_found") return "Could not find that repo or skill. Check the link and try again.";
-    if (code === "rate_limited" || code === "github_rate_limited") return "GitHub rate limit hit. Try again in a little while.";
+    if (code === "rate_limited" || code === "github_rate_limited") return "GitHub rate limit reached. For a public skill, try a direct link to its folder or SKILL.md file, or retry after the limit resets.";
     if (code === "repository_not_found_or_inaccessible") return "Repository not found or not accessible. Check the source and GitHub App access.";
     if (code === "github_access_unavailable") return "GitHub App access could not be verified. Check GitHub settings and retry.";
     if (code === "github_error" || code === "github_unavailable") return "GitHub had trouble with that request. Try again in a moment.";
@@ -4239,18 +4239,25 @@
       notes += ' <span class="import-note">showing the first ' + count + " &mdash; narrow with owner/repo@skill</span>";
     }
     if (resolution.skipped > 0) {
-      notes += ' <span class="import-note">(' + resolution.skipped + " skipped &mdash; missing a name or description)</span>";
+      notes += ' <span class="import-note">(' + resolution.skipped + " skipped &mdash; invalid or unsupported documents)</span>";
+    }
+    if (resolution.issues && resolution.issues.length) {
+      notes += '<span class="import-note">' + resolution.issues.slice(0, 6).map(function (issue) { return esc(issue.path + ': ' + issue.message); }).join(' ') + '</span>';
     }
     var allSelected = count > 0 && selected.every(function (on) { return on; });
     var rows = skills.map(function (skill, index) {
       var on = !!selected[index];
       var badge = skill.hasScripts
-        ? '<span class="badge-src import-scripts">has scripts &middot; won&rsquo;t run yet</span>'
+        ? '<span class="badge-src import-scripts">scripts omitted &middot; instructions only</span>'
         : "";
+      var inspection = skill.inspection;
+      var omitted = inspection ? [].concat(inspection.scriptPaths || [], inspection.auxiliaryPaths || [], inspection.unknownPaths || []) : [];
+      var disclosure = omitted.length ? '<span class="import-desc">Instructions only. Omitted: ' + esc(omitted.slice(0, 6).join(', ')) + (omitted.length > 6 ? ', and ' + (omitted.length - 6) + ' more' : '') + '.</span>' : '';
+      if (inspection && inspection.warnings && inspection.warnings.length) disclosure += '<span class="import-desc">' + esc(inspection.warnings.join(' ')) + '</span>';
       return '<label class="import-row' + (on ? " on" : "") + '">' +
         '<span class="import-check' + (on ? " on" : "") + '"><input type="checkbox" data-action="import-row-toggle" data-index="' + index + '" ' + (on ? "checked" : "") + ' aria-label="Import ' + esc(skill.name) + '"></span>' +
         '<span class="import-body"><span class="import-name">' + esc(skill.name) + badge + '</span>' +
-        '<span class="import-desc">' + esc(skill.description) + '</span></span></label>';
+        '<span class="import-desc">' + esc(skill.description) + '</span>' + disclosure + '</span></label>';
     }).join("");
     var listOrEmpty = count > 0
       ? '<div class="import-list">' + rows + '</div>'
@@ -4269,7 +4276,7 @@
         ? "Read through the connected GitHub App. "
         : "Read from GitHub without authentication. ";
       sourceDisclosure = '<div class="import-disclosure"><span class="badge-src">' + (isPrivate ? "Private repository" : "Public repository") + '</span>' +
-        '<span>' + access + 'Selected instructions are copied into this Agent as a snapshot and may be sent to its configured model when the skill is used. Scripts and assets are excluded.</span>' +
+        '<span>' + access + 'Selected instructions are copied into this Agent as a snapshot and may be sent to its configured model when the skill is used. Supporting files are excluded; instructions that need those files may be incomplete.</span>' +
         '<span>Importing does not grant the Agent access to the repository. Configure ongoing runtime access separately in the Repositories tab.</span></div>';
     }
     return '<div class="import-summary"><span>' + summary + notes + '</span>' + selectAll + "</div>" +

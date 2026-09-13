@@ -23,7 +23,9 @@ import {
   AGENT_AUTHORING_GUIDE_VERSION,
   useAgentAuthoring,
 } from '../src/management/agent-authoring/index.ts';
+import { workspaceManagementToolDescription } from '../src/management/tool-adapter.ts';
 import {
+  importSkillValibotSchema,
   applyWorkspaceChangesValibotSchema,
   confirmWorkspaceChangeValibotSchema,
   discoverSlackChannelsValibotSchema,
@@ -100,6 +102,7 @@ const MANAGEMENT_TOOLS = new Set([
   'propose_workspace_changes',
   'apply_workspace_changes',
   'manage_agent_skill',
+  'import_skill',
   'confirm_workspace_change',
   'prepare_connector_setup',
   'request_chickpea_handoff',
@@ -107,6 +110,7 @@ const MANAGEMENT_TOOLS = new Set([
 const APPLY_TOOLS = new Set([
   'apply_workspace_changes',
   'manage_agent_skill',
+  'import_skill',
   'confirm_workspace_change',
 ]);
 
@@ -233,6 +237,14 @@ function useEvaluationTools() {
     input: testMcpConnectionValibotSchema,
     output: v.string(),
     run: () => ({ output: JSON.stringify({ healthy: true }) }),
+  });
+  useTool({
+    name: 'import_skill',
+    description: workspaceManagementToolDescription('import_skill'),
+    input: importSkillValibotSchema,
+    output: v.string(),
+    run: () => ({ output: JSON.stringify({ status: 'installed', activation: 'next_turn', undoAvailable: true,
+      presentation: { slack: 'Instructions imported for skill `grilling`. Supporting files omitted: agents/openai.yaml. It is active from the next message.' } }) }),
   });
   useTool({
     name: 'manage_agent_skill',
@@ -883,6 +895,22 @@ async function runDeterministicSmoke(corpus) {
       );
     }
 
+    for (const entry of corpus.cases.filter(({ id }) => id.startsWith('skill-import-'))) {
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall('import_skill', {
+          source: entry.expected.skillImport.source, ...(entry.expected.skillImport.skillName ? { skillName: entry.expected.skillImport.skillName } : {}), guideVersion: AGENT_AUTHORING_GUIDE_VERSION, idempotencyKey: entry.id,
+        })], { stopReason: 'toolUse' }),
+        fauxAssistantMessage([fauxToolCall('record_eval_assessment', {
+          posture: 'commit', placements: ['skill'], approvalPosture: 'direct_allowed', capabilityClaimsGrounded: true,
+        })], { stopReason: 'toolUse' }),
+      ]);
+      const result = await runCase('current', entry);
+      assert(evaluateResult(result, entry.expected).assertions.every(({ passed }) => passed), `${entry.id}: correct import arguments failed.`);
+      const forged = result.toolCalls.map((call) => call.name === 'import_skill'
+        ? { ...call, input: { ...call.input, source: 'mattpocock/skills@grilling' } } : call);
+      assert(!skillImportArgumentsCorrect(forged, entry.expected.skillImport), `${entry.id}: synthesized source was accepted.`);
+    }
+
     return {
       mode: 'deterministic_smoke',
       corpusVersion: corpus.corpusVersion,
@@ -891,6 +919,7 @@ async function runDeterministicSmoke(corpus) {
       caseCount: corpus.cases.length,
       checks: [
         'corpus_valid',
+        'skill_import_source_and_selector',
         'public_flue_boundary',
         'guide_activation_observed',
         'negative_activation_absent',
@@ -1064,7 +1093,8 @@ function evaluateResult(raw, expected) {
     ['no_apply_before_approval', applied.length === 0],
     ['handoff_used', toolNames.includes('request_chickpea_handoff')],
     ['direct_apply_used', toolNames.includes('apply_workspace_changes') ||
-      toolNames.includes('manage_agent_skill')],
+      toolNames.includes('manage_agent_skill') || toolNames.includes('import_skill')],
+    ['skill_import_arguments', skillImportArgumentsCorrect(raw.toolCalls, expected.skillImport)],
     ['named_skill_action_selected', namedSkillActionSelected(
       raw.toolCalls,
       expected.skillAction,
@@ -1237,10 +1267,18 @@ function actualToolClass(toolNames, toolCalls = []) {
       : 'stale_confirmation';
   }
   if (toolNames.includes('apply_workspace_changes') ||
-      toolNames.includes('manage_agent_skill')) return 'direct_apply';
+      toolNames.includes('manage_agent_skill') || toolNames.includes('import_skill')) return 'direct_apply';
   if (toolNames.includes('propose_workspace_changes')) return 'proposal';
   if (toolNames.some((name) => INSPECTION_TOOLS.has(name))) return 'inspect';
   return 'none';
+}
+
+function skillImportArgumentsCorrect(toolCalls, expected) {
+  if (!expected) return false;
+  const imports = toolCalls.filter(({ name }) => name === 'import_skill');
+  return imports.length === 1 && imports[0].input.source === expected.source &&
+    (expected.skillName ? imports[0].input.skillName === expected.skillName : !imports[0].input.skillName || imports[0].input.skillName === expected.resolvedSkillName) &&
+    !toolCalls.some(({ name }) => ['propose_workspace_changes', 'apply_workspace_changes', 'propose_skill_import'].includes(name));
 }
 
 function namedSkillActionSelected(toolCalls, expected) {

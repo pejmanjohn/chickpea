@@ -572,6 +572,8 @@ export type ApplyWorkspaceChangesResult =
   | ManagementDuplicateIdentityResult;
 
 interface SkillImportReceiptMetadata {
+  omittedPaths?: string[];
+  warnings?: string[];
   sourceUrl: string;
   path: string;
   name: string;
@@ -994,6 +996,7 @@ export class ManagementError extends Error {
     readonly code:
       | 'forbidden'
       | 'invalid_request'
+      | 'incomplete_search'
       | 'invalid_state'
       | 'idempotency_conflict'
       | 'operation_not_found'

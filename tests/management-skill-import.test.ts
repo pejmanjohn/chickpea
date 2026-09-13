@@ -27,7 +27,10 @@ function resolution(
   };
 }
 
-test('Slack installs one exact public GitHub skill immediately with an undoable receipt', async () => {
+for (const withSupportingFiles of [false, true]) {
+test(`Slack imports an exact public skill with an undoable receipt (supporting files: ${withSupportingFiles})`, async () => {
+  const requestSource = withSupportingFiles ? 'https://github.com/cursor/plugins' : 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop';
+  const selector = withSupportingFiles ? { skillName: 'unslop' } : {};
   let resolvedSource: ParsedSkillSource | undefined;
   const f = await createManagementAdapterFixture('slack-skill-import', {
     resolveSkillImport: async (source) => {
@@ -37,6 +40,7 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
         description: 'Remove AI writing tells from prose.',
         instructions: 'Rewrite the draft plainly and preserve its meaning.',
         hasScripts: false,
+        ...(withSupportingFiles ? { inspection: { complete: true, scriptPaths: [], auxiliaryPaths: ['references/guide.md'], unknownPaths: [], warnings: ['Instructions that depend on omitted files may be incomplete.'] } } : {}),
         path: 'pstack/skills/unslop',
         sourceUrl: 'https://github.com/cursor/plugins/tree/1111111111111111111111111111111111111111/pstack/skills/unslop',
       }]);
@@ -75,7 +79,7 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
       eventId: 'Ev_SKILL_IMPORT',
       messageTs: '100.2',
       turnJobId: 'turn_SKILL_IMPORT',
-      requesterText: 'Install this skill <https://github.com/cursor/plugins/tree/main/pstack/skills/unslop|unslop>',
+      requesterText: `Install unslop skill from ${requestSource}`,
     },
   } as Parameters<typeof parseSlackManagementSignal>[0], {
     agentId: agent.id,
@@ -95,7 +99,8 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
         origin: { kind: 'mcp', clientId: 'skill-import-test' },
       },
       agentId: agent.id,
-      source: 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop',
+      source: requestSource,
+        ...selector,
       idempotencyKey: 'mcp-import-unslop',
       guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
     }), (error: unknown) =>
@@ -107,17 +112,19 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
       service: f.service,
       name: 'import_skill',
       args: {
-        source: 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop',
+        source: requestSource,
+        ...selector,
         idempotencyKey: 'import-unslop',
         guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
       },
     });
     assert.equal(installed.ok, true);
-    assert.deepEqual(resolvedSource, {
+    assert.deepEqual(resolvedSource, withSupportingFiles ? { owner: 'cursor', repo: 'plugins', skillFilter: 'unslop' } : {
       owner: 'cursor',
       repo: 'plugins',
       ref: 'main',
       skillPath: 'pstack/skills/unslop',
+      refPath: 'main/pstack/skills/unslop',
     });
     const result = (installed as { ok: true; result: {
       operationId: string;
@@ -140,7 +147,9 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
     assert.equal(result.import.replacedExisting, false);
     assert.equal(result.undoAvailable, true);
     assert.equal(result.presentation.slack,
-      'Installed skill `unslop` on Sprout. It’s active from the next message. You can undo this change.');
+      withSupportingFiles
+        ? 'Instructions imported for skill `unslop` on Sprout. It’s active from the next message. Supporting files omitted: references/guide.md. Instructions that depend on omitted files may be incomplete. You can undo this change.'
+        : 'Installed skill `unslop` on Sprout. It’s active from the next message. You can undo this change.');
 
     const replayed = await invokeSlackWorkspaceManagementTool({
       signal: { ...signal, eventId: 'Ev_SKILL_REPLAY', turnJobId: 'turn_SKILL_REPLAY' },
@@ -148,7 +157,8 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
       service: f.service,
       name: 'import_skill',
       args: {
-        source: 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop',
+        source: requestSource,
+        ...selector,
         idempotencyKey: 'import-unslop',
         guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
       },
@@ -162,7 +172,8 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
       service: f.service,
       name: 'import_skill',
       args: {
-        source: 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop',
+        source: requestSource,
+        ...selector,
         idempotencyKey: 'import-unslop-again',
         guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
       },
@@ -175,6 +186,10 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
     assert.equal((alreadyInstalled as { ok: true; result: {
       import: { replacedExisting: boolean };
     } }).result.import.replacedExisting, false);
+    if (withSupportingFiles) {
+      assert.match((alreadyInstalled as { ok: true; result: { presentation: { slack: string } } }).result.presentation.slack,
+        /Instructions for skill.*are already installed.*Supporting files omitted: references\/guide.md/);
+    }
 
     const forgedSignal = parseSlackManagementSignal({
       kind: 'signal',
@@ -207,7 +222,8 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
       service: f.service,
       name: 'import_skill',
       args: {
-        source: 'https://github.com/cursor/plugins/tree/main/pstack/skills/unslop',
+        source: requestSource,
+        ...selector,
         idempotencyKey: 'forged-import-unslop',
         guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
       },
@@ -289,6 +305,8 @@ test('Slack installs one exact public GitHub skill immediately with an undoable 
     f.close();
   }
 });
+
+}
 
 test('skill import requires selection for a multi-skill source and rejects packaged scripts', async () => {
   let resolutionCalls = 0;
@@ -375,6 +393,20 @@ test('skill import requires selection for a multi-skill source and rejects packa
     assert.deepEqual(selectionResult.candidates.map(({ name }) => name), ['alpha', 'beta']);
     assert.deepEqual((await f.config.getAgent(agent.id)).skills, []);
 
+    const callsBeforeConflictingSelector = resolutionCalls;
+    const conflictingSelector = await invokeSlackWorkspaceManagementTool({
+      signal: { ...signal, requesterText: 'Install acme/skills@alpha' },
+      identity: f.identity,
+      service: f.service,
+      name: 'import_skill',
+      args: {
+        source: 'acme/skills@alpha', skillName: 'beta',
+        idempotencyKey: 'conflicting-selector', guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+      },
+    });
+    assert.equal(conflictingSelector.ok, false);
+    assert.equal(resolutionCalls, callsBeforeConflictingSelector);
+
     const singleMutableCandidate = await invokeSlackWorkspaceManagementTool({
       signal: {
         ...signal,
@@ -391,14 +423,8 @@ test('skill import requires selection for a multi-skill source and rejects packa
         guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
       },
     });
-    assert.equal(singleMutableCandidate.ok, true);
-    assert.equal((singleMutableCandidate as { ok: true; result: {
-      status: string;
-      candidates: Array<{ name: string }>;
-    } }).result.status, 'selection_required');
-    assert.deepEqual((singleMutableCandidate as { ok: true; result: {
-      candidates: Array<{ name: string }>;
-    } }).result.candidates.map(({ name }) => name), ['alpha']);
+    assert.equal(singleMutableCandidate.ok, false);
+    assert.equal((singleMutableCandidate as { ok: false; error: { code: string } }).error.code, 'invalid_state');
     assert.deepEqual((await f.config.getAgent(agent.id)).skills, []);
 
     const selected = await invokeSlackWorkspaceManagementTool({
@@ -430,6 +456,8 @@ test('skill import requires selection for a multi-skill source and rejects packa
       repo: 'skills',
       ref: 'main',
       skillPath: 'skills/Writing_Helper',
+      refPath: 'main/skills/Writing_Helper',
+      skillFilter: 'beta',
     });
     assert.deepEqual((await f.config.getAgent(agent.id)).skills.map(({ name }) => name), ['beta']);
 
@@ -490,6 +518,7 @@ test('immediate skill import asks before replacing different same-name content',
       description: 'New upstream description.',
       instructions: 'Use the new upstream procedure.',
       hasScripts: false,
+      inspection: { complete: true, scriptPaths: [], auxiliaryPaths: ['guide.md'], unknownPaths: [], warnings: [] },
       path: 'skills/unslop',
       sourceUrl: 'https://github.com/acme/skills/tree/2222222222222222222222222222222222222222/skills/unslop',
     }]),
@@ -523,7 +552,7 @@ test('immediate skill import asks before replacing different same-name content',
     eventId: 'Ev_SKILL_REPLACEMENT',
     messageTs: '300.2',
     turnJobId: 'turn_SKILL_REPLACEMENT',
-    requesterText: 'Install https://github.com/acme/skills/tree/main/skills/unslop',
+    requesterText: 'Install unslop skill from https://github.com/acme/skills',
   };
   try {
     const collision = await invokeSlackWorkspaceManagementTool({
@@ -532,7 +561,8 @@ test('immediate skill import asks before replacing different same-name content',
       service: f.service,
       name: 'import_skill',
       args: {
-        source: 'https://github.com/acme/skills/tree/main/skills/unslop',
+        source: 'https://github.com/acme/skills',
+        skillName: 'unslop',
         idempotencyKey: 'replace-unslop-check',
         guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
       },
@@ -555,7 +585,8 @@ test('immediate skill import asks before replacing different same-name content',
       service: f.service,
       name: 'import_skill',
       args: {
-        source: 'https://github.com/acme/skills/tree/main/skills/unslop',
+        source: 'https://github.com/acme/skills',
+        skillName: 'unslop',
         replaceExisting: true,
         idempotencyKey: 'replace-unslop',
         guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
@@ -589,7 +620,49 @@ test('immediate skill import asks before replacing different same-name content',
     assert.equal((replaced as { ok: true; result: { status: string } }).result.status, 'installed');
     assert.equal((await f.config.getAgent(agent.id)).skills[0]?.instructions,
       'Use the new upstream procedure.');
+    assert.match((replaced as { ok: true; result: { presentation: { slack: string } } }).result.presentation.slack, /Instructions replaced.*Supporting files omitted: guide.md/);
   } finally {
     f.close();
   }
+});
+
+test('proposal receipts disclose omitted files before approval and named requests have distinct replay identities', async () => {
+  const f = await createManagementAdapterFixture('skill-named-replay', {
+    resolveSkillImport: async (source) => resolution(source, [{
+      name: source.skillFilter ?? 'alpha', description: 'A reusable procedure.', instructions: 'Follow the procedure.',
+      hasScripts: false, path: `skills/${source.skillFilter ?? 'alpha'}`,
+      sourceUrl: `https://github.com/acme/skills/tree/2222222222222222222222222222222222222222/skills/${source.skillFilter ?? 'alpha'}`,
+      inspection: { complete: true, scriptPaths: [], auxiliaryPaths: ['guide.md'], unknownPaths: [], warnings: [] },
+    }]),
+  });
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_named_replay', name: 'Named Replay', creatorMembershipId: f.admin.membership.id,
+      editPolicy: 'creator_and_admins', lifecycle: 'active', configurationGeneration: 1,
+      instructions: 'Help with work.', enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const proposal = await f.service.proposeSkillImport({
+      context: { userId: f.admin.user.id, membershipId: f.admin.membership.id, organizationId: f.admin.membership.organizationId,
+        origin: { kind: 'mcp', clientId: 'skill-proposal-test' } },
+      agentId: agent.id, source: 'acme/skills', skillName: 'alpha',
+      idempotencyKey: 'proposal-alpha', guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+    });
+    assert.ok('presentation' in proposal);
+    assert.match(proposal.presentation.slack, /Supporting files omitted: guide.md/);
+    assert.deepEqual((await f.config.getAgent(agent.id)).skills, []);
+    const operationIds: string[] = [];
+    for (const skillName of ['alpha', 'beta']) {
+      const result = await invokeSlackWorkspaceManagementTool({
+        signal: { agentId: agent.id, workspaceId: f.admin.user.slackTeamId, channelId: 'D_NAMED_REPLAY', threadTs: '500.1',
+          conversationKind: 'im', slackUserId: f.admin.binding.slackUserId, eventId: `Ev_${skillName}`, messageTs: '500.2',
+          turnJobId: `turn_${skillName}`, requesterText: `Install ${skillName} skill from acme/skills` },
+        identity: f.identity, service: f.service, name: 'import_skill',
+        args: { source: 'acme/skills', skillName, idempotencyKey: `import-${skillName}`, guideVersion: AGENT_AUTHORING_GUIDE_VERSION },
+      });
+      assert.equal(result.ok, true);
+      operationIds.push((result as { ok: true; result: { operationId: string } }).result.operationId);
+    }
+    assert.notEqual(operationIds[0], operationIds[1]);
+    assert.deepEqual((await f.config.getAgent(agent.id)).skills.map(({ name }) => name), ['alpha', 'beta']);
+  } finally { f.close(); }
 });

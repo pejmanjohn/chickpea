@@ -1,3 +1,4 @@
+import { describeSkillPaths } from '../config/skill-package.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import { canEditAgent } from '../auth/permissions.ts';
@@ -359,7 +360,8 @@ export class WorkspaceManagementService {
     return {
       ...publicProposal,
       presentation: {
-        slack: formatSlackSkillImportProposal(proposal.preview, skill.sourceUrl),
+        slack: formatSlackSkillImportProposal(proposal.preview, skill.sourceUrl) +
+          formatSkillImportDisclosures(skillImportMetadata(skill, existingIndex >= 0)),
       },
       import: skillImportMetadata(skill, existingIndex >= 0),
     };
@@ -378,12 +380,13 @@ export class WorkspaceManagementService {
     const metadata = skillImportMetadata(skill, existingIndex >= 0);
     const existing = existingIndex >= 0 ? agent.skills[existingIndex] : undefined;
     if (existing && canonicalJson(existing) === canonicalJson(importedSkill)) {
+      const partial = Boolean(metadata.omittedPaths?.length || metadata.warnings?.length);
       return {
         status: 'already_installed',
         presentation: {
-          slack: `Skill \`${escapeSlackControlCharacters(skill.name)}\` is already installed on ${
+          slack: `${partial ? 'Instructions for skill' : 'Skill'} \`${escapeSlackControlCharacters(skill.name)}\` ${partial ? 'are' : 'is'} already installed on ${
             escapeSlackControlCharacters(agent.name)
-          }. No changes were made.`,
+          }. No changes were made.${formatSkillImportDisclosures(metadata)}`,
         },
         import: { ...metadata, replacedExisting: false },
       };
@@ -426,16 +429,13 @@ export class WorkspaceManagementService {
       );
     }
     const undoAvailable = outcome.undoAvailable === true;
-    const verb = existing ? 'Replaced' : 'Installed';
     return {
       status: 'installed',
       operationId: applied.operationId,
       activation: applied.activation,
       undoAvailable,
       presentation: {
-        slack: `${verb} skill \`${escapeSlackControlCharacters(skill.name)}\` on ${
-          escapeSlackControlCharacters(agent.name)
-        }. It’s active from the next message.${undoAvailable ? ' You can undo this change.' : ''}`,
+        slack: formatSkillImportReceipt(metadata, agent.name, undoAvailable),
       },
       import: metadata,
     };
@@ -741,16 +741,13 @@ export class WorkspaceManagementService {
       );
     }
     const undoAvailable = outcome.undoAvailable === true && undo?.status === 'available';
-    const verb = replacedExisting ? 'Replaced' : 'Installed';
     return {
       status: 'installed',
       operationId: result.operationId,
       activation: result.activation,
       undoAvailable,
       presentation: {
-        slack: `${verb} skill \`${escapeSlackControlCharacters(changedSkill.name)}\` on ${
-          escapeSlackControlCharacters(agent.name)
-        }. It’s active from the next message.${undoAvailable ? ' You can undo this change.' : ''}`,
+        slack: formatSkillImportReceipt(metadata, agent.name, undoAvailable),
       },
       import: metadata,
     };
@@ -790,11 +787,15 @@ export class WorkspaceManagementService {
     });
     const agent = await this.requireEditableAgent(actor, agentId);
 
-    const parsed = parseSkillSource(input.source);
+    const parsedSource = parseSkillSource(input.source);
+    if (parsedSource?.skillFilter && input.skillName && parsedSource.skillFilter !== input.skillName) {
+      throw new ManagementError('invalid_request', 'The skill name conflicts with the selector in the supplied source. No change was made.');
+    }
+    const parsed = parsedSource && input.skillName ? { ...parsedSource, skillFilter: input.skillName } : parsedSource;
     if (!parsed) {
       throw new ManagementError(
         'invalid_request',
-        'Use a public GitHub repository, GitHub tree URL, skills.sh link, or owner/repo reference.',
+        'Use a public GitHub repository, SKILL.md or directory URL, raw GitHub URL, skills.sh link, or owner/repo reference.',
       );
     }
     if (!isValidRepositoryFullName(`${parsed.owner}/${parsed.repo}`)) {
@@ -810,7 +811,7 @@ export class WorkspaceManagementService {
       const message = error.code === 'access_candidate' || error.code === 'repository_inaccessible'
         ? 'Slack skill import currently supports public GitHub repositories. Use Admin for a private repository connected through the GitHub App.'
         : error.message;
-      throw new ManagementError('invalid_request', message);
+      throw new ManagementError(error.code === 'incomplete_search' ? 'incomplete_search' : 'invalid_request', message);
     }
 
     const matchingSkills = input.skillName
@@ -842,29 +843,17 @@ export class WorkspaceManagementService {
     }
 
     const skill = matchingSkills[0]!;
+    if (skill.inspection?.complete === false || skill.inspection?.unknownPaths.length) {
+      throw new ManagementError('invalid_request', `Skill ${skill.name} contains unsupported or incompletely inspected files: ${describeSkillPaths(skill.inspection.unknownPaths)}. No change was made.`);
+    }
     if (skill.hasScripts) {
       throw new ManagementError(
         'invalid_request',
-        `Skill ${skill.name} includes executable scripts, which Chickpea Agent skills do not package. No change was made.`,
+        `Skill ${skill.name} includes executable scripts${skill.inspection ? ` (${describeSkillPaths(skill.inspection.scriptPaths)})` : ''}, which Chickpea Agent skills do not package. No change was made.`,
       );
     }
     if (!immutableResolution) {
-      return {
-        status: 'selection_required',
-        source: {
-          owner: resolution.owner,
-          repo: resolution.repo,
-          ref: resolution.ref,
-        },
-        candidates: [{
-          name: skill.name,
-          description: skill.description,
-          path: skill.path,
-          sourceUrl: skill.sourceUrl,
-          hasScripts: skill.hasScripts,
-        }],
-        instruction: `Ask the requester to post this candidate’s sourceUrl in a new message, then call ${continuationTool} again with that exact source. The service will pin the inspected commit before any write.`,
-      };
+      throw new ManagementError('invalid_state', 'The skill source was not resolved to an immutable commit. No change was made.');
     }
     const importedSkill: SkillConfig = {
       name: skill.name,
@@ -5658,6 +5647,27 @@ async function routineContentAccess(
   }
 }
 
+function formatSkillImportReceipt(
+  metadata: { name: string; replacedExisting: boolean; omittedPaths?: string[]; warnings?: string[] },
+  agentName: string,
+  undoAvailable: boolean,
+): string {
+  const partial = Boolean(metadata.omittedPaths?.length || metadata.warnings?.length);
+  const headline = partial
+    ? `Instructions ${metadata.replacedExisting ? 'replaced' : 'imported'} for skill \`${escapeSlackControlCharacters(metadata.name)}\``
+    : `${metadata.replacedExisting ? 'Replaced' : 'Installed'} skill \`${escapeSlackControlCharacters(metadata.name)}\``;
+  return `${headline} on ${escapeSlackControlCharacters(agentName)}. It’s active from the next message.${formatSkillImportDisclosures(metadata)}${undoAvailable ? ' You can undo this change.' : ''}`;
+}
+
+function formatSkillImportDisclosures(
+  metadata: { omittedPaths?: string[]; warnings?: string[] },
+): string {
+  const omitted = metadata.omittedPaths?.length
+    ? ` Supporting files omitted: ${escapeSlackControlCharacters(describeSkillPaths(metadata.omittedPaths))}.` : '';
+  const warnings = metadata.warnings?.length ? ` ${escapeSlackControlCharacters(metadata.warnings.join(' '))}` : '';
+  return `${omitted}${warnings}`;
+}
+
 function skillImportMetadata(
   skill: SkillResolution['skills'][number],
   replacedExisting: boolean,
@@ -5668,6 +5678,7 @@ function skillImportMetadata(
     name: skill.name,
     description: skill.description,
     replacedExisting,
+    ...(skill.inspection ? { omittedPaths: skill.inspection.auxiliaryPaths, warnings: skill.inspection.warnings } : {}),
   };
 }
 

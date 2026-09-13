@@ -1821,6 +1821,7 @@ function runAdminPageHarness(
               description: 'Turns merged PRs into a changelog.',
               instructions: '# Release notes\nWrite in launch voice.',
               hasScripts: false,
+              inspection: { complete: true, scriptPaths: [], auxiliaryPaths: ['agents/openai.yaml'], unknownPaths: [], warnings: ['Instructions that depend on omitted files may be incomplete.'] },
               path: 'release-notes',
               sourceUrl: 'https://github.com/acme/skills/tree/main/release-notes',
             },
@@ -6058,10 +6059,12 @@ test('importing skills from a URL resolves a picker, adds the selected skill, an
 
   // The picker renders both skills, the summary line, and the has-scripts badge.
   assert.match(harness.app.innerHTML, /Found 2 skills in acme\/skills/);
+  assert.match(harness.app.innerHTML, /Instructions only\. Omitted: agents\/openai.yaml/);
+  assert.match(harness.app.innerHTML, /Instructions that depend on omitted files may be incomplete/);
   assert.match(harness.app.innerHTML, /Public repository/);
   assert.match(harness.app.innerHTML, /release-notes/);
   assert.match(harness.app.innerHTML, /incident-scribe/);
-  assert.match(harness.app.innerHTML, /won&rsquo;t run yet/);
+  assert.match(harness.app.innerHTML, /scripts omitted &middot; instructions only/);
   assert.match(harness.app.innerHTML, /data-action="import-add"/);
 
   // Both rows start selected; deselect the scripts one so only release-notes adds.
@@ -6317,7 +6320,7 @@ test('the import panel keeps public paste open while connected GitHub adds priva
   assert.match(harness.app.innerHTML, /Read through the connected GitHub App/);
   assert.match(harness.app.innerHTML, /copied into this Agent as a snapshot/);
   assert.match(harness.app.innerHTML, /does not grant the Agent access to the repository/);
-  assert.match(harness.app.innerHTML, /won&rsquo;t run yet/);
+  assert.match(harness.app.innerHTML, /scripts omitted &middot; instructions only/);
 
   click({ target: actionTarget({ 'data-action': 'import-add' }) });
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });

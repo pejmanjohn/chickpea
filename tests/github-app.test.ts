@@ -356,7 +356,8 @@ test('skill resolve route retries a private source with exact App access', async
         expires_at: '2026-07-26T00:00:00Z',
       });
     }
-    if (url.includes('/git/trees/main')) {
+    if (url.includes('/commits/main')) return new Response('1'.repeat(40));
+    if (url.includes('/git/trees/' + '1'.repeat(40))) {
       return Response.json({ tree: [{ path: 'skills/private/SKILL.md', type: 'blob' }] });
     }
     if (url.includes('/contents/skills/private/SKILL.md')) {
@@ -453,7 +454,7 @@ test('skill resolve route does not mint a token for anonymous rate limits', asyn
     assert.equal(response.status, 429);
     assert.deepEqual(await response.json(), {
       error: 'github_rate_limited',
-      message: 'GitHub rate limit reached. Try again after it resets.',
+      message: 'GitHub rate limit reached. For a public skill, try a direct link to its folder or SKILL.md file, or retry after the limit resets.',
     });
     assert.equal(requests, 1);
   } finally {
