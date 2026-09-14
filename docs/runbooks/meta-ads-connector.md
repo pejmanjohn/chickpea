@@ -8,7 +8,10 @@ connector.
 ## Configure the installation
 
 1. Follow [Meta's Ads MCP setup guide](https://developers.facebook.com/documentation/ads-commerce/ads-ai-connectors/ads-mcp-server/ads-mcp-server-get-started)
-   to configure a developer app for Ads MCP and Facebook Login for Business.
+   to configure a developer app with the **Create & manage ads with ads MCP
+   server** use case and Facebook Login for Business. Chickpea requests
+   `ads_mcp_management` and `ads_read` for reporting; the app must support
+   those permissions for the signing-in user.
 2. In Chickpea, open **Settings → Connectors → Meta Ads**. Copy the displayed
    callback URL into the app's valid OAuth redirect URIs. Both Admin and
    Slack-assisted setup use that exact callback.
