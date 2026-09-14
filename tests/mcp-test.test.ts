@@ -185,12 +185,16 @@ test('generic protocol discovery keeps the first 50 tools and does not scan late
 
 test('Meta protocol discovery fails closed for raw bounds, pagination bounds, repeated cursors and duplicate reviewed tools', async () => {
   const tooManyTools = pagedProtocolFetch({
-    '': { tools: Array.from({ length: 257 }, (_, index) => protocolTool(`tool_${index}`)) },
+    '': { tools: Array.from({ length: 1_025 }, (_, index) => protocolTool(`tool_${index}`)) },
   });
-  await assert.rejects(
-    () => discoverMcpTools(metaInput, undefined, () => tooManyTools),
-    /exceeded the raw tool limit/,
+  const rawLimitError = await discoverMcpTools(metaInput, undefined, () => tooManyTools).then(
+    () => null,
+    (error: unknown) => error,
   );
+  assert.ok(rawLimitError instanceof Error);
+  assert.match(rawLimitError.message, /exceeded the raw tool limit/);
+  assert.equal(classifyMcpError(rawLimitError), 'discovery_failed');
+  assert.equal(safeMcpFailureText(rawLimitError), 'Connected, but tool discovery failed.');
 
   const tooManyPages: Record<string, ProtocolToolPage> = {};
   for (let index = 0; index < 20; index += 1) {
@@ -228,6 +232,59 @@ test('Meta protocol discovery fails closed for raw bounds, pagination bounds, re
     () => discoverMcpTools(metaInput, undefined, () => duplicateReviewed),
     /duplicate reviewed tool ads_get_ad_entities/,
   );
+});
+
+test('Meta protocol discovery omits task-required reviewed tools and rejects duplicates even when one is task-only', async () => {
+  const taskOnly = protocolTool('ads_insights_performance_trend', scopedMetaSchema());
+  taskOnly.execution = { taskSupport: 'required' };
+  const result = await discoverMcpTools(metaInput, undefined, () => pagedProtocolFetch({
+    '': { tools: [
+      taskOnly,
+      protocolTool('ads_get_ad_entities', scopedMetaSchema()),
+    ] },
+  }));
+  assert.deepEqual(result.tools.map((entry) => entry.name), ['ads_get_ad_entities']);
+
+  await assert.rejects(
+    () => discoverMcpTools(metaInput, undefined, () => pagedProtocolFetch({
+      '': { tools: [taskOnly], nextCursor: 'duplicate' },
+      duplicate: { tools: [protocolTool('ads_insights_performance_trend', scopedMetaSchema())] },
+    })),
+    /duplicate reviewed tool ads_insights_performance_trend/,
+  );
+});
+
+test('Meta protocol discovery applies a short total deadline to a nonresponding tools/list', async () => {
+  let aborted = false;
+  const startedAt = Date.now();
+  const createFetch = ({ signal }: { signal?: AbortSignal }): typeof fetch => async (input, init) => {
+    const request = new Request(input, init);
+    const rpc = await request.json() as { id?: number; method: string };
+    if (rpc.id === undefined) return new Response(null, { status: 202 });
+    if (rpc.method === 'initialize') {
+      return Response.json({
+        jsonrpc: '2.0', id: rpc.id,
+        result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'test', version: '1' } },
+      });
+    }
+    return new Promise<Response>((_resolve, reject) => {
+      const onAbort = () => {
+        aborted = true;
+        reject(new Error('discovery fetch aborted'));
+      };
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  };
+
+  const error = await discoverMcpTools(
+    { ...metaInput, callTimeoutMs: 20 }, undefined, createFetch,
+  ).then(() => null, (reason: unknown) => reason);
+
+  assert.ok(error instanceof Error);
+  assert.equal(classifyMcpError(error), 'timeout');
+  assert.equal(aborted, true);
+  assert.ok(Date.now() - startedAt < 1_000, 'total discovery deadline must stop a hung page');
 });
 
 test('input-schema projection keeps exact required account evidence and fingerprints the whole schema', () => {
