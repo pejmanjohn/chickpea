@@ -594,10 +594,8 @@ export class TurnJobStoreLogic {
     const existingJson = row?.dispatch_envelope_json
       ? String(row.dispatch_envelope_json)
       : undefined;
-    const existing = existingJson
-      ? parseFlueDispatchEnvelope(JSON.parse(existingJson))
-      : undefined;
-    if (!existing) throw new Error('Flue dispatch envelope is unavailable.');
+    if (!existingJson) throw new Error('Flue dispatch envelope is unavailable.');
+    const existing = parseFlueDispatchEnvelope(JSON.parse(existingJson));
     if (existing.uid === uid && existing.initialData === undefined) return existing;
     if (existing.uid !== null || existing.initialData === undefined) {
       this.markRecoveryRequired(id, 'flue_existing_instance_reconciliation_conflict');
