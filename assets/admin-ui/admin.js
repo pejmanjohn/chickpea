@@ -3297,6 +3297,7 @@
     render();
     var prepare = Promise.resolve();
     var accountCreated = false;
+    var googleClientSaved = false;
     if (form.kind === "mcp" && !form.preset && !mcpOauth) {
       var customTest = { id: connectionId, url: body.mcp.url, transport: body.mcp.transport, authMode: body.mcp.authMode };
       if (body.mcp.authMode === "bearer") customTest.bearerToken = body.credential;
@@ -3347,6 +3348,7 @@
           clientId: String(form.oauthClientId || "").trim(),
           clientSecret: String(form.oauthClientSecret || "").trim()
         }).then(function () {
+          googleClientSaved = true;
           return startConnectionAccountOAuth(accountId, true);
         });
       }
@@ -3368,6 +3370,12 @@
         invalidateAgentConnections(agentId);
         return loadAgentConnections(agentId).then(function () {
           if (!state.profileDraft || state.profileDraft.id !== agentId || state.agentConnections.agentId !== agentId || state.connectionAccountForm) return;
+          if (state.agentConnections.error) return;
+          if (googleOauth && !googleClientSaved) {
+            state.agentConnections.actionError = "The connection was saved, but its Google app settings could not be saved. Remove this connection and add it again to enter those settings.";
+            render();
+            return;
+          }
           var message = mcpOauth
             ? oauthStartErrorText(error, label)
             : googleOauth
