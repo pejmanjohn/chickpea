@@ -41,6 +41,7 @@ function createHarness() {
   const scriptsDir = path.join(root, 'scripts');
   const scriptsLibDir = path.join(scriptsDir, 'lib');
   const authDir = path.join(root, 'src', 'auth');
+  const releaseDir = path.join(root, 'src', 'release');
   const authMigrationsDir = path.join(root, 'migrations', 'better-auth');
   const wranglerDir = path.join(root, 'node_modules', 'wrangler', 'bin');
   const logPath = path.join(root, 'commands.log');
@@ -52,6 +53,7 @@ function createHarness() {
   mkdirSync(scriptsDir, { recursive: true });
   mkdirSync(scriptsLibDir, { recursive: true });
   mkdirSync(authDir, { recursive: true });
+  mkdirSync(releaseDir, { recursive: true });
   mkdirSync(authMigrationsDir, { recursive: true });
   mkdirSync(wranglerDir, { recursive: true });
   for (const name of ['upgrade-source.mjs', 'build-identity.mjs', 'built-worker-config.mjs', 'inspect-deployment.mjs', 'auth-schema.mjs', 'upgrade-installation.mjs', 'upgrade-receipt.mjs', 'release-manifest.mjs']) {
@@ -63,6 +65,7 @@ function createHarness() {
   symlinkSync(path.join(PROJECT_ROOT, 'node_modules', 'typescript'), path.join(root, 'node_modules', 'typescript'), 'dir');
   copyFileSync(CAPABILITY_SCRIPT, path.join(authDir, 'setup-capability.mjs'));
   copyFileSync(ACTIVATION_SCRIPT, path.join(authDir, 'deployment-activation.mjs'));
+  copyFileSync(path.join(PROJECT_ROOT, 'src', 'release', 'upgrade-compatibility.mjs'), path.join(releaseDir, 'upgrade-compatibility.mjs'));
   writeFileSync(path.join(scriptsLibDir, 'cloudflare-account-preflight.mjs'), `
     import { appendFileSync, existsSync, readFileSync } from 'node:fs';
     export async function preflightCloudflareAccount(options) {

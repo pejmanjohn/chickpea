@@ -1,193 +1,225 @@
-# Updating Chickpea
+# Guided Cloudflare upgrades
 
-Owners can open **Settings → About & updates** to see the installed application
-version, check for a release, review its notes, and copy an exact upgrade command.
-The browser does not hold Cloudflare deployment credentials or install updates.
-Nothing updates automatically. The CLI makes the final compatibility decision.
+The public [Cloudflare update guide](../../UPDATE_CHICKPEA_CLOUDFLARE.md) is the
+coding-agent entry point. This runbook describes the updater's operating and
+recovery boundaries.
 
-## First-time command setup
+Owners can open **Settings -> About & updates** to see the installed application
+version and source commit, check published releases, review release notes, and
+copy a coding-agent update prompt and, for a verified supported transition, its
+updater command. The browser never holds Cloudflare deployment
+credentials and does not install updates. Nothing updates automatically.
 
-Use Node 24.20.0 from `.nvmrc`, Git, and your normal Cloudflare account access.
-Select an official tooling release whose notes support the intended transition.
-Replace `<tooling-release-tag>` below with its exact published tag, then follow
-that release's setup instructions:
+## Release and source selection
 
-```sh
-git clone --branch <tooling-release-tag> --single-branch https://github.com/pejmanjohn/chickpea.git chickpea-upgrades
-cd chickpea-upgrades
-nvm install && nvm use
-npm ci --strict-allow-scripts
-npx --no-install wrangler login
-npm run upgrade -- --configure --account YOUR_ACCOUNT_ID --worker YOUR_EXISTING_WORKER --profile core --url https://YOUR_CHICKPEA_HOST
-```
+Run the updater from a clean checkout of the exact destination application
+release. Application releases use `vX.Y.Z` tags. CLI tags, prereleases, drafts,
+and `main` are not update destinations. Verify the tag commit, use the Node pin
+from its `.nvmrc`, and install its lockfile with strict dependency-script policy.
 
-An existing compatible Node manager or shell-scoped Homebrew `node@24` also
-works. Keep the older tooling directory and its receipts for reference; run
-upgrades and recovery from the selected tooling directory. Configuring the
-launcher does not change the running installation. Do not assume an old chain
-of intermediate releases is supported by current tooling: both the destination's
-`supportedOrigins` and reviewed dependency policy must cover the exact sources.
+The destination's `release.json` makes the compatibility decision. Its
+`supportedOrigins` must include the exact installed application version, and
+the serving source commit must match that official origin release. An empty
+list permits no incoming update. An absent origin, unknown source, local source
+change, incompatible storage generation, or unreviewed migration stops before
+deployment. Matching digests alone do not establish support.
 
-The current runner uses npm 11.19.0 or compatible newer npm 11. It verifies
-source before and after installing dependencies with strict script policy.
-Releases with authored `allowScripts` use that policy. For the exact reviewed
-v0.1.16 source without it, the runner creates a private temporary userconfig
-outside source and receipts, preserving selected registry credentials, proxy,
-certificate settings and environment substitutions. Global and project config
-layers remain in place. The temporary file is removed after success, failure,
-or handled interruption and recreated for a retry. A forced kill may leave a
-private temporary directory; remove only the directory belonging to that run.
+Apply intermediate application releases in order when their published metadata
+defines the only supported route. Never infer a chain from version numbers.
+Every transition needs its own published support and recovery evidence.
 
-Conflicting script overrides, script suppression, unsupported npm, and unknown
-historical source/digest combinations stop before dependency installation.
-An npm install failure reports `NPM_INSTALL_FAILED`, its exit status and any
-recognized npm error code, such as `E401` or `ESTRICTALLOWSCRIPTS`. Raw dependency
-output is withheld because it may contain credentials or private registry URLs.
-Record the release and Node/npm versions and the error code; preserve source
-and receipts. Use the [reviewed policy](releasing.md#dependency-install-policy)
-and resolve the indicated configuration issue before resuming. Never run an
-approval command that changes retained `package.json` or print credential-bearing
-npm config. Dependency output is suppressed by the updater to keep credentials
-out of terminal logs and receipts.
+## Private target configuration
 
-For a named Wrangler login, add `--wrangler-profile NAME` to the configure
-command. This is distinct from `--profile core`. The chosen login is retained
-for inspection, deployment, resume, and recovery in temporary source directories.
-Directory-bound Wrangler activation alone does not cover those directories.
+Resolve the live account, Worker, HTTPS origin, installed release and commit,
+`AUTH_DB`, and resource identities from signed-in Admin, the private installation
+receipt, and live Cloudflare inspection. A local checkout is not proof of the
+serving target.
 
-Guided upgrades currently support the `core` profile only. Sandbox installations
-require the existing [Sandbox deployment procedure](coding-sandbox-deployment.md);
-version upload does not build or update their container image. The command
-inspects the selected existing Worker and records its account, name, profile,
-existing HTTPS origin, and resource identities privately under `~/.chickpea/upgrades/`. It never creates
-a Worker or database. For multiple deployments, add `--installation NAME` to
-configure and subsequent commands. There is no implicit fallback to `chickpea`.
+Inspect the saved targets under `~/.chickpea/upgrades/installations/` and reuse
+an existing installation name only when its account, Worker, profile, Wrangler
+login, origin, and live resource digest match the resolved deployment. Do not
+edit a saved target.
 
-If Cloudflare Builds still deploys on pushes to your old fork/branch, disable
-that deployment trigger before switching to this process. Otherwise a later
-push could silently replace the version installed by the upgrade command.
-Keep the old source and configuration for investigation; do not delete them.
-
-## Review and upgrade
-
-Run the command from the tooling directory. The version below is illustrative;
-copy the actual destination shown in Settings.
+When no saved target matches, configure an unused private installation name
+once from the clean tooling checkout:
 
 ```sh
-npm run upgrade -- --to v0.1.8 --preflight
-npm run upgrade -- --to v0.1.8
+npm run upgrade -- --configure --installation <installation-name> --account <account-id> --worker <worker-name> --profile core --url https://<existing-origin>
 ```
 
-The command verifies the exact immutable official GitHub release and tag commit,
-fetches clean source privately, checks the installed release's identity and
-declared compatibility, and builds with the lockfile. It shows the account,
-Worker, profile, installed version, destination, and private receipt path.
-Type the displayed Worker name to proceed. Preflight never deploys.
+Add `--wrangler-profile <login-name>` when the installation uses a named
+Wrangler login. This login is distinct from Chickpea's `--profile core`. The
+updater retains it for inspection, deployment, resume, and recovery from its
+private temporary directories.
 
-The first updater supports only explicitly reviewed transitions with unchanged
-D1, Durable Object, identity, configuration, and work-storage migration content.
-The initial release has no incoming supported origins. Equal digests alone are
-insufficient: a destination must name the installed version in `supportedOrigins`
-and its maintainer must have completed the populated upgrade/recovery test.
+Configuration inspects the existing deployment and records its target and
+resource digest. It creates no Worker, database, route, or deployment. The
+updater refuses an installation name that already exists. A saved target that
+does not match live state needs investigation, not editing or reconfiguration.
+Use distinct installation names for distinct Workers. There is no safe target
+fallback.
 
-During deployment the wrapper checks the current Worker again, preserves its
-AUTH_DB and Durable Object identities, supported plain variables, existing
-secrets, and setup authority, and verifies readiness at the recorded origin. It uploads a Worker version, rechecks the serving installation, then activates that exact version at 100% traffic. It does not deploy triggers or synchronize authored observability, logpush, or tail consumers. Existing routes, domains, crons, and those settings remain in place. Wrangler may synchronize service and environment tags during version upload. It does not apply schema
-changes, replace encryption keys, or print another setup link. A split deployment,
-unknown binding/variable, missing authority, changed identity, or schema mismatch
-stops the command. Review unsupported configuration explicitly; do not delete it
-just to make preflight pass. Plaintext credentials must be moved to Cloudflare
-secrets through your ordinary credential-management procedure first.
+Keep the original installation receipt under `~/.chickpea/installs/`. It should
+record the live coordinates, the source that was originally installed, and
+later update receipts and source paths. Do not put credentials, recovery
+capabilities, or private target details in the repository.
 
-The literal supported-variable list is in
-`scripts/lib/upgrade-installation.mjs`. It covers the documented Slack, gateway,
-provider endpoint/credential-label, Composio, telemetry, and usage settings.
-Secrets remain opaque names and are retained by the guarded deployment path.
-Custom resource classes and external Durable Object ownership are unsupported. A release introducing new plain variables is refused before deployment; upgrade tooling must explicitly support that transition first.
+## Preflight
 
-After success, reload Settings, sign in, and send a real Slack request. Confirm
-existing connections and any schedules you rely on. Readiness verifies deployment
-activation; it cannot establish every application journey by itself.
-
-## Interrupted update or recovery
-
-Keep the printed receipt and its neighboring private source directories. They
-contain target coordinates, configuration, and a recovery capability. They are not a data backup. Do not publish
-them. The browser's separately previewed support report is safe to review/copy;
-it omits those private deployment details and credentials.
+Run preflight before every transition:
 
 ```sh
-npm run upgrade -- --resume /absolute/path/printed/by/the/command/receipt.json
-npm run upgrade -- --recover /absolute/path/printed/by/the/command/receipt.json
+npm run upgrade -- --installation <installation-name> --to <destination-release-tag> --preflight
 ```
 
-Resume re-inspects the serving Worker. It accepts the recorded previous version
-or a recorded destination upload; a different/unrecorded deployment stops for
-investigation. A verified completed upload does not need another deployment.
-Otherwise the command rebuilds the verified source and asks for confirmation.
-If source download was interrupted before either checkout was verified, preserve
-that incomplete receipt and start a new exact-version command.
+The updater resolves immutable official release metadata, fetches clean origin
+and destination source into a new private receipt directory, verifies both
+checkouts, inspects the live Worker and `AUTH_DB` schema, checks configuration
+and resources, installs dependencies under the reviewed script policy, and
+builds the destination. The command prints the Worker, installed-to-destination
+version transition, and absolute receipt path. Verify the saved target and live
+inspection separately for the account, profile, Wrangler login, and origin.
+Preflight does not deploy.
 
-For v0.1.8, run both upgrade and recovery from the v0.1.8 tooling checkout.
-Older updaters reject this release's recovery policy before deployment. The new
-updater registers a recovery capability during authenticated readiness and keeps
-it in the private receipt. Before restoring v0.1.7, recovery authenticates to the
-serving candidate and switches the gateway back to socket delivery. It requires a
-healthy current-version socket before deploying the previous code. Recovery first
-tries that hook even if HTTP readiness failed. If the recovery authority is
-missing, it redeploys the retained candidate to register it and retries the hook;
-successful HTTP activation is not a prerequisite for restoring socket delivery.
-A new upgrade receipt explicitly restores HTTP delivery after a rollback; retrying
-the recovery receipt keeps socket delivery. Deployment activation time and Worker
-version establish ownership of transport changes. Both the installation and
-gateway reject stale owners, so an older in-flight request cannot undo a newer
-upgrade. Conflicting activation order fails closed.
-An unavailable recovery endpoint
-stops recovery before any downgrade. Preserve
-the receipt and repair the candidate; a raw Cloudflare version rollback alone
-can leave Slack routed to an HTTP endpoint that old code cannot receive.
+The release's `.nvmrc` is the exact Node build baseline. Use its supported npm
+major. The runner rejects script suppression, conflicting script overrides,
+uncovered dependency hooks, and unsupported npm. Dependency output stays out
+of receipts and terminal reports because it may contain private registry URLs
+or credentials. Preserve the named error code and Node/npm versions, correct
+the reviewed configuration issue, then resume from the exact receipt. Do not
+edit retained release source or run a blanket dependency approval.
 
-Recover then deploys the retained previous release's code with the same resources
-and credentials. It works independently of Admin. It is permitted only for this
-unchanged-storage transition and a recognized recorded serving state. It does
-not undo application writes, restore deleted data, or roll back schemas. A failure
-after upload may already be serving new code; never infer the serving version
-from the process exit code. If the upload ID was not recorded, inspect Cloudflare
-and preserve evidence before attempting another deployment.
+The updater retains its source checkouts and dependencies beside the receipt.
+It verifies retained source again before every retry or recovery. Missing,
+partial, dirty, or replaced source stops before dependency scripts and
+deployment.
 
-Cloudflare application state spans D1 and Durable Objects. Chickpea currently
-has no complete cross-store snapshot/restore tool. Releases requiring state
-migration need a separately designed and tested recovery procedure before this
-updater can support them. See [operations](operations.md).
+## Deployment contract
 
-## Existing unversioned installations
+Continue the successful preflight in an interactive terminal with its exact
+receipt:
 
-An experimental deployment or unknown source is not automatically v0.1.0.
-Setting `CHICKPEA_APP_VERSION` in the dashboard does not establish provenance.
-The command refuses adoption without a serving source that matches the official
-release and a compatible resource/schema inventory.
+```sh
+npm run upgrade -- --resume /absolute/path/printed/by/preflight/receipt.json
+```
 
-Preserve the current source, built artifact, Cloudflare serving version, complete
-resource identities, schema inspection, and recoverable credential roots. Have
-the maintainer compare the exact source/artifact against the reviewed release
-and rehearse preservation on a populated disposable installation. Adopt through
-the reviewed guarded deployment only after that evidence establishes
-compatibility. If the source cannot be established, stop; there is no `--force`
-or reset shortcut. Do not recreate a deployment containing data to obtain a
-version label. A disposable installation may be replaced only with its
-operator's separate authorization to lose that test data.
+Review every displayed coordinate. Type the exact displayed Worker name only
+when the account, Worker, profile, Wrangler login, origin, installed source,
+destination source, and receipt match the requested installation.
 
-## Node installations and future browser updates
+Starting with `--installation <installation-name> --to
+<destination-release-tag>` is a secondary shorthand. It creates a new receipt
+and performs preparation before confirmation. Do not use it after a successful
+preflight; resume the receipt already created by preflight.
 
-Node installations show version and release information but use the stopped
-backup/install/restart procedure in [operations](operations.md). This Cloudflare
-command does not update a Node service.
+Immediately before upload, the updater re-inspects the Worker and refuses
+resource or identity drift. It preserves the existing `AUTH_DB`, Durable Object
+identities, supported plain variables, opaque secret names, credentials, and
+setup authority. It uploads a Worker version, checks the serving installation,
+and activates that exact version at full traffic only after the guarded checks
+pass.
 
-A future browser flow can reuse the release contract, preflight, and receipt
-stages through a separately authorized deployment runner. No such runner,
-Cloudflare Builds workflow, or browser deployment authorization is required or
-enabled by this release.
+The core update does not create resources, reinstall Slack, issue another setup
+capability, apply schema changes, replace encryption keys, or synchronize
+authored routes, domains, schedules, observability, logpush, and tail consumers.
+Existing settings stay in place. Wrangler may synchronize service and
+environment tags during upload.
 
-## Local receipt storage
+The literal supported variable and resource rules live in
+`scripts/lib/upgrade-installation.mjs`. Unknown bindings, variables, resource
+classes, external Durable Object ownership, split traffic, missing authority,
+changed identities, schema drift, and incompatible work storage fail closed.
+Review unfamiliar configuration. Never delete it to make preflight pass.
 
-Each preflight or upgrade retains two source checkouts and their build dependencies. After verifying an upgrade and deciding that its code-recovery window is closed, you may remove that receipt directory to reclaim disk space. Keep any receipt still needed for retry, recovery, or investigation. A concurrent configuration edit can stop verification even if the newly deployed application is healthy; inspect the actual serving version before retrying.
+If Cloudflare Builds or another system still deploys an old fork or branch,
+disable that competing automatic writer before adopting guided updates. Keep
+the old source and configuration. An unrelated later deploy can otherwise
+replace a successful guarded update.
+
+## Resume and recovery
+
+The command prints an absolute private receipt path as soon as it begins an
+attempt. Keep that exact `receipt.json` and its neighboring source directories.
+A failed process may already have uploaded or activated code. Inspect the
+serving version before deciding what to do.
+
+Resume an interrupted attempt with the same destination tooling and exact
+receipt:
+
+```sh
+npm run upgrade -- --resume /absolute/path/to/receipt.json
+```
+
+Resume re-inspects the serving Worker and recognizes only states recorded by
+that receipt. It can reuse a verified completed upload. Otherwise it rebuilds
+the verified retained source and asks for confirmation. A different deployment,
+changed target, missing source, or incomplete download stops for investigation.
+Do not start a second update to hide the first attempt.
+
+When the user requests restoration and the release supports it, recover with
+the same tooling and receipt:
+
+```sh
+npm run upgrade -- --recover /absolute/path/to/receipt.json
+```
+
+Recovery authenticates to the serving candidate when the declared transition
+requires a delivery-mode handoff, restores eligible previous code with the same
+resources and credentials, and verifies the recorded serving state. It works
+without Admin only within that reviewed recovery contract. A raw Cloudflare
+version rollback can leave Slack routed to a transport the old code cannot
+receive, so it is not a substitute.
+
+Recovery does not undo application writes, restore deleted data, or roll back
+schemas. Cloudflare application state spans D1 and Durable Objects, and Chickpea
+does not have a complete cross-store snapshot and restore command. A receipt is
+recovery authority and deployment evidence, not a data backup. A transition
+that changes state needs a separately reviewed migration and recovery procedure
+before it can appear in `supportedOrigins`.
+
+The v0.1.18 release contract declares no incoming guided upgrade paths. Its
+v0.1.17 rehearsal upgraded successfully, but recovery to the immutable
+published v0.1.17 code could not continue an existing timezone-bearing
+conversation when it returned to a prior runtime plan. Candidate code cannot
+make that previous-code recovery safe for future turns. The v0.1.16 path also
+remains undeclared. Stop and request a reviewed path; no guided intermediate
+path is currently declared.
+
+## Acceptance and handoff
+
+After success, verify the destination release and full source commit in
+signed-in Admin. Send a real Slack request to an existing Agent and verify the
+expected reply. Confirm known memory when it exists. If a connection exists,
+exercise a harmless example with a read-only request. If a schedule exists,
+check that it still has the same definition, destination, enabled state, and
+next run, then observe its normal delivery or a harmless test when practical.
+Report memory, connection, or schedule as not configured when none exists. An
+optional item's absence does not fail an otherwise valid update. Readiness and
+a Worker upload ID do not establish these product behaviors.
+
+Update the private installation receipt with the serving application release
+and commit, Cloudflare Worker version ID, exact update receipt, clean tooling
+checkout, and retained destination source path. The original clone is now a
+launcher and historical record. Point its private installation notes at the
+retained source matching the live release, and use that source for later
+troubleshooting. Never copy over customized or historical source.
+
+Retain every receipt needed for resume, recovery, or investigation. After the
+user decides a verified transition's recovery window is closed, they may remove
+that receipt directory to reclaim disk space.
+
+## Unsupported installations
+
+An unversioned, unknown, or customized deployment is not an official release.
+Setting a version variable in Cloudflare does not establish provenance. Preserve
+its source, built artifact, serving Worker version, resource identities, schema,
+configuration, and credential roots. Adoption requires a maintainer-reviewed
+source and artifact comparison plus a populated disposable rehearsal. If that
+evidence cannot establish compatibility, stop. There is no force, reset, or
+recreate shortcut for an installation that contains user data.
+
+Node-hosted Chickpea uses the stopped backup, install, and restart procedure in
+[operations](operations.md). The Cloudflare updater does not update a Node
+service. A Cloudflare coding sandbox also follows the separate
+[sandbox deployment procedure](coding-sandbox-deployment.md) for its container
+image; a core Worker update does not build or update that image.

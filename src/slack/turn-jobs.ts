@@ -76,6 +76,25 @@ export const TURN_JOB_TTL_MS = CLAIM_TTL_MS;
 const SLACK_AGENT_BINDING_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const TURN_JOB_RECOVERY_BACKSTOP_MS = SLACK_AGENT_BINDING_TTL_MS;
 
+// Recovery reasons are operator telemetry, so keep this roster closed. Callers
+// may supply a bounded string through an RPC, but logs must never echo an
+// unreviewed value that could contain request or tenant data.
+const LOGGABLE_TURN_RECOVERY_REASONS = new Set([
+  'flue_binding_reconciliation_required',
+  'flue_dispatch_payload_conflict',
+  'flue_dispatch_reconciliation_required',
+  'flue_existing_instance_reconciliation_conflict',
+  'flue_expected_instance_missing',
+  'flue_receipt_conflict',
+  'flue_settlement_conflict',
+  'flue_unexpected_existing_instance',
+  'post_dispatch_attempts_exhausted',
+  'post_dispatch_redrive_required',
+  'slack_file_fallback_unavailable',
+  'slack_installation_unavailable',
+  'slack_presentation_effect_unresolved',
+]);
+
 /** A pending job the alarm should run, decoded from its row. */
 export interface PendingTurnJob {
   id: string;
@@ -568,8 +587,15 @@ export class TurnJobStoreLogic {
    */
   reconcileFlueExistingInstance(id: string, uid: string): FlueDispatchEnvelopeV1 {
     validateBoundedString(uid, 'Flue instance uid', 200);
-    const existing = this.getDispatchEnvelope(id);
-    if (!existing) throw new Error('Flue dispatch envelope is unavailable.');
+    const row = this.db.get(
+      'SELECT dispatch_envelope_json FROM turn_jobs WHERE id = ?',
+      id,
+    );
+    const existingJson = row?.dispatch_envelope_json
+      ? String(row.dispatch_envelope_json)
+      : undefined;
+    if (!existingJson) throw new Error('Flue dispatch envelope is unavailable.');
+    const existing = parseFlueDispatchEnvelope(JSON.parse(existingJson));
     if (existing.uid === uid && existing.initialData === undefined) return existing;
     if (existing.uid !== null || existing.initialData === undefined) {
       this.markRecoveryRequired(id, 'flue_existing_instance_reconciliation_conflict');
@@ -584,7 +610,7 @@ export class TurnJobStoreLogic {
          AND dispatch_receipt_json IS NULL AND flue_settlement_json IS NULL`,
       JSON.stringify(reconciled),
       id,
-      JSON.stringify(existing),
+      existingJson,
     );
     if (updated.changes === 1) return reconciled;
     const winner = this.getDispatchEnvelope(id);
@@ -730,12 +756,17 @@ export class TurnJobStoreLogic {
 
   markRecoveryRequired(id: string, reason: string): void {
     validateBoundedString(reason, 'recovery reason', 120);
-    this.db.run(
+    const updated = this.db.run(
       `UPDATE turn_jobs SET status = 'recovery_required', recovery_reason = ?
        WHERE id = ? AND delivered = 0`,
       reason,
       id,
     );
+    if (updated.changes === 1) {
+      console.error('[chickpea] TurnJob requires operator reconciliation', JSON.stringify({
+        reason: LOGGABLE_TURN_RECOVERY_REASONS.has(reason) ? reason : 'unclassified',
+      }));
+    }
   }
 
   /**
