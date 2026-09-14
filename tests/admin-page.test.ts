@@ -8475,6 +8475,51 @@ test('a failed Meta OAuth start reloads the saved account and retries that accou
   );
 });
 
+test('a ready Agent-owned MCP OAuth account reconnects in place from its menu', async () => {
+  const account = {
+    id: 'connection_ready_oauth', workspaceId: 'T_DESIGN', revision: 4,
+    ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads',
+    lifecycle: 'ready', credentialConfigured: true,
+    policy: {
+      kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
+      authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
+      discoveredTools: [{ name: 'ads_get_ad_entities' }],
+      allowedTools: ['ads_get_ad_entities'], toolPolicies: {},
+    },
+  };
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [ownedConnection(account)] },
+    oauthStartResult: {
+      authorizationUrl: 'https://www.facebook.com/dialog/oauth?state=reconnect',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="connection-account-mcp-oauth-start"[^>]*data-connection-id="connection_ready_oauth"[^>]*>Reconnect<\/button>/,
+  );
+  click({ target: actionTarget({
+    'data-action': 'connection-account-mcp-oauth-start',
+    'data-connection-id': 'connection_ready_oauth',
+  }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.oauthStartPosts, [{
+    agentId: 'agent_conn', connectionId: 'connection_ready_oauth', body: {},
+  }]);
+  assert.deepEqual(harness.assignedUrls, [
+    'https://www.facebook.com/dialog/oauth?state=reconnect',
+  ]);
+});
+
 test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],

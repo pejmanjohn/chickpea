@@ -128,6 +128,12 @@ export interface McpOAuthDependencies {
     ref: McpSecretRef,
     serverUrl: string,
   ) => void | Promise<void>;
+  onAuthorizationCancelled?: (
+    ref: McpSecretRef,
+    serverUrl: string,
+    accountRevision?: number,
+    oauthAttemptId?: string,
+  ) => void | Promise<void>;
 }
 
 export interface StartMcpOAuthInput {
@@ -594,9 +600,35 @@ export async function completeMcpOAuthAuthorization(
 export async function cancelMcpOAuthAuthorization(
   state: string,
   dependencies: McpOAuthDependencies,
-): Promise<{ ref: McpSecretRef; returnAgentId?: string }> {
+): Promise<{
+  ref: McpSecretRef;
+  accountRevision?: number;
+  oauthAttemptId?: string;
+  returnAgentId?: string;
+  authorizationAuthority?: OAuthAuthorizationAuthority;
+}> {
   const { ref, pending } = await consumePendingAuthorization(state, dependencies);
-  return { ref, ...(pending.returnAgentId ? { returnAgentId: pending.returnAgentId } : {}) };
+  await requireConfiguredClientGeneration(
+    pending.serverUrl, pending.configurationGeneration, dependencies,
+  );
+  await requireCurrentAuthorization(ref, pending.authorizationAuthority, dependencies);
+  await requireCurrentConnection(
+    ref, pending.serverUrl, dependencies, pending.accountRevision, pending.oauthAttemptId,
+  );
+  await dependencies.onAuthorizationCancelled?.(
+    ref, pending.serverUrl, pending.accountRevision, pending.oauthAttemptId,
+  );
+  return {
+    ref,
+    ...(pending.accountRevision !== undefined
+      ? { accountRevision: pending.accountRevision }
+      : {}),
+    ...(pending.oauthAttemptId ? { oauthAttemptId: pending.oauthAttemptId } : {}),
+    ...(pending.returnAgentId ? { returnAgentId: pending.returnAgentId } : {}),
+    ...(pending.authorizationAuthority
+      ? { authorizationAuthority: pending.authorizationAuthority }
+      : {}),
+  };
 }
 
 export async function resolveMcpOAuthAccessToken(

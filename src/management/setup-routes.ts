@@ -126,6 +126,7 @@ import { resolveManagedAuthorizationProviderContext } from '../connections/manag
 import {
   ConnectionAccountService,
   ManagedConnectionProviderUnavailableError,
+  markCancelledMcpOAuthAccount,
 } from '../connections/store.ts';
 import {
   agentAvatarUrl,
@@ -2597,6 +2598,21 @@ function mcpOAuthDependencies(
         return !!connection && connection.authMode === 'oauth' && connection.url === serverUrl;
       } catch {
         return false;
+      }
+    },
+    onAuthorizationCancelled: async (
+      ref, serverUrl, accountRevision, oauthAttemptId,
+    ) => {
+      const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+      if (!connectionAccountId) return;
+      if (!await markCancelledMcpOAuthAccount(dependencies.config, {
+        connectionAccountId, serverUrl,
+        ...(accountRevision !== undefined ? { accountRevision } : {}),
+        ...(oauthAttemptId ? { oauthAttemptId } : {}),
+      })) {
+        throw new McpOAuthError(
+          'oauth_attempt_superseded', 'OAuth attempt was superseded',
+        );
       }
     },
   };

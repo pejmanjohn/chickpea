@@ -3279,6 +3279,135 @@ test('Agent-owned MCP OAuth accounts start and complete against the account refe
   }
 });
 
+test('cancelling a ready account reconnect requires attention and pauses dependent schedules', async () => {
+  const oauthFetch: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    if (request.url === 'https://mcp.linear.app/.well-known/oauth-protected-resource/mcp') {
+      return Response.json({
+        resource: 'https://mcp.linear.app/mcp',
+        authorization_servers: ['https://auth.example.test'],
+      });
+    }
+    if (request.url === 'https://auth.example.test/.well-known/oauth-authorization-server') {
+      return Response.json({
+        issuer: 'https://auth.example.test',
+        authorization_endpoint: 'https://auth.example.test/authorize',
+        token_endpoint: 'https://auth.example.test/token',
+        registration_endpoint: 'https://auth.example.test/register',
+        response_types_supported: ['code'],
+        grant_types_supported: ['authorization_code', 'refresh_token'],
+        code_challenge_methods_supported: ['S256'],
+        token_endpoint_auth_methods_supported: ['none'],
+      });
+    }
+    if (request.url === 'https://auth.example.test/register') {
+      return Response.json({
+        ...await request.json() as Record<string, unknown>,
+        client_id: 'registered-client',
+      });
+    }
+    throw new Error(`Unexpected OAuth request ${request.method} ${request.url}`);
+  };
+  const fixture = harness(new FakeTransport(), { oauthFetch });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const created = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({
+          workspaceId: 'T_TEST', ownerKind: 'team', providerId: 'linear', label: 'Linear',
+          allowedCapabilities: [],
+          mcp: {
+            id: 'linear', displayName: 'Linear', url: 'https://mcp.linear.app/mcp',
+            transport: 'streamable-http', authMode: 'oauth', headerNames: [], enabled: true,
+            lifecycleStatus: 'pending', statusText: '', discoveredTools: [{ name: 'search_issues' }],
+            allowedTools: ['search_issues'], oauthScope: 'read', presetId: 'linear',
+          },
+        }),
+      },
+    );
+    const accountId = ((await created.json()) as Record<string, any>).account.id as string;
+    const createdAccount = (await fixture.store.listConnectionAccounts('T_TEST'))
+      .find((account) => account.id === accountId)!;
+    await fixture.store.putConnectionAccount({
+      ...createdAccount, lifecycle: 'ready',
+      identity: { workspaceName: 'Acme Linear', accountName: 'Owner' },
+    }, createdAccount.revision);
+    await fixture.store.putAgentScheduleReference({
+      scheduleId: 'schedule_linear_digest', agentId: 'agent_support', workspaceId: 'T_TEST',
+      channelId: 'C_SUPPORT', createdByMembershipId: 'membership_test_owner',
+      runsAsMembershipId: 'membership_test_owner', authorityReceiptId: 'schedule_authority_owner',
+      requiredConnectionAccountIds: [accountId], state: 'active',
+    });
+
+    const started = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/oauth/mcp/start`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    const firstAuthorizationUrl = new URL(
+      ((await started.json()) as { authorizationUrl: string }).authorizationUrl,
+    );
+    const firstAttempt = (await fixture.store.listConnectionAccounts('T_TEST'))
+      .find((account) => account.id === accountId)!;
+    const restarted = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/oauth/mcp/start`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(restarted.status, 200, await restarted.clone().text());
+    const authorizationUrl = new URL(
+      ((await restarted.json()) as { authorizationUrl: string }).authorizationUrl,
+    );
+    const pending = (await fixture.store.listConnectionAccounts('T_TEST'))
+      .find((account) => account.id === accountId)!;
+    assert.equal(pending.lifecycle, 'pending');
+    assert.notEqual(pending.revision, firstAttempt.revision);
+    assert.notEqual(
+      pending.policy.kind === 'mcp' ? pending.policy.oauthAttemptId : undefined,
+      firstAttempt.policy.kind === 'mcp' ? firstAttempt.policy.oauthAttemptId : undefined,
+    );
+    assert.equal((await fixture.store.listAgentScheduleReferences('agent_support'))[0]?.state, 'active');
+
+    const staleCallback = await fixture.app.request(
+      `http://localhost/oauth/callback?error=access_denied&state=${encodeURIComponent(firstAuthorizationUrl.searchParams.get('state')!)}`,
+    );
+    assert.equal(staleCallback.status, 400, await staleCallback.clone().text());
+    const afterStale = (await fixture.store.listConnectionAccounts('T_TEST'))
+      .find((account) => account.id === accountId)!;
+    assert.equal(afterStale.revision, pending.revision);
+    assert.equal(afterStale.lifecycle, 'pending');
+    assert.equal(
+      afterStale.policy.kind === 'mcp' ? afterStale.policy.oauthAttemptId : undefined,
+      pending.policy.kind === 'mcp' ? pending.policy.oauthAttemptId : undefined,
+    );
+    assert.equal((await fixture.store.listAgentScheduleReferences('agent_support'))[0]?.state, 'active');
+
+    const callback = await fixture.app.request(
+      `http://localhost/oauth/callback?error=access_denied&state=${encodeURIComponent(authorizationUrl.searchParams.get('state')!)}`,
+    );
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal(
+      callback.headers.get('location'),
+      `/admin/agents/agent_support?oauth=cancelled&connection=${encodeURIComponent(accountId)}&lane=mcp`,
+    );
+    const cancelled = (await fixture.store.listConnectionAccounts('T_TEST'))
+      .find((account) => account.id === accountId)!;
+    assert.equal(cancelled.lifecycle, 'needs_attention');
+    assert.equal(cancelled.identity, undefined);
+    const schedule = (await fixture.store.listAgentScheduleReferences('agent_support'))[0];
+    assert.equal(schedule?.state, 'needs_attention');
+    assert.deepEqual(schedule?.connectionPauseAccountIds, [accountId]);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('revoking during Agent-owned MCP OAuth verification cannot reactivate the account', async () => {
   let accountId = '';
   let startedAuthority: StartMcpOAuthInput['authorizationAuthority'];

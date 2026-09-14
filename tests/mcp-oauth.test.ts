@@ -5,6 +5,7 @@ import type { OAuthClientMetadata } from '@modelcontextprotocol/sdk/shared/auth.
 
 import { applicationIdentity } from '../src/release/identity.ts';
 import {
+  cancelMcpOAuthAuthorization,
   completeMcpOAuthAuthorization,
   createMcpOAuthClientMetadata,
   createMcpOAuthClientMetadataDocument,
@@ -1229,6 +1230,90 @@ test('failed MCP exchange retains the initiating Agent callback context', async 
         error.callbackContext?.ref.agentId === REF.agentId &&
         error.callbackContext.returnAgentId === 'agent_return',
     );
+  } finally {
+    settings.close();
+  }
+});
+
+test('MCP OAuth cancellation validates the exact actor and account attempt before recovery', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  const firstAttemptId = '11111111-1111-4111-8111-111111111111';
+  const secondAttemptId = '22222222-2222-4222-8222-222222222222';
+  const authority = {
+    organizationId: 'org_test', workspaceId: 'T_TEST', membershipId: 'membership_owner',
+    agentId: REF.agentId, ownerKind: 'team' as const,
+  };
+  let currentRevision = 4;
+  let currentAttemptId = firstAttemptId;
+  let actorCurrent = true;
+  const cancelled: Array<{
+    revision: number | undefined;
+    attemptId: string | undefined;
+  }> = [];
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    validateAuthorization: () => actorCurrent,
+    validateConnection: (
+      _ref: typeof REF,
+      _serverUrl: string,
+      revision?: number,
+      attemptId?: string,
+    ) => {
+      if (revision !== currentRevision || attemptId !== currentAttemptId) {
+        throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+      }
+      return true;
+    },
+    onAuthorizationCancelled: (
+      _ref: typeof REF,
+      _serverUrl: string,
+      revision?: number,
+      attemptId?: string,
+    ) => { cancelled.push({ revision, attemptId }); },
+  };
+  try {
+    const first = await startMcpOAuthAuthorization({
+      ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL,
+      returnAgentId: 'agent_return', accountRevision: currentRevision,
+      oauthAttemptId: currentAttemptId, authorizationAuthority: authority,
+    }, dependencies);
+    const result = await cancelMcpOAuthAuthorization(first.state, dependencies);
+    assert.equal(result.accountRevision, 4);
+    assert.equal(result.oauthAttemptId, firstAttemptId);
+    assert.equal(result.authorizationAuthority?.membershipId, 'membership_owner');
+    assert.deepEqual(cancelled, [{ revision: 4, attemptId: firstAttemptId }]);
+
+    currentRevision = 5;
+    currentAttemptId = secondAttemptId;
+    const staleAttempt = await startMcpOAuthAuthorization({
+      ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL,
+      accountRevision: currentRevision, oauthAttemptId: currentAttemptId,
+      authorizationAuthority: authority,
+    }, dependencies);
+    currentRevision = 6;
+    await assert.rejects(
+      cancelMcpOAuthAuthorization(staleAttempt.state, dependencies),
+      (error: unknown) => error instanceof McpOAuthError &&
+        error.code === 'oauth_attempt_superseded',
+    );
+    assert.equal(cancelled.length, 1);
+
+    currentRevision = 7;
+    currentAttemptId = firstAttemptId;
+    const staleActor = await startMcpOAuthAuthorization({
+      ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL,
+      accountRevision: currentRevision, oauthAttemptId: currentAttemptId,
+      authorizationAuthority: authority,
+    }, dependencies);
+    actorCurrent = false;
+    await assert.rejects(
+      cancelMcpOAuthAuthorization(staleActor.state, dependencies),
+      (error: unknown) => error instanceof McpOAuthError &&
+        error.code === 'authorization_expired',
+    );
+    assert.equal(cancelled.length, 1);
   } finally {
     settings.close();
   }

@@ -49,6 +49,8 @@ import {
   ManagedConnectionConflictError,
   ManagedConnectionProviderUnavailableError,
   ManagedResourceSelectionError,
+  markCancelledMcpOAuthAccount,
+  markConnectionAccountNeedsAttention,
   markManagedProviderAccountsUnavailable,
   reconcileManagedProviderAccounts,
   toConnectionAccountView,
@@ -2606,6 +2608,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...ref,
         serverUrl,
       });
+    },
+    onAuthorizationCancelled: async (
+      ref, serverUrl, accountRevision, oauthAttemptId,
+    ) => {
+      const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
+      if (!connectionAccountId) return;
+      if (!await markCancelledMcpOAuthAccount(store(c), {
+        connectionAccountId, serverUrl,
+        ...(accountRevision !== undefined ? { accountRevision } : {}),
+        ...(oauthAttemptId ? { oauthAttemptId } : {}),
+      })) {
+        throw new McpOAuthError(
+          'oauth_attempt_superseded', 'OAuth attempt was superseded',
+        );
+      }
     },
   });
   const apiOAuthDependencies = (c: Context): ApiOAuthDependencies => ({
@@ -10236,9 +10253,15 @@ async function replaceVerifiedMcpConnection(
           ? allowedToolsAfterMcpDiscovery(account.policy, discoveredTools)
           : discoveredTools.map((tool) => tool.name).filter((name) => account.policy.kind === 'mcp' && account.policy.allowedTools.includes(name)))
       : account.policy.allowedTools;
+    if (result.lifecycleStatus === 'failed') {
+      if (!await markConnectionAccountNeedsAttention(configStore, account)) {
+        throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+      }
+      return;
+    }
     await configStore.putConnectionAccount({
       ...account,
-      lifecycle: result.lifecycleStatus === 'ready' ? 'ready' : 'needs_attention',
+      lifecycle: 'ready',
       policy: { ...account.policy, discoveredTools, allowedTools },
       ...(result.lifecycleStatus === 'ready' && result.identity
         ? { identity: result.identity }

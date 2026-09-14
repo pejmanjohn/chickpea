@@ -26,6 +26,7 @@ import type {
 import { MAX_MANAGED_RESOURCE_SELECTIONS_PER_KEY } from '../config/types.ts';
 import type { ConnectionAccountView } from './types.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
+import { validateMcpUrl } from '../config/mcp-url.ts';
 import type {
   ManagedConnectionProviderRegistry,
   ManagedConnectionValidationResult,
@@ -958,11 +959,54 @@ export async function markApiOAuthAccountExpired(
   config: ConfigStore,
   account: ConnectionAccount,
 ): Promise<void> {
-  const index = await buildConnectionScheduleIndex(config);
+  await markConnectionAccountNeedsAttention(config, account);
+}
+
+/** Demote one exact account revision and pause work that depends on it. */
+export async function markConnectionAccountNeedsAttention(
+  config: ConfigStore,
+  account: ConnectionAccount,
+): Promise<boolean> {
+  const workspaceAccounts = await config.listConnectionAccounts(account.workspaceId);
+  const index = await buildConnectionScheduleIndex(config, new Map([[
+    account.workspaceId,
+    workspaceAccounts.map((candidate) => candidate.id === account.id
+      ? { ...candidate, lifecycle: 'ready' as const }
+      : candidate),
+  ]]));
   if (!await putConnectionAccountIfCurrent(
     config, { ...account, lifecycle: 'needs_attention' }, account.revision,
-  )) return;
+  )) return false;
   await pauseDependentSchedules(config, account.id, index);
+  return true;
+}
+
+/** A provider cancellation may demote only the pending MCP attempt it consumed. */
+export async function markCancelledMcpOAuthAccount(
+  config: ConfigStore,
+  input: {
+    connectionAccountId: string;
+    serverUrl: string;
+    accountRevision?: number;
+    oauthAttemptId?: string;
+  },
+): Promise<boolean> {
+  if (input.accountRevision === undefined || !input.oauthAttemptId) return false;
+  let account: ConnectionAccount | undefined;
+  for (const installation of await config.listWorkspaceInstallations()) {
+    account = (await config.listConnectionAccounts(installation.workspaceId)).find(
+      (candidate) => candidate.id === input.connectionAccountId,
+    );
+    if (account) break;
+  }
+  const validated = account?.policy.kind === 'mcp'
+    ? validateMcpUrl(account.policy.url)
+    : undefined;
+  if (!account || account.lifecycle !== 'pending' || account.revision !== input.accountRevision ||
+      account.policy.kind !== 'mcp' || account.policy.authMode !== 'oauth' ||
+      account.policy.oauthAttemptId !== input.oauthAttemptId ||
+      !validated?.ok || validated.url !== input.serverUrl) return false;
+  return markConnectionAccountNeedsAttention(config, account);
 }
 
 export async function markManagedAccountExpired(
