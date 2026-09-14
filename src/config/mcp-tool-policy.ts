@@ -23,3 +23,21 @@ export function assertMcpToolArguments(
     }
   }
 }
+
+/** Reject arguments absent from the authenticated tool schema projection. */
+export function assertMcpToolArgumentKeys(
+  name: string,
+  argumentsValue: unknown,
+  propertyNames: readonly string[],
+): void {
+  if (argumentsValue === undefined) return;
+  if (argumentsValue === null || typeof argumentsValue !== 'object' || Array.isArray(argumentsValue)) {
+    throw new Error(`MCP tool ${name} requires an object argument.`);
+  }
+  const allowed = new Set(propertyNames);
+  for (const key of Object.keys(argumentsValue)) {
+    if (!allowed.has(key)) {
+      throw new Error(`MCP tool ${name} does not permit the argument ${key}.`);
+    }
+  }
+}

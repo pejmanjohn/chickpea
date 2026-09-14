@@ -8,6 +8,7 @@ import { classifyMcpError, safeMcpFailureText } from '../src/config/mcp-errors.t
 import {
   connectMcp,
   discoverMcpTools,
+  projectMcpToolInputSchema,
   type McpConnectInput,
   type McpServerConnection,
   type McpServerOptions,
@@ -78,13 +79,87 @@ test('protocol discovery preserves true, false and absent read-only declarations
     return Response.json({ jsonrpc: '2.0', id: rpc.id, result });
   };
   const result = await discoverMcpTools(baseInput, undefined, () => fakeFetch);
-  assert.deepEqual(result.tools, [
+  assert.deepEqual(result.tools.map(({ inputSchema: _inputSchema, ...entry }) => entry), [
     { name: 'run_query', readOnlyHint: true },
     { name: 'get_messages', readOnlyHint: false },
     { name: 'unknown' },
     { name: 'y'.repeat(120) },
   ]);
+  assert.ok(result.tools.every((entry) => entry.inputSchema?.ambiguous === true));
   assert.ok(methods.includes('tools/list'));
+});
+
+test('input-schema projection keeps exact required account evidence and fingerprints the whole schema', () => {
+  const first = projectMcpToolInputSchema({
+    type: 'object',
+    required: ['ad_account_id'],
+    properties: {
+      filters: { type: 'object', oneOf: [{ required: ['date_start'] }, { required: ['date_preset'] }] },
+      ad_account_id: { type: 'string' },
+    },
+  });
+  const reordered = projectMcpToolInputSchema({
+    properties: {
+      ad_account_id: { type: 'string' },
+      filters: { oneOf: [{ required: ['date_start'] }, { required: ['date_preset'] }], type: 'object' },
+    },
+    required: ['ad_account_id'],
+    type: 'object',
+  });
+  assert.deepEqual(first.accountFields, [{ name: 'ad_account_id', type: 'string', required: true }]);
+  assert.equal(first.ambiguous, false, 'unrelated nested filter alternatives do not invalidate account scope');
+  assert.match(first.fingerprint, /^[a-f0-9]{64}$/);
+  assert.equal(reordered.fingerprint, first.fingerprint, 'object key order does not change the schema fingerprint');
+  assert.notEqual(projectMcpToolInputSchema({
+    type: 'object', required: ['ad_account_id'],
+    properties: { ad_account_id: { type: 'string' }, limit: { type: 'number' } },
+  }).fingerprint, first.fingerprint, 'any bounded input-schema change changes the fingerprint');
+});
+
+test('input-schema projection fails closed for optional, alternate and composed account selectors', () => {
+  for (const schema of [
+    { type: 'object', properties: { account_id: { type: 'string' } } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, business_account_id: { type: 'string' },
+    } },
+    { type: 'object', oneOf: [{ required: ['account_id'] }], required: ['account_id'],
+      properties: { account_id: { type: 'string' } } },
+    { type: 'object', required: ['account_id'], properties: { account_id: { type: 'number' } } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, target: { type: 'object', properties: { ad_account_id: { type: 'string' } } },
+    } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, campaign_id: { type: 'string' },
+    } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, filters: { type: 'array', items: {
+        type: 'object', properties: { campaign_id: { type: 'string' } },
+      } },
+    } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, filters: { type: 'array', prefixItems: [{
+        type: 'object', properties: { ad_account_id: { type: 'string' } },
+      }] },
+    } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, filters: { type: 'object', additionalProperties: {
+        type: 'object', properties: { entity_id: { type: 'string' } },
+      } },
+    } },
+  ]) {
+    assert.equal(projectMcpToolInputSchema(schema).ambiguous, true);
+  }
+});
+
+test('input-schema projection bounds oversized property names without retaining them', () => {
+  const oversized = 'x'.repeat(100_000);
+  const projection = projectMcpToolInputSchema({
+    type: 'object', required: ['account_id'],
+    properties: { account_id: { type: 'string' }, [oversized]: { type: 'string' } },
+  });
+  assert.equal(projection.ambiguous, true);
+  assert.deepEqual(projection.propertyNames, ['account_id']);
+  assert.match(projection.fingerprint, /^[a-f0-9]{64}$/);
 });
 
 test('MCP output-schema discovery works when dynamic code generation is forbidden', () => {

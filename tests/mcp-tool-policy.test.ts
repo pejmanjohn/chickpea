@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertMcpToolArguments, mcpToolEffect } from '../src/config/mcp-tool-policy.ts';
+import { assertMcpToolArgumentKeys, assertMcpToolArguments, mcpToolEffect } from '../src/config/mcp-tool-policy.ts';
 import { resolveRuntimePlanMcpConnections } from '../src/config/profile-mcp.ts';
 
 test('owner effects override server hints without guessing unknown tools', () => {
@@ -16,6 +16,15 @@ test('exact argument restrictions reject missing, wrong-type and unapproved inpu
   for (const args of [{}, null, { data_source: ['postgres'] }, { data_source: 'redshift' }, { data_source: 'POSTGRES' }]) {
     assert.throws(() => assertMcpToolArguments('run_query', args, rules), /approved value/);
   }
+});
+
+test('authenticated schema property names reject undeclared invocation arguments', () => {
+  assert.doesNotThrow(() => assertMcpToolArgumentKeys('report', {
+    ad_account_id: 'act_123', date_preset: 'last_7d',
+  }, ['ad_account_id', 'date_preset']));
+  assert.throws(() => assertMcpToolArgumentKeys('report', {
+    ad_account_id: 'act_123', campaign_id: 'other',
+  }, ['ad_account_id']), /does not permit the argument campaign_id/);
 });
 
 test('the production MCP fetch seam rejects unapproved input before outbound network I/O', async () => {

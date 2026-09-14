@@ -20,6 +20,7 @@ interface ConnectorPresetCommon {
 interface McpPresetLane {
   url: string;
   transport: 'streamable-http';
+  toolAccessMode?: 'review';
   /** Optional provider-owned URL narrowing rendered in the recommended setup. */
   oauthPathScope?: 'sentry-org-project';
   auth:
@@ -239,6 +240,20 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsHint: 'Sign in to Linear and choose the workspace Chickpea should access.',
     notes:
       'Chickpea requests Linear read and write access so it can find, create, and update workspace objects.',
+  },
+  {
+    id: 'meta-ads',
+    name: 'Meta Ads',
+    aliases: ['Facebook Ads', 'Instagram Ads'],
+    description: 'Review advertising performance and manage approved Meta ad accounts.',
+    category: 'business',
+    accent: '#0866FF',
+    url: 'https://mcp.facebook.com/ads',
+    transport: 'streamable-http',
+    auth: { kind: 'oauth' },
+    toolAccessMode: 'review',
+    tokenDocsUrl: 'https://developers.facebook.com/documentation/ads-commerce/ads-ai-connectors/ads-mcp-server/ads-mcp-server-get-started',
+    notes: 'An administrator first configures a Meta developer app for this installation. After signing in, choose the ad accounts and tools this Agent may use.',
   },
   {
     id: 'atlassian',

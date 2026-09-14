@@ -384,6 +384,7 @@ export function projectEffectiveMcpConnections(
     lifecycleStatus: 'ready' as const,
     statusText: account.purpose ?? `${account.label} is connected.`,
     discoveredTools: [...policy.discoveredTools],
+    ...(policy.toolAccessMode ? { toolAccessMode: policy.toolAccessMode } : {}),
     ...(policy.toolPolicies ? { toolPolicies: policy.toolPolicies } : {}),
     allowedTools: [...policy.allowedTools],
     ...(policy.oauthScope ? { oauthScope: policy.oauthScope } : {}),

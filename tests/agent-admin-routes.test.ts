@@ -5154,3 +5154,85 @@ test(`custom MCP ${recoverFromToken ? 'token recovery' : 'OAuth creation'} requi
 });
 
 }
+
+test('Meta Ads installation config and account review reject forged grants', async () => {
+  let startedInput: StartMcpOAuthInput | undefined;
+  const fixture = harness(new FakeTransport(), { startMcpOAuth: async (input) => {
+    startedInput = input;
+    return { authorizationUrl: new URL('https://www.facebook.com/oauth'), state: 'opaque' };
+  } });
+  const request = (path: string, method: string, body?: unknown) => fixture.app.request(`http://localhost${path}`, {
+    method, headers: auth(), ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  const configPath = '/admin/api/settings/connectors/meta-ads';
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({ workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support' });
+    assert.equal((await request(configPath, 'PUT', { clientId: '123456' })).status, 200);
+    const created = await request('/admin/api/agents/agent_support/connections', 'POST', {
+      workspaceId: 'T_TEST', ownerKind: 'team', providerId: 'meta-ads', label: 'Meta Ads', allowedCapabilities: ['forged'],
+      mcp: { id: 'meta-ads', displayName: 'Meta Ads', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
+        authMode: 'oauth', headerNames: [], enabled: true, lifecycleStatus: 'ready', statusText: 'forged', presetId: 'meta-ads',
+        discoveredTools: [{ name: 'forged', readOnlyHint: true }], allowedTools: ['forged'], toolPolicies: { forged: { effect: 'read' } } },
+    });
+    assert.equal(created.status, 201, await created.clone().text());
+    const body = await created.json() as Record<string, any>;
+    const id = body.account.id;
+    assert.equal(body.account.policy.toolAccessMode, 'review');
+    assert.deepEqual(body.account.policy.discoveredTools, []);
+    assert.deepEqual(body.account.policy.allowedTools, []);
+    assert.deepEqual(body.account.policy.toolPolicies, {});
+    assert.deepEqual(body.binding.allowedCapabilities, []);
+    const startPath = `/admin/api/agents/agent_support/connections/${id}/oauth/mcp/start`;
+    await fixture.settings.deleteSetting('mcp.oauth-client.meta-ads');
+    const before = (await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!;
+    assert.equal((await request(startPath, 'POST', {})).status, 409);
+    assert.equal(startedInput, undefined);
+    assert.equal((await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!.revision, before.revision);
+    assert.equal((await request(configPath, 'PUT', { clientId: '123456' })).status, 200);
+    const status = await (await request(configPath, 'GET')).json() as Record<string, any>;
+    assert.equal(status.clientId, '123456');
+    assert.equal(status.callbackUrl, 'http://localhost/oauth/callback');
+    assert.equal(JSON.stringify(status).includes('generation'), false);
+    assert.equal((await request(startPath, 'POST', {})).status, 200);
+    assert.equal(startedInput!.callbackUrl, 'http://localhost/oauth/callback');
+    const pending = (await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!;
+    assert.equal(pending.policy.kind, 'mcp');
+    if (pending.policy.kind !== 'mcp') throw new Error('expected MCP');
+    const discovered = ['ads_get_ad_entities', 'ads_get_opportunity_score'].map((name) => ({ name, inputSchema: { propertyNames: ['account_id'], accountFields: [{ name: 'account_id' as const, type: 'string' as const, required: true }], ambiguous: false, fingerprint: 'a'.repeat(64) } }));
+    const ready = await fixture.store.putConnectionAccount({ ...pending, lifecycle: 'ready', policy: { ...pending.policy, discoveredTools: discovered } }, pending.revision);
+    const toolsPath = `/admin/api/agents/agent_support/connections/${id}/mcp/tools`;
+    assert.equal((await request(toolsPath, 'PUT', { expectedRevision: ready.revision, allowedTools: ['ads_get_ad_entities'] })).status, 400);
+    const saved = await request(toolsPath, 'PUT', { expectedRevision: ready.revision, allowedTools: ['ads_get_ad_entities'], approvedAccountIds: ['123'], toolPolicies: { ads_get_ad_entities: { effect: 'read', argumentConstraints: { account_id: ['999'] } } } });
+    assert.equal(saved.status, 200, await saved.clone().text());
+    const savedAccount = (await saved.json() as Record<string, any>).account;
+    assert.deepEqual(savedAccount.policy.toolPolicies.ads_get_ad_entities.argumentConstraints, { account_id: ['123'] });
+    assert.equal(savedAccount.policy.toolPolicies.ads_get_ad_entities.effect, 'read');
+    const expanded = await request(toolsPath, 'PUT', { expectedRevision: savedAccount.revision,
+      allowedTools: ['ads_get_ad_entities', 'ads_get_opportunity_score'], approvedAccountIds: ['123'] });
+    assert.equal(expanded.status, 200, await expanded.clone().text());
+    const expandedAccount = (await expanded.json() as Record<string, any>).account;
+    assert.deepEqual(expandedAccount.policy.allowedTools, ['ads_get_ad_entities', 'ads_get_opportunity_score']);
+    assert.deepEqual((await fixture.store.getAgentConnectionBindingForAccount(id))!.allowedCapabilities, []);
+    assert.equal((await request(configPath, 'PUT', { clientId: '123456' })).status, 200);
+    assert.equal((await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!.lifecycle, 'ready');
+    assert.equal((await request(configPath, 'PUT', { clientId: '789012' })).status, 200);
+    assert.equal((await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!.lifecycle, 'needs_attention');
+    assert.equal((await request(configPath, 'DELETE', {})).status, 200);
+    assert.equal((await (await request(configPath, 'GET')).json() as Record<string, any>).configured, false);
+  } finally { fixture.store.close(); fixture.settings.close(); }
+});
+
+test('members cannot configure the installation Meta app', async () => {
+  const fixture = harness(new FakeTransport(), {}, {}, { userId: 'member', membershipId: 'membership_member', organizationId: 'org_oss', role: 'member', authenticatorKind: 'test_slack_session', credentialId: 'session_member', correlationId: 'test_member', machine: false });
+  try {
+    for (const method of ['PUT', 'DELETE']) {
+      const response = await fixture.app.request('http://localhost/admin/api/settings/connectors/meta-ads', { method, headers: auth(), body: JSON.stringify({ clientId: '123' }) });
+      assert.equal(response.status, 403);
+    }
+    const read = await fixture.app.request('http://localhost/admin/api/settings/connectors/meta-ads', { headers: auth() });
+    const body = await read.json() as Record<string, any>;
+    assert.equal(body.canConfigure, false);
+    assert.equal(body.clientId, undefined);
+  } finally { fixture.store.close(); fixture.settings.close(); }
+});

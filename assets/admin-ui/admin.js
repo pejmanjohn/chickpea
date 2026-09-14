@@ -209,6 +209,7 @@
     settingsLoaded: false,
     settingsLoadGeneration: 0,
     connectionInventory: { accounts: [], loading: false, error: "", notice: "" },
+    metaAdsSettings: { loading: true, configured: false, canConfigure: false, clientId: "", callbackUrl: "", busy: false, error: "", notice: "" },
     connectorSettings: { provider: null, catalog: [], canConfigure: false, recoveryMode: false, impact: { accounts: 0, schedules: 0 }, loading: false, busy: "", error: "", notice: "", key: "", editing: false, confirm: "" },
     providerSettingsRequestId: 0,
     settingsError: "",
@@ -4790,6 +4791,7 @@
     var connectedAccountPresetIds = new Set(accountPresets.map(function (preset) { return preset.id; }));
     var catalogVisible = showCatalog !== false;
     var shown = (catalogVisible ? catalog : []).filter(function (preset) {
+      if (!accountMode && preset.toolAccessMode === "review") return false;
       var googleService = googleServicePresetById(preset.id);
       var managedPreset = managedPresetById(preset.id);
       if (googleService) {
@@ -5568,7 +5570,7 @@
       : "";
     var regularAction = '<span class="connection-row-action-placeholder" aria-hidden="true"></span>';
     var customMcpEditor = customMcpToolEditorHtml(entry);
-    var customMcpAction = account.policy && account.policy.kind === "mcp" && !account.policy.presetId && account.lifecycle === "ready"
+    var customMcpAction = account.policy && account.policy.kind === "mcp" && (!account.policy.presetId || account.policy.toolAccessMode === "review") && account.lifecycle === "ready"
       ? '<button type="button" class="btn btn-soft btn-sm" data-action="custom-mcp-tools-open" data-connection-id="' + esc(account.id) + '">' + ((account.policy.allowedTools || []).length ? 'Edit tools' : 'Choose tools') + '</button>' : '';
     var recoverMcpAction = account.policy && account.policy.kind === "mcp" && !account.policy.presetId && account.policy.authMode !== "oauth" && account.lifecycle !== "revoked"
       ? '<button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-enable-oauth" data-connection-id="' + esc(account.id) + '">Sign in with OAuth</button>' : '';
@@ -5623,6 +5625,7 @@
     if (oauth) {
       return '<div class="form-grid"><div class="field"><label class="field-label">Google OAuth client ID</label><input class="input mono" value="' + esc(form.oauthClientId || "") + '" autocomplete="off" data-action="connection-account-oauth-client-id"></div><div class="field"><label class="field-label">Google OAuth client secret</label><input class="input mono" type="password" value="' + esc(form.oauthClientSecret || "") + '" autocomplete="off" data-action="connection-account-oauth-client-secret"></div></div><p class="hint">Use the OAuth client for this Chickpea deployment. The client secret is write-only.</p>';
     }
+    if (mcpOauth && preset && preset.id === "meta-ads") return '<p class="hint">An administrator must first configure the Meta App ID in Settings → Connectors. After sign-in, choose the ad accounts and tools this Agent may use.</p>';
     if (mcpOauth) {
       return '<p class="hint">You will sign in with ' + esc(preset ? preset.name : "the provider") + ' after adding this connection.</p>';
     }
@@ -5691,9 +5694,12 @@
 
   function customMcpToolChoices(tools, selected) {
     var busy = !!((state.connectionAccountForm || state.customMcpToolEditor || {}).busy);
-    var controls = '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>';
+    var review = state.customMcpToolEditor && state.customMcpToolEditor.metaAds;
+    var controls = review ? '<p class="hint">Select each tool deliberately. Change-capable tools can alter ads and may affect spending.</p>' : '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>';
     return controls + (tools.map(function (tool) {
-      return '<label class="field"><span><input type="checkbox" data-action="custom-mcp-tool" data-tool="' + esc(tool.name) + '"' + (selected.indexOf(tool.name) >= 0 ? ' checked' : '') + '> ' + esc(tool.title || tool.name) + '</span>' + (tool.description ? '<span class="hint">' + esc(tool.description) + '</span>' : '') + '</label>';
+      var supported = !review || tool.available === true;
+      if (!supported) return '<div class="field"><span>' + esc(tool.title || tool.name) + '</span><span class="hint">Not yet supported with ad account restrictions.</span></div>';
+      return '<label class="field"><span><input type="checkbox" data-action="custom-mcp-tool" data-tool="' + esc(tool.name) + '"' + (selected.indexOf(tool.name) >= 0 ? ' checked' : '') + '> ' + esc(tool.title || tool.name) + (review ? (tool.effect === 'read' ? ' · Reporting' : ' · May change ads') : '') + '</span>' + (tool.description ? '<span class="hint">' + esc(tool.description) + '</span>' : '') + '</label>';
     }).join("") || '<p class="hint">This server returned no tools.</p>');
   }
 
@@ -5722,10 +5728,13 @@
     if (!entry || entry.account.policy.kind !== 'mcp') return;
     var ceiling = entry.binding && entry.binding.allowedCapabilities || [];
     state.connectionAccountForm = null;
-    state.customMcpToolEditor = { accountId: accountId, revision: entry.account.revision,
-      tools: (entry.account.policy.discoveredTools || []).filter(function (tool) { return !ceiling.length || ceiling.indexOf(tool.name) >= 0; }),
+    var metaAds = entry.account.policy.toolAccessMode === 'review' || entry.account.policy.presetId === 'meta-ads' || entry.account.policy.url === 'https://mcp.facebook.com/ads';
+    var accountIds = [];
+    Object.values(entry.account.policy.toolPolicies || {}).forEach(function (policy) { Object.values(policy.argumentConstraints || {}).forEach(function (ids) { ids.forEach(function (id) { if (accountIds.indexOf(id) < 0) accountIds.push(id); }); }); });
+    state.customMcpToolEditor = { accountId: accountId, revision: entry.account.revision, metaAds: metaAds, accountIds: accountIds.join(', '),
+      tools: (entry.account.policy.discoveredTools || []).filter(function (tool) { return !ceiling.length || ceiling.indexOf(tool.name) >= 0; }).map(function (tool) { return Object.assign({}, tool, (entry.mcpToolAccess || []).find(function (access) { return access.name === tool.name; }) || {}); }),
       selectedTools: entry.account.policy.allowedTools.slice(), busy: false, error: '' };
-    if (selectAllIfEmpty && !state.customMcpToolEditor.selectedTools.length) {
+    if (!metaAds && selectAllIfEmpty && !state.customMcpToolEditor.selectedTools.length) {
       state.customMcpToolEditor.selectedTools = state.customMcpToolEditor.tools.map(function (tool) { return tool.name; });
     }
     render();
@@ -5734,7 +5743,7 @@
   function customMcpToolEditorHtml(entry) {
     var editor = state.customMcpToolEditor;
     if (!editor || editor.accountId !== entry.account.id) return '';
-    return '<div class="skill-form"><h3>Choose tools</h3>' + customMcpToolChoices(editor.tools, editor.selectedTools) +
+    return '<div class="skill-form"><h3>Choose access</h3>' + (editor.metaAds ? '<div class="field"><label class="field-label" for="meta-ads-account-ids">Ad account IDs</label><input id="meta-ads-account-ids" class="input mono" data-action="meta-ads-account-ids" value="' + esc(editor.accountIds) + '"><p class="hint">Copy the ad account IDs from Ads Manager, separated by commas. Tools are restricted to these accounts.</p></div>' : '') + customMcpToolChoices(editor.tools, editor.selectedTools) +
       (editor.error ? '<div class="err" role="alert">' + esc(editor.error) + '</div>' : '') +
       '<div class="skill-form-actions"><button class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-cancel"' + (editor.busy ? ' disabled' : '') + '>Cancel</button><button class="btn btn-primary btn-sm" data-action="custom-mcp-tools-save"' + (editor.busy ? ' disabled' : '') + '>Save tool access</button></div></div>';
   }
@@ -5746,7 +5755,8 @@
     editor.busy = true;
     render();
     postJson('/admin/api/agents/' + encodeURIComponent(agentId) + '/connections/' + encodeURIComponent(editor.accountId) + '/mcp/tools', 'PUT', {
-      expectedRevision: editor.revision, allowedTools: editor.selectedTools
+      expectedRevision: editor.revision, allowedTools: editor.selectedTools,
+      ...(editor.metaAds ? { approvedAccountIds: editor.accountIds.split(/[\s,]+/).filter(Boolean) } : {})
     }).then(function () {
       state.customMcpToolEditor = null;
       invalidateAgentConnections(agentId);
@@ -8117,6 +8127,39 @@
     });
   }
 
+  function metaAdsSettingsHtml() {
+    var current = state.metaAdsSettings;
+    var head = '<section class="section"><div class="section-head"><div><h2 class="section-title">Meta Ads</h2><p class="hint">Connect directly to Meta using your own developer app. Each Agent signs in and receives only the ad accounts and tools you select.</p></div></div>';
+    if (current.loading) return head + '<p class="hint">Loading Meta Ads settings&hellip;</p></section>';
+    if (current.error && !current.callbackUrl) return head + '<p class="field-error" role="alert">' + esc(current.error) + '</p></section>';
+    if (!current.canConfigure) return head + '<p class="hint">' + (current.configured ? 'Meta Ads is configured. Add it from an Agent’s Connections tab.' : 'A Chickpea owner or admin must configure the Meta app for this installation.') + '</p></section>';
+    return head + '<p class="hint">In Meta for Developers, enable the Ads MCP use case and Facebook Login for Business. Register this exact OAuth callback:</p><p><code>' + esc(current.callbackUrl || 'Complete installation setup first.') + '</code></p>' +
+      '<div class="field"><label class="field-label" for="meta-ads-app-id">Meta App ID</label><input id="meta-ads-app-id" class="input mono" autocomplete="off" inputmode="numeric" data-action="meta-ads-app-id" value="' + esc(current.clientId) + '"' + (current.busy ? ' disabled' : '') + '></div><p class="hint">The App ID is public; no app secret is stored. Changing or removing it requires connected accounts to sign in again.</p>' +
+      (current.error ? '<p class="field-error" role="alert">' + esc(current.error) + '</p>' : '') + (current.notice ? '<p class="hint" role="status">' + esc(current.notice) + '</p>' : '') +
+      '<div class="skill-form-actions"><button type="button" class="btn btn-primary btn-sm" data-action="meta-ads-save"' + (current.busy || !current.callbackUrl ? ' disabled' : '') + '>Save App ID</button>' + (current.configured ? '<button type="button" class="btn btn-ghost btn-sm" data-action="meta-ads-remove"' + (current.busy ? ' disabled' : '') + '>Remove app configuration</button>' : '') + '</div></section>';
+  }
+
+  function loadMetaAdsSettings(generation) {
+    var current = state.metaAdsSettings;
+    current.loading = true;
+    return api('/admin/api/settings/connectors/meta-ads', { cache: 'no-store' }).then(function (body) {
+      if (!settingsLoadIsCurrent(generation)) return;
+      Object.assign(current, body, { loading: false, error: '' });
+      render();
+    }).catch(function () { current.loading = false; current.error = 'Could not load Meta Ads settings. Reopen Settings to retry.'; render(); });
+  }
+
+  function saveMetaAdsSettings(remove) {
+    var current = state.metaAdsSettings;
+    if (current.busy || !current.canConfigure) return;
+    current.busy = true; current.error = ''; current.notice = ''; render();
+    postJson('/admin/api/settings/connectors/meta-ads', remove ? 'DELETE' : 'PUT', remove ? {} : { clientId: String(current.clientId || '').trim() }).then(function () {
+      current.busy = false;
+      current.notice = remove ? 'Meta app configuration removed.' : 'Meta App ID saved. Add Meta Ads from an Agent’s Connections tab.';
+      return loadMetaAdsSettings(state.settingsLoadGeneration);
+    }).catch(function (error) { current.busy = false; current.error = error.serverMessage || error.message || 'Could not save the Meta App ID.'; render(); });
+  }
+
   function connectorSettingsProviderHtml() {
     var settings = state.connectorSettings;
     var provider = settings.provider;
@@ -8212,7 +8255,7 @@
   }
 
   function connectorsSettingsHtml() {
-    return connectorSettingsProviderHtml() + connectionInventoryHtml();
+    return metaAdsSettingsHtml() + connectorSettingsProviderHtml() + connectionInventoryHtml();
   }
 
   function connectorSettingsConfirmModalHtml() {
@@ -8791,6 +8834,7 @@
       render();
       loadConnectionInventory(generation);
       loadConnectorSettings(generation);
+      loadMetaAdsSettings(generation);
       return;
     }
     render();
@@ -11194,6 +11238,8 @@
       }
     }
     if (action === "connection-inventory-retry") { loadConnectionInventory(state.settingsLoadGeneration); }
+    if (action === "meta-ads-save") saveMetaAdsSettings(false);
+    if (action === "meta-ads-remove") saveMetaAdsSettings(true);
     if (action === "connector-settings-retry-load") { loadConnectorSettings(state.settingsLoadGeneration); }
     if (action === "connector-settings-edit-key") {
       state.connectorSettings.editing = true;
@@ -11544,6 +11590,7 @@
         syncGoogleApiPolicy(state.apiConnectionEditor);
         render();
       } else if (selectedPreset) {
+        if (selectedPreset.toolAccessMode === "review") return;
         collectProfileDraft();
         state.customConnectionLane = null;
         state.connectorGallerySearch = "";
@@ -11948,6 +11995,8 @@
       state.connectionAccountForm.error = "";
       render();
     }
+    if (action === "meta-ads-app-id") state.metaAdsSettings.clientId = target.value;
+    if (action === "meta-ads-account-ids" && state.customMcpToolEditor) state.customMcpToolEditor.accountIds = target.value;
     if (action === "custom-mcp-tool") {
       var selection = state.connectionAccountForm || state.customMcpToolEditor;
       if (selection && !selection.busy) {
@@ -14747,7 +14796,7 @@
       if (state.oauthReturn.lane === "mcp" && state.oauthReturn.status === "connected") {
         await loadAgentConnections(state.profileDraft.id);
         var returnedAccount = (state.agentConnections.attached || []).find(function (entry) { return entry.account.id === state.oauthReturn.connectionId; });
-        if (returnedAccount && returnedAccount.account.policy.kind === "mcp" && !returnedAccount.account.policy.presetId) {
+        if (returnedAccount && returnedAccount.account.policy.kind === "mcp" && (!returnedAccount.account.policy.presetId || returnedAccount.account.policy.toolAccessMode === "review")) {
           openCustomMcpTools(returnedAccount.account.id, true);
         }
       }

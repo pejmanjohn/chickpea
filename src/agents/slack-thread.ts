@@ -945,6 +945,17 @@ export async function createSlackAgentRuntime(
         ],
         ...(input.actorMembershipId
           ? {
+              resolveCurrentConnection: async (connectionAccountId: string) => {
+                if (!(await isActiveConnectionActor({
+                  identity: getIdentityStore(env), workspaceId,
+                  actorMembershipId: input.actorMembershipId!,
+                }))) return undefined;
+                const current = await resolveEffectiveConnectionAccounts({
+                  config: store, workspaceId, agentId: config.agent.id,
+                  actorMembershipId: input.actorMembershipId!,
+                });
+                return projectEffectiveMcpConnections(current).find((server) => server.id === connectionAccountId);
+              },
               resolveBearerCredential: (connectionAccountId: string) =>
                 resolveConnectionSecretForInvocation({
                   config: store,

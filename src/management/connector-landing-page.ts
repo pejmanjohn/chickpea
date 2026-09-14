@@ -15,6 +15,17 @@ export interface ConnectorLandingPageInput {
   avatarUrl?: string;
   failureMessage?: string;
   writeAvailable?: boolean;
+  accessReview?: {
+    tools: Array<{
+      name: string;
+      title?: string;
+      description?: string;
+      effect?: 'read' | 'write';
+      available: boolean;
+      selected: boolean;
+    }>;
+    approvedAccountIds: string[];
+  };
 }
 
 export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInput): string {
@@ -153,6 +164,66 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
   });
 }
 
+export function renderCatalogConnectionAccessReviewPage(
+  input: ConnectorLandingPageInput,
+): string {
+  const { setup, agent, accessReview } = input;
+  if (!accessReview) return renderManagedConnectionUnavailablePage();
+  const connector = setup.target.targetLabel;
+  const availableCount = accessReview.tools.filter(({ available }) => available).length;
+  const toolChoices = accessReview.tools.map((tool) => {
+    const label = tool.title?.trim() || tool.name;
+    const description = tool.description?.trim();
+    const effectLabel = tool.effect === 'read'
+      ? 'Reporting access'
+      : tool.effect === 'write' ? 'May change ads' : undefined;
+    return `<label class="tool-option${tool.available ? '' : ' tool-option-unavailable'}">
+      <input type="checkbox" name="tool:${escapeHtml(tool.name)}"${tool.selected ? ' checked' : ''}${tool.available ? '' : ' disabled'}>
+      <span class="tool-option-copy"><strong>${escapeHtml(label)}</strong>${effectLabel ? `<span class="tool-effect">${escapeHtml(effectLabel)}</span>` : ''}${description ? `<span>${escapeHtml(description)}</span>` : ''}${tool.available ? '' : '<span>Not yet supported with ad account restrictions.</span>'}</span>
+    </label>`;
+  }).join('');
+  const failureMessage = input.failureMessage ?? '';
+  return pageShell({
+    title: `Review ${connector} access`,
+    surface: 'connector-access-review',
+    content: `
+      <main class="flow-shell setup-shell" aria-labelledby="flow-title">
+        ${brandHeader()}
+        <section class="flow-content">
+          ${agentIdentity(agent, input.avatarUrl)}
+          <h1 id="flow-title">Choose what ${escapeHtml(agent.name)} can use</h1>
+          <p class="setup-lead">${escapeHtml(connector)} is signed in. Select the tools and ad accounts this Agent may use.</p>
+          <section class="setup-card">
+            <div class="connector-row">
+              ${connectorLogo(setup)}
+              <strong>${escapeHtml(connector)}</strong>
+            </div>
+            <form id="access-review-form" method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/mcp/access">
+              <section class="choice-block" aria-labelledby="account-access-title">
+                <label for="ad-account-ids"><h2 id="account-access-title">Ad accounts</h2></label>
+                <p>Enter Meta ad account IDs, one per line. Every selected tool is limited to these accounts.</p>
+                <textarea class="account-id-input" id="ad-account-ids" name="adAccountIds" rows="4" autocomplete="off" placeholder="act_1234567890">${escapeHtml(accessReview.approvedAccountIds.join('\n'))}</textarea>
+              </section>
+              <section class="choice-block" aria-labelledby="tool-access-title">
+                <h2 id="tool-access-title">Tools</h2>
+                <p>Selected tools can read Meta Ads reporting data. Tools outside Chickpea&rsquo;s reviewed reporting contract remain unavailable.</p>
+                <div class="tool-options">${toolChoices || '<p>No tools were returned by Meta Ads.</p>'}</div>
+                ${availableCount === 0 ? '<p class="review-note">None of the discovered tools can yet be safely limited to an ad account, so access remains off.</p>' : ''}
+              </section>
+              <p class="security-copy">These choices become the maximum access available to ${escapeHtml(agent.name)}. You can change or remove the connection later in Admin.</p>
+              <p class="flow-alert" id="flow-alert" role="alert"${failureMessage ? '' : ' hidden'}>${escapeHtml(failureMessage)}</p>
+            </form>
+            <div class="flow-actions">
+              <a class="text-button" href="/admin/agents/${encodeURIComponent(agent.id)}">Cancel</a>
+              <button class="primary-button" type="submit" form="access-review-form" disabled>Save access</button>
+            </div>
+          </section>
+        </section>
+      </main>
+      <script nonce="setup">${accessReviewScript()}</script>`,
+  });
+}
+
 export function renderManagedConnectionDeparturePage(
   input: ConnectorLandingPageInput,
   authorizationUrl: string,
@@ -288,6 +359,10 @@ function setupScript(): string {
 
 function catalogSetupScript(input: { connector: string; agentName: string }): string {
   return `(function(){var form=document.getElementById("connector-form"),button=document.querySelector('button[form="connector-form"][value="authorize"]'),alert=document.getElementById("flow-alert"),owner=document.getElementById("connection-owner"),ownerHelp=document.getElementById("owner-help"),connector=${jsonForScript(input.connector)},agent=${jsonForScript(input.agentName)},neutral="Choose whether this connection is personal to you or shared with everyone who can use "+agent+".";if(!form||!button||!alert||!owner||!ownerHelp)return;function selectedOwner(){return owner.value==="member"||owner.value==="team"}function updateOwner(){ownerHelp.textContent=owner.value==="team"?"Everyone who can use "+agent+" can use this connection.":owner.value==="member"?"Only you can use this connection, and only when you invoke "+agent+".":neutral;button.disabled=!selectedOwner()}owner.addEventListener("change",updateOwner);form.addEventListener("submit",async function(event){event.preventDefault();if(!selectedOwner()){alert.textContent="Choose Personal or Team to continue.";alert.hidden=false;updateOwner();return}var label=button.textContent;button.disabled=true;button.textContent="Preparing "+connector+"…";alert.hidden=true;try{var response=await fetch(form.action,{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded;charset=UTF-8","x-requested-with":"chickpea-setup"},body:new URLSearchParams(new FormData(form)),credentials:"same-origin"});var body=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(String(body.message||"Chickpea could not prepare this connection. Try again."));if(body.authorizationUrl){var target=new URL(String(body.authorizationUrl));if(target.protocol!=="https:")throw new Error("Chickpea received an invalid secure sign-in URL.");location.assign(target.href);return}location.replace(location.pathname)}catch(error){alert.textContent=error instanceof Error?error.message:"Chickpea could not prepare this connection. Try again.";alert.hidden=false;button.textContent=label;updateOwner()}});updateOwner()})();`;
+}
+
+function accessReviewScript(): string {
+  return `(function(){var form=document.getElementById("access-review-form"),button=document.querySelector('button[form="access-review-form"]'),accounts=document.getElementById("ad-account-ids"),tools=form&&form.querySelectorAll('input[type="checkbox"]:not(:disabled)');if(!form||!button||!accounts||!tools)return;function update(){var selected=false;tools.forEach(function(tool){if(tool.checked)selected=true});button.disabled=!selected||!accounts.value.trim()}tools.forEach(function(tool){tool.addEventListener("change",update)});accounts.addEventListener("input",update);form.addEventListener("submit",function(){button.disabled=true;button.textContent="Saving access…"});update()})();`;
 }
 
 function pollScript(setupId: string): string {
@@ -529,6 +604,39 @@ body {
   text-wrap: pretty;
 }
 .security-copy { margin: 0; padding: 22px 24px 0; }
+.tool-options { display: grid; gap: 10px; margin-top: 16px; }
+.tool-option {
+  align-items: start;
+  background: var(--card);
+  border: 1px solid rgba(59, 50, 32, .18);
+  border-radius: 12px;
+  cursor: pointer;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  padding: 13px 14px;
+}
+.tool-option:has(input:checked) { border-color: var(--gold-press); box-shadow: 0 0 0 1px var(--gold-press); }
+.tool-option input { height: 18px; margin: 2px 0 0; width: 18px; }
+.tool-option-copy { display: grid; gap: 3px; min-width: 0; }
+.tool-option-copy strong { overflow-wrap: anywhere; }
+.tool-option-copy span { color: var(--muted); font-size: .88rem; line-height: 1.4; }
+.tool-option-copy .tool-effect { color: var(--green-deep); font-weight: 800; }
+.tool-option-unavailable { cursor: not-allowed; opacity: .66; }
+.review-note { color: var(--danger) !important; font-weight: 700; }
+.account-id-input {
+  background: var(--card);
+  border: 1px solid rgba(59, 50, 32, .25);
+  border-radius: 12px;
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.5;
+  margin-top: 14px;
+  padding: 12px 14px;
+  resize: vertical;
+  width: 100%;
+}
+.account-id-input:focus-visible { outline: 3px solid rgba(176, 84, 21, .42); outline-offset: 2px; }
 .flow-alert {
   background: #fff0ea;
   border: 1px solid rgba(168, 63, 52, .22);

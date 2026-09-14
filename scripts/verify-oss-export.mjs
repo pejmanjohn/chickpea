@@ -766,6 +766,7 @@ function verifyNpmPackManifest(entries, packageJson) {
     'docs/runbooks/agent-first-acceptance-2026-08-21.md',
     'docs/runbooks/coding-sandbox-deployment.md',
     'docs/runbooks/composio-managed-connectors.md',
+    'docs/runbooks/meta-ads-connector.md',
     'docs/runbooks/product-telemetry.md',
     'docs/runbooks/runtime-observability.md',
     'docs/runbooks/slack-message-identity.md',

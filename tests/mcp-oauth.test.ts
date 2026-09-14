@@ -7,11 +7,20 @@ import {
   completeMcpOAuthAuthorization,
   createMcpOAuthClientMetadata,
   createMcpOAuthClientMetadataDocument,
+  invalidateConfiguredMcpOAuthAuthorization,
   McpOAuthError,
   mcpOAuthSettingKeys,
+  readMcpOAuthSetupContinuation,
   resolveMcpOAuthAccessToken,
   startMcpOAuthAuthorization,
 } from '../src/config/mcp-oauth.ts';
+import {
+  configuredMcpOAuthClientDescriptor,
+  META_ADS_MCP_SERVER_URL,
+  META_ADS_OAUTH_ISSUER,
+  removeConfiguredMcpOAuthClient,
+  saveConfiguredMcpOAuthClient,
+} from '../src/config/mcp-oauth-clients.ts';
 import {
   SqliteSettingsStore,
   type SettingsPatch,
@@ -25,6 +34,7 @@ const METADATA_URL =
   'https://chickpea.example.test/.well-known/oauth-client-metadata.json';
 
 interface FakeOAuthServerOptions {
+  authorizationServerUrl?: string;
   clientSecret?: string;
   clientSecretExpiresAt?: number;
   cimd?: boolean;
@@ -32,6 +42,9 @@ interface FakeOAuthServerOptions {
   exchangeError?: string;
   initialExpiresIn?: number;
   issuer?: string;
+  expectedClientId?: string;
+  onExchange?: () => void | Promise<void>;
+  onRefresh?: () => void | Promise<void>;
   omitInitialRefreshToken?: boolean;
   omitRefreshTokenOnRefresh?: boolean;
   registrationAuthMethod?: 'client_secret_basic' | 'client_secret_post' | 'none';
@@ -44,6 +57,23 @@ interface FakeOAuthServerOptions {
 function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
   const serverUrl = options.serverUrl ?? SERVER_URL;
   const parsedServerUrl = new URL(serverUrl);
+  const authorizationServerUrl = options.authorizationServerUrl ?? 'https://auth.example.test';
+  const parsedAuthorizationServerUrl = new URL(authorizationServerUrl);
+  const authorizationMetadataUrl =
+    `${parsedAuthorizationServerUrl.origin}/.well-known/oauth-authorization-server` +
+    `${parsedAuthorizationServerUrl.pathname === '/' ? '' : parsedAuthorizationServerUrl.pathname}`;
+  const authorizationEndpoint = new URL(
+    `${parsedAuthorizationServerUrl.pathname.replace(/\/$/, '')}/authorize`,
+    parsedAuthorizationServerUrl.origin,
+  ).href;
+  const tokenEndpoint = new URL(
+    `${parsedAuthorizationServerUrl.pathname.replace(/\/$/, '')}/token`,
+    parsedAuthorizationServerUrl.origin,
+  ).href;
+  const registrationEndpoint = new URL(
+    `${parsedAuthorizationServerUrl.pathname.replace(/\/$/, '')}/register`,
+    parsedAuthorizationServerUrl.origin,
+  ).href;
   const protectedResourceMetadataUrl =
     `${parsedServerUrl.origin}/.well-known/oauth-protected-resource${parsedServerUrl.pathname}`;
   const calls: Array<{ url: string; body?: URLSearchParams }> = [];
@@ -70,19 +100,19 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
     ) {
       return Response.json({
         resource: serverUrl,
-        authorization_servers: ['https://auth.example.test'],
+        authorization_servers: [authorizationServerUrl],
         scopes_supported: ['read', 'write'],
       });
     }
     if (
       url ===
-      'https://auth.example.test/.well-known/oauth-authorization-server'
+      authorizationMetadataUrl
     ) {
       return Response.json({
-        issuer: options.issuer ?? 'https://auth.example.test',
-        authorization_endpoint: 'https://auth.example.test/authorize',
-        token_endpoint: 'https://auth.example.test/token',
-        registration_endpoint: 'https://auth.example.test/register',
+        issuer: options.issuer ?? authorizationServerUrl,
+        authorization_endpoint: authorizationEndpoint,
+        token_endpoint: tokenEndpoint,
+        registration_endpoint: registrationEndpoint,
         response_types_supported: ['code'],
         grant_types_supported: ['authorization_code', 'refresh_token'],
         code_challenge_methods_supported: options.codeChallengeMethods ?? ['S256'],
@@ -90,7 +120,7 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
         client_id_metadata_document_supported: options.cimd ?? false,
       });
     }
-    if (url === 'https://auth.example.test/register') {
+    if (url === registrationEndpoint) {
       registrations += 1;
       await new Promise((resolve) =>
         setTimeout(resolve, options.registrationDelayMs ?? 10),
@@ -111,7 +141,12 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
           : {}),
       });
     }
-    if (url === 'https://auth.example.test/token') {
+    if (url === tokenEndpoint) {
+      if (options.expectedClientId) {
+        assert.equal(body?.get('client_id'), options.expectedClientId);
+        assert.equal(body?.get('client_secret'), null);
+        assert.equal(request.headers.get('authorization'), null);
+      }
       if (options.clientSecret) {
         assert.equal(body?.get('client_id'), 'registered-client');
         assert.equal(body?.get('client_secret'), options.clientSecret);
@@ -120,6 +155,7 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
       const grantType = body?.get('grant_type');
       if (grantType === 'authorization_code') {
         exchanges += 1;
+        await options.onExchange?.();
         assert.equal(body?.get('code'), 'provider-code');
         assert.equal(body?.get('redirect_uri'), CALLBACK_URL);
         assert.ok(body?.get('code_verifier'));
@@ -142,6 +178,7 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
       }
       if (grantType === 'refresh_token') {
         refreshes += 1;
+        await options.onRefresh?.();
         await new Promise((resolve) => setTimeout(resolve, 10));
         if (options.refreshError) {
           return Response.json(
@@ -212,6 +249,591 @@ test('CIMD document binds client_id to its exact HTTPS document URL', () => {
       error instanceof McpOAuthError &&
       error.code === 'oauth_discovery_failed',
   );
+});
+
+test('Meta requires local configuration before any provider discovery', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({
+    serverUrl: META_ADS_MCP_SERVER_URL,
+    authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+  });
+  try {
+    await assert.rejects(
+      startMcpOAuthAuthorization({
+        ref: REF,
+        serverUrl: META_ADS_MCP_SERVER_URL,
+        callbackUrl: CALLBACK_URL,
+      }, { settings, fetchFn: oauth.fetchFn }),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'oauth_configuration_required',
+    );
+    assert.deepEqual(oauth.calls, []);
+  } finally {
+    settings.close();
+  }
+});
+
+test('Meta origin variants cannot bypass configured-client mode through DCR', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  let providerCalls = 0;
+  const dependencies = {
+    settings,
+    fetchFn: async () => {
+      providerCalls += 1;
+      throw new Error('provider must not be reached');
+    },
+  };
+  try {
+    for (const serverUrl of [
+      `${META_ADS_MCP_SERVER_URL}/`,
+      `${META_ADS_MCP_SERVER_URL}?mode=other`,
+      'https://mcp.facebook.com/other',
+    ]) {
+      await assert.rejects(
+        startMcpOAuthAuthorization({ ref: REF, serverUrl, callbackUrl: CALLBACK_URL }, dependencies),
+        (error: unknown) =>
+          error instanceof McpOAuthError && error.code === 'oauth_discovery_failed',
+      );
+    }
+    assert.equal(providerCalls, 0);
+  } finally {
+    settings.close();
+  }
+});
+
+test('Meta uses its configured public client and retains a non-consuming setup continuation', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({
+    serverUrl: META_ADS_MCP_SERVER_URL,
+    authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+    expectedClientId: '1234567890',
+  });
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    randomId: (() => {
+      let nonce = 0;
+      return () => `meta-state-${++nonce}`;
+    })(),
+    validateConnection: () => true,
+  };
+  try {
+    const configuration = await saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '1234567890' },
+      settings,
+      { randomId: () => '11111111-1111-4111-8111-111111111111' },
+    );
+    const first = await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: META_ADS_MCP_SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+      setupOperationId: 'setup_first',
+    }, dependencies);
+    const current = await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: META_ADS_MCP_SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+      setupOperationId: 'setup_current',
+    }, dependencies);
+
+    assert.equal(oauth.counts.registrations, 0);
+    assert.equal(current.authorizationUrl.searchParams.get('client_id'), '1234567890');
+    assert.equal(current.authorizationUrl.searchParams.get('code_challenge_method'), 'S256');
+    await assert.rejects(
+      readMcpOAuthSetupContinuation(first.state, dependencies),
+      (error: unknown) => error instanceof McpOAuthError && error.code === 'invalid_state',
+    );
+    assert.equal(await readMcpOAuthSetupContinuation(current.state, dependencies), 'setup_current');
+    assert.equal(await readMcpOAuthSetupContinuation(current.state, dependencies), 'setup_current');
+
+    const pending = JSON.parse(
+      (await settings.getSetting(mcpOAuthSettingKeys(REF)[1]))!,
+    ) as Record<string, unknown>;
+    const client = JSON.parse(
+      (await settings.getSetting(mcpOAuthSettingKeys(REF)[0]))!,
+    ) as Record<string, unknown>;
+    assert.equal(pending.configurationGeneration, configuration.generation);
+    assert.equal(client.configurationGeneration, configuration.generation);
+    assert.equal(JSON.stringify(client).includes('client_secret'), false);
+
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: current.state },
+      dependencies,
+    );
+    assert.equal(
+      await resolveMcpOAuthAccessToken(
+        { ref: REF, serverUrl: META_ADS_MCP_SERVER_URL },
+        dependencies,
+      ),
+      'access-initial',
+    );
+    const token = JSON.parse(
+      (await settings.getSetting(mcpOAuthSettingKeys(REF)[2]))!,
+    ) as Record<string, unknown>;
+    assert.equal(token.configurationGeneration, configuration.generation);
+  } finally {
+    settings.close();
+  }
+});
+
+test('Meta rejects an authorization server outside its reviewed descriptor', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({ serverUrl: META_ADS_MCP_SERVER_URL });
+  try {
+    await saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '1234567890' },
+      settings,
+      { randomId: () => '11111111-1111-4111-8111-111111111111' },
+    );
+    await assert.rejects(
+      startMcpOAuthAuthorization({
+        ref: REF,
+        serverUrl: META_ADS_MCP_SERVER_URL,
+        callbackUrl: CALLBACK_URL,
+      }, { settings, fetchFn: oauth.fetchFn, validateConnection: () => true }),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'oauth_discovery_failed',
+    );
+    assert.equal(oauth.calls.length, 1);
+    assert.equal(oauth.counts.registrations, 0);
+  } finally {
+    settings.close();
+  }
+});
+
+test('expired setup continuation is rejected without consuming newer state', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  let now = 1_000_000;
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => now,
+    randomId: () => 'continuation-state',
+  };
+  try {
+    const started = await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+      setupOperationId: 'setup_expiring',
+    }, dependencies);
+    now += 20 * 60_000;
+    await assert.rejects(
+      readMcpOAuthSetupContinuation(started.state, dependencies),
+      (error: unknown) => error instanceof McpOAuthError && error.code === 'invalid_state',
+    );
+    assert.ok(await settings.getSetting(mcpOAuthSettingKeys(REF)[1]));
+  } finally {
+    settings.close();
+  }
+});
+
+test('Meta callback rejects removal and same-ID re-add before exchange', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({
+    serverUrl: META_ADS_MCP_SERVER_URL,
+    authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+    expectedClientId: '1234567890',
+  });
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    randomId: () => 'meta-state',
+    validateConnection: () => true,
+  };
+  try {
+    await saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '1234567890' },
+      settings,
+      { randomId: () => '11111111-1111-4111-8111-111111111111' },
+    );
+    const started = await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: META_ADS_MCP_SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+    }, dependencies);
+    await removeConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      settings,
+      { randomId: () => '22222222-2222-4222-8222-222222222222' },
+    );
+    await saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '1234567890' },
+      settings,
+      { randomId: () => '33333333-3333-4333-8333-333333333333' },
+    );
+
+    await assert.rejects(
+      completeMcpOAuthAuthorization(
+        { code: 'provider-code', state: started.state },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'reauthorization_required',
+    );
+    assert.equal(oauth.counts.exchanges, 0);
+    assert.equal(await settings.getSetting(mcpOAuthSettingKeys(REF)[2]), undefined);
+  } finally {
+    settings.close();
+  }
+});
+
+test('Meta start removes its configured client record when configuration changes before pending publish', async () => {
+  const backing = new SqliteSettingsStore(':memory:');
+  const configurationKey = configuredMcpOAuthClientDescriptor(
+    META_ADS_MCP_SERVER_URL,
+  )!.settingKey;
+  let configurationReads = 0;
+  const settings: SettingsStore = {
+    getSetting: async (key) => {
+      if (key === configurationKey && ++configurationReads === 4) {
+        await saveConfiguredMcpOAuthClient(
+          META_ADS_MCP_SERVER_URL,
+          { clientId: '9876543210' },
+          backing,
+          { randomId: () => '22222222-2222-4222-8222-222222222222' },
+        );
+      }
+      return backing.getSetting(key);
+    },
+    getSettings: (keys) => backing.getSettings(keys),
+    setSetting: (key, value) => backing.setSetting(key, value),
+    deleteSetting: (key) => backing.deleteSetting(key),
+    mergeSettingStringSet: (key, values) => backing.mergeSettingStringSet(key, values),
+    applySettingsPatch: (patch) => backing.applySettingsPatch(patch),
+  };
+  const oauth = fakeOAuthServer({
+    serverUrl: META_ADS_MCP_SERVER_URL,
+    authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+    expectedClientId: '1234567890',
+  });
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    randomId: () => 'meta-state',
+    validateConnection: () => true,
+  };
+  try {
+    await saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '1234567890' },
+      settings,
+      { randomId: () => '11111111-1111-4111-8111-111111111111' },
+    );
+
+    await assert.rejects(
+      startMcpOAuthAuthorization({
+        ref: REF,
+        serverUrl: META_ADS_MCP_SERVER_URL,
+        callbackUrl: CALLBACK_URL,
+      }, dependencies),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'reauthorization_required',
+    );
+    assert.equal(await settings.getSetting(mcpOAuthSettingKeys(REF)[0]), undefined);
+    assert.equal(await settings.getSetting(mcpOAuthSettingKeys(REF)[1]), undefined);
+  } finally {
+    backing.close();
+  }
+});
+
+test('Meta callback cannot persist tokens when configuration changes during exchange', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({
+    serverUrl: META_ADS_MCP_SERVER_URL,
+    authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+    expectedClientId: '1234567890',
+    onExchange: () => saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '9876543210' },
+      settings,
+      { randomId: () => '22222222-2222-4222-8222-222222222222' },
+    ).then(() => undefined),
+  });
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    randomId: () => 'meta-state',
+    validateConnection: () => true,
+  };
+  try {
+    await saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '1234567890' },
+      settings,
+      { randomId: () => '11111111-1111-4111-8111-111111111111' },
+    );
+    const started = await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: META_ADS_MCP_SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+    }, dependencies);
+
+    await assert.rejects(
+      completeMcpOAuthAuthorization(
+        { code: 'provider-code', state: started.state },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'reauthorization_required',
+    );
+    assert.equal(oauth.counts.exchanges, 1);
+    assert.equal(await settings.getSetting(mcpOAuthSettingKeys(REF)[2]), undefined);
+  } finally {
+    settings.close();
+  }
+});
+
+test('Meta refresh cannot persist or return a token after client replacement', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  let now = 1_000_000;
+  const oauth = fakeOAuthServer({
+    serverUrl: META_ADS_MCP_SERVER_URL,
+    authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+    expectedClientId: '1234567890',
+    initialExpiresIn: 1,
+    onRefresh: () => saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '9876543210' },
+      settings,
+      { randomId: () => '22222222-2222-4222-8222-222222222222' },
+    ).then(() => undefined),
+  });
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => now,
+    randomId: () => 'meta-state',
+    validateConnection: () => true,
+  };
+  try {
+    await saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '1234567890' },
+      settings,
+      { randomId: () => '11111111-1111-4111-8111-111111111111' },
+    );
+    const started = await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: META_ADS_MCP_SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+    }, dependencies);
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    now += 2_000;
+
+    await assert.rejects(
+      resolveMcpOAuthAccessToken(
+        { ref: REF, serverUrl: META_ADS_MCP_SERVER_URL },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'reauthorization_required',
+    );
+    assert.equal(oauth.counts.refreshes, 1);
+    assert.equal(await settings.getSetting(mcpOAuthSettingKeys(REF)[2]), undefined);
+  } finally {
+    settings.close();
+  }
+});
+
+test('Meta fast token resolution clears credentials after configuration removal', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({
+    serverUrl: META_ADS_MCP_SERVER_URL,
+    authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+    expectedClientId: '1234567890',
+  });
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    randomId: () => 'meta-state',
+    validateConnection: () => true,
+  };
+  try {
+    await saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '1234567890' },
+      settings,
+      { randomId: () => '11111111-1111-4111-8111-111111111111' },
+    );
+    const started = await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: META_ADS_MCP_SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+    }, dependencies);
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    await removeConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      settings,
+      { randomId: () => '22222222-2222-4222-8222-222222222222' },
+    );
+
+    await assert.rejects(
+      resolveMcpOAuthAccessToken(
+        { ref: REF, serverUrl: META_ADS_MCP_SERVER_URL },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'oauth_configuration_required',
+    );
+    assert.equal(await settings.getSetting(mcpOAuthSettingKeys(REF)[2]), undefined);
+  } finally {
+    settings.close();
+  }
+});
+
+test('stale Meta refresh preserves credentials published by a replacement callback', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  let now = 1_000_000;
+  const tokenKey = mcpOAuthSettingKeys(REF)[2];
+  const replacementGeneration = '22222222-2222-4222-8222-222222222222';
+  const oauth = fakeOAuthServer({
+    serverUrl: META_ADS_MCP_SERVER_URL,
+    authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+    expectedClientId: '1234567890',
+    initialExpiresIn: 1,
+    onRefresh: async () => {
+      await removeConfiguredMcpOAuthClient(
+        META_ADS_MCP_SERVER_URL,
+        settings,
+        { randomId: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      );
+      await saveConfiguredMcpOAuthClient(
+        META_ADS_MCP_SERVER_URL,
+        { clientId: '1234567890' },
+        settings,
+        { randomId: () => replacementGeneration },
+      );
+      const winner = JSON.parse((await settings.getSetting(tokenKey))!) as {
+        configurationGeneration: string;
+        tokens: Record<string, unknown>;
+        obtainedAt: number;
+      };
+      winner.configurationGeneration = replacementGeneration;
+      winner.tokens = {
+        access_token: 'access-from-replacement-callback',
+        refresh_token: 'refresh-from-replacement-callback',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      };
+      winner.obtainedAt = now;
+      await settings.setSetting(tokenKey, JSON.stringify(winner));
+    },
+  });
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => now,
+    randomId: () => 'meta-state',
+    validateConnection: () => true,
+  };
+  try {
+    await saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '1234567890' },
+      settings,
+      { randomId: () => '11111111-1111-4111-8111-111111111111' },
+    );
+    const started = await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: META_ADS_MCP_SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+    }, dependencies);
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    now += 2_000;
+
+    await assert.rejects(
+      resolveMcpOAuthAccessToken(
+        { ref: REF, serverUrl: META_ADS_MCP_SERVER_URL },
+        dependencies,
+      ),
+      (error: unknown) =>
+        error instanceof McpOAuthError && error.code === 'reauthorization_required',
+    );
+    assert.match(
+      (await settings.getSetting(tokenKey)) ?? '',
+      /access-from-replacement-callback/,
+    );
+    assert.equal(
+      await resolveMcpOAuthAccessToken(
+        { ref: REF, serverUrl: META_ADS_MCP_SERVER_URL },
+        dependencies,
+      ),
+      'access-from-replacement-callback',
+    );
+  } finally {
+    settings.close();
+  }
+});
+
+test('configured-client eager cleanup preserves a concurrent newer reconnect', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const keys = mcpOAuthSettingKeys(REF);
+  const oldGeneration = '11111111-1111-4111-8111-111111111111';
+  const newGeneration = '22222222-2222-4222-8222-222222222222';
+  try {
+    const common = {
+      authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+      callbackUrl: CALLBACK_URL,
+      clientInformation: { client_id: '9876543210' },
+      configurationGeneration: newGeneration,
+    };
+    const pending = {
+      ...common,
+      state: 'state',
+      expiresAt: Date.now() + 60_000,
+      serverUrl: META_ADS_MCP_SERVER_URL,
+      metadata: {
+        issuer: META_ADS_OAUTH_ISSUER,
+        authorization_endpoint: `${META_ADS_OAUTH_ISSUER}/authorize`,
+        token_endpoint: `${META_ADS_OAUTH_ISSUER}/token`,
+        response_types_supported: ['code'],
+      },
+      resource: META_ADS_MCP_SERVER_URL,
+      codeVerifier: 'verifier',
+    };
+    const token = {
+      ...common,
+      serverUrl: META_ADS_MCP_SERVER_URL,
+      metadata: pending.metadata,
+      resource: META_ADS_MCP_SERVER_URL,
+      tokens: { access_token: 'new-token', token_type: 'Bearer' },
+      obtainedAt: Date.now(),
+    };
+    await settings.setSetting(keys[0], JSON.stringify(common));
+    await settings.setSetting(keys[1], JSON.stringify(pending));
+    await settings.setSetting(keys[2], JSON.stringify(token));
+
+    await invalidateConfiguredMcpOAuthAuthorization(REF, settings, oldGeneration);
+    assert.deepEqual(await settings.getSettings(keys.slice(0, 3)), [
+      JSON.stringify(common),
+      JSON.stringify(pending),
+      JSON.stringify(token),
+    ]);
+
+    await invalidateConfiguredMcpOAuthAuthorization(REF, settings, newGeneration);
+    assert.deepEqual(await settings.getSettings(keys.slice(0, 3)), [
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  } finally {
+    settings.close();
+  }
 });
 
 test('DCR is registered once, pending state is single-use, and callback stores tokens', async () => {

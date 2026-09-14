@@ -235,6 +235,7 @@ import {
   createMcpOAuthClientMetadataDocument,
   deleteMcpOAuthSettings,
   invalidateMcpOAuthAuthorization,
+  invalidateConfiguredMcpOAuthAuthorization,
   isCurrentMcpOAuthConnection,
   McpOAuthError,
   mcpOAuthReturnRefFromState,
@@ -246,6 +247,9 @@ import {
   type ResolveMcpOAuthAccessInput,
   type StartMcpOAuthInput,
 } from '../config/mcp-oauth.ts';
+import { allowedToolsAfterMcpDiscovery, isMcpToolReviewRequired } from '../config/mcp-access.ts';
+import { compileMetaAdsToolAccess, metaAdsAccountField, metaAdsToolEffect, MetaAdsAccessPolicyError } from '../config/meta-ads-policy.ts';
+import { META_ADS_MCP_SERVER_URL, configuredMcpOAuthCallbackUrl, configuredMcpOAuthClientDescriptor, getConfiguredMcpOAuthClient, saveConfiguredMcpOAuthClient, removeConfiguredMcpOAuthClient, ConfiguredMcpOAuthClientError } from '../config/mcp-oauth-clients.ts';
 import {
   buildMcpRequestHeaders,
   deleteMcpSecrets,
@@ -400,6 +404,7 @@ import type {
   AgentConnectionBinding,
   AgentReferenceSummary,
   ConnectionAccount,
+  ConnectionAccountPolicy,
   CustomAgentConfig,
   McpConnectionConfig,
   McpConnectionIdentity,
@@ -2555,6 +2560,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const startApiOAuth = options.startApiOAuth ?? startApiOAuthAuthorization;
   const completeApiOAuth = options.completeApiOAuth ?? completeApiOAuthAuthorization;
   const cancelApiOAuth = options.cancelApiOAuth ?? cancelApiOAuthAuthorization;
+  const mcpCallbackUrl = async (c: Context, serverUrl: string): Promise<string> => {
+    if (!configuredMcpOAuthClientDescriptor(serverUrl)) return `${requestOrigin(c)}/oauth/callback`;
+    const client = await getConfiguredMcpOAuthClient(serverUrl, settings(c));
+    const control = await identity(c).getAuthControl();
+    if (!client || !control?.canonicalAdminOrigin) throw new McpOAuthError('oauth_configuration_required', 'Configure Meta Ads before signing in.');
+    return configuredMcpOAuthCallbackUrl(control.canonicalAdminOrigin);
+  };
   const oauthDependencies = (c: Context): McpOAuthDependencies => ({
     settings: settings(c),
     ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
@@ -4198,6 +4210,58 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/installation/updates', async (c) => c.json(await checkUpdates(c.req.query('refresh') === '1')));
   app.get('/admin/api/installation/support', async (c) => c.json({ report: supportReport(await installationDetails(c)) }));
 
+  app.get('/admin/api/settings/connectors/meta-ads', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    try {
+      const principal = principalByContext.get(c);
+      const canConfigure = Boolean(principal && permissionForRole(principal.role).has('admin.configure'));
+      const client = await getConfiguredMcpOAuthClient(META_ADS_MCP_SERVER_URL, settings(c));
+      const control = await identity(c).getAuthControl();
+      return c.json({ configured: Boolean(client), canConfigure,
+        ...(canConfigure ? { clientId: client?.clientId ?? '', callbackUrl: control?.canonicalAdminOrigin ? configuredMcpOAuthCallbackUrl(control.canonicalAdminOrigin) : '' } : {}),
+      });
+    } catch (error) { return internalError(c, error); }
+  });
+
+  app.on(['PUT', 'DELETE'], '/admin/api/settings/connectors/meta-ads', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    try {
+      requirePermission(principalByContext.get(c), 'admin.configure');
+      const input = c.req.method === 'DELETE' ? undefined : v.safeParse(v.strictObject({
+        clientId: v.pipe(v.string(), v.trim(), v.regex(/^[0-9]{1,64}$/)),
+      }), await readJson(c.req));
+      if (input && !input.success) return invalidRequest(c);
+      const config = store(c);
+      const previous = await getConfiguredMcpOAuthClient(META_ADS_MCP_SERVER_URL, settings(c));
+      const affected = [];
+      for (const installation of await config.listWorkspaceInstallations()) {
+        for (const account of await config.listConnectionAccounts(installation.workspaceId)) {
+          if (account.lifecycle !== 'revoked' && account.policy.kind === 'mcp' && account.policy.url === META_ADS_MCP_SERVER_URL) affected.push(account);
+        }
+      }
+      const next = input?.success
+        ? await saveConfiguredMcpOAuthClient(META_ADS_MCP_SERVER_URL, input.output, settings(c))
+        : await removeConfiguredMcpOAuthClient(META_ADS_MCP_SERVER_URL, settings(c));
+      if (previous && previous.generation !== next.generation) {
+        for (const account of affected) {
+          await invalidateConfiguredMcpOAuthAuthorization(connectionAccountOAuthRef(account.id), settings(c), previous.generation);
+          try { await config.putConnectionAccount({ ...account, lifecycle: 'needs_attention' }, account.revision); }
+          catch (error) { if (!(error instanceof ConnectionAccountRevisionConflictError)) throw error; }
+        }
+        for (const agent of await config.listAgents()) {
+          for (const server of agent.mcpServers) {
+            if (server.url === META_ADS_MCP_SERVER_URL) await invalidateConfiguredMcpOAuthAuthorization({ agentId: agent.id, connectionId: server.id }, settings(c), previous.generation);
+          }
+        }
+      }
+      return c.json({ configured: Boolean(input?.success) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof ConfiguredMcpOAuthClientError) return c.json({ error: error.code, message: 'Meta Ads configuration could not be saved. Reload and try again.' }, 409);
+      return internalError(c, error);
+    }
+  });
+
   app.get('/admin/api/settings/connectors/composio', async (c) => {
     c.header('Cache-Control', 'no-store');
     try {
@@ -5296,7 +5360,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         {
           ref: { agentId, connectionId },
           serverUrl: connection.url,
-          callbackUrl: `${requestOrigin(c)}/oauth/callback`,
+          callbackUrl: await mcpCallbackUrl(c, connection.url),
           ...(oauthScope ? { scope: oauthScope } : {}),
           authorizationAuthority: await oauthAuthorizationAuthority(
             c, principal, agentId, 'legacy_agent',
@@ -5307,6 +5371,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ authorizationUrl: result.authorizationUrl.href });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof McpOAuthError && error.code === 'oauth_configuration_required') return c.json({ error: error.code, message: 'An administrator must configure the Meta App ID in Settings → Connectors before sign-in.' }, 409);
       if (error instanceof McpOAuthError && error.code === 'connection_missing') {
         return c.json({ error: 'not_found' }, 404);
       }
@@ -5332,6 +5397,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (account.policy.kind !== 'mcp' || account.policy.authMode !== 'oauth') {
         return c.json({ error: 'oauth_not_enabled' }, 409);
       }
+      const callbackUrl = await mcpCallbackUrl(c, account.policy.url);
       const ref = connectionAccountOAuthRef(account.id);
       const pendingAccount = await replacePendingMcpOAuthConnection(
         store(c), ref, account.policy.url,
@@ -5340,7 +5406,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         {
           ref,
           serverUrl: account.policy.url,
-          callbackUrl: `${requestOrigin(c)}/oauth/callback`,
+          callbackUrl,
           ...(account.policy.oauthScope ? { scope: account.policy.oauthScope } : {}),
           returnAgentId: agentId,
           accountRevision: pendingAccount.revision,
@@ -5355,6 +5421,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof McpOAuthError && error.code === 'oauth_configuration_required') return c.json({ error: error.code, message: 'An administrator must configure the Meta App ID in Settings → Connectors before sign-in.' }, 409);
       if (error instanceof McpOAuthError && error.code === 'connection_missing') {
         return c.json({ error: 'not_found' }, 404);
       }
@@ -6979,6 +7046,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) {
       return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
+    if (parsed.output.mcpServers.some((server) => isMcpToolReviewRequired(server))) return invalidRequest(c, 'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.');
     const requestedHandle = parsed.output.handle ?? parsed.output.name;
     if (reservedAgentIdentityField({
       id: parsed.output.id,
@@ -7666,7 +7734,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           if (!binding.enabled || !account || account.lifecycle === 'revoked') return [];
           if (account.ownerKind === 'member' &&
               account.ownerMembershipId !== principal.membershipId) return [];
-          return [{ account, binding }];
+          return [{ account, binding,
+            ...(account.policy.kind === 'mcp' && isMcpToolReviewRequired(account.policy) ? {
+              mcpToolAccess: account.policy.discoveredTools.map((tool) => ({ name: tool.name,
+                available: Boolean(metaAdsAccountField(tool)), effect: metaAdsToolEffect(tool.name) ?? 'write',
+              })),
+            } : {}),
+          }];
         }),
         managedConnectors: {
           composio: managedConnectorCatalog.some((connector) => connector.access.read.status === 'ready'),
@@ -7694,7 +7768,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const agent = await configStore.getAgent(c.req.param('id'));
       requireAgentEdit(principal, agent);
       const source = parsed.output.api ?? parsed.output.mcp!;
-      const policy = parsed.output.api
+      const policy: ConnectionAccountPolicy = parsed.output.api
         ? {
             kind: 'api' as const,
             allowedHosts: [...parsed.output.api.allowedHosts],
@@ -7742,6 +7816,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             ...(parsed.output.mcp!.oauthScope ? { oauthScope: parsed.output.mcp!.oauthScope } : {}),
             ...(parsed.output.mcp!.presetId ? { presetId: parsed.output.mcp!.presetId } : {}),
           };
+      if (policy.kind === 'mcp' && isMcpToolReviewRequired(policy)) {
+        if (policy.url !== META_ADS_MCP_SERVER_URL || policy.transport !== 'streamable-http' || policy.authMode !== 'oauth' || policy.headerNames.length) return invalidRequest(c);
+        if (!(await getConfiguredMcpOAuthClient(policy.url, settings(c)))) return c.json({ error: 'oauth_configuration_required', message: 'An administrator must configure the Meta App ID in Settings → Connectors before adding this connection.' }, 409);
+        policy.toolAccessMode = 'review';
+        policy.discoveredTools = [];
+        policy.allowedTools = [];
+        policy.toolPolicies = {};
+      }
       const service = connectionAccounts(c);
       const created = await service.createForAgent({
         principal,
@@ -7763,7 +7845,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         } : {}),
         policy,
         ...(parsed.output.credential ? { credential: parsed.output.credential } : {}),
-        allowedCapabilities: parsed.output.allowedCapabilities ?? [],
+        allowedCapabilities: policy.kind === 'mcp' && isMcpToolReviewRequired(policy) ? [] : parsed.output.allowedCapabilities ?? [],
       });
       const { account, binding } = created;
       const { secretRefId: _secretRefId, ...safeAccount } = account;
@@ -7805,13 +7887,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
       allowedTools: v.pipe(v.array(v.pipe(v.string(), v.minLength(1), v.maxLength(256))), v.maxLength(128)),
       toolPolicies: v.optional(mcpToolPoliciesSchema),
+      approvedAccountIds: v.optional(v.pipe(v.array(v.pipe(v.string(), v.trim(), v.regex(/^(?:act_)?[0-9]{1,32}$/))), v.maxLength(50))),
     }), await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
     try {
       const { account, binding } = await managedConnectionAccount(
         c, c.req.param('agentId'), c.req.param('connectionAccountId'),
       );
-      if (account.policy.kind !== 'mcp' || account.policy.presetId || account.lifecycle !== 'ready') {
+      if (account.policy.kind !== 'mcp' || (account.policy.presetId && !isMcpToolReviewRequired(account.policy)) || account.lifecycle !== 'ready') {
         return c.json({ error: 'connection_not_ready' }, 409);
       }
       const discovered = new Set(account.policy.discoveredTools.map((tool) => tool.name));
@@ -7823,13 +7906,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (parsed.output.toolPolicies && Object.keys(parsed.output.toolPolicies).some((tool) => !allowedTools.includes(tool))) {
         return c.json({ error: 'invalid_tool_policy' }, 400);
       }
+      const compiled = isMcpToolReviewRequired(account.policy)
+        ? compileMetaAdsToolAccess({ discoveredTools: account.policy.discoveredTools, requestedTools: allowedTools, approvedAccountIds: parsed.output.approvedAccountIds ?? [] })
+        : undefined;
       const updated = await store(c).putConnectionAccount({
         ...account, policy: { ...account.policy, allowedTools,
-          ...(parsed.output.toolPolicies ? { toolPolicies: parsed.output.toolPolicies } : {}),
+          ...(compiled ? { toolPolicies: compiled.toolPolicies } : parsed.output.toolPolicies ? { toolPolicies: parsed.output.toolPolicies } : {}),
         },
       }, parsed.output.expectedRevision);
       return c.json({ account: toConnectionAccountView(updated) });
     } catch (error) {
+      if (error instanceof MetaAdsAccessPolicyError) return c.json({ error: 'invalid_tool_selection', message: error.message }, 400);
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
       if (error instanceof ConnectionAccountRevisionConflictError) return c.json({ error: 'revision_conflict', message: 'This connection changed. Reload it before saving tool access.' }, 409);
@@ -8262,6 +8349,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           normalizedHandle: normalizeAgentHandle(requestedHandle),
           health: presence.desiredState === 'active' ? 'pending' : presence.health,
         };
+      }
+      if (patch.mcpServers?.some((server) => isMcpToolReviewRequired(server))) {
+        return invalidRequest(c, 'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.');
       }
       if (patch.apiConnections) {
         patch.apiConnections = await normalizeApiOAuthPatch(
@@ -10099,19 +10189,6 @@ async function verifyAndStoreMcpOAuthConnection(
   }
 }
 
-function allowedToolsAfterMcpDiscovery(
-  connection: Pick<McpConnectionConfig, 'allowedTools' | 'discoveredTools'>,
-  discoveredTools: McpConnectionConfig['discoveredTools'],
-): string[] {
-  const previouslyAllowed = new Set(connection.allowedTools);
-  if (connection.discoveredTools.length === 0) {
-    return discoveredTools.map((tool) => tool.name);
-  }
-  return discoveredTools
-    .map((tool) => tool.name)
-    .filter((toolName) => previouslyAllowed.has(toolName));
-}
-
 type VerifiedMcpConnectionResult = Pick<
   McpConnectionConfig,
   'statusText' | 'lastCheckedAt'
@@ -10608,7 +10685,7 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
     return 'admin.configure';
   }
   if (c.req.path === '/admin/logout') return 'account.view';
-  if (c.req.method === 'GET' && c.req.path === '/admin/api/settings/connectors/composio') {
+  if (c.req.method === 'GET' && ['/admin/api/settings/connectors/composio', '/admin/api/settings/connectors/meta-ads'].includes(c.req.path)) {
     return 'agent.create';
   }
   if (c.req.method === 'GET' && c.req.path === '/admin/api/team') return 'team.view';
@@ -10790,8 +10867,8 @@ function toMcpServers(
       ...(tool.description !== undefined ? { description: tool.description } : {}),
       ...(tool.readOnlyHint !== undefined ? { readOnlyHint: tool.readOnlyHint } : {}),
     })),
-    allowedTools: server.allowedTools,
-    ...(server.toolPolicies ? { toolPolicies: server.toolPolicies } : {}),
+    ...(isMcpToolReviewRequired(server) ? { toolAccessMode: 'review' as const, discoveredTools: [], allowedTools: [], toolPolicies: {} } : { allowedTools: server.allowedTools }),
+    ...(!isMcpToolReviewRequired(server) && server.toolPolicies ? { toolPolicies: server.toolPolicies } : {}),
     ...(server.oauthScope !== undefined ? { oauthScope: server.oauthScope } : {}),
     ...(server.lastCheckedAt !== undefined ? { lastCheckedAt: server.lastCheckedAt } : {}),
     ...(server.identity !== undefined

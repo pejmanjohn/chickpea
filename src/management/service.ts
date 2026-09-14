@@ -23,6 +23,7 @@ import {
   resolveProviderRuntimeImpact,
   resolveProviderRuntimeImpacts,
 } from '../config/provider-impact.ts';
+import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
 import {
   type AgentChannelGrant,
   type AgentScheduleReference,
@@ -155,8 +156,16 @@ import {
 const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
 const SETUP_TTL_MS = 24 * 60 * 60_000;
 const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
+const META_ADS_CATALOG_SETUP_MESSAGE =
+  'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.';
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
 type ManagedProviderSource = 'env' | 'stored' | 'missing';
+
+class MetaAdsCatalogSetupRequiredError extends ManagementError {
+  constructor() {
+    super('invalid_request', META_ADS_CATALOG_SETUP_MESSAGE);
+  }
+}
 
 export interface WorkspaceManagementServiceInput {
   identity: Pick<
@@ -1539,6 +1548,9 @@ export class WorkspaceManagementService {
           );
           continue;
         }
+        if (operation.kind === 'update_agent') {
+          assertNoLegacyMetaAdsConnections(operation.patch.mcpServers);
+        }
         const facts = await this.policyFacts(actor, operation, {
           ...(operation.kind === 'save_routine' &&
               progress.prepared?.itemId === operation.itemId
@@ -1630,6 +1642,9 @@ export class WorkspaceManagementService {
           disposition: 'failed',
           code: mutationErrorCode(error),
           ...(error instanceof ManagementError && error.code === 'model_provider_unavailable'
+            ? { warning: error.message }
+            : {}),
+          ...(error instanceof MetaAdsCatalogSetupRequiredError
             ? { warning: error.message }
             : {}),
           ...(error instanceof ManagementError && error.changed
@@ -3804,6 +3819,7 @@ export class WorkspaceManagementService {
       case 'update_agent': {
         const before = await this.stores.config.getAgent(operation.agentId);
         requireExpectedRevision(operation.expectedRevision, before.revision);
+        assertNoLegacyMetaAdsConnections(operation.patch.mcpServers);
         const patch = projectManagementAgentPatch(before, operation.patch);
         return {
           itemId: operation.itemId,
@@ -5381,6 +5397,7 @@ function assertBaseAgentCreationContract(operations: readonly ManagementOperatio
       );
     }
     if (operation.kind !== 'create_agent') continue;
+    assertNoLegacyMetaAdsConnections(operation.agent.mcpServers);
     if (operation.agent.mcpServers.length || operation.agent.apiConnections.length ||
         operation.agent.repositories.length) {
       throw new ManagementError(
@@ -5388,6 +5405,14 @@ function assertBaseAgentCreationContract(operations: readonly ManagementOperatio
         'Create the base Agent without connections or repositories, then add approved access separately.',
       );
     }
+  }
+}
+
+function assertNoLegacyMetaAdsConnections(
+  connections: readonly Pick<CustomAgentConfig['mcpServers'][number], 'presetId' | 'url'>[] | undefined,
+): void {
+  if (connections?.some(isMetaAdsMcpConnection)) {
+    throw new MetaAdsCatalogSetupRequiredError();
   }
 }
 

@@ -7,7 +7,15 @@ import type {
 
 import { mcpDebugText } from './mcp-errors.ts';
 import { withMcpHttpTelemetry } from './mcp-telemetry.ts';
-import { assertMcpToolArguments } from './mcp-tool-policy.ts';
+import { assertMcpToolArgumentKeys, assertMcpToolArguments } from './mcp-tool-policy.ts';
+import {
+  isMetaAdsMcpConnection,
+  metaAdsConstraintField,
+  metaAdsRuntimeAllowedTools,
+  metaAdsRuntimeConstraint,
+  metaAdsRuntimePropertyNames,
+  metaAdsToolEffect,
+} from './meta-ads-policy.ts';
 import {
   isCurrentMcpOAuthConnection,
   resolveMcpOAuthAccessToken,
@@ -74,6 +82,10 @@ interface ResolveProfileMcpToolsOptions {
   ) => Promise<string>;
   /** U6 account seam; rechecks binding/actor before returning a bearer. */
   resolveBearerCredential?: (connectionId: string) => Promise<string>;
+  /** Live account/profile projection used to fence every legacy invocation. */
+  resolveCurrentConnection?: (connectionId: string) => Promise<McpConnectionConfig | undefined>;
+  /** Test seam; production uses the SSRF-guarded fetch implementation. */
+  createGuardedFetch?: typeof createMcpGuardedFetch;
   /** Best-effort policy-only lifecycle hook; never receives headers or secrets. */
   onConnectionStart?: (connection: { id: string; displayName: string }) => void;
 }
@@ -107,6 +119,8 @@ export function resolveProfileMcpConnections(
   return (servers ?? [])
     .filter(isProfileMcpServerEligible)
     .flatMap((server) => {
+      const allowedTools = runtimeAllowedToolsForServer(server);
+      if (allowedTools.length === 0) return [];
       const validated = validateMcpUrl(server.url);
       if (!validated.ok) {
         console.warn(`[chickpea] MCP connection ${server.id} skipped: blocked URL`);
@@ -122,6 +136,9 @@ export function resolveProfileMcpConnections(
       });
       const fetchWithLiveCustomHeaders = withMcpHttpTelemetry(async (input, init) => {
         const request = new Request(input, init);
+        const invocation = serverNeedsInvocationGuard(server)
+          ? await mcpToolInvocation(request) : undefined;
+        if (invocation) assertServerMcpToolInvocation(server, allowedTools, invocation);
         const customHeaders = await resolveMcpHeaders(
           { agentId: opts.agentId, connectionId: server.id },
           server.headerNames,
@@ -140,7 +157,7 @@ export function resolveProfileMcpConnections(
         name: server.id,
         url: validated.url,
         transport: server.transport,
-        tools: [...server.allowedTools],
+        tools: allowedTools,
         optional: true,
         timeoutMs: 30_000,
         fetch: fetchWithLiveCustomHeaders,
@@ -163,7 +180,20 @@ export function resolveRuntimePlanMcpConnections(
   onConnectionStart?: (connection: { id: string; displayName: string }) => void,
   accountContext?: { workspaceId: string; actorMembershipId: string },
 ): McpConnectionDefinition[] {
-  return declarations.map((declaration) => {
+  return declarations.flatMap((declaration) => {
+    const allowedTools = runtimeAllowedToolsForDeclaration(declaration);
+    if (allowedTools.length === 0) return [];
+    const effectiveDeclaration: RuntimePlanMcpConnectionV2 = {
+      ...declaration,
+      allowedTools,
+      ...(declaration.readOnlyTools
+        ? { readOnlyTools: declaration.readOnlyTools.filter((tool) => allowedTools.includes(tool)) } : {}),
+      ...(declaration.writeTools
+        ? { writeTools: declaration.writeTools.filter((tool) => allowedTools.includes(tool)) } : {}),
+      ...(declaration.toolArgumentConstraints
+        ? { toolArgumentConstraints: Object.fromEntries(Object.entries(declaration.toolArgumentConstraints)
+            .filter(([tool]) => allowedTools.includes(tool))) } : {}),
+    };
     const validated = validateMcpUrl(declaration.url);
     if (!validated.ok) {
       throw new Error(`Runtime plan MCP connection ${declaration.id} has a blocked URL.`);
@@ -188,7 +218,7 @@ export function resolveRuntimePlanMcpConnections(
         const profile = await config.getAgent(profileId);
         server = profile.mcpServers.find((candidate) => candidate.id === declaration.id);
       }
-      if (!server || !runtimeMcpDeclarationStillAllowed(server, declaration)) {
+      if (!server || !runtimeMcpDeclarationStillAllowed(server, effectiveDeclaration)) {
         throw new Error('MCP connection policy changed; a new agent instance is required.');
       }
       try {
@@ -200,22 +230,19 @@ export function resolveRuntimePlanMcpConnections(
     };
     const fetchWithLiveHeaders = withMcpHttpTelemetry(async (input, init) => {
       const request = new Request(input, init);
-      if (request.method === 'POST') {
-        const rpc = await request.clone().json() as { method?: string; params?: { name?: string; arguments?: unknown } };
-        if (!rpc || typeof rpc !== 'object' || Array.isArray(rpc)) {
-          throw new Error('Invalid MCP tool invocation.');
+      const invocation = await mcpToolInvocation(request);
+      if (invocation) {
+        if (!effectiveDeclaration.allowedTools.includes(invocation.name)) {
+          throw new Error('MCP tool is not selected for this Agent.');
         }
-        if (rpc.method === 'tools/call') {
-          if (typeof rpc.params?.name !== 'string') throw new Error('Invalid MCP tool invocation.');
-          if (!declaration.allowedTools.includes(rpc.params.name)) {
-            throw new Error('MCP tool is not selected for this Agent.');
-          }
-          if (declaration.toolArgumentConstraints) {
-            assertMcpToolArguments(rpc.params.name, rpc.params.arguments, declaration.toolArgumentConstraints);
-          }
+        if (effectiveDeclaration.toolArgumentConstraints) {
+          assertMcpToolArguments(invocation.name, invocation.arguments, effectiveDeclaration.toolArgumentConstraints);
         }
       }
       const { server, env } = await liveServer();
+      if (invocation && isMetaAdsMcpConnection(server)) {
+        assertServerMcpToolInvocation(server, effectiveDeclaration.allowedTools, invocation);
+      }
       const customHeaders = accountContext
         ? (await resolveConnectionAccountMcpSecrets(server, (connectionAccountId) =>
             resolveConnectionSecretForInvocation({ ...accountContext, config: getConfigStore(env),
@@ -236,7 +263,7 @@ export function resolveRuntimePlanMcpConnections(
       name: declaration.id,
       url: validated.url,
       transport: declaration.transport,
-      tools: [...declaration.allowedTools],
+      tools: allowedTools,
       optional: declaration.optional,
       timeoutMs: 30_000,
       fetch: fetchWithLiveHeaders,
@@ -390,41 +417,10 @@ async function resolveOneServer(
 ): Promise<ToolDefinition[]> {
   let debugHeaders: Readonly<Record<string, string>> = {};
   try {
-    const secrets = opts.resolveBearerCredential
-      ? await resolveConnectionAccountMcpSecrets(server, opts.resolveBearerCredential)
-      : await resolveMcpSecrets(
-          { agentId: opts.agentId, connectionId: server.id },
-          server.headerNames,
-          opts.env,
-        );
-    if (server.authMode === 'oauth') {
-      secrets.bearer = await (
-        opts.resolveOAuthAccessToken ??
-        ((input) => {
-          const configStore = getConfigStore(opts.env);
-          return resolveMcpOAuthAccessToken(input, {
-            settings: getSettingsStore(opts.env),
-            validateConnection: (ref, serverUrl) =>
-              isCurrentMcpOAuthConnection(
-                configStore,
-                ref,
-                serverUrl,
-              ),
-            onReauthorizationRequired: async (ref, serverUrl) => {
-              await configStore.markOAuthReauthorizationRequired({
-                lane: 'mcp',
-                ...ref,
-                serverUrl,
-              });
-            },
-          });
-        })
-      )({
-        ref: { agentId: opts.agentId, connectionId: server.id },
-        serverUrl: server.url,
-      });
-    }
-    const headers = buildMcpRequestHeaders(server.authMode, secrets);
+    const runtimeAllowed = new Set(runtimeAllowedToolsForServer(server));
+    if (runtimeAllowed.size === 0) return [];
+    const liveMetaPolicy = isMetaAdsMcpConnection(server);
+    const headers = liveMetaPolicy ? {} : await resolveLegacyMcpHeaders(server, opts);
     debugHeaders = headers;
     try {
       opts.onConnectionStart?.({ id: server.id, displayName: server.displayName });
@@ -437,13 +433,23 @@ async function resolveOneServer(
         url: server.url,
         transport: server.transport,
         headers,
+        ...(liveMetaPolicy ? {
+          resolveHeaders: async () => {
+            const current = await requireCurrentLegacyMcpServer(server, opts);
+            return resolveLegacyMcpHeaders(current, opts);
+          },
+        } : {}),
         ...(opts.connectTimeoutMs !== undefined ? { connectTimeoutMs: opts.connectTimeoutMs } : {}),
       },
       opts.connect,
+      opts.createGuardedFetch,
     );
 
     const approved = new Set(server.allowedTools);
-    const kept = connection.tools.filter((tool) => approved.has(stripPrefix(server.id, tool.name)));
+    const kept = connection.tools
+      .filter((tool) => approved.has(stripPrefix(server.id, tool.name)) &&
+        runtimeAllowed.has(stripPrefix(server.id, tool.name)))
+      .map((tool) => wrapLegacyMcpTool(server, tool, opts));
 
     if (kept.length === 0) {
       // Nothing survived the intersection — no reason to hold the connection.
@@ -464,6 +470,169 @@ async function resolveOneServer(
     );
     return [];
   }
+}
+
+async function resolveLegacyMcpHeaders(
+  server: McpConnectionConfig,
+  opts: ResolveProfileMcpToolsOptions,
+): Promise<Record<string, string>> {
+  const secrets = opts.resolveBearerCredential
+    ? await resolveConnectionAccountMcpSecrets(server, opts.resolveBearerCredential)
+    : await resolveMcpSecrets(
+        { agentId: opts.agentId, connectionId: server.id },
+        server.headerNames,
+        opts.env,
+      );
+  if (server.authMode === 'oauth') {
+    secrets.bearer = await (
+      opts.resolveOAuthAccessToken ??
+      ((input) => {
+        const configStore = getConfigStore(opts.env);
+        return resolveMcpOAuthAccessToken(input, {
+          settings: getSettingsStore(opts.env),
+          validateConnection: (ref, serverUrl) =>
+            isCurrentMcpOAuthConnection(configStore, ref, serverUrl),
+          onReauthorizationRequired: async (ref, serverUrl) => {
+            await configStore.markOAuthReauthorizationRequired({
+              lane: 'mcp',
+              ...ref,
+              serverUrl,
+            });
+          },
+        });
+      })
+    )({
+      ref: { agentId: opts.agentId, connectionId: server.id },
+      serverUrl: server.url,
+    });
+  }
+  return buildMcpRequestHeaders(server.authMode, secrets);
+}
+
+async function requireCurrentLegacyMcpServer(
+  frozen: McpConnectionConfig,
+  opts: ResolveProfileMcpToolsOptions,
+): Promise<McpConnectionConfig> {
+  const current = opts.resolveCurrentConnection
+    ? await opts.resolveCurrentConnection(frozen.id)
+    : (await getConfigStore(opts.env).getAgent(opts.agentId)).mcpServers
+        .find((candidate) => candidate.id === frozen.id);
+  if (!current || !legacyMcpServerStillAllowed(current, frozen)) {
+    throw new Error('MCP connection policy changed; a new agent instance is required.');
+  }
+  return current;
+}
+
+function legacyMcpServerStillAllowed(
+  current: McpConnectionConfig,
+  frozen: McpConnectionConfig,
+): boolean {
+  if (!isProfileMcpServerEligible(current) || current.id !== frozen.id || current.url !== frozen.url ||
+      current.transport !== frozen.transport || current.authMode !== frozen.authMode ||
+      JSON.stringify([...current.headerNames].map((name) => name.toLowerCase()).sort()) !==
+        JSON.stringify([...frozen.headerNames].map((name) => name.toLowerCase()).sort())) return false;
+  const currentAllowed = new Set(runtimeAllowedToolsForServer(current));
+  return runtimeAllowedToolsForServer(frozen).every((name) => {
+    if (!currentAllowed.has(name)) return false;
+    if (canonicalMcpToolConstraint(current, name) !== canonicalMcpToolConstraint(frozen, name)) return false;
+    if (!isMetaAdsMcpConnection(frozen)) return true;
+    const currentSchema = current.discoveredTools.find((tool) => tool.name === name)?.inputSchema?.fingerprint;
+    const frozenSchema = frozen.discoveredTools.find((tool) => tool.name === name)?.inputSchema?.fingerprint;
+    return Boolean(currentSchema && currentSchema === frozenSchema);
+  });
+}
+
+function canonicalMcpToolConstraint(server: McpConnectionConfig, name: string): string {
+  const constraint = server.toolPolicies?.[name]?.argumentConstraints ?? {};
+  return JSON.stringify(Object.entries(constraint).sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, values]) => [key, [...values].sort()]));
+}
+
+interface McpToolInvocation {
+  name: string;
+  arguments: unknown;
+}
+
+async function mcpToolInvocation(request: Request): Promise<McpToolInvocation | undefined> {
+  if (request.method !== 'POST') return undefined;
+  const rpc = await request.clone().json() as { method?: string; params?: { name?: string; arguments?: unknown } };
+  if (!rpc || typeof rpc !== 'object' || Array.isArray(rpc)) {
+    throw new Error('Invalid MCP tool invocation.');
+  }
+  if (rpc.method !== 'tools/call') return undefined;
+  if (typeof rpc.params?.name !== 'string') throw new Error('Invalid MCP tool invocation.');
+  return { name: rpc.params.name, arguments: rpc.params.arguments };
+}
+
+function runtimeAllowedToolsForServer(server: McpConnectionConfig): string[] {
+  return isMetaAdsMcpConnection(server)
+    ? metaAdsRuntimeAllowedTools(server)
+    : [...server.allowedTools];
+}
+
+function serverNeedsInvocationGuard(server: McpConnectionConfig): boolean {
+  return isMetaAdsMcpConnection(server) || server.allowedTools.some((name) =>
+    server.toolPolicies?.[name]?.argumentConstraints !== undefined);
+}
+
+function runtimeAllowedToolsForDeclaration(declaration: RuntimePlanMcpConnectionV2): string[] {
+  if (!isMetaAdsMcpConnection(declaration)) return [...declaration.allowedTools];
+  return declaration.allowedTools.filter((name) =>
+    metaAdsToolEffect(name) !== undefined &&
+      metaAdsConstraintField(declaration.toolArgumentConstraints?.[name]) !== undefined);
+}
+
+function assertServerMcpToolInvocation(
+  server: McpConnectionConfig,
+  allowedTools: readonly string[],
+  invocation: McpToolInvocation,
+): void {
+  if (!allowedTools.includes(invocation.name)) {
+    throw new Error('MCP tool is not selected for this Agent.');
+  }
+  const constraints = isMetaAdsMcpConnection(server)
+    ? metaAdsRuntimeConstraint(server, invocation.name)
+    : server.toolPolicies?.[invocation.name]?.argumentConstraints;
+  if (isMetaAdsMcpConnection(server) && !constraints) {
+    throw new Error('Meta Ads tool access changed; review the connection before using it.');
+  }
+  if (isMetaAdsMcpConnection(server)) {
+    const propertyNames = metaAdsRuntimePropertyNames(server, invocation.name);
+    if (!propertyNames) {
+      throw new Error('Meta Ads tool schema changed; review the connection before using it.');
+    }
+    assertMcpToolArgumentKeys(invocation.name, invocation.arguments, propertyNames);
+  }
+  if (constraints) {
+    assertMcpToolArguments(invocation.name, invocation.arguments, { [invocation.name]: constraints });
+  }
+}
+
+function wrapLegacyMcpTool(
+  server: McpConnectionConfig,
+  tool: ToolDefinition,
+  opts: ResolveProfileMcpToolsOptions,
+): ToolDefinition {
+  const name = stripPrefix(server.id, tool.name);
+  if (!isMetaAdsMcpConnection(server) && !server.toolPolicies?.[name]?.argumentConstraints) return tool;
+  const wrapped: ToolDefinition = {
+    ...tool,
+    async run(context) {
+      const argumentsValue = 'data' in context ? context.data : undefined;
+      const current = isMetaAdsMcpConnection(server)
+        ? await requireCurrentLegacyMcpServer(server, opts)
+        : server;
+      assertServerMcpToolInvocation(current, runtimeAllowedToolsForServer(server), {
+        name,
+        arguments: argumentsValue,
+      });
+      const result = await tool.run(context);
+      // Flue records an omitted output as null; an empty envelope preserves
+      // that behavior while keeping this async wrapper's return union sound.
+      return result === undefined ? {} : result;
+    },
+  };
+  return wrapped;
 }
 
 async function resolveConnectionAccountMcpSecrets(
