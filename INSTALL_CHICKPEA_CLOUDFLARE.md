@@ -165,7 +165,7 @@ which resources are serving the deployment.
 If the deployment is healthy, continue its current Slack setup or sign in to
 Admin. Do not deploy again just to create a local checkout. An existing Owner
 uses ordinary Slack sign-in; do not try to claim ownership again. Updating an
-existing deployment follows [guided upgrades](docs/runbooks/upgrading.md),
+existing deployment follows the [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md),
 preserving local customization and the exact resource identities. Check
 **Settings → About & updates** for its installed release and source commit.
 An unversioned or customized deployment needs its source and compatibility
@@ -273,8 +273,8 @@ For a fresh installation, or a retry of that same release's unfinished setup,
 run this from the selected checkout. Use [later updates](#later-updates) to
 change the release of an existing installation.
 
-Customer installs from published releases, with only local installation
-settings changed, use this command directly.
+Customer installs and updates from published releases, with only local
+installation settings changed, use this command directly.
 Contributor host reservations, process inspection, and test suites are not
 installation prerequisites. Development and QA deployments still follow
 [host coordination](qa/live/operator/host-checks.md).
@@ -535,5 +535,6 @@ Report the specific blocker to the user; do not publish a report on their behalf
 When the user asks for an update, keep the original source and private
 installation receipt, then follow [Update Chickpea on Cloudflare](UPDATE_CHICKPEA_CLOUDFLARE.md).
 That guide starts from the cloned folder, identifies the live installation,
-selects a supported stable application release, and verifies the result. Do not
-rerun setup, reinstall Slack, or recreate Cloudflare resources as an update.
+updates to the latest stable application release, and verifies Admin access
+without sending Slack test messages. Do not rerun setup, reinstall Slack, or
+recreate Cloudflare resources as an update.

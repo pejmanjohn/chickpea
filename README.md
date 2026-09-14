@@ -39,8 +39,9 @@ Update this Chickpea installation to the latest stable release. Follow:
 https://github.com/pejmanjohn/chickpea/blob/main/UPDATE_CHICKPEA_CLOUDFLARE.md
 ```
 
-The [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md) stays current on `main`. The
-guarded updater decides whether the installed release has a supported path.
+The [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md) stays current on `main`. Your
+coding agent preserves the existing installation settings, deploys the latest
+release, and verifies Admin access. It does not send test messages to Slack.
 
 <div align="center">
 

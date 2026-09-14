@@ -37,12 +37,17 @@
   across this host with `verify:regression` or `verify:host`; see
   [host coordination](qa/live/operator/host-checks.md).
   This includes deployment builds during development and QA. Customer installs
-  from published releases, with only local installation settings changed,
-  follow the [install guide](INSTALL_CHICKPEA_CLOUDFLARE.md)
+  and updates from published releases, with only local installation settings
+  changed, follow the [install guide](INSTALL_CHICKPEA_CLOUDFLARE.md) or
+  [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md)
   without contributor host reservations, process inspection, or test suites.
   Continue lightweight independent checks; never stop another task's processes.
 - For Cloudflare deployment use `npm run deploy` (the guarded wrapper), not bare
   `wrangler deploy`. Confirm the intended target before any live mutation.
+- For ordinary customer updates, follow the [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md)
+  and verify the serving version and signed-in Admin. Do not send Slack messages
+  or invoke Agents, connections, or schedules unless the user requests those checks.
+  Maintainer development and release QA follow their separately authorized checks.
 - Report local checks and live acceptance separately. A source SHA, build, or
   deployment upload is not evidence of a real Slack reply.
 - Before changing Slack senders, avatars, attachments, streaming, message updates,
