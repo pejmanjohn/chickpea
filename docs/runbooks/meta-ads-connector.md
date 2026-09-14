@@ -36,6 +36,10 @@ before offering access to other businesses.
 
 ## Reconnect and change access
 
+Use **Reconnect** in the account's menu to refresh Meta permissions or its tool
+catalog. The Agent cannot use the account until sign-in completes. If you cancel
+at Meta, use **Sign in** to finish connecting again.
+
 Changing or removing the installation App ID requires accounts using the old
 configuration to sign in again. Saving the same App ID preserves existing
 connections. Old callbacks and refresh responses cannot restore the prior app's
