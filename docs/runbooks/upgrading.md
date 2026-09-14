@@ -1,8 +1,14 @@
-# Guided Cloudflare upgrades
+# Receipt-based Cloudflare upgrades
 
 The public [Cloudflare update guide](../../UPDATE_CHICKPEA_CLOUDFLARE.md) is the
-coding-agent entry point. This runbook describes the updater's operating and
-recovery boundaries.
+normal coding-agent workflow. It updates the existing deployment with
+`npm run deploy`, preserves installation settings and data, and verifies Admin
+access without sending Slack messages. It does not require an entry in
+`supportedOrigins` or a rollback guarantee.
+
+This runbook describes the optional `npm run upgrade` tool and its narrower
+receipt and recovery contract. Its compatibility restrictions apply to that
+tool, not to ordinary updates through the public guide.
 
 Owners can open **Settings -> About & updates** to see the installed application
 version and source commit, check published releases, review release notes, and
@@ -177,25 +183,21 @@ recovery authority and deployment evidence, not a data backup. A transition
 that changes state needs a separately reviewed migration and recovery procedure
 before it can appear in `supportedOrigins`.
 
-The v0.1.18 release contract declares no incoming guided upgrade paths. Its
+The v0.1.18 release contract declares no incoming receipt-based upgrade paths. Its
 v0.1.17 rehearsal upgraded successfully, but recovery to the immutable
 published v0.1.17 code could not continue an existing timezone-bearing
 conversation when it returned to a prior runtime plan. Candidate code cannot
 make that previous-code recovery safe for future turns. The v0.1.16 path also
-remains undeclared. Stop and request a reviewed path; no guided intermediate
-path is currently declared.
+remains undeclared. Use the normal [Cloudflare update guide](../../UPDATE_CHICKPEA_CLOUDFLARE.md)
+for an owner-requested update instead of treating this tool's refusal as a ban
+on updating.
 
 ## Acceptance and handoff
 
 After success, verify the destination release and full source commit in
-signed-in Admin. Send a real Slack request to an existing Agent and verify the
-expected reply. Confirm known memory when it exists. If a connection exists,
-exercise a harmless example with a read-only request. If a schedule exists,
-check that it still has the same definition, destination, enabled state, and
-next run, then observe its normal delivery or a harmless test when practical.
-Report memory, connection, or schedule as not configured when none exists. An
-optional item's absence does not fail an otherwise valid update. Readiness and
-a Worker upload ID do not establish these product behaviors.
+signed-in Admin. This verifies deployment and Admin access. Do not send Slack
+messages or invoke Agents, connections, or schedules unless the user requests
+those checks. Leave ordinary Slack testing to the user.
 
 Update the private installation receipt with the serving application release
 and commit, Cloudflare Worker version ID, exact update receipt, clean tooling

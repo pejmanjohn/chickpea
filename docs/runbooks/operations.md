@@ -151,8 +151,9 @@ Static Assets. No separate Worker or bucket is needed. Keep the generated
 files are public product images, not user uploads or document-processing code.
 
 Record the account, Worker name, deployed version, traffic allocation, bindings,
-and source commit. A successful upload is not acceptance: verify the signed-in
-Admin and an actual Slack request routed through that deployment.
+and source commit. For a customer update, verify the serving version and
+signed-in Admin. Send Slack test messages only when the user requests them.
+Development and release QA follow their separately authorized live checks.
 
 Cloudflare stores app/runtime state in Durable Objects as well as auth data in
 D1. Backing up or restoring `AUTH_DB` alone does **not** back up or restore the
@@ -163,10 +164,13 @@ capability you have not established. Read the [AUTH_DB contract](auth-db-deploym
 
 ## Upgrade and compatibility policy
 
-Use the [guided upgrade command](upgrading.md) for supported Cloudflare releases.
-Its recovery restores previous code only and requires unchanged storage. It does
-not supply a cross-store backup. The manual policy below also covers Node and
-transitions requiring a separate migration procedure.
+For routine Cloudflare updates, follow the
+[coding-agent update guide](../../UPDATE_CHICKPEA_CLOUDFLARE.md). Preserve the
+installation's live settings in the release checkout and run `npm run deploy`.
+The `supportedOrigins` list and recovery requirements belong to the optional
+[receipt-based updater](upgrading.md); they do not block ordinary updates.
+Review required migrations and preserve existing data. Rollback support is not
+a prerequisite for a forward update.
 
 Before the first tagged release, older experimental schemas may be incompatible.
 That is not permission to delete a production database. A disposable pre-release
@@ -178,20 +182,17 @@ change APIs, configuration, or schemas. Release notes must state supported
 starting versions, required operator actions, migrations, and rollback limits.
 There is no implied upgrade path from an unlisted experimental schema.
 
-For each upgrade:
+For Node upgrades:
 
 1. Read the destination release notes and confirm the starting version is
    supported. Record the current source/version and deployment configuration.
-2. Establish a tested recovery point. For Node, use the stopped backup procedure
-   above. For Cloudflare, follow the release-specific procedure for **all**
-   affected stores, not just D1.
+2. Establish a tested recovery point using the stopped backup procedure above.
 3. Rehearse on an isolated copy or approved disposable environment. Preserve
    state paths, the auth secret, encryption keys, and existing resource IDs.
-4. Stop/drain traffic as required. On Node install/build the new checkout and
-   restart the supervised service against the same state paths. On Cloudflare
-   use the guarded deployment wrapper.
-5. Verify sign-in, existing Agents/connections, a real Slack reply, and the
-   relevant schedule/memory behavior before declaring success.
+4. Stop/drain traffic as required. Install/build the new checkout and restart
+   the supervised service against the same state paths.
+5. Verify sign-in and the serving version. Send Slack messages or run other
+   product checks only when the user requests them.
 
 Do not edit already-applied migration SQL: its digest is part of the auth
 database contract. Add a forward migration and test both fresh creation and
