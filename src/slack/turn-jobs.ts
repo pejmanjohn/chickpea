@@ -587,7 +587,16 @@ export class TurnJobStoreLogic {
    */
   reconcileFlueExistingInstance(id: string, uid: string): FlueDispatchEnvelopeV1 {
     validateBoundedString(uid, 'Flue instance uid', 200);
-    const existing = this.getDispatchEnvelope(id);
+    const row = this.db.get(
+      'SELECT dispatch_envelope_json FROM turn_jobs WHERE id = ?',
+      id,
+    );
+    const existingJson = row?.dispatch_envelope_json
+      ? String(row.dispatch_envelope_json)
+      : undefined;
+    const existing = existingJson
+      ? parseFlueDispatchEnvelope(JSON.parse(existingJson))
+      : undefined;
     if (!existing) throw new Error('Flue dispatch envelope is unavailable.');
     if (existing.uid === uid && existing.initialData === undefined) return existing;
     if (existing.uid !== null || existing.initialData === undefined) {
@@ -603,7 +612,7 @@ export class TurnJobStoreLogic {
          AND dispatch_receipt_json IS NULL AND flue_settlement_json IS NULL`,
       JSON.stringify(reconciled),
       id,
-      JSON.stringify(existing),
+      existingJson,
     );
     if (updated.changes === 1) return reconciled;
     const winner = this.getDispatchEnvelope(id);

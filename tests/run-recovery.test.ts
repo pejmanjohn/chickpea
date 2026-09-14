@@ -117,6 +117,73 @@ test('activated direct-message dispatch preserves DM kind without channel_type',
   }
 });
 
+test('existing Flue instance reconciliation compares the exact persisted Slack envelope', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const zonedTurn: NormalizedSlackTurn = {
+      ...turn(),
+      requesterTimezone: 'America/Los_Angeles',
+    };
+    const zonedAssignment = assignment();
+    const id = 'turn_existing-zoned-instance';
+    turns.enqueue({
+      id,
+      evtKey: 'evt_existing-zoned-instance',
+      msgKey: 'msg_existing-zoned-instance',
+      turn: zonedTurn,
+      assignment: zonedAssignment,
+    });
+    const decision = turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+      turn: zonedTurn,
+      assignment: zonedAssignment,
+      instructions: 'Frozen zoned instructions.',
+      memoryEpoch: 1,
+      sandboxMode: 'bash',
+    }));
+    const priorBinding = {
+      continuityKey: decision.runtimePlan.conversation.continuityKey,
+      instanceId: `agent_${'b'.repeat(40)}`,
+      uid: 'inst_00000000000000000000000001',
+      updatedAt: NOW,
+    };
+    turns.pinAgentBinding(priorBinding);
+
+    const created = turns.prepareFlueDispatch(
+      id,
+      'Continue the zoned conversation.',
+      { generation: 'existing-zoned-generation' },
+    );
+    assert.equal(created.schemaVersion, 2);
+    assert.equal(created.uid, null);
+    assert.ok(created.initialData);
+    assert.deepEqual(created.previousBinding, {
+      instanceId: priorBinding.instanceId,
+      uid: priorBinding.uid,
+    });
+
+    const existingUid = 'inst_00000000000000000000000002';
+    const reconciled = turns.reconcileFlueExistingInstance(id, existingUid);
+    assert.equal(reconciled.uid, existingUid);
+    assert.equal(reconciled.initialData, undefined);
+    assert.deepEqual(turns.getDispatchEnvelope(id), reconciled);
+
+    turns.recordFlueReceipt(id, {
+      uid: existingUid,
+      submissionId: 'submission_existing-zoned-instance',
+      acceptedAt: '2026-09-13T00:00:00.000Z',
+    });
+    assert.deepEqual(turns.getAgentBinding(priorBinding.continuityKey), {
+      continuityKey: priorBinding.continuityKey,
+      instanceId: decision.instanceId,
+      uid: existingUid,
+      updatedAt: NOW,
+    });
+  } finally {
+    db.close();
+  }
+});
+
 test('Flue Slack signals retain trusted attachment file ids without durable bytes or URLs', () => {
   const db = openStateDb(':memory:');
   try {
