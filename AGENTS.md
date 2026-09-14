@@ -33,8 +33,13 @@
   live transcripts, and working documents out of the public repository.
 - Follow [CONTRIBUTING.md](CONTRIBUTING.md). Run tests and builds serially in each
   checkout. Use isolated databases for tests; never reset an operator's state.
-- Serialize expensive full-suite/build/workerd groups across this host with
-  `verify:regression` or `verify:host`; see [host coordination](qa/live/operator/host-checks.md).
+- For development and QA, serialize expensive full-suite/build/workerd groups
+  across this host with `verify:regression` or `verify:host`; see
+  [host coordination](qa/live/operator/host-checks.md).
+  This includes deployment builds during development and QA. Customer installs
+  from published releases, with only local installation settings changed,
+  follow the [install guide](INSTALL_CHICKPEA_CLOUDFLARE.md)
+  without contributor host reservations, process inspection, or test suites.
   Continue lightweight independent checks; never stop another task's processes.
 - For Cloudflare deployment use `npm run deploy` (the guarded wrapper), not bare
   `wrangler deploy`. Confirm the intended target before any live mutation.

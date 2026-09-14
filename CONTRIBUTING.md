@@ -55,8 +55,12 @@ for unchanged repeats; release mode always executes its full checkpoint.
 
 Run builds and tests **serially**: tests inspect generated artifacts, so a
 concurrent build can make them read a partially written artifact.
-Full suites, builds, and workerd groups also share one host reservation across
-worktrees. `verify:regression` acquires it automatically. Wrap standalone groups
+Full suites, builds, and workerd groups also share one host reservation for
+development and QA across checkouts, including deployment builds. Customer
+installs from published releases, with only local installation settings changed,
+follow the [install guide](INSTALL_CHICKPEA_CLOUDFLARE.md)
+without these reservations, process inspection, or contributor test suites.
+`verify:regression` acquires the reservation automatically. Wrap standalone groups
 with `npm run verify:host -- COMMAND [ARG ...]`; see
 [host coordination](qa/live/operator/host-checks.md). Focused unit checks can run
 independently when they do not build artifacts or start heavy fixtures.

@@ -103,9 +103,11 @@ pull newer commits partway through setup. Keep application code and release
 metadata intact; only adjust the installation settings described in step 2.
 
 Read the Cloudflare section of this checkout's [README.md](README.md#cloudflare).
-Use the setup documentation and commands matching the checked-out source. If
-this draft is not in the upstream checkout yet, keep the user-supplied copy as
-the entry point and verify its referenced commands against that checkout.
+Use this guide for the workflow. For version-specific commands and settings,
+the selected checkout's install guide, README, `.nvmrc`, and dependency policy
+take precedence over examples from `main`. Use that release's dependency
+install command; do not copy newer flags or change its manifest to match newer
+instructions.
 Resolve relative file references in this guide from the Chickpea checkout,
 even when the user supplied this file from another directory or a URL.
 
@@ -271,6 +273,12 @@ For a fresh installation, or a retry of that same release's unfinished setup,
 run this from the selected checkout. Use [later updates](#later-updates) to
 change the release of an existing installation.
 
+Customer installs from published releases, with only local installation
+settings changed, use this command directly.
+Contributor host reservations, process inspection, and test suites are not
+installation prerequisites. Development and QA deployments still follow
+[host coordination](qa/live/operator/host-checks.md).
+
 ```sh
 npm run deploy
 ```
@@ -365,6 +373,14 @@ Complete the chosen provider's setup using the normal credential form or an
 explicitly authorized secure local handoff. Ask for only the credentials that
 provider needs. A coding-agent subscription is not a provider API key.
 
+For API-key entry, bring the existing Chickpea setup tab to the foreground.
+Identify its browser/profile, page title, and public URL without a setup
+capability. Focus the key field and ask the user to enter the key there and tell
+you when ready. Keep that tab open. Then click **Validate and Continue**
+yourself and read the validation result without reading back the key. If the user has already
+advanced, inspect the current step and resume there. Continue through model
+selection and the Slack reply check below after the handoff.
+
 At **Choose your model**, honor any model the user already named. Otherwise
 show the models available for their selected provider and ask them to choose
 or delegate the model choice to you. Read the current model picker and account
@@ -401,15 +417,16 @@ the send action, request it for this exact DM and resume afterward. Use the
 human Slack session so the reply completes that user's onboarding.
 
 Observe a successful, substantive reply from Chickpea in that conversation.
-A typing indicator, reaction, error reply, successful upload, or healthy HTTP
-endpoint is insufficient. Preserve the request permalink, reply permalink
-when available, and time in the private receipt without copying conversation
-contents into the repository.
+A canned welcome, typing indicator, reaction, error reply, successful upload,
+or healthy HTTP endpoint is insufficient. Preserve the request permalink,
+reply permalink when available, and time in the private receipt without copying
+conversation contents into the repository.
 
 Return to the original Chickpea tab and check for **Reply confirmed in Slack**
 and **Chickpea is ready**. Use **Check again** if the page offers it, or refresh
 after observing the reply. Open the dashboard and verify signed-in access.
-**Proceed to Dashboard** is navigation and does not substitute for proof.
+**Proceed to Dashboard** marks onboarding complete and opens the dashboard;
+the installing agent still needs to verify a real Slack reply.
 
 If the first message fails, preserve its error and timing before changing
 anything. Diagnose the selected deployment, make a supported setup correction,
