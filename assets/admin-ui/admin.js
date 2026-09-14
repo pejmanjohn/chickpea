@@ -727,6 +727,14 @@
     return normalizedProfileTab(new URLSearchParams(search).get("tab") || "instructions");
   }
 
+  function waitForAgentConnectionsWorkspace(agentId) {
+    state.agentConnections = {
+      agentId: agentId, workspaceId: "", attached: [], managedCatalog: [],
+      managedCanConfigure: false, managedConfigurationReadOnly: false,
+      loading: true, waitingForWorkspace: true, error: "", notice: ""
+    };
+  }
+
   function openProfileEditor(selected, initialTab) {
     state.mobileAgentRosterOpen = false;
     state.view = "profiles";
@@ -736,6 +744,9 @@
     state.profileDraft = cloneAgent(selected);
     resetProfileTransientState();
     state.profileTab = normalizedProfileTab(initialTab || "instructions");
+    if (state.profileTab === "connections" && selected.canEdit !== false) {
+      waitForAgentConnectionsWorkspace(selected.id);
+    }
     markVisibleResourceCurrent("agent-detail", selected.id);
     render();
     if (selected.canEdit === false) {
@@ -2775,7 +2786,7 @@
       renderPreservingPagePosition();
       return Promise.resolve();
     }
-    var requestState = { agentId: agentId, workspaceId: workspaceId, attached: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: true, error: "", notice: "" };
+    var requestState = { agentId: agentId, workspaceId: workspaceId, attached: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: true, waitingForWorkspace: state.agentConnections.waitingForWorkspace === true, error: "", notice: "" };
     state.agentConnections = requestState;
     render();
     if (!workspaceId) {
@@ -5727,7 +5738,7 @@
   function customMcpToolChoices(tools, selected) {
     var busy = !!((state.connectionAccountForm || state.customMcpToolEditor || {}).busy);
     var review = state.customMcpToolEditor && state.customMcpToolEditor.metaAds;
-    var controls = review ? '<p class="hint">Select each tool deliberately. Change-capable tools can alter ads and may affect spending.</p>' : '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>';
+    var controls = review ? '<p class="hint">Select each reporting tool deliberately. Every selection remains limited to the approved ad accounts.</p>' : '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>';
     return controls + (tools.map(function (tool) {
       var supported = !review || tool.available === true;
       if (!supported) return '<div class="field"><span>' + esc(tool.title || tool.name) + '</span><span class="hint">Not yet supported with ad account restrictions.</span></div>';
@@ -5858,7 +5869,8 @@
     }
     var accounts = state.agentConnections;
     if (accounts.agentId !== draft.id || accounts.loading) {
-      if (state.connectionAccountsSupported === null && draft.mcpServers !== undefined) {
+      if (state.connectionAccountsSupported === null && draft.mcpServers !== undefined &&
+          accounts.waitingForWorkspace !== true) {
         return legacyConnectionsPanelHtml(draft);
       }
       return '<p class="hint ptab-hint">Loading connections&hellip;</p>';
@@ -10366,7 +10378,17 @@
       state.view !== "profiles" || state.profileScreen !== "edit" ||
       !draft || !draft.id || draft.canEdit === false
     ) return Promise.resolve();
-    if (tab === "connections") return loadAgentConnections(draft.id);
+    if (tab === "connections") {
+      var connectionsAgentId = draft.id;
+      var connectionsRefreshGeneration = refreshGeneration;
+      if (!WORKSPACE_ADMIN_UI) return loadAgentConnections(connectionsAgentId);
+      return loadVisibleSlackStatus().then(function () {
+        if (refreshGeneration !== connectionsRefreshGeneration || state.view !== "profiles" ||
+            state.profileScreen !== "edit" || !state.profileDraft ||
+            state.profileDraft.id !== connectionsAgentId || state.profileTab !== "connections") return;
+        return loadAgentConnections(connectionsAgentId);
+      });
+    }
     if (tab === "repositories") return loadProfileRepositories(draft.id);
     if (tab === "memory") return loadOwnerMemory("agent", connectedTeamId(), draft.id, true);
     if (tab === "schedules") return loadAgentSchedules(draft.id);
@@ -10379,6 +10401,9 @@
     if (changed) {
       if (tab !== "skills") resetSkillImportBrowseTransientState();
       state.profileTab = tab;
+      if (tab === "connections" && state.profileDraft.canEdit !== false && !connectedTeamId()) {
+        waitForAgentConnectionsWorkspace(state.profileDraft.id);
+      }
       if (canNavigate && routeReady) {
         var tabSearch = tab === "instructions" ? "" : "?tab=" + encodeURIComponent(tab);
         history.replaceState(null, "", canonicalPath() + tabSearch);

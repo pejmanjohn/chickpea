@@ -6936,6 +6936,106 @@ test('Agent connections expose Agent-owned Team and personal accounts with manag
   assert.match(page, /\/oauth\/api\/start/);
 });
 
+test('Connections deep links wait for Slack identity before loading account inventory', async () => {
+  let resolveSlack!: (response: FakeResponse) => void;
+  let slackGets = 0;
+  const pendingSlack = new Promise<FakeResponse>((resolve) => { resolveSlack = resolve; });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccounts: { attached: [] },
+    settingsLoadFetch(path, method) {
+      if (path !== '/admin/api/slack-connection' || method !== 'GET') return undefined;
+      slackGets += 1;
+      return pendingSlack;
+    },
+  });
+
+  await flushAsync();
+  assert.ok(slackGets > 0);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.match(harness.app.innerHTML, /Loading connections&hellip;/);
+  assert.doesNotMatch(harness.app.innerHTML, /Connect Slack before adding Agent connections/);
+  assert.doesNotMatch(harness.app.innerHTML, /MCP servers and REST APIs/);
+
+  resolveSlack(jsonResponse(connectedSlackFixture()));
+  await flushAsync();
+  assert.equal(harness.agentConnectionGets(), 1);
+  assert.match(harness.app.innerHTML, /No connections in this Agent yet/);
+});
+
+test('Connections deep links keep the disconnected Slack guidance after identity resolves', async () => {
+  let resolveSlack!: (response: FakeResponse) => void;
+  const pendingSlack = new Promise<FakeResponse>((resolve) => { resolveSlack = resolve; });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccounts: { attached: [] },
+    settingsLoadFetch(path, method) {
+      return path === '/admin/api/slack-connection' && method === 'GET'
+        ? pendingSlack
+        : undefined;
+    },
+  });
+
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Loading connections&hellip;/);
+  resolveSlack(jsonResponse(disconnectedSlackFixture()));
+  await flushAsync();
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.match(harness.app.innerHTML, /Connect Slack before adding Agent connections/);
+  assert.doesNotMatch(harness.app.innerHTML, /MCP servers and REST APIs/);
+});
+
+test('opening Connections while Slack identity is pending defers and coalesces account loading', async () => {
+  let resolveSlack!: (response: FakeResponse) => void;
+  let slackGets = 0;
+  const pendingSlack = new Promise<FakeResponse>((resolve) => { resolveSlack = resolve; });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    connectionAccounts: { attached: [] },
+    settingsLoadFetch(path, method) {
+      if (path !== '/admin/api/slack-connection' || method !== 'GET') return undefined;
+      slackGets += 1;
+      return pendingSlack;
+    },
+  });
+
+  await flushAsync();
+  const slackGetsBeforeTab = slackGets;
+  harness.listeners.click?.({
+    target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }),
+  });
+  await flushAsync();
+  assert.equal(slackGets, slackGetsBeforeTab);
+  assert.equal(harness.agentConnectionGets(), 0);
+  assert.match(harness.app.innerHTML, /Loading connections&hellip;/);
+  assert.doesNotMatch(harness.app.innerHTML, /Connect Slack before adding Agent connections/);
+
+  resolveSlack(jsonResponse(connectedSlackFixture()));
+  await flushAsync();
+  assert.equal(harness.agentConnectionGets(), 1);
+  assert.match(harness.app.innerHTML, /No connections in this Agent yet/);
+});
+
+test('Connections preserve the legacy panel after an explicit account endpoint 404', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    slackConnection: connectedSlackFixture(),
+    connectionAccountsFetch: async () => jsonResponse({ error: 'not_found' }, 404),
+  });
+
+  await flushAsync();
+  assert.equal(harness.agentConnectionGets(), 1);
+  assert.match(harness.app.innerHTML, /MCP servers and REST APIs/);
+  assert.doesNotMatch(harness.app.innerHTML, /Loading connections&hellip;/);
+});
+
 test('connection cards omit diagnostic records while retaining the account label', async () => {
   const account = { id: 'connection_exact', revision: 4, workspaceId: 'T_DESIGN', ownerKind: 'member',
     ownerMembershipId: 'membership_exact', createdByMembershipId: 'membership_creator', providerId: 'google',
@@ -15435,13 +15535,56 @@ test('custom OAuth callback opens account tool review and keeps creation and edi
   assert.match(harness.app.innerHTML, /0 of 1 selected/);
 });
 
+test('Meta tool review describes reporting access without implying ad changes', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts: { attached: [ownedConnection({
+      id: 'connection_meta', workspaceId: 'T_DESIGN', revision: 3,
+      ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads',
+      lifecycle: 'ready', credentialConfigured: true,
+      policy: {
+        kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
+        authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
+        discoveredTools: [{
+          name: 'get_ad_performance', title: 'Get ad performance',
+          description: 'Read performance metrics.', available: true, effect: 'read',
+        }],
+        allowedTools: ['get_ad_performance'], toolPolicies: {},
+      },
+    })] },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({
+    'data-action': 'custom-mcp-tools-open',
+    'data-connection-id': 'connection_meta',
+  }) });
+
+  assert.match(harness.app.innerHTML, /Select each reporting tool deliberately/);
+  assert.match(harness.app.innerHTML, /limited to the approved ad accounts/);
+  assert.match(harness.app.innerHTML, /Get ad performance · Reporting/);
+  assert.doesNotMatch(harness.app.innerHTML, /alter ads|affect spending|May change ads/);
+});
+
 test('Agent deep links render before channel discovery and auxiliary checks finish', async () => {
   const pending = new Map<string, (value: FakeResponse) => void>();
-  const delayed = new Set(['/admin/api/channels', '/admin/api/models', '/admin/api/onboarding', '/admin/api/environment/status']);
+  let resolveSlack!: (response: FakeResponse) => void;
+  const pendingSlack = new Promise<FakeResponse>((resolve) => { resolveSlack = resolve; });
+  let slackGets = 0;
+  const delayed = new Set(['/admin/api/channels', '/admin/api/models', '/admin/api/onboarding', '/admin/api/environment/status', '/admin/api/slack-connection']);
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()], initialPath: '/admin/agents/agent_conn',
     settingsLoadFetch(path, method) {
       if (method !== 'GET' || !delayed.has(path)) return undefined;
+      if (path === '/admin/api/slack-connection') {
+        slackGets += 1;
+        return pendingSlack;
+      }
       return new Promise<FakeResponse>(resolve => { pending.set(path, resolve); });
     },
   });
@@ -15449,6 +15592,8 @@ test('Agent deep links render before channel discovery and auxiliary checks fini
   assert.match(harness.app.innerHTML, /Agent configuration/);
   assert.match(harness.app.innerHTML, /Instructions/);
   assert.equal(pending.size, 4);
+  assert.ok(slackGets > 0);
+  assert.equal(harness.agentConnectionGets(), 0);
   // The delayed channel response must update discovery without resetting the editor.
   const input = harness.listeners.input!;
   input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Keep my unsaved instructions') });
@@ -15456,6 +15601,7 @@ test('Agent deep links render before channel discovery and auxiliary checks fini
   pending.get('/admin/api/models')!(jsonResponse({ providers: [] }));
   pending.get('/admin/api/onboarding')!(jsonResponse({ error: 'onboarding_not_found' }, 404));
   pending.get('/admin/api/environment/status')!(jsonResponse({}));
+  resolveSlack(jsonResponse(connectedSlackFixture()));
   await flushAsync();
   assert.match(harness.app.innerHTML, /Keep my unsaved instructions/);
   assert.match(harness.app.innerHTML, /Agent configuration/);
