@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import type { ToolDefinition } from '@flue/runtime';
@@ -312,6 +313,59 @@ test('input-schema projection keeps exact required account evidence and fingerpr
     type: 'object', required: ['ad_account_id'],
     properties: { ad_account_id: { type: 'string' }, limit: { type: 'number' } },
   }).fingerprint, first.fingerprint, 'any bounded input-schema change changes the fingerprint');
+});
+
+test('input-schema projection hashes long annotations without weakening structural account checks', () => {
+  const commonPrefix = 'supported reporting field '.repeat(200);
+  const firstDescription = commonPrefix + 'a'.repeat(5_000);
+  const secondDescription = commonPrefix + 'b'.repeat(5_000);
+  assert.equal(firstDescription.length, secondDescription.length);
+
+  const schema = (description: unknown) => ({
+    type: 'object',
+    required: ['ad_account_id'],
+    properties: {
+      fields: { type: 'array', items: { type: 'string' }, description },
+      ad_account_id: { type: 'string' },
+    },
+  });
+  const first = projectMcpToolInputSchema(schema(firstDescription));
+  const reordered = projectMcpToolInputSchema({
+    properties: {
+      ad_account_id: { type: 'string' },
+      fields: { description: firstDescription, items: { type: 'string' }, type: 'array' },
+    },
+    required: ['ad_account_id'],
+    type: 'object',
+  });
+
+  assert.equal(first.ambiguous, false);
+  assert.deepEqual(first.accountFields, [{ name: 'ad_account_id', type: 'string', required: true }]);
+  assert.equal(reordered.fingerprint, first.fingerprint, 'long-string fingerprints remain deterministic');
+  assert.notEqual(
+    projectMcpToolInputSchema(schema(secondDescription)).fingerprint,
+    first.fingerprint,
+    'same-length strings with a shared prefix retain distinct full-content fingerprints',
+  );
+  const stringMarkerShape = {
+    '$schema-string-sha256': createHash('sha256').update(JSON.stringify(firstDescription)).digest('hex'),
+    length: firstDescription.length,
+  };
+  for (const collisionCandidate of [stringMarkerShape, [stringMarkerShape], JSON.stringify(stringMarkerShape)]) {
+    assert.notEqual(
+      projectMcpToolInputSchema(schema(collisionCandidate)).fingerprint,
+      first.fingerprint,
+      'the long-string marker cannot collide with a schema object, array, or ordinary string',
+    );
+  }
+
+  assert.equal(projectMcpToolInputSchema({
+    type: 'object', required: ['ad_account_id'],
+    properties: {
+      ad_account_id: { type: 'number', description: firstDescription },
+      campaign_id: { type: 'string' },
+    },
+  }).ambiguous, true, 'long annotations do not make unsupported account types or selectors eligible');
 });
 
 test('input-schema projection fails closed for optional, alternate and composed account selectors', () => {

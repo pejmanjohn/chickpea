@@ -389,8 +389,15 @@ function boundedCanonicalSchema(value: unknown): { value: string; truncated: boo
     if (current === null || typeof current === 'boolean' || typeof current === 'number') return current;
     if (typeof current === 'string') {
       if (current.length <= MAX_SCHEMA_STRING) return current;
-      state.truncated = true;
-      return current.slice(0, MAX_SCHEMA_STRING) + `[truncated:${current.length}]`;
+      // Hash the complete string so long schema annotations remain bounded
+      // without making an otherwise exact input contract ambiguous. Every
+      // ordinary object key below is namespaced with `value:` or `sha256:`, so
+      // this unnamespaced marker cannot collide with any transformed schema
+      // object, string, or array.
+      return {
+        '$schema-string-sha256': bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(current)))),
+        length: current.length,
+      };
     }
     if (Array.isArray(current)) {
       if (current.length > MAX_SCHEMA_ARRAY) state.truncated = true;
