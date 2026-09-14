@@ -58,6 +58,62 @@ const baseInput: McpConnectInput = {
   headers: {},
 };
 
+const metaInput: McpConnectInput = {
+  ...baseInput,
+  id: 'meta-ads',
+  url: 'https://mcp.facebook.com/ads',
+};
+
+interface ProtocolToolPage {
+  tools: Array<Record<string, unknown>>;
+  nextCursor?: string;
+}
+
+function pagedProtocolFetch(
+  pages: Record<string, ProtocolToolPage>,
+  listCursors: Array<string | undefined> = [],
+): typeof fetch {
+  return async (input, init) => {
+    const request = new Request(input, init);
+    if (request.method !== 'POST') return new Response(null, { status: 405 });
+    const rpc = await request.json() as { id?: number; method: string; params?: { cursor?: string } };
+    if (rpc.id === undefined) return new Response(null, { status: 202 });
+    if (rpc.method === 'initialize') {
+      return Response.json({
+        jsonrpc: '2.0', id: rpc.id,
+        result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'test', version: '1' } },
+      });
+    }
+    const cursor = rpc.params?.cursor;
+    listCursors.push(cursor);
+    const page = pages[cursor ?? ''];
+    if (!page) throw new Error(`Unexpected tools/list cursor ${cursor ?? '<first>'}.`);
+    return Response.json({ jsonrpc: '2.0', id: rpc.id, result: page });
+  };
+}
+
+function protocolTool(name: string, inputSchema: Record<string, unknown> = { type: 'object' }): Record<string, unknown> {
+  return { name, inputSchema };
+}
+
+function scopedMetaSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: { ad_account_id: { type: 'string' } },
+    required: ['ad_account_id'],
+  };
+}
+
+const reviewedMetaToolNames = [
+  'ads_get_ad_entities',
+  'ads_get_opportunity_score',
+  'ads_insights_advertiser_context',
+  'ads_insights_anomaly_signal',
+  'ads_insights_auction_ranking_benchmarks',
+  'ads_insights_industry_benchmark',
+  'ads_insights_performance_trend',
+] as const;
+
 test('protocol discovery preserves true, false and absent read-only declarations', async () => {
   const methods: string[] = [];
   const fakeFetch: typeof fetch = async (input, init) => {
@@ -87,6 +143,91 @@ test('protocol discovery preserves true, false and absent read-only declarations
   ]);
   assert.ok(result.tools.every((entry) => entry.inputSchema?.ambiguous === true));
   assert.ok(methods.includes('tools/list'));
+});
+
+test('Meta protocol discovery scans past 50 tools and retains reviewed reporting tools', async () => {
+  const cursors: Array<string | undefined> = [];
+  const first = Array.from({ length: 60 }, (_, index) =>
+    protocolTool(`unsupported_${String(index).padStart(3, '0')}`));
+  const fetch = pagedProtocolFetch({
+    '': { tools: first, nextCursor: 'reporting' },
+    reporting: {
+      tools: reviewedMetaToolNames.map((name) => protocolTool(name, scopedMetaSchema())),
+    },
+  }, cursors);
+
+  const result = await discoverMcpTools(metaInput, undefined, () => fetch);
+
+  assert.deepEqual(result.tools.map((entry) => entry.name), reviewedMetaToolNames);
+  assert.deepEqual(result.tools[0]?.inputSchema?.accountFields, [
+    { name: 'ad_account_id', type: 'string', required: true },
+  ]);
+  assert.deepEqual(cursors, [undefined, 'reporting']);
+});
+
+test('generic protocol discovery keeps the first 50 tools and does not scan later pages', async () => {
+  const cursors: Array<string | undefined> = [];
+  const fetch = pagedProtocolFetch({
+    '': {
+      tools: Array.from({ length: 60 }, (_, index) => protocolTool(`generic_${index}`)),
+      nextCursor: 'later',
+    },
+    later: { tools: [protocolTool('ads_get_ad_entities', scopedMetaSchema())] },
+  }, cursors);
+
+  const result = await discoverMcpTools(baseInput, undefined, () => fetch);
+
+  assert.equal(result.tools.length, 50);
+  assert.equal(result.tools[0]?.name, 'generic_0');
+  assert.equal(result.tools[49]?.name, 'generic_49');
+  assert.deepEqual(cursors, [undefined]);
+});
+
+test('Meta protocol discovery fails closed for raw bounds, pagination bounds, repeated cursors and duplicate reviewed tools', async () => {
+  const tooManyTools = pagedProtocolFetch({
+    '': { tools: Array.from({ length: 257 }, (_, index) => protocolTool(`tool_${index}`)) },
+  });
+  await assert.rejects(
+    () => discoverMcpTools(metaInput, undefined, () => tooManyTools),
+    /exceeded the raw tool limit/,
+  );
+
+  const tooManyPages: Record<string, ProtocolToolPage> = {};
+  for (let index = 0; index < 20; index += 1) {
+    const cursor = index === 0 ? '' : `page_${index}`;
+    tooManyPages[cursor] = {
+      tools: [],
+      nextCursor: `page_${index + 1}`,
+    };
+  }
+  await assert.rejects(
+    () => discoverMcpTools(metaInput, undefined, () => pagedProtocolFetch(tooManyPages)),
+    /exceeded the page limit/,
+  );
+
+  const repeatedCursor = pagedProtocolFetch({
+    '': { tools: [], nextCursor: 'same' },
+    same: { tools: [], nextCursor: 'same' },
+  });
+  await assert.rejects(
+    () => discoverMcpTools(metaInput, undefined, () => repeatedCursor),
+    /repeated a cursor/,
+  );
+
+  const duplicateReviewed = pagedProtocolFetch({
+    '': {
+      tools: [
+        ...reviewedMetaToolNames.map((name) => protocolTool(name, scopedMetaSchema())),
+        ...Array.from({ length: 60 }, (_, index) => protocolTool(`unreviewed_${index}`)),
+      ],
+      nextCursor: 'duplicate',
+    },
+    duplicate: { tools: [protocolTool('ads_get_ad_entities', scopedMetaSchema())] },
+  });
+  await assert.rejects(
+    () => discoverMcpTools(metaInput, undefined, () => duplicateReviewed),
+    /duplicate reviewed tool ads_get_ad_entities/,
+  );
 });
 
 test('input-schema projection keeps exact required account evidence and fingerprints the whole schema', () => {
@@ -191,6 +332,18 @@ test('discoverMcpTools maps tools, strips the mcp__<id>__ prefix, and closes', a
   );
   assert.equal(result.tools[0]?.description, 'Search things');
   assert.equal(closed, true, 'discover must close the connection');
+});
+
+test('injected Meta discovery scans the bounded adapter catalog but returns only reviewed schema-less tools', async () => {
+  const unreviewed = Array.from({ length: 60 }, (_, index) =>
+    tool(`mcp__meta-ads__unsupported_${index}`));
+  const reviewed = reviewedMetaToolNames.map((name) => tool(`mcp__meta-ads__${name}`));
+  const { fn } = stubConnect(fakeConnection([...unreviewed, ...reviewed]));
+
+  const result = await discoverMcpTools(metaInput, fn);
+
+  assert.deepEqual(result.tools.map((entry) => entry.name), reviewedMetaToolNames);
+  assert.ok(result.tools.every((entry) => entry.inputSchema === undefined));
 });
 
 test('discoverMcpTools passes id as the server name and callTimeoutMs to connect', async () => {

@@ -170,7 +170,7 @@ export function normalizeMetaAdsAccountIds(ids: readonly string[]): string[] {
   return values;
 }
 
-function isReviewedMetaAdsTool(name: string): name is keyof typeof META_ADS_REVIEWED_TOOL_EFFECTS {
+export function isReviewedMetaAdsTool(name: string): name is keyof typeof META_ADS_REVIEWED_TOOL_EFFECTS {
   return Object.hasOwn(META_ADS_REVIEWED_TOOL_EFFECTS, name);
 }
 

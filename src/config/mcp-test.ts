@@ -12,6 +12,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
 import { McpBlockedUrlError } from './mcp-errors.ts';
+import { isMetaAdsMcpConnection, isReviewedMetaAdsTool } from './meta-ads-policy.ts';
 import {
   createMcpGuardedFetch,
   validateMcpUrl,
@@ -38,6 +39,9 @@ import type {
 const DEFAULT_CONNECT_TIMEOUT_MS = 8_000;
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 const MAX_TOOLS = 50;
+const MAX_META_DISCOVERY_RAW_TOOLS = 256;
+const MAX_META_DISCOVERY_PAGES = 20;
+const MAX_META_DISCOVERY_TIMEOUT_MS = 30_000;
 const NAME_MAX = 120;
 const DESCRIPTION_MAX = 400;
 const TOOL_NAME_PREFIX = /^mcp__[^_]+(?:_[^_]+)*__/;
@@ -78,9 +82,11 @@ const connectWithFlueV2: McpConnector = (name, definition) =>
   createMcpConnection({ name, ...definition });
 
 /**
- * Connect + list tools + close. Returns truncated, prefix-stripped tool
- * metadata (max 50). Throws classifiable errors; callers map via
- * classify/safeText. The connection is always closed in `finally`.
+ * Connect + list tools + close. Generic servers retain their first 50 tools.
+ * Meta Ads scans a separately bounded complete catalog and retains only the
+ * reviewed reporting tools, including schema-incompatible entries that the UI
+ * must explain. Throws classifiable errors; callers map via classify/safeText.
+ * The connection is always closed in `finally`.
  */
 export async function discoverMcpTools(
   input: McpConnectInput,
@@ -92,7 +98,11 @@ export async function discoverMcpTools(
   if (!connect) return discoverProtocolTools(input, createGuardedFetch);
   const connection = await connectMcp(input, connect);
   try {
-    return { tools: mapTools(input.id, connection.tools) };
+    return { tools: mapTools(
+      input.id,
+      connection.tools,
+      isMetaAdsMcpConnection({ url: input.url }),
+    ) };
   } finally {
     await connection.close().catch(() => undefined);
   }
@@ -127,31 +137,62 @@ async function discoverProtocolTools(
     );
     const tools: McpConnectionToolInfo[] = [];
     const cursors = new Set<string>();
+    const metaAds = isMetaAdsMcpConnection({ url: validated.url });
+    const reviewedNames = new Set<string>();
+    let rawToolCount = 0;
+    let pageCount = 0;
     let cursor: string | undefined;
-    do {
-      const page = await client.listTools(cursor ? { cursor } : {}, {
-        timeout: input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
-      });
-      for (const tool of page.tools) {
-        if (tool.execution?.taskSupport === 'required') continue;
-        if (tools.length >= MAX_TOOLS) break;
-        if (!supportedToolName(tool.name)) continue;
-        const description = truncate(tool.description, DESCRIPTION_MAX);
-        const title = truncate(tool.title ?? tool.annotations?.title, 160);
-        const inputSchema = projectMcpToolInputSchema(tool.inputSchema);
-        tools.push({
-          name: tool.name,
-          ...(title ? { title } : {}),
-          ...(description ? { description } : {}),
-          ...(typeof tool.annotations?.readOnlyHint === 'boolean'
-            ? { readOnlyHint: tool.annotations.readOnlyHint } : {}),
-          inputSchema,
+    const listTools = async (): Promise<void> => {
+      do {
+        pageCount += 1;
+        const page = await client.listTools(cursor ? { cursor } : {}, {
+          timeout: input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
         });
-      }
-      cursor = page.nextCursor;
-      if (cursor && cursors.has(cursor)) throw new Error('MCP discovery repeated a cursor.');
-      if (cursor) cursors.add(cursor);
-    } while (cursor && tools.length < MAX_TOOLS);
+        rawToolCount += page.tools.length;
+        if (metaAds && rawToolCount > MAX_META_DISCOVERY_RAW_TOOLS) {
+          throw new Error('Meta Ads MCP discovery exceeded the raw tool limit.');
+        }
+        for (const tool of page.tools) {
+          if (metaAds && isReviewedMetaAdsTool(tool.name)) {
+            if (reviewedNames.has(tool.name)) {
+              throw new Error(`Meta Ads MCP discovery returned duplicate reviewed tool ${tool.name}.`);
+            }
+            reviewedNames.add(tool.name);
+          }
+          if (metaAds && !isReviewedMetaAdsTool(tool.name)) continue;
+          if (tool.execution?.taskSupport === 'required') continue;
+          if (!metaAds && tools.length >= MAX_TOOLS) break;
+          if (!supportedToolName(tool.name)) continue;
+          const description = truncate(tool.description, DESCRIPTION_MAX);
+          const title = truncate(tool.title ?? tool.annotations?.title, 160);
+          const inputSchema = projectMcpToolInputSchema(tool.inputSchema);
+          tools.push({
+            name: tool.name,
+            ...(title ? { title } : {}),
+            ...(description ? { description } : {}),
+            ...(typeof tool.annotations?.readOnlyHint === 'boolean'
+              ? { readOnlyHint: tool.annotations.readOnlyHint } : {}),
+            inputSchema,
+          });
+        }
+        cursor = page.nextCursor;
+        if (cursor && cursors.has(cursor)) throw new Error('MCP discovery repeated a cursor.');
+        if (cursor) cursors.add(cursor);
+        if (metaAds && cursor && pageCount >= MAX_META_DISCOVERY_PAGES) {
+          throw new Error('Meta Ads MCP discovery exceeded the page limit.');
+        }
+      } while (cursor && (metaAds || tools.length < MAX_TOOLS));
+    };
+    if (metaAds) {
+      await raceDeadline(
+        listTools(),
+        Math.min(input.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, MAX_META_DISCOVERY_TIMEOUT_MS),
+        (error) => controller.abort(error),
+        'Meta Ads MCP discovery',
+      );
+      return { tools };
+    }
+    await listTools();
     return { tools };
   } finally {
     controller.abort();
@@ -213,11 +254,12 @@ function raceDeadline<T>(
   promise: Promise<T>,
   ms: number,
   onTimeout: (timeoutError: Error) => void,
+  label = 'connect',
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      const timeoutError = new Error('connect timeout after ' + ms + 'ms');
+      const timeoutError = new Error(label + ' timeout after ' + ms + 'ms');
       onTimeout(timeoutError);
       reject(timeoutError);
     }, ms);
@@ -227,11 +269,24 @@ function raceDeadline<T>(
   });
 }
 
-function mapTools(id: string, tools: ToolDefinition[]): McpConnectionToolInfo[] {
+function mapTools(id: string, tools: ToolDefinition[], metaAds = false): McpConnectionToolInfo[] {
+  if (metaAds && tools.length > MAX_META_DISCOVERY_RAW_TOOLS) {
+    throw new Error('Meta Ads MCP discovery exceeded the raw tool limit.');
+  }
   const mapped: McpConnectionToolInfo[] = [];
+  const reviewedNames = new Set<string>();
   for (const raw of tools) {
-    if (mapped.length >= MAX_TOOLS) break;
-    if (!supportedToolName(stripPrefix(id, raw.name))) continue;
+    const name = stripPrefix(id, raw.name);
+    if (metaAds) {
+      if (!isReviewedMetaAdsTool(name)) continue;
+      if (reviewedNames.has(name)) {
+        throw new Error(`Meta Ads MCP discovery returned duplicate reviewed tool ${name}.`);
+      }
+      reviewedNames.add(name);
+    } else if (mapped.length >= MAX_TOOLS) {
+      break;
+    }
+    if (!supportedToolName(name)) continue;
     mapped.push(toDiscovered(id, raw));
   }
   return mapped;
