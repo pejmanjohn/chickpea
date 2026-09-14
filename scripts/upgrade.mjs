@@ -146,8 +146,22 @@ function schemaInspection(sourceRoot, configPath, target) {
   }
 }
 
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
+async function assertOfficialReceiptRelease(release, role) {
+  if (!release || typeof release !== 'object' || Array.isArray(release) ||
+      typeof release.tag !== 'string' || typeof release.version !== 'string' ||
+      typeof release.commit !== 'string') {
+    throw new Error(`Stored ${role} release identity is invalid. Preserve the receipt and investigate before retrying.`);
+  }
+  const official = await resolveOfficialRelease(release.tag);
+  if (release.tag !== official.tag || release.version !== official.version || release.commit !== official.commit) {
+    throw new Error(`Stored ${role} release identity does not match its immutable official release. Preserve the receipt and investigate before retrying.`);
+  }
+  return official;
+}
+
+/** Run the guided updater with immutable official releases. */
+export async function runUpgrade(args = process.argv.slice(2)) {
+  const options = parseArgs(args);
   if (options.help) { console.log(HELP); return; }
   assertNodeVersion();
   const stateRoot = privateDirectory(path.join(homedir(), '.chickpea', 'upgrades'));
@@ -163,6 +177,11 @@ async function main() {
     if (path.dirname(realpathSync(directory)) !== receipts) throw new Error('Receipt belongs to a different upgrade-state directory.');
     receipt = readPrivateJson(file);
     if (receipt.schema !== 1 || receipt.id !== path.basename(directory)) throw new Error('Unknown or malformed upgrade receipt.');
+    // A retained checkout proves only what was downloaded earlier. Re-resolve
+    // both tags on every continuation so edited or legacy receipts cannot turn
+    // a different commit into executable upgrade or recovery source.
+    await assertOfficialReceiptRelease(receipt.previous, 'previous');
+    await assertOfficialReceiptRelease(receipt.destination, 'destination');
   }
   const stored = receipt ? undefined : options.configure ? undefined : readPrivateJson(installationFile);
   const target = validateTarget(receipt?.target ?? (options.configure ? { ...options, wranglerProfile: options['wrangler-profile'] } : stored?.target));
@@ -252,7 +271,7 @@ async function main() {
     if (options.preflight) {
       await prepare(receipt.destination, current);
       save({ ...receipt, stage: 'prepared' });
-      console.log(`Preflight passed for ${target.worker}: v${current.version} → ${receipt.destination.tag}. No deployment was attempted.\nReceipt: ${receiptPath}`);
+      console.log(`Preflight passed for ${target.worker}: v${current.version} → ${receipt.destination.tag}. No deployment was attempted.\nReceipt: ${receiptPath}\nTooling directory: ${root}\nRetained destination source: ${destinationRoot}`);
       return;
     }
     const result = await executePreparedUpgrade({ receipt, initial, direction: options.recover ? 'recover' : receipt.direction ?? 'upgrade', inspect,
@@ -271,11 +290,14 @@ async function main() {
         await subprocess(process.execPath, [path.join(root, 'scripts/deploy-with-epilogue.mjs'), '--skip-build', ...wranglerProfileArgs(target)], sourceRoot(source), deployEnvironment());
       },
     });
-    console.log(`Upgrade ${result}. Receipt: ${receiptPath}`);
+    const servingSource = result === 'recovered' ? previousRoot : result === 'succeeded' ? destinationRoot : undefined;
+    console.log(`Upgrade ${result}. Receipt: ${receiptPath}\nTooling directory: ${root}${servingSource ? `\nRetained serving source: ${servingSource}` : ''}`);
   } finally {
     rmSync(inspectionDirectory, { recursive: true, force: true });
     unlock();
   }
 }
 
-main().catch((error) => { console.error(error instanceof Error ? error.message : 'Upgrade failed. Preserve its private receipt.'); process.exitCode = 1; });
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  runUpgrade().catch((error) => { console.error(error instanceof Error ? error.message : 'Upgrade failed. Preserve its private receipt.'); process.exitCode = 1; });
+}

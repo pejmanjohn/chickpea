@@ -81,12 +81,13 @@ test('ambiguous identity, unknown configuration and missing authority are refuse
   }
 });
 test('equal migration digests alone do not authorize a transition', () => {
-  const before = { version: '0.1.0', storageGeneration: 1, migrations: { d1: 'a' }, recovery: 'previous-code-only' };
+  const migrations = Object.fromEntries(['d1', 'workerConfiguration', 'identity', 'configuration', 'work'].map((key, index) => [key, String(index + 1).repeat(64)]));
+  const before = { formatVersion: 1, version: '0.1.0', storageGeneration: 1, supportedOrigins: [], migrations, recovery: 'previous-code-only' };
   const after = { ...before, version: '0.1.1', supportedOrigins: [] };
   assert.throws(() => assertCompatibleRelease(before, after), /supported/);
   after.supportedOrigins = ['0.1.0'] as never[];
   assert.doesNotThrow(() => assertCompatibleRelease(before, after));
   assert.doesNotThrow(() => assertCompatibleRelease(before, { ...after, recovery: 'gateway-transport-then-previous-code' }));
   assert.throws(() => assertCompatibleRelease(before, { ...after, recovery: 'unknown' }), /recovery/);
-  assert.throws(() => assertCompatibleRelease(before, { ...after, migrations: { d1: 'b' } }), /migration/);
+  assert.throws(() => assertCompatibleRelease(before, { ...after, migrations: { ...migrations, d1: 'f'.repeat(64) } }), /migration/);
 });

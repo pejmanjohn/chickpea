@@ -7988,9 +7988,19 @@
   function installationCommand() {
     var current = state.installation;
     var release = current.updates && current.updates.release;
-    return current.details && current.updates && current.details.deployment === "cloudflare" && current.updates.status === "available" &&
+    return current.details && current.updates && current.details.deployment === "cloudflare" && current.updates.status === "available" && current.updates.guidedUpdate === "supported" &&
       release && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(release.version)
       ? "npm run upgrade -- --to v" + release.version : "";
+  }
+
+  function installationUpdatePrompt() {
+    var current = state.installation;
+    var identity = current.details && current.details.identity;
+    var release = current.updates && current.updates.status === "available" && current.updates.release;
+    if (!current.details || current.details.deployment !== "cloudflare" || !identity) return "";
+    var installed = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(identity.version) ? "v" + identity.version : "an unverified version";
+    var target = release && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(release.version) ? " to v" + release.version : " to the latest stable release if one is available";
+    return "Review and update this Chickpea Cloudflare installation from " + installed + target + ". Follow https://github.com/pejmanjohn/chickpea/blob/main/UPDATE_CHICKPEA_CLOUDFLARE.md. Before making changes, verify that the target release supports this installed version and storage manifest. If the transition is unsupported or cannot be verified, stop and explain what needs review.";
   }
 
   function installationDate(value) {
@@ -8006,14 +8016,21 @@
     var mode = update ? update.status : "loading";
     var title = "Checking for updates…";
     var copy = "Checking the latest published Chickpea release.";
-    if (mode === "available") { title = "Chickpea " + update.release.version + " is available"; copy = "Review what’s changed and update when you’re ready."; }
+    if (mode === "available") {
+      title = "Chickpea " + update.release.version + " is available";
+      copy = update.guidedUpdate === "supported" ? "This installation supports the guided update path." :
+        update.guidedUpdate === "unsupported" ? "This release is newer, but a guided update from this installation is unavailable." :
+          "This release is newer, but guided update compatibility could not be verified.";
+    }
     if (mode === "current") { title = "You’re up to date"; copy = "This installation is running the latest available release or a newer version."; }
     if (mode === "no-release") { title = "No releases published yet"; copy = "Your installation is ready to check for the first published release."; }
     if (mode === "unversioned") { title = "Confirm your installation’s version"; copy = "This build has no verified release identity. Follow the adoption guide before upgrading."; }
     if (mode === "failed") { title = "Couldn’t check for updates"; copy = update.error === "rate-limited" ? "GitHub’s request limit was reached. " + (update.retryAt && isFinite(new Date(update.retryAt).getTime()) ? "Try again after " + installationDate(update.retryAt) + "." : "Try again later.") : "The release service could not be reached or returned an unreadable response. Try again."; }
     var label = { available: "Update available", current: "Up to date", failed: "Check failed", "no-release": "Release status", unversioned: "Version unknown", loading: "Checking" }[mode] || "Release status";
-    var releaseAction = mode === "available" ? '<button type="button" class="btn btn-primary" data-action="installation-review">Review update ' + icon("arrow-right") + '</button>' : '';
-    if (mode === "unversioned") releaseAction = '<a class="btn btn-soft" href="https://github.com/pejmanjohn/chickpea/blob/main/docs/runbooks/upgrading.md" target="_blank" rel="noreferrer">Read upgrade guide</a>';
+    var updateMethod = details && details.deployment === "cloudflare" ?
+      mode === "available" && update.guidedUpdate === "supported" ? "Guided command available" : "Coding-agent update guide" : "Manual upgrade guide";
+    var releaseAction = mode === "available" ? '<button type="button" class="btn btn-primary" data-action="installation-review">Review update ' + icon("arrow-right") + '</button>' :
+      details && details.deployment === "cloudflare" ? '<button type="button" class="btn btn-soft" data-action="installation-review">Get update prompt</button>' : '';
     return '<div class="installation-page"><div class="about-heading"><div><p class="section-trail">Settings</p><h1 class="page-title">About &amp; updates</h1><p>Keep your Chickpea installation up to date.</p></div><span class="owner-label">Owner settings</span></div>' +
       (current.error ? '<p class="field-error" role="alert">' + esc(current.error) + '</p>' : '') +
       '<section class="version-panel"><div class="installed"><img class="installed-mark" src="/chickpea-mark-128.png" alt=""><div class="installed-copy"><h2>Chickpea ' + esc(identity ? identity.version : "") + '</h2><p>Installed version <span class="separator">·</span> <span class="mono">' + esc(identity && identity.sourceCommit ? identity.sourceCommit.slice(0, 7) : "Unknown commit") + '</span></p></div><span class="cloud-host">' + (details ? details.deployment === "cloudflare" ? "Hosted on Cloudflare" : "Hosted on Node" : "Loading installation…") + '</span></div>' +
@@ -8021,7 +8038,7 @@
       (mode === "failed" && update.lastSuccessfulCheckAt ? '<p class="cached-result">Last successful check: ' + esc(installationDate(update.lastSuccessfulCheckAt)) + (update.release ? '. Last seen release: v' + esc(update.release.version) : '') + '.</p>' : '') +
       '<div class="release-bottom"><span class="release-meta">Updates are installed when you choose.</span>' + releaseAction + '</div></div>' +
       '<div class="check-row"><span class="check-note" role="status">' + (current.busy ? "Checking…" : update ? "Last checked " + esc(installationDate(update.checkedAt)) : "Not checked yet") + '</span><button type="button" class="btn btn-ghost" data-action="installation-refresh"' + (current.busy ? ' disabled' : '') + '>Check for updates</button></div>' +
-      '<details class="details-row"><summary>Installation details ' + icon("chevron-right") + '</summary><dl class="deployment-list"><div><dt>Application version</dt><dd>' + esc(identity ? identity.version : "Unknown") + '</dd></div><div><dt>Source commit</dt><dd class="mono">' + esc(identity && identity.sourceCommit ? identity.sourceCommit : "Unknown") + '</dd></div><div><dt>Deployment</dt><dd>' + (details ? details.deployment === "cloudflare" ? "Cloudflare Workers" : "Node" : "Unknown") + '</dd></div><div><dt>Update method</dt><dd>' + (details && details.deployment === "cloudflare" ? "Guided command" : "Manual upgrade guide") + '</dd></div></dl></details></section>' +
+      '<details class="details-row"><summary>Installation details ' + icon("chevron-right") + '</summary><dl class="deployment-list"><div><dt>Application version</dt><dd>' + esc(identity ? identity.version : "Unknown") + '</dd></div><div><dt>Source commit</dt><dd class="mono">' + esc(identity && identity.sourceCommit ? identity.sourceCommit : "Unknown") + '</dd></div><div><dt>Deployment</dt><dd>' + (details ? details.deployment === "cloudflare" ? "Cloudflare Workers" : "Node" : "Unknown") + '</dd></div><div><dt>Update method</dt><dd>' + updateMethod + '</dd></div></dl></details></section>' +
       '<section class="support-panel"><div class="support-copy"><h2>Need a hand?</h2><p>Preview a safe summary of your version, setup, and provider configuration to share when asking for help.</p><p class="privacy">No credentials, conversations, or private workspace content.</p></div><button type="button" class="btn btn-soft" data-action="installation-report">Preview report</button></section>' +
       '<footer class="page-footer"><span>Chickpea · Open source, self-hosted.</span><span class="footer-links"><a href="https://docs.chickpea.co" target="_blank" rel="noreferrer">Documentation</a><a href="https://github.com/pejmanjohn/chickpea" target="_blank" rel="noreferrer">GitHub</a></span></footer></div>';
   }
@@ -8030,12 +8047,19 @@
     var current = state.installation;
     if (!current.dialog) return "";
     var report = current.dialog === "report";
-    var release = current.updates && current.updates.release;
+    var release = current.updates && current.updates.status === "available" && current.updates.release;
     var command = installationCommand();
+    var updatePrompt = installationUpdatePrompt();
+    var compatibility = current.updates && current.updates.guidedUpdate;
+    var guidance = compatibility === "unsupported" ? "A coding agent must review this unsupported transition and stop before changing the installation." :
+      compatibility === "unknown" ? "A coding agent must verify this transition and stop if compatibility remains unknown or unsupported." :
+        "A coding agent should still run the guide’s checks before changing the installation.";
     var body = report ? '<p class="report-intro">This is the exact report that will be copied. Nothing is sent automatically.</p><pre class="report-data">' + esc(current.report || "Loading report…") + '</pre>' :
-      '<p class="upgrade-path">' + esc(current.details && current.details.identity.version || "Unknown") + ' → ' + esc(release ? release.version : "Unknown") + '</p><h3>What’s changed</h3><div class="release-notes">' + esc(release && release.notes || "Read the full release notes on GitHub.") + '</div>' +
-      (command ? '<div class="command-section"><h3>Update from your terminal</h3><p>Run this in your Chickpea checkout. The command checks compatibility and shows the installation before asking you to confirm.</p><div class="command-box"><code>' + esc(command) + '</code><button type="button" class="btn btn-soft" data-action="installation-copy-command">Copy command</button></div><p class="preflight-note">The command preserves your installation and records recovery details. Code recovery is not a data backup.</p></div>' : '<div class="command-section"><p>Use the upgrade guide for this deployment. The guided Cloudflare command requires a known, supported release.</p></div>') +
-      (current.details && current.details.deployment === "cloudflare" ? '<details class="bootstrap"><summary>Installed with the Cloudflare Deploy button?</summary><p>Complete the one-time local setup and select your existing installation before running an upgrade.</p></details>' : '') + '<p class="upgrade-guide"><a href="https://github.com/pejmanjohn/chickpea/blob/main/docs/runbooks/' + (current.details && current.details.deployment === "node" ? 'operations' : 'upgrading') + '.md" target="_blank" rel="noreferrer">Read the upgrade guide</a></p>';
+      '<p class="upgrade-path">' + esc(current.details && current.details.identity.version || "Unknown") + ' → ' + esc(release ? release.version : "latest stable") + '</p>' +
+      (release ? '<h3>What’s changed</h3><div class="release-notes">' + esc(release.notes || "Read the full release notes on GitHub.") + '</div>' : '') +
+      (updatePrompt ? '<div class="command-section"><h3>Update with a coding agent</h3><p>' + esc(guidance) + '</p><div class="command-box"><code>' + esc(updatePrompt) + '</code><button type="button" class="btn btn-primary" data-action="installation-copy-prompt">Copy update prompt</button></div></div>' : '') +
+      (command ? '<div class="command-section"><h3>Or update from your terminal</h3><p>Run this in your Chickpea checkout. The command checks compatibility and shows the installation before asking you to confirm.</p><div class="command-box"><code>' + esc(command) + '</code><button type="button" class="btn btn-soft" data-action="installation-copy-command">Copy command</button></div><p class="preflight-note">The command preserves your installation and records recovery details. Code recovery is not a data backup.</p></div>' : '<div class="command-section"><p>' + (current.details && current.details.deployment === "cloudflare" ? "A terminal update command is available only after this exact release transition is verified as supported." : "Use the upgrade guide for this deployment.") + '</p></div>') +
+      (current.details && current.details.deployment === "cloudflare" ? '<details class="bootstrap"><summary>Installed with the Cloudflare Deploy button?</summary><p>Complete the one-time local setup and select your existing installation before running an upgrade.</p></details>' : '') + '<p class="upgrade-guide"><a href="https://github.com/pejmanjohn/chickpea/blob/main/' + (current.details && current.details.deployment === "node" ? 'docs/runbooks/operations.md' : 'UPDATE_CHICKPEA_CLOUDFLARE.md') + '" target="_blank" rel="noreferrer">Read the ' + (current.details && current.details.deployment === "node" ? 'operations' : 'Cloudflare update') + ' guide</a></p>';
     return '<div class="modal-backdrop"><div class="modal-card installation-dialog" role="dialog" aria-modal="true" aria-labelledby="installation-dialog-title" tabindex="-1" data-role="installation-dialog"><h2 class="modal-title" id="installation-dialog-title">' + (report ? "Support report" : "Review update") + '</h2><div class="dialog-content">' + body + '<p class="hint" role="status">' + esc(current.notice) + '</p></div><div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="installation-dialog-close">Done</button><span class="spacer"></span>' + (report ? '<button type="button" class="btn btn-primary" data-action="installation-copy-report"' + (!current.report ? ' disabled' : '') + '>Copy report</button>' : '') + '</div></div></div>';
   }
 
@@ -10796,6 +10820,7 @@
 
     if (state.installation.dialog) {
       if (action === "installation-dialog-close") closeInstallationDialog();
+      if (action === "installation-copy-prompt") copyInstallationText(installationUpdatePrompt());
       if (action === "installation-copy-command") copyInstallationText(installationCommand());
       if (action === "installation-copy-report" && state.installation.report) copyInstallationText(state.installation.report);
       return;

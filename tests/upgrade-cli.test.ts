@@ -17,6 +17,7 @@ function fixture(t: any, wranglerProfile?: string, authoredPolicy = true) {
   for (const dir of [launcher, origin, home]) mkdirSync(dir);
   cpSync('scripts/lib', join(launcher, 'scripts/lib'), { recursive: true });
   cpSync('scripts/upgrade.mjs', join(launcher, 'scripts/upgrade.mjs'));
+  cpSync('src/release/upgrade-compatibility.mjs', join(launcher, 'src/release/upgrade-compatibility.mjs'));
   cpSync('.nvmrc', join(launcher, '.nvmrc'));
   const git = (args: string[]) => {
     const result = spawnSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Upgrade Test', '-c', 'user.email=test@example.invalid', ...args], { cwd: origin, encoding: 'utf8' });
@@ -60,7 +61,7 @@ function fixture(t: any, wranglerProfile?: string, authoredPolicy = true) {
   for (const version of ['0.1.0', '0.1.1']) {
     put(join(origin, 'package.json'), JSON.stringify({ type: 'module', version, ...(authoredPolicy ? { allowScripts: { 'fixture-unused@1.0.0': false } } : {}) }));
     put(join(origin, 'package-lock.json'), JSON.stringify({ version, packages: { '': { version } } }));
-    put(join(origin, 'release.json'), JSON.stringify({ formatVersion: 1, version, storageGeneration: 1, recovery: 'previous-code-only', supportedOrigins: version === '0.1.0' ? [] : ['0.1.0'], migrations: migrationDigests(origin) }));
+    put(join(origin, 'release.json'), JSON.stringify({ formatVersion: 1, version, storageGeneration: 1, recovery: 'gateway-transport-then-previous-code', supportedOrigins: version === '0.1.0' ? [] : ['0.1.0'], migrations: migrationDigests(origin) }));
     git(['add', '.']); git(['commit', '--quiet', '-m', version]);
     commits[version] = git(['rev-parse', 'HEAD']); git(['tag', `v${version}`]);
   }
@@ -74,8 +75,17 @@ function fixture(t: any, wranglerProfile?: string, authoredPolicy = true) {
   spawnSync('chmod', ['700', shim]);
   const preload = join(base, 'preload.mjs');
   put(preload, `
+    import {appendFileSync} from 'node:fs';
     const commits=${JSON.stringify(commits)};
-    globalThis.fetch=async (url)=>{
+    globalThis.fetch=async (input,options)=>{
+      const url=String(input);
+      if(url==='https://customer.example/internal/deployment/recover-delivery'){
+        const authorization=new Headers(options?.headers).get('authorization');
+        const targetVersion=new Headers(options?.headers).get('x-chickpea-target-version');
+        if(options?.method!=='POST'||!authorization?.startsWith('Bearer ')||!targetVersion) throw new Error('Invalid transport recovery request');
+        appendFileSync(process.env.UPGRADE_FIXTURE_LOG,JSON.stringify({method:'POST',path:'/internal/deployment/recover-delivery',targetVersion,authorized:true})+'\\n');
+        return new Response(null,{status:204});
+      }
       if (!url.startsWith('https://api.github.com/repos/pejmanjohn/chickpea/')) throw new Error('Unexpected external request');
       const tag=url.split('/').at(-1);const version=tag.slice(1);
       return Response.json(url.includes('/releases/')?{tag_name:tag,immutable:true,draft:false,prerelease:false,html_url:'https://github.com/pejmanjohn/chickpea/releases/tag/'+tag,published_at:'2026-09-07T00:00:00Z'}:{object:{type:'commit',sha:commits[version]}});
@@ -148,6 +158,7 @@ for (const profile of [undefined, 'customer-login']) test(`current runner upgrad
   assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.1');
   const recover = f.run(['--recover', receipt], true); assert.equal(recover.status, 0, recover.stderr);
   assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
+  assert.match(readFileSync(f.log, 'utf8'), /\/internal\/deployment\/recover-delivery/);
   const again = f.run(['--resume', receipt]); assert.equal(again.status, 0, again.stderr); assert.match(again.stdout, /recovered/);
 });
 
@@ -164,6 +175,7 @@ test('current runner recovers source after a recorded post-upload interruption',
   assert.equal(recover.status, 0, recover.stderr);
   assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
   assert.equal(JSON.parse(readFileSync(receipt, 'utf8')).stage, 'recovered');
+  assert.match(readFileSync(f.log, 'utf8'), /\/internal\/deployment\/recover-delivery/);
 });
 
 test('CLI refuses altered retained source before dependency scripts or deployment', (t) => {
@@ -177,6 +189,29 @@ test('CLI refuses altered retained source before dependency scripts or deploymen
   assert.doesNotMatch(readFileSync(f.log, 'utf8'), /"ci"|"build"|"--skip-build"/);
   assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
 });
+
+for (const mutation of ['missing destination', 'stripped destination commit', 'tampered destination commit', 'tampered previous commit']) {
+  test(`CLI re-resolves both immutable release identities before resume: ${mutation}`, (t) => {
+    const f = fixture(t); f.configure();
+    const preflight = f.run(['--to', 'v0.1.1', '--preflight']);
+    assert.equal(preflight.status, 0, preflight.stderr);
+    const directory = join(f.receipts(), readdirSync(f.receipts())[0]!);
+    const receiptPath = join(directory, 'receipt.json');
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+    if (mutation === 'missing destination') delete receipt.destination;
+    else if (mutation === 'stripped destination commit') delete receipt.destination.commit;
+    else if (mutation === 'tampered destination commit') receipt.destination.commit = 'f'.repeat(40);
+    else receipt.previous.commit = 'f'.repeat(40);
+    writeFileSync(receiptPath, JSON.stringify(receipt), { mode: 0o600 });
+    writeFileSync(f.log, '');
+
+    const resumed = f.run(['--resume', receiptPath], true);
+    assert.equal(resumed.status, 1);
+    assert.match(resumed.stderr, /Stored (?:previous|destination) release identity/);
+    assert.equal(readFileSync(f.log, 'utf8'), '');
+    assert.equal(JSON.parse(readFileSync(f.remote, 'utf8')).version, '0.1.0');
+  });
+}
 
 test('CLI rejects conflicting arguments and receipts outside its private directory', (t) => {
   const f = fixture(t);

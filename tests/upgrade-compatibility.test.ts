@@ -1,0 +1,104 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { test } from 'node:test';
+import {
+  evaluateUpgradeCompatibility,
+  validateUpgradeManifest,
+} from '../src/release/upgrade-compatibility.mjs';
+
+const digest = (character: string) => character.repeat(64);
+const migrations = (configuration = digest('e')) => ({
+  d1: digest('a'),
+  workerConfiguration: digest('b'),
+  identity: digest('c'),
+  configuration,
+  work: digest('d'),
+});
+const manifest = (version: string, configuration?: string) => ({
+  formatVersion: 1 as const,
+  version,
+  storageGeneration: 1,
+  supportedOrigins: [] as string[],
+  recovery: 'gateway-transport-then-previous-code' as const,
+  migrations: migrations(configuration),
+});
+
+const publishedV017 = {
+  formatVersion: 1 as const,
+  version: '0.1.17',
+  storageGeneration: 1,
+  supportedOrigins: [] as string[],
+  recovery: 'gateway-transport-then-previous-code' as const,
+  migrations: {
+    d1: 'a22d9e323396cf1c464c3f87a4c89fa435e0cc56e16119d9ed6570aecf32155a',
+    workerConfiguration: '425adafbb6b377e225e240e82d8d29503039946606707a75c08af7b8bb217370',
+    identity: '33261b08e8876e2bcfac3f9aa93182e7fdc20fe95f05d3c629d818cf2bdde9c7',
+    configuration: '8ebfe7655eab0d28792642d317162a4c5ef96f1c43f7cc389e32977c17084dc2',
+    work: 'f4720ea5b23c3552deae2be1a5ad04940fc90d215b2ada81d17c1110ab068eb9',
+  },
+};
+
+test('candidate release manifest rejects the published v0.1.17 origin', () => {
+  const candidate = validateUpgradeManifest(JSON.parse(
+    readFileSync(new URL('../release.json', import.meta.url), 'utf8'),
+  ));
+  assert.deepEqual(evaluateUpgradeCompatibility(publishedV017, candidate), {
+    status: 'unsupported', reason: 'origin-not-declared',
+  });
+});
+
+test('unchanged storage is supported only for a declared older origin', () => {
+  const currentConfiguration = '8ebfe7655eab0d28792642d317162a4c5ef96f1c43f7cc389e32977c17084dc2';
+  const before = manifest('0.1.17', currentConfiguration);
+  const after = {
+    ...manifest('0.1.18', currentConfiguration), supportedOrigins: ['0.1.17'],
+  };
+  assert.deepEqual(evaluateUpgradeCompatibility(before, after), {
+    status: 'supported', reason: 'unchanged-storage',
+  });
+  assert.deepEqual(evaluateUpgradeCompatibility(before, { ...after, supportedOrigins: [] }), {
+    status: 'unsupported', reason: 'origin-not-declared',
+  });
+  assert.deepEqual(evaluateUpgradeCompatibility(before, {
+    ...after, version: '0.1.17', supportedOrigins: [],
+  }), {
+    status: 'unsupported', reason: 'destination-not-newer',
+  });
+});
+
+test('v0.1.16 configuration transition stays unsupported pending continuity review', () => {
+  const oldConfiguration = 'fa8728169c93d0a8ce86dad166d2779b0e8debcfdaaa4c791f96055e1db7b365';
+  const newConfiguration = '8ebfe7655eab0d28792642d317162a4c5ef96f1c43f7cc389e32977c17084dc2';
+  const before = manifest('0.1.16', oldConfiguration);
+  const after = { ...manifest('0.1.18', newConfiguration), supportedOrigins: ['0.1.16'] };
+  assert.deepEqual(evaluateUpgradeCompatibility(before, after), {
+    status: 'unsupported', reason: 'migration-content-changed',
+  });
+});
+
+test('every other storage and migration change fails closed', () => {
+  const before = manifest('0.1.17');
+  const after = { ...manifest('0.1.18'), supportedOrigins: ['0.1.17'] };
+  assert.deepEqual(evaluateUpgradeCompatibility(before, {
+    ...after, storageGeneration: 2,
+  }), { status: 'unsupported', reason: 'storage-generation-changed' });
+  for (const key of ['d1', 'workerConfiguration', 'identity', 'configuration', 'work'] as const) {
+    assert.deepEqual(evaluateUpgradeCompatibility(before, {
+      ...after, migrations: { ...after.migrations, [key]: digest('f') },
+    }), { status: 'unsupported', reason: 'migration-content-changed' });
+  }
+});
+
+test('manifest validation rejects incomplete, malformed, and unknown contracts', () => {
+  const valid = manifest('0.1.18');
+  assert.equal(validateUpgradeManifest(valid), valid);
+  for (const invalid of [
+    { ...valid, formatVersion: 2 },
+    { ...valid, version: 'v0.1.18' },
+    { ...valid, supportedOrigins: ['0.1.18'] },
+    { ...valid, supportedOrigins: ['0.1.17', '0.1.17'] },
+    { ...valid, recovery: 'snapshot' },
+    { ...valid, migrations: { ...valid.migrations, work: 'short' } },
+    { ...valid, migrations: { ...valid.migrations, extra: digest('f') } },
+  ]) assert.throws(() => validateUpgradeManifest(invalid), /Invalid release upgrade contract/);
+});

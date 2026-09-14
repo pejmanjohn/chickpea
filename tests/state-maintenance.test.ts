@@ -175,6 +175,29 @@ test('pending index preserves authority isolation, delivery, and recovery exclus
   } finally { db.close(); }
 });
 
+test('turn recovery logging exposes only reviewed reason codes', () => {
+  const db = openStateDb(':memory:');
+  const messages: string[] = [];
+  const originalError = console.error;
+  console.error = (...values: unknown[]) => messages.push(values.map(String).join(' '));
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    turns.enqueue(turnJob('known-recovery'));
+    turns.enqueue(turnJob('unreviewed-recovery'));
+    turns.markRecoveryRequired('known-recovery', 'flue_expected_instance_missing');
+    turns.markRecoveryRequired('unreviewed-recovery', 'request text must stay private');
+
+    assert.deepEqual(messages, [
+      '[chickpea] TurnJob requires operator reconciliation {"reason":"flue_expected_instance_missing"}',
+      '[chickpea] TurnJob requires operator reconciliation {"reason":"unclassified"}',
+    ]);
+    assert.doesNotMatch(messages.join('\n'), /request text must stay private/);
+  } finally {
+    console.error = originalError;
+    db.close();
+  }
+});
+
 test('maintenance indexes preserve the one-active-occurrence constraint and reject without partial writes', () => {
   const db = openStateDb(':memory:');
   try {
