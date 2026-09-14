@@ -201,6 +201,7 @@ const allowedPublicDocs = new Set([
   exportPath('docs', 'runbooks', 'agent-private-use-acceptance-2026-08-27.md'),
   exportPath('docs', 'runbooks', 'coding-sandbox-deployment.md'),
   exportPath('docs', 'runbooks', 'composio-managed-connectors.md'),
+  exportPath('docs', 'runbooks', 'meta-ads-connector.md'),
   exportPath('docs', 'runbooks', 'product-telemetry.md'),
   exportPath('docs', 'runbooks', 'runtime-observability.md'),
   exportPath('docs', 'runbooks', 'slack-message-identity.md'),
