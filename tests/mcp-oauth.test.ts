@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import type { OAuthClientMetadata } from '@modelcontextprotocol/sdk/shared/auth.js';
 
+import { applicationIdentity } from '../src/release/identity.ts';
 import {
   completeMcpOAuthAuthorization,
   createMcpOAuthClientMetadata,
@@ -49,6 +50,7 @@ interface FakeOAuthServerOptions {
   omitRefreshTokenOnRefresh?: boolean;
   registrationAuthMethod?: 'client_secret_basic' | 'client_secret_post' | 'none';
   registrationDelayMs?: number;
+  requireUserAgent?: string;
   refreshError?: string;
   serverUrl?: string;
   tokenAuthMethods?: Array<'client_secret_basic' | 'client_secret_post' | 'none'>;
@@ -76,7 +78,8 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
   ).href;
   const protectedResourceMetadataUrl =
     `${parsedServerUrl.origin}/.well-known/oauth-protected-resource${parsedServerUrl.pathname}`;
-  const calls: Array<{ url: string; body?: URLSearchParams }> = [];
+  const unsupportedBrowserUrl = new URL('/unsupportedbrowser', authorizationServerUrl).href;
+  const calls: Array<{ url: string; body?: URLSearchParams; userAgent?: string }> = [];
   let registrations = 0;
   let exchanges = 0;
   let refreshes = 0;
@@ -92,7 +95,8 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
       request.headers.get('content-type')?.includes('application/x-www-form-urlencoded')
         ? new URLSearchParams(rawBody)
         : undefined;
-    calls.push({ url, ...(body ? { body } : {}) });
+    const userAgent = request.headers.get('user-agent') ?? undefined;
+    calls.push({ url, ...(body ? { body } : {}), ...(userAgent ? { userAgent } : {}) });
 
     if (
       url ===
@@ -108,6 +112,12 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
       url ===
       authorizationMetadataUrl
     ) {
+      if (options.requireUserAgent && userAgent !== options.requireUserAgent) {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: unsupportedBrowserUrl },
+        });
+      }
       return Response.json({
         issuer: options.issuer ?? authorizationServerUrl,
         authorization_endpoint: authorizationEndpoint,
@@ -118,6 +128,11 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
         code_challenge_methods_supported: options.codeChallengeMethods ?? ['S256'],
         token_endpoint_auth_methods_supported: options.tokenAuthMethods ?? ['none'],
         client_id_metadata_document_supported: options.cimd ?? false,
+      });
+    }
+    if (url === unsupportedBrowserUrl) {
+      return new Response('<!doctype html><title>Unsupported browser</title>', {
+        headers: { 'Content-Type': 'text/html' },
       });
     }
     if (url === registrationEndpoint) {
@@ -142,6 +157,9 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
       });
     }
     if (url === tokenEndpoint) {
+      if (options.requireUserAgent) {
+        assert.equal(userAgent, options.requireUserAgent);
+      }
       if (options.expectedClientId) {
         assert.equal(body?.get('client_id'), options.expectedClientId);
         assert.equal(body?.get('client_secret'), null);
@@ -372,6 +390,68 @@ test('Meta uses its configured public client and retains a non-consuming setup c
       (await settings.getSetting(mcpOAuthSettingKeys(REF)[2]))!,
     ) as Record<string, unknown>;
     assert.equal(token.configurationGeneration, configuration.generation);
+  } finally {
+    settings.close();
+  }
+});
+
+test('OAuth identifies Chickpea during metadata discovery, exchange, and refresh', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const expectedUserAgent = `Chickpea/${applicationIdentity.version}`;
+  let now = 1_000_000;
+  const oauth = fakeOAuthServer({
+    serverUrl: META_ADS_MCP_SERVER_URL,
+    authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+    expectedClientId: '1234567890',
+    initialExpiresIn: 1,
+    requireUserAgent: expectedUserAgent,
+  });
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    now: () => now,
+    randomId: () => 'meta-state',
+    validateConnection: () => true,
+  };
+  try {
+    await saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '1234567890' },
+      settings,
+      { randomId: () => '11111111-1111-4111-8111-111111111111' },
+    );
+    const started = await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: META_ADS_MCP_SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+    }, dependencies);
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    now += 2_000;
+    assert.equal(
+      await resolveMcpOAuthAccessToken(
+        { ref: REF, serverUrl: META_ADS_MCP_SERVER_URL },
+        dependencies,
+      ),
+      'access-refreshed',
+    );
+    assert.deepEqual(
+      oauth.calls.map(({ url, userAgent }) => ({ url, userAgent })),
+      [
+        {
+          url: 'https://mcp.facebook.com/.well-known/oauth-protected-resource/ads',
+          userAgent: expectedUserAgent,
+        },
+        {
+          url: 'https://www.facebook.com/.well-known/oauth-authorization-server/ads',
+          userAgent: expectedUserAgent,
+        },
+        { url: 'https://www.facebook.com/ads/token', userAgent: expectedUserAgent },
+        { url: 'https://www.facebook.com/ads/token', userAgent: expectedUserAgent },
+      ],
+    );
   } finally {
     settings.close();
   }

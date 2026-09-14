@@ -1,5 +1,6 @@
 import { isRecord } from '../security/content-validation.ts';
 import { decodeBase64Url, encodeBase64Url } from '../security/base64url.ts';
+import { applicationIdentity } from '../release/identity.ts';
 import {
   discoverAuthorizationServerMetadata,
   discoverOAuthProtectedResourceMetadata,
@@ -69,6 +70,7 @@ import {
 const OAUTH_FETCH_TIMEOUT_MS = 8_000;
 const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const CONFIGURED_CLIENT_PUBLISH_ATTEMPTS = 16;
+const MCP_OAUTH_USER_AGENT = `Chickpea/${applicationIdentity.version}`;
 
 type McpOAuthErrorCode =
   | 'authorization_expired'
@@ -1508,7 +1510,7 @@ function validateCallbackUrl(value: string): URL {
 }
 
 function guardedOAuthFetch(dependencies: McpOAuthDependencies): typeof fetch {
-  return createMcpGuardedFetch(
+  const guardedFetch = createMcpGuardedFetch(
     dependencies.fetchFn
       ? {
           fetch: dependencies.fetchFn,
@@ -1517,4 +1519,9 @@ function guardedOAuthFetch(dependencies: McpOAuthDependencies): typeof fetch {
         }
       : { signal: AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS) },
   );
+  return ((input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    request.headers.set('User-Agent', MCP_OAUTH_USER_AGENT);
+    return guardedFetch(request);
+  }) as typeof fetch;
 }
