@@ -5626,6 +5626,9 @@
           revoked: "Disconnected"
         }[account.lifecycle] || "Needs attention") + '</span>';
     var menuItems = [];
+    if (account.policy && account.policy.kind === "mcp" && account.policy.authMode === "oauth" && account.lifecycle === "ready") {
+      menuItems.push('<button type="button" data-action="connection-account-mcp-oauth-start" data-connection-id="' + esc(account.id) + '">Reconnect</button>');
+    }
     if (managedResources.length && (!pendingResourceSelection || managedAction || oauthAction)) {
       menuItems.push('<button type="button" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">' + (pendingResourceSelection ? "Choose " : "Change ") + esc(managedResourceSelectionLabel(account)) + '</button>');
     }
