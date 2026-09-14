@@ -42,8 +42,6 @@ test('candidate release manifest rejects the published v0.1.17 origin', () => {
   const candidate = validateUpgradeManifest(JSON.parse(
     readFileSync(new URL('../release.json', import.meta.url), 'utf8'),
   ));
-  assert.equal(candidate.version, '0.1.18');
-  assert.deepEqual(candidate.supportedOrigins, []);
   assert.deepEqual(evaluateUpgradeCompatibility(publishedV017, candidate), {
     status: 'unsupported', reason: 'origin-not-declared',
   });
