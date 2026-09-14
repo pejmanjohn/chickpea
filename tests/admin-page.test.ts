@@ -15386,7 +15386,7 @@ test('Owner updates page reviews escaped notes, copies exact commands and previe
   assert.doesNotMatch(harness.app.innerHTML, /<script>alert/);
   click({ target: actionTarget({ 'data-action': 'installation-copy-prompt' }) });
   await flushAsync();
-  assert.equal(harness.clipboardWrites.at(-1), 'Review and update this Chickpea Cloudflare installation from v0.1.0 to v0.1.1. Follow https://github.com/pejmanjohn/chickpea/blob/main/UPDATE_CHICKPEA_CLOUDFLARE.md. Before making changes, verify that the target release supports this installed version and storage manifest. If the transition is unsupported or cannot be verified, stop and explain what needs review.');
+  assert.equal(harness.clipboardWrites.at(-1), 'Update this Chickpea installation to the latest stable release. Follow:\nhttps://github.com/pejmanjohn/chickpea/blob/main/UPDATE_CHICKPEA_CLOUDFLARE.md');
   click({ target: actionTarget({ 'data-action': 'installation-copy-command' }) });
   await flushAsync();
   assert.equal(harness.clipboardWrites.at(-1), 'npm run upgrade -- --to v0.1.1');
@@ -15432,8 +15432,7 @@ test('Owner update prompts stay available while unsupported or without a newer r
     click({ target: actionTarget({ 'data-action': 'installation-copy-prompt' }) });
     await flushAsync();
     assert.match(harness.clipboardWrites.at(-1) ?? '', /UPDATE_CHICKPEA_CLOUDFLARE\.md/);
-    assert.match(harness.clipboardWrites.at(-1) ?? '', updates.status === 'available' ? /from v0\.1\.0 to v0\.1\.1/ : /from v0\.1\.0 to the latest stable release/);
-    assert.match(harness.clipboardWrites.at(-1) ?? '', /unsupported or cannot be verified, stop/);
+    assert.match(harness.clipboardWrites.at(-1) ?? '', /^Update this Chickpea installation to the latest stable release\./);
   }
 });
 

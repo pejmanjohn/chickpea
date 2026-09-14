@@ -8044,11 +8044,8 @@
   function installationUpdatePrompt() {
     var current = state.installation;
     var identity = current.details && current.details.identity;
-    var release = current.updates && current.updates.status === "available" && current.updates.release;
     if (!current.details || current.details.deployment !== "cloudflare" || !identity) return "";
-    var installed = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(identity.version) ? "v" + identity.version : "an unverified version";
-    var target = release && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(release.version) ? " to v" + release.version : " to the latest stable release if one is available";
-    return "Review and update this Chickpea Cloudflare installation from " + installed + target + ". Follow https://github.com/pejmanjohn/chickpea/blob/main/UPDATE_CHICKPEA_CLOUDFLARE.md. Before making changes, verify that the target release supports this installed version and storage manifest. If the transition is unsupported or cannot be verified, stop and explain what needs review.";
+    return "Update this Chickpea installation to the latest stable release. Follow:\nhttps://github.com/pejmanjohn/chickpea/blob/main/UPDATE_CHICKPEA_CLOUDFLARE.md";
   }
 
   function installationDate(value) {
