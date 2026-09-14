@@ -18,6 +18,7 @@ import {
 import {
   configuredMcpOAuthClientDescriptor,
   META_ADS_MCP_SERVER_URL,
+  META_ADS_OAUTH_DEFAULT_SCOPE,
   META_ADS_OAUTH_ISSUER,
   removeConfiguredMcpOAuthClient,
   saveConfiguredMcpOAuthClient,
@@ -319,7 +320,7 @@ test('Meta origin variants cannot bypass configured-client mode through DCR', as
   }
 });
 
-test('Meta uses its configured public client and retains a non-consuming setup continuation', async () => {
+test('Meta defaults existing scope-less starts to read-only MCP access with its public PKCE client', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const oauth = fakeOAuthServer({
     serverUrl: META_ADS_MCP_SERVER_URL,
@@ -346,7 +347,6 @@ test('Meta uses its configured public client and retains a non-consuming setup c
       ref: REF,
       serverUrl: META_ADS_MCP_SERVER_URL,
       callbackUrl: CALLBACK_URL,
-      setupOperationId: 'setup_first',
     }, dependencies);
     const current = await startMcpOAuthAuthorization({
       ref: REF,
@@ -356,8 +356,11 @@ test('Meta uses its configured public client and retains a non-consuming setup c
     }, dependencies);
 
     assert.equal(oauth.counts.registrations, 0);
+    assert.equal(first.authorizationUrl.searchParams.get('scope'), META_ADS_OAUTH_DEFAULT_SCOPE);
+    assert.equal(current.authorizationUrl.searchParams.get('scope'), META_ADS_OAUTH_DEFAULT_SCOPE);
     assert.equal(current.authorizationUrl.searchParams.get('client_id'), '1234567890');
     assert.equal(current.authorizationUrl.searchParams.get('code_challenge_method'), 'S256');
+    assert.ok(current.authorizationUrl.searchParams.get('code_challenge'));
     await assert.rejects(
       readMcpOAuthSetupContinuation(first.state, dependencies),
       (error: unknown) => error instanceof McpOAuthError && error.code === 'invalid_state',
@@ -373,6 +376,7 @@ test('Meta uses its configured public client and retains a non-consuming setup c
     ) as Record<string, unknown>;
     assert.equal(pending.configurationGeneration, configuration.generation);
     assert.equal(client.configurationGeneration, configuration.generation);
+    assert.equal(client.scope, META_ADS_OAUTH_DEFAULT_SCOPE);
     assert.equal(JSON.stringify(client).includes('client_secret'), false);
 
     await completeMcpOAuthAuthorization(
@@ -390,6 +394,42 @@ test('Meta uses its configured public client and retains a non-consuming setup c
       (await settings.getSetting(mcpOAuthSettingKeys(REF)[2]))!,
     ) as Record<string, unknown>;
     assert.equal(token.configurationGeneration, configuration.generation);
+  } finally {
+    settings.close();
+  }
+});
+
+test('Meta preserves an explicit OAuth scope without broadening it', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({
+    serverUrl: META_ADS_MCP_SERVER_URL,
+    authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+    expectedClientId: '1234567890',
+  });
+  try {
+    await saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '1234567890' },
+      settings,
+      { randomId: () => '11111111-1111-4111-8111-111111111111' },
+    );
+    const started = await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: META_ADS_MCP_SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+      scope: 'ads_mcp_management',
+    }, {
+      settings,
+      fetchFn: oauth.fetchFn,
+      randomId: () => 'meta-state',
+      validateConnection: () => true,
+    });
+
+    assert.equal(started.authorizationUrl.searchParams.get('scope'), 'ads_mcp_management');
+    const client = JSON.parse(
+      (await settings.getSetting(mcpOAuthSettingKeys(REF)[0]))!,
+    ) as Record<string, unknown>;
+    assert.equal(client.scope, 'ads_mcp_management');
   } finally {
     settings.close();
   }

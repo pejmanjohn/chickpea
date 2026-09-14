@@ -303,7 +303,12 @@ export async function startMcpOAuthAuthorization(
   // A reviewed configured-client server must never fall through to CIMD or
   // dynamic registration. Resolve installation state before the first
   // provider request so missing setup is an actionable local failure.
+  const configuredClientDescriptor = configuredMcpOAuthClientDescriptor(serverUrl);
   const configuredClient = await configuredClientForStart(serverUrl, dependencies);
+  // Existing accounts may predate a reviewed configured provider's required
+  // scopes. Default only an absent scope; an explicit caller scope remains an
+  // exact authorization boundary and is never broadened here.
+  const scope = input.scope ?? configuredClientDescriptor?.defaultScope;
 
   const fetchFn = guardedOAuthFetch(dependencies);
   let resourceMetadata: OAuthProtectedResourceMetadata;
@@ -380,7 +385,7 @@ export async function startMcpOAuthAuthorization(
     authorizationServerUrl,
     callbackUrl,
     metadata,
-    input.scope,
+    scope,
     dependencies,
     configuredClient,
   );
@@ -391,7 +396,7 @@ export async function startMcpOAuthAuthorization(
       metadata,
       clientInformation,
       redirectUrl: callbackUrl,
-      ...(input.scope ? { scope: input.scope } : {}),
+      ...(scope ? { scope } : {}),
       state,
       resource,
     },

@@ -5,6 +5,7 @@ import test from 'node:test';
 import { readPublicAsset } from '../src/assets/read.node.ts';
 import { validateMcpUrl } from '../src/config/mcp-url.ts';
 import { CONNECTOR_LOGOS } from '../src/config/connector-logos.ts';
+import { META_ADS_OAUTH_DEFAULT_SCOPE } from '../src/config/mcp-oauth-clients.ts';
 import {
   CONNECTOR_PRESETS,
   GOOGLE_WORKSPACE_SERVICE_PRESETS,
@@ -244,6 +245,19 @@ test('the Linear MCP preset requests read-write OAuth access', () => {
     notes:
       'Chickpea requests Linear read and write access so it can find, create, and update workspace objects.',
   });
+});
+
+test('the Meta Ads preset requests only its reporting OAuth permissions', () => {
+  const preset = getConnectorPreset('meta-ads');
+  assert.ok(preset && 'auth' in preset);
+  assert.deepEqual(preset.auth, {
+    kind: 'oauth',
+    scope: META_ADS_OAUTH_DEFAULT_SCOPE,
+  });
+  assert.equal(
+    preset.description,
+    'Review advertising performance for approved Meta ad accounts.',
+  );
 });
 
 test('Sentry and Intercom use their official hosted OAuth MCPs while Monday stays token-based', () => {

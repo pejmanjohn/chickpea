@@ -6,6 +6,7 @@ import {
   ConfiguredMcpOAuthClientError,
   getConfiguredMcpOAuthClient,
   META_ADS_MCP_SERVER_URL,
+  META_ADS_OAUTH_DEFAULT_SCOPE,
   META_ADS_OAUTH_ISSUER,
   removeConfiguredMcpOAuthClient,
   saveConfiguredMcpOAuthClient,
@@ -22,6 +23,7 @@ test('configured public OAuth descriptors require the reviewed canonical server'
     serverUrl: META_ADS_MCP_SERVER_URL,
     authorizationServerUrl: META_ADS_OAUTH_ISSUER,
     settingKey: 'mcp.oauth-client.meta-ads',
+    defaultScope: META_ADS_OAUTH_DEFAULT_SCOPE,
   });
   assert.equal(configuredMcpOAuthClientDescriptor(`${META_ADS_MCP_SERVER_URL}/`), undefined);
   assert.equal(configuredMcpOAuthClientDescriptor(`${META_ADS_MCP_SERVER_URL}?mode=other`), undefined);

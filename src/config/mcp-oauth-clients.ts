@@ -6,11 +6,13 @@ const GENERATION_PATTERN = /^[A-Za-z0-9_-]{8,192}$/;
 
 export const META_ADS_MCP_SERVER_URL = 'https://mcp.facebook.com/ads';
 export const META_ADS_OAUTH_ISSUER = 'https://www.facebook.com/ads';
+export const META_ADS_OAUTH_DEFAULT_SCOPE = 'ads_mcp_management ads_read';
 
 export interface ConfiguredMcpOAuthClientDescriptor {
   serverUrl: string;
   authorizationServerUrl: string;
   settingKey: string;
+  defaultScope: string;
 }
 
 export interface ConfiguredMcpOAuthClient {
@@ -44,6 +46,7 @@ const DESCRIPTORS: readonly ConfiguredMcpOAuthClientDescriptor[] = [{
   serverUrl: META_ADS_MCP_SERVER_URL,
   authorizationServerUrl: META_ADS_OAUTH_ISSUER,
   settingKey: 'mcp.oauth-client.meta-ads',
+  defaultScope: META_ADS_OAUTH_DEFAULT_SCOPE,
 }];
 
 export function configuredMcpOAuthClientDescriptor(
