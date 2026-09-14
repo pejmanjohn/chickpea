@@ -450,6 +450,10 @@ function runAdminPageHarness(
         catalog?: Array<Record<string, unknown>>;
       };
     };
+    connectionAccountsFetch?: (
+      agentId: string,
+      call: number,
+    ) => Promise<FakeResponse>;
     composioSettings?: Record<string, unknown>;
     composioSettingsError?: {
       status: number;
@@ -1594,6 +1598,12 @@ function runAdminPageHarness(
     );
     if (agentConnectionsMatch && method === 'GET') {
       agentConnectionGets += 1;
+      if (harnessOptions.connectionAccountsFetch) {
+        return harnessOptions.connectionAccountsFetch(
+          decodeURIComponent(agentConnectionsMatch[1] as string),
+          agentConnectionGets,
+        );
+      }
       if (harnessOptions.connectionAccounts) {
         return Promise.resolve(jsonResponse(harnessOptions.connectionAccounts));
       }
@@ -1938,6 +1948,9 @@ function runAdminPageHarness(
       const connectionId = decodeURIComponent(accountMcpOAuthStartMatch[2] as string);
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
       oauthStartPosts.push({ agentId, connectionId, body });
+      if (oauthStartError) {
+        return Promise.resolve(jsonResponse(oauthStartError, oauthStartError.status));
+      }
       return Promise.resolve(jsonResponse(
         oauthStartResult ?? { authorizationUrl: 'https://auth.linear.example/authorize?state=opaque' },
       ));
@@ -1960,6 +1973,9 @@ function runAdminPageHarness(
       const connectionId = decodeURIComponent(accountApiOAuthStartMatch[2] as string);
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
       apiOAuthStartPosts.push({ agentId, connectionId, body });
+      if (apiOAuthStartError) {
+        return Promise.resolve(jsonResponse(apiOAuthStartError, apiOAuthStartError.status));
+      }
       return Promise.resolve(jsonResponse(
         apiOAuthStartResult ?? { authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=opaque' },
       ));
@@ -8299,6 +8315,66 @@ test('Agent-owned Linear accounts create policy before starting account-scoped M
   assert.deepEqual(harness.assignedUrls, ['https://auth.linear.example/authorize?state=opaque']);
 });
 
+test('a failed Meta OAuth start reloads the saved account and retries that account without duplicating it', async () => {
+  const pending = ownedConnection({
+    id: 'connection_created', workspaceId: 'T_DESIGN', revision: 2,
+    ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads',
+    lifecycle: 'pending', credentialConfigured: false,
+    policy: {
+      kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
+      authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
+      discoveredTools: [], allowedTools: [], toolPolicies: {},
+    },
+  });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccountsFetch: async (_agentId, call) => jsonResponse({
+      attached: call === 1 ? [] : [pending],
+    }),
+    oauthStartError: { status: 502, error: 'oauth_unavailable' },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'meta-ads' }) });
+  chooseConnectionOwner(harness, 'member');
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  assert.equal(harness.connectionAccountPosts.length, 1);
+  assert.deepEqual(harness.oauthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'connection_created', body: {} },
+  ]);
+  assert.equal(harness.agentConnectionGets(), 2);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-create"/);
+  assert.match(
+    harness.app.innerHTML,
+    /Meta Ads OAuth could not be prepared\. Check that this install has a reachable callback URL, then try again\. The connection was saved; use Sign in on its row to try again\./,
+  );
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="connection-account-mcp-oauth-start"[^>]*data-connection-id="connection_created"/,
+  );
+
+  click({ target: actionTarget({
+    'data-action': 'connection-account-mcp-oauth-start',
+    'data-connection-id': 'connection_created',
+  }) });
+  await flushAsync();
+  assert.equal(harness.connectionAccountPosts.length, 1);
+  assert.deepEqual(harness.oauthStartPosts.map(({ connectionId }) => connectionId), [
+    'connection_created', 'connection_created',
+  ]);
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="connection-account-mcp-oauth-start"[^>]*data-connection-id="connection_created"/,
+  );
+});
+
 test('Agent-owned Google Drive accounts start a Drive-only Composio Connect Link', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
@@ -8513,6 +8589,73 @@ test('self-hosted Agent-owned Google connectors fall back to native OAuth setup 
   click({ target: actionTarget({ 'data-action': 'connection-account-new' }) });
   assert.doesNotMatch(harness.app.innerHTML, /<option value="google_oauth"/);
   assert.match(harness.app.innerHTML, /For Google sign-in, choose a Google connector/);
+});
+
+test('a failed native Google OAuth start reloads the saved account instead of recreating it', async () => {
+  const pending = ownedConnection({
+    id: 'connection_created', workspaceId: 'T_DESIGN', revision: 2,
+    ownerKind: 'team', providerId: 'google', label: 'Google Drive',
+    lifecycle: 'pending', credentialConfigured: false,
+    policy: {
+      kind: 'api', authMode: 'oauth', oauthProvider: 'google',
+      oauthScopes: ['https://www.googleapis.com/auth/drive.readonly'],
+      oauthAppType: 'external', allowedHosts: ['www.googleapis.com'],
+      pathPrefixes: ['/drive/v3'], headerName: 'Authorization',
+      headerValuePrefix: 'Bearer ', allowedMethods: ['GET', 'HEAD'],
+      presetId: 'google-workspace',
+    },
+  });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccountsFetch: async (_agentId, call) => jsonResponse({
+      attached: call === 1 ? [] : [pending],
+      managedConnectors: { composio: false },
+    }),
+    apiOAuthStartError: { status: 502, error: 'oauth_unavailable' },
+  });
+  await flushAsync();
+  const { click, input } = harness.listeners;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'google-drive' }) });
+  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-id' }, 'client-id') });
+  input({ target: inputTarget({ 'data-action': 'connection-account-oauth-client-secret' }, 'client-secret') });
+  chooseConnectionOwner(harness);
+  click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+  await flushAsync();
+
+  assert.equal(harness.connectionAccountPosts.length, 1);
+  assert.equal(harness.apiOAuthClientPuts.length, 1);
+  assert.deepEqual(harness.apiOAuthStartPosts, [
+    { agentId: 'agent_conn', connectionId: 'connection_created', body: {} },
+  ]);
+  assert.equal(harness.agentConnectionGets(), 2);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-create"/);
+  assert.match(
+    harness.app.innerHTML,
+    /Google Drive OAuth could not be prepared\. Check the Google client and redirect URI, then try again\. The connection was saved; use Sign in on its row to try again\./,
+  );
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="connection-account-oauth-start"[^>]*data-connection-id="connection_created"/,
+  );
+
+  click({ target: actionTarget({
+    'data-action': 'connection-account-oauth-start',
+    'data-connection-id': 'connection_created',
+  }) });
+  await flushAsync();
+  assert.equal(harness.connectionAccountPosts.length, 1);
+  assert.deepEqual(harness.apiOAuthStartPosts.map(({ connectionId }) => connectionId), [
+    'connection_created', 'connection_created',
+  ]);
+  assert.match(
+    harness.app.innerHTML,
+    /data-action="connection-account-oauth-start"[^>]*data-connection-id="connection_created"/,
+  );
 });
 
 test('Agent-owned Exa accounts support anonymous limits without an API key', async () => {

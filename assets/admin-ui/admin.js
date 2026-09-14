@@ -3296,6 +3296,7 @@
     form.busy = true;
     render();
     var prepare = Promise.resolve();
+    var accountCreated = false;
     if (form.kind === "mcp" && !form.preset && !mcpOauth) {
       var customTest = { id: connectionId, url: body.mcp.url, transport: body.mcp.transport, authMode: body.mcp.authMode };
       if (body.mcp.authMode === "bearer") customTest.bearerToken = body.credential;
@@ -3337,6 +3338,7 @@
     prepare.then(function () {
       return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections", "POST", body);
     }).then(function (created) {
+      accountCreated = true;
       if (googleOauth) {
         var accountId = created && created.account && created.account.id;
         if (!accountId) throw new Error("Connection response was missing its account.");
@@ -3361,9 +3363,25 @@
       state.agentConnections.notice = label + (form.kind === "api" && !form.preset ? " is saved. Its API token has not been verified." : " is connected to this Agent.");
       render();
     }).catch(function (error) {
-      if (!state.connectionAccountForm) return;
-      state.connectionAccountForm.busy = false;
-      state.connectionAccountForm.error = (error && (error.serverMessage || error.message)) || "Could not create the connection.";
+      if (accountCreated) {
+        if (state.connectionAccountForm === form) state.connectionAccountForm = null;
+        invalidateAgentConnections(agentId);
+        return loadAgentConnections(agentId).then(function () {
+          if (!state.profileDraft || state.profileDraft.id !== agentId || state.agentConnections.agentId !== agentId || state.connectionAccountForm) return;
+          var message = mcpOauth
+            ? oauthStartErrorText(error, label)
+            : googleOauth
+              ? apiOAuthStartErrorText(error, label)
+              : (error && (error.serverMessage || error.message)) || "Could not finish connecting the account.";
+          state.agentConnections.actionError = message + ((mcpOauth || googleOauth)
+            ? " The connection was saved; use Sign in on its row to try again."
+            : " The connection was saved.");
+          render();
+        });
+      }
+      if (state.connectionAccountForm !== form) return;
+      form.busy = false;
+      form.error = (error && (error.serverMessage || error.message)) || "Could not create the connection.";
       render();
     });
   }
@@ -3371,6 +3389,11 @@
   function startConnectionAccountOAuth(accountId, fromCreate, lane) {
     var agentId = state.profileDraft && state.profileDraft.id;
     if (!agentId) return Promise.reject(new Error("Save the Agent before signing in."));
+    var requestState = state.agentConnections;
+    if (!fromCreate && requestState.agentId === agentId) {
+      requestState.actionError = "";
+      render();
+    }
     var oauthRoute = lane === "mcp" ? "/oauth/mcp/start" : "/oauth/api/start";
     return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) + oauthRoute, "POST", {}).then(function (body) {
       var authorizationUrl;
@@ -3380,8 +3403,9 @@
       location.assign(authorizationUrl.href);
       return { oauthStarted: true };
     }).catch(function (error) {
-      if (fromCreate && state.connectionAccountForm) throw error;
-      state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not start sign-in.";
+      if (fromCreate) throw error;
+      if (!state.profileDraft || state.profileDraft.id !== agentId || state.agentConnections !== requestState) return { oauthStarted: false };
+      requestState.actionError = (error && (error.serverMessage || error.message)) || "Could not start sign-in.";
       render();
       return { oauthStarted: false };
     });
@@ -5840,6 +5864,7 @@
       ? '<div class="connection-account-list">' + attached.map(function (entry) { return connectionAccountRowHtml(entry); }).join("") + '</div>'
       : '<div class="connection-empty">No connections in this Agent yet.</div>';
     var notice = accounts.notice ? '<div class="oauth-return ok" role="status">' + esc(accounts.notice) + '</div>' : '';
+    var actionError = accounts.actionError ? '<div class="oauth-return error" role="alert">' + esc(accounts.actionError) + '</div>' : '';
     var create = connectionAccountFormHtml();
     var gallery = connectorGalleryHtml(
       true,
@@ -5848,7 +5873,7 @@
     );
     var attachedSection = '<section class="connection-state-section"><div class="connection-section-head"><h4>In this Agent</h4><span class="connection-section-count">' + attached.length + '</span></div>' + attachedHtml + '</section>';
     var connectSection = gallery ? '<section class="connection-state-section">' + gallery + '</section>' : '';
-    return oauthReturnNoticeHtml(draft) + notice +
+    return oauthReturnNoticeHtml(draft) + actionError + notice +
       '<div class="connection-state-stack">' + attachedSection + connectSection + '</div>' +
       (create ? '<div style="margin-top:16px;">' + create + '</div>' : '');
   }
