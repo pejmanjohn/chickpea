@@ -1,10 +1,11 @@
 # Expensive checks on one host
 
 This workflow applies to development and QA, including release verification
-and deployment builds. Customer installs from published releases, with only
-local installation settings changed, follow the
-[install guide](../../../INSTALL_CHICKPEA_CLOUDFLARE.md) without contributor
-host reservations, process inspection, or test suites.
+and deployment builds. Customer installs and updates from published releases,
+with only local installation settings changed, follow the
+[install guide](../../../INSTALL_CHICKPEA_CLOUDFLARE.md) or
+[update guide](../../../UPDATE_CHICKPEA_CLOUDFLARE.md) without contributor host
+reservations, process inspection, or test suites.
 
 Use `verify:regression` for normal check groups. It reserves
 `~/.chickpea/verification-host/owner.json` for the whole serial group, including
