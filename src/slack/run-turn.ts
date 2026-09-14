@@ -96,6 +96,7 @@ import {
   AGENT_FAILURE_TEXT,
   SANDBOX_UNAVAILABLE_FALLBACK_NOTICE,
   WebClientPresenter,
+  slackDeliveryFailureOutcome,
   type SlackReactionReceipt,
 } from './web-client-presenter.ts';
 import type { SlackTablePresentation } from './table-presentation.ts';
@@ -929,10 +930,23 @@ export async function runTurn(
       // Reading the persisted input is the ledger fence; its content is not
       // user-visible and the semantic reaction remains the approved output.
       void prepared;
-      await presenter.deliverReaction(
-        interactionIntent.reaction,
-        resolveReactionCoordinate(turn, interactionIntent.target),
-      );
+      if (frozenPresentation?.schemaVersion === 3 && agentViewPresentation &&
+          !(await agentViewPresentation.prepareDeferredTerminalDelivery('answer'))) {
+        throw new Error('Slack reaction delivery requires reconciliation.');
+      }
+      try {
+        await presenter.deliverReaction(
+          interactionIntent.reaction,
+          resolveReactionCoordinate(turn, interactionIntent.target),
+        );
+      } catch (error) {
+        await agentViewPresentation?.recordTerminalDeliveryReceipt(slackDeliveryFailureOutcome(error));
+        throw error;
+      }
+      // The reaction is the terminal output. V3 cleanup requires its receipt,
+      // just as it does for a written answer.
+      await agentViewPresentation?.recordTerminalDeliveryReceipt('acknowledged');
+      await finishStatus('answer');
       await finishDelivery();
       return;
     }
