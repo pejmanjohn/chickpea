@@ -6,7 +6,8 @@ recovery boundaries.
 
 Owners can open **Settings -> About & updates** to see the installed application
 version and source commit, check published releases, review release notes, and
-copy an update command. The browser never holds Cloudflare deployment
+copy a coding-agent update prompt and, for a verified supported transition, its
+updater command. The browser never holds Cloudflare deployment
 credentials and does not install updates. Nothing updates automatically.
 
 ## Release and source selection
@@ -176,9 +177,13 @@ recovery authority and deployment evidence, not a data backup. A transition
 that changes state needs a separately reviewed migration and recovery procedure
 before it can appear in `supportedOrigins`.
 
-The v0.1.18 release contract supports v0.1.17 only. The v0.1.16 path remains
-undeclared pending cross-version thread-continuity review. Stop and request a
-reviewed migration path; no guided intermediate path is currently declared.
+The v0.1.18 release contract declares no incoming guided upgrade paths. Its
+v0.1.17 rehearsal upgraded successfully, but recovery to the immutable
+published v0.1.17 code could not continue an existing timezone-bearing
+conversation when it returned to a prior runtime plan. Candidate code cannot
+make that previous-code recovery safe for future turns. The v0.1.16 path also
+remains undeclared. Stop and request a reviewed path; no guided intermediate
+path is currently declared.
 
 ## Acceptance and handoff
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
   evaluateUpgradeCompatibility,
@@ -20,6 +21,32 @@ const manifest = (version: string, configuration?: string) => ({
   supportedOrigins: [] as string[],
   recovery: 'gateway-transport-then-previous-code' as const,
   migrations: migrations(configuration),
+});
+
+const publishedV017 = {
+  formatVersion: 1 as const,
+  version: '0.1.17',
+  storageGeneration: 1,
+  supportedOrigins: [] as string[],
+  recovery: 'gateway-transport-then-previous-code' as const,
+  migrations: {
+    d1: 'a22d9e323396cf1c464c3f87a4c89fa435e0cc56e16119d9ed6570aecf32155a',
+    workerConfiguration: '425adafbb6b377e225e240e82d8d29503039946606707a75c08af7b8bb217370',
+    identity: '33261b08e8876e2bcfac3f9aa93182e7fdc20fe95f05d3c629d818cf2bdde9c7',
+    configuration: '8ebfe7655eab0d28792642d317162a4c5ef96f1c43f7cc389e32977c17084dc2',
+    work: 'f4720ea5b23c3552deae2be1a5ad04940fc90d215b2ada81d17c1110ab068eb9',
+  },
+};
+
+test('candidate release manifest rejects the published v0.1.17 origin', () => {
+  const candidate = validateUpgradeManifest(JSON.parse(
+    readFileSync(new URL('../release.json', import.meta.url), 'utf8'),
+  ));
+  assert.equal(candidate.version, '0.1.18');
+  assert.deepEqual(candidate.supportedOrigins, []);
+  assert.deepEqual(evaluateUpgradeCompatibility(publishedV017, candidate), {
+    status: 'unsupported', reason: 'origin-not-declared',
+  });
 });
 
 test('unchanged storage is supported only for a declared older origin', () => {
