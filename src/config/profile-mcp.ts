@@ -10,6 +10,7 @@ import { withMcpHttpTelemetry } from './mcp-telemetry.ts';
 import { assertMcpToolArgumentKeys, assertMcpToolArguments } from './mcp-tool-policy.ts';
 import {
   META_ADS_ACCOUNT_HELPER,
+  assertMetaAdsHelperArguments,
   isMetaAdsMcpConnection,
   isMetaAdsHelperTool,
   metaAdsApprovedAccountIds,
@@ -644,6 +645,9 @@ function assertServerMcpToolInvocation(
       throw new Error('Meta Ads tool schema changed; review the connection before using it.');
     }
     assertMcpToolArgumentKeys(invocation.name, invocation.arguments, propertyNames);
+    if (isMetaAdsHelperTool(invocation.name)) {
+      assertMetaAdsHelperArguments(invocation.name, invocation.arguments);
+    }
   }
   if (constraints && !(isMetaAdsMcpConnection(server) && isMetaAdsHelperTool(invocation.name))) {
     assertMcpToolArguments(invocation.name, invocation.arguments, { [invocation.name]: constraints });

@@ -88,7 +88,7 @@ const metaEntitySchema = {
 const metaReportTool = 'ads_get_ad_entities';
 const metaScoreTool = 'ads_get_opportunity_score';
 const metaAccountHelperSchema = {
-  propertyNames: [],
+  propertyNames: ['advertiser_request', 'client_conversation_id', 'cursor', 'limit'],
   accountFields: [],
   ambiguous: false,
   fingerprint: 'b'.repeat(64),
@@ -331,7 +331,17 @@ test('legacy Meta account helper sends no fake scope argument and returns only a
       ] } } });
     },
   });
-  const result = await tools[0]!.run({ data: {} } as never);
+  await assert.rejects(async () => {
+    await tools[0]!.run({ data: { cursor: 'provider-cursor' } } as never);
+  }, /does not permit the argument cursor/);
+  await assert.rejects(async () => {
+    await tools[0]!.run({ data: { ad_account_id: 'act_144860434' } } as never);
+  }, /does not permit the argument ad_account_id/);
+  assert.equal(outbound, 0);
+  const result = await tools[0]!.run({ data: {
+    advertiser_request: 'List queryable approved accounts.',
+    client_conversation_id: 'correlation-1',
+  } } as never);
   assert.equal(outbound, 1);
   assert.doesNotMatch(JSON.stringify(result), /999|Other/);
   assert.match(JSON.stringify(result), /144860434|Magoosh/);
@@ -986,7 +996,8 @@ test('direct Meta field helper has no phantom account input and honors live revo
   const fieldServer = server({
     url: 'https://mcp.facebook.com/ads', presetId: 'meta-ads',
     discoveredTools: [{ name: META_ADS_FIELD_HELPER, inputSchema: {
-      propertyNames: [], accountFields: [], ambiguous: false, fingerprint: 'c'.repeat(64),
+      propertyNames: ['advertiser_request', 'client_conversation_id', 'field_names'],
+      accountFields: [], ambiguous: false, fingerprint: 'c'.repeat(64),
     } }],
     allowedTools: [META_ADS_FIELD_HELPER],
     toolPolicies: { [META_ADS_FIELD_HELPER]: { effect: 'read', argumentConstraints: {
@@ -1005,10 +1016,39 @@ test('direct Meta field helper has no phantom account input and honors live revo
       } });
     },
   });
+  await assert.rejects(definition!.fetch!('https://mcp.facebook.com/ads', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/call', params: {
+      name: META_ADS_FIELD_HELPER, arguments: { campaign_id: 'other' },
+    } }),
+  }), /does not permit the argument campaign_id/);
+  await assert.rejects(definition!.fetch!('https://mcp.facebook.com/ads', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/call', params: {
+      name: META_ADS_FIELD_HELPER, arguments: { field_names: ['x'.repeat(121)] },
+    } }),
+  }), /invalid field_names/);
+  await assert.rejects(definition!.fetch!('https://mcp.facebook.com/ads', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/call', params: {
+      name: META_ADS_FIELD_HELPER, arguments: { advertiser_request: null, field_names: ['spend'] },
+    } }),
+  }), /invalid advertiser_request/);
+  await assert.rejects(definition!.fetch!('https://mcp.facebook.com/ads', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/call', params: {
+      name: META_ADS_FIELD_HELPER, arguments: { advertiser_request: 'Verify fields.', field_names: 'spend' },
+    } }),
+  }), /invalid field_names/);
+  assert.equal(outbound, 0);
   await definition!.fetch!('https://mcp.facebook.com/ads', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
-      name: META_ADS_FIELD_HELPER, arguments: {},
+      name: META_ADS_FIELD_HELPER, arguments: {
+        advertiser_request: 'Verify reporting fields.',
+        client_conversation_id: null,
+        field_names: ['spend', 'impressions', 'reach'],
+      },
     } }),
   });
   assert.equal(outbound, 1);
@@ -1020,6 +1060,48 @@ test('direct Meta field helper has no phantom account input and honors live revo
     } }),
   }), /policy changed/);
   assert.equal(outbound, 1);
+});
+
+test('legacy Meta field helper enforces metadata values before its adapter runs', async () => {
+  let runs = 0;
+  const fieldServer = server({
+    url: 'https://mcp.facebook.com/ads', presetId: 'meta-ads',
+    discoveredTools: [{ name: META_ADS_FIELD_HELPER, inputSchema: {
+      propertyNames: ['advertiser_request', 'client_conversation_id', 'field_names'],
+      accountFields: [], ambiguous: false, fingerprint: 'd'.repeat(64),
+    } }],
+    allowedTools: [META_ADS_FIELD_HELPER],
+    toolPolicies: { [META_ADS_FIELD_HELPER]: { effect: 'read', argumentConstraints: {
+      [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['act_123'],
+    } } },
+  });
+  const remote = {
+    name: `mcp__srv__${META_ADS_FIELD_HELPER}`, description: '', input: undefined, output: undefined,
+    run() { runs += 1; return 'fields'; },
+  } as ToolDefinition;
+  const { fn } = stubConnect({ srv: fakeConnection([remote]) });
+  const tools = await resolveProfileMcpTools([fieldServer], {
+    agentId: 'agent_test', env: noSecretsEnv, existingToolNames: [], connect: fn,
+    resolveCurrentConnection: async () => fieldServer,
+  });
+  await assert.rejects(async () => { await tools[0]!.run({ data: {
+    advertiser_request: 'verify', field_names: [],
+  } } as never); }, /invalid field_names/);
+  await assert.rejects(async () => { await tools[0]!.run({ data: {
+    advertiser_request: 'verify', account_id: 'act_123', field_names: ['spend'],
+  } } as never); }, /does not permit the argument account_id/);
+  await assert.rejects(async () => { await tools[0]!.run({ data: {
+    advertiser_request: null, field_names: ['spend'],
+  } } as never); }, /invalid advertiser_request/);
+  await assert.rejects(async () => { await tools[0]!.run({ data: {
+    advertiser_request: 'verify', field_names: 'spend',
+  } } as never); }, /invalid field_names/);
+  assert.equal(runs, 0);
+  assert.equal(await tools[0]!.run({ data: {
+    advertiser_request: 'verify', client_conversation_id: 'correlation-2',
+    field_names: ['spend', 'impressions'],
+  } } as never), 'fields');
+  assert.equal(runs, 1);
 });
 
 test('direct Meta account helper sanitizes SSE under live profile policy', async () => {
@@ -1049,7 +1131,10 @@ test('direct Meta account helper sanitizes SSE under live profile policy', async
       const response = await definition!.fetch!('https://mcp.facebook.com/ads', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
-          name: META_ADS_ACCOUNT_HELPER, arguments: {},
+          name: META_ADS_ACCOUNT_HELPER, arguments: {
+            advertiser_request: 'List approved queryable accounts.',
+            client_conversation_id: 'correlation-3',
+          },
         } }),
       });
       const text = await response.text();
@@ -1090,7 +1175,10 @@ test('runtime-plan Meta account helper accepts empty provider args and sanitizes
       const response = await definition!.fetch!('https://mcp.facebook.com/ads', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
-          name: META_ADS_ACCOUNT_HELPER, arguments: {},
+          name: META_ADS_ACCOUNT_HELPER, arguments: {
+            advertiser_request: 'List the approved accounts.\nInclude queryability.',
+            client_conversation_id: 'correlation-4',
+          },
         } }),
       });
       const result = await response.json();

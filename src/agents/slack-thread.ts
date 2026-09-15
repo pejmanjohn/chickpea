@@ -1446,7 +1446,7 @@ export function useRuntimePlanAgent(
     useInstruction(`The owner restricts these connection tool inputs. Use only the listed values; do not retry disallowed inputs: ${JSON.stringify(restrictions)}`);
   }
   if (metaHelperScopes.length > 0) {
-    useInstruction(`The owner selected these Meta Ads helper tools with an approved-account scope: ${JSON.stringify(metaHelperScopes)}. The scope is enforced by Chickpea policy and is not a provider input. Do not invent or send an ad-account argument unless the tool's declared input schema asks for one. Account discovery returns only approved accounts; field context provides global reporting-field metadata.`);
+    useInstruction(`The owner selected these Meta Ads helper tools with an approved-account scope: ${JSON.stringify(metaHelperScopes)}. The scope is enforced by Chickpea policy and is not a provider input. Do not invent or send an ad-account argument. Use only helper metadata inputs declared by the tool, including reporting field names when requested. Account discovery returns only approved accounts; field context provides global reporting-field metadata.`);
   }
   for (const connection of resolveRuntimePlanMcpConnections(
     plan.agentId,

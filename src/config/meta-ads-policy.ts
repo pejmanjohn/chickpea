@@ -28,6 +28,11 @@ const META_ADS_HELPER_TOOLS = new Set<string>([
   META_ADS_FIELD_HELPER,
 ]);
 
+const META_ADS_HELPER_RUNTIME_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
+  [META_ADS_ACCOUNT_HELPER]: ['advertiser_request', 'client_conversation_id'],
+  [META_ADS_FIELD_HELPER]: ['advertiser_request', 'client_conversation_id', 'field_names'],
+} as const;
+
 /**
  * Authenticated Meta schemas include correlation metadata and recognized
  * entity filters whose names end in `_id`/`_ids`. Entity-filter semantics are
@@ -198,9 +203,11 @@ export function metaAdsToolSchemaSupported(tool: McpConnectionToolInfo): boolean
   if (!isMetaAdsHelperTool(tool.name)) return metaAdsAccountField(tool) !== undefined;
   if (schema.accountFields.length !== 0) return false;
   if (tool.name === META_ADS_ACCOUNT_HELPER) {
-    return schema.propertyNames.every((name) => name === 'cursor' || name === 'limit');
+    return schema.propertyNames.every((name) =>
+      [...(META_ADS_HELPER_RUNTIME_ARGUMENTS[META_ADS_ACCOUNT_HELPER] ?? []), 'cursor', 'limit'].includes(name));
   }
-  return schema.propertyNames.length === 0;
+  return schema.propertyNames.every((name) =>
+    (META_ADS_HELPER_RUNTIME_ARGUMENTS[META_ADS_FIELD_HELPER] ?? []).includes(name));
 }
 
 /** Trusted server-owned effect metadata for the reviewed Meta tool contract. */
@@ -214,7 +221,12 @@ export function metaAdsRuntimePropertyNames(
 ): string[] | undefined {
   const matches = connection.discoveredTools.filter((tool) => tool.name === name);
   if (matches.length !== 1 || !metaAdsToolSchemaSupported(matches[0]!)) return undefined;
-  if (isMetaAdsHelperTool(name)) return [];
+  if (isMetaAdsHelperTool(name)) {
+    const names = matches[0]!.inputSchema?.propertyNames ?? [];
+    const allowed = META_ADS_HELPER_RUNTIME_ARGUMENTS[name];
+    if (!allowed) return undefined;
+    return names.filter((value) => allowed.includes(value));
+  }
   const names = matches[0]!.inputSchema?.propertyNames;
   return Array.isArray(names) && names.length > 0 && names.length <= 64 &&
     names.every((value) => typeof value === 'string' && value.length > 0 && value.length <= 120)
@@ -235,6 +247,28 @@ export function metaAdsApprovedAccountIds(
 export function canonicalMetaAdsAccountId(value: string): string | undefined {
   if (value.trim() !== value || !/^(?:act_)?[0-9]{1,32}$/.test(value)) return undefined;
   return value.startsWith('act_') ? value.slice(4) : value;
+}
+
+/** Runtime value bounds for the exact helper-owned metadata arguments. */
+export function assertMetaAdsHelperArguments(name: string, argumentsValue: unknown): void {
+  if (!isMetaAdsHelperTool(name) || argumentsValue === undefined) return;
+  if (!argumentsValue || typeof argumentsValue !== 'object' || Array.isArray(argumentsValue)) {
+    throw new Error(`Meta Ads helper ${name} requires an object argument.`);
+  }
+  const args = argumentsValue as Record<string, unknown>;
+  if ('advertiser_request' in args && !boundedHelperString(args.advertiser_request, 4_096)) {
+    throw new Error(`Meta Ads helper ${name} has an invalid advertiser_request value.`);
+  }
+  if ('client_conversation_id' in args && args.client_conversation_id !== null &&
+      !boundedHelperString(args.client_conversation_id, 4_096)) {
+    throw new Error(`Meta Ads helper ${name} has an invalid client_conversation_id value.`);
+  }
+  if ('field_names' in args) {
+    const fields = args.field_names;
+    const valid = Array.isArray(fields) && fields.length > 0 && fields.length <= 64 &&
+      fields.every((field) => boundedFieldName(field)) && new Set(fields).size === fields.length;
+    if (!valid) throw new Error(`Meta Ads helper ${name} has an invalid field_names value.`);
+  }
 }
 
 /** Exact observed Meta ID-shaped fields that do not select the ad account. */
@@ -301,4 +335,14 @@ function uniqueStrings(values: readonly string[], label: string): string[] {
     }
   }
   return unique;
+}
+
+function boundedHelperString(value: unknown, max: number): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= max &&
+    !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value);
+}
+
+function boundedFieldName(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() === value && value.length > 0 && value.length <= 120 &&
+    !/[\u0000-\u001f\u007f]/.test(value);
 }

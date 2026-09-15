@@ -361,6 +361,13 @@ export function projectMcpToolInputSchema(
       ambiguous = true;
     }
     for (const [name, definition] of Object.entries(properties)) {
+      if (metaAdsHelper) {
+        if (!supportedMetaAdsHelperProperty(metaAdsToolName!, name, definition, required.has(name))) {
+          ambiguous = true;
+        }
+        if (containsNestedAccountSelector(definition)) ambiguous = true;
+        continue;
+      }
       if (name !== 'ad_account_id' && name !== 'account_id') {
         if (nonAccountIdArguments.has(name)) {
           if (name === 'client_conversation_id') {
@@ -386,19 +393,7 @@ export function projectMcpToolInputSchema(
       if (!isRequired) ambiguous = true;
     }
     if (metaAdsHelper) {
-      if (containsNestedAccountSelector(inputSchema)) ambiguous = true;
       if (accountFields.length !== 0) ambiguous = true;
-      if (metaAdsToolName === META_ADS_FIELD_HELPER && names.length !== 0) ambiguous = true;
-      if (metaAdsToolName === META_ADS_ACCOUNT_HELPER) {
-        for (const [name, definition] of Object.entries(properties)) {
-          if (required.has(name) || (name !== 'cursor' && name !== 'limit')) {
-            ambiguous = true;
-            continue;
-          }
-          if (name === 'cursor' && !simpleStringOrNullableString(definition)) ambiguous = true;
-          if (name === 'limit' && !simpleNumberSchema(definition)) ambiguous = true;
-        }
-      }
     }
   }
   if (metaAdsHelper ? accountFields.length !== 0 : accountFields.length !== 1) ambiguous = true;
@@ -408,6 +403,44 @@ export function projectMcpToolInputSchema(
     ambiguous,
     fingerprint: bytesToHex(sha256(new TextEncoder().encode(bounded.value))),
   };
+}
+
+function supportedMetaAdsHelperProperty(
+  tool: string,
+  name: string,
+  definition: unknown,
+  required: boolean,
+): boolean {
+  if (name === 'advertiser_request') {
+    return simpleString(definition);
+  }
+  if (name === 'client_conversation_id') {
+    return simpleStringOrNullableString(definition);
+  }
+  if (tool === META_ADS_ACCOUNT_HELPER && name === 'cursor') {
+    return !required && simpleStringOrNullableString(definition);
+  }
+  if (tool === META_ADS_ACCOUNT_HELPER && name === 'limit') {
+    return !required && simpleNumberSchema(definition);
+  }
+  if (tool === META_ADS_FIELD_HELPER && name === 'field_names') {
+    return simpleStringArray(definition);
+  }
+  return false;
+}
+
+function simpleStringArray(value: unknown): boolean {
+  if (!isRecord(value) || value.type !== 'array' ||
+      ['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in value) ||
+      !isRecord(value.items)) return false;
+  const items = value.items;
+  return items.type === 'string' &&
+    !['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in items);
+}
+
+function simpleString(value: unknown): boolean {
+  return isRecord(value) && value.type === 'string' &&
+    !['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in value);
 }
 
 function simpleNumberSchema(value: unknown): boolean {

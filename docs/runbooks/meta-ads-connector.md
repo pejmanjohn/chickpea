@@ -25,10 +25,14 @@ connector.
    choices; the account helper returns only the approved accounts. Campaign
    creation, editing and activation are not currently supported.
 
-The account helper may advertise optional pagination inputs, but Chickpea does
-not expose them to the Agent. Its first response must be complete; a paginated
+The helpers may request bounded correlation, advertiser-request, or reporting
+field-name inputs. These are provider metadata, not ad-account selectors. The
+account helper may also advertise optional pagination inputs, but Chickpea does
+not expose those to the Agent. Its first response must be complete; a paginated
 or otherwise unfamiliar account response fails closed without exposing other
-accounts.
+accounts. Meta currently describes account results as pages of up to 50, so an
+installation with more than 50 visible ad accounts cannot use this helper until
+bounded pagination is supported.
 
 Use the deployment's stable public HTTPS origin. Callback paths generated for
 individual setup sessions do not need to be registered separately. Localhost

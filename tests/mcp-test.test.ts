@@ -477,16 +477,29 @@ test('Meta projection admits only bounded accountless helper input contracts', (
     { type: 'object' },
     { type: 'object', properties: {} },
     { type: 'object', properties: {
+      advertiser_request: { type: 'string' },
+      client_conversation_id: { anyOf: [{ type: 'string' }, { type: 'null' }] },
       cursor: { anyOf: [{ type: 'string' }, { type: 'null' }] },
       limit: { type: 'integer', minimum: 1, maximum: 100 },
-    } },
+    }, required: ['advertiser_request', 'client_conversation_id'] },
   ]) {
     const projection = projectMcpToolInputSchema(schema, 'ads_get_ad_accounts');
     assert.equal(projection.ambiguous, false);
     assert.deepEqual(projection.accountFields, []);
   }
-  assert.equal(projectMcpToolInputSchema({ type: 'object', properties: {} },
-    'ads_get_field_context').ambiguous, false);
+  const fieldContext = projectMcpToolInputSchema({
+    type: 'object',
+    required: ['advertiser_request', 'client_conversation_id', 'field_names'],
+    properties: {
+      advertiser_request: { type: 'string' },
+      client_conversation_id: { type: ['string', 'null'] },
+      field_names: { type: 'array', items: { type: 'string' } },
+    },
+  }, 'ads_get_field_context');
+  assert.equal(fieldContext.ambiguous, false);
+  assert.deepEqual(fieldContext.propertyNames, [
+    'advertiser_request', 'client_conversation_id', 'field_names',
+  ]);
   for (const [name, schema] of [
     ['required pagination', { type: 'object', required: ['cursor'], properties: { cursor: { type: 'string' } } }],
     ['unknown input', { type: 'object', properties: { fields: { type: 'array' } } }],
@@ -497,6 +510,18 @@ test('Meta projection admits only bounded accountless helper input contracts', (
   }
   assert.equal(projectMcpToolInputSchema({ type: 'object', properties: { field: { type: 'string' } } },
     'ads_get_field_context').ambiguous, true);
+  assert.equal(projectMcpToolInputSchema({ type: 'object', properties: {
+    field_names: { type: 'string' },
+  } }, 'ads_get_field_context').ambiguous, true, 'field names must use the declared string-array shape');
+  assert.equal(projectMcpToolInputSchema({ type: 'object', properties: {
+    advertiser_request: { type: ['string', 'null'] },
+  } }, 'ads_get_field_context').ambiguous, true, 'advertiser request uses the conservative direct-string contract');
+  assert.equal(projectMcpToolInputSchema({ type: 'object', properties: {
+    client_conversation_id: { $ref: '#/$defs/conversation' },
+  } }, 'ads_get_field_context').ambiguous, true, 'correlation metadata references remain unsupported');
+  assert.equal(projectMcpToolInputSchema({ type: 'object', properties: {
+    field_names: { type: 'array', items: { $ref: '#/$defs/field' } },
+  } }, 'ads_get_field_context').ambiguous, true, 'field name item references remain unsupported');
 });
 
 test('Meta projection keeps entity filters optional and unknown or nested selectors closed', () => {
