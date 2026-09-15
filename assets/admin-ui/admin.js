@@ -2832,7 +2832,7 @@
         var priorEditedAccount = (currentState.attached || []).find(function (entry) {
           return entry.account.id === state.customMcpToolEditor.accountId;
         });
-        if (!editedAccount || (priorEditedAccount &&
+        if (!editedAccount || !connectionAccountCanEditMcpTools(editedAccount.account) || (priorEditedAccount &&
             (editedAccount.account.workspaceId !== priorEditedAccount.account.workspaceId ||
               editedAccount.account.ownerKind !== priorEditedAccount.account.ownerKind))) {
           state.customMcpToolEditor = null;
@@ -5656,7 +5656,7 @@
       : "";
     var regularAction = '<span class="connection-row-action-placeholder" aria-hidden="true"></span>';
     var customMcpEditor = customMcpToolEditorHtml(entry);
-    var customMcpAction = account.policy && account.policy.kind === "mcp" && (!account.policy.presetId || account.policy.toolAccessMode === "review") && account.lifecycle === "ready"
+    var customMcpAction = connectionAccountCanEditMcpTools(account)
       ? '<button type="button" class="btn btn-soft btn-sm connection-row-action" data-action="custom-mcp-tools-open" data-connection-id="' + esc(account.id) + '">' + ((account.policy.allowedTools || []).length ? 'Edit tools' : 'Choose tools') + '</button>' : '';
     var recoverMcpAction = account.policy && account.policy.kind === "mcp" && !account.policy.presetId && account.policy.authMode !== "oauth" && account.lifecycle !== "revoked"
       ? '<button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-enable-oauth" data-connection-id="' + esc(account.id) + '">Sign in with OAuth</button>' : '';
@@ -5692,6 +5692,12 @@
       status + connectionAccountCapabilitiesHtml(account, entry.binding ? entry.binding.allowedCapabilities : null) + action + menu +
       (customMcpEditor ? '<div class="connection-row-editor">' + customMcpEditor + '</div>' : '') +
       (resourceEditor ? '<div class="connection-row-editor">' + resourceEditor + '</div>' : '') + '</div>';
+  }
+
+  function connectionAccountCanEditMcpTools(account) {
+    return !!(account && account.policy && account.policy.kind === "mcp" &&
+      (!account.policy.presetId || account.policy.toolAccessMode === "review") &&
+      account.lifecycle === "ready");
   }
 
   function connectionAccountEndpointHtml(form, preset, oauth) {

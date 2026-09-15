@@ -15727,6 +15727,47 @@ test('background connection refresh keeps a same-Agent tool editor visible and i
   assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
 });
 
+test('background connection refresh closes a tool editor when the account loses access', async () => {
+  let resolveRefresh!: (response: FakeResponse) => void;
+  const reports = ownedConnection({
+    id: 'connection_reports', workspaceId: 'T_DESIGN', revision: 3,
+    ownerKind: 'team', providerId: 'reports', label: 'Reports',
+    lifecycle: 'ready', credentialConfigured: true,
+    policy: {
+      kind: 'mcp', url: 'https://reports.example.test/mcp', transport: 'streamable-http',
+      authMode: 'oauth', headerNames: [],
+      discoveredTools: [{ name: 'read_reports', description: 'Read reports.' }],
+      allowedTools: ['read_reports'],
+    },
+  });
+  const revoked = ownedConnection({
+    ...(reports as { account: Record<string, unknown> }).account,
+    revision: 4, lifecycle: 'revoked',
+  });
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccountsFetch(_agentId, call) {
+      if (call === 1) return Promise.resolve(jsonResponse({ attached: [reports] }));
+      return new Promise(resolve => { resolveRefresh = resolve; });
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({
+    'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_reports',
+  }) });
+  harness.focusWindow();
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
+
+  resolveRefresh(jsonResponse({ attached: [revoked] }));
+  await flushAsync();
+
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
+  assert.match(harness.app.innerHTML, />Disconnected</);
+});
+
 test('Meta tool save applies its response before refresh and ignores the older in-flight snapshot', async () => {
   let resolveOldRefresh!: (response: FakeResponse) => void;
   let resolveSavedRefresh!: (response: FakeResponse) => void;
