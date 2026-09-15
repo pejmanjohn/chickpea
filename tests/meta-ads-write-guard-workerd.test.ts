@@ -47,20 +47,26 @@ test('Meta Ads ownership preflight works under workerd and keeps failures fail-c
       mutationDispatched: true,
       delegateCalls: 1,
       delegateInput: {
-        url: 'https://graph.facebook.com/v26.0/987654321?fields=id%2Caccount_id',
+        url: 'https://graph.facebook.com/v26.0/987654321?fields=id%2Caccount_id%2Cconfigured_status',
         method: 'GET',
         redirect: 'manual',
         authorization: 'Bearer synthetic-workerd-token',
       },
     });
 
-    for (const mode of ['redirect', 'wrong-owner']) {
+    for (const mode of ['redirect', 'wrong-owner', 'missing-status']) {
       const blocked = await requestCase(worker, workerPort, stubPort, mode);
       assert.equal(blocked.ok, false, mode);
       assert.equal(blocked.mutationDispatched, false, mode);
       assert.equal(blocked.delegateCalls, 1, mode);
       assert.match(String(blocked.errorMessage), /could not verify/, mode);
     }
+
+    const active = await requestCase(worker, workerPort, stubPort, 'active');
+    assert.equal(active.ok, false);
+    assert.equal(active.mutationDispatched, false);
+    assert.equal(active.delegateCalls, 1);
+    assert.match(String(active.errorMessage), /may pause an active campaign/);
   } finally {
     await stopWorker(worker);
     await new Promise<void>((resolve, reject) => stub.close((error) =>
@@ -73,14 +79,19 @@ async function startStub(port: number): Promise<Server> {
   const server = createHttpServer((request, response) => {
     if (request.url === '/redirect') {
       response.writeHead(302, {
-        location: 'https://graph.facebook.com/v26.0/987654321?fields=id%2Caccount_id',
+        location: 'https://graph.facebook.com/v26.0/987654321?fields=id%2Caccount_id%2Cconfigured_status',
       });
       response.end();
       return;
     }
     const owner = request.url === '/wrong-owner' ? '999' : '123';
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ id: '987654321', account_id: owner }));
+    response.end(JSON.stringify({
+      id: '987654321', account_id: owner,
+      ...(request.url === '/missing-status' ? {} : {
+        configured_status: request.url === '/active' ? 'ACTIVE' : 'PAUSED',
+      }),
+    }));
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
