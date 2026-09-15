@@ -20,6 +20,7 @@ import {
 import { hostname, homedir } from 'node:os';
 import path, { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { QA_TARGETS, ORIGINAL_QA_TARGETS, validQaFleet } from '../../src/config/qa-targets.ts';
 
 import {
   readTargetLock,
@@ -27,7 +28,7 @@ import {
   targetLockPath,
 } from '../../qa/live/safety/lock.ts';
 
-export const activeEnvironmentTargets = Object.freeze(['amber', 'cobalt']);
+export const activeEnvironmentTargets = QA_TARGETS;
 export const inactiveEnvironmentTargets = Object.freeze([
   'fern', 'dedicated-qa', 'install', 'demo', 'spare', 'qualification', 'deep',
 ]);
@@ -190,14 +191,46 @@ export function readEnvironmentRegistry(options = {}) {
   return registry;
 }
 
+/** Adopt a prepared target while the fleet is idle; preserve all prior records. */
+export function registerEnvironment(input, options = {}) {
+  rejectSecretLikeFields(input);
+  if (!isRecord(input) || !exactKeys(input, ['expectedRegistryRevision', 'registration'])
+    || !Number.isSafeInteger(input.expectedRegistryRevision)) throw fail('INVALID_REGISTRATION');
+  const registration = normalizeTarget(input.registration);
+  if (registration.target !== 'violet' || registration.claim || registration.lastAttestation
+    || !registration.reachable || !registration.identityMatches) {
+    throw fail('INVALID_REGISTRATION');
+  }
+  assertSafeEvidenceRoot(registration.evidenceRoot, options);
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  return withRegistryLock(root, () => {
+    const registry = readRegistryAt(root, false);
+    assertRegistryHost(registry, options.hostFingerprint ?? readCurrentHostFingerprint(options));
+    if (registry.revision !== input.expectedRegistryRevision) throw fail('REGISTRY_REVISION_MISMATCH');
+    if (registry.targets[registration.target]) throw fail('TARGET_ALREADY_REGISTERED');
+    for (const lane of Object.values(registry.targets)) {
+      if (lane.claim) throw fail('FLEET_BUSY', { target: lane.target });
+      assertTargetMutationUnlocked(lane, options);
+    }
+    assertTargetMutationUnlocked(registration, options);
+    const next = structuredClone(registry);
+    next.revision += 1;
+    next.targets[registration.target] = registration;
+    next.audit.push(auditEvent('target_registered', registration.target, nowMs(options), next.revision));
+    trimAudit(next.audit);
+    validateRegistry(next);
+    writeRegistryRevision(root, next, options);
+    return { registered: registration.target, registryRevision: next.revision };
+  }, options);
+}
+
 /** Explicit metadata-only migration; never changes OAuth grants or lane resources. */
 export function migrateEnvironmentProviderAuthConfigs(input, options = {}) {
   rejectSecretLikeFields(input);
   if (!isRecord(input)
     || !exactKeys(input, ['expectedRegistryRevision', 'targets'])
     || !Number.isSafeInteger(input.expectedRegistryRevision) || input.expectedRegistryRevision < 0
-    || !Array.isArray(input.targets) || input.targets.length !== activeEnvironmentTargets.length
-    || !sameArray(input.targets.map((target) => target?.target).sort(), [...activeEnvironmentTargets].sort())
+    || !Array.isArray(input.targets) || !validQaFleet(input.targets.map((target) => target?.target))
     || input.targets.some((target) => !isRecord(target)
       || !exactKeys(target, ['target', 'providerProjectId', 'previousAuthConfigId', 'providerAuthConfigId'])
       || ![target.providerProjectId, target.previousAuthConfigId, target.providerAuthConfigId].every((value) => safeBounded(value)))) {
@@ -211,6 +244,10 @@ export function migrateEnvironmentProviderAuthConfigs(input, options = {}) {
       throw fail('REGISTRY_ALREADY_CURRENT');
     }
     if (registry.revision !== input.expectedRegistryRevision) throw fail('REGISTRY_REVISION_CONFLICT');
+    if (input.targets.length !== Object.keys(registry.targets).length
+      || input.targets.some((binding) => !registry.targets[binding.target])) {
+      throw fail('INVALID_PROVIDER_AUTH_MIGRATION');
+    }
     for (const binding of input.targets) {
       const registration = registry.targets[binding.target];
       if (registration.claim !== null) throw fail('TARGET_CLAIMED');
@@ -238,7 +275,7 @@ export function migrateEnvironmentProviderAuthConfigs(input, options = {}) {
     }
     trimAudit(next.audit);
     writeRegistryRevision(root, next, options);
-    return { migrated: true, registryRevision: next.revision, targets: [...activeEnvironmentTargets] };
+    return { migrated: true, registryRevision: next.revision, targets: Object.keys(next.targets) };
   }, options);
 }
 
@@ -258,10 +295,11 @@ export function claimEnvironment(target, options = {}) {
     const now = nowMs(options);
     repairOrphanMarker(registry, worktree, target);
     assertWorktreeClaimAvailable(registry, worktree, undefined, now);
-    const selected = target ?? activeEnvironmentTargets.find((candidate) => !registry.targets[candidate].claim);
+    const selected = target ?? Object.keys(registry.targets).find((candidate) => !registry.targets[candidate].claim);
     if (!selected) throw fail('NO_TARGET_AVAILABLE');
     assertActiveTarget(selected);
     const registration = registry.targets[selected];
+    if (!registration) throw fail('TARGET_NOT_REGISTERED', { target: selected });
     if (registration.claim) {
       const code = Date.parse(registration.claim.expiresAt) <= now
         ? 'CLAIM_EXPIRED_RECLAIM_REQUIRED'
@@ -292,6 +330,7 @@ export function reclaimEnvironment(target, options = {}) {
     const worktree = resolveWorktree(options.worktreePath ?? process.cwd(), options);
     const registry = readRegistryAt(root, false, options.allowLegacyRegistryRecovery === true);
     assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
+    if (!registry.targets[target]) throw fail('TARGET_NOT_REGISTERED', { target });
     assertTargetMutationUnlocked(registry.targets[target], options);
     const now = nowMs(options);
     assertWorktreeClaimAvailable(registry, worktree, target, now);
@@ -335,6 +374,7 @@ export function releaseEnvironment(target, options = {}) {
     const registry = readRegistryAt(root, false, options.allowLegacyRegistryRecovery === true);
     assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
     const claim = assertMatchingClaim(registry, target, worktree, options);
+    if (registry.targets[target].installation) throw fail('INSTALLATION_RESTORATION_REQUIRED');
     assertTargetMutationUnlocked(registry.targets[target], options);
     const now = nowMs(options);
     const nextRevision = registry.revision + 1;
@@ -351,6 +391,45 @@ export function releaseEnvironment(target, options = {}) {
     if (!sameClaim(marker, claim)) throw fail('MARKER_MISMATCH');
     unlinkSync(markerPath);
     return { target, released: true, registryRevision: nextRevision };
+  }, options);
+}
+
+/** Persist a borrowed lane until explicit, verified restoration. Claim expiry
+ * and reclaim never erase this obligation or change the standing resources. */
+export function recordEnvironmentInstallation(target, installation, expectedRevision, options = {}) {
+  assertActiveTarget(target);
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  return withRegistryLock(root, () => {
+    const registry = readRegistryAt(root, false);
+    assertRegistryHost(registry, options.hostFingerprint ?? currentHostFingerprint(options));
+    const worktree = resolveWorktree(options.worktreePath ?? process.cwd(), options);
+    const claim = assertMatchingClaim(registry, target, worktree, options);
+    if (Date.parse(claim.expiresAt) <= nowMs(options)) throw fail('CLAIM_EXPIRED_RECLAIM_REQUIRED');
+    if (registry.revision !== expectedRevision) throw fail('REGISTRY_REVISION_MISMATCH');
+    const registration = registry.targets[target];
+    assertTargetMutationUnlocked(registration, options);
+    if (installation !== null && registration.installation) throw fail('INSTALLATION_ALREADY_RESERVED');
+    if (installation === null && !registration.installation) throw fail('INSTALLATION_RESERVATION_REQUIRED');
+    if (installation !== null && !validInstallation(installation)) throw fail('INVALID_INSTALLATION_RESERVATION');
+    if (installation !== null) {
+      for (const lane of Object.values(registry.targets)) {
+        if (lane.workerName === installation.workerName || lane.authDatabaseName === installation.authDatabaseName
+          || lane.authDatabaseId === installation.authDatabaseId
+          || (lane.installation && ['workerName', 'authDatabaseName', 'authDatabaseId', 'installerPath']
+            .some((key) => lane.installation[key] === installation[key]))) {
+          throw fail('DUPLICATE_TARGET_IDENTITY');
+        }
+      }
+    }
+    const next = structuredClone(registry);
+    next.revision += 1;
+    if (installation === null) delete next.targets[target].installation;
+    else next.targets[target].installation = installation;
+    next.audit.push(auditEvent(installation === null ? 'installation_restored' : 'installation_reserved', target, nowMs(options), next.revision));
+    trimAudit(next.audit);
+    validateRegistry(next);
+    writeRegistryRevision(root, next, options);
+    return { target, registryRevision: next.revision, installation };
   }, options);
 }
 
@@ -991,7 +1070,7 @@ export function resolveEnvironmentRegistrationAlias(alias, registration) {
 }
 
 function parseEnvironmentAlias(alias) {
-  const match = /^env-(amber|cobalt)-([a-z0-9]+(?:-[a-z0-9]+)*)$/u.exec(alias);
+  const match = /^env-(amber|cobalt|violet)-([a-z0-9]+(?:-[a-z0-9]+)*)$/u.exec(alias);
   if (!match) throw fail('INVALID_ALIAS');
   return { target: match[1], field: match[2] };
 }
@@ -1004,7 +1083,8 @@ export function readEnvironmentStatus(options = {}) {
   const registry = readRegistryAt(root, true, true);
   if (!registry) return unregisteredStatus(options.target, now);
   assertRegistryHost(registry, options.hostFingerprint ?? readCurrentHostFingerprint(options));
-  const names = options.target ? [options.target] : activeEnvironmentTargets;
+  const names = options.target ? [options.target] : Object.keys(registry.targets);
+  if (names.some((target) => !registry.targets[target])) throw fail('TARGET_NOT_REGISTERED');
   const migrationRequired = registry.schemaVersion === LEGACY_ENVIRONMENT_REGISTRY_SCHEMA;
   const targets = names.map((target) => {
     const status = statusForTarget(registry.targets[target], now, options);
@@ -1055,14 +1135,14 @@ function normalizeInitialTargets(input) {
   if (!Array.isArray(input)) throw fail('INVALID_REGISTRY');
   const entries = input.map((target) => normalizeTarget(target));
   const names = entries.map(({ target }) => target).sort();
-  if (!sameArray(names, [...activeEnvironmentTargets].sort())) throw fail('INVALID_TARGET_INVENTORY');
+  if (!validQaFleet(names)) throw fail('INVALID_TARGET_INVENTORY');
   return Object.fromEntries(entries.map((target) => [target.target, target]));
 }
 
-function normalizeTarget(input) {
+export function normalizeTarget(input) {
   rejectSecretLikeFields(input);
   if (!isRecord(input)) throw fail('INVALID_TARGET_RECORD');
-  if (Object.keys(input).some((key) => ![...TARGET_KEYS, 'setupFlowUnprovenSince'].includes(key))) {
+  if (Object.keys(input).some((key) => ![...TARGET_KEYS, 'setupFlowUnprovenSince', 'installation'].includes(key))) {
     throw fail('INVALID_TARGET_RECORD');
   }
   assertActiveTarget(input.target);
@@ -1086,14 +1166,14 @@ function validateRegistry(input, allowLegacy = false) {
     || !Number.isSafeInteger(input.revision) || input.revision < 0
     || !safeBounded(input.hostFingerprint)
     || !isRecord(input.targets)
-    || !sameArray(Object.keys(input.targets).sort(), [...activeEnvironmentTargets].sort())
+    || !validQaFleet(Object.keys(input.targets))
     || !Array.isArray(input.audit) || input.audit.length > MAX_AUDIT_EVENTS) {
     throw fail('INVALID_REGISTRY');
   }
   validateSandbox(input.sandbox);
   let observedRevision = 0;
   const claimedWorktrees = new Set();
-  for (const target of activeEnvironmentTargets) {
+  for (const target of Object.keys(input.targets)) {
     validateTarget(input.targets[target], target, legacy);
     const claim = input.targets[target].claim;
     if (claim?.hostFingerprint !== undefined && claim.hostFingerprint !== input.hostFingerprint) {
@@ -1134,7 +1214,7 @@ function assertUniqueTargetIdentities(targets, legacy = false) {
   ];
   for (const [field, select] of identities) {
     const seen = new Map();
-    for (const target of activeEnvironmentTargets) {
+    for (const target of Object.keys(targets)) {
       const value = select(targets[target]);
       const previous = seen.get(value);
       const sharedGatewayApp = field === 'slackAppId'
@@ -1149,14 +1229,15 @@ function validateTarget(input, target, legacy = false) {
   const authConfigField = legacy ? 'providerReadOnlyAuthConfigId' : 'providerAuthConfigId';
   const keys = legacy ? TARGET_KEYS.map((key) => key === 'providerAuthConfigId' ? authConfigField : key) : TARGET_KEYS;
   // Optional so registries written before the setup-contract split stay valid.
-  if (!isRecord(input) || !exactKeys(input, keys, ['setupFlowUnprovenSince'])
+  if (!isRecord(input) || !exactKeys(input, keys, ['setupFlowUnprovenSince', 'installation'])
     || !validSetupFlowUnprovenSince(input.setupFlowUnprovenSince)
+    || (input.installation !== undefined && (!validInstallation(input.installation) || !input.claim))
     || input.target !== target
     || input.role !== 'branch'
     || (input.transport !== 'gateway' && input.transport !== 'events')
-    || input.workerName !== `chickpea-${target}-live`
+    || (target === 'violet' ? !/^[a-z0-9][a-z0-9_-]{0,62}$/u.test(input.workerName ?? '') : input.workerName !== `chickpea-${target}-live`)
     || input.authDatabaseBinding !== 'AUTH_DB'
-    || input.authDatabaseName !== `chickpea-auth-db-${target}-live`
+    || (target === 'violet' ? !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/u.test(input.authDatabaseName ?? '') : input.authDatabaseName !== `chickpea-auth-db-${target}-live`)
     || !safeBounded(input.authDatabaseId)
     || !safeBounded(input.workspaceId) || !safeLabel(input.workspaceLabel)
     || !safeBounded(input.slackAppId) || !safeLabel(input.slackAppLabel)
@@ -1186,6 +1267,21 @@ function validateTarget(input, target, legacy = false) {
 function validSetupFlowUnprovenSince(value) {
   return value === undefined || value === null
     || (typeof value === 'string' && /^[0-9a-f]{7,64}$/u.test(value));
+}
+
+function validInstallation(value) {
+  return isRecord(value) && exactKeys(value, ['runId', 'startedAt', 'workerName', 'authDatabaseName',
+    'authDatabaseId', 'installerPath', 'baselineDigest', 'standingVersion', 'beforeEvidence', 'beforeDigest',
+    'databaseCreationReceipt', 'databaseReceiptDigest'])
+    && /^[a-z0-9][a-z0-9-]{0,63}$/u.test(value.runId ?? '') && timestamp(value.startedAt)
+    && /^[a-z0-9][a-z0-9-]{0,62}$/u.test(value.workerName ?? '')
+    && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/u.test(value.authDatabaseName ?? '')
+    && safeBounded(value.authDatabaseId) && validServingVersion(value.standingVersion)
+    && /^sha256:[a-f0-9]{64}$/u.test(value.baselineDigest ?? '')
+    && /^sha256:[a-f0-9]{64}$/u.test(value.beforeDigest ?? '')
+    && /^sha256:[a-f0-9]{64}$/u.test(value.databaseReceiptDigest ?? '')
+    && [value.installerPath, value.beforeEvidence, value.databaseCreationReceipt].every((entry) => typeof entry === 'string'
+      && path.isAbsolute(entry) && resolve(entry) === entry && safeBounded(entry, 1024));
 }
 
 function validateClaim(input, target) {
@@ -1234,7 +1330,7 @@ function validateSandbox(input) {
     || !timestamp(input.archiveDate)
     || input.workspaceSlotsTotal !== 5
     || !Number.isSafeInteger(input.workspaceSlotsUsed)
-    || input.workspaceSlotsUsed < activeEnvironmentTargets.length
+    || input.workspaceSlotsUsed < ORIGINAL_QA_TARGETS.length
     || input.workspaceSlotsUsed > input.workspaceSlotsTotal
     || !Number.isSafeInteger(input.integrationHeadroom)
     || input.integrationHeadroom < 0 || input.integrationHeadroom > 10_000) {
@@ -1244,6 +1340,7 @@ function validateSandbox(input) {
 }
 
 function assertMatchingClaim(registry, target, worktree, options) {
+  if (!registry.targets[target]) throw fail('TARGET_NOT_REGISTERED', { target });
   const claim = registry.targets[target].claim;
   if (!claim) throw fail('CLAIM_REQUIRED');
   if (claim.hostFingerprint !== registry.hostFingerprint) throw fail('HOST_MISMATCH');
@@ -1260,7 +1357,7 @@ function assertMatchingClaim(registry, target, worktree, options) {
 }
 
 function assertWorktreeClaimAvailable(registry, worktree, exceptTarget, now) {
-  const existing = activeEnvironmentTargets.find((candidate) =>
+  const existing = Object.keys(registry.targets).find((candidate) =>
     candidate !== exceptTarget
     && registry.targets[candidate].claim?.canonicalWorktreePath === worktree.path
   );
@@ -1701,9 +1798,10 @@ function repairOrphanMarker(registry, worktree, requestedTarget) {
     throw fail('MARKER_MISMATCH');
   }
   if (requestedTarget !== undefined && marker.target !== requestedTarget) return false;
+  if (!registry.targets[marker.target]) throw fail('TARGET_NOT_REGISTERED');
   const centralClaim = registry.targets[marker.target].claim;
   if (centralClaim !== null) return false;
-  const anotherCentralClaim = activeEnvironmentTargets.some((target) =>
+  const anotherCentralClaim = Object.keys(registry.targets).some((target) =>
     registry.targets[target].claim?.canonicalWorktreePath === worktree.path
   );
   if (anotherCentralClaim) throw fail('MARKER_MISMATCH');
@@ -1787,6 +1885,7 @@ function statusForTarget(registration, now, options) {
     // Non-null means the lane serves a revision whose first-run setup flow was
     // never proven. It is a warning, not a health failure.
     setupFlowUnprovenSince: registration.setupFlowUnprovenSince ?? null,
+    ...(registration.installation ? { installationRun: registration.installation.runId } : {}),
     lastAttestedRevision: registration.lastAttestation?.sourceRevision ?? null,
     recoveryAction: recoveryAction(health, registration.target),
   });
@@ -1986,7 +2085,7 @@ function selectedTargetFor(registry, worktreePath) {
   if (!worktreePath || typeof worktreePath !== 'string') return null;
   let canonical;
   try { canonical = realpathSync(worktreePath); } catch { return null; }
-  return activeEnvironmentTargets.find(
+  return Object.keys(registry.targets).find(
     (target) => registry.targets[target].claim?.canonicalWorktreePath === canonical,
   ) ?? null;
 }
@@ -2046,7 +2145,7 @@ function validDeploymentMetadata(input, intent, registration) {
 function validateAudit(input) {
   if (!isRecord(input)
     || !exactKeys(input, ['event', 'target', 'at', 'registryRevision'])
-    || !['claim_created', 'claim_reclaimed', 'claim_adopted_orphan', 'claim_released', 'target_attested', 'target_deploy_intent', 'target_deploy_aborted', 'target_deploy_pending', 'target_deployed', 'provider_auth_config_migrated', 'target_setup_flow_proven'].includes(input.event)
+    || !['installation_reserved', 'installation_restored', 'target_registered', 'claim_created', 'claim_reclaimed', 'claim_adopted_orphan', 'claim_released', 'target_attested', 'target_deploy_intent', 'target_deploy_aborted', 'target_deploy_pending', 'target_deployed', 'provider_auth_config_migrated', 'target_setup_flow_proven'].includes(input.event)
     || !activeEnvironmentTargets.includes(input.target)
     || !timestamp(input.at)
     || !Number.isSafeInteger(input.registryRevision) || input.registryRevision < 1) {

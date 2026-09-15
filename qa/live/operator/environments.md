@@ -7,7 +7,7 @@
    when the intended comparison differs from local `origin/main`. The mapping is
    a starting point. Include indirectly affected behavior identified in review.
 2. Reuse a matching claim. For bounded automatic acquisition, run exactly
-   `npm run env -- wait-claim <amber|cobalt|any> --timeout-ms <milliseconds>
+   `npm run env -- wait-claim <amber|cobalt|violet|any> --timeout-ms <milliseconds>
    --poll-ms <milliseconds> --worktree <absolute-worktree>`. It reuses only the
    current worktree's matching live claim. Otherwise it polls read-only status
    and attempts the normal atomic claim only for a healthy free lane with no
@@ -28,7 +28,7 @@
    worktree no longer exists, `npm run env -- reclaim <alias> --adopt-orphan`
    can adopt it,
    but freeing another task's hold is the operator's decision: report the
-   holder and ask before adopting. Both busy means preserve pending work and
+   holder and ask before adopting. All registered lanes busy means preserve pending work and
    use the bounded wait described above. See [host coordination](hosts.md) for
    longer waits and host reservations.
 3. Prefer an initialized local workerd/HTTP lane for repeated application edits.
@@ -109,9 +109,9 @@
    gap (no registered actor alias for that lane), not a build failure: report
    it, and continue with the attended checklist as the signed-in test actor.
 
-Use one suitable lane by default. Both colors are needed when explicitly
+Use one suitable lane by default. Multiple colors are needed when explicitly
 requested or testing cross-lane isolation, not for every application change.
-Amber and Cobalt are ordinary exclusive QA lanes; the historical first protected
+Amber, Cobalt, and Violet are ordinary exclusive QA lanes once registered; the historical first protected
 Cobalt qualification is not a standing requirement to merge before testing.
 
 The expected source repository defaults to `pejmanjohn/chickpea`. A maintainer
@@ -158,7 +158,7 @@ per-case blockers.
 | Owner or Admin | Chosen candidate | Declared synthetic provider rows and owning Agent binding | Positive read/write and exact restoration |
 | Distinct Member plus authorized completer | Same candidate | Configured connector and the same pending setup | Permission denial or two-completer setup race |
 | Authorized reconnect actor | Same candidate | Disposable connection and dependent run-owned schedule | Authority loss, reconnect and separately graded due recovery |
-| Registered installer | Separate disposable installation target | Fresh public artifact and approved test account | Fresh installation and first real request |
+| Registered installer | Exclusively reserved free lane | Fresh public artifact, empty temporary state and approved test account | Fresh installation, first real request and restoration |
 
 Resolve actor identity/role, lane app/workspace pair, Agent/account binding,
 provider fixture revision, allowed operation and evidence expiry together.
@@ -166,7 +166,68 @@ An existing Member identity does not imply a connector is configured there.
 Refresh each capability's context snapshot after any relevant fixture or lane
 change. Shared browser control is not shared account authority.
 
-Check the disposable installation target at initial scope selection. If it is
-unavailable, keep fresh installation blocked and finish independent cases. Do not
-manufacture availability, repurpose a standing lane or provision accounts or
-infrastructure merely to complete this inventory.
+Check installation availability at initial scope selection. If every lane is
+occupied, keep fresh installation blocked and finish independent cases. A quiet
+Slack channel does not establish that its lane is free.
+
+## Borrow a lane for a fresh install
+
+Fresh installation is a temporary use of any free registered lane. Its Slack
+workspace can be reused; the customer's installation starts with a separate
+Worker and empty D1. Never reset the standing Worker/database.
+
+1. Claim a healthy free lane with `wait-claim any`. Inventory pending schedules,
+   proposals, deliveries and cleanup, and resolve ownership of independent apps
+   sharing the workspace. Record exact standing Slack, Admin and fixture state
+   in owner-only `before.json`, with `slack`, `admin`, `fixtures`,
+   `pendingWork: false` and `independentAppsResolved: true`. Those booleans are
+   attended observations, not permission to skip inspection.
+2. Prepare an isolated installation checkout/artifact and run-owned temporary
+   Worker/D1 coordinates. Create the empty D1 with the existing resource intent
+   and receipt workflow; retain exact IDs for cleanup. Write an owner-only spec
+   containing `runId`, `workerName`, `authDatabaseName`, `authDatabaseId`,
+   absolute `installerPath`, absolute `beforeEvidence`, and absolute
+   `databaseCreationReceipt`. The database receipt must identify the exact D1
+   created under this lane's current claim. Reserve before
+   disconnecting Slack or deploying:
+
+   ```sh
+   npm run env -- install-reserve <alias> --installation /private/path/spec.json
+   ```
+
+   Reservation checks the current claim, unresolved verifier work and live
+   standing baseline. It pins the baseline and preserves standing identities.
+   Normal lane deployments and release are refused until restoration. Expiry,
+   interruption and reclaim retain the reservation.
+3. Follow the supported customer disconnect/install flow. Use the temporary
+   coordinates in the isolated installer's `wrangler.jsonc`, then its guarded
+   `npm run deploy` with `CHICKPEA_INSTALLATION_LANE=<alias>` and
+   `CHICKPEA_DEPLOY_TARGET=production`. Here `production` explicitly selects that
+   checkout's ordinary Worker; the installation fence checks the exact reserved
+   temporary Worker and D1 before build and mutation. Never point it at the
+   standing resources. Verify fresh setup, signed-in Admin and a real Slack request.
+   An existing temporary Worker is refused as well; reconcile an interrupted
+   attempt and clean its exact resources before starting another fresh install.
+   The installer must include this reservation-aware deployment wrapper; older
+   published releases that ignore `CHICKPEA_INSTALLATION_LANE` cannot establish
+   this guarded rehearsal. Do not patch an older artifact and call it an unchanged
+   customer release test.
+4. Clean the exact temporary resources, reconnect the standing installation,
+   and read back its routing, Admin and fixture state. Save private JSON evidence
+   and an owner-only restoration receipt with `runId`, `restored` equal to the
+   original before-state, `temporary: {workerName, authDatabaseId,
+   workerPresent: false, databasePresent: false}`, and absolute `slackEvidence`,
+   `adminEvidence`, `cleanupEvidence` paths. These are operator receipts; the
+   command also independently checks the standing live authority and baseline.
+
+   ```sh
+   npm run env -- install-restore <alias> --installation /private/path/restore.json
+   npm run env -- release <alias>
+   ```
+
+If anything fails, retain the claim and reservation for recovery. Never submit
+a successful restoration receipt without actual readbacks. Other lanes can
+continue: their preflight checks a borrowed lane's unchanged standing Worker
+version and bindings and retains its pinned credential fingerprints for
+isolation. That exception is not Slack acceptance for the borrowed lane; its
+restoration always requires fresh live authority.

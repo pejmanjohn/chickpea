@@ -21,7 +21,7 @@ test('the checked-in manifest and feature map match the authoring catalog exactl
   assertFeatureMapFresh(readFileSync(new URL('../qa/live/generated/feature-map.md', import.meta.url), 'utf8'), compiled);
 });
 
-function policy(targetAlias: 'amber' | 'cobalt' = 'amber') {
+function policy(targetAlias: typeof PHASE_ONE_TARGET_ALIASES[number] = 'amber') {
   return {
     targetAlias,
     allowedSuites: ['case', 'smoke'] as const,
@@ -36,7 +36,7 @@ test('the deterministic manifest owns the exact Phase 1 smoke denominator', () =
   assert.equal(LIVE_MANIFEST.requiredVariants.case.includes(extraCase), true);
 });
 
-test('amber and cobalt allow case and smoke but always refuse deep', () => {
+test('registered lane aliases allow case and smoke but always refuse deep', () => {
   for (const targetAlias of PHASE_ONE_TARGET_ALIASES) {
     const targetPolicy = validateTargetSuitePolicy(policy(targetAlias));
     assert.deepEqual(targetPolicy.allowedSuites, ['case', 'smoke']);

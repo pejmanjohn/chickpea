@@ -16,7 +16,7 @@ once for browser ownership, evidence access, and the host's available tools.
 
 An instruction to run this skill authorizes the selected mode's declared actions
 on identified QA resources, including their exact teardown. Do not ask again at
-each step. For established Local, Amber, or Cobalt test environments this includes:
+each step. For established Local, Amber, Cobalt, or Violet test environments this includes:
 
 - Claiming an available lane, starting its existing local Worker, and guarded
   deployment of the candidate to the explicitly selected QA Worker.
@@ -46,8 +46,10 @@ declared QA action. Scope restrictions from the current user request still apply
 Production, the shared gateway/app configuration, purchases, workspace deletion,
 unrelated accounts/data, global upstream grant revocation, source merges, and
 release publication are outside this authorization. A fresh Slack installation
-uses an already designated disposable installation target; do not repurpose a
-standing lane or provision paid infrastructure to complete it.
+may borrow a free deployed lane using the [installation reservation](environments.md#borrow-a-lane-for-a-fresh-install).
+Preserve its standing Worker/database and hold the claim through verified
+restoration. No permanent installation-only workspace is required. Do not
+provision paid infrastructure outside the declared QA resources.
 
 Only request human input when a required fact or capability is actually missing:
 an unregistered account/target, a broader grant, unavailable credentials, MFA,
