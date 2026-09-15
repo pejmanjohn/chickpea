@@ -29,6 +29,13 @@ connector.
    Instagram boosting, can require additional Meta permissions and remain
    unavailable when the signed-in token does not have them.
 
+The tool catalog is gated by the schemas returned by the latest Meta discovery.
+Chickpea shows only tools whose current schemas pass its safety checks. The
+current catalog supports changes to existing ad sets through
+`ads_update_entity`; `ads_create_ad_set` remains unavailable because its
+creation schema has not been validated. Reconnect to refresh the catalog after
+Meta changes its schemas.
+
 Before changing an existing object or creating an ad or ad set under a parent,
 Chickpea uses the same OAuth token for a read-only Graph API v26 lookup of the
 object's `id` and `account_id`. The write is blocked before the MCP call unless
