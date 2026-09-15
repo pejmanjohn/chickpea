@@ -59,7 +59,8 @@ export async function assertMetaAdsWriteAccountOwnership(
       const response = await input.fetch(new Request(url, {
         method: 'GET',
         headers: { Authorization: input.authorization, Accept: 'application/json' },
-        redirect: 'error',
+        // workerd accepts manual/follow only; the guarded fetch and checks below reject redirects.
+        redirect: 'manual',
         signal,
       }));
       if (!response.ok || response.redirected ||

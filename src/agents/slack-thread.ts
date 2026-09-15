@@ -1452,6 +1452,9 @@ export function useRuntimePlanAgent(
   if (metaWriteScopes.length > 0) {
     useInstruction(`The owner restricts these Meta Ads audience tools to the listed ad accounts: ${JSON.stringify(metaWriteScopes)}. Chickpea verifies the target audience's owner before sending changes. This account scope is internal policy, not a provider input. Supply the actual audience ID using the tool's declared schema; do not invent an ad-account argument.`);
   }
+  if (plan.mcpConnections.some(isMetaAdsMcpConnection)) {
+    useInstruction('For Meta Ads replies, use campaign and ad-account names as the primary identifiers. Include IDs only when the user asks for them or when needed to distinguish entities with the same name. Format these names and IDs as ordinary text or bold text, not inline code. Describe outcomes in user language. Do not mention tool names or actions that were not taken unless the user asks. If a requested write fails or makes no change, say so plainly and do not imply success.');
+  }
   if (plan.mcpConnections.some((connection) => isMetaAdsMcpConnection(connection) && connection.writeTools?.length)) {
     useInstruction('Selected Meta Ads write tools can change ads and audiences. Use them only for changes the user requested. Before activating ads or increasing spend, establish the exact ad account, entities, and budget the user authorized; ask for missing authorization. Campaign, ad set, and ad creation leave them paused. Activation starts spending; do not activate merely because creation succeeded. Do not retry an uncertain write blindly: first read back whether it already happened.');
   }

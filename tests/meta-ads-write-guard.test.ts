@@ -101,7 +101,7 @@ test('Meta Ads write ownership accepts exact provider ownership for every entity
     assert.equal(provider.requests.length, 1, entry.name);
     const request = provider.requests[0]!;
     assert.equal(request.method, 'GET');
-    assert.equal(request.redirect, 'error');
+    assert.equal(request.redirect, 'manual');
     assert.equal(request.headers.get('authorization'), AUTHORIZATION);
     assert.equal(request.headers.get('accept'), 'application/json');
     const url = new URL(request.url);
