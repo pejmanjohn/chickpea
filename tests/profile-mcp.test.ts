@@ -202,6 +202,10 @@ test('legacy Meta tools enforce exact account arguments before their run functio
     await tools[0]!.run({ data: { ad_account_id: 'act_123', object_ids: ['other'] } } as never);
   }, /does not permit the argument object_ids/);
   assert.equal(runs, 0);
+  await assert.rejects(async () => {
+    await tools[0]!.run({ data: { ad_account_id: 'act_123', campaign_id: 'other' } } as never);
+  }, /does not permit the argument campaign_id/);
+  assert.equal(runs, 0);
   assert.equal(await tools[0]!.run({
     data: { ad_account_id: 'act_123', client_conversation_id: 'correlation-1' },
   } as never), 'reported');
@@ -839,9 +843,15 @@ test('direct Meta definitions expose only scoped tools and reject undeclared arg
       params: { name: metaReportTool, arguments: { ad_account_id: 'act_123', object_ids: ['other'] } } }),
   }), /does not permit the argument object_ids/);
   assert.equal(outbound, 0);
-  await definition!.fetch!('https://mcp.facebook.com/ads', {
+  await assert.rejects(definition!.fetch!('https://mcp.facebook.com/ads', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call',
+      params: { name: metaReportTool, arguments: { ad_account_id: 'act_123', campaign_id: 'other' } } }),
+  }), /does not permit the argument campaign_id/);
+  assert.equal(outbound, 0);
+  await definition!.fetch!('https://mcp.facebook.com/ads', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call',
       params: { name: metaReportTool, arguments: {
         ad_account_id: 'act_123', client_conversation_id: 'correlation-1', fields: ['spend'],
       } } }),

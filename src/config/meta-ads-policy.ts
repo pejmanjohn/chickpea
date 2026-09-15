@@ -18,10 +18,10 @@ export const META_ADS_REVIEWED_TOOL_EFFECTS = {
 } as const satisfies Readonly<Record<string, 'read'>>;
 
 /**
- * Authenticated Meta schemas include correlation metadata and optional entity
- * filters whose names end in `_id`/`_ids`. They are not alternate ad-account
- * selectors, but entity filters remain unavailable at runtime so callers can
- * only target the exact constrained `ad_account_id`.
+ * Authenticated Meta schemas include correlation metadata and recognized
+ * entity filters whose names end in `_id`/`_ids`. Entity-filter semantics are
+ * not used as account-scope evidence: those arguments remain unavailable at
+ * runtime so callers can only target the exact constrained `ad_account_id`.
  */
 const META_ADS_NON_ACCOUNT_ID_ARGUMENTS = {
   ads_get_ad_entities: ['client_conversation_id', 'object_ids'],

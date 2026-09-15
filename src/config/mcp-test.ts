@@ -380,10 +380,20 @@ export function projectMcpToolInputSchema(
 }
 
 function simpleStringOrNullableString(value: unknown): boolean {
-  if (!isRecord(value) || ['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in value)) return false;
-  if (value.type === 'string') return true;
-  return Array.isArray(value.type) && value.type.length === 2 &&
-    new Set(value.type).size === 2 && value.type.includes('string') && value.type.includes('null');
+  if (!isRecord(value) || '$ref' in value || 'allOf' in value) return false;
+  const unionKeys = ['oneOf', 'anyOf'].filter((key) => key in value);
+  if (unionKeys.length === 0) {
+    if (value.type === 'string') return true;
+    return Array.isArray(value.type) && value.type.length === 2 &&
+      new Set(value.type).size === 2 && value.type.includes('string') && value.type.includes('null');
+  }
+  if (unionKeys.length !== 1 || value.type !== undefined) return false;
+  const branches = value[unionKeys[0]!];
+  if (!Array.isArray(branches) || branches.length !== 2) return false;
+  const types = branches.map((branch) => isRecord(branch) && Object.keys(branch).length === 1
+    ? branch.type
+    : undefined);
+  return new Set(types).size === 2 && types.includes('string') && types.includes('null');
 }
 
 function looksLikeAlternateAccountSelector(name: string): boolean {

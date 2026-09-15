@@ -457,6 +457,16 @@ test('Meta projection accepts exact observed non-account IDs without weakening t
   assert.equal(projectMcpToolInputSchema(
     opportunityScore, 'ads_get_opportunity_score',
   ).ambiguous, false, 'bounded correlation metadata may be required');
+  for (const union of ['anyOf', 'oneOf'] as const) {
+    assert.equal(projectMcpToolInputSchema({
+      ...opportunityScore,
+      properties: {
+        ...opportunityScore.properties,
+        client_conversation_id: { [union]: [{ type: 'string' }, { type: 'null' }] },
+      },
+    }, 'ads_get_opportunity_score').ambiguous, false,
+    `canonical ${union} string/null correlation metadata is supported`);
+  }
 });
 
 test('Meta projection keeps entity filters optional and unknown or nested selectors closed', () => {
@@ -483,6 +493,17 @@ test('Meta projection keeps entity filters optional and unknown or nested select
   assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
     client_conversation_id: { type: 'number' },
   }), 'ads_get_ad_entities').ambiguous, true, 'correlation metadata must remain a bounded string');
+  for (const clientConversationSchema of [
+    { anyOf: [{ type: 'string' }, { $ref: '#/$defs/null' }] },
+    { oneOf: [{ type: 'string' }, { type: 'object' }] },
+    { anyOf: [{ type: 'string' }, { type: 'null' }, { type: 'number' }] },
+    { anyOf: [{ type: 'string' }, { type: 'null', oneOf: [{ type: 'null' }] }] },
+  ]) {
+    assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
+      client_conversation_id: clientConversationSchema,
+    }), 'ads_get_ad_entities').ambiguous, true,
+    'refs, object/third branches, and nested composition remain unsupported');
+  }
 });
 
 test('input-schema projection bounds oversized property names without retaining them', () => {
