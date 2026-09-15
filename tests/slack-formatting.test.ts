@@ -270,12 +270,70 @@ test('file sections preserve safe action labels while escaping malformed content
     agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
   });
   assert.match(comment, /Report &lt;team&gt;/);
-  assert.match(comment, /GRE: \$2,400 &amp; TOEFL: \$800/);
+  assert.match(comment, /\*GRE:\* \$2,400 &amp; TOEFL: \$800/);
   assert.match(comment, /<https:\/\/example.com\/report\?exam=gre&amp;row=1\|View report>/);
   assert.match(comment, /Unsafe\n\[Malformed\]\(https:\/\/example.com\/&lt;broken/);
   assert.match(comment, /&lt;!channel&gt;/);
   assert.match(comment, /\[credential redacted\]/);
   assert.doesNotMatch(comment, new RegExp(`${canary}|javascript:|<!channel>`));
+});
+
+test('file replies translate standard Markdown styles across code and links into mrkdwn', () => {
+  const markdown = [
+    '~~The June `TEST50` sale was the most recent **code explicitly labeled** 50%,',
+    'but it was not [the best comparable period](https://example.com/comparison).~~',
+    '[Edit: August is the better comparison.]',
+  ].join(' ');
+  assert.deepEqual(renderSlackMessage(markdown, 'markdown').blocks, [
+    { type: 'markdown', text: markdown },
+  ]);
+
+  const rendered = renderSlackArtifactMessage(markdown, 'markdown', {
+    agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+  }, [completedFile(0)]);
+  const first = rendered.blocks?.[0];
+  assert.equal(first?.type, 'section');
+  if (first?.type !== 'section') return;
+  assert.equal(first.text.type, 'mrkdwn');
+  assert.equal(first.text.text, [
+    '~The June `TEST50` sale was the most recent *code explicitly labeled* 50%,',
+    'but it was not <https://example.com/comparison|the best comparable period>.~',
+    '[Edit: August is the better comparison.]',
+  ].join(' '));
+});
+
+test('file reply style conversion leaves code and literal operators unchanged', () => {
+  const body = [
+    'Native mrkdwn: *bold* _italic_ ~old~.',
+    'Operators: 1 ~~ 2, a ~ b, z_k ** 2, and ~/reports.',
+    'Inline: `~~old~~ **bold** [docs](https://example.com)`.',
+    'Unfinished: ~~draft and **label.',
+    'Malformed: ~~~not a strike~~~ and \\~~literal~~.',
+    'Escaped closer: ~~keep \\~~ literal.',
+    'Even escape: \\\\~~removed~~.',
+    'Standard: __bold__ and ~~removed~~.',
+  ].join('\n');
+  const comment = renderFileBody(body, 'markdown', {
+    agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+  });
+  assert.equal(comment, [
+    'Native mrkdwn: *bold* _italic_ ~old~.',
+    'Operators: 1 ~~ 2, a ~ b, z_k ** 2, and ~/reports.',
+    'Inline: `~~old~~ **bold** [docs](https://example.com)`.',
+    'Unfinished: ~~draft and **label.',
+    'Malformed: ~~~not a strike~~~ and \\~~literal~~.',
+    'Escaped closer: ~~keep \\~~ literal.',
+    'Even escape: \\\\~removed~.',
+    'Standard: *bold* and ~removed~.',
+  ].join('\n'));
+});
+
+test('file reply conversion remains bounded for a full-size malformed delimiter chain', () => {
+  const body = '**a '.repeat(3_000).trim();
+  const blocks = renderSlackFileBlocks(body, 'markdown', {
+    agentName: 'Analyst', agentId: 'agent_analyst', includeConfigureLink: false,
+  });
+  assert.equal(fileBody(blocks), body);
 });
 
 test('plain file sections escape Slack control syntax and retain readable table data', () => {
@@ -304,7 +362,7 @@ test('file sections preserve fenced code and table-like literals while still esc
     '```python',
     'filename = "qa_artifacts_1531.csv"',
     'total_value = x_i * y_j + z_k ** 2',
-    'literal = "**keep** _this_ [link](https://example.com/a_b)"',
+    'literal = "~~keep~~ **this** [link](https://example.com/a_b)"',
     '| column_a | column_b |',
     '| --- | --- |',
     '```',
