@@ -440,12 +440,20 @@ function supportedMetaAdsWriteProperty(
   if (!contract) return false;
   if (name === 'advertiser_request') return simpleString(definition);
   if (name === 'client_conversation_id') return simpleStringOrNullableString(definition);
-  if (contract.ownershipFields.includes(name)) return required && simpleString(definition);
-  if (name === 'entity_type') return contract.entityType && required && simpleString(definition);
+  if (contract.ownershipFields.includes(name)) {
+    return tool === 'ads_activate_entity'
+      ? runtimeCheckedStringOrNullableString(definition)
+      : required && simpleString(definition);
+  }
+  if (name === 'entity_type') {
+    return contract.entityType && (tool === 'ads_activate_entity'
+      ? runtimeCheckedStringOrNullableString(definition)
+      : required && simpleString(definition));
+  }
   if (contract.blockedRuntimeFields.includes(name)) {
     // A blocked optional route can be omitted safely only when the provider
-    // does not declare a default that would restore it after key filtering.
-    return !required && isRecord(definition) && !('default' in definition);
+    // declares no active default that would restore it after key filtering.
+    return !required && safelyOmittedMetaAdsWriteProperty(definition);
   }
   if (contract.referenceFields.includes(name)) {
     return required ? simpleString(definition) : simpleStringOrNullableString(definition);
@@ -457,6 +465,12 @@ function supportedMetaAdsWriteProperty(
   return contract.nestedPayloadFields.includes(name)
     ? !containsNestedExactAccountSelector(definition)
     : !containsNestedAccountSelector(definition);
+}
+
+function safelyOmittedMetaAdsWriteProperty(definition: unknown): boolean {
+  if (!isRecord(definition) || !('default' in definition)) return isRecord(definition);
+  return definition.default === null ||
+    (Array.isArray(definition.default) && definition.default.length === 0);
 }
 
 function supportedMetaAdsHelperProperty(
@@ -517,6 +531,18 @@ function simpleStringOrNullableString(value: unknown): boolean {
     ? branch.type
     : undefined);
   return new Set(types).size === 2 && types.includes('string') && types.includes('null');
+}
+
+function runtimeCheckedStringOrNullableString(value: unknown): boolean {
+  if (simpleStringOrNullableString(value)) return true;
+  if (!isRecord(value) || '$ref' in value || 'allOf' in value || value.type !== undefined) return false;
+  const unionKeys = ['oneOf', 'anyOf'].filter((key) => key in value);
+  if (unionKeys.length !== 1) return false;
+  const branches = value[unionKeys[0]!];
+  if (!Array.isArray(branches) || branches.length !== 2) return false;
+  return branches.some(simpleString) && branches.some((branch) =>
+    isRecord(branch) && branch.type === 'null' &&
+    !['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in branch));
 }
 
 function looksLikeAlternateAccountSelector(name: string): boolean {

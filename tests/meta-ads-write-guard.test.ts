@@ -210,6 +210,26 @@ test('invalid routing arguments stay actionable and fail before provider fetch',
       message: /requires a valid entity_id/,
     },
     {
+      name: 'ads_activate_entity',
+      argumentsValue: { ad_account_id: 'act_123', entity_type: 'ad' },
+      message: /requires a valid entity_id/,
+    },
+    {
+      name: 'ads_activate_entity',
+      argumentsValue: { ad_account_id: 'act_123', entity_id: null, entity_type: 'ad' },
+      message: /requires a valid entity_id/,
+    },
+    {
+      name: 'ads_activate_entity',
+      argumentsValue: { ad_account_id: 'act_123', entity_id: '7001' },
+      message: /requires entity_type/,
+    },
+    {
+      name: 'ads_activate_entity',
+      argumentsValue: { ad_account_id: 'act_123', entity_id: '7001', entity_type: null },
+      message: /requires entity_type/,
+    },
+    {
       name: 'ads_update_entity',
       argumentsValue: { ad_account_id: 'act_123', entity_id: '7001', entity_type: 'creative' },
       message: /requires entity_type campaign, ad_set, or ad/,

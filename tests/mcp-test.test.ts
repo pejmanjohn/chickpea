@@ -660,26 +660,39 @@ test('Meta write projection retains bounded large schemas and closes blocked or 
     },
   }, 'ads_activate_entity').ambiguous, true, 'a required bulk route cannot be removed at runtime');
 
-  for (const [label, required, entityDefinition] of [
-    ['optional', ['ad_account_id', 'entity_type'], { type: 'string' }],
-    ['nullable', ['ad_account_id', 'entity_id', 'entity_type'], { type: ['string', 'null'] }],
+  for (const [label, required, entityDefinition, entityTypeDefinition] of [
+    ['optional', ['ad_account_id'], { type: 'string' }, { type: 'string' }],
+    ['nullable', ['ad_account_id'], { type: ['string', 'null'] }, {
+      anyOf: [{ type: 'string', enum: ['campaign', 'ad_set', 'ad'] }, { type: 'null' }],
+    }],
   ] as const) {
     assert.equal(projectMcpToolInputSchema({
       type: 'object', required,
       properties: {
-        ad_account_id: { type: 'string' }, entity_id: entityDefinition, entity_type: { type: 'string' },
+        ad_account_id: { type: 'string' }, entity_id: entityDefinition, entity_type: entityTypeDefinition,
         object_ids: { type: 'array', items: { type: 'string' } },
       },
-    }, 'ads_activate_entity').ambiguous, true, `${label} entity_id cannot prove one ownership target`);
+    }, 'ads_activate_entity').ambiguous, false,
+    `${label} single-entity selectors are enforced before dispatch rather than by schema requiredness`);
   }
 
+  for (const safeDefault of [null, []]) {
+    assert.equal(projectMcpToolInputSchema({
+      type: 'object', required: ['ad_account_id'],
+      properties: {
+        ad_account_id: { type: 'string' }, entity_id: { type: ['string', 'null'] },
+        entity_type: { type: ['string', 'null'] },
+        object_ids: { type: 'array', items: { type: 'string' }, default: safeDefault },
+      },
+    }, 'ads_activate_entity').ambiguous, false, 'null and empty-list defaults preserve omission');
+  }
   assert.equal(projectMcpToolInputSchema({
-    type: 'object', required: ['ad_account_id', 'entity_id', 'entity_type'],
+    type: 'object', required: ['ad_account_id'],
     properties: {
       ad_account_id: { type: 'string' }, entity_id: { type: 'string' }, entity_type: { type: 'string' },
-      object_ids: { type: 'array', items: { type: 'string' }, default: [] },
+      object_ids: { type: 'array', items: { type: 'string' }, default: ['789'] },
     },
-  }, 'ads_activate_entity').ambiguous, true, 'a blocked route with a provider default cannot be omitted safely');
+  }, 'ads_activate_entity').ambiguous, true, 'a nonempty blocked-route default cannot be omitted safely');
 
   assert.equal(projectMcpToolInputSchema({
     type: 'object', required: ['ad_account_id', 'campaign_id'],
