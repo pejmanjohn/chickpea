@@ -147,7 +147,6 @@
     "build:cli": "npm run build --workspace packages/cli",
     "verify:live:record": "node scripts/verification-record.mjs",
     "verify:live:candidate": "node scripts/verify-qa-candidate.mjs",
-    "verify:live:ui": "node --import tsx scripts/verification-ui-lease.mjs",
     "verify:live:fixtures": "node scripts/verification-fixtures.mjs",
     "preinstall": "node scripts/lib/node-version.mjs",
     "pretest": "node scripts/lib/node-version.mjs",

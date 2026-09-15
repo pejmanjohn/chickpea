@@ -2,15 +2,13 @@
 
 The `.agents` and `.claude` skill entrypoints both load [SKILL.md](SKILL.md).
 Keep workflow policy and executable helpers here; a host adapter only explains
-tool access. Both hosts use the same Node commands, private records, lane claims,
-and machine-wide UI ownership. Neither host's task list is an acceptance record.
+tool access. Both hosts use the same Node commands, private records, and lane
+claims. Neither host's task list is an acceptance record.
 
 At entry, identify the available shell, browser/native UI tools, authenticated
 test sessions, and private evidence directory. In Codex, use the enabled browser
 or computer-use tools and their current documentation. In Claude, use its enabled
 browser/native tools. Do not assume either host has the other's APIs or tab IDs.
-Use one stable browser alias for the actual shared browser profile across hosts.
-A new alias does not authorize using an already reserved browser.
 
 Keep evidence outside Git in an owner-only directory. Confirm that the current
 host can read it before a run. If a review tool cannot read a private file, provide
@@ -19,53 +17,44 @@ private evidence into source or bypass a tool denial. Report unavailable context
 Preserve requested model selectors; configured defaults and independent serving
 model readbacks are different evidence.
 
-## Browser action receipts
+## Task-owned browser tabs
 
-Use the same `~/.chickpea/live-ui` root on this machine. It interoperates with the
-existing mutex; older code fails closed on receipt ownership. Never use another
-root to bypass contention. The CLI acquires ownership only; it does not click,
-approve, send a message, or prove an action happened.
+Each task creates or uses its own tabs and keeps their handles in its working
+context. Independent tasks may work in separate tabs of the same browser or
+profile. Browser work requires no browser-wide or machine-wide UI lock, lease
+receipt, or registration command.
 
-```sh
-npm run verify:live:ui -- acquire --run RUN_ID --browser BROWSER_ALIAS \
-  --case CASE_ID --step STEP_ID --action "Approve the frozen QA proposal" \
-  --receipt /private/path/ui-step.json --wait-ms 30000
-# On exit 0, use the host's browser tool for this one bounded action/readback.
-npm run verify:live:ui -- release --receipt /private/path/ui-step.json
-```
+Before acting, confirm the intended tab/window, URL, signed-in actor, workspace,
+and run marker. Target that tab/window explicitly with the tool's supported APIs.
+Do not navigate, type into, reload, close, or repurpose another task's tabs.
+Close only tabs owned by this task when cleanup calls for it.
 
-Use aliases and a short action description, never credentials. A new receipt
-filename is required per acquisition; its private token authorizes exact release
-from a later CLI process. Do not print or share it. Keep action evidence separately
-in the run notebook. Bounded contention ends in exit 3 without an action; retry
-only normal `UI_BUSY` or `BROWSER_RESERVED` contention. Exit 130 is cancellation.
-Other errors require inspection. Never repeat the browser action because a later
-receipt command failed.
+Coordinate with the affected owner only when an operation uses an actual shared
+resource, such as the same tab, a profile-wide sign-out or account switch, or a
+native dialog/input operation that cannot be targeted independently. Use the
+tool's documented targeting and focus behavior and inspect the actual state.
+If an action requires exclusive control, coordinate that action for its duration;
+uncertainty about one native operation does not block unrelated tab work.
 
-When an authorized action needs MFA or another human capability, keep its browser
-reserved while freeing global interaction for independent work:
+Keep a tab waiting for MFA or another human capability with its owning task.
+Continue independent checks in other owned tabs. After the capability is supplied,
+inspect the current UI and reconcile the original action using [recovery.md](recovery.md)
+before continuing. Capture only the relevant window; never capture secret entry.
 
-```sh
-npm run verify:live:ui -- pause --receipt /private/path/ui-step.json
-# After the missing capability is supplied:
-npm run verify:live:ui -- resume --receipt /private/path/ui-step.json --wait-ms 30000
-# Observe the current UI; reconcile whether the original action already applied.
-npm run verify:live:ui -- finish --receipt /private/path/ui-step.json
-```
+Environment claims, shared fixture ownership, and [expensive-check host
+reservations](host-checks.md) still apply to their respective resources. Keep
+action evidence and measured browser/human wait time in the existing run record.
 
-`finish` removes both the exact browser reservation and global interaction lock.
-Use it after any pause/resume cycle; ordinary `release` only releases interaction.
-`release` refuses while a browser reservation remains and retains its receipt.
-An interrupted owner retains its receipt and reservations. Inspect the actual
-action state using [recovery.md](recovery.md), then resume/finish with that receipt.
-Resume is idempotent for an already-held exact receipt, including interruption
-before a pause. `UI_RESUME_NOT_OWNED` is an immediate ownership error, not ordinary
-contention. Resume only restores ownership: inspect and reconcile the visible
-state before deciding whether any browser action is still needed.
-Receipt ownership is not a live PID: a stopped CLI or changed hostname cannot
-clear it. Missing or mismatched receipts require deliberate owner reconciliation;
-never delete another task's lock or fabricate a replacement receipt.
+## Older workflow compatibility
 
-The CLI reports acquisition wait and elapsed time since acquisition. The latter
-includes pauses and is not browser-active time. Use the notebook's phase receipts
-for actual held windows and human waits; do not label their sum a critical path.
+`verify:live:ui`, `scripts/verification-ui-lease.mjs`, and `HostUiMutex` have been
+removed. Update private callers to use their own tabs directly and omit the
+coordinator's former `uiMutexRoot` option. `UiWindow.pause()` and `resume()` still
+guard capture during a human wait and recheck target identity on resume; they
+do not reserve a browser.
+
+Existing `~/.chickpea/live-ui` files and private UI lease receipts are not read,
+migrated, or deleted by this workflow. Older running checkouts may still use them.
+Leave their locks, receipts, tabs, and pending actions with their owners for
+reconciliation through the original checkout. Keep historical evidence and
+reconcile interrupted actions before continuing an old run with updated code.

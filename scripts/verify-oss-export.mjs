@@ -167,7 +167,6 @@ const liveVerifierExportPolicy = Object.freeze({
     exportPath('qa', 'live', 'safety', 'evidence.ts'),
     exportPath('qa', 'live', 'safety', 'journal.ts'),
     exportPath('qa', 'live', 'safety', 'lock.ts'),
-    exportPath('qa', 'live', 'safety', 'ui-mutex.ts'),
     exportPath('qa', 'live', 'schema.ts'),
     exportPath('qa', 'live', 'state.ts'),
     exportPath('qa', 'live', 'suites.ts'),

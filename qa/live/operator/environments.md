@@ -145,10 +145,10 @@ permits a stale claim, a mid-deploy HEAD change, or mutation of another task's l
 Refresh affected evidence after a candidate switch. See the
 [batch checkpoint policy](modes.md#repair-loop-and-final-checkpoint).
 
-Use the existing short UI mutex for competing browser actions. Release it during
-human waits and retain the affected browser reservation. A hostname change does
-not change local ownership. Recovery requires proof that the prior owner stopped.
-Never copy lock state between machines.
+Use task-owned browser tabs as described in [hosts.md](hosts.md). Coordinate only
+operations that affect an actual shared resource. A hostname change does not
+change environment or expensive-check lock ownership. Recovery of those locks
+requires proof that the prior owner stopped. Never copy lock state between machines.
 
 ## Fixture inventory
 
