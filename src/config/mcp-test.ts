@@ -59,7 +59,7 @@ const MAX_SCHEMA_NODES = 4_096;
 const MAX_SCHEMA_KEYS = 256;
 const MAX_SCHEMA_ARRAY = 256;
 const MAX_SCHEMA_STRING = 4_096;
-const MAX_PROJECTED_PROPERTIES = 64;
+const MAX_PROJECTED_PROPERTIES = MAX_SCHEMA_KEYS;
 const MAX_PROPERTY_NAME = 120;
 
 export interface McpDiscoveryResult {
@@ -442,6 +442,11 @@ function supportedMetaAdsWriteProperty(
   if (name === 'client_conversation_id') return simpleStringOrNullableString(definition);
   if (contract.ownershipFields.includes(name)) return required && simpleString(definition);
   if (name === 'entity_type') return contract.entityType && required && simpleString(definition);
+  if (contract.blockedRuntimeFields.includes(name)) {
+    // A blocked optional route can be omitted safely only when the provider
+    // does not declare a default that would restore it after key filtering.
+    return !required && isRecord(definition) && !('default' in definition);
+  }
   if (contract.referenceFields.includes(name)) {
     return required ? simpleString(definition) : simpleStringOrNullableString(definition);
   }
@@ -449,7 +454,9 @@ function supportedMetaAdsWriteProperty(
   // Other tool-specific payload fields may be strings, arrays, or nested JSON.
   // They cannot establish account or ownership proof and remain covered by the
   // full-schema fingerprint and the runtime top-level key allowlist.
-  return contract.nestedPayloadFields.includes(name) || !containsNestedAccountSelector(definition);
+  return contract.nestedPayloadFields.includes(name)
+    ? !containsNestedExactAccountSelector(definition)
+    : !containsNestedAccountSelector(definition);
 }
 
 function supportedMetaAdsHelperProperty(
@@ -533,6 +540,20 @@ function containsNestedAccountSelector(value: unknown, depth = 0): boolean {
       containsNestedAccountSelector(value.unevaluatedProperties, depth + 1)) return true;
   return ['oneOf', 'anyOf', 'allOf', 'prefixItems'].some((key) => Array.isArray(value[key]) &&
     (value[key] as unknown[]).some((entry) => containsNestedAccountSelector(entry, depth + 1)));
+}
+
+function containsNestedExactAccountSelector(value: unknown, depth = 0): boolean {
+  if (depth > MAX_SCHEMA_DEPTH) return false;
+  if (Array.isArray(value)) return value.some((entry) => containsNestedExactAccountSelector(entry, depth + 1));
+  if (!isRecord(value)) return false;
+  const properties = isRecord(value.properties) ? value.properties : undefined;
+  if (properties && Object.entries(properties).some(([name, definition]) =>
+    looksLikeAlternateAccountSelector(name) || containsNestedExactAccountSelector(definition, depth + 1))) return true;
+  if (containsNestedExactAccountSelector(value.items, depth + 1) ||
+      containsNestedExactAccountSelector(value.additionalProperties, depth + 1) ||
+      containsNestedExactAccountSelector(value.unevaluatedProperties, depth + 1)) return true;
+  return ['oneOf', 'anyOf', 'allOf', 'prefixItems'].some((key) => Array.isArray(value[key]) &&
+    (value[key] as unknown[]).some((entry) => containsNestedExactAccountSelector(entry, depth + 1)));
 }
 
 function boundedCanonicalSchema(value: unknown): { value: string; truncated: boolean } {

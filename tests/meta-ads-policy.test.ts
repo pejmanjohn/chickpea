@@ -21,6 +21,7 @@ import {
   normalizeMetaAdsAccountIds,
 } from '../src/config/meta-ads-policy.ts';
 import { projectMcpToolInputSchema } from '../src/config/mcp-test.ts';
+import { assertMcpToolArgumentKeys } from '../src/config/mcp-tool-policy.ts';
 import type { McpConnectionConfig, McpConnectionToolInfo } from '../src/config/types.ts';
 
 const fingerprint = 'a'.repeat(64);
@@ -306,6 +307,100 @@ test('runtime permits correlation metadata but withholds optional entity target 
   assert.deepEqual(metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, reportTool), [
     'ad_account_id', 'advertiser_request', 'client_conversation_id', 'fields',
   ]);
+});
+
+test('observed Meta write property sets admit single-entity routes after raw-schema validation', () => {
+  // These are the stored bounded projections and fingerprints supplied from a
+  // real discovery. `ambiguous: false` represents the result required from a
+  // fresh raw-schema pass; these literals do not invent the omitted raw types.
+  const projections: McpConnectionToolInfo[] = [
+    {
+      name: 'ads_activate_entity',
+      inputSchema: {
+        accountFields: [{ name: 'ad_account_id', type: 'string', required: true }],
+        propertyNames: [
+          'ad_account_id', 'advertiser_request', 'client_conversation_id', 'entity_id',
+          'entity_type', 'ignore_validation_errors', 'object_ids',
+        ],
+        ambiguous: false,
+        fingerprint: '74152ad0f0f13c6daed3ce991623826fb63f2a690d54d13c01582ee4f30affc1',
+      },
+    },
+    {
+      name: 'ads_create_campaign',
+      inputSchema: {
+        accountFields: [{ name: 'ad_account_id', type: 'string', required: true }],
+        propertyNames: [
+          'ad_account_id', 'adlabels', 'advertiser_request', 'budget_schedule_specs', 'buying_type',
+          'campaign_bid_strategy', 'campaign_daily_budget', 'campaign_lifetime_budget', 'campaign_name',
+          'campaign_optimization_type', 'campaign_spend_cap', 'campaign_start_time', 'campaign_stop_time',
+          'client_conversation_id', 'is_skadnetwork_attribution', 'is_using_l3_schedule',
+          'iterative_split_test_configs', 'objective', 'promoted_object', 'source_campaign_id',
+          'special_ad_categories', 'special_ad_category_country', 'topline_id',
+        ],
+        ambiguous: false,
+        fingerprint: 'e1fbba062258cdb33c1e6034f5fde438a9f6c943ba8fd258deb11653adf35e7f',
+      },
+    },
+    {
+      name: 'ads_create_creative',
+      inputSchema: {
+        accountFields: [{ name: 'ad_account_id', type: 'string', required: true }],
+        propertyNames: [
+          'ad_account_id', 'advantage_plus_creative', 'advantage_plus_creative_features',
+          'advertiser_request', 'call_to_action_type', 'cards', 'client_conversation_id',
+          'degrees_of_freedom_spec', 'description', 'display_link', 'facebook_partnership_ad',
+          'headline', 'image_hash', 'image_url', 'instagram_user_id', 'link_url', 'message', 'name',
+          'object_story_id', 'page_id', 'placement_videos', 'product_set_id', 'self_ai_disclosure', 'video_id',
+        ],
+        ambiguous: false,
+        fingerprint: 'ed692e7c72beebebec4829df8011e67012e6728388afc0383a601837c6566c60',
+      },
+    },
+    {
+      name: 'ads_create_ad_set',
+      inputSchema: {
+        accountFields: [{ name: 'ad_account_id', type: 'string', required: true }],
+        propertyNames: [
+          'ad_account_id', 'brand_audience_id', 'budget_split_set_id', 'campaign_id', 'campaign_spec',
+          'conversion_goal_id', 'include_in_ad_study_cell_id', 'include_in_ad_study_id', 'marketing_goal',
+          ...Array.from({ length: 60 }, (_, index) => `provider_option_${String(index).padStart(2, '0')}`),
+          'targeting',
+        ],
+        ambiguous: false,
+        fingerprint: '7d2d8e7135b2d4866efce2b748b024c476639d8049357abd8cc163643a77bfb0',
+      },
+    },
+  ];
+
+  for (const tool of projections) {
+    assert.equal(metaAdsToolSchemaSupported(tool), true, tool.name);
+  }
+  const connection = { discoveredTools: projections };
+  assert.deepEqual(metaAdsRuntimePropertyNames(connection, 'ads_activate_entity'), [
+    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'entity_id',
+    'entity_type', 'ignore_validation_errors',
+  ]);
+  const activationNames = metaAdsRuntimePropertyNames(connection, 'ads_activate_entity');
+  assert.ok(activationNames);
+  assert.throws(() => assertMcpToolArgumentKeys('ads_activate_entity', {
+    ad_account_id: 'act_123', entity_id: '456', entity_type: 'campaign', object_ids: ['789'],
+  }, activationNames), /does not permit the argument object_ids/);
+  const campaignNames = metaAdsRuntimePropertyNames(connection, 'ads_create_campaign');
+  assert.ok(campaignNames);
+  assert.equal(campaignNames.includes('source_campaign_id'), false);
+  assert.equal(campaignNames.includes('topline_id'), false);
+  const adSetNames = metaAdsRuntimePropertyNames(connection, 'ads_create_ad_set');
+  assert.ok(adSetNames);
+  for (const blocked of [
+    'brand_audience_id', 'budget_split_set_id', 'campaign_spec', 'conversion_goal_id',
+    'include_in_ad_study_cell_id', 'include_in_ad_study_id',
+  ]) {
+    assert.equal(adSetNames.includes(blocked), false, blocked);
+  }
+  assert.ok(adSetNames.includes('campaign_id'));
+  assert.ok(adSetNames.includes('targeting'));
+  assert.ok(metaAdsRuntimePropertyNames(connection, 'ads_create_creative')?.includes('video_id'));
 });
 
 test('account ID normalization validates syntax, deduplicates and bounds selections', () => {

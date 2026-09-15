@@ -623,6 +623,73 @@ test('Meta write projection requires exact account and ownership routing fields'
   }
 });
 
+test('Meta write projection retains bounded large schemas and closes blocked or nested alternate routes', () => {
+  const optionalProperties = Object.fromEntries(Array.from({ length: 70 }, (_, index) => [
+    `provider_option_${String(index).padStart(2, '0')}`,
+    { type: 'string' },
+  ]));
+  const adSet = projectMcpToolInputSchema({
+    type: 'object',
+    required: ['ad_account_id', 'campaign_id'],
+    properties: {
+      ad_account_id: { type: 'string' },
+      campaign_id: { type: 'string' },
+      campaign_spec: { type: 'object', properties: { campaign_id: { type: 'string' } } },
+      brand_audience_id: { type: ['string', 'null'] },
+      ...optionalProperties,
+    },
+  }, 'ads_create_ad_set');
+  assert.equal(adSet.ambiguous, false);
+  assert.equal(adSet.propertyNames.length, 74);
+  assert.ok(adSet.propertyNames.includes('campaign_id'));
+
+  const oversizedProperties = Object.fromEntries(Array.from({ length: 257 }, (_, index) => [
+    `provider_option_${String(index).padStart(3, '0')}`,
+    { type: 'string' },
+  ]));
+  assert.equal(projectMcpToolInputSchema({
+    type: 'object', required: ['ad_account_id'],
+    properties: { ad_account_id: { type: 'string' }, ...oversizedProperties },
+  }, 'ads_create_campaign').ambiguous, true, 'schemas beyond the full-schema key bound stay unavailable');
+
+  assert.equal(projectMcpToolInputSchema({
+    type: 'object', required: ['ad_account_id', 'entity_id', 'entity_type', 'object_ids'],
+    properties: {
+      ad_account_id: { type: 'string' }, entity_id: { type: 'string' }, entity_type: { type: 'string' },
+      object_ids: { type: 'array', items: { type: 'string' } },
+    },
+  }, 'ads_activate_entity').ambiguous, true, 'a required bulk route cannot be removed at runtime');
+
+  for (const [label, required, entityDefinition] of [
+    ['optional', ['ad_account_id', 'entity_type'], { type: 'string' }],
+    ['nullable', ['ad_account_id', 'entity_id', 'entity_type'], { type: ['string', 'null'] }],
+  ] as const) {
+    assert.equal(projectMcpToolInputSchema({
+      type: 'object', required,
+      properties: {
+        ad_account_id: { type: 'string' }, entity_id: entityDefinition, entity_type: { type: 'string' },
+        object_ids: { type: 'array', items: { type: 'string' } },
+      },
+    }, 'ads_activate_entity').ambiguous, true, `${label} entity_id cannot prove one ownership target`);
+  }
+
+  assert.equal(projectMcpToolInputSchema({
+    type: 'object', required: ['ad_account_id', 'entity_id', 'entity_type'],
+    properties: {
+      ad_account_id: { type: 'string' }, entity_id: { type: 'string' }, entity_type: { type: 'string' },
+      object_ids: { type: 'array', items: { type: 'string' }, default: [] },
+    },
+  }, 'ads_activate_entity').ambiguous, true, 'a blocked route with a provider default cannot be omitted safely');
+
+  assert.equal(projectMcpToolInputSchema({
+    type: 'object', required: ['ad_account_id', 'campaign_id'],
+    properties: {
+      ad_account_id: { type: 'string' }, campaign_id: { type: 'string' },
+      targeting: { type: 'object', properties: { ad_account_id: { type: 'string' } } },
+    },
+  }, 'ads_create_ad_set').ambiguous, true, 'known payloads cannot introduce a nested account route');
+});
+
 test('Meta projection keeps entity filters optional and unknown or nested selectors closed', () => {
   const schema = (required: string[], properties: Record<string, unknown>) => ({
     type: 'object', required, properties: { ad_account_id: { type: 'string' }, ...properties },

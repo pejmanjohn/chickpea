@@ -37,6 +37,7 @@ export const META_ADS_REVIEWED_TOOL_EFFECTS = {
 export const META_ADS_ACCOUNT_HELPER = 'ads_get_ad_accounts';
 export const META_ADS_FIELD_HELPER = 'ads_get_field_context';
 export const META_ADS_APPROVED_ACCOUNT_SCOPE = '$meta_ads_approved_account_id';
+const MAX_META_ADS_SCHEMA_PROPERTIES = 256;
 
 const META_ADS_HELPER_TOOLS = new Set<string>([
   META_ADS_ACCOUNT_HELPER,
@@ -61,44 +62,56 @@ export interface MetaAdsWriteSchemaContract {
   ownershipFields: readonly string[];
   referenceFields: readonly string[];
   nestedPayloadFields: readonly string[];
+  blockedRuntimeFields: readonly string[];
   entityType: boolean;
 }
 
 const META_ADS_WRITE_SCHEMA_CONTRACTS = {
   ads_create_campaign: {
-    accountScoped: true, ownershipFields: [], referenceFields: [], nestedPayloadFields: [], entityType: false,
+    accountScoped: true, ownershipFields: [], referenceFields: [],
+    nestedPayloadFields: ['budget_schedule_specs', 'iterative_split_test_configs', 'promoted_object'],
+    blockedRuntimeFields: ['source_campaign_id', 'topline_id'], entityType: false,
   },
   ads_create_ad_set: {
     accountScoped: true, ownershipFields: ['campaign_id'], referenceFields: ['pixel_id'],
-    nestedPayloadFields: ['targeting', 'promoted_object'], entityType: false,
+    nestedPayloadFields: ['targeting', 'promoted_object'],
+    blockedRuntimeFields: [
+      'brand_audience_id', 'budget_split_set_id', 'campaign_spec', 'conversion_goal_id',
+      'include_in_ad_study_cell_id', 'include_in_ad_study_id',
+    ],
+    entityType: false,
   },
   ads_create_ad: {
     accountScoped: true, ownershipFields: ['ad_set_id'],
     referenceFields: ['creative_id', 'source_ad_id'], nestedPayloadFields: ['creative', 'tracking_specs'],
-    entityType: false,
+    blockedRuntimeFields: [], entityType: false,
   },
   ads_update_entity: {
     accountScoped: true, ownershipFields: ['entity_id'], referenceFields: [], nestedPayloadFields: ['fields'],
-    entityType: true,
+    blockedRuntimeFields: [], entityType: true,
   },
   ads_activate_entity: {
-    accountScoped: true, ownershipFields: ['entity_id'], referenceFields: [], nestedPayloadFields: [], entityType: true,
+    accountScoped: true, ownershipFields: ['entity_id'], referenceFields: [], nestedPayloadFields: [],
+    blockedRuntimeFields: ['object_ids'], entityType: true,
   },
   ads_create_creative: {
     accountScoped: true, ownershipFields: [],
     referenceFields: [
       'page_id', 'instagram_actor_id', 'instagram_user_id', 'object_story_id', 'source_ad_id',
+      'video_id',
     ],
     nestedPayloadFields: [
       'creative', 'object_story_spec', 'link_data', 'asset_feed_spec', 'degrees_of_freedom_spec',
+      'advantage_plus_creative', 'advantage_plus_creative_features', 'cards',
+      'facebook_partnership_ad', 'placement_videos',
     ],
-    entityType: false,
+    blockedRuntimeFields: ['product_set_id'], entityType: false,
   },
   ads_boost_ig_post: {
     accountScoped: true, ownershipFields: [],
     referenceFields: ['page_id', 'ig_account_id', 'ig_media_id'],
     nestedPayloadFields: ['targeting', 'creative', 'promoted_object'],
-    entityType: false,
+    blockedRuntimeFields: [], entityType: false,
   },
   ads_create_custom_audience: {
     accountScoped: true, ownershipFields: [],
@@ -106,19 +119,19 @@ const META_ADS_WRITE_SCHEMA_CONTRACTS = {
       'pixel_id', 'application_id', 'source_audience_id', 'origin_audience_id', 'business_id',
     ],
     nestedPayloadFields: ['rule', 'lookalike_spec'],
-    entityType: false,
+    blockedRuntimeFields: [], entityType: false,
   },
   ads_update_custom_audience: {
     accountScoped: false, ownershipFields: ['custom_audience_id'], referenceFields: [],
-    nestedPayloadFields: ['fields', 'rule'], entityType: false,
+    nestedPayloadFields: ['fields', 'rule'], blockedRuntimeFields: [], entityType: false,
   },
   ads_update_custom_audience_users: {
     accountScoped: false, ownershipFields: ['audience_id'], referenceFields: ['session_id'],
-    nestedPayloadFields: ['users', 'payload', 'schema'], entityType: false,
+    nestedPayloadFields: ['users', 'payload', 'schema'], blockedRuntimeFields: [], entityType: false,
   },
   ads_delete_custom_audience: {
     accountScoped: false, ownershipFields: ['custom_audience_id'], referenceFields: [],
-    nestedPayloadFields: [], entityType: false,
+    nestedPayloadFields: [], blockedRuntimeFields: [], entityType: false,
   },
 } as const satisfies Readonly<Record<keyof typeof META_ADS_WRITE_TOOL_EFFECTS, MetaAdsWriteSchemaContract>>;
 
@@ -281,7 +294,7 @@ export function metaAdsAccountField(tool: McpConnectionToolInfo): 'ad_account_id
   const [field] = schema.accountFields;
   if (!field || field.type !== 'string' || !field.required) return undefined;
   const names = schema.propertyNames;
-  if (!Array.isArray(names) || names.length === 0 || names.length > 64 ||
+  if (!Array.isArray(names) || names.length === 0 || names.length > MAX_META_ADS_SCHEMA_PROPERTIES ||
       new Set(names).size !== names.length || !names.includes(field.name) ||
       names.some((value) => typeof value !== 'string' || value.length === 0 || value.length > 120)) {
     return undefined;
@@ -330,7 +343,7 @@ export function metaAdsRuntimePropertyNames(
     return names.filter((value) => allowed.includes(value));
   }
   const names = matches[0]!.inputSchema?.propertyNames;
-  return Array.isArray(names) && names.length > 0 && names.length <= 64 &&
+  return Array.isArray(names) && names.length > 0 && names.length <= MAX_META_ADS_SCHEMA_PROPERTIES &&
     names.every((value) => typeof value === 'string' && value.length > 0 && value.length <= 120)
     ? [...new Set(names)].filter((value) => !metaAdsBlockedRuntimeArgumentNames(name).includes(value))
     : undefined;
@@ -442,7 +455,10 @@ export function metaAdsNonAccountIdArgumentNames(name: string): readonly string[
 
 /** Optional entity filters stay unavailable even after their schema is accepted. */
 export function metaAdsBlockedRuntimeArgumentNames(name: string): readonly string[] {
-  return metaAdsNonAccountIdArgumentNames(name).filter((value) => value !== 'client_conversation_id');
+  const nonAccountIds = metaAdsNonAccountIdArgumentNames(name)
+    .filter((value) => value !== 'client_conversation_id');
+  const blockedWriteFields = metaAdsWriteSchemaContract(name)?.blockedRuntimeFields ?? [];
+  return [...new Set([...nonAccountIds, ...blockedWriteFields])];
 }
 
 export function normalizeMetaAdsAccountIds(ids: readonly string[]): string[] {
