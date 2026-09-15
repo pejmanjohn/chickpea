@@ -152,7 +152,7 @@ function sanitizeJsonRpcPayload(
   if (projected.some((candidate) => JSON.stringify(candidate) !== canonical)) {
     throw unsupportedResponse(response, 'conflicting-payloads', value);
   }
-  const safe = { accounts: projected[0]! };
+  const safe = { ad_accounts: projected[0]! };
   return {
     jsonrpc: '2.0',
     id: value.id,

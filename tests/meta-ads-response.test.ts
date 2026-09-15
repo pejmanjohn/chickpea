@@ -33,7 +33,7 @@ test('account helper rebuilds JSON with approved canonical records only', async 
   const rpc = await response.json() as {
     result: { content: Array<{ text: string }>; structuredContent: unknown };
   };
-  const expected = { accounts: [{
+  const expected = { ad_accounts: [{
     ad_account_id: '144860434',
     is_ads_mcp_enabled: true,
     is_queryable: true,
@@ -62,6 +62,8 @@ test('account helper rebuilds one SSE event without forwarding provider payload'
   const body = await response.text();
   assert.match(body, /^event: message\ndata: /);
   assert.match(body, /Setup required/);
+  assert.match(body, /"ad_accounts"/);
+  assert.doesNotMatch(body, /"accounts"/);
   assert.doesNotMatch(body, /222|drop-me|private/);
 });
 
@@ -72,8 +74,8 @@ test('account helper accepts identical aliases and rejects conflicting aliases',
       { ...row, id: '144860434' }, { ...row, id: 'act_144860434' },
     ]) }],
   }), approved);
-  assert.equal(((await accepted.json()) as { result: { structuredContent: { accounts: unknown[] } } })
-    .result.structuredContent.accounts.length, 1);
+  assert.equal(((await accepted.json()) as { result: { structuredContent: { ad_accounts: unknown[] } } })
+    .result.structuredContent.ad_accounts.length, 1);
 
   await assert.rejects(sanitizeMetaAdsAccountHelperResponse(rpcResult({
     content: [{ type: 'text', text: JSON.stringify([
@@ -87,8 +89,10 @@ test('account helper emits an exact stored approved alias and rejects padded pro
   const accepted = await sanitizeMetaAdsAccountHelperResponse(rpcResult({
     structuredContent: { accounts: [{ ...row, id: '144860434' }] },
   }), ['act_144860434']);
-  const body = await accepted.json() as { result: { structuredContent: { accounts: Array<{ ad_account_id: string }> } } };
-  assert.equal(body.result.structuredContent.accounts[0]!.ad_account_id, 'act_144860434');
+  const body = await accepted.json() as {
+    result: { structuredContent: { ad_accounts: Array<{ ad_account_id: string }> } };
+  };
+  assert.equal(body.result.structuredContent.ad_accounts[0]!.ad_account_id, 'act_144860434');
   await assert.rejects(sanitizeMetaAdsAccountHelperResponse(rpcResult({
     structuredContent: { accounts: [{ ...row, id: ' act_144860434 ' }] },
   }), ['act_144860434']), /account-id/);

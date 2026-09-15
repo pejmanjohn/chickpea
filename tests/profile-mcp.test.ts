@@ -343,6 +343,8 @@ test('legacy Meta account helper sends no fake scope argument and returns only a
     client_conversation_id: 'correlation-1',
   } } as never);
   assert.equal(outbound, 1);
+  assert.match(JSON.stringify(result), /"ad_accounts"/);
+  assert.doesNotMatch(JSON.stringify(result), /"accounts"/);
   assert.doesNotMatch(JSON.stringify(result), /999|Other/);
   assert.match(JSON.stringify(result), /144860434|Magoosh/);
 
@@ -1138,6 +1140,8 @@ test('direct Meta account helper sanitizes SSE under live profile policy', async
         } }),
       });
       const text = await response.text();
+      assert.match(text, /"ad_accounts"/);
+      assert.doesNotMatch(text, /"accounts"/);
       assert.match(text, /144860434|Magoosh/);
       assert.doesNotMatch(text, /999|Other|meta_ads_approved/);
     });
@@ -1147,7 +1151,7 @@ test('direct Meta account helper sanitizes SSE under live profile policy', async
   }
 });
 
-test('runtime-plan Meta account helper accepts empty provider args and sanitizes JSON', async () => {
+test('runtime-plan Meta account helper accepts bounded metadata and sanitizes JSON', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-runtime-meta-helper-'));
   const agentId = 'agent_runtime_meta_helper';
   const connection = metaAccountHelperServer({ id: 'meta' });
@@ -1182,6 +1186,8 @@ test('runtime-plan Meta account helper accepts empty provider args and sanitizes
         } }),
       });
       const result = await response.json();
+      assert.match(JSON.stringify(result), /"ad_accounts"/);
+      assert.doesNotMatch(JSON.stringify(result), /"accounts"/);
       assert.match(JSON.stringify(result), /144860434|Magoosh/);
       assert.doesNotMatch(JSON.stringify(result), /999|Other|meta_ads_approved/);
     });
