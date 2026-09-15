@@ -5332,6 +5332,7 @@
     var preset = connectionAccountPreset(account);
     var label = String(account.label || "Connection").replace(/\s+·\s+(?:Personal|Team)$/i, "");
     if (preset && label.toLowerCase() === preset.name.toLowerCase()) return preset.name;
+    if (preset && preset.id === "meta-ads" && label.toLowerCase() === "meta ads mcp") return preset.name;
     return label;
   }
 
@@ -5614,7 +5615,7 @@
     var regularAction = '<span class="connection-row-action-placeholder" aria-hidden="true"></span>';
     var customMcpEditor = customMcpToolEditorHtml(entry);
     var customMcpAction = account.policy && account.policy.kind === "mcp" && (!account.policy.presetId || account.policy.toolAccessMode === "review") && account.lifecycle === "ready"
-      ? '<button type="button" class="btn btn-soft btn-sm" data-action="custom-mcp-tools-open" data-connection-id="' + esc(account.id) + '">' + ((account.policy.allowedTools || []).length ? 'Edit tools' : 'Choose tools') + '</button>' : '';
+      ? '<button type="button" class="btn btn-soft btn-sm connection-row-action" data-action="custom-mcp-tools-open" data-connection-id="' + esc(account.id) + '">' + ((account.policy.allowedTools || []).length ? 'Edit tools' : 'Choose tools') + '</button>' : '';
     var recoverMcpAction = account.policy && account.policy.kind === "mcp" && !account.policy.presetId && account.policy.authMode !== "oauth" && account.lifecycle !== "revoked"
       ? '<button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-enable-oauth" data-connection-id="' + esc(account.id) + '">Sign in with OAuth</button>' : '';
     var action = (managedAction || oauthAction || pendingResourceAction || customMcpAction || regularAction) + recoverMcpAction;
@@ -5741,12 +5742,26 @@
   function customMcpToolChoices(tools, selected) {
     var busy = !!((state.connectionAccountForm || state.customMcpToolEditor || {}).busy);
     var review = state.customMcpToolEditor && state.customMcpToolEditor.metaAds;
-    var controls = review ? '<p class="hint">Select each Meta Ads tool deliberately. Reporting stays limited to the approved ad accounts, including when a selected helper verifies prerequisites.</p>' : '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>';
-    return controls + (tools.map(function (tool) {
+    var controls = review ? '<p class="hint">Choose the reporting tools this Agent can use for the selected ad accounts.</p>' : '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>';
+    var descriptions = {
+      ads_get_ad_accounts: "Verify which approved ad accounts are available.",
+      ads_get_ad_entities: "View campaigns, ad sets, ads, and their performance.",
+      ads_get_field_context: "Check supported reporting fields and metric names.",
+      ads_get_opportunity_score: "Review Meta's opportunity score and recommendations.",
+      ads_insights_advertiser_context: "Review the advertiser's business and marketing funnel.",
+      ads_insights_anomaly_signal: "Find unusual performance changes.",
+      ads_insights_auction_ranking_benchmarks: "Compare ad rankings and auction performance.",
+      ads_insights_industry_benchmark: "Compare performance with industry benchmarks.",
+      ads_insights_performance_trend: "Show performance trends over time."
+    };
+    var choices = tools.map(function (tool) {
       var supported = !review || tool.available === true;
-      if (!supported) return '<div class="field"><span>' + esc(tool.title || tool.name) + '</span><span class="hint">Not yet supported with ad account restrictions.</span></div>';
-      return '<label class="field"><span><input type="checkbox" data-action="custom-mcp-tool" data-tool="' + esc(tool.name) + '"' + (selected.indexOf(tool.name) >= 0 ? ' checked' : '') + '> ' + esc(tool.title || tool.name) + (review ? (tool.effect === 'read' ? ' · Reporting' : ' · May change ads') : '') + '</span>' + (tool.description ? '<span class="hint">' + esc(tool.description) + '</span>' : '') + '</label>';
-    }).join("") || '<p class="hint">This server returned no tools.</p>');
+      var checked = selected.indexOf(tool.name) >= 0;
+      var description = review ? descriptions[tool.name] : tool.description;
+      if (!supported) return '<div class="conn-tool conn-tool-unavailable"><span class="conn-tool-check-placeholder" aria-hidden="true"></span><span class="tool-body"><span class="tool-name">' + esc(tool.title || tool.name) + '</span><span class="tool-desc">Not yet supported with ad account restrictions.</span></span></div>';
+      return '<label class="conn-tool"><span class="import-check' + (checked ? ' on' : '') + '"><input type="checkbox" data-action="custom-mcp-tool" data-tool="' + esc(tool.name) + '"' + (checked ? ' checked' : '') + (busy ? ' disabled' : '') + '></span><span class="tool-body"><span class="tool-name">' + esc(tool.title || tool.name) + (review ? (tool.effect === 'read' ? ' · Reporting' : ' · May change ads') : '') + '</span>' + (description ? '<span class="tool-desc">' + esc(description) + '</span>' : '') + '</span></label>';
+    }).join("");
+    return controls + (choices ? '<div class="conn-tools custom-mcp-tool-list">' + choices + '</div>' : '<p class="hint">This server returned no tools.</p>');
   }
 
   function customMcpAccountFormHtml(form) {

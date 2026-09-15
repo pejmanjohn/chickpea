@@ -15584,16 +15584,23 @@ test('Meta tool review describes reporting access without implying ad changes', 
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [ownedConnection({
       id: 'connection_meta', workspaceId: 'T_DESIGN', revision: 3,
-      ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads',
+      ownerKind: 'member', providerId: 'meta-ads', label: 'Meta Ads MCP',
       lifecycle: 'ready', credentialConfigured: true,
       policy: {
         kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
         authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
-        discoveredTools: [{
-          name: 'get_ad_performance', title: 'Get ad performance',
-          description: 'Read performance metrics.', available: true, effect: 'read',
-        }],
-        allowedTools: ['get_ad_performance'], toolPolicies: {},
+        discoveredTools: [
+          {
+            name: 'ads_get_ad_entities',
+            description: 'Provider detail that is intentionally longer than the picker summary.',
+            available: true, effect: 'read',
+          },
+          {
+            name: 'ads_get_field_context',
+            description: 'Another verbose provider description.', available: true, effect: 'read',
+          },
+        ],
+        allowedTools: ['ads_get_ad_entities'], toolPolicies: {},
       },
     })] },
   });
@@ -15604,14 +15611,17 @@ test('Meta tool review describes reporting access without implying ad changes', 
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
+  assert.match(harness.app.innerHTML, />Meta Ads</);
+  assert.doesNotMatch(harness.app.innerHTML, />Meta Ads MCP</);
   click({ target: actionTarget({
     'data-action': 'custom-mcp-tools-open',
     'data-connection-id': 'connection_meta',
   }) });
 
-  assert.match(harness.app.innerHTML, /Select each reporting tool deliberately/);
-  assert.match(harness.app.innerHTML, /limited to the approved ad accounts/);
-  assert.match(harness.app.innerHTML, /Get ad performance · Reporting/);
+  assert.match(harness.app.innerHTML, /Choose the reporting tools this Agent can use for the selected ad accounts/);
+  assert.match(harness.app.innerHTML, /ads_get_ad_entities · Reporting/);
+  assert.match(harness.app.innerHTML, /View campaigns, ad sets, ads, and their performance/);
+  assert.match(harness.app.innerHTML, /Check supported reporting fields and metric names/);
   assert.doesNotMatch(harness.app.innerHTML, /alter ads|affect spending|May change ads/);
 });
 

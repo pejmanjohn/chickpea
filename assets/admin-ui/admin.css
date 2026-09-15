@@ -2588,6 +2588,10 @@ button.capability-pill { cursor: pointer; }
 .conn-tool .tool-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .conn-tool .tool-name { color: var(--text); font-family: var(--mono); font-size: 0.75rem; font-weight: 600; overflow-wrap: anywhere; }
 .conn-tool .tool-desc { color: var(--text-3); font-size: 0.75rem; overflow-wrap: anywhere; }
+.conn-tool-check-placeholder { flex: 0 0 18px; width: 18px; }
+.conn-tool-unavailable { cursor: default; }
+.custom-mcp-tool-list { margin-top: 8px; }
+.custom-mcp-tool-list .tool-name { font-weight: 650; }
 .conn-header-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .conn-header-row .input { flex: 1; min-width: 140px; }
 .conn-security { color: var(--text-3); font-size: 0.78125rem; text-wrap: pretty; }
@@ -2616,7 +2620,7 @@ button.capability-pill { cursor: pointer; }
   align-items: center;
   display: grid;
   gap: 12px;
-  grid-template-columns: 42px minmax(180px, 1fr) minmax(88px, auto) auto 76px 28px;
+  grid-template-columns: 42px minmax(180px, 1fr) minmax(88px, auto) auto minmax(76px, max-content) 28px;
   min-height: 64px;
   padding: 7px 14px;
   position: relative;
@@ -2704,7 +2708,7 @@ button.capability-pill { cursor: pointer; }
 .connection-state-stack .connection-capability-effect-write { color: #a66b00; }
 .connection-state-stack .connection-capability-effect-unknown { color: var(--text-3); }
 .connection-state-stack .connection-capability-grant { border-top: 1px solid var(--line); margin-top: 4px !important; padding-top: 9px; }
-.connection-state-stack .connection-row-action { justify-self: stretch; min-width: 76px; padding-left: 12px; padding-right: 12px; }
+.connection-state-stack .connection-row-action { justify-self: stretch; min-width: 76px; padding-left: 12px; padding-right: 12px; white-space: nowrap; }
 .connection-state-stack .connection-row-menu { justify-self: end; position: relative; }
 .connection-state-stack .connection-row-menu > summary {
   align-items: center;
