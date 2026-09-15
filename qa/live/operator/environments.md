@@ -96,6 +96,10 @@
    `src/auth/setup-capability.mjs` are hard-gated against the lane baseline; a
    mismatch refuses with `INSTALL_CONTINUATION_REQUIRED`, and the recovery is to
    prove a fresh install on a disposable target and re-record the baseline.
+   An existing installation may omit the optional `lists:read` and `lists:write`
+   scopes when its entire manifest otherwise matches. That deployment preserves
+   the baseline and still verifies the exact recorded live grant; it needs no
+   Slack reinstall or baseline rewrite.
    Changes to the setup flow (`src/auth/setup-handoff.ts`,
    `src/management/setup-routes.ts`, `src/config/onboarding-state.ts`,
    `src/admin/onboarding-proof.ts`) deploy normally and mark the lane

@@ -116,8 +116,15 @@ The lane baseline records the Slack manifest digest, the required bot scopes, an
 `src/admin/onboarding-proof.ts`. The combined `setupContractDigest` over all five
 is still recorded so older baselines and receipts stay comparable.
 
-Only the manifest digest, the scopes, and the install contract are hard-gated. A
-mismatch there refuses the deploy with `INSTALL_CONTINUATION_REQUIRED`; recover by
+Only the manifest digest, the scopes, and the install contract are hard-gated.
+An existing installation may omit `lists:read` and `lists:write` if removing
+exactly those optional scopes from the candidate produces the baseline's entire
+manifest and scope set. The baseline remains unchanged, live authority must still
+match its exact grant, and deployment metadata continues to describe that installed
+contract. This compatibility does not prove a fresh install or clear setup-flow
+evidence.
+
+Any other mismatch refuses the deploy with `INSTALL_CONTINUATION_REQUIRED`; recover by
 proving a fresh install on a disposable target and re-recording the lane baseline,
 not by editing the guard. A setup-flow-only change is first-run UX and cannot
 invalidate an installation that already happened: the deploy proceeds and the
