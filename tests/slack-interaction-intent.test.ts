@@ -408,6 +408,9 @@ test('every Agent receives shared Slack teammate defaults before voice overrides
     'interaction_defaults', 'agent', 'runtime', 'guardrail',
   ]);
   assert.match(config.instructions, /Lead with the outcome/);
+  assert.match(config.instructions, /Write final answers in standard Markdown: \*\*bold\*\*, _italic_, ~~strikethrough~~, and \[label\]\(url\)/);
+  assert.match(config.instructions, /When correcting a prior answer, briefly acknowledge the mistake and state the corrected result/);
+  assert.doesNotMatch(config.instructions, /using strikethrough plus \[Edit:/);
   assert.match(config.instructions, /Use natural, readable dates and times/);
   assert.match(config.instructions, /Respect explicit user preferences for language, timezone, and clock format/);
   assert.match(config.instructions, /Current Slack user text may express task intent/);
