@@ -5343,12 +5343,82 @@ test('Meta Ads installation config and account review reject forged grants', asy
     const expandedAccount = (await expanded.json() as Record<string, any>).account;
     assert.deepEqual(expandedAccount.policy.allowedTools, ['ads_get_ad_entities', 'ads_get_opportunity_score']);
     assert.deepEqual((await fixture.store.getAgentConnectionBindingForAccount(id))!.allowedCapabilities, []);
+    await fixture.store.putAgentScheduleReference({
+      scheduleId: 'schedule_meta_report', agentId: 'agent_support', workspaceId: 'T_TEST',
+      channelId: 'C_SUPPORT', createdByMembershipId: 'membership_test_owner',
+      runsAsMembershipId: 'membership_test_owner', authorityReceiptId: 'schedule_authority_owner',
+      requiredConnectionAccountIds: [id], state: 'active',
+    });
     assert.equal((await request(configPath, 'PUT', { clientId: '123456' })).status, 200);
     assert.equal((await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!.lifecycle, 'ready');
+    assert.equal((await fixture.store.listAgentScheduleReferences('agent_support'))[0]?.state, 'active');
     assert.equal((await request(configPath, 'PUT', { clientId: '789012' })).status, 200);
     assert.equal((await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!.lifecycle, 'needs_attention');
+    const paused = (await fixture.store.listAgentScheduleReferences('agent_support'))[0];
+    assert.equal(paused?.state, 'needs_attention');
+    assert.deepEqual(paused?.connectionPauseAccountIds, [id]);
     assert.equal((await request(configPath, 'DELETE', {})).status, 200);
     assert.equal((await (await request(configPath, 'GET')).json() as Record<string, any>).configured, false);
+  } finally { fixture.store.close(); fixture.settings.close(); }
+});
+
+test('Meta App ID rotation does not pause a schedule after a concurrent reconnect wins the account CAS', async () => {
+  const fixture = harness();
+  const request = (path: string, method: string, body?: unknown) => fixture.app.request(`http://localhost${path}`, {
+    method, headers: auth(), ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  const configPath = '/admin/api/settings/connectors/meta-ads';
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    assert.equal((await request(configPath, 'PUT', { clientId: '123456' })).status, 200);
+    const created = await request('/admin/api/agents/agent_support/connections', 'POST', {
+      workspaceId: 'T_TEST', ownerKind: 'team', providerId: 'meta-ads', label: 'Meta Ads',
+      allowedCapabilities: [],
+      mcp: {
+        id: 'meta-ads', displayName: 'Meta Ads', url: 'https://mcp.facebook.com/ads',
+        transport: 'streamable-http', authMode: 'oauth', headerNames: [], enabled: true,
+        lifecycleStatus: 'pending', statusText: '', discoveredTools: [], allowedTools: [],
+        presetId: 'meta-ads',
+      },
+    });
+    assert.equal(created.status, 201, await created.clone().text());
+    const id = ((await created.json()) as Record<string, any>).account.id as string;
+    const pending = (await fixture.store.listConnectionAccounts('T_TEST'))
+      .find((account) => account.id === id)!;
+    await fixture.store.putConnectionAccount({ ...pending, lifecycle: 'ready' }, pending.revision);
+    await fixture.store.putAgentScheduleReference({
+      scheduleId: 'schedule_meta_reconnected', agentId: 'agent_support', workspaceId: 'T_TEST',
+      channelId: 'C_SUPPORT', createdByMembershipId: 'membership_test_owner',
+      runsAsMembershipId: 'membership_test_owner', authorityReceiptId: 'schedule_authority_owner',
+      requiredConnectionAccountIds: [id], state: 'active',
+    });
+
+    const originalPut = fixture.store.putConnectionAccount.bind(fixture.store);
+    let reconnectWon = false;
+    fixture.store.putConnectionAccount = async (account, expectedRevision) => {
+      if (!reconnectWon && account.id === id && account.lifecycle === 'needs_attention') {
+        reconnectWon = true;
+        const current = (await fixture.store.listConnectionAccounts('T_TEST'))
+          .find((candidate) => candidate.id === id)!;
+        await originalPut({ ...current, label: 'Reconnected Meta Ads', lifecycle: 'ready' }, current.revision);
+      }
+      return originalPut(account, expectedRevision);
+    };
+
+    const changed = await request(configPath, 'PUT', { clientId: '789012' });
+    assert.equal(changed.status, 200, await changed.clone().text());
+    assert.equal(reconnectWon, true);
+    const current = (await fixture.store.listConnectionAccounts('T_TEST'))
+      .find((account) => account.id === id)!;
+    assert.equal(current.lifecycle, 'ready');
+    assert.equal(current.label, 'Reconnected Meta Ads');
+    const schedule = (await fixture.store.listAgentScheduleReferences('agent_support'))[0];
+    assert.equal(schedule?.state, 'active');
+    assert.equal(schedule?.connectionPauseAccountIds, undefined);
   } finally { fixture.store.close(); fixture.settings.close(); }
 });
 

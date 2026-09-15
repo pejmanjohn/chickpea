@@ -4262,8 +4262,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (previous && previous.generation !== next.generation) {
         for (const account of affected) {
           await invalidateConfiguredMcpOAuthAuthorization(connectionAccountOAuthRef(account.id), settings(c), previous.generation);
-          try { await config.putConnectionAccount({ ...account, lifecycle: 'needs_attention' }, account.revision); }
-          catch (error) { if (!(error instanceof ConnectionAccountRevisionConflictError)) throw error; }
+          await markConnectionAccountNeedsAttention(config, account);
         }
         for (const agent of await config.listAgents()) {
           for (const server of agent.mcpServers) {

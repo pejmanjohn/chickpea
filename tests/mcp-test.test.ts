@@ -184,7 +184,9 @@ test('generic protocol discovery keeps the first 50 tools and does not scan late
   const cursors: Array<string | undefined> = [];
   const fetch = pagedProtocolFetch({
     '': {
-      tools: Array.from({ length: 60 }, (_, index) => protocolTool(`generic_${index}`)),
+      tools: Array.from({ length: 60 }, (_, index) => protocolTool(`generic_${index}`, index === 0
+        ? { type: 'object', properties: { accounts: { type: 'array', items: { type: 'string' } } } }
+        : { type: 'object' })),
       nextCursor: 'later',
     },
     later: { tools: [protocolTool('ads_get_ad_entities', scopedMetaSchema())] },
@@ -194,6 +196,8 @@ test('generic protocol discovery keeps the first 50 tools and does not scan late
 
   assert.equal(result.tools.length, 50);
   assert.equal(result.tools[0]?.name, 'generic_0');
+  assert.equal(result.tools[0]?.inputSchema?.ambiguous, true,
+    'generic tools remain discoverable even when their schema cannot prove Meta account scoping');
   assert.equal(result.tools[49]?.name, 'generic_49');
   assert.deepEqual(cursors, [undefined]);
 });
@@ -388,6 +392,18 @@ test('input-schema projection fails closed for optional, alternate and composed 
     { type: 'object', required: ['account_id'], properties: {
       account_id: { type: 'string' }, business_account_id: { type: 'string' },
     } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, accounts: { type: 'array', items: { type: 'string' } },
+    } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, ad_account: { type: 'string' },
+    } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, ad_accounts: { type: 'array', items: { type: 'string' } },
+    } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, account: { type: 'string' },
+    } },
     { type: 'object', oneOf: [{ required: ['account_id'] }], required: ['account_id'],
       properties: { account_id: { type: 'string' } } },
     { type: 'object', required: ['account_id'], properties: { account_id: { type: 'number' } } },
@@ -410,6 +426,21 @@ test('input-schema projection fails closed for optional, alternate and composed 
     { type: 'object', required: ['account_id'], properties: {
       account_id: { type: 'string' }, filters: { type: 'object', additionalProperties: {
         type: 'object', properties: { entity_id: { type: 'string' } },
+      } },
+    } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, filters: { type: 'array', items: {
+        type: 'object', properties: { accounts: { type: 'array', items: { type: 'string' } } },
+      } },
+    } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, filters: { type: 'object', properties: {
+        ad_account: { type: 'string' },
+      } },
+    } },
+    { type: 'object', required: ['account_id'], properties: {
+      account_id: { type: 'string' }, filters: { type: 'object', properties: {
+        adAccount: { type: 'string' },
       } },
     } },
   ]) {

@@ -466,7 +466,7 @@ function simpleStringOrNullableString(value: unknown): boolean {
 }
 
 function looksLikeAlternateAccountSelector(name: string): boolean {
-  return /account/i.test(name) && /id/i.test(name);
+  return /account/i.test(name);
 }
 
 function looksLikeAlternateTargetSelector(name: string): boolean {
