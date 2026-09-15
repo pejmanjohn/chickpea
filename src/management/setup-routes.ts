@@ -61,6 +61,8 @@ import {
   configuredMcpOAuthCallbackUrl,
   configuredMcpOAuthClientDescriptor,
   getConfiguredMcpOAuthClient,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
+  resolveConfiguredMcpOAuthScope,
 } from '../config/mcp-oauth-clients.ts';
 import {
   allowedToolsAfterMcpDiscovery,
@@ -430,6 +432,7 @@ export function createManagementSetupRoutes(
       const { account, binding } = await currentCatalogReviewAccount(
         setup, principal, dependencies.config,
       );
+      if (account.policy.kind !== 'mcp') throw new AuthorizationError();
       const discovered = new Set(account.policy.kind === 'mcp'
         ? account.policy.discoveredTools.map(({ name }) => name)
         : []);
@@ -439,6 +442,13 @@ export function createManagementSetupRoutes(
       if (requestedTools.length === 0 || requestedTools.some((tool) => !discovered.has(tool))) {
         throw new MetaAdsAccessPolicyError(
           'Choose at least one tool that can be limited to the approved ad accounts.',
+        );
+      }
+      if ((account.policy.authMode !== 'oauth' ||
+          account.policy.oauthScope !== META_ADS_OAUTH_MANAGEMENT_SCOPE) &&
+          requestedTools.some((tool) => metaAdsToolEffect(tool) === 'write')) {
+        throw new MetaAdsAccessPolicyError(
+          'Reconnect with Reporting and editing access before selecting tools that may change ads.',
         );
       }
       const approvedAccountIds = normalizeMetaAdsAccountIds(
@@ -452,7 +462,6 @@ export function createManagementSetupRoutes(
         requestedTools,
         approvedAccountIds,
       });
-      if (account.policy.kind !== 'mcp') throw new AuthorizationError();
       const updated = await dependencies.config.putConnectionAccount({
         ...account,
         policy: {
@@ -1319,7 +1328,7 @@ async function catalogConnectionPageInput(
         }
         const allowed = new Set(account.policy.allowedTools);
         const tools = account.policy.discoveredTools.map((tool) => {
-          let available = true;
+          let schemaSupported = true;
           try {
             compileMetaAdsToolAccess({
               discoveredTools: account.policy.kind === 'mcp'
@@ -1330,9 +1339,14 @@ async function catalogConnectionPageInput(
             });
           } catch (error) {
             if (!(error instanceof MetaAdsAccessPolicyError)) throw error;
-            available = false;
+            schemaSupported = false;
           }
-          const effect = available ? metaAdsToolEffect(tool.name) : undefined;
+          const effect = metaAdsToolEffect(tool.name);
+          const requiresEditingAccess = schemaSupported && effect === 'write' &&
+            account.policy.kind === 'mcp' &&
+            (account.policy.authMode !== 'oauth' ||
+              account.policy.oauthScope !== META_ADS_OAUTH_MANAGEMENT_SCOPE);
+          const available = schemaSupported && !requiresEditingAccess;
           return {
             name: tool.name,
             ...(tool.title ? { title: tool.title } : {}),
@@ -1340,6 +1354,7 @@ async function catalogConnectionPageInput(
             available,
             selected: available && allowed.has(tool.name),
             ...(effect ? { effect } : {}),
+            ...(requiresEditingAccess ? { requiresEditingAccess: true } : {}),
           };
         });
         return {
@@ -1384,7 +1399,7 @@ function catalogSetupResult(
     connector: setup.target.targetLabel,
     connectionAccountId: account.id,
     ownerKind: account.ownerKind,
-    accessLane: catalogAccessLane(setup.scopes),
+    accessLane: catalogAccountAccessLane(account, setup.scopes),
     completedByUserId: principal.userId,
     completedByMembershipId: principal.membershipId,
     ...(account.identity?.accountName || account.identity?.workspaceName
@@ -1414,12 +1429,11 @@ async function beginCatalogConnectionSetup(
   const ownerKind = fields.ownerKind?.trim();
   if (ownerKind !== 'member' && ownerKind !== 'team') throw new Error('invalid_owner');
   requireCatalogOwnerLanePermission(principal, ownerKind);
-  const accessLane = catalogAccessLane(setup.scopes);
   const result = (account: ConnectionAccount): CatalogSetupResult => ({
     connector: preset.name,
     connectionAccountId: account.id,
     ownerKind: account.ownerKind,
-    accessLane,
+    accessLane: catalogAccountAccessLane(account, setup.scopes),
     completedByUserId: principal.userId,
     completedByMembershipId: principal.membershipId,
     ...(account.identity?.accountName || account.identity?.workspaceName
@@ -1488,12 +1502,21 @@ async function beginCatalogConnectionSetup(
       let nextPolicy: ConnectionAccountPolicy = prepared.policy;
       if (account.policy.kind === 'mcp' && prepared.policy.kind === 'mcp' &&
           preserveReviewedAccess) {
+        const allowedTools = prepared.policy.authMode === 'oauth' &&
+          prepared.policy.oauthScope === META_ADS_OAUTH_MANAGEMENT_SCOPE
+          ? account.policy.allowedTools
+          : account.policy.allowedTools.filter((tool) => metaAdsToolEffect(tool) !== 'write');
         nextPolicy = {
           ...prepared.policy,
           discoveredTools: account.policy.discoveredTools,
-          allowedTools: account.policy.allowedTools,
+          allowedTools,
           ...(account.policy.toolPolicies
-            ? { toolPolicies: account.policy.toolPolicies }
+            ? {
+                toolPolicies: Object.fromEntries(
+                  Object.entries(account.policy.toolPolicies)
+                    .filter(([tool]) => allowedTools.includes(tool)),
+                ),
+              }
             : {}),
         };
       }
@@ -1809,6 +1832,18 @@ async function prepareCatalogConnection(
         presetId: preset.id,
       }).catch(() => undefined);
     }
+    const requestedOAuthScope = auth.kind === 'oauth'
+      ? resolveConfiguredMcpOAuthScope(
+          validated.url,
+          auth.writeScope && fields.access?.trim() === 'editing'
+            ? auth.writeScope
+            : auth.scope,
+        )
+      : undefined;
+    if (auth.kind === 'oauth' && auth.writeScope && fields.access?.trim() &&
+        fields.access.trim() !== 'reporting' && fields.access.trim() !== 'editing') {
+      throw new Error('invalid_access');
+    }
     const basePolicy: ConnectionAccountPolicy = {
       kind: 'mcp',
       url: validated.url,
@@ -1825,7 +1860,7 @@ async function prepareCatalogConnection(
       discoveredTools: [],
       allowedTools: [],
       ...(preset.toolAccessMode ? { toolAccessMode: preset.toolAccessMode } : {}),
-      ...(auth.kind === 'oauth' && auth.scope ? { oauthScope: auth.scope } : {}),
+      ...(requestedOAuthScope ? { oauthScope: requestedOAuthScope } : {}),
       presetId: preset.id,
     };
     if (basePolicy.kind !== 'mcp') throw new Error('target_changed');
@@ -1881,6 +1916,18 @@ function catalogAccessLane(scopes: readonly string[]): 'read' | 'write' {
     /(?:^|[:_\s])write(?:$|[:_\s])/i.test(scope) ||
     ['POST', 'PUT', 'PATCH', 'DELETE'].includes(scope.toUpperCase())
   ) ? 'write' : 'read';
+}
+
+function catalogAccountAccessLane(
+  account: ConnectionAccount,
+  fallbackScopes: readonly string[],
+): 'read' | 'write' {
+  return account.policy.kind === 'mcp' && account.policy.authMode === 'oauth' &&
+    account.policy.oauthScope === META_ADS_OAUTH_MANAGEMENT_SCOPE
+    ? 'write'
+    : account.policy.kind === 'mcp' && account.policy.presetId === 'meta-ads'
+      ? 'read'
+      : catalogAccessLane(fallbackScopes);
 }
 
 function managedSetupSelection(
@@ -2320,7 +2367,7 @@ async function verifyMcpConnection(
       connector: setup.target.targetLabel,
       connectionAccountId: ready.id,
       ownerKind: ready.ownerKind,
-      accessLane: catalogAccessLane(setup.scopes),
+      accessLane: catalogAccountAccessLane(ready, setup.scopes),
       ...(requiresToolReview ? { requiresToolReview: true } : {}),
       ...(identity?.accountName || identity?.workspaceName
         ? { accountLabel: identity.accountName ?? identity.workspaceName }

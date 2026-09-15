@@ -3121,6 +3121,7 @@
         credential: "",
         oauthClientId: "",
         oauthClientSecret: "",
+        metaAdsAccess: preset.id === "meta-ads" ? "reporting" : "",
         busy: false,
         error: ""
       };
@@ -3135,6 +3136,16 @@
 
   function connectionAccountProviderId(form) {
     return String(form.providerId || form.label || "custom").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 128);
+  }
+
+  function metaAdsOAuthScope(preset, access) {
+    if (!preset || preset.id !== "meta-ads" || !preset.auth || preset.auth.kind !== "oauth") return "";
+    return String(access === "editing" ? preset.auth.writeScope : preset.auth.scope || "").trim();
+  }
+
+  function isMetaAdsAccount(account) {
+    return !!(account && account.policy && account.policy.kind === "mcp" &&
+      account.policy.presetId === "meta-ads" && account.policy.url === "https://mcp.facebook.com/ads");
   }
 
   function createConnectionAccount() {
@@ -3226,6 +3237,8 @@
         discoveredTools: [],
         allowedTools: []
       };
+      var selectedMetaScope = metaAdsOAuthScope(form.preset, form.metaAdsAccess);
+      if (selectedMetaScope) sourceMcp = Object.assign({}, sourceMcp, { oauthScope: selectedMetaScope });
       body.mcp = {
         id: connectionId,
         displayName: label,
@@ -3405,7 +3418,7 @@
     });
   }
 
-  function startConnectionAccountOAuth(accountId, fromCreate, lane) {
+  function startConnectionAccountOAuth(accountId, fromCreate, lane, scope) {
     var agentId = state.profileDraft && state.profileDraft.id;
     if (!agentId) return Promise.reject(new Error("Save the Agent before signing in."));
     var requestState = state.agentConnections;
@@ -3414,7 +3427,7 @@
       render();
     }
     var oauthRoute = lane === "mcp" ? "/oauth/mcp/start" : "/oauth/api/start";
-    return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) + oauthRoute, "POST", {}).then(function (body) {
+    return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) + oauthRoute, "POST", scope ? { scope: scope } : {}).then(function (body) {
       var authorizationUrl;
       try { authorizationUrl = new URL(String(body && body.authorizationUrl || "")); } catch (error) { throw new Error("OAuth start returned an invalid URL."); }
       if (authorizationUrl.protocol !== "https:") throw new Error("OAuth authorization must use https.");
@@ -5628,7 +5641,13 @@
         }[account.lifecycle] || "Needs attention") + '</span>';
     var menuItems = [];
     if (account.policy && account.policy.kind === "mcp" && account.policy.authMode === "oauth" && account.lifecycle === "ready") {
-      menuItems.push('<button type="button" data-action="connection-account-mcp-oauth-start" data-connection-id="' + esc(account.id) + '">Reconnect</button>');
+      if (isMetaAdsAccount(account)) {
+        var metaPreset = presetById("meta-ads");
+        menuItems.push('<button type="button" data-action="connection-account-mcp-oauth-start" data-connection-id="' + esc(account.id) + '" data-oauth-scope="' + esc(metaAdsOAuthScope(metaPreset, "reporting")) + '">Reconnect for reporting</button>');
+        menuItems.push('<button type="button" data-action="connection-account-mcp-oauth-start" data-connection-id="' + esc(account.id) + '" data-oauth-scope="' + esc(metaAdsOAuthScope(metaPreset, "editing")) + '">Reconnect for reporting and editing</button>');
+      } else {
+        menuItems.push('<button type="button" data-action="connection-account-mcp-oauth-start" data-connection-id="' + esc(account.id) + '">Reconnect</button>');
+      }
     }
     if (managedResources.length && (!pendingResourceSelection || managedAction || oauthAction)) {
       menuItems.push('<button type="button" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">' + (pendingResourceSelection ? "Choose " : "Change ") + esc(managedResourceSelectionLabel(account)) + '</button>');
@@ -5712,6 +5731,13 @@
         '<button type="button" class="' + (googleAccess === "read" ? "on" : "") + '" data-action="connection-account-google-access" data-access="read">Read-only</button>' +
         '<button type="button" class="' + (googleAccess === "write" ? "on" : "") + '" data-action="connection-account-google-access" data-access="write">Read and write</button></div></div>';
     }
+    if (form.kind === "mcp" && form.preset && form.preset.id === "meta-ads") {
+      var editing = form.metaAdsAccess === "editing";
+      return '<div class="field"><label class="field-label">Access</label><div class="seg" role="group" aria-label="Meta Ads access">' +
+        '<button type="button" class="' + (!editing ? "on" : "") + '" data-action="connection-account-meta-ads-access" data-access="reporting">Reporting</button>' +
+        '<button type="button" class="' + (editing ? "on" : "") + '" data-action="connection-account-meta-ads-access" data-access="editing">Reporting and editing</button></div>' +
+        '<p class="hint">Editing lets selected tools create or change ads. No tools are selected until you review them after sign-in.</p></div>';
+    }
     if (form.mcpEditor && form.mcpEditor.presetId === "supabase") {
       var readOnly = form.mcpEditor.supabaseReadOnly !== false;
       return '<div class="field"><label class="field-label">Database access</label><div class="seg" role="group" aria-label="Supabase database access">' +
@@ -5742,7 +5768,7 @@
   function customMcpToolChoices(tools, selected) {
     var busy = !!((state.connectionAccountForm || state.customMcpToolEditor || {}).busy);
     var review = state.customMcpToolEditor && state.customMcpToolEditor.metaAds;
-    var controls = review ? '<p class="hint">Choose the reporting tools this Agent can use for the selected ad accounts.</p>' : '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>';
+    var controls = review ? '<p class="hint">Choose the tools this Agent can use for the selected ad accounts.</p>' : '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-all"' + (busy ? ' disabled' : '') + '>Select all</button><button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-none"' + (busy ? ' disabled' : '') + '>Deselect all</button><span class="hint">' + tools.filter(function (tool) { return selected.indexOf(tool.name) >= 0; }).length + ' of ' + tools.length + ' selected</span></div>';
     var descriptions = {
       ads_get_ad_accounts: "Verify which approved ad accounts are available.",
       ads_get_ad_entities: "View campaigns, ad sets, ads, and their performance.",
@@ -5752,13 +5778,24 @@
       ads_insights_anomaly_signal: "Find unusual performance changes.",
       ads_insights_auction_ranking_benchmarks: "Compare ad rankings and auction performance.",
       ads_insights_industry_benchmark: "Compare performance with industry benchmarks.",
-      ads_insights_performance_trend: "Show performance trends over time."
+      ads_insights_performance_trend: "Show performance trends over time.",
+      ads_create_campaign: "Create a paused campaign.",
+      ads_create_ad_set: "Create a paused ad set with targeting and budget.",
+      ads_create_ad: "Create a paused ad with a creative.",
+      ads_update_entity: "Update a campaign, ad set, or ad.",
+      ads_activate_entity: "Activate a paused campaign, ad set, or ad and start spending.",
+      ads_create_creative: "Create a single-image link ad creative.",
+      ads_boost_ig_post: "Boost an existing Instagram post as an ad.",
+      ads_create_custom_audience: "Create a custom audience.",
+      ads_update_custom_audience: "Update a custom audience.",
+      ads_update_custom_audience_users: "Add or remove hashed customer records from an audience.",
+      ads_delete_custom_audience: "Delete a custom audience."
     };
     var choices = tools.map(function (tool) {
       var supported = !review || tool.available === true;
       var checked = selected.indexOf(tool.name) >= 0;
       var description = review ? descriptions[tool.name] : tool.description;
-      if (!supported) return '<div class="conn-tool conn-tool-unavailable"><span class="conn-tool-check-placeholder" aria-hidden="true"></span><span class="tool-body"><span class="tool-name">' + esc(tool.title || tool.name) + '</span><span class="tool-desc">Not yet supported with ad account restrictions.</span></span></div>';
+      if (!supported) return '<div class="conn-tool conn-tool-unavailable"><span class="conn-tool-check-placeholder" aria-hidden="true"></span><span class="tool-body"><span class="tool-name">' + esc(tool.title || tool.name) + '</span><span class="tool-desc">' + (tool.requiresEditingAccess ? 'Reconnect with Reporting and editing access to select this tool.' : 'Not yet supported with ad account restrictions.') + '</span></span></div>';
       return '<label class="conn-tool"><span class="import-check' + (checked ? ' on' : '') + '"><input type="checkbox" data-action="custom-mcp-tool" data-tool="' + esc(tool.name) + '"' + (checked ? ' checked' : '') + (busy ? ' disabled' : '') + '></span><span class="tool-body"><span class="tool-name">' + esc(tool.title || tool.name) + (review ? (tool.effect === 'read' ? ' · Reporting' : ' · May change ads') : '') + '</span>' + (description ? '<span class="tool-desc">' + esc(description) + '</span>' : '') + '</span></label>';
     }).join("");
     return controls + (choices ? '<div class="conn-tools custom-mcp-tool-list">' + choices + '</div>' : '<p class="hint">This server returned no tools.</p>');
@@ -11237,6 +11274,11 @@
         render();
       }
     }
+    if (action === "connection-account-meta-ads-access" && state.connectionAccountForm && state.connectionAccountForm.preset && state.connectionAccountForm.preset.id === "meta-ads") {
+      state.connectionAccountForm.metaAdsAccess = target.getAttribute("data-access") === "editing" ? "editing" : "reporting";
+      state.connectionAccountForm.error = "";
+      render();
+    }
     if (action === "connection-account-supabase-access" && state.connectionAccountForm && state.connectionAccountForm.mcpEditor && state.connectionAccountForm.mcpEditor.presetId === "supabase") {
       state.connectionAccountForm.mcpEditor.supabaseReadOnly = target.getAttribute("data-access") !== "read-write";
       syncSupabaseUrl(state.connectionAccountForm.mcpEditor);
@@ -11246,7 +11288,7 @@
     }
     if (action === "connection-account-create") { createConnectionAccount(); }
     if (action === "connection-account-oauth-start") { startConnectionAccountOAuth(target.getAttribute("data-connection-id") || "", false); }
-    if (action === "connection-account-mcp-oauth-start") { startConnectionAccountOAuth(target.getAttribute("data-connection-id") || "", false, "mcp"); }
+    if (action === "connection-account-mcp-oauth-start") { startConnectionAccountOAuth(target.getAttribute("data-connection-id") || "", false, "mcp", target.getAttribute("data-oauth-scope") || ""); }
     if (action === "connection-account-managed-reconnect") { reconnectManagedConnection(target.getAttribute("data-connection-id") || ""); }
     if (action === "connection-inventory-reconnect") {
       reconnectSettingsConnectionAccount(

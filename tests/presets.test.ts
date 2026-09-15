@@ -5,7 +5,10 @@ import test from 'node:test';
 import { readPublicAsset } from '../src/assets/read.node.ts';
 import { validateMcpUrl } from '../src/config/mcp-url.ts';
 import { CONNECTOR_LOGOS } from '../src/config/connector-logos.ts';
-import { META_ADS_OAUTH_DEFAULT_SCOPE } from '../src/config/mcp-oauth-clients.ts';
+import {
+  META_ADS_OAUTH_DEFAULT_SCOPE,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
+} from '../src/config/mcp-oauth-clients.ts';
 import {
   CONNECTOR_PRESETS,
   GOOGLE_WORKSPACE_SERVICE_PRESETS,
@@ -247,16 +250,17 @@ test('the Linear MCP preset requests read-write OAuth access', () => {
   });
 });
 
-test('the Meta Ads preset requests only its reporting OAuth permissions', () => {
+test('the Meta Ads preset defaults to reporting and exposes an explicit editing OAuth lane', () => {
   const preset = getConnectorPreset('meta-ads');
   assert.ok(preset && 'auth' in preset);
   assert.deepEqual(preset.auth, {
     kind: 'oauth',
     scope: META_ADS_OAUTH_DEFAULT_SCOPE,
+    writeScope: META_ADS_OAUTH_MANAGEMENT_SCOPE,
   });
   assert.equal(
     preset.description,
-    'Review advertising performance for approved Meta ad accounts.',
+    'Report on and manage ads for approved Meta ad accounts.',
   );
 });
 

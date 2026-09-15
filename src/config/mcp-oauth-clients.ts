@@ -7,12 +7,14 @@ const GENERATION_PATTERN = /^[A-Za-z0-9_-]{8,192}$/;
 export const META_ADS_MCP_SERVER_URL = 'https://mcp.facebook.com/ads';
 export const META_ADS_OAUTH_ISSUER = 'https://www.facebook.com/ads';
 export const META_ADS_OAUTH_DEFAULT_SCOPE = 'ads_mcp_management ads_read';
+export const META_ADS_OAUTH_MANAGEMENT_SCOPE = 'ads_mcp_management ads_management';
 
 export interface ConfiguredMcpOAuthClientDescriptor {
   serverUrl: string;
   authorizationServerUrl: string;
   settingKey: string;
   defaultScope: string;
+  supportedScopes: readonly string[];
 }
 
 export interface ConfiguredMcpOAuthClient {
@@ -34,7 +36,7 @@ export class ConfiguredMcpOAuthClientError extends Error {
   readonly name = 'ConfiguredMcpOAuthClientError';
 
   constructor(
-    readonly code: 'unsupported_server' | 'invalid_client_id' | 'invalid_storage' | 'write_conflict',
+    readonly code: 'unsupported_server' | 'invalid_client_id' | 'invalid_scope' | 'invalid_storage' | 'write_conflict',
     message: string,
     options?: ErrorOptions,
   ) {
@@ -47,6 +49,7 @@ const DESCRIPTORS: readonly ConfiguredMcpOAuthClientDescriptor[] = [{
   authorizationServerUrl: META_ADS_OAUTH_ISSUER,
   settingKey: 'mcp.oauth-client.meta-ads',
   defaultScope: META_ADS_OAUTH_DEFAULT_SCOPE,
+  supportedScopes: [META_ADS_OAUTH_DEFAULT_SCOPE, META_ADS_OAUTH_MANAGEMENT_SCOPE],
 }];
 
 export function configuredMcpOAuthClientDescriptor(
@@ -55,6 +58,21 @@ export function configuredMcpOAuthClientDescriptor(
   const validated = validateMcpUrl(serverUrl);
   if (!validated.ok) return undefined;
   return DESCRIPTORS.find((descriptor) => descriptor.serverUrl === validated.url);
+}
+
+/** Resolve one reviewed configured-client scope without broadening it. */
+export function resolveConfiguredMcpOAuthScope(
+  serverUrl: string,
+  requestedScope?: string,
+): string | undefined {
+  const descriptor = configuredMcpOAuthClientDescriptor(serverUrl);
+  const scope = requestedScope?.trim() || descriptor?.defaultScope;
+  if (!descriptor || !scope) return scope;
+  if (descriptor.supportedScopes.includes(scope)) return scope;
+  throw new ConfiguredMcpOAuthClientError(
+    'invalid_scope',
+    'This MCP server does not support the requested OAuth access.',
+  );
 }
 
 /** True for an origin reserved by a configured-client descriptor, even when

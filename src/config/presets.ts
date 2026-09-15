@@ -1,5 +1,8 @@
 import type { GoogleWorkspaceService } from './api-oauth-policy.ts';
-import { META_ADS_OAUTH_DEFAULT_SCOPE } from './mcp-oauth-clients.ts';
+import {
+  META_ADS_OAUTH_DEFAULT_SCOPE,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
+} from './mcp-oauth-clients.ts';
 
 type ConnectorCategory = 'project' | 'dev' | 'data' | 'search' | 'docs' | 'business';
 
@@ -26,7 +29,7 @@ interface McpPresetLane {
   oauthPathScope?: 'sentry-org-project';
   auth:
     | { kind: 'none' }
-    | { kind: 'oauth'; scope?: string }
+    | { kind: 'oauth'; scope?: string; writeScope?: string }
     | { kind: 'bearer'; placeholder: string }
     | {
         kind: 'header';
@@ -246,12 +249,16 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     id: 'meta-ads',
     name: 'Meta Ads',
     aliases: ['Facebook Ads', 'Instagram Ads'],
-    description: 'Review advertising performance for approved Meta ad accounts.',
+    description: 'Report on and manage ads for approved Meta ad accounts.',
     category: 'business',
     accent: '#0866FF',
     url: 'https://mcp.facebook.com/ads',
     transport: 'streamable-http',
-    auth: { kind: 'oauth', scope: META_ADS_OAUTH_DEFAULT_SCOPE },
+    auth: {
+      kind: 'oauth',
+      scope: META_ADS_OAUTH_DEFAULT_SCOPE,
+      writeScope: META_ADS_OAUTH_MANAGEMENT_SCOPE,
+    },
     toolAccessMode: 'review',
     tokenDocsUrl: 'https://developers.facebook.com/documentation/ads-commerce/ads-ai-connectors/ads-mcp-server/ads-mcp-server-get-started',
     notes: 'An administrator first configures a Meta developer app for this installation. After signing in, choose the ad accounts and tools this Agent may use.',

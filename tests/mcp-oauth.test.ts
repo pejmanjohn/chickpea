@@ -20,6 +20,7 @@ import {
   configuredMcpOAuthClientDescriptor,
   META_ADS_MCP_SERVER_URL,
   META_ADS_OAUTH_DEFAULT_SCOPE,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
   META_ADS_OAUTH_ISSUER,
   removeConfiguredMcpOAuthClient,
   saveConfiguredMcpOAuthClient,
@@ -37,6 +38,7 @@ const METADATA_URL =
   'https://chickpea.example.test/.well-known/oauth-client-metadata.json';
 
 interface FakeOAuthServerOptions {
+  authorizationEndpoint?: string;
   authorizationServerUrl?: string;
   clientSecret?: string;
   clientSecretExpiresAt?: number;
@@ -44,6 +46,8 @@ interface FakeOAuthServerOptions {
   codeChallengeMethods?: string[];
   exchangeError?: string;
   initialExpiresIn?: number;
+  initialScope?: string;
+  omitInitialScope?: boolean;
   issuer?: string;
   expectedClientId?: string;
   onExchange?: () => void | Promise<void>;
@@ -56,6 +60,7 @@ interface FakeOAuthServerOptions {
   refreshError?: string;
   serverUrl?: string;
   tokenAuthMethods?: Array<'client_secret_basic' | 'client_secret_post' | 'none'>;
+  tokenEndpoint?: string;
 }
 
 function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
@@ -66,11 +71,11 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
   const authorizationMetadataUrl =
     `${parsedAuthorizationServerUrl.origin}/.well-known/oauth-authorization-server` +
     `${parsedAuthorizationServerUrl.pathname === '/' ? '' : parsedAuthorizationServerUrl.pathname}`;
-  const authorizationEndpoint = new URL(
+  const authorizationEndpoint = options.authorizationEndpoint ?? new URL(
     `${parsedAuthorizationServerUrl.pathname.replace(/\/$/, '')}/authorize`,
     parsedAuthorizationServerUrl.origin,
   ).href;
-  const tokenEndpoint = new URL(
+  const tokenEndpoint = options.tokenEndpoint ?? new URL(
     `${parsedAuthorizationServerUrl.pathname.replace(/\/$/, '')}/token`,
     parsedAuthorizationServerUrl.origin,
   ).href;
@@ -107,7 +112,9 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
       return Response.json({
         resource: serverUrl,
         authorization_servers: [authorizationServerUrl],
-        scopes_supported: ['read', 'write'],
+        scopes_supported: serverUrl === META_ADS_MCP_SERVER_URL
+          ? ['ads_management', 'ads_read', 'ads_mcp_management']
+          : ['read', 'write'],
       });
     }
     if (
@@ -193,7 +200,7 @@ function fakeOAuthServer(options: FakeOAuthServerOptions = {}) {
             ? {}
             : { refresh_token: 'refresh-initial' }),
           expires_in: options.initialExpiresIn ?? 3600,
-          scope: 'read',
+          ...(options.omitInitialScope ? {} : { scope: options.initialScope ?? 'read' }),
         });
       }
       if (grantType === 'refresh_token') {
@@ -326,7 +333,10 @@ test('Meta defaults existing scope-less starts to read-only MCP access with its 
   const oauth = fakeOAuthServer({
     serverUrl: META_ADS_MCP_SERVER_URL,
     authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+    authorizationEndpoint: 'https://www.facebook.com/v26.0/dialog/oauth',
+    tokenEndpoint: 'https://graph.facebook.com/v26.0/oauth/access_token',
     expectedClientId: '1234567890',
+    initialScope: META_ADS_OAUTH_DEFAULT_SCOPE,
   });
   const dependencies = {
     settings,
@@ -400,12 +410,13 @@ test('Meta defaults existing scope-less starts to read-only MCP access with its 
   }
 });
 
-test('Meta preserves an explicit OAuth scope without broadening it', async () => {
+test('Meta rejects insufficient editing grants and unreviewed scope combinations', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const oauth = fakeOAuthServer({
     serverUrl: META_ADS_MCP_SERVER_URL,
     authorizationServerUrl: META_ADS_OAUTH_ISSUER,
     expectedClientId: '1234567890',
+    initialScope: 'ads_mcp_management ads_read',
   });
   try {
     await saveConfiguredMcpOAuthClient(
@@ -418,7 +429,7 @@ test('Meta preserves an explicit OAuth scope without broadening it', async () =>
       ref: REF,
       serverUrl: META_ADS_MCP_SERVER_URL,
       callbackUrl: CALLBACK_URL,
-      scope: 'ads_mcp_management',
+      scope: META_ADS_OAUTH_MANAGEMENT_SCOPE,
     }, {
       settings,
       fetchFn: oauth.fetchFn,
@@ -426,11 +437,68 @@ test('Meta preserves an explicit OAuth scope without broadening it', async () =>
       validateConnection: () => true,
     });
 
-    assert.equal(started.authorizationUrl.searchParams.get('scope'), 'ads_mcp_management');
+    assert.equal(started.authorizationUrl.searchParams.get('scope'), META_ADS_OAUTH_MANAGEMENT_SCOPE);
     const client = JSON.parse(
       (await settings.getSetting(mcpOAuthSettingKeys(REF)[0]))!,
     ) as Record<string, unknown>;
-    assert.equal(client.scope, 'ads_mcp_management');
+    assert.equal(client.scope, META_ADS_OAUTH_MANAGEMENT_SCOPE);
+    await assert.rejects(
+      completeMcpOAuthAuthorization(
+        { code: 'provider-code', state: started.state },
+        { settings, fetchFn: oauth.fetchFn, validateConnection: () => true },
+      ),
+      (error: unknown) => error instanceof McpOAuthError && error.code === 'oauth_unavailable',
+    );
+    await assert.rejects(
+      startMcpOAuthAuthorization({
+        ref: REF,
+        serverUrl: META_ADS_MCP_SERVER_URL,
+        callbackUrl: CALLBACK_URL,
+        scope: 'ads_mcp_management ads_read ads_management',
+      }, {
+        settings,
+        fetchFn: async () => { throw new Error('invalid scope must fail before discovery'); },
+        randomId: () => 'invalid-scope-state',
+        validateConnection: () => true,
+      }),
+      (error: unknown) => error instanceof McpOAuthError && error.code === 'oauth_unavailable',
+    );
+  } finally {
+    settings.close();
+  }
+});
+
+test('Meta accepts an omitted token scope as the exact requested editing grant', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer({
+    serverUrl: META_ADS_MCP_SERVER_URL,
+    authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+    expectedClientId: '1234567890',
+    omitInitialScope: true,
+  });
+  try {
+    await saveConfiguredMcpOAuthClient(
+      META_ADS_MCP_SERVER_URL,
+      { clientId: '1234567890' },
+      settings,
+      { randomId: () => '11111111-1111-4111-8111-111111111111' },
+    );
+    const started = await startMcpOAuthAuthorization({
+      ref: REF,
+      serverUrl: META_ADS_MCP_SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+      scope: META_ADS_OAUTH_MANAGEMENT_SCOPE,
+    }, {
+      settings,
+      fetchFn: oauth.fetchFn,
+      randomId: () => 'editing-scope-state',
+      validateConnection: () => true,
+    });
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      { settings, fetchFn: oauth.fetchFn, validateConnection: () => true },
+    );
+    assert.match((await settings.getSetting(mcpOAuthSettingKeys(REF)[2])) ?? '', /access-initial/);
   } finally {
     settings.close();
   }
@@ -443,6 +511,8 @@ test('OAuth identifies Chickpea during metadata discovery, exchange, and refresh
   const oauth = fakeOAuthServer({
     serverUrl: META_ADS_MCP_SERVER_URL,
     authorizationServerUrl: META_ADS_OAUTH_ISSUER,
+    authorizationEndpoint: 'https://www.facebook.com/v26.0/dialog/oauth',
+    tokenEndpoint: 'https://graph.facebook.com/v26.0/oauth/access_token',
     expectedClientId: '1234567890',
     initialExpiresIn: 1,
     requireUserAgent: expectedUserAgent,
@@ -466,6 +536,8 @@ test('OAuth identifies Chickpea during metadata discovery, exchange, and refresh
       serverUrl: META_ADS_MCP_SERVER_URL,
       callbackUrl: CALLBACK_URL,
     }, dependencies);
+    assert.equal(started.authorizationUrl.origin, 'https://www.facebook.com');
+    assert.equal(started.authorizationUrl.pathname, '/v26.0/dialog/oauth');
     await completeMcpOAuthAuthorization(
       { code: 'provider-code', state: started.state },
       dependencies,
@@ -489,8 +561,8 @@ test('OAuth identifies Chickpea during metadata discovery, exchange, and refresh
           url: 'https://www.facebook.com/.well-known/oauth-authorization-server/ads',
           userAgent: expectedUserAgent,
         },
-        { url: 'https://www.facebook.com/ads/token', userAgent: expectedUserAgent },
-        { url: 'https://www.facebook.com/ads/token', userAgent: expectedUserAgent },
+        { url: 'https://graph.facebook.com/v26.0/oauth/access_token', userAgent: expectedUserAgent },
+        { url: 'https://graph.facebook.com/v26.0/oauth/access_token', userAgent: expectedUserAgent },
       ],
     );
   } finally {

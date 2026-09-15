@@ -7,8 +7,10 @@ import {
   getConfiguredMcpOAuthClient,
   META_ADS_MCP_SERVER_URL,
   META_ADS_OAUTH_DEFAULT_SCOPE,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
   META_ADS_OAUTH_ISSUER,
   removeConfiguredMcpOAuthClient,
+  resolveConfiguredMcpOAuthScope,
   saveConfiguredMcpOAuthClient,
 } from '../src/config/mcp-oauth-clients.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -24,6 +26,7 @@ test('configured public OAuth descriptors require the reviewed canonical server'
     authorizationServerUrl: META_ADS_OAUTH_ISSUER,
     settingKey: 'mcp.oauth-client.meta-ads',
     defaultScope: META_ADS_OAUTH_DEFAULT_SCOPE,
+    supportedScopes: [META_ADS_OAUTH_DEFAULT_SCOPE, META_ADS_OAUTH_MANAGEMENT_SCOPE],
   });
   assert.equal(configuredMcpOAuthClientDescriptor(`${META_ADS_MCP_SERVER_URL}/`), undefined);
   assert.equal(configuredMcpOAuthClientDescriptor(`${META_ADS_MCP_SERVER_URL}?mode=other`), undefined);
@@ -32,6 +35,22 @@ test('configured public OAuth descriptors require the reviewed canonical server'
     configuredMcpOAuthClientDescriptor(META_ADS_MCP_SERVER_URL),
   );
   assert.equal(configuredMcpOAuthClientDescriptor('https://example.test/mcp'), undefined);
+});
+
+test('configured Meta OAuth scopes accept only the reviewed reporting and editing lanes', () => {
+  assert.equal(
+    resolveConfiguredMcpOAuthScope(META_ADS_MCP_SERVER_URL),
+    META_ADS_OAUTH_DEFAULT_SCOPE,
+  );
+  assert.equal(
+    resolveConfiguredMcpOAuthScope(META_ADS_MCP_SERVER_URL, META_ADS_OAUTH_MANAGEMENT_SCOPE),
+    META_ADS_OAUTH_MANAGEMENT_SCOPE,
+  );
+  assert.throws(
+    () => resolveConfiguredMcpOAuthScope(META_ADS_MCP_SERVER_URL, 'ads_mcp_management ads_read ads_management'),
+    (error: unknown) => error instanceof ConfiguredMcpOAuthClientError && error.code === 'invalid_scope',
+  );
+  assert.equal(resolveConfiguredMcpOAuthScope('https://example.test/mcp', 'custom read write'), 'custom read write');
 });
 
 test('configured client saves are CAS-backed and identical saves preserve generation', async () => {

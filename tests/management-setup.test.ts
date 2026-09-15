@@ -8,7 +8,11 @@ import {
 import { connectionAccountOAuthRef } from '../src/config/api-oauth.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
-import { saveConfiguredMcpOAuthClient } from '../src/config/mcp-oauth-clients.ts';
+import {
+  META_ADS_OAUTH_DEFAULT_SCOPE,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
+  saveConfiguredMcpOAuthClient,
+} from '../src/config/mcp-oauth-clients.ts';
 import {
   mcpOAuthSettingKeys,
   type StartMcpOAuthInput,
@@ -988,6 +992,15 @@ test('Meta Ads management setup uses the canonical callback and requires explici
             propertyNames: ['ad_account_id'],
           },
         }, {
+          name: 'ads_create_campaign',
+          description: 'Create a campaign in a paused state.',
+          inputSchema: {
+            accountFields: [{ name: 'ad_account_id', type: 'string', required: true }],
+            ambiguous: false,
+            fingerprint: 'c'.repeat(64),
+            propertyNames: ['ad_account_id'],
+          },
+        }, {
           name: 'ambiguous_tool',
           inputSchema: {
             accountFields: [],
@@ -1007,6 +1020,10 @@ test('Meta Ads management setup uses the canonical callback and requires explici
     assert.equal(exchanged.status, 200, await exchanged.clone().text());
     const cookie = exchanged.headers.get('set-cookie')!;
     assert.match(cookie, /Path=\/;/);
+    const setupPage = await app.request(`http://localhost/setup/${setupId}`, { headers: { cookie } });
+    const setupHtml = await setupPage.text();
+    assert.match(setupHtml, /name="access" value="reporting" checked/);
+    assert.match(setupHtml, /name="access" value="editing"/);
 
     const missingConfiguration = await app.request(`http://localhost/setup/${setupId}/authorize`, {
       method: 'POST',
@@ -1017,7 +1034,7 @@ test('Meta Ads management setup uses the canonical callback and requires explici
         cookie,
         'content-type': 'application/x-www-form-urlencoded',
       },
-      body: 'ownerKind=member',
+      body: 'ownerKind=member&access=editing',
     });
     assert.equal(missingConfiguration.status, 422);
     assert.equal((await missingConfiguration.json() as { error: string }).error, 'oauth_configuration_required');
@@ -1040,13 +1057,15 @@ test('Meta Ads management setup uses the canonical callback and requires explici
         cookie,
         'content-type': 'application/x-www-form-urlencoded',
       },
-      body: 'ownerKind=member',
+      body: 'ownerKind=member&access=editing',
     });
     assert.equal(authorized.status, 200, await authorized.clone().text());
     assert.equal(startInputs[0]?.callbackUrl, 'https://admin.example.com/oauth/callback');
     assert.equal(startInputs[0]?.setupOperationId, setupId);
+    assert.equal(startInputs[0]?.scope, META_ADS_OAUTH_MANAGEMENT_SCOPE);
     const [pending] = await config.listConnectionAccounts(owner.user.slackTeamId);
     assert.equal(pending?.lifecycle, 'pending');
+    assert.equal(pending?.policy.kind === 'mcp' ? pending.policy.oauthScope : undefined, META_ADS_OAUTH_MANAGEMENT_SCOPE);
     assert.deepEqual(pending?.policy.kind === 'mcp' ? pending.policy.allowedTools : undefined, []);
 
     assert.ok(pending && pending.policy.kind === 'mcp');
@@ -1102,7 +1121,40 @@ test('Meta Ads management setup uses the canonical callback and requires explici
     assert.match(reviewHtml, /Not yet supported with ad account restrictions/);
     assert.ok(reviewHtml.indexOf('Ad accounts') < reviewHtml.indexOf('Tools'));
     assert.match(reviewHtml, /Reporting access/);
+    assert.match(reviewHtml, /ads_create_campaign/);
+    assert.match(reviewHtml, /May change ads/);
+    assert.match(reviewHtml, /Create a paused campaign/);
+    assert.doesNotMatch(reviewHtml, /name="tool:ads_create_campaign" checked/);
     assert.equal((await management.getSetup(setupId))?.status, 'authorizing');
+
+    const [editingAccount] = await config.listConnectionAccounts(owner.user.slackTeamId);
+    assert.ok(editingAccount?.policy.kind === 'mcp');
+    if (!editingAccount || editingAccount.policy.kind !== 'mcp') throw new Error('expected MCP');
+    const reportingAccount = await config.putConnectionAccount({
+      ...editingAccount,
+      policy: { ...editingAccount.policy, oauthScope: META_ADS_OAUTH_DEFAULT_SCOPE },
+    }, editingAccount.revision);
+    assert.equal(reportingAccount.policy.kind, 'mcp');
+    if (reportingAccount.policy.kind !== 'mcp') throw new Error('expected MCP');
+    const reportingReview = await app.request(`http://localhost/setup/${setupId}?review=1`, {
+      headers: { cookie },
+    });
+    assert.match(await reportingReview.text(), /Reconnect with Reporting and editing access to select this tool/);
+    const rejectedWrite = await app.request(`http://localhost/setup/${setupId}/mcp/access`, {
+      method: 'POST',
+      headers: {
+        origin: 'http://localhost',
+        cookie,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: 'tool%3Aads_create_campaign=on&adAccountIds=act_123456789',
+    });
+    assert.equal(rejectedWrite.status, 422);
+    assert.match(await rejectedWrite.text(), /Reconnect with Reporting and editing access/);
+    await config.putConnectionAccount({
+      ...reportingAccount,
+      policy: { ...reportingAccount.policy, oauthScope: META_ADS_OAUTH_MANAGEMENT_SCOPE },
+    }, reportingAccount.revision);
 
     const saved = await app.request(`http://localhost/setup/${setupId}/mcp/access`, {
       method: 'POST',
@@ -1111,12 +1163,13 @@ test('Meta Ads management setup uses the canonical callback and requires explici
         cookie,
         'content-type': 'application/x-www-form-urlencoded',
       },
-      body: 'tool%3Aads_get_ad_entities=on&adAccountIds=act_123456789',
+      body: 'tool%3Aads_get_ad_entities=on&tool%3Aads_create_campaign=on&adAccountIds=act_123456789',
     });
     assert.equal(saved.status, 303, await saved.clone().text());
     assert.equal((await management.getSetup(setupId))?.status, 'completed');
     const [ready] = await config.listConnectionAccounts(owner.user.slackTeamId);
-    assert.deepEqual(ready?.policy.kind === 'mcp' ? ready.policy.allowedTools : undefined, ['ads_get_ad_entities']);
+    assert.deepEqual(ready?.policy.kind === 'mcp' ? ready.policy.allowedTools : undefined,
+      ['ads_get_ad_entities', 'ads_create_campaign']);
     assert.deepEqual(
       ready?.policy.kind === 'mcp'
         ? ready.policy.toolPolicies?.ads_get_ad_entities?.argumentConstraints

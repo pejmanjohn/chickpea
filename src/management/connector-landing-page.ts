@@ -23,6 +23,7 @@ export interface ConnectorLandingPageInput {
       effect?: 'read' | 'write';
       available: boolean;
       selected: boolean;
+      requiresEditingAccess?: boolean;
     }>;
     approvedAccountIds: string[];
   };
@@ -110,6 +111,12 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
     : undefined;
   const hostTemplate = 'api' in preset && preset.api.hostTemplate === true;
   const oauth = mcpAuth?.kind === 'oauth' || 'api' in preset && Boolean(preset.api.oauth);
+  const metaAdsAccess = preset.id === 'meta-ads' && mcpAuth?.kind === 'oauth' && mcpAuth.writeScope
+    ? `<div class="owner-options" role="radiogroup" aria-labelledby="access-title">
+        <label class="owner-option"><input type="radio" name="access" value="reporting" checked><span class="owner-radio" aria-hidden="true"></span><span><strong>Reporting</strong><span>View reports and account details.</span></span></label>
+        <label class="owner-option"><input type="radio" name="access" value="editing"><span class="owner-radio" aria-hidden="true"></span><span><strong>Reporting and editing</strong><span>Selected tools may create or change ads.</span></span></label>
+      </div><p>No tools are selected until you review them after sign-in.</p>`
+    : undefined;
   const accessSummary = mcpAuth?.kind === 'oauth'
     ? `${connector} requests native ${/\bwrite\b/i.test(mcpAuth.scope ?? '') ? 'read and write' : 'account'} access. Selected tools can carry out your requests; Agent instructions can require confirmation.`
     : preset.notes ?? preset.description;
@@ -145,7 +152,7 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
             </section>
             <section class="choice-block" aria-labelledby="access-title">
               <h2 id="access-title">Access</h2>
-              <p>${escapeHtml(accessSummary)}</p>
+              ${metaAdsAccess ?? `<p>${escapeHtml(accessSummary)}</p>`}
             </section>
             ${hostTemplate ? `<section class="choice-block"><label for="workspace-subdomain"><h2>Workspace subdomain</h2></label><input class="owner-select" id="workspace-subdomain" name="workspaceSubdomain" autocomplete="organization" placeholder="your-subdomain" required></section>` : ''}
             ${credential ? `<section class="choice-block"><label for="connection-credential"><h2>${escapeHtml(connector)} credential</h2></label><input class="owner-select" id="connection-credential" name="credential" type="password" autocomplete="off" placeholder="${escapeHtml(credential.placeholder)}"${credential.optional ? '' : ' required'}>${preset.tokenDocsHint ? `<p>${escapeHtml(preset.tokenDocsHint)}</p>` : ''}</section>` : ''}
@@ -170,16 +177,32 @@ export function renderCatalogConnectionAccessReviewPage(
   const { setup, agent, accessReview } = input;
   if (!accessReview) return renderManagedConnectionUnavailablePage();
   const connector = setup.target.targetLabel;
+  const metaAdsDescriptions: Record<string, string> = {
+    ads_create_campaign: 'Create a paused campaign.',
+    ads_create_ad_set: 'Create a paused ad set with targeting and budget.',
+    ads_create_ad: 'Create a paused ad with a creative.',
+    ads_update_entity: 'Update a campaign, ad set, or ad.',
+    ads_activate_entity: 'Activate a paused campaign, ad set, or ad and start spending.',
+    ads_create_creative: 'Create a single-image link ad creative.',
+    ads_boost_ig_post: 'Boost an existing Instagram post as an ad.',
+    ads_create_custom_audience: 'Create a custom audience.',
+    ads_update_custom_audience: 'Update a custom audience.',
+    ads_update_custom_audience_users: 'Add or remove hashed customer records from an audience.',
+    ads_delete_custom_audience: 'Delete a custom audience.',
+  };
   const availableCount = accessReview.tools.filter(({ available }) => available).length;
+  const editingUpgradeNeeded = accessReview.tools.some(({ requiresEditingAccess }) => requiresEditingAccess);
   const toolChoices = accessReview.tools.map((tool) => {
     const label = tool.title?.trim() || tool.name;
-    const description = tool.description?.trim();
+    const description = setup.target.presetId === 'meta-ads'
+      ? metaAdsDescriptions[tool.name] ?? tool.description?.trim()
+      : tool.description?.trim();
     const effectLabel = tool.effect === 'read'
       ? 'Reporting access'
       : tool.effect === 'write' ? 'May change ads' : undefined;
     return `<label class="tool-option${tool.available ? '' : ' tool-option-unavailable'}">
       <input type="checkbox" name="tool:${escapeHtml(tool.name)}"${tool.selected ? ' checked' : ''}${tool.available ? '' : ' disabled'}>
-      <span class="tool-option-copy"><strong>${escapeHtml(label)}</strong>${effectLabel ? `<span class="tool-effect">${escapeHtml(effectLabel)}</span>` : ''}${description ? `<span>${escapeHtml(description)}</span>` : ''}${tool.available ? '' : '<span>Not yet supported with ad account restrictions.</span>'}</span>
+      <span class="tool-option-copy"><strong>${escapeHtml(label)}</strong>${effectLabel ? `<span class="tool-effect">${escapeHtml(effectLabel)}</span>` : ''}${description ? `<span>${escapeHtml(description)}</span>` : ''}${tool.available ? '' : `<span>${tool.requiresEditingAccess ? 'Reconnect with Reporting and editing access to select this tool.' : 'Not yet supported with ad account restrictions.'}</span>`}</span>
     </label>`;
   }).join('');
   const failureMessage = input.failureMessage ?? '';
@@ -206,9 +229,9 @@ export function renderCatalogConnectionAccessReviewPage(
               </section>
               <section class="choice-block" aria-labelledby="tool-access-title">
                 <h2 id="tool-access-title">Tools</h2>
-                <p>Selected tools can read Meta Ads reporting data or verify approved-account and reporting-field prerequisites. Tools outside Chickpea&rsquo;s reviewed contract remain unavailable.</p>
+                <p>Selected tools can report on or change Meta ads for the approved accounts. Tools outside Chickpea&rsquo;s reviewed contract remain unavailable.</p>
                 <div class="tool-options">${toolChoices || '<p>No tools were returned by Meta Ads.</p>'}</div>
-                ${availableCount === 0 ? '<p class="review-note">None of the discovered tools can yet be safely limited to an ad account, so access remains off.</p>' : ''}
+                ${availableCount === 0 ? `<p class="review-note">${editingUpgradeNeeded ? 'Reconnect with Reporting and editing access to choose tools that may change ads.' : 'None of the discovered tools can yet be safely limited to an ad account, so access remains off.'}</p>` : ''}
               </section>
               <p class="security-copy">These choices become the maximum access available to ${escapeHtml(agent.name)}. You can change or remove the connection later in Admin.</p>
               <p class="flow-alert" id="flow-alert" role="alert"${failureMessage ? '' : ' hidden'}>${escapeHtml(failureMessage)}</p>

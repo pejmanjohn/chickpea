@@ -5342,7 +5342,7 @@ function scopeTokens(scope?: string): string[] {
 function catalogConnectionScopes(preset: ConnectorCatalogPreset): string[] {
   if ('url' in preset && typeof preset.url === 'string' &&
       preset.auth?.kind === 'oauth') {
-    return scopeTokens(preset.auth.scope);
+    return scopeTokens([preset.auth.scope, preset.auth.writeScope].filter(Boolean).join(' '));
   }
   if ('api' in preset) return [...preset.api.methods];
   return [];

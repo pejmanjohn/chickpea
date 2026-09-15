@@ -8,6 +8,10 @@ import {
   CONNECTION_CATALOG_PRESETS,
 } from '../src/config/presets.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
+import {
+  META_ADS_OAUTH_DEFAULT_SCOPE,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
+} from '../src/config/mcp-oauth-clients.ts';
 
 test('connection removal retries a schedule cleanup race once', () => {
   const page = renderAdminPage();
@@ -8423,7 +8427,7 @@ test('a failed Meta OAuth start reloads the saved account and retries that accou
     policy: {
       kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
       authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
-      discoveredTools: [], allowedTools: [], toolPolicies: {},
+      oauthScope: META_ADS_OAUTH_MANAGEMENT_SCOPE, discoveredTools: [], allowedTools: [], toolPolicies: {},
     },
   });
   const harness = runAdminPageHarness({
@@ -8441,11 +8445,14 @@ test('a failed Meta OAuth start reloads the saved account and retries that accou
   click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'meta-ads' }) });
+  assert.match(harness.app.innerHTML, /Reporting and editing/);
+  click({ target: actionTarget({ 'data-action': 'connection-account-meta-ads-access', 'data-access': 'editing' }) });
   chooseConnectionOwner(harness, 'member');
   click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
   await flushAsync();
 
   assert.equal(harness.connectionAccountPosts.length, 1);
+  assert.equal((harness.connectionAccountPosts[0]?.body.mcp as Record<string, unknown>)?.oauthScope, META_ADS_OAUTH_MANAGEMENT_SCOPE);
   assert.deepEqual(harness.oauthStartPosts, [
     { agentId: 'agent_conn', connectionId: 'connection_created', body: {} },
   ]);
@@ -8483,6 +8490,7 @@ test('a ready Agent-owned MCP OAuth account reconnects in place from its menu', 
     policy: {
       kind: 'mcp', url: 'https://mcp.facebook.com/ads', transport: 'streamable-http',
       authMode: 'oauth', headerNames: [], presetId: 'meta-ads', toolAccessMode: 'review',
+      oauthScope: META_ADS_OAUTH_DEFAULT_SCOPE,
       discoveredTools: [{ name: 'ads_get_ad_entities' }],
       allowedTools: ['ads_get_ad_entities'], toolPolicies: {},
     },
@@ -8504,18 +8512,29 @@ test('a ready Agent-owned MCP OAuth account reconnects in place from its menu', 
 
   assert.match(
     harness.app.innerHTML,
-    /data-action="connection-account-mcp-oauth-start"[^>]*data-connection-id="connection_ready_oauth"[^>]*>Reconnect<\/button>/,
+    /data-action="connection-account-mcp-oauth-start"[^>]*data-connection-id="connection_ready_oauth"[^>]*data-oauth-scope="ads_mcp_management ads_management"[^>]*>Reconnect for reporting and editing<\/button>/,
   );
   click({ target: actionTarget({
     'data-action': 'connection-account-mcp-oauth-start',
     'data-connection-id': 'connection_ready_oauth',
+    'data-oauth-scope': META_ADS_OAUTH_DEFAULT_SCOPE,
+  }) });
+  await flushAsync();
+  assert.deepEqual(harness.oauthStartPosts[0], {
+    agentId: 'agent_conn', connectionId: 'connection_ready_oauth', body: { scope: META_ADS_OAUTH_DEFAULT_SCOPE },
+  });
+  click({ target: actionTarget({
+    'data-action': 'connection-account-mcp-oauth-start',
+    'data-connection-id': 'connection_ready_oauth',
+    'data-oauth-scope': META_ADS_OAUTH_MANAGEMENT_SCOPE,
   }) });
   await flushAsync();
 
-  assert.deepEqual(harness.oauthStartPosts, [{
-    agentId: 'agent_conn', connectionId: 'connection_ready_oauth', body: {},
-  }]);
+  assert.deepEqual(harness.oauthStartPosts[1], {
+    agentId: 'agent_conn', connectionId: 'connection_ready_oauth', body: { scope: META_ADS_OAUTH_MANAGEMENT_SCOPE },
+  });
   assert.deepEqual(harness.assignedUrls, [
+    'https://www.facebook.com/dialog/oauth?state=reconnect',
     'https://www.facebook.com/dialog/oauth?state=reconnect',
   ]);
 });
@@ -15579,7 +15598,7 @@ test('custom OAuth callback opens account tool review and keeps creation and edi
   assert.match(harness.app.innerHTML, /0 of 1 selected/);
 });
 
-test('Meta tool review describes reporting access without implying ad changes', async () => {
+test('Meta tool review distinguishes reporting from write tools that need editing access', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [ownedConnection({
@@ -15598,6 +15617,11 @@ test('Meta tool review describes reporting access without implying ad changes', 
           {
             name: 'ads_get_field_context',
             description: 'Another verbose provider description.', available: true, effect: 'read',
+          },
+          {
+            name: 'ads_create_campaign',
+            description: 'Provider write description.', available: false, effect: 'write',
+            requiresEditingAccess: true,
           },
         ],
         allowedTools: ['ads_get_ad_entities'], toolPolicies: {},
@@ -15618,11 +15642,12 @@ test('Meta tool review describes reporting access without implying ad changes', 
     'data-connection-id': 'connection_meta',
   }) });
 
-  assert.match(harness.app.innerHTML, /Choose the reporting tools this Agent can use for the selected ad accounts/);
+  assert.match(harness.app.innerHTML, /Choose the tools this Agent can use for the selected ad accounts/);
   assert.match(harness.app.innerHTML, /ads_get_ad_entities · Reporting/);
   assert.match(harness.app.innerHTML, /View campaigns, ad sets, ads, and their performance/);
   assert.match(harness.app.innerHTML, /Check supported reporting fields and metric names/);
-  assert.doesNotMatch(harness.app.innerHTML, /alter ads|affect spending|May change ads/);
+  assert.match(harness.app.innerHTML, /Reconnect with Reporting and editing access to select this tool/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-tool="ads_create_campaign"/);
 });
 
 test('Agent deep links render before channel discovery and auxiliary checks finish', async () => {

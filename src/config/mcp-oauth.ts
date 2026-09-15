@@ -41,6 +41,9 @@ import {
   getConfiguredMcpOAuthClient,
   isConfiguredMcpOAuthClientOrigin,
   isConfiguredMcpOAuthClientGeneration,
+  META_ADS_MCP_SERVER_URL,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
+  resolveConfiguredMcpOAuthScope,
   type ConfiguredMcpOAuthClient,
 } from './mcp-oauth-clients.ts';
 import { createMcpGuardedFetch, validateMcpUrl } from './mcp-url.ts';
@@ -179,6 +182,7 @@ interface PendingAuthorization {
   metadata: AuthorizationServerMetadata;
   resource: string;
   clientInformation: OAuthClientInformationMixed;
+  scope?: string;
   returnAgentId?: string;
   accountRevision?: number;
   oauthAttemptId?: string;
@@ -309,12 +313,19 @@ export async function startMcpOAuthAuthorization(
   // A reviewed configured-client server must never fall through to CIMD or
   // dynamic registration. Resolve installation state before the first
   // provider request so missing setup is an actionable local failure.
-  const configuredClientDescriptor = configuredMcpOAuthClientDescriptor(serverUrl);
   const configuredClient = await configuredClientForStart(serverUrl, dependencies);
   // Existing accounts may predate a reviewed configured provider's required
   // scopes. Default only an absent scope; an explicit caller scope remains an
   // exact authorization boundary and is never broadened here.
-  const scope = input.scope ?? configuredClientDescriptor?.defaultScope;
+  let scope: string | undefined;
+  try {
+    scope = resolveConfiguredMcpOAuthScope(serverUrl, input.scope);
+  } catch (error) {
+    if (error instanceof ConfiguredMcpOAuthClientError && error.code === 'invalid_scope') {
+      throw new McpOAuthError('oauth_unavailable', error.message, { cause: error });
+    }
+    throw error;
+  }
 
   const fetchFn = guardedOAuthFetch(dependencies);
   let resourceMetadata: OAuthProtectedResourceMetadata;
@@ -428,6 +439,7 @@ export async function startMcpOAuthAuthorization(
     metadata,
     resource: resourceMetadata.resource,
     clientInformation,
+    ...(scope ? { scope } : {}),
     ...(input.returnAgentId ? { returnAgentId: input.returnAgentId } : {}),
     ...(input.accountRevision !== undefined ? { accountRevision: input.accountRevision } : {}),
     ...(input.oauthAttemptId ? { oauthAttemptId: input.oauthAttemptId } : {}),
@@ -516,6 +528,7 @@ export async function completeMcpOAuthAuthorization(
       );
     }
     assertBearerTokens(tokens);
+    assertGrantedOAuthScope(pending.serverUrl, tokens.scope, pending.scope);
     await requireConfiguredClientGeneration(
       pending.serverUrl, pending.configurationGeneration, dependencies,
     );
@@ -1236,6 +1249,22 @@ function assertBearerTokens(tokens: OAuthTokens): void {
   }
 }
 
+function assertGrantedOAuthScope(
+  serverUrl: string,
+  grantedScope: string | undefined,
+  requestedScope: string | undefined,
+): void {
+  if (serverUrl !== META_ADS_MCP_SERVER_URL ||
+      requestedScope !== META_ADS_OAUTH_MANAGEMENT_SCOPE || !grantedScope) return;
+  const granted = new Set(grantedScope.trim().split(/\s+/).filter(Boolean));
+  if (!granted.has('ads_mcp_management') || !granted.has('ads_management')) {
+    throw new McpOAuthError(
+      'oauth_unavailable',
+      'Meta did not grant reporting and editing access',
+    );
+  }
+}
+
 function validateAuthorizationServerMetadata(
   authorizationServerUrl: string,
   metadata: AuthorizationServerMetadata,
@@ -1365,6 +1394,7 @@ function parsePendingAuthorization(
     resource: value.resource,
     clientInformation: parseClientInformation(value.clientInformation),
     codeVerifier: value.codeVerifier,
+    ...(typeof value.scope === 'string' ? { scope: value.scope } : {}),
     ...(typeof value.returnAgentId === 'string' ? { returnAgentId: value.returnAgentId } : {}),
     ...(typeof value.accountRevision === 'number'
       ? { accountRevision: value.accountRevision }

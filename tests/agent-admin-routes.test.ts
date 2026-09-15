@@ -27,6 +27,10 @@ import {
   type StartMcpOAuthInput,
 } from '../src/config/mcp-oauth.ts';
 import {
+  META_ADS_OAUTH_DEFAULT_SCOPE,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
+} from '../src/config/mcp-oauth-clients.ts';
+import {
   mcpBearerSettingKey,
   mcpHeaderSettingKey,
 } from '../src/config/mcp-secrets.ts';
@@ -5311,6 +5315,7 @@ test('Meta Ads installation config and account review reject forged grants', asy
     assert.deepEqual(body.account.policy.discoveredTools, []);
     assert.deepEqual(body.account.policy.allowedTools, []);
     assert.deepEqual(body.account.policy.toolPolicies, {});
+    assert.equal(body.account.policy.oauthScope, META_ADS_OAUTH_DEFAULT_SCOPE);
     assert.deepEqual(body.binding.allowedCapabilities, []);
     const startPath = `/admin/api/agents/agent_support/connections/${id}/oauth/mcp/start`;
     await fixture.settings.deleteSetting('mcp.oauth-client.meta-ads');
@@ -5323,14 +5328,58 @@ test('Meta Ads installation config and account review reject forged grants', asy
     assert.equal(status.clientId, '123456');
     assert.equal(status.callbackUrl, 'http://localhost/oauth/callback');
     assert.equal(JSON.stringify(status).includes('generation'), false);
+    assert.equal((await request(startPath, 'POST', { scope: 'ads_read ads_management' })).status, 400);
     assert.equal((await request(startPath, 'POST', {})).status, 200);
+    assert.equal(startedInput!.scope, META_ADS_OAUTH_DEFAULT_SCOPE);
+    const reportingPending = (await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!;
+    assert.equal(reportingPending.policy.kind, 'mcp');
+    if (reportingPending.policy.kind !== 'mcp') throw new Error('expected MCP');
+    assert.equal(reportingPending.policy.oauthScope, META_ADS_OAUTH_DEFAULT_SCOPE);
+    const discovered = [
+      'ads_get_ad_entities',
+      'ads_get_opportunity_score',
+      'ads_create_campaign',
+    ].map((name) => ({ name, inputSchema: {
+      propertyNames: ['account_id'],
+      accountFields: [{ name: 'account_id' as const, type: 'string' as const, required: true }],
+      ambiguous: false,
+      fingerprint: 'a'.repeat(64),
+    } }));
+    const reportingReady = await fixture.store.putConnectionAccount({
+      ...reportingPending,
+      lifecycle: 'ready',
+      policy: { ...reportingPending.policy, discoveredTools: discovered },
+    }, reportingPending.revision);
+    const toolsPath = `/admin/api/agents/agent_support/connections/${id}/mcp/tools`;
+    const reportingInventory = await request('/admin/api/agents/agent_support/connections?workspaceId=T_TEST', 'GET');
+    assert.equal(reportingInventory.status, 200, await reportingInventory.clone().text());
+    const reportingAccess = (await reportingInventory.json() as Record<string, any>).attached[0].mcpToolAccess;
+    assert.deepEqual(reportingAccess.find(({ name }: { name: string }) => name === 'ads_create_campaign'), {
+      name: 'ads_create_campaign', available: false, effect: 'write', requiresEditingAccess: true,
+    });
+    const rejectedWrite = await request(toolsPath, 'PUT', {
+      expectedRevision: reportingReady.revision,
+      allowedTools: ['ads_create_campaign'],
+      approvedAccountIds: ['123'],
+    });
+    assert.equal(rejectedWrite.status, 400);
+    assert.match((await rejectedWrite.json() as { message: string }).message, /Reporting and editing/);
+    const reportingSaved = await request(toolsPath, 'PUT', {
+      expectedRevision: reportingReady.revision,
+      allowedTools: ['ads_get_ad_entities'],
+      approvedAccountIds: ['123'],
+    });
+    assert.equal(reportingSaved.status, 200, await reportingSaved.clone().text());
+    const reportingSavedAccount = (await reportingSaved.json() as Record<string, any>).account;
+    assert.equal((await request(startPath, 'POST', { scope: META_ADS_OAUTH_MANAGEMENT_SCOPE })).status, 200);
     assert.equal(startedInput!.callbackUrl, 'http://localhost/oauth/callback');
+    assert.equal(startedInput!.scope, META_ADS_OAUTH_MANAGEMENT_SCOPE);
     const pending = (await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!;
     assert.equal(pending.policy.kind, 'mcp');
     if (pending.policy.kind !== 'mcp') throw new Error('expected MCP');
-    const discovered = ['ads_get_ad_entities', 'ads_get_opportunity_score'].map((name) => ({ name, inputSchema: { propertyNames: ['account_id'], accountFields: [{ name: 'account_id' as const, type: 'string' as const, required: true }], ambiguous: false, fingerprint: 'a'.repeat(64) } }));
+    assert.equal(pending.policy.oauthScope, META_ADS_OAUTH_MANAGEMENT_SCOPE);
+    assert.deepEqual(pending.policy.allowedTools, reportingSavedAccount.policy.allowedTools);
     const ready = await fixture.store.putConnectionAccount({ ...pending, lifecycle: 'ready', policy: { ...pending.policy, discoveredTools: discovered } }, pending.revision);
-    const toolsPath = `/admin/api/agents/agent_support/connections/${id}/mcp/tools`;
     assert.equal((await request(toolsPath, 'PUT', { expectedRevision: ready.revision, allowedTools: ['ads_get_ad_entities'] })).status, 400);
     const saved = await request(toolsPath, 'PUT', { expectedRevision: ready.revision, allowedTools: ['ads_get_ad_entities'], approvedAccountIds: ['123'], toolPolicies: { ads_get_ad_entities: { effect: 'read', argumentConstraints: { account_id: ['999'] } } } });
     assert.equal(saved.status, 200, await saved.clone().text());
@@ -5338,10 +5387,19 @@ test('Meta Ads installation config and account review reject forged grants', asy
     assert.deepEqual(savedAccount.policy.toolPolicies.ads_get_ad_entities.argumentConstraints, { account_id: ['123'] });
     assert.equal(savedAccount.policy.toolPolicies.ads_get_ad_entities.effect, 'read');
     const expanded = await request(toolsPath, 'PUT', { expectedRevision: savedAccount.revision,
-      allowedTools: ['ads_get_ad_entities', 'ads_get_opportunity_score'], approvedAccountIds: ['123'] });
+      allowedTools: ['ads_get_ad_entities', 'ads_get_opportunity_score', 'ads_create_campaign'], approvedAccountIds: ['123'] });
     assert.equal(expanded.status, 200, await expanded.clone().text());
     const expandedAccount = (await expanded.json() as Record<string, any>).account;
-    assert.deepEqual(expandedAccount.policy.allowedTools, ['ads_get_ad_entities', 'ads_get_opportunity_score']);
+    assert.deepEqual(expandedAccount.policy.allowedTools, ['ads_get_ad_entities', 'ads_get_opportunity_score', 'ads_create_campaign']);
+    assert.equal((await request(startPath, 'POST', {})).status, 200);
+    assert.equal(startedInput!.scope, META_ADS_OAUTH_MANAGEMENT_SCOPE);
+    assert.equal((await request(startPath, 'POST', { scope: META_ADS_OAUTH_DEFAULT_SCOPE })).status, 200);
+    const downgradedPending = (await fixture.store.listConnectionAccounts('T_TEST')).find((account) => account.id === id)!;
+    assert.equal(downgradedPending.policy.kind, 'mcp');
+    if (downgradedPending.policy.kind !== 'mcp') throw new Error('expected MCP');
+    assert.deepEqual(downgradedPending.policy.allowedTools, ['ads_get_ad_entities', 'ads_get_opportunity_score']);
+    assert.equal(downgradedPending.policy.toolPolicies?.ads_create_campaign, undefined);
+    await fixture.store.putConnectionAccount({ ...downgradedPending, lifecycle: 'ready' }, downgradedPending.revision);
     assert.deepEqual((await fixture.store.getAgentConnectionBindingForAccount(id))!.allowedCapabilities, []);
     await fixture.store.putAgentScheduleReference({
       scheduleId: 'schedule_meta_report', agentId: 'agent_support', workspaceId: 'T_TEST',
