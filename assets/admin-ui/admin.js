@@ -5827,7 +5827,7 @@
       ads_delete_custom_audience: "Delete a custom audience."
     };
     var choices = tools.map(function (tool) {
-      var supported = !review || tool.available === true;
+      var supported = !review || tool.available !== false;
       var checked = selected.indexOf(tool.name) >= 0;
       var description = review ? descriptions[tool.name] : tool.description;
       if (!supported) return '<div class="conn-tool conn-tool-unavailable"><span class="conn-tool-check-placeholder" aria-hidden="true"></span><span class="tool-body"><span class="tool-name">' + esc(tool.title || tool.name) + '</span><span class="tool-desc">' + (tool.requiresEditingAccess ? 'Reconnect with Reporting and editing access to select this tool.' : 'Not yet supported with ad account restrictions.') + '</span></span></div>';
@@ -5876,7 +5876,7 @@
   function customMcpToolEditorHtml(entry) {
     var editor = state.customMcpToolEditor;
     if (!editor || editor.accountId !== entry.account.id) return '';
-    var tools = editor.metaAds ? editor.tools.filter(function (tool) { return tool.available === true; }) : editor.tools;
+    var tools = editor.metaAds ? editor.tools.filter(function (tool) { return tool.available !== false; }) : editor.tools;
     return '<div class="skill-form"><h3>Choose access</h3>' + (editor.metaAds ? '<div class="field"><label class="field-label" for="meta-ads-account-ids">Ad account IDs</label><input id="meta-ads-account-ids" class="input mono" data-action="meta-ads-account-ids" value="' + esc(editor.accountIds) + '"><p class="hint">Copy the ad account IDs from Ads Manager, separated by commas. Tools are restricted to these accounts.</p></div>' : '') + customMcpToolChoices(tools, editor.selectedTools) +
       (editor.error ? '<div class="err" role="alert">' + esc(editor.error) + '</div>' : '') +
       '<div class="skill-form-actions"><button class="btn btn-ghost btn-sm" data-action="custom-mcp-tools-cancel"' + (editor.busy ? ' disabled' : '') + '>Cancel</button><button class="btn btn-primary btn-sm" data-action="custom-mcp-tools-save"' + (editor.busy ? ' disabled' : '') + '>Save tool access</button></div></div>';

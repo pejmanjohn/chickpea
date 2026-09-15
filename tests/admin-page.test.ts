@@ -15650,6 +15650,10 @@ test('Meta tool review shows only available reporting and write tools', async ()
             description: 'Another verbose provider description.', available: true, effect: 'read',
           },
           {
+            name: 'ads_get_opportunity_score',
+            description: 'Provider tool without an availability classification.', effect: 'read',
+          },
+          {
             name: 'ads_create_campaign',
             description: 'Provider write description.', available: true, effect: 'write',
           },
@@ -15662,7 +15666,7 @@ test('Meta tool review shows only available reporting and write tools', async ()
             description: 'Provider creative description.', available: true, effect: 'write',
           },
         ],
-        allowedTools: ['ads_get_ad_entities'], toolPolicies: {},
+        allowedTools: ['ads_get_ad_entities', 'ads_get_opportunity_score'], toolPolicies: {},
       },
     })] },
   });
@@ -15685,6 +15689,8 @@ test('Meta tool review shows only available reporting and write tools', async ()
   assert.match(harness.app.innerHTML, /data-tool="ads_get_ad_entities" checked/);
   assert.match(harness.app.innerHTML, /View campaigns, ad sets, ads, and their performance/);
   assert.match(harness.app.innerHTML, /Check supported reporting fields and metric names/);
+  assert.match(harness.app.innerHTML, /ads_get_opportunity_score · Reporting/);
+  assert.match(harness.app.innerHTML, /data-tool="ads_get_opportunity_score" checked/);
   assert.match(harness.app.innerHTML, /ads_create_campaign · May change ads/);
   assert.doesNotMatch(harness.app.innerHTML, /data-tool="ads_create_campaign" checked/);
   assert.match(harness.app.innerHTML, /Create an ad creative from images, videos, or posts/);
