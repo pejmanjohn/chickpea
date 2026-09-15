@@ -408,7 +408,8 @@ export function metaAdsWriteOwnershipTargets(name: string, argumentsValue: unkno
     }
   }
   if ((name === 'ads_update_entity' || name === 'ads_update_custom_audience') && 'fields' in args) {
-    assertNoMetaAdsRoutingOverride(args.fields);
+    const fields = assertNoMetaAdsRoutingOverride(args.fields);
+    if (name === 'ads_update_entity' && fields) assertMetaAdsEntityUpdateFields(fields);
   }
   return targets;
 }
@@ -500,8 +501,8 @@ function normalizedMetaAdsHelperScope(
   return { [META_ADS_APPROVED_ACCOUNT_SCOPE]: normalized };
 }
 
-function assertNoMetaAdsRoutingOverride(value: unknown): void {
-  if (value === undefined || value === null) return;
+function assertNoMetaAdsRoutingOverride(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined || value === null) return undefined;
   let decoded: unknown = value;
   if (typeof value === 'string') {
     if (value.length === 0 || value.length > 65_536) {
@@ -539,6 +540,40 @@ function assertNoMetaAdsRoutingOverride(value: unknown): void {
     }
   };
   visit(decoded, 0);
+  return decoded as Record<string, unknown>;
+}
+
+function assertMetaAdsEntityUpdateFields(fields: Record<string, unknown>): void {
+  if ('status' in fields) {
+    if (fields.status !== 'PAUSED') {
+      throw new MetaAdsAccessPolicyError(
+        'Meta Ads entity updates permit status only as PAUSED. Use the activation tool to activate an entity.',
+      );
+    }
+    if (Object.keys(fields).length !== 1) {
+      throw new MetaAdsAccessPolicyError(
+        'Meta Ads entity status changes require a dedicated status-only update.',
+      );
+    }
+  }
+
+  const readonlyStatuses = new Set(['configured_status', 'effective_status']);
+  const visit = (current: unknown): void => {
+    if (Array.isArray(current)) {
+      for (const entry of current) visit(entry);
+      return;
+    }
+    if (!current || typeof current !== 'object') return;
+    for (const [key, entry] of Object.entries(current as Record<string, unknown>)) {
+      if (readonlyStatuses.has(key)) {
+        throw new MetaAdsAccessPolicyError(
+          'Meta Ads entity updates cannot write configured_status or effective_status.',
+        );
+      }
+      visit(entry);
+    }
+  };
+  visit(fields);
 }
 
 function uniqueStrings(values: readonly string[], label: string): string[] {

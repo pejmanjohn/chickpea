@@ -232,7 +232,7 @@ test('write ownership targets validate accounts, routes, paused creation, and up
     ['ads_create_ad', { ad_account_id: 'act_123', ad_set_id: '789' }, ['789']],
     ['ads_update_entity', {
       ad_account_id: 'act_123', entity_id: '456', entity_type: 'ad_set',
-      fields: { status: 'ACTIVE', targeting: { custom_audiences: [{ id: '789' }] }, creative: { id: '321' } },
+      fields: { daily_budget: '22500' },
     }, ['456']],
     ['ads_activate_entity', {
       ad_account_id: 'act_123', entity_id: '567', entity_type: 'campaign',
@@ -281,6 +281,46 @@ test('write ownership targets validate accounts, routes, paused creation, and up
   assert.throws(() => metaAdsWriteOwnershipTargets('ads_update_entity', {
     ad_account_id: 'act_123', entity_id: '456', entity_type: 'campaign', fields: '{bad',
   }), /valid JSON/);
+});
+
+test('entity updates isolate requested status changes from ordinary field edits', () => {
+  const update = (fields: unknown) => metaAdsWriteOwnershipTargets('ads_update_entity', {
+    ad_account_id: 'act_123', entity_id: '456', entity_type: 'campaign', fields,
+  });
+
+  for (const fields of [
+    { daily_budget: '22500' },
+    JSON.stringify({ daily_budget: '22500' }),
+    { status: 'PAUSED' },
+    JSON.stringify({ status: 'PAUSED' }),
+    { daily_budget: '22500', delivery_estimate: { status: 'PENDING' } },
+    JSON.stringify({ daily_budget: '22500', delivery_estimate: { status: 'PENDING' } }),
+  ]) {
+    assert.deepEqual(update(fields), ['456']);
+  }
+
+  for (const fields of [
+    { daily_budget: '22500', status: 'PAUSED' },
+    JSON.stringify({ daily_budget: '22500', status: 'PAUSED' }),
+  ]) {
+    assert.throws(() => update(fields), /status-only update/);
+  }
+
+  for (const fields of [
+    { status: 'ACTIVE' },
+    JSON.stringify({ status: 'ACTIVE' }),
+  ]) {
+    assert.throws(() => update(fields), /permit status only as PAUSED/);
+  }
+
+  for (const fields of [
+    { configured_status: 'PAUSED' },
+    JSON.stringify({ effective_status: 'PAUSED' }),
+    { delivery_estimate: { configured_status: 'PAUSED' } },
+    JSON.stringify({ delivery_estimate: { effective_status: 'PAUSED' } }),
+  ]) {
+    assert.throws(() => update(fields), /cannot write configured_status or effective_status/);
+  }
 });
 
 test('runtime revalidates current schema against its exact stored constraint', () => {

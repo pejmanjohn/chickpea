@@ -48,6 +48,10 @@ function writeInputProjection() {
       ad_account_id: { type: 'string' },
       entity_id: { type: 'string' },
       entity_type: { type: 'string', enum: ['campaign', 'ad_set', 'ad'] },
+      fields: { type: 'object', properties: {
+        daily_budget: { type: 'string' },
+        status: { type: 'string' },
+      } },
     },
     additionalProperties: false,
   }, WRITE_TOOL);
@@ -198,6 +202,22 @@ test('native direct profile MCP verifies ownership before sending a selected wri
   assert.deepEqual(definition?.tools, [WRITE_TOOL]);
   await definition!.fetch!(toolCall());
   assert.deepEqual(provider.events, ['ownership GET', 'MCP POST']);
+});
+
+test('native direct profile MCP rejects a bundled budget and pause before any provider egress', async () => {
+  const server = metaWriteServer();
+  const provider = orderedProvider();
+  const [definition] = resolveProfileMcpConnections([server], {
+    agentId: 'agent_direct_meta_mixed_status_write',
+    env: NO_SECRETS_ENV,
+    resolveCurrentConnection: async () => server,
+    createGuardedFetch: provider.createGuardedFetch,
+  });
+  await assert.rejects(definition!.fetch!(toolCall(WRITE_TOOL, {
+    ...ARGUMENTS,
+    fields: { daily_budget: '22500', status: 'PAUSED' },
+  })), /status-only update/);
+  assert.deepEqual(provider.events, []);
 });
 
 test('RuntimePlanV2 verifies ownership before sending a selected write', async () => {
