@@ -20,7 +20,10 @@ import {
   metaAdsRuntimePropertyNames,
   metaAdsToolEffect,
 } from './meta-ads-policy.ts';
-import { sanitizeMetaAdsAccountHelperResponse } from './meta-ads-response.ts';
+import {
+  advertiseMetaAdsAccountHelperOutput,
+  sanitizeMetaAdsAccountHelperResponse,
+} from './meta-ads-response.ts';
 import {
   isCurrentMcpOAuthConnection,
   resolveMcpOAuthAccessToken,
@@ -143,6 +146,7 @@ export function resolveProfileMcpConnections(
       });
       const fetchWithLiveCustomHeaders = withMcpHttpTelemetry(async (input, init) => {
         const request = new Request(input, init);
+        const advertisedRequest = usesMetaAdsOutputAdapter(server) ? request.clone() : undefined;
         const invocation = serverNeedsInvocationGuard(server)
           ? await mcpToolInvocation(request) : undefined;
         if (invocation) assertServerMcpToolInvocation(server, allowedTools, invocation);
@@ -166,12 +170,15 @@ export function resolveProfileMcpConnections(
         }
         const outbound = new Request(request, { headers });
         const response = await guardedFetch(outbound);
+        const advertised = advertisedRequest
+          ? await advertiseMetaAdsAccountHelperOutput(advertisedRequest, response)
+          : response;
         if (!liveMetaServer || !invocation) {
-          return response;
+          return advertised;
         }
         const sanitized = invocation.name === META_ADS_ACCOUNT_HELPER
-          ? await sanitizeAccountHelperResponse(liveMetaServer, response)
-          : response;
+          ? await sanitizeAccountHelperResponse(liveMetaServer, advertised)
+          : advertised;
         await requireCurrentProfileMcpServer(server, opts);
         return sanitized;
       }, { connectionId: server.id, authMode: server.authMode });
@@ -266,6 +273,7 @@ export function resolveRuntimePlanMcpConnections(
         }
       }
       const { server, env } = await liveServer();
+      const advertisedRequest = usesMetaAdsOutputAdapter(server) ? request.clone() : undefined;
       if (invocation && isMetaAdsMcpConnection(server)) {
         assertServerMcpToolInvocation(server, effectiveDeclaration.allowedTools, invocation);
       }
@@ -284,12 +292,15 @@ export function resolveRuntimePlanMcpConnections(
         headers.set(name, value);
       }
       const response = await guardedFetch(new Request(request, { headers }));
+      const advertised = advertisedRequest
+        ? await advertiseMetaAdsAccountHelperOutput(advertisedRequest, response)
+        : response;
       if (!invocation || !isMetaAdsMcpConnection(server) || !isMetaAdsHelperTool(invocation.name)) {
-        return response;
+        return advertised;
       }
       const sanitized = invocation.name === META_ADS_ACCOUNT_HELPER
-        ? await sanitizeAccountHelperResponse(server, response)
-        : response;
+        ? await sanitizeAccountHelperResponse(server, advertised)
+        : advertised;
       await liveServer();
       return sanitized;
     }, { connectionId: declaration.id, authMode: declaration.authMode });
@@ -473,11 +484,14 @@ async function resolveOneServer(
             return resolveLegacyMcpHeaders(current, opts);
           },
           transformResponse: async (request: Request, response: Response) => {
+            const advertised = usesMetaAdsOutputAdapter(server)
+              ? await advertiseMetaAdsAccountHelperOutput(request, response)
+              : response;
             const invocation = await mcpToolInvocation(request);
-            if (invocation?.name !== META_ADS_ACCOUNT_HELPER) return response;
+            if (invocation?.name !== META_ADS_ACCOUNT_HELPER) return advertised;
             const current = await requireCurrentLegacyMcpServer(server, opts);
             assertServerMcpToolInvocation(current, runtimeAllowedToolsForServer(server), invocation);
-            const sanitized = await sanitizeAccountHelperResponse(current, response);
+            const sanitized = await sanitizeAccountHelperResponse(current, advertised);
             await requireCurrentLegacyMcpServer(server, opts);
             return sanitized;
           },
@@ -611,6 +625,17 @@ function runtimeAllowedToolsForServer(server: McpConnectionConfig): string[] {
   return isMetaAdsMcpConnection(server)
     ? metaAdsRuntimeAllowedTools(server)
     : [...server.allowedTools];
+}
+
+function usesMetaAdsOutputAdapter(connection: Pick<McpConnectionConfig, 'url'>): boolean {
+  try {
+    const url = new URL(connection.url);
+    const path = decodeURIComponent(url.pathname).replace(/\/+$/, '');
+    return url.protocol === 'https:' && url.hostname === 'mcp.facebook.com' && url.port === '' &&
+      url.username === '' && url.password === '' && url.search === '' && url.hash === '' && path === '/ads';
+  } catch {
+    return false;
+  }
 }
 
 function serverNeedsInvocationGuard(server: McpConnectionConfig): boolean {

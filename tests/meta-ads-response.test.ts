@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { sanitizeMetaAdsAccountHelperResponse } from '../src/config/meta-ads-response.ts';
+import {
+  META_ADS_ACCOUNT_HELPER_DESCRIPTION,
+  advertiseMetaAdsAccountHelperOutput,
+  sanitizeMetaAdsAccountHelperResponse,
+} from '../src/config/meta-ads-response.ts';
 
 const approved = ['144860434', 'act_144860434'];
 
@@ -10,6 +14,81 @@ function rpcResult(result: Record<string, unknown>, contentType = 'application/j
     headers: { 'content-type': contentType },
   });
 }
+
+const toolsListRequest = new Request('https://mcp.facebook.com/ads', {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+});
+
+function toolsListEnvelope() {
+  return { jsonrpc: '2.0', id: 2, result: { tools: [
+    { name: 'ads_get_ad_accounts', description: 'Provider pagination instructions.',
+      inputSchema: { type: 'object', properties: { cursor: { type: 'string' } } },
+      outputSchema: { type: 'object', properties: { accounts: { type: 'array' } }, required: ['accounts'] } },
+    { name: 'ads_get_ad_entities', description: 'Keep me.', inputSchema: { type: 'object' },
+      outputSchema: { type: 'object', properties: { data: { type: 'array' } } } },
+  ], nextCursor: 'next-page' } };
+}
+
+test('account helper advertises the sanitizer-owned JSON output contract', async () => {
+  const response = await advertiseMetaAdsAccountHelperOutput(toolsListRequest, Response.json(toolsListEnvelope()));
+  const body = await response.json() as { result: { tools: Array<Record<string, unknown>>; nextCursor: string } };
+  const helper = body.result.tools[0]!;
+  assert.equal(helper.description, META_ADS_ACCOUNT_HELPER_DESCRIPTION);
+  assert.deepEqual(helper.inputSchema, toolsListEnvelope().result.tools[0]!.inputSchema);
+  assert.deepEqual(helper.outputSchema, {
+    type: 'object',
+    properties: { ad_accounts: {
+      type: 'array', maxItems: 50, items: {
+        type: 'object',
+        properties: {
+          ad_account_id: { type: 'string' },
+          is_ads_mcp_enabled: { type: 'boolean' },
+          is_queryable: { type: 'boolean' },
+          not_queryable_reason: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          currency: { type: 'string' },
+          account_status: { anyOf: [{ type: 'string' }, { type: 'integer' }] },
+          ad_account_name: { type: 'string' },
+        },
+        required: ['ad_account_id', 'is_ads_mcp_enabled', 'is_queryable'],
+        additionalProperties: false,
+      },
+    } },
+    required: ['ad_accounts'],
+    additionalProperties: false,
+  });
+  assert.deepEqual(body.result.tools[1], toolsListEnvelope().result.tools[1]);
+  assert.equal(body.result.nextCursor, 'next-page');
+});
+
+test('account helper advertises the same contract through SSE and preserves notifications', async () => {
+  const notification = { jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 1 } };
+  const response = await advertiseMetaAdsAccountHelperOutput(toolsListRequest, new Response(
+    `event: message\ndata: ${JSON.stringify(notification)}\n\nevent: message\ndata: ${JSON.stringify(toolsListEnvelope())}\n\n`,
+    { headers: { 'content-type': 'text/event-stream' } },
+  ));
+  const body = await response.text();
+  const payloads = [...body.matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]!) as Record<string, unknown>);
+  assert.equal(payloads.length, 2);
+  assert.deepEqual(payloads[0], notification);
+  const result = payloads[1]!.result as { tools: Array<Record<string, unknown>> };
+  const schema = result.tools[0]!.outputSchema as { required: string[] };
+  assert.deepEqual(schema.required, ['ad_accounts']);
+  assert.deepEqual(result.tools[1], toolsListEnvelope().result.tools[1]);
+});
+
+test('account helper output advertisement fails closed on malformed JSON-RPC listings', async () => {
+  for (const payload of [
+    { jsonrpc: '2.0', id: {}, result: { tools: [] } },
+    { jsonrpc: '2.0', id: 1, error: { code: -1 }, result: { tools: [] } },
+    { jsonrpc: '2.0', id: 1, result: { tools: [
+      { name: 'ads_get_ad_accounts' }, { name: 'ads_get_ad_accounts' },
+    ] } },
+  ]) {
+    await assert.rejects(advertiseMetaAdsAccountHelperOutput(toolsListRequest, Response.json(payload)),
+      /Meta Ads tool discovery returned an unsupported response/);
+  }
+});
 
 test('account helper rebuilds JSON with approved canonical records only', async () => {
   const provider = {

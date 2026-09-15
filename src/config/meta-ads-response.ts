@@ -1,9 +1,42 @@
-import { canonicalMetaAdsAccountId } from './meta-ads-policy.ts';
+import { META_ADS_ACCOUNT_HELPER, canonicalMetaAdsAccountId } from './meta-ads-policy.ts';
 
 const MAX_META_ADS_HELPER_RESPONSE_BYTES = 512_000;
+const MAX_META_ADS_TOOL_LIST_BYTES = 8_000_000;
 const MAX_META_ADS_ACCOUNT_RECORDS = 1_000;
 const MAX_META_ADS_ACCOUNT_TEXT = 240;
 const META_ADS_HELPER_RESPONSE_DEADLINE_MS = 30_000;
+
+export const META_ADS_ACCOUNT_HELPER_DESCRIPTION =
+  'Verify which owner-approved Meta ad accounts are enabled and queryable. ' +
+  'Returns only approved account records in ad_accounts. Do not send ad-account IDs, cursors, or pagination arguments.';
+
+export const META_ADS_ACCOUNT_HELPER_OUTPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    ad_accounts: {
+      type: 'array',
+      // Access policy permits at most 50 approved account IDs, so the
+      // reconstructed result cannot legitimately contain more rows.
+      maxItems: 50,
+      items: {
+        type: 'object',
+        properties: {
+          ad_account_id: { type: 'string' },
+          is_ads_mcp_enabled: { type: 'boolean' },
+          is_queryable: { type: 'boolean' },
+          not_queryable_reason: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          currency: { type: 'string' },
+          account_status: { anyOf: [{ type: 'string' }, { type: 'integer' }] },
+          ad_account_name: { type: 'string' },
+        },
+        required: ['ad_account_id', 'is_ads_mcp_enabled', 'is_queryable'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['ad_accounts'],
+  additionalProperties: false,
+} as const;
 
 interface SafeMetaAdsAccount {
   ad_account_id: string;
@@ -48,13 +81,43 @@ export async function sanitizeMetaAdsAccountHelperResponse(
   return rebuiltResponse(response, JSON.stringify(sanitized), 'application/json');
 }
 
-async function readBoundedText(response: Response, deadlineMs: number): Promise<string> {
+/**
+ * The account helper result is reconstructed by Chickpea, so the provider's
+ * output schema no longer describes what the MCP client receives. Replace only
+ * that advertised contract; input schemas and every other tool stay untouched.
+ */
+export async function advertiseMetaAdsAccountHelperOutput(
+  request: Request,
+  response: Response,
+): Promise<Response> {
+  if (!(await isToolsListRequest(request)) || !response.ok) return response;
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+  const body = await readBoundedText(
+    response,
+    META_ADS_HELPER_RESPONSE_DEADLINE_MS,
+    MAX_META_ADS_TOOL_LIST_BYTES,
+    (reason) => unsupportedToolListing(reason),
+  );
+  if (contentType.includes('text/event-stream')) {
+    return rebuiltResponse(response, rewriteToolsListSse(body), 'text/event-stream');
+  }
+  if (!contentType.includes('application/json')) throw unsupportedToolListing('content-type');
+  const payload = parseJson(body, response);
+  return rebuiltResponse(response, JSON.stringify(rewriteToolsListPayload(payload)), 'application/json');
+}
+
+async function readBoundedText(
+  response: Response,
+  deadlineMs: number,
+  maxBytes = MAX_META_ADS_HELPER_RESPONSE_BYTES,
+  failure: (reason: string) => Error = (reason) => unsupportedResponse(response, reason),
+): Promise<string> {
   if (!Number.isFinite(deadlineMs) || deadlineMs <= 0 || deadlineMs > META_ADS_HELPER_RESPONSE_DEADLINE_MS) {
     throw new RangeError('Meta Ads helper response deadline is invalid.');
   }
   const declared = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > MAX_META_ADS_HELPER_RESPONSE_BYTES) {
-    throw unsupportedResponse(response, 'response-size');
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw failure('response-size');
   }
   if (!response.body) return '';
   const reader = response.body.getReader();
@@ -66,9 +129,9 @@ async function readBoundedText(response: Response, deadlineMs: number): Promise<
       const chunk = await reader.read();
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
-      if (bytes > MAX_META_ADS_HELPER_RESPONSE_BYTES) {
+      if (bytes > maxBytes) {
         await reader.cancel();
-        throw unsupportedResponse(response, 'response-size');
+        throw failure('response-size');
       }
       value += decoder.decode(chunk.value, { stream: true });
     }
@@ -79,7 +142,7 @@ async function readBoundedText(response: Response, deadlineMs: number): Promise<
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       void reader.cancel();
-      reject(unsupportedResponse(response, 'response-deadline'));
+      reject(failure('response-deadline'));
     }, deadlineMs);
   });
   try {
@@ -88,6 +151,73 @@ async function readBoundedText(response: Response, deadlineMs: number): Promise<
     if (timer !== undefined) clearTimeout(timer);
     reader.releaseLock();
   }
+}
+
+async function isToolsListRequest(request: Request): Promise<boolean> {
+  if (request.method !== 'POST') return false;
+  try {
+    const value = await request.clone().json() as unknown;
+    return isRecord(value) && value.method === 'tools/list';
+  } catch {
+    return false;
+  }
+}
+
+function rewriteToolsListPayload(value: unknown): Record<string, unknown> {
+  if (!isRecord(value) || value.jsonrpc !== '2.0' || !('id' in value) || 'error' in value ||
+      !(['string', 'number'].includes(typeof value.id) || value.id === null) ||
+      !isRecord(value.result) || !Array.isArray(value.result.tools)) {
+    throw unsupportedToolListing('json-rpc');
+  }
+  let matches = 0;
+  const tools = value.result.tools.map((tool) => {
+    if (!isRecord(tool) || tool.name !== META_ADS_ACCOUNT_HELPER) return tool;
+    matches += 1;
+    return {
+      ...tool,
+      description: META_ADS_ACCOUNT_HELPER_DESCRIPTION,
+      outputSchema: META_ADS_ACCOUNT_HELPER_OUTPUT_SCHEMA,
+    };
+  });
+  if (matches > 1) throw unsupportedToolListing('duplicate-account-helper');
+  return { ...value, result: { ...value.result, tools } };
+}
+
+function rewriteToolsListSse(body: string): string {
+  const events = body.replace(/\r\n/g, '\n').split('\n\n').filter((block) => block.trim());
+  let responses = 0;
+  const rewritten = events.map((event) => {
+    const lines = event.split('\n');
+    const dataIndexes: number[] = [];
+    const data: string[] = [];
+    for (const [index, line] of lines.entries()) {
+      if (line.startsWith('data:')) {
+        dataIndexes.push(index);
+        data.push(line.slice(5).replace(/^ /, ''));
+      } else if (line && !line.startsWith(':') && !line.startsWith('event:') &&
+          !line.startsWith('id:') && !line.startsWith('retry:')) {
+        throw unsupportedToolListing('sse-field');
+      }
+    }
+    if (data.length === 0) return event;
+    let value: unknown;
+    try {
+      value = JSON.parse(data.join('\n')) as unknown;
+    } catch {
+      throw unsupportedToolListing('invalid-json');
+    }
+    if (isRecord(value) && isRecord(value.result) && Array.isArray(value.result.tools)) {
+      value = rewriteToolsListPayload(value);
+      responses += 1;
+    }
+    const first = dataIndexes[0]!;
+    return lines.flatMap((line, index) => {
+      if (index === first) return [`data: ${JSON.stringify(value)}`];
+      return dataIndexes.includes(index) ? [] : [line];
+    }).join('\n');
+  });
+  if (responses !== 1) throw unsupportedToolListing('sse-response-count');
+  return `${rewritten.join('\n\n')}\n\n`;
 }
 
 function parseSingleSsePayload(body: string, response: Response): unknown {
@@ -267,6 +397,10 @@ function unsupportedResponse(response: Response, reason: string, value?: unknown
   return new Error(
     `Meta Ads account verification returned an unsupported response (${reason}; response-kind=${responseKind}; top-level=${topLevel}).`,
   );
+}
+
+function unsupportedToolListing(reason: string): Error {
+  return new Error(`Meta Ads tool discovery returned an unsupported response (${reason}).`);
 }
 
 function boundedText(value: unknown): value is string {
