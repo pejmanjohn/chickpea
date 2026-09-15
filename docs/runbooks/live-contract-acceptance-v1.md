@@ -7,6 +7,11 @@
 
 This record separates deterministic verifier checks from live Chickpea acceptance. A green local suite does not prove Slack, Admin, provider, gateway, or cleanup behavior on a serving target.
 
+Historical UI mutex references below describe earlier checks and requirements.
+The current workflow uses [task-owned tabs](../../qa/live/operator/hosts.md)
+without a browser-wide or host-wide UI lock. Target claims, cleanup ownership,
+and evidence requirements still apply; this policy change adds no live acceptance.
+
 ## Integration status
 
 The two-lane environment integration now emits selected-target v2 private
@@ -91,14 +96,14 @@ Before live scoring, expose any required durable truth through a bounded read-on
 
 1. Claim one permitted target. Consume `env target <alias>` and `env attest <alias>` without copying immutable IDs into another format.
 2. Resolve every required actor alias to a Computer Use-addressable browser session. The same Owner-capable actor may fulfill the Owner and Member aliases for these non-denial smoke variants; do not infer coverage of distinct-role or access-denial scenarios.
-3. Implement the verifier-owned attended coordinator and prove target lock, safe clear-lock, UI mutex/browser reservation, challenge, receipt, visible readback, exact cleanup, and postflight behavior without a product mutation.
+3. Implement the verifier-owned attended coordinator and prove target lock, safe clear-lock, independent task-owned tabs, challenge, receipt, visible readback, exact cleanup, and postflight behavior without a product mutation.
 4. Make every selected UI observation recipe available, run transport-aware doctor, and require a ready result.
 5. After the environment handoff releases it, take an ordinary exclusive claim on clean `cobalt` and start one immutable protected origin/main Computer Use smoke at `LC01-V1-create-welcome`.
 6. If it passes with cleanup proof, clean and release the target, then return it to normal branch-lane use. Do not persist a qualification mode or dual-role registry state or require a third environment.
 
-Both color targets bind the same exact four-variant smoke inventory. They run a selected `case` from that inventory or the complete `smoke`; the Phase 1 environment registry rejects `deep`. Different targets may run concurrently on one host; only Computer Use action, input, or observation windows take the short host-wide UI mutex.
+Both color targets bind the same exact four-variant smoke inventory. They run a selected `case` from that inventory or the complete `smoke`; the Phase 1 environment registry rejects `deep`. Different targets may run concurrently on one host using their own browser tabs.
 
-Fable 5.1's final plan review required this foundation/live-completion split, exact shared smoke inventory, transport-aware attestation, derived lock path, UI-only scored journey, host-wide UI mutex, and verifier-owned coordinator boundaries. The environment scope keeps first-install automation and deep qualification beyond Phase 1.
+Fable 5.1's historical plan review required this foundation/live-completion split, exact shared smoke inventory, transport-aware attestation, derived lock path, UI-only scored journey, host-wide UI mutex, and verifier-owned coordinator boundaries. The UI mutex requirement has since been removed. The environment scope keeps first-install automation and deep qualification beyond Phase 1.
 
 ## Acceptance rule
 

@@ -54,7 +54,7 @@ an unregistered account/target, a broader grant, unavailable credentials, MFA,
 CAPTCHA, billing, or a tool-enforced approval. Use existing authenticated sessions
 and approved credential mechanisms without recording secrets. Do not bypass a
 tool denial. Name the exact blocked action and reason, ask once, retain the
-pending browser, and continue independent checks. Report blocked checks as
+pending tab, and continue independent checks. Report blocked checks as
 blocked rather than passing them or repeatedly asking the same question.
 
 ## Node baseline
@@ -113,9 +113,9 @@ separate requirements.
    Link a separately scoped follow-up with `--parent-run` and `--original-case`;
    generate `report --family` so earlier coverage and cleanup remain visible.
 
-Ordinary contention should continue automatically with the bounded lane, host,
-and browser wait commands. No user recheck is needed when the existing owner
-releases normally. A deadline, unsafe ownership, stale source, orphan marker,
+Ordinary contention should continue automatically with the bounded lane and
+expensive-check host wait commands. No user recheck is needed when the existing
+owner releases normally. A deadline, unsafe ownership, stale source, orphan marker,
 unavailable account, or unreconciled action needs its specific recovery; waiting
 longer does not resolve it. Continue independent work and preserve the blocker.
 
@@ -128,8 +128,10 @@ Give each agent a clear scope, code ownership, and the required
 [repair handoff](recovery.md#repair-priority-and-handoff). Group suspected common
 causes; serialize overlapping edits or assign them to one repair owner.
 
-Keep one verifier responsible for live actions, browser control, fixtures,
-claims, deployment, cleanup, and run-record updates. Repair agents work in
+Keep one verifier per run responsible for live actions, its own browser tabs,
+fixtures, claims, deployment, cleanup, and run-record updates. Independent runs
+may use separate tabs in the same browser; follow [hosts.md](hosts.md) for actual
+shared resources. Repair agents work in
 [isolated worktrees](environments.md#repair-worktrees-and-serving-candidates)
 without live or shared resource access. Delegation does not expand edit, landing,
 deployment, or account authority. When tools or safe independent work are
@@ -169,8 +171,8 @@ After ambiguity, observe the actual UI and native dialogs before replaying. Repl
 requires authoritative evidence that the action did not apply. If it applied,
 resolve and grade the original attempt. Preserve its first outcome. Request human
 input only for the missing capabilities listed above, then continue independent
-cases. Use the short UI mutex for competing browser actions, release it during
-human waits, and retain the affected browser reservation.
+cases. Keep a pending human-input tab with its owning task. Other tasks can
+continue in their own tabs without a browser-wide or machine-wide UI lock.
 
 Return mode, target, source, passes, failures, blocked/untested coverage, cleanup,
 and measured time/cost gaps. Distinguish product/model failures from tool or

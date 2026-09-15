@@ -327,8 +327,10 @@ Before any provider mutation:
    on a Slack developer page.
 2. Verify the native Slack app returns accessibility text and a screenshot for
    workspace navigation and a normal message surface. Do not type or send.
-3. Reserve one private browser alias for each human actor. The current Phase 1
-   smoke inventory needs one actor; use more only when an enabled case requires
+3. Identify one private browser alias for each human actor. This names the actor's
+   session; it does not reserve the browser. Use
+   [task-owned tabs](../../qa/live/operator/hosts.md). The current Phase 1 smoke
+   inventory needs one actor; use more only when an enabled case requires
    distinct identities.
 4. Read the active sandbox count, monthly provisioning count, and eligibility.
 5. Read Cloudflare Worker, D1, and Durable Object counts. Compare them with the

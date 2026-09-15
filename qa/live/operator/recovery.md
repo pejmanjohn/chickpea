@@ -61,11 +61,14 @@ disabled/archive intent and must never reactivate grants while retrying cleanup.
 
 1. Record an `ambiguous` finish. A timeout describes an observation failure;
    it does not establish whether the product action applied.
-2. Reacquire the browser/app and obtain a fresh state with currently supported
-   tool APIs. Resolve the exact target by current URL, workspace, and run marker.
+2. Reconnect to the task's own tab/window and obtain a fresh state with currently
+   supported tool APIs. Resolve the exact target by current URL, workspace, and
+   run marker.
    A retained tab handle may have disappeared. Inspect the native dialog and
    browser state independently when they disagree. Do not dismiss an unidentified
-   dialog or send a partial composer draft.
+   dialog or send a partial composer draft. If the tab is gone, create a new owned
+   tab; do not take over another task's tab. Follow [hosts.md](hosts.md) when an
+   operation affects a shared session or native input.
 3. Inspect authoritative state for the exact operation: sent Slack message,
    frozen proposal/apply result, saved Agent value, provider row, connection, or
    schedule occurrence. Reconcile as `applied`, `not_applied`, or `unknown`, with

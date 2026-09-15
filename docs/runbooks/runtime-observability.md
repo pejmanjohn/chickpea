@@ -246,7 +246,8 @@ calling them alone does not consume a stream; do not build another client.
    record. Avoid `--status error`, IP, or text filters that would hide successful
    invocations containing failed tools. `--search` matches log text, not a
    general trace query. Capture each evidenced Worker separately if necessary.
-4. Perform the single attributable action under the existing claim/UI lock.
+4. Perform the single attributable action under the existing environment claim,
+   using the task's own browser tab.
    Stop with Ctrl-C after its outcome or the deadline, even if no event arrives;
    confirm the tail process exited. Do not leave capture running across OAuth
    waits. Record capture start/end, readiness, filters, sampling warnings, and
