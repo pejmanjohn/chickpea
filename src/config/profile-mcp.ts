@@ -7,7 +7,27 @@ import type {
 
 import { mcpDebugText } from './mcp-errors.ts';
 import { withMcpHttpTelemetry } from './mcp-telemetry.ts';
-import { assertMcpToolArguments } from './mcp-tool-policy.ts';
+import { assertMcpToolArgumentKeys, assertMcpToolArguments } from './mcp-tool-policy.ts';
+import {
+  META_ADS_ACCOUNT_HELPER,
+  assertMetaAdsHelperArguments,
+  isMetaAdsMcpConnection,
+  isMetaAdsHelperTool,
+  isMetaAdsAccountScopeTool,
+  isMetaAdsWriteTool,
+  metaAdsApprovedAccountIds,
+  metaAdsRuntimeAllowedTools,
+  metaAdsRuntimeConstraint,
+  metaAdsRuntimePolicyConstraint,
+  metaAdsRuntimePropertyNames,
+  metaAdsToolEffect,
+} from './meta-ads-policy.ts';
+import {
+  advertiseMetaAdsAccountHelperOutput,
+  sanitizeMetaAdsAccountHelperResponse,
+} from './meta-ads-response.ts';
+import { assertMetaAdsWriteAccountOwnership, META_ADS_OWNERSHIP_ORIGIN } from './meta-ads-write-guard.ts';
+import { META_ADS_OAUTH_MANAGEMENT_SCOPE } from './mcp-oauth-clients.ts';
 import {
   isCurrentMcpOAuthConnection,
   resolveMcpOAuthAccessToken,
@@ -74,6 +94,10 @@ interface ResolveProfileMcpToolsOptions {
   ) => Promise<string>;
   /** U6 account seam; rechecks binding/actor before returning a bearer. */
   resolveBearerCredential?: (connectionId: string) => Promise<string>;
+  /** Live account/profile projection used to fence every legacy invocation. */
+  resolveCurrentConnection?: (connectionId: string) => Promise<McpConnectionConfig | undefined>;
+  /** Test seam; production uses the SSRF-guarded fetch implementation. */
+  createGuardedFetch?: typeof createMcpGuardedFetch;
   /** Best-effort policy-only lifecycle hook; never receives headers or secrets. */
   onConnectionStart?: (connection: { id: string; displayName: string }) => void;
 }
@@ -86,6 +110,8 @@ interface ResolveProfileMcpConnectionsOptions {
     input: ResolveMcpOAuthAccessInput,
   ) => Promise<string>;
   resolveBearerCredential?: (connectionId: string) => Promise<string>;
+  /** Test/account seam; production falls back to the live Agent profile. */
+  resolveCurrentConnection?: (connectionId: string) => Promise<McpConnectionConfig | undefined>;
   onConnectionStart?: (connection: { id: string; displayName: string }) => void;
   /** Test seam; production uses the SSRF-guarded fetch implementation. */
   createGuardedFetch?: typeof createMcpGuardedFetch;
@@ -107,6 +133,8 @@ export function resolveProfileMcpConnections(
   return (servers ?? [])
     .filter(isProfileMcpServerEligible)
     .flatMap((server) => {
+      const allowedTools = runtimeAllowedToolsForServer(server);
+      if (allowedTools.length === 0) return [];
       const validated = validateMcpUrl(server.url);
       if (!validated.ok) {
         console.warn(`[chickpea] MCP connection ${server.id} skipped: blocked URL`);
@@ -122,6 +150,16 @@ export function resolveProfileMcpConnections(
       });
       const fetchWithLiveCustomHeaders = withMcpHttpTelemetry(async (input, init) => {
         const request = new Request(input, init);
+        const advertisedRequest = usesMetaAdsOutputAdapter(server) ? request.clone() : undefined;
+        const invocation = serverNeedsInvocationGuard(server)
+          ? await mcpToolInvocation(request) : undefined;
+        if (invocation) assertServerMcpToolInvocation(server, allowedTools, invocation);
+        const liveMetaServer = invocation && isMetaAdsMcpConnection(server)
+          ? await requireCurrentProfileMcpServer(server, opts)
+          : undefined;
+        if (liveMetaServer && invocation) {
+          assertServerMcpToolInvocation(liveMetaServer, allowedTools, invocation);
+        }
         const customHeaders = await resolveMcpHeaders(
           { agentId: opts.agentId, connectionId: server.id },
           server.headerNames,
@@ -134,13 +172,30 @@ export function resolveProfileMcpConnections(
         ))) {
           headers.set(name, value);
         }
-        return guardedFetch(new Request(request, { headers }));
+        const outbound = new Request(request, { headers });
+        if (liveMetaServer && invocation && isMetaAdsWriteTool(invocation.name)) {
+          await assertMetaWriteOwnership(liveMetaServer, invocation, headers, opts.createGuardedFetch, request.signal);
+          const current = await requireCurrentProfileMcpServer(server, opts);
+          assertServerMcpToolInvocation(current, allowedTools, invocation);
+        }
+        const response = await guardedFetch(outbound);
+        const advertised = advertisedRequest
+          ? await advertiseMetaAdsAccountHelperOutput(advertisedRequest, response)
+          : response;
+        if (!liveMetaServer || !invocation) {
+          return advertised;
+        }
+        const sanitized = invocation.name === META_ADS_ACCOUNT_HELPER
+          ? await sanitizeAccountHelperResponse(liveMetaServer, advertised)
+          : advertised;
+        await requireCurrentProfileMcpServer(server, opts);
+        return sanitized;
       }, { connectionId: server.id, authMode: server.authMode });
       return [{
         name: server.id,
         url: validated.url,
         transport: server.transport,
-        tools: [...server.allowedTools],
+        tools: allowedTools,
         optional: true,
         timeoutMs: 30_000,
         fetch: fetchWithLiveCustomHeaders,
@@ -162,13 +217,29 @@ export function resolveRuntimePlanMcpConnections(
   declarations: readonly RuntimePlanMcpConnectionV2[],
   onConnectionStart?: (connection: { id: string; displayName: string }) => void,
   accountContext?: { workspaceId: string; actorMembershipId: string },
+  testOptions?: { createGuardedFetch?: typeof createMcpGuardedFetch },
 ): McpConnectionDefinition[] {
-  return declarations.map((declaration) => {
+  return declarations.flatMap((declaration) => {
+    const allowedTools = runtimeAllowedToolsForDeclaration(declaration);
+    if (allowedTools.length === 0) return [];
+    const effectiveDeclaration: RuntimePlanMcpConnectionV2 = {
+      ...declaration,
+      allowedTools,
+      ...(declaration.readOnlyTools
+        ? { readOnlyTools: declaration.readOnlyTools.filter((tool) => allowedTools.includes(tool)) } : {}),
+      ...(declaration.writeTools
+        ? { writeTools: declaration.writeTools.filter((tool) => allowedTools.includes(tool)) } : {}),
+      ...(declaration.toolArgumentConstraints
+        ? { toolArgumentConstraints: Object.fromEntries(Object.entries(declaration.toolArgumentConstraints)
+            .filter(([tool]) => allowedTools.includes(tool))) } : {}),
+    };
     const validated = validateMcpUrl(declaration.url);
     if (!validated.ok) {
       throw new Error(`Runtime plan MCP connection ${declaration.id} has a blocked URL.`);
     }
-    const guardedFetch = createMcpGuardedFetch({ allowedOrigin: new URL(validated.url).origin });
+    const guardedFetch = (testOptions?.createGuardedFetch ?? createMcpGuardedFetch)({
+      allowedOrigin: new URL(validated.url).origin,
+    });
     const liveServer = async (): Promise<{
       server: McpConnectionConfig;
       env: PlatformEnv | undefined;
@@ -188,7 +259,7 @@ export function resolveRuntimePlanMcpConnections(
         const profile = await config.getAgent(profileId);
         server = profile.mcpServers.find((candidate) => candidate.id === declaration.id);
       }
-      if (!server || !runtimeMcpDeclarationStillAllowed(server, declaration)) {
+      if (!server || !runtimeMcpDeclarationStillAllowed(server, effectiveDeclaration)) {
         throw new Error('MCP connection policy changed; a new agent instance is required.');
       }
       try {
@@ -200,22 +271,21 @@ export function resolveRuntimePlanMcpConnections(
     };
     const fetchWithLiveHeaders = withMcpHttpTelemetry(async (input, init) => {
       const request = new Request(input, init);
-      if (request.method === 'POST') {
-        const rpc = await request.clone().json() as { method?: string; params?: { name?: string; arguments?: unknown } };
-        if (!rpc || typeof rpc !== 'object' || Array.isArray(rpc)) {
-          throw new Error('Invalid MCP tool invocation.');
+      const invocation = await mcpToolInvocation(request);
+      if (invocation) {
+        if (!effectiveDeclaration.allowedTools.includes(invocation.name)) {
+          throw new Error('MCP tool is not selected for this Agent.');
         }
-        if (rpc.method === 'tools/call') {
-          if (typeof rpc.params?.name !== 'string') throw new Error('Invalid MCP tool invocation.');
-          if (!declaration.allowedTools.includes(rpc.params.name)) {
-            throw new Error('MCP tool is not selected for this Agent.');
-          }
-          if (declaration.toolArgumentConstraints) {
-            assertMcpToolArguments(rpc.params.name, rpc.params.arguments, declaration.toolArgumentConstraints);
-          }
+        if (effectiveDeclaration.toolArgumentConstraints &&
+            !(isMetaAdsMcpConnection(effectiveDeclaration) && isMetaAdsAccountScopeTool(invocation.name))) {
+          assertMcpToolArguments(invocation.name, invocation.arguments, effectiveDeclaration.toolArgumentConstraints);
         }
       }
       const { server, env } = await liveServer();
+      const advertisedRequest = usesMetaAdsOutputAdapter(server) ? request.clone() : undefined;
+      if (invocation && isMetaAdsMcpConnection(server)) {
+        assertServerMcpToolInvocation(server, effectiveDeclaration.allowedTools, invocation);
+      }
       const customHeaders = accountContext
         ? (await resolveConnectionAccountMcpSecrets(server, (connectionAccountId) =>
             resolveConnectionSecretForInvocation({ ...accountContext, config: getConfigStore(env),
@@ -230,13 +300,30 @@ export function resolveRuntimePlanMcpConnections(
       ))) {
         headers.set(name, value);
       }
-      return guardedFetch(new Request(request, { headers }));
+      if (invocation && isMetaAdsMcpConnection(server) && isMetaAdsWriteTool(invocation.name)) {
+        await assertMetaWriteOwnership(server, invocation, headers, testOptions?.createGuardedFetch, request.signal);
+        const current = (await liveServer()).server;
+        assertUnchangedMetaInvocationSchema(server, current, invocation.name);
+        assertServerMcpToolInvocation(current, effectiveDeclaration.allowedTools, invocation);
+      }
+      const response = await guardedFetch(new Request(request, { headers }));
+      const advertised = advertisedRequest
+        ? await advertiseMetaAdsAccountHelperOutput(advertisedRequest, response)
+        : response;
+      if (!invocation || !isMetaAdsMcpConnection(server)) {
+        return advertised;
+      }
+      const sanitized = invocation.name === META_ADS_ACCOUNT_HELPER
+        ? await sanitizeAccountHelperResponse(server, advertised)
+        : advertised;
+      await liveServer();
+      return sanitized;
     }, { connectionId: declaration.id, authMode: declaration.authMode });
     return {
       name: declaration.id,
       url: validated.url,
       transport: declaration.transport,
-      tools: [...declaration.allowedTools],
+      tools: allowedTools,
       optional: declaration.optional,
       timeoutMs: 30_000,
       fetch: fetchWithLiveHeaders,
@@ -279,6 +366,11 @@ function runtimeMcpDeclarationStillAllowed(
   server: McpConnectionConfig,
   declaration: RuntimePlanMcpConnectionV2,
 ): boolean {
+  if (isMetaAdsMcpConnection(server) !== isMetaAdsMcpConnection(declaration)) return false;
+  if (isMetaAdsMcpConnection(server) && declaration.allowedTools.some(isMetaAdsWriteTool) &&
+      (server.oauthScope !== declaration.oauthScope || server.oauthAttemptId !== declaration.oauthAttemptId)) {
+    return false;
+  }
   return isProfileMcpServerEligible(server) &&
     (declaration.displayName === undefined || server.displayName === declaration.displayName) &&
     declaration.allowedTools.every((tool) => {
@@ -390,41 +482,10 @@ async function resolveOneServer(
 ): Promise<ToolDefinition[]> {
   let debugHeaders: Readonly<Record<string, string>> = {};
   try {
-    const secrets = opts.resolveBearerCredential
-      ? await resolveConnectionAccountMcpSecrets(server, opts.resolveBearerCredential)
-      : await resolveMcpSecrets(
-          { agentId: opts.agentId, connectionId: server.id },
-          server.headerNames,
-          opts.env,
-        );
-    if (server.authMode === 'oauth') {
-      secrets.bearer = await (
-        opts.resolveOAuthAccessToken ??
-        ((input) => {
-          const configStore = getConfigStore(opts.env);
-          return resolveMcpOAuthAccessToken(input, {
-            settings: getSettingsStore(opts.env),
-            validateConnection: (ref, serverUrl) =>
-              isCurrentMcpOAuthConnection(
-                configStore,
-                ref,
-                serverUrl,
-              ),
-            onReauthorizationRequired: async (ref, serverUrl) => {
-              await configStore.markOAuthReauthorizationRequired({
-                lane: 'mcp',
-                ...ref,
-                serverUrl,
-              });
-            },
-          });
-        })
-      )({
-        ref: { agentId: opts.agentId, connectionId: server.id },
-        serverUrl: server.url,
-      });
-    }
-    const headers = buildMcpRequestHeaders(server.authMode, secrets);
+    const runtimeAllowed = new Set(runtimeAllowedToolsForServer(server));
+    if (runtimeAllowed.size === 0) return [];
+    const liveMetaPolicy = isMetaAdsMcpConnection(server);
+    const headers = liveMetaPolicy ? {} : await resolveLegacyMcpHeaders(server, opts);
     debugHeaders = headers;
     try {
       opts.onConnectionStart?.({ id: server.id, displayName: server.displayName });
@@ -437,13 +498,35 @@ async function resolveOneServer(
         url: server.url,
         transport: server.transport,
         headers,
+        ...(liveMetaPolicy ? {
+          resolveHeaders: async () => {
+            const current = await requireCurrentLegacyMcpServer(server, opts);
+            return resolveLegacyMcpHeaders(current, opts);
+          },
+          transformResponse: async (request: Request, response: Response) => {
+            const advertised = usesMetaAdsOutputAdapter(server)
+              ? await advertiseMetaAdsAccountHelperOutput(request, response)
+              : response;
+            const invocation = await mcpToolInvocation(request);
+            if (invocation?.name !== META_ADS_ACCOUNT_HELPER) return advertised;
+            const current = await requireCurrentLegacyMcpServer(server, opts);
+            assertServerMcpToolInvocation(current, runtimeAllowedToolsForServer(server), invocation);
+            const sanitized = await sanitizeAccountHelperResponse(current, advertised);
+            await requireCurrentLegacyMcpServer(server, opts);
+            return sanitized;
+          },
+        } : {}),
         ...(opts.connectTimeoutMs !== undefined ? { connectTimeoutMs: opts.connectTimeoutMs } : {}),
       },
       opts.connect,
+      opts.createGuardedFetch,
     );
 
     const approved = new Set(server.allowedTools);
-    const kept = connection.tools.filter((tool) => approved.has(stripPrefix(server.id, tool.name)));
+    const kept = connection.tools
+      .filter((tool) => approved.has(stripPrefix(server.id, tool.name)) &&
+        runtimeAllowed.has(stripPrefix(server.id, tool.name)))
+      .map((tool) => wrapLegacyMcpTool(server, tool, opts));
 
     if (kept.length === 0) {
       // Nothing survived the intersection — no reason to hold the connection.
@@ -464,6 +547,262 @@ async function resolveOneServer(
     );
     return [];
   }
+}
+
+async function resolveLegacyMcpHeaders(
+  server: McpConnectionConfig,
+  opts: ResolveProfileMcpToolsOptions,
+): Promise<Record<string, string>> {
+  const secrets = opts.resolveBearerCredential
+    ? await resolveConnectionAccountMcpSecrets(server, opts.resolveBearerCredential)
+    : await resolveMcpSecrets(
+        { agentId: opts.agentId, connectionId: server.id },
+        server.headerNames,
+        opts.env,
+      );
+  if (server.authMode === 'oauth') {
+    secrets.bearer = await (
+      opts.resolveOAuthAccessToken ??
+      ((input) => {
+        const configStore = getConfigStore(opts.env);
+        return resolveMcpOAuthAccessToken(input, {
+          settings: getSettingsStore(opts.env),
+          validateConnection: (ref, serverUrl) =>
+            isCurrentMcpOAuthConnection(configStore, ref, serverUrl),
+          onReauthorizationRequired: async (ref, serverUrl) => {
+            await configStore.markOAuthReauthorizationRequired({
+              lane: 'mcp',
+              ...ref,
+              serverUrl,
+            });
+          },
+        });
+      })
+    )({
+      ref: { agentId: opts.agentId, connectionId: server.id },
+      serverUrl: server.url,
+    });
+  }
+  return buildMcpRequestHeaders(server.authMode, secrets);
+}
+
+async function requireCurrentLegacyMcpServer(
+  frozen: McpConnectionConfig,
+  opts: ResolveProfileMcpToolsOptions,
+): Promise<McpConnectionConfig> {
+  const current = opts.resolveCurrentConnection
+    ? await opts.resolveCurrentConnection(frozen.id)
+    : (await getConfigStore(opts.env).getAgent(opts.agentId)).mcpServers
+        .find((candidate) => candidate.id === frozen.id);
+  if (!current || !legacyMcpServerStillAllowed(current, frozen)) {
+    throw new Error('MCP connection policy changed; a new agent instance is required.');
+  }
+  return current;
+}
+
+function legacyMcpServerStillAllowed(
+  current: McpConnectionConfig,
+  frozen: McpConnectionConfig,
+): boolean {
+  if (isMetaAdsMcpConnection(current) !== isMetaAdsMcpConnection(frozen)) return false;
+  if (!isProfileMcpServerEligible(current) || current.id !== frozen.id || current.url !== frozen.url ||
+      current.transport !== frozen.transport || current.authMode !== frozen.authMode ||
+      JSON.stringify([...current.headerNames].map((name) => name.toLowerCase()).sort()) !==
+        JSON.stringify([...frozen.headerNames].map((name) => name.toLowerCase()).sort())) return false;
+  if (isMetaAdsMcpConnection(frozen) &&
+      (current.oauthAttemptId !== frozen.oauthAttemptId || current.oauthScope !== frozen.oauthScope)) return false;
+  const currentAllowed = new Set(runtimeAllowedToolsForServer(current));
+  return runtimeAllowedToolsForServer(frozen).every((name) => {
+    if (!currentAllowed.has(name)) return false;
+    if (canonicalMcpToolConstraint(current, name) !== canonicalMcpToolConstraint(frozen, name)) return false;
+    if (!isMetaAdsMcpConnection(frozen)) return true;
+    const currentSchema = current.discoveredTools.find((tool) => tool.name === name)?.inputSchema?.fingerprint;
+    const frozenSchema = frozen.discoveredTools.find((tool) => tool.name === name)?.inputSchema?.fingerprint;
+    return Boolean(currentSchema && currentSchema === frozenSchema);
+  });
+}
+
+function canonicalMcpToolConstraint(server: McpConnectionConfig, name: string): string {
+  const constraint = server.toolPolicies?.[name]?.argumentConstraints ?? {};
+  return JSON.stringify(Object.entries(constraint).sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, values]) => [key, [...values].sort()]));
+}
+
+interface McpToolInvocation {
+  name: string;
+  arguments: unknown;
+}
+
+async function mcpToolInvocation(request: Request): Promise<McpToolInvocation | undefined> {
+  if (request.method !== 'POST') return undefined;
+  const rpc = await request.clone().json() as { method?: string; params?: { name?: string; arguments?: unknown } };
+  if (!rpc || typeof rpc !== 'object' || Array.isArray(rpc)) {
+    throw new Error('Invalid MCP tool invocation.');
+  }
+  if (rpc.method !== 'tools/call') return undefined;
+  if (typeof rpc.params?.name !== 'string') throw new Error('Invalid MCP tool invocation.');
+  return { name: rpc.params.name, arguments: rpc.params.arguments };
+}
+
+function runtimeAllowedToolsForServer(server: McpConnectionConfig): string[] {
+  return isMetaAdsMcpConnection(server)
+    ? metaAdsRuntimeAllowedTools(server)
+    : [...server.allowedTools];
+}
+
+function usesMetaAdsOutputAdapter(connection: Pick<McpConnectionConfig, 'url'>): boolean {
+  try {
+    const url = new URL(connection.url);
+    const path = decodeURIComponent(url.pathname).replace(/\/+$/, '');
+    return url.protocol === 'https:' && url.hostname === 'mcp.facebook.com' && url.port === '' &&
+      url.username === '' && url.password === '' && url.search === '' && url.hash === '' && path === '/ads';
+  } catch {
+    return false;
+  }
+}
+
+function serverNeedsInvocationGuard(server: McpConnectionConfig): boolean {
+  return isMetaAdsMcpConnection(server) || server.allowedTools.some((name) =>
+    server.toolPolicies?.[name]?.argumentConstraints !== undefined);
+}
+
+function runtimeAllowedToolsForDeclaration(declaration: RuntimePlanMcpConnectionV2): string[] {
+  if (!isMetaAdsMcpConnection(declaration)) return [...declaration.allowedTools];
+  return declaration.allowedTools.filter((name) =>
+    metaAdsToolEffect(name) !== undefined &&
+      metaAdsRuntimePolicyConstraint(name, declaration.toolArgumentConstraints?.[name]) !== undefined);
+}
+
+function assertServerMcpToolInvocation(
+  server: McpConnectionConfig,
+  allowedTools: readonly string[],
+  invocation: McpToolInvocation,
+): void {
+  if (!allowedTools.includes(invocation.name)) {
+    throw new Error('MCP tool is not selected for this Agent.');
+  }
+  const constraints = isMetaAdsMcpConnection(server)
+    ? metaAdsRuntimeConstraint(server, invocation.name)
+    : server.toolPolicies?.[invocation.name]?.argumentConstraints;
+  if (isMetaAdsMcpConnection(server) && !constraints) {
+    throw new Error('Meta Ads tool access changed; review the connection before using it.');
+  }
+  if (isMetaAdsMcpConnection(server)) {
+    if (isMetaAdsWriteTool(invocation.name) &&
+        (server.authMode !== 'oauth' || server.oauthScope !== META_ADS_OAUTH_MANAGEMENT_SCOPE)) {
+      throw new Error('Reconnect Meta Ads with Reporting and editing access before using write tools.');
+    }
+    const propertyNames = metaAdsRuntimePropertyNames(server, invocation.name);
+    if (!propertyNames) {
+      throw new Error('Meta Ads tool schema changed; review the connection before using it.');
+    }
+    assertMcpToolArgumentKeys(invocation.name, invocation.arguments, propertyNames);
+    if (isMetaAdsHelperTool(invocation.name)) {
+      assertMetaAdsHelperArguments(invocation.name, invocation.arguments);
+    }
+  }
+  if (constraints && !(isMetaAdsMcpConnection(server) && isMetaAdsAccountScopeTool(invocation.name))) {
+    assertMcpToolArguments(invocation.name, invocation.arguments, { [invocation.name]: constraints });
+  }
+}
+
+function assertUnchangedMetaInvocationSchema(
+  frozen: McpConnectionConfig,
+  current: McpConnectionConfig,
+  name: string,
+): void {
+  if (current.oauthAttemptId !== frozen.oauthAttemptId || current.oauthScope !== frozen.oauthScope) {
+    throw new Error('Meta Ads authorization changed; start a new request before using it.');
+  }
+  const before = frozen.discoveredTools.find((tool) => tool.name === name)?.inputSchema?.fingerprint;
+  const after = current.discoveredTools.find((tool) => tool.name === name)?.inputSchema?.fingerprint;
+  if (!before || before !== after) throw new Error('Meta Ads tool schema changed; review the connection before using it.');
+}
+
+async function assertMetaWriteOwnership(
+  server: McpConnectionConfig,
+  invocation: McpToolInvocation,
+  headers: Headers,
+  createGuardedFetchOverride?: typeof createMcpGuardedFetch,
+  signal?: AbortSignal,
+): Promise<void> {
+  // Never send a custom MCP server's credential to Graph based on a forged preset ID.
+  if (!usesMetaAdsOutputAdapter(server)) throw new Error('Meta Ads writes require the official Meta Ads endpoint.');
+  const constraints = metaAdsRuntimeConstraint(server, invocation.name);
+  const approved = constraints ? Object.values(constraints).flat() : [];
+  await assertMetaAdsWriteAccountOwnership({
+    name: invocation.name,
+    argumentsValue: invocation.arguments,
+    approvedAccountIds: approved,
+    authorization: headers.get('authorization'),
+    fetch: (createGuardedFetchOverride ?? createMcpGuardedFetch)({
+      allowedOrigin: META_ADS_OWNERSHIP_ORIGIN,
+      maxRedirects: 0,
+    }),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+async function sanitizeAccountHelperResponse(
+  server: McpConnectionConfig,
+  response: Response,
+): Promise<Response> {
+  const constraints = metaAdsRuntimeConstraint(server, META_ADS_ACCOUNT_HELPER);
+  const approvedAccountIds = metaAdsApprovedAccountIds(constraints);
+  if (!approvedAccountIds) {
+    throw new Error('Meta Ads account verification scope changed; review the connection before using it.');
+  }
+  return sanitizeMetaAdsAccountHelperResponse(response, approvedAccountIds);
+}
+
+async function requireCurrentProfileMcpServer(
+  frozen: McpConnectionConfig,
+  opts: ResolveProfileMcpConnectionsOptions,
+): Promise<McpConnectionConfig> {
+  const current = opts.resolveCurrentConnection
+    ? await opts.resolveCurrentConnection(frozen.id)
+    : (await getConfigStore(opts.env).getAgent(opts.agentId)).mcpServers
+        .find((candidate) => candidate.id === frozen.id);
+  if (!current || !legacyMcpServerStillAllowed(current, frozen)) {
+    throw new Error('MCP connection policy changed; a new agent instance is required.');
+  }
+  return current;
+}
+
+function wrapLegacyMcpTool(
+  server: McpConnectionConfig,
+  tool: ToolDefinition,
+  opts: ResolveProfileMcpToolsOptions,
+): ToolDefinition {
+  const name = stripPrefix(server.id, tool.name);
+  if (!isMetaAdsMcpConnection(server) && !server.toolPolicies?.[name]?.argumentConstraints) return tool;
+  const wrapped: ToolDefinition = {
+    ...tool,
+    async run(context) {
+      const argumentsValue = 'data' in context ? context.data : undefined;
+      const current = isMetaAdsMcpConnection(server)
+        ? await requireCurrentLegacyMcpServer(server, opts)
+        : server;
+      assertServerMcpToolInvocation(current, runtimeAllowedToolsForServer(server), {
+        name,
+        arguments: argumentsValue,
+      });
+      if (isMetaAdsMcpConnection(current) && isMetaAdsWriteTool(name)) {
+        const headers = new Headers(await resolveLegacyMcpHeaders(current, opts));
+        await assertMetaWriteOwnership(current, { name, arguments: argumentsValue }, headers, opts.createGuardedFetch);
+        const latest = await requireCurrentLegacyMcpServer(server, opts);
+        assertServerMcpToolInvocation(latest, runtimeAllowedToolsForServer(server), {
+          name, arguments: argumentsValue,
+        });
+      }
+      const result = await tool.run(context);
+      if (isMetaAdsMcpConnection(server)) await requireCurrentLegacyMcpServer(server, opts);
+      // Flue records an omitted output as null; an empty envelope preserves
+      // that behavior while keeping this async wrapper's return union sound.
+      return result === undefined ? {} : result;
+    },
+  };
+  return wrapped;
 }
 
 async function resolveConnectionAccountMcpSecrets(

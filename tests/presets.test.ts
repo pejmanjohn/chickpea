@@ -6,6 +6,10 @@ import { readPublicAsset } from '../src/assets/read.node.ts';
 import { validateMcpUrl } from '../src/config/mcp-url.ts';
 import { CONNECTOR_LOGOS } from '../src/config/connector-logos.ts';
 import {
+  META_ADS_OAUTH_DEFAULT_SCOPE,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
+} from '../src/config/mcp-oauth-clients.ts';
+import {
   CONNECTOR_PRESETS,
   GOOGLE_WORKSPACE_SERVICE_PRESETS,
   MANAGED_CONNECTOR_PRESETS,
@@ -102,7 +106,7 @@ test('managed Google analytics presets reference the official product-icon binar
 
 test('preset lanes classify the existing MCP catalog, the API additions, and both', () => {
   const existingMcpPresets = CONNECTOR_PRESETS.filter((preset) => !API_PRESET_IDS.has(preset.id));
-  assert.equal(existingMcpPresets.length, 21);
+  assert.equal(existingMcpPresets.length, 22);
   for (const preset of existingMcpPresets) {
     assert.deepEqual(presetLanes(preset), { mcp: true, api: false }, preset.id);
   }
@@ -244,6 +248,20 @@ test('the Linear MCP preset requests read-write OAuth access', () => {
     notes:
       'Chickpea requests Linear read and write access so it can find, create, and update workspace objects.',
   });
+});
+
+test('the Meta Ads preset defaults to reporting and exposes an explicit editing OAuth lane', () => {
+  const preset = getConnectorPreset('meta-ads');
+  assert.ok(preset && 'auth' in preset);
+  assert.deepEqual(preset.auth, {
+    kind: 'oauth',
+    scope: META_ADS_OAUTH_DEFAULT_SCOPE,
+    writeScope: META_ADS_OAUTH_MANAGEMENT_SCOPE,
+  });
+  assert.equal(
+    preset.description,
+    'Report on and manage ads for approved Meta ad accounts.',
+  );
 });
 
 test('Sentry and Intercom use their official hosted OAuth MCPs while Monday stays token-based', () => {

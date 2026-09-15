@@ -169,6 +169,93 @@ test('management operation schemas expose Agent presence, Channel reach, and lif
   }
 });
 
+test('legacy Agent writes direct Meta Ads through the reviewed connection catalog', async () => {
+  const f = await createManagementAdapterFixture('legacy-meta-ads-catalog-boundary');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'legacy-meta-ads-client' },
+  };
+  const metaAdsConnection = {
+    id: 'meta-ads-direct',
+    displayName: 'Meta Ads',
+    url: 'https://mcp.facebook.com/ads/',
+    transport: 'streamable-http' as const,
+    authMode: 'oauth' as const,
+    headerNames: [],
+    enabled: true,
+    lifecycleStatus: 'pending' as const,
+    statusText: 'Setup required',
+    discoveredTools: [],
+    allowedTools: [],
+  };
+  const catalogMessage =
+    'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.';
+  try {
+    await assert.rejects(
+      () => f.service.applyWorkspaceChanges({
+        context,
+        idempotencyKey: 'legacy-meta-create',
+        operations: [{
+          itemId: 'create',
+          kind: 'create_agent',
+          agent: { ...agentInput, mcpServers: [metaAdsConnection] },
+        }],
+      }),
+      (error: unknown) => error instanceof ManagementError &&
+        error.code === 'invalid_request' && error.message === catalogMessage,
+    );
+
+    const created = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'legacy-meta-base-agent',
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+    });
+    assert.equal(created.status, 'completed');
+    const agent = await f.config.getAgent(agentInput.id);
+
+    const customMcp = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'legacy-custom-mcp-update',
+      operations: [{
+        itemId: 'custom-mcp',
+        kind: 'update_agent',
+        agentId: agent.id,
+        expectedRevision: agent.revision,
+        patch: {
+          mcpServers: [{
+            ...metaAdsConnection,
+            id: 'custom-mcp',
+            displayName: 'Custom MCP',
+            url: 'https://mcp.example.com/api',
+          }],
+        },
+      }],
+    });
+    assert.equal(customMcp.status, 'confirmation_required');
+
+    const rejected = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'legacy-meta-update',
+      operations: [{
+        itemId: 'meta-mcp',
+        kind: 'update_agent',
+        agentId: agent.id,
+        expectedRevision: agent.revision,
+        patch: { mcpServers: [metaAdsConnection] },
+      }],
+    });
+    assert.equal(rejected.status, 'partial');
+    assert.equal(rejected.outcomes[0]?.disposition, 'failed');
+    assert.equal(rejected.outcomes[0]?.code, 'invalid_request');
+    assert.equal(rejected.outcomes[0]?.warning, catalogMessage);
+    assert.deepEqual((await f.config.getAgent(agent.id)).mcpServers, []);
+  } finally {
+    f.close();
+  }
+});
+
 test('Slack and MCP share exact proposal semantics while preserving origin binding', async () => {
   const f = await createManagementAdapterFixture('proposal-surface-parity');
   const agent = await f.config.createAgent({

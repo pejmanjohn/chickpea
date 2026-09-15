@@ -345,6 +345,21 @@ test('connector setup handoff and snapshot stay locked to the current Slack Agen
     assert.equal(linearSetup?.target.ownerKind, 'team');
     assert.match(linearSetup?.target.connectionId ?? '', /^connection_[a-f0-9]{32}$/);
 
+    const metaAds = await invokeWorkspaceManagementTool({
+      service: f.service,
+      resolveContext: async () => context,
+    }, 'prepare_connector_setup', { connector: 'Meta Ads', ownerKind: 'member' });
+    assert.equal(metaAds.ok, true);
+    const metaAdsHandoff = (metaAds as { ok: true; result: {
+      handoffUrl: string;
+      setupOperationId: string;
+    } }).result;
+    assert.match(new URL(metaAdsHandoff.handoffUrl).pathname, /^\/setup\/setup_/);
+    const metaAdsSetup = await f.management.getSetup(metaAdsHandoff.setupOperationId);
+    assert.equal(metaAdsSetup?.action, 'catalog_connection');
+    assert.equal(metaAdsSetup?.target.presetId, 'meta-ads');
+    assert.equal(metaAdsSetup?.target.ownerKind, 'member');
+
     const unknown = await invokeWorkspaceManagementTool({
       service: f.service,
       resolveContext: async () => context,

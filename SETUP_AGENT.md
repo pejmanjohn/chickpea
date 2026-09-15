@@ -25,6 +25,8 @@ A Cloudflare Worker itself runs in workerd, independently of build-time Node.
 8. Open a direct message with `@Chickpea` and ask for a first teammate, as the setup page suggests. Chickpea offers a few starters that work without any connected account; replying with a number creates that Agent. Setup is complete only after a real Slack reply from Chickpea succeeds.
 9. Optional: connect a coding agent or a script. Every deployment serves an OAuth-protected management MCP server at `https://<deployment>/mcp`; add that URL to Claude Code, Codex, or Cursor and the client signs in through Slack by itself. From a shell, `npx chickpea-cli doctor https://<deployment>` confirms the public surface is up (it reports a 404 as unfinished setup until step 6 completes), `npx chickpea-cli mcp config https://<deployment>` prints the client snippets, and `npx chickpea-cli login https://<deployment>` gives scripts the same access. See [the workspace management runbook](docs/runbooks/workspace-management-mcp.md).
 
+For Meta Ads, configure an installation-owned Meta App ID before connecting an Agent. See [Meta Ads setup](docs/runbooks/meta-ads-connector.md).
+
 ## Manual adoption
 
 Manual app adoption is a secondary recovery path on the setup page. Use the same reviewed manifest and unchanged deployment callback URLs. Client secret and signing secret inputs are write-only and encrypted before persistence. Do not use an app-level `xapp-` token; Chickpea uses Slack's HTTP Events API and a bot OAuth token issued by the install flow.
