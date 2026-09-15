@@ -192,6 +192,62 @@ test('direct runtime verifies the full Slack member and exact DM without Channel
   assert.match(access.accessHash, /^[a-f0-9]{64}$/);
 });
 
+test('direct runtime access ignores a catalog refresh after repeating the live DM checks', async () => {
+  const calls: string[] = [];
+  const client = {
+    users: {
+      info: async () => {
+        calls.push('users.info');
+        return {
+          ok: true,
+          user: {
+            id: 'U_DIRECT', team_id: 'T_TEST', deleted: false, is_bot: false,
+            is_app_user: false, is_restricted: false, is_ultra_restricted: false,
+            is_stranger: false,
+          },
+        };
+      },
+    },
+    conversations: {
+      open: async () => {
+        calls.push('conversations.open');
+        return { ok: true, channel: { id: 'D_TEST', is_im: true } };
+      },
+    },
+  } as unknown as WebClient;
+  const access = async (catalogRevision: string) => resolveRoutineRuntimeAccess(
+    { ...run, routineId: directRoutine.id, revision: { ...run.revision!, authorityMode: 'live_direct_member_v1' } },
+    directRoutine,
+    undefined,
+    dependencies({
+      authority: async () => ({
+        ...directAuthority,
+        assignment: {
+          ...directAuthority.assignment,
+          modelAttribution: {
+            source: 'workspace_default' as const,
+            providerId: 'anthropic',
+            workspaceDefaultRevision: 2,
+            catalogRevision,
+          },
+        },
+      }),
+      installationExecution: async () => ({
+        workspaceId: 'T_TEST', transportMode: 'gateway', botUserId: 'UBOT', client,
+      }),
+    }),
+  );
+
+  const beforeRefresh = await access('0');
+  const afterRefresh = await access('1');
+
+  assert.equal(afterRefresh.accessHash, beforeRefresh.accessHash);
+  assert.deepEqual(calls, [
+    'users.info', 'conversations.open',
+    'users.info', 'conversations.open',
+  ]);
+});
+
 test('direct runtime rejects ineligible Slack identities and a mismatched DM', async () => {
   const cases = [
     { label: 'guest', user: { is_restricted: true } },

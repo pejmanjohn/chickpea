@@ -34,6 +34,7 @@ import {
   type ModelRoleReader,
 } from '../config/model-policy.ts';
 import type { EffectiveSlackConfig } from '../config/effective-config.ts';
+import { loadModelCatalog } from '../model-catalog/index.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getConfigStore,
@@ -135,6 +136,7 @@ interface RoutineExecutionDependencies {
   workStore?: WorkStore;
   persistenceTelemetrySink?: RoutinePersistenceTelemetrySink;
   productTelemetry?: ProductTelemetryCapture;
+  loadCatalog?: typeof loadModelCatalog;
 }
 
 interface PreparedExecution {
@@ -183,9 +185,20 @@ export async function executeRoutineOccurrence(
   if (!admission) return 'superseded';
 
   let prepared: PreparedExecution;
+  let access: RoutineRuntimeAccess | undefined;
+  const resolveAccess = dependencies.resolveAccess ?? resolveRoutineRuntimeAccess;
   try {
+    if (current.deadlineAt <= now() && !current.flueAgentSettlement) {
+      throw new RoutineRuntimeError(
+        'deadline_exceeded',
+        'The routine occurrence expired before execution began.',
+      );
+    }
+    const settingsStore = dependencies.settingsStore ?? getSettingsStore(input.env);
+    await (dependencies.loadCatalog ?? loadModelCatalog)(settingsStore).catch(() => undefined);
+    access = await resolveAccess(current, routine, input.env);
     prepared = await prepareExecution(
-      { ...input, run: current, routine, admission },
+      { ...input, run: current, routine, admission, access, settingsStore },
       dependencies,
     );
   } catch (error) {
@@ -211,6 +224,7 @@ export async function executeRoutineOccurrence(
         }).catch(() => undefined),
       ]);
     }
+    let terminalFailure = false;
     if (
       failure.failureClass === 'assignment_missing' &&
       current.status === 'admitting' &&
@@ -225,6 +239,20 @@ export async function executeRoutineOccurrence(
         failure.publicError,
         now(),
       );
+      terminalFailure = true;
+    }
+    if (terminalFailure && access) {
+      const terminalRun = await input.store.getRun(current.id);
+      if (terminalRun) {
+        const freshAccess = await resolveAccess(terminalRun, routine, input.env).catch(() => undefined);
+        if (freshAccess) {
+          await deliverFailureNoticeBestEffort({
+            store: input.store,
+            runId: current.id,
+            access: freshAccess,
+          }, failure.publicError);
+        }
+      }
     }
     return 'completed';
   }
@@ -391,6 +419,8 @@ async function prepareExecution(
     routine: RoutineDefinition;
     admission: RoutineAdmissionAttempt;
     attempt: number;
+    access: RoutineRuntimeAccess;
+    settingsStore: SettingsStore;
   },
   dependencies: RoutineExecutionDependencies,
 ): Promise<PreparedExecution> {
@@ -401,12 +431,11 @@ async function prepareExecution(
       'The routine occurrence expired before execution began.',
     );
   }
-  const resolveAccess = dependencies.resolveAccess ?? resolveRoutineRuntimeAccess;
-  const access = await resolveAccess(input.run, input.routine, input.env);
+  const access = input.access;
   if (input.run.flueAgentEnvelope) {
     assertRoutineReattachmentAttribution(input.run, input.run.flueAgentEnvelope, access);
   }
-  const settingsStore = dependencies.settingsStore ?? getSettingsStore(input.env);
+  const settingsStore = input.settingsStore;
   const usageStore = dependencies.usageStore ?? getUsageStore(input.env);
   const resolveModel = dependencies.resolveModel ?? resolveRuntimeModel;
   const frozenInitialData = input.run.flueAgentEnvelope
@@ -709,13 +738,18 @@ function assertRoutineReattachmentAttribution(
   envelope: RoutineAgentDispatchEnvelope,
   access: RoutineRuntimeAccess,
 ): void {
-  const admittedAgentId = executionInitialData(envelope).runtimePlan.agentId;
+  const runtimePlan = executionInitialData(envelope).runtimePlan;
+  const admittedAgentId = runtimePlan.agentId;
+  const legacyAccessHash = access.legacyAccessHashForCatalogRevision?.(
+    runtimePlan.modelAttribution?.catalogRevision,
+  );
   if (
     !run.resolvedAgentId ||
     !run.resolvedAccessHash ||
     run.resolvedAgentId !== admittedAgentId ||
     access.config.agentId !== admittedAgentId ||
-    access.accessHash !== run.resolvedAccessHash
+    access.accessHash !== run.resolvedAccessHash &&
+    legacyAccessHash !== run.resolvedAccessHash
   ) {
     throw new RoutineRuntimeError(
       'access_denied',
@@ -896,7 +930,12 @@ async function finalizeSettlement(
     usageCompleteness: settlement.usage?.completeness ?? 'not_reported',
   });
   captureScheduledRun(prepared, 'failed');
-  await deliverFailureNoticeBestEffort(prepared, settlement.publicError);
+  await deliverFailureNoticeBestEffort({
+    store: prepared.store,
+    runId: prepared.run.id,
+    access: prepared.access,
+    ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
+  }, settlement.publicError);
   await deliverPauseNoticeBestEffort(prepared);
   return 'completed';
 }
@@ -1211,33 +1250,41 @@ async function skipUnresolvedRun(
 }
 
 async function deliverFailureNoticeBestEffort(
-  prepared: PreparedExecution,
+  input: {
+    store: RoutineStore;
+    runId: string;
+    access: RoutineRuntimeAccess;
+    workLifecycle?: ShadowWorkLifecycle;
+  },
   publicError: string,
 ): Promise<void> {
   try {
-    const store = prepared.store;
-    const run = await store.getRun(prepared.run.id);
+    const run = await input.store.getRun(input.runId);
     if (!run || run.status !== 'failed' || run.deliveryStatus !== 'none') return;
+    const routine = await input.store.getRoutine(run.routineId);
+    if (!routine) return;
     await deliverRoutineFailureNotice({
-      store,
+      store: input.store,
       run,
-      routine: prepared.routine,
-      access: prepared.access,
+      routine,
+      access: input.access,
       publicError,
-      ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
-    }, prepared.access.client);
+      ...(input.workLifecycle ? { workLifecycle: input.workLifecycle } : {}),
+    }, input.access.client);
   } catch (error) {
     if (error instanceof RoutineRuntimeError &&
         error.failureClass === 'direct_thread_unavailable') {
       await (async () => {
-        const run = await prepared.store.getRun(prepared.run.id);
+        const run = await input.store.getRun(input.runId);
         if (!run) return;
+        const routine = await input.store.getRoutine(run.routineId);
+        if (!routine) return;
         await deliverRoutineRecoveryNotice({
-          store: prepared.store,
+          store: input.store,
           run,
-          routine: prepared.routine,
-          access: prepared.access,
-        }, prepared.access.client);
+          routine,
+          access: input.access,
+        }, input.access.client);
       })().catch(() => undefined);
     }
     // The failed occurrence remains available through its authorized management surface.

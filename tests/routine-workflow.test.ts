@@ -14,7 +14,10 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import {
   executeRoutineOccurrence,
 } from '../src/routines/execution.ts';
-import { RoutineRuntimeError } from '../src/routines/runtime.ts';
+import {
+  resolveRoutineRuntimeAccess,
+  RoutineRuntimeError,
+} from '../src/routines/runtime.ts';
 import { hashRoutineValue, routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type {
@@ -532,6 +535,110 @@ test('an interrupted local read stays resumable and the next execution reads the
   }
 });
 
+test('a catalog refresh does not reject scheduled execution reattachment after fresh access checks', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  let catalogRevision = '0';
+  let conversationChecks = 0;
+  let membershipChecks = 0;
+  let dispatches = 0;
+  let catalogLoads = 0;
+  const preparationOrder: string[] = [];
+  const resolveAccess = async (run: RoutineRun, routine: RoutineDefinition) => {
+    preparationOrder.push('access');
+    const access = await resolveRoutineRuntimeAccess(run, routine, undefined, {
+      credentials: async () => ({ botToken: 'xoxb-test', signingSecret: undefined, botUserId: 'UBOT' }),
+      authTest: async () => ({
+        ok: true, error: undefined, teamId: 'T_TEST', teamName: 'Test',
+        botName: 'Chickpea', botUserId: 'UBOT',
+      }),
+      conversation: async () => {
+        conversationChecks += 1;
+        return {
+          ok: true, error: undefined, retryAfterMs: undefined,
+          channel: { id: routine.channelId, name: 'test', isPrivate: false, isMember: true },
+          facts: {
+            id: routine.channelId, name: 'test', private: false, archived: false,
+            frozen: false, shared: false, externallyShared: false,
+            organizationShared: false, pendingShared: false, member: true,
+            teamId: routine.workspaceId,
+          },
+        };
+      },
+      members: async () => {
+        membershipChecks += 1;
+        return {
+          ok: true, error: undefined, memberIds: ['U_MEMBER', 'UBOT'],
+          nextCursor: undefined, retryAfterMs: undefined,
+        };
+      },
+      config: async () => ({
+        ...config,
+        workspaceId: routine.workspaceId,
+        channelId: routine.channelId,
+        modelAttribution: {
+          source: 'workspace_default' as const,
+          providerId: 'anthropic',
+          workspaceDefaultRevision: 2,
+          catalogRevision,
+        },
+      }),
+    });
+    return catalogRevision === '0'
+      ? {
+          ...access,
+          accessHash: access.legacyAccessHashForCatalogRevision!('0'),
+        }
+      : access;
+  };
+  try {
+    const fixture = await admittedFixture(store, 'catalog_refresh_reattach');
+    const first = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      resolveAccess,
+      loadCatalog: async () => {
+        catalogLoads += 1;
+        preparationOrder.push('catalog');
+        if (catalogLoads === 2) throw new Error('transient catalog read failure');
+        return { status: 'bundled', revision: 0 };
+      },
+      handle: fakeHandle({ readError: new DOMException('reader stopped', 'AbortError') }),
+    });
+    assert.equal(first, 'resumable');
+
+    catalogRevision = '1';
+    const resumed = fakeHandle({});
+    resumed.dispatch = async () => {
+      dispatches += 1;
+      throw new Error('must not redispatch');
+    };
+    const second = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      resolveAccess,
+      loadCatalog: async () => {
+        catalogLoads += 1;
+        preparationOrder.push('catalog');
+        if (catalogLoads === 2) throw new Error('transient catalog read failure');
+        return { status: 'activated', revision: 1 };
+      },
+      handle: resumed,
+    });
+
+    assert.equal(second, 'completed');
+    assert.equal((await store.getRun(fixture.run.id))?.status, 'no_op');
+    assert.equal(dispatches, 0);
+    assert.equal(conversationChecks, 2);
+    assert.equal(membershipChecks, 2);
+    assert.equal(catalogLoads, 2);
+    assert.deepEqual(preparationOrder, ['catalog', 'access', 'catalog', 'access']);
+  } finally {
+    store.close();
+  }
+});
+
 test('an unresolved initial assignment records a skip without model or Agent side effects', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   const events: string[] = [];
@@ -833,12 +940,101 @@ test('reattachment never combines a frozen Agent A envelope with current Agent B
     });
 
     assert.equal(second, 'completed');
-    assert.deepEqual(events, ['live-access-b']);
+    assert.deepEqual(events, ['live-access-b', 'live-access-b']);
     const failed = await store.getRun(fixture.run.id);
     assert.equal(failed?.status, 'failed');
     assert.equal(failed?.failureClass, 'access_denied');
     assert.equal(failed?.resolvedAgentId, 'agent_default');
     assert.deepEqual(failed?.flueAgentEnvelope, frozen);
+  } finally {
+    store.close();
+  }
+});
+
+test('a preparation failure posts one notice when fresh access can still reach the destination', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  const posts: Array<Record<string, unknown>> = [];
+  try {
+    const fixture = await admittedFixture(store, 'reattach_failure_notice');
+    const first = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      handle: fakeHandle({ readError: new DOMException('reader stopped', 'AbortError') }),
+    });
+    assert.equal(first, 'resumable');
+
+    const client = {
+      chat: {
+        postMessage: async (input: Record<string, unknown>) => {
+          posts.push(input);
+          return { ok: true, channel: 'C_TEST', ts: '1785153600.000003' };
+        },
+      },
+    };
+    const second = await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      resolveAccess: async (_run, routine) => ({
+        config: {
+          ...config,
+          workspaceId: routine.workspaceId,
+          channelId: routine.channelId,
+          agentId: 'agent_b',
+          agent: { ...config.agent, id: 'agent_b', name: 'Agent B' },
+        },
+        accessHash: 'b'.repeat(64),
+        botToken: 'xoxb-test',
+        botUserId: 'UBOT',
+        client: client as never,
+      }),
+      handle: fakeHandle({}),
+    });
+
+    assert.equal(second, 'completed');
+    const failed = await store.getRun(fixture.run.id);
+    assert.equal(failed?.status, 'failed');
+    assert.equal(failed?.failureClass, 'access_denied');
+    assert.equal(failed?.deliveryStatus, 'delivered');
+    assert.equal(posts.length, 1);
+    assert.match(String(posts[0]?.text), /Routine needs attention/);
+    assert.match(String(posts[0]?.text), /Channel access changed while the routine was running/);
+    assert.doesNotMatch(String(posts[0]?.text), /Inspect current state/);
+    assert.equal(await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, { ...dependencies(), handle: fakeHandle({}) }), 'superseded');
+    assert.equal(posts.length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test('a preparation failure stays silent when fresh destination authorization fails', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const fixture = await admittedFixture(store, 'reattach_failure_unauthorized');
+    assert.equal(await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      handle: fakeHandle({ readError: new DOMException('reader stopped', 'AbortError') }),
+    }), 'resumable');
+
+    assert.equal(await executeRoutineOccurrence({
+      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+    }, {
+      ...dependencies(),
+      resolveAccess: async () => {
+        throw new RoutineRuntimeError('access_denied', 'Current channel access could not be verified.');
+      },
+      handle: fakeHandle({}),
+    }), 'completed');
+
+    const failed = await store.getRun(fixture.run.id);
+    assert.equal(failed?.status, 'failed');
+    assert.equal(failed?.failureClass, 'access_denied');
+    assert.equal(failed?.deliveryStatus, 'none');
   } finally {
     store.close();
   }
