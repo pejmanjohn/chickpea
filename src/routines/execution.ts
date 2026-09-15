@@ -250,7 +250,7 @@ export async function executeRoutineOccurrence(
             store: input.store,
             runId: current.id,
             access: freshAccess,
-          }, failure.publicError);
+          }, terminalRun.publicError ?? failure.publicError);
         }
       }
     }

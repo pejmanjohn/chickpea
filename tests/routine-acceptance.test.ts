@@ -9,10 +9,13 @@ import type { AgentInstanceHandle } from '@flue/runtime';
 
 import { createRoutineAdminApi } from '../src/admin/routines-api.ts';
 import { ROUTINE_RESULT_DATA_NAME } from '../src/agents/routine-execution.ts';
-import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
+import {
+  computeSnapshotHash,
+  type EffectiveSlackConfig,
+} from '../src/config/effective-config.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { RoutineAdmissionController } from '../src/routines/admission.ts';
-import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
+import { hashRoutineValue, routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import { executeRoutineOccurrence } from '../src/routines/execution.ts';
 import {
   resolveRoutineRuntimeAccess,
@@ -227,8 +230,8 @@ test('a private once occurrence reattaches a legacy catalog hash and delivers to
           agent,
           model: config.model,
           modelAttribution: {
-            source: 'workspace_default', providerId: 'anthropic',
-            workspaceDefaultRevision: 2, catalogRevision,
+            source: 'workspace_default', workspaceDefaultRevision: 2,
+            providerId: 'anthropic', catalogRevision,
           },
         },
         actorSlackUserId,
@@ -240,8 +243,17 @@ test('a private once occurrence reattaches a legacy catalog hash and delivers to
       }),
     });
     if (catalogRevision !== '0') return access;
-    legacyAdmittedHash = access.legacyAccessHashForCatalogRevision?.('0');
-    return { ...access, accessHash: legacyAdmittedHash! };
+    legacyAdmittedHash = hashRoutineValue(JSON.stringify({
+      config: computeSnapshotHash(access.config),
+      workspaceId: routine.workspaceId,
+      actorSlackUserId,
+      actorMembershipId: reference.runsAsMembershipId,
+      authorityReceiptId: reference.authorityReceiptId,
+      botUserId: 'UBOT',
+      destinationKind: routine.destination.kind,
+      destinationBindingDigest: reference.destinationBindingDigest,
+    }));
+    return { ...access, accessHash: legacyAdmittedHash };
   };
   try {
     const run = await fixture.store.createOccurrence({

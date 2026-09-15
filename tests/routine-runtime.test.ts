@@ -271,6 +271,10 @@ test('direct runtime access ignores a catalog refresh after repeating the live D
     afterRefresh.legacyAccessHashForCatalogRevision?.('0'),
     beforeRefresh.legacyAccessHashForCatalogRevision?.('0'),
   );
+  assert.notEqual(
+    afterRefresh.legacyAccessHashForCatalogRevision?.('wrong-frozen-revision'),
+    beforeRefresh.legacyAccessHashForCatalogRevision?.('0'),
+  );
 
   const changes = [
     (authority: ResolvedRoutineAuthority): ResolvedRoutineAuthority => ({

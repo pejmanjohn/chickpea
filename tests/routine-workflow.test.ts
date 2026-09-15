@@ -25,6 +25,7 @@ import type {
   RoutineDefinitionContent,
   RoutineDestination,
   RoutineRun,
+  RoutineStore,
 } from '../src/routines/types.ts';
 import {
   parseRoutineExecutionInitialData,
@@ -954,6 +955,8 @@ test('reattachment never combines a frozen Agent A envelope with current Agent B
 test('a preparation failure posts one notice when fresh access can still reach the destination', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   const posts: Array<Record<string, unknown>> = [];
+  const recordedTerminalError = 'The recorded terminal failure won the race.';
+  let wonTerminalRace = false;
   try {
     const fixture = await admittedFixture(store, 'reattach_failure_notice');
     const first = await executeRoutineOccurrence({
@@ -972,8 +975,27 @@ test('a preparation failure posts one notice when fresh access can still reach t
         },
       },
     };
+    const competingStore = new Proxy(store, {
+      get(target, property, receiver) {
+        if (property === 'transitionRun') {
+          return async (input: Parameters<RoutineStore['transitionRun']>[0]) => {
+            if (input.to === 'failed' && !wonTerminalRace) {
+              wonTerminalRace = true;
+              await target.transitionRun({
+                ...input,
+                failureClass: 'policy_denied',
+                publicError: recordedTerminalError,
+              });
+            }
+            return target.transitionRun(input);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as RoutineStore;
     const second = await executeRoutineOccurrence({
-      env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
+      env: {}, store: competingStore, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, {
       ...dependencies(),
       resolveAccess: async (_run, routine) => ({
@@ -995,11 +1017,14 @@ test('a preparation failure posts one notice when fresh access can still reach t
     assert.equal(second, 'completed');
     const failed = await store.getRun(fixture.run.id);
     assert.equal(failed?.status, 'failed');
-    assert.equal(failed?.failureClass, 'access_denied');
+    assert.equal(failed?.failureClass, 'policy_denied');
+    assert.equal(failed?.publicError, recordedTerminalError);
     assert.equal(failed?.deliveryStatus, 'delivered');
+    assert.equal(wonTerminalRace, true);
     assert.equal(posts.length, 1);
     assert.match(String(posts[0]?.text), /Routine needs attention/);
-    assert.match(String(posts[0]?.text), /Channel access changed while the routine was running/);
+    assert.match(String(posts[0]?.text), /The recorded terminal failure won the race/);
+    assert.doesNotMatch(String(posts[0]?.text), /Channel access changed while the routine was running/);
     assert.doesNotMatch(String(posts[0]?.text), /Inspect current state/);
     assert.equal(await executeRoutineOccurrence({
       env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
@@ -1384,6 +1409,7 @@ test('routine deadline bounds a stalled durable Usage owner before dispatch', { 
       return new Promise<never>(() => undefined);
     },
   } as unknown as UsageStore;
+  let notices = 0;
   try {
     const fixture = await admittedFixture(
       routines,
@@ -1393,14 +1419,24 @@ test('routine deadline bounds a stalled durable Usage owner before dispatch', { 
       deadlineAt,
     );
     const startedAt = Date.now();
+    const base = dependencies(events);
     const execution = executeRoutineOccurrence({
       env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, {
-      ...dependencies(),
+      ...base,
       now: Date.now,
       usageRecordingEnabled: true,
       usageStore: stalledUsage,
       persistenceTelemetrySink: telemetry.sink,
+      resolveAccess: async (...args: Parameters<typeof base.resolveAccess>) => ({
+        ...await base.resolveAccess(...args),
+        client: {
+          chat: { postMessage: async () => {
+            notices += 1;
+            return { ok: true, channel: 'C_TEST', ts: '1785153600.000005' };
+          } },
+        } as never,
+      }),
       handle: fakeHandle({ events }),
     });
     await usageEntered;
@@ -1409,6 +1445,7 @@ test('routine deadline bounds a stalled durable Usage owner before dispatch', { 
 
     assert.equal(Date.now() - startedAt, 50);
     assert.equal(events.filter((event) => event === 'dispatch').length, 0);
+    assert.equal(notices, 1);
     assert.equal(telemetry.errors.length, 1);
     assert.match(telemetry.errors[0]!, /"usage":"unrepaired"/);
     assert.doesNotMatch(telemetry.errors[0]!, /usage_deadline|C_TEST/);
