@@ -16,7 +16,7 @@ import type { PostflightInventoryItem } from '../qa/live/safety/cleanup.ts';
 const NOW = Date.parse('2026-09-03T01:00:00.000Z');
 const digest = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
 
-function fixture(context: test.TestContext) {
+function fixture(context: test.TestContext, windowId = 'test-window', runId = 'run-test') {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'chickpea-coordinator-')));
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const example = JSON.parse(readFileSync(new URL('../qa/live/target.example.json', import.meta.url), 'utf8'));
@@ -30,14 +30,14 @@ function fixture(context: test.TestContext) {
     missingActorAliases: [], workspaceMatches: true, evidenceRootSafe: true, targetMatches: true, lock: { status: 'clear' },
   };
   const request: Omit<AdvanceLiveRunRequest, 'signal' | 'now'> = {
-    journalPath: join(root, 'evidence', 'runs', 'run-test.jsonl'), runId: 'run-test',
+    journalPath: join(root, 'evidence', 'runs', `${runId}.jsonl`), runId,
     suite: 'case', variantIds: ['LC01-V1-create-welcome'], overlay, identity, doctorSnapshot: snapshot,
   };
   let captures = 0;
   let actions = 0;
   let cleanups = 0;
   const capture = <Value>(ui: UiWindow, value: Value) => ui.capture({ transport: 'computer_use', observationScope: 'window',
-    windowId: 'test-window', observedAt: new Date(NOW).toISOString(), captureDigest: digest(`capture-${++captures}`), value });
+    windowId, observedAt: new Date(NOW).toISOString(), captureDigest: digest(`capture-${++captures}`), value });
   const driver: ComputerUseDriver = {
     transport: 'computer_use', browserAlias: 'test-browser', actorAlias: 'owner-browser-profile',
     prepare: async (_action, ui) => capture(ui, { expectedRevision: 'absent', baselines: [] }),
@@ -71,7 +71,7 @@ function fixture(context: test.TestContext) {
       ],
     }),
   };
-  const deps = { driver, uiMutexRoot: join(root, 'ui'), attest: async () => snapshot, now: () => NOW };
+  const deps = { driver, attest: async () => snapshot, now: () => NOW };
   return { root, request, deps, snapshot, capture, counts: () => ({ captures, actions, cleanups }) };
 }
 
@@ -82,7 +82,6 @@ test('coordinator binds Computer Use actions, generated effects, exact cleanup a
   assert.equal(f.counts().actions, 1);
   assert.equal(f.counts().cleanups, 2);
   assert.equal(existsSync(join(f.root, 'evidence', 'target.lock')), false);
-  assert.equal(existsSync(join(f.root, 'ui', 'interaction.lock')), false);
   assert.equal(readRunJournalStatus(f.request.journalPath, 'run-test').safeToClear, true);
   const journal = readFileSync(f.request.journalPath, 'utf8');
   assert.match(journal, /computer_use_window/u);
@@ -353,14 +352,10 @@ test('a new process resumes a crash-exposed action only after visible absence an
     const driver = { transport: 'computer_use', actorAlias: 'owner-browser-profile', browserAlias: 'test-browser',
       prepare: async (action, ui) => capture(ui, { expectedRevision: 'absent', baselines: [] }),
       act: async () => process.exit(91) };
-    await new AttendedLiveCoordinator(request, { driver, uiMutexRoot: ${JSON.stringify(f.deps.uiMutexRoot)},
+    await new AttendedLiveCoordinator(request, { driver,
       attest: async () => request.doctorSnapshot, now: () => ${NOW} }).run();`;
   const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { encoding: 'utf8' });
   assert.equal(child.status, 91, child.stderr);
-  // UI crash reservations have their own explicit dead-owner recovery; they
-  // never clear or replace the product target lock.
-  const { HostUiMutex } = await import('../qa/live/safety/ui-mutex.ts');
-  new HostUiMutex(f.deps.uiMutexRoot).clearStoppedOwner(f.request.runId, f.deps.driver.browserAlias);
   let readbacks = 0;
   f.deps.driver.readbackAction = async (_action, ui) => { readbacks += 1; return f.capture(ui, { outcome: 'absent' }); };
   const result = await new AttendedLiveCoordinator(f.request, f.deps).resume();
@@ -374,7 +369,7 @@ test('a new process resumes a crash-exposed action only after visible absence an
   assert.equal(events.filter((event) => event.type === 'target_lock_recovery' && event.stage === 'published').length, 1);
 });
 
-test('observation polling releases the host UI mutex while retaining the target lock', async (context) => {
+test('observation polling retains the target lock between independent window operations', async (context) => {
   const f = fixture(context);
   let now = NOW;
   let polls = 0;
@@ -391,7 +386,6 @@ test('observation polling releases the host UI mutex while retaining the target 
     observationTimeoutMs: 3_000, observationPollMs: 1_000,
     wait: async (milliseconds: number) => {
       waits += 1;
-      assert.equal(existsSync(join(f.root, 'ui', 'interaction.lock')), false);
       assert.equal(existsSync(join(f.root, 'evidence', 'target.lock')), true);
       now += milliseconds;
     },
@@ -402,6 +396,66 @@ test('observation polling releases the host UI mutex while retaining the target 
   assert.equal(f.counts().actions, 1);
   assert.match(readFileSync(f.request.journalPath, 'utf8'), /"pollAttempt":2,"pollElapsedMs":1000/u);
 });
+
+for (const gate of ['active', 'paused'] as const) {
+  test(`different targets sharing one browser alias progress in independent tabs while one action is ${gate}`, async (context) => {
+    const amberWindow = `amber-${gate}-tab`;
+    const cobaltWindow = `cobalt-${gate}-tab`;
+    const amber = fixture(context, amberWindow, `run-amber-${gate}`);
+    const cobalt = fixture(context, cobaltWindow, `run-cobalt-${gate}`);
+    const cobaltInput = structuredClone(cobalt.request.overlay) as any;
+    cobaltInput.targetAlias = 'cobalt';
+    const cobaltOverlay = validateTargetOverlay(LIVE_MANIFEST, cobaltInput);
+    cobalt.request.overlay = cobaltOverlay;
+    cobalt.snapshot.targetAlias = 'cobalt';
+    cobalt.snapshot.targetOverlayDigest = digestTargetOverlay(cobaltOverlay);
+    assert.equal(amber.deps.driver.browserAlias, cobalt.deps.driver.browserAlias);
+    assert.notEqual(amber.request.runId, cobalt.request.runId);
+    assert.notEqual(amber.snapshot.targetAlias, cobalt.snapshot.targetAlias);
+
+    let reachedBarrier!: () => void;
+    const blocked = new Promise<void>((resolve) => { reachedBarrier = resolve; });
+    let continueAmber!: () => void;
+    const continueAfterCobalt = new Promise<void>((resolve) => { continueAmber = resolve; });
+    const act = amber.deps.driver.act;
+    let amberContinued = false;
+    amber.deps.driver.act = async (record, challenge, ui) => {
+      if (gate === 'paused') ui.pause();
+      reachedBarrier();
+      await continueAfterCobalt;
+      amberContinued = true;
+      if (gate === 'paused') await ui.resume();
+      return act(record, challenge, ui);
+    };
+
+    const amberRun = new AttendedLiveCoordinator(amber.request, amber.deps).run();
+    await blocked;
+    const [cobaltOutcome] = await Promise.allSettled([
+      Promise.resolve().then(() => new AttendedLiveCoordinator(cobalt.request, cobalt.deps).run()),
+    ]);
+    const overlap = {
+      amberContinued,
+      amberLocked: existsSync(join(amber.root, 'evidence', 'target.lock')),
+      cobaltLocked: existsSync(join(cobalt.root, 'evidence', 'target.lock')),
+    };
+    continueAmber();
+    const [amberOutcome] = await Promise.allSettled([amberRun]);
+
+    if (cobaltOutcome.status === 'rejected') assert.fail(String(cobaltOutcome.reason));
+    if (amberOutcome.status === 'rejected') assert.fail(String(amberOutcome.reason));
+    assert.deepEqual(overlap, { amberContinued: false, amberLocked: true, cobaltLocked: false });
+    assert.equal(cobaltOutcome.value.report.aggregate, 'pass');
+    assert.equal(amberOutcome.value.report.aggregate, 'pass');
+    assert.equal(amber.counts().actions, 1);
+    assert.equal(cobalt.counts().actions, 1);
+    const amberJournal = readFileSync(amber.request.journalPath, 'utf8');
+    const cobaltJournal = readFileSync(cobalt.request.journalPath, 'utf8');
+    assert.match(amberJournal, new RegExp(`"windowDigest":"${digest(amberWindow)}"`, 'u'));
+    assert.doesNotMatch(amberJournal, new RegExp(digest(cobaltWindow), 'u'));
+    assert.match(cobaltJournal, new RegExp(`"windowDigest":"${digest(cobaltWindow)}"`, 'u'));
+    assert.doesNotMatch(cobaltJournal, new RegExp(digest(amberWindow), 'u'));
+  });
+}
 
 test('coordinator refuses Git/package roots and symlinked evidence despite a ready snapshot', (context) => {
   const f = fixture(context);
@@ -443,7 +497,6 @@ test('a thrown action preserves its ambiguous intent and never retries the produ
   assert.equal(calls, 1);
   assert.equal(readRunJournalStatus(f.request.journalPath, 'run-test').safeToClear, false);
   assert.equal(existsSync(join(f.root, 'evidence', 'target.lock')), true);
-  assert.equal(existsSync(join(f.root, 'ui', 'interaction.lock')), false);
   await assert.rejects(new AttendedLiveCoordinator(f.request, f.deps).run(), /LOCK_ACTIVE/u);
   assert.equal(calls, 1);
 });
@@ -622,7 +675,7 @@ test('a process crash immediately after lock acquisition leaves a safe header fo
      let reads = 0;
      await new AttendedLiveCoordinator(${JSON.stringify(f.request)}, {
        driver: { transport: 'computer_use', browserAlias: 'test-browser', actorAlias: 'owner-browser-profile' },
-       uiMutexRoot: ${JSON.stringify(f.deps.uiMutexRoot)}, now: () => ${NOW},
+       now: () => ${NOW},
        attest: async () => { if (++reads === 2) process.exit(42); return ${JSON.stringify(f.snapshot)}; }
      }).run();`], { encoding: 'utf8' });
   assert.equal(child.status, 42, child.stderr);
@@ -646,5 +699,33 @@ test('resuming a human gate reattests before another UI interaction', async (con
   };
   await assert.rejects(new AttendedLiveCoordinator(f.request, f.deps).run(), /TARGET_DRIFT/u);
   assert.equal(resumed, false);
-  assert.equal(existsSync(join(f.root, 'ui', 'interaction.lock')), false);
+});
+
+test('a paused window cannot certify a capture until resume reattests it', async (context) => {
+  const f = fixture(context);
+  const act = f.deps.driver.act;
+  f.deps.driver.act = async (record, challenge, ui) => {
+    ui.pause();
+    assert.throws(() => f.capture(ui, { outcome: 'completed' as const }), /WINDOW_CAPTURE_REQUIRED/u);
+    await ui.resume();
+    return act(record, challenge, ui);
+  };
+  const result = await new AttendedLiveCoordinator(f.request, f.deps).run();
+  assert.equal(result.report.aggregate, 'pass');
+});
+
+test('a completed window cannot certify later captures', async (context) => {
+  const f = fixture(context);
+  let completedWindow: UiWindow | undefined;
+  const inventory = f.deps.driver.inventory;
+  f.deps.driver.inventory = async (variantId, ui) => {
+    completedWindow = ui;
+    return inventory(variantId, ui);
+  };
+  const result = await new AttendedLiveCoordinator(f.request, f.deps).run();
+  assert.equal(result.report.aggregate, 'pass');
+  const closedWindow = completedWindow;
+  assert.ok(closedWindow);
+  assert.throws(() => f.capture(closedWindow, { identity: f.request.identity,
+    declaredResourceKinds: [], inventory: [] }), /WINDOW_CAPTURE_REQUIRED/u);
 });
