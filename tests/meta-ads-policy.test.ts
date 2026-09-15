@@ -2,12 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  META_ADS_ACCOUNT_HELPER,
+  META_ADS_APPROVED_ACCOUNT_SCOPE,
+  META_ADS_FIELD_HELPER,
   compileMetaAdsToolAccess,
   isMetaAdsMcpConnection,
   MetaAdsAccessPolicyError,
   metaAdsRuntimeAllowedTools,
   metaAdsRuntimeConstraint,
   metaAdsRuntimePropertyNames,
+  metaAdsToolSchemaSupported,
   normalizeMetaAdsAccountIds,
 } from '../src/config/meta-ads-policy.ts';
 import type { McpConnectionConfig, McpConnectionToolInfo } from '../src/config/types.ts';
@@ -15,6 +19,18 @@ import type { McpConnectionConfig, McpConnectionToolInfo } from '../src/config/t
 const fingerprint = 'a'.repeat(64);
 const reportTool = 'ads_get_ad_entities';
 const scoreTool = 'ads_get_opportunity_score';
+
+function helper(name: typeof META_ADS_ACCOUNT_HELPER | typeof META_ADS_FIELD_HELPER): McpConnectionToolInfo {
+  return {
+    name,
+    inputSchema: {
+      accountFields: [],
+      propertyNames: [],
+      ambiguous: false,
+      fingerprint,
+    },
+  };
+}
 
 function discovered(
   name: string,
@@ -51,6 +67,47 @@ test('compiler emits exact account constraints with server-owned reviewed effect
       [scoreTool]: { effect: 'read', argumentConstraints: { account_id: ['act_123', 'act_456'] } },
     },
   });
+});
+
+test('helpers remain explicit grants and store account scope without a provider argument', () => {
+  assert.deepEqual(compileMetaAdsToolAccess({
+    discoveredTools: [helper(META_ADS_ACCOUNT_HELPER), helper(META_ADS_FIELD_HELPER)],
+    requestedTools: [META_ADS_ACCOUNT_HELPER, META_ADS_FIELD_HELPER],
+    approvedAccountIds: ['144860434', 'act_144860434'],
+  }), {
+    allowedTools: [META_ADS_ACCOUNT_HELPER, META_ADS_FIELD_HELPER],
+    toolPolicies: {
+      [META_ADS_ACCOUNT_HELPER]: { effect: 'read', argumentConstraints: {
+        [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['144860434', 'act_144860434'],
+      } },
+      [META_ADS_FIELD_HELPER]: { effect: 'read', argumentConstraints: {
+        [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['144860434', 'act_144860434'],
+      } },
+    },
+  });
+  assert.equal(metaAdsToolSchemaSupported(helper(META_ADS_ACCOUNT_HELPER)), true);
+  assert.equal(metaAdsToolSchemaSupported(helper(META_ADS_FIELD_HELPER)), true);
+});
+
+test('helper schema or scope drift revokes runtime access', () => {
+  const account = helper(META_ADS_ACCOUNT_HELPER);
+  const connection = {
+    discoveredTools: [account],
+    allowedTools: [META_ADS_ACCOUNT_HELPER],
+    toolPolicies: { [META_ADS_ACCOUNT_HELPER]: { effect: 'read' as const, argumentConstraints: {
+      [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['act_123'],
+    } } },
+  };
+  assert.deepEqual(metaAdsRuntimeAllowedTools(connection), [META_ADS_ACCOUNT_HELPER]);
+  assert.deepEqual(metaAdsRuntimeConstraint(connection, META_ADS_ACCOUNT_HELPER), {
+    [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['act_123'],
+  });
+  assert.deepEqual(metaAdsRuntimePropertyNames(connection, META_ADS_ACCOUNT_HELPER), []);
+  account.inputSchema!.ambiguous = true;
+  assert.deepEqual(metaAdsRuntimeAllowedTools(connection), []);
+  account.inputSchema!.ambiguous = false;
+  connection.toolPolicies[META_ADS_ACCOUNT_HELPER]!.argumentConstraints![META_ADS_APPROVED_ACCOUNT_SCOPE] = ['wrong'];
+  assert.deepEqual(metaAdsRuntimeAllowedTools(connection), []);
 });
 
 test('compiler rejects tools without one required scalar account field', () => {

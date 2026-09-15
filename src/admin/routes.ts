@@ -250,7 +250,7 @@ import {
   type StartMcpOAuthInput,
 } from '../config/mcp-oauth.ts';
 import { allowedToolsAfterMcpDiscovery, isMcpToolReviewRequired } from '../config/mcp-access.ts';
-import { compileMetaAdsToolAccess, metaAdsAccountField, metaAdsToolEffect, MetaAdsAccessPolicyError } from '../config/meta-ads-policy.ts';
+import { compileMetaAdsToolAccess, metaAdsToolEffect, metaAdsToolSchemaSupported, MetaAdsAccessPolicyError } from '../config/meta-ads-policy.ts';
 import { META_ADS_MCP_SERVER_URL, configuredMcpOAuthCallbackUrl, configuredMcpOAuthClientDescriptor, getConfiguredMcpOAuthClient, saveConfiguredMcpOAuthClient, removeConfiguredMcpOAuthClient, ConfiguredMcpOAuthClientError } from '../config/mcp-oauth-clients.ts';
 import {
   buildMcpRequestHeaders,
@@ -7754,7 +7754,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           return [{ account, binding,
             ...(account.policy.kind === 'mcp' && isMcpToolReviewRequired(account.policy) ? {
               mcpToolAccess: account.policy.discoveredTools.map((tool) => ({ name: tool.name,
-                available: Boolean(metaAdsAccountField(tool)), effect: metaAdsToolEffect(tool.name) ?? 'write',
+                available: metaAdsToolSchemaSupported(tool), effect: metaAdsToolEffect(tool.name) ?? 'write',
               })),
             } : {}),
           }];

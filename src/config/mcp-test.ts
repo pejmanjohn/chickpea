@@ -13,7 +13,10 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 
 import { McpBlockedUrlError } from './mcp-errors.ts';
 import {
+  META_ADS_ACCOUNT_HELPER,
+  META_ADS_FIELD_HELPER,
   isMetaAdsMcpConnection,
+  isMetaAdsHelperTool,
   isReviewedMetaAdsTool,
   metaAdsNonAccountIdArgumentNames,
 } from './meta-ads-policy.ts';
@@ -69,6 +72,8 @@ export interface McpConnectInput {
   headers: Record<string, string>;
   /** When present, each request resolves fresh headers instead of retaining these headers. */
   resolveHeaders?: () => Promise<Record<string, string>>;
+  /** Optional policy response boundary used by reviewed server adapters. */
+  transformResponse?: (request: Request, response: Response) => Promise<Response>;
   /** Deadline around the initial connect (Flue's timeoutMs does not bound it). */
   connectTimeoutMs?: number;
   /** Per-request timeout passed to `createMcpConnection` (bounds tool calls). */
@@ -228,12 +233,19 @@ export async function connectMcp(
     allowedOrigin: new URL(validated.url).origin,
     signal: controller.signal,
   });
-  const fetch = input.resolveHeaders
+  const fetch = input.resolveHeaders || input.transformResponse
     ? async (requestInput: RequestInfo | URL, requestInit?: RequestInit): Promise<Response> => {
         const request = new Request(requestInput, requestInit);
         const headers = new Headers(request.headers);
-        for (const [name, value] of Object.entries(await input.resolveHeaders!())) headers.set(name, value);
-        return guardedFetch(new Request(request, { headers }));
+        if (input.resolveHeaders) {
+          for (const [name, value] of Object.entries(await input.resolveHeaders())) headers.set(name, value);
+        }
+        const outbound = new Request(request, { headers });
+        const transformRequest = input.transformResponse ? outbound.clone() : undefined;
+        const response = await guardedFetch(outbound);
+        return input.transformResponse
+          ? input.transformResponse(transformRequest!, response)
+          : response;
       }
     : guardedFetch;
   const pending = connect(input.id, {
@@ -326,10 +338,14 @@ export function projectMcpToolInputSchema(
   const accountFields: McpToolInputSchemaProjection['accountFields'] = [];
   let propertyNames: string[] = [];
   let ambiguous = bounded.truncated;
-  if (!isRecord(inputSchema) || inputSchema.type !== 'object' || !isRecord(inputSchema.properties)) {
+  const metaAdsHelper = metaAdsToolName !== undefined && isMetaAdsHelperTool(metaAdsToolName);
+  const helperEmptyProperties = metaAdsHelper && isRecord(inputSchema) && inputSchema.properties === undefined;
+  if (!isRecord(inputSchema) || inputSchema.type !== 'object' ||
+      (!isRecord(inputSchema.properties) && !helperEmptyProperties)) {
     ambiguous = true;
   } else {
-    const names = Object.keys(inputSchema.properties);
+    const properties = isRecord(inputSchema.properties) ? inputSchema.properties : {};
+    const names = Object.keys(properties);
     propertyNames = names.filter((name) => name.length <= MAX_PROPERTY_NAME)
       .sort().slice(0, MAX_PROJECTED_PROPERTIES);
     if (names.length > MAX_PROJECTED_PROPERTIES || propertyNames.length !== names.length) ambiguous = true;
@@ -344,7 +360,7 @@ export function projectMcpToolInputSchema(
         (!Array.isArray(inputSchema.required) || !inputSchema.required.every((value) => typeof value === 'string'))) {
       ambiguous = true;
     }
-    for (const [name, definition] of Object.entries(inputSchema.properties)) {
+    for (const [name, definition] of Object.entries(properties)) {
       if (name !== 'ad_account_id' && name !== 'account_id') {
         if (nonAccountIdArguments.has(name)) {
           if (name === 'client_conversation_id') {
@@ -369,14 +385,34 @@ export function projectMcpToolInputSchema(
       accountFields.push({ name, type: 'string', required: isRequired });
       if (!isRequired) ambiguous = true;
     }
+    if (metaAdsHelper) {
+      if (containsNestedAccountSelector(inputSchema)) ambiguous = true;
+      if (accountFields.length !== 0) ambiguous = true;
+      if (metaAdsToolName === META_ADS_FIELD_HELPER && names.length !== 0) ambiguous = true;
+      if (metaAdsToolName === META_ADS_ACCOUNT_HELPER) {
+        for (const [name, definition] of Object.entries(properties)) {
+          if (required.has(name) || (name !== 'cursor' && name !== 'limit')) {
+            ambiguous = true;
+            continue;
+          }
+          if (name === 'cursor' && !simpleStringOrNullableString(definition)) ambiguous = true;
+          if (name === 'limit' && !simpleNumberSchema(definition)) ambiguous = true;
+        }
+      }
+    }
   }
-  if (accountFields.length !== 1) ambiguous = true;
+  if (metaAdsHelper ? accountFields.length !== 0 : accountFields.length !== 1) ambiguous = true;
   return {
     accountFields,
     propertyNames,
     ambiguous,
     fingerprint: bytesToHex(sha256(new TextEncoder().encode(bounded.value))),
   };
+}
+
+function simpleNumberSchema(value: unknown): boolean {
+  if (!isRecord(value) || ['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in value)) return false;
+  return value.type === 'integer' || value.type === 'number';
 }
 
 function simpleStringOrNullableString(value: unknown): boolean {

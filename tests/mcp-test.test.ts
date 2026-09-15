@@ -106,7 +106,9 @@ function scopedMetaSchema(): Record<string, unknown> {
 }
 
 const reviewedMetaToolNames = [
+  'ads_get_ad_accounts',
   'ads_get_ad_entities',
+  'ads_get_field_context',
   'ads_get_opportunity_score',
   'ads_insights_advertiser_context',
   'ads_insights_anomaly_signal',
@@ -153,26 +155,27 @@ test('Meta protocol discovery scans past 50 tools and retains reviewed reporting
   const fetch = pagedProtocolFetch({
     '': { tools: first, nextCursor: 'reporting' },
     reporting: {
-      tools: reviewedMetaToolNames.map((name) => protocolTool(name, name === 'ads_get_ad_entities'
-        ? {
+      tools: reviewedMetaToolNames.map((name) => protocolTool(name,
+        name === 'ads_get_ad_accounts' || name === 'ads_get_field_context'
+          ? { type: 'object', properties: {} }
+          : name === 'ads_get_ad_entities' ? {
             type: 'object', required: ['ad_account_id'], properties: {
               ad_account_id: { type: 'string' },
               client_conversation_id: { type: 'string' },
               fields: { type: 'array', items: { type: 'string' } },
               object_ids: { type: 'array', items: { type: 'string' } },
             },
-          }
-        : scopedMetaSchema())),
+          } : scopedMetaSchema())),
     },
   }, cursors);
 
   const result = await discoverMcpTools(metaInput, undefined, () => fetch);
 
   assert.deepEqual(result.tools.map((entry) => entry.name), reviewedMetaToolNames);
-  assert.deepEqual(result.tools[0]?.inputSchema?.accountFields, [
+  assert.deepEqual(result.tools.find(({ name }) => name === 'ads_get_ad_entities')?.inputSchema?.accountFields, [
     { name: 'ad_account_id', type: 'string', required: true },
   ]);
-  assert.equal(result.tools[0]?.inputSchema?.ambiguous, false,
+  assert.equal(result.tools.find(({ name }) => name === 'ads_get_ad_entities')?.inputSchema?.ambiguous, false,
     'production discovery applies the exact reviewed-tool schema exception');
   assert.deepEqual(cursors, [undefined, 'reporting']);
 });
@@ -469,6 +472,33 @@ test('Meta projection accepts exact observed non-account IDs without weakening t
   }
 });
 
+test('Meta projection admits only bounded accountless helper input contracts', () => {
+  for (const schema of [
+    { type: 'object' },
+    { type: 'object', properties: {} },
+    { type: 'object', properties: {
+      cursor: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+      limit: { type: 'integer', minimum: 1, maximum: 100 },
+    } },
+  ]) {
+    const projection = projectMcpToolInputSchema(schema, 'ads_get_ad_accounts');
+    assert.equal(projection.ambiguous, false);
+    assert.deepEqual(projection.accountFields, []);
+  }
+  assert.equal(projectMcpToolInputSchema({ type: 'object', properties: {} },
+    'ads_get_field_context').ambiguous, false);
+  for (const [name, schema] of [
+    ['required pagination', { type: 'object', required: ['cursor'], properties: { cursor: { type: 'string' } } }],
+    ['unknown input', { type: 'object', properties: { fields: { type: 'array' } } }],
+    ['account selector', { type: 'object', properties: { ad_account_id: { type: 'string' } } }],
+    ['nested selector', { type: 'object', properties: { filter: { type: 'object', properties: { campaign_id: { type: 'string' } } } } }],
+  ] as const) {
+    assert.equal(projectMcpToolInputSchema(schema, 'ads_get_ad_accounts').ambiguous, true, name);
+  }
+  assert.equal(projectMcpToolInputSchema({ type: 'object', properties: { field: { type: 'string' } } },
+    'ads_get_field_context').ambiguous, true);
+});
+
 test('Meta projection keeps entity filters optional and unknown or nested selectors closed', () => {
   const schema = (required: string[], properties: Record<string, unknown>) => ({
     type: 'object', required, properties: { ad_account_id: { type: 'string' }, ...properties },
@@ -667,6 +697,30 @@ test('connectMcp returns the live connection without closing it', async () => {
   assert.equal(returned, conn, 'connectMcp returns the live connection');
   assert.equal(closed, false, 'connectMcp does NOT close the connection');
   assert.equal(calls[0]?.name, 'srv');
+});
+
+test('connectMcp preserves a transform request when provider fetch consumes its body', async () => {
+  let transformedMethod = '';
+  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> => {
+    await options.fetch!('https://mcp.example.com/mcp', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call' }),
+    });
+    return fakeConnection([]);
+  };
+  const createGuardedFetch = (): typeof fetch => async (input, init) => {
+    const request = new Request(input, init);
+    await request.text();
+    return Response.json({ jsonrpc: '2.0', id: 1, result: {} });
+  };
+  await connectMcp({
+    ...baseInput,
+    transformResponse: async (request, response) => {
+      transformedMethod = ((await request.json()) as { method: string }).method;
+      return response;
+    },
+  }, connect, createGuardedFetch);
+  assert.equal(transformedMethod, 'tools/call');
 });
 
 test('connectMcp also enforces the SSRF guard before connecting', async () => {

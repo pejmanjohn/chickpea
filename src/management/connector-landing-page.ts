@@ -206,7 +206,7 @@ export function renderCatalogConnectionAccessReviewPage(
               </section>
               <section class="choice-block" aria-labelledby="tool-access-title">
                 <h2 id="tool-access-title">Tools</h2>
-                <p>Selected tools can read Meta Ads reporting data. Tools outside Chickpea&rsquo;s reviewed reporting contract remain unavailable.</p>
+                <p>Selected tools can read Meta Ads reporting data or verify approved-account and reporting-field prerequisites. Tools outside Chickpea&rsquo;s reviewed contract remain unavailable.</p>
                 <div class="tool-options">${toolChoices || '<p>No tools were returned by Meta Ads.</p>'}</div>
                 ${availableCount === 0 ? '<p class="review-note">None of the discovered tools can yet be safely limited to an ad account, so access remains off.</p>' : ''}
               </section>

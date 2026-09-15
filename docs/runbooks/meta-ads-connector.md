@@ -20,9 +20,15 @@ connector.
 4. Open an Agent's **Connections** tab, add **Meta Ads**, choose Personal or
    Team ownership, and sign in to Meta.
 5. Review the ad account IDs and tools that Agent may use. Sign-in alone grants
-   no tools. Only reviewed reporting tools whose discovered inputs support an
-   exact ad account restriction are available. Campaign creation, editing and
-   activation are not currently supported.
+   no tools. Reporting tools require an exact ad account restriction. Meta's
+   account-queryability and reporting-field helpers are separate, unchecked
+   choices; the account helper returns only the approved accounts. Campaign
+   creation, editing and activation are not currently supported.
+
+The account helper may advertise optional pagination inputs, but Chickpea does
+not expose them to the Agent. Its first response must be complete; a paginated
+or otherwise unfamiliar account response fails closed without exposing other
+accounts.
 
 Use the deployment's stable public HTTPS origin. Callback paths generated for
 individual setup sessions do not need to be registered separately. Localhost

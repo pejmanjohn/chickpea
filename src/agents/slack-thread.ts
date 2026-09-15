@@ -70,6 +70,9 @@ import {
   resolveRuntimePlanMcpConnections,
   resolveProfileMcpTools,
 } from '../config/profile-mcp.ts';
+import {
+  projectMcpPolicyInstructions,
+} from '../config/mcp-policy-instructions.ts';
 import { resolveMcpOAuthAccessToken } from '../config/mcp-oauth.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import {
@@ -1438,12 +1441,12 @@ export function useRuntimePlanAgent(
   )) {
     useSkill(skill);
   }
-  const restrictions = plan.mcpConnections.filter((connection) =>
-    Object.keys(connection.toolArgumentConstraints ?? {}).length > 0);
+  const { restrictions, metaHelperScopes } = projectMcpPolicyInstructions(plan.mcpConnections);
   if (restrictions.length > 0) {
-    useInstruction(`The owner restricts these connection tool inputs. Use only the listed values; do not retry disallowed inputs: ${JSON.stringify(restrictions.map((connection) => ({
-      connection: connection.id, tools: connection.toolArgumentConstraints,
-    })))}`);
+    useInstruction(`The owner restricts these connection tool inputs. Use only the listed values; do not retry disallowed inputs: ${JSON.stringify(restrictions)}`);
+  }
+  if (metaHelperScopes.length > 0) {
+    useInstruction(`The owner selected these Meta Ads helper tools with an approved-account scope: ${JSON.stringify(metaHelperScopes)}. The scope is enforced by Chickpea policy and is not a provider input. Do not invent or send an ad-account argument unless the tool's declared input schema asks for one. Account discovery returns only approved accounts; field context provides global reporting-field metadata.`);
   }
   for (const connection of resolveRuntimePlanMcpConnections(
     plan.agentId,

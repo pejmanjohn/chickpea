@@ -16,6 +16,11 @@ import {
   resolveRuntimePlanMcpConnections,
 } from '../src/config/profile-mcp.ts';
 import { ConnectionCredentialUnavailableError } from '../src/connections/errors.ts';
+import {
+  META_ADS_ACCOUNT_HELPER,
+  META_ADS_APPROVED_ACCOUNT_SCOPE,
+  META_ADS_FIELD_HELPER,
+} from '../src/config/meta-ads-policy.ts';
 import { mcpOAuthSettingKeys } from '../src/config/mcp-oauth.ts';
 import { mcpBearerEnvVar, mcpHeaderEnvVar } from '../src/config/mcp-secrets.ts';
 import {
@@ -82,6 +87,27 @@ const metaEntitySchema = {
 };
 const metaReportTool = 'ads_get_ad_entities';
 const metaScoreTool = 'ads_get_opportunity_score';
+const metaAccountHelperSchema = {
+  propertyNames: [],
+  accountFields: [],
+  ambiguous: false,
+  fingerprint: 'b'.repeat(64),
+};
+
+function metaAccountHelperServer(overrides: Partial<McpConnectionConfig> = {}): McpConnectionConfig {
+  return server({
+    url: 'https://mcp.facebook.com/ads',
+    presetId: 'meta-ads',
+    discoveredTools: [{ name: META_ADS_ACCOUNT_HELPER, inputSchema: metaAccountHelperSchema }],
+    allowedTools: [META_ADS_ACCOUNT_HELPER],
+    toolPolicies: { [META_ADS_ACCOUNT_HELPER]: {
+      effect: 'read', argumentConstraints: {
+        [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['144860434', 'act_144860434'],
+      },
+    } },
+    ...overrides,
+  });
+}
 
 /**
  * A connect stub that dispatches per server id to a preset connection (or a
@@ -275,6 +301,76 @@ test('legacy Meta tools reread policy and OAuth before provider I/O', async () =
   }, /policy changed/);
   assert.equal(remoteRuns, 1, 'disconnect blocks before the remote tool adapter runs again');
   assert.equal(outbound, 0);
+});
+
+test('legacy Meta account helper sends no fake scope argument and returns only approved accounts', async () => {
+  const frozen = metaAccountHelperServer();
+  let current: McpConnectionConfig | undefined = frozen;
+  let outbound = 0;
+  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> =>
+    fakeConnection([{
+      name: `mcp__srv__${META_ADS_ACCOUNT_HELPER}`, description: '', input: undefined, output: undefined,
+      async run(context) {
+        const response = await options.fetch!('https://mcp.facebook.com/ads', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+            name: META_ADS_ACCOUNT_HELPER, arguments: 'data' in context ? context.data : undefined,
+          } }),
+        });
+        return response.json();
+      },
+    } as ToolDefinition]);
+  const tools = await resolveProfileMcpTools([frozen], {
+    agentId: 'agent_test', env: noSecretsEnv, existingToolNames: [], connect,
+    resolveCurrentConnection: async () => current,
+    createGuardedFetch: () => async () => {
+      outbound += 1;
+      return Response.json({ jsonrpc: '2.0', id: 1, result: { structuredContent: { accounts: [
+        { id: 'act_999', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Other' },
+        { id: 'act_144860434', is_ads_mcp_enabled: true, is_queryable: true, currency: 'USD', ad_account_name: 'Magoosh' },
+      ] } } });
+    },
+  });
+  const result = await tools[0]!.run({ data: {} } as never);
+  assert.equal(outbound, 1);
+  assert.doesNotMatch(JSON.stringify(result), /999|Other/);
+  assert.match(JSON.stringify(result), /144860434|Magoosh/);
+
+  current = { ...frozen, allowedTools: [] };
+  await assert.rejects(async () => { await tools[0]!.run({ data: {} } as never); }, /policy changed/);
+  assert.equal(outbound, 1, 'revocation blocks before the provider request');
+});
+
+test('legacy Meta account helper blocks response release after policy changes in flight', async () => {
+  const frozen = metaAccountHelperServer();
+  let current: McpConnectionConfig | undefined = frozen;
+  let outbound = 0;
+  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> =>
+    fakeConnection([{
+      name: `mcp__srv__${META_ADS_ACCOUNT_HELPER}`, description: '', input: undefined, output: undefined,
+      async run(context) {
+        const response = await options.fetch!('https://mcp.facebook.com/ads', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+            name: META_ADS_ACCOUNT_HELPER, arguments: 'data' in context ? context.data : undefined,
+          } }),
+        });
+        return response.json();
+      },
+    } as ToolDefinition]);
+  const tools = await resolveProfileMcpTools([frozen], {
+    agentId: 'agent_test', env: noSecretsEnv, existingToolNames: [], connect,
+    resolveCurrentConnection: async () => current,
+    createGuardedFetch: () => async () => {
+      outbound += 1;
+      current = { ...frozen, allowedTools: [] };
+      return Response.json({ jsonrpc: '2.0', id: 1, result: { structuredContent: { accounts: [
+        { id: 'act_144860434', is_ads_mcp_enabled: true, is_queryable: true },
+      ] } } });
+    },
+  });
+  await assert.rejects(async () => { await tools[0]!.run({ data: {} } as never); }, /policy changed/);
+  assert.equal(outbound, 1);
 });
 
 test('reports connection start with policy-only identity before opening the server', async () => {
@@ -818,7 +914,7 @@ test('Flue 2 MCP definitions retain only policy and resolve rotating bearer auth
 
 test('direct Meta definitions expose only scoped tools and reject undeclared arguments', async () => {
   let outbound = 0;
-  const [definition] = resolveProfileMcpConnections([server({
+  const metaServer = server({
     url: 'https://mcp.facebook.com/ads',
     discoveredTools: [
       { name: metaReportTool, inputSchema: metaEntitySchema },
@@ -829,8 +925,10 @@ test('direct Meta definitions expose only scoped tools and reject undeclared arg
       [metaReportTool]: { effect: 'read', argumentConstraints: { ad_account_id: ['act_123'] } },
       [metaScoreTool]: { effect: 'read' },
     },
-  })], {
+  });
+  const [definition] = resolveProfileMcpConnections([metaServer], {
     agentId: 'agent_test', env: noSecretsEnv,
+    resolveCurrentConnection: async () => metaServer,
     createGuardedFetch: () => async () => {
       outbound += 1;
       return Response.json({});
@@ -857,6 +955,152 @@ test('direct Meta definitions expose only scoped tools and reject undeclared arg
       } } }),
   });
   assert.equal(outbound, 1);
+});
+
+test('custom MCP tool with a helper-shaped name keeps ordinary argument constraints', async () => {
+  let outbound = 0;
+  const custom = server({
+    discoveredTools: [{ name: META_ADS_ACCOUNT_HELPER }],
+    allowedTools: [META_ADS_ACCOUNT_HELPER],
+    toolPolicies: { [META_ADS_ACCOUNT_HELPER]: {
+      effect: 'read', argumentConstraints: { tenant_id: ['tenant-1'] },
+    } },
+  });
+  const [definition] = resolveProfileMcpConnections([custom], {
+    agentId: 'agent_test', env: noSecretsEnv,
+    createGuardedFetch: () => async () => {
+      outbound += 1;
+      return Response.json({});
+    },
+  });
+  await assert.rejects(definition!.fetch!('https://mcp.example.com/mcp', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+      name: META_ADS_ACCOUNT_HELPER, arguments: {},
+    } }),
+  }), /approved value/);
+  assert.equal(outbound, 0);
+});
+
+test('direct Meta field helper has no phantom account input and honors live revocation', async () => {
+  const fieldServer = server({
+    url: 'https://mcp.facebook.com/ads', presetId: 'meta-ads',
+    discoveredTools: [{ name: META_ADS_FIELD_HELPER, inputSchema: {
+      propertyNames: [], accountFields: [], ambiguous: false, fingerprint: 'c'.repeat(64),
+    } }],
+    allowedTools: [META_ADS_FIELD_HELPER],
+    toolPolicies: { [META_ADS_FIELD_HELPER]: { effect: 'read', argumentConstraints: {
+      [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['act_123'],
+    } } },
+  });
+  let current: McpConnectionConfig | undefined = fieldServer;
+  let outbound = 0;
+  const [definition] = resolveProfileMcpConnections([fieldServer], {
+    agentId: 'agent_test', env: noSecretsEnv,
+    resolveCurrentConnection: async () => current,
+    createGuardedFetch: () => async () => {
+      outbound += 1;
+      return Response.json({ jsonrpc: '2.0', id: 1, result: {
+        content: [{ type: 'text', text: 'field metadata' }],
+      } });
+    },
+  });
+  await definition!.fetch!('https://mcp.facebook.com/ads', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+      name: META_ADS_FIELD_HELPER, arguments: {},
+    } }),
+  });
+  assert.equal(outbound, 1);
+  current = { ...fieldServer, allowedTools: [] };
+  await assert.rejects(definition!.fetch!('https://mcp.facebook.com/ads', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: {
+      name: META_ADS_FIELD_HELPER, arguments: {},
+    } }),
+  }), /policy changed/);
+  assert.equal(outbound, 1);
+});
+
+test('direct Meta account helper sanitizes SSE under live profile policy', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-direct-meta-helper-'));
+  const agentId = 'agent_direct_meta_helper';
+  const connection = metaAccountHelperServer();
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db') }, async () => {
+      await getConfigStore().createAgent({
+        id: agentId, name: 'Direct Meta helper', instructions: 'Test Meta helper policy.',
+        enabled: true, model: 'local-stub/direct-meta', skills: [],
+        mcpServers: [connection], apiConnections: [], repositories: [],
+      });
+      const [definition] = resolveProfileMcpConnections([connection], {
+        agentId,
+        createGuardedFetch: () => async () => {
+          const envelope = { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify({ accounts: [
+            { id: 'act_999', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Other' },
+            { id: '144860434', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Magoosh' },
+          ] }) }] } };
+          return new Response(`event: message\ndata: ${JSON.stringify(envelope)}\n\n`, {
+            headers: { 'content-type': 'text/event-stream' },
+          });
+        },
+      });
+      assert.deepEqual(definition?.tools, [META_ADS_ACCOUNT_HELPER]);
+      const response = await definition!.fetch!('https://mcp.facebook.com/ads', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+          name: META_ADS_ACCOUNT_HELPER, arguments: {},
+        } }),
+      });
+      const text = await response.text();
+      assert.match(text, /144860434|Magoosh/);
+      assert.doesNotMatch(text, /999|Other|meta_ads_approved/);
+    });
+  } finally {
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('runtime-plan Meta account helper accepts empty provider args and sanitizes JSON', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-runtime-meta-helper-'));
+  const agentId = 'agent_runtime_meta_helper';
+  const connection = metaAccountHelperServer({ id: 'meta' });
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db') }, async () => {
+      await getConfigStore().createAgent({
+        id: agentId, name: 'Runtime Meta helper', instructions: 'Test Meta helper policy.',
+        enabled: true, model: 'local-stub/runtime-meta-helper', skills: [],
+        mcpServers: [connection], apiConnections: [], repositories: [],
+      });
+      const [definition] = resolveRuntimePlanMcpConnections(agentId, [{
+        id: connection.id, url: connection.url, transport: connection.transport,
+        authMode: 'none', headerNames: [], optional: true,
+        allowedTools: [META_ADS_ACCOUNT_HELPER], readOnlyTools: [META_ADS_ACCOUNT_HELPER],
+        toolArgumentConstraints: { [META_ADS_ACCOUNT_HELPER]: {
+          [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['144860434', 'act_144860434'],
+        } },
+      }], undefined, undefined, { createGuardedFetch: () => async () => Response.json({
+        jsonrpc: '2.0', id: 1, result: { structuredContent: { accounts: [
+          { id: 'act_999', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Other' },
+          { id: 'act_144860434', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Magoosh' },
+        ] } },
+      }) });
+      assert.deepEqual(definition?.tools, [META_ADS_ACCOUNT_HELPER]);
+      const response = await definition!.fetch!('https://mcp.facebook.com/ads', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+          name: META_ADS_ACCOUNT_HELPER, arguments: {},
+        } }),
+      });
+      const result = await response.json();
+      assert.match(JSON.stringify(result), /144860434|Magoosh/);
+      assert.doesNotMatch(JSON.stringify(result), /999|Other|meta_ads_approved/);
+    });
+  } finally {
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('runtime-plan direct Meta definitions withhold unscoped tools and reject another account pre-I/O', async () => {

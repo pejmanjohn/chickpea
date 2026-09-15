@@ -8,7 +8,9 @@ export const META_ADS_MCP_URL = 'https://mcp.facebook.com/ads';
 
 /** Reporting tools reviewed against Meta's official Ads MCP documentation. */
 export const META_ADS_REVIEWED_TOOL_EFFECTS = {
+  ads_get_ad_accounts: 'read',
   ads_get_ad_entities: 'read',
+  ads_get_field_context: 'read',
   ads_get_opportunity_score: 'read',
   ads_insights_advertiser_context: 'read',
   ads_insights_anomaly_signal: 'read',
@@ -17,6 +19,15 @@ export const META_ADS_REVIEWED_TOOL_EFFECTS = {
   ads_insights_performance_trend: 'read',
 } as const satisfies Readonly<Record<string, 'read'>>;
 
+export const META_ADS_ACCOUNT_HELPER = 'ads_get_ad_accounts';
+export const META_ADS_FIELD_HELPER = 'ads_get_field_context';
+export const META_ADS_APPROVED_ACCOUNT_SCOPE = '$meta_ads_approved_account_id';
+
+const META_ADS_HELPER_TOOLS = new Set<string>([
+  META_ADS_ACCOUNT_HELPER,
+  META_ADS_FIELD_HELPER,
+]);
+
 /**
  * Authenticated Meta schemas include correlation metadata and recognized
  * entity filters whose names end in `_id`/`_ids`. Entity-filter semantics are
@@ -24,7 +35,9 @@ export const META_ADS_REVIEWED_TOOL_EFFECTS = {
  * runtime so callers can only target the exact constrained `ad_account_id`.
  */
 const META_ADS_NON_ACCOUNT_ID_ARGUMENTS = {
+  ads_get_ad_accounts: [],
   ads_get_ad_entities: ['client_conversation_id', 'object_ids'],
+  ads_get_field_context: [],
   ads_get_opportunity_score: ['client_conversation_id'],
   ads_insights_advertiser_context: ['client_conversation_id', 'entity_ids'],
   ads_insights_anomaly_signal: ['client_conversation_id', 'entity_ids'],
@@ -79,10 +92,13 @@ export function compileMetaAdsToolAccess(
     if (matches.length !== 1) {
       throw new MetaAdsAccessPolicyError(`Meta Ads tool ${name} is not uniquely present in current discovery.`);
     }
-    const field = metaAdsAccountField(matches[0]!);
-    if (!field) {
+    const tool = matches[0]!;
+    if (!metaAdsToolSchemaSupported(tool)) {
       throw new MetaAdsAccessPolicyError(`Meta Ads tool ${name} cannot be restricted to an approved ad account.`);
     }
+    const field = isMetaAdsHelperTool(name)
+      ? META_ADS_APPROVED_ACCOUNT_SCOPE
+      : metaAdsAccountField(tool)!;
     policyEntries.push([name, {
       effect: META_ADS_REVIEWED_TOOL_EFFECTS[name],
       argumentConstraints: { [field]: accountIds },
@@ -125,6 +141,10 @@ export function metaAdsRuntimeConstraint(
   if (!isReviewedMetaAdsTool(name)) return undefined;
   const matches = connection.discoveredTools.filter((tool) => tool.name === name);
   if (matches.length !== 1) return undefined;
+  if (isMetaAdsHelperTool(name)) {
+    if (!metaAdsToolSchemaSupported(matches[0]!)) return undefined;
+    return normalizedMetaAdsHelperScope(connection.toolPolicies?.[name]?.argumentConstraints);
+  }
   const field = metaAdsAccountField(matches[0]!);
   if (!field) return undefined;
   const constraints = connection.toolPolicies?.[name]?.argumentConstraints;
@@ -143,9 +163,19 @@ export function metaAdsConstraintField(
   return normalizedConstraint(constraints, field) ? field : undefined;
 }
 
+/** Validate a frozen Meta constraint without treating helper scope as provider input. */
+export function metaAdsRuntimePolicyConstraint(
+  name: string,
+  constraints: Record<string, string[]> | undefined,
+): Record<string, string[]> | undefined {
+  if (isMetaAdsHelperTool(name)) return normalizedMetaAdsHelperScope(constraints);
+  const field = metaAdsConstraintField(constraints);
+  return field ? normalizedConstraint(constraints, field) : undefined;
+}
+
 /** A supported tool has exactly one required top-level scalar account field. */
 export function metaAdsAccountField(tool: McpConnectionToolInfo): 'ad_account_id' | 'account_id' | undefined {
-  if (!metaAdsToolEffect(tool.name)) return undefined;
+  if (!metaAdsToolEffect(tool.name) || isMetaAdsHelperTool(tool.name)) return undefined;
   const schema = tool.inputSchema;
   if (!schema || schema.ambiguous || !/^[a-f0-9]{64}$/.test(schema.fingerprint) ||
       schema.accountFields.length !== 1) return undefined;
@@ -160,6 +190,19 @@ export function metaAdsAccountField(tool: McpConnectionToolInfo): 'ad_account_id
   return field.name;
 }
 
+/** Authenticated schema admission for both scoped report tools and exact helpers. */
+export function metaAdsToolSchemaSupported(tool: McpConnectionToolInfo): boolean {
+  if (!metaAdsToolEffect(tool.name)) return false;
+  const schema = tool.inputSchema;
+  if (!schema || schema.ambiguous || !/^[a-f0-9]{64}$/.test(schema.fingerprint)) return false;
+  if (!isMetaAdsHelperTool(tool.name)) return metaAdsAccountField(tool) !== undefined;
+  if (schema.accountFields.length !== 0) return false;
+  if (tool.name === META_ADS_ACCOUNT_HELPER) {
+    return schema.propertyNames.every((name) => name === 'cursor' || name === 'limit');
+  }
+  return schema.propertyNames.length === 0;
+}
+
 /** Trusted server-owned effect metadata for the reviewed Meta tool contract. */
 export function metaAdsToolEffect(name: string): 'read' | 'write' | undefined {
   return isReviewedMetaAdsTool(name) ? META_ADS_REVIEWED_TOOL_EFFECTS[name] : undefined;
@@ -170,12 +213,28 @@ export function metaAdsRuntimePropertyNames(
   name: string,
 ): string[] | undefined {
   const matches = connection.discoveredTools.filter((tool) => tool.name === name);
-  if (matches.length !== 1 || !metaAdsAccountField(matches[0]!)) return undefined;
+  if (matches.length !== 1 || !metaAdsToolSchemaSupported(matches[0]!)) return undefined;
+  if (isMetaAdsHelperTool(name)) return [];
   const names = matches[0]!.inputSchema?.propertyNames;
   return Array.isArray(names) && names.length > 0 && names.length <= 64 &&
     names.every((value) => typeof value === 'string' && value.length > 0 && value.length <= 120)
     ? [...new Set(names)].filter((value) => !metaAdsBlockedRuntimeArgumentNames(name).includes(value))
     : undefined;
+}
+
+export function isMetaAdsHelperTool(name: string): boolean {
+  return META_ADS_HELPER_TOOLS.has(name);
+}
+
+export function metaAdsApprovedAccountIds(
+  constraints: Record<string, string[]> | undefined,
+): string[] | undefined {
+  return normalizedMetaAdsHelperScope(constraints)?.[META_ADS_APPROVED_ACCOUNT_SCOPE];
+}
+
+export function canonicalMetaAdsAccountId(value: string): string | undefined {
+  if (value.trim() !== value || !/^(?:act_)?[0-9]{1,32}$/.test(value)) return undefined;
+  return value.startsWith('act_') ? value.slice(4) : value;
 }
 
 /** Exact observed Meta ID-shaped fields that do not select the ad account. */
@@ -211,6 +270,20 @@ function normalizedConstraint(
     return undefined;
   }
   return { [field]: [...new Set(allowed)] };
+}
+
+function normalizedMetaAdsHelperScope(
+  constraints: Record<string, string[]> | undefined,
+): Record<string, string[]> | undefined {
+  if (!constraints || Object.keys(constraints).length !== 1) return undefined;
+  const allowed = constraints[META_ADS_APPROVED_ACCOUNT_SCOPE];
+  if (!Array.isArray(allowed) || allowed.length === 0 || allowed.length > 50) return undefined;
+  const normalized = [...new Set(allowed)];
+  if (normalized.length !== allowed.length || normalized.some((value) =>
+    typeof value !== 'string' || value.trim() !== value || canonicalMetaAdsAccountId(value) === undefined)) {
+    return undefined;
+  }
+  return { [META_ADS_APPROVED_ACCOUNT_SCOPE]: normalized };
 }
 
 function uniqueStrings(values: readonly string[], label: string): string[] {
