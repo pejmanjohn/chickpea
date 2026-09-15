@@ -44,4 +44,19 @@ test('custom MCP name collisions retain ordinary input restrictions', () => {
     connection: 'connection', tools: { [META_ADS_ACCOUNT_HELPER]: { tenant_id: ['tenant-1'] } },
   }]);
   assert.deepEqual(projection.metaHelperScopes, []);
+  assert.deepEqual(projection.metaWriteScopes, []);
+});
+
+test('accountless audience writes describe ownership scope without inventing provider inputs', () => {
+  const projection = projectMcpPolicyInstructions([connection({
+    id: 'meta', url: 'https://mcp.facebook.com/ads', allowedTools: ['ads_delete_custom_audience'],
+    toolArgumentConstraints: {
+      ads_delete_custom_audience: { [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['act_123'] },
+    },
+  })]);
+  assert.deepEqual(projection.restrictions, []);
+  assert.deepEqual(projection.metaHelperScopes, []);
+  assert.deepEqual(projection.metaWriteScopes, [
+    { connection: 'meta', tool: 'ads_delete_custom_audience', approvedAccountIds: ['act_123'] },
+  ]);
 });

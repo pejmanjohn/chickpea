@@ -11938,6 +11938,7 @@
   document.addEventListener("input", function (event) {
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
+    if (action === "meta-ads-account-ids" && state.customMcpToolEditor) state.customMcpToolEditor.accountIds = target.value;
     if (action === "channels-index-query") {
       var channelQueryCaret = target.selectionStart;
       state.channelIndexQuery = target.value;

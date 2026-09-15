@@ -15648,6 +15648,12 @@ test('Meta tool review distinguishes reporting from write tools that need editin
   assert.match(harness.app.innerHTML, /Check supported reporting fields and metric names/);
   assert.match(harness.app.innerHTML, /Reconnect with Reporting and editing access to select this tool/);
   assert.doesNotMatch(harness.app.innerHTML, /data-tool="ads_create_campaign"/);
+  // Selecting another tool rerenders the picker before a pasted field blurs.
+  harness.listeners.input!({ target: inputTarget({ 'data-action': 'meta-ads-account-ids' }, '123, 456') });
+  harness.listeners.change!({ target: checkboxTarget({
+    'data-action': 'custom-mcp-tool', 'data-tool': 'ads_get_field_context',
+  }, true) });
+  assert.match(harness.app.innerHTML, /id="meta-ads-account-ids"[^>]*value="123, 456"/);
 });
 
 test('Agent deep links render before channel discovery and auxiliary checks finish', async () => {

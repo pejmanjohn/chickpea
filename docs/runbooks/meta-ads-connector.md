@@ -29,10 +29,11 @@ connector.
    Instagram boosting, can require additional Meta permissions and remain
    unavailable when the signed-in token does not have them.
 
-Before a selected write tool runs, Chickpea uses the same OAuth token for a
-read-only Graph API v26 lookup of the target object's `id` and `account_id`.
-The write is blocked before the MCP call unless that ownership matches an
-approved ad account. Audience operations whose MCP input has no ad account use
+Before changing an existing object or creating an ad or ad set under a parent,
+Chickpea uses the same OAuth token for a read-only Graph API v26 lookup of the
+object's `id` and `account_id`. The write is blocked before the MCP call unless
+that ownership matches an approved ad account. Other creations must name an
+approved account. Audience operations whose MCP input has no ad account use
 the connection's internal approved-account scope for the same check. Selecting
 a write tool grants the Agent access to it; Chickpea instructs the model to make
 only requested changes, but does not add an automatic confirmation to every

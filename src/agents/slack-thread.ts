@@ -73,6 +73,7 @@ import {
 import {
   projectMcpPolicyInstructions,
 } from '../config/mcp-policy-instructions.ts';
+import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
 import { resolveMcpOAuthAccessToken } from '../config/mcp-oauth.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import {
@@ -1441,12 +1442,18 @@ export function useRuntimePlanAgent(
   )) {
     useSkill(skill);
   }
-  const { restrictions, metaHelperScopes } = projectMcpPolicyInstructions(plan.mcpConnections);
+  const { restrictions, metaHelperScopes, metaWriteScopes } = projectMcpPolicyInstructions(plan.mcpConnections);
   if (restrictions.length > 0) {
     useInstruction(`The owner restricts these connection tool inputs. Use only the listed values; do not retry disallowed inputs: ${JSON.stringify(restrictions)}`);
   }
   if (metaHelperScopes.length > 0) {
     useInstruction(`The owner selected these Meta Ads helper tools with an approved-account scope: ${JSON.stringify(metaHelperScopes)}. The scope is enforced by Chickpea policy and is not a provider input. Do not invent or send an ad-account argument. Use only helper metadata inputs declared by the tool, including reporting field names when requested. Account discovery returns only approved accounts; field context provides global reporting-field metadata.`);
+  }
+  if (metaWriteScopes.length > 0) {
+    useInstruction(`The owner restricts these Meta Ads audience tools to the listed ad accounts: ${JSON.stringify(metaWriteScopes)}. Chickpea verifies the target audience's owner before sending changes. This account scope is internal policy, not a provider input. Supply the actual audience ID using the tool's declared schema; do not invent an ad-account argument.`);
+  }
+  if (plan.mcpConnections.some((connection) => isMetaAdsMcpConnection(connection) && connection.writeTools?.length)) {
+    useInstruction('Selected Meta Ads write tools can change ads and audiences. Use them only for changes the user requested. Before activating ads or increasing spend, establish the exact ad account, entities, and budget the user authorized; ask for missing authorization. Campaign, ad set, and ad creation leave them paused. Activation starts spending; do not activate merely because creation succeeded. Do not retry an uncertain write blindly: first read back whether it already happened.');
   }
   for (const connection of resolveRuntimePlanMcpConnections(
     plan.agentId,

@@ -87,6 +87,8 @@ export interface McpConnectionConfig {
   allowedTools: string[];
   /** OAuth scopes are connection policy, never credentials. */
   oauthScope?: string;
+  /** Internal account OAuth generation used to fence in-flight tool calls. */
+  oauthAttemptId?: string;
   lastCheckedAt?: number;
   identity?: McpConnectionIdentity;
   /**

@@ -388,6 +388,7 @@ export function projectEffectiveMcpConnections(
     ...(policy.toolPolicies ? { toolPolicies: policy.toolPolicies } : {}),
     allowedTools: [...policy.allowedTools],
     ...(policy.oauthScope ? { oauthScope: policy.oauthScope } : {}),
+    ...(policy.oauthAttemptId ? { oauthAttemptId: policy.oauthAttemptId } : {}),
     ...(account.identity ? { identity: account.identity } : {}),
     ...(policy.presetId ? { presetId: policy.presetId } : {}),
   }] : []);
