@@ -103,7 +103,7 @@ function metaAccountHelperServer(overrides: Partial<McpConnectionConfig> = {}): 
     allowedTools: [META_ADS_ACCOUNT_HELPER],
     toolPolicies: { [META_ADS_ACCOUNT_HELPER]: {
       effect: 'read', argumentConstraints: {
-        [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['144860434', 'act_144860434'],
+        [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['123450001', 'act_123450001'],
       },
     } },
     ...overrides,
@@ -144,8 +144,8 @@ function providerAccountHelperFetch(wire: 'json' | 'sse'): typeof fetch {
     }
     if (rpc.method === 'tools/call') {
       return respond({ jsonrpc: '2.0', id: rpc.id ?? 1, result: { structuredContent: { accounts: [{
-        id: '144860434', is_ads_mcp_enabled: true, is_queryable: true,
-        currency: 'USD', ad_account_name: 'Magoosh', provider_private: 'drop-me',
+        id: '123450001', is_ads_mcp_enabled: true, is_queryable: true,
+        currency: 'USD', ad_account_name: 'Example Advertiser', provider_private: 'drop-me',
       }] } } });
     }
     throw new Error(`Unexpected fake MCP request: ${String(rpc.method)}`);
@@ -379,7 +379,7 @@ test('legacy Meta account helper sends no fake scope argument and returns only a
       outbound += 1;
       return Response.json({ jsonrpc: '2.0', id: 1, result: { structuredContent: { accounts: [
         { id: 'act_999', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Other' },
-        { id: 'act_144860434', is_ads_mcp_enabled: true, is_queryable: true, currency: 'USD', ad_account_name: 'Magoosh' },
+        { id: 'act_123450001', is_ads_mcp_enabled: true, is_queryable: true, currency: 'USD', ad_account_name: 'Example Advertiser' },
       ] } } });
     },
   });
@@ -387,7 +387,7 @@ test('legacy Meta account helper sends no fake scope argument and returns only a
     await tools[0]!.run({ data: { cursor: 'provider-cursor' } } as never);
   }, /does not permit the argument cursor/);
   await assert.rejects(async () => {
-    await tools[0]!.run({ data: { ad_account_id: 'act_144860434' } } as never);
+    await tools[0]!.run({ data: { ad_account_id: 'act_123450001' } } as never);
   }, /does not permit the argument ad_account_id/);
   assert.equal(outbound, 0);
   const result = await tools[0]!.run({ data: {
@@ -398,7 +398,7 @@ test('legacy Meta account helper sends no fake scope argument and returns only a
   assert.match(JSON.stringify(result), /"ad_accounts"/);
   assert.doesNotMatch(JSON.stringify(result), /"accounts"/);
   assert.doesNotMatch(JSON.stringify(result), /999|Other/);
-  assert.match(JSON.stringify(result), /144860434|Magoosh/);
+  assert.match(JSON.stringify(result), /123450001|Example Advertiser/);
 
   current = { ...frozen, allowedTools: [] };
   await assert.rejects(async () => { await tools[0]!.run({ data: {} } as never); }, /policy changed/);
@@ -429,7 +429,7 @@ test('legacy Meta account helper blocks response release after policy changes in
       outbound += 1;
       current = { ...frozen, allowedTools: [] };
       return Response.json({ jsonrpc: '2.0', id: 1, result: { structuredContent: { accounts: [
-        { id: 'act_144860434', is_ads_mcp_enabled: true, is_queryable: true },
+        { id: 'act_123450001', is_ads_mcp_enabled: true, is_queryable: true },
       ] } } });
     },
   });
@@ -1074,7 +1074,7 @@ test('real MCP SDK rejects a sanitized account result against the untouched prov
         : undefined;
       const response = await provider(request);
       return rpc?.method === 'tools/call'
-        ? sanitizeMetaAdsAccountHelperResponse(response, ['144860434'])
+        ? sanitizeMetaAdsAccountHelperResponse(response, ['123450001'])
         : response;
     },
   });
@@ -1104,7 +1104,7 @@ test('Meta adapter advertises its filtered account result to the real MCP SDK ov
         advertiser_request: 'List approved accounts.', client_conversation_id: null,
       });
       assert.match(result, /"ad_accounts"/);
-      assert.match(result, /144860434|Magoosh/);
+      assert.match(result, /123450001|Example Advertiser/);
       assert.doesNotMatch(result, /provider_private|drop-me/);
     } finally {
       await connection.close();
@@ -1273,7 +1273,7 @@ test('direct Meta account helper sanitizes SSE under live profile policy', async
         createGuardedFetch: () => async () => {
           const envelope = { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify({ accounts: [
             { id: 'act_999', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Other' },
-            { id: '144860434', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Magoosh' },
+            { id: '123450001', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Example Advertiser' },
           ] }) }] } };
           return new Response(`event: message\ndata: ${JSON.stringify(envelope)}\n\n`, {
             headers: { 'content-type': 'text/event-stream' },
@@ -1293,7 +1293,7 @@ test('direct Meta account helper sanitizes SSE under live profile policy', async
       const text = await response.text();
       assert.match(text, /"ad_accounts"/);
       assert.doesNotMatch(text, /"accounts"/);
-      assert.match(text, /144860434|Magoosh/);
+      assert.match(text, /123450001|Example Advertiser/);
       assert.doesNotMatch(text, /999|Other|meta_ads_approved/);
     });
   } finally {
@@ -1318,7 +1318,7 @@ test('runtime-plan Meta account helper accepts bounded metadata and sanitizes JS
         authMode: 'none', headerNames: [], optional: true,
         allowedTools: [META_ADS_ACCOUNT_HELPER], readOnlyTools: [META_ADS_ACCOUNT_HELPER],
         toolArgumentConstraints: { [META_ADS_ACCOUNT_HELPER]: {
-          [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['144860434', 'act_144860434'],
+          [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['123450001', 'act_123450001'],
         } },
       }], undefined, undefined, { createGuardedFetch: () => async (input, init) => {
         const request = new Request(input, init);
@@ -1333,7 +1333,7 @@ test('runtime-plan Meta account helper accepts bounded metadata and sanitizes JS
         return Response.json({
           jsonrpc: '2.0', id: rpc.id ?? 1, result: { structuredContent: { accounts: [
             { id: 'act_999', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Other' },
-            { id: 'act_144860434', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Magoosh' },
+            { id: 'act_123450001', is_ads_mcp_enabled: true, is_queryable: true, ad_account_name: 'Example Advertiser' },
           ] } },
         });
       } });
@@ -1356,7 +1356,7 @@ test('runtime-plan Meta account helper accepts bounded metadata and sanitizes JS
       const result = await response.json();
       assert.match(JSON.stringify(result), /"ad_accounts"/);
       assert.doesNotMatch(JSON.stringify(result), /"accounts"/);
-      assert.match(JSON.stringify(result), /144860434|Magoosh/);
+      assert.match(JSON.stringify(result), /123450001|Example Advertiser/);
       assert.doesNotMatch(JSON.stringify(result), /999|Other|meta_ads_approved/);
     });
   } finally {

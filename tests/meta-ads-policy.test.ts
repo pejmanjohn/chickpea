@@ -122,15 +122,15 @@ test('helpers remain explicit grants and store account scope without a provider 
   assert.deepEqual(compileMetaAdsToolAccess({
     discoveredTools: [helper(META_ADS_ACCOUNT_HELPER), helper(META_ADS_FIELD_HELPER)],
     requestedTools: [META_ADS_ACCOUNT_HELPER, META_ADS_FIELD_HELPER],
-    approvedAccountIds: ['144860434', 'act_144860434'],
+    approvedAccountIds: ['123450001', 'act_123450001'],
   }), {
     allowedTools: [META_ADS_ACCOUNT_HELPER, META_ADS_FIELD_HELPER],
     toolPolicies: {
       [META_ADS_ACCOUNT_HELPER]: { effect: 'read', argumentConstraints: {
-        [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['144860434', 'act_144860434'],
+        [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['123450001', 'act_123450001'],
       } },
       [META_ADS_FIELD_HELPER]: { effect: 'read', argumentConstraints: {
-        [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['144860434', 'act_144860434'],
+        [META_ADS_APPROVED_ACCOUNT_SCOPE]: ['123450001', 'act_123450001'],
       } },
     },
   });

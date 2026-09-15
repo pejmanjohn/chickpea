@@ -7,7 +7,7 @@ import {
   sanitizeMetaAdsAccountHelperResponse,
 } from '../src/config/meta-ads-response.ts';
 
-const approved = ['144860434', 'act_144860434'];
+const approved = ['123450001', 'act_123450001'];
 
 function rpcResult(result: Record<string, unknown>, contentType = 'application/json'): Response {
   return new Response(JSON.stringify({ jsonrpc: '2.0', id: 7, result }), {
@@ -98,7 +98,7 @@ test('account helper rebuilds JSON with approved canonical records only', async 
         is_ads_mcp_enabled: true, is_queryable: true, currency: 'EUR',
       },
       {
-        ad_account_id: 'act_144860434', ad_account_name: 'Magoosh', business_id: 'not-forwarded',
+        ad_account_id: 'act_123450001', ad_account_name: 'Example Advertiser', business_id: 'not-forwarded',
         is_ads_mcp_enabled: true, is_queryable: true, currency: 'USD', account_status: 1,
         payment_method: 'not-forwarded',
       },
@@ -113,12 +113,12 @@ test('account helper rebuilds JSON with approved canonical records only', async 
     result: { content: Array<{ text: string }>; structuredContent: unknown };
   };
   const expected = { ad_accounts: [{
-    ad_account_id: '144860434',
+    ad_account_id: '123450001',
     is_ads_mcp_enabled: true,
     is_queryable: true,
     currency: 'USD',
     account_status: 1,
-    ad_account_name: 'Magoosh',
+    ad_account_name: 'Example Advertiser',
   }] };
   assert.deepEqual(rpc.result.structuredContent, expected);
   assert.deepEqual(JSON.parse(rpc.result.content[0]!.text), expected);
@@ -127,7 +127,7 @@ test('account helper rebuilds JSON with approved canonical records only', async 
 
 test('account helper rebuilds one SSE event without forwarding provider payload', async () => {
   const provider = { data: [
-    { ad_account_id: '144860434', is_ads_mcp_enabled: true, is_queryable: false,
+    { ad_account_id: '123450001', is_ads_mcp_enabled: true, is_queryable: false,
       not_queryable_reason: 'Setup required', internal: 'drop-me' },
     { ad_account_id: '222', is_ads_mcp_enabled: true, is_queryable: true, internal: 'private' },
   ] };
@@ -150,7 +150,7 @@ test('account helper accepts identical aliases and rejects conflicting aliases',
   const row = { is_ads_mcp_enabled: true, is_queryable: true, currency: 'USD' };
   const accepted = await sanitizeMetaAdsAccountHelperResponse(rpcResult({
     content: [{ type: 'text', text: JSON.stringify([
-      { ...row, id: '144860434' }, { ...row, id: 'act_144860434' },
+      { ...row, id: '123450001' }, { ...row, id: 'act_123450001' },
     ]) }],
   }), approved);
   assert.equal(((await accepted.json()) as { result: { structuredContent: { ad_accounts: unknown[] } } })
@@ -158,7 +158,7 @@ test('account helper accepts identical aliases and rejects conflicting aliases',
 
   await assert.rejects(sanitizeMetaAdsAccountHelperResponse(rpcResult({
     content: [{ type: 'text', text: JSON.stringify([
-      { ...row, id: '144860434' }, { ...row, id: 'act_144860434', is_queryable: false },
+      { ...row, id: '123450001' }, { ...row, id: 'act_123450001', is_queryable: false },
     ]) }],
   }), approved), /conflicting-account-aliases/);
 });
@@ -166,15 +166,15 @@ test('account helper accepts identical aliases and rejects conflicting aliases',
 test('account helper emits an exact stored approved alias and rejects padded provider IDs', async () => {
   const row = { is_ads_mcp_enabled: true, is_queryable: true };
   const accepted = await sanitizeMetaAdsAccountHelperResponse(rpcResult({
-    structuredContent: { accounts: [{ ...row, id: '144860434' }] },
-  }), ['act_144860434']);
+    structuredContent: { accounts: [{ ...row, id: '123450001' }] },
+  }), ['act_123450001']);
   const body = await accepted.json() as {
     result: { structuredContent: { ad_accounts: Array<{ ad_account_id: string }> } };
   };
-  assert.equal(body.result.structuredContent.ad_accounts[0]!.ad_account_id, 'act_144860434');
+  assert.equal(body.result.structuredContent.ad_accounts[0]!.ad_account_id, 'act_123450001');
   await assert.rejects(sanitizeMetaAdsAccountHelperResponse(rpcResult({
-    structuredContent: { accounts: [{ ...row, id: ' act_144860434 ' }] },
-  }), ['act_144860434']), /account-id/);
+    structuredContent: { accounts: [{ ...row, id: ' act_123450001 ' }] },
+  }), ['act_123450001']), /account-id/);
 });
 
 test('account helper response body has an independent finite deadline', async () => {
@@ -185,7 +185,7 @@ test('account helper response body has an independent finite deadline', async ()
 });
 
 test('account helper fails closed on malformed, raw, conflicting, or incomplete responses', async () => {
-  const valid = { accounts: [{ ad_account_id: '144860434', is_ads_mcp_enabled: true, is_queryable: true }] };
+  const valid = { accounts: [{ ad_account_id: '123450001', is_ads_mcp_enabled: true, is_queryable: true }] };
   const cases: Array<[string, Response]> = [
     ['non-json', new Response('private provider text', { headers: { 'content-type': 'text/plain' } })],
     ['invalid-json', new Response('{private', { headers: { 'content-type': 'application/json' } })],
