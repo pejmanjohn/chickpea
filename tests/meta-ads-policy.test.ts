@@ -7,6 +7,7 @@ import {
   MetaAdsAccessPolicyError,
   metaAdsRuntimeAllowedTools,
   metaAdsRuntimeConstraint,
+  metaAdsRuntimePropertyNames,
   normalizeMetaAdsAccountIds,
 } from '../src/config/meta-ads-policy.ts';
 import type { McpConnectionConfig, McpConnectionToolInfo } from '../src/config/types.ts';
@@ -91,6 +92,17 @@ test('runtime revalidates current schema against its exact stored constraint', (
   assert.deepEqual(metaAdsRuntimeConstraint(connection, reportTool), { ad_account_id: ['act_123'] });
   connection.discoveredTools[0]!.inputSchema!.fingerprint = 'invalid';
   assert.equal(metaAdsRuntimeConstraint(connection, reportTool), undefined);
+});
+
+test('runtime permits correlation metadata but withholds optional entity target arguments', () => {
+  const tool = discovered(reportTool, 'ad_account_id', {
+    propertyNames: [
+      'ad_account_id', 'advertiser_request', 'client_conversation_id', 'fields', 'object_ids',
+    ],
+  });
+  assert.deepEqual(metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, reportTool), [
+    'ad_account_id', 'advertiser_request', 'client_conversation_id', 'fields',
+  ]);
 });
 
 test('account ID normalization validates syntax, deduplicates and bounds selections', () => {

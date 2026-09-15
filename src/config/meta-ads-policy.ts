@@ -17,6 +17,22 @@ export const META_ADS_REVIEWED_TOOL_EFFECTS = {
   ads_insights_performance_trend: 'read',
 } as const satisfies Readonly<Record<string, 'read'>>;
 
+/**
+ * Authenticated Meta schemas include correlation metadata and optional entity
+ * filters whose names end in `_id`/`_ids`. They are not alternate ad-account
+ * selectors, but entity filters remain unavailable at runtime so callers can
+ * only target the exact constrained `ad_account_id`.
+ */
+const META_ADS_NON_ACCOUNT_ID_ARGUMENTS = {
+  ads_get_ad_entities: ['client_conversation_id', 'object_ids'],
+  ads_get_opportunity_score: ['client_conversation_id'],
+  ads_insights_advertiser_context: ['client_conversation_id', 'entity_ids'],
+  ads_insights_anomaly_signal: ['client_conversation_id', 'entity_ids'],
+  ads_insights_auction_ranking_benchmarks: ['client_conversation_id', 'entity_ids'],
+  ads_insights_industry_benchmark: ['client_conversation_id', 'entity_ids'],
+  ads_insights_performance_trend: ['client_conversation_id', 'entity_ids'],
+} as const satisfies Readonly<Record<keyof typeof META_ADS_REVIEWED_TOOL_EFFECTS, readonly string[]>>;
+
 export class MetaAdsAccessPolicyError extends Error {
   constructor(message: string) {
     super(message);
@@ -158,7 +174,18 @@ export function metaAdsRuntimePropertyNames(
   const names = matches[0]!.inputSchema?.propertyNames;
   return Array.isArray(names) && names.length > 0 && names.length <= 64 &&
     names.every((value) => typeof value === 'string' && value.length > 0 && value.length <= 120)
-    ? [...new Set(names)] : undefined;
+    ? [...new Set(names)].filter((value) => !metaAdsBlockedRuntimeArgumentNames(name).includes(value))
+    : undefined;
+}
+
+/** Exact observed Meta ID-shaped fields that do not select the ad account. */
+export function metaAdsNonAccountIdArgumentNames(name: string): readonly string[] {
+  return isReviewedMetaAdsTool(name) ? META_ADS_NON_ACCOUNT_ID_ARGUMENTS[name] : [];
+}
+
+/** Optional entity filters stay unavailable even after their schema is accepted. */
+export function metaAdsBlockedRuntimeArgumentNames(name: string): readonly string[] {
+  return metaAdsNonAccountIdArgumentNames(name).filter((value) => value !== 'client_conversation_id');
 }
 
 export function normalizeMetaAdsAccountIds(ids: readonly string[]): string[] {

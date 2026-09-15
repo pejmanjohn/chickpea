@@ -153,7 +153,16 @@ test('Meta protocol discovery scans past 50 tools and retains reviewed reporting
   const fetch = pagedProtocolFetch({
     '': { tools: first, nextCursor: 'reporting' },
     reporting: {
-      tools: reviewedMetaToolNames.map((name) => protocolTool(name, scopedMetaSchema())),
+      tools: reviewedMetaToolNames.map((name) => protocolTool(name, name === 'ads_get_ad_entities'
+        ? {
+            type: 'object', required: ['ad_account_id'], properties: {
+              ad_account_id: { type: 'string' },
+              client_conversation_id: { type: 'string' },
+              fields: { type: 'array', items: { type: 'string' } },
+              object_ids: { type: 'array', items: { type: 'string' } },
+            },
+          }
+        : scopedMetaSchema())),
     },
   }, cursors);
 
@@ -163,6 +172,8 @@ test('Meta protocol discovery scans past 50 tools and retains reviewed reporting
   assert.deepEqual(result.tools[0]?.inputSchema?.accountFields, [
     { name: 'ad_account_id', type: 'string', required: true },
   ]);
+  assert.equal(result.tools[0]?.inputSchema?.ambiguous, false,
+    'production discovery applies the exact reviewed-tool schema exception');
   assert.deepEqual(cursors, [undefined, 'reporting']);
 });
 
@@ -401,6 +412,77 @@ test('input-schema projection fails closed for optional, alternate and composed 
   ]) {
     assert.equal(projectMcpToolInputSchema(schema).ambiguous, true);
   }
+});
+
+test('Meta projection accepts exact observed non-account IDs without weakening target selectors', () => {
+  const getEntitiesSchema = {
+    type: 'object',
+    required: ['ad_account_id'],
+    properties: {
+      ad_account_id: { type: 'string' },
+      advertiser_request: { type: 'string' },
+      breakdowns: { type: 'array', items: { type: 'string' } },
+      client_conversation_id: { type: ['string', 'null'] },
+      cursor: { type: 'string' },
+      date_preset: { type: 'string' },
+      fields: { type: 'array', items: { type: 'string' } },
+      filtering: { type: 'array', items: { type: 'object', properties: { field: { type: 'string' } } } },
+      include_additional_context: { type: 'boolean' },
+      level: { type: 'string' },
+      limit: { type: 'number' },
+      object_ids: { type: 'array', items: { type: 'string' } },
+      object_state: { type: 'string' },
+      sort: { type: 'string' },
+      time_increment: { type: 'number' },
+      time_range: { type: 'object', properties: { since: { type: 'string' }, until: { type: 'string' } } },
+    },
+  };
+  const projection = projectMcpToolInputSchema(getEntitiesSchema, 'ads_get_ad_entities');
+  assert.equal(projection.ambiguous, false);
+  assert.deepEqual(projection.accountFields, [
+    { name: 'ad_account_id', type: 'string', required: true },
+  ]);
+  assert.deepEqual(projection.propertyNames, Object.keys(getEntitiesSchema.properties).sort());
+  assert.equal(projectMcpToolInputSchema(getEntitiesSchema).ambiguous, true,
+    'generic MCP schemas do not receive Meta-specific exceptions');
+
+  const opportunityScore = {
+    type: 'object', required: ['ad_account_id', 'client_conversation_id'],
+    properties: {
+      ad_account_id: { type: 'string' },
+      advertiser_request: { type: 'string' },
+      client_conversation_id: { type: 'string' },
+    },
+  };
+  assert.equal(projectMcpToolInputSchema(
+    opportunityScore, 'ads_get_opportunity_score',
+  ).ambiguous, false, 'bounded correlation metadata may be required');
+});
+
+test('Meta projection keeps entity filters optional and unknown or nested selectors closed', () => {
+  const schema = (required: string[], properties: Record<string, unknown>) => ({
+    type: 'object', required, properties: { ad_account_id: { type: 'string' }, ...properties },
+  });
+  assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
+    object_ids: { type: 'array', items: { type: 'string' } },
+  }), 'ads_get_ad_entities').ambiguous, false);
+  assert.equal(projectMcpToolInputSchema(schema(['ad_account_id', 'object_ids'], {
+    object_ids: { type: 'array', items: { type: 'string' } },
+  }), 'ads_get_ad_entities').ambiguous, true, 'required entity targets remain unsupported');
+  assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
+    object_ids: { type: 'array', items: { type: 'string' } },
+  }), 'ads_get_opportunity_score').ambiguous, true, 'exceptions are tool-specific');
+  assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
+    campaign_id: { type: 'string' },
+  }), 'ads_get_ad_entities').ambiguous, true, 'unknown target selectors remain unsupported');
+  assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
+    filtering: { type: 'array', items: {
+      type: 'object', properties: { campaign_id: { type: 'string' } },
+    } },
+  }), 'ads_get_ad_entities').ambiguous, true, 'nested target selectors remain unsupported');
+  assert.equal(projectMcpToolInputSchema(schema(['ad_account_id'], {
+    client_conversation_id: { type: 'number' },
+  }), 'ads_get_ad_entities').ambiguous, true, 'correlation metadata must remain a bounded string');
 });
 
 test('input-schema projection bounds oversized property names without retaining them', () => {

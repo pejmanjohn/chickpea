@@ -76,6 +76,10 @@ const metaAccountSchema = {
   ambiguous: false,
   fingerprint: 'a'.repeat(64),
 };
+const metaEntitySchema = {
+  ...metaAccountSchema,
+  propertyNames: ['ad_account_id', 'client_conversation_id', 'fields', 'object_ids'],
+};
 const metaReportTool = 'ads_get_ad_entities';
 const metaScoreTool = 'ads_get_opportunity_score';
 
@@ -181,7 +185,7 @@ test('legacy Meta tools enforce exact account arguments before their run functio
   const metaServer = server({
     url: 'https://mcp.facebook.com/ads',
     presetId: 'meta-ads',
-    discoveredTools: [{ name: metaReportTool, inputSchema: metaAccountSchema }],
+    discoveredTools: [{ name: metaReportTool, inputSchema: metaEntitySchema }],
     allowedTools: [metaReportTool],
     toolPolicies: { [metaReportTool]: {
       effect: 'read', argumentConstraints: { ad_account_id: ['act_123'] },
@@ -195,10 +199,12 @@ test('legacy Meta tools enforce exact account arguments before their run functio
   await assert.rejects(async () => { await tools[0]!.run({ data: { ad_account_id: 'act_456' } } as never); }, /approved value/);
   assert.equal(runs, 0);
   await assert.rejects(async () => {
-    await tools[0]!.run({ data: { ad_account_id: 'act_123', campaign_id: 'other' } } as never);
-  }, /does not permit the argument campaign_id/);
+    await tools[0]!.run({ data: { ad_account_id: 'act_123', object_ids: ['other'] } } as never);
+  }, /does not permit the argument object_ids/);
   assert.equal(runs, 0);
-  assert.equal(await tools[0]!.run({ data: { ad_account_id: 'act_123' } } as never), 'reported');
+  assert.equal(await tools[0]!.run({
+    data: { ad_account_id: 'act_123', client_conversation_id: 'correlation-1' },
+  } as never), 'reported');
   assert.equal(runs, 1);
 });
 
@@ -811,7 +817,7 @@ test('direct Meta definitions expose only scoped tools and reject undeclared arg
   const [definition] = resolveProfileMcpConnections([server({
     url: 'https://mcp.facebook.com/ads',
     discoveredTools: [
-      { name: metaReportTool, inputSchema: metaAccountSchema },
+      { name: metaReportTool, inputSchema: metaEntitySchema },
       { name: metaScoreTool },
     ],
     allowedTools: [metaReportTool, metaScoreTool],
@@ -830,9 +836,17 @@ test('direct Meta definitions expose only scoped tools and reject undeclared arg
   await assert.rejects(definition!.fetch!('https://mcp.facebook.com/ads', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
-      params: { name: metaReportTool, arguments: { ad_account_id: 'act_123', campaign_id: 'other' } } }),
-  }), /does not permit the argument campaign_id/);
+      params: { name: metaReportTool, arguments: { ad_account_id: 'act_123', object_ids: ['other'] } } }),
+  }), /does not permit the argument object_ids/);
   assert.equal(outbound, 0);
+  await definition!.fetch!('https://mcp.facebook.com/ads', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call',
+      params: { name: metaReportTool, arguments: {
+        ad_account_id: 'act_123', client_conversation_id: 'correlation-1', fields: ['spend'],
+      } } }),
+  });
+  assert.equal(outbound, 1);
 });
 
 test('runtime-plan direct Meta definitions withhold unscoped tools and reject another account pre-I/O', async () => {
@@ -849,6 +863,44 @@ test('runtime-plan direct Meta definitions withhold unscoped tools and reject an
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
       params: { name: metaReportTool, arguments: { ad_account_id: 'act_456' } } }),
   }), /approved value/);
+});
+
+test('runtime-plan Meta invocation rejects optional entity targets from the current schema', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-runtime-meta-arguments-'));
+  const agentId = 'agent_runtime_meta_arguments';
+  const connection = server({
+    id: 'meta', url: 'https://mcp.facebook.com/ads', presetId: 'meta-ads',
+    discoveredTools: [{ name: metaReportTool, inputSchema: metaEntitySchema }],
+    allowedTools: [metaReportTool],
+    toolPolicies: { [metaReportTool]: {
+      effect: 'read', argumentConstraints: { ad_account_id: ['act_123'] },
+    } },
+  });
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db') }, async () => {
+      await getConfigStore().createAgent({
+        id: agentId, name: 'Runtime Meta arguments', instructions: 'Test Meta argument policy.',
+        enabled: true, model: 'local-stub/runtime-meta', skills: [],
+        mcpServers: [connection], apiConnections: [], repositories: [],
+      });
+      const [definition] = resolveRuntimePlanMcpConnections(agentId, [{
+        id: connection.id, url: connection.url, transport: connection.transport,
+        authMode: 'none', headerNames: [], optional: true,
+        allowedTools: [metaReportTool], readOnlyTools: [metaReportTool],
+        toolArgumentConstraints: { [metaReportTool]: { ad_account_id: ['act_123'] } },
+      }]);
+      await assert.rejects(definition!.fetch!('https://mcp.facebook.com/ads', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+          name: metaReportTool,
+          arguments: { ad_account_id: 'act_123', object_ids: ['other'] },
+        } }),
+      }), /does not permit the argument object_ids/);
+    });
+  } finally {
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('Flue 2 MCP guarded fetch resolves rotating custom headers per request', async () => {

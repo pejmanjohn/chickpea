@@ -12,7 +12,11 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
 import { McpBlockedUrlError } from './mcp-errors.ts';
-import { isMetaAdsMcpConnection, isReviewedMetaAdsTool } from './meta-ads-policy.ts';
+import {
+  isMetaAdsMcpConnection,
+  isReviewedMetaAdsTool,
+  metaAdsNonAccountIdArgumentNames,
+} from './meta-ads-policy.ts';
 import {
   createMcpGuardedFetch,
   validateMcpUrl,
@@ -165,7 +169,10 @@ async function discoverProtocolTools(
           if (!supportedToolName(tool.name)) continue;
           const description = truncate(tool.description, DESCRIPTION_MAX);
           const title = truncate(tool.title ?? tool.annotations?.title, 160);
-          const inputSchema = projectMcpToolInputSchema(tool.inputSchema);
+          const inputSchema = projectMcpToolInputSchema(
+            tool.inputSchema,
+            metaAds ? tool.name : undefined,
+          );
           tools.push({
             name: tool.name,
             ...(title ? { title } : {}),
@@ -311,7 +318,10 @@ function toDiscovered(id: string, raw: ToolDefinition): McpConnectionToolInfo {
  * root composition, alternate account selectors, optional account fields, and
  * unbounded schemas remain discoverable but cannot become account-scoped tools.
  */
-export function projectMcpToolInputSchema(inputSchema: unknown): McpToolInputSchemaProjection {
+export function projectMcpToolInputSchema(
+  inputSchema: unknown,
+  metaAdsToolName?: string,
+): McpToolInputSchemaProjection {
   const bounded = boundedCanonicalSchema(inputSchema);
   const accountFields: McpToolInputSchemaProjection['accountFields'] = [];
   let propertyNames: string[] = [];
@@ -327,13 +337,27 @@ export function projectMcpToolInputSchema(inputSchema: unknown): McpToolInputSch
     const required = Array.isArray(inputSchema.required) && inputSchema.required.every((value) => typeof value === 'string')
       ? new Set(inputSchema.required as string[])
       : new Set<string>();
+    const nonAccountIdArguments = new Set(metaAdsToolName
+      ? metaAdsNonAccountIdArgumentNames(metaAdsToolName)
+      : []);
     if (inputSchema.required !== undefined &&
         (!Array.isArray(inputSchema.required) || !inputSchema.required.every((value) => typeof value === 'string'))) {
       ambiguous = true;
     }
     for (const [name, definition] of Object.entries(inputSchema.properties)) {
       if (name !== 'ad_account_id' && name !== 'account_id') {
-        if (looksLikeAlternateTargetSelector(name) || containsNestedAccountSelector(definition)) ambiguous = true;
+        if (nonAccountIdArguments.has(name)) {
+          if (name === 'client_conversation_id') {
+            if (!simpleStringOrNullableString(definition)) ambiguous = true;
+          } else if (required.has(name)) {
+            // Entity filters are safe only when callers can omit them. Runtime
+            // projection also removes them from the accepted argument keys.
+            ambiguous = true;
+          }
+          if (containsNestedAccountSelector(definition)) ambiguous = true;
+        } else if (looksLikeAlternateTargetSelector(name) || containsNestedAccountSelector(definition)) {
+          ambiguous = true;
+        }
         continue;
       }
       if (!isRecord(definition) || definition.type !== 'string' ||
@@ -353,6 +377,13 @@ export function projectMcpToolInputSchema(inputSchema: unknown): McpToolInputSch
     ambiguous,
     fingerprint: bytesToHex(sha256(new TextEncoder().encode(bounded.value))),
   };
+}
+
+function simpleStringOrNullableString(value: unknown): boolean {
+  if (!isRecord(value) || ['$ref', 'oneOf', 'anyOf', 'allOf'].some((key) => key in value)) return false;
+  if (value.type === 'string') return true;
+  return Array.isArray(value.type) && value.type.length === 2 &&
+    new Set(value.type).size === 2 && value.type.includes('string') && value.type.includes('null');
 }
 
 function looksLikeAlternateAccountSelector(name: string): boolean {
