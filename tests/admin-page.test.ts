@@ -15607,7 +15607,7 @@ test('custom OAuth callback opens account tool review and keeps creation and edi
     initialSearch: '?oauth=connected&connection=connection_custom&lane=mcp',
     connectionAccounts: { attached: [{
       account: { id: 'connection_custom', workspaceId: 'T_DESIGN', ownerKind: 'team', providerId: 'reports', label: 'Reports', revision: 2, lifecycle: 'ready',
-        policy: { kind: 'mcp', authMode: 'oauth', url: 'https://reports.example.test/mcp', transport: 'streamable-http', headerNames: [], discoveredTools: [{ name: 'read_reports' }], allowedTools: [] } },
+        policy: { kind: 'mcp', authMode: 'oauth', url: 'https://reports.example.test/mcp', transport: 'streamable-http', headerNames: [], discoveredTools: [{ name: 'read_reports' }, { name: 'legacy_reports', available: false }], allowedTools: [] } },
       binding: { agentId: 'agent_conn', connectionAccountId: 'connection_custom', providerId: 'reports', allowedCapabilities: [], enabled: true },
     }] },
   });
@@ -15615,7 +15615,8 @@ test('custom OAuth callback opens account tool review and keeps creation and edi
   await flushAsync();
   assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
   assert.doesNotMatch(harness.app.innerHTML, /account is ready for the Agent/);
-  assert.match(harness.app.innerHTML, /1 of 1 selected/);
+  assert.match(harness.app.innerHTML, /2 of 2 selected/);
+  assert.match(harness.app.innerHTML, /data-tool="legacy_reports"/);
   assert.doesNotMatch(harness.app.innerHTML, /Signed in\. Choose/);
   const { click } = harness.listeners;
   assert.ok(click);
@@ -15624,10 +15625,11 @@ test('custom OAuth callback opens account tool review and keeps creation and edi
   click({ target: actionTarget({ 'data-action': 'custom-mcp-tools-open', 'data-connection-id': 'connection_custom' }) });
   assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-create"/);
   assert.match(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
-  assert.match(harness.app.innerHTML, /0 of 1 selected/);
+  assert.match(harness.app.innerHTML, /0 of 2 selected/);
+  assert.match(harness.app.innerHTML, /data-tool="legacy_reports"/);
 });
 
-test('Meta tool review distinguishes reporting from write tools that need editing access', async () => {
+test('Meta tool review shows only available reporting and write tools', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent()],
     connectionAccounts: { attached: [ownedConnection({
@@ -15649,8 +15651,11 @@ test('Meta tool review distinguishes reporting from write tools that need editin
           },
           {
             name: 'ads_create_campaign',
-            description: 'Provider write description.', available: false, effect: 'write',
-            requiresEditingAccess: true,
+            description: 'Provider write description.', available: true, effect: 'write',
+          },
+          {
+            name: 'ads_create_ad_set',
+            description: 'Provider ad set description.', available: false, effect: 'write',
           },
           {
             name: 'ads_create_creative',
@@ -15677,12 +15682,17 @@ test('Meta tool review distinguishes reporting from write tools that need editin
 
   assert.match(harness.app.innerHTML, /Choose the tools this Agent can use for the selected ad accounts/);
   assert.match(harness.app.innerHTML, /ads_get_ad_entities · Reporting/);
+  assert.match(harness.app.innerHTML, /data-tool="ads_get_ad_entities" checked/);
   assert.match(harness.app.innerHTML, /View campaigns, ad sets, ads, and their performance/);
   assert.match(harness.app.innerHTML, /Check supported reporting fields and metric names/);
+  assert.match(harness.app.innerHTML, /ads_create_campaign · May change ads/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-tool="ads_create_campaign" checked/);
   assert.match(harness.app.innerHTML, /Create an ad creative from images, videos, or posts/);
+  assert.match(harness.app.innerHTML, /ads_create_creative · May change ads/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-tool="ads_create_creative" checked/);
   assert.doesNotMatch(harness.app.innerHTML, /single-image link ad creative/);
-  assert.match(harness.app.innerHTML, /Reconnect with Reporting and editing access to select this tool/);
-  assert.doesNotMatch(harness.app.innerHTML, /data-tool="ads_create_campaign"/);
+  assert.doesNotMatch(harness.app.innerHTML, /ads_create_ad_set/);
+  assert.doesNotMatch(harness.app.innerHTML, /Provider ad set description/);
   // Selecting another tool rerenders the picker before a pasted field blurs.
   harness.listeners.input!({ target: inputTarget({ 'data-action': 'meta-ads-account-ids' }, '123, 456') });
   harness.listeners.change!({ target: checkboxTarget({
