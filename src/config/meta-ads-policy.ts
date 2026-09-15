@@ -84,7 +84,7 @@ const META_ADS_WRITE_SCHEMA_CONTRACTS = {
   ads_create_ad: {
     accountScoped: true, ownershipFields: ['ad_set_id'],
     referenceFields: ['creative_id', 'source_ad_id'], nestedPayloadFields: ['creative', 'tracking_specs'],
-    blockedRuntimeFields: [], entityType: false,
+    blockedRuntimeFields: ['adset_spec'], entityType: false,
   },
   ads_update_entity: {
     accountScoped: true, ownershipFields: ['entity_id'], referenceFields: [], nestedPayloadFields: ['fields'],

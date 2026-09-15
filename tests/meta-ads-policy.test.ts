@@ -309,6 +309,17 @@ test('runtime permits correlation metadata but withholds optional entity target 
   ]);
 });
 
+test('create-ad runtime rejects the optional adset_spec alternate parent route', () => {
+  const tool = discoveredWrite('ads_create_ad');
+  tool.inputSchema!.propertyNames.push('adset_spec');
+  const names = metaAdsRuntimePropertyNames({ discoveredTools: [tool] }, 'ads_create_ad');
+  assert.ok(names);
+  assert.equal(names.includes('adset_spec'), false);
+  assert.throws(() => assertMcpToolArgumentKeys('ads_create_ad', {
+    ad_account_id: 'act_123', ad_set_id: '456', adset_spec: '{"id":"789"}',
+  }, names), /does not permit the argument adset_spec/);
+});
+
 test('observed Meta write property sets admit single-entity routes after raw-schema validation', () => {
   // These are the stored bounded projections and fingerprints supplied from a
   // real discovery. `ambiguous: false` represents the result required from a

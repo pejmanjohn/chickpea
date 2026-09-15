@@ -660,6 +660,21 @@ test('Meta write projection retains bounded large schemas and closes blocked or 
     },
   }, 'ads_activate_entity').ambiguous, true, 'a required bulk route cannot be removed at runtime');
 
+  assert.equal(projectMcpToolInputSchema({
+    type: 'object', required: ['ad_account_id', 'ad_set_id'],
+    properties: {
+      ad_account_id: { type: 'string' }, ad_set_id: { type: 'string' },
+      adset_spec: { type: 'object', properties: { ad_set_id: { type: 'string' } } },
+    },
+  }, 'ads_create_ad').ambiguous, false, 'optional alternate parent route is omitted before dispatch');
+  assert.equal(projectMcpToolInputSchema({
+    type: 'object', required: ['ad_account_id', 'ad_set_id', 'adset_spec'],
+    properties: {
+      ad_account_id: { type: 'string' }, ad_set_id: { type: 'string' },
+      adset_spec: { type: 'string' },
+    },
+  }, 'ads_create_ad').ambiguous, true, 'a required alternate parent route cannot be removed at runtime');
+
   for (const [label, required, entityDefinition, entityTypeDefinition] of [
     ['optional', ['ad_account_id'], { type: 'string' }, { type: 'string' }],
     ['nullable', ['ad_account_id'], { type: ['string', 'null'] }, {
