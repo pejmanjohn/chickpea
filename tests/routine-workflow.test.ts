@@ -40,6 +40,15 @@ import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import { withEnv } from './helpers/env.ts';
 
 const NOW = Date.UTC(2026, 6, 27, 12);
+const offlineSlackClient = {
+  chat: {
+    postMessage: async () => ({
+      ok: true,
+      channel: 'C_TEST',
+      ts: '1785153600.000000',
+    }),
+  },
+} as unknown as WebClient;
 
 for (const rejection of ['channel_not_found', 'is_archived', 'not_in_channel', 'ratelimited']) {
   test(`completed execution settles definite delivery rejection ${rejection} without rewriting its result`, async () => {
@@ -304,6 +313,17 @@ function dependencies(events: string[] = []) {
       memoryEpoch: 1,
       validateMemoryLease: async () => true,
       confirmMemory: async () => undefined,
+    }),
+  };
+}
+
+function offlineDependencies(events: string[] = []) {
+  const base = dependencies(events);
+  return {
+    ...base,
+    resolveAccess: async (...args: Parameters<typeof base.resolveAccess>) => ({
+      ...await base.resolveAccess(...args),
+      client: offlineSlackClient,
     }),
   };
 }
@@ -927,6 +947,7 @@ test('reattachment never combines a frozen Agent A envelope with current Agent B
           accessHash: 'b'.repeat(64),
           botToken: 'xoxb-test',
           botUserId: 'UBOT',
+          client: offlineSlackClient,
         };
       },
       resolveModel: async () => {
@@ -1211,7 +1232,7 @@ test('a sandbox preparation failure terminalizes the already-started occurrence 
     const outcome = await executeRoutineOccurrence({
       env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, {
-      ...dependencies(),
+      ...offlineDependencies(),
       sandboxInstalled: () => true,
       useCloudflareSandbox: async () => true,
       prepareSandbox: async () => { throw new Error('sandbox unavailable'); },
@@ -1570,7 +1591,7 @@ test('routine deadline bounds a stalled durable Work owner before dispatch', { t
     const execution = executeRoutineOccurrence({
       env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, {
-      ...dependencies(),
+      ...offlineDependencies(),
       now: Date.now,
       usageRecordingEnabled: false,
       workStore: stalledWork,
