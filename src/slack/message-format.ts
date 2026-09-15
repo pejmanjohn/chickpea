@@ -575,28 +575,116 @@ function fileReplyMrkdwnText(markdown: string): string {
 }
 
 function fileReplyProseText(markdown: string): string {
-  const content = linearizeMarkdownTables(markdown);
-  // Convert only complete Markdown links. Escape all other text, including
-  // malformed links and Slack control syntax, before adding the trusted footer.
+  const content = linearizeMarkdownTables(markdown)
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^>\s?/gm, '')
+    .replace(/^\s{0,3}[-*+]\s+/gm, '- ');
+  // Convert complete Markdown links and unambiguous inline style pairs. Escape
+  // all other text, including malformed links and Slack control syntax, before
+  // adding the trusted footer.
   // Keep the entire canonical answer; the 4,000-character fallback is only a
   // notification preview, not the body of the file-share message.
-  return content.split(/(`[^`\n]+`|!?\[[^\]\n]*\]\([^)]+\))/g).map((segment) => {
-    if (segment.startsWith('`')) return escapeSlackControlCharacters(segment);
-    const link = segment.match(/^(!?)\[([^\]\n]*)\]\(([^)]+)\)$/);
-    if (!link) {
-      // Keep native mrkdwn emphasis and literal underscores/operators. The
-      // notification fallback deliberately removes them and is unsuitable for
-      // a message body containing exact filenames or mathematical values.
-      return escapeSlackControlCharacters(segment
-        .replace(/^#{1,6}\s+/gm, '')
-        .replace(/^>\s?/gm, '')
-        .replace(/(?<![\p{L}\p{N}_])\*\*([^*\n]+)\*\*(?![\p{L}\p{N}_])/gu, '$1')
-        .replace(/^\s{0,3}[-*+]\s+/gm, '- '));
+  return renderSlackInlineMarkdown(content);
+}
+
+const markdownToMrkdwnDelimiters = [
+  { markdown: '~~', mrkdwn: '~' },
+  { markdown: '**', mrkdwn: '*' },
+  { markdown: '__', mrkdwn: '*' },
+] as const;
+
+function renderSlackInlineMarkdown(source: string): string {
+  const pieces: string[] = [];
+  const open: Array<{ delimiter: string; piece: number }> = [];
+  let at = 0;
+  while (at < source.length) {
+    if (source[at] === '\n') {
+      // Inline styles do not span lines. Leave any unmatched opening markers
+      // as written and start the next line with a fresh delimiter stack.
+      open.length = 0;
+      pieces.push('\n');
+      at += 1;
+      continue;
     }
-    return link[1]
-      ? escapeSlackControlCharacters(link[2]!)
-      : renderSlackActionLink(link[3]!, link[2]!);
-  }).join('');
+
+    const code = inlineCodeSpanAt(source, at);
+    if (code) {
+      pieces.push(escapeSlackControlCharacters(source.slice(at, code.next)));
+      at = code.next;
+      continue;
+    }
+
+    const link = source.slice(at).match(/^(!?)\[([^\]\n]*)\]\(([^)\n]+)\)/);
+    if (link) {
+      pieces.push(link[1]
+        ? escapeSlackControlCharacters(link[2]!)
+        : renderSlackActionLink(link[3]!, link[2]!));
+      at += link[0].length;
+      continue;
+    }
+
+    let handledDelimiter = false;
+    for (const delimiter of markdownToMrkdwnDelimiters) {
+      if (!source.startsWith(delimiter.markdown, at)) continue;
+      const opening = open.findLastIndex((candidate) =>
+        candidate.delimiter === delimiter.markdown);
+      if (opening >= 0 && canCloseMarkdownDelimiter(source, at, delimiter.markdown)) {
+        pieces[open[opening]!.piece] = delimiter.mrkdwn;
+        pieces.push(delimiter.mrkdwn);
+        open.splice(opening);
+        at += delimiter.markdown.length;
+        handledDelimiter = true;
+      } else if (canOpenMarkdownDelimiter(source, at, delimiter.markdown)) {
+        open.push({
+          delimiter: delimiter.markdown,
+          piece: pieces.push(delimiter.markdown) - 1,
+        });
+        at += delimiter.markdown.length;
+        handledDelimiter = true;
+      }
+      break;
+    }
+    if (handledDelimiter) continue;
+
+    pieces.push(escapeSlackControlCharacters(source[at]!));
+    at += 1;
+  }
+  return pieces.join('');
+}
+
+function inlineCodeSpanAt(source: string, start: number): { next: number } | undefined {
+  if (source[start] !== '`') return undefined;
+  let runLength = 1;
+  while (source[start + runLength] === '`') runLength += 1;
+  const delimiter = '`'.repeat(runLength);
+  let close = source.indexOf(delimiter, start + runLength);
+  while (close >= 0 && (source[close - 1] === '`' || source[close + runLength] === '`')) {
+    close = source.indexOf(delimiter, close + runLength);
+  }
+  if (close < 0 || source.slice(start + runLength, close).includes('\n')) return undefined;
+  return { next: close + runLength };
+}
+
+function canOpenMarkdownDelimiter(source: string, start: number, delimiter: string): boolean {
+  const before = source[start - 1];
+  const after = source[start + delimiter.length];
+  if (!after || /\s/u.test(after) || isEscapedMarkdownDelimiter(source, start)) return false;
+  if (delimiter === '~~' && (before === '~' || after === '~')) return false;
+  return delimiter === '~~' || !before || !/[\p{L}\p{N}_]/u.test(before);
+}
+
+function canCloseMarkdownDelimiter(source: string, start: number, delimiter: string): boolean {
+  const before = source[start - 1];
+  const after = source[start + delimiter.length];
+  if (!before || /\s/u.test(before) || isEscapedMarkdownDelimiter(source, start)) return false;
+  if (delimiter === '~~' && (before === '~' || after === '~')) return false;
+  return delimiter === '~~' || !after || !/[\p{L}\p{N}_]/u.test(after);
+}
+
+function isEscapedMarkdownDelimiter(source: string, start: number): boolean {
+  let backslashes = 0;
+  for (let at = start - 1; at >= 0 && source[at] === '\\'; at -= 1) backslashes += 1;
+  return backslashes % 2 === 1;
 }
 
 function linearizeMarkdownTables(markdown: string): string {
