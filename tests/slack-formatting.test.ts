@@ -280,7 +280,7 @@ test('file sections preserve safe action labels while escaping malformed content
 
 test('file replies translate standard Markdown styles across code and links into mrkdwn', () => {
   const markdown = [
-    '~~The June `ELEVATE50` sale was the most recent **code explicitly labeled** 50%,',
+    '~~The June `TEST50` sale was the most recent **code explicitly labeled** 50%,',
     'but it was not [the best comparable period](https://example.com/comparison).~~',
     '[Edit: August is the better comparison.]',
   ].join(' ');
@@ -296,7 +296,7 @@ test('file replies translate standard Markdown styles across code and links into
   if (first?.type !== 'section') return;
   assert.equal(first.text.type, 'mrkdwn');
   assert.equal(first.text.text, [
-    '~The June `ELEVATE50` sale was the most recent *code explicitly labeled* 50%,',
+    '~The June `TEST50` sale was the most recent *code explicitly labeled* 50%,',
     'but it was not <https://example.com/comparison|the best comparable period>.~',
     '[Edit: August is the better comparison.]',
   ].join(' '));
