@@ -5819,7 +5819,7 @@
       ads_create_ad: "Create a paused ad with a creative.",
       ads_update_entity: "Update a campaign, ad set, or ad.",
       ads_activate_entity: "Activate a paused campaign, ad set, or ad and start spending.",
-      ads_create_creative: "Create a single-image link ad creative.",
+      ads_create_creative: "Create an ad creative from images, videos, or posts.",
       ads_boost_ig_post: "Boost an existing Instagram post as an ad.",
       ads_create_custom_audience: "Create a custom audience.",
       ads_update_custom_audience: "Update a custom audience.",

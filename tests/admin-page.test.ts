@@ -15652,6 +15652,10 @@ test('Meta tool review distinguishes reporting from write tools that need editin
             description: 'Provider write description.', available: false, effect: 'write',
             requiresEditingAccess: true,
           },
+          {
+            name: 'ads_create_creative',
+            description: 'Provider creative description.', available: true, effect: 'write',
+          },
         ],
         allowedTools: ['ads_get_ad_entities'], toolPolicies: {},
       },
@@ -15675,6 +15679,8 @@ test('Meta tool review distinguishes reporting from write tools that need editin
   assert.match(harness.app.innerHTML, /ads_get_ad_entities · Reporting/);
   assert.match(harness.app.innerHTML, /View campaigns, ad sets, ads, and their performance/);
   assert.match(harness.app.innerHTML, /Check supported reporting fields and metric names/);
+  assert.match(harness.app.innerHTML, /Create an ad creative from images, videos, or posts/);
+  assert.doesNotMatch(harness.app.innerHTML, /single-image link ad creative/);
   assert.match(harness.app.innerHTML, /Reconnect with Reporting and editing access to select this tool/);
   assert.doesNotMatch(harness.app.innerHTML, /data-tool="ads_create_campaign"/);
   // Selecting another tool rerenders the picker before a pasted field blurs.
