@@ -46,6 +46,12 @@ a write tool grants the Agent access to it; Chickpea instructs the model to make
 only requested changes, but does not add an automatic confirmation to every
 write call.
 
+Meta's update service has been observed to pause an active campaign during a
+budget decrease even when the request contains only the budget. Chickpea blocks
+budget changes to active entities through `ads_update_entity` before sending the
+write. Change those budgets in Ads Manager. Chickpea does not reactivate an
+entity automatically after an unexpected pause.
+
 The helpers may request bounded correlation, advertiser-request, or reporting
 field-name inputs. These are provider metadata, not ad-account selectors. The
 account helper may also advertise optional pagination inputs, but Chickpea does

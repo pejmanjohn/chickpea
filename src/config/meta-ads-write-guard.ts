@@ -10,6 +10,11 @@ export const META_ADS_OWNERSHIP_ORIGIN = 'https://graph.facebook.com';
 const GRAPH_VERSION = 'v26.0';
 const MAX_OWNERSHIP_BYTES = 16_384;
 const OWNERSHIP_TIMEOUT_MS = 8_000;
+const NON_ACTIVE_CONFIGURED_STATUSES = new Set(['PAUSED', 'DELETED', 'ARCHIVED']);
+
+type MetaAdsEntityType = 'campaign' | 'ad_set' | 'ad';
+
+class MetaAdsBudgetSafetyError extends Error {}
 
 interface MetaAdsWriteAccountOwnershipInput {
   name: string;
@@ -30,6 +35,7 @@ export async function assertMetaAdsWriteAccountOwnership(
 ): Promise<void> {
   if (!isMetaAdsWriteTool(input.name)) return;
   const targets = metaAdsWriteOwnershipTargets(input.name, input.argumentsValue);
+  const budgetEntityType = metaAdsBudgetUpdateEntityType(input.name, input.argumentsValue);
   const approved = new Set(input.approvedAccountIds.map(canonicalMetaAdsAccountId));
   if (approved.size === 0 || approved.has(undefined)) throw ownershipError();
   const args = input.argumentsValue as Record<string, unknown>;
@@ -55,7 +61,9 @@ export async function assertMetaAdsWriteAccountOwnership(
     for (const id of targets) {
       if (!/^[0-9]{1,32}$/.test(id)) throw ownershipError();
       const url = new URL(`${META_ADS_OWNERSHIP_ORIGIN}/${GRAPH_VERSION}/${id}`);
-      url.searchParams.set('fields', 'id,account_id');
+      url.searchParams.set('fields', budgetEntityType
+        ? 'id,account_id,configured_status'
+        : 'id,account_id');
       const response = await input.fetch(new Request(url, {
         method: 'GET',
         headers: { Authorization: input.authorization, Accept: 'application/json' },
@@ -75,10 +83,52 @@ export async function assertMetaAdsWriteAccountOwnership(
         ? canonicalMetaAdsAccountId(record.account_id) : undefined;
       if (record.id !== id || !owner || !approved.has(owner) ||
           (requestedAccount !== undefined && owner !== requestedAccount)) throw ownershipError();
+      if (budgetEntityType) assertBudgetUpdateIsSafe(record.configured_status, budgetEntityType);
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof MetaAdsBudgetSafetyError) throw error;
     // Provider errors may contain tokens or unrelated account details.
     throw ownershipError();
+  }
+}
+
+function metaAdsBudgetUpdateEntityType(
+  name: string,
+  argumentsValue: unknown,
+): MetaAdsEntityType | undefined {
+  if (name !== 'ads_update_entity' || !argumentsValue ||
+      typeof argumentsValue !== 'object' || Array.isArray(argumentsValue)) return undefined;
+  const args = argumentsValue as Record<string, unknown>;
+  let fields = args.fields;
+  if (typeof fields === 'string') {
+    try {
+      fields = JSON.parse(fields) as unknown;
+    } catch {
+      return undefined;
+    }
+  }
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields) ||
+      (!Object.hasOwn(fields, 'daily_budget') && !Object.hasOwn(fields, 'lifetime_budget'))) {
+    return undefined;
+  }
+  return args.entity_type === 'campaign' || args.entity_type === 'ad_set' || args.entity_type === 'ad'
+    ? args.entity_type
+    : undefined;
+}
+
+function assertBudgetUpdateIsSafe(status: unknown, entityType: MetaAdsEntityType): void {
+  const entity = entityType === 'ad_set' ? 'ad set' : entityType;
+  if (status === 'ACTIVE') {
+    throw new MetaAdsBudgetSafetyError(
+      `Meta's update service may pause an active ${entity} during budget changes. ` +
+      `Use Ads Manager to change this ${entity}'s budget. No ad changes were sent.`,
+    );
+  }
+  if (typeof status !== 'string' || !NON_ACTIVE_CONFIGURED_STATUSES.has(status)) {
+    throw new MetaAdsBudgetSafetyError(
+      `Meta Ads could not verify whether this ${entity} is active. ` +
+      `Use Ads Manager to change this ${entity}'s budget. No ad changes were sent.`,
+    );
   }
 }
 

@@ -10,6 +10,10 @@ import { MetaAdsAccessPolicyError } from '../src/config/meta-ads-policy.ts';
 const AUTHORIZATION = 'Bearer meta-runtime-token';
 const SAFE_ERROR =
   'Meta Ads could not verify that the target belongs to the selected ad account. No ad changes were sent.';
+const ACTIVE_BUDGET_ERROR =
+  "Meta's update service may pause an active campaign during budget changes. Use Ads Manager to change this campaign's budget. No ad changes were sent.";
+const UNKNOWN_BUDGET_STATUS_ERROR =
+  "Meta Ads could not verify whether this campaign is active. Use Ads Manager to change this campaign's budget. No ad changes were sent.";
 
 interface FetchCapture {
   requests: Request[];
@@ -108,6 +112,98 @@ test('Meta Ads write ownership accepts exact provider ownership for every entity
     assert.equal(url.origin, META_ADS_OWNERSHIP_ORIGIN);
     assert.equal(url.pathname, `/v26.0/${entry.target}`);
     assert.equal(url.searchParams.get('fields'), 'id,account_id');
+  }
+});
+
+test('active entity budget updates are blocked after status readback', async () => {
+  const provider = providerFetch(() => Response.json({
+    id: '5001',
+    account_id: '123',
+    configured_status: 'ACTIVE',
+  }));
+  await assert.rejects(assertMetaAdsWriteAccountOwnership({
+    name: 'ads_update_entity',
+    argumentsValue: {
+      ad_account_id: 'act_123', entity_id: '5001', entity_type: 'campaign',
+      fields: { daily_budget: '22500' },
+    },
+    approvedAccountIds: ['123'],
+    authorization: AUTHORIZATION,
+    fetch: provider.fetch,
+  }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, ACTIVE_BUDGET_ERROR);
+    return true;
+  });
+  assert.equal(provider.requests.length, 1);
+  assert.equal(new URL(provider.requests[0]!.url).searchParams.get('fields'),
+    'id,account_id,configured_status');
+});
+
+test('paused entity budget updates remain eligible for MCP dispatch', async () => {
+  const provider = providerFetch(() => Response.json({
+    id: '5002',
+    account_id: '123',
+    configured_status: 'PAUSED',
+  }));
+  await assertMetaAdsWriteAccountOwnership({
+    name: 'ads_update_entity',
+    argumentsValue: {
+      ad_account_id: 'act_123', entity_id: '5002', entity_type: 'ad_set',
+      fields: { lifetime_budget: '45000' },
+    },
+    approvedAccountIds: ['123'],
+    authorization: AUTHORIZATION,
+    fetch: provider.fetch,
+  });
+  assert.equal(provider.requests.length, 1);
+  assert.equal(new URL(provider.requests[0]!.url).searchParams.get('fields'),
+    'id,account_id,configured_status');
+});
+
+test('JSON-string budget fields receive the same active-entity protection', async () => {
+  const provider = providerFetch(() => Response.json({
+    id: '5003',
+    account_id: '123',
+    configured_status: 'ACTIVE',
+  }));
+  await assert.rejects(assertMetaAdsWriteAccountOwnership({
+    name: 'ads_update_entity',
+    argumentsValue: {
+      ad_account_id: 'act_123', entity_id: '5003', entity_type: 'ad_set',
+      fields: JSON.stringify({ lifetime_budget: '45000' }),
+    },
+    approvedAccountIds: ['123'],
+    authorization: AUTHORIZATION,
+    fetch: provider.fetch,
+  }), /may pause an active ad set.*Ads Manager/);
+  assert.equal(provider.requests.length, 1);
+  assert.equal(new URL(provider.requests[0]!.url).searchParams.get('fields'),
+    'id,account_id,configured_status');
+});
+
+test('budget updates fail closed when configured status is missing or invalid', async () => {
+  for (const configuredStatus of [undefined, 'CAMPAIGN_PAUSED', 123]) {
+    const provider = providerFetch(() => Response.json({
+      id: '5004',
+      account_id: '123',
+      ...(configuredStatus === undefined ? {} : { configured_status: configuredStatus }),
+    }));
+    await assert.rejects(assertMetaAdsWriteAccountOwnership({
+      name: 'ads_update_entity',
+      argumentsValue: {
+        ad_account_id: 'act_123', entity_id: '5004', entity_type: 'campaign',
+        fields: { daily_budget: '22500' },
+      },
+      approvedAccountIds: ['123'],
+      authorization: AUTHORIZATION,
+      fetch: provider.fetch,
+    }), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, UNKNOWN_BUDGET_STATUS_ERROR);
+      return true;
+    });
+    assert.equal(provider.requests.length, 1);
   }
 });
 

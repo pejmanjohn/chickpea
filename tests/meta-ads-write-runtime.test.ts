@@ -148,6 +148,7 @@ function toolCall(name = WRITE_TOOL, argumentsValue: unknown = ARGUMENTS): Reque
 function orderedProvider(
   ownerAccountId = '123',
   beforeOwnershipResponse?: () => void | Promise<void>,
+  configuredStatus?: unknown,
 ) {
   const events: string[] = [];
   const requests: Request[] = [];
@@ -160,7 +161,11 @@ function orderedProvider(
         assert.equal(request.method, 'GET');
         assert.equal(request.headers.get('authorization'), `Bearer ${TOKEN}`);
         await beforeOwnershipResponse?.();
-        return Response.json({ id: ARGUMENTS.entity_id, account_id: ownerAccountId });
+        return Response.json({
+          id: ARGUMENTS.entity_id,
+          account_id: ownerAccountId,
+          ...(configuredStatus === undefined ? {} : { configured_status: configuredStatus }),
+        });
       }
       events.push('MCP POST');
       assert.equal(request.method, 'POST');
@@ -218,6 +223,24 @@ test('native direct profile MCP rejects a bundled budget and pause before any pr
     fields: { daily_budget: '22500', status: 'PAUSED' },
   })), /status-only update/);
   assert.deepEqual(provider.events, []);
+});
+
+test('native direct profile MCP blocks an active budget update before MCP dispatch', async () => {
+  const server = metaWriteServer();
+  const provider = orderedProvider('123', undefined, 'ACTIVE');
+  const [definition] = resolveProfileMcpConnections([server], {
+    agentId: 'agent_direct_meta_active_budget_write',
+    env: NO_SECRETS_ENV,
+    resolveCurrentConnection: async () => server,
+    createGuardedFetch: provider.createGuardedFetch,
+  });
+  await assert.rejects(definition!.fetch!(toolCall(WRITE_TOOL, {
+    ...ARGUMENTS,
+    fields: { daily_budget: '22500' },
+  })), /may pause an active campaign.*Ads Manager/);
+  assert.deepEqual(provider.events, ['ownership GET']);
+  assert.equal(new URL(provider.requests[0]!.url).searchParams.get('fields'),
+    'id,account_id,configured_status');
 });
 
 test('RuntimePlanV2 verifies ownership before sending a selected write', async () => {
