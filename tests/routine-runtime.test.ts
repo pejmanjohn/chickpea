@@ -149,6 +149,28 @@ test('runtime access resolves current channel membership and hashes only non-sec
   assert.notEqual(changed.accessHash, access.accessHash);
 });
 
+test('injected effective config fences credential attribution in stable and legacy routine hashes', async () => {
+  const credential = (version: number): EffectiveSlackConfig['modelCredential'] => ({
+    credentialRefId: 'credential_test', version, providerId: 'anthropic',
+    sourceKind: 'stored', label: 'Test credential', scopeLabel: null, unknownRotation: false,
+  });
+  const resolve = (version: number) => resolveRoutineRuntimeAccess(
+    run,
+    routine,
+    undefined,
+    dependencies({ config: async () => ({ ...config, modelCredential: credential(version) }) }),
+  );
+
+  const beforeRotation = await resolve(1);
+  const afterRotation = await resolve(2);
+
+  assert.notEqual(afterRotation.accessHash, beforeRotation.accessHash);
+  assert.notEqual(
+    afterRotation.legacyAccessHashForCatalogRevision?.(undefined),
+    beforeRotation.legacyAccessHashForCatalogRevision?.(undefined),
+  );
+});
+
 test('direct runtime verifies the full Slack member and exact DM without Channel membership calls', async () => {
   const calls: string[] = [];
   const client = {
@@ -215,12 +237,15 @@ test('direct runtime access ignores a catalog refresh after repeating the live D
       },
     },
   } as unknown as WebClient;
-  const access = async (catalogRevision: string) => resolveRoutineRuntimeAccess(
+  const access = async (
+    catalogRevision: string,
+    mutate: (authority: ResolvedRoutineAuthority) => ResolvedRoutineAuthority = (authority) => authority,
+  ) => resolveRoutineRuntimeAccess(
     { ...run, routineId: directRoutine.id, revision: { ...run.revision!, authorityMode: 'live_direct_member_v1' } },
     directRoutine,
     undefined,
     dependencies({
-      authority: async () => ({
+      authority: async () => mutate({
         ...directAuthority,
         assignment: {
           ...directAuthority.assignment,
@@ -242,10 +267,67 @@ test('direct runtime access ignores a catalog refresh after repeating the live D
   const afterRefresh = await access('1');
 
   assert.equal(afterRefresh.accessHash, beforeRefresh.accessHash);
-  assert.deepEqual(calls, [
-    'users.info', 'conversations.open',
-    'users.info', 'conversations.open',
-  ]);
+  assert.equal(
+    afterRefresh.legacyAccessHashForCatalogRevision?.('0'),
+    beforeRefresh.legacyAccessHashForCatalogRevision?.('0'),
+  );
+
+  const changes = [
+    (authority: ResolvedRoutineAuthority): ResolvedRoutineAuthority => ({
+      ...authority,
+      assignment: {
+        ...authority.assignment,
+        model: 'anthropic/claude-opus-4-6',
+        agent: { ...authority.assignment.agent, model: 'anthropic/claude-opus-4-6' },
+      },
+    }),
+    (authority: ResolvedRoutineAuthority): ResolvedRoutineAuthority => ({
+      ...authority,
+      agent: { ...authority.agent, instructions: 'Changed private instructions.' },
+      assignment: {
+        ...authority.assignment,
+        agent: { ...authority.assignment.agent, instructions: 'Changed private instructions.' },
+      },
+    }),
+    (authority: ResolvedRoutineAuthority): ResolvedRoutineAuthority => ({
+      ...authority,
+      agent: {
+        ...authority.agent,
+        mcpServers: [{
+          id: 'connection_changed', displayName: 'Changed connection',
+          url: 'https://connections.invalid/mcp', transport: 'streamable-http',
+          authMode: 'oauth', headerNames: [], enabled: true,
+          lifecycleStatus: 'ready', statusText: 'Connected', discoveredTools: [],
+          allowedTools: ['read'],
+        }],
+      },
+      assignment: {
+        ...authority.assignment,
+        agent: {
+          ...authority.assignment.agent,
+          mcpServers: [{
+            id: 'connection_changed', displayName: 'Changed connection',
+            url: 'https://connections.invalid/mcp', transport: 'streamable-http',
+            authMode: 'oauth', headerNames: [], enabled: true,
+            lifecycleStatus: 'ready', statusText: 'Connected', discoveredTools: [],
+            allowedTools: ['read'],
+          }],
+        },
+      },
+    }),
+  ];
+  for (const change of changes) {
+    const changed = await access('1', change);
+    assert.notEqual(changed.accessHash, beforeRefresh.accessHash);
+    assert.notEqual(
+      changed.legacyAccessHashForCatalogRevision?.('0'),
+      beforeRefresh.legacyAccessHashForCatalogRevision?.('0'),
+    );
+  }
+  assert.deepEqual(
+    calls,
+    Array.from({ length: 5 }, () => ['users.info', 'conversations.open']).flat(),
+  );
 });
 
 test('direct runtime rejects ineligible Slack identities and a mismatched DM', async () => {

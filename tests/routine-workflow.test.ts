@@ -1012,6 +1012,8 @@ test('a preparation failure posts one notice when fresh access can still reach t
 
 test('a preparation failure stays silent when fresh destination authorization fails', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
+  let accessChecks = 0;
+  let posts = 0;
   try {
     const fixture = await admittedFixture(store, 'reattach_failure_unauthorized');
     assert.equal(await executeRoutineOccurrence({
@@ -1025,8 +1027,29 @@ test('a preparation failure stays silent when fresh destination authorization fa
       env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt,
     }, {
       ...dependencies(),
-      resolveAccess: async () => {
-        throw new RoutineRuntimeError('access_denied', 'Current channel access could not be verified.');
+      resolveAccess: async (_run, routine) => {
+        accessChecks += 1;
+        if (accessChecks === 2) {
+          throw new RoutineRuntimeError('access_denied', 'Current channel access could not be verified.');
+        }
+        return {
+          config: {
+            ...config,
+            workspaceId: routine.workspaceId,
+            channelId: routine.channelId,
+            agentId: 'agent_b',
+            agent: { ...config.agent, id: 'agent_b', name: 'Agent B' },
+          },
+          accessHash: 'b'.repeat(64),
+          botToken: 'xoxb-test',
+          botUserId: 'UBOT',
+          client: {
+            chat: { postMessage: async () => {
+              posts += 1;
+              return { ok: true, channel: 'C_TEST', ts: '1785153600.000004' };
+            } },
+          } as never,
+        };
       },
       handle: fakeHandle({}),
     }), 'completed');
@@ -1035,6 +1058,8 @@ test('a preparation failure stays silent when fresh destination authorization fa
     assert.equal(failed?.status, 'failed');
     assert.equal(failed?.failureClass, 'access_denied');
     assert.equal(failed?.deliveryStatus, 'none');
+    assert.equal(accessChecks, 2);
+    assert.equal(posts, 0);
   } finally {
     store.close();
   }
