@@ -53,6 +53,7 @@ export const SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS = [
   'Set memoryIntent to "possible" whenever the message could semantically be asking Chickpea to retain durable information, change stored memory, or forget stored memory, regardless of wording. Otherwise set it to "none". Do not rely on keywords or exact command grammar.',
   'A possible memory intent is always substantive: choose reply or work, never ignore or react_only. The main Agent will decide whether a memory write is actually appropriate and authorized.',
   'Approval of a pending workspace-management proposal is consequential. Choose reply, never react_only, so the main Agent can apply the exact reviewed proposal and report its terminal receipt.',
+  'An answer or confirmation to a pending Agent question continues the task, even when it is only yes or okay. Use recent context to distinguish it from social agreement; choose reply or work, never react_only or ignore.',
   'For work, return one to four short checklist labels naming an artifact, result, or question. Never use generic activity labels such as working, investigating, thinking, or checking.',
   'Messages addressed to another person or bot and people working something out themselves default to ignore unless the contribution prevents a meaningful error or adds information they cannot easily get.',
   'A guaranteed input may never be ignored. The host will enforce this.',
@@ -250,6 +251,11 @@ export function resolveImmediateSlackInteractionIntent(
     return { disposition: 'reply', reason: 'substantive_request' };
   }
   if (context.guaranteed) {
+    // Admission has no conversation history. Let the main Agent interpret
+    // confirmations in context instead of silently consuming an answer to it.
+    if (possibleConfirmation(text)) {
+      return { disposition: 'reply', reason: 'substantive_request' };
+    }
     const acknowledgment = obviousAcknowledgment(text, Boolean(context.activeWork));
     if (acknowledgment) return acknowledgment;
   }
@@ -305,6 +311,12 @@ function normalizedInteractionText(text: string): string {
     .trim();
 }
 
+function possibleConfirmation(text: string): boolean {
+  return /^(?:agreed|sounds good|works for me|sgtm|yes|yep|yeah|exactly|perfect|great|ok|okay|\+1|confirmed)$/.test(
+    normalizedApprovalText(text),
+  );
+}
+
 function obviousAcknowledgment(
   text: string,
   activeWork: boolean,
@@ -317,13 +329,7 @@ function obviousAcknowledgment(
     )
   ) {
     reaction = 'appreciation';
-  } else if (
-    /^(?:agreed|sounds good|works for me|sgtm|yes|yep|yeah|exactly|perfect|great|ok|okay|\+1)$/.test(
-      acknowledgment,
-    )
-  ) {
-    reaction = 'agreement';
-  } else if (/^(?:done|confirmed|fixed|complete|completed)$/.test(acknowledgment)) {
+  } else if (/^(?:done|fixed|complete|completed)$/.test(acknowledgment)) {
     reaction = 'done';
   } else if (/^(?:seen|noted|got it)$/.test(acknowledgment)) {
     reaction = 'seen';

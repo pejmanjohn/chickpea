@@ -236,12 +236,7 @@ test('workspace proposal approvals always reach the main Agent instead of ending
 
   assert.deepEqual(
     resolveImmediateSlackInteractionIntent({ ...baseContext, text: 'yes' }),
-    {
-      disposition: 'react_only',
-      reason: 'pure_ack',
-      reaction: 'agreement',
-      target: 'trigger',
-    },
+    { disposition: 'reply', reason: 'substantive_request' },
   );
 
   for (const text of [
@@ -254,6 +249,25 @@ test('workspace proposal approvals always reach the main Agent instead of ending
     'yes, but change the name', 'do it next week',
   ]) {
     assert.equal(shouldResolveSlackManagementApproval(text), false, text);
+  }
+});
+
+test('short confirmations reach the main Agent with its conversation context', async () => {
+  for (const source of ['dm_message', 'app_mention', 'agent_mention'] as const) {
+    for (const text of ['yes', 'Yep!', 'yeah', 'okay', 'ok', 'sounds good', 'agreed', 'confirmed']) {
+      for (const activeWork of [false, true]) {
+        let classifierCalls = 0;
+        const result = await classifySlackInteraction({
+          ...baseContext, source, text, activeWork,
+          recentContext: ['Agent: Should I use seven-day conversion and combine both variants?'],
+        }, undefined, async () => {
+          classifierCalls += 1;
+          return JSON.stringify({ disposition: 'react_only', reason: 'pure_ack', reaction: 'agreement', target: 'trigger' });
+        });
+        assert.deepEqual(result.intent, { disposition: 'reply', reason: 'substantive_request' }, `${source}: ${text}`);
+        assert.equal(classifierCalls, 0, 'the main Agent, not a context-free preclassifier, decides how to continue');
+      }
+    }
   }
 });
 

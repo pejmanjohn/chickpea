@@ -1541,6 +1541,48 @@ test('activity remains visible until final delivery and omits model or context n
   );
 });
 
+test('reaction-only delivery settles the V3 session and clears admitted activity without model work', async () => {
+  const turn: NormalizedSlackTurn = {
+    ...workTurn('Ev_V3_REACTION_CLEANUP'),
+    text: 'thanks',
+    interactionIntent: { disposition: 'react_only', reason: 'pure_ack', reaction: 'appreciation', target: 'trigger' },
+  };
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment, sourceVisibility: 'private', admittedAt: Date.now(),
+  }));
+  const runId = admitted.run.id;
+  const h = v3PresentationHarness(turn, runId);
+  const effects: string[] = [];
+  const client = {
+    apiCall: async (_method: string, input: Record<string, unknown>) => {
+      effects.push(`session:${String(input.status)}`);
+      return { ok: true };
+    },
+    assistant: { threads: { setStatus: async (input: Record<string, unknown>) => {
+      effects.push(`activity:${input.status ? 'set' : 'clear'}`);
+      return { ok: true };
+    } } },
+    reactions: { add: async () => { effects.push('reaction'); return { ok: true }; } },
+  } as unknown as WebClient;
+  try {
+    await runTurn(turn, assignment, undefined, {
+      client, runId, presentationState: h.state, workStore: work,
+      usageRecordingEnabled: false,
+      agentPrompt: async () => { assert.fail('thanks must not invoke the model'); },
+      onDelivered: async () => { effects.push('delivered'); },
+    });
+    assert.deepEqual(effects, ['session:processing', 'activity:set', 'reaction', 'session:active', 'activity:clear', 'delivered']);
+    const stored = h.store.get(runId);
+    assert.equal(stored?.schemaVersion, 3);
+    if (stored?.schemaVersion !== 3) assert.fail('expected V3 presentation');
+    assert.equal(stored.agentSession.acknowledged, 'active');
+    assert.equal(stored.activityProjection.state, 'cleared');
+    assert.equal(stored.lifecyclePhase, 'settled');
+    assert.equal(stored.repairRequired, false);
+  } finally { h.db.close(); work.close(); }
+});
+
 test('acknowledged final settles the frozen Agent Session before deleting activity', async () => {
   const turn: NormalizedSlackTurn = {
     ...workTurn('Ev_V3_TERMINAL_ORDER'),

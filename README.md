@@ -10,61 +10,28 @@
   <strong>AI teammates in Slack that answer questions, take on tasks, and use the accounts you give them, all on infrastructure you own.</strong>
 </p>
 
-## Install with your coding agent
-
-Copy this prompt into a coding agent with terminal and browser access:
-
-```text
-Install Chickpea for my Slack workspace on my Cloudflare account using this guide:
-https://github.com/pejmanjohn/chickpea/blob/main/INSTALL_CHICKPEA_CLOUDFLARE.md
-
-Select the latest stable Chickpea application release and follow the setup
-instructions matching that release. Walk me through the Cloudflare account,
-Slack workspace, and model-provider choices, and handle the installation.
-Help me complete any sign-in steps that need my input. Before calling setup
-complete, send a test message in Slack and verify Chickpea's reply, then confirm
-I can sign in to Admin. Tell me which release was installed and where the local
-project lives.
-```
-
-The [installation guide](INSTALL_CHICKPEA_CLOUDFLARE.md) stays current on `main`;
-the installation uses a stable application release.
-
-## Update with your coding agent
-
-Open your Chickpea folder in your coding agent and paste:
-
-```text
-Update this Chickpea installation to the latest stable release. Follow:
-https://github.com/pejmanjohn/chickpea/blob/main/UPDATE_CHICKPEA_CLOUDFLARE.md
-```
-
-The [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md) stays current on `main`. Your
-coding agent preserves the existing installation settings, deploys the latest
-release, and verifies Admin access. It does not send test messages to Slack.
-
 <div align="center">
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-555555.svg?labelColor=333333&color=2EA44F)](./LICENSE)
 [![Node](https://img.shields.io/badge/Node-24.x-555555?labelColor=333333&color=339933)](https://nodejs.org)
-[![Runs on](https://img.shields.io/badge/Runs_on-Cloudflare_Workers_or_Node-555555?labelColor=333333&color=F38020)](#install)
+[![Runs on](https://img.shields.io/badge/Runs_on-Cloudflare_Workers_or_Node-555555?labelColor=333333&color=F38020)](#deploy-it-yourself)
 [![Built on Flue](https://img.shields.io/badge/Built_on-Flue-555555?labelColor=333333&color=DDA126)](https://flueframework.com)
 
 <br />
 
 <img src="assets/admin-agent.png" alt="Chickpea Admin, showing the Sprout Agent: its Slack destination, and the Google Docs, Drive, Sheets, Gmail, and Calendar accounts it can use" width="880">
 
+<br /><br />
+
+**[Get started with your coding agent](#get-started-with-your-coding-agent)** &nbsp; · &nbsp; [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea)
+
+<sub>Both routes install Chickpea on your own Cloudflare account.</sub>
+
+Already installed? [Connect via MCP](#connect-via-mcp) · [Update](#update-chickpea)
+
 <br />
 
-**Deploy it**
-
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea)
-
-<sub><em>or run it on your own box. Full steps in <a href="#node">Install</a>.</em></sub>
-
-<br />
-
-[Why it exists](#why-chickpea-exists) · [Features](#what-your-workspace-gets) · [How it works](#how-it-works) · [Managing](#managing-chickpea) · [CLI](#cli) · [Security](#security-model) · [Install](#install) · [Good to know](#good-to-know) · [FAQ](#faq)
+[Why it exists](#why-chickpea-exists) · [Features](#what-your-workspace-gets) · [How it works](#how-it-works) · [Managing](#managing-chickpea) · [CLI](#cli) · [Security](#security-model) · [Deployment](#deploy-it-yourself) · [Good to know](#good-to-know) · [FAQ](#faq)
 
 </div>
 
@@ -274,7 +241,7 @@ Chickpea has an Admin panel. It is not the only way in. The same controls have t
 
 - **Admin**, the browser UI on your deployment.
 - **Slack**, by asking `@Chickpea`, or asking any Agent about itself.
-- **MCP**, from any MCP client you already use, through the management MCP server.
+- **[MCP](#connect-via-mcp)**, from any MCP client you already use, through the management MCP server.
 
 Most days the Slack door is the one you want.
 
@@ -377,7 +344,109 @@ The other exception is the optional shared Slack-app gateway, which exists so yo
 
 ---
 
-## Install
+## Get started with your coding agent
+
+<a id="install-with-your-coding-agent"></a>
+
+### Install Chickpea
+
+Copy this prompt into a coding agent with terminal and browser access:
+
+```text
+Install Chickpea for my Slack workspace on my Cloudflare account using this guide:
+https://github.com/pejmanjohn/chickpea/blob/main/INSTALL_CHICKPEA_CLOUDFLARE.md
+
+Select the latest stable Chickpea application release and follow the setup
+instructions matching that release. Walk me through the Cloudflare account,
+Slack workspace, and model-provider choices, and handle the installation.
+Help me complete any sign-in steps that need my input. Before calling setup
+complete, send a test message in Slack and verify Chickpea's reply, then confirm
+I can sign in to Admin. Tell me which release was installed and where the local
+project lives.
+```
+
+The [installation guide](INSTALL_CHICKPEA_CLOUDFLARE.md) stays current on `main`;
+the installation uses a stable application release.
+
+### Connect via MCP
+
+Chickpea includes a built-in MCP server. Connect your coding agent to create
+Chickpea Agents, update their instructions, manage connections, edit memory,
+and set up schedules.
+
+You need an existing Chickpea installation and permission to manage the Agents
+you want to work with.
+
+Replace `https://chickpea.example.com` below with your installation's address:
+the same address you use for Admin, without `/admin`. Ask whoever installed
+Chickpea if you don't know it.
+
+#### Claude Code
+
+Run in your terminal:
+
+```bash
+claude mcp add --transport http --scope user chickpea https://chickpea.example.com/mcp
+```
+
+This makes Chickpea available across your Claude Code projects. Open Claude
+Code, run `/mcp`, select `chickpea`, and follow the browser sign-in steps.
+
+#### Codex
+
+Run in your terminal:
+
+```bash
+codex mcp add chickpea --url https://chickpea.example.com/mcp
+codex mcp login chickpea
+```
+
+Follow the browser sign-in steps.
+
+#### Sign in and try it
+
+Sign in with your Slack account for the workspace where Chickpea is installed,
+then approve access to manage your Chickpea workspace. Authentication uses
+OAuth; no API key or separate MCP package is needed.
+
+Start a conversation in your coding agent and ask:
+
+> Use Chickpea to show me the Agents I can manage and their connected services.
+
+Then try:
+
+> Create a Chickpea Agent named Support that helps our team answer billing questions.
+
+Chickpea applies your existing permissions. Changes that expand access or
+require confirmation produce a proposal for you to approve. Connecting an
+account opens a browser setup flow.
+
+Other MCP clients can connect to the same `/mcp` URL using Streamable HTTP
+and OAuth.
+
+See [Managing Chickpea](#managing-chickpea) for available controls and the
+[MCP guide](docs/runbooks/workspace-management-mcp.md) for details.
+
+<a id="update-with-your-coding-agent"></a>
+
+### Update Chickpea
+
+Open your Chickpea folder in your coding agent and paste:
+
+```text
+Update this Chickpea installation to the latest stable release. Follow:
+https://github.com/pejmanjohn/chickpea/blob/main/UPDATE_CHICKPEA_CLOUDFLARE.md
+```
+
+The [update guide](UPDATE_CHICKPEA_CLOUDFLARE.md) stays current on `main`. Your
+coding agent preserves the existing installation settings, deploys the latest
+release, and verifies Admin access. It does not send test messages to Slack.
+
+---
+
+<a id="install"></a>
+
+## Deploy it yourself
 
 ### Cloudflare
 
@@ -425,7 +494,9 @@ HTTPS, backups, and upgrades, follow [Operating Chickpea](docs/runbooks/operatio
 
 State defaults to SQLite. Set `TAG_DB_PATH=:memory:` and `SLACK_STATE_DB_PATH=:memory:` only for disposable development.
 
-### Configuration
+---
+
+## Configuration
 
 Chickpea is offline-safe by default. Left unset, most variables take a local path. These are the ones worth knowing:
 
