@@ -2786,17 +2786,30 @@
       renderPreservingPagePosition();
       return Promise.resolve();
     }
-    var requestState = { agentId: agentId, workspaceId: workspaceId, attached: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: true, waitingForWorkspace: state.agentConnections.waitingForWorkspace === true, error: "", notice: "" };
+    var currentState = state.agentConnections;
+    var sameOwner = currentState.agentId === agentId && currentState.workspaceId === workspaceId &&
+      currentState.loaded === true && currentState.waitingForWorkspace !== true;
+    if (!sameOwner) {
+      state.connectionAccountForm = null;
+      state.customMcpToolEditor = null;
+    }
+    // A focus/visibility refresh must not replace a valid same-owner snapshot
+    // with an empty list. Keep its rows and in-progress forms while the server
+    // read runs; a real Agent/workspace change still starts from empty state.
+    var requestState = sameOwner
+      ? Object.assign({}, currentState, { loading: true, refreshing: true, error: "" })
+      : { agentId: agentId, workspaceId: workspaceId, attached: [], managedCatalog: [], managedCanConfigure: false, managedConfigurationReadOnly: false, loading: true, refreshing: false, loaded: false, waitingForWorkspace: !workspaceId && currentState.waitingForWorkspace === true, error: "", notice: "" };
     state.agentConnections = requestState;
-    render();
+    renderPreservingPagePosition();
     if (!workspaceId) {
       state.agentConnections.loading = false;
+      state.agentConnections.refreshing = false;
       state.agentConnections.error = "Connect Slack before adding Agent connections.";
       finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
       return Promise.resolve();
     }
-    var request = api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections?workspaceId=" + encodeURIComponent(workspaceId)).then(function (body) {
+    var request = api("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections?workspaceId=" + encodeURIComponent(workspaceId), { cache: "no-store" }).then(function (body) {
       if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentConnections !== requestState) return;
       state.agentConnections.attached = body.attached || [];
       state.agentConnections.managedCatalog = body.managedConnectors && body.managedConnectors.catalog || [];
@@ -2808,14 +2821,30 @@
       state.agentConnections.managedGoogleAvailable = !body.managedConnectors ||
         body.managedConnectors.composio === true;
       state.agentConnections.loading = false;
+      state.agentConnections.refreshing = false;
+      state.agentConnections.loaded = true;
       state.agentConnections.error = "";
       state.connectionAccountsSupported = true;
+      if (state.customMcpToolEditor) {
+        var editedAccount = state.agentConnections.attached.find(function (entry) {
+          return entry.account.id === state.customMcpToolEditor.accountId;
+        });
+        var priorEditedAccount = (currentState.attached || []).find(function (entry) {
+          return entry.account.id === state.customMcpToolEditor.accountId;
+        });
+        if (!editedAccount || (priorEditedAccount &&
+            (editedAccount.account.workspaceId !== priorEditedAccount.account.workspaceId ||
+              editedAccount.account.ownerKind !== priorEditedAccount.account.ownerKind))) {
+          state.customMcpToolEditor = null;
+        }
+      }
       restoreManagedAuthorization(agentId);
       finishVisibleResourceLoad(resourceTicket);
       renderPreservingPagePosition();
     }).catch(function (error) {
       if (!visibleResourceLoadIsCurrent(resourceTicket) || state.agentConnections !== requestState) return;
       state.agentConnections.loading = false;
+      state.agentConnections.refreshing = false;
       state.agentConnections.legacyFallback = !!(error && error.status === 404);
       if (state.agentConnections.legacyFallback) state.connectionAccountsSupported = false;
       state.agentConnections.error = (error && (error.serverMessage || error.message)) || "Could not load connections.";
@@ -2825,8 +2854,8 @@
     return trackVisibleResourcePromise(resourceTicket, request);
   }
 
-  function invalidateAgentConnections(agentId) {
-    invalidateVisibleResource("connections", agentId + ":" + connectedTeamId());
+  function invalidateAgentConnections(agentId, workspaceId) {
+    invalidateVisibleResource("connections", agentId + ":" + (workspaceId === undefined ? connectedTeamId() : workspaceId));
   }
 
   function loadAgentSchedules(agentId, terminalState) {
@@ -5849,17 +5878,35 @@
   function saveCustomMcpTools() {
     var editor = state.customMcpToolEditor;
     var agentId = state.agentConnections.agentId;
+    var workspaceId = state.agentConnections.workspaceId;
     if (!editor || editor.busy) return;
     editor.busy = true;
+    // The editor is now the newest local state for this owner. Invalidate any
+    // focus refresh that began before Save so its older snapshot cannot land
+    // while the mutation is in flight.
+    invalidateAgentConnections(agentId, workspaceId);
     render();
     postJson('/admin/api/agents/' + encodeURIComponent(agentId) + '/connections/' + encodeURIComponent(editor.accountId) + '/mcp/tools', 'PUT', {
       expectedRevision: editor.revision, allowedTools: editor.selectedTools,
       ...(editor.metaAds ? { approvedAccountIds: editor.accountIds.split(/[\s,]+/).filter(Boolean) } : {})
-    }).then(function () {
+    }).then(function (body) {
+      if (state.customMcpToolEditor !== editor || state.agentConnections.agentId !== agentId ||
+          state.agentConnections.workspaceId !== workspaceId) return;
+      var updatedAccount = body && body.account;
+      var updatedIndex = (state.agentConnections.attached || []).findIndex(function (entry) {
+        return entry.account.id === editor.accountId;
+      });
+      if (updatedAccount && updatedIndex >= 0) {
+        var updatedAttached = state.agentConnections.attached.slice();
+        updatedAttached[updatedIndex] = Object.assign({}, updatedAttached[updatedIndex], { account: updatedAccount });
+        state.agentConnections.attached = updatedAttached;
+      }
       state.customMcpToolEditor = null;
-      invalidateAgentConnections(agentId);
+      invalidateAgentConnections(agentId, workspaceId);
       return loadAgentConnections(agentId);
     }).catch(function (error) {
+      if (state.customMcpToolEditor !== editor || state.agentConnections.agentId !== agentId ||
+          state.agentConnections.workspaceId !== workspaceId) return;
       editor.busy = false;
       editor.error = error.serverMessage || error.message || 'Could not save tool access.';
       render();
@@ -5923,7 +5970,7 @@
       return '<p class="hint ptab-hint">Save this Agent first, then add Team connections or your personal accounts.</p>';
     }
     var accounts = state.agentConnections;
-    if (accounts.agentId !== draft.id || accounts.loading) {
+    if (accounts.agentId !== draft.id || (accounts.loading && !accounts.refreshing)) {
       if (state.connectionAccountsSupported === null && draft.mcpServers !== undefined &&
           accounts.waitingForWorkspace !== true) {
         return legacyConnectionsPanelHtml(draft);
