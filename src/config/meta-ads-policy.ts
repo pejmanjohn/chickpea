@@ -6,7 +6,21 @@ import type {
 
 export const META_ADS_MCP_URL = 'https://mcp.facebook.com/ads';
 
-/** Reporting tools reviewed against Meta's official Ads MCP documentation. */
+export const META_ADS_WRITE_TOOL_EFFECTS = {
+  ads_create_campaign: 'write',
+  ads_create_ad_set: 'write',
+  ads_create_ad: 'write',
+  ads_update_entity: 'write',
+  ads_activate_entity: 'write',
+  ads_create_creative: 'write',
+  ads_boost_ig_post: 'write',
+  ads_create_custom_audience: 'write',
+  ads_update_custom_audience: 'write',
+  ads_update_custom_audience_users: 'write',
+  ads_delete_custom_audience: 'write',
+} as const satisfies Readonly<Record<string, 'write'>>;
+
+/** Tools reviewed against Meta's official Ads MCP documentation. */
 export const META_ADS_REVIEWED_TOOL_EFFECTS = {
   ads_get_ad_accounts: 'read',
   ads_get_ad_entities: 'read',
@@ -17,7 +31,8 @@ export const META_ADS_REVIEWED_TOOL_EFFECTS = {
   ads_insights_auction_ranking_benchmarks: 'read',
   ads_insights_industry_benchmark: 'read',
   ads_insights_performance_trend: 'read',
-} as const satisfies Readonly<Record<string, 'read'>>;
+  ...META_ADS_WRITE_TOOL_EFFECTS,
+} as const satisfies Readonly<Record<string, 'read' | 'write'>>;
 
 export const META_ADS_ACCOUNT_HELPER = 'ads_get_ad_accounts';
 export const META_ADS_FIELD_HELPER = 'ads_get_field_context';
@@ -27,6 +42,85 @@ const META_ADS_HELPER_TOOLS = new Set<string>([
   META_ADS_ACCOUNT_HELPER,
   META_ADS_FIELD_HELPER,
 ]);
+
+const META_ADS_ACCOUNTLESS_WRITE_TOOLS = new Set<string>([
+  'ads_update_custom_audience',
+  'ads_update_custom_audience_users',
+  'ads_delete_custom_audience',
+]);
+
+const META_ADS_PAUSED_CREATION_TOOLS = new Set<string>([
+  'ads_create_campaign',
+  'ads_create_ad_set',
+  'ads_create_ad',
+  'ads_boost_ig_post',
+]);
+
+export interface MetaAdsWriteSchemaContract {
+  accountScoped: boolean;
+  ownershipFields: readonly string[];
+  referenceFields: readonly string[];
+  nestedPayloadFields: readonly string[];
+  entityType: boolean;
+}
+
+const META_ADS_WRITE_SCHEMA_CONTRACTS = {
+  ads_create_campaign: {
+    accountScoped: true, ownershipFields: [], referenceFields: [], nestedPayloadFields: [], entityType: false,
+  },
+  ads_create_ad_set: {
+    accountScoped: true, ownershipFields: ['campaign_id'], referenceFields: ['pixel_id'],
+    nestedPayloadFields: ['targeting', 'promoted_object'], entityType: false,
+  },
+  ads_create_ad: {
+    accountScoped: true, ownershipFields: ['ad_set_id'],
+    referenceFields: ['creative_id', 'source_ad_id'], nestedPayloadFields: ['creative', 'tracking_specs'],
+    entityType: false,
+  },
+  ads_update_entity: {
+    accountScoped: true, ownershipFields: ['entity_id'], referenceFields: [], nestedPayloadFields: ['fields'],
+    entityType: true,
+  },
+  ads_activate_entity: {
+    accountScoped: true, ownershipFields: ['entity_id'], referenceFields: [], nestedPayloadFields: [], entityType: true,
+  },
+  ads_create_creative: {
+    accountScoped: true, ownershipFields: [],
+    referenceFields: [
+      'page_id', 'instagram_actor_id', 'instagram_user_id', 'object_story_id', 'source_ad_id',
+    ],
+    nestedPayloadFields: [
+      'creative', 'object_story_spec', 'link_data', 'asset_feed_spec', 'degrees_of_freedom_spec',
+    ],
+    entityType: false,
+  },
+  ads_boost_ig_post: {
+    accountScoped: true, ownershipFields: [],
+    referenceFields: ['page_id', 'ig_account_id', 'ig_media_id'],
+    nestedPayloadFields: ['targeting', 'creative', 'promoted_object'],
+    entityType: false,
+  },
+  ads_create_custom_audience: {
+    accountScoped: true, ownershipFields: [],
+    referenceFields: [
+      'pixel_id', 'application_id', 'source_audience_id', 'origin_audience_id', 'business_id',
+    ],
+    nestedPayloadFields: ['rule', 'lookalike_spec'],
+    entityType: false,
+  },
+  ads_update_custom_audience: {
+    accountScoped: false, ownershipFields: ['custom_audience_id'], referenceFields: [],
+    nestedPayloadFields: ['fields', 'rule'], entityType: false,
+  },
+  ads_update_custom_audience_users: {
+    accountScoped: false, ownershipFields: ['audience_id'], referenceFields: ['session_id'],
+    nestedPayloadFields: ['users', 'payload', 'schema'], entityType: false,
+  },
+  ads_delete_custom_audience: {
+    accountScoped: false, ownershipFields: ['custom_audience_id'], referenceFields: [],
+    nestedPayloadFields: [], entityType: false,
+  },
+} as const satisfies Readonly<Record<keyof typeof META_ADS_WRITE_TOOL_EFFECTS, MetaAdsWriteSchemaContract>>;
 
 const META_ADS_HELPER_RUNTIME_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
   [META_ADS_ACCOUNT_HELPER]: ['advertiser_request', 'client_conversation_id'],
@@ -49,7 +143,7 @@ const META_ADS_NON_ACCOUNT_ID_ARGUMENTS = {
   ads_insights_auction_ranking_benchmarks: ['client_conversation_id', 'entity_ids'],
   ads_insights_industry_benchmark: ['client_conversation_id', 'entity_ids'],
   ads_insights_performance_trend: ['client_conversation_id', 'entity_ids'],
-} as const satisfies Readonly<Record<keyof typeof META_ADS_REVIEWED_TOOL_EFFECTS, readonly string[]>>;
+} as const satisfies Readonly<Partial<Record<keyof typeof META_ADS_REVIEWED_TOOL_EFFECTS, readonly string[]>>>;
 
 export class MetaAdsAccessPolicyError extends Error {
   constructor(message: string) {
@@ -91,7 +185,7 @@ export function compileMetaAdsToolAccess(
   const policyEntries: Array<[string, McpToolPolicy]> = [];
   for (const name of requestedTools) {
     if (!isReviewedMetaAdsTool(name)) {
-      throw new MetaAdsAccessPolicyError(`Meta Ads tool ${name} is not in the reviewed reporting contract.`);
+      throw new MetaAdsAccessPolicyError(`Meta Ads tool ${name} is not in the reviewed access contract.`);
     }
     const matches = input.discoveredTools.filter((tool) => tool.name === name);
     if (matches.length !== 1) {
@@ -101,7 +195,7 @@ export function compileMetaAdsToolAccess(
     if (!metaAdsToolSchemaSupported(tool)) {
       throw new MetaAdsAccessPolicyError(`Meta Ads tool ${name} cannot be restricted to an approved ad account.`);
     }
-    const field = isMetaAdsHelperTool(name)
+    const field = isMetaAdsAccountScopeTool(name)
       ? META_ADS_APPROVED_ACCOUNT_SCOPE
       : metaAdsAccountField(tool)!;
     policyEntries.push([name, {
@@ -146,7 +240,7 @@ export function metaAdsRuntimeConstraint(
   if (!isReviewedMetaAdsTool(name)) return undefined;
   const matches = connection.discoveredTools.filter((tool) => tool.name === name);
   if (matches.length !== 1) return undefined;
-  if (isMetaAdsHelperTool(name)) {
+  if (isMetaAdsAccountScopeTool(name)) {
     if (!metaAdsToolSchemaSupported(matches[0]!)) return undefined;
     return normalizedMetaAdsHelperScope(connection.toolPolicies?.[name]?.argumentConstraints);
   }
@@ -173,14 +267,14 @@ export function metaAdsRuntimePolicyConstraint(
   name: string,
   constraints: Record<string, string[]> | undefined,
 ): Record<string, string[]> | undefined {
-  if (isMetaAdsHelperTool(name)) return normalizedMetaAdsHelperScope(constraints);
+  if (isMetaAdsAccountScopeTool(name)) return normalizedMetaAdsHelperScope(constraints);
   const field = metaAdsConstraintField(constraints);
   return field ? normalizedConstraint(constraints, field) : undefined;
 }
 
 /** A supported tool has exactly one required top-level scalar account field. */
 export function metaAdsAccountField(tool: McpConnectionToolInfo): 'ad_account_id' | 'account_id' | undefined {
-  if (!metaAdsToolEffect(tool.name) || isMetaAdsHelperTool(tool.name)) return undefined;
+  if (!metaAdsToolEffect(tool.name) || isMetaAdsAccountScopeTool(tool.name)) return undefined;
   const schema = tool.inputSchema;
   if (!schema || schema.ambiguous || !/^[a-f0-9]{64}$/.test(schema.fingerprint) ||
       schema.accountFields.length !== 1) return undefined;
@@ -200,6 +294,14 @@ export function metaAdsToolSchemaSupported(tool: McpConnectionToolInfo): boolean
   if (!metaAdsToolEffect(tool.name)) return false;
   const schema = tool.inputSchema;
   if (!schema || schema.ambiguous || !/^[a-f0-9]{64}$/.test(schema.fingerprint)) return false;
+  if (isMetaAdsWriteTool(tool.name)) {
+    const contract = META_ADS_WRITE_SCHEMA_CONTRACTS[tool.name];
+    if (contract.accountScoped ? metaAdsAccountField(tool) === undefined : schema.accountFields.length !== 0) {
+      return false;
+    }
+    return contract.ownershipFields.every((field) => schema.propertyNames.includes(field)) &&
+      (!contract.entityType || schema.propertyNames.includes('entity_type'));
+  }
   if (!isMetaAdsHelperTool(tool.name)) return metaAdsAccountField(tool) !== undefined;
   if (schema.accountFields.length !== 0) return false;
   if (tool.name === META_ADS_ACCOUNT_HELPER) {
@@ -238,6 +340,66 @@ export function isMetaAdsHelperTool(name: string): boolean {
   return META_ADS_HELPER_TOOLS.has(name);
 }
 
+export function isMetaAdsWriteTool(name: string): name is keyof typeof META_ADS_WRITE_TOOL_EFFECTS {
+  return Object.hasOwn(META_ADS_WRITE_TOOL_EFFECTS, name);
+}
+
+/** Tools whose approved account list is policy scope rather than provider input. */
+export function isMetaAdsAccountScopeTool(name: string): boolean {
+  return isMetaAdsHelperTool(name) || META_ADS_ACCOUNTLESS_WRITE_TOOLS.has(name);
+}
+
+export function metaAdsWriteSchemaContract(name: string): MetaAdsWriteSchemaContract | undefined {
+  return isMetaAdsWriteTool(name) ? META_ADS_WRITE_SCHEMA_CONTRACTS[name] : undefined;
+}
+
+/**
+ * Validate mutation routing arguments and return IDs whose Graph account owner
+ * must be checked before dispatch. Account IDs themselves remain constraints,
+ * not ownership lookup targets.
+ */
+export function metaAdsWriteOwnershipTargets(name: string, argumentsValue: unknown): string[] {
+  const contract = metaAdsWriteSchemaContract(name);
+  if (!contract) return [];
+  if (!argumentsValue || typeof argumentsValue !== 'object' || Array.isArray(argumentsValue)) {
+    throw new MetaAdsAccessPolicyError(`Meta Ads write tool ${name} requires an object argument.`);
+  }
+  const args = argumentsValue as Record<string, unknown>;
+  if (contract.accountScoped) {
+    const accountFields = ['ad_account_id', 'account_id'].filter((field) => field in args);
+    if (accountFields.length !== 1 || typeof args[accountFields[0]!] !== 'string' ||
+        canonicalMetaAdsAccountId(args[accountFields[0]!] as string) === undefined) {
+      throw new MetaAdsAccessPolicyError(`Meta Ads write tool ${name} requires one valid ad account ID.`);
+    }
+  } else if ('ad_account_id' in args || 'account_id' in args) {
+    throw new MetaAdsAccessPolicyError(`Meta Ads write tool ${name} does not accept an ad account argument.`);
+  }
+  const targets = contract.ownershipFields.map((field) => {
+    const value = args[field];
+    if (typeof value !== 'string' || !/^[0-9]{1,32}$/.test(value)) {
+      throw new MetaAdsAccessPolicyError(`Meta Ads write tool ${name} requires a valid ${field}.`);
+    }
+    return value;
+  });
+  if (contract.entityType) {
+    const entityType = args.entity_type;
+    if (entityType !== 'campaign' && entityType !== 'ad_set' && entityType !== 'ad') {
+      throw new MetaAdsAccessPolicyError(
+        `Meta Ads write tool ${name} requires entity_type campaign, ad_set, or ad.`,
+      );
+    }
+  }
+  if (META_ADS_PAUSED_CREATION_TOOLS.has(name)) {
+    if ('status' in args && args.status !== 'PAUSED') {
+      throw new MetaAdsAccessPolicyError(`Meta Ads write tool ${name} permits status only as PAUSED.`);
+    }
+  }
+  if ((name === 'ads_update_entity' || name === 'ads_update_custom_audience') && 'fields' in args) {
+    assertNoMetaAdsRoutingOverride(args.fields);
+  }
+  return targets;
+}
+
 export function metaAdsApprovedAccountIds(
   constraints: Record<string, string[]> | undefined,
 ): string[] | undefined {
@@ -273,7 +435,9 @@ export function assertMetaAdsHelperArguments(name: string, argumentsValue: unkno
 
 /** Exact observed Meta ID-shaped fields that do not select the ad account. */
 export function metaAdsNonAccountIdArgumentNames(name: string): readonly string[] {
-  return isReviewedMetaAdsTool(name) ? META_ADS_NON_ACCOUNT_ID_ARGUMENTS[name] : [];
+  return isReviewedMetaAdsTool(name) && Object.hasOwn(META_ADS_NON_ACCOUNT_ID_ARGUMENTS, name)
+    ? META_ADS_NON_ACCOUNT_ID_ARGUMENTS[name as keyof typeof META_ADS_NON_ACCOUNT_ID_ARGUMENTS]
+    : [];
 }
 
 /** Optional entity filters stay unavailable even after their schema is accepted. */
@@ -318,6 +482,47 @@ function normalizedMetaAdsHelperScope(
     return undefined;
   }
   return { [META_ADS_APPROVED_ACCOUNT_SCOPE]: normalized };
+}
+
+function assertNoMetaAdsRoutingOverride(value: unknown): void {
+  if (value === undefined || value === null) return;
+  let decoded: unknown = value;
+  if (typeof value === 'string') {
+    if (value.length === 0 || value.length > 65_536) {
+      throw new MetaAdsAccessPolicyError('Meta Ads update fields are invalid.');
+    }
+    try {
+      decoded = JSON.parse(value) as unknown;
+    } catch {
+      throw new MetaAdsAccessPolicyError('Meta Ads update fields must contain valid JSON.');
+    }
+  }
+  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
+    throw new MetaAdsAccessPolicyError('Meta Ads update fields must be an object.');
+  }
+  const routingFields = new Set([
+    'ad_account_id', 'account_id', 'campaign_id', 'ad_set_id', 'adset_id', 'entity_id',
+    'entity_type', 'custom_audience_id', 'audience_id',
+  ]);
+  let nodes = 0;
+  const visit = (current: unknown, depth: number): void => {
+    nodes += 1;
+    if (nodes > 4_096 || depth > 16) {
+      throw new MetaAdsAccessPolicyError('Meta Ads update fields exceed the supported structure.');
+    }
+    if (Array.isArray(current)) {
+      for (const entry of current) visit(entry, depth + 1);
+      return;
+    }
+    if (!current || typeof current !== 'object') return;
+    for (const [key, entry] of Object.entries(current as Record<string, unknown>)) {
+      if (routingFields.has(key) || (depth === 0 && key === 'id')) {
+        throw new MetaAdsAccessPolicyError(`Meta Ads update fields cannot override ${key}.`);
+      }
+      visit(entry, depth + 1);
+    }
+  };
+  visit(decoded, 0);
 }
 
 function uniqueStrings(values: readonly string[], label: string): string[] {

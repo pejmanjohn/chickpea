@@ -17,8 +17,10 @@ import {
   META_ADS_FIELD_HELPER,
   isMetaAdsMcpConnection,
   isMetaAdsHelperTool,
+  isMetaAdsWriteTool,
   isReviewedMetaAdsTool,
   metaAdsNonAccountIdArgumentNames,
+  metaAdsWriteSchemaContract,
 } from './meta-ads-policy.ts';
 import {
   createMcpGuardedFetch,
@@ -339,6 +341,7 @@ export function projectMcpToolInputSchema(
   let propertyNames: string[] = [];
   let ambiguous = bounded.truncated;
   const metaAdsHelper = metaAdsToolName !== undefined && isMetaAdsHelperTool(metaAdsToolName);
+  const metaAdsWrite = metaAdsToolName !== undefined && isMetaAdsWriteTool(metaAdsToolName);
   const helperEmptyProperties = metaAdsHelper && isRecord(inputSchema) && inputSchema.properties === undefined;
   if (!isRecord(inputSchema) || inputSchema.type !== 'object' ||
       (!isRecord(inputSchema.properties) && !helperEmptyProperties)) {
@@ -366,6 +369,19 @@ export function projectMcpToolInputSchema(
           ambiguous = true;
         }
         if (containsNestedAccountSelector(definition)) ambiguous = true;
+        continue;
+      }
+      if (metaAdsWrite) {
+        if (name === 'ad_account_id' || name === 'account_id') {
+          const isRequired = required.has(name);
+          if (!simpleString(definition)) ambiguous = true;
+          accountFields.push({ name, type: 'string', required: isRequired });
+          if (!isRequired) ambiguous = true;
+        } else if (!supportedMetaAdsWriteProperty(
+          metaAdsToolName!, name, definition, required.has(name),
+        )) {
+          ambiguous = true;
+        }
         continue;
       }
       if (name !== 'ad_account_id' && name !== 'account_id') {
@@ -396,13 +412,44 @@ export function projectMcpToolInputSchema(
       if (accountFields.length !== 0) ambiguous = true;
     }
   }
-  if (metaAdsHelper ? accountFields.length !== 0 : accountFields.length !== 1) ambiguous = true;
+  if (metaAdsHelper) {
+    if (accountFields.length !== 0) ambiguous = true;
+  } else if (metaAdsWrite) {
+    const contract = metaAdsWriteSchemaContract(metaAdsToolName!);
+    if (!contract || accountFields.length !== (contract.accountScoped ? 1 : 0) ||
+        contract.ownershipFields.some((field) => !propertyNames.includes(field)) ||
+        (contract.entityType && !propertyNames.includes('entity_type'))) ambiguous = true;
+  } else if (accountFields.length !== 1) {
+    ambiguous = true;
+  }
   return {
     accountFields,
     propertyNames,
     ambiguous,
     fingerprint: bytesToHex(sha256(new TextEncoder().encode(bounded.value))),
   };
+}
+
+function supportedMetaAdsWriteProperty(
+  tool: string,
+  name: string,
+  definition: unknown,
+  required: boolean,
+): boolean {
+  const contract = metaAdsWriteSchemaContract(tool);
+  if (!contract) return false;
+  if (name === 'advertiser_request') return simpleString(definition);
+  if (name === 'client_conversation_id') return simpleStringOrNullableString(definition);
+  if (contract.ownershipFields.includes(name)) return required && simpleString(definition);
+  if (name === 'entity_type') return contract.entityType && required && simpleString(definition);
+  if (contract.referenceFields.includes(name)) {
+    return required ? simpleString(definition) : simpleStringOrNullableString(definition);
+  }
+  if (name === 'account' || name === 'ad_account' || looksLikeAlternateTargetSelector(name)) return false;
+  // Other tool-specific payload fields may be strings, arrays, or nested JSON.
+  // They cannot establish account or ownership proof and remain covered by the
+  // full-schema fingerprint and the runtime top-level key allowlist.
+  return contract.nestedPayloadFields.includes(name) || !containsNestedAccountSelector(definition);
 }
 
 function supportedMetaAdsHelperProperty(

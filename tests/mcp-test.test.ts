@@ -555,6 +555,74 @@ test('Meta projection admits only bounded accountless helper input contracts', (
   } }, 'ads_get_field_context').ambiguous, true, 'field name item references remain unsupported');
 });
 
+test('Meta write projection requires exact account and ownership routing fields', () => {
+  const project = (name: string, required: string[], properties: Record<string, unknown>) =>
+    projectMcpToolInputSchema({ type: 'object', required, properties }, name);
+  const account = { ad_account_id: { type: 'string' } };
+
+  assert.equal(project('ads_create_campaign', ['ad_account_id'], {
+    ...account, name: { type: 'string' }, status: { type: 'string' },
+  }).ambiguous, false);
+  assert.equal(project('ads_create_ad_set', ['ad_account_id', 'campaign_id'], {
+    ...account, campaign_id: { type: 'string' },
+    targeting: { type: 'object', properties: {
+      custom_audiences: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } } } },
+    } },
+  }).ambiguous, false, 'known targeting payload IDs do not become mutation targets');
+  assert.equal(project('ads_create_creative', ['ad_account_id', 'page_id', 'object_story_id'], {
+    ...account, page_id: { type: 'string' }, instagram_user_id: { type: ['string', 'null'] },
+    object_story_id: { type: 'string' },
+    creative: { type: 'object', properties: { id: { type: 'string' } } },
+  }).ambiguous, false, 'required and optional reference IDs retain scalar shapes');
+  assert.equal(project('ads_boost_ig_post', ['ad_account_id', 'ig_account_id', 'ig_media_id'], {
+    ...account, ig_account_id: { type: 'string' }, ig_media_id: { type: 'string' },
+  }).ambiguous, false);
+  assert.equal(project('ads_update_entity', ['ad_account_id', 'entity_id', 'entity_type'], {
+    ...account, entity_id: { type: 'string' }, entity_type: { type: 'string' },
+    fields: { type: 'string' },
+  }).ambiguous, false, 'JSON-string update fields are checked at invocation');
+  assert.equal(project('ads_update_custom_audience', ['custom_audience_id'], {
+    custom_audience_id: { type: 'string' }, name: { type: 'string' },
+  }).ambiguous, false, 'accountless audience writes retain one required ownership target');
+  assert.equal(project('ads_update_custom_audience_users', ['audience_id'], {
+    audience_id: { type: 'string' }, payload: { type: 'object', properties: {
+      users: { type: 'array', items: { type: 'object', properties: { extern_id: { type: 'string' } } } },
+    } },
+  }).ambiguous, false);
+
+  for (const [label, projection] of [
+    ['missing account', project('ads_create_campaign', [], { name: { type: 'string' } })],
+    ['optional account', project('ads_create_campaign', [], { ...account })],
+    ['two accounts', project('ads_create_campaign', ['ad_account_id', 'account_id'], {
+      ...account, account_id: { type: 'string' },
+    })],
+    ['missing parent', project('ads_create_ad_set', ['ad_account_id'], { ...account })],
+    ['nullable parent', project('ads_create_ad', ['ad_account_id', 'ad_set_id'], {
+      ...account, ad_set_id: { type: ['string', 'null'] },
+    })],
+    ['missing entity type', project('ads_update_entity', ['ad_account_id', 'entity_id'], {
+      ...account, entity_id: { type: 'string' },
+    })],
+    ['wrong audience target', project('ads_update_custom_audience_users', ['custom_audience_id'], {
+      custom_audience_id: { type: 'string' },
+    })],
+    ['unknown top-level ID', project('ads_create_campaign', ['ad_account_id'], {
+      ...account, business_id: { type: 'string' },
+    })],
+    ['unknown nested routing', project('ads_create_campaign', ['ad_account_id'], {
+      ...account, payload: { type: 'object', properties: { campaign_id: { type: 'string' } } },
+    })],
+    ['unknown nested account selector', project('ads_create_campaign', ['ad_account_id'], {
+      ...account, payload: { type: 'object', properties: { ad_account_id: { type: 'string' } } },
+    })],
+    ['composed reference', project('ads_create_creative', ['ad_account_id'], {
+      ...account, page_id: { anyOf: [{ type: 'string' }, { type: 'number' }] },
+    })],
+  ] as const) {
+    assert.equal(projection.ambiguous, true, label);
+  }
+});
+
 test('Meta projection keeps entity filters optional and unknown or nested selectors closed', () => {
   const schema = (required: string[], properties: Record<string, unknown>) => ({
     type: 'object', required, properties: { ad_account_id: { type: 'string' }, ...properties },

@@ -5,20 +5,68 @@ import {
   META_ADS_ACCOUNT_HELPER,
   META_ADS_APPROVED_ACCOUNT_SCOPE,
   META_ADS_FIELD_HELPER,
+  META_ADS_WRITE_TOOL_EFFECTS,
   compileMetaAdsToolAccess,
+  isMetaAdsAccountScopeTool,
   isMetaAdsMcpConnection,
+  isMetaAdsWriteTool,
   MetaAdsAccessPolicyError,
   metaAdsRuntimeAllowedTools,
   metaAdsRuntimeConstraint,
   metaAdsRuntimePropertyNames,
   metaAdsToolSchemaSupported,
+  metaAdsToolEffect,
+  metaAdsWriteOwnershipTargets,
+  metaAdsWriteSchemaContract,
   normalizeMetaAdsAccountIds,
 } from '../src/config/meta-ads-policy.ts';
+import { projectMcpToolInputSchema } from '../src/config/mcp-test.ts';
 import type { McpConnectionConfig, McpConnectionToolInfo } from '../src/config/types.ts';
 
 const fingerprint = 'a'.repeat(64);
 const reportTool = 'ads_get_ad_entities';
 const scoreTool = 'ads_get_opportunity_score';
+const writeTools = Object.keys(META_ADS_WRITE_TOOL_EFFECTS);
+
+const requiredReferences: Readonly<Record<string, readonly string[]>> = {
+  ads_create_creative: ['page_id'],
+  ads_boost_ig_post: ['ig_account_id', 'ig_media_id'],
+};
+
+function discoveredWrite(name: string): McpConnectionToolInfo {
+  const contract = metaAdsWriteSchemaContract(name);
+  assert.ok(contract);
+  const required: string[] = [];
+  const properties: Record<string, unknown> = {
+    advertiser_request: { type: 'string' },
+    name: { type: 'string' },
+  };
+  if (contract.accountScoped) {
+    properties.ad_account_id = { type: 'string' };
+    required.push('ad_account_id');
+  }
+  for (const field of contract.ownershipFields) {
+    properties[field] = { type: 'string' };
+    required.push(field);
+  }
+  if (contract.entityType) {
+    properties.entity_type = { type: 'string' };
+    required.push('entity_type');
+  }
+  const requiredRefs = new Set(requiredReferences[name] ?? []);
+  for (const field of contract.referenceFields) {
+    properties[field] = requiredRefs.has(field) ? { type: 'string' } : { type: ['string', 'null'] };
+    if (requiredRefs.has(field)) required.push(field);
+  }
+  if (contract.nestedPayloadFields.length > 0) {
+    properties[contract.nestedPayloadFields[0]!] = { type: 'object', properties: {
+      custom_audiences: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } } } },
+    } };
+  }
+  return { name, inputSchema: projectMcpToolInputSchema(
+    { type: 'object', properties, required }, name,
+  ) };
+}
 
 function helper(name: typeof META_ADS_ACCOUNT_HELPER | typeof META_ADS_FIELD_HELPER): McpConnectionToolInfo {
   return {
@@ -131,9 +179,107 @@ test('compiler rejects tools without one required scalar account field', () => {
     discoveredTools: [discovered(reportTool)], requestedTools: [reportTool], approvedAccountIds: [],
   }), /Select at least one/);
   assert.throws(() => compileMetaAdsToolAccess({
-    discoveredTools: [discovered('ads_create_campaign')], requestedTools: ['ads_create_campaign'],
+    discoveredTools: [discovered('ads_unknown_write')], requestedTools: ['ads_unknown_write'],
     approvedAccountIds: ['act_123'],
-  }), /reviewed reporting contract/);
+  }), /reviewed access contract/);
+});
+
+test('all reviewed Meta writes require explicit selection and compile with write effects', () => {
+  const discoveredTools = writeTools.map(discoveredWrite);
+  assert.equal(discoveredTools.length, 11);
+  for (const tool of discoveredTools) {
+    assert.equal(tool.inputSchema?.ambiguous, false, tool.name);
+    assert.equal(metaAdsToolSchemaSupported(tool), true, tool.name);
+    assert.equal(isMetaAdsWriteTool(tool.name), true, tool.name);
+    assert.equal(metaAdsToolEffect(tool.name), 'write', tool.name);
+  }
+  assert.deepEqual(compileMetaAdsToolAccess({
+    discoveredTools, requestedTools: [], approvedAccountIds: [],
+  }), { allowedTools: [], toolPolicies: {} });
+
+  const compiled = compileMetaAdsToolAccess({
+    discoveredTools, requestedTools: writeTools, approvedAccountIds: ['act_123'],
+  });
+  assert.deepEqual(compiled.allowedTools, writeTools);
+  for (const name of writeTools) {
+    assert.equal(compiled.toolPolicies[name]?.effect, 'write');
+    const expectedField = isMetaAdsAccountScopeTool(name)
+      ? META_ADS_APPROVED_ACCOUNT_SCOPE
+      : 'ad_account_id';
+    assert.deepEqual(compiled.toolPolicies[name]?.argumentConstraints, { [expectedField]: ['act_123'] }, name);
+  }
+});
+
+test('write compiler rejects missing target evidence and duplicate discovery', () => {
+  const update = discoveredWrite('ads_update_entity');
+  assert.throws(() => compileMetaAdsToolAccess({
+    discoveredTools: [{ ...update, inputSchema: {
+      ...update.inputSchema!, propertyNames: ['ad_account_id', 'entity_type'],
+    } }],
+    requestedTools: ['ads_update_entity'], approvedAccountIds: ['act_123'],
+  }), /cannot be restricted/);
+  assert.throws(() => compileMetaAdsToolAccess({
+    discoveredTools: [update, structuredClone(update)],
+    requestedTools: ['ads_update_entity'], approvedAccountIds: ['act_123'],
+  }), /not uniquely present/);
+});
+
+test('write ownership targets validate accounts, routes, paused creation, and update fields', () => {
+  for (const [name, args, targets] of [
+    ['ads_create_campaign', { ad_account_id: 'act_123', status: 'PAUSED' }, []],
+    ['ads_create_ad_set', { account_id: '123', campaign_id: '456', status: 'PAUSED' }, ['456']],
+    ['ads_create_ad', { ad_account_id: 'act_123', ad_set_id: '789' }, ['789']],
+    ['ads_update_entity', {
+      ad_account_id: 'act_123', entity_id: '456', entity_type: 'ad_set',
+      fields: { status: 'ACTIVE', targeting: { custom_audiences: [{ id: '789' }] }, creative: { id: '321' } },
+    }, ['456']],
+    ['ads_activate_entity', {
+      ad_account_id: 'act_123', entity_id: '567', entity_type: 'campaign',
+    }, ['567']],
+    ['ads_create_creative', { ad_account_id: 'act_123', object_story_id: '111_222' }, []],
+    ['ads_boost_ig_post', { ad_account_id: 'act_123', status: 'PAUSED' }, []],
+    ['ads_create_custom_audience', { ad_account_id: 'act_123' }, []],
+    ['ads_update_custom_audience', { custom_audience_id: '876', fields: { name: 'Updated' } }, ['876']],
+    ['ads_update_custom_audience_users', { audience_id: '987', payload: { users: [] } }, ['987']],
+    ['ads_delete_custom_audience', { custom_audience_id: '654' }, ['654']],
+  ] as const) {
+    assert.deepEqual(metaAdsWriteOwnershipTargets(name, args), targets, name);
+  }
+
+  for (const [name, args, pattern] of [
+    ['ads_create_campaign', {}, /one valid ad account ID/],
+    ['ads_create_campaign', { ad_account_id: 'act_123', status: 'ACTIVE' }, /only as PAUSED/],
+    ['ads_create_ad_set', { ad_account_id: 'act_123' }, /valid campaign_id/],
+    ['ads_create_ad', { ad_account_id: 'act_123', ad_set_id: 'not-numeric' }, /valid ad_set_id/],
+    ['ads_update_entity', { ad_account_id: 'act_123', entity_id: '456', entity_type: 'audience' }, /entity_type/],
+    ['ads_update_custom_audience', { custom_audience_id: '123', account_id: '123' }, /does not accept/],
+    ['ads_update_custom_audience_users', { custom_audience_id: '123' }, /valid audience_id/],
+    ['ads_delete_custom_audience', { audience_id: '123' }, /valid custom_audience_id/],
+  ] as const) {
+    assert.throws(() => metaAdsWriteOwnershipTargets(name, args), pattern, name);
+  }
+
+  for (const name of ['ads_create_campaign', 'ads_create_ad_set', 'ads_create_ad', 'ads_boost_ig_post']) {
+    const args: Record<string, string> = { ad_account_id: 'act_123', status: 'ACTIVE' };
+    if (name === 'ads_create_ad_set') args.campaign_id = '456';
+    if (name === 'ads_create_ad') args.ad_set_id = '789';
+    assert.throws(() => metaAdsWriteOwnershipTargets(name, args), /only as PAUSED/, name);
+  }
+
+  for (const fields of [
+    { account_id: '999' },
+    { nested: { adset_id: '999' } },
+    { entity_type: 'campaign' },
+    { id: '999' },
+    JSON.stringify({ nested: { campaign_id: '999' } }),
+  ]) {
+    assert.throws(() => metaAdsWriteOwnershipTargets('ads_update_entity', {
+      ad_account_id: 'act_123', entity_id: '456', entity_type: 'campaign', fields,
+    }), /cannot override/);
+  }
+  assert.throws(() => metaAdsWriteOwnershipTargets('ads_update_entity', {
+    ad_account_id: 'act_123', entity_id: '456', entity_type: 'campaign', fields: '{bad',
+  }), /valid JSON/);
 });
 
 test('runtime revalidates current schema against its exact stored constraint', () => {
