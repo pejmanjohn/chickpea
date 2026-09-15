@@ -1,3 +1,5 @@
+import { QA_TARGETS } from '../../src/config/qa-targets.ts';
+
 export const PRODUCT_AREAS = [
   'agents',
   'connections',
@@ -181,7 +183,7 @@ export const TYPED_REASONS = [
 
 export const CLEANUP_RESULTS = ['not_required', 'pass', 'failed'] as const;
 export const SUITES = ['case', 'smoke', 'deep'] as const;
-export const PHASE_ONE_TARGET_ALIASES = ['amber', 'cobalt'] as const;
+export const PHASE_ONE_TARGET_ALIASES = QA_TARGETS;
 export const PHASE_ONE_SMOKE_VARIANTS = [
   'LC01-V1-create-welcome',
   'LC01-V2-update-approve',

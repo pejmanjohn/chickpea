@@ -9,12 +9,14 @@ import test from 'node:test';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { assertLiveEnvironmentClaim, claimEnvironment, createEnvironmentRegistry, environmentMarkerPath, migrateEnvironmentProviderAuthConfigs, readEnvironmentRegistry, reclaimEnvironment, recordEnvironmentAttestation, releaseEnvironment } from '../scripts/lib/environment-registry.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
-import { EnvironmentPreflightError, assertEnvironmentReleaseAllowed, beginEnvironmentDeployment, classifySetupContractDrift, completeEnvironmentDeployment, environmentBaselinePath, environmentDeployReceiptPath, readLocalEnvironmentContract, observeProductionEnvironmentAuthority, observeReceiptBackedEnvironment, preflightEnvironmentMutation, readEnvironmentDeployReceipt, authorizeEnvironmentCleanupPlan, reconcileEnvironmentDeployment, recheckEnvironmentMutationAuthority, resumeEnvironmentDeployment, writeEnvironmentBaseline, writeEnvironmentResourceCreationIntent, writeEnvironmentResourceCreationReceipt, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
+import { adoptEnvironmentFromFile, EnvironmentPreflightError, assertEnvironmentReleaseAllowed, beginEnvironmentDeployment, classifySetupContractDrift, completeEnvironmentDeployment, environmentBaselinePath, environmentDeployReceiptPath, readLocalEnvironmentContract, observeProductionEnvironmentAuthority, observeReceiptBackedEnvironment, preflightEnvironmentMutation, readEnvironmentDeployReceipt, authorizeEnvironmentCleanupPlan, reconcileEnvironmentDeployment, recheckEnvironmentMutationAuthority, resumeEnvironmentDeployment, writeEnvironmentBaseline, writeEnvironmentResourceCreationIntent, writeEnvironmentResourceCreationReceipt, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
 import { acquireTargetLock, readTargetLock } from '../qa/live/safety/lock.ts';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { attestEnvironment } from '../scripts/lib/environment-attestation.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { createPhaseOneBaselinePlan, projectProtectedProductInventory } from '../scripts/lib/environment-baseline.mjs';
+// @ts-expect-error Executable environment modules intentionally have no declarations.
+import { reserveEnvironmentInstallation, restoreEnvironmentInstallation, assertInstallationDeployment } from '../scripts/lib/environment-installation.mjs';
 
 const NOW = Date.parse('2026-09-01T12:00:00.000Z');
 const DEAD_PID = 2_147_483_647;
@@ -206,6 +208,198 @@ function rejects(code: string) {
   return (error: unknown) => error instanceof EnvironmentPreflightError
     && (error as { code?: unknown }).code === code;
 }
+
+function installationDatabaseReceipt(parent: string, target: string, options: object) {
+  const intentPath = join(parent, `${target}-d1-intent.json`);
+  const receiptPath = join(parent, `${target}-d1-receipt.json`);
+  const intent = writeEnvironmentResourceCreationIntent(intentPath, { target, provider: 'cloudflare', kind: 'd1' }, options);
+  writeEnvironmentResourceCreationReceipt(receiptPath, {
+    target, provider: 'cloudflare', kind: 'd1', id: 'fresh-d1', intentPath,
+    providerReadback: { target, provider: 'cloudflare', kind: 'd1', id: 'fresh-d1', immutableId: 'fresh-d1',
+      creationIntentDigest: intent.intentDigest, observedAt: new Date(NOW).toISOString() },
+  }, { ...options, allowSuppliedProviderReadback: true });
+  return receiptPath;
+}
+
+test('borrowed installation retains its lane across expiry and refuses release until live restoration and exact cleanup', async (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const claim = claimEnvironment('amber', f.options);
+  const installer = join(f.parent, 'installer');
+  mkdirSync(installer);
+  const before = { slack: { workspace: 'T_AMBER' }, admin: { owner: 'test-owner' },
+    fixtures: { agent: 'smoke-amber' }, pendingWork: false, independentAppsResolved: true };
+  const beforePath = join(f.parent, 'before.json');
+  writeFileSync(beforePath, JSON.stringify(before), { mode: 0o600 });
+  const spec = { runId: 'install-test', workerName: 'fresh-worker', authDatabaseName: 'fresh-auth',
+    authDatabaseId: 'fresh-d1', installerPath: installer, beforeEvidence: beforePath,
+    databaseCreationReceipt: installationDatabaseReceipt(f.parent, 'amber', f.options) };
+  const specPath = join(f.parent, 'installation.json');
+  writeFileSync(specPath, JSON.stringify(spec), { mode: 0o600 });
+  const options = { ...f.options, localContract: localContract(), observeAuthority: async () => authority() };
+  writeFileSync(specPath, JSON.stringify({ ...spec, authDatabaseId: 'unrelated-d1' }));
+  await assert.rejects(reserveEnvironmentInstallation('amber', specPath, options), { code: 'INSTALLATION_DATABASE_OWNERSHIP_REQUIRED' });
+  assert.equal(readEnvironmentRegistry(f.options).targets.amber.installation, undefined);
+  writeFileSync(specPath, JSON.stringify(spec));
+  let currentTime = NOW;
+  await assert.rejects(reserveEnvironmentInstallation('amber', specPath, {
+    ...options, now: () => currentTime,
+    observeAuthority: async () => { currentTime = Date.parse(claim.expiresAt) + 1; return authority(); },
+  }), { code: 'CLAIM_EXPIRED_RECLAIM_REQUIRED' });
+  assert.equal(readEnvironmentRegistry(f.options).targets.amber.installation, undefined);
+  await reserveEnvironmentInstallation('amber', specPath, options);
+  const saved = readEnvironmentRegistry(f.options).targets.amber;
+  assert.equal(saved.workerName, 'chickpea-amber-live');
+  assert.equal(saved.authDatabaseId, 'd1-amber');
+  assert.equal(saved.installation.runId, 'install-test');
+  assert.throws(() => releaseEnvironment('amber', f.options), { code: 'INSTALLATION_RESTORATION_REQUIRED' });
+  await assert.rejects(preflightEnvironmentMutation('amber', options), { code: 'INSTALLATION_RESTORATION_REQUIRED' });
+  assert.throws(() => assertInstallationDeployment('amber', installer, { ...spec, authDatabaseId: 'd1-cobalt' }, f.options),
+    { code: 'INSTALLATION_TARGET_MISMATCH' });
+  assert.equal(assertInstallationDeployment('amber', installer, spec, f.options).runId, spec.runId);
+  const later = { ...options, now: () => Date.parse(claim.expiresAt) + 1 };
+  reclaimEnvironment('amber', later);
+  assert.equal(readEnvironmentRegistry(f.options).targets.amber.installation.runId, spec.runId);
+  assert.equal(assertInstallationDeployment('amber', installer, spec, later).runId, spec.runId);
+  assert.throws(() => releaseEnvironment('amber', later), { code: 'INSTALLATION_RESTORATION_REQUIRED' });
+  const receiptPath = join(f.parent, 'restore.json');
+  const receipt = { runId: spec.runId, restored: before, temporary: { workerName: spec.workerName,
+    authDatabaseId: spec.authDatabaseId, workerPresent: true, databasePresent: false },
+    slackEvidence: beforePath, adminEvidence: beforePath, cleanupEvidence: beforePath };
+  writeFileSync(receiptPath, JSON.stringify(receipt), { mode: 0o600 });
+  await assert.rejects(restoreEnvironmentInstallation('amber', receiptPath, later), { code: 'INSTALLATION_RESTORATION_UNPROVEN' });
+  receipt.temporary.workerPresent = false;
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  await assert.rejects(restoreEnvironmentInstallation('amber', receiptPath, {
+    ...later, observeAuthority: async () => authority('amber', { slack: { ...authority().slack, teamId: 'T_OTHER' } }),
+  }), { code: 'SLACK_TEAM_MISMATCH' });
+  assert.ok(readEnvironmentRegistry(f.options).targets.amber.installation);
+  await restoreEnvironmentInstallation('amber', receiptPath, later);
+  releaseEnvironment('amber', later);
+  assert.equal(readEnvironmentRegistry(f.options).targets.amber.claim, null);
+  assert.equal(readEnvironmentRegistry(f.options).targets.amber.authDatabaseId, 'd1-amber');
+});
+
+test('adding Violet preserves older baselines while checking every prior fingerprint and new fingerprint isolation', async (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', f.options);
+  const fleet = { ...authority().fleetCredentialFingerprints, violet: fingerprints('violet') };
+  const options = { ...f.options, localContract: localContract(), observeAuthority: async () => authority('amber', { fleetCredentialFingerprints: fleet }) };
+  assert.equal((await preflightEnvironmentMutation('amber', options)).target, 'amber');
+  await assert.rejects(preflightEnvironmentMutation('amber', {
+    ...options, observeAuthority: async () => authority('amber', { fleetCredentialFingerprints: { ...fleet, violet: fingerprints('amber') } }),
+  }), { code: 'CREDENTIAL_FINGERPRINT_REUSED' });
+  await assert.rejects(preflightEnvironmentMutation('amber', {
+    ...options, observeAuthority: async () => authority('amber', { fleetCredentialFingerprints: { ...fleet, cobalt: fingerprints('other') } }),
+  }), { code: 'CREDENTIAL_FLEET_FINGERPRINT_MISMATCH' });
+});
+
+test('other lanes retain isolation checks while a borrowed workspace is disconnected', async (context) => {
+  const f = fixture({ transport: 'gateway' });
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', f.options);
+  const holder = join(f.parent, 'holder');
+  git(f.parent, 'clone', f.worktree, holder);
+  claimEnvironment('cobalt', { ...f.options, worktreePath: holder });
+  writeEnvironmentBaseline(f.records[1]!.evidenceRoot, baseline('cobalt'));
+  const installer = join(f.parent, 'installer');
+  mkdirSync(installer);
+  const beforePath = join(f.parent, 'before.json');
+  writeFileSync(beforePath, JSON.stringify({ slack: {}, admin: {}, fixtures: {}, pendingWork: false, independentAppsResolved: true }), { mode: 0o600 });
+  const specPath = join(f.parent, 'spec.json');
+  writeFileSync(specPath, JSON.stringify({ runId: 'borrow-cobalt', workerName: 'fresh-cobalt', authDatabaseName: 'fresh-auth',
+    authDatabaseId: 'fresh-d1', installerPath: installer, beforeEvidence: beforePath,
+    databaseCreationReceipt: installationDatabaseReceipt(f.parent, 'cobalt', { ...f.options, worktreePath: holder }) }), { mode: 0o600 });
+  const gatewayAuthority = (target: string) => authority(target, { transport: 'gateway',
+    transportAuthority: { healthy: true, phase: 'healthy', detail: null, generation: 1, versionId: `version-${target}` } });
+  await reserveEnvironmentInstallation('cobalt', specPath, { ...f.options, worktreePath: holder,
+    localContract: localContract(), observeAuthority: async () => gatewayAuthority('cobalt') });
+  let cobaltChanged = false;
+  const reads: string[] = [];
+  const options = { ...f.options, allowTestAuthorityObserver: false, localContract: localContract(),
+    env: { CHICKPEA_ENV_AMBER_LIVE_AUTHORITY_URL: 'https://amber.test/authority', CHICKPEA_ENV_AMBER_LIVE_AUTHORITY_READ_TOKEN: 'a'.repeat(43) },
+    runWrangler: (args: string[]) => {
+      const target = args.includes('chickpea-cobalt-live') ? 'cobalt' : 'amber';
+      if (args[0] === 'deployments') return { status: 0, stdout: JSON.stringify({ versions: [{
+        version_id: cobaltChanged && target === 'cobalt' ? 'version-changed' : `version-${target}`, percentage: 100,
+      }] }) };
+      if (args[0] === 'd1') return { status: 0, stdout: JSON.stringify([{ success: true, results: [{ name: '0002_mcp_oauth.sql' }] }]) };
+      return { status: 0, stdout: JSON.stringify({ migrations: [{ tag: 'v9' }], resources: { bindings: [
+        { name: 'AUTH_DB', type: 'd1', id: `d1-${target}` },
+        { name: 'TAG_STATE', type: 'durable_object_namespace', class_name: 'TagStateStore', namespace_id: `tag-${target}` },
+        { name: 'CHICKPEA_ENV_TARGET', type: 'plain_text', text: target },
+      ] } }) };
+    },
+    fetchImpl: async (url: string) => {
+      reads.push(String(url));
+      assert.equal(String(url), 'https://amber.test/authority');
+      return Response.json({ schemaVersion: 'chickpea-environment-runtime-authority/v2', target: 'amber',
+        observedAt: new Date(NOW).toISOString(), slack: authority().slack,
+        transportAuthority: gatewayAuthority('amber').transportAuthority,
+        secretFingerprints: { schemaVersion: 'chickpea-environment-runtime-secret-fingerprints/v2',
+          sourceBindings: { ...RUNTIME_SECRET_SOURCE_BINDINGS, cookie: 'CHICKPEA_AUTH_SECRET', signing: 'slack.gateway.deploymentIdentity.v1.deploymentId' },
+          fingerprints: fingerprints('amber') },
+      });
+    },
+  };
+  assert.equal((await preflightEnvironmentMutation('amber', options)).target, 'amber');
+  assert.deepEqual(reads, ['https://amber.test/authority']);
+  cobaltChanged = true;
+  await assert.rejects(preflightEnvironmentMutation('amber', options), { code: 'INSTALLATION_BASELINE_CHANGED' });
+  assert.ok(readEnvironmentRegistry(f.options).targets.cobalt.installation);
+});
+
+test('Violet admission requires reachable distinct fleet authority before publishing registration', async (context) => {
+  const f = fixture({ transport: 'gateway' });
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const violet = JSON.parse(JSON.stringify(f.records[0]).replaceAll('amber', 'violet').replaceAll('AMBER', 'VIOLET'));
+  mkdirSync(violet.evidenceRoot, { recursive: true, mode: 0o700 });
+  const targets = ['amber', 'cobalt', 'violet'];
+  writeEnvironmentBaseline(violet.evidenceRoot, { ...baseline('violet'),
+    credentialFingerprintsByTarget: Object.fromEntries(targets.map((target) => [target, fingerprints(target)])) });
+  const registrationPath = join(f.parent, 'registration.json');
+  const prior = readEnvironmentRegistry(f.options);
+  writeFileSync(registrationPath, JSON.stringify({ expectedRegistryRevision: prior.revision, registration: violet }), { mode: 0o600 });
+  let reachable = false;
+  let duplicate = false;
+  const options = { ...f.options,
+    env: Object.fromEntries(targets.flatMap((target) => [
+      [`CHICKPEA_ENV_${target.toUpperCase()}_LIVE_AUTHORITY_URL`, `https://${target}.test/authority`],
+      [`CHICKPEA_ENV_${target.toUpperCase()}_LIVE_AUTHORITY_READ_TOKEN`, target[0]!.repeat(43)],
+    ])),
+    runWrangler: (args: string[]) => {
+      if (args[0] === 'deployments') return { status: 0, stdout: JSON.stringify({ versions: [{ version_id: 'version-violet', percentage: 100 }] }) };
+      if (args[0] === 'd1') return { status: 0, stdout: JSON.stringify([{ success: true, results: [{ name: '0002_mcp_oauth.sql' }] }]) };
+      return { status: 0, stdout: JSON.stringify({ migrations: [{ tag: 'v9' }], resources: { bindings: [
+        { name: 'AUTH_DB', type: 'd1', id: 'd1-violet' },
+        { name: 'TAG_STATE', type: 'durable_object_namespace', class_name: 'TagStateStore', namespace_id: 'tag-violet' },
+        { name: 'CHICKPEA_ENV_TARGET', type: 'plain_text', text: 'violet' },
+      ] } }) };
+    },
+    fetchImpl: async (url: string) => {
+      const target = new URL(String(url)).hostname.split('.')[0]!;
+      if (!reachable && target === 'violet') return new Response('', { status: 503 });
+      return Response.json({ schemaVersion: 'chickpea-environment-runtime-authority/v2', target,
+        observedAt: new Date(NOW).toISOString(), slack: authority(target).slack,
+        transportAuthority: { healthy: true, phase: 'healthy', detail: null, generation: 1, versionId: `version-${target}` },
+        secretFingerprints: { schemaVersion: 'chickpea-environment-runtime-secret-fingerprints/v2',
+          sourceBindings: { ...RUNTIME_SECRET_SOURCE_BINDINGS, cookie: 'CHICKPEA_AUTH_SECRET', signing: 'slack.gateway.deploymentIdentity.v1.deploymentId' },
+          fingerprints: fingerprints(duplicate && target === 'violet' ? 'amber' : target) },
+      });
+    },
+  };
+  await assert.rejects(adoptEnvironmentFromFile(registrationPath, options));
+  assert.deepEqual(readEnvironmentRegistry(f.options), prior);
+  reachable = true;
+  duplicate = true;
+  await assert.rejects(adoptEnvironmentFromFile(registrationPath, options), { code: 'CREDENTIAL_FINGERPRINT_REUSED' });
+  assert.deepEqual(readEnvironmentRegistry(f.options), prior);
+  duplicate = false;
+  assert.equal((await adoptEnvironmentFromFile(registrationPath, options)).registered, 'violet');
+  assert.deepEqual(readEnvironmentRegistry(f.options).targets.amber, prior.targets.amber);
+  assert.deepEqual(readEnvironmentRegistry(f.options).targets.cobalt, prior.targets.cobalt);
+});
 
 function makeMutationLockStale(evidenceRoot: string) {
   const lockPath = join(evidenceRoot, 'target.lock');

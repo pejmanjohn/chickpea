@@ -42,6 +42,27 @@
         "env-cobalt-auth-db",
         "env-cobalt-tag-state"
       ]
+    },
+    {
+      "targetAlias": "violet",
+      "allowedSuites": ["case", "smoke"],
+      "smokeVariants": [
+        "LC01-V1-create-welcome",
+        "LC01-V2-update-approve",
+        "LC04-V1-personal-read",
+        "LC08-V1-create-due"
+      ],
+      "requiredEnvironmentAliases": [
+        "env-violet-worker",
+        "env-violet-workspace",
+        "env-violet-slack-app",
+        "env-violet-provider-project",
+        "env-violet-provider-auth-config",
+        "env-violet-evidence-root",
+        "env-violet-timezone",
+        "env-violet-auth-db",
+        "env-violet-tag-state"
+      ]
     }
   ]
 }

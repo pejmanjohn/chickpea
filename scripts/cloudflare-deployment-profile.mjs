@@ -10,13 +10,11 @@ import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { QA_TARGETS } from '../src/config/qa-targets.ts';
 
 export const CORE_DEPLOYMENT_PROFILE = 'core';
 export const SANDBOX_DEPLOYMENT_PROFILE = 'sandbox';
-export const ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS = Object.freeze([
-  'amber',
-  'cobalt',
-]);
+export const ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS = QA_TARGETS;
 const TARGET_DEFINITIONS = Object.freeze(Object.fromEntries(
   ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS.map((target) => [target, Object.freeze({
     target,
@@ -113,8 +111,15 @@ function combinedSchemaGeneration(d1Generation, durableObjectGeneration) {
   return `d1:${d1Generation};do:${durableObjectGeneration}`;
 }
 
-function targetDefinition(target) {
-  return TARGET_DEFINITIONS[target];
+function targetDefinition(target, coordinates) {
+  const definition = TARGET_DEFINITIONS[target];
+  if (target !== 'violet' || !coordinates) return definition;
+  const { workerName, authDatabaseName } = coordinates;
+  if (!/^[a-z0-9][a-z0-9_-]{0,62}$/u.test(workerName ?? '')
+    || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/u.test(authDatabaseName ?? '')) {
+    throw new Error('Violet requires exact registered Worker and AUTH_DB names.');
+  }
+  return { ...definition, workerName, authDatabaseName };
 }
 
 /**
@@ -133,7 +138,8 @@ export function validateCloudflareDeploymentTargetIdentity(
   if (!ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS.includes(selected?.target)) {
     throw new Error('Cloudflare selected deployment target identity is invalid.');
   }
-  const selectedDefinition = targetDefinition(selected.target);
+  const selectedRegistration = registeredTargetIdentities.find(({ target }) => target === selected.target);
+  const selectedDefinition = targetDefinition(selected.target, selectedRegistration ?? selected);
   if (
     selected.workerName !== selectedDefinition.workerName ||
     selected.authDatabaseBinding !== selectedDefinition.authDatabaseBinding ||
@@ -149,7 +155,7 @@ export function validateCloudflareDeploymentTargetIdentity(
     if (!ACTIVE_CLOUDFLARE_DEPLOYMENT_TARGETS.includes(target)) {
       throw new Error(`Cloudflare registered deployment target ${JSON.stringify(target)} is invalid.`);
     }
-    const definition = targetDefinition(target);
+    const definition = targetDefinition(target, registration);
     const databaseId = trimmed(registration?.authDatabaseId);
     const coordinatesAgree =
       registration?.workerName === definition.workerName &&
@@ -188,7 +194,12 @@ export function validateCloudflareDeploymentTargetIdentity(
 function prepareCloudflareDeploymentTarget(config, env, options) {
   const target = resolveCloudflareDeploymentTarget(env[TARGET_VAR]);
   if (!target) return undefined;
-  const definition = targetDefinition(target);
+  const workerName = trimmed(env.CHICKPEA_DEPLOY_WORKER_NAME);
+  const authDatabaseName = trimmed(env.CHICKPEA_DEPLOY_AUTH_DB_NAME);
+  if ((workerName || authDatabaseName) && target !== 'violet') {
+    throw new Error('Only an adopted Violet installation supports registered resource names.');
+  }
+  const definition = targetDefinition(target, workerName || authDatabaseName ? { workerName, authDatabaseName } : undefined);
   const authDatabase = onlyAuthDatabase(config, target);
   const configuredDatabaseId = trimmed(authDatabase.database_id);
   const immutableDatabaseId = trimmed(env[TARGET_AUTH_DB_ID_VAR]);
@@ -238,8 +249,11 @@ export function readCloudflareDeploymentTargetTuple(config, env = process.env) {
     }
     return undefined;
   }
-  const definition = targetDefinition(requestedTarget);
   const authDatabase = onlyAuthDatabase(config, requestedTarget);
+  const definition = targetDefinition(requestedTarget, requestedTarget === 'violet' ? {
+    workerName: trimmed(env.CHICKPEA_DEPLOY_WORKER_NAME) ?? TARGET_DEFINITIONS.violet.workerName,
+    authDatabaseName: trimmed(env.CHICKPEA_DEPLOY_AUTH_DB_NAME) ?? TARGET_DEFINITIONS.violet.authDatabaseName,
+  } : undefined);
   const immutableDatabaseId = trimmed(env[TARGET_AUTH_DB_ID_VAR]);
   const databaseId = trimmed(authDatabase.database_id);
   const d1Generation = trimmed(config.vars?.[AUTH_DB_SCHEMA_GENERATION_VAR]);

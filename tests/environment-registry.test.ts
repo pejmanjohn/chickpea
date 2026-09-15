@@ -88,7 +88,7 @@ function worktree(parent: string, name: string): GitFixture {
   };
 }
 
-function targetRecord(target: typeof TARGETS[number], revision: string, evidenceParent: string) {
+function targetRecord(target: typeof TARGETS[number] | 'violet', revision: string, evidenceParent: string) {
   return {
     target,
     role: 'branch',
@@ -154,6 +154,42 @@ function registryOptions(root: string) {
     now: () => NOW,
   };
 }
+
+test('Violet can join the existing two-lane registry without changing its identities or history', () => {
+  const f = fixture();
+  try {
+    const before = readEnvironmentRegistry(registryOptions(f.root));
+    const violet = targetRecord('violet', f.first.revision, f.parent);
+    violet.workerName = 'existing-install-worker';
+    violet.authDatabaseName = 'existing-install-auth-db';
+    mkdirSync(violet.evidenceRoot, { recursive: true, mode: 0o700 });
+    environmentRegistryModule.registerEnvironment({ expectedRegistryRevision: before.revision, registration: violet }, registryOptions(f.root));
+    const after = readEnvironmentRegistry(registryOptions(f.root));
+    assert.deepEqual(after.targets.amber, before.targets.amber);
+    assert.deepEqual(after.targets.cobalt, before.targets.cobalt);
+    assert.deepEqual(after.audit.slice(0, before.audit.length), before.audit);
+    assert.equal(after.targets.violet.workerName, 'existing-install-worker');
+    assert.equal(resolveEnvironmentAlias('env-violet-workspace', registryOptions(f.root)), 'T_VIOLET');
+    const claim = claimEnvironment('violet', { ...registryOptions(f.root), worktreePath: f.first.path });
+    assert.equal(claim.target, 'violet');
+    assert.equal(targetEnvironment('violet', { ...registryOptions(f.root), worktreePath: f.first.path }).targetOverlay.targetAlias, 'violet');
+    releaseEnvironment('violet', { ...registryOptions(f.root), worktreePath: f.first.path });
+    assert.equal(readEnvironmentStatus(registryOptions(f.root)).targets.length, 3);
+  } finally { rmSync(f.parent, { recursive: true, force: true }); }
+});
+
+test('Violet registration refuses an occupied fleet and a stale registry revision', () => {
+  const f = fixture();
+  try {
+    const violet = targetRecord('violet', f.first.revision, f.parent);
+    mkdirSync(violet.evidenceRoot, { recursive: true, mode: 0o700 });
+    claimEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
+    assert.throws(() => environmentRegistryModule.registerEnvironment({ expectedRegistryRevision: 1, registration: violet }, registryOptions(f.root)), rejectsCode('FLEET_BUSY'));
+    releaseEnvironment('amber', { ...registryOptions(f.root), worktreePath: f.first.path });
+    assert.throws(() => environmentRegistryModule.registerEnvironment({ expectedRegistryRevision: 0, registration: violet }, registryOptions(f.root)), rejectsCode('REGISTRY_REVISION_MISMATCH'));
+    assert.deepEqual(Object.keys(readEnvironmentRegistry(registryOptions(f.root)).targets), ['amber', 'cobalt']);
+  } finally { rmSync(f.parent, { recursive: true, force: true }); }
+});
 
 function rejectsCode(code: string) {
   return (error: unknown) => error instanceof EnvironmentRegistryError
@@ -600,7 +636,7 @@ test('fleet status is read-only and projects stale and unreachable states with r
   const emptyRoot = join(realpathSync(mkdtempSync(join(tmpdir(), 'chickpea-status-empty-'))), 'registry');
   context.after(() => rmSync(join(emptyRoot, '..'), { recursive: true, force: true }));
   const emptyStatus = readEnvironmentStatus({ root: emptyRoot, hostFingerprint: 'host-fixture' });
-  assert.equal(emptyStatus.targets.length, 2);
+  assert.equal(emptyStatus.targets.length, 3);
   assert.equal(emptyStatus.sandbox, null);
   assert.equal(existsSync(emptyRoot), false);
 

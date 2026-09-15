@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { attestEnvironment } from './lib/environment-attestation.mjs';
 import {
   EnvironmentRegistryError,
+  activeEnvironmentTargets,
   claimEnvironment,
   migrateEnvironmentProviderAuthConfigsFromFile,
   readEnvironmentStatus,
@@ -12,9 +13,11 @@ import {
   releaseEnvironment,
 } from './lib/environment-registry.mjs';
 import { EnvironmentWaitError, waitForEnvironmentClaim } from './lib/environment-wait.mjs';
+import { reserveEnvironmentInstallation, restoreEnvironmentInstallation } from './lib/environment-installation.mjs';
 import { targetEnvironment } from './lib/environment-target.mjs';
 import {
   reconcileEnvironmentDeployment,
+  adoptEnvironmentFromFile,
   withEnvironmentReleaseFence,
 } from './lib/environment-preflight.mjs';
 
@@ -41,7 +44,21 @@ export async function runEnvironmentCli(argv, io = {}) {
       ...(io.allowSuppliedObservation === true ? { allowSuppliedObservation: true } : {}),
     };
     let result;
-    if (parsed.command === 'migrate-provider-auth') {
+    if (['install-reserve', 'install-restore'].includes(parsed.command)) {
+      requireTarget(parsed.target);
+      if (!parsed.flags.installation || Object.keys(parsed.flags).some((flag) => ![
+        'root', 'worktree', 'installation', 'profile', 'environment',
+      ].includes(flag))) throw new EnvironmentRegistryError('INVALID_ARGUMENT');
+      result = await (parsed.command === 'install-reserve' ? reserveEnvironmentInstallation : restoreEnvironmentInstallation)(
+        parsed.target, parsed.flags.installation, options,
+      );
+    } else if (parsed.command === 'register') {
+      if (parsed.target || !parsed.flags.registration
+        || Object.keys(parsed.flags).some((flag) => !['root', 'registration'].includes(flag))) {
+        throw new EnvironmentRegistryError('INVALID_ARGUMENT');
+      }
+      result = await adoptEnvironmentFromFile(parsed.flags.registration, options);
+    } else if (parsed.command === 'migrate-provider-auth') {
       if (parsed.target || !parsed.flags.bindings
         || Object.keys(parsed.flags).some((flag) => !['root', 'bindings'].includes(flag))) {
         throw new EnvironmentRegistryError('INVALID_ARGUMENT');
@@ -50,7 +67,7 @@ export async function runEnvironmentCli(argv, io = {}) {
     } else if (parsed.command === 'claim') {
       result = claimEnvironment(parsed.target, options);
     } else if (parsed.command === 'wait-claim') {
-      if (!parsed.target || !['any', 'amber', 'cobalt'].includes(parsed.target)
+      if (!parsed.target || !['any', ...activeEnvironmentTargets].includes(parsed.target)
         || parsed.flags.timeoutMs === undefined || parsed.flags.pollMs === undefined
         || Object.keys(parsed.flags).some((flag) => ![
           'root', 'worktree', 'leaseMs', 'timeoutMs', 'pollMs',
@@ -183,6 +200,8 @@ function parseArgs(argv) {
       '--poll-ms': 'pollMs',
       '--observation': 'observation',
       '--bindings': 'bindings',
+      '--registration': 'registration',
+      '--installation': 'installation',
       '--profile': 'profile',
       '--env': 'environment',
     }[value];
@@ -202,6 +221,8 @@ function parseArgs(argv) {
   if (flags.bindings && positional[0] !== 'migrate-provider-auth') {
     throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   }
+  if (flags.registration && positional[0] !== 'register') throw new EnvironmentRegistryError('INVALID_ARGUMENT');
+  if (flags.installation && !['install-reserve', 'install-restore'].includes(positional[0])) throw new EnvironmentRegistryError('INVALID_ARGUMENT');
   if (positional[0] !== 'wait-claim'
     && (flags.timeoutMs !== undefined || flags.pollMs !== undefined)) {
     throw new EnvironmentRegistryError('INVALID_ARGUMENT');
