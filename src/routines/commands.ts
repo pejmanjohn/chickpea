@@ -238,7 +238,7 @@ async function executeRoutineCommand(
       );
       const suffix = capability.enabled
         ? ''
-        : `\n\n_${capability.reason === 'unsupported_target' ? 'Scheduling is currently Cloudflare-only.' : 'Scheduling is disabled by the deployment operator.'}_`;
+        : `\n\n_${capability.reason === 'unsupported_target' ? 'Scheduling is unavailable on this deployment.' : 'Scheduling is disabled by the deployment operator.'}_`;
       return renderRoutineList(routines, turn.channelId, { destinationKind: 'direct_thread' }) + suffix;
     }
     const mentionedId = command.channelMention
@@ -256,7 +256,7 @@ async function executeRoutineCommand(
     }
     const suffix = capability.enabled
       ? ''
-      : `\n\n_${capability.reason === 'unsupported_target' ? 'Scheduling is currently Cloudflare-only.' : 'Scheduling is disabled by the deployment operator.'}_`;
+      : `\n\n_${capability.reason === 'unsupported_target' ? 'Scheduling is unavailable on this deployment.' : 'Scheduling is disabled by the deployment operator.'}_`;
     return renderRoutineList(await store.listRoutines(turn.workspaceId, channelId), channelId) + suffix;
   }
   if (turn.channelType !== 'im' && !(await canManageChannel(
