@@ -424,6 +424,17 @@ export function renderSlackSetupPage(input: {
   });
 }
 
+export function renderSlackSetupHttpsRequiredPage(input: { loopback: boolean }): string {
+  const subject = input.loopback ? 'this computer' : 'this server';
+  return renderSlackJourneyPage({
+    surface: 'setup',
+    eyebrow: 'Slack setup',
+    title: 'Connect Slack using HTTPS',
+    intro: `This version of Chickpea needs a public HTTPS address for Slack setup and delivery. Chickpea can keep running on ${subject}.`,
+    body: '<section class="auth-section"><h2>Give Chickpea an HTTPS address</h2><p class="auth-help">Choose a stable public HTTPS origin through a reverse proxy or tunnel. Generate a private setup link for that origin, then save <code>SLACK_TAG_PUBLIC_URL</code> and the generated setup values in Chickpea’s runtime configuration. Restart Chickpea and open the new private setup link.</p></section>',
+  });
+}
+
 function slackSetupPageMessage(code: string): string {
   switch (code) {
     case 'gateway_claim_expired': return 'The previous Slack authorization has ended. Choose Add to Slack to try again.';
