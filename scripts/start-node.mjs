@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
@@ -151,7 +151,16 @@ export async function startProductionNode({ args = process.argv.slice(2) } = {})
   return lifecycle;
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+export function isMainModule(argvEntry = process.argv[1], moduleUrl = import.meta.url) {
+  if (!argvEntry) return false;
+  try {
+    return realpathSync(argvEntry) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
+const isMain = isMainModule();
 if (isMain) {
   startProductionNode().catch((error) => {
     console.error(`[chickpea] ${error instanceof Error ? error.message : String(error)}`);

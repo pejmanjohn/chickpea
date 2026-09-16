@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,6 +52,25 @@ test('the production CLI rejects an invalid port without exposing environment-fi
   assert.equal(result.status, 1);
   assert.match(result.stderr, /PORT must be an integer/);
   assert.doesNotMatch(result.stderr, /do-not-print-this-secret/);
+});
+
+test('the production CLI runs through release-directory and file symlinks', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-node-symlink-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const script = fileURLToPath(new URL('../scripts/start-node.mjs', import.meta.url));
+  const current = join(directory, 'current');
+  symlinkSync(fileURLToPath(new URL('..', import.meta.url)), current, 'dir');
+  const directLink = join(directory, 'start-node.mjs');
+  symlinkSync(script, directLink, 'file');
+
+  for (const invokedPath of [join(current, 'scripts', 'start-node.mjs'), directLink]) {
+    const result = spawnSync(process.execPath, ['--', invokedPath, '--unknown'], {
+      encoding: 'utf8',
+      env: {},
+    });
+    assert.equal(result.status, 1, invokedPath);
+    assert.match(result.stderr, /Unknown option: --unknown/, invokedPath);
+  }
 });
 
 test('explicit environment file fills missing values without replacing the standard environment', (t) => {
