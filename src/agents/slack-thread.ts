@@ -1554,7 +1554,7 @@ function createRuntimePlanSandbox(
 ): SandboxFactory {
   if (plan.sandbox.mode === 'bash') {
     return {
-      async createSessionEnv(options) {
+      async createSandbox(options) {
         const env = await resolveAgentPlatformEnv();
         await prepareRuntimePlanModel(plan, env);
         // Native plans grant only their frozen connector scopes. Operator-wide
@@ -1562,19 +1562,19 @@ function createRuntimePlanSandbox(
         // incidental grant when any connection is bound. Empty plans need no
         // account or egress setting reads.
         if (!plan.apiConnections.length) {
-          return bash(() => new Bash({ fs: new InMemoryFs() })).createSessionEnv(options);
+          return bash(() => new Bash({ fs: new InMemoryFs() })).createSandbox(options);
         }
         const connections = await resolveRuntimePlanApiConnections(plan, env);
         const sandbox = createConnectorScopedBash(
           { mode: 'allowlist', domains: [] }, isCloudflareTarget(),
           mergeRepositoryAndApiConnectors([], connections.flatMap(({ connectors }) => connectors)),
         );
-        return sandbox.createSessionEnv(options);
+        return sandbox.createSandbox(options);
       },
     };
   }
   return {
-    async createSessionEnv({ id }) {
+    async createSandbox({ id }) {
       const env = await resolveAgentPlatformEnv();
       const current = await requireLiveFrozenAgent(getConfigStore(env), plan.agentId);
       const agent = projectRuntimePlanAgent(plan, current);
@@ -1608,7 +1608,7 @@ function createRuntimePlanSandbox(
         ...(sandboxConversationKey ? { sandboxConversationKey } : {}),
       });
       if (!runtime.sandbox) throw new Error('RuntimePlanV2 sandbox is unavailable.');
-      return runtime.sandbox.createSessionEnv({ id });
+      return runtime.sandbox.createSandbox({ id });
     },
   };
 }

@@ -99,10 +99,10 @@ test('dependencies and scripts are pinned to the supported Flue 2 surface', asyn
     scripts: Record<string, string>;
   };
 
-  assert.equal(packageJson.dependencies['@flue/runtime'], '2.0.0');
-  assert.equal(packageJson.dependencies['@flue/slack'], '2.0.0');
-  assert.equal(packageJson.devDependencies['@flue/cli'], '2.0.0');
-  assert.equal(packageJson.devDependencies['@flue/vite'], '2.0.0');
+  assert.equal(packageJson.dependencies['@flue/runtime'], '2.0.7');
+  assert.equal(packageJson.dependencies['@flue/slack'], '2.0.7');
+  assert.equal(packageJson.devDependencies['@flue/cli'], '2.0.7');
+  assert.equal(packageJson.devDependencies['@flue/vite'], '2.0.7');
   assert.equal(packageJson.dependencies['@flue/sdk'], undefined);
   assert.equal(packageJson.devDependencies['@flue/sdk'], undefined);
   const scripts = JSON.stringify(packageJson.scripts);

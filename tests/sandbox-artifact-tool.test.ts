@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { SandboxFactory, SessionEnv } from '@flue/runtime';
+import type { Sandbox, SandboxFactory } from '@flue/runtime';
 
 import {
   buildArtifactToolsInstruction,
@@ -16,7 +16,7 @@ const TOOL_RUN_CONTEXT = {
   log: { info() {}, warn() {}, error() {} },
 } as const;
 
-function fakeSessionEnv(
+function fakeSandbox(
   readPaths: string[],
   statPaths: string[] = [],
   size = 3,
@@ -25,7 +25,7 @@ function fakeSessionEnv(
     removedPaths?: string[];
     readBytes?: Uint8Array;
   } = {},
-): SessionEnv {
+): Sandbox {
   return {
     cwd: '/workspace',
     resolvePath(path) {
@@ -60,15 +60,15 @@ function fakeSessionEnv(
   };
 }
 
-test('workspace artifact tool reads through SessionEnv and binds the Slack destination', async () => {
+test('workspace artifact tool reads through Sandbox and binds the Slack destination', async () => {
   const readPaths: string[] = [];
   const statPaths: string[] = [];
   const execCommands: string[] = [];
   const removedPaths: string[] = [];
   const uploads: unknown[] = [];
   const base: SandboxFactory = {
-    async createSessionEnv() {
-      return fakeSessionEnv(readPaths, statPaths, 3, {
+    async createSandbox() {
+      return fakeSandbox(readPaths, statPaths, 3, {
         execCommands,
         removedPaths,
       });
@@ -85,7 +85,7 @@ test('workspace artifact tool reads through SessionEnv and binds the Slack desti
     },
   });
 
-  await capability.sandbox.createSessionEnv({ id: 'thread-1' });
+  await capability.sandbox.createSandbox({ id: 'thread-1' });
   const result = await capability.tool.run({
     ...TOOL_RUN_CONTEXT,
     data: {
@@ -128,8 +128,8 @@ test('workspace artifact tool rejects over-cap files without reading or posting 
   const statPaths: string[] = [];
   const uploads: unknown[] = [];
   const base: SandboxFactory = {
-    async createSessionEnv() {
-      return fakeSessionEnv(readPaths, statPaths, MAX_ARTIFACT_BYTES + 1);
+    async createSandbox() {
+      return fakeSandbox(readPaths, statPaths, MAX_ARTIFACT_BYTES + 1);
     },
   };
   const capability = createWorkspaceArtifactCapability({
@@ -143,7 +143,7 @@ test('workspace artifact tool rejects over-cap files without reading or posting 
     },
   });
 
-  await capability.sandbox.createSessionEnv({ id: 'thread-1' });
+  await capability.sandbox.createSandbox({ id: 'thread-1' });
   await assert.rejects(
     async () =>
       capability.tool.run({
@@ -166,8 +166,8 @@ test('workspace artifact copy-freeze bounds a source that grows after the pre-st
   const execCommands: string[] = [];
   const removedPaths: string[] = [];
   const base: SandboxFactory = {
-    async createSessionEnv() {
-      return fakeSessionEnv(readPaths, statPaths, 1, {
+    async createSandbox() {
+      return fakeSandbox(readPaths, statPaths, 1, {
         execCommands,
         removedPaths,
         readBytes: new Uint8Array(MAX_ARTIFACT_BYTES),
@@ -186,7 +186,7 @@ test('workspace artifact copy-freeze bounds a source that grows after the pre-st
     },
   });
 
-  await capability.sandbox.createSessionEnv({ id: 'thread-race' });
+  await capability.sandbox.createSandbox({ id: 'thread-race' });
   await capability.tool.run({
     ...TOOL_RUN_CONTEXT,
     data: {
@@ -207,8 +207,8 @@ test('workspace artifact tool rejects post-read oversize bytes and cleans up', a
   const removedPaths: string[] = [];
   const uploads: unknown[] = [];
   const base: SandboxFactory = {
-    async createSessionEnv() {
-      return fakeSessionEnv(readPaths, statPaths, 1, {
+    async createSandbox() {
+      return fakeSandbox(readPaths, statPaths, 1, {
         removedPaths,
         readBytes: new Uint8Array(MAX_ARTIFACT_BYTES + 1),
       });
@@ -225,7 +225,7 @@ test('workspace artifact tool rejects post-read oversize bytes and cleans up', a
     },
   });
 
-  await capability.sandbox.createSessionEnv({ id: 'thread-post-read' });
+  await capability.sandbox.createSandbox({ id: 'thread-post-read' });
   await assert.rejects(
     async () =>
       capability.tool.run({
@@ -246,8 +246,8 @@ test('workspace artifact temp name is random and independent of model input', as
   const readPaths: string[] = [];
   const execCommands: string[] = [];
   const base: SandboxFactory = {
-    async createSessionEnv() {
-      return fakeSessionEnv(readPaths, [], 3, { execCommands });
+    async createSandbox() {
+      return fakeSandbox(readPaths, [], 3, { execCommands });
     },
   };
   const capability = createWorkspaceArtifactCapability({
@@ -260,7 +260,7 @@ test('workspace artifact temp name is random and independent of model input', as
     },
   });
 
-  await capability.sandbox.createSessionEnv({ id: 'thread-random' });
+  await capability.sandbox.createSandbox({ id: 'thread-random' });
   await capability.tool.run({
     ...TOOL_RUN_CONTEXT,
     data: {
@@ -287,8 +287,8 @@ test('workspace artifact temp name is random and independent of model input', as
 test('workspace artifact tool keeps the container root and rejects paths outside it', async () => {
   const readPaths: string[] = [];
   const base: SandboxFactory = {
-    async createSessionEnv() {
-      return fakeSessionEnv(readPaths);
+    async createSandbox() {
+      return fakeSandbox(readPaths);
     },
   };
   const capability = createWorkspaceArtifactCapability({
@@ -300,7 +300,7 @@ test('workspace artifact tool keeps the container root and rejects paths outside
       return { attached: true, byteLength: input.bytes.byteLength };
     },
   });
-  await capability.sandbox.createSessionEnv({ id: 'thread-1' });
+  await capability.sandbox.createSandbox({ id: 'thread-1' });
 
   assert.deepEqual(
     await capability.tool.run({
@@ -345,7 +345,7 @@ test('in-memory sandbox artifacts are read directly, byte for byte, with no shel
       return { attached: true, byteLength: input.bytes.byteLength };
     },
   });
-  const env = await capability.sandbox.createSessionEnv({ id: 'thread-bash' });
+  const env = await capability.sandbox.createSandbox({ id: 'thread-bash' });
 
   // A text file the model would write with the shell, addressed relative to cwd.
   const csv = 'exam,net_bookings\nGRE,2400\nTOEFL,800\n';
@@ -385,8 +385,8 @@ test('in-memory sandbox artifacts stat before reading and reject malformed resol
   const uploads: unknown[] = [];
   const build = (size: number, readBytes?: Uint8Array) => createWorkspaceArtifactCapability({
     sandbox: {
-      async createSessionEnv() {
-        const env = fakeSessionEnv(readPaths, statPaths, size, {
+      async createSandbox() {
+        const env = fakeSandbox(readPaths, statPaths, size, {
           execCommands,
           ...(readBytes ? { readBytes } : {}),
         });
@@ -403,7 +403,7 @@ test('in-memory sandbox artifacts stat before reading and reject malformed resol
   });
 
   const ok = build(3);
-  await ok.sandbox.createSessionEnv({ id: 'thread-a' });
+  await ok.sandbox.createSandbox({ id: 'thread-a' });
   await ok.tool.run({ ...TOOL_RUN_CONTEXT, data: { path: 'notes/report.md', filename: 'report.md' } });
   assert.deepEqual(statPaths, ['/home/user/notes/report.md']);
   assert.deepEqual(readPaths, ['/home/user/notes/report.md']);
@@ -421,7 +421,7 @@ test('in-memory sandbox artifacts stat before reading and reject malformed resol
   }
 
   const tooLarge = build(MAX_ARTIFACT_BYTES + 1);
-  await tooLarge.sandbox.createSessionEnv({ id: 'thread-b' });
+  await tooLarge.sandbox.createSandbox({ id: 'thread-b' });
   readPaths.length = 0;
   await assert.rejects(
     async () => tooLarge.tool.run({ ...TOOL_RUN_CONTEXT, data: { path: '/big.bin', filename: 'big.bin' } }),
@@ -430,7 +430,7 @@ test('in-memory sandbox artifacts stat before reading and reject malformed resol
   assert.deepEqual(readPaths, [], 'oversize files are refused before any read');
 
   const grown = build(3, new Uint8Array(MAX_ARTIFACT_BYTES + 1));
-  await grown.sandbox.createSessionEnv({ id: 'thread-c' });
+  await grown.sandbox.createSandbox({ id: 'thread-c' });
   await assert.rejects(
     async () => grown.tool.run({ ...TOOL_RUN_CONTEXT, data: { path: '/grown.bin', filename: 'grown.bin' } }),
     /exceeds the 8 MB upload limit/,
@@ -451,7 +451,7 @@ test('the hook-agent artifact tool reads the in-memory sandbox through the harne
       return { attached: true, byteLength: input.bytes.byteLength };
     },
   });
-  const env = fakeSessionEnv(readPaths, [], 3);
+  const env = fakeSandbox(readPaths, [], 3);
   const result = await tool.run({
     ...TOOL_RUN_CONTEXT,
     data: { path: '/home/user/summary.json', filename: 'summary.json' },
