@@ -279,14 +279,14 @@ test('the hook path registers the image tool only for a filled image capability'
 
   assert.deepEqual(
     names({ role: 'image', filled: true, acceptsImageInput: true }),
-    ['post_artifact', 'render_chart', GENERATE_IMAGE_TOOL_NAME, 'recover_image'],
+    ['post_artifact', GENERATE_IMAGE_TOOL_NAME, 'recover_image'],
   );
   assert.deepEqual(
     names({ role: 'image', filled: false, acceptsImageInput: false }),
-    ['post_artifact', 'render_chart'],
+    ['post_artifact'],
   );
   // A plan written before the capability existed mounts no image tool either.
-  assert.deepEqual(names(undefined), ['post_artifact', 'render_chart']);
+  assert.deepEqual(names(undefined), ['post_artifact']);
 });
 
 test('the legacy app-identity assembler never mounts the image tool', async () => {
@@ -296,7 +296,7 @@ test('the legacy app-identity assembler never mounts the image tool', async () =
   const start = source.indexOf('const artifactCapability = createWorkspaceArtifactCapability(');
   assert.ok(start > 0);
   const legacy = source.slice(start, source.indexOf('if (input.registerActivityContext !== false)', start));
-  assert.match(legacy, /createChartArtifactTool\(/);
+  assert.match(legacy, /artifactCapability\.tool/);
   assert.doesNotMatch(legacy, /createImageArtifactTool/);
 });
 

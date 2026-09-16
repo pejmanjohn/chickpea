@@ -118,7 +118,7 @@ test(`native REST session: ${scenario}`, async (t) => {
     }
     if (scenario.startsWith('routine')) {
       assert.ok(mountedToolNames.includes('submit_routine_result'));
-      for (const name of ['post_artifact', 'render_chart']) assert.equal(mountedToolNames.includes(name), scheduled);
+      assert.equal(mountedToolNames.includes('post_artifact'), scheduled);
       if (scheduled) assert.doesNotMatch(instructions, /old queued occurrence has no verified file destination/);
       else assert.match(instructions, /old queued occurrence has no verified file destination/);
     }

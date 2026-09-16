@@ -12,7 +12,7 @@ Outbound file uploads pass through the gateway in memory as base64 inside a
 signed JSON request. Its 1 MiB request limit includes that encoding and metadata,
 so keep individual files below 700 KiB for this transport. Chickpea rejects an
 oversized encoded request before sending it; using your own Slack app retains
-the 8 MiB artifact limit. Built-in chart PNGs are usually a few kilobytes.
+the 8 MiB artifact limit.
 
 | Location | Data | Retention |
 |---|---|---|

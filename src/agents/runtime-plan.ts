@@ -190,7 +190,7 @@ export interface RuntimePlanV2 {
     kind: 'slack_conversation';
     channelId: string;
     /**
-     * Trusted Slack thread for file and chart delivery. Absent means the
+     * Trusted Slack thread for artifact delivery. Absent means the
      * files post at the top level of the conversation. Never a synthetic
      * timestamp: scheduled runs set it only from the saved routine thread.
      */
@@ -226,7 +226,7 @@ export interface CompileRuntimePlanV2Input {
   connectionChoices?: readonly RuntimePlanConnectionChoiceV2[];
   connectionSelections?: readonly ConnectionAccountSelection[];
   /**
-   * Thread that `post_artifact` and `render_chart` deliver into. Defaults to
+   * Thread that artifact tools deliver into. Defaults to
    * the turn's real Slack thread. Scheduled runs must pass the saved routine
    * destination thread, or `null` for top-level channel delivery, because
    * their turn timestamp is synthetic and not a Slack thread.
@@ -391,12 +391,11 @@ export function buildRuntimePlanActivityContext(
   if (plan.repositories.length > 0) families.add('repository');
   if (plan.apiConnections.length > 0) families.add('custom_connection');
 
-  // File and chart delivery is mounted for every sandbox mode.
+  // File delivery is mounted for every sandbox mode.
   const artifact = genericSemanticDescriptor('artifact');
   descriptors.push(
     { toolName: 'post_artifact', descriptor: artifact },
     { toolName: 'complete_file_delivery', descriptor: artifact },
-    { toolName: 'render_chart', descriptor: artifact },
     { toolName: 'generate_image', descriptor: artifact },
     { toolName: 'recover_image', descriptor: artifact },
   );

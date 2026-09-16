@@ -334,9 +334,6 @@ export function toolActivityStatus(
   if (toolName === 'post_artifact' || toolName === 'complete_file_delivery') {
     return activityStatus('finishing', 'Sharing', 'a workspace artifact');
   }
-  if (toolName === 'render_chart') {
-    return activityStatus('finishing', 'Sharing', 'a chart');
-  }
   // Non-terminal: the provider call runs before anything is staged, and the
   // status publishes once at tool start.
   if (toolName === 'generate_image') {

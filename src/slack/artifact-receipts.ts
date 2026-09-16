@@ -41,6 +41,7 @@ export function isSlackFilePermalink(value: unknown, fileId: string): value is s
  * Kinds this build understands. A newer build may stage a kind absent here;
  * the reader drops those entries rather than failing the whole list, so a
  * rollback to older code still reads its own receipts.
+ * Keep `chart` for receipts staged before the built-in chart tool was removed.
  */
 export const SLACK_ARTIFACT_RECEIPT_KINDS = ['file', 'chart', 'image'] as const;
 

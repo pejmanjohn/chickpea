@@ -163,7 +163,7 @@ test('both reply attachment tools use host context rather than word matching', a
     ]) {
       await submission(agentName, request, async (context) => {
         assert.doesNotThrow(assertArtifactDeliveryAllowed, request);
-        for (const toolName of ['post_artifact', 'render_chart', GENERATE_IMAGE_TOOL_NAME]) {
+        for (const toolName of ['post_artifact', GENERATE_IMAGE_TOOL_NAME]) {
           assert.equal(await memoryToolPolicyInterceptor(
             { type: 'tool', toolCallId: toolName, toolName }, context, delivered,
           ), 'delivered', `${toolName}: ${request}`);
@@ -189,7 +189,7 @@ test('both reply attachment tools use host context rather than word matching', a
         // Intent and prohibitions are interpreted by the Agent. A host wording
         // classifier must not invent a missing workspace permission.
         assert.doesNotThrow(assertArtifactDeliveryAllowed, request);
-        for (const toolName of ['post_artifact', 'render_chart', GENERATE_IMAGE_TOOL_NAME]) {
+        for (const toolName of ['post_artifact', GENERATE_IMAGE_TOOL_NAME]) {
           assert.equal(await memoryToolPolicyInterceptor(
             { type: 'tool', toolCallId: toolName, toolName }, context, delivered,
           ), 'delivered', `${toolName}: ${request}`);
@@ -311,7 +311,7 @@ test('an upload turn admits image delivery on both of its renders', async () => 
 test('the attachment-context rerender admits file delivery for its own turn', async () => {
   await uploadSubmission(attachmentContextSignal(), async (context) => {
     assert.doesNotThrow(assertArtifactDeliveryAllowed);
-    for (const toolName of ['render_chart', 'post_artifact', GENERATE_IMAGE_TOOL_NAME]) {
+    for (const toolName of ['post_artifact', GENERATE_IMAGE_TOOL_NAME]) {
       assert.equal(await memoryToolPolicyInterceptor(
         { type: 'tool', toolCallId: toolName, toolName }, context, delivered,
       ), 'delivered', toolName);
@@ -340,7 +340,7 @@ test('an attachment-context signal admits nothing outside its own actor, message
     await uploadSubmission(rendered as string, async (context) => {
       await assert.rejects(
         memoryToolPolicyInterceptor(
-          { type: 'tool', toolCallId: 'render_chart', toolName: 'render_chart' }, context, delivered,
+          { type: 'tool', toolCallId: 'post_artifact', toolName: 'post_artifact' }, context, delivered,
         ),
         { name: 'CurrentRequestSideEffectDeniedError' }, label,
       );
@@ -358,7 +358,7 @@ test('only the terminal envelope after the evidence end marker is the one the ga
   await uploadSubmission(rendered, async (context) => {
     assert.doesNotThrow(assertArtifactDeliveryAllowed);
     assert.equal(await memoryToolPolicyInterceptor(
-      { type: 'tool', toolCallId: 'render_chart', toolName: 'render_chart' }, context, delivered,
+      { type: 'tool', toolCallId: 'post_artifact', toolName: 'post_artifact' }, context, delivered,
     ), 'delivered');
   });
 
@@ -369,7 +369,7 @@ test('only the terminal envelope after the evidence end marker is the one the ga
   await uploadSubmission(withoutTerminal, async (context) => {
     await assert.rejects(
       memoryToolPolicyInterceptor(
-        { type: 'tool', toolCallId: 'render_chart', toolName: 'render_chart' }, context, delivered,
+        { type: 'tool', toolCallId: 'post_artifact', toolName: 'post_artifact' }, context, delivered,
       ),
       { name: 'CurrentRequestSideEffectDeniedError' },
     );

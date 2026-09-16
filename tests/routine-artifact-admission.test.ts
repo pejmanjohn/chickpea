@@ -201,7 +201,7 @@ test('a due channel occurrence admits the saved chart task through the real Flue
 
   await routineSubmission(rendered, async (context) => {
     assert.doesNotThrow(assertArtifactDeliveryAllowed);
-    for (const toolName of ['render_chart', 'post_artifact']) {
+    for (const toolName of ['post_artifact', 'generate_image']) {
       assert.equal(await memoryToolPolicyInterceptor(
         { type: 'tool', toolCallId: toolName, toolName }, context, delivered,
       ), 'delivered', toolName);
@@ -226,7 +226,7 @@ test('a due thread occurrence admits file delivery into its saved thread', async
   assert.ok(parseModelVisibleCurrentRequestEnvelope(rendered));
   await routineSubmission(rendered, async (context) => {
     assert.equal(await memoryToolPolicyInterceptor(
-      { type: 'tool', toolCallId: 'render_chart', toolName: 'render_chart' }, context, delivered,
+      { type: 'tool', toolCallId: 'post_artifact', toolName: 'post_artifact' }, context, delivered,
     ), 'delivered');
   });
   const plan = parseRoutineExecutionInitialData(initialData).runtimePlan;
@@ -258,7 +258,7 @@ test('a schedule signal admits only the envelope stamped for its own occurrence'
     assert.equal(parseModelVisibleCurrentRequestEnvelope(rendered), undefined, label);
     await routineSubmission(rendered, async (context) => {
       await assert.rejects(
-        memoryToolPolicyInterceptor({ type: 'tool', toolCallId: 'render_chart', toolName: 'render_chart' }, context, delivered),
+        memoryToolPolicyInterceptor({ type: 'tool', toolCallId: 'post_artifact', toolName: 'post_artifact' }, context, delivered),
         { name: 'CurrentRequestSideEffectDeniedError' }, label,
       );
     });
