@@ -1028,7 +1028,10 @@ export async function createSlackAgentRuntime(
         resolveSlackInstallationExecutionContext(
           workspaceId,
           env,
-          { settings: settingsStore },
+          {
+            settings: settingsStore,
+            credentialDependencies: getSlackCredentialResolutionDependencies(env),
+          },
         ),
         resolveSlackPublicUrl(env, settingsStore).catch(() => undefined),
       ]).then(([installation, publicUrl]) => {

@@ -4,7 +4,13 @@ import type { RuntimePlanV2 } from '../../agents/runtime-plan.ts';
 import type { ConfigStore } from '../../config/store.ts';
 import type { IdentityStore } from '../../identity/types.ts';
 import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
-import { getConfigStore, getIdentityStore, getSettingsStore, type PlatformEnv } from '../../config/state-backend.ts';
+import {
+  getConfigStore,
+  getIdentityStore,
+  getSettingsStore,
+  getSlackCredentialResolutionDependencies,
+  type PlatformEnv,
+} from '../../config/state-backend.ts';
 import { isActiveConnectionActor } from '../../connections/runtime.ts';
 import { parseSlackManagementSignal, resolveSlackManagementActor, type SlackManagementSignal } from '../../management/slack-tools.ts';
 import { resolveSlackInstallationExecutionContext } from '../installation-execution.ts';
@@ -108,7 +114,12 @@ export function useSlackListsTools(plan: RuntimePlanV2, resolveEnv: () => Promis
     const identity = getIdentityStore(env);
     await assertSlackListsAccess(plan, signal, config, identity);
     const settings = getSettingsStore(env);
-    const installation = await resolveSlackInstallationExecutionContext(signal.workspaceId, env, { config, settings, rejectRateLimitedCalls: true });
+    const installation = await resolveSlackInstallationExecutionContext(signal.workspaceId, env, {
+      config,
+      settings,
+      credentialDependencies: getSlackCredentialResolutionDependencies(env),
+      rejectRateLimitedCalls: true,
+    });
     return new SlackListsService({ workspaceId: signal.workspaceId, call: createSlackListsCall(installation.client), ledger: new ListWriteLedger(settings, signal.workspaceId, signal.turnJobId), admittedListIds: signal.admittedListIds, timezone: signal.requesterTimezone, signal: abort });
   })) useTool(tool);
 }
