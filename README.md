@@ -23,9 +23,9 @@
 
 <br /><br />
 
-**[Get started with your coding agent](#get-started-with-your-coding-agent)** &nbsp; · &nbsp; [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea)
+**[Get started with your coding agent](#get-started-with-your-coding-agent)** &nbsp; · &nbsp; [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea) &nbsp; · &nbsp; **[Install on a Mac](INSTALL_CHICKPEA_NODE.md)**
 
-<sub>Both routes install Chickpea on your own Cloudflare account.</sub>
+<sub>Run Chickpea in your own Cloudflare account or on your own Mac.</sub>
 
 Already installed? [Connect via MCP](#connect-via-mcp) · [Update](#update-chickpea)
 
@@ -368,6 +368,11 @@ project lives.
 The [installation guide](INSTALL_CHICKPEA_CLOUDFLARE.md) stays current on `main`;
 the installation uses a stable application release.
 
+To run Chickpea on a Mac without deploying a Cloudflare Worker, use
+[Install Chickpea on a Mac with Node](INSTALL_CHICKPEA_NODE.md). It covers the
+pinned Node release, a stable HTTPS tunnel, private persistent state, a
+customer-owned Slack app, and foreground operation.
+
 ### Connect via MCP
 
 Chickpea includes a built-in MCP server. Connect your coding agent to create
@@ -467,32 +472,15 @@ Uses Cloudflare Workers, Durable Objects, D1, and Workers AI.
 
 ### Node
 
-Requires Node **24.x, minimum 24.20.0**. Use an existing Node manager to select the `.nvmrc` baseline (`nvm install && nvm use` with nvm), or a compatible Homebrew `node@24` scoped to the current shell; do not replace an unrelated global runtime.
+For a production Mac installation, follow
+[Install Chickpea on a Mac with Node](INSTALL_CHICKPEA_NODE.md). It uses Node
+24.20.0, a built release, persistent SQLite state, a stable public HTTPS tunnel,
+and a customer-owned Slack app. It does not deploy a Cloudflare Worker.
 
-```bash
-git clone https://github.com/pejmanjohn/chickpea && cd chickpea
-npm ci
-
-# 32 random bytes, stable across restarts
-export CHICKPEA_AUTH_SECRET=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
-
-npm run setup:link -- https://your-chickpea.example
-```
-
-`setup:link` takes the URL your deployment will answer on and prints a `CHICKPEA_SETUP_CAPABILITY_DIGEST`, a `CHICKPEA_SETUP_CAPABILITY_ISSUED_AT`, and the private setup link itself. Export the two variables:
-
-```bash
-export CHICKPEA_SETUP_CAPABILITY_DIGEST=...
-export CHICKPEA_SETUP_CAPABILITY_ISSUED_AT=...
-
-npm run dev
-```
-
-Then open the private link and follow the same Slack flow as above. `npm run dev`
-is for development. For a supervised production server, persistent state paths,
-HTTPS, backups, and upgrades, follow [Operating Chickpea](docs/runbooks/operations.md).
-
-State defaults to SQLite. Set `TAG_DB_PATH=:memory:` and `SLACK_STATE_DB_PATH=:memory:` only for disposable development.
+The production launcher is `npm run start:node -- --env-file <path>`.
+`npm run dev` and in-memory databases are for disposable development only. For
+Linux supervision, backups, restores, and upgrades, use
+[Operating and upgrading Chickpea](docs/runbooks/operations.md).
 
 ---
 

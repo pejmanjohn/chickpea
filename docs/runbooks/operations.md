@@ -1,7 +1,9 @@
 # Operating and upgrading Chickpea
 
 This guide covers a single-host Node deployment and the existing Cloudflare
-deployment wrapper. For first-time Slack setup, use [SETUP_AGENT.md](../../SETUP_AGENT.md).
+deployment wrapper. For a first-time production Mac installation, use
+[Install Chickpea on a Mac with Node](../../INSTALL_CHICKPEA_NODE.md). For
+first-time Slack setup, use [SETUP_AGENT.md](../../SETUP_AGENT.md).
 
 ## Production Node
 
@@ -131,34 +133,12 @@ reply, and state surviving a service restart before routing normal traffic.
 
 ### Run in the foreground on macOS
 
-Keep production state outside the release checkout and lock it to your account:
+Use [Install Chickpea on a Mac with Node](../../INSTALL_CHICKPEA_NODE.md) for
+the supported first-install procedure. It writes a complete private environment
+file without printing the authentication secret, preserves paths that contain
+spaces, configures stable HTTPS, and uses a customer-owned Slack app.
 
-```sh
-install -d -m 700 "$HOME/Library/Application Support/Chickpea/node"
-install -d -m 700 "$HOME/Library/Application Support/Chickpea/node/state"
-test -e "$HOME/Library/Application Support/Chickpea/node/runtime.env" || \
-  install -m 600 /dev/null "$HOME/Library/Application Support/Chickpea/node/runtime.env"
-chmod 600 "$HOME/Library/Application Support/Chickpea/node/runtime.env"
-```
-
-The conditional creation preserves an existing environment file and its stable
-auth secret. Do not truncate or replace that file during an update.
-
-Put the production variables above in `runtime.env`. Run this command to print
-the stable paths for your account, then copy its output into that file.
-Environment files do not expand `$HOME`, so save the printed absolute paths:
-
-```sh
-printf '%s\n' \
-  'HOST=127.0.0.1' \
-  'PORT=3000' \
-  "TAG_DB_PATH=$HOME/Library/Application Support/Chickpea/node/state/transcripts.sqlite" \
-  "SLACK_STATE_DB_PATH=$HOME/Library/Application Support/Chickpea/node/state/app.sqlite" \
-  "CHICKPEA_AUTH_DB_PATH=$HOME/Library/Application Support/Chickpea/node/state/auth.sqlite" \
-  "CHICKPEA_CREDENTIAL_KEYRING_PATH=$HOME/Library/Application Support/Chickpea/node/state/credential-keyring.json"
-```
-
-Then start the built release in the foreground:
+To start an existing installation, run the built release in the foreground:
 
 ```sh
 npm run start:node -- \
@@ -166,7 +146,10 @@ npm run start:node -- \
 ```
 
 Use a process supervisor for unattended operation. This foreground recipe does
-not install a LaunchAgent or make Chickpea start at login.
+not install a LaunchAgent or make Chickpea start at login. Keep the Mac awake,
+and keep both this launcher and the HTTPS tunnel running. Stop the launcher with
+Control-C and wait for its graceful shutdown before closing the Terminal. Reuse
+the same environment file and authentication secret for every restart.
 
 ### Recover a stale Node process owner
 
