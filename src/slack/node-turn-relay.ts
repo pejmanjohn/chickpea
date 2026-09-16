@@ -441,6 +441,7 @@ async function drainNodeTurnRelayOnce(
               deliveredRecord,
               delivery,
               config,
+              getManagementStore(env),
               presentation,
             );
           } finally {

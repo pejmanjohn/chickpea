@@ -204,6 +204,7 @@ test('an applied create records one bounded terminal intent while other outcomes
     kind: 'proposal',
     text: 'Add Deck to <#C_SECOND>? Reply `approve` to continue.',
   }]);
+  assert.equal(withProposal?.pendingProposalId, 'proposal_reach');
   assert.deepEqual(written, [intent, withProposal]);
 
   const longProposal = `Review this separate change: ${'detail '.repeat(100)}`;
@@ -216,6 +217,7 @@ test('an applied create records one bounded terminal intent while other outcomes
     },
   });
   assert.equal(withLongProposal?.followOnNotices[1]?.text, longProposal.trim());
+  assert.equal(withLongProposal?.pendingProposalId, 'proposal_long');
 
   const withFailure = coordinator.recordFollowOn({
     ok: true,

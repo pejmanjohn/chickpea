@@ -510,6 +510,25 @@ export class ManagementStoreLogic {
         ) as unknown as ManagementOutboxRow[];
         return { kind: 'outbox_batch', outbox: rows.map(outboxFromRow) };
       }
+      case 'get_deferred_agent_creation_welcome': {
+        const row = this.db.get(
+          `SELECT * FROM management_receipt_outbox
+           WHERE json_extract(receipt_json, '$.kind') = 'agent_created_welcome'
+             AND json_extract(receipt_json, '$.requesterMembershipId') = ?
+             AND json_extract(receipt_json, '$.deferredHandoffProposalId') = ?
+             AND json_extract(destination_json, '$.kind') = 'thread'
+             AND json_extract(destination_json, '$.workspaceId') = ?
+             AND json_extract(destination_json, '$.channelId') = ?
+             AND json_extract(destination_json, '$.threadTs') = ?
+           LIMIT 1`,
+          request.requesterMembershipId,
+          request.proposalId,
+          request.workspaceId,
+          request.channelId,
+          request.threadTs,
+        ) as unknown as ManagementOutboxRow | undefined;
+        return { kind: 'outbox', outbox: row ? outboxFromRow(row) : null };
+      }
       case 'claim_due_outbox':
         return {
           kind: 'outbox_batch',

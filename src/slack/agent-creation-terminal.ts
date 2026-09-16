@@ -22,6 +22,7 @@ export const SlackAgentCreationTerminalIntentSchema = v.strictObject({
     v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128))),
     v.maxLength(12),
   ),
+  pendingProposalId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))),
   followOnNotices: v.pipe(v.array(SlackAgentCreationFollowOnNoticeSchema), v.maxLength(8)),
 });
 

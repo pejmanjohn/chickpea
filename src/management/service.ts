@@ -1108,6 +1108,21 @@ export class WorkspaceManagementService {
       ? new URL(`/admin/agents/${encodeURIComponent(agent.id)}`, baseUrl).href
       : undefined);
     const at = this.now();
+    const deferredHandoffProposal = input.pendingProposalId
+      ? await this.stores.management.getChangeSetProposal(input.pendingProposalId)
+      : undefined;
+    const deferredHandoffProposalId = deferredHandoffProposal?.status === 'pending' &&
+        deferredHandoffProposal.organizationId === actor.organizationId &&
+        deferredHandoffProposal.actorUserId === actor.userId &&
+        deferredHandoffProposal.actorMembershipId === actor.membershipId &&
+        deferredHandoffProposal.originKey === managementActorOriginKey(actor) &&
+        deferredHandoffProposal.approvalScopeKey === managementApprovalScopeKey(actor) &&
+        deferredHandoffProposal.authoringReason === 'agent_creation' &&
+        deferredHandoffProposal.operations.some((operation) =>
+          'agentId' in operation && operation.agentId === input.agentId
+        )
+      ? deferredHandoffProposal.proposalId
+      : undefined;
     const receipt: ManagementAgentCreatedWelcome = {
       kind: 'agent_created_welcome',
       creationOperationId: input.operationId,
@@ -1130,6 +1145,7 @@ export class WorkspaceManagementService {
       connectorActions,
       connectorNotices,
       followOnNotices: input.followOnNotices,
+      ...(deferredHandoffProposalId ? { deferredHandoffProposalId } : {}),
       ...(viewAgentUrl ? { viewAgentUrl } : {}),
     };
     const outbox: ManagementReceiptOutboxRecord = {

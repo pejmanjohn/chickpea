@@ -2303,6 +2303,7 @@ async function drainCloudflareManagementReceipts(
             deliveredRecord,
             delivery,
             stores.config,
+            stores.management as unknown as ManagementStore,
             presentation,
           );
         } finally {

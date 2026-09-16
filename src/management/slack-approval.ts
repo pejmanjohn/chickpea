@@ -2,6 +2,10 @@ import type { ConfigStore } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { CONNECTION_CATALOG_PRESETS } from '../config/presets.ts';
 import type { IdentityStore } from '../identity/types.ts';
+import {
+  handoffCreatedAgentThread,
+  type CreatedAgentHandoffConfig,
+} from '../slack/agent-routing.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 import { slackConversationKind } from '../slack/thread-key.ts';
@@ -26,8 +30,8 @@ import {
 
 export interface SlackManagementApprovalDependencies {
   identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
-  config: Pick<ConfigStore, 'getAgent'>;
-  management: Pick<ManagementStore, 'putOutbox'> & {
+  config: Pick<ConfigStore, 'getAgent'> & CreatedAgentHandoffConfig;
+  management: Pick<ManagementStore, 'putOutbox' | 'execute'> & {
     getChangeSetProposal?: ManagementStore['getChangeSetProposal'];
   };
   service: WorkspaceManagementService;
@@ -86,6 +90,16 @@ export async function executeHostSlackManagementApproval(input: {
       context: actor,
       proposalId: input.proposalId,
     });
+    await completeDeferredAgentCreationHandoff({
+      turn: input.turn,
+      proposalId: input.proposalId,
+      actor,
+      result,
+      config: input.dependencies.config,
+      management: input.dependencies.management,
+    }).catch(() => {
+      console.warn('[chickpea:management] deferred Agent thread handoff will require retry');
+    });
     return formatHostSlackManagementReceipt({
       result,
       turn: input.turn,
@@ -111,6 +125,47 @@ export async function executeHostSlackManagementApproval(input: {
     }
     throw error;
   }
+}
+
+async function completeDeferredAgentCreationHandoff(input: {
+  turn: NormalizedSlackTurn;
+  proposalId: string;
+  actor: ManagementActorContext;
+  result: ManagementApplyResult;
+  config: CreatedAgentHandoffConfig;
+  management: Pick<ManagementStore, 'execute'> & {
+    getChangeSetProposal?: ManagementStore['getChangeSetProposal'];
+  };
+}): Promise<void> {
+  if (input.result.status !== 'completed' ||
+      input.result.outcomes.some(({ disposition }) => disposition !== 'applied')) return;
+  const response = await input.management.execute({
+    kind: 'get_deferred_agent_creation_welcome',
+    workspaceId: input.turn.workspaceId,
+    channelId: input.turn.channelId,
+    threadTs: input.turn.threadTs,
+    requesterMembershipId: input.actor.membershipId,
+    proposalId: input.proposalId,
+  });
+  if (response.kind !== 'outbox') return;
+  const welcome = response.outbox;
+  if (!welcome || welcome.destination.kind !== 'thread' ||
+      welcome.status !== 'delivered' ||
+      !('kind' in welcome.receipt) || welcome.receipt.kind !== 'agent_created_welcome' ||
+      welcome.receipt.requesterMembershipId !== input.actor.membershipId ||
+      welcome.receipt.deferredHandoffProposalId !== input.proposalId) return;
+  const delivery = /^slack:([^:]+):(\d+\.\d+)$/.exec(welcome.deliveryRef ?? '');
+  if (!delivery || delivery[1] !== input.turn.channelId) return;
+  await handoffCreatedAgentThread({
+    workspaceId: welcome.destination.workspaceId,
+    channelId: welcome.destination.channelId,
+    threadTs: welcome.destination.threadTs,
+    welcomeMessageTs: delivery[2]!,
+    agentId: welcome.receipt.agentId,
+    requesterMembershipId: welcome.receipt.requesterMembershipId,
+    surface: welcome.receipt.surface,
+    config: input.config,
+  });
 }
 
 function slackManagementSignal(

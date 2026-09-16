@@ -2270,6 +2270,7 @@ async function finishSetup(
         deliveredRecord,
         delivery,
         dependencies.config,
+        dependencies.management,
         presentation,
       ),
     }),

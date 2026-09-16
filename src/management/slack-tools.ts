@@ -236,11 +236,13 @@ export function createSlackAgentCreationTurnCoordinator(
 
   const appendNotice = (
     notice: SlackAgentCreationTerminalIntent['followOnNotices'][number] | undefined,
+    pendingProposalId?: string,
   ): SlackAgentCreationTerminalIntent | undefined => {
     const terminal = current.terminalIntent;
     if (!terminal || !notice || terminal.followOnNotices.length >= 8) return terminal;
     const updated = {
       ...terminal,
+      ...(pendingProposalId ? { pendingProposalId } : {}),
       followOnNotices: [...terminal.followOnNotices, notice],
     };
     current = { ...current, terminalIntent: updated };
@@ -318,7 +320,10 @@ export function createSlackAgentCreationTurnCoordinator(
       return intent;
     },
     recordFollowOn(result) {
-      return appendNotice(followOnNoticeFromResult(result));
+      return appendNotice(
+        followOnNoticeFromResult(result),
+        pendingProposalIdFromResult(result),
+      );
     },
     recordScheduleFollowOn(result) {
       return appendNotice(followOnNoticeFromScheduleResult(result));
@@ -424,6 +429,16 @@ function followOnNoticeFromResult(
     }
   }
   return undefined;
+}
+
+function pendingProposalIdFromResult(
+  result: WorkspaceManagementToolResult,
+): string | undefined {
+  if (!result.ok || !result.result || typeof result.result !== 'object') return undefined;
+  const value = result.result as Record<string, unknown>;
+  return value.status === 'pending' && typeof value.proposalId === 'string'
+    ? value.proposalId
+    : undefined;
 }
 
 function followOnNoticeFromScheduleResult(

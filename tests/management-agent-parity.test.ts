@@ -11,6 +11,7 @@ import {
   AGENT_AUTHORING_GUIDE_VERSION,
 } from '../src/management/agent-authoring/index.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
+import { completeAgentWelcomeDelivery } from '../src/management/receipts.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import { resolvePrivateAgentAccess } from '../src/slack/agent-access.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
@@ -34,6 +35,7 @@ import {
 import type {
   ManagementActorContext,
   ManagementAgentPatch,
+  ManagementApplyResult,
   ManagementOperation,
   ManagementWorkspaceSnapshot,
 } from '../src/management/types.ts';
@@ -807,6 +809,194 @@ test('host approval receipts never claim that a failed change was applied', asyn
       text: 'That proposal is still being applied; it won’t be applied twice.',
     });
     assert.equal(confirmAttempts, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test('creation follow-on approval keeps Chickpea ownership until the exact proposal completes', async () => {
+  const f = await createManagementAdapterFixture('creation-follow-on-handoff');
+  const threadTs = '200.110000';
+  const welcomeTs = '200.120000';
+  const proposalId = 'changeset_creation_reach';
+  const created = await f.config.createAgent({
+    ...agentInput,
+    id: 'agent_creation_reach',
+    name: 'Creation Reach',
+    creatorMembershipId: f.admin.membership.id,
+  });
+  const installation = await f.config.ensureWorkspaceInstallation({
+    workspaceId: f.admin.binding.slackTeamId,
+    transportMode: 'direct',
+    defaultAgentId: CHICKPEA_AGENT_ID,
+  });
+  await f.config.updateWorkspaceInstallation(
+    installation.workspaceId,
+    { health: 'healthy' },
+    installation.revision,
+  );
+  const welcome = {
+    outboxId: 'agent_welcome_creation_reach',
+    operationId: 'management_creation_reach',
+    destination: {
+      kind: 'thread' as const,
+      workspaceId: f.admin.binding.slackTeamId,
+      channelId: 'D_CREATION_REACH',
+      threadTs,
+    },
+    receipt: {
+      kind: 'agent_created_welcome' as const,
+      creationOperationId: 'management_creation_reach',
+      agentId: created.id,
+      agentName: created.name,
+      requesterMembershipId: f.admin.membership.id,
+      surface: 'direct' as const,
+      persona: { name: created.name },
+      followOnNotices: [{
+        kind: 'proposal' as const,
+        text: 'Add Creation Reach to the requested Channel? Reply `approve` to continue.',
+      }],
+      deferredHandoffProposalId: proposalId,
+    },
+    status: 'delivered' as const,
+    attempts: 1,
+    nextAttemptAt: 1_800_000_000_000,
+    deliveryRef: `slack:D_CREATION_REACH:${welcomeTs}`,
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_001,
+  };
+  const proposal = {
+    proposalId,
+    organizationId: f.admin.membership.organizationId,
+    actorUserId: f.admin.user.id,
+    actorMembershipId: f.admin.membership.id,
+    originKey: `slack:${welcome.destination.workspaceId}:${welcome.destination.channelId}:${threadTs}:im:agent:${CHICKPEA_AGENT_ID}`,
+    approvalScopeKey: `slack:${welcome.destination.workspaceId}:${welcome.destination.channelId}:dm:agent:${CHICKPEA_AGENT_ID}`,
+    idempotencyKey: 'creation-reach',
+    guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+    authoringReason: 'agent_creation' as const,
+    operations: [{
+      itemId: 'reach',
+      kind: 'grant_agent_channel' as const,
+      workspaceId: welcome.destination.workspaceId,
+      channelId: 'C_REACH',
+      agentId: created.id,
+      expectedRevision: 0,
+    }],
+    digest: 'a'.repeat(64),
+    preview: { summary: 'Add reach', changes: [], missingSetup: [] },
+    targetRevisions: {},
+    status: 'completed' as const,
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_001,
+  };
+  const client = {} as import('@slack/web-api').WebClient;
+  try {
+    await completeAgentWelcomeDelivery(welcome, {
+      workspaceId: welcome.destination.workspaceId,
+      channelId: welcome.destination.channelId,
+      threadTs,
+      messageTs: welcomeTs,
+      text: 'Agent welcome and proposal preview',
+      persona: 'agent',
+      client,
+    }, f.config, {
+      getChangeSetProposal: async () => ({ ...proposal, status: 'pending' as const }),
+    });
+    assert.equal(
+      await f.config.getAgentThreadRoute(
+        welcome.destination.workspaceId,
+        welcome.destination.channelId,
+        threadTs,
+      ),
+      undefined,
+      'the pending Chickpea-bound proposal keeps ownership under Chickpea',
+    );
+    await f.management.putOutbox(welcome);
+    for (const query of [
+      { threadTs: '200.999999', requesterMembershipId: f.admin.membership.id, proposalId },
+      { threadTs, requesterMembershipId: 'membership_other', proposalId },
+      { threadTs, requesterMembershipId: f.admin.membership.id, proposalId: 'changeset_other' },
+    ]) {
+      const response = await f.management.execute({
+        kind: 'get_deferred_agent_creation_welcome',
+        workspaceId: welcome.destination.workspaceId,
+        channelId: welcome.destination.channelId,
+        ...query,
+      });
+      assert.equal(response.kind, 'outbox');
+      if (response.kind === 'outbox') assert.equal(response.outbox, null);
+    }
+
+    const completedResult = {
+      operationId: proposalId,
+      idempotencyKey: 'creation-reach',
+      status: 'completed' as const,
+      outcomes: [{
+        itemId: 'reach',
+        operationKind: 'grant_agent_channel' as const,
+        disposition: 'applied' as const,
+      }],
+      effectiveRevision: 'reach-applied',
+      activation: 'next_turn' as const,
+    };
+    const approvalTurn = {
+      workspaceId: welcome.destination.workspaceId,
+      channelId: welcome.destination.channelId,
+      eventId: 'Ev_CREATION_REACH_APPROVE',
+      text: 'approve',
+      userId: f.admin.binding.slackUserId,
+      messageTs: '200.130000',
+      threadTs,
+      source: 'dm_message',
+      contextMode: 'thread',
+    } as const;
+    const approvalAssignment = {
+      workspaceId: welcome.destination.workspaceId,
+      channelId: welcome.destination.channelId,
+      agentId: CHICKPEA_AGENT_ID,
+      runtimeContract: 'chickpea-v1' as const,
+      agent: await f.config.materializeChickpeaAgent(),
+    };
+    const approveWithResult = async (result: ManagementApplyResult) =>
+      executeHostSlackManagementApproval({
+        turn: approvalTurn,
+        assignment: approvalAssignment,
+        turnJobId: 'turn_CREATION_REACH_APPROVE',
+        proposalId,
+        dependencies: {
+          identity: f.identity,
+          config: f.config,
+          management: {
+            putOutbox: (...args) => f.management.putOutbox(...args),
+            getChangeSetProposal: async () => proposal as never,
+            execute: (...args) => f.management.execute(...args),
+          },
+          service: {
+            confirmWorkspaceChange: async () => result,
+          } as unknown as WorkspaceManagementService,
+        },
+      });
+
+    await approveWithResult({ ...completedResult, status: 'partial' });
+    assert.equal(
+      await f.config.getAgentThreadRoute(
+        welcome.destination.workspaceId,
+        welcome.destination.channelId,
+        threadTs,
+      ),
+      undefined,
+      'an incomplete proposal cannot transfer the deferred thread',
+    );
+
+    await approveWithResult(completedResult);
+
+    const route = await f.config.getAgentThreadRoute(
+      welcome.destination.workspaceId,
+      welcome.destination.channelId,
+      threadTs,
+    );
+    assert.equal(route?.agentId, created.id);
   } finally {
     f.close();
   }

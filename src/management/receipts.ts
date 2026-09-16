@@ -191,6 +191,7 @@ export async function completeAgentWelcomeDelivery(
     ): Awaited<ReturnType<ConfigStore['putSlackPublicContext']>> |
       ReturnType<ConfigStore['putSlackPublicContext']>;
   },
+  management: Pick<ManagementStore, 'getChangeSetProposal'>,
   presentation?: AgentWelcomePresentationRuntime,
 ): Promise<void> {
   if (!isAgentCreatedWelcome(record.receipt)) return;
@@ -224,16 +225,32 @@ export async function completeAgentWelcomeDelivery(
     if (presentationError) throw presentationError;
     return;
   }
-  await handoffCreatedAgentThread({
-    workspaceId: record.destination.workspaceId,
-    channelId: record.destination.channelId,
-    threadTs: record.destination.threadTs,
-    welcomeMessageTs: delivery.messageTs,
-    agentId: record.receipt.agentId,
-    requesterMembershipId: record.receipt.requesterMembershipId,
-    surface: record.receipt.surface,
-    config,
-  });
+  let deferHandoff = false;
+  if (record.receipt.deferredHandoffProposalId) {
+    try {
+      const proposal = await management.getChangeSetProposal(
+        record.receipt.deferredHandoffProposalId,
+      );
+      deferHandoff = proposal?.status === 'pending' || proposal?.status === 'applying';
+    } catch {
+      // Keep Chickpea ownership when the authoritative proposal state cannot
+      // be read. The exact approval path can still complete the handoff.
+      deferHandoff = true;
+      console.warn('[chickpea:management] deferred Agent thread handoff state unavailable');
+    }
+  }
+  if (!deferHandoff) {
+    await handoffCreatedAgentThread({
+      workspaceId: record.destination.workspaceId,
+      channelId: record.destination.channelId,
+      threadTs: record.destination.threadTs,
+      welcomeMessageTs: delivery.messageTs,
+      agentId: record.receipt.agentId,
+      requesterMembershipId: record.receipt.requesterMembershipId,
+      surface: record.receipt.surface,
+      config,
+    });
+  }
   await config.putSlackPublicContext({
     workspaceId: record.destination.workspaceId,
     channelId: record.destination.channelId,

@@ -418,6 +418,8 @@ export interface ManagementAgentCreatedWelcome {
     kind: 'proposal' | 'pending' | 'declined' | 'failure';
     text: string;
   }>;
+  /** Validated pending proposal that temporarily retains the creation thread under Chickpea. */
+  deferredHandoffProposalId?: string;
   viewAgentUrl?: string;
   /** Compatibility fields for proposal-created welcomes. */
   setupUrl?: string;
@@ -802,6 +804,7 @@ export interface FinalizeSlackAgentCreationWelcomeInput {
   creationItemId: string;
   agentId: string;
   connectorMentions: string[];
+  pendingProposalId?: string;
   followOnNotices: Array<{
     kind: 'proposal' | 'pending' | 'declined' | 'failure';
     text: string;
@@ -1321,6 +1324,14 @@ export type ManagementRpcRequest =
   | { kind: 'claim_introduction'; input: ClaimManagementIntroductionInput }
   | { kind: 'get_outbox_for_operation'; operationId: string }
   | { kind: 'list_agent_creation_welcomes'; workspaceId: string; agentId: string; requesterMembershipId: string }
+  | {
+      kind: 'get_deferred_agent_creation_welcome';
+      workspaceId: string;
+      channelId: string;
+      threadTs: string;
+      requesterMembershipId: string;
+      proposalId: string;
+    }
   | { kind: 'claim_due_outbox'; at: number; limit: number; leaseUntil: number }
   | {
       kind: 'settle_outbox';
