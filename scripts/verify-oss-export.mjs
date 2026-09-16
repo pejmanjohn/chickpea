@@ -250,6 +250,7 @@ const allowedBinaryFiles = new Map([
   [exportPath('assets', 'onboarding', 'reinstall.webp'), '25e05848d4c6c284435d225dc9a6424d460bf3c4c210cb292dcda3a5b6d04ad2'],
   [exportPath('assets', 'onboarding', 'signing-secret.webp'), 'f1b05edc9b64c2b598f6ac6b5da26c6d831c77c7434eebacf3589ca777103346'],
   [exportPath('assets', 'onboarding', 'events-retry.webp'), '9a2549d158fba8f6edc9bbee0199585370eeeee8d9a8bfd1b18415ac1a489f8f'],
+  [exportPath('assets', 'connectors', 'bugsnag.png'), '3ae8846f2b32c318a4d88e47d862d961d7e33e44c1d9611118de4e4c868c722f'],
   [exportPath('assets', 'connectors', 'exa.png'), '277c9f6801afffd060b6891522b7a75062e7da677e439ea1bb7c2e697b35d770'],
   [exportPath('assets', 'connectors', 'fireflies.png'), 'de55a51173478c6412190b6af4867a7e2134a961aa423b569421f33674b714ac'],
   [exportPath('assets', 'connectors', 'gamma.png'), '535376ea3fb0ad62fdb1b6b1c8e0bb3eb51768e988972f8cd8c4455f98af437c'],

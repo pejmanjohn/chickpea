@@ -20,7 +20,7 @@ export const PUBLIC_ASSET_PATHS = [
   ...DEFAULT_AGENT_AVATAR_FILES.map((file) => `chickpea-avatars/agent-defaults/${file}`),
   ...ONBOARDING_ASSET_FILES.map((file) => `onboarding/${file}`),
   ...[
-    'exa', 'fireflies', 'gamma', 'granola', 'incident-io', 'lunarcrush',
+    'bugsnag', 'exa', 'fireflies', 'gamma', 'granola', 'incident-io', 'lunarcrush',
     'google-search-console', 'google-analytics', 'google-ads',
   ].map((name) => `connectors/${name}.png`),
 ];
