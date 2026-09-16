@@ -246,6 +246,7 @@ test('a stalled body times out and releases only its request binding', async () 
     format: { format: 'png' },
     deadlineMs: 10,
   });
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(result, { ok: false, reason: 'timeout', detail: 'deadline_exceeded' });
   assert.equal(released.length, 1);
   assert.equal(bodyCancellations, 1);

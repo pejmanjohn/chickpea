@@ -114,7 +114,12 @@ async function generateOnce(
         recordOpenAiSubscriptionAuthenticationFailure)(options.settings, { credentials });
     },
   });
-  const release = () => { releaseTransport(marker); };
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    releaseTransport(marker);
+  };
   signal.addEventListener('abort', release, { once: true });
 
   try {
