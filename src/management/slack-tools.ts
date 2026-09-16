@@ -10,7 +10,9 @@ import type { SlackMemoryUpdate } from '../slack/memory-update-terminal.ts';
 
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import {
+  getManagementStore,
   getIdentityStore,
+  getRoutineStore,
   getSettingsStore,
   isCloudflareTarget,
   type PlatformEnv,
@@ -58,9 +60,11 @@ import {
   type SlackActionLink,
 } from '../slack/message-format.ts';
 import {
+  invokeSlackScheduleAction,
   type SlackScheduleActionOutcome,
   type SlackScheduleToolOperation,
 } from './slack-schedule-actions.ts';
+import { scheduleActionRpcResult } from './slack-schedule-rpc.ts';
 import { opaqueId } from '../work/admission.ts';
 import type { ManagementApplyResult } from './types.ts';
 import type { SlackAgentCreationTerminalIntent } from '../slack/agent-creation-terminal.ts';
@@ -969,20 +973,46 @@ async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
   });
 }
 
-async function invokeLiveSlackScheduleAction(
+export async function invokeLiveSlackScheduleAction(
   signal: SlackManagementSignal,
   resolvePlatformEnv: PlatformEnvResolver,
   operation: SlackScheduleToolOperation,
 ): Promise<SlackScheduleActionOutcome> {
-  if (!isCloudflareTarget()) {
-    return { outcome: 'failed', code: 'routines_unavailable_on_target' };
-  }
   const env = await resolvePlatformEnv();
+  if (!isCloudflareTarget()) {
+    return invokeNodeSlackScheduleAction({ signal, env, operation });
+  }
   return invokeCloudflareSlackScheduleAction({
     stub: tagStateStub(env),
     signal,
     operation,
   });
+}
+
+export async function invokeNodeSlackScheduleAction(input: {
+  signal: SlackManagementSignal;
+  env: PlatformEnv | undefined;
+  operation: SlackScheduleToolOperation;
+}): Promise<SlackScheduleActionOutcome> {
+  const identity = getIdentityStore(input.env);
+  const settings = getSettingsStore(input.env);
+  const service = createLiveWorkspaceManagementService(input.env, {
+    identity,
+    settings,
+    overrides: { setupBaseUrl: () => resolveSlackPublicUrl(input.env, settings) },
+  });
+  const context = await resolveSlackManagementActor(input.signal, identity);
+  return scheduleActionRpcResult(() => invokeSlackScheduleAction({
+    signal: input.signal,
+    context,
+    operation: input.operation,
+    dependencies: {
+      management: getManagementStore(input.env),
+      routines: getRoutineStore(input.env),
+      service,
+      owner: `node:${input.signal.turnJobId}`,
+    },
+  }));
 }
 
 export async function invokeCloudflareSlackScheduleAction(input: {
