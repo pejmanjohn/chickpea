@@ -349,6 +349,7 @@ test('behavioral evaluation corpus is versioned, synthetic, and guide-bound', as
     baseline: { id: string };
     cases: Array<{
       id: string;
+      actingScope?: string;
       prompt: string;
       expected: Record<string, unknown> & {
         assertions: string[];
@@ -366,6 +367,7 @@ test('behavioral evaluation corpus is versioned, synthetic, and guide-bound', as
   for (const entry of corpus.cases) {
     assert.match(entry.id, /^[a-z0-9][a-z0-9-]+$/);
     assert.ok(entry.prompt.length >= 20);
+    assert.ok(['user_agent', 'system_chickpea'].includes(entry.actingScope ?? 'user_agent'));
     for (const field of [
       'activation', 'skillCreation', 'posture', 'placements', 'requiredInspections',
       'toolClass', 'mutationAllowance', 'approvalPosture', 'assertions', 'criticalAssertions',
@@ -383,6 +385,11 @@ test('behavioral evaluation corpus is versioned, synthetic, and guide-bound', as
   assert.equal(immediateCreation?.expected.mutationAllowance, 'direct_apply');
   assert.equal(previewOnlyCreation?.expected.mutationAllowance, 'none');
   assert.ok(previewOnlyCreation?.expected.criticalAssertions.includes('no_mutation'));
+  assert.equal(immediateCreation?.actingScope, 'system_chickpea');
+  assert.equal(previewOnlyCreation?.actingScope, 'system_chickpea');
+  assert.ok(corpus.cases
+    .filter(({ id }) => !id.startsWith('new-agent-'))
+    .every(({ actingScope }) => (actingScope ?? 'user_agent') === 'user_agent'));
 });
 
 test('the deployed MCP verifier stays pinned to the canonical guide version', async () => {

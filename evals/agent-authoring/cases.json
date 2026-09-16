@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "corpusVersion": "1.5.5",
+  "corpusVersion": "1.5.6",
   "guideVersion": "1.0.38",
   "baseline": {
     "id": "no-guide-v1",
@@ -338,6 +338,7 @@
     },
     {
       "id": "new-agent-single-approval",
+      "actingScope": "system_chickpea",
       "prompt": "Create a new Editorial Agent named Copy Desk that improves headlines and short marketing copy while preserving the writer's meaning.",
       "expected": {
         "activation": "required",
@@ -354,6 +355,7 @@
     },
     {
       "id": "new-agent-preview-only",
+      "actingScope": "system_chickpea",
       "prompt": "Create a new Release Notes Agent named Draftsmith that turns merged changes into concise customer updates. Show me the complete draft first, and do not create or apply anything until I approve it.",
       "expected": {
         "activation": "required",
