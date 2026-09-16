@@ -122,6 +122,63 @@ test('Agent View message context is stripped before ordinary DM normalization', 
   assert.deepEqual(normalizeSlackTurn(adversarial, options), normalizeSlackTurn(absent, options));
 });
 
+test('thread broadcasts preserve ordinary DM and channel reply routing and message identity', () => {
+  for (const message of [
+    dmMessage({ event: { thread_ts: '1782770400.000100' } }),
+    channelThreadMessage(),
+    privateChannelThreadMessage(),
+    channelThreadMessage({ event: { text: '<@UBOT> please check this' } }),
+  ]) {
+    const broadcast = structuredClone(message);
+    broadcast.event.subtype = 'thread_broadcast';
+    // Slack includes a rendering copy of the root. Its author and content
+    // must not replace the human reply's author, text, or routing coordinates.
+    Object.assign(broadcast.event, {
+      root: { bot_id: 'B_OTHER', text: 'Earlier bot answer', ts: message.event.thread_ts },
+    });
+    const ordinary = normalizeSlackTurn(message, { botUserId: 'UBOT' });
+    assert.equal(ordinary.status, 'runnable');
+    assert.deepEqual(normalizeSlackTurn(broadcast, { botUserId: 'UBOT' }), ordinary);
+
+    // A second event for the same message must retain the message identity
+    // used by admission to deduplicate Slack's event fan-out.
+    broadcast.event_id = 'Ev_BROADCAST';
+    const fanout = normalizeSlackTurn(broadcast, { botUserId: 'UBOT' });
+    assert.ok(fanout.status === 'runnable' && ordinary.status === 'runnable');
+    assert.deepEqual(fanout.turn, { ...ordinary.turn, eventId: 'Ev_BROADCAST' });
+  }
+});
+
+test('thread broadcasts retain bot, self, system, and missing-author safeguards', () => {
+  for (const [authorship, reason] of [
+    [{ bot_id: 'B_OTHER' }, 'bot_message'],
+    [{ app_id: 'A_OTHER' }, 'bot_message'],
+    [{ bot_profile: { app_id: 'A_OTHER' } }, 'bot_message'],
+    [{ user: 'UBOT' }, 'self_message'],
+    [{ user: 'USLACK' }, 'slack_system_user'],
+  ] as const) {
+    const payload = dmMessage({ event: {
+      subtype: 'thread_broadcast', thread_ts: '1782770400.000100', ...authorship,
+    } });
+    assert.deepEqual(normalizeSlackTurn(payload, { botUserId: 'UBOT' }), {
+      status: 'ignored', reason,
+    });
+  }
+  const anonymous = dmMessage({ event: { subtype: 'thread_broadcast', thread_ts: '1782770400.000100' } });
+  delete anonymous.event.user;
+  assert.deepEqual(normalizeSlackTurn(anonymous, { botUserId: 'UBOT' }), {
+    status: 'ignored', reason: 'missing_user',
+  });
+});
+
+test('accepting thread broadcasts does not admit message mutations or system subtypes', () => {
+  for (const subtype of ['message_changed', 'message_deleted', 'message_replied', 'channel_join', 'bot_message']) {
+    assert.deepEqual(normalizeSlackTurn(dmMessage({ event: { subtype } }), { botUserId: 'UBOT' }), {
+      status: 'ignored', reason: 'message_subtype',
+    });
+  }
+});
+
 test('a suggested prompt click remains an ordinary user-rooted DM turn', () => {
   const payload = dmMessage({
     event: { text: 'Help me plan this task:' },

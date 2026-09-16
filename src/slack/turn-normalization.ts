@@ -13,6 +13,7 @@ import {
 } from './types.ts';
 import type { SlackInboundEnvelope } from './transport/types.ts';
 import { preserveSlackRichTextLinks } from './rich-text-links.ts';
+import { isSlackContentMessageSubtype } from './message-subtypes.ts';
 
 interface SlackTurnNormalizationOptions {
   botUserId?: string;
@@ -134,7 +135,7 @@ export function normalizeSlackTurn(
   }
 
   const event = payload.event;
-  if (event.subtype && event.subtype !== 'file_share') {
+  if (!isSlackContentMessageSubtype(event.subtype)) {
     return { status: 'ignored', reason: 'message_subtype' };
   }
   if (isAppAuthoredMessage(event)) {
