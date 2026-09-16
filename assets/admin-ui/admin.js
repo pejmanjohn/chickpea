@@ -8785,7 +8785,7 @@
     var keySource = keyConnected ? (summary.status === "env" ? "Environment managed" : "Saved in Chickpea") : "Add an API key for chat and images.";
     var head = '<div class="prov-head">' + providerCardIdentityHtml("openai", meta) +
       '<div class="prov-status"><span class="badge ' + (activeReady ? 'badge-on' : 'badge-off') + '"><span class="dot"></span>' + (activeReady ? 'Connected' : 'Needs attention') + '</span></div></div>';
-    var choices = '<div class="provider-step-list" aria-label="OpenAI chat method">' +
+    var choices = '<div class="provider-step-list openai-auth-methods" aria-label="OpenAI chat method">' +
       openAiAuthChoiceHtml("api_key", "API key", keySource, keyConnected, active === "api_key", !!state.openAiSubscription.busy) +
       openAiAuthChoiceHtml("subscription", "ChatGPT subscription", subscriptionConnected ? "Connected for supported chat models." : "Connect an account to use its subscription for chat.", subscriptionConnected, active === "subscription", !!state.openAiSubscription.busy) + '</div>';
     var keyBody = '<div class="provider-card-copy"><p><span class="openai-auth-title">API key</span> &middot; ' + esc(keySource) + '</p>' +
