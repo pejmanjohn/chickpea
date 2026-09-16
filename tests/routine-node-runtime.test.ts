@@ -9,6 +9,7 @@ import {
   NodeRoutineScheduler,
   NodeRoutineSchedulerLifecycle,
 } from '../src/routines/node-runtime.ts';
+import { requireRoutineScheduling, resolveRoutineCapability } from '../src/routines/scheduler-adapter.ts';
 
 test('Node routine scheduler wakes at startup, coalesces overlapping minute ticks, and stops', async () => {
   const ticks: Array<() => void> = [];
@@ -139,3 +140,33 @@ test('Node scheduler lifecycle publishes readiness before first wake and seriali
 async function spin(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
+
+test('shutdown lets an in-flight schedule retry pass its authority gate before withdrawing availability', async () => {
+  let available = false;
+  let finishRead!: () => void;
+  const read = new Promise<void>((resolve) => { finishRead = resolve; });
+  const errors: string[] = [];
+  let saved = false;
+  const scheduler = new NodeRoutineScheduler({
+    runHeartbeat: async () => {
+      // The real retry reads nextScheduleActionDueAt before it creates a
+      // management service with a snapshot of this capability.
+      await read;
+      requireRoutineScheduling(resolveRoutineCapability({ cloudflare: false, nodeAvailable: available }));
+      saved = true;
+    },
+    onError: (error) => errors.push(error),
+  });
+  const lifecycle = new NodeRoutineSchedulerLifecycle({
+    create: () => scheduler,
+    setAvailable: (value) => { available = value; },
+  });
+  await lifecycle.start();
+  const stopping = lifecycle.stop();
+  await spin();
+  finishRead();
+  await stopping;
+  assert.equal(saved, true, 'shutdown must drain the retry without permanently rejecting it');
+  assert.deepEqual(errors, []);
+  assert.equal(available, false);
+});

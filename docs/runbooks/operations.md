@@ -37,8 +37,10 @@ runtime. It checks for due work immediately and every minute, using the same
 missed-slot policy as Cloudflare. A stopped or sleeping computer is not woken;
 the startup check recovers eligible missed work when Chickpea runs again. The
 wrapper also retries durable Slack schedule actions and performs Work and image
-retention maintenance. Starting a second process against the same state database
-is refused before the app runtime starts.
+retention maintenance. Starting a second production launcher against the same
+state database is refused before the app runtime starts. The development server
+and raw `dist/server.mjs` entry do not participate in this guard; never run them
+against a production installation's state.
 
 ### Persist state and secrets
 
@@ -114,9 +116,9 @@ WantedBy=multi-user.target
 ```
 
 The production entry point handles SIGTERM, stops and drains the scheduler before
-Flue, and waits for shutdown with a 60-second internal deadline. The launcher
-enforces one process per state database. Do not use a network filesystem as a
-substitute for shared-state support.
+Flue, and waits for shutdown with a 60-second internal deadline. Production
+launchers enforce one process per state database. Do not use a network filesystem
+as a substitute for shared-state support.
 
 Terminate HTTPS at a reverse proxy and forward to port 3000. Keep the default
 loopback binding when the proxy runs on the same host. If the proxy requires a
@@ -164,6 +166,31 @@ npm run start:node -- \
 
 Use a process supervisor for unattended operation. This foreground recipe does
 not install a LaunchAgent or make Chickpea start at login.
+
+### Recover a stale Node process owner
+
+After an unclean exit, the launcher automatically replaces an owner whose PID
+no longer exists. If the operating system reused that PID, or the service account
+cannot inspect it, startup refuses to take over. It does not assume another
+process is safe to displace.
+
+Inspect `owner_pid`, `owner_token`, and `acquired_at` in the state database's
+`chickpea_node_runtime_owner` table. Use `ps` to identify that PID and `lsof` to
+check which processes have the configured SQLite files open. If Chickpea is
+running, stop it through its owning supervisor. If process access is denied,
+resolve the service account permissions before proceeding.
+
+Only after verifying that no Chickpea process is using this installation, back
+up the stopped state directory and remove the exact stale row. Substitute the
+observed PID and token; do not delete the database or clear an unverified owner:
+
+```sql
+DELETE FROM chickpea_node_runtime_owner
+WHERE singleton = 1 AND owner_pid = <observed_pid>
+  AND owner_token = '<observed_token>';
+```
+
+Restart using the production launcher and the same environment file.
 
 ### Back up and restore Node
 

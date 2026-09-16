@@ -195,10 +195,16 @@ export class NodeRoutineSchedulerLifecycle {
 
   stop(): Promise<void> {
     return this.#enqueue(async () => {
-      this.#setAvailable(false);
       const scheduler = this.#active;
       this.#active = undefined;
-      await scheduler?.stop();
+      try {
+        // A retry already in flight can construct its management service after
+        // an await. Keep scheduling available until it finishes so shutdown
+        // cannot turn that pending action into an unsupported-target failure.
+        await scheduler?.stop();
+      } finally {
+        this.#setAvailable(false);
+      }
     });
   }
 
