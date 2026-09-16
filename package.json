@@ -93,6 +93,7 @@
     "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
     "dev": "vite dev --config vite.node.config.ts",
+    "start:node": "node -- scripts/start-node.mjs",
     "dev:cf": "node scripts/chickpea-local-worker.mjs",
     "flue:build": "vite build --config vite.node.config.ts",
     "flue:build:cf": "vite build --config vite.config.ts && node scripts/flue-build-cf.mjs --validate-only && node scripts/verify-worker-size.mjs",

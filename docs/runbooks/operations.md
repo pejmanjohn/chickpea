@@ -23,10 +23,13 @@ npm ci
 npm run flue:build
 ```
 
-The entry point is `dist/server.mjs`, not the Vite development server. Keep the
-release checkout, its `node_modules`, `migrations/`, and `assets/` available at runtime.
-The built server reads runtime environment variables; it does not automatically
-load your development `.env` file.
+Run production through `npm run start:node -- --env-file <path>`, not the Vite
+development server. The wrapper validates Node, loads only the explicitly named
+environment file, and imports Flue's non-listening `dist/app.mjs` artifact so it
+can bind to `HOST` (default `127.0.0.1`) and `PORT` (default `3000`). Existing
+process environment values take precedence over values in the file. Keep the
+release checkout, its `node_modules`, `migrations/`, and `assets/` available at
+runtime.
 
 ### Persist state and secrets
 
@@ -38,6 +41,7 @@ Do not put state inside a checkout that will be replaced during upgrades.
 
 ```dotenv
 NODE_ENV=production
+HOST=127.0.0.1
 PORT=3000
 TAG_DB_PATH=/var/lib/chickpea/transcripts.sqlite
 SLACK_STATE_DB_PATH=/var/lib/chickpea/state.sqlite
@@ -84,7 +88,7 @@ User=chickpea
 Group=chickpea
 WorkingDirectory=/opt/chickpea/current
 EnvironmentFile=/etc/chickpea/runtime.env
-ExecStart=/usr/bin/node dist/server.mjs
+ExecStart=/usr/bin/node scripts/start-node.mjs --env-file /etc/chickpea/runtime.env
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
@@ -104,13 +108,52 @@ The production entry point handles SIGTERM and waits for shutdown, with a
 60-second internal deadline. Do not run several processes against these SQLite
 files or use a network filesystem as a substitute for shared-state support.
 
-Terminate HTTPS at a reverse proxy and forward to port 3000. The current entry
-point exposes `PORT`, not a `HOST` environment setting, so use firewall/container
-network rules to make the Node port unreachable from the public internet.
+Terminate HTTPS at a reverse proxy and forward to port 3000. Keep the default
+loopback binding when the proxy runs on the same host. If the proxy requires a
+different interface, set `HOST` deliberately and use firewall/container network
+rules to make the Node port unreachable from the public internet.
 Preserve the public host and HTTPS scheme through the proxy, avoid request-body
 logging, and configure streaming rather than buffering Slack-related responses.
 Complete Slack setup using the exact HTTPS origin. Verify sign-in, a real Slack
 reply, and state surviving a service restart before routing normal traffic.
+
+### Run in the foreground on macOS
+
+Keep production state outside the release checkout and lock it to your account:
+
+```sh
+install -d -m 700 "$HOME/Library/Application Support/Chickpea/node"
+install -d -m 700 "$HOME/Library/Application Support/Chickpea/node/state"
+test -e "$HOME/Library/Application Support/Chickpea/node/runtime.env" || \
+  install -m 600 /dev/null "$HOME/Library/Application Support/Chickpea/node/runtime.env"
+chmod 600 "$HOME/Library/Application Support/Chickpea/node/runtime.env"
+```
+
+The conditional creation preserves an existing environment file and its stable
+auth secret. Do not truncate or replace that file during an update.
+
+Put the production variables above in `runtime.env`, using these stable state
+paths (write the absolute `/Users/...` paths; environment files do not expand
+`$HOME`):
+
+```dotenv
+HOST=127.0.0.1
+PORT=3000
+TAG_DB_PATH=/Users/you/Library/Application Support/Chickpea/node/state/transcripts.sqlite
+SLACK_STATE_DB_PATH=/Users/you/Library/Application Support/Chickpea/node/state/app.sqlite
+CHICKPEA_AUTH_DB_PATH=/Users/you/Library/Application Support/Chickpea/node/state/auth.sqlite
+CHICKPEA_CREDENTIAL_KEYRING_PATH=/Users/you/Library/Application Support/Chickpea/node/state/credential-keyring.json
+```
+
+Then start the built release in the foreground:
+
+```sh
+npm run start:node -- \
+  --env-file "$HOME/Library/Application Support/Chickpea/node/runtime.env"
+```
+
+Use a process supervisor for unattended operation. This foreground recipe does
+not install a LaunchAgent or make Chickpea start at login.
 
 ### Back up and restore Node
 
