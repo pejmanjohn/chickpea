@@ -23,9 +23,9 @@
 
 <br /><br />
 
-**[Get started with your coding agent](#get-started-with-your-coding-agent)** &nbsp; · &nbsp; [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea)
+**[Get started with your coding agent](#get-started-with-your-coding-agent)** &nbsp; · &nbsp; [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/chickpea) &nbsp; · &nbsp; **[Install on a Mac](INSTALL_CHICKPEA_NODE.md)**
 
-<sub>Both routes install Chickpea on your own Cloudflare account.</sub>
+<sub>Run Chickpea in your own Cloudflare account or on your own Mac.</sub>
 
 Already installed? [Connect via MCP](#connect-via-mcp) · [Update](#update-chickpea)
 
@@ -300,7 +300,7 @@ Memory is advisory, never policy. Live instructions, current permissions, and ve
 
 Schedules belong to an Agent, target a granted Slack destination or a private DM thread, and record their creator as **Runs as**. Ask for one in Slack and the Agent sets it up.
 
-Every run rechecks the whole chain: is the Agent alive, does it still have the channel, is the creator still a member, do the required connections still work, does policy still allow it. If authority disappears, future runs pause. Chickpea never silently reassigns work to someone else. Cloudflare supplies the production scheduler; Node keeps inspection and shutdown controls but runs no timers.
+Every run rechecks the whole chain: is the Agent alive, does it still have the channel, is the creator still a member, do the required connections still work, does policy still allow it. If authority disappears, future runs pause. Chickpea never silently reassigns work to someone else. Cloudflare supplies alarms; the production Node launcher checks for due work at startup and every minute while its process is running.
 
 ---
 
@@ -367,6 +367,11 @@ project lives.
 
 The [installation guide](INSTALL_CHICKPEA_CLOUDFLARE.md) stays current on `main`;
 the installation uses a stable application release.
+
+To run Chickpea on a Mac without deploying a Cloudflare Worker, use
+[Install Chickpea on a Mac with Node](INSTALL_CHICKPEA_NODE.md). It covers the
+pinned Node release, a stable HTTPS tunnel, private persistent state, a
+customer-owned Slack app, and foreground operation.
 
 ### Connect via MCP
 
@@ -467,32 +472,15 @@ Uses Cloudflare Workers, Durable Objects, D1, and Workers AI.
 
 ### Node
 
-Requires Node **24.x, minimum 24.20.0**. Use an existing Node manager to select the `.nvmrc` baseline (`nvm install && nvm use` with nvm), or a compatible Homebrew `node@24` scoped to the current shell; do not replace an unrelated global runtime.
+For a production Mac installation, follow
+[Install Chickpea on a Mac with Node](INSTALL_CHICKPEA_NODE.md). It uses Node
+24.20.0, a built release, persistent SQLite state, a stable public HTTPS tunnel,
+and a customer-owned Slack app. It does not deploy a Cloudflare Worker.
 
-```bash
-git clone https://github.com/pejmanjohn/chickpea && cd chickpea
-npm ci
-
-# 32 random bytes, stable across restarts
-export CHICKPEA_AUTH_SECRET=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
-
-npm run setup:link -- https://your-chickpea.example
-```
-
-`setup:link` takes the URL your deployment will answer on and prints a `CHICKPEA_SETUP_CAPABILITY_DIGEST`, a `CHICKPEA_SETUP_CAPABILITY_ISSUED_AT`, and the private setup link itself. Export the two variables:
-
-```bash
-export CHICKPEA_SETUP_CAPABILITY_DIGEST=...
-export CHICKPEA_SETUP_CAPABILITY_ISSUED_AT=...
-
-npm run dev
-```
-
-Then open the private link and follow the same Slack flow as above. `npm run dev`
-is for development. For a supervised production server, persistent state paths,
-HTTPS, backups, and upgrades, follow [Operating Chickpea](docs/runbooks/operations.md).
-
-State defaults to SQLite. Set `TAG_DB_PATH=:memory:` and `SLACK_STATE_DB_PATH=:memory:` only for disposable development.
+The production launcher is `npm run start:node -- --env-file <path>`.
+`npm run dev` and in-memory databases are for disposable development only. For
+Linux supervision, backups, restores, and upgrades, use
+[Operating and upgrading Chickpea](docs/runbooks/operations.md).
 
 ---
 
@@ -526,7 +514,7 @@ The full list, including per-connector Composio auth config IDs and the Google A
 - Node durability is single-host SQLite. Multi-instance Node needs a shared state service.
 - The compressed Worker upload is about 2.5 MiB, under the Workers Free plan's 3 MiB limit; `npm run build` fails if it grows past the budget in `scripts/verify-worker-size.mjs`. Public images and the Admin application's browser code use Static Assets in the same deployment, which do not count toward that limit.
 - Anonymous, content-free [product telemetry](TELEMETRY.md) is enabled by default and has a complete operator opt-out.
-- The coding sandbox and scheduled execution are Cloudflare-only. Node uses the in-memory execution path and no scheduler.
+- The coding sandbox is Cloudflare-only. Node uses the in-memory execution path and runs scheduled work only while its production process is active; startup applies the same eligible missed-run policy after downtime.
 - Earlier experimental schemas may be incompatible. Never reset production state to upgrade; follow the [compatibility and recovery policy](docs/runbooks/operations.md#upgrade-and-compatibility-policy).
 
 Contributions go through GitHub pull requests; see [CONTRIBUTING.md](CONTRIBUTING.md).

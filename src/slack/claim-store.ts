@@ -335,7 +335,7 @@ export class SlackStateLogic {
         ) {
           throw new Error('Turn job authority does not match its canonical Run.');
         }
-        turnJobs.enqueue(input.turnJob);
+        turnJobs.enqueueInTransaction(input.turnJob);
       }
       if (input.presentation) {
         if (!input.turnJob || !presentations) {

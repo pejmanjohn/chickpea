@@ -1034,6 +1034,55 @@ test('setup GET renders the durable stage directly and never writes it', async (
   }
 });
 
+test('HTTP setup explains the HTTPS requirement without creating setup state', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const authority = await mintSetupCapability({ now: () => NOW });
+  const localOrigin = 'http://localhost:3595';
+  try {
+    const app = createAdminRoutes({
+      identity,
+      slackCredentials: { state: identity, keyring: generateCredentialKeyring('key_v1') },
+      slackAppCreationNow: () => NOW,
+    });
+    const env = setupEnv(authority);
+
+    for (const path of ['/admin/setup', '/admin/setup/manual']) {
+      const page = await app.request(`${localOrigin}${path}`, {}, env);
+      const html = await page.text();
+      assert.equal(page.status, 200);
+      assert.match(html, /Connect Slack using HTTPS/);
+      assert.match(html, /keep running on this computer/);
+      assert.match(html, /SLACK_TAG_PUBLIC_URL/);
+      assert.match(html, /Generate a private setup link[\s\S]*save[\s\S]*Restart Chickpea/);
+      assert.doesNotMatch(html, /Add Chickpea to Slack|Use your own Slack app/);
+      assert.doesNotMatch(html, /data-primary-action=/);
+
+      const rejected = await app.request(`${localOrigin}${path}`, {
+        method: 'POST',
+        headers: {
+          origin: localOrigin,
+          'sec-fetch-site': 'same-origin',
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({ action: 'open', capability: authority.capability }),
+      }, env);
+      assert.equal(rejected.status, 400);
+      assert.match(await rejected.text(), /Connect Slack using HTTPS/);
+      assert.equal(
+        await identity.getSlackSetupTransaction('setup_default'),
+        undefined,
+        'unsupported HTTP setup must not create durable setup state',
+      );
+    }
+
+    const remoteHttp = await app.request('http://chickpea.example/admin/setup', {}, env);
+    assert.equal(remoteHttp.status, 400);
+    assert.match(await remoteHttp.text(), /Connect Slack using HTTPS/);
+  } finally {
+    identity.close();
+  }
+});
+
 test('setup GET reflects a later durable stage without exposing app identifiers', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const authority = await mintSetupCapability({ now: () => NOW });

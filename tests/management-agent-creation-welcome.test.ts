@@ -8,7 +8,10 @@ import {
 } from '../src/config/presets.ts';
 import { selectAgentCreationConnectors } from '../src/management/agent-creation-welcome.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
-import { managementActorOriginKey } from '../src/management/contracts.ts';
+import {
+  managementActorOriginKey,
+  managementApprovalScopeKey,
+} from '../src/management/contracts.ts';
 import type { ManagementActorContext } from '../src/management/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
@@ -167,6 +170,16 @@ test('a Slack creation freezes one welcome with connector handoffs and its publi
         agentId: CHICKPEA_AGENT_ID,
       },
     };
+    const installation = await f.config.ensureWorkspaceInstallation({
+      workspaceId: f.admin.binding.slackTeamId,
+      transportMode: 'direct',
+      defaultAgentId: CHICKPEA_AGENT_ID,
+    });
+    await f.config.updateWorkspaceInstallation(
+      installation.workspaceId,
+      { runtimeContract: 'chickpea-v1', health: 'healthy' },
+      installation.revision,
+    );
     const applied = await f.service.applyWorkspaceChanges({
       context,
       idempotencyKey: 'create-deck-with-connectors',
@@ -199,13 +212,41 @@ test('a Slack creation freezes one welcome with connector handoffs and its publi
       },
     }, created.revision);
 
+    const pendingProposal = await f.management.putChangeSetProposal({
+      proposalId: 'changeset_deck_welcome_reach',
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: managementActorOriginKey(context),
+      approvalScopeKey: managementApprovalScopeKey(context),
+      idempotencyKey: 'deck-welcome-reach',
+      guideVersion: 'test',
+      authoringReason: 'agent_edit',
+      operations: [{
+        itemId: 'reach',
+        kind: 'grant_agent_channel',
+        workspaceId: f.admin.binding.slackTeamId,
+        channelId: 'C_DECK_WELCOME',
+        agentId: created.id,
+        expectedRevision: 0,
+      }],
+      digest: 'd'.repeat(64),
+      preview: { summary: 'Add Deck to a Channel', changes: [], missingSetup: [] },
+      targetRevisions: {},
+      at: 1_800_000_000_000,
+    });
+
     const first = await f.service.finalizeSlackAgentCreationWelcome({
       context,
       operationId: applied.operationId,
       creationItemId: 'create',
       agentId: 'agent_deck_welcome',
       connectorMentions: ['Notion', 'Supabase', 'Google Slides'],
-      followOnNotices: [],
+      pendingProposalId: pendingProposal.proposalId,
+      followOnNotices: [{
+        kind: 'proposal',
+        text: 'Add Deck to the requested Channel? Reply `approve` to continue.',
+      }],
       presentationRunId: 'run_deck_welcome',
       turnJobId: 'turn_deck_welcome',
     });
@@ -270,6 +311,7 @@ test('a Slack creation freezes one welcome with connector handoffs and its publi
       avatarUrl,
     );
     assert.deepEqual(receipt.publication, { status: 'complete', incomplete: [] });
+    assert.equal(receipt.deferredHandoffProposalId, pendingProposal.proposalId);
     assert.deepEqual(receipt.connectorActions?.map(({ label }) => label), [
       'Google Slides',
       'Notion',
@@ -352,7 +394,11 @@ test('a rejecting managed-connector availability check still queues the welcome'
       creationItemId: 'create',
       agentId: 'agent_connector_availability',
       connectorMentions: ['Notion'],
-      followOnNotices: [],
+      pendingProposalId: 'changeset_untrusted_reply_data',
+      followOnNotices: [{
+        kind: 'proposal',
+        text: 'Untrusted reply data must not retain thread ownership.',
+      }],
       turnJobId: 'turn_connector_availability',
     });
 
@@ -362,6 +408,7 @@ test('a rejecting managed-connector availability check still queues the welcome'
         finalized.outbox.receipt.kind !== 'agent_created_welcome') {
       assert.fail('expected Agent welcome receipt');
     }
+    assert.equal(finalized.outbox.receipt.deferredHandoffProposalId, undefined);
     assert.deepEqual(finalized.outbox.receipt.connectorActions, []);
     assert.deepEqual(finalized.outbox.receipt.connectorNotices, [{
       kind: 'unavailable',

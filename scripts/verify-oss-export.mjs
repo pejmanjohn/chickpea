@@ -744,6 +744,7 @@ function verifyNpmPackManifest(entries, packageJson) {
     'AGENTS.md',
     'SETUP_AGENT.md',
     'INSTALL_CHICKPEA_CLOUDFLARE.md',
+    'INSTALL_CHICKPEA_NODE.md',
     'UPDATE_CHICKPEA_CLOUDFLARE.md',
     'TELEMETRY.md',
     'assets/admin-agent.png',

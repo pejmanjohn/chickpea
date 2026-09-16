@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai';
 import {
   bash, init, instrument, useDataWriter, useDelivery, useInstruction, useModel,
   useResponseStart, useSandbox, useTool,
-  type AgentReply, type DeliveredMessage, type LlmMessage,
+  type AgentReply, type DeliveredMessage, type LlmMessage, type Sandbox,
 } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import { Bash, InMemoryFs } from 'just-bash';
@@ -14,7 +17,10 @@ import * as v from 'valibot';
 import { CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME, CHICKPEA_SLACK_AGENT_NAME } from '../src/agents/names.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { createRuntimePlanArtifactTools } from '../src/agents/slack-thread.ts';
-import type { CustomAgentConfig } from '../src/config/types.ts';
+import {
+  closeNodeStateStores, getConfigStore, getSlackCredentialDependencies,
+} from '../src/config/state-backend.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID, type CustomAgentConfig } from '../src/config/types.ts';
 import {
   assertArtifactDeliveryAllowed, bindCurrentRequestConversation,
   boundCurrentRequestConversation, memoryToolPolicyInterceptor, observeMemoryToolPolicy,
@@ -28,6 +34,9 @@ import {
   useSlackArtifactReceipts, type SlackArtifactReceipts,
 } from '../src/slack/artifact-receipts.ts';
 import { stageArtifactWithReceipt } from '../src/slack/artifact-staging.ts';
+import {
+  invalidateSlackInstallationCredentialCache, writeSlackInstallationCredentials,
+} from '../src/slack/installation-credentials.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import {
   COMPLETE_FILE_DELIVERY_TOOL, FILE_COMPLETION_INSTRUCTION, FILE_DELIVERY_DATA_NAME,
@@ -37,6 +46,7 @@ import {
 import type { SlackFileStageInput, SlackFileTransport } from '../src/slack/file-transport.ts';
 import { promptSlackThreadAgent, type SlackFlueDispatchState } from '../src/slack/flue-dispatch.ts';
 import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
+import { withEnv } from './helpers/env.ts';
 
 const MODEL = 'faux/file-delivery';
 const CONVERSATION = { workspaceId: 'TPROBE', channelId: 'CPROBE', threadTs: '1789230000.000100' };
@@ -159,6 +169,24 @@ const writeReport = (path = '/home/user/report.md') => call('write', { path, con
 const completeReport = (path = '/home/user/report.md') =>
   call(COMPLETE_FILE_DELIVERY_TOOL, { files: [{ path, filename: 'report.md' }] });
 
+function artifactSandbox(bytes: Uint8Array): Sandbox {
+  return {
+    cwd: '/home/user',
+    resolvePath(requested) {
+      return requested.startsWith('/') ? requested : `/home/user/${requested}`;
+    },
+    async exec() { return { stdout: '', stderr: '', exitCode: 0 }; },
+    async readFile() { return new TextDecoder().decode(bytes); },
+    async readFileBuffer() { return bytes.slice(); },
+    async writeFile() {},
+    async stat() { return { isFile: true, isDirectory: false, size: bytes.byteLength }; },
+    async readdir() { return []; },
+    async exists() { return true; },
+    async mkdir() {},
+    async rm() {},
+  };
+}
+
 test('artifact declarations expose only export tools during file-delivery repair', () => {
   let receipts: SlackArtifactReceipts = { schemaVersion: 1, receipts: [] };
   const accumulator = createArtifactReceiptAccumulator((update) => { receipts = update(receipts); });
@@ -178,6 +206,118 @@ test('artifact declarations expose only export tools during file-delivery repair
       ? ['post_artifact', COMPLETE_FILE_DELIVERY_TOOL]
       : ['post_artifact', COMPLETE_FILE_DELIVERY_TOOL, 'generate_image', 'recover_image']);
   }
+});
+
+test('default runtime-plan artifact binding uses the durable Node Slack installation', async (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'chickpea-node-artifact-binding-'));
+  const statePath = path.join(directory, 'state.sqlite');
+  const keyringPath = path.join(directory, 'credential-keyring.json');
+  const bytes = new TextEncoder().encode('MAC_LOCAL_FILE_TEST\n');
+  const fileId = 'FNODEARTIFACT1';
+  const permalink = `https://example.slack.com/files/UTEST/${fileId}/proof.txt`;
+  const requests: string[] = [];
+  let receipts: SlackArtifactReceipts = { schemaVersion: 1, receipts: [] };
+
+  await withEnv({
+    TAG_DB_PATH: statePath,
+    SLACK_STATE_DB_PATH: statePath,
+    CHICKPEA_CREDENTIAL_KEYRING_PATH: keyringPath,
+    SLACK_API_URL: 'https://slack.invalid/api/',
+  }, async () => {
+    closeNodeStateStores();
+    const config = getConfigStore();
+    await config.ensureWorkspaceInstallation({
+      workspaceId: CONVERSATION.workspaceId,
+      transportMode: 'direct',
+      teamId: CONVERSATION.workspaceId,
+      appId: 'ANODEARTIFACT',
+      botUserId: 'UBOTNODE',
+    });
+    await writeSlackInstallationCredentials(
+      getSlackCredentialDependencies(),
+      WORKSPACE_SLACK_INSTALLATION_ID,
+      null,
+      {
+        botToken: 'xoxb-node-artifact-test',
+        signingSecret: 'node-artifact-signing-secret',
+        botUserId: 'UBOTNODE',
+        appId: 'ANODEARTIFACT',
+        teamId: CONVERSATION.workspaceId,
+      },
+    );
+    t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith('/auth.test')) {
+        assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer xoxb-node-artifact-test');
+        return Response.json({
+          ok: true, app_id: 'ANODEARTIFACT', team_id: CONVERSATION.workspaceId,
+          user_id: 'UBOTNODE', user: 'Chickpea',
+        });
+      }
+      if (url.endsWith('/files.getUploadURLExternal')) {
+        return Response.json({ ok: true, file_id: fileId, upload_url: 'https://uploads.slack.test/node-artifact' });
+      }
+      if (url === 'https://uploads.slack.test/node-artifact') {
+        assert.deepEqual(new Uint8Array(await new Response(init?.body).arrayBuffer()), bytes);
+        return new Response('OK');
+      }
+      assert.ok(url.endsWith('/files.completeUploadExternal'), url);
+      return Response.json({ ok: true, files: [{ id: fileId, permalink, size: bytes.byteLength }] });
+    });
+
+    const accumulator = createArtifactReceiptAccumulator((update) => {
+      receipts = update(receipts);
+    });
+    const postArtifact = createRuntimePlanArtifactTools(
+      PLAN,
+      accumulator,
+      (next) => { receipts = next; },
+    ).find((tool) => tool.name === 'post_artifact');
+    assert.ok(postArtifact);
+    const runPostArtifact = postArtifact.run as unknown as (input: {
+      toolCallId: string;
+      log: { info(): void; warn(): void; error(): void };
+      data: { path: string; filename: string };
+      harness: { sandbox: Sandbox };
+    }) => Promise<{ output: unknown }>;
+    const result = await runPostArtifact({
+      toolCallId: 'node-artifact-binding',
+      log: { info() {}, warn() {}, error() {} },
+      data: { path: '/home/user/proof.txt', filename: 'proof.txt' },
+      harness: { sandbox: artifactSandbox(bytes) },
+    });
+
+    assert.deepEqual(result, {
+      output: { attached: true, filename: 'proof.txt', byteLength: bytes.byteLength },
+    });
+    assert.deepEqual(requests, [
+      'https://slack.invalid/api/auth.test',
+      'https://slack.invalid/api/files.getUploadURLExternal',
+      'https://uploads.slack.test/node-artifact',
+      'https://slack.invalid/api/files.completeUploadExternal',
+    ]);
+    assert.deepEqual(receipts.receipts.map((receipt) => ({
+      fileId: receipt.fileId,
+      filename: receipt.filename,
+      byteLength: receipt.byteLength,
+      destination: receipt.destination,
+    })), [{
+      fileId,
+      filename: 'proof.txt',
+      byteLength: bytes.byteLength,
+      destination: {
+        workspaceId: CONVERSATION.workspaceId,
+        agentId: AGENT.id,
+        channelId: CONVERSATION.channelId,
+        threadTs: CONVERSATION.threadTs,
+      },
+    }]);
+  }).finally(() => {
+    invalidateSlackInstallationCredentialCache();
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  });
 });
 
 test('native file-delivery completion preserves authority, response state, and bounded recovery', { timeout: 30_000 }, async (t) => {

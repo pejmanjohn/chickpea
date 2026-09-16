@@ -1,7 +1,9 @@
 # Operating and upgrading Chickpea
 
 This guide covers a single-host Node deployment and the existing Cloudflare
-deployment wrapper. For first-time Slack setup, use [SETUP_AGENT.md](../../SETUP_AGENT.md).
+deployment wrapper. For a first-time production Mac installation, use
+[Install Chickpea on a Mac with Node](../../INSTALL_CHICKPEA_NODE.md). For
+first-time Slack setup, use [SETUP_AGENT.md](../../SETUP_AGENT.md).
 
 ## Production Node
 
@@ -9,9 +11,10 @@ Use Node 24.x, minimum 24.20.0, and one running Chickpea process per state direc
 Use the 24.20.0 baseline in `.nvmrc` for reproducible installs and verification.
 Later Node 24 updates are supported; other majors are outside the support policy.
 
-Node does not support scheduled execution or the coding sandbox. Use your own Slack
-app: the Node shared-gateway path does not yet have Cloudflare's durable event
-admission guarantee. See [gateway data handling](../shared-gateway-data-handling.md).
+Node supports scheduled execution while the Chickpea process is running, but not
+the coding sandbox. Use your own Slack app: the Node shared-gateway path does not
+yet have Cloudflare's durable event admission guarantee. See
+[gateway data handling](../shared-gateway-data-handling.md).
 
 ### Build a release
 
@@ -23,10 +26,23 @@ npm ci
 npm run flue:build
 ```
 
-The entry point is `dist/server.mjs`, not the Vite development server. Keep the
-release checkout, its `node_modules`, `migrations/`, and `assets/` available at runtime.
-The built server reads runtime environment variables; it does not automatically
-load your development `.env` file.
+Run production through `npm run start:node -- --env-file <path>`, not the Vite
+development server. The wrapper validates Node, loads only the explicitly named
+environment file, and imports Flue's non-listening `dist/app.mjs` artifact so it
+can bind to `HOST` (default `127.0.0.1`) and `PORT` (default `3000`). Existing
+process environment values take precedence over values in the file. Keep the
+release checkout, its `node_modules`, `migrations/`, and `assets/` available at
+runtime.
+
+The production wrapper starts the scheduler after Flue finishes assembling its
+runtime. It checks for due work immediately and every minute, using the same
+missed-slot policy as Cloudflare. A stopped or sleeping computer is not woken;
+the startup check recovers eligible missed work when Chickpea runs again. The
+wrapper also retries durable Slack schedule actions and performs Work and image
+retention maintenance. Starting a second production launcher against the same
+state database is refused before the app runtime starts. The development server
+and raw `dist/server.mjs` entry do not participate in this guard; never run them
+against a production installation's state.
 
 ### Persist state and secrets
 
@@ -38,6 +54,7 @@ Do not put state inside a checkout that will be replaced during upgrades.
 
 ```dotenv
 NODE_ENV=production
+HOST=127.0.0.1
 PORT=3000
 TAG_DB_PATH=/var/lib/chickpea/transcripts.sqlite
 SLACK_STATE_DB_PATH=/var/lib/chickpea/state.sqlite
@@ -84,7 +101,7 @@ User=chickpea
 Group=chickpea
 WorkingDirectory=/opt/chickpea/current
 EnvironmentFile=/etc/chickpea/runtime.env
-ExecStart=/usr/bin/node dist/server.mjs
+ExecStart=/usr/bin/node scripts/start-node.mjs --env-file /etc/chickpea/runtime.env
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
@@ -100,17 +117,64 @@ ReadWritePaths=/var/lib/chickpea
 WantedBy=multi-user.target
 ```
 
-The production entry point handles SIGTERM and waits for shutdown, with a
-60-second internal deadline. Do not run several processes against these SQLite
-files or use a network filesystem as a substitute for shared-state support.
+The production entry point handles SIGTERM, stops and drains the scheduler before
+Flue, and waits for shutdown with a 60-second internal deadline. Production
+launchers enforce one process per state database. Do not use a network filesystem
+as a substitute for shared-state support.
 
-Terminate HTTPS at a reverse proxy and forward to port 3000. The current entry
-point exposes `PORT`, not a `HOST` environment setting, so use firewall/container
-network rules to make the Node port unreachable from the public internet.
+Terminate HTTPS at a reverse proxy and forward to port 3000. Keep the default
+loopback binding when the proxy runs on the same host. If the proxy requires a
+different interface, set `HOST` deliberately and use firewall/container network
+rules to make the Node port unreachable from the public internet.
 Preserve the public host and HTTPS scheme through the proxy, avoid request-body
 logging, and configure streaming rather than buffering Slack-related responses.
 Complete Slack setup using the exact HTTPS origin. Verify sign-in, a real Slack
 reply, and state surviving a service restart before routing normal traffic.
+
+### Run in the foreground on macOS
+
+Use [Install Chickpea on a Mac with Node](../../INSTALL_CHICKPEA_NODE.md) for
+the supported first-install procedure. It writes a complete private environment
+file without printing the authentication secret, preserves paths that contain
+spaces, configures stable HTTPS, and uses a customer-owned Slack app.
+
+To start an existing installation, run the built release in the foreground:
+
+```sh
+npm run start:node -- \
+  --env-file "$HOME/Library/Application Support/Chickpea/node/runtime.env"
+```
+
+Use a process supervisor for unattended operation. This foreground recipe does
+not install a LaunchAgent or make Chickpea start at login. Keep the Mac awake,
+and keep both this launcher and the HTTPS tunnel running. Stop the launcher with
+Control-C and wait for its graceful shutdown before closing the Terminal. Reuse
+the same environment file and authentication secret for every restart.
+
+### Recover a stale Node process owner
+
+After an unclean exit, the launcher automatically replaces an owner whose PID
+no longer exists. If the operating system reused that PID, or the service account
+cannot inspect it, startup refuses to take over. It does not assume another
+process is safe to displace.
+
+Inspect `owner_pid`, `owner_token`, and `acquired_at` in the state database's
+`chickpea_node_runtime_owner` table. Use `ps` to identify that PID and `lsof` to
+check which processes have the configured SQLite files open. If Chickpea is
+running, stop it through its owning supervisor. If process access is denied,
+resolve the service account permissions before proceeding.
+
+Only after verifying that no Chickpea process is using this installation, back
+up the stopped state directory and remove the exact stale row. Substitute the
+observed PID and token; do not delete the database or clear an unverified owner:
+
+```sql
+DELETE FROM chickpea_node_runtime_owner
+WHERE singleton = 1 AND owner_pid = <observed_pid>
+  AND owner_token = '<observed_token>';
+```
+
+Restart using the production launcher and the same environment file.
 
 ### Back up and restore Node
 

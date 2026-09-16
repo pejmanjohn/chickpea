@@ -15,7 +15,7 @@ interface RoutineExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
 }
 
-async function settleScheduledDuties(tasks: Array<() => Promise<unknown>>): Promise<void> {
+export async function settleScheduledDuties(tasks: Array<() => Promise<unknown>>): Promise<void> {
   const results = await Promise.allSettled(tasks.map((task) => Promise.resolve().then(task)));
   const failures = results.flatMap((result) =>
     result.status === 'rejected' ? [result.reason] : []
@@ -83,8 +83,11 @@ export function createRoutineScheduledHandler(input: {
   };
 }
 
-export function resolveRoutineCapability(input: { cloudflare: boolean }): RoutineCapability {
-  if (!input.cloudflare) {
+export function resolveRoutineCapability(input: {
+  cloudflare: boolean;
+  nodeAvailable?: boolean;
+}): RoutineCapability {
+  if (!input.cloudflare && !input.nodeAvailable) {
     return {
       target: 'node',
       available: false,
@@ -93,7 +96,7 @@ export function resolveRoutineCapability(input: { cloudflare: boolean }): Routin
     };
   }
   return {
-    target: 'cloudflare',
+    target: input.cloudflare ? 'cloudflare' : 'node',
     available: true,
     enabled: true,
     reason: 'enabled',
@@ -104,7 +107,7 @@ export function requireRoutineScheduling(capability: RoutineCapability): void {
   if (!capability.available) {
     throw new RoutineStateError(
       'routines_unavailable_on_target',
-      'Routine scheduling is currently available only on Cloudflare deployments.',
+      'Routine scheduling is unavailable on this deployment.',
     );
   }
 }

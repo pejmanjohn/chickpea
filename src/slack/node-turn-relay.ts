@@ -13,6 +13,7 @@ import {
 } from '../config/state-backend.ts';
 import {
   completeAgentWelcomeDelivery,
+  completeSettledAgentWelcomeHandoff,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
   failAgentWelcomeDelivery,
@@ -425,6 +426,11 @@ async function drainNodeTurnRelayOnce(
       : undefined;
     await drainManagementReceiptOutbox({
       management: getManagementStore(env),
+      onDeliveredSettled: (record) => completeSettledAgentWelcomeHandoff(
+        record,
+        config,
+        getManagementStore(env),
+      ),
       onTerminalFailure: async (record) => {
         await failAgentWelcomeDelivery(record, presentation);
         if (isAgentCreatedWelcome(record.receipt) && record.receipt.turnJobId) {

@@ -140,6 +140,7 @@ import { resolveSlackInstallationExecutionContext } from '../slack/installation-
 import { slackPresentationStatePort } from '../slack/presentation-state-port.ts';
 import {
   completeAgentWelcomeDelivery,
+  completeSettledAgentWelcomeHandoff,
   completeManagementSetupReceipt,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
@@ -2277,6 +2278,11 @@ async function finishSetup(
     : undefined;
   await drainManagementReceiptOutbox({
     management: dependencies.management,
+    onDeliveredSettled: (record) => completeSettledAgentWelcomeHandoff(
+      record,
+      dependencies.config,
+      dependencies.management,
+    ),
     onTerminalFailure: (record) => failAgentWelcomeDelivery(record, presentation),
     deliver: (record) => (options.deliverReceipt ?? deliverManagementReceiptToSlack)(record, {
       identity: dependencies.identity,

@@ -20,6 +20,10 @@ test('changed verification includes each affected area and direct test changes',
   assert.ok(tests.includes('tests/routine-scheduler.test.ts'));
   assert.ok(tests.includes('tests/gateway-session-runner.test.ts'));
   assert.ok(plan.steps.some((step: { script?: string }) => step.script === 'verify:cf-smoke'));
+  assert.ok(plan.steps.some((step: { script?: string }) =>
+    step.script === 'verify:node-scheduler-offline'));
+  assert.ok(plan.steps.some((step: { script?: string }) =>
+    step.script === 'verify:node-scheduler-capability'));
 });
 
 test('unknown runtime changes and deleted tests broaden verification instead of yielding a false pass', () => {

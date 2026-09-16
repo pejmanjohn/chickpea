@@ -35,6 +35,7 @@ import type {
   ManagementSetupRecord,
 } from './types.ts';
 import { emitManagementMetric } from './telemetry.ts';
+import { managementResultFullyApplied } from './contracts.ts';
 
 const OUTBOX_LEASE_MS = 30_000;
 const OUTBOX_MAX_ATTEMPTS = 8;
@@ -167,6 +168,7 @@ export function formatManagementSetupReceipt(receipt: ManagementReceipt): string
 
 interface ManagementReceiptDeliveryResult {
   deliveryRef: string;
+  deliveryPersona?: 'agent' | 'chickpea';
 }
 
 interface AgentWelcomePresentationRuntime {
@@ -224,16 +226,6 @@ export async function completeAgentWelcomeDelivery(
     if (presentationError) throw presentationError;
     return;
   }
-  await handoffCreatedAgentThread({
-    workspaceId: record.destination.workspaceId,
-    channelId: record.destination.channelId,
-    threadTs: record.destination.threadTs,
-    welcomeMessageTs: delivery.messageTs,
-    agentId: record.receipt.agentId,
-    requesterMembershipId: record.receipt.requesterMembershipId,
-    surface: record.receipt.surface,
-    config,
-  });
   await config.putSlackPublicContext({
     workspaceId: record.destination.workspaceId,
     channelId: record.destination.channelId,
@@ -250,6 +242,37 @@ export async function completeAgentWelcomeDelivery(
     }));
     throw presentationError;
   }
+}
+
+export async function completeSettledAgentWelcomeHandoff(
+  record: ManagementReceiptOutboxRecord,
+  config: CreatedAgentHandoffConfig,
+  management: Pick<ManagementStore, 'getChangeSetProposal'>,
+): Promise<void> {
+  if (!isAgentCreatedWelcome(record.receipt) || record.destination.kind !== 'thread' ||
+      record.status !== 'delivered' || record.receipt.deliveryPersona !== 'agent' ||
+      record.receipt.publication?.incomplete.includes('slack_presence')) return;
+  if (record.receipt.deferredHandoffProposalId) {
+    const proposal = await management.getChangeSetProposal(
+      record.receipt.deferredHandoffProposalId,
+    );
+    // A stale or abandoned proposal keeps Chickpea ownership. The requester
+    // can explicitly mention the new Agent to select it without weakening the
+    // original proposal binding.
+    if (proposal?.status !== 'completed' || !managementResultFullyApplied(proposal.result)) return;
+  }
+  const delivery = /^slack:([^:]+):(\d+\.\d+)$/.exec(record.deliveryRef ?? '');
+  if (!delivery || delivery[1] !== record.destination.channelId) return;
+  await handoffCreatedAgentThread({
+    workspaceId: record.destination.workspaceId,
+    channelId: record.destination.channelId,
+    threadTs: record.destination.threadTs,
+    welcomeMessageTs: delivery[2]!,
+    agentId: record.receipt.agentId,
+    requesterMembershipId: record.receipt.requesterMembershipId,
+    surface: record.receipt.surface,
+    config,
+  });
 }
 
 export async function failAgentWelcomeDelivery(
@@ -269,6 +292,7 @@ export async function drainManagementReceiptOutbox(input: {
   management: ManagementStore;
   deliver(record: ManagementReceiptOutboxRecord): Promise<ManagementReceiptDeliveryResult>;
   onTerminalFailure?(record: ManagementReceiptOutboxRecord, failureCode: string): Promise<void>;
+  onDeliveredSettled?(record: ManagementReceiptOutboxRecord): Promise<void>;
   now?: () => number;
   limit?: number;
 }): Promise<{ delivered: number; retried: number; failed: number }> {
@@ -285,12 +309,21 @@ export async function drainManagementReceiptOutbox(input: {
   for (const record of claimed) {
     try {
       const result = await input.deliver(record);
-      await input.management.settleOutbox({
+      const settled = await input.management.settleOutbox({
         outboxId: record.outboxId,
         outcome: 'delivered',
         at: now(),
         deliveryRef: result.deliveryRef,
+        ...(result.deliveryPersona ? { deliveryPersona: result.deliveryPersona } : {}),
       });
+      try {
+        await input.onDeliveredSettled?.(settled);
+      } catch (error) {
+        console.warn('[chickpea:management] settled receipt bookkeeping failed', JSON.stringify({
+          outboxId: record.outboxId,
+          error: error instanceof Error ? error.name : 'unknown',
+        }));
+      }
       delivered += 1;
     } catch (error) {
       const failureCode = receiptDeliveryFailureCode(error);
@@ -498,7 +531,10 @@ export async function deliverManagementReceiptToSlack(
       error: error instanceof Error ? error.name : 'unknown',
     }));
   }
-  return { deliveryRef: `slack:${channel}:${response.ts}` };
+  return {
+    deliveryRef: `slack:${channel}:${response.ts}`,
+    ...(isAgentCreatedWelcome(record.receipt) ? { deliveryPersona: persona } : {}),
+  };
 }
 
 function receiptDestination(setup: ManagementSetupRecord): ManagementReceiptDestination {

@@ -1294,6 +1294,9 @@ export async function runTurn(
         creationItemId: terminal.creationItemId,
         agentId: terminal.agentId,
         connectorMentions: terminal.connectorMentions,
+        ...(terminal.pendingProposalId
+          ? { pendingProposalId: terminal.pendingProposalId }
+          : {}),
         followOnNotices: terminal.followOnNotices,
         turnJobId,
         ...(agentViewPresentation && options.runId

@@ -74,7 +74,6 @@ import { localSlackStateStore } from './slack/local-state-store.ts';
 import {
   getConfigStore,
   getIdentityStore,
-  getRoutineStore,
   getSettingsStore,
   getSlackStateStore,
   type AppStores,
@@ -247,6 +246,7 @@ import {
 import type { WorkspaceManagementToolResult } from './management/tool-adapter.ts';
 import {
   completeAgentWelcomeDelivery,
+  completeSettledAgentWelcomeHandoff,
   deliverManagementReceiptToSlack,
   drainManagementReceiptOutbox,
   failAgentWelcomeDelivery,
@@ -270,12 +270,7 @@ import {
   type WorkRpcResponse,
   type WorkStore,
 } from './work/types.ts';
-import {
-  RoutineAdmissionController,
-} from './routines/admission.ts';
-import { RoutineScheduler } from './routines/scheduler.ts';
-import { executeRoutineOccurrence } from './routines/execution.ts';
-import { drainRoutinePauseNotices } from './routines/delivery.ts';
+import { runRoutineHeartbeat as runSharedRoutineHeartbeat } from './routines/heartbeat.ts';
 
 // The generated default captures model and tool content. Register the native
 // Cloudflare adapter explicitly for this Cloudflare-only entry so Workers
@@ -2294,6 +2289,11 @@ async function drainCloudflareManagementReceipts(
   };
   await drainManagementReceiptOutbox({
     management: stores.management as unknown as ManagementStore,
+    onDeliveredSettled: (record) => completeSettledAgentWelcomeHandoff(
+      record,
+      stores.config,
+      stores.management as unknown as ManagementStore,
+    ),
     onTerminalFailure: async (record) => {
       await failAgentWelcomeDelivery(record, presentation);
       if (isAgentCreatedWelcome(record.receipt) && record.receipt.turnJobId) {
@@ -2639,21 +2639,16 @@ async function runRoutineHeartbeat(
   rawEnv: Record<string, unknown>,
   context: { waitUntil(promise: Promise<unknown>): void },
 ): Promise<void> {
-  const store = getRoutineStore(rawEnv);
   const productTelemetry = createPlatformProductTelemetry({
     env: rawEnv,
     settings: getSettingsStore(rawEnv),
     config: getConfigStore(rawEnv),
     lifecycle: createWaitUntilTelemetryLifecycle(context),
   });
-  const admissions = new RoutineAdmissionController(store, {
-    execute: (run, attempt) => executeRoutineOccurrence({
-      env: rawEnv,
-      store,
-      occurrenceId: run.id,
-      attempt: attempt.attempt,
-    }, { productTelemetry }),
+  await runSharedRoutineHeartbeat({
+    scheduledTime,
+    owner,
+    env: rawEnv,
+    productTelemetry,
   });
-  await new RoutineScheduler(store, admissions).heartbeat(scheduledTime, owner);
-  await drainRoutinePauseNotices({ store, env: rawEnv as PlatformEnv });
 }

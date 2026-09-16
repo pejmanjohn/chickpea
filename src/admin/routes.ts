@@ -23,6 +23,7 @@ import {
   renderSlackOwnerCompletePage,
   renderSlackRecoveryPage,
   renderSlackManualSetupPage,
+  renderSlackSetupHttpsRequiredPage,
   renderSlackSetupPage,
   renderSlackSignInPage,
 } from './page.ts';
@@ -365,6 +366,7 @@ import {
   resolveRoutineCapability,
   type RoutineCapability,
 } from '../routines/scheduler-adapter.ts';
+import { nodeRoutineSchedulerAvailable } from '../routines/runtime-state.ts';
 import { hashRoutineValue } from '../routines/ids.ts';
 import {
   reassignRoutineAgentAuthority,
@@ -3315,7 +3317,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!capability) return c.notFound();
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
-    const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
+    const origin = requestOrigin(c);
+    const httpsRequired = slackSetupHttpsRequirement(origin);
+    if (httpsRequired) {
+      return c.html(
+        renderSlackSetupHttpsRequiredPage({ loopback: httpsRequired.loopback }),
+        httpsRequired.loopback ? 200 : 400,
+      );
+    }
+    const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin });
     // Read-only: the durable setup is never created or advanced by a GET.
     const current = await publicSetupState(c, capability);
     return c.html(renderSlackManualSetupPage({
@@ -3333,9 +3343,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!capability) return c.notFound();
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
+    const origin = requestOrigin(c);
+    const httpsRequired = slackSetupHttpsRequirement(origin);
+    if (httpsRequired) {
+      return c.html(renderSlackSetupHttpsRequiredPage({ loopback: httpsRequired.loopback }), 400);
+    }
     const source = authSourceKey(c);
     const limiter = authRateLimiter(c, capability.digest);
-    const origin = requestOrigin(c);
     let setup: SlackSetupTransaction | undefined;
     let action = 'open';
     try {
@@ -3419,6 +3433,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!capability) return c.notFound();
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
+    const origin = requestOrigin(c);
+    const httpsRequired = slackSetupHttpsRequirement(origin);
+    if (httpsRequired) {
+      return c.html(
+        renderSlackSetupHttpsRequiredPage({ loopback: httpsRequired.loopback }),
+        httpsRequired.loopback ? 200 : 400,
+      );
+    }
     const installStatus = safeSlackInstallStatus(c.req.query('slack_install'));
     let gatewayNotice = c.req.query('gateway_status') === 'expired' ? 'gateway_claim_expired' : undefined;
     let gatewayState: 'disconnected' | 'pending' | 'connected' | 'error' = 'disconnected';
@@ -3445,7 +3467,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch {
       gatewayState = 'error';
     }
-    const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
+    const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin });
     // Read-only: the durable setup is never created or advanced by a GET. The
     // capability itself stays in the fragment and is bound to each POST only.
     const current = await publicSetupState(c, capability);
@@ -3466,6 +3488,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!capability) return c.notFound();
     c.header('Cache-Control', 'no-store');
     c.header('Referrer-Policy', 'no-referrer');
+    const origin = requestOrigin(c);
+    const httpsRequired = slackSetupHttpsRequirement(origin);
+    if (httpsRequired) {
+      return c.html(renderSlackSetupHttpsRequiredPage({ loopback: httpsRequired.loopback }), 400);
+    }
     const source = authSourceKey(c);
     const limiter = authRateLimiter(c, capability.digest);
     let setup: SlackSetupTransaction | undefined;
@@ -3473,14 +3500,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     let notice: string | undefined;
     try {
       await limiter.assertAllowed('slack_setup_source', source);
-      if (!validAuthFormPost(c, requestOrigin(c))) throw new AuthDeniedError();
+      if (!validAuthFormPost(c, origin)) throw new AuthDeniedError();
       const rawForm = await readForm(c);
       action = boundedSetupField(rawForm.action ?? 'open', 32);
       notice = safeSlackInstallStatus(rawForm.notice);
       setup = await openSlackSetupTransaction(identity(c), {
         capability: boundedSetupField(rawForm.capability, 512),
         authority: capability,
-        canonicalAdminOrigin: requestOrigin(c),
+        canonicalAdminOrigin: origin,
         destination: rawForm.destination ?? '/admin/onboarding',
         ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
       });
@@ -3497,14 +3524,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(options.slackAppCreationFetch ? { fetch: options.slackAppCreationFetch } : {}),
         ...(options.slackAppCreationNow ? { now: options.slackAppCreationNow } : {}),
       });
-      const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
+      const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin });
       if (action === 'gateway_begin' || action === 'gateway_resume') {
         const gateway = createGatewayDeploymentClient(
           c.env as PlatformEnv | undefined,
         );
         await gateway.resumeClaimSetup({ setupId: setup.id, setupRevision: setup.revision });
         const claim = await gateway.beginClaim(
-          `${requestOrigin(c)}/admin/setup?gateway_return=1`,
+          `${origin}/admin/setup?gateway_return=1`,
           { setupId: setup.id, setupRevision: setup.revision },
           { resumeOnly: action === 'gateway_resume' },
         );
@@ -3579,7 +3606,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       if (error instanceof AuthRateLimitError) {
         c.header('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1_000))));
-        const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
+        const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin });
         return c.html(renderSlackSetupPage({
           ...(setup ? { setup } : {}),
           destination: setup?.destination ?? '/admin/onboarding',
@@ -3602,7 +3629,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         : code === 'gateway_not_configured' || code === 'gateway_unreachable' ? 503
         : code === 'gateway_redirect_rejected' || code === 'gateway_rejected' ? 502
         : 400;
-      const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: requestOrigin(c) });
+      const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin });
       return c.html(renderSlackSetupPage({
         ...(setup ? { setup } : {}),
         destination: setup?.destination ?? '/admin/onboarding',
@@ -8213,7 +8240,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (action === 'resume') {
         requireRoutineScheduling(
           options.routineCapability?.(c) ??
-            resolveRoutineCapability({ cloudflare: isCloudflareTarget() }),
+            resolveRoutineCapability({
+              cloudflare: isCloudflareTarget(),
+              nodeAvailable: nodeRoutineSchedulerAvailable(),
+            }),
         );
       }
       const updated = await new RoutineService(state).control({
@@ -10475,6 +10505,16 @@ function isLoopbackHttpOrigin(value: string): boolean {
   const url = new URL(value);
   return url.protocol === 'http:' &&
     ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+}
+
+function slackSetupHttpsRequirement(value: string): { loopback: boolean } | undefined {
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'https:') return undefined;
+    return { loopback: isLoopbackHttpOrigin(url.origin) };
+  } catch {
+    return { loopback: false };
+  }
 }
 
 function boundedSetupField(value: string | undefined, maximum: number): string {

@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { openStateDb } from '../src/state/node-state-db.ts';
 import {
   SlackStateLogic,
+  SqliteSlackStateStore,
   selectSlackPresentationOwner,
   slackSessionGenerationFromTimestamp,
 } from '../src/slack/claim-store.ts';
 import { localSlackStateStore } from '../src/slack/local-state-store.ts';
+import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
+import { SqliteWorkStore } from '../src/work/store.ts';
 
 test('local Slack admission injects every transactional state owner', async () => {
   const work = { owner: 'work' };
@@ -84,7 +90,7 @@ test('canonical Slack admission creates V3 owner and activity state in the same 
     const result = slack.admitCanonical(
       input as never,
       { admitShadowRunInTransaction: () => canonical } as never,
-      { enqueue: () => true } as never,
+      { enqueueInTransaction: () => true } as never,
       {
         createInTransaction(value: unknown) {
           presentationInput = structuredClone(value);
@@ -103,6 +109,91 @@ test('canonical Slack admission creates V3 owner and activity state in the same 
     });
   } finally {
     db.close();
+  }
+});
+
+test('SQLite canonical Slack admission composes TurnJob cleanup inside its transaction', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-slack-admission-'));
+  const path = join(directory, 'state.sqlite');
+  const now = 1_800_000_000_000;
+  const state = new SqliteSlackStateStore(path, () => now);
+  let work: SqliteWorkStore | undefined;
+  try {
+    const turn = {
+      workspaceId: 'T_NODE_ADMISSION',
+      channelId: 'D_NODE_ADMISSION',
+      eventId: 'Ev_NODE_ADMISSION',
+      text: 'Complete the local verification.',
+      userId: 'U_NODE_ADMISSION',
+      messageTs: '1800000000.000100',
+      threadTs: '1800000000.000100',
+      source: 'dm_message' as const,
+      channelType: 'im' as const,
+      contextMode: 'dm_history' as const,
+    };
+    const assignment = {
+      workspaceId: turn.workspaceId,
+      channelId: turn.channelId,
+      agentId: 'agent_node_admission',
+      model: 'openai/gpt-5.6-terra',
+      modelAttribution: { source: 'pinned' as const, providerId: 'openai' },
+      agent: {
+        id: 'agent_node_admission',
+        kind: 'user' as const,
+        revision: 1,
+        name: 'Node Admission',
+        instructions: 'Answer directly.',
+        enabled: true,
+        skills: [],
+        mcpServers: [],
+        apiConnections: [],
+        repositories: [],
+      },
+    };
+    const admission = prepareSlackShadowAdmission({
+      turn,
+      assignment,
+      sourceVisibility: 'private',
+      admittedAt: now,
+    });
+    const input = {
+      evtKey: 'evt:node-admission',
+      msgKey: 'msg:node-admission',
+      threadKey: `${turn.workspaceId}:${turn.channelId}:${turn.threadTs}`,
+      admission,
+      turnJob: {
+        id: 'turn_node_admission',
+        evtKey: 'evt:node-admission',
+        msgKey: 'msg:node-admission',
+        turn,
+        assignment,
+        runId: admission.run.id,
+        executionAuthority: admission.run.executionAuthority,
+      },
+      presentation: {
+        schemaVersion: 3 as const,
+        root: {
+          workspaceId: turn.workspaceId,
+          channelId: turn.channelId,
+          threadTs: turn.threadTs,
+          requesterUserId: turn.userId,
+        },
+        owner: { kind: 'chickpea' as const },
+        sessionGeneration: 1800000000000100,
+      },
+    };
+
+    const result = await state.admitCanonical(input);
+
+    assert.equal(result.claimed, true);
+    assert.equal((await state.listPendingTurns!())[0]?.id, input.turnJob.id);
+    assert.equal((await state.getRunPresentation!(admission.run.id))?.runId, admission.run.id);
+    work = new SqliteWorkStore(path);
+    assert.equal((await work.getRun(admission.run.id))?.id, admission.run.id);
+  } finally {
+    work?.close();
+    state.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

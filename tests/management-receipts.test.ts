@@ -207,6 +207,60 @@ test('the outbox drain records the real Slack failure code and settles permanent
   }
 });
 
+test('the delivered hook observes a settled Agent welcome and its accepted persona', async () => {
+  const management = new SqliteManagementStore(':memory:');
+  const welcome: ManagementReceiptOutboxRecord = {
+    outboxId: 'agent_welcome_settlement_order',
+    operationId: 'management_welcome_settlement_order',
+    destination: {
+      kind: 'thread',
+      workspaceId: 'T_SETTLED',
+      channelId: 'D_SETTLED',
+      threadTs: '1800000000.000100',
+    },
+    receipt: {
+      kind: 'agent_created_welcome',
+      creationOperationId: 'management_welcome_settlement_order',
+      agentId: 'agent_settled',
+      agentName: 'Settled',
+      requesterMembershipId: 'membership_settled',
+      surface: 'direct',
+      persona: { name: 'Settled' },
+    },
+    status: 'pending',
+    attempts: 0,
+    nextAttemptAt: 1_800_000_000_000,
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  };
+  try {
+    await management.putOutbox(welcome);
+    let observed: ManagementReceiptOutboxRecord | undefined;
+    const result = await drainManagementReceiptOutbox({
+      management,
+      now: () => 1_800_000_000_001,
+      deliver: async () => ({
+        deliveryRef: 'slack:D_SETTLED:1800000000.000200',
+        deliveryPersona: 'agent',
+      }),
+      onDeliveredSettled: async (record) => { observed = record; },
+    });
+
+    assert.deepEqual(result, { delivered: 1, retried: 0, failed: 0 });
+    assert.equal(observed?.status, 'delivered');
+    assert.equal(observed?.deliveryRef, 'slack:D_SETTLED:1800000000.000200');
+    assert.equal(
+      observed && 'kind' in observed.receipt &&
+          observed.receipt.kind === 'agent_created_welcome'
+        ? observed.receipt.deliveryPersona
+        : undefined,
+      'agent',
+    );
+  } finally {
+    management.close();
+  }
+});
+
 test('an existing schedule acknowledgement reaction is an idempotent delivery success', async () => {
   const result = await deliverManagementReceiptToSlack(ACKNOWLEDGEMENT, {
     identity: { async listExternalIdentities() { return []; } },

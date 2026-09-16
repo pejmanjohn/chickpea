@@ -302,6 +302,7 @@ export interface ManagementStore {
     at: number;
     nextAttemptAt?: number;
     deliveryRef?: string;
+    deliveryPersona?: 'agent' | 'chickpea';
     failureCode?: string;
   }): Promise<ManagementReceiptOutboxRecord>;
   cleanupRetention(at: number, limit?: number): Promise<number>;
@@ -509,6 +510,25 @@ export class ManagementStoreLogic {
           request.agentId, request.requesterMembershipId, request.workspaceId,
         ) as unknown as ManagementOutboxRow[];
         return { kind: 'outbox_batch', outbox: rows.map(outboxFromRow) };
+      }
+      case 'get_deferred_agent_creation_welcome': {
+        const row = this.db.get(
+          `SELECT * FROM management_receipt_outbox
+           WHERE json_extract(receipt_json, '$.kind') = 'agent_created_welcome'
+             AND json_extract(receipt_json, '$.requesterMembershipId') = ?
+             AND json_extract(receipt_json, '$.deferredHandoffProposalId') = ?
+             AND json_extract(destination_json, '$.kind') = 'thread'
+             AND json_extract(destination_json, '$.workspaceId') = ?
+             AND json_extract(destination_json, '$.channelId') = ?
+             AND json_extract(destination_json, '$.threadTs') = ?
+           LIMIT 1`,
+          request.requesterMembershipId,
+          request.proposalId,
+          request.workspaceId,
+          request.channelId,
+          request.threadTs,
+        ) as unknown as ManagementOutboxRow | undefined;
+        return { kind: 'outbox', outbox: row ? outboxFromRow(row) : null };
       }
       case 'claim_due_outbox':
         return {
@@ -1572,6 +1592,7 @@ export class ManagementStoreLogic {
     at: number;
     nextAttemptAt?: number;
     deliveryRef?: string;
+    deliveryPersona?: 'agent' | 'chickpea';
     failureCode?: string;
   }): ManagementReceiptOutboxRecord {
     const current = this.requireOutbox(input.outboxId);
@@ -1581,14 +1602,20 @@ export class ManagementStoreLogic {
     const nextAttemptAt = input.outcome === 'retry'
       ? input.nextAttemptAt ?? input.at
       : current.nextAttemptAt;
+    const receipt = input.outcome === 'delivered' && input.deliveryPersona &&
+        'kind' in current.receipt && current.receipt.kind === 'agent_created_welcome'
+      ? { ...current.receipt, deliveryPersona: input.deliveryPersona }
+      : current.receipt;
     this.db.run(
       `UPDATE management_receipt_outbox
-       SET status = ?, next_attempt_at = ?, delivery_ref = ?, failure_code = ?, updated_at = ?
+       SET status = ?, next_attempt_at = ?, delivery_ref = ?, failure_code = ?,
+           receipt_json = ?, updated_at = ?
        WHERE outbox_id = ? AND status = 'delivering'`,
       status,
       nextAttemptAt,
       input.deliveryRef ?? null,
       input.failureCode ? boundedFailureCode(input.failureCode) : null,
+      JSON.stringify(receipt),
       input.at,
       input.outboxId,
     );

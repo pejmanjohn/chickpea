@@ -837,7 +837,7 @@ export class FakeSlackBackend {
           this.finalPostFailedOnce = true;
           return { ok: false, error: 'internal_error' };
         }
-        return { ok: true, ts: this.nextTs() };
+        return { ok: true, channel: body.channel, ts: this.nextTs() };
       case 'chat.update':
         return { ok: true, channel: body.channel, ts: body.ts };
       case 'reactions.add':

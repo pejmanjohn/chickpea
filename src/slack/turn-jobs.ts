@@ -266,6 +266,16 @@ export class TurnJobStoreLogic {
    */
   enqueue(job: TurnJob): boolean {
     this.purgeExpired();
+    return this.insert(job);
+  }
+
+  /** Composite Slack admission already owns the StateDb transaction. */
+  enqueueInTransaction(job: TurnJob): boolean {
+    this.purgeExpired('borrowed');
+    return this.insert(job);
+  }
+
+  private insert(job: TurnJob): boolean {
     const inserted = this.db.run(
       `INSERT OR IGNORE INTO turn_jobs (
         id, evt_key, msg_key, turn_json, assignment_json, run_id, execution_authority,
@@ -1121,7 +1131,7 @@ export class TurnJobStoreLogic {
     return false;
   }
 
-  private purgeExpired(): void {
+  private purgeExpired(transaction: 'owned' | 'borrowed' = 'owned'): void {
     const now = this.now();
     const backedOff = this.db.run(
       `UPDATE turn_jobs
@@ -1156,9 +1166,9 @@ export class TurnJobStoreLogic {
              WHERE prior.runtime_plan_json IS NOT NULL AND prior.dispatch_receipt_json IS NOT NULL
            ) WHERE position = 1
          )`;
-    this.db.transaction(() => {
-      // Content-free Lists write receipts live exactly as long as their turn.
-      // Isolated TurnJob stores may not have installed SettingsStore yet.
+    // Content-free Lists write receipts live exactly as long as their turn.
+    // Isolated TurnJob stores may not have installed SettingsStore yet.
+    const purgeTerminalRows = () => {
       if (this.db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'")) {
         this.db.run(
           `DELETE FROM app_settings WHERE key IN (SELECT 'slack_lists.writes.v1:' || id FROM turn_jobs ${expiredTerminalPredicate})`,
@@ -1166,7 +1176,9 @@ export class TurnJobStoreLogic {
         );
       }
       this.db.run(`DELETE FROM turn_jobs ${expiredTerminalPredicate}`, now - TURN_JOB_TTL_MS);
-    });
+    };
+    if (transaction === 'borrowed') purgeTerminalRows();
+    else this.db.transaction(purgeTerminalRows);
   }
 
   private recordTerminalStatus(id: string, terminal: 'success' | 'error'): void {
