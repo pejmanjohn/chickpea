@@ -9,10 +9,23 @@ export function hasScheduledComposition(source) {
     .filter(ts.isFunctionDeclaration)
     .filter((node) => node.name && node.body)
     .map((node) => [node.name.text, node]));
-  const callsMethod = (node, name) => {
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
-        node.expression.name.text === name) return true;
-    return Boolean(ts.forEachChild(node, (child) => callsMethod(child, name) || undefined));
+  // Follow only direct identifier calls reachable from the selected handler;
+  // do not let an unrelated function elsewhere in the entry satisfy the check.
+  const callsMethod = (handler, name, seen = new Set()) => {
+    if (!handler?.body || seen.has(handler)) return false;
+    seen.add(handler);
+    const scan = (node) => {
+      if (ts.isCallExpression(node)) {
+        if (ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text === name) return true;
+        if (ts.isIdentifier(node.expression)) {
+          const delegate = functions.get(node.expression.text);
+          if (delegate && callsMethod(delegate, name, seen)) return true;
+        }
+      }
+      return Boolean(ts.forEachChild(node, (child) => scan(child) || undefined));
+    };
+    return scan(handler.body);
   };
   const visit = (node) => {
     if (ts.isCallExpression(node)) {
