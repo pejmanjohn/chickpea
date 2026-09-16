@@ -283,6 +283,14 @@ rm "$HOME/Library/Application Support/Chickpea/node/setup-link.txt"
 The setup page can configure Anthropic, OpenAI, OpenRouter, or REST-based
 Cloudflare Workers AI. A Node installation cannot use a Worker-only binding.
 
+For OpenAI chat, you can connect a ChatGPT subscription in **Settings → Model
+providers → OpenAI**. Follow the device sign-in instructions using the account
+whose subscription you want to use. OpenAI may require enabling device code
+authorization for Codex in that account's security settings. Subscription usage
+shares that account's limits. Chickpea never switches to API billing automatically.
+Image generation still requires a separate OpenAI API key; saving that key does
+not change your selected chat authentication method.
+
 ## Operate the installation
 
 ### Check status

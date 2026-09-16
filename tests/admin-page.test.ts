@@ -286,6 +286,7 @@ type ProviderSummaryFixture = {
   modelCount: number | null;
   enabled?: boolean;
   activeAuthMethod?: 'api_key' | 'subscription';
+  subscriptionAvailable?: boolean;
   subscription?: OpenAiSubscriptionStatusFixture;
 };
 type ModelProviderFixture = {
@@ -391,6 +392,8 @@ function runAdminPageHarness(
     openAiModelsAfterMethodSwitch?: Array<{ id: string }>;
     providerKeyReject?: { status: number; detail: string };
     providerSettingsError?: { status: number; error: string };
+    openAiSubscriptionStartResult?: Record<string, unknown>;
+    deferOpenAiSubscriptionStart?: boolean;
     openAiSubscriptionPollResult?: Record<string, unknown>;
     egressPolicy?: EgressPolicyFixture;
     sandboxStatus?: SandboxStatusFixture;
@@ -527,6 +530,9 @@ function runAdminPageHarness(
   openAiSubscriptionPosts: Array<{ action: string; body: Record<string, unknown> }>;
   openAiAuthMethodPuts: Array<'api_key' | 'subscription'>;
   openAiSubscriptionDisconnects(): number;
+  resolveOpenAiSubscriptionStart(): void;
+  runNextTimer(): void;
+  scheduledTimerCount(): number;
   favoritesPuts: Array<{ id: string; favorites: string[] }>;
   workersAiEnabledPuts: boolean[];
   workspaceDefaultPuts: Array<{ modelId: string; expectedRevision: number }>;
@@ -755,6 +761,7 @@ function runAdminPageHarness(
   const openAiSubscriptionPosts: Array<{ action: string; body: Record<string, unknown> }> = [];
   const openAiAuthMethodPuts: Array<'api_key' | 'subscription'> = [];
   let openAiSubscriptionDisconnects = 0;
+  let openAiSubscriptionStartResolver: ((response: FakeResponse) => void) | undefined;
   const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
   const workersAiEnabledPuts: boolean[] = [];
   const workspaceDefaultPuts: Array<{ modelId: string; expectedRevision: number }> = [];
@@ -972,6 +979,8 @@ function runAdminPageHarness(
     },
   };
   const windowListeners: Record<string, (event: Record<string, unknown>) => void> = {};
+  const scheduledTimers = new Map<number, () => void>();
+  let nextTimerId = 1;
   let documentVisibilityState: 'hidden' | 'visible' = 'visible';
   let documentScrollLeft = 0;
   let documentScrollTop = 0;
@@ -987,7 +996,12 @@ function runAdminPageHarness(
       documentScrollLeft = Number(left) || 0;
       documentScrollTop = Number(top) || 0;
     },
-    setTimeout() { return 1; },
+    setTimeout(callback: () => void) {
+      const timerId = nextTimerId++;
+      scheduledTimers.set(timerId, callback);
+      return timerId;
+    },
+    clearTimeout(timerId: number) { scheduledTimers.delete(timerId); },
     confirm() { return true; },
     open(url?: string) {
       if (url && url !== 'about:blank') {
@@ -1020,7 +1034,7 @@ function runAdminPageHarness(
   const providerState: ProviderSummaryFixture[] =
     options.providers ?? [
       { id: 'anthropic', status: 'stored', modelCount: 10 },
-      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscriptionAvailable: !options.cloudflare, subscription: { state: 'disconnected', updatedAt: 0 } },
       { id: 'openrouter', status: 'env', modelCount: null },
       {
         id: 'workers-ai',
@@ -2549,9 +2563,6 @@ function runAdminPageHarness(
         openAiSubscriptionDisconnects += 1;
         if (openAi) {
           openAi.subscription = { state: 'disconnected', updatedAt: 1_800_000_020_000 };
-          if (openAi.status === 'stored' || openAi.status === 'env') {
-            openAi.activeAuthMethod = 'api_key';
-          }
         }
         return Promise.resolve(jsonResponse({ status: openAi?.subscription }));
       }
@@ -2562,14 +2573,18 @@ function runAdminPageHarness(
       openAiSubscriptionPosts.push({ action, body });
       if (action === 'start') {
         if (openAi) openAi.subscription = { state: 'authorizing', updatedAt: 1_800_000_000_000 };
-        return Promise.resolve(jsonResponse({
+        const startResponse = jsonResponse(harnessOptions.openAiSubscriptionStartResult ?? {
           state: 'authorizing',
           verificationUri: 'https://auth.openai.com/codex/device',
           userCode: 'CHICK-PEA',
           expiresAt: 1_800_000_060_000,
           nextPollAt: 1_800_000_005_000,
           attemptCapability: 'browser-attempt-capability-1234567890',
-        }));
+        });
+        if (harnessOptions.deferOpenAiSubscriptionStart) {
+          return new Promise<FakeResponse>((resolve) => { openAiSubscriptionStartResolver = resolve; });
+        }
+        return Promise.resolve(startResponse);
       }
       if (action === 'poll') {
         const result = harnessOptions.openAiSubscriptionPollResult ?? {
@@ -2580,7 +2595,6 @@ function runAdminPageHarness(
         };
         if (openAi && result.state !== 'pending') {
           openAi.subscription = result as OpenAiSubscriptionStatusFixture;
-          if (result.state === 'connected') openAi.activeAuthMethod = 'subscription';
         }
         return Promise.resolve(jsonResponse(result));
       }
@@ -2593,7 +2607,6 @@ function runAdminPageHarness(
         };
         if (openAi) {
           openAi.subscription = connected;
-          openAi.activeAuthMethod = 'subscription';
         }
         return Promise.resolve(jsonResponse(connected));
       }
@@ -2640,7 +2653,10 @@ function runAdminPageHarness(
       if (entry) {
         entry.status = 'stored';
         entry.modelCount = 2;
-        if (id === 'openai' && wasMissing) entry.activeAuthMethod = 'api_key';
+        if (
+          id === 'openai' && wasMissing &&
+          !(entry.activeAuthMethod === 'subscription' && entry.subscription?.state === 'connected')
+        ) entry.activeAuthMethod = 'api_key';
       }
       return Promise.resolve(
         jsonResponse({ ok: true, provider: { id, status: 'stored', modelCount: 2 }, models: [{ id: 'm1' }, { id: 'm2' }] }),
@@ -2813,6 +2829,26 @@ function runAdminPageHarness(
     openAiSubscriptionPosts,
     openAiAuthMethodPuts,
     openAiSubscriptionDisconnects: () => openAiSubscriptionDisconnects,
+    resolveOpenAiSubscriptionStart() {
+      const resolve = openAiSubscriptionStartResolver;
+      assert.ok(resolve, 'OpenAI subscription start is not pending');
+      openAiSubscriptionStartResolver = undefined;
+      resolve(jsonResponse(harnessOptions.openAiSubscriptionStartResult ?? {
+        state: 'authorizing',
+        verificationUri: 'https://auth.openai.com/codex/device',
+        userCode: 'CHICK-PEA',
+        expiresAt: 1_800_000_060_000,
+        nextPollAt: 1_800_000_005_000,
+        attemptCapability: 'browser-attempt-capability-1234567890',
+      }));
+    },
+    runNextTimer() {
+      const entry = scheduledTimers.entries().next().value as [number, () => void] | undefined;
+      assert.ok(entry, 'no timer is scheduled');
+      scheduledTimers.delete(entry[0]);
+      entry[1]();
+    },
+    scheduledTimerCount: () => scheduledTimers.size,
     favoritesPuts,
     workersAiEnabledPuts,
     workspaceDefaultPuts,
@@ -14484,7 +14520,8 @@ test('Settings renders all four providers in the Shelf grid on every target', as
   assert.match(html, /data-provider-card="openai"/);
   assert.match(html, /data-provider-card="openrouter"/);
   assert.match(html, /data-provider-card="workers-ai"/);
-  // Anthropic (stored) shows the Stored chip + model count; OpenAI exposes only API-key billing.
+  // Anthropic (stored) shows the Stored chip + model count; OpenAI offers both
+  // chat authentication methods on Node.
   assert.match(html, /<span class="prov-name">Anthropic<\/span>/);
   assert.match(html, /data-provider-card="anthropic"[\s\S]*?<span class="dot"><\/span>Connected<\/span>/);
   assert.match(html, /10 models available\./);
@@ -14492,8 +14529,11 @@ test('Settings renders all four providers in the Shelf grid on every target', as
   assert.doesNotMatch(html, /of 1 connected/);
   assert.match(html, /Connect the API credentials Chickpea can use/);
   assert.match(html, /<span class="openai-auth-title">API key<\/span>/);
-  assert.match(html, /data-provider-card="openai"[\s\S]*?<span class="dot"><\/span>Key needed<\/span>/);
-  assert.doesNotMatch(html, /ChatGPT subscription|Connect subscription|openai-subscription|Use for OpenAI calls|Selected:/);
+  assert.match(html, /data-provider-card="openai"[\s\S]*?<span class="dot"><\/span>Needs attention<\/span>/);
+  assert.match(html, /ChatGPT subscription/);
+  assert.match(html, /Connect subscription/);
+  assert.match(html, /Usage shares the connected ChatGPT account&rsquo;s subscription limits/);
+  assert.match(html, /Images continue to use the OpenAI API key/);
   assert.match(html, /data-action="prov-add-key" data-provider="openai"/);
   // OpenRouter (env) is read-only and starts in the compact selected-model summary.
   assert.match(html, /data-provider-card="openrouter"[\s\S]*?<span class="dot"><\/span>Connected<\/span>/);
@@ -14509,7 +14549,7 @@ test('Settings renders all four providers in the Shelf grid on every target', as
   assert.match(html, /<span class="prov-name">Cloudflare Workers AI<\/span>/);
 });
 
-test('Settings hides legacy OpenAI subscription state and exposes only API-key billing', async () => {
+test('Settings shows the selected OpenAI chat method without exposing account identifiers', async () => {
   const harness = runAdminPageHarness({
     providers: [
       { id: 'anthropic', status: 'missing', modelCount: null },
@@ -14518,6 +14558,7 @@ test('Settings hides legacy OpenAI subscription state and exposes only API-key b
         status: 'stored',
         modelCount: 2,
         activeAuthMethod: 'api_key',
+        subscriptionAvailable: true,
         subscription: {
           state: 'connected',
           updatedAt: 1_800_000_005_000,
@@ -14540,7 +14581,248 @@ test('Settings hides legacy OpenAI subscription state and exposes only API-key b
   assert.match(harness.app.innerHTML, /Saved in Chickpea/);
   assert.match(harness.app.innerHTML, /<details class="provider-action-menu">/);
   assert.match(harness.app.innerHTML, /<summary[^>]*aria-label="Manage OpenAI API key"/);
-  assert.doesNotMatch(harness.app.innerHTML, /ChatGPT subscription|openai-subscription|Use for OpenAI calls|>Selected</);
+  assert.match(harness.app.innerHTML, /ChatGPT subscription/);
+  assert.match(harness.app.innerHTML, /data-action="openai-auth-method" data-method="api_key"[^>]*>Selected/);
+  assert.match(harness.app.innerHTML, /data-action="openai-auth-method" data-method="subscription"[^>]*>Use for chat/);
+  assert.match(harness.app.innerHTML, /One connected ChatGPT account is shared by this Chickpea installation/);
+  assert.doesNotMatch(harness.app.innerHTML, /oas_safe_fixture/);
+});
+
+test('Settings fails closed on Cloudflare even if an OpenAI subscription capability is reported', async () => {
+  const harness = runAdminPageHarness({
+    cloudflare: true,
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscriptionAvailable: true, subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'env', modelCount: null },
+    ],
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  assert.doesNotMatch(harness.app.innerHTML, /ChatGPT subscription|Connect subscription|openai-subscription|not supported/);
+  assert.match(harness.app.innerHTML, /Platform billing requires an API key here/);
+});
+
+test('Settings lets Cloudflare recover a persisted subscription selection with an API key', async () => {
+  const harness = runAdminPageHarness({
+    cloudflare: true,
+    initialPath: '/admin/settings/providers',
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'stored', modelCount: 2, activeAuthMethod: 'subscription', subscriptionAvailable: false, subscription: { state: 'connected', updatedAt: 1 } },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'env', modelCount: null },
+    ],
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Select the API key to enable OpenAI chat on this installation/);
+  assert.match(harness.app.innerHTML, /data-action="openai-auth-method" data-method="api_key"[^>]*>Use API key for chat/);
+  assert.doesNotMatch(harness.app.innerHTML, /ChatGPT|Connect subscription|openai-subscription/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'openai-auth-method', 'data-method': 'api_key' }) });
+  await flushAsync();
+  assert.deepEqual(harness.openAiAuthMethodPuts, ['api_key']);
+  assert.match(harness.app.innerHTML, /Saved in Chickpea/);
+  assert.doesNotMatch(harness.app.innerHTML, /Use API key for chat/);
+});
+
+test('Settings completes a transient OpenAI subscription device authorization and switches chat explicitly', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'stored', modelCount: 2, activeAuthMethod: 'api_key', subscriptionAvailable: true, subscription: { state: 'disconnected', updatedAt: 0 } },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'openai-subscription-start' }) });
+  await flushAsync();
+  assert.deepEqual(harness.openAiSubscriptionPosts, [{ action: 'start', body: {} }]);
+  assert.match(harness.app.innerHTML, /CHICK-PEA/);
+  assert.match(harness.app.innerHTML, /Open OpenAI/);
+  assert.equal(harness.scheduledTimerCount(), 1);
+  assert.doesNotMatch(harness.app.innerHTML, /browser-attempt-capability/);
+  assert.equal(harness.sessionStorageValue('browser-attempt-capability-1234567890'), null);
+
+  harness.runNextTimer();
+  await flushAsync();
+  assert.deepEqual(harness.openAiSubscriptionPosts.at(-1), {
+    action: 'poll',
+    body: { attemptCapability: 'browser-attempt-capability-1234567890' },
+  });
+  assert.match(harness.app.innerHTML, /ChatGPT subscription[\s\S]*Connected/);
+  assert.doesNotMatch(harness.app.innerHTML, /browser-attempt-capability|oas_safe_fixture/);
+
+  click({ target: actionTarget({ 'data-action': 'openai-auth-method', 'data-method': 'subscription' }) });
+  await flushAsync();
+  assert.deepEqual(harness.openAiAuthMethodPuts, ['subscription']);
+  assert.match(harness.app.innerHTML, /data-action="openai-auth-method" data-method="subscription"[^>]*>Selected/);
+});
+
+test('Settings cancels an OpenAI device authorization with its transient capability', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/settings/providers' });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'openai-subscription-start' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'openai-subscription-cancel' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.openAiSubscriptionPosts.at(-1), {
+    action: 'cancel',
+    body: { attemptCapability: 'browser-attempt-capability-1234567890' },
+  });
+  assert.equal(harness.scheduledTimerCount(), 0);
+  assert.doesNotMatch(harness.app.innerHTML, /CHICK-PEA|browser-attempt-capability/);
+});
+
+test('Settings explains when a reloaded pending OpenAI authorization can be retried', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscriptionAvailable: true, subscription: { state: 'authorizing', updatedAt: 1 } },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Continue in the original sign-in tab, or wait for that code to expire before starting again here/);
+  assert.match(harness.app.innerHTML, /data-action="openai-subscription-start"[^>]*>Start again<\/button>/);
+});
+
+test('Settings cancels transient OpenAI authorization on navigation and expiry', async () => {
+  const navigating = runAdminPageHarness({ initialPath: '/admin/settings/providers' });
+  await flushAsync();
+  navigating.listeners.click?.({ target: actionTarget({ 'data-action': 'openai-subscription-start' }) });
+  await flushAsync();
+  navigating.listeners.click?.({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
+  await flushAsync();
+  assert.deepEqual(navigating.openAiSubscriptionPosts.at(-1), {
+    action: 'cancel',
+    body: { attemptCapability: 'browser-attempt-capability-1234567890' },
+  });
+  assert.equal(navigating.scheduledTimerCount(), 0);
+
+  const expired = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    openAiSubscriptionStartResult: {
+      state: 'authorizing',
+      verificationUri: 'https://auth.openai.com/codex/device',
+      userCode: 'EXPIRED-CODE',
+      expiresAt: 1,
+      nextPollAt: 1,
+      attemptCapability: 'expired-attempt-capability',
+    },
+  });
+  await flushAsync();
+  expired.listeners.click?.({ target: actionTarget({ 'data-action': 'openai-subscription-start' }) });
+  await flushAsync();
+  assert.deepEqual(expired.openAiSubscriptionPosts.at(-1), {
+    action: 'cancel',
+    body: { attemptCapability: 'expired-attempt-capability' },
+  });
+  assert.match(expired.app.innerHTML, /sign-in code expired/);
+  assert.doesNotMatch(expired.app.innerHTML, /EXPIRED-CODE|expired-attempt-capability/);
+});
+
+test('Settings cancels a delayed OpenAI start response after navigation without opening sign-in', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    deferOpenAiSubscriptionStart: true,
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'openai-subscription-start' }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
+  harness.resolveOpenAiSubscriptionStart();
+  await flushAsync();
+
+  assert.deepEqual(harness.openAiSubscriptionPosts.at(-1), {
+    action: 'cancel',
+    body: { attemptCapability: 'browser-attempt-capability-1234567890' },
+  });
+  assert.deepEqual(harness.openedUrls, []);
+  assert.equal(harness.scheduledTimerCount(), 0);
+  assert.doesNotMatch(harness.app.innerHTML, /CHICK-PEA|browser-attempt-capability/);
+});
+
+test('Settings confirms an OpenAI account change without rendering account fingerprints', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    openAiSubscriptionPollResult: {
+      state: 'account_change_confirmation_required',
+      updatedAt: 1_800_000_005_000,
+      accountFingerprint: 'old_account_fingerprint',
+      candidateAccountFingerprint: 'new_account_fingerprint',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'openai-subscription-start' }) });
+  await flushAsync();
+  harness.runNextTimer();
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Confirm account change/);
+  assert.doesNotMatch(harness.app.innerHTML, /old_account_fingerprint|new_account_fingerprint|browser-attempt-capability/);
+  click({ target: actionTarget({ 'data-action': 'openai-subscription-confirm' }) });
+  await flushAsync();
+  assert.deepEqual(harness.openAiSubscriptionPosts.at(-1), {
+    action: 'confirm-account',
+    body: { attemptCapability: 'browser-attempt-capability-1234567890' },
+  });
+  assert.match(harness.app.innerHTML, /ChatGPT account updated/);
+});
+
+test('Settings disconnects a ChatGPT subscription without silently changing the selected chat method', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'stored', modelCount: 2, activeAuthMethod: 'subscription', subscriptionAvailable: true, subscription: { state: 'connected', updatedAt: 1 } },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'openai-subscription-disconnect' }) });
+  await flushAsync();
+
+  assert.equal(harness.openAiSubscriptionDisconnects(), 1);
+  assert.deepEqual(harness.openAiAuthMethodPuts, []);
+  assert.match(harness.app.innerHTML, /ChatGPT subscription disconnected/);
+  assert.match(harness.app.innerHTML, /Needs attention/);
+});
+
+test('Settings explains that removing an inactive OpenAI API key affects images, not subscription chat', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'stored', modelCount: 2, activeAuthMethod: 'subscription', subscriptionAvailable: true, subscription: { state: 'connected', updatedAt: 1 } },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'prov-remove', 'data-provider': 'openai' }) });
+
+  assert.match(harness.app.innerHTML, /Chat continues using the selected ChatGPT subscription/);
+  assert.match(harness.app.innerHTML, /Image generation needs an OpenAI API key/);
+  assert.doesNotMatch(harness.app.innerHTML, /will stop answering/);
 });
 
 test('Settings provider action menus dismiss on sibling, outside click, and Escape', async () => {
@@ -14653,14 +14935,15 @@ test('Settings validates a pasted key and collapses the row to a stored status',
   await flushAsync();
 
   assert.deepEqual(harness.providerKeyPosts, [{ id: 'openai', key: 'sk-live-openai' }]);
-  // The API-key connection is the only OpenAI provider option.
+  // Saving an API key keeps both chat methods available and leaves the key selected.
   assert.match(harness.app.innerHTML, /<span class="prov-name">OpenAI<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /of 1 connected/);
   assert.match(harness.app.innerHTML, /Saved in Chickpea/);
-  assert.doesNotMatch(harness.app.innerHTML, /ChatGPT subscription|openai-subscription|Use for OpenAI calls/);
+  assert.match(harness.app.innerHTML, /ChatGPT subscription/);
+  assert.match(harness.app.innerHTML, /data-action="openai-auth-method" data-method="api_key"[^>]*>Selected/);
 });
 
-test('Settings does not count a legacy Subscription as an available OpenAI connection', async () => {
+test('Settings ignores subscription status unless the server explicitly reports the capability', async () => {
   const harness = runAdminPageHarness({
     providers: [
       { id: 'anthropic', status: 'missing', modelCount: null },
@@ -14685,8 +14968,9 @@ test('Settings does not count a legacy Subscription as an available OpenAI conne
   await flushAsync();
 
   assert.doesNotMatch(harness.app.innerHTML, /of 1 connected/);
-  assert.match(harness.app.innerHTML, /Platform billing/);
-  assert.doesNotMatch(harness.app.innerHTML, /ChatGPT subscription|openai-subscription|Use for OpenAI calls|>Selected|oas_safe_fixture/);
+  assert.match(harness.app.innerHTML, /Add an OpenAI API key, then select it to enable OpenAI chat on this installation/);
+  assert.match(harness.app.innerHTML, /data-action="prov-add-key" data-provider="openai"/);
+  assert.doesNotMatch(harness.app.innerHTML, /ChatGPT subscription|openai-subscription|Use for OpenAI calls|Use API key for chat|>Selected|oas_safe_fixture/);
 });
 
 test('OpenAI profiles contain only the model choice and do not carry an auth-method selector', async () => {

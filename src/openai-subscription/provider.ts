@@ -26,6 +26,7 @@ import {
   type ResolvedOpenAiSubscriptionCredentials,
 } from './credentials.ts';
 import { OpenAiSubscriptionError } from './errors.ts';
+import { requireOpenAiSubscriptionAvailable } from './availability.ts';
 import {
   listOpenAiSubscriptionModels,
 } from './model-catalog.ts';
@@ -99,6 +100,7 @@ interface BindOpenAiSubscriptionProviderOptions {
 }
 
 export function registerOpenAiSubscriptionApi(): void {
+  requireOpenAiSubscriptionAvailable();
   registerCapturedSubscriptionApi(BUNDLED_SUBSCRIPTION_REGISTRATION);
   // Flue resolves useModel() before sandbox initialization. Register the safe
   // bundled provider shape at startup so a fresh Agent isolate recognizes the
@@ -110,6 +112,7 @@ export function registerOpenAiSubscriptionApi(): void {
 export async function bindOpenAiSubscriptionProvider(
   options: BindOpenAiSubscriptionProviderOptions,
 ): Promise<void> {
+  requireOpenAiSubscriptionAvailable();
   registerOpenAiSubscriptionApi();
   const route = options.route;
   if (
@@ -194,6 +197,7 @@ export function registerCapturedOpenAiSubscriptionProvider(options: {
   sha256: string;
   models: readonly Model<string>[];
 }): { providerId: string; api: string } {
+  requireOpenAiSubscriptionAvailable();
   const aliases = revisionedAlias('openaiSubscription', options.revision, options.sha256);
   const existing = hostedSubscriptionRegistrations.get(aliases.providerId);
   if (!existing && hostedSubscriptionRegistrations.size >= MAX_HOSTED_ALIAS_REGISTRATIONS) {

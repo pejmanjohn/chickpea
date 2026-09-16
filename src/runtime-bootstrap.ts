@@ -6,6 +6,7 @@ import {
   setWorkersAiRestPiProvider,
 } from './config/pi-provider.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
+import { openAiSubscriptionAvailable } from './openai-subscription/availability.ts';
 import { WORKERS_AI_CONTEXT_WINDOW_FLOOR, WORKERS_AI_REASONING_MAX_TOKENS } from './config/workers-ai-models.ts';
 
 export { WORKERS_AI_CONTEXT_WINDOW_FLOOR };
@@ -40,7 +41,7 @@ export function bootstrapRuntimeProviders(): void {
   recordRegisteredProvider('cloudflare-workers-ai');
 
   registerModelCompatibilityApis();
-  registerOpenAiSubscriptionApi();
+  if (openAiSubscriptionAvailable()) registerOpenAiSubscriptionApi();
 
   for (const [id, apiKey, baseUrl] of [
     ['anthropic', process.env.ANTHROPIC_API_KEY, process.env.ANTHROPIC_BASE_URL],

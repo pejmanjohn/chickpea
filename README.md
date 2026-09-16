@@ -308,6 +308,8 @@ Every run rechecks the whole chain: is the Agent alive, does it still have the c
 
 Bring your own: Anthropic, OpenAI, OpenRouter, or Cloudflare Workers AI. Cloudflare deploys can use the keyless binding provider and skip the API token entirely. Keys go in environment variables or in Settings, whichever you prefer.
 
+Node installations can also connect a ChatGPT subscription in **Settings → Model providers → OpenAI** for chat. This uses the subscription's shared usage limits. The option is unavailable on Cloudflare. Switching between a subscription and an API key is explicit; Chickpea does not fall back to API billing when the subscription is unavailable.
+
 Every Agent can be pinned to its own model. A cheap fast model for triage, a strong one for the Agent that writes.
 
 Images are a second model role beside chat. Pick a **default image model** in **Settings → Model providers**, and override it on any Agent from its Model tab; Agents with the role filled can generate and edit images in a thread, and Agents without it cannot. Image models come from OpenAI in this release and reuse your OpenAI key. When an Agent makes an image, the prompt text it writes and any images people posted in that Slack thread are sent to that provider.

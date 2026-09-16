@@ -269,6 +269,10 @@
     egressSaving: false,
     provUi: {},
     favUi: {},
+    // The device authorization capability is intentionally browser-memory only.
+    // It is cleared on cancellation, expiry, completion, or navigation and is
+    // never rendered or persisted.
+    openAiSubscription: { attempt: null, timer: null, requestId: 0, busy: "", error: "", notice: "" },
     // null = favorites not yet fetched (picker/Settings load them lazily). The
     // profile Model picker distinguishes "not loaded" (fall back to static
     // suggestions mid-load) from "loaded but empty" (suppress the group). Readers
@@ -941,6 +945,9 @@
   }
 
   function render() {
+    if ((state.openAiSubscription.attempt || state.openAiSubscription.busy === "start") && (state.view !== "settings" || state.settingsSection !== "providers")) {
+      stopOpenAiSubscriptionAttempt(true);
+    }
     var renderedPath = pagePositionKey();
     var resetPagePosition = routeReady && !!lastRenderedPath && renderedPath !== lastRenderedPath;
     lastRenderedPath = renderedPath;
@@ -8718,10 +8725,108 @@
       '<div class="provider-card-footer">' + providerActionsHtml(id, summary, ui) + '</div></div>';
   }
 
+  function openAiSubscriptionConnected(summary) {
+    var status = summary && summary.subscription;
+    return !!status && (status.state === "connected" || status.state === "account_change_confirmation_required");
+  }
+
+  function openAiAuthChoiceHtml(method, title, detail, available, active, busy) {
+    var label = active ? "Selected" : "Use for chat";
+    return '<div class="provider-step' + (active ? ' complete' : '') + '"><div><strong>' + esc(title) + '</strong><p class="provider-card-muted">' + esc(detail) + '</p></div>' +
+      '<button type="button" class="btn ' + (active ? 'btn-soft' : 'btn-ghost') + ' btn-sm" data-action="openai-auth-method" data-method="' + esc(method) + '"' +
+      (!available || active || busy ? ' disabled' : '') + '>' + label + '</button></div>';
+  }
+
+  function openAiSubscriptionControlsHtml(summary) {
+    var subscriptionUi = state.openAiSubscription;
+    var attempt = subscriptionUi.attempt;
+    var status = summary.subscription || { state: "disconnected" };
+    var busy = !!subscriptionUi.busy;
+    var controls = "";
+    var copy = "Connect a ChatGPT account to use its subscription for supported chat models.";
+    if (status.state === "account_change_confirmation_required" && attempt) {
+      copy = "A different ChatGPT account was authorized. Confirm the account change or cancel it.";
+      controls = '<button type="button" class="btn btn-primary btn-sm" data-action="openai-subscription-confirm"' + (busy ? ' disabled' : '') + '>Confirm account change</button>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>';
+    } else if (attempt) {
+      copy = 'Open OpenAI and enter <strong class="mono">' + esc(attempt.userCode) + '</strong>. This page will finish when authorization completes.';
+      controls = '<a class="btn btn-primary btn-sm" href="' + esc(attempt.verificationUri) + '" target="_blank" rel="noopener noreferrer">Open OpenAI &nearr;</a>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="openai-subscription-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>';
+    } else if (status.state === "account_change_confirmation_required") {
+      copy = "The account change can no longer be confirmed in this browser. Start again to choose the account.";
+      controls = '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-start"' + (busy ? ' disabled' : '') + '>Start again</button>';
+    } else if (status.state === "authorizing") {
+      copy = "Continue in the original sign-in tab, or wait for that code to expire before starting again here.";
+      controls = '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-start"' + (busy ? ' disabled' : '') + '>Start again</button>';
+    } else if (status.state === "connected") {
+      copy = "One connected ChatGPT account is shared by this Chickpea installation for chat.";
+      controls = '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-start"' + (busy ? ' disabled' : '') + '>Reauthenticate</button>' +
+        '<button type="button" class="btn btn-ghost btn-sm danger-text" data-action="openai-subscription-disconnect"' + (busy ? ' disabled' : '') + '>Disconnect</button>';
+    } else {
+      if (status.state === "reconnect_required") copy = "Reconnect the ChatGPT account before using the subscription for chat.";
+      else if (status.state === "error") copy = "The ChatGPT connection needs attention. Start a fresh connection.";
+      controls = '<button type="button" class="btn btn-soft btn-sm" data-action="openai-subscription-start"' + (busy ? ' disabled' : '') + '>Connect subscription</button>';
+    }
+    return '<div class="provider-card-copy"><p><span class="openai-auth-title">ChatGPT subscription</span></p><p class="provider-card-muted">' + copy + '</p>' +
+      '<p class="provider-card-muted">Usage shares the connected ChatGPT account&rsquo;s subscription limits.</p></div>' +
+      (subscriptionUi.error ? '<p class="field-error" role="alert">' + esc(subscriptionUi.error) + '</p>' : '') +
+      (subscriptionUi.notice ? '<p class="inline-status" role="status">' + esc(subscriptionUi.notice) + '</p>' : '') +
+      '<div class="prov-actions">' + controls + '</div>';
+  }
+
+  function openAiProviderRowHtml(summary, ui, meta) {
+    var keyConnected = summary.status === "stored" || summary.status === "env";
+    var subscriptionConnected = openAiSubscriptionConnected(summary);
+    var active = summary.activeAuthMethod === "subscription" ? "subscription" : "api_key";
+    var activeReady = active === "subscription" ? subscriptionConnected : keyConnected;
+    var editor = "";
+    if (ui.removeOpen) editor = removeConfirmHtml("openai", summary);
+    else if (ui.open) editor = pasteBodyHtml("openai", ui, meta);
+    var keySource = keyConnected ? (summary.status === "env" ? "Environment managed" : "Saved in Chickpea") : "Add an API key for chat and images.";
+    var head = '<div class="prov-head">' + providerCardIdentityHtml("openai", meta) +
+      '<div class="prov-status"><span class="badge ' + (activeReady ? 'badge-on' : 'badge-off') + '"><span class="dot"></span>' + (activeReady ? 'Connected' : 'Needs attention') + '</span></div></div>';
+    var choices = '<div class="provider-step-list" aria-label="OpenAI chat method">' +
+      openAiAuthChoiceHtml("api_key", "API key", keySource, keyConnected, active === "api_key", !!state.openAiSubscription.busy) +
+      openAiAuthChoiceHtml("subscription", "ChatGPT subscription", subscriptionConnected ? "Connected for supported chat models." : "Connect an account to use its subscription for chat.", subscriptionConnected, active === "subscription", !!state.openAiSubscription.busy) + '</div>';
+    var keyBody = '<div class="provider-card-copy"><p><span class="openai-auth-title">API key</span> &middot; ' + esc(keySource) + '</p>' +
+      '<p class="provider-card-muted">Images continue to use the OpenAI API key even when ChatGPT subscription is selected for chat.</p></div>' +
+      (editor ? '<div class="provider-card-editor">' + editor + '</div>' : '') +
+      '<div class="provider-card-footer">' + providerActionsHtml("openai", summary, ui) + '</div>';
+    return '<article class="prov-row provider-card" data-provider-card="openai">' + head + '<div class="prov-body">' + choices + keyBody + openAiSubscriptionControlsHtml(summary) + '</div></article>';
+  }
+
+  function openAiNeedsApiKeyRecovery(summary) {
+    return summary.activeAuthMethod === "subscription" && (summary.subscriptionAvailable !== true || IS_CLOUDFLARE);
+  }
+
+  function openAiApiKeyRecoveryRowHtml(summary, ui, meta) {
+    var keyConnected = summary.status === "stored" || summary.status === "env";
+    var editor = "";
+    if (ui.removeOpen) editor = removeConfirmHtml("openai", summary);
+    else if (ui.open) editor = pasteBodyHtml("openai", ui, meta);
+    var source = keyConnected ? (summary.status === "env" ? "Environment managed" : "Saved in Chickpea") : "API key needed";
+    var guidance = keyConnected
+      ? "Select the API key to enable OpenAI chat on this installation."
+      : "Add an OpenAI API key, then select it to enable OpenAI chat on this installation.";
+    var recoveryAction = keyConnected
+      ? '<button type="button" class="btn btn-soft btn-sm" data-action="openai-auth-method" data-method="api_key"' + (state.openAiSubscription.busy ? ' disabled' : '') + '>Use API key for chat</button>'
+      : "";
+    var head = '<div class="prov-head">' + providerCardIdentityHtml("openai", meta) +
+      '<div class="prov-status"><span class="badge badge-off"><span class="dot"></span>Needs attention</span></div></div>';
+    return '<article class="prov-row provider-card" data-provider-card="openai">' + head + '<div class="prov-body">' +
+      '<div class="provider-card-copy"><p><span class="openai-auth-title">API key</span> &middot; ' + esc(source) + '</p><p class="provider-card-muted">' + esc(guidance) + '</p></div>' +
+      (editor ? '<div class="provider-card-editor">' + editor + '</div>' : '') +
+      (state.openAiSubscription.error ? '<p class="field-error" role="alert">' + esc(state.openAiSubscription.error) + '</p>' : '') +
+      (state.openAiSubscription.notice ? '<p class="inline-status" role="status">' + esc(state.openAiSubscription.notice) + '</p>' : '') +
+      '<div class="provider-card-footer">' + providerActionsHtml("openai", summary, ui) + recoveryAction + '</div></div></article>';
+  }
+
   function providerRowHtml(summary) {
     var id = summary.id;
     var meta = providerMeta(id);
     var ui = state.provUi[id] || {};
+    if (id === "openai" && summary.subscriptionAvailable === true && !IS_CLOUDFLARE) return openAiProviderRowHtml(summary, ui, meta);
+    if (id === "openai" && openAiNeedsApiKeyRecovery(summary)) return openAiApiKeyRecoveryRowHtml(summary, ui, meta);
     if (isFavoriteProvider(id)) return favoriteProviderRowHtml(summary, ui, meta);
     var body = "";
     if (ui.removeOpen) body = removeConfirmHtml(id, summary);
@@ -8815,6 +8920,13 @@
 
   function removeConfirmHtml(id, summary) {
     var meta = providerMeta(id);
+    if (id === "openai" && summary.activeAuthMethod === "subscription" && openAiSubscriptionConnected(summary)) {
+      var subscriptionEnvNote = 'An <span class="mono" style="color:var(--text);">' + esc(meta.env) + '</span> in the environment, if set, still applies.';
+      var subscriptionRemoveError = provUiFor(id).removeError ? '<p class="field-error">' + esc(provUiFor(id).removeError) + '</p>' : "";
+      return '<div class="callout">' + icon("exclamation-triangle", "ic-l g") + '<span>Remove the stored OpenAI key? Chat continues using the selected ChatGPT subscription. Image generation needs an OpenAI API key and will stop until a key is available. ' + subscriptionEnvNote + '</span></div>' + subscriptionRemoveError +
+        '<div style="display:flex; gap:10px;"><button type="button" class="btn btn-soft btn-sm" data-action="prov-remove-cancel" data-provider="openai">Keep key</button>' +
+        '<button type="button" class="btn btn-danger btn-sm" data-action="prov-remove-confirm" data-provider="openai">Remove key</button></div>';
+    }
     var pinned = pinnedProfilesForProvider(id);
     var count = pinned.length;
     var workspaceDefaultAffected = !!(state.workspaceDefault && state.workspaceDefault.live &&
@@ -10201,6 +10313,248 @@
       return loadSettings().then(function () { refreshModels(); render(); });
     }).catch(function (error) {
       ui.removeError = (error && (error.serverMessage || error.message)) || "Could not remove the key.";
+      render();
+    });
+  }
+
+  function openAiSummary() {
+    var summary = providerSummaryById("openai");
+    return summary && summary.subscriptionAvailable === true && !IS_CLOUDFLARE ? summary : null;
+  }
+
+  function applyOpenAiSubscriptionStatus(status) {
+    var summary = openAiSummary();
+    if (summary && status && status.state) summary.subscription = status;
+  }
+
+  function clearOpenAiSubscriptionTimer() {
+    var subscriptionUi = state.openAiSubscription;
+    if (subscriptionUi.timer != null && window.clearTimeout) window.clearTimeout(subscriptionUi.timer);
+    subscriptionUi.timer = null;
+  }
+
+  function stopOpenAiSubscriptionAttempt(sendCancel) {
+    var subscriptionUi = state.openAiSubscription;
+    var attempt = subscriptionUi.attempt;
+    subscriptionUi.requestId += 1;
+    clearOpenAiSubscriptionTimer();
+    subscriptionUi.attempt = null;
+    subscriptionUi.busy = "";
+    if (sendCancel && attempt && attempt.attemptCapability) {
+      postJson("/admin/api/providers/openai/subscription/cancel", "POST", {
+        attemptCapability: attempt.attemptCapability
+      }).catch(function () { /* Navigation still clears the browser capability. */ });
+    }
+  }
+
+  function openAiSubscriptionError(error, fallback) {
+    if (error && error.serverMessage) return error.serverMessage;
+    if (error && error.message === "openai_subscription_expired") return "The sign-in code expired. Start again for a new code.";
+    if (error && error.message === "openai_subscription_unavailable") return "ChatGPT subscription sign-in is unavailable on this installation.";
+    return fallback;
+  }
+
+  function scheduleOpenAiSubscriptionPoll() {
+    var subscriptionUi = state.openAiSubscription;
+    var attempt = subscriptionUi.attempt;
+    if (!attempt) return;
+    clearOpenAiSubscriptionTimer();
+    var now = Date.now();
+    if (attempt.expiresAt && now >= attempt.expiresAt) {
+      stopOpenAiSubscriptionAttempt(true);
+      subscriptionUi.error = "The sign-in code expired. Start again for a new code.";
+      render();
+      return;
+    }
+    var delay = Math.max(250, Number(attempt.nextPollAt || now + 1000) - now);
+    if (attempt.expiresAt) delay = Math.min(delay, Math.max(250, attempt.expiresAt - now));
+    subscriptionUi.timer = window.setTimeout(pollOpenAiSubscription, delay);
+  }
+
+  function startOpenAiSubscription() {
+    var summary = openAiSummary();
+    var subscriptionUi = state.openAiSubscription;
+    if (!summary || subscriptionUi.busy) return;
+    stopOpenAiSubscriptionAttempt(true);
+    var requestId = ++subscriptionUi.requestId;
+    subscriptionUi.busy = "start";
+    subscriptionUi.error = "";
+    subscriptionUi.notice = "";
+    render();
+    postJson("/admin/api/providers/openai/subscription/start", "POST", {}).then(function (body) {
+      if (requestId !== subscriptionUi.requestId || state.view !== "settings" || state.settingsSection !== "providers" || !openAiSummary()) {
+        if (body && body.attemptCapability) {
+          postJson("/admin/api/providers/openai/subscription/cancel", "POST", {
+            attemptCapability: body.attemptCapability
+          }).catch(function () { /* The abandoned server attempt still expires safely. */ });
+        }
+        return;
+      }
+      if (!body || body.state !== "authorizing" || !body.attemptCapability || !body.verificationUri || !body.userCode) {
+        throw new Error("invalid_subscription_start");
+      }
+      subscriptionUi.busy = "";
+      subscriptionUi.attempt = {
+        attemptCapability: body.attemptCapability,
+        verificationUri: body.verificationUri,
+        userCode: body.userCode,
+        expiresAt: Number(body.expiresAt || 0),
+        nextPollAt: Number(body.nextPollAt || Date.now() + 1000)
+      };
+      applyOpenAiSubscriptionStatus({ state: "authorizing", updatedAt: Date.now() });
+      render();
+      try { window.open(body.verificationUri, "_blank", "noopener,noreferrer"); } catch (_) { /* The visible link remains available. */ }
+      scheduleOpenAiSubscriptionPoll();
+    }).catch(function (error) {
+      if (requestId !== subscriptionUi.requestId) return;
+      subscriptionUi.busy = "";
+      subscriptionUi.error = openAiSubscriptionError(error, "Could not start ChatGPT subscription sign-in.");
+      render();
+    });
+  }
+
+  function pollOpenAiSubscription() {
+    var subscriptionUi = state.openAiSubscription;
+    var attempt = subscriptionUi.attempt;
+    subscriptionUi.timer = null;
+    if (!attempt || !openAiSummary()) return;
+    if (attempt.expiresAt && Date.now() >= attempt.expiresAt) {
+      stopOpenAiSubscriptionAttempt(true);
+      subscriptionUi.error = "The sign-in code expired. Start again for a new code.";
+      render();
+      return;
+    }
+    postJson("/admin/api/providers/openai/subscription/poll", "POST", {
+      attemptCapability: attempt.attemptCapability
+    }).then(function (body) {
+      if (subscriptionUi.attempt !== attempt) return;
+      if (body && body.state === "pending") {
+        attempt.expiresAt = Number(body.expiresAt || attempt.expiresAt || 0);
+        attempt.nextPollAt = Number(body.nextPollAt || Date.now() + 1000);
+        scheduleOpenAiSubscriptionPoll();
+        return;
+      }
+      if (body && body.state === "account_change_confirmation_required") {
+        applyOpenAiSubscriptionStatus(body);
+        clearOpenAiSubscriptionTimer();
+        subscriptionUi.busy = "";
+        render();
+        return;
+      }
+      if (body && body.state === "connected") {
+        applyOpenAiSubscriptionStatus(body);
+        stopOpenAiSubscriptionAttempt(false);
+        subscriptionUi.notice = "ChatGPT subscription connected.";
+        invalidateOpenAiProviderModels();
+        refreshModels();
+        render();
+        return;
+      }
+      throw new Error("invalid_subscription_poll");
+    }).catch(function (error) {
+      if (subscriptionUi.attempt !== attempt) return;
+      stopOpenAiSubscriptionAttempt(true);
+      subscriptionUi.error = openAiSubscriptionError(error, "Could not finish ChatGPT subscription sign-in. Start again.");
+      render();
+    });
+  }
+
+  function cancelOpenAiSubscription() {
+    var subscriptionUi = state.openAiSubscription;
+    var attempt = subscriptionUi.attempt;
+    if (!attempt || subscriptionUi.busy) {
+      subscriptionUi.error = "Start a fresh connection to continue.";
+      render();
+      return;
+    }
+    clearOpenAiSubscriptionTimer();
+    subscriptionUi.busy = "cancel";
+    postJson("/admin/api/providers/openai/subscription/cancel", "POST", {
+      attemptCapability: attempt.attemptCapability
+    }).then(function (body) {
+      if (subscriptionUi.attempt !== attempt) return;
+      stopOpenAiSubscriptionAttempt(false);
+      applyOpenAiSubscriptionStatus(body.status || body);
+      subscriptionUi.error = "";
+      subscriptionUi.notice = "ChatGPT subscription sign-in canceled.";
+      render();
+    }).catch(function (error) {
+      if (subscriptionUi.attempt !== attempt) return;
+      subscriptionUi.busy = "";
+      subscriptionUi.error = openAiSubscriptionError(error, "Could not cancel ChatGPT subscription sign-in.");
+      render();
+    });
+  }
+
+  function confirmOpenAiSubscriptionAccount() {
+    var subscriptionUi = state.openAiSubscription;
+    var attempt = subscriptionUi.attempt;
+    if (!attempt || subscriptionUi.busy) {
+      subscriptionUi.error = "Start a fresh connection before confirming the account change.";
+      render();
+      return;
+    }
+    subscriptionUi.busy = "confirm";
+    postJson("/admin/api/providers/openai/subscription/confirm-account", "POST", {
+      attemptCapability: attempt.attemptCapability
+    }).then(function (body) {
+      if (subscriptionUi.attempt !== attempt) return;
+      stopOpenAiSubscriptionAttempt(false);
+      applyOpenAiSubscriptionStatus(body.status || body);
+      subscriptionUi.notice = "ChatGPT account updated.";
+      invalidateOpenAiProviderModels();
+      refreshModels();
+      render();
+    }).catch(function (error) {
+      subscriptionUi.busy = "";
+      subscriptionUi.error = openAiSubscriptionError(error, "Could not confirm the ChatGPT account change.");
+      render();
+    });
+  }
+
+  function disconnectOpenAiSubscription() {
+    var subscriptionUi = state.openAiSubscription;
+    if (!openAiSummary() || subscriptionUi.busy) return;
+    stopOpenAiSubscriptionAttempt(true);
+    subscriptionUi.busy = "disconnect";
+    subscriptionUi.error = "";
+    render();
+    api("/admin/api/providers/openai/subscription", { method: "DELETE" }).then(function (body) {
+      subscriptionUi.busy = "";
+      applyOpenAiSubscriptionStatus(body.status || body);
+      subscriptionUi.notice = "ChatGPT subscription disconnected.";
+      invalidateOpenAiProviderModels();
+      refreshModels();
+      render();
+    }).catch(function (error) {
+      subscriptionUi.busy = "";
+      subscriptionUi.error = openAiSubscriptionError(error, "Could not disconnect the ChatGPT subscription.");
+      render();
+    });
+  }
+
+  function selectOpenAiAuthMethod(method) {
+    var summary = providerSummaryById("openai");
+    var subscriptionUi = state.openAiSubscription;
+    if (!summary || summary.id !== "openai" || subscriptionUi.busy || (method !== "api_key" && method !== "subscription")) return;
+    if (method === "subscription" && (summary.subscriptionAvailable !== true || IS_CLOUDFLARE)) return;
+    var available = method === "api_key"
+      ? summary.status === "stored" || summary.status === "env"
+      : openAiSubscriptionConnected(summary);
+    if (!available || summary.activeAuthMethod === method) return;
+    subscriptionUi.busy = "select";
+    subscriptionUi.error = "";
+    render();
+    postJson("/admin/api/providers/openai/auth-method", "PUT", { method: method }).then(function (body) {
+      subscriptionUi.busy = "";
+      summary.activeAuthMethod = body.activeAuthMethod || method;
+      subscriptionUi.notice = method === "subscription" ? "ChatGPT subscription selected for chat." : "OpenAI API key selected for chat.";
+      invalidateOpenAiProviderModels();
+      refreshModels();
+      render();
+    }).catch(function (error) {
+      subscriptionUi.busy = "";
+      subscriptionUi.error = openAiSubscriptionError(error, "Could not change the OpenAI chat method.");
       render();
     });
   }
@@ -11604,6 +11958,11 @@
     if (action === "prov-remove") { openProviderRemove(target.getAttribute("data-provider")); }
     if (action === "prov-remove-cancel") { closeProviderRemove(target.getAttribute("data-provider")); }
     if (action === "prov-remove-confirm") { removeProviderKey(target.getAttribute("data-provider")); }
+    if (action === "openai-subscription-start") { startOpenAiSubscription(); }
+    if (action === "openai-subscription-cancel") { cancelOpenAiSubscription(); }
+    if (action === "openai-subscription-confirm") { confirmOpenAiSubscriptionAccount(); }
+    if (action === "openai-subscription-disconnect") { disconnectOpenAiSubscription(); }
+    if (action === "openai-auth-method") { selectOpenAiAuthMethod(target.getAttribute("data-method")); }
     if (action === "fav-manager-toggle") {
       var favoriteProvider = target.getAttribute("data-provider");
       var favoriteUi = favUiFor(favoriteProvider);
