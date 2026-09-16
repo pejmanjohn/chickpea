@@ -91,6 +91,7 @@ import {
   getConfigStore,
   getIdentityStore,
   getSettingsStore,
+  getSlackCredentialResolutionDependencies,
   getUsageStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
@@ -1725,7 +1726,11 @@ export function createRuntimePlanArtifactTools(
       const installation = await resolveSlackInstallationExecutionContext(
         plan.conversation.workspaceId,
         env,
-        { config: getConfigStore(env), settings: getSettingsStore(env) },
+        {
+          config: getConfigStore(env),
+          settings: getSettingsStore(env),
+          credentialDependencies: getSlackCredentialResolutionDependencies(env),
+        },
       );
       return createSlackFileTransport(installation.client);
     })();
