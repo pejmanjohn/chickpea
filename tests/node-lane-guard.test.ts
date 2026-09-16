@@ -15,9 +15,11 @@ test('Flue 2 has one compatible Pi/Agents/MCP dependency graph', () => {
   const lock = JSON.parse(readFileSync(path.join(PROJECT_ROOT, 'package-lock.json'), 'utf8'));
   const packages = lock.packages as Record<string, { version?: string }>;
 
-  assert.equal(packageJson.dependencies['@flue/runtime'], '2.0.0');
-  assert.equal(packageJson.dependencies['@flue/slack'], '2.0.0');
-  assert.equal(packageJson.devDependencies['@flue/vite'], '2.0.0');
+  assert.equal(packageJson.dependencies['@flue/runtime'], '2.0.7');
+  assert.equal(packageJson.dependencies['@flue/slack'], '2.0.7');
+  assert.equal(packageJson.devDependencies['@flue/cli'], '2.0.7');
+  assert.equal(packageJson.devDependencies['@flue/vite'], '2.0.7');
+  assert.equal(packageJson.dependencies.agents, undefined);
   assert.equal(packageJson.dependencies['@earendil-works/pi-ai'], '0.83.0');
   assert.equal(packages['node_modules/@earendil-works/pi-ai']?.version, '0.83.0');
   assert.equal(
@@ -25,6 +27,10 @@ test('Flue 2 has one compatible Pi/Agents/MCP dependency graph', () => {
     1,
   );
   assert.equal(packages['node_modules/agents']?.version, '0.20.1');
+  assert.equal(
+    Object.keys(packages).filter((entry) => entry.endsWith('node_modules/agents')).length,
+    1,
+  );
   assert.equal(packages['node_modules/@modelcontextprotocol/sdk']?.version, '1.30.0');
   assert.equal(packages['node_modules/@modelcontextprotocol/client']?.version, '2.0.0');
   assert.equal(packages['node_modules/@modelcontextprotocol/server']?.version, '2.0.0');
